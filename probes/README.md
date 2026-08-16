@@ -1,25 +1,34 @@
 # probes/
 
-Throwaway measurement scripts. **Not product code** — brigadier v2 has no source yet, and
-decision 1 (true zero) means none of v1 is carried. These exist so a measurement can be
-re-run and disputed rather than trusted from a written record.
+Throwaway measurement scripts. **Not product code**, not held to product standards, and not the
+beginning of a codebase — see `AGENTS.md`. Each one exists to turn one assumption on the wayfinder
+map into evidence, and each names the ticket it serves.
 
-Every result belongs in a comment on the ticket it answers, recorded as
-**"MEASURED against `<tool> <version>` on `<date>`"** — never in the present tense. v1
-recorded codex-cli moving 0.145.0 → 0.147.0 mid-project, which made every present-tense
-claim version-stale while measured-against statements stayed true forever.
+Every probe follows the same two rules the map insists on: it prints what it measured rather than a
+verdict it inferred, and where it makes a claim it also shows the check *failing* when it should.
 
-## `acp-handshake.ts`
+| probe | ticket | question |
+| --- | --- | --- |
+| `acp-handshake.ts` | #14, #2 | What does an agent's ACP `initialize` actually return? |
+| `acp-session.ts` | #14, #3 | A full turn: `session/new` in a clone, a prompt, permissions, a diff. |
+| `treesitter/` | #23 | Can `bun build --compile` embed and load a tree-sitter `.wasm` grammar? |
+| `windows/portability.ts` | #5 | Hardlinks, `MAX_PATH`, CRLF, symlinks, `PATHEXT` — measured per platform. |
+| `windows/jobobject-tree.ts` | #5 | Does killing a spawned child kill its grandchildren? |
 
-Minimal ACP client: spawns an agent as a subprocess, speaks newline-delimited JSON-RPC 2.0
-on its stdio, sends `initialize`, prints the response, kills the child.
+## Running them
 
-```sh
-bun probes/acp-handshake.ts <deadline-ms> <command> [args...]
+```
+bun probes/acp-handshake.ts 60000 npx -y @agentclientprotocol/claude-agent-acp
+bun probes/windows/portability.ts /tmp/scratch
+bun probes/windows/jobobject-tree.ts --group
 
-bun probes/acp-handshake.ts 90000 npx -y @agentclientprotocol/claude-agent-acp
-bun probes/acp-handshake.ts 120000 npx -y @agentclientprotocol/codex-acp
+cd probes/treesitter && npm install && bun grammars.ts
 ```
 
-It kills the child on the first answered request and enforces a hard deadline, because agent
-CLIs do not reliably exit on their own. **Exit 137 is the deliberate SIGKILL, not a failure.**
+The tree-sitter probe pins both its runtime and its grammars. They must come from the same
+tree-sitter ABI; a mismatched pair fails inside Emscripten's dynamic-link loader with a bare
+`Error` and no message, which reads exactly like "WASM does not work here" and is not that.
+
+`.github/workflows/portability.yml` runs the `windows/` and `treesitter/` probes on
+`windows-latest`, `ubuntu-latest` and `macos-latest`, because a Windows result with no control
+column is not a measurement.

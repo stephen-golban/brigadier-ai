@@ -1,0 +1,83 @@
+name: portability
+
+# Ticket #5 — the Windows portability contract, measured on a real Windows host
+# rather than reasoned about. macOS and Linux run the same probes so every claim
+# has a control column; a Windows-only result with nothing to compare it against
+# is how v1 shipped a defect that was invisible to 740 tests.
+#
+# Also carries ticket #23's blocking sub-question onto Windows: can a
+# `bun build --compile`d binary load a tree-sitter .wasm grammar there?
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "probes/**"
+      - ".github/workflows/portability.yml"
+
+jobs:
+  portability:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      - name: Environment
+        shell: bash
+        run: |
+          echo "os=${{ matrix.os }}"
+          bun --version
+          git --version
+          echo "runner.arch=${{ runner.arch }}"
+
+      # ---------------------------------------------------------------- #5
+      - name: Portability contract
+        shell: bash
+        run: bun probes/windows/portability.ts "${RUNNER_TEMP}/brig-port"
+
+      - name: Process tree — naive kill
+        shell: bash
+        run: bun probes/windows/jobobject-tree.ts
+
+      - name: Process tree — group/tree kill
+        shell: bash
+        run: bun probes/windows/jobobject-tree.ts --group
+
+      - name: Process tree — negative control (no kill, must SURVIVE)
+        shell: bash
+        run: bun probes/windows/jobobject-tree.ts --no-kill
+
+      # ---------------------------------------------------------------- #23
+      - name: tree-sitter WASM under bun --compile
+        shell: bash
+        working-directory: probes/treesitter
+        run: |
+          npm install --no-fund --no-audit
+          echo "--- interpreted ---"
+          bun grammars.ts
+          echo "--- compiled ---"
+          bun build --compile grammars.ts --outfile ts-probe
+          # Run it from a directory with no node_modules, so a pass proves the
+          # grammars are embedded rather than being read off disk.
+          mkdir -p "${RUNNER_TEMP}/bare"
+          cp ts-probe* "${RUNNER_TEMP}/bare/" 2>/dev/null || cp ts-probe "${RUNNER_TEMP}/bare/"
+          cd "${RUNNER_TEMP}/bare"
+          if [ -f ts-probe.exe ]; then ./ts-probe.exe; else ./ts-probe; fi
+
+      - name: Binary size delta
+        shell: bash
+        working-directory: probes/treesitter
+        run: |
+          echo 'console.log("empty")' > empty.ts
+          bun build --compile empty.ts --outfile empty-bin
+          for f in empty-bin empty-bin.exe ts-probe ts-probe.exe; do
+            [ -f "$f" ] && echo "$(wc -c < "$f") $f"
+          done
+          true

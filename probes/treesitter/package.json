@@ -1,0 +1,9 @@
+{
+  "name": "brigadier-probe-treesitter",
+  "private": true,
+  "description": "Throwaway probe for ticket #23 — can bun --compile embed and load tree-sitter WASM grammars? Versions are pinned because the runtime and the grammars must be built from the same tree-sitter ABI; a mismatch fails inside Emscripten's dylink loader with a bare Error.",
+  "dependencies": {
+    "@vscode/tree-sitter-wasm": "0.3.1",
+    "web-tree-sitter": "0.25.10"
+  }
+}
