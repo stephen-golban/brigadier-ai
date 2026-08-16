@@ -123,6 +123,9 @@ const permissionLog: Array<Record<string, unknown>> = [];
 const toolCalls: Array<Record<string, unknown>> = [];
 let updateCount = 0;
 let transcriptChars = 0;
+let thoughtChunks = 0;
+let thoughtChars = 0;
+let messageChars = 0;
 
 // -------------------------------------------------- server side of the client
 const handleAgentRequest = async (msg: any) => {
@@ -196,6 +199,15 @@ const handleNotification = (msg: any) => {
   updateCount++;
   const u = msg.params?.update ?? {};
   const kind = u.sessionUpdate;
+  // Reasoning volume is the discriminator for #45: an effort lever that is
+  // cosmetic and one that is real look identical in the return value and
+  // different here.
+  if (kind === "agent_thought_chunk") {
+    thoughtChunks++;
+    thoughtChars += (u.content?.text ?? "").length;
+  } else if (kind === "agent_message_chunk") {
+    messageChars += (u.content?.text ?? "").length;
+  }
   if (kind === "tool_call" || kind === "tool_call_update") {
     toolCalls.push({ at: Date.now() - started, kind, title: u.title, status: u.status, toolKind: u.kind, locations: u.locations });
     if (kind === "tool_call") note(`TOOL  ${u.kind ?? "?"} ${JSON.stringify(u.title ?? "")}`);
@@ -306,8 +318,12 @@ result.permissionRequests = permissionLog;
 result.toolCalls = toolCalls;
 result.updateCount = updateCount;
 result.transcriptChars = transcriptChars;
+result.thoughtChunks = thoughtChunks;
+result.thoughtChars = thoughtChars;
+result.messageChars = messageChars;
 result.stderr = stderrChunks.join("").slice(0, 4000);
 writeFileSync(join(outDir, "result.json"), JSON.stringify(result, null, 2));
 
 note(`STATS updates=${updateCount} permissionRequests=${permissionLog.length} toolCalls=${toolCalls.length} agentBytes=${transcriptChars}`);
+note(`THINK thoughtChunks=${thoughtChunks} thoughtChars=${thoughtChars} messageChars=${messageChars}`);
 note(`OUT   ${outDir}`);
