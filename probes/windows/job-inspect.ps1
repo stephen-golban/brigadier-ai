@@ -37,11 +37,16 @@ public static class BrigJob {
 
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool QueryInformationJobObject(IntPtr hJob, int infoClass, IntPtr info, int len, IntPtr returned);
+    public static extern bool QueryInformationJobObject(IntPtr hJob, int infoClass, IntPtr info, int len, out int returned);
 
+    // Every field is a pointer or an integer. The first revision declared the
+    // three reserved members as `string`, which marshals a struct-default ANSI
+    // pointer into a CharSet.Unicode call and handed CreateProcessW a garbage
+    // lpDesktop — observed as ERROR_INVALID_NAME (123), which reads exactly like
+    // a malformed command line and is not that.
     [StructLayout(LayoutKind.Sequential)]
     public struct STARTUPINFO {
-        public int cb; public string res1; public string desktop; public string title;
+        public int cb; public IntPtr res1; public IntPtr desktop; public IntPtr title;
         public int x; public int y; public int xs; public int ys; public int xcc; public int ycc;
         public int fill; public int flags; public short showWindow; public short res2;
         public IntPtr res3; public IntPtr stdIn; public IntPtr stdOut; public IntPtr stdErr;
@@ -101,24 +106,48 @@ if ($Mode -eq "flags") {
     exit 0
   }
 
-  $size = 256
-  $buf = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($size)
-  try {
-    $q = [BrigJob]::QueryInformationJobObject([IntPtr]::Zero, $JobObjectExtendedLimitInformation, $buf, $size, [IntPtr]::Zero)
-    if (-not $q) {
-      Write-Output ("QUERY_OK=False")
-      Write-Output ("QUERY_LAST_ERROR=" + [System.Runtime.InteropServices.Marshal]::GetLastWin32Error())
-      exit 0
+  # QueryInformationJobObject is length-sensitive and the required length differs
+  # by info class and architecture, so try each candidate and report the rc and
+  # the error for every attempt rather than one opaque failure. Class 2 is
+  # JobObjectBasicLimitInformation, whose LimitFlags sits at the same offset —
+  # if the extended class is refused, the basic one still answers the question.
+  $attempts = @(
+    @{ cls = $JobObjectExtendedLimitInformation; name = "extended"; size = 144 },
+    @{ cls = $JobObjectExtendedLimitInformation; name = "extended"; size = 112 },
+    @{ cls = $JobObjectExtendedLimitInformation; name = "extended"; size = 256 },
+    @{ cls = 2;                                  name = "basic";    size = 48  },
+    @{ cls = 2;                                  name = "basic";    size = 64  }
+  )
+
+  $limitFlags = $null
+  foreach ($a in $attempts) {
+    $buf = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($a.size)
+    try {
+      [System.Runtime.InteropServices.Marshal]::WriteInt32($buf, 0, 0)
+      $ret = 0
+      $q = [BrigJob]::QueryInformationJobObject([IntPtr]::Zero, $a.cls, $buf, $a.size, [ref]$ret)
+      $err = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+      Write-Output ("QUERY_ATTEMPT_" + $a.name + "_" + $a.size + "=ok=" + $q + ",err=" + $err + ",returned=" + $ret)
+      if ($q -and $limitFlags -eq $null) {
+        $limitFlags = [System.Runtime.InteropServices.Marshal]::ReadInt32($buf, $LimitFlagsOffset)
+        Write-Output ("QUERY_WON=" + $a.name + "/" + $a.size)
+      }
+    } finally {
+      [System.Runtime.InteropServices.Marshal]::FreeHGlobal($buf)
     }
-    $limitFlags = [System.Runtime.InteropServices.Marshal]::ReadInt32($buf, $LimitFlagsOffset)
-    Write-Output ("QUERY_OK=True")
-    Write-Output ("LIMIT_FLAGS=0x{0:X8}" -f $limitFlags)
-    foreach ($k in ($FLAGS.Keys | Sort-Object)) {
-      $set = ($limitFlags -band $FLAGS[$k]) -ne 0
-      Write-Output ("FLAG_${k}=" + $set)
-    }
-  } finally {
-    [System.Runtime.InteropServices.Marshal]::FreeHGlobal($buf)
+  }
+
+  if ($limitFlags -eq $null) {
+    Write-Output "QUERY_OK=False"
+    Write-Output "LIMIT_FLAGS=unreadable"
+    exit 0
+  }
+
+  Write-Output ("QUERY_OK=True")
+  Write-Output ("LIMIT_FLAGS=0x{0:X8}" -f $limitFlags)
+  foreach ($k in ($FLAGS.Keys | Sort-Object)) {
+    $set = ($limitFlags -band $FLAGS[$k]) -ne 0
+    Write-Output ("FLAG_${k}=" + $set)
   }
   exit 0
 }
@@ -133,24 +162,49 @@ if ($Mode -eq "breakaway") {
   $pi = New-Object BrigJob+PROCESS_INFORMATION
 
   # CreateProcessW mutates the command-line buffer, and the exe path may contain
-  # spaces, so quote it explicitly rather than relying on the search heuristic.
+  # spaces, so quote it explicitly. lpApplicationName is passed as well, which
+  # removes the command-line search heuristic from the picture entirely — the
+  # only thing left that can fail is the breakaway itself, which is the point.
   $cmdline = '"' + $Exe + '" ' + $Arguments
+  Write-Output ("CREATEPROCESS_EXE=" + $Exe)
+  Write-Output ("CREATEPROCESS_CMDLINE=" + $cmdline)
 
-  $flags = $CREATE_BREAKAWAY_FROM_JOB -bor $DETACHED_PROCESS
-  $ok = [BrigJob]::CreateProcessW($null, $cmdline, [IntPtr]::Zero, [IntPtr]::Zero, $false, $flags, [IntPtr]::Zero, $null, [ref]$si, [ref]$pi)
-  $err = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+  # Run the same call twice: once asking to break away, once not. Without the
+  # control, "it failed" and "this call never works here" look identical.
+  $trials = @(
+    @{ name = "with_breakaway";    flags = ($CREATE_BREAKAWAY_FROM_JOB -bor $DETACHED_PROCESS) },
+    @{ name = "without_breakaway"; flags = $DETACHED_PROCESS }
+  )
 
-  Write-Output ("CREATEPROCESS_BREAKAWAY_OK=" + $ok)
-  Write-Output ("CREATEPROCESS_LAST_ERROR=" + $err)
-  Write-Output ("CREATEPROCESS_PID=" + $pi.pid)
+  foreach ($t in $trials) {
+    $si2 = New-Object BrigJob+STARTUPINFO
+    $si2.cb = [System.Runtime.InteropServices.Marshal]::SizeOf($si2)
+    $pi2 = New-Object BrigJob+PROCESS_INFORMATION
+    $ok = [BrigJob]::CreateProcessW($Exe, $cmdline, [IntPtr]::Zero, [IntPtr]::Zero, $false, $t.flags, [IntPtr]::Zero, $null, [ref]$si2, [ref]$pi2)
+    $err = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
 
-  if (-not $ok) {
-    # 5 == ERROR_ACCESS_DENIED, which is exactly what a job without
-    # JOB_OBJECT_LIMIT_BREAKAWAY_OK returns. Anything else is a different story
-    # and must not be reported as "breakaway blocked".
-    Write-Output ("CREATEPROCESS_INTERPRETATION=" + $(if ($err -eq 5) { "ACCESS_DENIED_breakaway_forbidden" } else { "other_failure" }))
-  } else {
-    Write-Output "CREATEPROCESS_INTERPRETATION=launched_outside_job"
+    Write-Output ("CREATEPROCESS_" + $t.name + "_OK=" + $ok)
+    Write-Output ("CREATEPROCESS_" + $t.name + "_LAST_ERROR=" + $err)
+    Write-Output ("CREATEPROCESS_" + $t.name + "_PID=" + $pi2.pid)
+
+    if (-not $ok) {
+      # 5 == ERROR_ACCESS_DENIED, which is exactly what a job without
+      # JOB_OBJECT_LIMIT_BREAKAWAY_OK returns. Anything else is a different
+      # story and must not be reported as "breakaway blocked".
+      $interp = if ($err -eq 5) { "ACCESS_DENIED_breakaway_forbidden" } else { "other_failure_err_$err" }
+    } else {
+      $interp = "launched"
+    }
+    Write-Output ("CREATEPROCESS_" + $t.name + "_INTERPRETATION=" + $interp)
+
+    # Only the breakaway trial may leave a live grandchild behind. The control
+    # is given long enough to write one heartbeat — so the caller's "did it ever
+    # start" precondition is satisfied either way — and is then killed, so a
+    # contained process can never be counted as an escape.
+    if ($ok -and $t.name -eq "without_breakaway") {
+      Start-Sleep -Milliseconds 1500
+      try { Stop-Process -Id $pi2.pid -Force -ErrorAction SilentlyContinue } catch {}
+    }
   }
   exit 0
 }
