@@ -8,7 +8,7 @@
  * Usage: bun portability.ts <scratch-dir>
  */
 
-import { mkdirSync, writeFileSync, statSync, rmSync, existsSync, symlinkSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, statSync, rmSync, existsSync, symlinkSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 const root = Bun.argv[2];
@@ -54,12 +54,23 @@ if (cl.code !== 0) {
   say("clone--local", `ok in ${cloneMs.toFixed(0)}ms`);
   // A hardlinked object has nlink >= 2 and shares an inode with the parent's copy.
   const packDir = join(src, ".git", "objects");
+  // Walk with node's own fs rather than shelling out — the first version of
+  // this used `dir /s /b | findstr` on Windows and reported INCONCLUSIVE, which
+  // reads exactly like "git does not hardlink here" and is not that.
   const findLoose = (base: string): string | null => {
-    const r = sh(process.platform === "win32"
-      ? ["cmd", "/c", `dir /s /b "${base}" | findstr /v /c:"info" | findstr /v /c:"pack"`]
-      : ["sh", "-c", `find "${base}" -type f -not -path '*/pack/*' -not -path '*/info/*' | head -1`]);
-    const first = r.out.split(/\r?\n/).find((l) => l.trim().length > 0);
-    return first ? first.trim() : null;
+    const stack = [base];
+    while (stack.length) {
+      const dir = stack.pop()!;
+      if (/[\\/](pack|info)$/.test(dir)) continue;
+      let entries;
+      try { entries = readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+      for (const e of entries) {
+        const p = join(dir, e.name);
+        if (e.isDirectory()) stack.push(p);
+        else if (e.isFile()) return p;
+      }
+    }
+    return null;
   };
   const sample = findLoose(packDir);
   if (!sample) {
@@ -93,18 +104,30 @@ if (cl.code !== 0) {
 
 // ------------------------------------------------------------- 2. MAX_PATH
 // Clone paths nest a repo inside a per-run directory, so depth is real.
-let deep = root;
-for (let i = 0; i < 12; i++) deep = join(deep, "d".repeat(20));
-const deepClone = join(deep, "repo");
-let mk = { code: 0 as number | null, err: "" };
-try { mkdirSync(deep, { recursive: true }); } catch (e: any) { mk = { code: 1, err: String(e.message) }; }
-say("deep-path-len", String(deepClone.length));
-if (mk.code !== 0) {
-  say("deep-mkdir", `FAILED ${mk.err.slice(0, 160)}`);
-} else {
+// One data point only tells you it broke somewhere below that; walk it up so
+// the contract can state an actual budget.
+let lastMkdirOk = 0;
+let lastCloneOk = 0;
+let firstCloneFail = 0;
+let firstFailErr = "";
+for (let depth = 1; depth <= 16; depth++) {
+  let deep = join(root, "deep");
+  for (let i = 0; i < depth; i++) deep = join(deep, "d".repeat(20));
+  const deepClone = join(deep, "repo");
+  try { mkdirSync(deep, { recursive: true }); } catch { break; }
+  lastMkdirOk = deep.length;
   const dc = sh(["git", "clone", "--local", "-q", src, deepClone]);
-  say("deep-clone", dc.code === 0 ? `ok at ${deepClone.length} chars` : `FAILED rc=${dc.code} ${dc.err.slice(0, 200)}`);
+  if (dc.code === 0) {
+    lastCloneOk = deepClone.length;
+  } else {
+    firstCloneFail = deepClone.length;
+    firstFailErr = dc.err.replace(/\s+/g, " ").slice(0, 120);
+    break;
+  }
 }
+say("deep-mkdir-max-ok", `${lastMkdirOk} chars`);
+say("deep-clone-max-ok", `${lastCloneOk} chars`);
+say("deep-clone-first-fail", firstCloneFail ? `${firstCloneFail} chars — ${firstFailErr}` : "none up to depth 16");
 
 // ----------------------------------------------------------------- 3. CRLF
 // What does core.autocrlf do to a `git diff base..head` handed to a reviewer?
@@ -160,9 +183,15 @@ const withPath = { ...process.env, PATH: `${binDir}${process.platform === "win32
 for (const attempt of process.platform === "win32"
   ? ["probetool", "probetool.cmd", "probeps.ps1"]
   : ["probetool"]) {
-  const r = Bun.spawnSync([attempt], { env: withPath, stdout: "pipe", stderr: "pipe" });
-  const out = new TextDecoder().decode(r.stdout).trim();
-  say(`spawn "${attempt}"`, r.exitCode === 0 ? `rc=0 out=${out}` : `rc=${r.exitCode} err=${new TextDecoder().decode(r.stderr).trim().slice(0, 120)}`);
+  // A throw is itself a result here — decision 6 spawns every candidate agent,
+  // and on Windows an agent is often a shim Bun may refuse to exec.
+  try {
+    const r = Bun.spawnSync([attempt], { env: withPath, stdout: "pipe", stderr: "pipe" });
+    const out = new TextDecoder().decode(r.stdout).trim();
+    say(`spawn "${attempt}"`, r.exitCode === 0 ? `rc=0 out=${out}` : `rc=${r.exitCode} err=${new TextDecoder().decode(r.stderr).trim().slice(0, 120)}`);
+  } catch (e: any) {
+    say(`spawn "${attempt}"`, `THREW ${e.code ?? ""} ${String(e.message).slice(0, 120)}`);
+  }
 }
 say("PATHEXT", process.env.PATHEXT ?? "(unset)");
 
