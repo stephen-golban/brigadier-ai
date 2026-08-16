@@ -54,6 +54,15 @@ jobs:
         shell: bash
         run: bun probes/windows/jobobject-tree.ts --no-kill
 
+      # ---------------------------------------------------------------- #43
+      # The adversarial descendant. #5 measured the cooperative one; this asks
+      # whether a process created via CREATE_BREAKAWAY_FROM_JOB, the WMI service
+      # or the Task Scheduler leaves the container, and whether the sweep
+      # decision 15 specifies actually reclaims one that does.
+      - name: Process escape — breakaway matrix
+        shell: bash
+        run: bun probes/windows/breakaway.ts
+
       # ---------------------------------------------------------------- #23
       - name: tree-sitter WASM under bun --compile
         shell: bash
