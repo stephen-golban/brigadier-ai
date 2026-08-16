@@ -295,9 +295,11 @@ const runScenario = async (s: Scenario): Promise<Row> => {
   const deadline = Date.now() + 45_000;
   while (!existsSync(beat) && Date.now() < deadline) await Bun.sleep(150);
 
+  // Generous, because the KEY=VALUE evidence from the helper is the finding on
+  // the breakaway row and a 300-char slice cut it off before the return codes.
   const detailFiles = ["breakaway.out", "wmi.out", "schtasks.out", "child.log"]
     .filter((f) => existsSync(join(dir, f)))
-    .map((f) => `${f}: ${readFileSync(join(dir, f), "utf8").replace(/\s+/g, " ").trim().slice(0, 300)}`)
+    .map((f) => `${f}: ${readFileSync(join(dir, f), "utf8").replace(/\s+/g, " ").trim().slice(0, 1500)}`)
     .join(" | ");
 
   if (!existsSync(beat)) {
