@@ -52,52 +52,66 @@ if (cl.code !== 0) {
   say("clone--local", `FAILED rc=${cl.code} ${cl.err.slice(0, 200)}`);
 } else {
   say("clone--local", `ok in ${cloneMs.toFixed(0)}ms`);
-  // A hardlinked object has nlink >= 2 and shares an inode with the parent's copy.
-  const packDir = join(src, ".git", "objects");
-  // Walk with node's own fs rather than shelling out — the first version of
-  // this used `dir /s /b | findstr` on Windows and reported INCONCLUSIVE, which
-  // reads exactly like "git does not hardlink here" and is not that.
-  const findLoose = (base: string): string | null => {
-    const stack = [base];
-    while (stack.length) {
-      const dir = stack.pop()!;
-      if (/[\\/](pack|info)$/.test(dir)) continue;
-      let entries;
-      try { entries = readdirSync(dir, { withFileTypes: true }); } catch { continue; }
-      for (const e of entries) {
-        const p = join(dir, e.name);
-        if (e.isDirectory()) stack.push(p);
-        else if (e.isFile()) return p;
+  // A hardlinked object shares an inode with the parent's copy and has nlink>=2.
+  //
+  // Getting a *sample object* to compare is where the earlier versions of this
+  // check went wrong. Walking `.git/objects` found nothing on two of three
+  // runners — git had already packed — and "no loose object found" renders
+  // identically to "git did not hardlink", which is the exact failure the map
+  // warns about. So ask git for the object list instead of guessing, and fall
+  // back to the packfile, which is what actually gets hardlinked once packed.
+  const objRoot = (repo: string) => join(repo, ".git", "objects");
+  const sampleObjects = (): Array<[string, string]> => {
+    const pairs: Array<[string, string]> = [];
+    // Loose objects, named by git rather than discovered by walking.
+    const shas = sh(["git", "rev-list", "--objects", "--all"], src).out
+      .split(/\r?\n/).map((l) => l.trim().split(" ")[0]).filter((s) => /^[0-9a-f]{40}$/.test(s));
+    for (const sha of shas) {
+      const rel = join(sha.slice(0, 2), sha.slice(2));
+      const a = join(objRoot(src), rel);
+      const b = join(objRoot(dst), rel);
+      if (existsSync(a) && existsSync(b)) pairs.push([a, b]);
+      if (pairs.length >= 3) break;
+    }
+    if (pairs.length > 0) return pairs;
+    // Packed: compare the packfiles themselves.
+    const packSrc = join(objRoot(src), "pack");
+    const packDst = join(objRoot(dst), "pack");
+    try {
+      for (const name of readdirSync(packSrc)) {
+        if (!name.endsWith(".pack")) continue;
+        const a = join(packSrc, name);
+        const b = join(packDst, name);
+        if (existsSync(b)) pairs.push([a, b]);
       }
-    }
-    return null;
+    } catch { /* no pack dir */ }
+    return pairs;
   };
-  const sample = findLoose(packDir);
-  if (!sample) {
-    say("hardlink-check", "INCONCLUSIVE no loose object found in parent");
+
+  const pairs = sampleObjects();
+  if (pairs.length === 0) {
+    say("hardlink-check", "INCONCLUSIVE no object present in BOTH parent and clone");
   } else {
-    const rel = sample.slice(packDir.length + 1);
-    const mirror = join(dst, ".git", "objects", rel);
-    if (!existsSync(mirror)) {
-      say("hardlink-check", `INCONCLUSIVE clone lacks ${rel}`);
-    } else {
-      const a = statSync(sample);
-      const b = statSync(mirror);
-      const linked = a.ino === b.ino && a.dev === b.dev && a.nlink >= 2;
-      say("hardlink-check",
-        `${linked ? "HARDLINKED" : "COPIED"} parent(ino=${a.ino},nlink=${a.nlink}) clone(ino=${b.ino},nlink=${b.nlink})`);
-    }
+    const [a0, b0] = pairs[0];
+    const a = statSync(a0);
+    const b = statSync(b0);
+    const linked = a.ino === b.ino && a.dev === b.dev && a.nlink >= 2;
+    say("hardlink-check",
+      `${linked ? "HARDLINKED" : "COPIED"} via ${a0.endsWith(".pack") ? "packfile" : "loose object"} ` +
+      `parent(ino=${a.ino},nlink=${a.nlink}) clone(ino=${b.ino},nlink=${b.nlink})`);
   }
   // Negative control: --no-hardlinks MUST report COPIED, or the check is blind.
   const nl = join(root, "clone-nohard");
   sh(["git", "clone", "--local", "--no-hardlinks", "-q", src, nl]);
-  const sample2 = findLoose(join(src, ".git", "objects"));
-  if (sample2) {
-    const rel = sample2.slice(join(src, ".git", "objects").length + 1);
-    const mirror = join(nl, ".git", "objects", rel);
+  if (pairs.length > 0) {
+    const [a0] = pairs[0];
+    const rel = a0.slice(objRoot(src).length + 1);
+    const mirror = join(objRoot(nl), rel);
     if (existsSync(mirror)) {
-      const a = statSync(sample2), b = statSync(mirror);
-      say("hardlink-negctl", `${a.ino === b.ino ? "HARDLINKED(BAD)" : "COPIED(expected)"}`);
+      const a = statSync(a0), b = statSync(mirror);
+      say("hardlink-negctl", a.ino === b.ino ? "HARDLINKED(BAD — check is blind)" : "COPIED(expected)");
+    } else {
+      say("hardlink-negctl", "INCONCLUSIVE control clone lacks the sample object");
     }
   }
 }
