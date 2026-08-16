@@ -114,8 +114,10 @@ produces confident wrong numbers, which is worse than no numbers.
 
 On this machine (macOS, 24 GB RAM, 14 cores), 2026-08-16:
 
-- `@agentclientprotocol/claude-agent-acp` **0.69.0** answers `initialize` in **4.4 s**;
-  `@agentclientprotocol/codex-acp` **1.4.0** in **5.9 s**. Both `protocolVersion: 1`.
+- `@agentclientprotocol/claude-agent-acp` **0.69.0** answers `initialize` in **4.4 s cold**
+  (first run, includes the `npx` package fetch) and **0.68 s warm** (package cached);
+  `@agentclientprotocol/codex-acp` **1.4.0** in **5.9 s cold**. Both `protocolVersion: 1`.
+  **The expensive part is the one-time bridge fetch, not the handshake.**
 - **`authMethods` is NOT an auth-state signal** — Claude returns `[]` and Codex returns two methods,
   both while verified authenticated.
 - **Neither agent advertises models or reasoning effort at `initialize`.** `providers` is `{}` on
