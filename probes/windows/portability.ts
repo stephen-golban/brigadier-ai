@@ -103,17 +103,20 @@ if (cl.code !== 0) {
   // Negative control: --no-hardlinks MUST report COPIED, or the check is blind.
   const nl = join(root, "clone-nohard");
   sh(["git", "clone", "--local", "--no-hardlinks", "-q", src, nl]);
-  if (pairs.length > 0) {
-    const [a0] = pairs[0];
+  // Re-derive the sample: a clone can trigger `gc --auto` in the source, which
+  // packs the loose object the first pass picked and makes it vanish mid-probe.
+  const ctlPairs = sampleObjects().filter(([a]) => existsSync(a));
+  let done = false;
+  for (const [a0] of ctlPairs) {
     const rel = a0.slice(objRoot(src).length + 1);
     const mirror = join(objRoot(nl), rel);
-    if (existsSync(mirror)) {
-      const a = statSync(a0), b = statSync(mirror);
-      say("hardlink-negctl", a.ino === b.ino ? "HARDLINKED(BAD — check is blind)" : "COPIED(expected)");
-    } else {
-      say("hardlink-negctl", "INCONCLUSIVE control clone lacks the sample object");
-    }
+    if (!existsSync(mirror)) continue;
+    const a = statSync(a0), b = statSync(mirror);
+    say("hardlink-negctl", a.ino === b.ino ? "HARDLINKED(BAD — check is blind)" : "COPIED(expected)");
+    done = true;
+    break;
   }
+  if (!done) say("hardlink-negctl", "INCONCLUSIVE no shared object between source and control clone");
 }
 
 // ------------------------------------------------------------- 2. MAX_PATH
