@@ -16,11 +16,28 @@ surface that matters when brigadier arrives without this repository beside it.
 
 ## Statically linked LGPL components, and how to relink
 
-`bun` statically links **JavaScriptCore/WebKit (LGPL-2)** and **tinycc (LGPL-2.1)**.
-LGPL-2 asks that a recipient be able to modify those libraries and relink the application. brigadier
-is built by `bun build --compile` from its own published source, so the relink path is: rebuild Bun
-against your modified WebKit (upstream documents this at <https://github.com/oven-sh/webkit>), then
-rebuild brigadier with `bun run build` using that Bun.
+`bun` statically links parts of **JavaScriptCore/WebKit** and **tinycc**.
+
+**What the licences actually are.** JavaScriptCore's `COPYING.LIB` is the GNU **Library** General
+Public License **version 2** — which has no shared-library option — but its source headers say
+*"version 2 of the License, or (at your option) any later version"*, so it is **LGPL-2.0-or-later**
+and a recipient may elect 2.1 or 3. tinycc's `COPYING` is **LGPL-2.1**, headers likewise
+*or later*. Read 2026-08-17.
+
+**JavaScriptCore is not uniformly LGPL, and this notice used to imply it was.** Of 3,523 files in
+`Source/JavaScriptCore`, **187 (5.3%) carry LGPL headers** — concentrated in `runtime/` — and
+**3,321 are BSD-2-Clause or BSD-3-Clause**; `Source/WTF` is 101 LGPL of 1,092. Those BSD files carry
+their own attribution requirement, which a flat "LGPL-2" label understates.
+
+**How to relink.** LGPL-2.1 §6a requires the "work that uses the Library" *"as object code and/or
+source code"* — source is one of the two forms the licence names, and it is the route Qt's and
+FFmpeg's published compliance guidance recommend. brigadier's own complete source is public under
+Apache-2.0, so: rebuild Bun against your modified WebKit (upstream documents this at
+<https://github.com/oven-sh/webkit>), then rebuild brigadier with `bun run build` using that Bun.
+
+**§6a has a second limb** that the application source does not discharge: the Library's own complete
+corresponding source, including whatever changes were used. brigadier offers it from the same place
+as the binary, pinned to the exact WebKit and tinycc revisions this Bun was built from.
 
 ## Full licence texts
 

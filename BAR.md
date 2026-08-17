@@ -273,8 +273,16 @@ unrecognised event **discards every hook in the file**, and the item asserts bri
 today the symptom is that nothing happens. A count-based check would pass this; `.lsp.json` was
 measured reporting `LSP servers (1)` for `{"notARealKey": 1}`.
 
-*Rulings 26, 42, 12, 4, 44, 47, 5, 46, 60.* ChatGPT is a **permanent blank** — a hosted surface has no
-filesystem — and the item must not imply six uniform clients.
+**And the LGPL obligations are discharged against the artifact** (ruling 72): `brigadier licenses
+--full` carries **the LGPL text itself** — §6 makes supplying it unconditional, and Bun's own shipped
+binary was measured carrying **875 hits for "JavaScriptCore" and 0 for "GNU Lesser/Library General
+Public"**, so nothing upstream discharges it for us. The relink recipe is present, and **WebKit's and
+tinycc's corresponding source is reachable from the same place as the binary**, pinned.
+
+*Rulings 26, 42, 12, 4, 44, 47, 5, 46, 60, 72.* ChatGPT is a **permanent blank** — a hosted surface has
+no filesystem — and the item must not imply six uniform clients. **Not proven by this item:** that the
+documented rebuild path actually reproduces the binary, which §6 requires and which ruling 72 leaves
+as a bar item still to be written.
 
 ### 11. The run report fits in a host model's window, and never hides a failure to do it
 
@@ -423,6 +431,7 @@ user-visible promise, so it grows through phase 2. Rulings 49 onward were added 
 | 69 drift graded by blast radius; a failed lane assertion blocks | items 1, 2 (a drifted version is reported; an unasserted lane blocks a `write`) |
 | 70 no token-reduction claim; spend and levers reported | item 13 (the lever line, and a run including opencode says `unpriceable`) |
 | 71 no `init`; first run prints the four unlearnable things | items 1, 9, 6 |
+| 72 the source relink route, and the Library's own source offered | item 10 |
 
 **The gap ruling 48 declared is CLOSED.** Rulings 21, 23, 29, 30, 31 and 40 were parked as
 *deferred — #24 open* and ruling 35 as *deferred — #31 open*; rulings 66 and 67 settled both tickets
