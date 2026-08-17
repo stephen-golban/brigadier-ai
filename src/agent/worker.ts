@@ -178,8 +178,13 @@ export class Worker {
       self = new Worker(profile, version, options.lane, connection, sessionId);
 
       // The Claude bridge opens in bypassPermissions; without this the lane is
-      // decorative (#3). Failure is not fatal — it is recorded and the caller
-      // can decide, because a vendor without modes is not a vendor in error.
+      // decorative (#3).
+      //
+      // Failure is recorded rather than thrown here, and ruling 69 decides what
+      // the caller must do with it: for a `write` item on a vendor whose profile
+      // declares a lane assertion, `laneAsserted === false` BLOCKS — see
+      // `laneFailureBlocks` in ./drift.ts. A vendor with no modes is not a
+      // vendor in error, which is why this is not an exception.
       const assertion = profile.laneAssertion;
       const modeId = laneModeFor(assertion, options.kind ?? "write");
       if (assertion.kind === "session-mode" && modeId && options.restrictive !== false) {

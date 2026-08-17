@@ -72,7 +72,12 @@ verbatim) and **item 13** (ruling 66, the cost model). Ruling 48's text stands; 
 entry** rather than assuming it is ours. An agent renamed off `PATH` reports `absent`; an agent
 present but logged out reports `unusable` with the vendor's own remedy text.
 
-*Rulings 6, 41, 46, 2.* Exists because v1 inferred installation from a marker file and reported
+**And a version that has drifted from the profile is reported** (ruling 69), graded — the lane
+assertion blocking, capabilities a warning. Note what cannot be used for this: **all four agents
+measured returned `protocolVersion: 1`**, so the protocol version discriminates nothing and the
+agent's own version is the only signal.
+
+*Rulings 6, 41, 46, 2, 69.* Exists because v1 inferred installation from a marker file and reported
 `opencode` present on a machine where it was not on `PATH`.
 
 ### 2. The lane holds, including where the payload is empty
@@ -406,6 +411,7 @@ user-visible promise, so it grows through phase 2. Rulings 49 onward were added 
 | 66 predict as a range, two ceilings, keyed by root commits | item 13 |
 | 67 clamp difficulty down and loudly; check the distribution | item 13 |
 | 68 competence cited by identity, unranked is not excluded | items 5, 10 (`brigadier competence` prints class and citation) |
+| 69 drift graded by blast radius; a failed lane assertion blocks | items 1, 2 (a drifted version is reported; an unasserted lane blocks a `write`) |
 
 **The gap ruling 48 declared is CLOSED.** Rulings 21, 23, 29, 30, 31 and 40 were parked as
 *deferred — #24 open* and ruling 35 as *deferred — #31 open*; rulings 66 and 67 settled both tickets
