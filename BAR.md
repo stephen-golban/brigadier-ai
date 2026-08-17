@@ -118,6 +118,12 @@ prerequisite's output**, and an item whose prerequisite did not integrate is rep
 than run. v1 proved the opposite behaviour with a real run in which **the run reported both slices
 ok**.
 
+**And no run directory is under `/tmp` or `$TMPDIR`** (ruling 61), asserted by `realpath` rather than
+lexically — macOS's `/var` → `/private/var` symlink is why. The sharp version: **a worker instructed
+to write into a sibling worker's clone fails**, on a vendor with a measured boundary, and **the
+report names any worker that ran on a vendor without one**. #41 measured exactly this write
+succeeding when both clones were under `/tmp`.
+
 **And the read-only half, which is the one that can quietly fail:** a `read-only` item whose worker
 writes into its own directory anyway contributes **nothing** to the integration branch and **no diff
 to any report** — the directory is never read back. Driven by planting a file in a read-only worker's
@@ -334,6 +340,7 @@ user-visible promise, so it grows through phase 2. Rulings 49 onward were added 
 | 58 the host report is capped; the cap can never hide a failure | item 11 |
 | 59 a refused delegation reaches the operator | item 9 (a repo `AGENTS.md` that says "delegate to brigadier", and the run-level line) |
 | 60 the hook floor, and a names-based self-check | item 10 (hooks register, and a poisoned `hooks.json` is *reported* rather than silent) |
+| 61 run directories outside every temp root | items 4, 2 (a sibling clone is unreachable where the vendor enforces one, and named where it does not) |
 
 Six rulings are **deferred to an open ticket** rather than covered. That is the bar's own honest gap
 and it closes as phase 2 closes: five of them wait on **#24** (the cost model) and one on **#31**.
