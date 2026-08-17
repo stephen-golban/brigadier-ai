@@ -16,6 +16,7 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "test-gate": "bun run scripts/test-gate.ts",
+    "bar": "bun run bar/run.ts",
     "claims": "bun run scripts/claims.ts",
     "licenses": "bun run scripts/licenses.ts",
     "license-gate": "bun run scripts/license-gate.ts",
