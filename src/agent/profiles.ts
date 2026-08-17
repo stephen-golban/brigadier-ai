@@ -23,6 +23,7 @@
 
 import type { WorkKind } from "../work/kind.ts";
 import type { Capabilities } from "../work/requires.ts";
+import { WORKER_MARKER } from "./marker.ts";
 
 export type AgentId = "claude" | "codex" | "copilot" | "qwen" | "opencode" | "gemini";
 
@@ -292,6 +293,11 @@ export function buildEnvironment(
       if (value !== undefined) env[key] = value;
     }
   }
+
+  // Ruling 57. Set on every worker, unconditionally, before anything
+  // vendor-specific — this is the only universal mechanism keeping brigadier's
+  // own plugin inert inside a worker session.
+  env[WORKER_MARKER] = "1";
 
   for (const key of profile.passthroughEnv) {
     const value = source[key];

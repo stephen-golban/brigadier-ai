@@ -205,9 +205,21 @@ A user-global instruction file is **not obeyed** by a worker, and first-run **sa
 worker on a machine with brigadier's plugin installed **does the work** rather than invoking
 brigadier.
 
-*Rulings 17, 36.* v1's finding 114 — a worker that ran `brigadier run` instead of working: 12
+**Asserted on the effect: the files exist and `brigadier run` was not invoked.** Asserting that
+`BRIGADIER_WORKER` is set proves only that a variable exists — the exact *check that reports success
+when the thing it checks did not happen* shape v1 kept shipping.
+
+**This item carries ruling 57's one unmeasured assumption**, and is the only thing that can settle
+it: brigadier sets the marker on the **agent** process, and whether every vendor passes its
+environment through to the shell it runs **tool commands** in is not measured. If a vendor builds a
+clean environment, the refusal never fires there and nothing else catches it. v1's `USER` finding is
+the precedent — environment propagation into an agent behaving unlike expectation, found only by
+bisecting the real binary.
+
+*Rulings 17, 36, 57.* v1's finding 114 — a worker that ran `brigadier run` instead of working: 12
 minutes, zero files — **reproduced unprovoked** during #14, where a Codex worker spent 51 s on it.
-Twice recorded is not an edge case.
+Twice recorded is not an edge case, and it is also this guard's **demonstrated negative**: the
+failure is known to reproduce without anyone having to construct it.
 
 ### 10. The artifact ships, and says what is in it
 
@@ -286,6 +298,7 @@ user-visible promise, so it grows through phase 2. Rulings 49 onward were added 
 | 54 fan-out arithmetic, waves, no free-memory scheduling | item 4 (the binding filter is named; a `dependsOn` wave runs in order) |
 | 55 the ladder's second rung, and a short ladder said up front | item 6 (the rung is named; a missing rung never reads as exhausted) |
 | 56 brigadier runs no git inside a clone an agent touched | item 2 (planted hook and config payloads, asserted on the escaped bytes) |
+| 57 the binary refuses inside a worker | item 9 (asserted on the effect, and it carries the ruling's unmeasured assumption) |
 
 Six rulings are **deferred to an open ticket** rather than covered. That is the bar's own honest gap
 and it closes as phase 2 closes: five of them wait on **#24** (the cost model) and one on **#31**.

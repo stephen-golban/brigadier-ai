@@ -10,6 +10,7 @@
  */
 
 import { detectAll } from "./agent/detect.ts";
+import { REFUSAL, isInsideWorker } from "./agent/marker.ts";
 import { ALL_AGENT_IDS, PROFILES, type AgentId } from "./agent/profiles.ts";
 import { LICENSES } from "./generated/licenses.ts";
 
@@ -153,7 +154,22 @@ function licenses(): number {
   return 0;
 }
 
+/**
+ * Ruling 57. Commands that would orchestrate — spawn workers, clone, integrate.
+ * Read-only introspection is deliberately still allowed inside a worker: it
+ * cannot cause finding 114, and refusing it would only make the refusal look
+ * arbitrary to a model trying to understand its situation.
+ */
+const ORCHESTRATING = new Set(["run", "plan"]);
+
 const exitCode = await (async () => {
+  // Checked before any command dispatch and before any input is read. v1's
+  // nudge hook read the marker before reading stdin; that detail is deliberate.
+  if (command !== undefined && ORCHESTRATING.has(command) && isInsideWorker()) {
+    console.error(REFUSAL);
+    return 3;
+  }
+
   switch (command) {
     case "detect":
       return detect();
