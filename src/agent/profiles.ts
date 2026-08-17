@@ -275,6 +275,11 @@ export function buildEnvironment(
     configRoot?: string;
     /** Ruling 49: the mode asserted depends on the kind, not on a single flag. */
     kind?: WorkKind;
+    /**
+     * Ruling 64. Per item, inside the item's own directory — see below. Omitted
+     * only by detection and by tests, which have no item to be inside.
+     */
+    tmpDir?: string;
     /** False only for baseline measurement. Never for work. */
     restrictive?: boolean;
     extra?: Record<string, string>;
@@ -283,10 +288,24 @@ export function buildEnvironment(
   const source = process.env;
   const env: Record<string, string> = {};
 
-  for (const key of ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG", "TERM"]) {
+  for (const key of ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TERM"]) {
     const value = source[key];
     if (value !== undefined) env[key] = value;
   }
+
+  // TMPDIR is deliberately NOT inherited. Ruling 64: #41 measured the Codex ACP
+  // bridge building its sandbox with `excludeTmpdirEnvVar: false`, which ADDS
+  // $TMPDIR to the writable set — and that is how a worker poisoned a sibling
+  // clone's tracked file. Pointing TMPDIR inside the item's own directory makes
+  // that exemption add nothing, because the exempted region IS the item's own
+  // region and was writable anyway.
+  //
+  // Half a fix, and recorded as half: `/tmp` stays exempted regardless
+  // (`excludeSlashTmp: false`), so ruling 61's placement — run directories
+  // outside every temp root — is still what keeps the clones out of reach.
+  // Neither is sufficient alone.
+  if (options.tmpDir) env["TMPDIR"] = options.tmpDir;
+  else if (source["TMPDIR"] !== undefined) env["TMPDIR"] = source["TMPDIR"];
   if (process.platform === "win32") {
     for (const key of ["SYSTEMROOT", "APPDATA", "LOCALAPPDATA", "USERPROFILE", "PATHEXT", "COMSPEC"]) {
       const value = source[key];

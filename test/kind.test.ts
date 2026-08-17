@@ -68,3 +68,20 @@ describe("the per-kind lane assertion", () => {
     );
   });
 });
+
+describe("ruling 64: TMPDIR is per item", () => {
+  test("a supplied tmpDir wins over the inherited one", () => {
+    // #41: Codex's sandbox ADDS $TMPDIR to its writable set, so a shared
+    // $TMPDIR is a shared writable region between siblings. Pointing it inside
+    // the item makes the exemption add nothing.
+    const env = buildEnvironment(PROFILES.codex, { tmpDir: "/Users/x/.brigadier/r/a1/3/tmp" });
+    expect(env["TMPDIR"]).toBe("/Users/x/.brigadier/r/a1/3/tmp");
+  });
+
+  test("without one, the operator's TMPDIR is inherited unchanged", () => {
+    // Detection and tests have no item to be inside. Negative control for the
+    // branch above.
+    const env = buildEnvironment(PROFILES.codex);
+    expect(env["TMPDIR"]).toBe(process.env["TMPDIR"]);
+  });
+});

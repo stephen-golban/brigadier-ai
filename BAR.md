@@ -352,6 +352,7 @@ user-visible promise, so it grows through phase 2. Rulings 49 onward were added 
 | 61 run directories outside every temp root | items 4, 2 (a sibling clone is unreachable where the vendor enforces one, and named where it does not) |
 | 62 evidence standards and this repository's gates | development-process ruling — no user-visible promise; enforced by `bun run gates` in CI |
 | 63 resume by ref, retain interrupted clones, re-raise | item 7 (both directions: nothing leaks, and nothing of the operator's is destroyed) |
+| 64 shared cache, per-item `TMPDIR`, ports by binding | items 4, 2 (concurrent installs complete; a sibling is unreachable through `$TMPDIR`) |
 
 Six rulings are **deferred to an open ticket** rather than covered. That is the bar's own honest gap
 and it closes as phase 2 closes: five of them wait on **#24** (the cost model) and one on **#31**.
