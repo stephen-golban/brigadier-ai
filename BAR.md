@@ -306,12 +306,17 @@ predicted**. The **soft ceiling** stops new items being dispatched while in-flig
 **hard ceiling** cancels work already running, and the run report distinguishes the two. Each item
 records its **(agent, model, effort) triple** and the effort actually asserted.
 
+**The `difficulty` clamp is printed per item** (ruling 67) — `difficulty: hard (clamped to medium)` —
+and the item asserts brigadier **never clamps upward**, because an upgrade spends money the operator
+did not ask for. v1's recurring shape is the silent downgrade, so a clamp that did not print would be
+the defect this proves against.
+
 And the half that is easiest to fake: **quota is reported per vendor as `read`, `unreadable` or
 `unpriceable`**, never absent and never optimistic. A run using opencode says `unpriceable` — #42
 measured it reaching a model with no credential at all through its own gateway, so a successful turn
 proves nothing about which account was billed.
 
-*Rulings 66, 23, 21, 29, 30, 31, 40.* Estimates are ranges because #44 measured **two identical Codex
+*Rulings 66, 67, 35, 23, 21, 29, 30, 31, 40.* Estimates are ranges because #44 measured **two identical Codex
 runs at 427,723 and 28,245 bytes — 15×** — and published tooling puts real cost at 3–5× naive
 estimates. **What this item cannot prove:** #45 measured neither vendor's effort setting confirmable
 over the protocol, so "the effort we asked for is the effort that ran" is asserted from vendor-private
@@ -362,7 +367,7 @@ user-visible promise, so it grows through phase 2. Rulings 49 onward were added 
 | 32 cross-vendor preferred, not required | items 5, 6 |
 | 33 the scratch base commit | item 4 |
 | 34 git hooks neutered, `.git/**` excluded | item 2 |
-| 35 `difficulty` must be checkable | **deferred — #31 open** |
+| 35 `difficulty` must be checkable | item 13 (the clamp is printed per item, and it only ever clamps down) |
 | 36 brigadier's plugin inert in a worker | item 9 |
 | 37 nothing executed comes from a committed file | item 8 |
 | 38 the sweep is the containment mechanism | item 7 |
@@ -394,10 +399,11 @@ user-visible promise, so it grows through phase 2. Rulings 49 onward were added 
 | 64 shared cache, per-item `TMPDIR`, ports by binding | items 4, 2 (concurrent installs complete; a sibling is unreachable through `$TMPDIR`) |
 | 65 secrets in the environment, redaction at one sink | item 12 |
 | 66 predict as a range, two ceilings, keyed by root commits | item 13 |
+| 67 clamp difficulty down and loudly; check the distribution | item 13 |
 
-**The gap ruling 48 declared is now closed on five of six.** Rulings 21, 23, 29, 30, 31 and 40 were
-parked as *deferred — #24 open*; ruling 66 settled #24 and they move to **item 13**. Ruling 35 waits
-on **#31**, still open.
+**The gap ruling 48 declared is CLOSED.** Rulings 21, 23, 29, 30, 31 and 40 were parked as
+*deferred — #24 open* and ruling 35 as *deferred — #31 open*; rulings 66 and 67 settled both tickets
+and all seven move to **item 13**. No ruling in this table is deferred.
 
 **One does not fully close, and it is stated rather than absorbed:** ruling 30's effort ceiling can be
 asserted as what brigadier *set*, and only asserted as what was *received* where a shim or a
