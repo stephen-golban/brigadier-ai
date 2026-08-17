@@ -1,11 +1,8 @@
-# Nothing is built here yet; these are the things probes and future work leave behind.
 node_modules/
 dist/
-.tmp/
-*.log
-
-# Probe output — evidence belongs in a ticket comment, not in the tree.
-probes/out/
-
-# OS noise
 .DS_Store
+*.log
+probes/treesitter/node_modules/
+probes/treesitter/*.wasm
+probes/treesitter/ts-probe*
+probes/treesitter/empty-bin*

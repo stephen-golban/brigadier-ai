@@ -12,13 +12,20 @@ The canonical artifact is **issue #1**, not this tree:
 It holds every locked ruling with its reason and its accepted cost. Tickets reference rulings by
 number and will not make sense without it. Read it completely before acting.
 
-## There is no product source, and adding some is not a small decision
+## The build has started, and `probes/` is not part of it
 
-The design has 37 locked rulings and at least eight rest on unmeasured assumptions. Some will reverse
-when measured. **The current phase is measurement.** See `MEASUREMENT-SESSION.md`.
+**Phase 1 (measurement) closed on 2026-08-17.** There are now 46 locked rulings, and rulings 38–46
+amend earlier ones against measured evidence. Product source lives in `src/` and is held to product
+standards: `bun test` and `bunx tsc --noEmit` must both pass.
 
-`probes/` holds throwaway measurement scripts. They are not product code and are not held to product
-standards. Everything else in a commit should be a document or a ticket.
+`probes/` holds throwaway measurement scripts. They are **not** product code, are excluded from the
+typecheck, and must not be imported from `src/`. If a probe's behaviour is worth keeping, port the
+finding into `src/` deliberately — do not reach across.
+
+**Every measured fact in `src/` cites its ticket.** The launch-profile table in
+`src/agent/profiles.ts` is the clearest case: each entry names the version it was measured against
+and the ticket that measured it, because three of six agent coordinates in circulation were wrong and
+a stale one fails as a hang rather than an error.
 
 ## Do not port anything from v1
 
