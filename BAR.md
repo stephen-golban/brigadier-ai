@@ -1,0 +1,230 @@
+# The bar — how we know v2 is done
+
+Ruling 48, settling [#37](../../issues/37).
+
+**v2 is done when every locked ruling that makes a user-visible promise has an item proving it holds
+against the real compiled binary.** Not when the ideas run out.
+
+Every item below obeys three rules, and an item that breaks one is removed rather than argued for:
+
+1. **Checkable by someone who does not trust the author.** A command with an observable result — not
+   "routing works".
+2. **Driven against the real compiled binary**, not the test suite. v1's worst defect — a global
+   git-config check that made the product refuse to run for every git-lfs user, in every repository —
+   survived 740 tests, four gates, two adversarial review lenses and twenty-two work orders, and was
+   found only by pushing to CI.
+3. **Tied to a ruling.** An item that proves no locked decision is decoration.
+
+## How it is run
+
+`bar/run.ts --binary <path>` — a harness **separate from `bun test`**, pointed at a downloaded
+release artifact by someone who has never built this repository. Each item prints what it did, what
+it observed, and `PASS` / `FAIL` / `SKIPPED`.
+
+**A `SKIPPED` item blocks a tag exactly as a `FAIL` does.** A check that did not run is not a check
+that passed. This is the standing rule that closed #46, #47 and #48 with their unmeasured halves
+named rather than absorbed.
+
+### Where the authoritative run happens
+
+CI on `windows-latest`, `ubuntu-latest` and `macos-latest`, against a freshly downloaded binary in a
+clean checkout — plus **one leg configured hostile-but-legal**:
+
+- `git-lfs` filters installed in the global config
+- `core.autocrlf` set
+- a non-default `HOME`
+- **a v1 `brigadier` already on `PATH`** — not hypothetical: ruling 46 records that v1 shipped one on
+  a Homebrew tap at 0.2.1
+
+v1's defect was not that the author's machine was broken. It was that the author's machine was
+*normal*. A bar that only runs on normal machines cannot find that class of defect.
+
+**Accepted cost, stated rather than hidden:** live-agent items cannot run on CI — vendor auth is
+interactive and there are no credentials there — so the items that matter most run on a credentialed
+machine, which is the environment this section calls blind. That tension is not solved; it is handed
+to the verifier.
+
+### Who verifies
+
+An **independent verifier**: a separate session, a **different vendor** from whoever built the slice
+(ruling 32's principle turned on the bar itself), **blind to the builder's reasoning**, inspecting
+the real artifact rather than any description of it.
+
+- It **plants its own defects.** A builder's planted defect tests only what the builder already
+  thought of. v1's strongest result came from a verifier that planted its own.
+- It **drives the live items** on a credentialed machine — the half CI cannot reach.
+- Its report lands in this repository **verbatim, negatives included**.
+- **A failed or skipped item means no tag.**
+
+**Accepted cost:** a release can be blocked by a verifier that is an LLM session and can be wrong. A
+false negative will stop a good release, and the temptation to overrule it is the exact moment this
+mechanism becomes worth nothing.
+
+## The items
+
+### 1. Detection is honest
+
+`brigadier detect` claims only agents that complete **both** steps, and reports the **resolved `PATH`
+entry** rather than assuming it is ours. An agent renamed off `PATH` reports `absent`; an agent
+present but logged out reports `unusable` with the vendor's own remedy text.
+
+*Rulings 6, 41, 46, 2.* Exists because v1 inferred installation from a marker file and reported
+`opencode` present on a machine where it was not on `PATH`.
+
+### 2. The lane holds, including where the payload is empty
+
+A worker instructed to write outside its clone is **denied**, and the file does not exist afterwards.
+Driven on both payload shapes: a vendor that sends a full path (Claude / Copilot `edit`) and one that
+sends **nothing at all** (Codex `edit`: `title: null`, `locations: []`), where the guard must
+**refuse what it cannot place** rather than pass a `locations.every(inLane)` that can never fail.
+
+*Rulings 43, 34, 2.* This is the promise most likely to be quietly false: #41 measured that an
+**approved** `session/request_permission` on Codex runs the command *outside* its own OS sandbox, and
+#50 found opencode has no boundary of any kind for execute-class work.
+
+### 3. No file another product owns is touched
+
+Hash every foreign config file before a full run and after it — `~/.claude/settings.json`,
+`~/.codex/config.toml`, `~/.cursor/hooks.json`, `~/.gemini/hooks.json`, `~/.config/opencode/`,
+`~/.kiro/hooks.json` — and assert **byte-identical**.
+
+*Rulings 8, 27, 28.* #27 already drove this shape and found `~/.claude/settings.json` unchanged
+throughout; the item makes it permanent rather than a one-off observation.
+
+### 4. Fan-out isolates, and integration merges
+
+A plan with disjoint items produces N clones and N workers, each seeing the owner's **uncommitted
+tracked *and* untracked work**, and merges to **one integration branch** carrying every change. A
+plan with two items claiming one path is **rejected**. The report names **which of the three filters
+bound the worker count** and why. The fan-out **renders in a real ACP client** as a `plan` with
+concurrent `tool_call`s.
+
+*Rulings 19, 14, 7, 13, 33, 16, 9, 2, 39.* The uncommitted-work half is ruling 33 repairing ruling 7,
+which had dropped the mechanism without replacing it.
+
+### 5. Review is cross-vendor, and its catch rate is published
+
+The reviewer's vendor differs from the builder's, and its verdict is recorded. Against **five defects
+planted by the verifier**, at least **three are caught**, and **the catch rate is printed whether or
+not it clears the threshold**.
+
+*Rulings 32, 10, 24.* The threshold is a stated judgement, not a measurement — review is
+probabilistic and a flaky blocking item gets disabled, while a published number gets argued with.
+Anthropic documents models preferring their own output when asked to judge it, which is why the
+cross-vendor half is pass/fail and the catch rate is not.
+
+### 6. A single-vendor machine degrades visibly
+
+The same run on a machine with one drivable vendor **completes**, and the report states that review
+ran **same-vendor**. It does not refuse to start, and it does not render the weakened check as a pass.
+
+*Ruling 32.* This is the common case for a first-time user.
+
+### 7. An interruption leaves nothing behind — including what escaped
+
+`SIGKILL` mid-run, with a descendant that has **escaped** containment: `cmd /c start` on Windows
+(#43 measured Bun's job object carrying `BREAKAWAY_OK` **and** `SILENT_BREAKAWAY_OK`), `setsid()` on
+POSIX. The next start's **sweep** reclaims it, no clone survives, and the run manifest says what
+happened.
+
+*Rulings 15, 38, 5.* Ruling 38 promoted the sweep from crash-recovery to *the* containment mechanism
+precisely because the job object is opt-out by design and brigadier cannot fix it. An item that only
+kills a well-behaved child would pass on a product that leaks every real one.
+
+### 8. An impossible plan is refused before anything is spawned
+
+A plan requiring a tool absent from the worker's real environment is refused, the refusal **names
+what was missing**, and **zero processes and zero clones are created**. A verify command present only
+in a committed file is **not executed**.
+
+*Rulings 11, 37, 18.* The second half is ruling 37's security property: cloning a hostile repository
+must not run its command with the operator's privileges.
+
+### 9. Ambient instructions are suppressed and brigadier's own plugin is inert
+
+A user-global instruction file is **not obeyed** by a worker, and first-run **says so out loud**. A
+worker on a machine with brigadier's plugin installed **does the work** rather than invoking
+brigadier.
+
+*Rulings 17, 36.* v1's finding 114 — a worker that ran `brigadier run` instead of working: 12
+minutes, zero files — **reproduced unprovoked** during #14, where a Codex worker spent 51 s on it.
+Twice recorded is not an edge case.
+
+### 10. The artifact ships, and says what is in it
+
+Installs, runs and is removed cleanly on all three platforms by each host's **real** discovery path
+(ruling 42: `~/.agents/skills/`, and **no `bin/`-on-`PATH` outside Claude Code**). Runs with **node
+absent from `PATH`**. `brigadier licenses` prints the full attribution. The licence gate passes on
+the **released** artifact. Size and start-up within the measured budget.
+
+*Rulings 26, 42, 12, 4, 44, 47, 5, 46.* ChatGPT is a **permanent blank** — a hosted surface has no
+filesystem — and the item must not imply six uniform clients.
+
+## Coverage — every ruling, and what proves it
+
+The second column is where a promise gets quietly buried. Writing *no user-visible promise* next to a
+ruling that has one is a single-line way to make this bar lie, so it is written out in full and is
+meant to be argued with.
+
+| ruling | proved by |
+| --- | --- |
+| 1 true zero | process ruling — no user-visible promise |
+| 2 ACP hub, client down and server up | items 1, 4 |
+| 3 not an HTTP proxy | architectural exclusion — no user-visible promise |
+| 4 vendor the bridges | item 10 (runs with node absent from `PATH`) |
+| 5 Bun `--compile`, bridges out-of-process | items 7, 10 |
+| 6 detection bar | item 1 |
+| 7 clone per unit of work | items 4, 7 |
+| 8 own directories only | item 3 |
+| 9 local models via an ACP agent | **downgraded to unproven by ruling 45** — no mechanism exists to prove |
+| 10 routing constrains, router ranks | item 5 |
+| 11 brigadier validates the plan | item 8 |
+| 12 Windows first class | item 10 |
+| 13 in-tree work under a checkable rule | item 4 |
+| 14 three fan-out filters, lowest wins | item 4 |
+| 15 cleanup proves ownership three ways | items 3, 7 |
+| 16 identifiers up front, contents just-in-time | item 4 |
+| 17 ambient files suppressed | item 9 |
+| 18 three config layers | item 8 |
+| 19 bounded work queue, work kinds | item 4 |
+| 20 the orchestrator has no context window | architectural exclusion — no user-visible promise |
+| 21 token strategy ranked by impact | **deferred — #24 open** |
+| 22 repo map adopted | item 4 |
+| 23 cost model: predict, enforce, learn | **deferred — #24 open** |
+| 24 retry is a ladder | item 5 |
+| 25 host-first is the product | items 9, 10 |
+| 26 one plugin directory, both formats | item 10 |
+| 27 hooks only in an owned directory | item 3 |
+| 28 `PreCompact` recovers ruling 8's cost | item 3 |
+| 29 the routing unit is a triple | **deferred — #24 open**; recorded in the run report |
+| 30 effort ceiling `high` | **deferred — #24 open** |
+| 31 router derives effort | **deferred — #24 open** |
+| 32 cross-vendor preferred, not required | items 5, 6 |
+| 33 the scratch base commit | item 4 |
+| 34 git hooks neutered, `.git/**` excluded | item 2 |
+| 35 `difficulty` must be checkable | **deferred — #31 open** |
+| 36 brigadier's plugin inert in a worker | item 9 |
+| 37 nothing executed comes from a committed file | item 8 |
+| 38 the sweep is the containment mechanism | item 7 |
+| 39 repo map ~2K, per run | item 4 |
+| 40 effort graded on Codex, binary on Claude | **deferred — #24 open** |
+| 41 detection is two steps | item 1 |
+| 42 `~/.agents/skills/`, no `bin/` off Claude Code | item 10 |
+| 43 the lane is an approval channel | item 2 |
+| 44 `CLAUDE_CODE_EXECUTABLE` is load-bearing | items 2, 10 |
+| 45 ruling 9 downgraded to unproven | nothing to prove — see ruling 9 |
+| 46 identity | items 1, 10 |
+| 47 Apache-2.0, attribution, licence gate | item 10 |
+
+Six rulings are **deferred to an open ticket** rather than covered. That is the bar's own honest gap
+and it closes as phase 2 closes: five of them wait on **#24** (the cost model) and one on **#31**.
+**A deferred ruling is not a covered ruling**, and this table must be revisited each time a grilling
+ticket lands a ruling with a user-visible promise.
+
+## When an item cannot be met
+
+An item is **struck only in the open**: a line on the map saying which item, why, and what promise is
+therefore unproven. It is never quietly disabled, never marked "known failing", and never left
+`SKIPPED` while a tag goes out.
+
+Scaling the bar down is the owner's call. Doing it silently is not available to anyone.

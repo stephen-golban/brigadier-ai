@@ -40,23 +40,39 @@ Do not read `src/` yourself. Send a subagent to summarise it and report back an 
   (`src/agent/`), and a CLI. `brigadier detect` reports 6/6 agents usable on this machine.
   24 tests pass, typecheck is clean, the binary compiles at 61 MB.
 
-## The bar
+## Two bars, and they are not the same thing
 
-**v1 — `stephen-golban/brigadier`, shipped at 0.2.1, signed, notarized, on a Homebrew tap.** It is an
-archive and a reference, never a source of code (ruling 1 is true zero: read it to understand a
-finding, never copy it). v2 clears the bar when it does what v1 did, without v1's 124 recorded
-defects, and honouring the 46 rulings.
+**The release bar is [`BAR.md`](../blob/main/BAR.md) — ruling 48, settled on #37.** Ten items, each
+driven against the **real compiled binary** rather than the test suite, each tied to a ruling, plus a
+coverage table over all 47 rulings showing which promise nothing yet proves. **That file is what
+"done" means. Read it before you decompose anything** — six of its ten items are not covered by any
+slice in the list below, which tells you what the build is actually missing.
 
-Concrete, checkable, and non-negotiable — a critic must be able to verify each one:
+Building `bar/run.ts` — the harness that takes `--binary <path>` and runs those ten items — **is
+itself a slice**, and it is the one that makes every other slice checkable. It is not covered below
+either. Add it.
+
+## The per-round gate
+
+Distinct from the release bar and much cheaper: this is what must be true **every round**, so a bad
+round is caught in minutes rather than at a tag. It is not a definition of done, and it never was —
+it is the floor.
 
 - `bunx tsc --noEmit` clean and `bun test` green, every round, no skipped tests.
 - **Every guard has a negative control** — a test proving it fails when it should. A guard that
   always passes looks identical to a working one.
 - **Every measured fact in source cites its ticket and the version it was measured against.** Three
   of six agent coordinates in circulation were wrong; a stale one fails as a hang, not an error.
+- `bun run build` green — which now runs the **licence gate** (ruling 47): a non-allowlisted
+  dependency licence, a proprietary marker string found in the compiled binary, or a `bun` that has
+  drifted from `vendor/pins.json` each fail the build.
 - Binary ≤ 63 MB, cold start ≤ 70 ms, warm ≤ 10 ms (v1's measured numbers).
 - `.github/workflows/portability.yml` green on `windows-latest`, `ubuntu-latest`, `macos-latest`.
 - No `src/` file imports from `probes/`.
+
+**v1 — `stephen-golban/brigadier`, shipped at 0.2.1, signed, notarized, on a Homebrew tap** — is an
+archive and a reference, never a source of code (ruling 1 is true zero: read it to understand a
+finding, never copy it). Its 124 findings are input to both bars.
 
 ## Slices — fan out, disjoint owned paths
 
@@ -134,7 +150,6 @@ Keep going until I stop you. Do not ask whether to continue.
 
 ---
 
-*Note for the owner: `#37 — the success bar: how we know v2 is done` is still an open grilling ticket.
-The bar above is a build-phase bar chosen so the loop has something concrete to aim at; it is not a
-substitute for ruling #37, and the gauntlet skill's own doctrine is that the bar is the most important
-part of the technique.*
+*Note for the owner: #36 and #37 are settled — rulings 47 (licensing) and 48 (the success bar), both
+2026-08-17. `BAR.md` replaces the placeholder build-phase bar this file used to carry, and the
+per-round gate above is now labelled as the floor it always was rather than as a definition of done.*
