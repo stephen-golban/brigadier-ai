@@ -153,7 +153,12 @@ cross-vendor half is pass/fail and the catch rate is not.
 The same run on a machine with one drivable vendor **completes**, and the report states that review
 ran **same-vendor**. It does not refuse to start, and it does not render the weakened check as a pass.
 
-*Ruling 32.* This is the common case for a first-time user.
+**And the retry ladder says which rung it actually got** (ruling 55): a failed item on that machine
+renders `attempts 2 of 2 (same-vendor, model changed)` or `attempts 1 of 1 — no second rung`, never
+the bare `attempts 2 of 2` a two-vendor machine produces. **A missing rung must not render as an
+exhausted one**, and a short ladder is stated **at plan admission**, before anything is spent.
+
+*Rulings 32, 55, 53.* This is the common case for a first-time user.
 
 ### 7. An interruption leaves nothing behind — including what escaped
 
@@ -270,6 +275,7 @@ user-visible promise, so it grows through phase 2. Rulings 49 onward were added 
 | 52 four check outcomes, three of them block | items 5 (reviewer `error`), 8 (the unstartable gate) |
 | 53 three requirement terms, unmeasured is not permission | item 8 (the refusal names the term and the agent) |
 | 54 fan-out arithmetic, waves, no free-memory scheduling | item 4 (the binding filter is named; a `dependsOn` wave runs in order) |
+| 55 the ladder's second rung, and a short ladder said up front | item 6 (the rung is named; a missing rung never reads as exhausted) |
 
 Six rulings are **deferred to an open ticket** rather than covered. That is the bar's own honest gap
 and it closes as phase 2 closes: five of them wait on **#24** (the cost model) and one on **#31**.
