@@ -162,7 +162,12 @@ that did not make it.
 mid-turn and asserting the item does not integrate. v1 merged its most delicate change on
 `review: not run (REVIEWER_FAILED)`.
 
-*Rulings 32, 10, 24, 52.* The threshold is a stated judgement, not a measurement — review is
+**And the table it ranks with is auditable from the binary** (ruling 68): `brigadier competence`
+prints every row with its **evidence class and citation**, and **no citation is a line anchor** — v1
+lost 8 of 44 to one comment-only sweep. A model the table has never heard of is **used, sorted last,
+and named**, never silently excluded.
+
+*Rulings 32, 10, 24, 52, 68.* The threshold is a stated judgement, not a measurement — review is
 probabilistic and a flaky blocking item gets disabled, while a published number gets argued with.
 Anthropic documents models preferring their own output when asked to judge it, which is why the
 cross-vendor half is pass/fail and the catch rate is not.
@@ -400,6 +405,7 @@ user-visible promise, so it grows through phase 2. Rulings 49 onward were added 
 | 65 secrets in the environment, redaction at one sink | item 12 |
 | 66 predict as a range, two ceilings, keyed by root commits | item 13 |
 | 67 clamp difficulty down and loudly; check the distribution | item 13 |
+| 68 competence cited by identity, unranked is not excluded | items 5, 10 (`brigadier competence` prints class and citation) |
 
 **The gap ruling 48 declared is CLOSED.** Rulings 21, 23, 29, 30, 31 and 40 were parked as
 *deferred — #24 open* and ruling 35 as *deferred — #31 open*; rulings 66 and 67 settled both tickets
