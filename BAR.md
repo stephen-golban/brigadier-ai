@@ -234,6 +234,10 @@ A user-global instruction file is **not obeyed** by a worker, and first-run **sa
 worker on a machine with brigadier's plugin installed **does the work** rather than invoking
 brigadier.
 
+**And there is no `init` to run first** (ruling 71): the item drives a first run on a machine with no
+prior state and asserts it completes, that state is created, and that **deleting the state directory
+is a supported repair** rather than a corruption.
+
 **Asserted on the effect: the files exist and `brigadier run` was not invoked.** Asserting that
 `BRIGADIER_WORKER` is set proves only that a variable exists — the exact *check that reports success
 when the thing it checks did not happen* shape v1 kept shipping.
@@ -418,6 +422,7 @@ user-visible promise, so it grows through phase 2. Rulings 49 onward were added 
 | 68 competence cited by identity, unranked is not excluded | items 5, 10 (`brigadier competence` prints class and citation) |
 | 69 drift graded by blast radius; a failed lane assertion blocks | items 1, 2 (a drifted version is reported; an unasserted lane blocks a `write`) |
 | 70 no token-reduction claim; spend and levers reported | item 13 (the lever line, and a run including opencode says `unpriceable`) |
+| 71 no `init`; first run prints the four unlearnable things | items 1, 9, 6 |
 
 **The gap ruling 48 declared is CLOSED.** Rulings 21, 23, 29, 30, 31 and 40 were parked as
 *deferred — #24 open* and ruling 35 as *deferred — #31 open*; rulings 66 and 67 settled both tickets
