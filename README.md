@@ -44,8 +44,13 @@ recorded there that produced confidently wrong readings before they were caught.
 Five research tickets remain open and are honest blanks rather than passes: they need GUI clients,
 additional authenticated agents, or the owner's consent to exhaust a quota window.
 
-**Phase 2 — decide — is the current phase.** 26 `wayfinder:grilling` tickets, human in the loop, one
-per session. The map closes when they do.
+**Phase 1 closed on 2026-08-17 by the owner**, with #46, #47 and #48 closed while still carrying
+stated unmeasured halves — recorded plainly in each ticket rather than rewritten as passes.
+
+**Phases 2 and 3 now run together.** 26 `wayfinder:grilling` tickets remain, and the owner has elected
+to start building alongside them rather than after. Note which of them gate the first files: identity
+(#35) fixes the binary and repository name, licensing (#36) fixes every source header, and the
+work-kind, gate and integration rulings shape the core types.
 
 ## Relationship to v1
 
