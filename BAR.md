@@ -238,7 +238,13 @@ Installs, runs and is removed cleanly on all three platforms by each host's **re
 absent from `PATH`**. `brigadier licenses` prints the full attribution. The licence gate passes on
 the **released** artifact. Size and start-up within the measured budget.
 
-*Rulings 26, 42, 12, 4, 44, 47, 5, 46.* ChatGPT is a **permanent blank** — a hosted surface has no
+**And the hook surface is verified by name, not by count** (ruling 60): after install,
+`claude plugin details brigadier` names `PreCompact`. Then the negative: a `hooks.json` carrying one
+unrecognised event **discards every hook in the file**, and the item asserts brigadier **says so** —
+today the symptom is that nothing happens. A count-based check would pass this; `.lsp.json` was
+measured reporting `LSP servers (1)` for `{"notARealKey": 1}`.
+
+*Rulings 26, 42, 12, 4, 44, 47, 5, 46, 60.* ChatGPT is a **permanent blank** — a hosted surface has no
 filesystem — and the item must not imply six uniform clients.
 
 ### 11. The run report fits in a host model's window, and never hides a failure to do it
@@ -327,6 +333,7 @@ user-visible promise, so it grows through phase 2. Rulings 49 onward were added 
 | 57 the binary refuses inside a worker | item 9 (asserted on the effect, and it carries the ruling's unmeasured assumption) |
 | 58 the host report is capped; the cap can never hide a failure | item 11 |
 | 59 a refused delegation reaches the operator | item 9 (a repo `AGENTS.md` that says "delegate to brigadier", and the run-level line) |
+| 60 the hook floor, and a names-based self-check | item 10 (hooks register, and a poisoned `hooks.json` is *reported* rather than silent) |
 
 Six rulings are **deferred to an open ticket** rather than covered. That is the bar's own honest gap
 and it closes as phase 2 closes: five of them wait on **#24** (the cost model) and one on **#31**.
