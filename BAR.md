@@ -104,7 +104,11 @@ writes into its own directory anyway contributes **nothing** to the integration 
 to any report** — the directory is never read back. Driven by planting a file in a read-only worker's
 checkout and asserting it reaches neither.
 
-*Rulings 19, 14, 7, 13, 33, 16, 9, 2, 39, 49.* The uncommitted-work half is ruling 33 repairing
+**And the operator's own repository is byte-identical afterwards:** `git status --porcelain -uall`,
+the hash of `.git/index`, a hash over the whole working tree, and `HEAD`, captured before the run and
+asserted after it — including after the scratch base ref is cleaned up.
+
+*Rulings 19, 14, 7, 13, 33, 16, 9, 2, 39, 49, 50.* The uncommitted-work half is ruling 33 repairing
 ruling 7, which had dropped the mechanism without replacing it. The read-only half is ruling 49,
 which defines the kind by what brigadier reads back **because** three of five measured vendors give
 no lane at all — so an item that asserted "the agent could not write" would be proving a promise the
@@ -228,6 +232,7 @@ user-visible promise, so it grows through phase 2. Rulings 49 onward were added 
 | 47 Apache-2.0, attribution, licence gate | item 10 |
 | 48 the success bar | this document — no separate item |
 | 49 `read-only` defined by what is read back | items 4 (read-only half), 2 (the flat `deny` lane) |
+| 50 base state, and the operator's tree untouched | item 4 (both halves, including the ref cleanup) |
 
 Six rulings are **deferred to an open ticket** rather than covered. That is the bar's own honest gap
 and it closes as phase 2 closes: five of them wait on **#24** (the cost model) and one on **#31**.
