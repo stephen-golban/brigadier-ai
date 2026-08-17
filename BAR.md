@@ -62,9 +62,9 @@ mechanism becomes worth nothing.
 
 ## The items
 
-Ruling 48 described **ten**. Phase 2 added **item 11** (ruling 58), because a ruling that makes a
-user-visible promise needs an item and ruling 58 promises the run report fits in the window the owner
-is working in. Ruling 48's text stands; this is the amendment, in the place a reader looks.
+Ruling 48 described **ten**. Phase 2 added **item 11** (ruling 58, the run report fits the window the
+owner is working in) and **item 12** (ruling 65, a granted secret does not reach a persisted artifact
+verbatim). Ruling 48's text stands; this is the amendment, in the place a reader looks.
 
 ### 1. Detection is honest
 
@@ -278,6 +278,27 @@ floor, since #23 measured that formula underestimating by 22% — against **Copi
 token window** (#46). Being careless here costs the owner the session they are working in, and
 host-first is the normal case under ruling 25, not an edge one.
 
+### 12. A granted secret does not reach any persisted artifact verbatim
+
+A run is given a secret through ruling 65's environment channel, a worker is asked to put it in a
+file it commits, and afterwards **no persisted artifact contains that value in any enumerated
+encoding** — literal, JSON-escaped, URL-encoded or base64. Checked across the run record, the
+transcripts, the commit messages, the diff and the host-session report.
+
+Then the check that would otherwise be theatre: **the same assertion is run in v1's form** — *does
+the raw literal appear?* — and both results are printed. v1's version passed on a file that still
+held the secret in escaped form, and an item that only reproduces v1's assertion would pass on the
+same file.
+
+**And the secret is not in the clone at all.** Ruling 50 puts no gitignored file in the base commit
+and ruling 65 adds no exception for secrets, so `grep` over the worker's checkout finds nothing before
+the worker starts.
+
+*Rulings 65, 50, 37, 25.* **What this item deliberately does not prove:** ruling 65 defeats *verbatim*
+leaks only. A worker that paraphrases a key, re-encodes it in a scheme we do not enumerate, or
+describes it in prose is not caught by this item or by the product, and the item must not be written
+so that a reader concludes otherwise.
+
 ## Coverage — every ruling, and what proves it
 
 The second column is where a promise gets quietly buried. Writing *no user-visible promise* next to a
@@ -353,6 +374,7 @@ user-visible promise, so it grows through phase 2. Rulings 49 onward were added 
 | 62 evidence standards and this repository's gates | development-process ruling — no user-visible promise; enforced by `bun run gates` in CI |
 | 63 resume by ref, retain interrupted clones, re-raise | item 7 (both directions: nothing leaks, and nothing of the operator's is destroyed) |
 | 64 shared cache, per-item `TMPDIR`, ports by binding | items 4, 2 (concurrent installs complete; a sibling is unreachable through `$TMPDIR`) |
+| 65 secrets in the environment, redaction at one sink | item 12 |
 
 Six rulings are **deferred to an open ticket** rather than covered. That is the bar's own honest gap
 and it closes as phase 2 closes: five of them wait on **#24** (the cost model) and one on **#31**.
