@@ -1,3 +1,11 @@
+> **STATUS: this work order is COMPLETE as of 2026-08-17, and is kept as a record of how phase 1 ran.**
+> 17 research and prototype tickets closed; eight locked rulings amended on the map as rulings 38–45.
+> Five tickets remain open as stated blanks — #39, #42, #46, #47, #48 — each blocked on a GUI client,
+> an authenticated agent, or the owner's consent to exhaust a quota window, not on effort.
+> The "Already measured — do not redo" section below was true when written; several of its lines have
+> since been superseded by the tickets that measured them properly. **The map is the current record,
+> not this file.**
+
 Resolve every **measurement** ticket on the brigadier v2 wayfinder map. This is AFK work — no
 decisions are yours to make; your job is to turn assumptions into evidence and record it.
 

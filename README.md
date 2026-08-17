@@ -26,13 +26,26 @@ Read the map before reading anything else here.
 
 ## Why no code
 
-The design is deep and its foundation is not yet measured. Several locked rulings rest on assumptions
-that have never been checked, and some of them will reverse when they are. Writing source against
-those now buys a rewrite.
+The design is deep and its foundation had never been measured. Several locked rulings rested on
+assumptions nobody had checked, and some of them reversed when they were. Writing source against
+those would have bought a rewrite.
 
-So the next phase is measurement, not construction. See
-[`MEASUREMENT-SESSION.md`](./MEASUREMENT-SESSION.md) for that work order, and [`probes/`](./probes/)
-for the throwaway scripts that produce the evidence.
+**Phase 1 — measurement — is done, as of 2026-08-17.** 17 research and prototype tickets are closed,
+and **eight locked rulings were contradicted or qualified by the evidence** — amended on the map as
+rulings 38–45 rather than by editing the originals, so the record of what was believed and why it
+changed survives. Among them: the Windows Job Object permits breakaway, so containment is the sweep
+rather than the job; the repo map pays but at a 2K budget, not 1K; and effort is a graded axis on one
+vendor and a binary one on the other.
+
+See [`MEASUREMENT-SESSION.md`](./MEASUREMENT-SESSION.md) for the work order it ran from, and
+[`probes/`](./probes/) for the throwaway scripts that produced the evidence — including two traps
+recorded there that produced confidently wrong readings before they were caught.
+
+Five research tickets remain open and are honest blanks rather than passes: they need GUI clients,
+additional authenticated agents, or the owner's consent to exhaust a quota window.
+
+**Phase 2 — decide — is the current phase.** 26 `wayfinder:grilling` tickets, human in the loop, one
+per session. The map closes when they do.
 
 ## Relationship to v1
 
