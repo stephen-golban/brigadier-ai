@@ -78,9 +78,18 @@ Driven on both payload shapes: a vendor that sends a full path (Claude / Copilot
 sends **nothing at all** (Codex `edit`: `title: null`, `locations: []`), where the guard must
 **refuse what it cannot place** rather than pass a `locations.every(inLane)` that can never fail.
 
-*Rulings 43, 34, 2.* This is the promise most likely to be quietly false: #41 measured that an
+**And a worker that plants an executable payload in its own clone does not reach the operator**
+(ruling 56). Driven by planting all three measured shapes — a `pre-commit` hook, a
+`reference-transaction` hook, and a `core.fsmonitor` in `.git/config` — running a **complete
+integration**, and asserting the canary file **outside the clone does not exist**. The assertion is on
+the escaped bytes, never on a flag: v1's finding 41 is that a flag assertion survives a refactor that
+removes the property.
+
+*Rulings 43, 34, 2, 56.* This is the promise most likely to be quietly false: #41 measured that an
 **approved** `session/request_permission` on Codex runs the command *outside* its own OS sandbox, and
-#50 found opencode has no boundary of any kind for execute-class work.
+#50 found opencode has no boundary of any kind for execute-class work. Note what this item does
+**not** prove: ruling 56's containment is brigadier not running git inside the clone, **not** the
+lane's `.git/**` exclusion, which ruling 43 measured can only fire on two of five vendors.
 
 ### 3. No file another product owns is touched
 
@@ -276,6 +285,7 @@ user-visible promise, so it grows through phase 2. Rulings 49 onward were added 
 | 53 three requirement terms, unmeasured is not permission | item 8 (the refusal names the term and the agent) |
 | 54 fan-out arithmetic, waves, no free-memory scheduling | item 4 (the binding filter is named; a `dependsOn` wave runs in order) |
 | 55 the ladder's second rung, and a short ladder said up front | item 6 (the rung is named; a missing rung never reads as exhausted) |
+| 56 brigadier runs no git inside a clone an agent touched | item 2 (planted hook and config payloads, asserted on the escaped bytes) |
 
 Six rulings are **deferred to an open ticket** rather than covered. That is the bar's own honest gap
 and it closes as phase 2 closes: five of them wait on **#24** (the cost model) and one on **#31**.
