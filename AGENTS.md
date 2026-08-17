@@ -80,4 +80,10 @@ work back to an orchestrator, which is exactly the failure v1 recorded: a worker
 two files" order instead cloned the repo and ran the orchestrator, producing zero files in twelve
 minutes where the direct edit took two.
 
-Tracked as issue #34. Do not add delegation instructions to this file.
+**Ruling 59** (settling #34): this is finding 114's **third** route, after ambient globals and the
+installed plugin, and all three are closed by one mechanism that is deliberately indifferent to how
+the model got the idea — **ruling 57's binary refusal**. The rule here is the *request* half of that
+ruling, and it applies to brigadier's own documentation as much as to this file: **never suggest
+putting delegation doctrine in a repository file**, or we manufacture the third route ourselves.
+
+Do not add delegation instructions to this file.

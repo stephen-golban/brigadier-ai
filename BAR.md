@@ -213,6 +213,12 @@ brigadier.
 `BRIGADIER_WORKER` is set proves only that a variable exists — the exact *check that reports success
 when the thing it checks did not happen* shape v1 kept shipping.
 
+**Driven on all three of finding 114's routes** (ruling 59): a user-global instruction file, the
+installed plugin, and **a committed `AGENTS.md` in the cloned repository that says work should be
+handed to brigadier**. The third is the one no marker governs, and the run report must carry the
+**run-level** line saying how many workers tried and were refused — a signal the brief was wrong,
+which must survive ruling 58's cap.
+
 **This item carries ruling 57's one unmeasured assumption**, and is the only thing that can settle
 it: brigadier sets the marker on the **agent** process, and whether every vendor passes its
 environment through to the shell it runs **tool commands** in is not measured. If a vendor builds a
@@ -320,6 +326,7 @@ user-visible promise, so it grows through phase 2. Rulings 49 onward were added 
 | 56 brigadier runs no git inside a clone an agent touched | item 2 (planted hook and config payloads, asserted on the escaped bytes) |
 | 57 the binary refuses inside a worker | item 9 (asserted on the effect, and it carries the ruling's unmeasured assumption) |
 | 58 the host report is capped; the cap can never hide a failure | item 11 |
+| 59 a refused delegation reaches the operator | item 9 (a repo `AGENTS.md` that says "delegate to brigadier", and the run-level line) |
 
 Six rulings are **deferred to an open ticket** rather than covered. That is the bar's own honest gap
 and it closes as phase 2 closes: five of them wait on **#24** (the cost model) and one on **#31**.

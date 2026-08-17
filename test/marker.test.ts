@@ -12,7 +12,14 @@
 
 import { describe, expect, test } from "bun:test";
 import { PROFILES, buildEnvironment } from "../src/agent/profiles.ts";
-import { RUN_MARKER_FLAG, WORKER_MARKER, isInsideWorker } from "../src/agent/marker.ts";
+import {
+  RUN_MARKER_FLAG,
+  WORKER_MARKER,
+  isInsideWorker,
+  refusalSummary,
+  workerIdentity,
+  workerMarkerValue,
+} from "../src/agent/marker.ts";
 
 describe("the worker marker", () => {
   test("is set on every profile's environment", () => {
@@ -28,6 +35,35 @@ describe("the worker marker", () => {
     // for someone who exported it to turn it OFF.
     expect(isInsideWorker({ [WORKER_MARKER]: "0" })).toBe(false);
     expect(isInsideWorker({ [WORKER_MARKER]: "" })).toBe(false);
+  });
+});
+
+describe("ruling 59: the marker carries an identity, and a refusal has somewhere to go", () => {
+  test("the identity round-trips", () => {
+    const env = { [WORKER_MARKER]: workerMarkerValue("2026-08-17.a1b2", 3) };
+    expect(workerIdentity(env)).toEqual({ runId: "2026-08-17.a1b2", item: 3 });
+    // Still refuses, obviously — the predicate did not change.
+    expect(isInsideWorker(env)).toBe(true);
+  });
+
+  test("ruling 57's bare `1` still refuses, just without a home for the record", () => {
+    expect(isInsideWorker({ [WORKER_MARKER]: "1" })).toBe(true);
+    expect(workerIdentity({ [WORKER_MARKER]: "1" })).toBeNull();
+  });
+
+  test("a malformed identity does not become an item number", () => {
+    expect(workerIdentity({ [WORKER_MARKER]: "run/" })).toBeNull();
+    expect(workerIdentity({ [WORKER_MARKER]: "run/0" })).toBeNull();
+    expect(workerIdentity({ [WORKER_MARKER]: "/3" })).toBeNull();
+    expect(workerIdentity({})).toBeNull();
+  });
+
+  test("the operator's line is run-level, singular-aware, and a count not a diagnosis", () => {
+    expect(refusalSummary(0)).toBe("");
+    expect(refusalSummary(1)).toContain("1 worker attempted");
+    expect(refusalSummary(3)).toContain("3 workers attempted");
+    // It points at where to look. It does not claim to know which sentence did it.
+    expect(refusalSummary(3)).toContain("AGENTS.md");
   });
 });
 
