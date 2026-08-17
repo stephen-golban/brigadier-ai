@@ -1,0 +1,87 @@
+name: gates
+
+# Ruling 62. The product gates, on all three platforms, and a failure on any of
+# them blocks.
+#
+# The ticket asked specifically what a Windows failure blocks, given ruling 12.
+# The same as any other: everything. #5 measured MAX_PATH failing a clone at 198
+# characters and core.autocrlf=false turning a one-line edit into a six-line
+# whole-file diff — neither of which is visible anywhere else, and v1's worst
+# defect survived 740 tests and four gates and was found only by pushing to CI.
+#
+# Deliberately separate from `portability.yml`, which drives probes/. AGENTS.md
+# holds probes to no product standard and their results are DATA. Conflating an
+# exploratory probe run with a product gate makes the gate noisy, and a noisy
+# gate gets ignored — which is exactly how ruling 48's "a flaky blocking item
+# gets disabled" happens.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "src/**"
+      - "test/**"
+      - "scripts/**"
+      - "package.json"
+      - "tsconfig.json"
+      - "bun.lock"
+      - "BAR.md"
+      - ".github/workflows/gates.yml"
+  pull_request:
+
+jobs:
+  gates:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          # Ruling 47: the licence gate fails if the bun building the binary is
+          # not the version vendor/pins.json pins the attribution to.
+          bun-version: "1.3.14"
+
+      - run: bun install --frozen-lockfile
+
+      # Typecheck first: it is the cheapest and it fails most specifically.
+      - name: typecheck
+        run: bun run typecheck
+
+      # Ruling 62 (c): a skipped test is not a passing test. This is the gate,
+      # not the convention — the runner's own output is read from a file and any
+      # skip or todo fails the build.
+      - name: tests, with nothing skipped
+        run: bun run test-gate
+
+      # Ruling 62 (g): the full-tree scan for stale claims. The only check here
+      # that is NOT scoped to changed files, which is the whole point — v1 lost
+      # four documents in one day to staleness and every instance passed all
+      # four gates, because the stale file was one nobody had touched.
+      - name: claims
+        run: bun run claims
+
+      # Ruling 47: attribution matches what is actually bundled, no proprietary
+      # marker in the compiled artifact, and the toolchain is the pinned one.
+      - name: build and licence gate
+        run: bun run build
+
+      # The binary must actually run on the machine that built it. Ruling 62's
+      # standard (a): assert on the artifact, not on the build succeeding.
+      - name: the compiled binary runs
+        shell: bash
+        run: |
+          if [ -f dist/brigadier.exe ]; then BIN=dist/brigadier.exe; else BIN=dist/brigadier; fi
+          "$BIN" --help
+          "$BIN" licenses | head -20
+          # Ruling 57's refusal, asserted on the effect rather than on the flag.
+          set +e
+          BRIGADIER_WORKER=ci/1 "$BIN" run > worker-refusal.txt 2>&1
+          code=$?
+          set -e
+          grep -q "IS a brigadier worker" worker-refusal.txt
+          test "$code" -eq 3
+          echo "worker refusal: exit $code, message present"

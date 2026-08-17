@@ -341,6 +341,7 @@ user-visible promise, so it grows through phase 2. Rulings 49 onward were added 
 | 59 a refused delegation reaches the operator | item 9 (a repo `AGENTS.md` that says "delegate to brigadier", and the run-level line) |
 | 60 the hook floor, and a names-based self-check | item 10 (hooks register, and a poisoned `hooks.json` is *reported* rather than silent) |
 | 61 run directories outside every temp root | items 4, 2 (a sibling clone is unreachable where the vendor enforces one, and named where it does not) |
+| 62 evidence standards and this repository's gates | development-process ruling — no user-visible promise; enforced by `bun run gates` in CI |
 
 Six rulings are **deferred to an open ticket** rather than covered. That is the bar's own honest gap
 and it closes as phase 2 closes: five of them wait on **#24** (the cost model) and one on **#31**.

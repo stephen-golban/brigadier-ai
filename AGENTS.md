@@ -53,6 +53,26 @@ this gate exists to catch is legal, not functional: no test goes red and no user
 `stephen-golban/brigadier` is an archive. Ruling 1 is true zero: its 124 **findings** are input, its
 **code** is not. Reading v1 source to understand a finding is fine; copying it is not.
 
+## The gates
+
+`bun run gates` — typecheck, tests, claims, build. Ruling 62 settles what each is for, and CI runs
+all of them on **`windows-latest`, `ubuntu-latest` and `macos-latest`, where a failure on any one
+blocks**. Ruling 12 makes Windows first class, and #5 measured `MAX_PATH` failing a clone at 198
+characters and `core.autocrlf=false` turning a one-line edit into a six-line whole-file diff —
+neither visible anywhere else.
+
+- **`bun run test-gate`** fails on any **skipped or todo** test. A skipped test is not a passing test,
+  and ruling 62 makes that a gate rather than a line in this file. It is ruling 48's *"a `SKIPPED`
+  item blocks a tag exactly as a `FAIL` does"* at a third scale — release, change, test run.
+- **`bun run claims`** is a **full-tree** scan, and it is the only check here that is not scoped to
+  changed files. That is the point: v1 lost four documents in one day to invisible staleness and
+  every instance passed all four gates, because the stale file was one nobody had touched. It checks
+  `BAR.md`'s coverage table is contiguous, that nothing cites a ruling the table has never heard of,
+  and that nothing in `src/` imports from `probes/`.
+
+**The `portability` workflow is not a gate.** It drives `probes/`, its results are data, and a noisy
+gate gets ignored.
+
 ## Measurement discipline
 
 The rules below each came from a confidently wrong number that reached a shipped file.
