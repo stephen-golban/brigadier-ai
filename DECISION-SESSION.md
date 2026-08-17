@@ -1,5 +1,14 @@
 # Prompt for the autonomous decision session
 
+> **✅ EXECUTED 2026-08-17. Phase 2 is closed.** All 24 remaining `wayfinder:grilling` tickets were
+> ruled and closed in one session, producing **rulings 49–72**, which live in three comments on the
+> map (issue #1) because its body exceeded GitHub's 256 KB limit. `BAR.md` gained items 11, 12 and 13,
+> and **its six deferred rulings are now covered — no ruling in the coverage table is deferred.**
+>
+> Kept for the record rather than for re-use: the delegation of decision authority it grants was for
+> that session and only that session, and `wayfinder:grilling`'s normal rule — *an agent that answers
+> its own question here has broken the ticket type* — is back in force.
+
 Paste everything below the line into a fresh session in `~/Development/brigadier-v2`.
 
 ---
