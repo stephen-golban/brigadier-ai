@@ -1,0 +1,4 @@
+{
+  "_comment": "Machine-readable pins for the verbatim license copies in this directory. scripts/license-gate.ts fails the build if the toolchain does not match, so an upgrade cannot silently leave THIRD-PARTY.md describing a runtime that is no longer in the binary.",
+  "bun": "1.3.14"
+}

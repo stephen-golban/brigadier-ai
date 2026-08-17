@@ -7,7 +7,7 @@ VS Code. Claude Code reads it too.
 ## Read the map first
 
 The canonical artifact is **issue #1**, not this tree:
-`gh issue view 1 --repo stephen-golban/brigadier-v2`
+`gh issue view 1 --repo stephen-golban/brigadier-ai`
 
 It holds every locked ruling with its reason and its accepted cost. Tickets reference rulings by
 number and will not make sense without it. Read it completely before acting.
@@ -26,6 +26,27 @@ finding into `src/` deliberately — do not reach across.
 `src/agent/profiles.ts` is the clearest case: each entry names the version it was measured against
 and the ticket that measured it, because three of six agent coordinates in circulation were wrong and
 a stale one fails as a hang rather than an error.
+
+## Licensing is a gate, not a preference
+
+Ruling 47. brigadier is **Apache-2.0**; every `.ts` file outside `probes/` opens with
+`// SPDX-License-Identifier: Apache-2.0` as its first line (after the shebang, where there is one).
+
+`THIRD-PARTY.md` and `src/generated/licenses.ts` are **generated** by `bun run licenses`. Never edit
+either by hand — `bun run build` runs `licenses --check` first and fails if the committed attribution
+disagrees with what is actually bundled.
+
+`bun run license-gate` then scans the compiled binary. It fails the build if:
+
+- a production dependency carries a licence outside the permissive allowlist in `scripts/inventory.ts`;
+- the binary contains a marker string from `@anthropic-ai/claude-agent-sdk`, which is **proprietary**
+  ("© Anthropic PBC. All rights reserved.") and which the Claude ACP bridge depends on — it stays out
+  of the binary only because ruling 44's `CLAUDE_CODE_EXECUTABLE` shim keeps it out;
+- the `bun` building the binary is not the version `vendor/pins.json` pins the attribution to.
+
+**Adding a production dependency means running `bun run licenses` in the same commit.** If the gate
+blocks you, the answer is not to widen the allowlist — it is to say so on the ticket. The failure
+this gate exists to catch is legal, not functional: no test goes red and no user reports it.
 
 ## Do not port anything from v1
 

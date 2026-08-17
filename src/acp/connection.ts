@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /**
  * JSON-RPC 2.0 over a `LineChannel`, in both directions.
  *

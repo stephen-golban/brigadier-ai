@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /**
  * The lane: given a permission request, allow or deny — and say why.
  *

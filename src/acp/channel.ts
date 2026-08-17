@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /**
  * A duplex channel of newline-delimited text, and the process adapter that
  * satisfies it.

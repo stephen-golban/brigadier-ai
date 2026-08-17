@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// SPDX-License-Identifier: Apache-2.0
 /**
  * The terminal entry point.
  *
@@ -10,6 +11,7 @@
 
 import { detectAll } from "./agent/detect.ts";
 import { ALL_AGENT_IDS, PROFILES, type AgentId } from "./agent/profiles.ts";
+import { LICENSES } from "./generated/licenses.ts";
 
 const USAGE = `brigadier — an ACP hub
 
@@ -20,6 +22,10 @@ const USAGE = `brigadier — an ACP hub
 
   brigadier agents
       Print the launch-profile table, with what was measured against each.
+
+  brigadier licenses [--full]
+      brigadier's own licence and every third-party component compiled into
+      this binary. --full prints the complete licence texts.
 
 Agents: ${ALL_AGENT_IDS.join(", ")}
 `;
@@ -93,12 +99,58 @@ function describeLane(assertion: (typeof PROFILES)[AgentId]["laneAssertion"]): s
   }
 }
 
+/**
+ * Ruling 47. Apache-2.0 §4(a) obliges us to give the licence to whoever
+ * RECEIVES the work, and under ruling 26 that is routinely a bare binary from a
+ * Homebrew tap, `curl | sh`, or a plugin directory — with no repository beside
+ * it and no THIRD-PARTY.md to read. This command is how that obligation is
+ * discharged for those recipients, so it must never depend on a file on disk.
+ */
+function licenses(): number {
+  console.log(`${LICENSES.self.name} — ${LICENSES.self.license}`);
+  console.log(LICENSES.self.copyright);
+  console.log();
+
+  if (LICENSES.components.length > 0) {
+    console.log("Third-party components compiled into this binary:");
+    console.log();
+    for (const c of LICENSES.components) {
+      console.log(`  ${c.name} ${c.version} — ${c.license}`);
+      if (c.copyright) console.log(`    ${c.copyright}`);
+      console.log(`    ${c.reason}`);
+      console.log();
+    }
+  }
+
+  if (flag("full")) {
+    console.log("=".repeat(78));
+    console.log("brigadier's own licence");
+    console.log("=".repeat(78));
+    console.log(LICENSES.apacheText);
+    for (const c of LICENSES.components) {
+      if (!c.licenseText) continue;
+      console.log();
+      console.log("=".repeat(78));
+      console.log(`${c.name} ${c.version} — ${c.license}`);
+      console.log("=".repeat(78));
+      console.log(c.licenseText);
+    }
+  } else {
+    console.log("Run `brigadier licenses --full` for the complete licence texts.");
+  }
+
+  return 0;
+}
+
 const exitCode = await (async () => {
   switch (command) {
     case "detect":
       return detect();
     case "agents":
       return agents();
+    case "licenses":
+    case "--licenses":
+      return licenses();
     case undefined:
     case "-h":
     case "--help":

@@ -15,7 +15,9 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "build": "bun build --compile src/cli.ts --outfile dist/brigadier"
+    "licenses": "bun run scripts/licenses.ts",
+    "license-gate": "bun run scripts/license-gate.ts",
+    "build": "bun run licenses --check && bun build --compile src/cli.ts --outfile dist/brigadier && bun run license-gate --require-binary"
   },
   "devDependencies": {
     "@types/bun": "latest",
