@@ -63,8 +63,8 @@ mechanism becomes worth nothing.
 ## The items
 
 Ruling 48 described **ten**. Phase 2 added **item 11** (ruling 58, the run report fits the window the
-owner is working in) and **item 12** (ruling 65, a granted secret does not reach a persisted artifact
-verbatim). Ruling 48's text stands; this is the amendment, in the place a reader looks.
+owner is working in) **item 12** (ruling 65, a granted secret does not reach a persisted artifact
+verbatim) and **item 13** (ruling 66, the cost model). Ruling 48's text stands; this is the amendment, in the place a reader looks.
 
 ### 1. Detection is honest
 
@@ -299,6 +299,24 @@ leaks only. A worker that paraphrases a key, re-encodes it in a scheme we do not
 describes it in prose is not caught by this item or by the product, and the item must not be written
 so that a reader concludes otherwise.
 
+### 13. The cost model predicts, enforces, and says what it could not see
+
+A run prints an estimate **as a range** with its provenance, and afterwards prints **actual against
+predicted**. The **soft ceiling** stops new items being dispatched while in-flight items complete; the
+**hard ceiling** cancels work already running, and the run report distinguishes the two. Each item
+records its **(agent, model, effort) triple** and the effort actually asserted.
+
+And the half that is easiest to fake: **quota is reported per vendor as `read`, `unreadable` or
+`unpriceable`**, never absent and never optimistic. A run using opencode says `unpriceable` — #42
+measured it reaching a model with no credential at all through its own gateway, so a successful turn
+proves nothing about which account was billed.
+
+*Rulings 66, 23, 21, 29, 30, 31, 40.* Estimates are ranges because #44 measured **two identical Codex
+runs at 427,723 and 28,245 bytes — 15×** — and published tooling puts real cost at 3–5× naive
+estimates. **What this item cannot prove:** #45 measured neither vendor's effort setting confirmable
+over the protocol, so "the effort we asked for is the effort that ran" is asserted from vendor-private
+records or not at all.
+
 ## Coverage — every ruling, and what proves it
 
 The second column is where a promise gets quietly buried. Writing *no user-visible promise* next to a
@@ -330,17 +348,17 @@ user-visible promise, so it grows through phase 2. Rulings 49 onward were added 
 | 18 three config layers | item 8 |
 | 19 bounded work queue, work kinds | item 4 |
 | 20 the orchestrator has no context window | architectural exclusion — no user-visible promise |
-| 21 token strategy ranked by impact | **deferred — #24 open** |
+| 21 token strategy ranked by impact | item 13 |
 | 22 repo map adopted | item 4 |
-| 23 cost model: predict, enforce, learn | **deferred — #24 open** |
+| 23 cost model: predict, enforce, learn | item 13 |
 | 24 retry is a ladder | item 5 |
 | 25 host-first is the product | items 9, 10 |
 | 26 one plugin directory, both formats | item 10 |
 | 27 hooks only in an owned directory | item 3 |
 | 28 `PreCompact` recovers ruling 8's cost | item 3 |
-| 29 the routing unit is a triple | **deferred — #24 open**; recorded in the run report |
-| 30 effort ceiling `high` | **deferred — #24 open** |
-| 31 router derives effort | **deferred — #24 open** |
+| 29 the routing unit is a triple | item 13 (recorded per item in the run report) |
+| 30 effort ceiling `high` | item 13 — **partly unprovable**: #45 measured neither vendor's effort confirmable over the protocol |
+| 31 router derives effort | item 13 |
 | 32 cross-vendor preferred, not required | items 5, 6 |
 | 33 the scratch base commit | item 4 |
 | 34 git hooks neutered, `.git/**` excluded | item 2 |
@@ -349,7 +367,7 @@ user-visible promise, so it grows through phase 2. Rulings 49 onward were added 
 | 37 nothing executed comes from a committed file | item 8 |
 | 38 the sweep is the containment mechanism | item 7 |
 | 39 repo map ~2K, per run | item 4 |
-| 40 effort graded on Codex, binary on Claude | **deferred — #24 open** |
+| 40 effort graded on Codex, binary on Claude | item 13 (both shapes recorded; see ruling 30's row) |
 | 41 detection is two steps | item 1 |
 | 42 `~/.agents/skills/`, no `bin/` off Claude Code | item 10 |
 | 43 the lane is an approval channel | item 2 |
@@ -375,9 +393,17 @@ user-visible promise, so it grows through phase 2. Rulings 49 onward were added 
 | 63 resume by ref, retain interrupted clones, re-raise | item 7 (both directions: nothing leaks, and nothing of the operator's is destroyed) |
 | 64 shared cache, per-item `TMPDIR`, ports by binding | items 4, 2 (concurrent installs complete; a sibling is unreachable through `$TMPDIR`) |
 | 65 secrets in the environment, redaction at one sink | item 12 |
+| 66 predict as a range, two ceilings, keyed by root commits | item 13 |
 
-Six rulings are **deferred to an open ticket** rather than covered. That is the bar's own honest gap
-and it closes as phase 2 closes: five of them wait on **#24** (the cost model) and one on **#31**.
+**The gap ruling 48 declared is now closed on five of six.** Rulings 21, 23, 29, 30, 31 and 40 were
+parked as *deferred — #24 open*; ruling 66 settled #24 and they move to **item 13**. Ruling 35 waits
+on **#31**, still open.
+
+**One does not fully close, and it is stated rather than absorbed:** ruling 30's effort ceiling can be
+asserted as what brigadier *set*, and only asserted as what was *received* where a shim or a
+vendor-private rollout file exposes it — #45 measured that **neither vendor's effort setting is
+confirmable over the protocol**.
+
 **A deferred ruling is not a covered ruling**, and this table must be revisited each time a grilling
 ticket lands a ruling with a user-visible promise.
 

@@ -28,6 +28,7 @@
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
+import { crossings } from "./forbidden-imports.ts";
 
 const ROOT = new URL("..", import.meta.url).pathname;
 const CITATION = /\bruling(?:s)?\s+(\d+(?:\s*(?:,|and|–|-|\/)\s*\d+)*)/gi;
@@ -94,14 +95,17 @@ for (const n of covered) {
   seen.add(n);
 }
 
-// 4. `src/` never reaches into `probes/`. AGENTS.md: probes are throwaway
-//    measurement scripts held to no product standard, and a reach across is how
-//    an unmaintained one becomes load-bearing without anyone deciding to.
+// 4. The seams that must not be crossed — `src/` into `probes/`, and (decision
+//    22, made mechanical by ruling 66) the router's competence path into the
+//    cost store, in either direction.
+const sources = new Map<string, string>();
 for (const file of walk(join(ROOT, "src"))) {
-  const text = readFileSync(file, "utf8");
-  if (/from\s+["'][^"']*probes\//.test(text) || /import\(["'][^"']*probes\//.test(text)) {
-    problems.push(`${relative(ROOT, file)} imports from probes/`);
-  }
+  sources.set(relative(ROOT, file), readFileSync(file, "utf8"));
+}
+for (const crossing of crossings(sources)) {
+  problems.push(
+    `${crossing.file} imports "${crossing.specifier}" across a forbidden seam — ${crossing.seam.why}`,
+  );
 }
 
 if (problems.length > 0) {
