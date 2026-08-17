@@ -186,9 +186,18 @@ exhausted one**, and a short ladder is stated **at plan admission**, before anyt
 POSIX. The next start's **sweep** reclaims it, no clone survives, and the run manifest says what
 happened.
 
-*Rulings 15, 38, 5.* Ruling 38 promoted the sweep from crash-recovery to *the* containment mechanism
-precisely because the job object is opt-out by design and brigadier cannot fix it. An item that only
-kills a well-behaved child would pass on a product that leaks every real one.
+**Then the half ruling 63 adds, which points the other way:** an item that had **committed work in
+its clone** is **still there afterwards**, reported with its path and its bytes, **not merged and not
+deleted**. v1's finding 92 is the precedent — an external signal killed a supervisor, both workers had
+done real work, and it was unrecoverable. And a **second** interrupt during the drain **re-raises the
+signal** rather than exiting with an invented code, so the process's status is genuinely
+signal-terminated.
+
+*Rulings 15, 38, 5, 63.* Ruling 38 promoted the sweep from crash-recovery to *the* containment
+mechanism precisely because the job object is opt-out by design and brigadier cannot fix it. An item
+that only kills a well-behaved child would pass on a product that leaks every real one. Ruling 63
+splits the sweep along a seam: **processes always, directories only for complete runs** — a leaked
+process can still act, a retained directory is inert and holds someone's only copy.
 
 ### 8. An impossible plan is refused before anything is spawned
 
@@ -342,6 +351,7 @@ user-visible promise, so it grows through phase 2. Rulings 49 onward were added 
 | 60 the hook floor, and a names-based self-check | item 10 (hooks register, and a poisoned `hooks.json` is *reported* rather than silent) |
 | 61 run directories outside every temp root | items 4, 2 (a sibling clone is unreachable where the vendor enforces one, and named where it does not) |
 | 62 evidence standards and this repository's gates | development-process ruling — no user-visible promise; enforced by `bun run gates` in CI |
+| 63 resume by ref, retain interrupted clones, re-raise | item 7 (both directions: nothing leaks, and nothing of the operator's is destroyed) |
 
 Six rulings are **deferred to an open ticket** rather than covered. That is the bar's own honest gap
 and it closes as phase 2 closes: five of them wait on **#24** (the cost model) and one on **#31**.
