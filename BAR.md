@@ -326,7 +326,12 @@ And the half that is easiest to fake: **quota is reported per vendor as `read`, 
 measured it reaching a model with no credential at all through its own gateway, so a successful turn
 proves nothing about which account was billed.
 
-*Rulings 66, 67, 35, 23, 21, 29, 30, 31, 40.* Estimates are ranges because #44 measured **two identical Codex
+**And the run says what it spent without claiming to have saved anything** (ruling 70): the levers
+that were active are listed with the numbers measured for them elsewhere, phrased so *the 16.5× cache
+lever was active* cannot be read as *this run saved 16.5×*. A run including opencode prints
+`unpriceable` and its total as a **lower bound**.
+
+*Rulings 66, 67, 70, 35, 23, 21, 29, 30, 31, 40.* Estimates are ranges because #44 measured **two identical Codex
 runs at 427,723 and 28,245 bytes — 15×** — and published tooling puts real cost at 3–5× naive
 estimates. **What this item cannot prove:** #45 measured neither vendor's effort setting confirmable
 over the protocol, so "the effort we asked for is the effort that ran" is asserted from vendor-private
@@ -412,6 +417,7 @@ user-visible promise, so it grows through phase 2. Rulings 49 onward were added 
 | 67 clamp difficulty down and loudly; check the distribution | item 13 |
 | 68 competence cited by identity, unranked is not excluded | items 5, 10 (`brigadier competence` prints class and citation) |
 | 69 drift graded by blast radius; a failed lane assertion blocks | items 1, 2 (a drifted version is reported; an unasserted lane blocks a `write`) |
+| 70 no token-reduction claim; spend and levers reported | item 13 (the lever line, and a run including opencode says `unpriceable`) |
 
 **The gap ruling 48 declared is CLOSED.** Rulings 21, 23, 29, 30, 31 and 40 were parked as
 *deferred — #24 open* and ruling 35 as *deferred — #31 open*; rulings 66 and 67 settled both tickets
