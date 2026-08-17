@@ -96,8 +96,14 @@ throughout; the item makes it permanent rather than a one-off observation.
 A plan with disjoint items produces N clones and N workers, each seeing the owner's **uncommitted
 tracked *and* untracked work**, and merges to **one integration branch** carrying every change. A
 plan with two items claiming one path is **rejected**. The report names **which of the three filters
-bound the worker count** and why. The fan-out **renders in a real ACP client** as a `plan` with
-concurrent `tool_call`s.
+bound the worker count** and why — driven so that *the plan had one item*, *desirability capped it*
+and *RAM capped it* produce three different sentences for the same worker count (ruling 54). The
+fan-out **renders in a real ACP client** as a `plan` with concurrent `tool_call`s.
+
+**A `dependsOn` plan runs in waves**: wave 2 clones from wave 1's integration commit and **sees its
+prerequisite's output**, and an item whose prerequisite did not integrate is reported unrun rather
+than run. v1 proved the opposite behaviour with a real run in which **the run reported both slices
+ok**.
 
 **And the read-only half, which is the one that can quietly fail:** a `read-only` item whose worker
 writes into its own directory anyway contributes **nothing** to the integration branch and **no diff
@@ -263,6 +269,7 @@ user-visible promise, so it grows through phase 2. Rulings 49 onward were added 
 | 51 integration: fetch not push, no working tree | item 4 (the ref diff, the visible branch, partial reported as partial) |
 | 52 four check outcomes, three of them block | items 5 (reviewer `error`), 8 (the unstartable gate) |
 | 53 three requirement terms, unmeasured is not permission | item 8 (the refusal names the term and the agent) |
+| 54 fan-out arithmetic, waves, no free-memory scheduling | item 4 (the binding filter is named; a `dependsOn` wave runs in order) |
 
 Six rulings are **deferred to an open ticket** rather than covered. That is the bar's own honest gap
 and it closes as phase 2 closes: five of them wait on **#24** (the cost model) and one on **#31**.
