@@ -50,19 +50,30 @@ const sessionUpdate = (sessionId: string, update: unknown) =>
 async function runTurn(sessionId: string, promptText: string): Promise<string> {
   const session = sessions.get(sessionId)!;
 
-  // A fan-out is a plan. `plan` / `plan_update` is the only structured
-  // multi-item progress channel ACP has, so this is where slices belong.
+  // A fan-out is a plan — the only structured multi-item progress channel ACP
+  // has, so this is where slices belong.
+  //
+  // Progress is reported by RE-SENDING the whole `plan`, not by `plan_update`.
+  // Measured against Zed 1.15.0 (#48): `plan_update` is marked **UNSTABLE** in
+  // the schema ("not part of the spec yet, and may be removed or changed at any
+  // point") and Zed silently ignores it — the task list rendered once and then
+  // sat on three pending spinners for the whole turn while every slice
+  // finished. `plan` is stable and carries its entries at the top level.
   const entries = Array.from({ length: SLICES }, (_, i) => ({
     content: `slice ${i + 1}: ${promptText.slice(0, 40)}`,
     priority: "medium" as const,
-    status: "pending" as const,
+    status: "pending" as string,
   }));
-  sessionUpdate(sessionId, { sessionUpdate: "plan", entries });
+  const publishPlan = () =>
+    sessionUpdate(sessionId, { sessionUpdate: "plan", entries: entries.map((e) => ({ ...e })) });
+  publishPlan();
 
   // Each slice is its own tool call, so a client that renders tool calls shows
   // per-slice progress without understanding anything about brigadier.
   const runSlice = async (i: number) => {
     const toolCallId = `slice-${i + 1}`;
+    entries[i].status = "in_progress";
+    publishPlan();
     sessionUpdate(sessionId, {
       sessionUpdate: "tool_call",
       toolCallId,
@@ -108,10 +119,12 @@ async function runTurn(sessionId: string, promptText: string): Promise<string> {
     }
 
     sessionUpdate(sessionId, { sessionUpdate: "tool_call_update", toolCallId, status: "completed" });
-    sessionUpdate(sessionId, {
-      sessionUpdate: "plan_update",
-      plan: { entries: entries.map((e, j) => ({ ...e, status: j <= i ? "completed" : "in_progress" })) },
-    });
+    // Mark only THIS slice done and re-publish. The previous version derived
+    // every entry's status from the finishing slice's index, so slices
+    // completing out of order flipped already-finished ones back to
+    // in_progress — a progress display that goes backwards.
+    entries[i].status = "completed";
+    publishPlan();
     return "ok";
   };
 
