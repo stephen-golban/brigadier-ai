@@ -4,7 +4,7 @@ Paste everything below the line into a fresh session in `~/Development/brigadier
 
 ---
 
-/gauntlet brigadier-ai's build phase against v1's shipped 0.2.1 and its 124 recorded findings
+/gauntlet brigadier-ai's build phase against BAR.md's thirteen items, driven on the real compiled binary
 
 You are the **coordinator**. You do not write product code yourself. You decompose, delegate to
 subagents, verify what comes back, and keep the ledger. Treat your own context as the scarcest
