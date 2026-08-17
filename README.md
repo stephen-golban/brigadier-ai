@@ -41,11 +41,12 @@ See [`MEASUREMENT-SESSION.md`](./MEASUREMENT-SESSION.md) for the work order it r
 [`probes/`](./probes/) for the throwaway scripts that produced the evidence — including two traps
 recorded there that produced confidently wrong readings before they were caught.
 
-Five research tickets remain open and are honest blanks rather than passes: they need GUI clients,
-additional authenticated agents, or the owner's consent to exhaust a quota window.
-
-**Phase 1 closed on 2026-08-17 by the owner**, with #46, #47 and #48 closed while still carrying
-stated unmeasured halves — recorded plainly in each ticket rather than rewritten as passes.
+**Phase 1 closed on 2026-08-17 by the owner.** All 23 research and prototype tickets are closed —
+but #46, #47 and #48 were closed *with work outstanding*, by ruling rather than because they were
+finished. Their unmeasured halves are named in their resolution comments and on the map: the quota
+signal at the limit, the compaction dropped-branch reproduction, five of six agents undriven for
+compaction, and JetBrains / the VS Code ACP extension as ACP clients. A check that did not run is not
+a passing check, and none of those was rewritten as one.
 
 **Phases 2 and 3 now run together.** 26 `wayfinder:grilling` tickets remain, and the owner has elected
 to start building alongside them rather than after. Note which of them gate the first files: identity
