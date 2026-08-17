@@ -62,6 +62,10 @@ mechanism becomes worth nothing.
 
 ## The items
 
+Ruling 48 described **ten**. Phase 2 added **item 11** (ruling 58), because a ruling that makes a
+user-visible promise needs an item and ruling 58 promises the run report fits in the window the owner
+is working in. Ruling 48's text stands; this is the amendment, in the place a reader looks.
+
 ### 1. Detection is honest
 
 `brigadier detect` claims only agents that complete **both** steps, and reports the **resolved `PATH`
@@ -231,6 +235,22 @@ the **released** artifact. Size and start-up within the measured budget.
 *Rulings 26, 42, 12, 4, 44, 47, 5, 46.* ChatGPT is a **permanent blank** — a hosted surface has no
 filesystem — and the item must not imply six uniform clients.
 
+### 11. The run report fits in a host model's window, and never hides a failure to do it
+
+A **fifty-item** run reported into a host session is **under 2,000 tokens** (ruling 58's ceiling,
+which is ruling 39's repo-map budget), and **no worker transcript appears in it** — only summaries
+and the path to the full record, which is on disk in full.
+
+Then the half that matters: a run where **items fail** is reported into the same ceiling and **every
+failing item still appears**, with every one of its blocking checks (ruling 52). Passing items
+collapse to a count; a failure never does.
+
+*Rulings 58, 52, 21, 25, 39.* The measured reason this item exists: #14 recorded **~46 KB of
+agent→client traffic for a one-line change**, so ten turns is **~115,000 tokens at `chars/4`** — a
+floor, since #23 measured that formula underestimating by 22% — against **Copilot's measured 128,000
+token window** (#46). Being careless here costs the owner the session they are working in, and
+host-first is the normal case under ruling 25, not an edge one.
+
 ## Coverage — every ruling, and what proves it
 
 The second column is where a promise gets quietly buried. Writing *no user-visible promise* next to a
@@ -299,6 +319,7 @@ user-visible promise, so it grows through phase 2. Rulings 49 onward were added 
 | 55 the ladder's second rung, and a short ladder said up front | item 6 (the rung is named; a missing rung never reads as exhausted) |
 | 56 brigadier runs no git inside a clone an agent touched | item 2 (planted hook and config payloads, asserted on the escaped bytes) |
 | 57 the binary refuses inside a worker | item 9 (asserted on the effect, and it carries the ruling's unmeasured assumption) |
+| 58 the host report is capped; the cap can never hide a failure | item 11 |
 
 Six rulings are **deferred to an open ticket** rather than covered. That is the bar's own honest gap
 and it closes as phase 2 closes: five of them wait on **#24** (the cost model) and one on **#31**.
