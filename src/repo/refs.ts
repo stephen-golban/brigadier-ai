@@ -34,10 +34,54 @@ export const REF_NAMESPACE = "refs/brigadier";
 /** A run id is opaque to this module but must not be able to escape the namespace. */
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
-export function baseRef(runId: string): string {
+function checked(runId: string): string {
   if (!RUN_ID.test(runId)) throw new Error(`unusable run id: ${JSON.stringify(runId)}`);
-  return `${REF_NAMESPACE}/${runId}/base`;
+  return runId;
 }
+
+export function baseRef(runId: string): string {
+  return `${REF_NAMESPACE}/${checked(runId)}/base`;
+}
+
+/** Where one item's result lands in the operator's repository. Invisible, and deletable. */
+export function itemRef(runId: string, item: number): string {
+  if (!Number.isInteger(item) || item < 1) throw new Error(`unusable item number: ${item}`);
+  return `${REF_NAMESPACE}/${checked(runId)}/item/${item}`;
+}
+
+/**
+ * The deliverable — ruling 51, and the one ref that is deliberately NOT in the
+ * invisible namespace.
+ *
+ * A branch the operator cannot see in `git branch`, `git switch`, their
+ * editor's branch picker or `gh pr create` is not a deliverable. So the
+ * namespace is invisible for machinery and visible for the deliverable, and the
+ * two facts below are the same fact stated twice:
+ *
+ *   The only ref brigadier makes visible is the only ref brigadier never
+ *   deletes.
+ *
+ * `isDeletableRef` covers `refs/brigadier/` alone, precisely so that it can
+ * never reach this one. From the moment it exists the branch is the operator's.
+ */
+export function integrationBranch(runId: string): string {
+  return `refs/heads/brigadier/${checked(runId)}`;
+}
+
+/**
+ * The branch a worker commits on, inside its own clone.
+ *
+ * Deliberately a constant rather than a per-item name. The clone's ref
+ * namespace is private — decision 7's whole point — so a distinguishing name
+ * buys nothing, while ruling 21 measured a **16.5×** cache lever on a
+ * byte-stable prefix and ruling 16 makes the brief byte-identical across
+ * agents. A per-item branch name would put a varying token into that brief in
+ * exchange for nothing.
+ */
+export const WORK_BRANCH = "work";
+
+/** The local branch a clone's base state is fetched onto. Also fixed, for the same reason. */
+export const BASE_BRANCH = "brigadier-base";
 
 /**
  * The first two of ruling 50's three conditions. The third — that the manifest

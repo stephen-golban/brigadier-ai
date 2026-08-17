@@ -7,7 +7,16 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { REF_NAMESPACE, baseRef, deleteRefArgv, isDeletableRef } from "../src/repo/refs.ts";
+import {
+  BASE_BRANCH,
+  REF_NAMESPACE,
+  WORK_BRANCH,
+  baseRef,
+  deleteRefArgv,
+  integrationBranch,
+  isDeletableRef,
+  itemRef,
+} from "../src/repo/refs.ts";
 
 const RUNS = ["r1", "r2"];
 
@@ -49,6 +58,33 @@ describe("what may be deleted", () => {
   test("NOT the namespace root itself", () => {
     expect(isDeletableRef("refs/brigadier/r1", RUNS)).toBe(false);
     expect(isDeletableRef("refs/brigadier/", RUNS)).toBe(false);
+  });
+});
+
+describe("ruling 51: the only visible ref is the only undeletable one", () => {
+  test("the integration branch is a real branch the operator can see", () => {
+    expect(integrationBranch("r1")).toBe("refs/heads/brigadier/r1");
+  });
+
+  test("and is therefore OUT of reach of every delete path", () => {
+    expect(isDeletableRef(integrationBranch("r1"), RUNS)).toBe(false);
+    expect(() =>
+      deleteRefArgv(integrationBranch("r1"), "0123456789abcdef0123456789abcdef01234567", RUNS),
+    ).toThrow(/does not own/);
+    // Positive control: the machinery refs for the same run ARE deletable.
+    expect(isDeletableRef(baseRef("r1"), RUNS)).toBe(true);
+    expect(isDeletableRef(itemRef("r1", 3), RUNS)).toBe(true);
+  });
+
+  test("in-clone branch names are constants, for ruling 21's cache-stable prefix", () => {
+    expect(WORK_BRANCH).toBe("work");
+    expect(BASE_BRANCH).toBe("brigadier-base");
+  });
+
+  test("an item number cannot smuggle a path", () => {
+    expect(() => itemRef("r1", 0)).toThrow();
+    expect(() => itemRef("r1", 1.5)).toThrow();
+    expect(itemRef("r1", 12)).toBe("refs/brigadier/r1/item/12");
   });
 });
 
