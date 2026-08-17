@@ -170,7 +170,13 @@ in a committed file is **not executed**.
 checker's executable on `PATH` in the environment it will actually run in. v1's injected `ENOENT`
 produced *approved, `tests_pass` skipped, `(approved by codex)`*, after a full build was burned.
 
-*Rulings 11, 37, 18, 52.* The second half is ruling 37's security property: cloning a hostile repository
+**And the refusal names a remedy rather than arithmetic** (ruling 53): which requirement failed on
+which agent, and whether it failed because the agent cannot or because **nobody has measured it** —
+those need different fixes. v1 said `ROUTING_FAILED — 11 model(s) were eliminated`. A plan whose
+retry ladder has nowhere to go at rung two is **admitted with the ladder shortened and that stated
+before the run**, never discovered after an attempt is spent (finding 87).
+
+*Rulings 11, 37, 18, 52, 53.* The second half is ruling 37's security property: cloning a hostile repository
 must not run its command with the operator's privileges.
 
 ### 9. Ambient instructions are suppressed and brigadier's own plugin is inert
@@ -256,6 +262,7 @@ user-visible promise, so it grows through phase 2. Rulings 49 onward were added 
 | 50 base state, and the operator's tree untouched | item 4 (both halves, including the ref cleanup) |
 | 51 integration: fetch not push, no working tree | item 4 (the ref diff, the visible branch, partial reported as partial) |
 | 52 four check outcomes, three of them block | items 5 (reviewer `error`), 8 (the unstartable gate) |
+| 53 three requirement terms, unmeasured is not permission | item 8 (the refusal names the term and the agent) |
 
 Six rulings are **deferred to an open ticket** rather than covered. That is the bar's own honest gap
 and it closes as phase 2 closes: five of them wait on **#24** (the cost model) and one on **#31**.

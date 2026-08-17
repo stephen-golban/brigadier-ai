@@ -22,6 +22,7 @@
  */
 
 import type { WorkKind } from "../work/kind.ts";
+import type { Capabilities } from "../work/requires.ts";
 
 export type AgentId = "claude" | "codex" | "copilot" | "qwen" | "opencode" | "gemini";
 
@@ -71,6 +72,19 @@ export interface LaunchProfile {
   /** Where this agent keeps its config root — decision 17's suppression lever. */
   configRootEnv?: string;
   laneAssertion: LaneAssertion;
+  /**
+   * Ruling 53's brigadier-defined half of the requirement vocabulary.
+   *
+   * A key is present ONLY where it was measured, and an absent key means
+   * unmeasured — which does not satisfy a requirement. `imageInput` is
+   * deliberately never here: it is read from ACP's
+   * `promptCapabilities.image` at the handshake, and no term exists in
+   * both places.
+   *
+   * This table is mostly empty today. That is the finding, not an
+   * embarrassment: filling it is measurement work nobody has scheduled.
+   */
+  capabilities: Capabilities;
   /** Does `session/new` return a model list we can route over? (#2, ruling 40.) */
   modelsAtSessionNew: boolean;
   /** Does the agent emit `usage_update` over ACP? (#46 — three of six do.) */
@@ -89,6 +103,9 @@ export const PROFILES: Record<AgentId, LaunchProfile> = {
     measuredVersion: "0.69.0 (claude 2.1.233)",
     passthroughEnv: ["ANTHROPIC_MODEL", "MAX_THINKING_TOKENS", "CLAUDE_CODE_EXECUTABLE"],
     configRootEnv: "CLAUDE_CONFIG_DIR",
+    // #3, #50: sends an `execute` permission request, so it runs commands.
+    // networkAccess unmeasured — not false, and it does not satisfy.
+    capabilities: { commandExecution: true },
     // The bridge opens sessions in `bypassPermissions`, which routes every write
     // around the client. The lane means nothing until this is set back (#3).
     // No read-only session mode was measured on this bridge, so there is no
@@ -114,6 +131,10 @@ export const PROFILES: Record<AgentId, LaunchProfile> = {
     measuredVersion: "1.4.0 (codex-cli 0.147.0)",
     passthroughEnv: ["CODEX_PATH"],
     configRootEnv: "CODEX_CONFIG",
+    // #3: sends an `execute` request. #41: ruling 49's `write` mode is
+    // `agent`, which blocks ALL network at the OS level — so these two differ
+    // in the same session, which is exactly findings 70 and 71's asymmetry.
+    capabilities: { commandExecution: true, networkAccess: false },
     laneAssertion: {
       kind: "env",
       name: "INITIAL_AGENT_MODE",
@@ -144,6 +165,8 @@ export const PROFILES: Record<AgentId, LaunchProfile> = {
     bridged: false,
     measuredVersion: "1.0.80",
     passthroughEnv: [],
+    // #50: `execute` requests carry a meaningful title. Network unmeasured.
+    capabilities: { commandExecution: true },
     laneAssertion: { kind: "none" },
     modelsAtSessionNew: false,
     emitsUsage: true,
@@ -165,6 +188,9 @@ export const PROFILES: Record<AgentId, LaunchProfile> = {
     measuredVersion: "0.21.13",
     passthroughEnv: [],
     configRootEnv: "QWEN_HOME",
+    // Ruling 53: unmeasured is not permission. Qwen never issues a permission
+    // request at all (#50), so nothing here has been observed either way.
+    capabilities: {},
     laneAssertion: { kind: "none" },
     modelsAtSessionNew: false,
     emitsUsage: true,
@@ -188,6 +214,10 @@ export const PROFILES: Record<AgentId, LaunchProfile> = {
     measuredVersion: "1.18.18",
     passthroughEnv: [],
     configRootEnv: "OPENCODE_CONFIG_DIR",
+    // #50: it ran `printf > ~/...` and reported exit 0. #42 proves the AGENT
+    // PROCESS reaches a network gateway; that says nothing about the worker's
+    // shell, and conflating the two would be research in measurement's clothes.
+    capabilities: { commandExecution: true },
     laneAssertion: { kind: "none" },
     modelsAtSessionNew: false,
     emitsUsage: true,
@@ -209,6 +239,8 @@ export const PROFILES: Record<AgentId, LaunchProfile> = {
     bridged: false,
     measuredVersion: "0.55.1",
     passthroughEnv: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+    // Unmeasured on both terms. #42 could not even establish its config root.
+    capabilities: {},
     laneAssertion: { kind: "none" },
     modelsAtSessionNew: false,
     emitsUsage: false,
