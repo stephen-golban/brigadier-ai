@@ -19,6 +19,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Lane } from "../lane/lane.ts";
+import { lanePolicyFor } from "../work/kind.ts";
 import { PROFILES, ALL_AGENT_IDS, type AgentId, type LaunchProfile } from "./profiles.ts";
 import { Worker } from "./worker.ts";
 
@@ -68,7 +69,15 @@ export async function detectOne(
     }
 
     const worker = await withTimeout(
-      Worker.start(profile, { cwd: scratch, lane: new Lane(scratch, "deny") }),
+      // Detection is a `read-only` probe by ruling 49's definition: nothing it
+      // touches is ever read back. Both halves are asserted — the vendor's own
+      // read-only mode where one was measured, and the flat `deny` lane
+      // everywhere.
+      Worker.start(profile, {
+        cwd: scratch,
+        kind: "read-only",
+        lane: new Lane(scratch, lanePolicyFor("read-only")),
+      }),
       options.timeoutMs ?? 60_000,
       `${profile.id} did not answer within the detection timeout`,
     );

@@ -88,12 +88,23 @@ function agents(): number {
   return 0;
 }
 
+/**
+ * Ruling 49 leaves `readOnly` absent where no vendor lever was measured, and an
+ * absent lever must print as absent. Rendering "no read-only mode" as a blank
+ * is the one-line way to make this table read stronger than it is.
+ */
+function describeReadOnly(readOnly: string | undefined, lever: string): string {
+  return readOnly
+    ? `${lever}=${readOnly} (read-only)`
+    : "no read-only lever measured — the flat deny lane is the whole enforcement";
+}
+
 function describeLane(assertion: (typeof PROFILES)[AgentId]["laneAssertion"]): string {
   switch (assertion.kind) {
     case "env":
-      return `${assertion.name}=${assertion.restrictive} at spawn`;
+      return `${assertion.name}=${assertion.write} at spawn (write), ${describeReadOnly(assertion.readOnly, assertion.name)}`;
     case "session-mode":
-      return `session/set_mode ${assertion.restrictive} after session/new`;
+      return `session/set_mode ${assertion.write} after session/new (write), ${describeReadOnly(assertion.readOnly, "session/set_mode")}`;
     case "none":
       return "no spawn-time lever measured — the agent decides for itself";
   }

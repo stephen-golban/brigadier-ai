@@ -21,16 +21,39 @@
  *   confirmed as a real `process.env` read.
  */
 
+import type { WorkKind } from "../work/kind.ts";
+
 export type AgentId = "claude" | "codex" | "copilot" | "qwen" | "opencode" | "gemini";
 
-/** How, if at all, the permission lane can be asserted before the first turn. */
+/**
+ * How, if at all, the permission lane can be asserted before the first turn.
+ *
+ * The restrictive mode is PER WORK KIND, and that is ruling 49 correcting a
+ * constant this file already shipped. Codex's single restrictive value was
+ * `INITIAL_AGENT_MODE=read-only`, which #41 measured as blocking writes at the
+ * OS level — correct for a `read-only` item and fatal for a `write` one, where
+ * every Codex worker would have been sandboxed out of doing its job and the
+ * failure would have looked like a bad agent rather than a bad constant. The
+ * `write` mode is `agent`: out-of-`cwd` writes and all network blocked, work
+ * inside the clone permitted (#41).
+ *
+ * `readOnly` is absent where no vendor lever for it was measured. Absent means
+ * absent — the enforcement there is brigadier's own flat `deny` and nothing
+ * else, which is exactly what ruling 49 says out loud.
+ */
 export type LaneAssertion =
   /** An env var pins the mode at spawn. */
-  | { kind: "env"; name: string; restrictive: string; permissive: string }
+  | { kind: "env"; name: string; permissive: string; write: string; readOnly?: string }
   /** `session/set_mode` after `session/new`. */
-  | { kind: "session-mode"; restrictive: string }
+  | { kind: "session-mode"; write: string; readOnly?: string }
   /** No spawn-time lever measured; the agent decides for itself. */
   | { kind: "none" };
+
+/** The mode to assert for this kind, or undefined when the vendor offers none. */
+export function laneModeFor(assertion: LaneAssertion, kind: WorkKind): string | undefined {
+  if (assertion.kind === "none") return undefined;
+  return kind === "read-only" ? assertion.readOnly : assertion.write;
+}
 
 export interface LaunchProfile {
   id: AgentId;
@@ -68,7 +91,10 @@ export const PROFILES: Record<AgentId, LaunchProfile> = {
     configRootEnv: "CLAUDE_CONFIG_DIR",
     // The bridge opens sessions in `bypassPermissions`, which routes every write
     // around the client. The lane means nothing until this is set back (#3).
-    laneAssertion: { kind: "session-mode", restrictive: "default" },
+    // No read-only session mode was measured on this bridge, so there is no
+    // `readOnly` value to name. Ruling 49's flat `deny` is the whole
+    // enforcement for a read-only item here.
+    laneAssertion: { kind: "session-mode", write: "default" },
     modelsAtSessionNew: false,
     emitsUsage: false,
     caveats: [
@@ -91,8 +117,12 @@ export const PROFILES: Record<AgentId, LaunchProfile> = {
     laneAssertion: {
       kind: "env",
       name: "INITIAL_AGENT_MODE",
-      restrictive: "read-only",
-      permissive: "agent",
+      // `agent` blocks out-of-cwd writes and all network at the OS level while
+      // permitting work inside the clone; `read-only` blocks writes outright
+      // (#41). Ruling 49: one value cannot serve both kinds.
+      write: "agent",
+      readOnly: "read-only",
+      permissive: "agent-full-access",
     },
     modelsAtSessionNew: true,
     emitsUsage: false,
@@ -208,7 +238,14 @@ export const ALL_AGENT_IDS = Object.keys(PROFILES) as AgentId[];
  */
 export function buildEnvironment(
   profile: LaunchProfile,
-  options: { configRoot?: string; restrictive?: boolean; extra?: Record<string, string> } = {},
+  options: {
+    configRoot?: string;
+    /** Ruling 49: the mode asserted depends on the kind, not on a single flag. */
+    kind?: WorkKind;
+    /** False only for baseline measurement. Never for work. */
+    restrictive?: boolean;
+    extra?: Record<string, string>;
+  } = {},
 ): Record<string, string> {
   const source = process.env;
   const env: Record<string, string> = {};
@@ -235,7 +272,9 @@ export function buildEnvironment(
 
   const assertion = profile.laneAssertion;
   if (assertion.kind === "env") {
-    env[assertion.name] = options.restrictive === false ? assertion.permissive : assertion.restrictive;
+    const restrictive = laneModeFor(assertion, options.kind ?? "write");
+    env[assertion.name] =
+      options.restrictive === false ? assertion.permissive : (restrictive ?? assertion.write);
   }
 
   // Colour codes in a protocol stream are noise at best.

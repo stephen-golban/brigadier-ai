@@ -28,7 +28,8 @@
 import { spawnChannel, type LineChannel } from "../acp/channel.ts";
 import { Connection, MethodNotFound } from "../acp/connection.ts";
 import { Lane, type Verdict } from "../lane/lane.ts";
-import { buildEnvironment, type LaunchProfile } from "./profiles.ts";
+import type { WorkKind } from "../work/kind.ts";
+import { buildEnvironment, laneModeFor, type LaunchProfile } from "./profiles.ts";
 
 export interface ToolCallRecord {
   id?: string;
@@ -73,6 +74,14 @@ export interface WorkerOptions {
   /** Absolute path. Becomes `session/new`'s cwd and the lane root. */
   cwd: string;
   lane: Lane;
+  /**
+   * Ruling 49. Selects the vendor mode asserted at spawn, and it is not
+   * cosmetic: Codex's `read-only` blocks writes at the OS level and its `agent`
+   * does not (#41). Defaults to `write`. A `read-only` caller must also pass a
+   * lane built with `lanePolicyFor("read-only")` — the two halves are separate
+   * because only one of them exists on every vendor.
+   */
+  kind?: WorkKind;
   /** Point the agent's config root here to suppress ambient instructions (decision 17). */
   configRoot?: string;
   /** Assert the restrictive mode where the vendor offers one. Default true. */
@@ -123,6 +132,7 @@ export class Worker {
         cwd: options.cwd,
         env: buildEnvironment(profile, {
           ...(options.configRoot !== undefined ? { configRoot: options.configRoot } : {}),
+          kind: options.kind ?? "write",
           restrictive: options.restrictive !== false,
         }),
       });
@@ -171,12 +181,10 @@ export class Worker {
       // decorative (#3). Failure is not fatal — it is recorded and the caller
       // can decide, because a vendor without modes is not a vendor in error.
       const assertion = profile.laneAssertion;
-      if (assertion.kind === "session-mode" && options.restrictive !== false) {
+      const modeId = laneModeFor(assertion, options.kind ?? "write");
+      if (assertion.kind === "session-mode" && modeId && options.restrictive !== false) {
         try {
-          await connection.request("session/set_mode", {
-            sessionId,
-            modeId: assertion.restrictive,
-          });
+          await connection.request("session/set_mode", { sessionId, modeId });
         } catch {
           // Recorded by absence: the caller sees laneAsserted === false.
           self.#laneAsserted = false;

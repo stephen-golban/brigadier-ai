@@ -99,8 +99,16 @@ plan with two items claiming one path is **rejected**. The report names **which 
 bound the worker count** and why. The fan-out **renders in a real ACP client** as a `plan` with
 concurrent `tool_call`s.
 
-*Rulings 19, 14, 7, 13, 33, 16, 9, 2, 39.* The uncommitted-work half is ruling 33 repairing ruling 7,
-which had dropped the mechanism without replacing it.
+**And the read-only half, which is the one that can quietly fail:** a `read-only` item whose worker
+writes into its own directory anyway contributes **nothing** to the integration branch and **no diff
+to any report** — the directory is never read back. Driven by planting a file in a read-only worker's
+checkout and asserting it reaches neither.
+
+*Rulings 19, 14, 7, 13, 33, 16, 9, 2, 39, 49.* The uncommitted-work half is ruling 33 repairing
+ruling 7, which had dropped the mechanism without replacing it. The read-only half is ruling 49,
+which defines the kind by what brigadier reads back **because** three of five measured vendors give
+no lane at all — so an item that asserted "the agent could not write" would be proving a promise the
+product does not make.
 
 ### 5. Review is cross-vendor, and its catch rate is published
 
@@ -166,6 +174,9 @@ The second column is where a promise gets quietly buried. Writing *no user-visib
 ruling that has one is a single-line way to make this bar lie, so it is written out in full and is
 meant to be argued with.
 
+Ruling 48 requires this table to be revisited every time a grilling ticket lands a ruling with a
+user-visible promise, so it grows through phase 2. Rulings 49 onward were added as they landed.
+
 | ruling | proved by |
 | --- | --- |
 | 1 true zero | process ruling — no user-visible promise |
@@ -215,6 +226,8 @@ meant to be argued with.
 | 45 ruling 9 downgraded to unproven | nothing to prove — see ruling 9 |
 | 46 identity | items 1, 10 |
 | 47 Apache-2.0, attribution, licence gate | item 10 |
+| 48 the success bar | this document — no separate item |
+| 49 `read-only` defined by what is read back | items 4 (read-only half), 2 (the flat `deny` lane) |
 
 Six rulings are **deferred to an open ticket** rather than covered. That is the bar's own honest gap
 and it closes as phase 2 closes: five of them wait on **#24** (the cost model) and one on **#31**.
