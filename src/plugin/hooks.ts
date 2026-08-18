@@ -99,3 +99,67 @@ export function hookWarning(missing: readonly string[]): string {
   if (missing.length === 0) return "";
   return `brigadier's ${missing.join(", ")} hook${missing.length > 1 ? "s are" : " is"} not registered on this claude — one unrecognised event discards every hook in the file (ruling 60).`;
 }
+
+/**
+ * The `claude` the full event vocabulary below was measured against.
+ *
+ * Deliberately NOT the same constant as `HOOK_FLOOR_CLAUDE_VERSION`, and the
+ * difference is the whole reason both exist:
+ *
+ *   the FLOOR governs what brigadier may REGISTER. It is the oldest `claude`
+ *   the registered set is known to survive, so it may only move up together
+ *   with a deliberate breaking change.
+ *
+ *   the KNOWN set governs what brigadier may FLAG as unrecognised in somebody
+ *   else's file. Flagging is a claim about a file this product does not own, so
+ *   it is measured against the NEWEST `claude` available — the conservative
+ *   direction. A too-small known set would report a real event as poison, which
+ *   is a false alarm on a working installation.
+ */
+export const KNOWN_EVENTS_CLAUDE_VERSION = "2.1.234";
+
+/**
+ * Every hook event `claude` accepts, measured one at a time.
+ *
+ * MEASURED against `claude 2.1.234` on macOS 26.5.2 on 2026-08-18, by the method
+ * `probes/plugin-manifests.sh` established: each candidate written ALONE into a
+ * scratch plugin's `hooks/hooks.json` under a scratch `CLAUDE_CONFIG_DIR`, then
+ * `claude plugin details` read back. `Hooks (1)` means accepted; `Hooks (0)`
+ * means the total discard, which is what an unrecognised event produces.
+ *
+ * The same run carried its own negative controls, which is why this list is
+ * evidence rather than a transcription of documentation: `PreSubagentStart`,
+ * `PermissionDecision`, `Error` and `NotARealEvent` all reported `Hooks (0)`.
+ * Two of those three plausible-looking names are exactly the kind of thing a
+ * maintainer would add to a list by hand and never notice was wrong.
+ *
+ * Seventeen candidates, thirteen accepted. `Setup` and `TeammateIdle` were
+ * surprises and are in the list because they were measured, not because they
+ * were expected — which is the point of measuring instead of listing.
+ */
+export const KNOWN_HOOK_EVENTS: readonly string[] = [
+  "Notification",
+  "PostCompact",
+  "PostToolUse",
+  "PreCompact",
+  "PreToolUse",
+  "SessionEnd",
+  "SessionStart",
+  "Setup",
+  "Stop",
+  "SubagentStart",
+  "SubagentStop",
+  "TeammateIdle",
+  "UserPromptSubmit",
+];
+
+/**
+ * Which of these event names `claude` will not recognise — and will therefore
+ * discard the WHOLE FILE over.
+ *
+ * Order is preserved from the file rather than sorted, because a reader fixing
+ * the file is looking for the key in the order they wrote it.
+ */
+export function unrecognisedEvents(events: readonly string[]): string[] {
+  return events.filter((event) => !KNOWN_HOOK_EVENTS.includes(event));
+}

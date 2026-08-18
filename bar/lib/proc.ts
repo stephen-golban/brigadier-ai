@@ -36,13 +36,21 @@ export async function exec(argv: string[], opts: RunOptions = {}): Promise<RunRe
     stdin: opts.stdin !== undefined ? new TextEncoder().encode(opts.stdin) : "ignore",
     stdout: "pipe",
     stderr: "pipe",
+    // A new session/group, so a timeout can reclaim the WHOLE tree rather than
+    // just this one pid. Measured on this host on 2026-08-18: a run of the
+    // real binary that this function SIGKILLed on timeout left its own ACP
+    // vendor children behind, reparented to init and each pinning a core —
+    // `--brigadier-run` markers still in their command lines, no run root left
+    // to sweep them from because the item's `finally` had already deleted it.
+    // Killing a single pid was never going to catch a child of that pid.
+    detached: true,
   });
 
   let timedOut = false;
   const timeoutMs = opts.timeoutMs ?? 120_000;
   const timer = setTimeout(() => {
     timedOut = true;
-    proc.kill("SIGKILL");
+    killTree(proc);
   }, timeoutMs);
 
   const [stdout, stderr] = await Promise.all([
@@ -62,6 +70,37 @@ export async function exec(argv: string[], opts: RunOptions = {}): Promise<RunRe
     // correction that makes the budget honest.
     ms: Math.round((performance.now() - started) * 100) / 100,
   };
+}
+
+/**
+ * Kill a timed-out invocation's WHOLE process group, not just the pid `exec`
+ * holds a handle to.
+ *
+ * `detached: true` makes that pid a session/group leader, so on POSIX
+ * `process.kill(-pid, ...)` reaches every contained descendant in one signal —
+ * exactly the group kill ruling 38 describes the product doing to its own
+ * workers. It is best-effort: a descendant that has ALREADY escaped its group
+ * (item 7's own fixture, deliberately) is untouched by this and is the
+ * product's sweep's job, not this harness's.
+ */
+export function killTree(proc: Bun.Subprocess): void {
+  const pid = proc.pid;
+  try {
+    if (process.platform === "win32") {
+      Bun.spawnSync(["taskkill", "/T", "/F", "/PID", String(pid)], { stdout: "ignore", stderr: "ignore" });
+    } else {
+      process.kill(-pid, "SIGKILL");
+    }
+  } catch {
+    // Already gone, or never became a group leader (e.g. it exec'd into
+    // something that dropped the session) — either way, the direct kill below
+    // is the fallback that still applies.
+  }
+  try {
+    proc.kill("SIGKILL");
+  } catch {
+    // Exited between the group kill and this line, which is the outcome we wanted.
+  }
 }
 
 /**

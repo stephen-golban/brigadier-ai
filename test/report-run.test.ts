@@ -56,6 +56,8 @@ function record(items: RecordItem[], refusedDelegations = 0): RunRecord {
   return {
     runId: "r1",
     integrationRef: "refs/heads/brigadier/r1",
+    integrationSha: "1".repeat(40),
+    base: { ref: "refs/brigadier/r1/base", sha: "0".repeat(40) },
     runRoot: "/home/x/.brigadier",
     bindingFilter: "desirability",
     workers: 3,

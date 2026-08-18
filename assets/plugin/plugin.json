@@ -1,0 +1,9 @@
+{
+  "name": "brigadier",
+  "version": "0.0.0",
+  "description": "An ACP hub: one client drives whichever coding agents are installed, isolates each unit of work, and composes them.",
+  "author": { "name": "Stephen Golban" },
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/stephen-golban/brigadier-ai",
+  "repository": "https://github.com/stephen-golban/brigadier-ai"
+}

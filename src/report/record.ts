@@ -102,12 +102,61 @@ export interface RecordItem {
   /** Ruling 63: a retained clone is reported with its path and its bytes. */
   clonePath?: string;
   bytes?: number;
+  /**
+   * The commit this item's clone STARTED from, and the left-hand side of its
+   * ownership diff.
+   *
+   * Without it the record cannot re-derive what an item did. `itemRef` names the
+   * right-hand side and `commit` names the same object; the left-hand side was
+   * nowhere, so `git diff <base>..<itemRef>` — which ruling 51 makes the
+   * ownership check and ruling 52 makes the reviewer's brief — could be
+   * recomputed only by re-running the run. It is per ITEM rather than per run
+   * because ruling 54 gives wave N+1 a different base from wave 1: the
+   * integration commit wave N published.
+   */
+  baseRef?: string;
+  baseSha?: string;
 }
 
 export interface RunRecord {
   runId: string;
-  /** Ruling 51: `refs/heads/brigadier/<run-id>`, visible to `git branch`. */
+  /**
+   * Ruling 51: `refs/heads/brigadier/<run-id>`, visible to `git branch`.
+   *
+   * THE NAME IS NOT THE THING. This field is the ref brigadier would publish
+   * to; `integrationSha` is the only evidence it exists, and its absence is the
+   * machine-readable form of "this run published nothing".
+   */
   integrationRef: string;
+  /**
+   * What `git rev-parse --verify <integrationRef>^{commit}` answered in the
+   * OPERATOR's repository after the last wave.
+   *
+   * Absent when the branch is not there. Ruling 51 makes the branch the
+   * deliverable and the one ref brigadier never deletes; a record that named it
+   * unconditionally described a deliverable that did not exist, which is
+   * exactly ruling 52's "a missing result rendering as a satisfied
+   * requirement", one level up from a check.
+   */
+  integrationSha?: string;
+  /**
+   * Ruling 50's base commit: the state every wave-1 item was cloned from and
+   * diffed against.
+   *
+   * Required, and that is the contract change. `git diff <base.sha>..<itemRef>`
+   * is what ruling 51 uses as the ownership check and what ruling 52 hands a
+   * reviewer, and neither record carried the left-hand side — so an item's diff
+   * could not be re-derived from the evidence, only by re-running the run.
+   */
+  base: { ref: string; sha: string };
+  /**
+   * Checks about the RUN rather than about an item or the merged tree.
+   *
+   * O(1), for `run-report.ts`'s reason: a run-level fact attached to an item is
+   * the first thing ruling 58's cap collapses. Today there is one — whether the
+   * deliverable branch exists — and it blocks by ruling 52's ordinary rule.
+   */
+  runChecks?: RecordCheck[];
   /** Ruling 61: outside every temp root, by `realpath`. */
   runRoot: string;
   /** Ruling 54: WHICH of the filters bound the worker count, not just the number. */

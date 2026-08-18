@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo brigadier: carry forward the run id, the integration ref and the failing checks - not the transcript."
+          }
+        ]
+      }
+    ]
+  }
+}

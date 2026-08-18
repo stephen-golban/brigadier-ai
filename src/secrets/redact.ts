@@ -29,7 +29,11 @@
  *   ONE SINK, AFTER COMPOSITION. Every persisted artifact and every stream out
  *   of brigadier passes through a single writer, and that writer redacts the
  *   final bytes. Not the serialiser, not the log formatter, not a string
- *   builder — the last point before the bytes leave.
+ *   builder — the last point before the bytes leave. That writer is `Sink` in
+ *   `./sink.ts`, and `./audit.ts` is the full-tree gate that keeps it the only
+ *   one. Nothing in THIS file writes anything: it holds the inventory and the
+ *   encodings, and a caller that redacts here and writes elsewhere has already
+ *   made v1's mistake.
  *
  *   EVERY ENCODING, NOT THE LITERAL. A secret that survived `JSON.stringify` is
  *   still a leak.
@@ -48,29 +52,53 @@ export const MINIMUM_SECRET_LENGTH = 8;
 
 export const PLACEHOLDER = "[redacted]";
 
+/** The enumerated list, by name. There is no "everything else" member, and that is the honest limit. */
+export type EncodingName = "literal" | "json-escaped" | "url-encoded" | "base64";
+
+export interface EncodedForm {
+  readonly name: EncodingName;
+  readonly value: string;
+}
+
 /**
- * Every form a value can take on its way to a file.
+ * Every form a value can take on its way to a file, each carrying its name.
  *
  * Failure 2 is exactly this list being one item long. The set is enumerable and
  * finite, which is the whole reason this is tractable — and it is also the
  * boundary of the honest limit above: an encoding not listed here is not
  * covered, and there is no way to cover "all encodings".
+ *
+ * The NAME is carried because a leak report that prints the pattern it matched
+ * prints the secret, which is v1's failure wearing a hat. `leakEncodings` below
+ * reports names; `leaks` reports patterns and is for tests only.
  */
-export function encodings(value: string): string[] {
-  const forms = new Set<string>([value]);
+export function encodedForms(value: string): EncodedForm[] {
+  // First name wins on collision: a value whose escaped form equals its literal
+  // is one needle, not two, and calling it "literal" is the truthful label.
+  const byValue = new Map<string, EncodingName>();
+  const add = (name: EncodingName, form: string): void => {
+    if (!byValue.has(form)) byValue.set(form, name);
+  };
+  add("literal", value);
   // What a JSON serialiser would write between the quotes.
-  forms.add(JSON.stringify(value).slice(1, -1));
+  add("json-escaped", JSON.stringify(value).slice(1, -1));
   try {
-    forms.add(encodeURIComponent(value));
+    add("url-encoded", encodeURIComponent(value));
   } catch {
     // Lone surrogates. The literal form is still covered.
   }
   try {
-    forms.add(btoa(value));
+    add("base64", btoa(value));
   } catch {
     // Non-latin1. Same.
   }
-  return [...forms].filter((form) => form.length >= MINIMUM_SECRET_LENGTH);
+  return [...byValue]
+    .filter(([form]) => form.length >= MINIMUM_SECRET_LENGTH)
+    .map(([form, name]) => ({ name, value: form }));
+}
+
+export function encodings(value: string): string[] {
+  return encodedForms(value).map((form) => form.value);
 }
 
 /**
@@ -96,8 +124,37 @@ export class SecretInventory {
 
   /** Every encoding of every value, longest first so a superstring wins. */
   patterns(): string[] {
-    const all = [...this.#values].flatMap(encodings);
-    return [...new Set(all)].sort((a, b) => b.length - a.length);
+    return this.forms().map((form) => form.value);
+  }
+
+  /** The same list, named, longest first. */
+  forms(): EncodedForm[] {
+    const byValue = new Map<string, EncodingName>();
+    for (const form of [...this.#values].flatMap(encodedForms)) {
+      if (!byValue.has(form.value)) byValue.set(form.value, form.name);
+    }
+    return [...byValue]
+      .map(([value, name]) => ({ name, value }))
+      .sort((a, b) => b.value.length - a.value.length);
+  }
+
+  /**
+   * How many trailing bytes of a stream must be held back before a flush is
+   * safe.
+   *
+   * Rule 2 is "after composition", and a stream is composed across CALLS. A
+   * sink that flushes at every newline is composing correctly for every pattern
+   * that cannot contain a newline — which is all of them unless an inventoried
+   * value has one, and a PEM key does. So: zero when no pattern spans lines,
+   * and otherwise one byte short of the longest pattern, which is the largest
+   * tail a pattern can straddle into.
+   */
+  straddleGuard(): number {
+    let longest = 0;
+    for (const pattern of this.patterns()) {
+      if (pattern.includes("\n") && pattern.length > longest) longest = pattern.length;
+    }
+    return longest === 0 ? 0 : longest - 1;
   }
 
   /**
@@ -121,5 +178,22 @@ export class SecretInventory {
    */
   leaks(text: string): string[] {
     return this.patterns().filter((pattern) => text.includes(pattern));
+  }
+
+  /**
+   * The same question, answered without quoting the answer.
+   *
+   * `leaks` returns the PATTERNS it matched, which are the secrets — fine in a
+   * test that already holds them, and a leak channel anywhere else. This
+   * returns encoding names, so a caller can report "the record held the
+   * base64 form" into a file that goes through the sink without the report
+   * itself being the leak.
+   */
+  leakEncodings(text: string): EncodingName[] {
+    const hit = new Set<EncodingName>();
+    for (const form of this.forms()) {
+      if (text.includes(form.value)) hit.add(form.name);
+    }
+    return [...hit];
   }
 }

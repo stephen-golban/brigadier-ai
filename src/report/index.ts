@@ -35,5 +35,7 @@ export {
   renderItem,
   renderRecordCheck,
   renderRunReport,
+  runHeadline,
+  type HeadlineInput,
   type RunReportInput,
 } from "./run-report.ts";

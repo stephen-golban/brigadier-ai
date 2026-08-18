@@ -36,6 +36,12 @@ const CLI = new URL("../src/cli.ts", import.meta.url).pathname;
  * toss. It commits, because ruling 56 keeps brigadier's count of git commands
  * inside a clone an agent has touched at zero and `integrateWave` fetches the
  * clone's `work` branch — an uncommitted change is not part of a result.
+ *
+ * `nocommit` in the brief makes it write the file and STOP THERE, which is the
+ * negative control for exactly that sentence: the worker really did the work,
+ * the bytes really are in the clone, and none of it is on the branch brigadier
+ * fetches. Real vendors reach this state routinely, and the run used to report
+ * it as two items integrated and exit 0.
  */
 const AGENT_SOURCE = `
 import { existsSync } from "node:fs";
@@ -76,8 +82,10 @@ for await (const chunk of Bun.stdin.stream()) {
       if (probe !== undefined) body = existsSync(probe) ? "PRESENT" : "ABSENT";
       if (out !== undefined) {
         await Bun.write(out, id + ":" + body + "\\n");
-        Bun.spawnSync(["git", "add", "-A"], { cwd: process.cwd() });
-        Bun.spawnSync(["git", "-c", "user.name=p", "-c", "user.email=p@e.invalid", "commit", "-q", "-m", "work " + id], { cwd: process.cwd() });
+        if (!/nocommit/.test(brief)) {
+          Bun.spawnSync(["git", "add", "-A"], { cwd: process.cwd() });
+          Bun.spawnSync(["git", "-c", "user.name=p", "-c", "user.email=p@e.invalid", "commit", "-q", "-m", "work " + id], { cwd: process.cwd() });
+        }
       }
       send({ jsonrpc: "2.0", id: msg.id, result: { stopReason: "end_turn" } });
     } else {
@@ -551,5 +559,224 @@ describe("ruling 65: one sink, after composition, every encoding", () => {
     // destroy diagnostics. The standing rule: an inventoried value is a secret;
     // nothing else is.
     expect(transcript).toContain("decoy");
+  });
+});
+
+// ---------------------------------------------------------- the deliverable
+
+/**
+ * Ruling 51's deliverable, and ruling 52's rule about what may never render as
+ * a pass.
+ *
+ * MEASURED on 2026-08-18 against `git 2.50.1`, and this is the defect the whole
+ * block exists for: two planted agents wrote their files, committed neither,
+ * and brigadier printed *"2 of 2 items landed"*, marked both items
+ * `integrated`, named `refs/heads/brigadier/<run-id>` as "the deliverable" and
+ * exited 0 — with no such branch in the repository. `integrateWave` scores an
+ * item that changed no tracked file `no-change` and PASSES it, which is right
+ * for a `read-only` item and the exact opposite for a `write` one.
+ *
+ * Every assertion below is on ESCAPED BYTES (ruling 62b): the ref as
+ * `git rev-parse` resolves it, the branch list as `git branch` prints it, the
+ * blob as `git cat-file` reads it back, and the record's own bytes on disk.
+ * Nothing here reads a flag the code returned.
+ */
+describe("a `write` item that committed nothing is not a landing (rulings 51, 52)", () => {
+  const world = makeWorld("nocommit");
+  const planPath = writePlan(world.dir, [
+    { id: "silent", kind: "write", paths: ["silent.txt"], prompt: "nocommit out=silent.txt" },
+  ]);
+  const result = brigadier(world, [
+    "run", "--plan", planPath, "--repo", world.repo, "--run-root", world.runs, "--audience", "terminal",
+  ]);
+  const runId = readdirSync(join(world.runs, "r"))[0] ?? "";
+  const branch = `refs/heads/brigadier/${runId}`;
+  const record = JSON.parse(readFileSync(join(world.runs, "r", runId, "record.json"), "utf8")) as {
+    integrationRef: string;
+    integrationSha?: string;
+    base: { ref: string; sha: string };
+    runChecks?: Array<{ name: string; outcome: string; blocking: boolean }>;
+    items: Array<{
+      status: string;
+      clonePath?: string;
+      commit?: string;
+      baseRef?: string;
+      baseSha?: string;
+      checks: Array<{ name: string; outcome: string; blocking: boolean; qualifier?: string }>;
+    }>;
+  };
+
+  test("the branch does not exist — `git rev-parse` and `git branch` both say so", () => {
+    const proc = Bun.spawnSync(["git", "rev-parse", "--verify", "-q", `${branch}^{commit}`], {
+      cwd: world.repo,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(proc.exitCode).not.toBe(0);
+    expect(proc.stdout.toString().trim()).toBe("");
+    expect(git(world.repo, ["branch", "--list", "brigadier/*"])).toBe("");
+  });
+
+  test("the run exits non-zero and the headline does not claim a landing", () => {
+    expect(result.code).toBe(1);
+    expect(result.stdout).toContain("NOTHING INTEGRATED");
+    expect(result.stdout).toContain("NO INTEGRATION BRANCH");
+    expect(result.stdout).not.toContain("1 of 1 items landed");
+  });
+
+  test("ruling 52: the item's integration check is a BLOCKING fail, in the record's bytes", () => {
+    const check = record.items[0]?.checks.find((entry) => entry.name.startsWith("integrate item"));
+    expect(check?.outcome).toBe("fail");
+    expect(check?.blocking).toBe(true);
+    expect(check?.qualifier).toBe("nothing committed");
+    expect(record.items[0]?.status).not.toBe("integrated");
+    // Ruling 70: the NDJSON is the flight recorder, and it must carry the same
+    // verdict — a process killed after the wave leaves this and nothing else.
+    const ndjson = readFileSync(join(world.runs, "r", runId, "record.ndjson"), "utf8");
+    expect(ndjson).toContain('"check-settled"');
+    expect(ndjson).toContain('"integrate item 1","outcome":"fail"');
+  });
+
+  test("ruling 51: the record does not claim a sha for a branch that is not there", () => {
+    expect(record.integrationRef).toBe(branch);
+    expect(record.integrationSha).toBeUndefined();
+    const deliverable = record.runChecks?.find((check) => check.name === "integration branch");
+    expect(deliverable?.outcome).toBe("fail");
+    expect(deliverable?.blocking).toBe(true);
+    expect(record.items[0]?.commit).toBeUndefined();
+  });
+
+  test("ruling 63: the clone is RETAINED, and the worker's bytes are still in it", () => {
+    // The old rule deleted a clone whose fetched ref merely existed, and a
+    // `no-change` item has one — so the only copy of everything the worker
+    // wrote and did not commit was removed. Read the file back rather than
+    // trusting the report's path.
+    const clonePath = record.items[0]?.clonePath;
+    expect(clonePath).toBeDefined();
+    expect(existsSync(clonePath as string)).toBe(true);
+    expect(readFileSync(join(clonePath as string, "silent.txt"), "utf8")).toBe("silent:\n");
+    expect(result.stdout).toContain(`retained clone item 1: ${clonePath}`);
+  });
+
+  test("NEGATIVE CONTROL: the SAME plan with the same agent committing does land", () => {
+    // Without this, every assertion above is also satisfied by a binary that
+    // refuses everything. One token of the brief is the only difference.
+    const good = makeWorld("nocommit-control");
+    const plan = writePlan(good.dir, [
+      { id: "silent", kind: "write", paths: ["silent.txt"], prompt: "out=silent.txt" },
+    ]);
+    const ran = brigadier(good, [
+      "run", "--plan", plan, "--repo", good.repo, "--run-root", good.runs, "--audience", "terminal",
+    ]);
+    expect(ran.code).toBe(0);
+    const id = readdirSync(join(good.runs, "r"))[0] ?? "";
+    const ref = `refs/heads/brigadier/${id}`;
+    const sha = git(good.repo, ["rev-parse", "--verify", `${ref}^{commit}`]);
+    expect(sha).toMatch(/^[0-9a-f]{40}$/);
+    expect(git(good.repo, ["branch", "--list", "brigadier/*"])).toContain(`brigadier/${id}`);
+    expect(git(good.repo, ["cat-file", "blob", `${ref}:silent.txt`])).toBe("silent:");
+    const parsed = JSON.parse(readFileSync(join(good.runs, "r", id, "record.json"), "utf8")) as {
+      integrationSha?: string;
+    };
+    expect(parsed.integrationSha).toBe(sha);
+  });
+
+  test("NEGATIVE CONTROL: a plan of only read-only items publishes nothing AND succeeds", () => {
+    // The other side: "no branch" must not block a run that was never going to
+    // produce one. Ruling 49 never reads a read-only item's directory back at
+    // all, so there is nothing to merge and nothing wrong.
+    const quiet = makeWorld("readonly-only");
+    const plan = writePlan(quiet.dir, [{ id: "look", kind: "read-only", paths: [], prompt: "say=looked" }]);
+    const ran = brigadier(quiet, [
+      "run", "--plan", plan, "--repo", quiet.repo, "--run-root", quiet.runs, "--audience", "terminal",
+    ]);
+    expect(ran.code).toBe(0);
+    expect(git(quiet.repo, ["branch", "--list", "brigadier/*"])).toBe("");
+    const id = readdirSync(join(quiet.runs, "r"))[0] ?? "";
+    const parsed = JSON.parse(readFileSync(join(quiet.runs, "r", id, "record.json"), "utf8")) as {
+      runChecks?: Array<{ name: string; outcome: string; qualifier?: string }>;
+    };
+    const deliverable = parsed.runChecks?.find((check) => check.name === "integration branch");
+    expect(deliverable?.outcome).toBe("pass");
+    expect(deliverable?.qualifier).toBe("read-only plan");
+  });
+});
+
+// ------------------------------------------------------------- the base ref
+
+/**
+ * The contract change: both records now carry the commit an item's diff is
+ * taken FROM.
+ *
+ * `itemRef` and `commit` are the right-hand side of `git diff <base>..<ref>`,
+ * and until now the left-hand side was in neither record — so the diff ruling
+ * 51 makes the ownership check and ruling 52 makes the reviewer's brief could
+ * not be recomputed from the evidence, only by re-running the run. The
+ * assertion is that the diff really re-derives: the paths git reports are the
+ * paths the item declared.
+ */
+describe("an item's diff is re-derivable from the record alone (rulings 51, 52)", () => {
+  const world = makeWorld("basederive");
+  const planPath = writePlan(world.dir, [
+    { id: "first", kind: "write", paths: ["first.txt"], prompt: "out=first.txt" },
+    {
+      id: "next",
+      kind: "write",
+      paths: ["next.txt"],
+      dependsOn: ["first"],
+      prompt: "read=first.txt out=next.txt",
+    },
+  ]);
+  const result = brigadier(world, [
+    "run", "--plan", planPath, "--repo", world.repo, "--run-root", world.runs, "--audience", "terminal",
+  ]);
+  const runId = readdirSync(join(world.runs, "r"))[0] ?? "";
+  const record = JSON.parse(readFileSync(join(world.runs, "r", runId, "record.json"), "utf8")) as {
+    base: { ref: string; sha: string };
+    items: Array<{ id: string; itemRef?: string; baseRef?: string; baseSha?: string }>;
+  };
+
+  test("the run landed, so there are diffs to re-derive", () => {
+    expect(result.code).toBe(0);
+  });
+
+  test("`git diff <baseSha>..<itemRef>` names exactly the path each item declared", () => {
+    for (const [id, path] of [["first", "first.txt"], ["next", "next.txt"]] as const) {
+      const item = record.items.find((entry) => entry.id === id);
+      expect(item?.baseSha).toMatch(/^[0-9a-f]{40}$/);
+      const paths = git(world.repo, ["diff", "--name-only", `${item?.baseSha}..${item?.itemRef}`]);
+      expect(paths.split("\n").filter(Boolean)).toEqual([path]);
+    }
+  });
+
+  test("ruling 54: wave 2's base is NOT wave 1's — the bases differ, and the second resolves", () => {
+    // The reason this is per item rather than per run. If a single run-level
+    // base were recorded, the assertion above would silently compare wave 2's
+    // work against a commit it never saw.
+    const first = record.items.find((entry) => entry.id === "first");
+    const next = record.items.find((entry) => entry.id === "next");
+    expect(first?.baseSha).toBe(record.base.sha);
+    expect(next?.baseSha).not.toBe(record.base.sha);
+    expect(next?.baseRef).toBe(`refs/heads/brigadier/${runId}`);
+    expect(git(world.repo, ["cat-file", "-t", next?.baseSha ?? ""])).toBe("commit");
+  });
+
+  test("the NDJSON carries the same bases, so a killed run still has them (ruling 70)", () => {
+    const ndjson = readFileSync(join(world.runs, "r", runId, "record.ndjson"), "utf8");
+    const bases = ndjson
+      .split("\n")
+      .filter((line) => line.includes('"base-recorded"'))
+      .map((line) => JSON.parse(line) as { wave: number; ref: string; sha: string });
+    expect(bases.map((entry) => entry.wave)).toEqual([0, 1, 2]);
+    expect(bases[0]?.sha).toBe(record.base.sha);
+    expect(bases[2]?.sha).toBe(record.items.find((entry) => entry.id === "next")?.baseSha);
+  });
+
+  test("NEGATIVE CONTROL: the base is a commit the item did NOT write into", () => {
+    // Without this, `baseSha` could be the item's own commit and every diff
+    // above would come back empty and pass.
+    const first = record.items.find((entry) => entry.id === "first");
+    expect(git(world.repo, ["cat-file", "blob", `${first?.baseSha}:first.txt`])).toContain("first.txt");
+    expect(git(world.repo, ["cat-file", "blob", `${first?.itemRef}:first.txt`])).toBe("first:");
   });
 });

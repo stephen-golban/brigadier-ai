@@ -66,6 +66,17 @@ export function recordPath(runRoot: string, runId: string): string {
 export type RunEvent =
   /** Written before anything is created, so a record exists even for a run that dies immediately. */
   | { type: "run-started"; at: number; runId: string; repo: string; runRoot: string; pid: number }
+  /**
+   * The commit a wave's items were cloned from and are diffed against.
+   *
+   * `wave: 0` is ruling 50's base commit for the whole run; `wave: n` is what
+   * ruling 54 gives wave `n` — the base commit on wave 1, and the integration
+   * commit the previous wave published afterwards. Recorded because
+   * `item-landed` names only the RIGHT-hand side of `git diff <base>..<ref>`,
+   * and a record that cannot re-derive an item's diff cannot support ruling
+   * 51's ownership check or ruling 52's reviewer brief after the fact.
+   */
+  | { type: "base-recorded"; at: number; wave: number; ref: string; sha: string }
   /** Mirrors the manifest entry. The manifest is authority for deletion; this is the timeline. */
   | { type: "clone-recorded"; at: number; item: number; dir: string }
   /** Ruling 38: the marker as spawned, so a later sweep can be told what it should have matched. */
@@ -101,6 +112,7 @@ export type RunEventType = RunEvent["type"];
  */
 const REQUIRED: Record<RunEventType, readonly string[]> = {
   "run-started": ["runId", "repo", "runRoot", "pid"],
+  "base-recorded": ["wave", "ref", "sha"],
   "clone-recorded": ["item", "dir"],
   "process-spawned": ["item", "pid", "commandLine"],
   "check-slot": ["item", "check", "outcome"],

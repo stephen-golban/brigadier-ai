@@ -21,6 +21,7 @@
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { killTree } from "./proc.ts";
 
 /**
  * Ruling 38's marker, as `src/agent/marker.ts` spells it.
@@ -338,6 +339,10 @@ export async function runSampled(
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
+    // Same defect `bar/lib/proc.ts`'s `exec` had, and the same fix: a new
+    // session/group so a timeout can reclaim the WHOLE tree — including any ACP
+    // vendor children the real binary spawned — rather than just this one pid.
+    detached: true,
   });
 
   let running = true;
@@ -362,7 +367,7 @@ export async function runSampled(
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
-    proc.kill("SIGKILL");
+    killTree(proc);
   }, options.timeoutMs ?? 300_000);
 
   const [stdout, stderr] = await Promise.all([

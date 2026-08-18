@@ -80,6 +80,85 @@ export function renderItem(item: RecordItem): string {
   return lines.join("\n");
 }
 
+/**
+ * The one line an operator reads first, computed from the very checks this
+ * report is about to print.
+ *
+ * `src/integrate/report.ts` has a headline too, and it is computed from the
+ * WAVE's item outcomes. That is the right input for `renderRun`, which prints
+ * waves, and the wrong one here: a `write` item that committed nothing scores
+ * `no-change` in a wave, and `no-change` counts as landed — so a run in which
+ * two workers wrote two files, committed neither, published no branch and
+ * created no deliverable printed *"2 of 2 items landed"* and exited 0.
+ * MEASURED on 2026-08-18 against `git 2.50.1`, with a planted ACP agent that
+ * writes and does not commit. The repair is that the headline is derived from
+ * the SAME data the reader is shown: an item counts as landed when its status
+ * is `integrated` and no check of its blocks, and nothing else does.
+ *
+ * `runChecks` is in the conjunction for ruling 51's reason: a run whose
+ * deliverable branch does not exist has not succeeded, whatever its items say.
+ */
+export interface HeadlineInput {
+  items: readonly RecordItem[];
+  /** Ruling 52's own section: "every item passed" is not "the merged result passed". */
+  mergedResult: readonly RecordCheck[];
+  /** Run-level, and they block in exactly the same way. */
+  runChecks?: readonly RecordCheck[];
+}
+
+function blocking(checks: readonly RecordCheck[]): RecordCheck[] {
+  return checks.filter((check) => check.blocking && blocks(check.outcome));
+}
+
+export function runHeadline(input: HeadlineInput): string {
+  const total = input.items.length;
+  if (total === 0) return "nothing to integrate: this run had no items";
+
+  const landedItems = input.items.filter((item) => item.status === "integrated" && !itemBlocks(item));
+  const landed = landedItems.length;
+  const gateBlocked = blocking(input.mergedResult);
+  const runBlocked = blocking(input.runChecks ?? []);
+
+  // COUNTS, NEVER IDENTITIES. The headline is in `fixedLines`' head, which
+  // ruling 58's cap never trims, so a clause per item would be an O(items)
+  // string in the one part of the report that cannot shrink — and item 11's bar
+  // case is a fifty-item run. Nothing is hidden by that: ruling 52 guarantees
+  // every blocking item keeps its own line with every one of its checks, which
+  // is where the reason belongs.
+  const byStatus = new Map<string, number>();
+  for (const item of input.items) {
+    if (landedItems.includes(item)) continue;
+    byStatus.set(item.status, (byStatus.get(item.status) ?? 0) + 1);
+  }
+  const reasons: string[] = [];
+  for (const [status, count] of byStatus) reasons.push(`${count} ${status}`);
+  for (const check of runBlocked) reasons.push(`${check.name}: ${check.outcome}`);
+  if (gateBlocked.length > 0) {
+    reasons.push(`the merged result is ${gateBlocked.map((gate) => gate.outcome).join(", ")}`);
+  }
+
+  if (landed === 0) {
+    return `NOTHING INTEGRATED — 0 of ${total} items landed on the integration branch; ${reasons.join("; ")}.`;
+  }
+  if (landed < total || gateBlocked.length > 0 || runBlocked.length > 0) {
+    return (
+      `PARTIAL INTEGRATION — ${landed} of ${total} items landed; ${reasons.join("; ")}. ` +
+      "This is not a success, and it is not a failure: it is the state the run ended in."
+    );
+  }
+  // A VERIFICATION CLAIM IS DERIVED FROM A `pass` THAT HAPPENED, never from the
+  // absence of a failure. Ruling 52's exact bug is an absent result rendering as
+  // a satisfied requirement, and this is the line people actually read.
+  if (input.mergedResult.some((gate) => gate.outcome === "pass")) {
+    return `integrated — ${landed} of ${total} items landed, and the merged result was verified`;
+  }
+  const why =
+    input.mergedResult.length === 0
+      ? "no integration gate was recorded for this run"
+      : `the merged result is ${input.mergedResult.map((gate) => gate.outcome).join(", ")}`;
+  return `${landed} of ${total} items landed, and THE MERGED RESULT WAS NOT VERIFIED — ${why}`;
+}
+
 export interface RunReportInput {
   record: RunRecord;
   recordPath: string;
@@ -108,18 +187,54 @@ export function refusedDelegationLine(count: number): string | null {
   return `${workers} attempted to delegate and were refused — check the repository's AGENTS.md and the brief (ruling 59).`;
 }
 
+/**
+ * Ruling 51's deliverable, rendered as it was FOUND.
+ *
+ * The old line named `record.integrationRef` unconditionally and called it "the
+ * deliverable". A run that published nothing therefore printed the name of a
+ * branch that did not exist, beside a headline saying its items had landed —
+ * and a reader who ran `git switch` on that name got `invalid reference`. The
+ * name is what brigadier would write to; `integrationSha` is what `git
+ * rev-parse` answered, and only that makes the branch a deliverable.
+ */
+function branchLine(record: RunRecord): string {
+  if (record.integrationSha === undefined) {
+    return (
+      `NO INTEGRATION BRANCH — ${record.integrationRef} does not resolve in the operator's repository: ` +
+      "this run published nothing. Ruling 51's deliverable is a branch `git branch` can see, and a name is not one."
+    );
+  }
+  return (
+    `branch ${record.integrationRef} at ${record.integrationSha.slice(0, 12)} — the deliverable, resolved with ` +
+    "`git rev-parse`; every other ref brigadier wrote is under refs/brigadier/"
+  );
+}
+
 function fixedLines(input: RunReportInput): { head: string[]; tail: string[] } {
   const { record } = input;
   const head = [
     input.headline,
     recordPointer(input.recordPath),
-    `branch ${record.integrationRef} — the deliverable; every other ref brigadier wrote is under refs/brigadier/`,
+    // O(1), and it is the other end of every diff in this run: an item's work is
+    // `git diff <base sha>..<item ref>`, which is ruling 51's ownership check and
+    // ruling 52's reviewer brief. Without it neither is re-derivable afterwards.
+    `base ${record.base.ref} at ${record.base.sha.slice(0, 12)} — every item's diff is <base>..<its ref>`,
+    branchLine(record),
   ];
 
   const tail: string[] = ["", "the merged result:"];
   for (const check of input.mergedResult) {
     tail.push(`  ${renderRecordCheck(check)}`);
     if (check.detail !== undefined && check.outcome !== "pass") tail.push(`      ${check.detail}`);
+  }
+
+  const runChecks = record.runChecks ?? [];
+  if (runChecks.length > 0) {
+    tail.push("", "the run:");
+    for (const check of runChecks) {
+      tail.push(`  ${renderRecordCheck(check)}`);
+      if (check.detail !== undefined && check.outcome !== "pass") tail.push(`      ${check.detail}`);
+    }
   }
 
   for (const clone of input.retained ?? []) {

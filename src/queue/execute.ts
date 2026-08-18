@@ -60,9 +60,9 @@ import {
 import {
   attemptable,
   discardGateClone,
-  headline,
   initialIntegrationCheck,
   integrateWave,
+  refSha,
   runIntegrationGate,
   waveBoundary,
   type IntegrationItem,
@@ -70,7 +70,7 @@ import {
 } from "../integrate/index.ts";
 import { Lane } from "../lane/lane.ts";
 import { RUN_DIR } from "../repo/layout.ts";
-import { integrationBranch, itemRef } from "../repo/refs.ts";
+import { WORK_BRANCH, integrationBranch, itemRef } from "../repo/refs.ts";
 import {
   appendEvent,
   describeStartSweep,
@@ -85,6 +85,7 @@ import {
 import { SecretInventory } from "../secrets/redact.ts";
 import {
   renderRunReport,
+  runHeadline,
   type Audience,
   type RecordCheck,
   type RecordItem,
@@ -256,6 +257,42 @@ function grantSecrets(names: readonly string[], inventory: SecretInventory): Rec
   return granted;
 }
 
+/**
+ * The check a `write` item gets when its clone's work branch carried nothing.
+ *
+ * `integrateWave` scores an item that changed no tracked file `no-change` and
+ * PASSES it, and for a `read-only` item that is exactly right — ruling 49 never
+ * reads its directory back at all. For a `write` item it is the opposite: the
+ * item declared paths it owns, brigadier fetched its `work` branch, and the
+ * branch carried nothing.
+ *
+ * MEASURED on 2026-08-18 against `git 2.50.1`, with a planted ACP agent that
+ * writes its file and does not commit: `git diff <base>..<item ref>` came back
+ * empty for both items, the wave published nothing,
+ * `refs/heads/brigadier/<run-id>` was never created — and the run printed
+ * *"2 of 2 items landed"*, marked both items `integrated` and exited 0. Ruling
+ * 52's exact failure, at the one place an empty result could still read as a
+ * satisfied requirement.
+ *
+ * `fail` rather than `error`: the remedy is to send the builder back, which is
+ * what `fail` means in ruling 52's vocabulary. `error` would say the checker
+ * broke, and it did not — it looked, and there was nothing there.
+ */
+export function nothingCommitted(item: PlannedItem, ref: string): CheckResult {
+  return {
+    name: `integrate item ${item.number}`,
+    outcome: "fail",
+    qualifier: "nothing committed",
+    detail:
+      `item ${item.id} declared ${item.paths.join(", ") || "no paths"} and its clone's \`${WORK_BRANCH}\` ` +
+      "branch carried no change, so there was nothing to merge. Ruling 56 keeps brigadier's count of " +
+      "git commands run inside a clone an agent has touched at zero, so brigadier cannot commit on a " +
+      "worker's behalf — the brief says so in its constant prefix, and a worker that wrote files and " +
+      "did not commit them has produced no result. Its clone is retained rather than deleted (ruling " +
+      `63): it may hold the only copy of that work. Inspect the fetched ref at ${ref}.`,
+  };
+}
+
 interface ItemRun {
   item: PlannedItem;
   checks: CheckResult[];
@@ -263,6 +300,11 @@ interface ItemRun {
   clonePath: string | null;
   agent: string | null;
   model: string | null;
+  /** Ruling 54: wave 1's is the base commit, wave N+1's is the previous integration commit. */
+  baseRef: string;
+  baseSha: string;
+  /** A `write` item whose work branch carried nothing. Never deleted, never a pass. */
+  producedNothing: boolean;
   /** Ruling 29's third axis, and what brigadier actually did about it. */
   effort: EffortOutcome;
   bytes: number;
@@ -301,6 +343,12 @@ async function runItem(
     clonePath: null,
     agent: agent?.id ?? null,
     model: null,
+    // Recorded per item rather than per run: ruling 54 gives wave N+1 a
+    // different base from wave 1, so "the left-hand side of this item's diff" is
+    // not a run-level fact.
+    baseRef: base.ref,
+    baseSha: base.sha,
+    producedNothing: false,
     effort:
       agent === null
         ? noLever(requested, { kind: "none", why: "no agent resolved, so nothing was spawned to assert it on" })
@@ -521,6 +569,12 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
     `base ${base.sha.slice(0, 12)} at ${base.ref} — ${base.untrackedIncluded} untracked file(s) carried in ` +
       `(ruling 33), ${base.ignoredEntriesExcluded} ignored entr(ies) left out (ruling 50)`,
   );
+  // The left-hand side of every diff this run will produce, on disk before the
+  // first clone exists. `item-landed` records only the right-hand side, so a
+  // record without this cannot re-derive what an item did — which is ruling
+  // 51's ownership check and ruling 52's reviewer brief, both computed from
+  // `git diff <base>..<item ref>`.
+  sink.append(record, { type: "base-recorded", at: Date.now(), wave: 0, ref: base.ref, sha: base.sha });
 
   const runs: ItemRun[] = [];
   const waves: WaveIntegration[] = [];
@@ -531,6 +585,17 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
 
   for (const [index, wave] of plan.waves.entries()) {
     const waveNumber = index + 1;
+    // Ruling 54: wave 1 is diffed against the base commit and wave N+1 against
+    // the integration commit wave N published, so this is per wave rather than
+    // per run and it is written down before the wave spends anything.
+    const waveBaseRef = waveNumber === 1 ? base.ref : integrationBranch(runId);
+    sink.append(record, {
+      type: "base-recorded",
+      at: Date.now(),
+      wave: waveNumber,
+      ref: waveBaseRef,
+      sha: waveBase,
+    });
     const eligible = attemptable(
       wave,
       plan.items.map((item) => ({ item: item.number, dependsOn: item.dependsOn })),
@@ -568,6 +633,12 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
         clone: run.clonePath as string,
         declaredPaths: run.item.paths,
       }));
+
+    // Ruling 52's write-ahead for the integration check, before the fetch that
+    // could crash between "started" and "answered". `not-run` BLOCKS, so a
+    // process killed here leaves a blocking value on disk rather than a slot
+    // that never existed.
+    for (const entry of integrationItems) openCheckSlot(record, entry.item, `integrate item ${entry.item}`);
 
     let waveResult: WaveIntegration;
     try {
@@ -607,7 +678,24 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
     }
     waves.push(waveResult);
 
+    // A `write` item whose work branch carried nothing produced NO RESULT, and
+    // `nothingCommitted` says why at length. It is decided here, once, and the
+    // three consequences below all read from it: the item does not join
+    // `integrated` (so a dependent never clones from a base without its
+    // prerequisite's output), its `pass (no change)` is replaced by a blocking
+    // `fail`, and its clone is retained rather than deleted — ruling 63, because
+    // that directory is now the only copy of whatever the worker wrote.
     for (const entry of waveResult.items) {
+      if (entry.outcome !== "no-change") continue;
+      const owner = attempted.find((run) => run.item.number === entry.item);
+      if (owner !== undefined && owner.item.kind === "write") owner.producedNothing = true;
+    }
+    const producedNothing = new Set(
+      attempted.filter((run) => run.producedNothing).map((run) => run.item.number),
+    );
+
+    for (const entry of waveResult.items) {
+      if (producedNothing.has(entry.item)) continue;
       if (entry.outcome === "integrated" || entry.outcome === "no-change") integrated.add(entry.item);
       if (entry.outcome === "integrated" && entry.sha !== undefined) {
         sink.append(record, {
@@ -622,7 +710,15 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
     for (const check of waveResult.checks) {
       const number = Number(/item (\d+)/.exec(check.name)?.[1] ?? 0);
       const owner = runs.find((run) => run.item.number === number);
-      if (owner !== undefined) owner.checks.push(check);
+      if (owner === undefined) continue;
+      const judged = producedNothing.has(number)
+        ? nothingCommitted(owner.item, itemRef(runId, number))
+        : check;
+      owner.checks.push(judged);
+      // Ruling 52's slot, settled with the verdict the report will print rather
+      // than with `integrateWave`'s: the NDJSON is what a killed run leaves
+      // behind, and it must not say `pass` where the report says `fail`.
+      settleCheck(record, number, judged.name, judged.outcome, judged.detail ?? null);
     }
 
     // 4. The merged-result gate, in its own slot, written before it runs.
@@ -681,7 +777,12 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
     const landed = waves
       .flatMap((wave) => wave.items)
       .find((entry) => entry.item === run.item.number);
-    const preserved = landed?.sha !== undefined;
+    // `landed.sha` is the sha of the item's FETCHED ref, and a `no-change` item
+    // has one: the fetch happened and it pointed at the base. So "the ref
+    // exists" is not "the work is in the operator's repository", and deleting on
+    // it threw away the only copy of everything a worker had written and not
+    // committed. Preservation is the outcome, not the presence of a sha.
+    const preserved = landed?.outcome === "integrated" || (landed?.outcome === "no-change" && !run.producedNothing);
     if (!run.retain && preserved && run.clone !== null) {
       try {
         discardClone(run.clone);
@@ -693,6 +794,60 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
     if (existsSync(run.clonePath)) {
       retained.push({ item: run.item.number, path: run.clonePath, bytes: directoryBytes(run.clonePath) });
     }
+  }
+
+  // RULING 51: THE DELIVERABLE IS RESOLVED, NEVER ASSERTED.
+  //
+  // `refs/heads/brigadier/<run-id>` is a real branch, visible to `git branch`,
+  // and the one ref brigadier never deletes. The record used to name it whether
+  // or not it existed, so a run that published nothing still printed
+  // *"branch refs/heads/brigadier/… — the deliverable"* over a name `git switch`
+  // answers `invalid reference` to. This asks git, in the operator's repository,
+  // and the answer is the only evidence there is.
+  const branchRef = integrationBranch(runId);
+  const writeItems = plan.items.filter((item) => item.kind === "write").length;
+  let integrationSha: string | null = null;
+  let deliverable: CheckResult;
+  try {
+    integrationSha = await refSha(options.repo, branchRef);
+    if (integrationSha !== null) {
+      deliverable = {
+        name: "integration branch",
+        outcome: "pass",
+        detail:
+          `${branchRef} resolves to ${integrationSha} — a real branch, visible to \`git branch\`, and ` +
+          "the one ref brigadier never deletes. From here it is the operator's.",
+      };
+    } else if (writeItems === 0) {
+      // Nothing to publish, and that is the plan's shape rather than a failure:
+      // ruling 49 never reads a read-only item's directory back at all.
+      deliverable = {
+        name: "integration branch",
+        outcome: "pass",
+        qualifier: "read-only plan",
+        detail: `no item in this plan declares \`kind: write\`, so there is no ${branchRef} to publish.`,
+      };
+    } else {
+      deliverable = {
+        name: "integration branch",
+        outcome: waves.some((wave) => wave.published) ? "error" : "fail",
+        qualifier: "no branch",
+        detail:
+          `${branchRef} does not exist in ${options.repo}: this run published nothing, so there is no ` +
+          "deliverable. Ruling 51 makes that branch the whole output of a run — a record naming it " +
+          "while `git rev-parse` cannot resolve it is a missing result rendering as a satisfied " +
+          "requirement, which ruling 52 forbids at every level including this one.",
+      };
+    }
+  } catch (error) {
+    // Ruling 52: the CHECKER broke. Never `fail` — nothing here says a worker
+    // did anything wrong.
+    deliverable = {
+      name: "integration branch",
+      outcome: "error",
+      qualifier: "unresolvable",
+      detail: `${branchRef} could not be resolved: ${error instanceof Error ? error.message : String(error)}`,
+    };
   }
 
   // 5. The full record to disk, and only then a report (ruling 58).
@@ -722,8 +877,16 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
       attempts: 1,
       attemptsAvailable: options.admission.ladder.kind === "short" ? 1 : 2,
       checks: run.checks.map(checkRecord),
-      ...(landed?.sha === undefined ? {} : { commit: landed.sha }),
+      // Only for an item that actually merged. A `no-change` item's fetched ref
+      // points at the base commit, so recording that sha as `commit` named the
+      // state BEFORE the item as the item's own contribution.
+      ...(landed?.outcome === "integrated" && landed.sha !== undefined ? { commit: landed.sha } : {}),
       itemRef: itemRef(runId, run.item.number),
+      // The left-hand side of `git diff <base>..<itemRef>` — ruling 51's
+      // ownership check and ruling 52's reviewer brief, both re-derivable from
+      // the record alone now that this is in it.
+      baseRef: run.baseRef,
+      baseSha: run.baseSha,
       ...(kept === undefined ? {} : { clonePath: kept.path, bytes: kept.bytes }),
     };
   });
@@ -771,7 +934,10 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
 
   const runRecord: RunRecord = {
     runId,
-    integrationRef: integrationBranch(runId),
+    integrationRef: branchRef,
+    ...(integrationSha === null ? {} : { integrationSha }),
+    base: { ref: base.ref, sha: base.sha },
+    runChecks: [checkRecord(deliverable)],
     runRoot: options.runRoot,
     bindingFilter: options.admission.fanOut[0]?.boundBy ?? "item-count",
     workers: options.admission.fanOut[0]?.workers ?? 0,
@@ -801,23 +967,27 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
     items,
   };
 
-  sink.file(join(transcriptDir, "full.log"), `${transcript.join("\n")}\n`);
-  sink.file(jsonRecord, `${JSON.stringify(runRecord, null, 2)}\n`);
-  sink.append(record, {
-    type: "run-finished",
-    at: Date.now(),
-    outcome: gates.some((gate) => blocks(gate.outcome)) ? "abandoned" : "complete",
-  });
-
+  const mergedResult = gates.map(checkRecord);
+  // Ruling 52's conjunction, and the deliverable is in it: a run whose
+  // integration branch does not exist has not succeeded, whatever its items say.
   const ok =
     items.every((item) => item.checks.every((check) => !check.blocking || !blocks(check.outcome))) &&
-    gates.every((gate) => !blocks(gate.outcome));
+    gates.every((gate) => !blocks(gate.outcome)) &&
+    !blocks(deliverable.outcome);
+
+  sink.file(join(transcriptDir, "full.log"), `${transcript.join("\n")}\n`);
+  sink.file(jsonRecord, `${JSON.stringify(runRecord, null, 2)}\n`);
+  sink.append(record, { type: "run-finished", at: Date.now(), outcome: ok ? "complete" : "abandoned" });
 
   const report = renderRunReport({
     record: runRecord,
     recordPath: jsonRecord,
-    headline: headline({ waves, gates }),
-    mergedResult: gates.map(checkRecord),
+    // Derived from the very items and checks this report prints, rather than
+    // from the wave outcomes: `no-change` counts as landed in a wave, and that
+    // is how "2 of 2 items landed" got printed over a run that published
+    // nothing. See `runHeadline`.
+    headline: runHeadline({ items, mergedResult, runChecks: runRecord.runChecks ?? [] }),
+    mergedResult,
     retained,
     unconfirmedPids: start.unconfirmedPids,
     audience: options.audience,

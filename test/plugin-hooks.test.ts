@@ -9,10 +9,13 @@ import { describe, expect, test } from "bun:test";
 import {
   FLOOR_HOOK_EVENTS,
   HOOK_FLOOR_CLAUDE_VERSION,
+  KNOWN_EVENTS_CLAUDE_VERSION,
+  KNOWN_HOOK_EVENTS,
   REGISTERED_HOOK_EVENTS,
   eventsAboveFloor,
   hookWarning,
   missingHooks,
+  unrecognisedEvents,
 } from "../src/plugin/hooks.ts";
 
 // Real output shape, copied from `claude plugin details` on 2.1.233.
@@ -84,5 +87,47 @@ describe("the self-check asserts names, not a count", () => {
     // A reformat of `claude plugin details` lands here. Ruling 52: it blocks
     // rather than passes, so it fails safe and noisily.
     expect(missingHooks("some completely different output")).toEqual(["PreCompact"]);
+  });
+});
+
+describe("the vocabulary used to FLAG someone else's file", () => {
+  test("what brigadier registers is inside the vocabulary it recognises", () => {
+    for (const event of REGISTERED_HOOK_EVENTS) expect(KNOWN_HOOK_EVENTS).toContain(event);
+    for (const event of FLOOR_HOOK_EVENTS) expect(KNOWN_HOOK_EVENTS).toContain(event);
+  });
+
+  test("the vocabulary is measured against a NEWER claude than the floor", () => {
+    // The two constants point in opposite directions on purpose: the floor is
+    // the oldest claude the registered set survives, the vocabulary is the
+    // newest one, because flagging a real event as poison is a false alarm on a
+    // working installation.
+    expect(KNOWN_EVENTS_CLAUDE_VERSION).toBe("2.1.234");
+    expect(HOOK_FLOOR_CLAUDE_VERSION).toBe("2.1.233");
+    expect(KNOWN_HOOK_EVENTS.length).toBeGreaterThan(FLOOR_HOOK_EVENTS.length);
+  });
+
+  test("nothing is recognised twice, and the list is sorted so a diff is readable", () => {
+    expect(new Set(KNOWN_HOOK_EVENTS).size).toBe(KNOWN_HOOK_EVENTS.length);
+    expect([...KNOWN_HOOK_EVENTS]).toEqual([...KNOWN_HOOK_EVENTS].sort());
+  });
+
+  test("NEGATIVE CONTROL: the four names MEASURED to be rejected are rejected", () => {
+    // Measured in the same run that produced the list, against `claude 2.1.234`
+    // on 2026-08-18: each of these reported `Hooks (0)` — the total discard.
+    // Two of them are plausible enough that a hand-written list would carry them.
+    expect(unrecognisedEvents(["PreSubagentStart", "PermissionDecision", "Error", "NotARealEvent"])).toEqual([
+      "PreSubagentStart",
+      "PermissionDecision",
+      "Error",
+      "NotARealEvent",
+    ]);
+  });
+
+  test("and the real ones beside them are not", () => {
+    expect(unrecognisedEvents(["SubagentStart", "Setup", "TeammateIdle", "PostCompact"])).toEqual([]);
+  });
+
+  test("file order is preserved, because that is the order the reader will scan", () => {
+    expect(unrecognisedEvents(["zzz", "PreCompact", "aaa"])).toEqual(["zzz", "aaa"]);
   });
 });
