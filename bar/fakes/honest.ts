@@ -28,6 +28,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RecordItem, RunRecord } from "../lib/contract.ts";
+import { cloneDirsUnder, productRunDir } from "../lib/layout.ts";
 import type { Directive, Plan, PlanItem } from "../lib/plan.ts";
 
 const VENDOR_SCRIPT = fileURLToPath(new URL("./vendor.ts", import.meta.url));
@@ -214,10 +215,16 @@ function hasCommittedWork(clone: string): boolean {
 function sweepDirectories(runsRoot: string): { removed: string[]; retained: string[] } {
   const removed: string[] = [];
   const retained: string[] = [];
-  if (!existsSync(runsRoot)) return { removed, retained };
+  // `<run-root>/r/<run-id>/<item>` — ruling 61's short shape, taken from the
+  // product's own source by `bar/lib/layout.ts`. The fixture held a shape of
+  // its own invention (`<run-root>/<run-id>/clones/<id>`) for nine rounds, and
+  // it agreed with item 7's equally invented one, so the pair looked healthy
+  // while both were looking where the product puts nothing.
+  const runs = join(runsRoot, productRunDir());
+  if (!existsSync(runs)) return { removed, retained };
 
-  for (const entry of readdirSync(runsRoot)) {
-    const runDir = join(runsRoot, entry);
+  for (const entry of readdirSync(runs)) {
+    const runDir = join(runs, entry);
     if (!statSync(runDir).isDirectory()) continue;
     if (existsSync(join(runDir, "complete"))) {
       rmSync(runDir, { recursive: true, force: true });
@@ -229,10 +236,10 @@ function sweepDirectories(runsRoot: string): { removed: string[]; retained: stri
     // even when its sibling is kept. Retaining a whole run directory because one
     // clone in it mattered would be leaving inert litter behind and calling it
     // caution.
-    const clonesDir = join(runDir, "clones");
     let kept = false;
-    for (const child of existsSync(clonesDir) ? readdirSync(clonesDir) : []) {
-      const clone = join(clonesDir, child);
+    for (const child of readdirSync(runDir)) {
+      if (!/^[0-9]+$/.test(child)) continue;
+      const clone = join(runDir, child);
       if (!statSync(clone).isDirectory()) continue;
       if (hasCommittedWork(clone)) {
         retained.push(`${clone} (${directorySize(clone)} bytes)`);
@@ -476,9 +483,10 @@ async function doRun(): Promise<number> {
   // directory in its command line, which the first needle matches; the marker
   // needles add ruling 38's own channel for the run ids this root has a record
   // of, which is the same set `sweepAtStart` considers in scope.
-  const knownRunIds = readdirSync(runsRoot).filter((entry) => entry.startsWith("run-"));
+  const runsDir = join(runsRoot, productRunDir());
+  const knownRunIds = (existsSync(runsDir) ? readdirSync(runsDir) : []).filter((entry) => entry.startsWith("run-"));
   const swept = sweepProcesses([
-    join(runsRoot, "run-"),
+    join(runsDir, "run-"),
     ...knownRunIds.map((id) => `${RUN_MARKER} ${id}`),
   ]);
   const sweptDirs = sweepDirectories(runsRoot);
@@ -499,7 +507,8 @@ async function doRun(): Promise<number> {
     return 0;
   }
 
-  const runRoot = join(runsRoot, runId);
+  // `<run-root>/r/<run-id>`, the product's own composition.
+  const runRoot = join(runsRoot, productRunDir(), runId);
   mkdirSync(runRoot, { recursive: true });
   const emptyHooks = join(runRoot, "no-hooks");
   mkdirSync(emptyHooks, { recursive: true });
@@ -605,8 +614,7 @@ async function doRun(): Promise<number> {
       const itemBaseRef = wave2 ? integrationRefName : baseRef;
       const itemBaseSha = wave2 ? integrationTip : baseCommit.out;
 
-      const clone = join(runRoot, "clones", item.id);
-      mkdirSync(join(runRoot, "clones"), { recursive: true });
+      const clone = join(runRoot, String(numberOf.get(item.id) ?? 0));
       run(["git", "clone", "--local", "--quiet", repo, clone], { cwd: runRoot });
       run(["git", "fetch", "--quiet", "origin", `${baseRef}:refs/heads/bar-base`], { cwd: clone });
       if ((item.dependsOn ?? []).length > 0) {
@@ -890,7 +898,9 @@ async function doRun(): Promise<number> {
   // a clone left behind is a checkout of the operator's tree sitting on disk.
   // The record and the transcripts stay: item 11 requires the full record to be
   // there, and a report that names a path nothing is at is a report that lies.
-  rmSync(join(runRoot, "clones"), { recursive: true, force: true });
+  for (const clone of cloneDirsUnder(runsRoot)) {
+    if (clone.runId === runId) rmSync(clone.path, { recursive: true, force: true });
+  }
 
   // Report. Under a host-session audience it is capped, and ruling 52's rule is
   // that a cap prints fewer ITEMS and never fewer CHECKS — so a failing item and
