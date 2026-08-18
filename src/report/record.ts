@@ -57,7 +57,32 @@ export interface RecordItem {
   /** Ruling 29: the routing unit is a triple, recorded per item. */
   agent?: string;
   model?: string;
+  /**
+   * The third axis, rendered with its qualifier INSIDE the value.
+   *
+   * `high` alone would read as the effort that RAN, and #45 measured that
+   * neither vendor's setting is confirmable over the protocol — both had to be
+   * recovered from vendor-private on-disk records. So this string always says
+   * what brigadier DID, and the fields below carry the same fact in a form a
+   * machine can read without parsing prose.
+   */
   effort?: string;
+  /** Ruling 31: derived from (kind, difficulty). Never supplied by the plan. */
+  effortRequested?: string;
+  /** `session/set_model`, `MAX_THINKING_TOKENS at spawn`, or `none measured`. */
+  effortLever?: string;
+  /** What brigadier did: set it, sent it, had it accepted, had it refused, or nothing. */
+  effortDisposition?: string;
+  /**
+   * #45, as a field that cannot say otherwise.
+   *
+   * Typed as the literal `false`. "The effort we asked for is the effort that
+   * ran" is asserted from vendor-private records or not at all, and brigadier
+   * does not have them — so there is no value this may take that would imply it
+   * does.
+   */
+  effortConfirmed?: false;
+  effortDetail?: string;
   /** Ruling 67: recorded per item, and only ever downward. */
   difficulty?: string;
   clampedTo?: string;

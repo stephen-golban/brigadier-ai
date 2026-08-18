@@ -38,12 +38,29 @@ import { RUN_MARKER_FLAG, WORKER_MARKER, workerMarkerValue } from "../agent/mark
 import { buildEnvironment, type LaunchProfile } from "../agent/profiles.ts";
 import { runMarkerArg } from "../run/marker.ts";
 import type { WorkKind } from "../work/kind.ts";
+import {
+  chooseEffortModel,
+  leverFor,
+  noLever,
+  switchState,
+  type EffortOutcome,
+  type EffortRequest,
+} from "./effort.ts";
 
 export interface MarkedSpawn {
   channel: LineChannel;
   pid: number;
   /** Exactly what a `ps` scan will see. Recorded so a sweep can be audited. */
   commandLine: string;
+  /**
+   * What was done about ruling 29's third axis, read AFTER the turn.
+   *
+   * A function rather than a value because the graded lever is answered on the
+   * wire: `session/set_model` is sent while the handshake is in flight and the
+   * agent's answer arrives later. Reading it at spawn time would record `sent`
+   * for a setting that was subsequently refused.
+   */
+  effort(): EffortOutcome;
   kill(): void;
 }
 
@@ -60,7 +77,25 @@ export interface MarkedSpawnOptions {
   tmpDir: string;
   /** Ruling 65: granted at spawn, through the environment and nowhere else. */
   secrets?: Record<string, string>;
+  /**
+   * Ruling 31's derived effort. Derived from (kind, difficulty) by the caller,
+   * never read from the plan, and already under ruling 30's ceiling.
+   */
+  effort: EffortRequest;
+  /** Frames this module puts on the wire itself, so the transcript is complete. */
+  onFrame?: (direction: "out" | "in", raw: string) => void;
 }
+
+/**
+ * The id brigadier uses for the one request it sends outside `Connection`.
+ *
+ * A STRING, and that is the whole of why this is safe: `src/acp/connection.ts`
+ * numbers its own requests from 1 and correlates them in a `Map<number, …>`, so
+ * a string id cannot collide with one of its pending calls. The response is
+ * swallowed here rather than passed through, so nothing above ever sees an id it
+ * did not issue.
+ */
+export const EFFORT_REQUEST_ID = "brigadier-effort";
 
 /**
  * Spawn one agent for one item.
@@ -74,6 +109,38 @@ export interface MarkedSpawnOptions {
 export function spawnMarkedAgent(options: MarkedSpawnOptions): MarkedSpawn {
   const marker = runMarkerArg(options.runId, options.item);
   const argv = [options.profile.command, ...options.profile.args, marker];
+  const lever = leverFor(options.profile);
+
+  // Ruling 40's switch half. Set BEFORE the process exists, because the lever is
+  // an environment variable and there is no later moment at which it applies.
+  // Two states, never four: `high` on a two-state lever is a word for something
+  // MEASURED not to exist.
+  const effortEnv: Record<string, string> = {};
+  const outcome: { current: EffortOutcome } = {
+    current:
+      lever.kind === "none"
+        ? noLever(options.effort, lever)
+        : lever.kind === "switch"
+          ? {
+              requested: options.effort,
+              asserted: switchState(options.effort),
+              lever: `${lever.variable} at spawn`,
+              disposition: "set-at-spawn",
+              confirmed: false,
+            }
+          : {
+              requested: options.effort,
+              asserted: options.effort,
+              lever: "session/set_model",
+              disposition: "unavailable",
+              confirmed: false,
+              detail: "the agent had not answered session/new when this was recorded",
+            },
+  };
+  if (lever.kind === "switch") {
+    effortEnv[lever.variable] = options.effort === "low" ? lever.off : lever.on;
+  }
+
   const env = buildEnvironment(options.profile, {
     configRoot: options.configRoot,
     kind: options.kind,
@@ -83,6 +150,7 @@ export function spawnMarkedAgent(options: MarkedSpawnOptions): MarkedSpawn {
       // Ruling 59 upgrades this from a boolean to an identity: a refused
       // delegation needs to know whose record to be written to.
       [WORKER_MARKER]: workerMarkerValue(options.runId, options.item),
+      ...effortEnv,
       ...(options.secrets ?? {}),
     },
   });
@@ -144,9 +212,13 @@ export function spawnMarkedAgent(options: MarkedSpawnOptions): MarkedSpawn {
   };
 
   return {
-    channel,
+    channel:
+      lever.kind === "graded"
+        ? gradedEffortChannel(channel, options.effort, outcome, options.onFrame)
+        : channel,
     pid: child.pid,
     commandLine: argv.join(" "),
+    effort: () => outcome.current,
     kill() {
       try {
         child.kill("SIGKILL");
@@ -159,3 +231,114 @@ export function spawnMarkedAgent(options: MarkedSpawnOptions): MarkedSpawn {
 
 /** The flag a reader will see in `ps`, exported so a report can name it. */
 export const MARKER_FLAG = RUN_MARKER_FLAG;
+
+/**
+ * Codex's graded lever, asserted on the wire.
+ *
+ * `session/set_model` is the only measured way to move Codex's effort (ruling
+ * 40), and `Worker` exposes no way to send an arbitrary request — so the
+ * request is put on the channel here, between the agent's answer to
+ * `session/new` and the prompt that follows it. Three properties make that
+ * safe rather than clever, and each is checked by a test:
+ *
+ *   THE ID IS A STRING. `Connection` numbers its own requests and correlates
+ *   them in a `Map<number, …>`, so `"brigadier-effort"` cannot collide with a
+ *   call it is waiting on.
+ *
+ *   THE ANSWER IS SWALLOWED. Nothing above this ever sees a response to an id
+ *   it did not issue.
+ *
+ *   THE MODEL ID IS READ, NEVER CONSTRUCTED. The Codex profile's own caveat,
+ *   and ruling 40 measured that an invalid id fails `-32603` — so the only
+ *   strings sent are ones the agent itself listed at `session/new`.
+ *
+ * WHAT IT STILL DOES NOT ESTABLISH: that the effort asked for is the effort
+ * that ran. #45 measured that neither vendor's setting is confirmable over the
+ * protocol; an accepted id is an accepted id. `EffortOutcome.confirmed` stays
+ * `false` on every path through this function.
+ */
+export function gradedEffortChannel(
+  inner: LineChannel,
+  request: EffortRequest,
+  outcome: { current: EffortOutcome },
+  onFrame?: (direction: "out" | "in", raw: string) => void,
+): LineChannel {
+  let asked = false;
+  return {
+    send: (line) => inner.send(line),
+    diagnostics: () => inner.diagnostics(),
+    close: () => inner.close(),
+    async *lines() {
+      for await (const line of inner.lines()) {
+        const message = parseFrame(line);
+
+        // Our own answer, and nobody else's business.
+        if (message !== null && message["id"] === EFFORT_REQUEST_ID) {
+          onFrame?.("in", line);
+          const error = message["error"] as { message?: string } | undefined;
+          outcome.current = error
+            ? { ...outcome.current, disposition: "rejected", detail: error.message ?? "no message" }
+            : { ...outcome.current, disposition: "accepted", asserted: outcome.current.asserted };
+          continue;
+        }
+
+        if (!asked) {
+          const result = message?.["result"] as { sessionId?: unknown } | undefined;
+          const sessionId = result?.sessionId;
+          if (typeof sessionId === "string" && sessionId.length > 0) {
+            asked = true;
+            const models = availableModels(result);
+            const modelId = chooseEffortModel(models, request);
+            if (modelId === null) {
+              outcome.current = {
+                ...outcome.current,
+                disposition: "unavailable",
+                detail:
+                  `session/new listed ${models.length} model id(s) and none of them encodes an ` +
+                  `effort at or below \`${request}\`. Ruling 30's ceiling is not exceeded to make ` +
+                  "one fit, and an id is never constructed to invent one.",
+              };
+            } else {
+              const frame = JSON.stringify({
+                jsonrpc: "2.0",
+                id: EFFORT_REQUEST_ID,
+                method: "session/set_model",
+                params: { sessionId, modelId },
+              });
+              inner.send(frame);
+              onFrame?.("out", frame);
+              outcome.current = { ...outcome.current, asserted: modelId, disposition: "sent" };
+            }
+          }
+        }
+
+        yield line;
+      }
+    },
+  };
+}
+
+function parseFrame(line: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(line) as unknown;
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Both envelopes `src/agent/worker.ts` accepts, for the same reason it accepts
+ * both: #2 measured only THAT the list arrives on Codex, not which envelope the
+ * shipped bridge uses. An unrecognised shape yields an empty list, which becomes
+ * `unavailable` rather than a guess.
+ */
+function availableModels(result: unknown): string[] {
+  const holder = result as { models?: { availableModels?: unknown }; availableModels?: unknown } | null;
+  const list = holder?.models?.availableModels ?? holder?.availableModels;
+  if (!Array.isArray(list)) return [];
+  return list
+    .map((entry) => (entry as { modelId?: unknown; id?: unknown } | null)?.modelId ?? (entry as { id?: unknown } | null)?.id)
+    .filter((id): id is string => typeof id === "string" && id.length > 0);
+}

@@ -71,8 +71,23 @@ export function token(label = "tok"): string {
   return `${label}-${randomBytes(9).toString("hex")}`;
 }
 
+/**
+ * The fixture channel rides inside the PROMPT, because that is the only field
+ * that reaches an ACP agent.
+ *
+ * `directive` is still written for orchestrators that read plans directly, but
+ * the product hands an agent prose and nothing else — so a fixture that could
+ * only be reached through a plan field was a fixture the product could never
+ * drive. A real agent ignores the tag and follows the sentence above it.
+ */
+export function promptWithDirective(item: PlanItem): string {
+  if (!item.directive) return `item: ${item.id}\n${item.prompt}`;
+  return `item: ${item.id}\n${item.prompt}\n<BAR-DIRECTIVE>${JSON.stringify(item.directive)}</BAR-DIRECTIVE>`;
+}
+
 export function writePlan(dir: string, plan: Plan, name = "plan.json"): string {
   const path = join(dir, name);
+  plan = { ...plan, items: plan.items.map((i) => ({ ...i, prompt: promptWithDirective(i) })) };
   writeFileSync(path, `${JSON.stringify(plan, null, 2)}\n`);
   return path;
 }

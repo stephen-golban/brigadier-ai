@@ -114,8 +114,8 @@ const item: BarItem = {
 
     const binDir = ensureDir(join(ctx.workdir, "bin"));
     const fleet = plantFleet(binDir, join(ctx.workdir, "vendor-ledger.tsv"), [
-      { id: "codex", version: "1.4.0" },
       { id: "qwen", version: "0.21.13" },
+      { id: "copilot", version: "1.0.80" },
     ]);
     const env = baseEnv({ PATH: isolatedPath(binDir) });
     const runs = ensureDir(join(ctx.workdir, "runs"));

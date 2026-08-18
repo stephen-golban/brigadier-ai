@@ -95,6 +95,7 @@ import { lanePolicyFor } from "../work/kind.ts";
 import type { VerifyResolution } from "../gate/verify.ts";
 import { bindingSentence, type Admission } from "./admit.ts";
 import { composeBrief } from "./brief.ts";
+import { CEILING, deriveEffort, noLever, leverFor, renderEffort, type EffortOutcome } from "./effort.ts";
 import { spawnMarkedAgent } from "./spawn.ts";
 import { describeEstimate, estimatePlan } from "./estimate.ts";
 import type { PlannedItem } from "./plan.ts";
@@ -146,6 +147,15 @@ export interface ExecuteOptions {
   review: boolean;
   /** Ruling 65: names of environment variables to grant, and to redact everywhere. */
   secretEnv: readonly string[];
+  /**
+   * Ruling 30's edge case, declared by the OPERATOR and never by the plan.
+   *
+   * Item ids whose ceiling is raised from `high` to `xhigh`. Ruling 31 bans the
+   * plan from setting effort at all — a model choosing how hard it gets to think
+   * about its own task is a self-serving input on the axis that most directly
+   * sets the bill — so the only channel for this is the command line.
+   */
+  xhigh?: readonly string[];
   softCeiling?: number;
   hardCeiling?: number;
   runId?: string;
@@ -253,6 +263,8 @@ interface ItemRun {
   clonePath: string | null;
   agent: string | null;
   model: string | null;
+  /** Ruling 29's third axis, and what brigadier actually did about it. */
+  effort: EffortOutcome;
   bytes: number;
   /** Set when the clone is the only copy of the work — ruling 63 retains it. */
   retain: boolean;
@@ -276,6 +288,12 @@ async function runItem(
   secrets: Record<string, string>,
   transcript: string[],
 ): Promise<ItemRun> {
+  // Ruling 31: derived from (kind, difficulty), here, from the difficulty
+  // ACTUALLY IN FORCE. Deriving from the declared one would spend at the level
+  // the plan asked for after ruling 67 had already said it was clamped down.
+  const ceiling = (options.xhigh ?? []).includes(item.id) ? "xhigh" : CEILING;
+  const requested = deriveEffort(item.kind, item.clampedTo, ceiling);
+
   const result: ItemRun = {
     item,
     checks: [],
@@ -283,6 +301,20 @@ async function runItem(
     clonePath: null,
     agent: agent?.id ?? null,
     model: null,
+    effort:
+      agent === null
+        ? noLever(requested, { kind: "none", why: "no agent resolved, so nothing was spawned to assert it on" })
+        : (() => {
+            const lever = leverFor(agent.profile);
+            return lever.kind === "none" ? noLever(requested, lever) : {
+              requested,
+              asserted: requested,
+              lever: lever.kind === "switch" ? `${lever.variable} at spawn` : "session/set_model",
+              disposition: "unavailable" as const,
+              confirmed: false as const,
+              detail: "the worker never started, so the lever was never reached",
+            };
+          })(),
     bytes: 0,
     retain: false,
   };
@@ -315,6 +347,7 @@ async function runItem(
   let outcome: CheckOutcome = "not-run";
   let detail = "no agent was available to attempt this item";
   let spawned: { pid: number; kill(): void } | null = null;
+  let marked: ReturnType<typeof spawnMarkedAgent> | undefined;
 
   if (agent !== null) {
     // The profile as it will be SPAWNED — ruling 69's override already applied
@@ -322,7 +355,7 @@ async function runItem(
     // did not print.
     const profile = agent.profile;
     try {
-      const marked = spawnMarkedAgent({
+      marked = spawnMarkedAgent({
         profile,
         runId: base.runId,
         item: item.number,
@@ -331,6 +364,8 @@ async function runItem(
         configRoot: join(clone.stateDir, "agent-config"),
         tmpDir: join(clone.stateDir, "tmp"),
         secrets,
+        effort: requested,
+        onFrame: (direction, raw) => transcript.push(`${item.id} ${direction} ${raw}`),
       });
       spawned = marked;
       mkdirSync(join(clone.stateDir, "agent-config"), { recursive: true });
@@ -379,6 +414,10 @@ async function runItem(
       outcome = "error";
       detail = error instanceof Error ? error.message : String(error);
     } finally {
+      // Read AFTER the turn: the graded lever is answered on the wire, so
+      // reading it at spawn time would record `sent` for a setting the agent
+      // subsequently refused.
+      result.effort = marked?.effort() ?? result.effort;
       spawned?.kill();
     }
   } else {
@@ -668,6 +707,15 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
       kind: run.item.kind,
       ...(run.agent === null ? {} : { agent: run.agent }),
       ...(run.model === null ? {} : { model: run.model }),
+      // Ruling 29's triple is complete only with this. Rendered so the qualifier
+      // is INSIDE the value: `high` alone would read as what ran, and #45
+      // measured that brigadier cannot know that.
+      effort: renderEffort(run.effort),
+      effortRequested: run.effort.requested,
+      effortLever: run.effort.lever,
+      effortDisposition: run.effort.disposition,
+      effortConfirmed: run.effort.confirmed,
+      ...(run.effort.detail === undefined ? {} : { effortDetail: run.effort.detail }),
       ...(run.item.difficulty === null
         ? {}
         : { difficulty: run.item.difficulty, clampedTo: run.item.clampedTo ?? run.item.difficulty }),

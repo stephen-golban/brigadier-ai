@@ -70,7 +70,10 @@ export function renderItem(item: RecordItem): string {
     );
   }
   if (item.agent !== undefined) {
-    head.push(`(${item.agent}, ${item.model ?? "unrouted"}, ${item.effort ?? "default"})`);
+    // `default` would read as a value somebody chose. An absent one is an
+    // absent one — ruling 52's rule about a missing result never rendering as a
+    // satisfied requirement, one axis over.
+    head.push(`(${item.agent}, ${item.model ?? "unrouted"}, ${item.effort ?? "effort NOT recorded"})`);
   }
   const lines = [`  ${head.join(" — ")}`];
   for (const check of item.checks) lines.push(`      ${renderRecordCheck(check)}`);

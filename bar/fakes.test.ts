@@ -136,7 +136,11 @@ describe("the honest fixture must pass the items it implements", () => {
   // agent, and the licence text, size and start-up of a compiled binary — so a
   // script fixture is the wrong subject for them and they are driven against
   // `dist/brigadier` by the bar itself rather than here.
-  const covered = [2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13];
+  // Item 5 is deliberately absent: it drives the operator's REAL credentialed
+  // fleet, because ruling 43 and #41 measured an approved permission escaping a
+  // vendor's own sandbox and no fixture we write can reproduce that. A fixture
+  // passing it would mean the item had quietly stopped needing real vendors.
+  const covered = [2, 3, 4, 6, 7, 8, 9, 11, 12, 13];
 
   test(
     "a brigadier that really clones, spawns, merges and records passes them",

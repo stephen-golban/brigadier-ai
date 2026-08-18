@@ -45,6 +45,16 @@ export function plantVendor(binDir: string, config: VendorConfig): string {
   );
 }
 
+/**
+ * Agents whose launch profile is their own binary.
+ *
+ * `claude` and `codex` are BRIDGED — their profiles launch `npx -y
+ * @agentclientprotocol/…` (ruling 44) — so planting a file called `codex` on
+ * PATH resolves nothing and the product correctly finds zero eligible agents.
+ * Items 6 and 12 failed on exactly that. These four are launched by name.
+ */
+export const PLANTABLE_VENDORS = ["copilot", "qwen", "opencode", "gemini"] as const;
+
 export function plantVendors(binDir: string, configs: readonly VendorConfig[]): string[] {
   return configs.map((config) => plantVendor(binDir, config));
 }

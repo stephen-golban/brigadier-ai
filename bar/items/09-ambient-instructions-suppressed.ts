@@ -139,8 +139,8 @@ const item: BarItem = {
     );
 
     plantFleet(binDir, join(ctx.workdir, "vendor-ledger.tsv"), [
-      { id: "codex", version: "1.4.0" },
       { id: "qwen", version: "0.21.13" },
+      { id: "copilot", version: "1.0.80" },
     ]);
     const ledger = join(ensureDir(join(ctx.workdir, "observe")), "brigadier-invocations.log");
     plantBrigadierShim(binDir, ledger, ctx.binary);
@@ -159,13 +159,13 @@ const item: BarItem = {
       controlBrief,
       JSON.stringify({ itemId: "control", clone: controlClone, role: "builder" }, null, 2),
     );
-    const control = await exec([join(binDir, "codex"), controlBrief], {
+    const control = await exec([join(binDir, "qwen"), controlBrief], {
       cwd: controlClone,
       env: baseEnv({ PATH: isolatedPath(binDir), HOME: home, BAR_ANSWER_FILE: join(ctx.workdir, "control.answer") }),
       timeoutMs: 60_000,
     });
     writeFileSync(join(ctx.workdir, "control.answer"), "ALLOW");
-    const controlAgain = await exec([join(binDir, "codex"), controlBrief], {
+    const controlAgain = await exec([join(binDir, "qwen"), controlBrief], {
       cwd: controlClone,
       env: baseEnv({ PATH: isolatedPath(binDir), HOME: home, BAR_ANSWER_FILE: join(ctx.workdir, "control.answer") }),
       timeoutMs: 60_000,

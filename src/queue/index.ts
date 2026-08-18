@@ -38,6 +38,25 @@ export {
 export { BRIEF_PREFIX, briefFor, composeBrief } from "./brief.ts";
 
 export {
+  CEILING,
+  CLAUDE_THINKING_OFF,
+  CLAUDE_THINKING_ON,
+  EFFORT_ORDER,
+  atMost,
+  chooseEffortModel,
+  deriveEffort,
+  effortOf,
+  leverFor,
+  noLever,
+  renderEffort,
+  switchState,
+  type EffortDisposition,
+  type EffortLever,
+  type EffortOutcome,
+  type EffortRequest,
+} from "./effort.ts";
+
+export {
   MEASURED_ITEM_BYTES,
   NO_SAVINGS_CLAIM,
   activeLevers,
@@ -77,4 +96,11 @@ export {
   type ValidationInput,
 } from "./plan.ts";
 
-export { MARKER_FLAG, spawnMarkedAgent, type MarkedSpawn, type MarkedSpawnOptions } from "./spawn.ts";
+export {
+  EFFORT_REQUEST_ID,
+  MARKER_FLAG,
+  gradedEffortChannel,
+  spawnMarkedAgent,
+  type MarkedSpawn,
+  type MarkedSpawnOptions,
+} from "./spawn.ts";

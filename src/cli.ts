@@ -54,6 +54,10 @@ const USAGE = `brigadier — an ACP hub
       --audience terminal|acp-client|host-session   default host-session, where
                     the report is hard-capped because a model pays for it forever.
       --max-difficulty easy|medium|hard   the ceiling items are clamped DOWN to.
+      --xhigh <item-id>     raise ONE item's effort ceiling from high to xhigh.
+                    Ruling 30's declared edge case. A plan may not set effort at
+                    all (ruling 31): it is derived from (kind, difficulty), and
+                    this is the only channel that moves the ceiling. Repeatable.
       --workers <n> the per-run concurrency budget (ruling 54's third filter).
 
   brigadier plan --plan <path> [...]
@@ -465,6 +469,9 @@ async function run(): Promise<number> {
     verify,
     review: flag("review"),
     secretEnv: values("secret-env"),
+    // Ruling 30's declared edge case, and ruling 31's reason it is here rather
+    // than in the plan: the operator raises a ceiling, never the plan.
+    xhigh: values("xhigh"),
     ...(value("soft-ceiling") === undefined ? {} : { softCeiling: Number(value("soft-ceiling")) }),
     ...(value("hard-ceiling") === undefined ? {} : { hardCeiling: Number(value("hard-ceiling")) }),
   });

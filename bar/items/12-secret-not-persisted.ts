@@ -151,7 +151,7 @@ const item: BarItem = {
     did.push(`wrote a plan at ${planPath} asking a worker to COMMIT the secret, granted through ruling 65's environment channel as $${SECRET_ENV}`);
 
     const binDir = ensureDir(join(ctx.workdir, "bin"));
-    plantFleet(binDir, join(ctx.workdir, "vendor-ledger.tsv"), [{ id: "codex", version: "1.4.0" }]);
+    plantFleet(binDir, join(ctx.workdir, "vendor-ledger.tsv"), [{ id: "qwen", version: "0.21.13" }]);
     const runs = ensureDir(join(ctx.workdir, "runs"));
     const env = baseEnv({ PATH: isolatedPath(binDir), [SECRET_ENV]: secret });
 

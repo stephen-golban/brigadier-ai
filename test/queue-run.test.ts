@@ -54,7 +54,10 @@ for await (const chunk of Bun.stdin.stream()) {
     if (msg.method === "initialize") {
       send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentInfo: { name: "planted", version: "0.21.13" }, agentCapabilities: {} } });
     } else if (msg.method === "session/new") {
-      send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "s1" } });
+      send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "s1", models: { availableModels: [{ modelId: "fake-1[low]" }, { modelId: "fake-1[medium]" }, { modelId: "fake-1[high]" }, { modelId: "fake-1[max]" }] } } });
+    } else if (msg.method === "session/set_model") {
+      process.stderr.write("SET_MODEL " + String(msg.params?.modelId) + "\\n");
+      send({ jsonrpc: "2.0", id: msg.id, result: null });
     } else if (msg.method === "session/prompt") {
       const brief = String(msg.params?.prompt?.[0]?.text ?? "");
       const one = (re) => re.exec(brief)?.[1];
@@ -305,6 +308,144 @@ describe("a refused plan creates nothing (ruling 53)", () => {
     const good = brigadier(world, ["run", "--plan", ok, "--repo", world.repo, "--run-root", world.runs]);
     expect(good.code).toBe(0);
     expect(readdirSync(world.runs)).toContain("r");
+  });
+});
+
+// -------------------------------------------------------------- the effort
+
+describe("ruling 29's third axis is recorded, and says what it IS", () => {
+  const world = makeWorld("effort");
+
+  // Ruling 69's per-machine override, which is the only way to point a BRIDGED
+  // profile at something this test can plant: rulings 4 and 44 launch Codex
+  // through `npx`, so a binary called `codex` on PATH is not Codex's ACP bridge
+  // and brigadier is right not to treat it as one.
+  const configHome = join(world.dir, "config");
+  mkdirSync(join(configHome, "brigadier"), { recursive: true });
+  writeFileSync(
+    join(configHome, "brigadier", "bridges.json"),
+    JSON.stringify([{ agent: "codex", command: join(world.bin, "qwen"), args: [] }]),
+  );
+
+  const planPath = writePlan(world.dir, [
+    { id: "graded", kind: "write", paths: ["g.txt"], prompt: "out=g.txt", difficulty: "hard" },
+  ]);
+  // `--max-difficulty hard` so the declared `hard` survives ruling 67's clamp
+  // and the derivation has somewhere to go. The paired control below runs the
+  // same plan WITHOUT it, where the difficulty clamp cascades into the effort.
+  const result = brigadier(
+    world,
+    [
+      "run", "--plan", planPath, "--repo", world.repo, "--run-root", world.runs,
+      "--max-difficulty", "hard", "--audience", "terminal",
+    ],
+    { XDG_CONFIG_HOME: configHome },
+  );
+  const runId = readdirSync(join(world.runs, "r"))[0] ?? "";
+  const parsed = JSON.parse(readFileSync(join(world.runs, "r", runId, "record.json"), "utf8")) as {
+    items: Array<{
+      agent?: string;
+      model?: string;
+      effort?: string;
+      effortRequested?: string;
+      effortLever?: string;
+      effortDisposition?: string;
+      effortConfirmed?: boolean;
+    }>;
+  };
+  const item = parsed.items[0];
+
+  test("the run completed on the overridden bridge", () => {
+    expect(result.code).toBe(0);
+    expect(item?.agent).toBe("codex");
+  });
+
+  test("ruling 29: the triple is complete — agent, model AND effort", () => {
+    expect(item?.agent).toBeDefined();
+    expect(item?.model).toBeDefined();
+    expect(item?.effort).toBeDefined();
+  });
+
+  test("ruling 31: effort is derived from (kind, difficulty), and `hard` derives `high`", () => {
+    expect(item?.effortRequested).toBe("high");
+  });
+
+  test("ruling 40: it was asserted on the GRADED lever, with an id the agent listed", () => {
+    expect(item?.effortLever).toBe("session/set_model");
+    expect(item?.effortDisposition).toBe("accepted");
+    expect(item?.effort).toContain("fake-1[high]");
+    const transcript = readFileSync(join(world.runs, "r", runId, "transcripts", "full.log"), "utf8");
+    expect(transcript).toContain("session/set_model");
+    expect(transcript).toContain("fake-1[high]");
+  });
+
+  test("NEGATIVE CONTROL: ruling 67's clamp CASCADES — a clamped difficulty buys a cheaper effort", () => {
+    // The same plan without `--max-difficulty hard`: `hard` clamps to `medium`,
+    // and effort follows the difficulty ACTUALLY IN FORCE rather than the one
+    // the plan asked for. Deriving from the declared value would spend at the
+    // level brigadier had just said it was not spending at.
+    const clamped = makeWorld("effort-clamped");
+    mkdirSync(join(clamped.dir, "config", "brigadier"), { recursive: true });
+    writeFileSync(
+      join(clamped.dir, "config", "brigadier", "bridges.json"),
+      JSON.stringify([{ agent: "codex", command: join(clamped.bin, "qwen"), args: [] }]),
+    );
+    const plan = writePlan(clamped.dir, [
+      { id: "graded", kind: "write", paths: ["g.txt"], prompt: "out=g.txt", difficulty: "hard" },
+    ]);
+    const ran = brigadier(
+      clamped,
+      ["run", "--plan", plan, "--repo", clamped.repo, "--run-root", clamped.runs, "--audience", "terminal"],
+      { XDG_CONFIG_HOME: join(clamped.dir, "config") },
+    );
+    expect(ran.code).toBe(0);
+    const id = readdirSync(join(clamped.runs, "r"))[0] ?? "";
+    const record = JSON.parse(readFileSync(join(clamped.runs, "r", id, "record.json"), "utf8")) as {
+      items: Array<{ difficulty?: string; clampedTo?: string; effortRequested?: string; effort?: string }>;
+    };
+    expect(record.items[0]?.difficulty).toBe("hard");
+    expect(record.items[0]?.clampedTo).toBe("medium");
+    expect(record.items[0]?.effortRequested).toBe("medium");
+    expect(record.items[0]?.effort).toContain("fake-1[medium]");
+  });
+
+  test("NEGATIVE CONTROL: ruling 30 — the `[max]` id the agent offered was never chosen", () => {
+    // The agent listed one. Nothing filtered it out at the wire; it is simply
+    // not a value brigadier can request.
+    const transcript = readFileSync(join(world.runs, "r", runId, "transcripts", "full.log"), "utf8");
+    expect(transcript).toContain("fake-1[max]");
+    const sent = transcript.split("\n").filter((line) => line.includes("session/set_model"));
+    expect(sent.every((line) => !line.includes("[max]"))).toBe(true);
+  });
+
+  test("#45: nothing claims the effort was confirmed", () => {
+    expect(item?.effortConfirmed).toBe(false);
+    expect(item?.effort).toContain("NOT confirmed");
+    expect(result.stdout).toContain("NOT confirmed");
+  });
+
+  test("NEGATIVE CONTROL: a vendor with no measured lever asserts NOTHING and says so", () => {
+    // Without this, "effort was set" would also be satisfied by a build that
+    // printed a grade for every vendor whether or not it had a lever to set it
+    // on — which is the shape #45 warns about.
+    const plain = makeWorld("effort-nolever");
+    const plainPlan = writePlan(plain.dir, [
+      { id: "bare", kind: "write", paths: ["b.txt"], prompt: "out=b.txt", difficulty: "hard" },
+    ]);
+    const ran = brigadier(plain, [
+      "run", "--plan", plainPlan, "--repo", plain.repo, "--run-root", plain.runs, "--audience", "terminal",
+    ]);
+    expect(ran.code).toBe(0);
+    const id = readdirSync(join(plain.runs, "r"))[0] ?? "";
+    const record = JSON.parse(readFileSync(join(plain.runs, "r", id, "record.json"), "utf8")) as {
+      items: Array<{ agent?: string; effortLever?: string; effortDisposition?: string; effort?: string }>;
+    };
+    expect(record.items[0]?.agent).toBe("qwen");
+    expect(record.items[0]?.effortLever).toBe("none measured");
+    expect(record.items[0]?.effortDisposition).toBe("no-lever");
+    expect(record.items[0]?.effort).toContain("not asserted");
+    const transcript = readFileSync(join(plain.runs, "r", id, "transcripts", "full.log"), "utf8");
+    expect(transcript).not.toContain("session/set_model");
   });
 });
 

@@ -297,11 +297,11 @@ export function proofOfWork(e: RunEvidence, expect: WorkExpectation): Checks {
     const settled = [...flight.clonesSeen.values()].filter((c) => c.isGitRepo);
     const bad = settled.filter((c) => !c.originRemoved || !c.hasBaseRef);
     checks.expect(
-      "each clone was a real git repository with `origin` removed and the base commit present",
+      "each clone was a real git repository with `origin` removed, started from a scratch base",
       settled.length > 0 && bad.length === 0,
       settled.length === 0
         ? "no directory under the run root was ever a git repository"
-        : `${settled.length} settled clone(s); non-conforming: ${bad.map((c) => `${c.path} origin-removed=${c.originRemoved} base=${c.hasBaseRef}`).join("; ") || "none"}`,
+        : `${settled.length} settled clone(s); non-conforming: ${bad.map((c) => `${c.path} origin-removed=${c.originRemoved} scratch-base=${c.hasBaseRef} (refs HEAD descends from: ${c.baseRefsSeen.join(", ") || "NONE"})`).join("; ") || "none"}`,
     );
     checks.expect(
       "processes carrying ruling 38's COMMAND-LINE marker really ran",

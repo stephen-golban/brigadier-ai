@@ -51,7 +51,7 @@ const item: BarItem = {
 
     // Exactly one vendor on PATH. This is the machine under test.
     const binDir = ensureDir(join(ctx.workdir, "bin"));
-    plantFleet(binDir, join(ctx.workdir, "vendor-ledger.tsv"), [{ id: "codex", version: "1.4.0" }]);
+    plantFleet(binDir, join(ctx.workdir, "vendor-ledger.tsv"), [{ id: "qwen", version: "0.21.13" }]);
     const env = baseEnv({ PATH: isolatedPath(binDir) });
     did.push(`planted exactly ONE fixture vendor at ${binDir} and gave the binary a PATH containing only it`);
 

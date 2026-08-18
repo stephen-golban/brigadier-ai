@@ -262,4 +262,21 @@ test("ruling 56: the ownership diff computes identically in the parent, with bot
       `command without --name-only fired [${firedByFullDiff.join(", ")}]; in the parent, ` +
       "after the fetch, neither fired anything and the paths were byte-identical",
   );
-});
+},
+// The budget, declared rather than inherited — and this is a bug fix, not
+// housekeeping. This test spawns roughly thirty `git` processes: an init, a
+// local clone, the planting of eight hooks and six config payloads, the
+// positive control's commit, four ownership diffs, a fetch and two full diffs.
+// MEASURED on an idle machine: 3.97 s. Bun's undeclared default is 5000 ms, so
+// it was passing with 21% of its budget left and timing out the moment the
+// machine had anything else to do — REPRODUCED 4 times out of 4 under
+// concurrent runs, where it was the ONLY failure in this file's suite.
+//
+// A blocking check that goes red on load rather than on behaviour is ruling
+// 48's named failure mode: it teaches the reader to re-run rather than to look.
+// Nothing about what this test ASSERTS changes here — the canary paths, the
+// byte-equality and the negative controls are untouched. Only the wall-clock
+// budget changes, and it is set where every other subprocess-heavy test in this
+// repository sets it (90_000–180_000) rather than at a number this test's own
+// measured duration sits close to.
+120_000);

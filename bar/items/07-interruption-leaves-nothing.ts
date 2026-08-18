@@ -187,8 +187,8 @@ const item: BarItem = {
 
     const binDir = ensureDir(join(ctx.workdir, "bin"));
     plantFleet(binDir, join(ctx.workdir, "vendor-ledger.tsv"), [
-      { id: "codex", version: "1.4.0" },
       { id: "qwen", version: "0.21.13" },
+      { id: "copilot", version: "1.0.80" },
     ]);
     const env = baseEnv({ PATH: isolatedPath(binDir) });
     const runs = ensureDir(join(ctx.workdir, "runs"));
@@ -260,8 +260,17 @@ const item: BarItem = {
         if (victim.exitCode !== null || victim.signalCode !== null) break;
         await Bun.sleep(200);
       }
-      const readyClones = clonesUnder(runs);
-      const wasReady = fileSize(heartbeat) > 0 && readyClones.some((c) => c.hadCommits);
+      // Readiness is RETRIED rather than assumed. A blocking item that fails
+      // because the kill landed early is flaky, and ruling 48 names a flaky
+      // blocking item as the thing that gets disabled — so the item waits for
+      // the state it needs, and only then kills.
+      let readyClones = clonesUnder(runs);
+      let wasReady = fileSize(heartbeat) > 0 && readyClones.some((c) => c.hadCommits);
+      for (let extra = 0; !wasReady && extra < 3 && victim.exitCode === null && victim.signalCode === null; extra++) {
+        await Bun.sleep(3_000);
+        readyClones = clonesUnder(runs);
+        wasReady = fileSize(heartbeat) > 0 && readyClones.some((c) => c.hadCommits);
+      }
       victim.kill("SIGKILL");
       await victim.exited;
       did.push(

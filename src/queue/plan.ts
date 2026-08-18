@@ -68,6 +68,12 @@ export interface PlanItemSpec {
   verify?: unknown;
   requires?: unknown;
   difficulty?: unknown;
+  /**
+   * Present in the type ONLY so that a plan which sets it can be refused by
+   * name. Ruling 31: effort is derived from (kind, difficulty) and a plan may
+   * not set it.
+   */
+  effort?: unknown;
 }
 
 export interface PlanSpec {
@@ -283,6 +289,19 @@ export function validatePlan(spec: PlanSpec, input: ValidationInput): ValidatedP
     }
     if (entry.verify !== undefined && typeof entry.verify !== "string") {
       shape.push(`item ${id}'s \`verify\` must be a string command.`);
+      return;
+    }
+    // Ruling 31, refused rather than ignored. A field that is silently dropped
+    // is a field the author believes is in force, and this one is on the axis
+    // that most directly sets the bill: a model choosing how hard it gets to
+    // think about its own task is a self-serving input.
+    if (entry.effort !== undefined) {
+      shape.push(
+        `item ${id} sets \`effort\`, and a plan may not (ruling 31). Effort is derived from ` +
+          "(kind, difficulty): declare `difficulty` instead, and brigadier will clamp it DOWN " +
+          "if it has to (ruling 67). The only channel that raises the ceiling is the operator's " +
+          "own `--xhigh <item-id>`, which is ruling 30's declared edge case.",
+      );
       return;
     }
     const difficulty = isDifficulty(entry.difficulty) ? entry.difficulty : null;

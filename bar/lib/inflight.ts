@@ -46,8 +46,25 @@ export interface CloneSample {
   payloadsSeen: string[];
   /** Ruling 51: a worker can push through the clone's own `origin`. */
   originRemoved: boolean;
-  /** The scratch base commit is what a clone is supposed to start from. */
+  /**
+   * Does this clone start from a SCRATCH BASE rather than from `HEAD`?
+   *
+   * The previous version looked for a ref literally called `bar-base`, which is
+   * my own fixture's name — so it reported `false` against every real
+   * implementation and would have stayed false forever. The property that is
+   * actually promised is ruling 33's: the base commit carries the owner's
+   * uncommitted tracked and untracked work, so it CANNOT equal the operator's
+   * `HEAD`. That is checkable without knowing anyone's ref names.
+   */
   hasBaseRef: boolean;
+  /**
+   * The local refs the clone's checkout actually descends from — evidence, so a
+   * failure names what WAS in the clone instead of only that a probe said no.
+   *
+   * `refname@sha`, HEAD's own branch excluded. See `inspectClone` for why this
+   * is a list of what was found rather than a lookup of a name we chose.
+   */
+  baseRefsSeen: string[];
 }
 
 export interface Flight {
@@ -101,22 +118,79 @@ function scanPayloads(path: string, payloadMarker?: string): string[] {
   return payloadsSeen;
 }
 
-function inspectClone(path: string, payloadMarker?: string): CloneSample {
+function inspectClone(path: string, payloadMarker?: string, operatorHead?: string): CloneSample {
   const gitDir = join(path, ".git");
   const payloadsSeen = scanPayloads(path, payloadMarker);
-  if (!existsSync(gitDir)) return { path, isGitRepo: false, originRemoved: false, hasBaseRef: false, payloadsSeen };
+  if (!existsSync(gitDir)) {
+    return { path, isGitRepo: false, originRemoved: false, hasBaseRef: false, payloadsSeen, baseRefsSeen: [] };
+  }
   const git = (args: string[]): { ok: boolean; out: string } => {
     const proc = Bun.spawnSync(["git", `--git-dir=${gitDir}`, ...args], { stdout: "pipe", stderr: "pipe" });
     return { ok: proc.exitCode === 0, out: new TextDecoder().decode(proc.stdout).trim() };
   };
   const remotes = git(["remote"]);
-  const base = git(["rev-parse", "--verify", "--quiet", "refs/heads/bar-base"]);
+  const head = git(["rev-parse", "--verify", "--quiet", "HEAD"]);
+  // THE BASE COMMIT, asked for as a PROPERTY rather than as a name.
+  //
+  // This probe used to be `rev-parse refs/heads/bar-base`, and `bar-base` is
+  // the name `bar/fakes/honest.ts` — the FIXTURE — fetches its base onto. The
+  // product fetches onto a name of its own, so the sub-check reported
+  // `base=false` for every real clone: a check only the harness's own fake
+  // could satisfy, which is the exact inversion of what a bar is for. Naming
+  // the product's constant instead would only move the defect, because `bar/`
+  // deliberately imports nothing from `src/` and a second copy goes stale
+  // silently — as this one already had.
+  //
+  // Two independent properties, and the `&&` is deliberate:
+  //
+  //   1. The checkout DESCENDS FROM some other local ref. A clone made from a
+  //      base state has one; a directory merely `git init`-ed and committed
+  //      into has only the branch HEAD is on. `--merged HEAD` is ancestor-OR-
+  //      EQUAL, which matters: between the base fetch and the agent's first
+  //      commit the two are the same commit, and a stricter test would report
+  //      `false` for a correct clone caught in that window — the sampling-luck
+  //      failure this module already fought once.
+  //   2. Ruling 33's property, when the caller knows it: the base commit
+  //      carries the operator's uncommitted tracked and untracked work, so it
+  //      CANNOT equal the operator's `HEAD`. Only item 4 passes `operatorHead`
+  //      today, so (1) is what keeps the check honest for the rest — without
+  //      it, an undefined `operatorHead` would degrade this to "HEAD resolves",
+  //      which a forger satisfies by committing once.
+  //
+  // MEASURED (git 2.50.1, 2026-08-17) against all three shapes: a clone with
+  // `brigadier-base` + `work` yields two candidates both before and after the
+  // agent commits; the fixture's `bar-base` + `work` yields two; and `git init`
+  // plus one commit yields NONE.
+  const merged = git([
+    "for-each-ref",
+    "--merged",
+    "HEAD",
+    // `%(HEAD)` renders as `*` for the branch HEAD is on and as a SPACE for
+    // every other — so it is bracketed rather than left bare. The `git` helper
+    // above trims its whole output, which silently ate the leading space of the
+    // first row and dropped that ref from the evidence; a delimiter that cannot
+    // be trimmed away is the difference between reading three refs and two.
+    "--format=[%(HEAD)]%09%(refname)@%(objectname:short)",
+    "refs/heads/",
+  ]);
+  const baseRefsSeen = merged.ok
+    ? merged.out
+        .split("\n")
+        .map((line) => line.split("\t"))
+        .filter((cols) => cols.length === 2 && cols[0] === "[ ]")
+        .map((cols) => cols[1] as string)
+    : [];
   return {
     path,
     isGitRepo: git(["rev-parse", "--git-dir"]).ok,
     originRemoved: remotes.ok && !remotes.out.split("\n").includes("origin"),
-    hasBaseRef: base.ok && base.out.length === 40,
+    hasBaseRef:
+      head.ok &&
+      head.out.length === 40 &&
+      baseRefsSeen.length > 0 &&
+      (operatorHead === undefined || head.out !== operatorHead),
     payloadsSeen,
+    baseRefsSeen,
   };
 }
 
@@ -162,6 +236,7 @@ export function sampleOnce(
   flight: Flight,
   payloadMarker?: string,
   processes = true,
+  operatorHead?: string,
 ): void {
   flight.samples += 1;
 
@@ -186,7 +261,7 @@ export function sampleOnce(
       existing !== undefined && existing.isGitRepo && existing.originRemoved && existing.hasBaseRef;
     const sample = proven
       ? { ...(existing as CloneSample), payloadsSeen: scanPayloads(path, payloadMarker) }
-      : inspectClone(path, payloadMarker);
+      : inspectClone(path, payloadMarker, operatorHead);
     // Keep the BEST observation of each clone: a clone is momentarily
     // origin-ful while `git clone` is still running, and judging it on that
     // instant would be measuring the harness's sampling luck.
@@ -197,6 +272,7 @@ export function sampleOnce(
           originRemoved: existing.originRemoved || sample.originRemoved,
           hasBaseRef: existing.hasBaseRef || sample.hasBaseRef,
           payloadsSeen: [...new Set([...existing.payloadsSeen, ...sample.payloadsSeen])],
+          baseRefsSeen: [...new Set([...existing.baseRefsSeen, ...sample.baseRefsSeen])],
         }
       : sample;
     flight.clonesSeen.set(path, merged);
@@ -247,6 +323,8 @@ export async function runSampled(
     intervalMs?: number;
     /** When set, hook files carrying this marker are recorded per clone. */
     payloadMarker?: string;
+    /** The operator repository's HEAD, so a clone's base can be told from it. */
+    operatorHead?: string;
   },
 ): Promise<SampledRun> {
   const [command, ...rest] = argv;
@@ -275,7 +353,7 @@ export async function runSampled(
     // rate that observes every clone several times is what stops it.
     let turn = 0;
     while (running) {
-      sampleOnce(options.runRoot, flight, options.payloadMarker, turn % 3 === 0);
+      sampleOnce(options.runRoot, flight, options.payloadMarker, turn % 3 === 0, options.operatorHead);
       turn += 1;
       await Bun.sleep(options.intervalMs ?? 40);
     }
@@ -296,7 +374,7 @@ export async function runSampled(
   running = false;
   await sampler;
   // One last look, so a run that finished between samples is still counted.
-  sampleOnce(options.runRoot, flight, options.payloadMarker);
+  sampleOnce(options.runRoot, flight, options.payloadMarker, true, options.operatorHead);
 
   return {
     stdout,

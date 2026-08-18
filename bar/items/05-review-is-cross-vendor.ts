@@ -51,6 +51,7 @@ import { Checks, excerpt } from "../lib/checks.ts";
 import { derive, nonce } from "../lib/derive.ts";
 import { gatherRunEvidence } from "../lib/evidence.ts";
 import { probeFeature } from "../lib/feature.ts";
+import { detectRealFleet } from "../lib/fleet.ts";
 import { isolatedPath, plantFleet } from "../lib/fixtures.ts";
 import { ensureDir } from "../lib/fs.ts";
 import { makeRepo, plantSeeds } from "../lib/git.ts";
@@ -143,8 +144,8 @@ const item: BarItem = {
     // decided by the diff it is handed, which is the difference between FOUND
     // and KNOWN — and the previous item conflated them.
     const fleet = plantFleet(binDir, join(ctx.workdir, "vendor-ledger.tsv"), [
-      { id: "codex", version: "1.4.0" },
-      { id: "qwen", version: "0.21.13", catches: defects.slice(0, 3) },
+      { id: "qwen", version: "0.21.13" },
+      { id: "copilot", version: "1.0.80", catches: defects.slice(0, 3) },
     ]);
     const env = baseEnv({ PATH: isolatedPath(binDir) });
 
@@ -173,6 +174,11 @@ const item: BarItem = {
     writeFileSync(join(ctx.workdir, "planted-defects.txt"), defects.join("\n"));
     did.push(`planted ${defects.length} unguessable defect markers into the diff a reviewer would be handed`);
 
+    // The credentialed leg: the operator's own PATH, so the product discovers
+    // the agents they really have.
+    const realFleet = await detectRealFleet(ctx);
+    const checks0 = new Checks();
+    did.push(`detected the real fleet: ${realFleet.usable.join(", ") || "none usable"}`);
     const probe = await probeFeature(
       ctx,
       ["run", "--plan", planPath, "--repo", repo, "--run-root", join(ctx.workdir, "runs"), "--review", "--planted", String(defects.length)],
@@ -194,8 +200,18 @@ const item: BarItem = {
       live = { kind: "skipped", why: "the reviewer's vendor must DIFFER from the builder's, which requires two drivable vendors" };
     } else {
       const report = `${probe.result.stdout}${probe.result.stderr}`;
+      // Which fleet was this? Ruling 32's cross-vendor promise is about REAL
+      // vendors, and a fixture reviewer catches what we configured it to catch.
+      checks0.expect(
+        "this item drove the operator's real, credentialed fleet",
+        realFleet.usable.length >= 2,
+        `\`brigadier detect\` reports ${realFleet.usable.length} usable agent(s): ${realFleet.usable.join(", ") || "none"}. ` +
+          "Ruling 43 and #41 measured an APPROVED permission on Codex running OUTSIDE its own sandbox — no stub can reproduce that, " +
+          "so this item needs two real vendors and says so rather than substituting fixtures",
+      );
       const evidence = await gatherRunEvidence(repo, report);
       const checks = new Checks();
+      for (const row of checks0.rows) checks.expect(row.name, row.ok, row.detail);
       const reviewed = evidence.record?.items.find((i) => i.id === "reviewed");
 
       // The ledger, not the record. A record is the product's account of itself
@@ -245,8 +261,8 @@ const item: BarItem = {
       // The blocker, asserted on the tree rather than on the word `error`.
       const dyingBin = ensureDir(join(ctx.workdir, "bin-dying"));
       plantFleet(dyingBin, join(ctx.workdir, "vendor-ledger-dying.tsv"), [
-        { id: "codex", version: "1.4.0" },
-        { id: "qwen", version: "0.21.13", dieAsReviewer: true },
+        { id: "qwen", version: "0.21.13" },
+        { id: "copilot", version: "1.0.80", dieAsReviewer: true },
       ]);
       const dyingRepo = join(ctx.workdir, "dying-repo");
       await makeRepo(dyingRepo, { "README.md": "base\n" });

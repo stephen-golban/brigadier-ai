@@ -153,7 +153,7 @@ const item: BarItem = {
     did.push(`wrote a plan at ${planPath} requiring \`${missingTool}\` and verifying with \`${misspelled}\` — both generated for this run`);
 
     const binDir = ensureDir(join(ctx.workdir, "bin"));
-    plantVendors(binDir, [{ id: "codex", version: "1.4.0" }]);
+    plantVendors(binDir, [{ id: "qwen", version: "0.21.13" }]);
     const env = baseEnv({ PATH: isolatedPath(binDir) });
 
     const workRoot = ensureDir(join(ctx.workdir, "runs"));
