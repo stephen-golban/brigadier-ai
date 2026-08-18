@@ -166,6 +166,15 @@ export const PROFILES: Record<AgentId, LaunchProfile> = {
     bridged: false,
     measuredVersion: "1.0.80",
     passthroughEnv: [],
+    // MEASURED against `copilot 1.0.80` on 2026-08-18: COPILOT_HOME is a real
+    // process.env read AND a real config root. An ACP `initialize` under a
+    // redirected COPILOT_HOME wrote config.json and logs/ into that directory;
+    // the negative control (same handshake, variable unset) wrote nothing there.
+    // Ruling 57 recorded Copilot as UNESTABLISHED for a config-root redirect;
+    // this establishes it, so the lever exists on 5 of 6 vendors, not 4.
+    // Gemini remains the sole vendor with none (#42: GEMINI_DIR is an internal
+    // constant with zero env reads), so decision 17 cannot hold there.
+    configRootEnv: "COPILOT_HOME",
     // #50: `execute` requests carry a meaningful title. Network unmeasured.
     capabilities: { commandExecution: true },
     laneAssertion: { kind: "none" },
