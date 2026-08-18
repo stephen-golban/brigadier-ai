@@ -1,4 +1,7 @@
 {
-  "_comment": "Machine-readable pins for the verbatim license copies in this directory. scripts/license-gate.ts fails the build if the toolchain does not match, so an upgrade cannot silently leave THIRD-PARTY.md describing a runtime that is no longer in the binary.",
-  "bun": "1.3.14"
+  "_comment": "Machine-readable pins for the verbatim license copies in this directory. scripts/license-gate.ts fails the build if the toolchain does not match, so an upgrade cannot silently leave THIRD-PARTY.md describing a runtime that is no longer in the binary. The three revisions below are one chain and the gate checks every link: `bun --revision` reports bun-revision; bun-revision is the commit tag bun-v1.3.14 points at; that commit's scripts/build/deps/webkit.ts and scripts/build/deps/tinycc.ts name the WebKit and tinycc revisions. Provenance with read dates is in RELINKING.md.",
+  "bun": "1.3.14",
+  "bun-revision": "0d9b296af33f2b851fcbf4df3e9ec89751734ba4",
+  "javascriptcore-webkit": "5488984d20e0dbfe4be2c3ba8fb18eb81a5e0e8b",
+  "tinycc": "12882eee073cfe5c7621bcfadf679e1372d4537b"
 }

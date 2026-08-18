@@ -29,6 +29,7 @@ import { spawnChannel, type LineChannel } from "../acp/channel.ts";
 import { Connection, MethodNotFound } from "../acp/connection.ts";
 import { Lane, type Verdict } from "../lane/lane.ts";
 import type { WorkKind } from "../work/kind.ts";
+import { laneFailureBlocks } from "./drift.ts";
 import { buildEnvironment, laneModeFor, type LaunchProfile } from "./profiles.ts";
 
 export interface ToolCallRecord {
@@ -95,6 +96,32 @@ export interface WorkerOptions {
 /** Qwen announces compaction only as prose. This is the shape it uses (#47). */
 const COMPACTION_PROSE = /compressed from:\s*\d+\s*to\s*\d+\s*tokens|approached the input token limit/i;
 
+/** What `session/new` answers with. `models` arrives on Codex alone (#2). */
+interface SessionNew {
+  sessionId?: string;
+  models?: { availableModels?: unknown };
+  availableModels?: unknown;
+}
+
+/**
+ * The model ids a session offered, read out of `availableModels`.
+ *
+ * Both envelopes are accepted — `models.availableModels` and a bare
+ * `availableModels` — because #2 measured only THAT the list arrives on Codex
+ * and that ids must be read rather than constructed; which of the two envelopes
+ * the shipped bridge uses was not re-measured here. An unrecognised shape yields
+ * an empty list, and `sessionContradictions` then reports that as a discrepancy
+ * with the profile rather than passing it off as "this vendor sent none" — a
+ * parser that guessed wrong fails loudly instead of silently.
+ */
+function modelIds(session: SessionNew | null): string[] {
+  const list = session?.models?.availableModels ?? session?.availableModels;
+  if (!Array.isArray(list)) return [];
+  return list
+    .map((entry) => (entry as { modelId?: unknown; id?: unknown } | null)?.modelId ?? (entry as { id?: unknown } | null)?.id)
+    .filter((id): id is string => typeof id === "string" && id.length > 0);
+}
+
 export class Worker {
   #connection: Connection;
   #sessionId: string;
@@ -110,6 +137,17 @@ export class Worker {
   private constructor(
     readonly profile: LaunchProfile,
     readonly agentVersion: string,
+    /** The kind this session was opened for. Ruling 49: it selects the vendor mode. */
+    readonly kind: WorkKind,
+    /**
+     * Model ids the agent returned at `session/new`, in its own order.
+     *
+     * Empty on five of six profiles, and that is measured rather than missing
+     * (#2). Read, never constructed: Codex encodes effort as a suffix
+     * (`gpt-5.6-sol[high]`) and a constructed id is a guess wearing a
+     * measurement's clothes.
+     */
+    readonly models: readonly string[],
     private readonly lane: Lane,
     connection: Connection,
     sessionId: string,
@@ -169,13 +207,14 @@ export class Worker {
       const session = (await connection.request("session/new", {
         cwd: options.lane.root,
         mcpServers: [],
-      })) as { sessionId?: string } | null;
+      })) as SessionNew | null;
 
       const sessionId = session?.sessionId;
       if (!sessionId) throw new Error(`${profile.id}: session/new returned no sessionId`);
 
       const version = initialize?.agentInfo?.version ?? "unknown";
-      self = new Worker(profile, version, options.lane, connection, sessionId);
+      const kind = options.kind ?? "write";
+      self = new Worker(profile, version, kind, modelIds(session), options.lane, connection, sessionId);
 
       // The Claude bridge opens in bypassPermissions; without this the lane is
       // decorative (#3).
@@ -186,7 +225,7 @@ export class Worker {
       // `laneFailureBlocks` in ./drift.ts. A vendor with no modes is not a
       // vendor in error, which is why this is not an exception.
       const assertion = profile.laneAssertion;
-      const modeId = laneModeFor(assertion, options.kind ?? "write");
+      const modeId = laneModeFor(assertion, kind);
       if (assertion.kind === "session-mode" && modeId && options.restrictive !== false) {
         try {
           await connection.request("session/set_mode", { sessionId, modeId });
@@ -210,6 +249,26 @@ export class Worker {
   /** False when the vendor offers a restrictive mode and it could not be set. */
   get laneAsserted(): boolean {
     return this.#laneAsserted;
+  }
+
+  /**
+   * Ruling 69's decision, computed rather than left to each caller.
+   *
+   * `laneAsserted` alone was "recorded, and the caller can decide", and a fact
+   * every caller must re-derive is a fact one caller will get wrong. This is the
+   * derivation, in one place: a `write` worker on a vendor that declares a lane
+   * lever, whose lever did not take, has no lane — #3 measured the Claude bridge
+   * opening in `bypassPermissions`, so every write there routes around the
+   * client. Ruling 32's standing rule then applies: a weakened check never
+   * renders as a pass.
+   *
+   * False for a `read-only` worker whatever happened, and that is ruling 49
+   * rather than an exemption: a read-only item's directory is never diffed,
+   * merged or read back, so its enforcement is brigadier's own flat `deny` and
+   * needs no vendor cooperation at all.
+   */
+  get laneBlocks(): boolean {
+    return !this.#laneAsserted && laneFailureBlocks(this.profile, this.kind);
   }
 
   get sessionId(): string {

@@ -36,6 +36,7 @@ import type { BarItem, BarRecord } from "./types.ts";
 
 const PRINTER = fileURLToPath(new URL("./fakes/printer.ts", import.meta.url));
 const HONEST = fileURLToPath(new URL("./fakes/honest.ts", import.meta.url));
+const FORGER = fileURLToPath(new URL("./fakes/forger.ts", import.meta.url));
 
 /**
  * Wrap a fixture as an executable, so the harness drives it exactly as it drives
@@ -105,6 +106,28 @@ describe("the do-nothing binary must fail every item", () => {
       }
     },
     600_000,
+  );
+});
+
+describe("the SOPHISTICATED forger must fail every item", () => {
+  // The printer is a solved problem. This one runs real `git`, writes real
+  // objects, produces refs that pass `git fsck`, and writes a plausible run
+  // record — and implements no promise. It scored **12 of 13** against the
+  // previous harness in a single run.
+  test(
+    "a brigadier with real git and no work scores 0 of 13",
+    async () => {
+      const root = workroot("forger");
+      const binary = asBinary(join(root, "bin"), FORGER, "brigadier-forger");
+      try {
+        const records = await score(binary, ITEMS, true, root);
+        expect(records.filter((r) => r.outcome === "PASS").map((r) => `${r.id} ${r.title}`)).toEqual([]);
+        expect(records).toHaveLength(13);
+      } finally {
+        removeDir(root);
+      }
+    },
+    900_000,
   );
 });
 

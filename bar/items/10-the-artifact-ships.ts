@@ -25,11 +25,13 @@
  * it and this item does not prove it.
  */
 
-import { readFileSync, statSync } from "node:fs";
+import { chmodSync, copyFileSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { Checks, excerpt } from "../lib/checks.ts";
 import { probeFeature } from "../lib/feature.ts";
+import { ensureDir, listTree } from "../lib/fs.ts";
 import { combine } from "../lib/halves.ts";
-import { baseEnv, pathWithout, spawnFloorMs } from "../lib/proc.ts";
+import { baseEnv, exec, pathWithout, spawnFloorMs } from "../lib/proc.ts";
 import type { BarContext, BarItem, BarResult } from "../types.ts";
 
 /**
@@ -110,6 +112,12 @@ export interface ArtifactObservations {
   nodelessPathRemoved: string[];
   installProbe: string;
   hooksProbe: string;
+  /** Paths that really appeared under a scratch HOME after `install`. */
+  installedPaths: string[];
+  poisonedHooksProbe: string;
+  poisonKey: string;
+  /** A never-executed copy of the artifact, timed once. See COLD_START_BUDGET_MS. */
+  freshColdMs: number;
 }
 
 const APACHE_BODY = "TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION";
@@ -194,10 +202,18 @@ export function judgeArtifact(o: ArtifactObservations): Checks {
   // can be argued with rather than taken on trust.
   const coldNet = Math.round((o.coldMs - o.spawnFloorMs) * 100) / 100;
   const warmNet = Math.round((o.warmMs - o.spawnFloorMs) * 100) / 100;
+  // The real cold start: a COPY of the artifact that has never been executed,
+  // timed once, N=1 by definition. `BAR.md`'s authoritative scenario is "a
+  // freshly downloaded release artifact in a clean checkout", which is exactly
+  // this case — and exactly the one the previous harness was not measuring,
+  // because earlier items had already warmed the page cache.
+  const freshNet = Math.round((o.freshColdMs - o.spawnFloorMs) * 100) / 100;
   checks.expect(
-    `first invocation within ${COLD_START_BUDGET_MS} ms`,
-    coldNet <= COLD_START_BUDGET_MS,
-    `${o.coldMs} ms observed − ${o.spawnFloorMs} ms spawn floor = ${coldNet} ms`,
+    `a NEVER-EXECUTED copy starts within ${COLD_START_BUDGET_MS} ms`,
+    freshNet <= COLD_START_BUDGET_MS,
+    `${o.freshColdMs} ms observed on a fresh copy − ${o.spawnFloorMs} ms spawn floor = ${freshNet} ms, against a ${COLD_START_BUDGET_MS} ms budget. ` +
+      `The warm figure on the already-executed original was ${coldNet} ms. ` +
+      "This harness cannot evict the page cache without privileges, so the fresh copy's pages come from disk while the binary's own file may still be partially cached — the number is therefore a LOWER BOUND on a true cold start",
   );
   checks.expect(
     `warm start within ${WARM_START_BUDGET_MS} ms (minimum of ${START_SAMPLES}, floor-corrected)`,
@@ -224,16 +240,30 @@ export function judgeArtifact(o: ArtifactObservations): Checks {
     `removed ${o.nodelessPathRemoved.length} PATH entries containing a \`node\`; exit ${o.nodeless.code}; stdout ${o.nodeless.stdout.length} bytes; stderr: ${excerpt(o.nodeless.stderr, 160)}`,
   );
 
-  // Ruling 42 and ruling 60. Probed against the artifact, never assumed.
+  // Ruling 42 and ruling 60, asserted BY NAME. "Did not print `unknown command`"
+  // is not an assertion about anything: ruling 60 exists precisely because a
+  // count-based check passes where a names-based one fails — `.lsp.json` was
+  // measured reporting `LSP servers (1)` for `{"notARealKey": 1}`.
   checks.expect(
-    "an install surface exists to reach ~/.agents/skills/ (ruling 42)",
-    !/unknown command/i.test(o.installProbe),
-    o.installProbe,
+    "install reaches ruling 42's real discovery path, named",
+    /~\/\.agents\/skills\/|\.agents[/\\]skills/.test(o.installProbe) && o.installedPaths.some((p) => /\.agents[/\\]skills/.test(p)),
+    `install output: ${excerpt(o.installProbe, 200)}; paths that actually appeared under HOME: ${o.installedPaths.join(", ") || "NONE"}`,
   );
   checks.expect(
-    "the hook surface can be verified BY NAME, and a poisoned hooks.json is reported (ruling 60)",
-    !/unknown command/i.test(o.hooksProbe),
-    o.hooksProbe,
+    "install puts no `bin/` on PATH outside Claude Code (ruling 42)",
+    !o.installedPaths.some((p) => /(^|[/\\])bin[/\\]/.test(p)),
+    `paths that appeared: ${o.installedPaths.join(", ") || "none"}`,
+  );
+  checks.expect(
+    "the hook surface names `PreCompact` (ruling 60)",
+    /\bPreCompact\b/.test(o.hooksProbe),
+    `hook output: ${excerpt(o.hooksProbe, 200)} — asserted by NAME, because a count passes on \`{"notARealKey": 1}\``,
+  );
+  checks.expect(
+    "a hooks.json carrying one unrecognised event is REPORTED, not silently discarded (ruling 60)",
+    o.poisonedHooksProbe.includes(o.poisonKey) && /(discard|ignored|unrecognis|unrecogniz|unknown event|invalid)/i.test(o.poisonedHooksProbe),
+    `planted an unrecognised event ${JSON.stringify(o.poisonKey)} beside valid hooks; output: ${excerpt(o.poisonedHooksProbe, 240)}. ` +
+      "Today the symptom is that nothing happens, which is why the item asserts brigadier SAYS so",
   );
 
   checks.note(
@@ -311,9 +341,41 @@ const item: BarItem = {
     const nodeless = await ctx.run(["licenses"], { env: baseEnv({ PATH: strippedPath }), timeoutMs: 30_000 });
     did.push(`ran \`brigadier licenses\` with a PATH from which every directory containing a \`node\` was removed`);
 
-    const install = await probeFeature(ctx, ["install"], { timeoutMs: 30_000 });
-    const hooks = await probeFeature(ctx, ["plugin", "hooks"], { timeoutMs: 30_000 });
-    did.push("probed `brigadier install` and `brigadier plugin hooks` for the plugin/discovery surface");
+    // A scratch HOME, so "install" can be judged on the paths it creates rather
+    // than on the sentence it prints.
+    const installHome = ensureDir(join(ctx.workdir, "install-home"));
+    const install = await probeFeature(ctx, ["install"], {
+      env: baseEnv({ HOME: installHome }),
+      timeoutMs: 60_000,
+    });
+    const installedPaths = listTree(installHome);
+
+    // Ruling 60's negative: one unrecognised event beside valid hooks.
+    const poisonKey = `notARealEvent-${Math.random().toString(36).slice(2, 8)}`;
+    const hooksHome = ensureDir(join(ctx.workdir, "hooks-home"));
+    const hooksDir = ensureDir(join(hooksHome, ".claude"));
+    writeFileSync(
+      join(hooksDir, "hooks.json"),
+      JSON.stringify({ PreCompact: [{ command: "echo ok" }], [poisonKey]: [{ command: "echo no" }] }, null, 2),
+    );
+    const hooks = await probeFeature(ctx, ["plugin", "hooks"], {
+      env: baseEnv({ HOME: hooksHome }),
+      timeoutMs: 30_000,
+    });
+    const poisoned = await probeFeature(ctx, ["plugin", "hooks", "--check"], {
+      env: baseEnv({ HOME: hooksHome }),
+      timeoutMs: 30_000,
+    });
+    did.push(
+      `installed into a scratch HOME (${installedPaths.length} paths appeared) and planted a hooks.json carrying one unrecognised event ${JSON.stringify(poisonKey)}`,
+    );
+
+    // A copy that has never been executed. This is BAR.md's authoritative case.
+    const freshPath = join(ensureDir(join(ctx.workdir, "fresh")), "brigadier-fresh");
+    copyFileSync(ctx.binary, freshPath);
+    chmodSync(freshPath, 0o755);
+    const freshCold = await exec([freshPath, "--help"], { env: baseEnv(), timeoutMs: 120_000 });
+    did.push(`copied the artifact to ${freshPath} and timed its FIRST EVER invocation: ${freshCold.ms} ms`);
 
     const checks = judgeArtifact({
       licences: { code: licences.code, stdout: licences.stdout, stderr: licences.stderr },
@@ -325,8 +387,12 @@ const item: BarItem = {
       spawnFloorMs: floor,
       nodeless: { code: nodeless.code, stdout: nodeless.stdout, stderr: nodeless.stderr },
       nodelessPathRemoved: removed,
-      installProbe: install.transcript,
-      hooksProbe: hooks.transcript,
+      installProbe: `${install.result.stdout}${install.result.stderr}`,
+      hooksProbe: `${hooks.result.stdout}${hooks.result.stderr}`,
+      installedPaths,
+      poisonedHooksProbe: `${poisoned.result.stdout}${poisoned.result.stderr}`,
+      poisonKey,
+      freshColdMs: freshCold.ms,
     });
 
     // Every assertion in this item is about a file on disk or a process that

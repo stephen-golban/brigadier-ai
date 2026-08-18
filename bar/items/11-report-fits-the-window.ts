@@ -36,15 +36,16 @@
  * to be too small is a budget that passes runs it should not.
  */
 
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { Checks, excerpt } from "../lib/checks.ts";
-import { gatherRunEvidence } from "../lib/evidence.ts";
+import { gatherRunEvidence, proofOfWork } from "../lib/evidence.ts";
 import { probeFeature } from "../lib/feature.ts";
-import { isolatedPath, plantVendors } from "../lib/fixtures.ts";
-import { ensureDir } from "../lib/fs.ts";
-import { makeRepo } from "../lib/git.ts";
+import { isolatedPath, plantFleet } from "../lib/fixtures.ts";
+import { ensureDir, listTree, writeScript } from "../lib/fs.ts";
+import { makeRepo, plantSeeds } from "../lib/git.ts";
 import { combine, noCredentialFreeChecks, type LiveHalf } from "../lib/halves.ts";
+import { runSampled } from "../lib/inflight.ts";
 import { disjointPlan, estimateTokens, writePlan } from "../lib/plan.ts";
 import { baseEnv } from "../lib/proc.ts";
 import type { BarContext, BarItem, BarResult } from "../types.ts";
@@ -61,6 +62,9 @@ export interface ReportObservations {
   fullRecordPath: string;
   fullRecordExists: boolean;
   transcriptBytes: number;
+  /** How many of the failing items the on-disk record actually mentions. */
+  transcriptMentions: number;
+  failingCount: number;
 }
 
 /** A worker transcript looks like protocol frames or an agent's own prose block. */
@@ -91,6 +95,13 @@ export function judgeReport(o: ReportObservations): Checks {
     "the full record on disk is substantially larger than the report",
     o.transcriptBytes > o.hostReport.length * 2,
     `transcript ${o.transcriptBytes} bytes vs report ${o.hostReport.length} chars — "summaries and the path to the full record" means nothing if the full record is not bigger`,
+  );
+  // Size is not content. A forger's "full record" was 60 KB of repeated filler,
+  // which is larger than the report and says nothing about the run.
+  checks.expect(
+    "the full record on disk is about THIS run, not filler",
+    o.transcriptMentions === o.failingCount,
+    `the on-disk record mentions ${o.transcriptMentions} of the ${o.failingCount} failing items by id — a large file that names none of them is padding`,
   );
   checks.expect(
     "every failing item still appears under the cap (ruling 52)",
@@ -125,25 +136,38 @@ const item: BarItem = {
     // Fifty items, three of which must fail — with a verify command that
     // RESOLVES, so this is a failing CHECK and not a missing checker.
     const fifty = disjointPlan(50, "fifty");
+    await plantSeeds(repo, fifty.seeds);
     const failing = ["fifty-4", "fifty-18", "fifty-43"];
-    const failer = process.platform === "win32" ? "cmd /c exit 1" : "false";
+    // A verify command that leaves a WITNESS when it runs. "Items that carry a
+    // verify field" is not the same as "items whose verify was executed", and
+    // the previous version could not tell them apart.
+    const witnessDir = ensureDir(join(ctx.workdir, "verify-witness"));
+    const failer = writeScript(
+      join(ctx.workdir, "failing-verify"),
+      `#!/bin/sh\ntouch ${JSON.stringify(join(witnessDir, "ran"))}.$$\nexit 1\n`,
+      `@echo off\r\ntype nul > ${join(witnessDir, "ran")}.%RANDOM%\r\nexit /b 1\r\n`,
+    );
     for (const id of failing) {
       const target = fifty.plan.items.find((i) => i.id === id);
       if (target) target.verify = failer;
     }
     const planPath = writePlan(ctx.workdir, fifty.plan);
-    did.push(`wrote a fifty-item plan at ${planPath}; items ${failing.join(", ")} verify with \`${failer}\`, which resolves on PATH and exits non-zero`);
+    did.push(`wrote a fifty-item plan at ${planPath}; items ${failing.join(", ")} verify with ${failer}, which resolves on PATH, writes a witness and exits non-zero`);
 
     const binDir = ensureDir(join(ctx.workdir, "bin"));
-    plantVendors(binDir, [{ id: "codex", version: "1.4.0" }, { id: "qwen", version: "0.21.13" }]);
+    plantFleet(binDir, join(ctx.workdir, "vendor-ledger.tsv"), [
+      { id: "codex", version: "1.4.0" },
+      { id: "qwen", version: "0.21.13" },
+    ]);
     const env = baseEnv({ PATH: isolatedPath(binDir) });
+    const runs = ensureDir(join(ctx.workdir, "runs"));
 
     const probe = await probeFeature(
       ctx,
-      ["run", "--plan", planPath, "--repo", repo, "--run-root", join(ctx.workdir, "runs"), "--audience", "host-session"],
-      { env, timeoutMs: 600_000 },
+      ["run", "--plan", planPath, "--repo", repo, "--run-root", runs, "--dry-run"],
+      { env, timeoutMs: 60_000 },
     );
-    did.push(probe.transcript);
+    did.push(`admission probe: ${probe.transcript}`);
 
     let live: LiveHalf;
     if (!probe.present) {
@@ -155,25 +179,55 @@ const item: BarItem = {
     } else if (!ctx.live) {
       live = { kind: "skipped", why: "fifty real items must actually run for the report to have fifty items to collapse" };
     } else {
-      const report = probe.result.stdout;
-      const evidence = await gatherRunEvidence(repo, `${report}${probe.result.stderr}`);
+      const sampled = await runSampled(
+        [ctx.binary, "run", "--plan", planPath, "--repo", repo, "--run-root", runs, "--audience", "host-session"],
+        { cwd: ctx.workdir, env, runRoot: runs, timeoutMs: 900_000 },
+      );
+      const report = sampled.stdout;
+      const evidence = await gatherRunEvidence(repo, `${report}${sampled.stderr}`);
       const blocking = (evidence.record?.items ?? [])
         .filter((i) => failing.includes(i.id))
         .flatMap((i) => (i.checks ?? []).filter((c) => c.blocking && c.outcome !== "pass").map((c) => c.name));
       const transcripts = evidence.record?.transcriptsPath;
       const transcriptFile = transcripts === undefined ? "" : join(transcripts, "full.log");
 
-      live = {
-        kind: "ran",
-        checks: judgeReport({
+      const checks = new Checks();
+      // Fifty items really ran. Without this the cap is being measured on a
+      // report of nothing.
+      for (const row of proofOfWork(evidence, {
+        // The three items whose verify must fail are deliberately excluded: a
+        // failing item must NOT reach the branch, so expecting its output would
+        // be asserting the opposite of what this run is testing.
+        expected: new Map([...fifty.expected].filter(([p]) => !failing.some((id) => p.startsWith(`${id}.`))).slice(0, 5)),
+        itemIds: fifty.itemIds.filter((id) => !failing.includes(id)).slice(0, 5),
+        flight: sampled.flight,
+        expectedWorkers: 50,
+      }).rows) {
+        checks.expect(row.name, row.ok, row.detail);
+      }
+      const witnesses = listTree(witnessDir).length;
+      checks.expect(
+        "the verify command was really EXECUTED, not merely declared",
+        witnesses >= failing.length,
+        `${witnesses} witness file(s) written by the verify command against ${failing.length} items that carry one — ` +
+          "carrying a `verify` field is not the same as having run it",
+      );
+      for (const row of judgeReport({
           hostReport: report,
           failingItems: failing,
           blockingChecks: [...new Set(blocking)],
           fullRecordPath: evidence.recordPath ?? "",
           fullRecordExists: evidence.recordExists,
           transcriptBytes: transcriptFile.length > 0 && existsSync(transcriptFile) ? statSync(transcriptFile).size : 0,
-        }),
-      };
+          transcriptMentions:
+            transcriptFile.length > 0 && existsSync(transcriptFile)
+              ? failing.filter((id) => readFileSync(transcriptFile, "utf8").includes(id)).length
+              : 0,
+          failingCount: failing.length,
+        }).rows) {
+        checks.expect(row.name, row.ok, row.detail);
+      }
+      live = { kind: "ran", checks };
     }
 
     return combine(did, noCredentialFreeChecks(), live);

@@ -49,6 +49,24 @@ export function plantVendors(binDir: string, configs: readonly VendorConfig[]): 
   return configs.map((config) => plantVendor(binDir, config));
 }
 
+export interface PlantedFleet {
+  paths: string[];
+  /** Every vendor invocation lands here. The product has no way to write it. */
+  ledger: string;
+}
+
+/**
+ * Plant a fleet that signs a ledger.
+ *
+ * The ledger is the answer to "the record says two different vendors ran". A
+ * record is the product's account of itself and a forger writes it; a ledger
+ * line is a file that a process had to exist to append to. Item 5 passed on two
+ * strings in a record without either vendor running, and this is what closes it.
+ */
+export function plantFleet(binDir: string, ledger: string, configs: readonly VendorConfig[]): PlantedFleet {
+  return { paths: plantVendors(binDir, configs.map((c) => ({ ...c, ledger }))), ledger };
+}
+
 /**
  * A `PATH` holding only the planted vendors, plus what any program needs to
  * exist at all.
@@ -78,9 +96,14 @@ export function isolatedPath(binDir: string): string {
  */
 export function plantBrigadierShim(binDir: string, ledger: string, real: string): string {
   ensureDir(binDir);
+  // `$BRIGADIER_WORKER` is recorded alongside the argv, and that is the whole
+  // point. An orchestrator invoking `brigadier` on ITSELF also lands in this
+  // ledger, so a line without the worker marker proves nothing about a worker
+  // having tried to delegate — which is how a forger satisfied ruling 59 by
+  // calling its own name once.
   return writeScript(
     join(binDir, "brigadier"),
-    `#!/bin/sh\necho "invoked: $@" >> ${quote(ledger)}\nexec ${quote(real)} "$@"\n`,
-    `@echo off\r\necho invoked: %* >> ${quote(ledger)}\r\n${quote(real)} %*\r\n`,
+    `#!/bin/sh\necho "worker=\${BRIGADIER_WORKER:-none} argv: $@" >> ${quote(ledger)}\nexec ${quote(real)} "$@"\n`,
+    `@echo off\r\necho worker=%BRIGADIER_WORKER% argv: %* >> ${quote(ledger)}\r\n${quote(real)} %*\r\n`,
   );
 }

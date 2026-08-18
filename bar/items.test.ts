@@ -81,6 +81,7 @@ describe("proofOfWork — the check a printer cannot satisfy", () => {
     refType: "commit",
     fsckProblems: "",
     subjects: ["alpha: integrated", "alpha: work"],
+    mergeParents: [{ sha: "b".repeat(40), parents: ["c".repeat(40), "d".repeat(40)] }],
     files: new Map([["alpha.txt", "TOKEN-1\n"]]),
     refsAfter: ["refs/heads/brigadier/r1"],
   };
@@ -377,6 +378,10 @@ describe("item 5 — the competence table is auditable from the binary", () => {
 
 describe("item 7 — an interruption leaves nothing behind", () => {
   const clean: InterruptObservations = {
+    escapeePid: 4242,
+    aliveBeforeSweep: true,
+    aliveAfterSweep: false,
+    survivedFirstInterrupt: true,
     heartbeatAtKill: 200,
     heartbeatBeforeSweep: 400,
     heartbeatAfterSweep: 420,
@@ -390,21 +395,32 @@ describe("item 7 — an interruption leaves nothing behind", () => {
     expect(names(judgeInterrupt(clean))).toEqual([]);
   });
 
-  test("fails when the escaped descendant is STILL WRITING after the sweep (ruling 38)", () => {
-    const checks = judgeInterrupt({ ...clean, heartbeatSettled: 900 });
-    expect(names(checks)).toContain("the next start's sweep reclaimed the escaped descendant (ruling 38)");
+  test("fails when the escaped descendant is STILL ALIVE after the sweep (ruling 38)", () => {
+    expect(names(judgeInterrupt({ ...clean, aliveAfterSweep: true }))).toContain("the next start's sweep reclaimed it (ruling 38)");
+    expect(names(judgeInterrupt({ ...clean, heartbeatSettled: 900 }))).toContain("the next start's sweep reclaimed it (ruling 38)");
   });
 
   test("fails when nothing ever escaped — the check would pass for the wrong reason", () => {
-    const checks = judgeInterrupt({ ...clean, heartbeatAtKill: 0, heartbeatBeforeSweep: 0 });
-    expect(names(checks)).toContain("a descendant really escaped and kept acting after the orchestrator was killed");
+    expect(names(judgeInterrupt({ ...clean, escapeePid: 0, aliveBeforeSweep: false }))).toContain(
+      "a descendant really escaped and was STILL ALIVE when the sweep started",
+    );
   });
 
-  test("fails when the descendant died with its parent rather than escaping", () => {
-    // Same size at the kill and after the settle window: nothing outlived the
-    // orchestrator, so the sweep had nothing to prove.
-    const checks = judgeInterrupt({ ...clean, heartbeatBeforeSweep: 200 });
-    expect(names(checks)).toContain("a descendant really escaped and kept acting after the orchestrator was killed");
+  test("fails when the descendant SELF-TERMINATED, which reads like a successful sweep", () => {
+    // Dead before the sweep even started. On file sizes alone this is
+    // indistinguishable from containment; on the pid it is not.
+    expect(names(judgeInterrupt({ ...clean, aliveBeforeSweep: false }))).toContain(
+      "a descendant really escaped and was STILL ALIVE when the sweep started",
+    );
+  });
+
+  test("fails when the binary died on the FIRST signal, having no handler at all", () => {
+    // A binary with no SIGINT handling satisfies "re-raises rather than
+    // inventing an exit code" for free. Surviving the first is what makes the
+    // second interrupt a statement about a drain.
+    expect(names(judgeInterrupt({ ...clean, survivedFirstInterrupt: false }))).toContain(
+      "the orchestrator SURVIVED the first interrupt to drain (ruling 63)",
+    );
   });
 
   test("a tick landing between the reading and the kill is not a failure", () => {
@@ -551,8 +567,12 @@ const TRUTHFUL_ARTIFACT: ArtifactObservations = {
   spawnFloorMs: 1,
   nodeless: { code: 0, stdout: "brigadier — Apache-2.0", stderr: "" },
   nodelessPathRemoved: ["/nvm/bin"],
-  installProbe: "ran `brigadier install`; exit 0; installed to ~/.agents/skills/brigadier",
-  hooksProbe: "ran `brigadier plugin hooks`; exit 0; PreCompact",
+  installProbe: "installed to ~/.agents/skills/brigadier",
+  hooksProbe: "hooks: PreCompact",
+  installedPaths: [".agents/skills/brigadier/SKILL.md"],
+  poisonedHooksProbe: "hooks.json carries an unrecognised event notARealEvent-abc123 — the whole file was discarded",
+  poisonKey: "notARealEvent-abc123",
+  freshColdMs: 40,
 };
 
 describe("item 10 — the artifact ships, and says what is in it", () => {
@@ -604,10 +624,34 @@ describe("item 10 — the artifact ships, and says what is in it", () => {
     ).toContain("runs with node absent from PATH (ruling 4)");
   });
 
-  test("fails when there is no install surface (ruling 42)", () => {
+  test("fails when install does not reach ruling 42's real discovery path", () => {
+    expect(names(judgeArtifact({ ...TRUTHFUL_ARTIFACT, installedPaths: [] }))).toContain(
+      "install reaches ruling 42's real discovery path, named",
+    );
+  });
+
+  test("fails when install puts a bin/ on PATH (ruling 42)", () => {
     expect(
-      names(judgeArtifact({ ...TRUTHFUL_ARTIFACT, installProbe: "ran `brigadier install`; exit 2; unknown command: install" })),
-    ).toContain("an install surface exists to reach ~/.agents/skills/ (ruling 42)");
+      names(judgeArtifact({ ...TRUTHFUL_ARTIFACT, installedPaths: [".agents/skills/brigadier/SKILL.md", ".local/bin/brigadier"] })),
+    ).toContain("install puts no `bin/` on PATH outside Claude Code (ruling 42)");
+  });
+
+  test("fails when the hook surface does not name PreCompact (ruling 60)", () => {
+    // A count-based check passes here; ruling 60 exists because `.lsp.json` was
+    // measured reporting `LSP servers (1)` for `{"notARealKey": 1}`.
+    expect(names(judgeArtifact({ ...TRUTHFUL_ARTIFACT, hooksProbe: "hooks (1)" }))).toContain(
+      "the hook surface names `PreCompact` (ruling 60)",
+    );
+  });
+
+  test("fails when a poisoned hooks.json is silently discarded (ruling 60)", () => {
+    expect(names(judgeArtifact({ ...TRUTHFUL_ARTIFACT, poisonedHooksProbe: "hooks: PreCompact" }))).toContain(
+      "a hooks.json carrying one unrecognised event is REPORTED, not silently discarded (ruling 60)",
+    );
+  });
+
+  test("fails when a never-executed copy blows the cold-start budget", () => {
+    expect(names(judgeArtifact({ ...TRUTHFUL_ARTIFACT, freshColdMs: 3_900 })).some((n) => n.includes("NEVER-EXECUTED"))).toBe(true);
   });
 
   test("a pin belonging to some other component is not a pin", () => {
@@ -638,6 +682,8 @@ describe("item 11 — the report fits the window and never hides a failure", () 
     fullRecordPath: "/runs/r1/record.json",
     fullRecordExists: true,
     transcriptBytes: 6_400,
+    transcriptMentions: 3,
+    failingCount: 3,
   };
 
   test("passes on a compact report that names every failure", () => {
@@ -671,6 +717,14 @@ describe("item 11 — the report fits the window and never hides a failure", () 
     );
   });
 
+  test("fails when the `full record` is large but is filler", () => {
+    // A forger's full record was 60 KB of one repeated line. Bigger is not the
+    // property; being about this run is.
+    expect(names(judgeReport({ ...clean, transcriptMentions: 0 }))).toContain(
+      "the full record on disk is about THIS run, not filler",
+    );
+  });
+
   test("the estimate applies #23's measured +22% correction rather than the naive formula", () => {
     expect(estimateTokens("x".repeat(4_000))).toBe(1_220);
   });
@@ -680,11 +734,11 @@ describe("item 11 — the report fits the window and never hides a failure", () 
 
 describe("item 12 — a granted secret does not reach a persisted artifact", () => {
   test("passes when nothing holds the secret and something was actually scanned", () => {
-    expect(names(judgeSecret({ secret: "abc", leaks: [], literalLeaks: [], inClone: [], artefactsScanned: 7 }))).toEqual([]);
+    expect(names(judgeSecret({ secret: "abc", leaks: [], literalLeaks: [], inClone: [], artefactsScanned: 7, deliveryProved: true, deliveryDetail: "hash matched" }))).toEqual([]);
   });
 
   test("fails when the scan examined nothing — the first draft's hardcoded empty list", () => {
-    expect(names(judgeSecret({ secret: "abc", leaks: [], literalLeaks: [], inClone: [], artefactsScanned: 0 }))).toContain(
+    expect(names(judgeSecret({ secret: "abc", leaks: [], literalLeaks: [], inClone: [], artefactsScanned: 0, deliveryProved: true, deliveryDetail: "hash matched" }))).toContain(
       "the scan examined something",
     );
   });
@@ -696,6 +750,8 @@ describe("item 12 — a granted secret does not reach a persisted artifact", () 
       literalLeaks: [],
       inClone: [],
       artefactsScanned: 7,
+      deliveryProved: true,
+      deliveryDetail: "hash matched",
     });
     expect(names(checks)).toContain("no persisted artifact holds the secret in ANY enumerated encoding");
   });
@@ -707,8 +763,23 @@ describe("item 12 — a granted secret does not reach a persisted artifact", () 
       literalLeaks: [],
       inClone: [{ file: "tree:.env", encoding: "file" }],
       artefactsScanned: 7,
+      deliveryProved: true,
+      deliveryDetail: "hash matched",
     });
     expect(names(checks)).toContain("the secret is not in the tree every clone came from (ruling 50)");
+  });
+
+  test("fails when the secret was never DELIVERED — a critic deleted the sink and it still passed", () => {
+    const checks = judgeSecret({
+      secret: "abc",
+      leaks: [],
+      literalLeaks: [],
+      inClone: [],
+      artefactsScanned: 7,
+      deliveryProved: false,
+      deliveryDetail: "the worker's proof file held NOTHING",
+    });
+    expect(names(checks)).toContain("the granted secret really reached the worker (ruling 65's channel)");
   });
 
   test("the four encodings are genuinely different needles", () => {
@@ -761,6 +832,7 @@ describe("item 13 — the cost model predicts, enforces, and says what it could 
       "estimate 0.40 – 1.90 USD\nactual 0.14 USD against predicted 0.40 – 1.90\nceilings — soft reached: no new items dispatched, hard reached: work in flight cancelled\ndeclared-hard: difficulty: hard (clamped to medium)\nquota — codex: read\nlevers active: prompt cache",
     record,
     integratedCount: 2,
+    uncappedIntegratedCount: 4,
     plannedCount: 4,
   };
 
@@ -769,8 +841,16 @@ describe("item 13 — the cost model predicts, enforces, and says what it could 
   });
 
   test("fails when the ceiling only printed and every item still ran", () => {
-    const checks = judgeCost({ ...clean, integratedCount: 4 });
-    expect(names(checks)).toContain("a hard ceiling below the plan's cost really stopped work (ruling 66)");
+    expect(names(judgeCost({ ...clean, integratedCount: 4 }))).toContain(
+      "the same plan without ceilings integrates MORE — so the ceiling is the cause (ruling 66)",
+    );
+  });
+
+  test("fails when the binary simply does less, with or without a ceiling", () => {
+    // Two of four either way: the shortfall is the binary, not the ceiling.
+    expect(names(judgeCost({ ...clean, uncappedIntegratedCount: 2 }))).toContain(
+      "the same plan without ceilings integrates MORE — so the ceiling is the cause (ruling 66)",
+    );
   });
 
   test("fails when a clamp goes UPWARD (ruling 67)", () => {

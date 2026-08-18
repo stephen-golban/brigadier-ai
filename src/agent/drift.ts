@@ -100,6 +100,63 @@ export function laneFailureBlocks(profile: LaunchProfile, kind: "write" | "read-
 }
 
 /**
+ * What a session just contradicted about its own profile.
+ *
+ * The other half of ruling 69, and the half that needs no history: a version
+ * comparison catches a table that has gone stale against a NUMBER, but a bridge
+ * can be replaced under the same version and take a measured behaviour with it.
+ * `modelsAtSessionNew: true` says models were MEASURED to arrive (#2), so a
+ * session that returns none is a discrepancy checkable inside a single run, with
+ * nothing to remember between runs.
+ *
+ * Graded `warn` rather than `note`. The `note` grade above is about the FLAG
+ * going stale — that is harmless because the list is observed fresh every run.
+ * This is the observed contradiction, and it has a consequence: ruling 55's
+ * second retry rung is `same-vendor-different-model`, and on a single-vendor
+ * machine that rung is reachable only because Codex returns its 33
+ * effort-bearing model ids. An empty list silently shortens every ladder there.
+ * It is not `blocking`, because blocking is reserved for the one axis that
+ * loses containment silently, and routing badly is not losing containment.
+ */
+export interface SessionObservation {
+  /** Model ids read back at `session/new`. Never constructed — see profiles.ts. */
+  models: readonly string[];
+}
+
+export function sessionContradictions(profile: LaunchProfile, observed: SessionObservation): Drift[] {
+  if (!profile.modelsAtSessionNew || observed.models.length > 0) return [];
+  return [
+    {
+      field: "modelsAtSessionNew",
+      severity: "warn",
+      measuredAgainst: profile.measuredVersion,
+      observed: "session/new returned no model ids",
+      why: "the profile was measured with a model list arriving here (#2); without one, ruling 55's second retry rung (same-vendor-different-model) silently disappears from every ladder on this machine",
+    },
+  ];
+}
+
+/**
+ * Why a drift produced nothing blocking — said out loud rather than left to be
+ * inferred from an absence.
+ *
+ * A reader handed a `warn` and nothing else cannot tell whether the blocking
+ * axis was checked and found clean or never existed on this vendor, and those
+ * are two different facts about their machine. Four of six profiles declare no
+ * lane lever at all (copilot, qwen, opencode, gemini), so on this fleet the
+ * common case is the one that most needs saying.
+ *
+ * `undefined` when something blocking DID fire: `driftFor` has already emitted
+ * that entry with its own reason, and printing both would be saying it twice.
+ */
+export function noBlockingReason(profile: LaunchProfile, drift: readonly Drift[]): string | undefined {
+  if (drift.some((d) => d.severity === "blocking")) return undefined;
+  return profile.laneAssertion.kind === "none"
+    ? `lane assertion — none declared for ${profile.id}: no spawn-time lever was measured, so there is nothing here to go stale and nothing BLOCKS. Where a vendor declares one, a drifted lane assertion blocks every write item.`
+    : `lane assertion — declared for ${profile.id} and not among what drifted here, so nothing BLOCKS. A drifted lane assertion blocks every write item.`;
+}
+
+/**
  * Ruling 69's answer to "how does an owner get a fixed bridge without waiting
  * for a brigadier release" — the ticket asks for an answer, not a shrug.
  *
@@ -121,4 +178,58 @@ export interface BridgeOverride {
 
 export function overrideWarning(override: BridgeOverride): string {
   return `${override.agent}: bridge overridden to \`${override.command} ${override.args.join(" ")}\` — every measured fact in its launch profile is now unverified`;
+}
+
+/**
+ * Read overrides out of the operator's own config, strictly.
+ *
+ * Takes the text rather than a path so that the file read stays in the CLI and
+ * this stays a total function of its input — which is also what makes the
+ * rejection cases testable without a filesystem.
+ *
+ * Every rejection is REPORTED rather than dropped. An override an operator
+ * wrote and brigadier silently ignored is the worst of the three outcomes: they
+ * believe their fixed bridge is in use, and the coordinate actually running is
+ * the one in the table.
+ */
+export function parseOverrides(json: string): { overrides: BridgeOverride[]; problems: string[] } {
+  const problems: string[] = [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch (error) {
+    return { overrides: [], problems: [`bridge overrides are not valid JSON: ${String(error)}`] };
+  }
+  if (!Array.isArray(parsed)) {
+    return { overrides: [], problems: ["bridge overrides must be a JSON array of {agent, command, args}"] };
+  }
+
+  const overrides: BridgeOverride[] = [];
+  for (const [index, raw] of parsed.entries()) {
+    const entry = raw as { agent?: unknown; command?: unknown; args?: unknown } | null;
+    const args = entry?.args ?? [];
+    if (typeof entry?.agent !== "string" || typeof entry.command !== "string") {
+      problems.push(`bridge override ${index} needs a string \`agent\` and a string \`command\``);
+      continue;
+    }
+    if (!Array.isArray(args) || args.some((a) => typeof a !== "string")) {
+      problems.push(`bridge override for ${entry.agent}: \`args\` must be an array of strings`);
+      continue;
+    }
+    overrides.push({ agent: entry.agent, command: entry.command, args: args as string[] });
+  }
+  return { overrides, problems };
+}
+
+/**
+ * The override applied to a profile — the coordinate only.
+ *
+ * `measuredVersion` is deliberately left alone. It is the record of what was
+ * measured and against what, and rewriting it to say "unverified" would destroy
+ * the one fact drift grading compares against. The invalidation is announced by
+ * `overrideWarning` instead, which is where an operator will read it.
+ */
+export function applyOverride(profile: LaunchProfile, overrides: readonly BridgeOverride[]): LaunchProfile {
+  const override = overrides.find((o) => o.agent === profile.id);
+  return override ? { ...profile, command: override.command, args: [...override.args] } : profile;
 }

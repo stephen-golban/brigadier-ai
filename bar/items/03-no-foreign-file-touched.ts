@@ -27,10 +27,11 @@ import { join } from "node:path";
 import { Checks } from "../lib/checks.ts";
 import { gatherRunEvidence, proofOfWork } from "../lib/evidence.ts";
 import { probeFeature } from "../lib/feature.ts";
-import { isolatedPath, plantVendors } from "../lib/fixtures.ts";
+import { isolatedPath, plantFleet } from "../lib/fixtures.ts";
 import { ensureDir, hashFile, hashTree } from "../lib/fs.ts";
-import { makeRepo } from "../lib/git.ts";
+import { makeRepo, plantSeeds } from "../lib/git.ts";
 import { combine, noCredentialFreeChecks, type LiveHalf } from "../lib/halves.ts";
+import { runSampled } from "../lib/inflight.ts";
 import { disjointPlan, writePlan } from "../lib/plan.ts";
 import { baseEnv } from "../lib/proc.ts";
 import type { BarContext, BarItem, BarResult } from "../types.ts";
@@ -90,22 +91,23 @@ const item: BarItem = {
     const repo = join(ctx.workdir, "repo");
     await makeRepo(repo, { "README.md": "base\n" });
     const plan = disjointPlan(2, "foreign");
+    await plantSeeds(repo, plan.seeds);
     const planPath = writePlan(ctx.workdir, plan.plan);
 
     const binDir = ensureDir(join(ctx.workdir, "bin"));
-    plantVendors(binDir, [{ id: "codex", version: "1.4.0" }, { id: "qwen", version: "0.21.13" }]);
+    plantFleet(binDir, join(ctx.workdir, "vendor-ledger.tsv"), [
+      { id: "codex", version: "1.4.0" },
+      { id: "qwen", version: "0.21.13" },
+    ]);
     const env = baseEnv({ PATH: isolatedPath(binDir) });
-    did.push(`wrote a two-item plan at ${planPath}, each item carrying a token generated just now`);
+    const runs = ensureDir(join(ctx.workdir, "runs"));
+    did.push(`wrote a two-item plan at ${planPath}; each item must DERIVE its output from a nonce that exists only inside the clone`);
 
-    const probe = await probeFeature(
-      ctx,
-      ["run", "--plan", planPath, "--repo", repo, "--run-root", join(ctx.workdir, "runs")],
-      { env, timeoutMs: 300_000 },
-    );
-    did.push(probe.transcript);
-
-    const after = snapshotForeign();
-    const changed = diffForeign(before, after);
+    const probe = await probeFeature(ctx, ["run", "--plan", planPath, "--repo", repo, "--run-root", runs, "--dry-run"], {
+      env,
+      timeoutMs: 60_000,
+    });
+    did.push(`admission probe: ${probe.transcript}`);
 
     let live: LiveHalf;
     if (!probe.present) {
@@ -118,11 +120,25 @@ const item: BarItem = {
     } else if (!ctx.live) {
       live = { kind: "skipped", why: "a full run with real workers is what would touch another product's directory" };
     } else {
-      const evidence = await gatherRunEvidence(repo, `${probe.result.stdout}${probe.result.stderr}`);
+      const sampled = await runSampled([ctx.binary, "run", "--plan", planPath, "--repo", repo, "--run-root", runs], {
+        cwd: ctx.workdir,
+        env,
+        runRoot: runs,
+        timeoutMs: 300_000,
+      });
+      did.push(`ran the plan while sampling the run root ${sampled.flight.samples} times`);
+      const after = snapshotForeign();
+      const changed = diffForeign(before, after);
+
+      const evidence = await gatherRunEvidence(repo, `${sampled.stdout}${sampled.stderr}`);
       const checks = new Checks();
       // Something moved. Only then does nothing having moved elsewhere mean
       // anything.
-      for (const row of proofOfWork(evidence, { expected: plan.expected, itemIds: plan.itemIds }).rows) {
+      for (const row of proofOfWork(evidence, {
+        expected: plan.expected,
+        itemIds: plan.itemIds,
+        flight: sampled.flight,
+      }).rows) {
         checks.expect(row.name, row.ok, row.detail);
       }
       checks.expect(

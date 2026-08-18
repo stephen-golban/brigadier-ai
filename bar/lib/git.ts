@@ -83,3 +83,48 @@ export async function makeRepo(dir: string, files: Record<string, string>): Prom
     { cwd: dir },
   );
 }
+
+export interface Placement {
+  path: string;
+  value: string;
+  placement: "committed" | "uncommitted-tracked" | "untracked" | "gitignored";
+}
+
+/**
+ * Plant nonces into a repository in every shape a clone must — and must not —
+ * carry them.
+ *
+ * The three placements are not decoration. Ruling 33 repairs ruling 7 by
+ * carrying the owner's uncommitted TRACKED and UNTRACKED work into each clone,
+ * and ruling 50 keeps gitignored content out of the base commit entirely. A
+ * product that dropped any one of the three would still look correct on a
+ * repository whose seeds were all committed, which is precisely how ruling 7
+ * lost the mechanism in the first place.
+ *
+ * `uncommitted-tracked` is committed with a placeholder first and then modified,
+ * so the working-tree value is genuinely different from the value at `HEAD` —
+ * a clone that checked out `HEAD` rather than the scratch base commit yields the
+ * placeholder and the derivation comes out wrong.
+ */
+export async function plantSeeds(repo: string, seeds: readonly Placement[]): Promise<void> {
+  const committedFirst = seeds.filter((s) => s.placement === "committed" || s.placement === "uncommitted-tracked");
+  for (const seed of committedFirst) {
+    await Bun.write(join(repo, seed.path), seed.placement === "committed" ? `${seed.value}\n` : "PLACEHOLDER-AT-HEAD\n");
+  }
+  const ignored = seeds.filter((s) => s.placement === "gitignored");
+  if (ignored.length > 0) {
+    await Bun.write(join(repo, ".gitignore"), `${ignored.map((s) => s.path).join("\n")}\n`);
+  }
+  if (committedFirst.length > 0 || ignored.length > 0) {
+    await exec(["git", "add", "-A"], { cwd: repo });
+    await exec(
+      ["git", "-c", "user.name=bar", "-c", "user.email=bar@example.invalid", "commit", "-q", "-m", "seeds"],
+      { cwd: repo },
+    );
+  }
+
+  for (const seed of seeds) {
+    if (seed.placement === "committed") continue;
+    await Bun.write(join(repo, seed.path), `${seed.value}\n`);
+  }
+}

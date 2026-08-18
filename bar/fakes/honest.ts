@@ -65,7 +65,10 @@ function onInterrupt(): void {
     // its loop and exited 0, a second interrupt would have nothing to arrive at
     // and "re-raises rather than inventing an exit code" would be unobservable —
     // which is exactly how the first version of this fixture failed item 7.
-    setTimeout(() => process.exit(130), 3_000);
+    // Long enough that "survived the first signal" is observable. A binary with
+    // no handler at all dies immediately, which must NOT read as a correct
+    // drain — that ambiguity let a forger satisfy ruling 63 by doing nothing.
+    setTimeout(() => process.exit(130), 6_000);
     return;
   }
   process.removeListener("SIGINT", onInterrupt);
@@ -474,6 +477,7 @@ async function doRun(): Promise<number> {
   // Ruling 33 repairing ruling 7: the base commit carries the owner's
   // uncommitted TRACKED and UNTRACKED work. Ruling 50: and nothing gitignored.
   // Built through a private index so the operator's `.git/index` is untouched.
+  const operatorHead = run(["git", "rev-parse", "HEAD"], { cwd: repo }).out;
   const scratchIndex = join(runRoot, "scratch-index");
   const indexEnv = { ...process.env, GIT_INDEX_FILE: scratchIndex } as Record<string, string>;
   run(["git", "read-tree", "HEAD"], { cwd: repo, env: indexEnv });
@@ -549,10 +553,19 @@ async function doRun(): Promise<number> {
       mkdirSync(join(runRoot, "clones"), { recursive: true });
       run(["git", "clone", "--local", "--quiet", repo, clone], { cwd: runRoot });
       run(["git", "fetch", "--quiet", "origin", `${baseRef}:refs/heads/bar-base`], { cwd: clone });
-      run(["git", "checkout", "--quiet", "-B", "work", (item.dependsOn ?? []).length > 0 ? integrationTip : "bar-base"], {
-        cwd: clone,
-      });
+      if ((item.dependsOn ?? []).length > 0) {
+        // Ruling 54: wave 2 clones from wave 1's INTEGRATION commit, so it can
+        // see its prerequisite's output.
+        run(["git", "fetch", "--quiet", repo, `${integrationTip}:refs/heads/bar-wave`], { cwd: clone });
+        run(["git", "checkout", "--quiet", "-B", "work", "bar-wave"], { cwd: clone });
+      } else {
+        run(["git", "checkout", "--quiet", "-B", "work", "bar-base"], { cwd: clone });
+      }
       run(["git", "update-ref", "refs/heads/bar-base", "HEAD"], { cwd: clone });
+      // Ruling 51: a worker can push into the operator's repository through the
+      // clone's own `origin`. Removing it is a speed bump rather than a
+      // boundary, and it is removed anyway — the boundary is the ref diff.
+      run(["git", "remote", "remove", "origin"], { cwd: clone });
 
       const workerEnv: Record<string, string> = {
         PATH: process.env["PATH"] ?? "",
@@ -626,7 +639,13 @@ async function doRun(): Promise<number> {
       let verdict: RecordItem["reviewVerdict"] = "skipped";
       let caught: string[] = [];
       if (flag("review")) {
-        const diff = run(["git", "diff", `${baseCommit.out}..${head.out}`], { cwd: repo }).out;
+        // Ruling 52's framing: the reviewer gets the exact diff from the
+        // owner's committed state, so uncommitted work the base commit carried
+        // is visible to it too. Diffing from the base commit would hide it.
+        // Taken in the CLONE: at review time the work has not been fetched into
+        // the operator's repository yet, so diffing there produced nothing and
+        // the reviewer was handed an empty string.
+        const diff = safeGit(clone, emptyHooks, ["diff", `${operatorHead}..HEAD`], runRoot).out;
         const reviewOutcome = await driveWorker({
           vendor: reviewer,
           brief: { itemId: item.id, clone, role: "reviewer", diff },
@@ -712,7 +731,10 @@ async function doRun(): Promise<number> {
 
   const transcripts = join(runRoot, "transcripts");
   mkdirSync(transcripts, { recursive: true });
-  writeFileSync(join(transcripts, "full.log"), `${"transcript line\n".repeat(400)}`);
+  writeFileSync(
+    join(transcripts, "full.log"),
+    `${records.map((r) => `[${r.id}] agent=${r.agent ?? "none"} status=${r.status}\n${"turn detail\n".repeat(30)}`).join("")}`,
+  );
 
   const quota: Record<string, "read" | "unreadable" | "unpriceable"> = {};
   for (const vendor of vendors) {

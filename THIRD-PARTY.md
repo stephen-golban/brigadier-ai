@@ -7,37 +7,66 @@ received**, not merely a build-time dependency. This file is generated from what
 bundled rather than maintained by hand, because hand-written attribution drifts from the binary
 silently.
 
-The same content is reachable from the binary itself with `brigadier licenses`, which is the
-surface that matters when brigadier arrives without this repository beside it.
+Everything under "Full licence texts" below is also inside the binary, printed by `brigadier
+licenses --full` — that is the surface that matters when brigadier arrives without this
+repository beside it. `bun run license-gate` fails the build unless the compiled artifact's
+BYTES carry each text's title, its body, its pinned revision and its source-offer status, so
+this file and the binary cannot drift apart silently. The narrative sections are the long
+form and live here and in `RELINKING.md`.
 
 | component | version | licence | why it is in the binary |
 | --- | --- | --- | --- |
-| `bun` | 1.3.14 | MIT | ruling 5 compiles with `bun --compile`, which embeds the Bun runtime and everything it statically links — including JavaScriptCore/WebKit (LGPL-2) and tinycc (LGPL-2.1) |
+| `bun` | 1.3.14 | MIT | ruling 5 compiles with `bun --compile`, which embeds the Bun runtime and everything it statically links — including JavaScriptCore/WebKit and tinycc, both LGPL, both listed below |
+| `javascriptcore-webkit` | oven-sh/WebKit@5488984d20e0dbfe4be2c3ba8fb18eb81a5e0e8b | LGPL-2.0-or-later, with a BSD-2-Clause/BSD-3-Clause majority (see the census below) | statically linked into every `bun --compile` artifact — the JS engine the binary runs on; `bun run license-gate` fails the build unless the compiled artifact carries this licence text |
+| `tinycc` | oven-sh/tinycc@12882eee073cfe5c7621bcfadf679e1372d4537b | LGPL-2.1-or-later | statically linked into every `bun --compile` artifact as the backend for `bun:ffi`'s C compiler; MODIFIED by Bun — patches/tinycc/tcc.h.patch at tag bun-v1.3.14, READ 2026-08-17 |
 
-## Statically linked LGPL components, and how to relink
+## The statically linked LGPL libraries — status of the obligation
 
-`bun` statically links parts of **JavaScriptCore/WebKit** and **tinycc**.
+`bun --compile` embeds the Bun runtime whole, and Bun statically links **JavaScriptCore
+(WebKit)** and **tinycc**, both LGPL. Those are components brigadier **redistributes**.
+LGPL §6 makes supplying a copy of the licence unconditional, and nothing upstream discharges it
+for us. MEASURED on 2026-08-17 with Apple `strings` (cctools, from Xcode's default toolchain;
+it accepts no version flag) on darwin 25.5.0 arm64, against `~/.bun/bin/bun` 1.3.14, 63,096,576
+bytes — counting LINES of `strings` output that contain each phrase: **875** for
+`JavaScriptCore`, **0** for `GNU Lesser`, **0** for `GNU Library General Public`. The same scan
+of brigadier's own binary before this file was regenerated: **879**, **0**, **0**. Supplying the
+text is therefore ours to do, and `brigadier licenses --full` now does it.
 
-**What the licences actually are.** JavaScriptCore's `COPYING.LIB` is the GNU **Library** General
-Public License **version 2** — which has no shared-library option — but its source headers say
-*"version 2 of the License, or (at your option) any later version"*, so it is **LGPL-2.0-or-later**
-and a recipient may elect 2.1 or 3. tinycc's `COPYING` is **LGPL-2.1**, headers likewise
-*or later*. Read 2026-08-17.
+| library | pinned revision | licence file it ships | source offer |
+| --- | --- | --- | --- |
+| JavaScriptCore (WebKit) | `oven-sh/WebKit@5488984d20e0dbfe4be2c3ba8fb18eb81a5e0e8b` | Source/JavaScriptCore/COPYING.LIB — GNU LIBRARY GENERAL PUBLIC LICENSE, Version 2, June 1991 | **not yet discharged**, see below |
+| tinycc | `oven-sh/tinycc@12882eee073cfe5c7621bcfadf679e1372d4537b` | COPYING — GNU LESSER GENERAL PUBLIC LICENSE, Version 2.1, February 1999 | **not yet discharged**, see below |
 
-**JavaScriptCore is not uniformly LGPL, and this notice used to imply it was.** Of 3,523 files in
-`Source/JavaScriptCore`, **187 (5.3%) carry LGPL headers** — concentrated in `runtime/` — and
-**3,321 are BSD-2-Clause or BSD-3-Clause**; `Source/WTF` is 101 LGPL of 1,092. Those BSD files carry
-their own attribution requirement, which a flat "LGPL-2" label understates.
+**What is discharged.** The complete licence text of both libraries is inside the binary and
+printed by `brigadier licenses --full`, along with the exact revision each was built from, the
+rebuild path, and the per-file attribution census below. `bun run license-gate` fails the build
+if any of that is missing from the artifact's bytes.
 
-**How to relink.** LGPL-2.1 §6a requires the "work that uses the Library" *"as object code and/or
-source code"* — source is one of the two forms the licence names, and it is the route Qt's and
-FFmpeg's published compliance guidance recommend. brigadier's own complete source is public under
-Apache-2.0, so: rebuild Bun against your modified WebKit (upstream documents this at
-<https://github.com/oven-sh/webkit>), then rebuild brigadier with `bun run build` using that Bun.
+**What is not.** §6c of LGPL-2.0 (§6d of LGPL-2.1) asks that the Library's complete
+corresponding source be offered **from the same place as the binary**. brigadier publishes no
+release artifacts yet, so there is no such place and no mirror under our control to point at.
+That step belongs to the first release; until it happens the obligation is **open**, and this
+file says so instead of implying it is closed. Qt's published obligations page — READ
+2026-08-17, <https://www.qt.io/licensing/open-source-lgpl-obligations> — puts it as: "complete
+corresponding source code of the library used with the application or the device built using
+LGPL, including all modifications to the library, should be delivered with the application (or
+alternatively provide a written offer with instructions on how to get the source code)".
 
-**§6a has a second limb** that the application source does not discharge: the Library's own complete
-corresponding source, including whatever changes were used. brigadier offers it from the same place
-as the binary, pinned to the exact WebKit and tinycc revisions this Bun was built from.
+**Not proven.** §6 also requires the shipped form of the "work that uses the Library" to include
+the data and utility programs needed for **reproducing the executable from it**. The recipe is
+in `RELINKING.md` and in the binary; nobody has yet demonstrated that following it reproduces
+this binary. Ruling 72 leaves that as a bar item still to be written and nothing here claims it.
+
+**Two labels we had wrong, corrected.** JavaScriptCore's `COPYING.LIB` at the pinned revision is
+the GNU **Library** General Public License **version 2** (READ 2026-08-17), which has no
+shared-library option — but its file headers say *"or (at your option) any later version"*, so a
+recipient may elect 2.1 or 3, and the census counts how many headers actually say it. And
+JavaScriptCore is **not uniformly LGPL**: the majority of its files are BSD-2-Clause or
+BSD-3-Clause and carry their own attribution requirement, which the flat `LGPL-2` label we used
+to print understated. Both corrections are enumerated per library under "Full licence texts".
+
+**These are not legal advice** and the licence review before the first signed tag stands
+regardless of what is written here.
 
 ## Full licence texts
 
@@ -130,6 +159,1847 @@ For compatibility reasons, the following packages are embedded into Bun's binary
 
 - Bun's JS transpiler, CSS lexer, and Node.js module resolver source code is a port of [@evanw](https://github.com/evanw)’s [esbuild](https://github.com/evanw/esbuild) project.
 - Credit to [@kipply](https://github.com/kipply) for the name "Bun"!
+```
+
+### javascriptcore-webkit oven-sh/WebKit@5488984d20e0dbfe4be2c3ba8fb18eb81a5e0e8b — LGPL-2.0-or-later, with a BSD-2-Clause/BSD-3-Clause majority (see the census below)
+
+Copyright (C) 1991, 1999 Free Software Foundation, Inc.; and the holders enumerated below
+
+```
+brigadier's notice for JavaScriptCore (WebKit) — written by brigadier, not by upstream.
+The verbatim licence begins below the row of "=" signs; everything above it is ours.
+
+WHAT IS IN THE BINARY
+  JavaScriptCore (WebKit) is statically linked into every brigadier binary, because ruling 5
+  compiles with `bun --compile` and that embeds the Bun runtime whole. You did not
+  install it and you cannot remove it; you are nonetheless holding a copy of it.
+
+THE REVISION THIS COPY WAS BUILT FROM
+  https://github.com/oven-sh/WebKit @ 5488984d20e0dbfe4be2c3ba8fb18eb81a5e0e8b
+  Established, not assumed: `bun --revision` reports 0d9b296af33f2b851fcbf4df3e9ec89751734ba4, which is the
+  commit oven-sh/bun's tag bun-v1.3.14 points at; that commit's build scripts name the
+  revision above. `bun run license-gate` re-checks the first link of that chain on every
+  build — the building bun against the pinned revision — and refuses to build if it moved.
+  The remaining links were READ from the primary source on 2026-08-17; RELINKING.md records
+  each URL, each read date, and what the chain does NOT establish.
+
+THE SOURCE OFFER — STATUS: NOT YET DISCHARGED
+  §6c of LGPL-2.0 (the same clause is §6d in LGPL-2.1) asks that the Library's complete
+  corresponding source be offered from the SAME PLACE as the binary. brigadier publishes
+  no release artifacts yet, so there is no such place, and no mirror under our control
+  exists to point you at. This notice states that rather than implying otherwise. What IS
+  discharged here and now: the complete licence text below, which §6 requires
+  unconditionally; the exact revision above; and the rebuild path beneath. What is NOT: a
+  copy of that source served by us. Until the first release does that, treat this as an
+  open obligation — and if you need the source before then, ask, and take it from upstream
+  at exactly the revision above:
+    git clone https://github.com/oven-sh/WebKit.git javascriptcore-webkit && git -C javascriptcore-webkit checkout 5488984d20e0dbfe4be2c3ba8fb18eb81a5e0e8b
+
+HOW TO RELINK, IF YOU WANT A DIFFERENT JAVASCRIPTCORE (WEBKIT)
+  1. Clone the revision above and make your changes.
+  2. Rebuild Bun against it — upstream documents the WebKit route at
+     https://github.com/oven-sh/webkit, and the build scripts for both libraries live in
+     oven-sh/bun under scripts/build/deps/ at the tag above.
+  3. Rebuild brigadier with your Bun: `bun run build`. brigadier's own source — the other
+     half of §6a, the "work that uses the Library" — is licensed Apache-2.0 and ships
+     with this repository. It is NOT yet published: MEASURED 2026-08-17, the GitHub API
+     returns 404 for stephen-golban/brigadier-ai and package.json still says
+     "private": true. So this half is open for the same reason the other one is — nothing
+     has been released yet — and saying it is done because the licence file exists would
+     be the precise mistake this notice was rewritten to stop making.
+  NOT PROVEN: nobody has yet demonstrated that this path reproduces this binary. §6
+  requires the shipped form of the "work that uses the Library" to include the data and
+  utility programs needed for reproducing the executable from it; the recipe is here, a
+  demonstration that it works is not. Ruling 72 leaves that as a bar item still to be
+  written, and this notice does not claim it has been.
+
+WHAT THIS LIBRARY ACTUALLY IS, FILE BY FILE
+  MEASURED against git 2.50.1 (Apple Git-155) and bun 1.3.14 on 2026-08-17, by reading the first
+  8192 bytes of every file at 5488984d20e0:
+
+    Source/JavaScriptCore — 3785 files: BSD-2-Clause 3264, unclassified 209, LGPL 201, BSD-3-Clause 105, MIT-like 5, Apache-2.0 1
+    Source/WTF — 1126 files: BSD-2-Clause 690, unclassified 237, LGPL 101, BSD-3-Clause 83, MIT-like 8, Apache-2.0 7
+
+  So a single licence label cannot be right for this tree. 302 files carry LGPL headers;
+  297 of those 302 offer "or (at your option) any later version", so a recipient may elect
+  a later LGPL for them even though Source/JavaScriptCore/COPYING.LIB itself is not "or
+  later". The other 5 do NOT say it, and for those the version named in the file is the
+  one you get — a distinction our old flat label erased in both directions. They are:
+    Source/JavaScriptCore/API/glib/docs/jsc.toml.in
+    Source/JavaScriptCore/COPYING.LIB
+    Source/JavaScriptCore/runtime/JSDateMath.h
+    Source/WTF/wtf/DateMath.h
+    Source/WTF/wtf/text/Base64.cpp
+
+  4142 of the 4465 classified files are BSD-2-Clause or BSD-3-Clause. Those carry their
+  OWN attribution requirement — the copyright notice and the disclaimer must be reproduced
+  with the binary — and it is not discharged by naming the LGPL. Every holder and every
+  distinct wording is enumerated after the licence text below.
+
+  The classifier is crude and its crudeness is the reason these numbers are printed
+  rather than asserted: it matches each header against the licences' distinctive
+  wording, in the first 8 KiB only, and it reads headers rather than build graphs — it
+  cannot tell you which of these files are compiled into the artifact.
+  446 files matched nothing (mostly .h 206, .json 87, .json-error 27, .cmake 22, (no
+  extension) 19, .txt 19) and are listed as unclassified rather than assigned a licence by
+  guesswork.
+
+  Third-party code nested inside this tree ships its own licence files, which are in
+  the source at the pinned revision and are part of what a recipient receives:
+    Source/JavaScriptCore/COPYING.LIB
+    Source/JavaScriptCore/disassembler/ARM64/LICENSE-binja.txt
+    Source/JavaScriptCore/disassembler/zydis/LICENSE-zycore.txt
+    Source/JavaScriptCore/disassembler/zydis/LICENSE-zydis.txt
+    Source/WTF/LICENSE-LLVM.txt
+    Source/WTF/LICENSE-dragonbox.txt
+    Source/WTF/LICENSE-libc++.txt
+    Source/WTF/LICENSE-simde.txt
+    Source/WTF/icu/LICENSE
+    Source/WTF/wtf/dtoa/COPYING
+    Source/WTF/wtf/dtoa/LICENSE
+    Source/WTF/wtf/fast_float/LICENSE
+    Source/WTF/wtf/simdutf/LICENSE-simdutf.txt
+
+============================================================================
+GNU LIBRARY GENERAL PUBLIC LICENSE, Version 2, June 1991 — verbatim, as it appears in Source/JavaScriptCore/COPYING.LIB at the revision above
+============================================================================
+
+
+
+NOTE! The LGPL below is copyrighted by the Free Software Foundation, but 
+the instance of code that it refers to (the kde libraries) are copyrighted 
+by the authors who actually wrote it.
+				   
+---------------------------------------------------------------------------
+		  GNU LIBRARY GENERAL PUBLIC LICENSE
+		       Version 2, June 1991
+
+ Copyright (C) 1991 Free Software Foundation, Inc.
+                    51 Franklin Street, Fifth Floor
+                    Boston, MA 02110-1301, USA.
+ Everyone is permitted to copy and distribute verbatim copies
+ of this license document, but changing it is not allowed.
+
+[This is the first released version of the library GPL.  It is
+ numbered 2 because it goes with version 2 of the ordinary GPL.]
+
+			    Preamble
+
+  The licenses for most software are designed to take away your
+freedom to share and change it.  By contrast, the GNU General Public
+Licenses are intended to guarantee your freedom to share and change
+free software--to make sure the software is free for all its users.
+
+  This license, the Library General Public License, applies to some
+specially designated Free Software Foundation software, and to any
+other libraries whose authors decide to use it.  You can use it for
+your libraries, too.
+
+  When we speak of free software, we are referring to freedom, not
+price.  Our General Public Licenses are designed to make sure that you
+have the freedom to distribute copies of free software (and charge for
+this service if you wish), that you receive source code or can get it
+if you want it, that you can change the software or use pieces of it
+in new free programs; and that you know you can do these things.
+
+  To protect your rights, we need to make restrictions that forbid
+anyone to deny you these rights or to ask you to surrender the rights.
+These restrictions translate to certain responsibilities for you if
+you distribute copies of the library, or if you modify it.
+
+  For example, if you distribute copies of the library, whether gratis
+or for a fee, you must give the recipients all the rights that we gave
+you.  You must make sure that they, too, receive or can get the source
+code.  If you link a program with the library, you must provide
+complete object files to the recipients so that they can relink them
+with the library, after making changes to the library and recompiling
+it.  And you must show them these terms so they know their rights.
+
+  Our method of protecting your rights has two steps: (1) copyright
+the library, and (2) offer you this license which gives you legal
+permission to copy, distribute and/or modify the library.
+
+  Also, for each distributor's protection, we want to make certain
+that everyone understands that there is no warranty for this free
+library.  If the library is modified by someone else and passed on, we
+want its recipients to know that what they have is not the original
+version, so that any problems introduced by others will not reflect on
+the original authors' reputations.
+
+  Finally, any free program is threatened constantly by software
+patents.  We wish to avoid the danger that companies distributing free
+software will individually obtain patent licenses, thus in effect
+transforming the program into proprietary software.  To prevent this,
+we have made it clear that any patent must be licensed for everyone's
+free use or not licensed at all.
+
+  Most GNU software, including some libraries, is covered by the ordinary
+GNU General Public License, which was designed for utility programs.  This
+license, the GNU Library General Public License, applies to certain
+designated libraries.  This license is quite different from the ordinary
+one; be sure to read it in full, and don't assume that anything in it is
+the same as in the ordinary license.
+
+  The reason we have a separate public license for some libraries is that
+they blur the distinction we usually make between modifying or adding to a
+program and simply using it.  Linking a program with a library, without
+changing the library, is in some sense simply using the library, and is
+analogous to running a utility program or application program.  However, in
+a textual and legal sense, the linked executable is a combined work, a
+derivative of the original library, and the ordinary General Public License
+treats it as such.
+
+  Because of this blurred distinction, using the ordinary General
+Public License for libraries did not effectively promote software
+sharing, because most developers did not use the libraries.  We
+concluded that weaker conditions might promote sharing better.
+
+  However, unrestricted linking of non-free programs would deprive the
+users of those programs of all benefit from the free status of the
+libraries themselves.  This Library General Public License is intended to
+permit developers of non-free programs to use free libraries, while
+preserving your freedom as a user of such programs to change the free
+libraries that are incorporated in them.  (We have not seen how to achieve
+this as regards changes in header files, but we have achieved it as regards
+changes in the actual functions of the Library.)  The hope is that this
+will lead to faster development of free libraries.
+
+  The precise terms and conditions for copying, distribution and
+modification follow.  Pay close attention to the difference between a
+"work based on the library" and a "work that uses the library".  The
+former contains code derived from the library, while the latter only
+works together with the library.
+
+  Note that it is possible for a library to be covered by the ordinary
+General Public License rather than by this special one.
+
+		  GNU LIBRARY GENERAL PUBLIC LICENSE
+   TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION
+
+  0. This License Agreement applies to any software library which
+contains a notice placed by the copyright holder or other authorized
+party saying it may be distributed under the terms of this Library
+General Public License (also called "this License").  Each licensee is
+addressed as "you".
+
+  A "library" means a collection of software functions and/or data
+prepared so as to be conveniently linked with application programs
+(which use some of those functions and data) to form executables.
+
+  The "Library", below, refers to any such software library or work
+which has been distributed under these terms.  A "work based on the
+Library" means either the Library or any derivative work under
+copyright law: that is to say, a work containing the Library or a
+portion of it, either verbatim or with modifications and/or translated
+straightforwardly into another language.  (Hereinafter, translation is
+included without limitation in the term "modification".)
+
+  "Source code" for a work means the preferred form of the work for
+making modifications to it.  For a library, complete source code means
+all the source code for all modules it contains, plus any associated
+interface definition files, plus the scripts used to control compilation
+and installation of the library.
+
+  Activities other than copying, distribution and modification are not
+covered by this License; they are outside its scope.  The act of
+running a program using the Library is not restricted, and output from
+such a program is covered only if its contents constitute a work based
+on the Library (independent of the use of the Library in a tool for
+writing it).  Whether that is true depends on what the Library does
+and what the program that uses the Library does.
+  
+  1. You may copy and distribute verbatim copies of the Library's
+complete source code as you receive it, in any medium, provided that
+you conspicuously and appropriately publish on each copy an
+appropriate copyright notice and disclaimer of warranty; keep intact
+all the notices that refer to this License and to the absence of any
+warranty; and distribute a copy of this License along with the
+Library.
+
+  You may charge a fee for the physical act of transferring a copy,
+and you may at your option offer warranty protection in exchange for a
+fee.
+
+  2. You may modify your copy or copies of the Library or any portion
+of it, thus forming a work based on the Library, and copy and
+distribute such modifications or work under the terms of Section 1
+above, provided that you also meet all of these conditions:
+
+    a) The modified work must itself be a software library.
+
+    b) You must cause the files modified to carry prominent notices
+    stating that you changed the files and the date of any change.
+
+    c) You must cause the whole of the work to be licensed at no
+    charge to all third parties under the terms of this License.
+
+    d) If a facility in the modified Library refers to a function or a
+    table of data to be supplied by an application program that uses
+    the facility, other than as an argument passed when the facility
+    is invoked, then you must make a good faith effort to ensure that,
+    in the event an application does not supply such function or
+    table, the facility still operates, and performs whatever part of
+    its purpose remains meaningful.
+
+    (For example, a function in a library to compute square roots has
+    a purpose that is entirely well-defined independent of the
+    application.  Therefore, Subsection 2d requires that any
+    application-supplied function or table used by this function must
+    be optional: if the application does not supply it, the square
+    root function must still compute square roots.)
+
+These requirements apply to the modified work as a whole.  If
+identifiable sections of that work are not derived from the Library,
+and can be reasonably considered independent and separate works in
+themselves, then this License, and its terms, do not apply to those
+sections when you distribute them as separate works.  But when you
+distribute the same sections as part of a whole which is a work based
+on the Library, the distribution of the whole must be on the terms of
+this License, whose permissions for other licensees extend to the
+entire whole, and thus to each and every part regardless of who wrote
+it.
+
+Thus, it is not the intent of this section to claim rights or contest
+your rights to work written entirely by you; rather, the intent is to
+exercise the right to control the distribution of derivative or
+collective works based on the Library.
+
+In addition, mere aggregation of another work not based on the Library
+with the Library (or with a work based on the Library) on a volume of
+a storage or distribution medium does not bring the other work under
+the scope of this License.
+
+  3. You may opt to apply the terms of the ordinary GNU General Public
+License instead of this License to a given copy of the Library.  To do
+this, you must alter all the notices that refer to this License, so
+that they refer to the ordinary GNU General Public License, version 2,
+instead of to this License.  (If a newer version than version 2 of the
+ordinary GNU General Public License has appeared, then you can specify
+that version instead if you wish.)  Do not make any other change in
+these notices.
+
+  Once this change is made in a given copy, it is irreversible for
+that copy, so the ordinary GNU General Public License applies to all
+subsequent copies and derivative works made from that copy.
+
+  This option is useful when you wish to copy part of the code of
+the Library into a program that is not a library.
+
+  4. You may copy and distribute the Library (or a portion or
+derivative of it, under Section 2) in object code or executable form
+under the terms of Sections 1 and 2 above provided that you accompany
+it with the complete corresponding machine-readable source code, which
+must be distributed under the terms of Sections 1 and 2 above on a
+medium customarily used for software interchange.
+
+  If distribution of object code is made by offering access to copy
+from a designated place, then offering equivalent access to copy the
+source code from the same place satisfies the requirement to
+distribute the source code, even though third parties are not
+compelled to copy the source along with the object code.
+
+  5. A program that contains no derivative of any portion of the
+Library, but is designed to work with the Library by being compiled or
+linked with it, is called a "work that uses the Library".  Such a
+work, in isolation, is not a derivative work of the Library, and
+therefore falls outside the scope of this License.
+
+  However, linking a "work that uses the Library" with the Library
+creates an executable that is a derivative of the Library (because it
+contains portions of the Library), rather than a "work that uses the
+library".  The executable is therefore covered by this License.
+Section 6 states terms for distribution of such executables.
+
+  When a "work that uses the Library" uses material from a header file
+that is part of the Library, the object code for the work may be a
+derivative work of the Library even though the source code is not.
+Whether this is true is especially significant if the work can be
+linked without the Library, or if the work is itself a library.  The
+threshold for this to be true is not precisely defined by law.
+
+  If such an object file uses only numerical parameters, data
+structure layouts and accessors, and small macros and small inline
+functions (ten lines or less in length), then the use of the object
+file is unrestricted, regardless of whether it is legally a derivative
+work.  (Executables containing this object code plus portions of the
+Library will still fall under Section 6.)
+
+  Otherwise, if the work is a derivative of the Library, you may
+distribute the object code for the work under the terms of Section 6.
+Any executables containing that work also fall under Section 6,
+whether or not they are linked directly with the Library itself.
+
+  6. As an exception to the Sections above, you may also compile or
+link a "work that uses the Library" with the Library to produce a
+work containing portions of the Library, and distribute that work
+under terms of your choice, provided that the terms permit
+modification of the work for the customer's own use and reverse
+engineering for debugging such modifications.
+
+  You must give prominent notice with each copy of the work that the
+Library is used in it and that the Library and its use are covered by
+this License.  You must supply a copy of this License.  If the work
+during execution displays copyright notices, you must include the
+copyright notice for the Library among them, as well as a reference
+directing the user to the copy of this License.  Also, you must do one
+of these things:
+
+    a) Accompany the work with the complete corresponding
+    machine-readable source code for the Library including whatever
+    changes were used in the work (which must be distributed under
+    Sections 1 and 2 above); and, if the work is an executable linked
+    with the Library, with the complete machine-readable "work that
+    uses the Library", as object code and/or source code, so that the
+    user can modify the Library and then relink to produce a modified
+    executable containing the modified Library.  (It is understood
+    that the user who changes the contents of definitions files in the
+    Library will not necessarily be able to recompile the application
+    to use the modified definitions.)
+
+    b) Accompany the work with a written offer, valid for at
+    least three years, to give the same user the materials
+    specified in Subsection 6a, above, for a charge no more
+    than the cost of performing this distribution.
+
+    c) If distribution of the work is made by offering access to copy
+    from a designated place, offer equivalent access to copy the above
+    specified materials from the same place.
+
+    d) Verify that the user has already received a copy of these
+    materials or that you have already sent this user a copy.
+
+  For an executable, the required form of the "work that uses the
+Library" must include any data and utility programs needed for
+reproducing the executable from it.  However, as a special exception,
+the source code distributed need not include anything that is normally
+distributed (in either source or binary form) with the major
+components (compiler, kernel, and so on) of the operating system on
+which the executable runs, unless that component itself accompanies
+the executable.
+
+  It may happen that this requirement contradicts the license
+restrictions of other proprietary libraries that do not normally
+accompany the operating system.  Such a contradiction means you cannot
+use both them and the Library together in an executable that you
+distribute.
+
+  7. You may place library facilities that are a work based on the
+Library side-by-side in a single library together with other library
+facilities not covered by this License, and distribute such a combined
+library, provided that the separate distribution of the work based on
+the Library and of the other library facilities is otherwise
+permitted, and provided that you do these two things:
+
+    a) Accompany the combined library with a copy of the same work
+    based on the Library, uncombined with any other library
+    facilities.  This must be distributed under the terms of the
+    Sections above.
+
+    b) Give prominent notice with the combined library of the fact
+    that part of it is a work based on the Library, and explaining
+    where to find the accompanying uncombined form of the same work.
+
+  8. You may not copy, modify, sublicense, link with, or distribute
+the Library except as expressly provided under this License.  Any
+attempt otherwise to copy, modify, sublicense, link with, or
+distribute the Library is void, and will automatically terminate your
+rights under this License.  However, parties who have received copies,
+or rights, from you under this License will not have their licenses
+terminated so long as such parties remain in full compliance.
+
+  9. You are not required to accept this License, since you have not
+signed it.  However, nothing else grants you permission to modify or
+distribute the Library or its derivative works.  These actions are
+prohibited by law if you do not accept this License.  Therefore, by
+modifying or distributing the Library (or any work based on the
+Library), you indicate your acceptance of this License to do so, and
+all its terms and conditions for copying, distributing or modifying
+the Library or works based on it.
+
+  10. Each time you redistribute the Library (or any work based on the
+Library), the recipient automatically receives a license from the
+original licensor to copy, distribute, link with or modify the Library
+subject to these terms and conditions.  You may not impose any further
+restrictions on the recipients' exercise of the rights granted herein.
+You are not responsible for enforcing compliance by third parties to
+this License.
+
+  11. If, as a consequence of a court judgment or allegation of patent
+infringement or for any other reason (not limited to patent issues),
+conditions are imposed on you (whether by court order, agreement or
+otherwise) that contradict the conditions of this License, they do not
+excuse you from the conditions of this License.  If you cannot
+distribute so as to satisfy simultaneously your obligations under this
+License and any other pertinent obligations, then as a consequence you
+may not distribute the Library at all.  For example, if a patent
+license would not permit royalty-free redistribution of the Library by
+all those who receive copies directly or indirectly through you, then
+the only way you could satisfy both it and this License would be to
+refrain entirely from distribution of the Library.
+
+If any portion of this section is held invalid or unenforceable under any
+particular circumstance, the balance of the section is intended to apply,
+and the section as a whole is intended to apply in other circumstances.
+
+It is not the purpose of this section to induce you to infringe any
+patents or other property right claims or to contest validity of any
+such claims; this section has the sole purpose of protecting the
+integrity of the free software distribution system which is
+implemented by public license practices.  Many people have made
+generous contributions to the wide range of software distributed
+through that system in reliance on consistent application of that
+system; it is up to the author/donor to decide if he or she is willing
+to distribute software through any other system and a licensee cannot
+impose that choice.
+
+This section is intended to make thoroughly clear what is believed to
+be a consequence of the rest of this License.
+
+  12. If the distribution and/or use of the Library is restricted in
+certain countries either by patents or by copyrighted interfaces, the
+original copyright holder who places the Library under this License may add
+an explicit geographical distribution limitation excluding those countries,
+so that distribution is permitted only in or among countries not thus
+excluded.  In such case, this License incorporates the limitation as if
+written in the body of this License.
+
+  13. The Free Software Foundation may publish revised and/or new
+versions of the Library General Public License from time to time.
+Such new versions will be similar in spirit to the present version,
+but may differ in detail to address new problems or concerns.
+
+Each version is given a distinguishing version number.  If the Library
+specifies a version number of this License which applies to it and
+"any later version", you have the option of following the terms and
+conditions either of that version or of any later version published by
+the Free Software Foundation.  If the Library does not specify a
+license version number, you may choose any version ever published by
+the Free Software Foundation.
+
+  14. If you wish to incorporate parts of the Library into other free
+programs whose distribution conditions are incompatible with these,
+write to the author to ask for permission.  For software which is
+copyrighted by the Free Software Foundation, write to the Free
+Software Foundation; we sometimes make exceptions for this.  Our
+decision will be guided by the two goals of preserving the free status
+of all derivatives of our free software and of promoting the sharing
+and reuse of software generally.
+
+			    NO WARRANTY
+
+  15. BECAUSE THE LIBRARY IS LICENSED FREE OF CHARGE, THERE IS NO
+WARRANTY FOR THE LIBRARY, TO THE EXTENT PERMITTED BY APPLICABLE LAW.
+EXCEPT WHEN OTHERWISE STATED IN WRITING THE COPYRIGHT HOLDERS AND/OR
+OTHER PARTIES PROVIDE THE LIBRARY "AS IS" WITHOUT WARRANTY OF ANY
+KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+PURPOSE.  THE ENTIRE RISK AS TO THE QUALITY AND PERFORMANCE OF THE
+LIBRARY IS WITH YOU.  SHOULD THE LIBRARY PROVE DEFECTIVE, YOU ASSUME
+THE COST OF ALL NECESSARY SERVICING, REPAIR OR CORRECTION.
+
+  16. IN NO EVENT UNLESS REQUIRED BY APPLICABLE LAW OR AGREED TO IN
+WRITING WILL ANY COPYRIGHT HOLDER, OR ANY OTHER PARTY WHO MAY MODIFY
+AND/OR REDISTRIBUTE THE LIBRARY AS PERMITTED ABOVE, BE LIABLE TO YOU
+FOR DAMAGES, INCLUDING ANY GENERAL, SPECIAL, INCIDENTAL OR
+CONSEQUENTIAL DAMAGES ARISING OUT OF THE USE OR INABILITY TO USE THE
+LIBRARY (INCLUDING BUT NOT LIMITED TO LOSS OF DATA OR DATA BEING
+RENDERED INACCURATE OR LOSSES SUSTAINED BY YOU OR THIRD PARTIES OR A
+FAILURE OF THE LIBRARY TO OPERATE WITH ANY OTHER SOFTWARE), EVEN IF
+SUCH HOLDER OR OTHER PARTY HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH
+DAMAGES.
+
+		     END OF TERMS AND CONDITIONS
+           How to Apply These Terms to Your New Libraries
+
+  If you develop a new library, and you want it to be of the greatest
+possible use to the public, we recommend making it free software that
+everyone can redistribute and change.  You can do so by permitting
+redistribution under these terms (or, alternatively, under the terms of the
+ordinary General Public License).
+
+  To apply these terms, attach the following notices to the library.  It is
+safest to attach them to the start of each source file to most effectively
+convey the exclusion of warranty; and each file should have at least the
+"copyright" line and a pointer to where the full notice is found.
+
+    <one line to give the library's name and a brief idea of what it does.>
+    Copyright (C) <year>  <name of author>
+
+    This library is free software; you can redistribute it and/or
+    modify it under the terms of the GNU Lesser General Public
+    License as published by the Free Software Foundation; either
+    version 2 of the License, or (at your option) any later version.
+
+    This library is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+    Lesser General Public License for more details.
+
+    You should have received a copy of the GNU Lesser General Public
+    License along with this library; if not, write to the Free Software
+    Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
+
+Also add information on how to contact you by electronic and paper mail.
+
+You should also get your employer (if you work as a programmer) or your
+school, if any, to sign a "copyright disclaimer" for the library, if
+necessary.  Here is a sample; alter the names:
+
+  Yoyodyne, Inc., hereby disclaims all copyright interest in the
+  library `Frob' (a library for tweaking knobs) written by James Random Hacker.
+
+  <signature of Ty Coon>, 1 April 1990
+  Ty Coon, President of Vice
+
+That's all there is to it!
+
+============================================================================
+ATTRIBUTION FOR THE NON-LGPL MAJORITY (BSD-2-Clause and BSD-3-Clause)
+============================================================================
+
+Every copyright holder named in a licence header in the tree above, with the number of
+files naming them. MEASURED on 2026-08-17; years are omitted because the
+attribution is owed to the holder, and `(c)` is written for `©` throughout.
+
+  -- Apache-2.0 --
+      3  Copyright (c) The Abseil Authors.
+      1  Copyright (c) The fast_float authors
+      1  Copyright (c) Vector 35 Inc.
+  -- BSD-2-Clause --
+   3627  Copyright (c) Apple Inc. All rights reserved.
+    110  Copyright (c) Yusuke Suzuki <utatane.tea@gmail.com>.
+     76  Copyright (c) Sony Interactive Entertainment Inc.
+     69  Copyright (c) Igalia S.L.
+     57  Copyright (c) Apple, Inc. All rights reserved.
+     55  Copyright (c) University of Washington. All rights reserved.
+     46  Copyright (c) Sosuke Suzuki <aosukeke@gmail.com>.
+     44  Copyright (c) Google Inc. All rights reserved.
+     32  Copyright (c) Yusuke Suzuki <utatane.tea@gmail.com>
+     26  Copyright (c) Andy VanWagoner (andy@vanwagoner.family)
+     20  Copyright (c) Oleksandr Skachkov <gskachkov@gmail.com>.
+     19  Copyright (c) the V8 project authors. All rights reserved.
+     18  Copyright (c) Canon Inc. All rights reserved.
+     18  Copyright (c) Igalia S.L. All rights reserved.
+     12  Copyright (c) Patrick Gansterer <paroga@paroga.com>
+     11  Copyright (c) Research In Motion Limited. All rights reserved.
+     11  Copyright (c) Samuel Weinig <sam@webkit.org>
+     11  Copyright (c) Tetsuharu Ohzeki <tetsuharu.ohzeki@gmail.com>.
+     11  Copyright (c) Torch Mobile, Inc.
+     10  Copyright (c) Igalia S.A. All rights reserved.
+     10  Copyright (c) University of Szeged
+     10  Copyright (c) Yusuke Suzuki <yusukesuzuki@slowstart.org>.
+      9  Copyright (c) Caitlin Potter <caitp@igalia.com>.
+      7  Copyright (c) Alexey Shvayka <shvaikalesh@gmail.com>.
+      7  Copyright (c) Anthropic PBC.
+      7  Copyright (c) Caio Lima <ticaiolima@gmail.com>.
+      7  Copyright (c) Igalia, S.L. All rights reserved.
+      6  Copyright (c) Metrological Group B.V.
+      5  Copyright (c) Caio Lima <ticaiolima@gmail.com>
+      5  Copyright (c) Codeblog CORP.
+      5  Copyright (c) Gabor Loki <loki@webkit.org>
+      5  Copyright (c) Google, Inc. All rights reserved.
+      5  Copyright (c) The Chromium Authors. All rights reserved.
+      4  Copyright (c) Apple Inc.
+      4  Copyright (c) Apple Inc. All Rights Reserved.
+      4  Copyright (c) Comcast Inc.
+      4  Copyright (c) Motorola Mobility, Inc. All rights reserved.
+      4  Copyright (c) Peter Varga (pvarga@inf.u-szeged.hu), University of Szeged
+      4  Copyright (c) Saam Barati. <saambarati1@gmail.com>
+      4  Copyright (c) Samsung Electronics. All rights reserved.
+      4  Copyright (c) Sukolsak Sakshuwong (sukolsak@gmail.com)
+      4  Copyright (c) University of Szeged. All rights reserved.
+      3  Copyright (c) Eric Seidel <eric@webkit.org>
+      3  Copyright (c) Igalia, S.L.
+      3  Copyright (c) Jarred Sumner. All rights reserved.
+      3  Copyright (c) Justin Haygood (jhaygood@reaktix.com)
+      3  Copyright (c) Leaning Technologies Inc. All rights reserved.
+      3  Copyright (c) Renata Hodovan (hodovan@inf.u-szeged.hu)
+      2  Copyright (c) Alp Toker <alp@atoker.com>
+      2  Copyright (c) Colin Vidal <colin@cvidal.org> All rights reserved.
+      2  Copyright (c) Devin Rousso <webkit@devinrousso.com>.
+      2  Copyright (c) Devin Rousso <webkit@devinrousso.com>. All rights reserved.
+      2  Copyright (c) Dominic Szablewski (dominic@phoboslab.org)
+      2  Copyright (c) Google Inc.
+      2  Copyright (c) Haiku, inc
+      2  Copyright (c) Igalia S. L.
+      2  Copyright (c) Kelvin W Sherlock (ksherlock@gmail.com)
+      2  Copyright (c) Konstantin Tokavev <annulen@yandex.ru>
+      2  Copyright (c) mce sys Ltd. All rights reserved.
+      2  Copyright (c) Raspberry Pi Foundation. All rights reserved.
+      2  Copyright (c) Red Hat Inc.
+      2  Copyright (c) Saam Barati <saambarati1@gmail.com>. All rights reserved.
+      2  Copyright (c) Sony Interactive Entertainment Inc. All rights reserved.
+      2  Copyright (c) Torch Mobile Inc. All rights reserved. (http://www.torchmobile.com/)
+      2  Copyright (c) Yusuke Suzuki <utatane.tea@gmail.com>. All rights reserved.
+      1  Copyright (c) #{Date.today.year} Apple Inc. All rights reserved.
+      1  Copyright (c) Alexey Proskuryakov <ap@webkit.org>
+      1  Copyright (c) Andrew Bortz. All rights reserved.
+      1  Copyright (c) Andrzej Krzemienski.
+      1  Copyright (c) Andy VanWagoner <andy@vanwagoner.family>.
+      1  Copyright (c) Apple Inc. and the Swift project authors
+      1  Copyright (c) Block = (
+      1  Copyright (c) by Sun Microsystems, Inc. All rights reserved.
+      1  Copyright (c) Collabora Ltd.
+      1  Copyright (c) Daniil Goncharov <neargye@gmail.com>.
+      1  Copyright (c) Digia Plc. and/or its subsidiary(-ies)
+      1  Copyright (c) Facebook Inc.
+      1  Copyright (c) Georgia Institute of Technology
+      1  Copyright (c) Google LLC
+      1  Copyright (c) Ian Grunert <ian.grunert@gmail.com>
+      1  Copyright (c) Intel Corporation. All rights reserved.
+      1  Copyright (c) Jan-Michael Brummer <jan.brummer@tabos.org>
+      1  Copyright (c) Jordan Harband. All rights reserved.
+      1  Copyright (c) Keita Nonaka
+      1  Copyright (c) Konstantin Tokarev <annulen@yandex.ru>
+      1  Copyright (c) Leonardo Taccari <leot@NetBSD.org>.
+      1  Copyright (c) Mathias Bynens (mathias@qiwi.be)
+      1  Copyright (c) Michael Park, 2015-2017
+      1  Copyright (c) Nokia Corporation and/or its subsidiary(-ies)
+      1  Copyright (c) Nokia Corporation and/or its subsidiary(-ies).
+      1  Copyright (c) Oleksandr Skachkov (gskachkov@gmail.com)
+      1  Copyright (c) Oleksandr Skachkov <gskackhov@gmail.com>.
+      1  Copyright (c) Peter Varga (pvarga@webkit.org), University of Szeged
+      1  Copyright (c) Radford M. Neal
+      1  Copyright (c) SONY Interactive Entertainment Inc. All rights reserved.
+      1  Copyright (c) Sony Network Entertainment. All rights reserved.
+      1  Copyright (c) Stephan Aßmus <superstippi@gmx.de>
+      1  Copyright (c) The bytecount Developers
+      1  Copyright (c) the Dart project authors. Please see the AUTHORS file [1]
+      1  Copyright (c) The Go Authors. All rights reserved.
+      1  Copyright (c) The Rust Project Developers.
+      1  Copyright (c) University of Washington.
+      1  Copyright (c) University of Washington. All
+      1  Copyright (c) Yusuke Suzuki <yusuke.suzuki@sslab.ics.keio.ac.jp>
+  -- BSD-3-Clause --
+    158  Copyright (c) Apple Inc. All rights reserved.
+     46  Copyright (c) Google Inc. All rights reserved.
+     23  Copyright (c) Cameron Zwarich <cwzwarich@uwaterloo.ca>
+     20  Copyright (c) the V8 project authors. All rights reserved.
+      4  Copyright (c) Matt Lilek <webkit@mattlilek.com>
+      3  Copyright (c) Collabora, Ltd. All rights reserved.
+      3  Copyright (c) Justin Haygood (jhaygood@reaktix.com)
+      3  Copyright (c) Research In Motion Limited. All rights reserved.
+      3  Copyright (c) Yusuke Suzuki <utatane.tea@gmail.com>
+      2  Copyright (c) Apple, Inc. All rights reserved.
+      2  Copyright (c) Igalia S.L.
+      2  Copyright (c) Igalia, S.L.
+      2  Copyright (c) Justin Haygood <jhaygood@reaktix.com>
+      2  Copyright (c) Sony Interactive Entertainment Inc.
+      2  Copyright (c) University of Washington. All rights reserved.
+      1  Copyright (c) Cameron Zwarich (cwzwarich@uwaterloo.ca)
+      1  Copyright (c) Canon Inc. All rights reserved.
+      1  Copyright (c) Google Inc.
+      1  Copyright (c) Haiku, Inc. All rights reserved.
+      1  Copyright (c) International Business Machines Corporation and others
+      1  Copyright (c) Jian Li <jianli@chromium.org>
+      1  Copyright (c) Konstantin Tokavev <annulen@yandex.ru>
+      1  Copyright (c) Microsoft Corporation. All rights reserved.
+      1  Copyright (c) Oracle and/or its affiliates. All rights reserved.
+      1  Copyright (c) Patrick Gansterer <paroga@paroga.com>
+      1  Copyright (c) Sosuke Suzuki <aosukeke@gmail.com>.
+      1  Copyright (c) Tetsuharu Ohzeki <tetsuharu.ohzeki@gmail.com>.
+      1  Copyright (c) Torch Mobile Inc. All rights reserved.
+      1  Copyright (c) Torch Mobile, Inc.
+      1  Copyright (c) Unicode, Inc. All rights reserved.
+      1  Copyright (c) University of Illinois at Urbana-Champaign.
+  -- LGPL --
+    243  Copyright (c) Apple Inc. All rights reserved.
+    135  Copyright (c) Harri Porten (porten@kde.org)
+     46  Copyright (c) Igalia S.L.
+     37  Copyright (c) Peter Kelly (pmk@post.com)
+     11  Copyright (c) Maks Orlovich
+     10  Copyright (c) Cameron Zwarich (cwzwarich@uwaterloo.ca)
+     10  Copyright (c) Google Inc. All rights reserved.
+      9  Copyright (c) Eric Seidel <eric@webkit.org>
+      9  Copyright (c) Igalia, S.L.
+      9  Copyright (c) Torch Mobile, Inc.
+      8  Copyright (c) Patrick Gansterer <paroga@paroga.com>
+      4  Copyright (c) the V8 project authors. All rights reserved.
+      3  Copyright (c) Alexey Proskuryakov (ap@nypop.com)
+      3  Copyright (c) Eric Seidel (eric@webkit.org)
+      3  Copyright (c) Research In Motion Limited. All rights reserved.
+      2  Copyright (c) &yet, LLC. (nate@andyet.net)
+      2  Copyright (c) Alexey Proskuryakov <ap@webkit.org>
+      2  Copyright (c) Alp Toker <alp@atoker.com>
+      2  Copyright (c) Igalia S.L. All rights reserved.
+      2  Copyright (c) Igalia, S.L. All rights reserved.
+      2  Copyright (c) Lars Knoll (knoll@kde.org)
+      2  Copyright (c) Martin Robinson
+      2  Copyright (c) Metrological Group B.V.
+      2  Copyright (c) Peter Varga (pvarga@inf.u-szeged.hu), University of Szeged
+      2  Copyright (c) Samuel Weinig <sam.weinig@gmail.com>
+      2  Copyright (c) Sony Interactive Entertainment Inc.
+      2  Copyright (c) Sosuke Suzuki <aosukeke@gmail.com>.
+      2  Copyright (c) Tetsuharu Ohzeki <tetsuharu.ohzeki@gmail.com>.
+      2  Copyright (c) Torch Mobile, Inc. All rights reserved.
+      2  Copyright (c) Yusuke Suzuki <utatane.tea@gmail.com>.
+      2  Copyright (c) Zoltan Herczeg (zherczeg@inf.u-szeged.hu)
+      1  Copyright (c) Acision BV. All rights reserved.
+      1  Copyright (c) Anders Carlsson <andersca@mac.com>
+      1  Copyright (c) Andrew Wellington (proton@wiretapped.net)
+      1  Copyright (c) Apple Inc. All rights reserved
+      1  Copyright (c) Apple, Inc.
+      1  Copyright (c) Benjamin Poulain <ikipou@gmail.com>
+      1  Copyright (c) Bjoern Graf (bjoern.graf@gmail.com)
+      1  Copyright (c) Cameron McCormack <cam@mcc.id.au>
+      1  Copyright (c) Canon Inc. All rights reserved.
+      1  Copyright (c) Collabora Ltd.
+      1  Copyright (c) Collabora, Ltd.
+      1  Copyright (c) David Levin <levin@chromium.org>
+      1  Copyright (c) Dawit Alemayehu <adawit@kde.org>
+      1  Copyright (c) Ericsson AB. All rights reserved.
+      1  Copyright (c) Free Software Foundation, Inc.
+      1  Copyright (c) Gustavo Noronha Silva <gns@gnome.org>
+      1  Copyright (c) Holger Hans Peter Freyther
+      1  Copyright (c) Jan-Michael Brummer <jan.brummer@tabos.org>
+      1  Copyright (c) John E. Bossom
+      1  Copyright (c) Jordan Harband (ljharb@gmail.com)
+      1  Copyright (c) Lars Knoll <lars@trolltech.com>
+      1  Copyright (c) Mathias Bynens (mathias@qiwi.be)
+      1  Copyright (c) Motorola Mobility, Inc. All rights reserved.
+      1  Copyright (c) Nikolas Zimmermann <zimmermann@kde.org>
+      1  Copyright (c) Nokia Corporation and/or its subsidiary(-ies)
+      1  Copyright (c) Nokia Corporation and/or its subsidiary(-ies).
+      1  Copyright (c) Patrick Gansterer <paroga@webkit.org>
+      1  Copyright (c) Pthreads-win32 contributors
+      1  Copyright (c) Research In Motion Limited 2009. All rights reserved.
+      1  Copyright (c) Research In Motion Limited 2010. All rights reserved.
+      1  Copyright (c) Samuel Weinig <sam@webkit.org>
+      1  Copyright (c) Torch Mobile (Beijing) Co. Ltd. All rights reserved.
+      1  Copyright (c) University of Szeged. All rights reserved.
+      1  Copyright (c) Yusuke Suzuki<utatane.tea@gmail.com>. All rights reserved.
+  -- MIT-like --
+      2  Copyright (c) Florian Bernd
+      2  Copyright (c) Joel Höner
+      1  Copyright (c) by the contributors listed in CREDITS.TXT
+      1  Copyright (c) Dave St.Germain
+      1  Copyright (c) Edouard Alligand and Joel Falcou
+      1  Copyright (c) Evan Nemerson <evan@nemerson.com>
+      1  Copyright (c) Joyent, Inc. and other Node contributors. All rights reserved.
+      1  Copyright (c) The simdutf authors
+
+The 21 distinct notice wordings those files carry, most common first. Whitespace is
+collapsed and comment markers stripped so one wording counts once; the words are
+untouched, and the file each was taken from is named so it can be compared verbatim
+against the source at the pinned revision.
+
+  [2941 file(s); e.g. Source/JavaScriptCore/API/APICallbackFunction.h]
+  Redistribution and use in source and binary forms, with or without modification, are
+  permitted provided that the following conditions are met: 1. Redistributions of source
+  code must retain the above copyright notice, this list of conditions and the following
+  disclaimer. 2. Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation and/or other
+  materials provided with the distribution. THIS SOFTWARE IS PROVIDED BY APPLE INC. ``AS
+  IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+  WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO
+  EVENT SHALL APPLE INC. OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+  SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT
+  OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+  INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+  [935 file(s); e.g. Source/JavaScriptCore/API/JSAPIWrapperObject.h]
+  Redistribution and use in source and binary forms, with or without modification, are
+  permitted provided that the following conditions are met: 1. Redistributions of source
+  code must retain the above copyright notice, this list of conditions and the following
+  disclaimer. 2. Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation and/or other
+  materials provided with the distribution. THIS SOFTWARE IS PROVIDED BY APPLE INC. AND
+  ITS CONTRIBUTORS ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+  PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS BE LIABLE FOR
+  ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+  (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF
+  USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+  LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+  OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+  POSSIBILITY OF SUCH DAMAGE.
+
+  [129 file(s); e.g. Source/JavaScriptCore/API/JSRetainPtr.h]
+  Redistribution and use in source and binary forms, with or without modification, are
+  permitted provided that the following conditions are met: 1. Redistributions of source
+  code must retain the above copyright notice, this list of conditions and the following
+  disclaimer. 2. Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation and/or other
+  materials provided with the distribution. 3. Neither the name of Apple Inc. ("Apple")
+  nor the names of its contributors may be used to endorse or promote products derived
+  from this software without specific prior written permission. THIS SOFTWARE IS PROVIDED
+  BY APPLE AND ITS CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING,
+  BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
+  PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE OR ITS CONTRIBUTORS BE LIABLE
+  FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+  (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF
+  USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+  LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+  OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+  POSSIBILITY OF SUCH DAMAGE.
+
+  [55 file(s); e.g. Source/JavaScriptCore/inspector/InjectedScript.cpp]
+  Redistribution and use in source and binary forms, with or without modification, are
+  permitted provided that the following conditions are met: * Redistributions of source
+  code must retain the above copyright notice, this list of conditions and the following
+  disclaimer. * Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation and/or other
+  materials provided with the distribution. * Neither the name of Google Inc. nor the
+  names of its contributors may be used to endorse or promote products derived from this
+  software without specific prior written permission. THIS SOFTWARE IS PROVIDED BY THE
+  COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+  A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+  CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+  CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+  SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+  ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+  NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
+  ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+  [26 file(s); e.g. Source/JavaScriptCore/parser/generateLexerUnicodePropertyTables.py]
+  Redistribution and use in source and binary forms, with or without modification, are
+  permitted provided that the following conditions are met: 1. Redistributions of source
+  code must retain the above copyright notice, this list of conditions and the following
+  disclaimer. 2. Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation and/or other
+  materials provided with the distribution. THIS SOFTWARE IS PROVIDED BY APPLE AND ITS
+  CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+  TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+  DISCLAIMED. IN NO EVENT SHALL APPLE OR ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+  INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+  LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
+  OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+  CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+  WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+  [14 file(s); e.g. Source/WTF/wtf/dragonbox/detail/bits.h]
+  Redistribution and use in source and binary forms, with or without modification, are
+  permitted provided that the following conditions are met: * Redistributions of source
+  code must retain the above copyright notice, this list of conditions and the following
+  disclaimer. * Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation and/or other
+  materials provided with the distribution. THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT
+  HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT
+  NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+  PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE
+  FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+  (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF
+  USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+  LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+  OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+  POSSIBILITY OF SUCH DAMAGE.
+
+  [10 file(s); e.g. Source/JavaScriptCore/runtime/RegExpCache.cpp]
+  Redistribution and use in source and binary forms, with or without modification, are
+  permitted provided that the following conditions are met: 1. Redistributions of source
+  code must retain the above copyright notice, this list of conditions and the following
+  disclaimer. 2. Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation and/or other
+  materials provided with the distribution. THIS SOFTWARE IS PROVIDED BY UNIVERSITY OF
+  SZEGED ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
+  THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+  DISCLAIMED. IN NO EVENT SHALL UNIVERSITY OF SZEGED OR CONTRIBUTORS BE LIABLE FOR ANY
+  DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+  BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+  PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+  WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY
+  OF SUCH DAMAGE.
+
+  [9 file(s); e.g. Source/JavaScriptCore/API/JSTypedArray.cpp]
+  Redistribution and use in source and binary forms, with or without modification, are
+  permitted provided that the following conditions are met: 1. Redistributions of source
+  code must retain the above copyright notice, this list of conditions and the following
+  disclaimer. 2. Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation and/or other
+  materials provided with the distribution. THIS SOFTWARE IS PROVIDED BY APPLE COMPUTER,
+  INC. ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+  IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+  DISCLAIMED. IN NO EVENT SHALL APPLE COMPUTER, INC. OR CONTRIBUTORS BE LIABLE FOR ANY
+  DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+  BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+  PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+  WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY
+  OF SUCH DAMAGE.
+
+  [6 file(s); e.g. Source/WTF/wtf/CompactVariant.h]
+  Redistribution and use in source and binary forms, with or without modification, are
+  permitted provided that the following conditions are met: 1. Redistributions of source
+  code must retain the above copyright notice, this list of conditions and the following
+  disclaimer. 2. Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation and/or other
+  materials provided with the distribution. THIS SOFTWARE IS PROVIDED BY APPLE INC. ``AS
+  IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+  WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO
+  EVENT SHALL APPLE INC. OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+  SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROFITS; OR
+  BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+  CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+  WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+  [5 file(s); e.g. Source/WTF/wtf/OSRandomSource.cpp]
+  Redistribution and use in source and binary forms, with or without modification, are
+  permitted provided that the following conditions are met: 1. Redistributions of source
+  code must retain the above copyright notice, this list of conditions and the following
+  disclaimer. 2. Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation and/or other
+  materials provided with the distribution. THIS SOFTWARE IS PROVIDED BY GOOGLE, INC. ``AS
+  IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+  WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO
+  EVENT SHALL APPLE INC. OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+  SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT
+  OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+  INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+  [3 file(s); e.g. Source/WTF/icu/LICENSE]
+  Redistribution and use in source and binary forms, with or without modification, are
+  permitted provided that the following conditions are met: Redistributions of source code
+  must retain the above copyright notice, this list of conditions and the following
+  disclaimer. Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation and/or other
+  materials provided with the distribution. Neither the name of Google Inc. nor the names
+  of its contributors may be used to endorse or promote products derived from this
+  software without specific prior written permission. THIS SOFTWARE IS PROVIDED BY THE
+  COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+  A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+  CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+  CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+  SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+  ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+  NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
+  ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+  [2 file(s); e.g. Source/JavaScriptCore/inspector/ContentSearchUtilities.cpp]
+  Redistribution and use in source and binary forms, with or without modification, are
+  permitted provided that the following conditions are met: 1. Redistributions of source
+  code must retain the above copyright notice, this list of conditions and the following
+  disclaimer. 2. Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation and/or other
+  materials provided with the distribution. THIS SOFTWARE IS PROVIDED BY GOOGLE INC. AND
+  ITS CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+  PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL GOOGLE INC. OR ITS CONTRIBUTORS BE LIABLE FOR
+  ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+  (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF
+  USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+  LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+  OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+  POSSIBILITY OF SUCH DAMAGE.
+
+  [2 file(s); e.g. Source/WTF/wtf/UniStdExtras.h]
+  Redistribution and use in source and binary forms, with or without modification, are
+  permitted provided that the following conditions are met: 1. Redistributions of source
+  code must retain the above copyright notice, this list of conditions and the following
+  disclaimer. 2. Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation and/or other
+  materials provided with the distribution. THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT
+  HOLDERS ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
+  THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+  DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE LIABLE FOR ANY
+  DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+  BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+  PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+  WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY
+  OF SUCH DAMAGE.
+
+  [1 file(s); e.g. Source/JavaScriptCore/inspector/InspectorTarget.cpp]
+  Redistribution and use in source and binary forms, with or without modification, are
+  permitted provided that the following conditions are met: * Redistributions of source
+  code must retain the above copyright notice, this list of conditions and the following
+  disclaimer. * Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation and/or other
+  materials provided with the distribution. * Neither the name of Microsoft Corporation
+  nor the names of its contributors may be used to endorse or promote products derived
+  from this software without specific prior written permission. THIS SOFTWARE IS PROVIDED
+  BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+  A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+  CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+  CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+  SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+  ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+  NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
+  ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+  [1 file(s); e.g. Source/JavaScriptCore/Scripts/xxd.pl]
+  Redistribution and use in source and binary forms, with or without modification, are
+  permitted provided that the following conditions are met: # Redistributions of source
+  code must retain the above copyright notice, this list of conditions and the following
+  disclaimer. # Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation and/or other
+  materials provided with the distribution. # Neither the name of Google Inc. nor the
+  names of its contributors may be used to endorse or promote products derived from this
+  software without specific prior written permission. THIS SOFTWARE IS PROVIDED BY THE
+  COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+  A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+  CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+  CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+  SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+  ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+  NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
+  ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+  [1 file(s); e.g. Source/JavaScriptCore/Scripts/UpdateContents.py]
+  Redistribution and use in source and binary forms, with or without modification, are
+  permitted provided that the following conditions are met: 1. Redistributions of source
+  code must retain the above copyright notice, this list of conditions and the following
+  disclaimer. 2. Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation and/or other
+  materials provided with the distribution. 3. Neither the name of Apple, Inc. ("Apple")
+  nor the names of its contributors may be used to endorse or promote products derived
+  from this software without specific prior written permission. THIS SOFTWARE IS PROVIDED
+  BY APPLE AND ITS CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING,
+  BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
+  PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE OR ITS CONTRIBUTORS BE LIABLE
+  FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+  (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF
+  USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+  LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+  OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+  POSSIBILITY OF SUCH DAMAGE.
+
+  [1 file(s); e.g. Source/JavaScriptCore/wasm/WasmIPIntPlan.cpp]
+  Redistribution and use in source and binary forms, with or without modification, are
+  permitted provided that the following conditions are met: 1. Redistributions of source
+  code must retain the above copyright notice, this list of conditions and the following
+  disclaimer. 2. Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation and/or other
+  materials provided with the distribution. THIS SOFTWARE IS PROVIDED BY APPLE INC. ``AS
+  IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+  WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO
+  EVENT SHAIP APPLE INC. OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+  SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT
+  OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+  INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+  [1 file(s); e.g. Source/JavaScriptCore/wasm/debugger/WasmModuleDebugInfo.cpp]
+  Redistribution and use in source and binary forms, with or without modification, are
+  permitted provided that the following conditions are met: 1. Redistributions of source
+  code must retain the above copyright notice, this list of conditions and the following
+  disclaimer. 2. Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation and/or other
+  materials provided with the distribution. THIS SOFTWARE IS PROVIDED BY APPLE INC. ``AS
+  IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+  WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO
+  EVENT SHALL APPLE INC. OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+  SPECIAL, EXEMPLARY, OR CONSEQUARY DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+  SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+  HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+  SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+  [1 file(s); e.g. Source/JavaScriptCore/yarr/YarrPattern.cpp]
+  Redistribution and use in source and binary forms, with or without modification, are
+  permitted provided that the following conditions are met: 1. Redistributions of source
+  code must retain the above copyright notice, this list of conditions and the following
+  disclaimer. 2. Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation and/or other
+  materials provided with the distribution. THIS SOFTWARE IS PROVIDED BY APPLE INC. ``AS
+  IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+  WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO
+  EVENT SHALL APPLE INC. OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+  SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT
+  OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+  INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN IN CONTRACT,
+  STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF
+  THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+  [1 file(s); e.g. Source/JavaScriptCore/Scripts/tests/builtins/JavaScriptCore-InternalClashingNames-Combined.js]
+  Redistribution and use in source and binary forms, with or without modification, are
+  permitted provided that the following conditions are met: 1. Redistributions of source
+  code must retain the above copyright notice, this list of conditions and the following
+  disclaimer. 2. Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation and/or other
+  materials provided with the distribution. THIS SOFTWARE IS PROVIDED BY CANON INC. ``AS
+  IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+  WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO
+  EVENT SHALL CANON INC. OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+  SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT
+  OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+  INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+  [1 file(s); e.g. Source/JavaScriptCore/wasm/generateWasmOMGIRGeneratorInlinesHeader.py]
+  Redistribution and use in source and binary forms, with or without modification, are
+  permitted provided that the following conditions are met:n 1. Redistributions of source
+  code must retain the above copyright notice, this list of conditions and the following
+  disclaimer. 2. Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation and/or other
+  materials provided with the distribution. THIS SOFTWARE IS PROVIDED BY APPLE AND ITS
+  CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+  TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+  DISCLAIMED. IN NO EVENT SHALL APPLE OR ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+  INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+  LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
+  OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+  CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+  WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+```
+
+### tinycc oven-sh/tinycc@12882eee073cfe5c7621bcfadf679e1372d4537b — LGPL-2.1-or-later
+
+Copyright (C) 1991, 1999 Free Software Foundation, Inc.; tinycc by Fabrice Bellard and contributors
+
+```
+brigadier's notice for tinycc — written by brigadier, not by upstream.
+The verbatim licence begins below the row of "=" signs; everything above it is ours.
+
+WHAT IS IN THE BINARY
+  tinycc is statically linked into every brigadier binary, because ruling 5
+  compiles with `bun --compile` and that embeds the Bun runtime whole. You did not
+  install it and you cannot remove it; you are nonetheless holding a copy of it.
+
+THE REVISION THIS COPY WAS BUILT FROM
+  https://github.com/oven-sh/tinycc @ 12882eee073cfe5c7621bcfadf679e1372d4537b
+  Established, not assumed: `bun --revision` reports 0d9b296af33f2b851fcbf4df3e9ec89751734ba4, which is the
+  commit oven-sh/bun's tag bun-v1.3.14 points at; that commit's build scripts name the
+  revision above. `bun run license-gate` re-checks the first link of that chain on every
+  build — the building bun against the pinned revision — and refuses to build if it moved.
+  The remaining links were READ from the primary source on 2026-08-17; RELINKING.md records
+  each URL, each read date, and what the chain does NOT establish.
+
+THE SOURCE OFFER — STATUS: NOT YET DISCHARGED
+  §6d of LGPL-2.1 asks that the Library's complete corresponding source be offered from
+  the SAME PLACE as the binary. brigadier publishes no release artifacts yet, so there is
+  no such place, and no mirror under our control exists to point you at. This notice
+  states that rather than implying otherwise. What IS discharged here and now: the
+  complete licence text below, which §6 requires unconditionally; the exact revision
+  above; and the rebuild path beneath. What is NOT: a copy of that source served by us.
+  Until the first release does that, treat this as an open obligation — and if you need
+  the source before then, ask, and take it from upstream at exactly the revision above:
+    git clone https://github.com/oven-sh/tinycc.git tinycc && git -C tinycc checkout 12882eee073cfe5c7621bcfadf679e1372d4537b
+
+HOW TO RELINK, IF YOU WANT A DIFFERENT TINYCC
+  1. Clone the revision above and make your changes.
+     Bun MODIFIES this library: patches/tinycc/tcc.h.patch in oven-sh/bun at tag
+     bun-v1.3.14, READ 2026-08-17. Apply it after checking out the revision above. A
+     rebuild that skips it is not the build that shipped.
+  2. Rebuild Bun against it — upstream documents the WebKit route at
+     https://github.com/oven-sh/webkit, and the build scripts for both libraries live in
+     oven-sh/bun under scripts/build/deps/ at the tag above.
+  3. Rebuild brigadier with your Bun: `bun run build`. brigadier's own source — the other
+     half of §6a, the "work that uses the Library" — is licensed Apache-2.0 and ships
+     with this repository. It is NOT yet published: MEASURED 2026-08-17, the GitHub API
+     returns 404 for stephen-golban/brigadier-ai and package.json still says
+     "private": true. So this half is open for the same reason the other one is — nothing
+     has been released yet — and saying it is done because the licence file exists would
+     be the precise mistake this notice was rewritten to stop making.
+  NOT PROVEN: nobody has yet demonstrated that this path reproduces this binary. §6
+  requires the shipped form of the "work that uses the Library" to include the data and
+  utility programs needed for reproducing the executable from it; the recipe is here, a
+  demonstration that it works is not. Ruling 72 leaves that as a bar item still to be
+  written, and this notice does not claim it has been.
+
+WHAT THIS LIBRARY ACTUALLY IS, FILE BY FILE
+  MEASURED against git 2.50.1 (Apple Git-155) and bun 1.3.14 on 2026-08-17, by reading the first
+  8192 bytes of every file at 12882eee073c:
+
+    . — 523 files: unclassified 487, LGPL 28, GPL 3, MIT-like 3, Apache-2.0 1, BSD-3-Clause 1
+
+  So a single licence label cannot be right for this tree. 28 files carry LGPL headers; 24
+  of those 28 offer "or (at your option) any later version", so a recipient may elect a
+  later LGPL for them even though COPYING itself is not "or later". The other 4 do NOT say
+  it, and for those the version named in the file is the one you get — a distinction our
+  old flat label erased in both directions. They are:
+    COPYING
+    Changelog
+    README
+    win32/tcc-win32.txt
+
+  1 of the 36 classified files is BSD-2-Clause or BSD-3-Clause. Those carry their OWN
+  attribution requirement — the copyright notice and the disclaimer must be reproduced
+  with the binary — and it is not discharged by naming the LGPL. Every holder and every
+  distinct wording is enumerated after the licence text below.
+
+  The classifier is crude and its crudeness is the reason these numbers are printed
+  rather than asserted: it matches each header against the licences' distinctive
+  wording, in the first 8 KiB only, and it reads headers rather than build graphs — it
+  cannot tell you which of these files are compiled into the artifact.
+  487 files matched nothing (mostly .c 199, .expect 151, .h 106, (no extension) 11, .S 9,
+  .def 5) and are listed as unclassified rather than assigned a licence by guesswork.
+
+  3 file(s) carry a PLAIN GPL header rather than a lesser one. They are listed
+  individually because a count would hide the only thing that matters about them —
+  whether they carry an exception permitting them to be linked into a non-GPL work:
+    il-opcodes.h — linking exception in the header: NO
+    lib/libtcc1.c — linking exception in the header: YES
+    texi2pod.pl — linking exception in the header: NO
+  At least one has NO such exception in its header. Whether that file is compiled into
+  this binary at all is not something this census can tell you — it reads headers, not
+  build graphs — and it is flagged here rather than resolved.
+
+  Third-party code nested inside this tree ships its own licence files, which are in
+  the source at the pinned revision and are part of what a recipient receives:
+    COPYING
+    tests/tests2/LICENSE
+
+============================================================================
+GNU LESSER GENERAL PUBLIC LICENSE, Version 2.1, February 1999 — verbatim, as it appears in COPYING at the revision above
+============================================================================
+
+		  GNU LESSER GENERAL PUBLIC LICENSE
+		       Version 2.1, February 1999
+
+ Copyright (C) 1991, 1999 Free Software Foundation, Inc.
+     59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ Everyone is permitted to copy and distribute verbatim copies
+ of this license document, but changing it is not allowed.
+
+[This is the first released version of the Lesser GPL.  It also counts
+ as the successor of the GNU Library Public License, version 2, hence
+ the version number 2.1.]
+
+			    Preamble
+
+  The licenses for most software are designed to take away your
+freedom to share and change it.  By contrast, the GNU General Public
+Licenses are intended to guarantee your freedom to share and change
+free software--to make sure the software is free for all its users.
+
+  This license, the Lesser General Public License, applies to some
+specially designated software packages--typically libraries--of the
+Free Software Foundation and other authors who decide to use it.  You
+can use it too, but we suggest you first think carefully about whether
+this license or the ordinary General Public License is the better
+strategy to use in any particular case, based on the explanations below.
+
+  When we speak of free software, we are referring to freedom of use,
+not price.  Our General Public Licenses are designed to make sure that
+you have the freedom to distribute copies of free software (and charge
+for this service if you wish); that you receive source code or can get
+it if you want it; that you can change the software and use pieces of
+it in new free programs; and that you are informed that you can do
+these things.
+
+  To protect your rights, we need to make restrictions that forbid
+distributors to deny you these rights or to ask you to surrender these
+rights.  These restrictions translate to certain responsibilities for
+you if you distribute copies of the library or if you modify it.
+
+  For example, if you distribute copies of the library, whether gratis
+or for a fee, you must give the recipients all the rights that we gave
+you.  You must make sure that they, too, receive or can get the source
+code.  If you link other code with the library, you must provide
+complete object files to the recipients, so that they can relink them
+with the library after making changes to the library and recompiling
+it.  And you must show them these terms so they know their rights.
+
+  We protect your rights with a two-step method: (1) we copyright the
+library, and (2) we offer you this license, which gives you legal
+permission to copy, distribute and/or modify the library.
+
+  To protect each distributor, we want to make it very clear that
+there is no warranty for the free library.  Also, if the library is
+modified by someone else and passed on, the recipients should know
+that what they have is not the original version, so that the original
+author's reputation will not be affected by problems that might be
+introduced by others.
+
+  Finally, software patents pose a constant threat to the existence of
+any free program.  We wish to make sure that a company cannot
+effectively restrict the users of a free program by obtaining a
+restrictive license from a patent holder.  Therefore, we insist that
+any patent license obtained for a version of the library must be
+consistent with the full freedom of use specified in this license.
+
+  Most GNU software, including some libraries, is covered by the
+ordinary GNU General Public License.  This license, the GNU Lesser
+General Public License, applies to certain designated libraries, and
+is quite different from the ordinary General Public License.  We use
+this license for certain libraries in order to permit linking those
+libraries into non-free programs.
+
+  When a program is linked with a library, whether statically or using
+a shared library, the combination of the two is legally speaking a
+combined work, a derivative of the original library.  The ordinary
+General Public License therefore permits such linking only if the
+entire combination fits its criteria of freedom.  The Lesser General
+Public License permits more lax criteria for linking other code with
+the library.
+
+  We call this license the "Lesser" General Public License because it
+does Less to protect the user's freedom than the ordinary General
+Public License.  It also provides other free software developers Less
+of an advantage over competing non-free programs.  These disadvantages
+are the reason we use the ordinary General Public License for many
+libraries.  However, the Lesser license provides advantages in certain
+special circumstances.
+
+  For example, on rare occasions, there may be a special need to
+encourage the widest possible use of a certain library, so that it becomes
+a de-facto standard.  To achieve this, non-free programs must be
+allowed to use the library.  A more frequent case is that a free
+library does the same job as widely used non-free libraries.  In this
+case, there is little to gain by limiting the free library to free
+software only, so we use the Lesser General Public License.
+
+  In other cases, permission to use a particular library in non-free
+programs enables a greater number of people to use a large body of
+free software.  For example, permission to use the GNU C Library in
+non-free programs enables many more people to use the whole GNU
+operating system, as well as its variant, the GNU/Linux operating
+system.
+
+  Although the Lesser General Public License is Less protective of the
+users' freedom, it does ensure that the user of a program that is
+linked with the Library has the freedom and the wherewithal to run
+that program using a modified version of the Library.
+
+  The precise terms and conditions for copying, distribution and
+modification follow.  Pay close attention to the difference between a
+"work based on the library" and a "work that uses the library".  The
+former contains code derived from the library, whereas the latter must
+be combined with the library in order to run.
+
+		  GNU LESSER GENERAL PUBLIC LICENSE
+   TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION
+
+  0. This License Agreement applies to any software library or other
+program which contains a notice placed by the copyright holder or
+other authorized party saying it may be distributed under the terms of
+this Lesser General Public License (also called "this License").
+Each licensee is addressed as "you".
+
+  A "library" means a collection of software functions and/or data
+prepared so as to be conveniently linked with application programs
+(which use some of those functions and data) to form executables.
+
+  The "Library", below, refers to any such software library or work
+which has been distributed under these terms.  A "work based on the
+Library" means either the Library or any derivative work under
+copyright law: that is to say, a work containing the Library or a
+portion of it, either verbatim or with modifications and/or translated
+straightforwardly into another language.  (Hereinafter, translation is
+included without limitation in the term "modification".)
+
+  "Source code" for a work means the preferred form of the work for
+making modifications to it.  For a library, complete source code means
+all the source code for all modules it contains, plus any associated
+interface definition files, plus the scripts used to control compilation
+and installation of the library.
+
+  Activities other than copying, distribution and modification are not
+covered by this License; they are outside its scope.  The act of
+running a program using the Library is not restricted, and output from
+such a program is covered only if its contents constitute a work based
+on the Library (independent of the use of the Library in a tool for
+writing it).  Whether that is true depends on what the Library does
+and what the program that uses the Library does.
+  
+  1. You may copy and distribute verbatim copies of the Library's
+complete source code as you receive it, in any medium, provided that
+you conspicuously and appropriately publish on each copy an
+appropriate copyright notice and disclaimer of warranty; keep intact
+all the notices that refer to this License and to the absence of any
+warranty; and distribute a copy of this License along with the
+Library.
+
+  You may charge a fee for the physical act of transferring a copy,
+and you may at your option offer warranty protection in exchange for a
+fee.
+
+  2. You may modify your copy or copies of the Library or any portion
+of it, thus forming a work based on the Library, and copy and
+distribute such modifications or work under the terms of Section 1
+above, provided that you also meet all of these conditions:
+
+    a) The modified work must itself be a software library.
+
+    b) You must cause the files modified to carry prominent notices
+    stating that you changed the files and the date of any change.
+
+    c) You must cause the whole of the work to be licensed at no
+    charge to all third parties under the terms of this License.
+
+    d) If a facility in the modified Library refers to a function or a
+    table of data to be supplied by an application program that uses
+    the facility, other than as an argument passed when the facility
+    is invoked, then you must make a good faith effort to ensure that,
+    in the event an application does not supply such function or
+    table, the facility still operates, and performs whatever part of
+    its purpose remains meaningful.
+
+    (For example, a function in a library to compute square roots has
+    a purpose that is entirely well-defined independent of the
+    application.  Therefore, Subsection 2d requires that any
+    application-supplied function or table used by this function must
+    be optional: if the application does not supply it, the square
+    root function must still compute square roots.)
+
+These requirements apply to the modified work as a whole.  If
+identifiable sections of that work are not derived from the Library,
+and can be reasonably considered independent and separate works in
+themselves, then this License, and its terms, do not apply to those
+sections when you distribute them as separate works.  But when you
+distribute the same sections as part of a whole which is a work based
+on the Library, the distribution of the whole must be on the terms of
+this License, whose permissions for other licensees extend to the
+entire whole, and thus to each and every part regardless of who wrote
+it.
+
+Thus, it is not the intent of this section to claim rights or contest
+your rights to work written entirely by you; rather, the intent is to
+exercise the right to control the distribution of derivative or
+collective works based on the Library.
+
+In addition, mere aggregation of another work not based on the Library
+with the Library (or with a work based on the Library) on a volume of
+a storage or distribution medium does not bring the other work under
+the scope of this License.
+
+  3. You may opt to apply the terms of the ordinary GNU General Public
+License instead of this License to a given copy of the Library.  To do
+this, you must alter all the notices that refer to this License, so
+that they refer to the ordinary GNU General Public License, version 2,
+instead of to this License.  (If a newer version than version 2 of the
+ordinary GNU General Public License has appeared, then you can specify
+that version instead if you wish.)  Do not make any other change in
+these notices.
+
+  Once this change is made in a given copy, it is irreversible for
+that copy, so the ordinary GNU General Public License applies to all
+subsequent copies and derivative works made from that copy.
+
+  This option is useful when you wish to copy part of the code of
+the Library into a program that is not a library.
+
+  4. You may copy and distribute the Library (or a portion or
+derivative of it, under Section 2) in object code or executable form
+under the terms of Sections 1 and 2 above provided that you accompany
+it with the complete corresponding machine-readable source code, which
+must be distributed under the terms of Sections 1 and 2 above on a
+medium customarily used for software interchange.
+
+  If distribution of object code is made by offering access to copy
+from a designated place, then offering equivalent access to copy the
+source code from the same place satisfies the requirement to
+distribute the source code, even though third parties are not
+compelled to copy the source along with the object code.
+
+  5. A program that contains no derivative of any portion of the
+Library, but is designed to work with the Library by being compiled or
+linked with it, is called a "work that uses the Library".  Such a
+work, in isolation, is not a derivative work of the Library, and
+therefore falls outside the scope of this License.
+
+  However, linking a "work that uses the Library" with the Library
+creates an executable that is a derivative of the Library (because it
+contains portions of the Library), rather than a "work that uses the
+library".  The executable is therefore covered by this License.
+Section 6 states terms for distribution of such executables.
+
+  When a "work that uses the Library" uses material from a header file
+that is part of the Library, the object code for the work may be a
+derivative work of the Library even though the source code is not.
+Whether this is true is especially significant if the work can be
+linked without the Library, or if the work is itself a library.  The
+threshold for this to be true is not precisely defined by law.
+
+  If such an object file uses only numerical parameters, data
+structure layouts and accessors, and small macros and small inline
+functions (ten lines or less in length), then the use of the object
+file is unrestricted, regardless of whether it is legally a derivative
+work.  (Executables containing this object code plus portions of the
+Library will still fall under Section 6.)
+
+  Otherwise, if the work is a derivative of the Library, you may
+distribute the object code for the work under the terms of Section 6.
+Any executables containing that work also fall under Section 6,
+whether or not they are linked directly with the Library itself.
+
+  6. As an exception to the Sections above, you may also combine or
+link a "work that uses the Library" with the Library to produce a
+work containing portions of the Library, and distribute that work
+under terms of your choice, provided that the terms permit
+modification of the work for the customer's own use and reverse
+engineering for debugging such modifications.
+
+  You must give prominent notice with each copy of the work that the
+Library is used in it and that the Library and its use are covered by
+this License.  You must supply a copy of this License.  If the work
+during execution displays copyright notices, you must include the
+copyright notice for the Library among them, as well as a reference
+directing the user to the copy of this License.  Also, you must do one
+of these things:
+
+    a) Accompany the work with the complete corresponding
+    machine-readable source code for the Library including whatever
+    changes were used in the work (which must be distributed under
+    Sections 1 and 2 above); and, if the work is an executable linked
+    with the Library, with the complete machine-readable "work that
+    uses the Library", as object code and/or source code, so that the
+    user can modify the Library and then relink to produce a modified
+    executable containing the modified Library.  (It is understood
+    that the user who changes the contents of definitions files in the
+    Library will not necessarily be able to recompile the application
+    to use the modified definitions.)
+
+    b) Use a suitable shared library mechanism for linking with the
+    Library.  A suitable mechanism is one that (1) uses at run time a
+    copy of the library already present on the user's computer system,
+    rather than copying library functions into the executable, and (2)
+    will operate properly with a modified version of the library, if
+    the user installs one, as long as the modified version is
+    interface-compatible with the version that the work was made with.
+
+    c) Accompany the work with a written offer, valid for at
+    least three years, to give the same user the materials
+    specified in Subsection 6a, above, for a charge no more
+    than the cost of performing this distribution.
+
+    d) If distribution of the work is made by offering access to copy
+    from a designated place, offer equivalent access to copy the above
+    specified materials from the same place.
+
+    e) Verify that the user has already received a copy of these
+    materials or that you have already sent this user a copy.
+
+  For an executable, the required form of the "work that uses the
+Library" must include any data and utility programs needed for
+reproducing the executable from it.  However, as a special exception,
+the materials to be distributed need not include anything that is
+normally distributed (in either source or binary form) with the major
+components (compiler, kernel, and so on) of the operating system on
+which the executable runs, unless that component itself accompanies
+the executable.
+
+  It may happen that this requirement contradicts the license
+restrictions of other proprietary libraries that do not normally
+accompany the operating system.  Such a contradiction means you cannot
+use both them and the Library together in an executable that you
+distribute.
+
+  7. You may place library facilities that are a work based on the
+Library side-by-side in a single library together with other library
+facilities not covered by this License, and distribute such a combined
+library, provided that the separate distribution of the work based on
+the Library and of the other library facilities is otherwise
+permitted, and provided that you do these two things:
+
+    a) Accompany the combined library with a copy of the same work
+    based on the Library, uncombined with any other library
+    facilities.  This must be distributed under the terms of the
+    Sections above.
+
+    b) Give prominent notice with the combined library of the fact
+    that part of it is a work based on the Library, and explaining
+    where to find the accompanying uncombined form of the same work.
+
+  8. You may not copy, modify, sublicense, link with, or distribute
+the Library except as expressly provided under this License.  Any
+attempt otherwise to copy, modify, sublicense, link with, or
+distribute the Library is void, and will automatically terminate your
+rights under this License.  However, parties who have received copies,
+or rights, from you under this License will not have their licenses
+terminated so long as such parties remain in full compliance.
+
+  9. You are not required to accept this License, since you have not
+signed it.  However, nothing else grants you permission to modify or
+distribute the Library or its derivative works.  These actions are
+prohibited by law if you do not accept this License.  Therefore, by
+modifying or distributing the Library (or any work based on the
+Library), you indicate your acceptance of this License to do so, and
+all its terms and conditions for copying, distributing or modifying
+the Library or works based on it.
+
+  10. Each time you redistribute the Library (or any work based on the
+Library), the recipient automatically receives a license from the
+original licensor to copy, distribute, link with or modify the Library
+subject to these terms and conditions.  You may not impose any further
+restrictions on the recipients' exercise of the rights granted herein.
+You are not responsible for enforcing compliance by third parties with
+this License.
+
+  11. If, as a consequence of a court judgment or allegation of patent
+infringement or for any other reason (not limited to patent issues),
+conditions are imposed on you (whether by court order, agreement or
+otherwise) that contradict the conditions of this License, they do not
+excuse you from the conditions of this License.  If you cannot
+distribute so as to satisfy simultaneously your obligations under this
+License and any other pertinent obligations, then as a consequence you
+may not distribute the Library at all.  For example, if a patent
+license would not permit royalty-free redistribution of the Library by
+all those who receive copies directly or indirectly through you, then
+the only way you could satisfy both it and this License would be to
+refrain entirely from distribution of the Library.
+
+If any portion of this section is held invalid or unenforceable under any
+particular circumstance, the balance of the section is intended to apply,
+and the section as a whole is intended to apply in other circumstances.
+
+It is not the purpose of this section to induce you to infringe any
+patents or other property right claims or to contest validity of any
+such claims; this section has the sole purpose of protecting the
+integrity of the free software distribution system which is
+implemented by public license practices.  Many people have made
+generous contributions to the wide range of software distributed
+through that system in reliance on consistent application of that
+system; it is up to the author/donor to decide if he or she is willing
+to distribute software through any other system and a licensee cannot
+impose that choice.
+
+This section is intended to make thoroughly clear what is believed to
+be a consequence of the rest of this License.
+
+  12. If the distribution and/or use of the Library is restricted in
+certain countries either by patents or by copyrighted interfaces, the
+original copyright holder who places the Library under this License may add
+an explicit geographical distribution limitation excluding those countries,
+so that distribution is permitted only in or among countries not thus
+excluded.  In such case, this License incorporates the limitation as if
+written in the body of this License.
+
+  13. The Free Software Foundation may publish revised and/or new
+versions of the Lesser General Public License from time to time.
+Such new versions will be similar in spirit to the present version,
+but may differ in detail to address new problems or concerns.
+
+Each version is given a distinguishing version number.  If the Library
+specifies a version number of this License which applies to it and
+"any later version", you have the option of following the terms and
+conditions either of that version or of any later version published by
+the Free Software Foundation.  If the Library does not specify a
+license version number, you may choose any version ever published by
+the Free Software Foundation.
+
+  14. If you wish to incorporate parts of the Library into other free
+programs whose distribution conditions are incompatible with these,
+write to the author to ask for permission.  For software which is
+copyrighted by the Free Software Foundation, write to the Free
+Software Foundation; we sometimes make exceptions for this.  Our
+decision will be guided by the two goals of preserving the free status
+of all derivatives of our free software and of promoting the sharing
+and reuse of software generally.
+
+			    NO WARRANTY
+
+  15. BECAUSE THE LIBRARY IS LICENSED FREE OF CHARGE, THERE IS NO
+WARRANTY FOR THE LIBRARY, TO THE EXTENT PERMITTED BY APPLICABLE LAW.
+EXCEPT WHEN OTHERWISE STATED IN WRITING THE COPYRIGHT HOLDERS AND/OR
+OTHER PARTIES PROVIDE THE LIBRARY "AS IS" WITHOUT WARRANTY OF ANY
+KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+PURPOSE.  THE ENTIRE RISK AS TO THE QUALITY AND PERFORMANCE OF THE
+LIBRARY IS WITH YOU.  SHOULD THE LIBRARY PROVE DEFECTIVE, YOU ASSUME
+THE COST OF ALL NECESSARY SERVICING, REPAIR OR CORRECTION.
+
+  16. IN NO EVENT UNLESS REQUIRED BY APPLICABLE LAW OR AGREED TO IN
+WRITING WILL ANY COPYRIGHT HOLDER, OR ANY OTHER PARTY WHO MAY MODIFY
+AND/OR REDISTRIBUTE THE LIBRARY AS PERMITTED ABOVE, BE LIABLE TO YOU
+FOR DAMAGES, INCLUDING ANY GENERAL, SPECIAL, INCIDENTAL OR
+CONSEQUENTIAL DAMAGES ARISING OUT OF THE USE OR INABILITY TO USE THE
+LIBRARY (INCLUDING BUT NOT LIMITED TO LOSS OF DATA OR DATA BEING
+RENDERED INACCURATE OR LOSSES SUSTAINED BY YOU OR THIRD PARTIES OR A
+FAILURE OF THE LIBRARY TO OPERATE WITH ANY OTHER SOFTWARE), EVEN IF
+SUCH HOLDER OR OTHER PARTY HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH
+DAMAGES.
+
+		     END OF TERMS AND CONDITIONS
+
+           How to Apply These Terms to Your New Libraries
+
+  If you develop a new library, and you want it to be of the greatest
+possible use to the public, we recommend making it free software that
+everyone can redistribute and change.  You can do so by permitting
+redistribution under these terms (or, alternatively, under the terms of the
+ordinary General Public License).
+
+  To apply these terms, attach the following notices to the library.  It is
+safest to attach them to the start of each source file to most effectively
+convey the exclusion of warranty; and each file should have at least the
+"copyright" line and a pointer to where the full notice is found.
+
+    <one line to give the library's name and a brief idea of what it does.>
+    Copyright (C) <year>  <name of author>
+
+    This library is free software; you can redistribute it and/or
+    modify it under the terms of the GNU Lesser General Public
+    License as published by the Free Software Foundation; either
+    version 2 of the License, or (at your option) any later version.
+
+    This library is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+    Lesser General Public License for more details.
+
+    You should have received a copy of the GNU Lesser General Public
+    License along with this library; if not, write to the Free Software
+    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+
+Also add information on how to contact you by electronic and paper mail.
+
+You should also get your employer (if you work as a programmer) or your
+school, if any, to sign a "copyright disclaimer" for the library, if
+necessary.  Here is a sample; alter the names:
+
+  Yoyodyne, Inc., hereby disclaims all copyright interest in the
+  library `Frob' (a library for tweaking knobs) written by James Random Hacker.
+
+  <signature of Ty Coon>, 1 April 1990
+  Ty Coon, President of Vice
+
+That's all there is to it!
+
+============================================================================
+ATTRIBUTION FOR THE NON-LGPL MAJORITY (BSD-2-Clause and BSD-3-Clause)
+============================================================================
+
+Every copyright holder named in a licence header in the tree above, with the number of
+files naming them. MEASURED on 2026-08-17; years are omitted because the
+attribution is owed to the holder, and `(c)` is written for `©` throughout.
+
+  -- BSD-3-Clause --
+      1  Copyright (c) Zik Saleeba
+  -- GPL --
+      2  Copyright (c) Free Software Foundation, Inc.
+      1  Copyright (c) Fabrice Bellard
+  -- LGPL --
+     16  Copyright (c) Fabrice Bellard
+      3  Copyright (c) Free Software Foundation, Inc.
+      1  Copyright (c) Daniel Glöckner
+      1  Copyright (c) Danny Milosavljevic
+      1  Copyright (c) Frédéric Feret (x86_64 support)
+      1  Copyright (c) grischka
+      1  Copyright (c) Red Hat, Inc.
+      1  Copyright (c) Shinichiro Hamaji
+      1  Copyright (c) Thomas Preud'homme
+      1  Copyright (c) Timppa
+  -- MIT-like --
+      1  Copyright (c) Rich Felker, et al.
+      1  Copyright (c) Thomas Preud'homme
+
+The 1 distinct notice wordings those files carry, most common first. Whitespace is
+collapsed and comment markers stripped so one wording counts once; the words are
+untouched, and the file each was taken from is named so it can be compared verbatim
+against the source at the pinned revision.
+
+  [1 file(s); e.g. tests/tests2/LICENSE]
+  Redistribution and use in source and binary forms, with or without modification, are
+  permitted provided that the following conditions are met: Redistributions of source code
+  must retain the above copyright notice, this list of conditions and the following
+  disclaimer. Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation and/or other
+  materials provided with the distribution. Neither the name of the Zik Saleeba nor the
+  names of its contributors may be used to endorse or promote products derived from this
+  software without specific prior written permission. THIS SOFTWARE IS PROVIDED BY THE
+  COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+  A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+  CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+  CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+  SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+  ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+  NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
+  ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
 ```
 
 ## brigadier's own licence

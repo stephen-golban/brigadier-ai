@@ -20,6 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Lane } from "../lane/lane.ts";
 import { lanePolicyFor } from "../work/kind.ts";
+import { applyOverride, driftFor, sessionContradictions, type BridgeOverride, type Drift } from "./drift.ts";
 import { PROFILES, ALL_AGENT_IDS, type AgentId, type LaunchProfile } from "./profiles.ts";
 import { Worker } from "./worker.ts";
 
@@ -40,6 +41,24 @@ export interface Detection {
   remedy?: string;
   /** Where the command resolved. Ruling 46: never assume a PATH hit is ours. */
   resolvedPath?: string;
+  /**
+   * Ruling 69. What this agent has moved out from under, graded by what a stale
+   * fact can silently break. Present only when something drifted — an agent at
+   * the version its profile was measured against carries no key at all, because
+   * an empty array reads as "checked and clean" only to someone who already
+   * knows the field exists.
+   *
+   * Recorded, never pinned: agents auto-update, and a product that stops working
+   * after every vendor release is not a product.
+   */
+  drift?: Drift[];
+  /**
+   * Model ids this session returned, read from `availableModels` and never
+   * constructed. Ruling 68's maintenance trigger runs off this: an id here that
+   * the competence table does not list is reported, which is a mechanical
+   * trigger rather than a review cadence nobody enforces.
+   */
+  models?: string[];
   milliseconds: number;
 }
 
@@ -83,13 +102,21 @@ export async function detectOne(
     );
 
     const version = worker.agentVersion;
+    const models = [...worker.models];
     await worker.close();
+
+    // Ruling 69, both halves. The version comparison catches a table that went
+    // stale against a NUMBER; the contradiction catches a bridge replaced under
+    // the same number, which no history would have seen.
+    const drift = [...driftFor(profile, version), ...sessionContradictions(profile, { models })];
 
     return {
       id: profile.id,
       availability: "usable",
       version,
       resolvedPath: resolved,
+      ...(drift.length > 0 ? { drift } : {}),
+      ...(models.length > 0 ? { models } : {}),
       milliseconds: Date.now() - started,
     };
   } catch (error) {
@@ -110,12 +137,22 @@ export async function detectOne(
   }
 }
 
-/** Probe every known agent concurrently. */
+/**
+ * Probe every known agent concurrently.
+ *
+ * `overrides` are the operator's own, read from a per-machine config by the
+ * caller — never from the repository, because ruling 37's principle is that
+ * capability comes from the human and a repository choosing which binary
+ * brigadier executes is the same class of attack as one supplying a verify
+ * command. They are applied here so that detection probes the coordinate that
+ * will actually be spawned rather than the one in the table.
+ */
 export async function detectAll(
   ids: AgentId[] = ALL_AGENT_IDS,
-  options: { timeoutMs?: number } = {},
+  options: { timeoutMs?: number; overrides?: readonly BridgeOverride[] } = {},
 ): Promise<Detection[]> {
-  return Promise.all(ids.map((id) => detectOne(PROFILES[id], options)));
+  const overrides = options.overrides ?? [];
+  return Promise.all(ids.map((id) => detectOne(applyOverride(PROFILES[id], overrides), options)));
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {

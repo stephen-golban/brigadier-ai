@@ -63,6 +63,39 @@ export function parseCoverage(markdown: string): number[] {
   return [...markdown.matchAll(/^\|\s*(\d+)\s+[^|]*\|/gm)].map((m) => Number(m[1])).sort((a, b) => a - b);
 }
 
+/**
+ * Rulings cited by the register that `BAR.md`'s coverage table never accounts
+ * for, and gaps in the table itself.
+ *
+ * `parseCoverage` existed and was called by nothing — the parser for the section
+ * `BAR.md` itself calls *"where a promise gets quietly buried"*. It is wired
+ * here, and a disagreement aborts the run exactly as a drifted heading does.
+ */
+export function coverageProblems(
+  markdown: string,
+  register: readonly { id: number; rulings: number[] }[],
+): string[] {
+  const covered = parseCoverage(markdown);
+  const problems: string[] = [];
+  const highest = covered[covered.length - 1] ?? 0;
+  for (let n = 1; n <= highest; n++) {
+    if (!covered.includes(n)) problems.push(`BAR.md coverage table has no row for ruling ${n}`);
+  }
+  const seen = new Set<number>();
+  for (const n of covered) {
+    if (seen.has(n)) problems.push(`BAR.md coverage table has two rows for ruling ${n}`);
+    seen.add(n);
+  }
+  for (const item of register) {
+    for (const ruling of item.rulings) {
+      if (!covered.includes(ruling)) {
+        problems.push(`item ${item.id} claims to prove ruling ${ruling}, which BAR.md's coverage table has no row for`);
+      }
+    }
+  }
+  return problems;
+}
+
 export function specPath(): string {
   return fileURLToPath(new URL("../../BAR.md", import.meta.url));
 }

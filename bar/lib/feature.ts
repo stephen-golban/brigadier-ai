@@ -40,14 +40,21 @@ export interface FeatureProbe {
 export async function probeFeature(
   ctx: BarContext,
   args: string[],
-  opts: RunOptions = {},
+  opts: RunOptions & { evidence?: (result: RunResult) => boolean } = {},
 ): Promise<FeatureProbe> {
   const result = await ctx.run(args, opts);
   const transcript =
     `ran \`brigadier ${args.join(" ")}\`; exit ${result.code}${result.signal ? ` (signal ${result.signal})` : ""}` +
     `; stdout: ${excerpt(result.stdout, 200)}; stderr: ${excerpt(result.stderr, 200)}`;
+  // A feature is "present" only if there is POSITIVE evidence for it. The
+  // previous version decided on the absence of the string "unknown command",
+  // which made a binary that printed something plausible and exited 0 convert
+  // "the feature does not exist" into a SKIPPED — the exact disguise this file
+  // says it prevents. Offline, a printer collected seven of them.
   const unknown = /unknown command/i.test(result.stderr) || /unknown command/i.test(result.stdout);
-  return { present: !unknown, result, transcript };
+  const usageOnly = /^\s*brigadier\b[\s\S]*\bbrigadier (detect|agents|licenses)\b/.test(result.stdout);
+  const evidenced = opts.evidence === undefined ? result.code === 0 && !usageOnly : opts.evidence(result);
+  return { present: !unknown && evidenced, result, transcript };
 }
 
 /** The `FAIL` an item returns when the artifact does not implement it yet. */
@@ -60,12 +67,20 @@ export function missingFeature(did: string, probe: FeatureProbe, promise: string
   };
 }
 
-/** The one legal skip: real vendor agents are required and `--live` was not passed. */
+/**
+ * The one legal skip: real vendor agents are required and `--live` was not passed.
+ *
+ * The wording matters and is not decoration. A skip here says only that THIS
+ * harness did not drive the feature; it is not a statement that the feature
+ * exists, and a reader who takes it as one has been misled by the instrument.
+ */
 export function needsLive(did: string, observed: string, what: string): BarResult {
   return {
     outcome: "SKIPPED",
     did,
     observed,
-    reason: `requires real vendor agents (${what}) and --live was not passed. This BLOCKS exactly as a FAIL does — ruling 48`,
+    reason:
+      `requires real vendor agents (${what}) and --live was not passed. This BLOCKS exactly as a FAIL does — ruling 48. ` +
+      "It is NOT evidence that the feature works, or that it exists: nothing was driven",
   };
 }

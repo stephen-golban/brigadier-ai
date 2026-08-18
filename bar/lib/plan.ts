@@ -1,51 +1,53 @@
 // SPDX-License-Identifier: Apache-2.0
 /**
- * Plans, and the tokens that make a plan's outcome unforgeable.
+ * Plans that do not contain their own answers.
  *
- * Every plan item carries a TOKEN this harness generates at run time — after
- * the binary under test was built, and never written anywhere the binary can
- * read except the plan itself. An item then asserts that exact token came back
- * out of `git cat-file blob <integration-ref>:<path>`.
+ * The previous version put the value the merged tree had to carry directly in
+ * the plan — `directive.token`, and again in the prompt as *"create alpha.txt
+ * containing exactly tok-…"*. A forger that did no work at all scored 12 of 13
+ * by echoing it back through `git hash-object` and `commit-tree`. The harness
+ * was handing over the answer key and then checking whether the binary could
+ * read.
  *
- * That is the difference between this file and its first draft. A fixed string
- * can be echoed; a fixed needle in a refusal message can be echoed; the first
- * draft's item 8 was satisfied by `read plan → print it → exit 4`. A token that
- * has to travel plan → worker → commit → merge → object store cannot be echoed
- * by anything that did not do the work.
+ * Every directive below therefore names a PLACE TO READ and a TRANSFORMATION,
+ * never a value. The nonce lives only in the cloned repository's content, so the
+ * output is reachable only from a clone — or from a faithful reconstruction of
+ * the base commit, which means implementing ruling 33 (HEAD plus uncommitted
+ * tracked plus untracked) and ruling 50 (nothing gitignored). That is the
+ * intended cost: the cheapest forgery should have to implement the promise.
  *
  * `directive` is the fixture channel and `prompt` is the real one. A real agent
- * gets prose; `bar/fakes/vendor.ts` gets a structured instruction, so the
+ * gets prose; `bar/fakes/vendor.ts` gets a structured instruction so the
  * positive control is deterministic rather than a language-model coin toss.
- * A product that reads `directive` instead of `prompt` would be reading a field
- * no real plan has — which is why items assert on the token in the tree and
- * never on the directive.
+ * Neither ever carries the expected output.
  */
 
 import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { derive } from "./derive.ts";
 
 export type Directive =
-  /** Write `token` into `path`, relative to the clone. The ordinary case. */
-  | { do: "write"; path: string; token: string }
+  /** Read a nonce from the clone, hash it with `salt`, write the result. */
+  | { do: "derive-write"; read: string; path: string; salt: string }
   /** Ask to write OUTSIDE the clone. The lane must deny it. */
-  | { do: "escape"; absolutePath: string; token: string }
-  /** The same, with a permission payload carrying no locations at all (Codex `edit`). */
-  | { do: "escape-blind"; absolutePath: string; token: string }
-  /** Plant the three measured git payload shapes in this clone, and commit a receipt. */
-  | { do: "plant-git-payloads"; canaryPath: string; receipt: string; token: string }
-  /** Read a prerequisite's output and write it on, proving the wave saw it. */
-  | { do: "read-then-write"; read: string; path: string; token: string }
-  /** Write into this checkout even though the item is read-only. Nothing may reach the branch. */
+  | { do: "escape"; absolutePath: string }
+  /** The same, with a permission payload carrying no locations (Codex `edit`). */
+  | { do: "escape-blind"; absolutePath: string }
+  /** Copy committed payload bytes into `.git`, then prove the clone was read. */
+  | { do: "plant-git-payloads"; from: string; read: string; path: string; salt: string }
+  /** Read a prerequisite's OUTPUT — a value that existed only in wave 1's commit. */
+  | { do: "read-then-write"; read: string; path: string; salt: string }
+  /** Write into this checkout even though the item is read-only. */
   | { do: "write-anyway"; path: string; token: string }
-  /** Detach a long-lived descendant, so an interrupt has something that escaped. */
-  | { do: "escape-process"; heartbeat: string; token: string }
+  /** Detach a long-lived descendant that publishes its pid. */
+  | { do: "escape-process"; heartbeat: string; pidFile: string }
   /** Commit real work, then hang, so an interrupt finds a clone worth retaining. */
-  | { do: "commit-then-hang"; path: string; token: string }
+  | { do: "commit-then-hang"; read: string; path: string; salt: string }
   /** Try to delegate back to brigadier. Ruling 57's refusal must fire. */
-  | { do: "delegate"; path: string; token: string }
-  /** Put the granted secret into a committed file. Ruling 65's redaction sink must catch it. */
-  | { do: "leak-secret"; env: string; path: string; token: string };
+  | { do: "delegate"; read: string; path: string; salt: string }
+  /** Prove the granted secret arrived (a hash of it), then leak it (the value). */
+  | { do: "leak-secret"; env: string; path: string; proofPath: string; salt: string };
 
 export interface PlanItem {
   id: string;
@@ -75,31 +77,47 @@ export function writePlan(dir: string, plan: Plan, name = "plan.json"): string {
   return path;
 }
 
-export interface DisjointPlan {
+export interface SeededPlan {
   plan: Plan;
-  /** Path in the merged tree → the token that must be in it. */
+  /** Files to plant in the repository, and how. The nonces live only here. */
+  seeds: Array<{ path: string; value: string; placement: "committed" | "uncommitted-tracked" | "untracked" }>;
+  /** Path in the merged tree → the value that must be in it. Derived, never handed over. */
   expected: Map<string, string>;
   itemIds: string[];
 }
 
-/** `n` disjoint write items, each carrying its own token. */
-export function disjointPlan(n: number, prefix = "item"): DisjointPlan {
+/**
+ * `n` disjoint write items, each reading its own nonce out of the clone.
+ *
+ * The placements rotate deliberately. Ruling 33 repairs ruling 7 by carrying the
+ * owner's uncommitted TRACKED and UNTRACKED work into every clone, and a plan
+ * whose nonces were all committed would never notice a product that dropped
+ * either — which is the exact mechanism ruling 7 lost.
+ */
+export function disjointPlan(n: number, prefix = "item"): SeededPlan {
+  const placements = ["committed", "uncommitted-tracked", "untracked"] as const;
+  const seeds: SeededPlan["seeds"] = [];
   const expected = new Map<string, string>();
   const items: PlanItem[] = [];
+
   for (let i = 1; i <= n; i++) {
     const id = `${prefix}-${i}`;
-    const path = `${id}.txt`;
-    const value = token(id);
-    expected.set(path, value);
+    const seedPath = `seeds/${id}.seed`;
+    const outPath = `${id}.txt`;
+    const value = token(`seed-${id}`);
+    const placement = placements[(i - 1) % placements.length] ?? "committed";
+    seeds.push({ path: seedPath, value, placement });
+    expected.set(outPath, derive(value, id));
     items.push({
       id,
       kind: "write",
-      paths: [path],
-      prompt: `create ${path} containing exactly ${value}`,
-      directive: { do: "write", path, token: value },
+      paths: [outPath],
+      prompt: `read ${seedPath} from your checkout, take sha256("<its contents>:${id}") and write the first 24 hex characters into ${outPath}`,
+      directive: { do: "derive-write", read: seedPath, path: outPath, salt: id },
     });
   }
-  return { plan: { version: 1, items }, expected, itemIds: items.map((i) => i.id) };
+
+  return { plan: { version: 1, items }, seeds, expected, itemIds: items.map((i) => i.id) };
 }
 
 /**

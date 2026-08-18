@@ -48,12 +48,14 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Checks, excerpt } from "../lib/checks.ts";
+import { derive, nonce } from "../lib/derive.ts";
 import { gatherRunEvidence } from "../lib/evidence.ts";
 import { probeFeature } from "../lib/feature.ts";
-import { isolatedPath, plantVendors } from "../lib/fixtures.ts";
+import { isolatedPath, plantFleet } from "../lib/fixtures.ts";
 import { ensureDir } from "../lib/fs.ts";
-import { makeRepo } from "../lib/git.ts";
+import { makeRepo, plantSeeds } from "../lib/git.ts";
 import { combine, type LiveHalf } from "../lib/halves.ts";
+import { readLedger, vendorsIn } from "../lib/ledger.ts";
 import { token, writePlan } from "../lib/plan.ts";
 import { baseEnv } from "../lib/proc.ts";
 import type { BarContext, BarItem, BarResult } from "../types.ts";
@@ -137,8 +139,10 @@ const item: BarItem = {
     // ---- live: rulings 32, 52, 24 -------------------------------------------
     const binDir = ensureDir(join(ctx.workdir, "bin"));
     const defects = Array.from({ length: CATCH_THRESHOLD.planted }, (_, i) => token(`DEFECT-${i + 1}`));
-    // A reviewer that spots three of the five. The rate is published, not gated.
-    plantVendors(binDir, [
+    // A reviewer that CAN spot three of the five. What it actually finds is
+    // decided by the diff it is handed, which is the difference between FOUND
+    // and KNOWN — and the previous item conflated them.
+    const fleet = plantFleet(binDir, join(ctx.workdir, "vendor-ledger.tsv"), [
       { id: "codex", version: "1.4.0" },
       { id: "qwen", version: "0.21.13", catches: defects.slice(0, 3) },
     ]);
@@ -146,11 +150,14 @@ const item: BarItem = {
 
     const repo = join(ctx.workdir, "repo");
     await makeRepo(repo, { "README.md": "base\n" });
-    const reviewedToken = token("reviewed");
-    // The defects live in the file the worker rewrites, so they are in the diff
-    // the reviewer is handed — ruling 52's framing, which is the assumption this
-    // item exists to falsify or confirm in public.
-    const body = `${reviewedToken}\n${defects.join("\n")}\n`;
+    // The defects are planted in the repository so they land in the diff the
+    // reviewer is handed — ruling 52's framing, which is the assumption this
+    // item exists to falsify or confirm in public. The nonce the worker derives
+    // from lives beside them and only inside the clone.
+    const reviewedSeed = nonce("reviewed-seed");
+    await plantSeeds(repo, [
+      { path: "seeds/reviewed.seed", value: `${reviewedSeed}\n${defects.join("\n")}`, placement: "uncommitted-tracked" },
+    ]);
     const planPath = writePlan(ctx.workdir, {
       version: 1,
       items: [
@@ -159,7 +166,7 @@ const item: BarItem = {
           kind: "write",
           paths: ["reviewed.txt"],
           prompt: "write reviewed.txt",
-          directive: { do: "write", path: "reviewed.txt", token: body },
+          directive: { do: "derive-write", read: "seeds/reviewed.seed", path: "reviewed.txt", salt: "reviewed" },
         },
       ],
     });
@@ -169,7 +176,14 @@ const item: BarItem = {
     const probe = await probeFeature(
       ctx,
       ["run", "--plan", planPath, "--repo", repo, "--run-root", join(ctx.workdir, "runs"), "--review", "--planted", String(defects.length)],
-      { env, timeoutMs: 300_000 },
+      {
+        env,
+        timeoutMs: 300_000,
+        // A run whose items FAIL review exits non-zero, which is correct
+        // behaviour — so presence is judged on the run having produced a
+        // record, not on the exit code.
+        evidence: (r) => /run-record:/.test(r.stdout),
+      },
     );
     did.push(probe.transcript);
 
@@ -184,17 +198,43 @@ const item: BarItem = {
       const checks = new Checks();
       const reviewed = evidence.record?.items.find((i) => i.id === "reviewed");
 
+      // The ledger, not the record. A record is the product's account of itself
+      // and a forger writes it; a ledger line is a file a process had to exist to
+      // append to. The previous item passed on two strings without either vendor
+      // running.
+      const ledger = readLedger(fleet.ledger);
+      const builders = vendorsIn(ledger, "builder");
+      const reviewers = vendorsIn(ledger, "reviewer");
       checks.expect(
-        "the run record names a reviewer whose vendor differs from the builder's (ruling 32)",
-        reviewed?.reviewerAgent !== undefined &&
-          reviewed.builderAgent !== undefined &&
-          reviewed.reviewerAgent !== reviewed.builderAgent,
-        `builder ${reviewed?.builderAgent ?? "none"}, reviewer ${reviewed?.reviewerAgent ?? "none"} — both must be among the vendors planted on this PATH seconds ago`,
+        "a builder vendor process and a reviewer vendor process BOTH really ran",
+        builders.length > 0 && reviewers.length > 0,
+        `vendor ledger: builders ${builders.join(", ") || "NONE"}, reviewers ${reviewers.join(", ") || "NONE"} (${ledger.length} invocations recorded)`,
       );
       checks.expect(
-        "the catch rate is recorded as identities, not a number to be believed",
-        (evidence.record?.review?.caughtDefects ?? []).every((m) => defects.includes(m)),
-        `caught ${JSON.stringify(evidence.record?.review?.caughtDefects ?? [])} of planted ${JSON.stringify(defects)}`,
+        "the reviewer's vendor DIFFERS from the builder's, in the ledger and in the record (ruling 32)",
+        builders.length > 0 &&
+          reviewers.length > 0 &&
+          reviewers.some((r) => !builders.includes(r)) &&
+          reviewed?.reviewerAgent !== undefined &&
+          reviewed.builderAgent !== undefined &&
+          reviewed.reviewerAgent !== reviewed.builderAgent,
+        `ledger builders ${builders.join(",")}, ledger reviewers ${reviewers.join(",")}; ` +
+          `record says builder ${reviewed?.builderAgent ?? "none"}, reviewer ${reviewed?.reviewerAgent ?? "none"}`,
+      );
+      // `.every()` is true of an empty array, so the previous version accepted
+      // `caughtDefects: []` as a perfect score. Non-emptiness is asserted first,
+      // and the set must be exactly what this reviewer could find in this diff —
+      // FOUND, not KNOWN.
+      const caught = evidence.record?.review?.caughtDefects ?? [];
+      checks.expect(
+        "the catch rate is recorded as identities, and there is at least one",
+        caught.length > 0 && caught.every((m) => defects.includes(m)),
+        `caught ${JSON.stringify(caught)} of planted ${JSON.stringify(defects)} — an empty list is not a perfect score, and \`.every()\` on it is vacuously true`,
+      );
+      checks.expect(
+        "the reviewer reports what it FOUND, not what it knows",
+        caught.length === 3 && caught.every((m) => defects.slice(0, 3).includes(m)),
+        `this reviewer can spot ${defects.slice(0, 3).length} of the ${defects.length} planted and all of them are in the diff, so exactly those must be reported; it reported ${caught.length}`,
       );
       checks.expect(
         "the catch rate is PRINTED whether or not it clears the threshold",
@@ -204,13 +244,15 @@ const item: BarItem = {
 
       // The blocker, asserted on the tree rather than on the word `error`.
       const dyingBin = ensureDir(join(ctx.workdir, "bin-dying"));
-      plantVendors(dyingBin, [
+      plantFleet(dyingBin, join(ctx.workdir, "vendor-ledger-dying.tsv"), [
         { id: "codex", version: "1.4.0" },
         { id: "qwen", version: "0.21.13", dieAsReviewer: true },
       ]);
       const dyingRepo = join(ctx.workdir, "dying-repo");
       await makeRepo(dyingRepo, { "README.md": "base\n" });
-      const blockedToken = token("blocked");
+      const blockedSeed = nonce("blocked-seed");
+      await plantSeeds(dyingRepo, [{ path: "seeds/blocked.seed", value: blockedSeed, placement: "committed" }]);
+      const blockedValue = derive(blockedSeed, "blocked");
       const blockedPlan = writePlan(
         ctx.workdir,
         {
@@ -221,7 +263,7 @@ const item: BarItem = {
               kind: "write",
               paths: ["blocked.txt"],
               prompt: "write blocked.txt",
-              directive: { do: "write", path: "blocked.txt", token: blockedToken },
+              directive: { do: "derive-write", read: "seeds/blocked.seed", path: "blocked.txt", salt: "blocked" },
             },
           ],
         },
@@ -232,11 +274,11 @@ const item: BarItem = {
         { env: baseEnv({ PATH: isolatedPath(dyingBin) }), timeoutMs: 300_000 },
       );
       const blockedEvidence = await gatherRunEvidence(dyingRepo, `${blocked.stdout}${blocked.stderr}`);
-      const reachedTree = [...blockedEvidence.files.values()].some((body) => body.includes(blockedToken));
+      const reachedTree = [...blockedEvidence.files.values()].some((body) => body.includes(blockedValue));
       checks.expect(
         "a reviewer that produced no verdict BLOCKS — the item did not integrate (ruling 52)",
         !reachedTree,
-        `the reviewer was killed mid-turn; the item's token ${blockedToken} in the integration tree: ${reachedTree}. ` +
+        `the reviewer was killed mid-turn; the item's derived output ${blockedValue} in the integration tree: ${reachedTree}. ` +
           `Asserted on the tree rather than on the word "error", because v1 merged its most delicate change on \`review: not run (REVIEWER_FAILED)\``,
       );
       checks.note(

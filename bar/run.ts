@@ -29,12 +29,12 @@
  * nothing, so nothing here is permitted to weaken an item into passing.
  */
 
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { ensureDir, pruneEmpty, removeDir } from "./lib/fs.ts";
 import { exec, baseEnv } from "./lib/proc.ts";
-import { disagreements, readSpec, type SpecItem } from "./lib/spec.ts";
+import { coverageProblems, disagreements, readSpec, specPath, type SpecItem } from "./lib/spec.ts";
 import { ITEMS } from "./items/index.ts";
 import type { BarContext, BarItem, BarRecord } from "./types.ts";
 
@@ -261,10 +261,16 @@ if (import.meta.main) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(2);
   }
-  const drift = disagreements(spec, ITEMS);
+  const drift = [
+    ...disagreements(spec, ITEMS).map((d) => d.detail),
+    // BAR.md calls its coverage table "where a promise gets quietly buried", so
+    // a ruling an item claims to prove and the table has never heard of stops
+    // the run exactly as a drifted heading does.
+    ...coverageProblems(readFileSync(specPath(), "utf8"), ITEMS),
+  ];
   if (drift.length > 0) {
     console.error("the register and BAR.md disagree, so the bar cannot say what completeness means:\n");
-    for (const problem of drift) console.error(`  ${problem.detail}`);
+    for (const problem of drift) console.error(`  ${problem}`);
     console.error("\nBAR.md is the specification. An item is struck only in the open — by editing the");
     console.error("document, with a line saying which item, why, and what promise is now unproven.");
     process.exit(2);

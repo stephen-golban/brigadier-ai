@@ -35,13 +35,14 @@
 
 import { join } from "node:path";
 import { Checks, excerpt } from "../lib/checks.ts";
+import { nonce } from "../lib/derive.ts";
 import { gatherRunEvidence } from "../lib/evidence.ts";
 import { probeFeature } from "../lib/feature.ts";
-import { isolatedPath, plantVendors } from "../lib/fixtures.ts";
+import { isolatedPath, plantFleet } from "../lib/fixtures.ts";
 import { ensureDir } from "../lib/fs.ts";
-import { makeRepo } from "../lib/git.ts";
+import { makeRepo, plantSeeds } from "../lib/git.ts";
 import { combine, type LiveHalf } from "../lib/halves.ts";
-import { token, writePlan } from "../lib/plan.ts";
+import { writePlan } from "../lib/plan.ts";
 import { baseEnv } from "../lib/proc.ts";
 import type { RunRecord } from "../lib/contract.ts";
 import type { BarContext, BarItem, BarResult } from "../types.ts";
@@ -79,8 +80,16 @@ export function isUpwardClamp(from: string, to: string): boolean {
 export interface CostObservations {
   report: string;
   record: RunRecord | undefined;
-  /** Commits actually in the integration history. */
+  /** Commits actually in the integration history, WITH the ceilings applied. */
   integratedCount: number;
+  /**
+   * The same plan, same binary, same vendors, NO ceilings.
+   *
+   * Without this, "fewer items integrated" is indistinguishable from a binary
+   * that simply does less — which is what a forger does for free. The ceiling
+   * has to be shown to be the cause.
+   */
+  uncappedIntegratedCount: number;
   plannedCount: number;
 }
 
@@ -90,11 +99,23 @@ export function judgeCost(o: CostObservations): Checks {
 
   // Enforcement, asserted on what did NOT happen rather than on a sentence.
   checks.expect(
-    "a hard ceiling below the plan's cost really stopped work (ruling 66)",
-    o.integratedCount < o.plannedCount &&
+    "the same plan without ceilings integrates MORE — so the ceiling is the cause (ruling 66)",
+    o.uncappedIntegratedCount > o.integratedCount &&
+      o.uncappedIntegratedCount === o.plannedCount &&
       (o.record?.items ?? []).some((i) => i.status === "unrun" || i.status === "cancelled"),
-    `${o.integratedCount} of ${o.plannedCount} items reached the integration history; statuses: ` +
-      `${(o.record?.items ?? []).map((i) => `${i.id}=${i.status}`).join(", ") || "no record"}`,
+    `uncapped: ${o.uncappedIntegratedCount} of ${o.plannedCount} integrated; capped: ${o.integratedCount}. ` +
+      `Statuses under the cap: ${(o.record?.items ?? []).map((i) => `${i.id}=${i.status}`).join(", ") || "no record"}. ` +
+      "A binary that simply does less produces the same shortfall with no ceiling involved",
+  );
+  const cost0 = o.record?.cost;
+  checks.expect(
+    "actual is reported against the estimate, and falls inside the range",
+    cost0?.actual !== undefined &&
+      cost0.estimateLow !== undefined &&
+      cost0.actual >= 0 &&
+      cost0.actual <= cost0.estimateHigh &&
+      /actual/i.test(o.report),
+    `actual ${cost0?.actual ?? "absent"} against ${cost0?.estimateLow ?? "?"} – ${cost0?.estimateHigh ?? "?"} ${cost0?.currency ?? ""}`,
   );
   checks.expect(
     "the report distinguishes the soft ceiling from the hard one",
@@ -175,6 +196,8 @@ const item: BarItem = {
     const repo = join(ctx.workdir, "repo");
     await makeRepo(repo, { "README.md": "base\n" });
     const items = ["cheap", "declared-hard", "third", "fourth"];
+    const seeds = items.map((id) => ({ path: `seeds/${id}.seed`, value: nonce(`${id}-seed`), placement: "committed" as const }));
+    await plantSeeds(repo, seeds);
     const planPath = writePlan(ctx.workdir, {
       version: 1,
       items: items.map((id, index) => ({
@@ -182,7 +205,7 @@ const item: BarItem = {
         kind: "write" as const,
         paths: [`${id}.txt`],
         prompt: `create ${id}.txt`,
-        directive: { do: "write" as const, path: `${id}.txt`, token: token(id) },
+        directive: { do: "derive-write" as const, read: `seeds/${id}.seed`, path: `${id}.txt`, salt: id },
         // Ruling 67's clamp must PRINT for this one, and must only go down.
         ...(index === 1 ? { difficulty: "hard" as const } : {}),
       })),
@@ -190,7 +213,10 @@ const item: BarItem = {
     did.push(`wrote a four-item plan at ${planPath}, one item declaring \`difficulty: hard\` so a clamp has something to print`);
 
     const binDir = ensureDir(join(ctx.workdir, "bin"));
-    plantVendors(binDir, [{ id: "codex", version: "1.4.0" }, { id: "qwen", version: "0.21.13" }]);
+    plantFleet(binDir, join(ctx.workdir, "vendor-ledger.tsv"), [
+      { id: "codex", version: "1.4.0" },
+      { id: "qwen", version: "0.21.13" },
+    ]);
     const env = baseEnv({ PATH: isolatedPath(binDir) });
 
     // ---- credential-free: predicting costs nothing --------------------------
@@ -222,14 +248,10 @@ const item: BarItem = {
     // bite rather than merely print.
     const probe = await probeFeature(
       ctx,
-      [
-        "run", "--plan", planPath, "--repo", repo,
-        "--run-root", join(ctx.workdir, "runs"),
-        "--soft-ceiling", "0.06", "--hard-ceiling", "0.14",
-      ],
-      { env, timeoutMs: 300_000 },
+      ["run", "--plan", planPath, "--repo", repo, "--run-root", join(ctx.workdir, "runs"), "--dry-run"],
+      { env, timeoutMs: 60_000 },
     );
-    did.push(probe.transcript);
+    did.push(`admission probe: ${probe.transcript}`);
 
     let live: LiveHalf;
     if (!probe.present) {
@@ -237,15 +259,37 @@ const item: BarItem = {
     } else if (!ctx.live) {
       live = { kind: "skipped", why: "actual-against-predicted requires real spend, and per-vendor quota requires real vendor accounts" };
     } else {
-      const report = `${probe.result.stdout}${probe.result.stderr}`;
+      // A: the same plan, same vendors, NO ceilings.
+      const uncappedRepo = join(ctx.workdir, "uncapped-repo");
+      await makeRepo(uncappedRepo, { "README.md": "base\n" });
+      await plantSeeds(uncappedRepo, seeds);
+      const uncapped = await ctx.run(
+        ["run", "--plan", planPath, "--repo", uncappedRepo, "--run-root", join(ctx.workdir, "runs-uncapped")],
+        { env, timeoutMs: 300_000 },
+      );
+      const uncappedEvidence = await gatherRunEvidence(uncappedRepo, `${uncapped.stdout}${uncapped.stderr}`);
+      const uncappedIntegrated = uncappedEvidence.subjects.filter((l) => /: integrated$/.test(l)).length;
+
+      // B: ceilings deliberately below what four items cost.
+      const capped = await ctx.run(
+        [
+          "run", "--plan", planPath, "--repo", repo,
+          "--run-root", join(ctx.workdir, "runs"),
+          "--soft-ceiling", "0.06", "--hard-ceiling", "0.14",
+        ],
+        { env, timeoutMs: 300_000 },
+      );
+      did.push(`drove the same plan twice: once with no ceilings (${uncappedIntegrated} integrated) and once with them`);
+      const report = `${capped.stdout}${capped.stderr}`;
       const evidence = await gatherRunEvidence(repo, report);
-      const integrated = evidence.subjects.filter((s) => /: integrated$/.test(s)).length;
+      const integrated = evidence.subjects.filter((l) => /: integrated$/.test(l)).length;
       live = {
         kind: "ran",
         checks: judgeCost({
           report,
           record: evidence.record,
           integratedCount: integrated,
+          uncappedIntegratedCount: uncappedIntegrated,
           plannedCount: items.length,
         }),
       };

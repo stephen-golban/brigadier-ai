@@ -32,7 +32,7 @@ const frameFor = (channel: { sent: string[] }, method: string) =>
  */
 async function completeHandshake(
   channel: ReturnType<typeof memoryChannel>,
-  options: { failSession?: string; agentVersion?: string } = {},
+  options: { failSession?: string; agentVersion?: string; session?: Record<string, unknown> } = {},
 ) {
   await waitFor(() => frameFor(channel, "initialize") !== undefined);
   const initialize = frameFor(channel, "initialize");
@@ -54,7 +54,7 @@ async function completeHandshake(
     JSON.stringify(
       options.failSession
         ? { jsonrpc: "2.0", id: session.id, error: { code: -32000, message: options.failSession } }
-        : { jsonrpc: "2.0", id: session.id, result: { sessionId: "sess-1" } },
+        : { jsonrpc: "2.0", id: session.id, result: { sessionId: "sess-1", ...(options.session ?? {}) } },
     ),
   );
 }
@@ -197,6 +197,120 @@ describe("Worker.start — two-step detection (ruling 41)", () => {
 
     const worker = await starting;
     expect(worker.laneAsserted).toBe(true);
+    await worker.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+/**
+ * Ruling 69's tightening, at the seam that has to act on it.
+ *
+ * `laneAsserted` alone was "recorded, and the caller can decide". `laneBlocks`
+ * is the decision, made once: a `write` worker on a vendor that declares a lane
+ * lever, whose lever did not take, has no lane at all.
+ */
+describe("a failed lane assertion blocks a write worker (ruling 69)", () => {
+  /** Fail `session/set_mode`, the way a bridge that moved under us would. */
+  async function startWithFailedAssertion(profile: typeof PROFILES.claude, kind: "write" | "read-only") {
+    const dir = scratch();
+    const channel = memoryChannel();
+    const starting = Worker.start(profile, { cwd: dir, lane: new Lane(dir), channel, kind });
+    await completeHandshake(channel);
+    await waitFor(() => frameFor(channel, "session/set_mode") !== undefined);
+    const setMode = frameFor(channel, "session/set_mode");
+    channel.deliver(
+      JSON.stringify({ jsonrpc: "2.0", id: setMode.id, error: { code: -32601, message: "no such mode" } }),
+    );
+    return { worker: await starting, dir };
+  }
+
+  test("write on a vendor with a lever: the assertion failed, so the item BLOCKS", async () => {
+    // #3 measured the Claude bridge opening in bypassPermissions. A write
+    // worker whose set_mode was refused is a worker with no lane, and ruling 32
+    // says a weakened check never renders as a pass.
+    const { worker, dir } = await startWithFailedAssertion(PROFILES.claude, "write");
+    expect(worker.laneAsserted).toBe(false);
+    expect(worker.laneBlocks).toBe(true);
+    await worker.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("NEGATIVE CONTROL: the same failure on a read-only item does NOT block", async () => {
+    // The profile is constructed rather than taken from the fleet, and that is
+    // the finding: no shipped profile declares a read-only SESSION mode, so
+    // this case cannot be produced from `PROFILES` today. It is asserted anyway
+    // because ruling 49 is what makes it safe — a read-only item's directory is
+    // never diffed, merged or read back, so its enforcement is brigadier's own
+    // flat `deny` and needs no vendor cooperation. A refactor that made the
+    // block unconditional would break exactly this row.
+    const hypothetical = {
+      ...PROFILES.claude,
+      laneAssertion: { kind: "session-mode", write: "default", readOnly: "plan" },
+    } as typeof PROFILES.claude;
+    const { worker, dir } = await startWithFailedAssertion(hypothetical, "read-only");
+    expect(worker.laneAsserted).toBe(false);
+    expect(worker.laneBlocks).toBe(false);
+    await worker.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("NEGATIVE CONTROL: an assertion that succeeded blocks nothing", async () => {
+    const dir = scratch();
+    const channel = memoryChannel();
+    const starting = Worker.start(PROFILES.claude, { cwd: dir, lane: new Lane(dir), channel });
+    await completeHandshake(channel);
+    await waitFor(() => frameFor(channel, "session/set_mode") !== undefined);
+    const setMode = frameFor(channel, "session/set_mode");
+    channel.deliver(JSON.stringify({ jsonrpc: "2.0", id: setMode.id, result: {} }));
+    const worker = await starting;
+    expect(worker.laneBlocks).toBe(false);
+    await worker.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("a vendor with no lever cannot fail an assertion it never makes", async () => {
+    const dir = scratch();
+    const channel = memoryChannel();
+    const starting = Worker.start(PROFILES.qwen, { cwd: dir, lane: new Lane(dir), channel });
+    await completeHandshake(channel);
+    const worker = await starting;
+    expect(frameFor(channel, "session/set_mode")).toBeUndefined();
+    expect(worker.laneBlocks).toBe(false);
+    await worker.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("model ids are read back, never constructed (ruling 68, #2)", () => {
+  test("availableModels reaches the caller in the agent's own order", async () => {
+    const dir = scratch();
+    const channel = memoryChannel();
+    const starting = Worker.start(PROFILES.codex, { cwd: dir, lane: new Lane(dir), channel });
+    await completeHandshake(channel, {
+      session: {
+        models: {
+          availableModels: [{ modelId: "gpt-5.6-sol[high]" }, { modelId: "gpt-5.6-sol[low]" }],
+          currentModelId: "gpt-5.6-sol[high]",
+        },
+      },
+    });
+    const worker = await starting;
+    expect(worker.models).toEqual(["gpt-5.6-sol[high]", "gpt-5.6-sol[low]"]);
+    await worker.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("NEGATIVE CONTROL: an unrecognised envelope yields nothing rather than junk", async () => {
+    // Which envelope the shipped bridge uses was not re-measured here, so a
+    // wrong guess must fail LOUDLY: an empty list on a profile whose
+    // `modelsAtSessionNew` is true is reported by `sessionContradictions` as a
+    // discrepancy, not passed off as "this vendor sent none".
+    const dir = scratch();
+    const channel = memoryChannel();
+    const starting = Worker.start(PROFILES.codex, { cwd: dir, lane: new Lane(dir), channel });
+    await completeHandshake(channel, { session: { models: { availableModels: [{ nope: 1 }, "x", null] } } });
+    const worker = await starting;
+    expect(worker.models).toEqual([]);
     await worker.close();
     rmSync(dir, { recursive: true, force: true });
   });

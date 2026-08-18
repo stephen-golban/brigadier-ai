@@ -15,13 +15,35 @@
  * binary — a Homebrew tap, `curl | sh`, a plugin directory — with no repository
  * anywhere near it. A file that lives only in the repo does not discharge it.
  *
+ * Ruling 72 added a third obligation to the two above. LGPL §6 — "You must
+ * supply a copy of this License" — is unconditional, and Bun's own artifacts
+ * supply none (MEASURED with Apple `strings` on 2026-08-17 against
+ * `~/.bun/bin/bun` 1.3.14: 875 output lines contain "JavaScriptCore", 0 contain
+ * "GNU Lesser" and 0 contain "GNU Library General Public"), so nothing upstream
+ * discharges it for us. The per-library notices are composed in `inventory.ts` and rendered
+ * here; `license-gate.ts` then checks the compiled binary's BYTES for them,
+ * because a generator can only state an intention.
+ *
  *   bun run licenses            regenerate
  *   bun run licenses --check    fail if the committed output is stale
+ *   bun run licenses --census <checkout> <component> <revision> <path>...
+ *                               re-walk a pinned source tree and rewrite
+ *                               vendor/lgpl-census.json. By hand, never in the
+ *                               build: see RELINKING.md for the clone commands.
  */
 
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { REPO_ROOT, allComponents, isAllowed, type Component } from "./inventory.ts";
+import {
+  CENSUS_FILE,
+  PROPRIETARY_MARKERS,
+  REPO_ROOT,
+  allComponents,
+  censusFromCheckout,
+  isAllowed,
+  type Component,
+  type LicenceCensus,
+} from "./inventory.ts";
 
 const APACHE_TEXT = readFileSync(join(REPO_ROOT, "LICENSE"), "utf8").trimEnd();
 
@@ -38,8 +60,12 @@ function renderMarkdown(components: Component[]): string {
     "silently.",
   );
   lines.push("");
-  lines.push("The same content is reachable from the binary itself with `brigadier licenses`, which is the");
-  lines.push("surface that matters when brigadier arrives without this repository beside it.");
+  lines.push("Everything under \"Full licence texts\" below is also inside the binary, printed by `brigadier");
+  lines.push("licenses --full` — that is the surface that matters when brigadier arrives without this");
+  lines.push("repository beside it. `bun run license-gate` fails the build unless the compiled artifact's");
+  lines.push("BYTES carry each text's title, its body, its pinned revision and its source-offer status, so");
+  lines.push("this file and the binary cannot drift apart silently. The narrative sections are the long");
+  lines.push("form and live here and in `RELINKING.md`.");
   lines.push("");
   lines.push("| component | version | licence | why it is in the binary |");
   lines.push("| --- | --- | --- | --- |");
@@ -48,36 +74,66 @@ function renderMarkdown(components: Component[]): string {
   }
   lines.push("");
 
-  const lgpl = components.find((c) => c.licenseText.includes("LGPL"));
-  if (lgpl) {
-    lines.push("## Statically linked LGPL components, and how to relink");
+  const lgplComponents = components.filter((c) => c.lgpl !== undefined);
+  if (lgplComponents.length > 0) {
+    lines.push("## The statically linked LGPL libraries — status of the obligation");
     lines.push("");
-    // Ruling 72 corrected two errors in this text. Both were introduced by
-    // repeating Bun's own summary rather than reading the licence files, and
-    // both made the notice LESS accurate about what is in the binary.
+    // Ruling 72. Everything in this section is checked by `bun run
+    // license-gate` against the compiled binary's bytes, because the previous
+    // version of this section asserted a source offer that did not exist. A
+    // generated, legal-facing document that is WRONG is worse than one that is
+    // merely incomplete: it converts an open obligation into a false claim.
     lines.push(
-      "`" + lgpl.name + "` statically links parts of **JavaScriptCore/WebKit** and **tinycc**.",
+      "`bun --compile` embeds the Bun runtime whole, and Bun statically links **JavaScriptCore",
+      "(WebKit)** and **tinycc**, both LGPL. Those are components brigadier **redistributes**.",
+      "LGPL §6 makes supplying a copy of the licence unconditional, and nothing upstream discharges it",
+      "for us. MEASURED on 2026-08-17 with Apple `strings` (cctools, from Xcode's default toolchain;",
+      "it accepts no version flag) on darwin 25.5.0 arm64, against `~/.bun/bin/bun` 1.3.14, 63,096,576",
+      "bytes — counting LINES of `strings` output that contain each phrase: **875** for",
+      "`JavaScriptCore`, **0** for `GNU Lesser`, **0** for `GNU Library General Public`. The same scan",
+      "of brigadier's own binary before this file was regenerated: **879**, **0**, **0**. Supplying the",
+      "text is therefore ours to do, and `brigadier licenses --full` now does it.",
       "",
-      "**What the licences actually are.** JavaScriptCore's `COPYING.LIB` is the GNU **Library** General",
-      "Public License **version 2** — which has no shared-library option — but its source headers say",
-      "*\"version 2 of the License, or (at your option) any later version\"*, so it is **LGPL-2.0-or-later**",
-      "and a recipient may elect 2.1 or 3. tinycc's `COPYING` is **LGPL-2.1**, headers likewise",
-      "*or later*. Read 2026-08-17.",
+      "| library | pinned revision | licence file it ships | source offer |",
+      "| --- | --- | --- | --- |",
+    );
+    for (const c of lgplComponents) {
+      lines.push(
+        `| ${c.lgpl?.library} | \`${c.version}\` | ${c.lgpl?.licenceFile} — ${c.lgpl?.licenceName} | **not yet discharged**, see below |`,
+      );
+    }
+    lines.push(
       "",
-      "**JavaScriptCore is not uniformly LGPL, and this notice used to imply it was.** Of 3,523 files in",
-      "`Source/JavaScriptCore`, **187 (5.3%) carry LGPL headers** — concentrated in `runtime/` — and",
-      "**3,321 are BSD-2-Clause or BSD-3-Clause**; `Source/WTF` is 101 LGPL of 1,092. Those BSD files carry",
-      "their own attribution requirement, which a flat \"LGPL-2\" label understates.",
+      "**What is discharged.** The complete licence text of both libraries is inside the binary and",
+      "printed by `brigadier licenses --full`, along with the exact revision each was built from, the",
+      "rebuild path, and the per-file attribution census below. `bun run license-gate` fails the build",
+      "if any of that is missing from the artifact's bytes.",
       "",
-      "**How to relink.** LGPL-2.1 §6a requires the \"work that uses the Library\" *\"as object code and/or",
-      "source code\"* — source is one of the two forms the licence names, and it is the route Qt's and",
-      "FFmpeg's published compliance guidance recommend. brigadier's own complete source is public under",
-      "Apache-2.0, so: rebuild Bun against your modified WebKit (upstream documents this at",
-      "<https://github.com/oven-sh/webkit>), then rebuild brigadier with `bun run build` using that Bun.",
+      "**What is not.** §6c of LGPL-2.0 (§6d of LGPL-2.1) asks that the Library's complete",
+      "corresponding source be offered **from the same place as the binary**. brigadier publishes no",
+      "release artifacts yet, so there is no such place and no mirror under our control to point at.",
+      "That step belongs to the first release; until it happens the obligation is **open**, and this",
+      "file says so instead of implying it is closed. Qt's published obligations page — READ",
+      "2026-08-17, <https://www.qt.io/licensing/open-source-lgpl-obligations> — puts it as: \"complete",
+      "corresponding source code of the library used with the application or the device built using",
+      "LGPL, including all modifications to the library, should be delivered with the application (or",
+      "alternatively provide a written offer with instructions on how to get the source code)\".",
       "",
-      "**§6a has a second limb** that the application source does not discharge: the Library's own complete",
-      "corresponding source, including whatever changes were used. brigadier offers it from the same place",
-      "as the binary, pinned to the exact WebKit and tinycc revisions this Bun was built from.",
+      "**Not proven.** §6 also requires the shipped form of the \"work that uses the Library\" to include",
+      "the data and utility programs needed for **reproducing the executable from it**. The recipe is",
+      "in `RELINKING.md` and in the binary; nobody has yet demonstrated that following it reproduces",
+      "this binary. Ruling 72 leaves that as a bar item still to be written and nothing here claims it.",
+      "",
+      "**Two labels we had wrong, corrected.** JavaScriptCore's `COPYING.LIB` at the pinned revision is",
+      "the GNU **Library** General Public License **version 2** (READ 2026-08-17), which has no",
+      "shared-library option — but its file headers say *\"or (at your option) any later version\"*, so a",
+      "recipient may elect 2.1 or 3, and the census counts how many headers actually say it. And",
+      "JavaScriptCore is **not uniformly LGPL**: the majority of its files are BSD-2-Clause or",
+      "BSD-3-Clause and carry their own attribution requirement, which the flat `LGPL-2` label we used",
+      "to print understated. Both corrections are enumerated per library under \"Full licence texts\".",
+      "",
+      "**These are not legal advice** and the licence review before the first signed tag stands",
+      "regardless of what is written here.",
     );
     lines.push("");
   }
@@ -147,7 +203,64 @@ export const LICENSES: LicenseManifest = ${JSON.stringify(payload, null, 2)};
 `;
 }
 
+// `--census <checkout>` — regenerate `vendor/lgpl-census.json` from a source
+// tree at the pinned revision. Run by hand, not by the build: the build must
+// work offline and a 200 MB checkout is not a build input. The output is
+// committed so `bun run licenses` and the gate can stay hermetic, and anyone
+// holding the same revision can re-run this and diff the result.
+const censusIndex = Bun.argv.indexOf("--census");
+if (censusIndex !== -1) {
+  const checkout = Bun.argv[censusIndex + 1];
+  const componentName = Bun.argv[censusIndex + 2];
+  const revision = Bun.argv[censusIndex + 3];
+  const paths = Bun.argv.slice(censusIndex + 4);
+  if (!checkout || !componentName || !revision || paths.length === 0) {
+    console.error("usage: bun run licenses --census <checkout> <component> <revision> <path> [path...]");
+    process.exit(2);
+  }
+  const component = allComponents().find((c) => c.name === componentName);
+  if (!component?.lgpl) {
+    console.error(`${componentName} is not a component with an \`lgpl\` block; nothing to census.`);
+    process.exit(2);
+  }
+  const censusPath = join(REPO_ROOT, "vendor", CENSUS_FILE);
+  const existing = await Bun.file(censusPath)
+    .json()
+    .catch(() => ({}));
+  const measuredWith = `git ${Bun.spawnSync(["git", "--version"]).stdout.toString().trim().replace(/^git version /, "")} and bun ${Bun.version}`;
+  existing[componentName] = censusFromCheckout(checkout, {
+    repo: component.lgpl.upstream,
+    revision,
+    measuredOn: new Date().toISOString().slice(0, 10),
+    measuredWith,
+    paths,
+  });
+  writeFileSync(censusPath, `${JSON.stringify(existing, null, 2)}\n`);
+  const census = existing[componentName] as LicenceCensus;
+  console.log(`censused ${componentName} at ${revision} — ${JSON.stringify(census.totals)}`);
+  console.log(`  ${census.holders.length} holder(s), ${census.notices.length} distinct notice wording(s)`);
+  process.exit(0);
+}
+
+// `allComponents` composes the shipped text. Both files below and the gate's
+// scan of the binary read the same bytes from the same place, which is the
+// whole reason the composition is not done here.
 const components = allComponents();
+
+// The gate reads what this writes. Generated attribution that contained a
+// proprietary marker would fail the marker scan on the next build with a
+// finding that looks like bundled proprietary code — and WebKit really does
+// carry an `Anthropic PBC` copyright line (8 files, MEASURED 2026-08-17), so
+// this is a live hazard rather than a hypothetical one.
+for (const c of components) {
+  for (const marker of PROPRIETARY_MARKERS) {
+    if (c.licenseText.includes(marker)) {
+      console.error(`Refusing to generate: ${c.name}'s text contains the proprietary marker ${JSON.stringify(marker)}.`);
+      console.error("The marker scan in scripts/license-gate.ts would read this back as bundled proprietary code.");
+      process.exit(1);
+    }
+  }
+}
 
 // The generator refuses to render a licence the gate would reject. Producing a
 // tidy attribution file for a component that may not be redistributed would be

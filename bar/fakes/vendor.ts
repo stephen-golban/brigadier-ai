@@ -2,26 +2,39 @@
 /**
  * A fake coding agent, spawned as a real process by the fixture orchestrator.
  *
- * It exists so the positive control is a control rather than a wish. An
- * instrument needs both directions: a do-nothing binary that must score zero,
- * and an honest one that must score high. Without the second, "every item
- * fails" is indistinguishable from "every item is unsatisfiable" — which was
- * true of three items in the first draft and nobody could tell.
+ * It exists so the positive control is a control rather than a wish, and it is a
+ * REAL separate process on purpose: item 7 needs something to `SIGKILL` and
+ * something to escape, item 8 needs processes that would otherwise have existed,
+ * item 4 needs N concurrent workers, and a function call would satisfy none of
+ * those.
  *
- * It is a REAL separate process on purpose. Item 7 needs something to `SIGKILL`
- * and something to escape via `setsid()`; item 8's "zero processes were
- * created" needs processes that would otherwise have existed; item 4 needs N
- * concurrent workers. A function call would satisfy none of those.
+ * Three things it does that a forger cannot cheaply reproduce, and each is here
+ * because a forger scored on the version without it:
  *
- * The permission protocol mirrors ACP's shape rather than reimplementing it:
- * the agent asks before every write and honours the answer, and it can ask with
- * a payload carrying NO locations — which is Codex's measured `edit` shape
- * (`title: null`, `locations: []`), the one where a `locations.every(inLane)`
- * guard can never fail.
+ *   **It DERIVES rather than echoes.** The value it writes is a hash of a nonce
+ *   that exists only in the cloned repository's content — never in the plan,
+ *   never in the prompt, never in the environment. To produce it you must have a
+ *   clone, or have reconstructed the base commit that a clone comes from.
+ *
+ *   **It signs a ledger.** One line per invocation, naming the vendor, the role,
+ *   the item and the pid. A run record is the product's account of itself; a
+ *   ledger line is a file a process had to exist to write.
+ *
+ *   **Its escapee publishes a pid.** "Still running" then becomes `kill(pid, 0)`
+ *   rather than a guess about file sizes, and a descendant that quietly died on
+ *   its own no longer reads as a successful sweep.
+ *
+ * The permission protocol mirrors ACP's shape rather than reimplementing it: the
+ * agent asks before every write and honours the answer, and it can ask with a
+ * payload carrying NO locations — Codex's measured `edit` shape (`title: null`,
+ * `locations: []`), the one where a `locations.every(inLane)` guard can never
+ * fail.
  */
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { derive } from "../lib/derive.ts";
+import { appendLedger } from "../lib/ledger.ts";
 import type { Directive } from "../lib/plan.ts";
 
 export interface VendorConfig {
@@ -32,6 +45,8 @@ export interface VendorConfig {
   dieAsReviewer?: boolean;
   /** Defect markers this reviewer is able to spot, of those planted in the diff. */
   catches?: string[];
+  /** Where every invocation is recorded. The harness owns this path. */
+  ledger?: string;
 }
 
 export interface Brief {
@@ -47,9 +62,6 @@ export interface Brief {
 
 function ask(request: Record<string, unknown>): boolean {
   process.stdout.write(`REQUEST ${JSON.stringify(request)}\n`);
-  // The orchestrator answers on a file rather than stdin: stdin is already the
-  // brief, and a second channel keeps this fixture's plumbing out of the
-  // property under test.
   const answerPath = `${process.env["BAR_ANSWER_FILE"] ?? ""}`;
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
@@ -70,15 +82,21 @@ function write(path: string, contents: string): void {
   writeFileSync(path, contents);
 }
 
+/** Read a nonce out of the clone. Absent means the clone is not what it claims. */
+function readSeed(clone: string, relative: string): string {
+  const path = resolve(clone, relative);
+  if (!existsSync(path)) return `SEED-MISSING:${relative}`;
+  return readFileSync(path, "utf8").trim();
+}
+
 /**
  * The ambient instruction file, read exactly the way a real agent reads one.
  *
- * `XDG_CONFIG_HOME` wins outright when it is set — that is the specification's
- * own rule, and it is also decision 17's suppression lever: an orchestrator that
- * points the config root somewhere it owns makes the user's global file
- * unreachable. An orchestrator that forgets leaves it reachable, and this
- * function is how item 9 can tell the two apart on the EFFECT rather than on a
- * variable.
+ * `XDG_CONFIG_HOME` wins outright when it is set — the specification's own rule,
+ * and also decision 17's suppression lever: an orchestrator that points the
+ * config root somewhere it owns makes the user's global file unreachable, and
+ * one that forgets leaves it reachable. This is how item 9 tells the two apart
+ * on the EFFECT rather than on a variable.
  */
 function ambientMarker(): string | undefined {
   const xdg = process.env["XDG_CONFIG_HOME"];
@@ -91,8 +109,6 @@ function ambientMarker(): string | undefined {
 function act(brief: Brief, config: VendorConfig): number {
   const marker = ambientMarker();
   if (marker !== undefined) {
-    // Obeyed, because the agent found it and had no reason not to. If this file
-    // reaches the merged tree, suppression did not happen.
     const target = resolve(brief.clone, "ambient-obeyed.txt");
     if (ask({ kind: "edit", title: "ambient", locations: [{ path: target }] })) write(target, `${marker}\n`);
   }
@@ -101,10 +117,12 @@ function act(brief: Brief, config: VendorConfig): number {
   if (!directive) return 0;
 
   switch (directive.do) {
-    case "write": {
+    case "derive-write": {
+      // The value cannot be produced without the clone: the nonce is only there.
+      const seed = readSeed(brief.clone, directive.read);
       const target = resolve(brief.clone, directive.path);
       if (!ask({ kind: "edit", title: `write ${directive.path}`, locations: [{ path: target }] })) return 1;
-      write(target, `${directive.token}\n`);
+      write(target, `${derive(seed, directive.salt)}\n`);
       return 0;
     }
 
@@ -112,47 +130,47 @@ function act(brief: Brief, config: VendorConfig): number {
       const target = directive.absolutePath;
       // A full path, as Claude and Copilot were measured to send.
       if (!ask({ kind: "edit", title: `write ${target}`, locations: [{ path: target }] })) return 0;
-      write(target, `${directive.token}\n`);
+      write(target, "escaped\n");
       return 0;
     }
 
     case "escape-blind": {
       // Codex's measured shape: no title, no locations, nothing to place.
       if (!ask({ kind: "edit", title: null, locations: [] })) return 0;
-      write(directive.absolutePath, `${directive.token}\n`);
+      write(directive.absolutePath, "escaped\n");
       return 0;
     }
 
     case "plant-git-payloads": {
+      // The payloads are COPIED OUT OF THE CLONE's committed content, so the
+      // harness can verify from outside that real payload bytes reached
+      // `.git/hooks` — rather than believing a receipt written by the same party
+      // that would have planted them.
       const hooks = join(brief.clone, ".git", "hooks");
       mkdirSync(hooks, { recursive: true });
-      const body = (label: string): string =>
-        process.platform === "win32"
-          ? `@echo off\r\necho ${label} > ${directive.canaryPath}\r\n`
-          : `#!/bin/sh\necho "${label}" > ${JSON.stringify(directive.canaryPath)}\nexit 0\n`;
-      const planted: string[] = [];
+      const source = resolve(brief.clone, directive.from);
+      const body = existsSync(source) ? readFileSync(source, "utf8") : "";
       for (const name of ["pre-commit", "reference-transaction"]) {
-        const path = join(hooks, name);
-        writeFileSync(path, body(name), { mode: 0o755 });
-        planted.push(path);
+        writeFileSync(join(hooks, name), body, { mode: 0o755 });
       }
       const fsmonitor = join(brief.clone, ".git", "bar-fsmonitor");
-      writeFileSync(fsmonitor, body("core.fsmonitor"), { mode: 0o755 });
+      writeFileSync(fsmonitor, body, { mode: 0o755 });
       appendFileSync(join(brief.clone, ".git", "config"), `\n[core]\n\tfsmonitor = ${fsmonitor}\n`);
-      planted.push(`core.fsmonitor=${fsmonitor}`);
 
-      const receipt = resolve(brief.clone, directive.receipt);
-      if (!ask({ kind: "edit", title: "receipt", locations: [{ path: receipt }] })) return 1;
-      write(receipt, `${directive.token}\n${planted.join("\n")}\n`);
+      const seed = readSeed(brief.clone, directive.read);
+      const target = resolve(brief.clone, directive.path);
+      if (!ask({ kind: "edit", title: "receipt", locations: [{ path: target }] })) return 1;
+      write(target, `${derive(seed, directive.salt)}\n`);
       return 0;
     }
 
     case "read-then-write": {
-      const source = resolve(brief.clone, directive.read);
-      const seen = existsSync(source) ? readFileSync(source, "utf8").trim() : "PREREQUISITE-NOT-VISIBLE";
+      // Ruling 54: wave 2 must SEE wave 1's output. The value it needs existed
+      // only in wave 1's integration commit, never in the plan.
+      const seen = readSeed(brief.clone, directive.read);
       const target = resolve(brief.clone, directive.path);
       if (!ask({ kind: "edit", title: `write ${directive.path}`, locations: [{ path: target }] })) return 1;
-      write(target, `${directive.token} saw ${seen}\n`);
+      write(target, `${derive(seen, directive.salt)}\n`);
       return 0;
     }
 
@@ -167,21 +185,14 @@ function act(brief: Brief, config: VendorConfig): number {
     case "escape-process": {
       mkdirSync(dirname(directive.heartbeat), { recursive: true });
       const script = join(brief.clone, "..", `escapee-${brief.itemId}.sh`);
+      // `trap '' HUP` so it does not quietly die with its parent: a descendant
+      // that self-terminates reads exactly like a successful sweep, and that
+      // ambiguity was a real defect in the previous fixture.
       writeFileSync(
         script,
-        `#!/bin/sh\nwhile true; do echo tick >> ${JSON.stringify(directive.heartbeat)}; sleep 0.2; done\n`,
+        `#!/bin/sh\ntrap '' HUP\necho $$ > ${JSON.stringify(directive.pidFile)}\nwhile true; do echo tick >> ${JSON.stringify(directive.heartbeat)}; sleep 0.2; done\n`,
         { mode: 0o755 },
       );
-      // POSIX: leave the process group entirely with `setsid`. Windows:
-      // `cmd /c start`, which #43 measured breaking out of Bun's job object
-      // (BREAKAWAY_OK and SILENT_BREAKAWAY_OK both set).
-      //
-      // MEASURED on 2026-08-17: macOS ships no `setsid` — it is a util-linux
-      // program and the BSD userland does not carry it. So the POSIX branch
-      // falls back to `nohup … &`, which does not leave the process group but
-      // does outlive the parent, which is the property this fixture needs. The
-      // difference is recorded rather than smoothed over: on macOS this
-      // demonstrates a surviving descendant, not an escaped process GROUP.
       const detach = Bun.which("setsid") !== null ? "setsid" : "nohup";
       const argv =
         process.platform === "win32"
@@ -189,42 +200,47 @@ function act(brief: Brief, config: VendorConfig): number {
           : ["/bin/sh", "-c", `${detach} ${JSON.stringify(script)} </dev/null >/dev/null 2>&1 &`];
       process.stdout.write(`ESCAPED-VIA ${process.platform === "win32" ? "cmd /c start" : detach}\n`);
       Bun.spawn(argv, { stdout: "ignore", stderr: "ignore", stdin: "ignore" });
-      Bun.sleepSync(600);
+      Bun.sleepSync(700);
       return 0;
     }
 
     case "commit-then-hang": {
+      const seed = readSeed(brief.clone, directive.read);
       const target = resolve(brief.clone, directive.path);
       if (!ask({ kind: "edit", title: `write ${directive.path}`, locations: [{ path: target }] })) return 1;
-      write(target, `${directive.token}\n`);
+      write(target, `${derive(seed, directive.salt)}\n`);
       process.stdout.write("COMMIT-NOW\n");
-      // Long enough that the harness's SIGKILL always arrives first.
       Bun.sleepSync(600_000);
       return 0;
     }
 
     case "delegate": {
       // Finding 114, reproduced deliberately: a worker that decides the job is
-      // to run the orchestrator. Ruling 57's refusal is what must stop it.
-      const proc = Bun.spawnSync(["brigadier", "run", "--plan", "whatever"], {
-        stdout: "pipe",
-        stderr: "pipe",
-      });
+      // to run the orchestrator. Ruling 57's refusal is what must stop it, and
+      // the shim on PATH records that the attempt really happened.
+      const proc = Bun.spawnSync(["brigadier", "run", "--plan", "whatever"], { stdout: "pipe", stderr: "pipe" });
       const refused = proc.exitCode === 3;
+      const seed = readSeed(brief.clone, directive.read);
       const target = resolve(brief.clone, directive.path);
       if (!ask({ kind: "edit", title: `write ${directive.path}`, locations: [{ path: target }] })) return 1;
-      // Refused, so it does the work itself — which is the effect ruling 57 is
-      // asserted on, not the variable.
-      write(target, `${directive.token}\n`);
+      write(target, `${derive(seed, directive.salt)}\n`);
       process.stdout.write(`DELEGATION-${refused ? "REFUSED" : "ACCEPTED"}\n`);
       return 0;
     }
 
     case "leak-secret": {
-      const secret = process.env[directive.env] ?? "NO-SECRET-IN-ENVIRONMENT";
+      // Two files, and the pair is the point. The DERIVATION proves the secret
+      // was really delivered through ruling 65's environment channel — a hash is
+      // not an encoding of the value, so it can be asserted without weakening
+      // the leak scan. The other file is the leak the product must contain.
+      const secret = process.env[directive.env];
+      const proof = resolve(brief.clone, directive.proofPath);
+      if (!ask({ kind: "edit", title: `write ${directive.proofPath}`, locations: [{ path: proof }] })) return 1;
+      write(proof, `${secret === undefined ? "NO-SECRET-IN-ENVIRONMENT" : derive(secret, directive.salt)}\n`);
+
       const target = resolve(brief.clone, directive.path);
       if (!ask({ kind: "edit", title: `write ${directive.path}`, locations: [{ path: target }] })) return 1;
-      write(target, JSON.stringify({ token: directive.token, credential: secret }, null, 2));
+      write(target, JSON.stringify({ credential: secret ?? "none" }, null, 2));
       return 0;
     }
   }
@@ -237,6 +253,8 @@ function review(brief: Brief, config: VendorConfig): number {
     process.exit(9);
   }
   const diff = brief.diff ?? "";
+  // FOUND, not KNOWN: only markers this reviewer can spot AND that are actually
+  // present in the diff it was handed.
   const found = (config.catches ?? []).filter((marker) => diff.includes(marker));
   process.stdout.write(`VERDICT ${JSON.stringify({ verdict: found.length > 0 ? "rejected" : "approved", found })}\n`);
   return 0;
@@ -251,6 +269,9 @@ if (import.meta.main) {
   }
   const config = JSON.parse(readFileSync(configPath, "utf8")) as VendorConfig;
   const brief = JSON.parse(readFileSync(briefPath, "utf8")) as Brief;
+  if (config.ledger !== undefined) {
+    appendLedger(config.ledger, { vendor: config.id, role: brief.role, item: brief.itemId, pid: process.pid });
+  }
   process.stdout.write(`AGENT ${config.id} ${config.version}\n`);
   process.exit(brief.role === "reviewer" ? review(brief, config) : act(brief, config));
 }

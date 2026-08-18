@@ -161,6 +161,7 @@ const item: BarItem = {
     const probe = await probeFeature(ctx, ["run", "--plan", planPath, "--repo", repo, "--run-root", workRoot], {
       env,
       timeoutMs: 120_000,
+      evidence: (r) => r.code !== 0 && `${r.stdout}${r.stderr}`.trim().length > 0,
     });
     did.push(probe.transcript);
 

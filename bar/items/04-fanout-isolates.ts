@@ -54,12 +54,14 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Checks, excerpt } from "../lib/checks.ts";
+import { derive, nonce } from "../lib/derive.ts";
 import { gatherRunEvidence, insideTempRoot, proofOfWork } from "../lib/evidence.ts";
 import { probeFeature } from "../lib/feature.ts";
-import { isolatedPath, plantVendors } from "../lib/fixtures.ts";
+import { isolatedPath, plantFleet } from "../lib/fixtures.ts";
 import { ensureDir } from "../lib/fs.ts";
-import { captureRepo, diffRepo, makeRepo, newRefs } from "../lib/git.ts";
+import { captureRepo, diffRepo, makeRepo, newRefs, plantSeeds } from "../lib/git.ts";
 import { combine, noCredentialFreeChecks, type LiveHalf } from "../lib/halves.ts";
+import { runSampled } from "../lib/inflight.ts";
 import { disjointPlan, token, writePlan } from "../lib/plan.ts";
 import { baseEnv } from "../lib/proc.ts";
 import type { BarContext, BarItem, BarResult } from "../types.ts";
@@ -75,7 +77,10 @@ const item: BarItem = {
     const credentialFree = new Checks();
 
     const binDir = ensureDir(join(ctx.workdir, "bin"));
-    plantVendors(binDir, [{ id: "codex", version: "1.4.0" }, { id: "qwen", version: "0.21.13" }]);
+    plantFleet(binDir, join(ctx.workdir, "vendor-ledger.tsv"), [
+      { id: "codex", version: "1.4.0" },
+      { id: "qwen", version: "0.21.13" },
+    ]);
     const env = baseEnv({ PATH: isolatedPath(binDir) });
     const runs = ensureDir(join(ctx.workdir, "runs"));
 
@@ -99,7 +104,10 @@ const item: BarItem = {
     const clash = await probeFeature(
       ctx,
       ["run", "--plan", clashPlan, "--repo", clashRepo, "--run-root", join(ctx.workdir, "clash-runs")],
-      { env, timeoutMs: 120_000 },
+      // A REFUSAL is the positive evidence here: a non-zero exit that said
+      // something. Judging presence on "exited 0" would mark a correct refusal
+      // as a missing feature.
+      { env, timeoutMs: 120_000, evidence: (r) => r.code !== 0 && `${r.stdout}${r.stderr}`.trim().length > 0 },
     );
     const clashAfter = await captureRepo(clashRepo);
     did.push(`drove a two-items-one-path plan at ${clashPlan}: ${clash.transcript}`);
@@ -124,23 +132,46 @@ const item: BarItem = {
     }
 
     // ---- the real fan-out --------------------------------------------------
+    //
+    // Every nonce below lives ONLY in the repository's content, in a different
+    // placement each time. Ruling 33 carries the owner's uncommitted TRACKED and
+    // UNTRACKED work into each clone; ruling 50 keeps gitignored content out of
+    // the base commit entirely. A product that dropped any one of the three
+    // yields a wrong derivation, and a forger that reads the working tree gets
+    // the gitignored one WRONG in the opposite direction — it must be absent.
     const repo = join(ctx.workdir, "operator-repo");
-    await makeRepo(repo, { "README.md": "base\n", "tracked.txt": "committed\n" });
-    const uncommittedToken = token("uncommitted");
-    const untrackedToken = token("untracked");
-    writeFileSync(join(repo, "tracked.txt"), `${uncommittedToken}\n`);
-    writeFileSync(join(repo, "untracked.txt"), `${untrackedToken}\n`);
-    did.push(`built ${repo} with uncommitted TRACKED (${uncommittedToken}) and UNTRACKED (${untrackedToken}) work`);
+    await makeRepo(repo, { "README.md": "base\n" });
+    const alphaSeed = nonce("alpha-seed");
+    const betaSeed = nonce("beta-seed");
+    const ignoredSeed = nonce("ignored-seed");
+    await plantSeeds(repo, [
+      { path: "seeds/alpha.seed", value: alphaSeed, placement: "uncommitted-tracked" },
+      { path: "seeds/beta.seed", value: betaSeed, placement: "untracked" },
+      { path: "seeds/secret.seed", value: ignoredSeed, placement: "gitignored" },
+    ]);
+    did.push(
+      `built ${repo} with three nonces: one uncommitted-TRACKED, one UNTRACKED (ruling 33) and one GITIGNORED (ruling 50, which must NOT reach a clone)`,
+    );
 
-    const alphaToken = token("alpha");
-    const betaToken = token("beta");
     const readOnlyToken = token("read-only-leak");
-    const waveToken = token("wave2");
+    const alphaOut = derive(alphaSeed, "alpha");
     const planPath = writePlan(ctx.workdir, {
       version: 1,
       items: [
-        { id: "alpha", kind: "write", paths: ["alpha.txt"], prompt: "create alpha.txt", directive: { do: "write", path: "alpha.txt", token: alphaToken } },
-        { id: "beta", kind: "write", paths: ["beta.txt"], prompt: "create beta.txt", directive: { do: "write", path: "beta.txt", token: betaToken } },
+        {
+          id: "alpha",
+          kind: "write",
+          paths: ["alpha.txt"],
+          prompt: "derive alpha.txt from seeds/alpha.seed",
+          directive: { do: "derive-write", read: "seeds/alpha.seed", path: "alpha.txt", salt: "alpha" },
+        },
+        {
+          id: "beta",
+          kind: "write",
+          paths: ["beta.txt"],
+          prompt: "derive beta.txt from seeds/beta.seed",
+          directive: { do: "derive-write", read: "seeds/beta.seed", path: "beta.txt", salt: "beta" },
+        },
         {
           id: "reader",
           kind: "read-only",
@@ -149,16 +180,29 @@ const item: BarItem = {
           directive: { do: "write-anyway", path: "leaked.txt", token: readOnlyToken },
         },
         {
+          // Ruling 54: the value wave 2 needs existed ONLY in wave 1's
+          // integration commit. It is nowhere in the plan and nowhere in the
+          // repository, so a forger must chain the derivation in the right
+          // order from the right source.
           id: "wave2",
           kind: "write",
           paths: ["wave2.txt"],
           dependsOn: ["alpha"],
-          prompt: "read alpha.txt and write wave2.txt naming what you saw",
-          directive: { do: "read-then-write", read: "alpha.txt", path: "wave2.txt", token: waveToken },
+          prompt: "read alpha.txt — wave one's output — and derive wave2.txt from it",
+          directive: { do: "read-then-write", read: "alpha.txt", path: "wave2.txt", salt: "wave2" },
+        },
+        {
+          // The gitignored nonce. Ruling 50 keeps it out of the base commit, so
+          // this derivation must NOT be producible — and its absence is checked.
+          id: "ignored",
+          kind: "write",
+          paths: ["ignored.txt"],
+          prompt: "derive ignored.txt from seeds/secret.seed if you can reach it",
+          directive: { do: "derive-write", read: "seeds/secret.seed", path: "ignored.txt", salt: "ignored" },
         },
       ],
     });
-    did.push(`wrote a four-item plan at ${planPath}: two disjoint writes, one read-only that writes anyway, one dependsOn wave`);
+    did.push(`wrote a five-item plan at ${planPath}: two derivations, one read-only that writes anyway, one dependsOn wave, one reaching for gitignored content`);
 
     const before = await captureRepo(repo);
     did.push(
@@ -166,12 +210,11 @@ const item: BarItem = {
         `refs=${JSON.stringify(before.refs.trim())}, .git/index=${before.indexHash.slice(0, 12)}, tree=${before.treeHash.slice(0, 12)}`,
     );
 
-    const probe = await probeFeature(ctx, ["run", "--plan", planPath, "--repo", repo, "--run-root", runs], {
+    const probe = await probeFeature(ctx, ["run", "--plan", planPath, "--repo", repo, "--run-root", runs, "--dry-run"], {
       env,
-      timeoutMs: 300_000,
+      timeoutMs: 60_000,
     });
-    did.push(probe.transcript);
-    const after = await captureRepo(repo);
+    did.push(`admission probe: ${probe.transcript}`);
 
     let live: LiveHalf;
     if (!probe.present) {
@@ -183,30 +226,45 @@ const item: BarItem = {
     } else if (!ctx.live) {
       live = { kind: "skipped", why: "N clones and N workers require N drivable vendor agents" };
     } else {
-      const report = `${probe.result.stdout}${probe.result.stderr}`;
+      const sampled = await runSampled([ctx.binary, "run", "--plan", planPath, "--repo", repo, "--run-root", runs], {
+        cwd: ctx.workdir,
+        env,
+        runRoot: runs,
+        timeoutMs: 300_000,
+      });
+      did.push(
+        `ran the plan while sampling: ${sampled.flight.samples} samples, peak ${sampled.flight.peakConcurrentClones} concurrent clones, peak ${sampled.flight.peakMarkedProcesses} marked processes`,
+      );
+      const report = `${sampled.stdout}${sampled.stderr}`;
+      const after = await captureRepo(repo);
       const evidence = await gatherRunEvidence(repo, report);
       const checks = new Checks();
 
       const expected = new Map([
-        ["alpha.txt", alphaToken],
-        ["beta.txt", betaToken],
-        ["wave2.txt", waveToken],
-        // Ruling 33: the owner's uncommitted work reached the workers.
-        ["tracked.txt", uncommittedToken],
-        ["untracked.txt", untrackedToken],
+        ["alpha.txt", alphaOut],
+        ["beta.txt", derive(betaSeed, "beta")],
+        ["wave2.txt", derive(alphaOut, "wave2")],
       ]);
-      for (const row of proofOfWork(evidence, { expected, itemIds: ["alpha", "beta", "wave2"] }).rows) {
+      for (const row of proofOfWork(evidence, {
+        expected,
+        itemIds: ["alpha", "beta", "wave2"],
+        flight: sampled.flight,
+        expectedWorkers: 4,
+      }).rows) {
         checks.expect(row.name, row.ok, row.detail);
       }
 
-      // Ruling 54: the wave saw its prerequisite, proved by the prerequisite's
-      // token appearing inside the dependent's file rather than by an ordering
-      // claim in a report.
-      const wave = evidence.files.get("wave2.txt") ?? "";
+      // Ruling 50: the gitignored nonce never reached a clone, so its derivation
+      // cannot exist. A forger reading the working tree produces it and fails
+      // here; a product that put gitignored content in the base commit does too.
+      const forbidden = derive(ignoredSeed, "ignored");
+      const leakedIgnored = [...evidence.files.entries()].filter(([, body]) => body.includes(forbidden));
       checks.expect(
-        "a dependsOn wave SAW its prerequisite's output",
-        wave.includes(alphaToken),
-        `wave2.txt (from the object store): ${excerpt(wave, 120)} — must contain alpha's token ${alphaToken}`,
+        "gitignored content never reached a clone, so its derivation cannot exist (ruling 50)",
+        leakedIgnored.length === 0,
+        leakedIgnored.length === 0
+          ? "no path in the merged tree carries a derivation of the gitignored nonce"
+          : `${leakedIgnored.map(([p]) => p).join(", ")} carries it — either the base commit included gitignored content, or the value was computed from the working tree rather than from a clone`,
       );
 
       // Ruling 49: the read-only item's directory is never read back.
@@ -257,10 +315,12 @@ const item: BarItem = {
       const singlePath = writePlan(ctx.workdir, single.plan, "solo.json");
       const soloRepo = join(ctx.workdir, "solo-repo");
       await makeRepo(soloRepo, { "README.md": "base\n" });
+      await plantSeeds(soloRepo, single.seeds);
       const solo = await ctx.run(["run", "--plan", singlePath, "--repo", soloRepo, "--run-root", runs, "--dry-run"], { env });
 
       const many = disjointPlan(6, "many");
       const manyPath = writePlan(ctx.workdir, many.plan, "many.json");
+      await plantSeeds(soloRepo, many.seeds);
       const capped = await ctx.run(
         ["run", "--plan", manyPath, "--repo", soloRepo, "--run-root", runs, "--dry-run", "--max-workers", "2"],
         { env },

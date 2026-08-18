@@ -118,6 +118,20 @@ export function renderRow(row: CompetenceRow): string {
  */
 export const UNRANKED = Number.NEGATIVE_INFINITY;
 
+/**
+ * How an unranked row renders: `unranked` where the score would be, with its
+ * class and citation intact.
+ *
+ * The word is printed rather than a number, a dash or a blank, because all three
+ * of those read as "zero" and zero sorts like a bad model rather than an unknown
+ * one — which is the confusion finding 87 was made of. The row is still a row:
+ * eligible, sorted last, and NAMED.
+ */
+export function renderRanked(row: CompetenceRow, known: ReadonlySet<string>): string {
+  if (known.has(`${row.agent}/${row.model}`)) return renderRow(row);
+  return `${row.agent}/${row.model} ${row.role}: unranked (${row.evidence}: ${row.citation})`;
+}
+
 export function rank(rows: readonly CompetenceRow[], known: ReadonlySet<string>): CompetenceRow[] {
   return [...rows].sort((a, b) => {
     const sa = known.has(`${a.agent}/${a.model}`) ? a.score : UNRANKED;

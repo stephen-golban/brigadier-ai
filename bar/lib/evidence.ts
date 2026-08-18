@@ -30,6 +30,7 @@ import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { Checks, excerpt } from "./checks.ts";
 import { parseRecord, recordPathFrom, type RunRecord } from "./contract.ts";
+import { RUN_MARKER_FLAG, type Flight } from "./inflight.ts";
 import { exec } from "./proc.ts";
 
 async function git(repo: string, args: string[]): Promise<{ ok: boolean; out: string; err: string }> {
@@ -141,8 +142,23 @@ export interface RunEvidence {
   refType: string | undefined;
   fsckProblems: string;
   subjects: string[];
+  /** Ruling 51: integration MERGES; a chain of single-parent commits is not one. */
+  mergeParents: Array<{ sha: string; parents: string[] }>;
   files: Map<string, string>;
   refsAfter: string[];
+}
+
+/** Every commit on `ref` with its parents, so the history's SHAPE can be read. */
+export async function historyShape(repo: string, ref: string): Promise<Array<{ sha: string; parents: string[] }>> {
+  const result = await exec(["git", "rev-list", "--parents", ref], { cwd: repo, timeoutMs: 60_000 });
+  if (result.code !== 0) return [];
+  return result.stdout
+    .split("\n")
+    .filter((l) => l.trim().length > 0)
+    .map((line) => {
+      const [sha = "", ...parents] = line.trim().split(/\s+/);
+      return { sha, parents };
+    });
 }
 
 /**
@@ -159,6 +175,7 @@ export async function gatherRunEvidence(repo: string, report: string): Promise<R
   const ref = record?.integrationRef;
   const refSha = ref ? await revParse(repo, ref) : undefined;
 
+  const shape = ref && refSha ? await historyShape(repo, ref) : [];
   return {
     report,
     recordPath,
@@ -168,16 +185,31 @@ export async function gatherRunEvidence(repo: string, report: string): Promise<R
     refType: refSha ? await objectType(repo, refSha) : undefined,
     fsckProblems: await fsck(repo),
     subjects: ref && refSha ? await commitSubjects(repo, ref) : [],
+    mergeParents: shape.filter((c) => c.parents.length >= 2),
     files: ref && refSha ? await treeFiles(repo, ref) : new Map(),
     refsAfter: await refList(repo),
   };
 }
 
 export interface WorkExpectation {
-  /** Path → the exact token the plan asked a worker to write. Generated per run. */
+  /**
+   * Path → the value the merged tree must carry.
+   *
+   * DERIVED, never handed over. The previous version put this value in the plan
+   * and then asked for it back, which reduced the whole spine to an echo plus
+   * `commit-tree`; the values here are hashes of nonces that exist only inside
+   * the clone.
+   */
   expected: Map<string, string>;
   /** Plan item ids that must appear as commits in the integration history. */
   itemIds: string[];
+  /**
+   * In-flight facts, where the item sampled them. A residue can be constructed
+   * at leisure; a live process tree cannot.
+   */
+  flight?: Flight;
+  /** How many workers really had to exist. Checked against the process table. */
+  expectedWorkers?: number;
 }
 
 /**
@@ -213,6 +245,19 @@ export function proofOfWork(e: RunEvidence, expect: WorkExpectation): Checks {
     expect.itemIds.length > 0 && missingCommits.length === 0,
     `expected ${expect.itemIds.join(", ")}; git log --format=%s gave ${e.subjects.join(" | ") || "nothing"}`,
   );
+  // Ruling 51: integration is a MERGE of work done elsewhere, not a commit made
+  // on the spot. A forger that hashes the answers and chains single-parent
+  // commits produces a history with the right subjects and the wrong shape, so
+  // the parents are read rather than assumed.
+  checks.expect(
+    "each integration commit MERGES a second parent — work done in a clone",
+    e.mergeParents.length >= expect.itemIds.length &&
+      e.mergeParents.every((p) => p.parents.length >= 2) &&
+      e.mergeParents.every((p) => p.parents.length === new Set(p.parents).size),
+    e.mergeParents.length === 0
+      ? "no integration commit had more than one parent — nothing was merged in"
+      : e.mergeParents.map((p) => `${p.sha.slice(0, 8)} <- ${p.parents.length} parent(s)`).join("; "),
+  );
 
   // The bytes. These tokens are generated after the binary was built, so they
   // cannot be baked in, and they are reachable only through the object store.
@@ -236,6 +281,41 @@ export function proofOfWork(e: RunEvidence, expect: WorkExpectation): Checks {
     runRoot !== undefined && insideTempRoot(runRoot) === undefined,
     runRoot === undefined ? "the record names no run root" : (insideTempRoot(runRoot) ?? `${runRoot} is outside /tmp and $TMPDIR`),
   );
+
+  // The in-flight half. Everything above can be constructed at leisure by
+  // something that never cloned and never spawned; none of this can.
+  const flight = expect.flight;
+  if (flight !== undefined) {
+    const wanted = expect.expectedWorkers ?? expect.itemIds.length;
+    checks.expect(
+      "clones really existed while the run was in flight",
+      flight.clonesSeen.size > 0,
+      `${flight.samples} samples taken during the run; clone directories seen: ${[...flight.clonesSeen.keys()].join(", ") || "NONE — nothing was ever cloned"}`,
+    );
+    // Only clones ever OBSERVED as repositories are judged: a directory caught
+    // mid-`git clone` is the sampler's luck, not the product's behaviour.
+    const settled = [...flight.clonesSeen.values()].filter((c) => c.isGitRepo);
+    const bad = settled.filter((c) => !c.originRemoved || !c.hasBaseRef);
+    checks.expect(
+      "each clone was a real git repository with `origin` removed and the base commit present",
+      settled.length > 0 && bad.length === 0,
+      settled.length === 0
+        ? "no directory under the run root was ever a git repository"
+        : `${settled.length} settled clone(s); non-conforming: ${bad.map((c) => `${c.path} origin-removed=${c.originRemoved} base=${c.hasBaseRef}`).join("; ") || "none"}`,
+    );
+    checks.expect(
+      "processes carrying ruling 38's COMMAND-LINE marker really ran",
+      flight.peakMarkedProcesses > 0,
+      `peak processes carrying ${RUN_MARKER_FLAG}: ${flight.peakMarkedProcesses}; command lines: ${flight.markedCommandLines.slice(0, 3).join(" | ") || "none"}`,
+    );
+    if (wanted > 1) {
+      checks.expect(
+        `at least 2 clones existed CONCURRENTLY (${wanted} items fanned out)`,
+        flight.peakConcurrentClones >= 2,
+        `peak concurrent clone directories: ${flight.peakConcurrentClones} across ${flight.samples} samples — "N clones existed in total" is not isolation`,
+      );
+    }
+  }
 
   return checks;
 }

@@ -1,0 +1,1414 @@
+{
+  "javascriptcore-webkit": {
+    "measuredOn": "2026-08-17",
+    "measuredWith": "git 2.50.1 (Apple Git-155) and bun 1.3.14",
+    "repo": "https://github.com/oven-sh/WebKit",
+    "revision": "5488984d20e0dbfe4be2c3ba8fb18eb81a5e0e8b",
+    "headerBytes": 8192,
+    "populations": [
+      {
+        "path": "Source/JavaScriptCore",
+        "files": 3785,
+        "byClass": {
+          "BSD-2-Clause": 3264,
+          "unclassified": 209,
+          "LGPL": 201,
+          "BSD-3-Clause": 105,
+          "MIT-like": 5,
+          "Apache-2.0": 1
+        }
+      },
+      {
+        "path": "Source/WTF",
+        "files": 1126,
+        "byClass": {
+          "BSD-2-Clause": 690,
+          "unclassified": 237,
+          "LGPL": 101,
+          "BSD-3-Clause": 83,
+          "MIT-like": 8,
+          "Apache-2.0": 7
+        }
+      }
+    ],
+    "totals": {
+      "BSD-2-Clause": 3954,
+      "unclassified": 446,
+      "LGPL": 302,
+      "BSD-3-Clause": 188,
+      "MIT-like": 13,
+      "Apache-2.0": 8
+    },
+    "orLater": {
+      "lgplFiles": 302,
+      "sayingOrLater": 297,
+      "without": [
+        "Source/JavaScriptCore/API/glib/docs/jsc.toml.in",
+        "Source/JavaScriptCore/COPYING.LIB",
+        "Source/JavaScriptCore/runtime/JSDateMath.h",
+        "Source/WTF/wtf/DateMath.h",
+        "Source/WTF/wtf/text/Base64.cpp"
+      ]
+    },
+    "holders": [
+      {
+        "class": "Apache-2.0",
+        "holder": "The Abseil Authors.",
+        "files": 3
+      },
+      {
+        "class": "Apache-2.0",
+        "holder": "The fast_float authors",
+        "files": 1
+      },
+      {
+        "class": "Apache-2.0",
+        "holder": "Vector 35 Inc.",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Apple Inc. All rights reserved.",
+        "files": 3627
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Yusuke Suzuki <utatane.tea@gmail.com>.",
+        "files": 110
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Sony Interactive Entertainment Inc.",
+        "files": 76
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Igalia S.L.",
+        "files": 69
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Apple, Inc. All rights reserved.",
+        "files": 57
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "University of Washington. All rights reserved.",
+        "files": 55
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Sosuke Suzuki <aosukeke@gmail.com>.",
+        "files": 46
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Google Inc. All rights reserved.",
+        "files": 44
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Yusuke Suzuki <utatane.tea@gmail.com>",
+        "files": 32
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Andy VanWagoner (andy@vanwagoner.family)",
+        "files": 26
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Oleksandr Skachkov <gskachkov@gmail.com>.",
+        "files": 20
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "the V8 project authors. All rights reserved.",
+        "files": 19
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Canon Inc. All rights reserved.",
+        "files": 18
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Igalia S.L. All rights reserved.",
+        "files": 18
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Patrick Gansterer <paroga@paroga.com>",
+        "files": 12
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Research In Motion Limited. All rights reserved.",
+        "files": 11
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Samuel Weinig <sam@webkit.org>",
+        "files": 11
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Tetsuharu Ohzeki <tetsuharu.ohzeki@gmail.com>.",
+        "files": 11
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Torch Mobile, Inc.",
+        "files": 11
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Igalia S.A. All rights reserved.",
+        "files": 10
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "University of Szeged",
+        "files": 10
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Yusuke Suzuki <yusukesuzuki@slowstart.org>.",
+        "files": 10
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Caitlin Potter <caitp@igalia.com>.",
+        "files": 9
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Alexey Shvayka <shvaikalesh@gmail.com>.",
+        "files": 7
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Anthropic PBC.",
+        "files": 7
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Caio Lima <ticaiolima@gmail.com>.",
+        "files": 7
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Igalia, S.L. All rights reserved.",
+        "files": 7
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Metrological Group B.V.",
+        "files": 6
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Caio Lima <ticaiolima@gmail.com>",
+        "files": 5
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Codeblog CORP.",
+        "files": 5
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Gabor Loki <loki@webkit.org>",
+        "files": 5
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Google, Inc. All rights reserved.",
+        "files": 5
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "The Chromium Authors. All rights reserved.",
+        "files": 5
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Apple Inc.",
+        "files": 4
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Apple Inc. All Rights Reserved.",
+        "files": 4
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Comcast Inc.",
+        "files": 4
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Motorola Mobility, Inc. All rights reserved.",
+        "files": 4
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Peter Varga (pvarga@inf.u-szeged.hu), University of Szeged",
+        "files": 4
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Saam Barati. <saambarati1@gmail.com>",
+        "files": 4
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Samsung Electronics. All rights reserved.",
+        "files": 4
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Sukolsak Sakshuwong (sukolsak@gmail.com)",
+        "files": 4
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "University of Szeged. All rights reserved.",
+        "files": 4
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Eric Seidel <eric@webkit.org>",
+        "files": 3
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Igalia, S.L.",
+        "files": 3
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Jarred Sumner. All rights reserved.",
+        "files": 3
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Justin Haygood (jhaygood@reaktix.com)",
+        "files": 3
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Leaning Technologies Inc. All rights reserved.",
+        "files": 3
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Renata Hodovan (hodovan@inf.u-szeged.hu)",
+        "files": 3
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Alp Toker <alp@atoker.com>",
+        "files": 2
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Colin Vidal <colin@cvidal.org> All rights reserved.",
+        "files": 2
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Devin Rousso <webkit@devinrousso.com>.",
+        "files": 2
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Devin Rousso <webkit@devinrousso.com>. All rights reserved.",
+        "files": 2
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Dominic Szablewski (dominic@phoboslab.org)",
+        "files": 2
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Google Inc.",
+        "files": 2
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Haiku, inc",
+        "files": 2
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Igalia S. L.",
+        "files": 2
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Kelvin W Sherlock (ksherlock@gmail.com)",
+        "files": 2
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Konstantin Tokavev <annulen@yandex.ru>",
+        "files": 2
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "mce sys Ltd. All rights reserved.",
+        "files": 2
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Raspberry Pi Foundation. All rights reserved.",
+        "files": 2
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Red Hat Inc.",
+        "files": 2
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Saam Barati <saambarati1@gmail.com>. All rights reserved.",
+        "files": 2
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Sony Interactive Entertainment Inc. All rights reserved.",
+        "files": 2
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Torch Mobile Inc. All rights reserved. (http://www.torchmobile.com/)",
+        "files": 2
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Yusuke Suzuki <utatane.tea@gmail.com>. All rights reserved.",
+        "files": 2
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "#{Date.today.year} Apple Inc. All rights reserved.",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Alexey Proskuryakov <ap@webkit.org>",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Andrew Bortz. All rights reserved.",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Andrzej Krzemienski.",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Andy VanWagoner <andy@vanwagoner.family>.",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Apple Inc. and the Swift project authors",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Block = (",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "by Sun Microsystems, Inc. All rights reserved.",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Collabora Ltd.",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Daniil Goncharov <neargye@gmail.com>.",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Digia Plc. and/or its subsidiary(-ies)",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Facebook Inc.",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Georgia Institute of Technology",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Google LLC",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Ian Grunert <ian.grunert@gmail.com>",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Intel Corporation. All rights reserved.",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Jan-Michael Brummer <jan.brummer@tabos.org>",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Jordan Harband. All rights reserved.",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Keita Nonaka",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Konstantin Tokarev <annulen@yandex.ru>",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Leonardo Taccari <leot@NetBSD.org>.",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Mathias Bynens (mathias@qiwi.be)",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Michael Park, 2015-2017",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Nokia Corporation and/or its subsidiary(-ies)",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Nokia Corporation and/or its subsidiary(-ies).",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Oleksandr Skachkov (gskachkov@gmail.com)",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Oleksandr Skachkov <gskackhov@gmail.com>.",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Peter Varga (pvarga@webkit.org), University of Szeged",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Radford M. Neal",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "SONY Interactive Entertainment Inc. All rights reserved.",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Sony Network Entertainment. All rights reserved.",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Stephan Aßmus <superstippi@gmx.de>",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "The bytecount Developers",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "the Dart project authors. Please see the AUTHORS file [1]",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "The Go Authors. All rights reserved.",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "The Rust Project Developers.",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "University of Washington.",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "University of Washington. All",
+        "files": 1
+      },
+      {
+        "class": "BSD-2-Clause",
+        "holder": "Yusuke Suzuki <yusuke.suzuki@sslab.ics.keio.ac.jp>",
+        "files": 1
+      },
+      {
+        "class": "BSD-3-Clause",
+        "holder": "Apple Inc. All rights reserved.",
+        "files": 158
+      },
+      {
+        "class": "BSD-3-Clause",
+        "holder": "Google Inc. All rights reserved.",
+        "files": 46
+      },
+      {
+        "class": "BSD-3-Clause",
+        "holder": "Cameron Zwarich <cwzwarich@uwaterloo.ca>",
+        "files": 23
+      },
+      {
+        "class": "BSD-3-Clause",
+        "holder": "the V8 project authors. All rights reserved.",
+        "files": 20
+      },
+      {
+        "class": "BSD-3-Clause",
+        "holder": "Matt Lilek <webkit@mattlilek.com>",
+        "files": 4
+      },
+      {
+        "class": "BSD-3-Clause",
+        "holder": "Collabora, Ltd. All rights reserved.",
+        "files": 3
+      },
+      {
+        "class": "BSD-3-Clause",
+        "holder": "Justin Haygood (jhaygood@reaktix.com)",
+        "files": 3
+      },
+      {
+        "class": "BSD-3-Clause",
+        "holder": "Research In Motion Limited. All rights reserved.",
+        "files": 3
+      },
+      {
+        "class": "BSD-3-Clause",
+        "holder": "Yusuke Suzuki <utatane.tea@gmail.com>",
+        "files": 3
+      },
+      {
+        "class": "BSD-3-Clause",
+        "holder": "Apple, Inc. All rights reserved.",
+        "files": 2
+      },
+      {
+        "class": "BSD-3-Clause",
+        "holder": "Igalia S.L.",
+        "files": 2
+      },
+      {
+        "class": "BSD-3-Clause",
+        "holder": "Igalia, S.L.",
+        "files": 2
+      },
+      {
+        "class": "BSD-3-Clause",
+        "holder": "Justin Haygood <jhaygood@reaktix.com>",
+        "files": 2
+      },
+      {
+        "class": "BSD-3-Clause",
+        "holder": "Sony Interactive Entertainment Inc.",
+        "files": 2
+      },
+      {
+        "class": "BSD-3-Clause",
+        "holder": "University of Washington. All rights reserved.",
+        "files": 2
+      },
+      {
+        "class": "BSD-3-Clause",
+        "holder": "Cameron Zwarich (cwzwarich@uwaterloo.ca)",
+        "files": 1
+      },
+      {
+        "class": "BSD-3-Clause",
+        "holder": "Canon Inc. All rights reserved.",
+        "files": 1
+      },
+      {
+        "class": "BSD-3-Clause",
+        "holder": "Google Inc.",
+        "files": 1
+      },
+      {
+        "class": "BSD-3-Clause",
+        "holder": "Haiku, Inc. All rights reserved.",
+        "files": 1
+      },
+      {
+        "class": "BSD-3-Clause",
+        "holder": "International Business Machines Corporation and others",
+        "files": 1
+      },
+      {
+        "class": "BSD-3-Clause",
+        "holder": "Jian Li <jianli@chromium.org>",
+        "files": 1
+      },
+      {
+        "class": "BSD-3-Clause",
+        "holder": "Konstantin Tokavev <annulen@yandex.ru>",
+        "files": 1
+      },
+      {
+        "class": "BSD-3-Clause",
+        "holder": "Microsoft Corporation. All rights reserved.",
+        "files": 1
+      },
+      {
+        "class": "BSD-3-Clause",
+        "holder": "Oracle and/or its affiliates. All rights reserved.",
+        "files": 1
+      },
+      {
+        "class": "BSD-3-Clause",
+        "holder": "Patrick Gansterer <paroga@paroga.com>",
+        "files": 1
+      },
+      {
+        "class": "BSD-3-Clause",
+        "holder": "Sosuke Suzuki <aosukeke@gmail.com>.",
+        "files": 1
+      },
+      {
+        "class": "BSD-3-Clause",
+        "holder": "Tetsuharu Ohzeki <tetsuharu.ohzeki@gmail.com>.",
+        "files": 1
+      },
+      {
+        "class": "BSD-3-Clause",
+        "holder": "Torch Mobile Inc. All rights reserved.",
+        "files": 1
+      },
+      {
+        "class": "BSD-3-Clause",
+        "holder": "Torch Mobile, Inc.",
+        "files": 1
+      },
+      {
+        "class": "BSD-3-Clause",
+        "holder": "Unicode, Inc. All rights reserved.",
+        "files": 1
+      },
+      {
+        "class": "BSD-3-Clause",
+        "holder": "University of Illinois at Urbana-Champaign.",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Apple Inc. All rights reserved.",
+        "files": 243
+      },
+      {
+        "class": "LGPL",
+        "holder": "Harri Porten (porten@kde.org)",
+        "files": 135
+      },
+      {
+        "class": "LGPL",
+        "holder": "Igalia S.L.",
+        "files": 46
+      },
+      {
+        "class": "LGPL",
+        "holder": "Peter Kelly (pmk@post.com)",
+        "files": 37
+      },
+      {
+        "class": "LGPL",
+        "holder": "Maks Orlovich",
+        "files": 11
+      },
+      {
+        "class": "LGPL",
+        "holder": "Cameron Zwarich (cwzwarich@uwaterloo.ca)",
+        "files": 10
+      },
+      {
+        "class": "LGPL",
+        "holder": "Google Inc. All rights reserved.",
+        "files": 10
+      },
+      {
+        "class": "LGPL",
+        "holder": "Eric Seidel <eric@webkit.org>",
+        "files": 9
+      },
+      {
+        "class": "LGPL",
+        "holder": "Igalia, S.L.",
+        "files": 9
+      },
+      {
+        "class": "LGPL",
+        "holder": "Torch Mobile, Inc.",
+        "files": 9
+      },
+      {
+        "class": "LGPL",
+        "holder": "Patrick Gansterer <paroga@paroga.com>",
+        "files": 8
+      },
+      {
+        "class": "LGPL",
+        "holder": "the V8 project authors. All rights reserved.",
+        "files": 4
+      },
+      {
+        "class": "LGPL",
+        "holder": "Alexey Proskuryakov (ap@nypop.com)",
+        "files": 3
+      },
+      {
+        "class": "LGPL",
+        "holder": "Eric Seidel (eric@webkit.org)",
+        "files": 3
+      },
+      {
+        "class": "LGPL",
+        "holder": "Research In Motion Limited. All rights reserved.",
+        "files": 3
+      },
+      {
+        "class": "LGPL",
+        "holder": "&yet, LLC. (nate@andyet.net)",
+        "files": 2
+      },
+      {
+        "class": "LGPL",
+        "holder": "Alexey Proskuryakov <ap@webkit.org>",
+        "files": 2
+      },
+      {
+        "class": "LGPL",
+        "holder": "Alp Toker <alp@atoker.com>",
+        "files": 2
+      },
+      {
+        "class": "LGPL",
+        "holder": "Igalia S.L. All rights reserved.",
+        "files": 2
+      },
+      {
+        "class": "LGPL",
+        "holder": "Igalia, S.L. All rights reserved.",
+        "files": 2
+      },
+      {
+        "class": "LGPL",
+        "holder": "Lars Knoll (knoll@kde.org)",
+        "files": 2
+      },
+      {
+        "class": "LGPL",
+        "holder": "Martin Robinson",
+        "files": 2
+      },
+      {
+        "class": "LGPL",
+        "holder": "Metrological Group B.V.",
+        "files": 2
+      },
+      {
+        "class": "LGPL",
+        "holder": "Peter Varga (pvarga@inf.u-szeged.hu), University of Szeged",
+        "files": 2
+      },
+      {
+        "class": "LGPL",
+        "holder": "Samuel Weinig <sam.weinig@gmail.com>",
+        "files": 2
+      },
+      {
+        "class": "LGPL",
+        "holder": "Sony Interactive Entertainment Inc.",
+        "files": 2
+      },
+      {
+        "class": "LGPL",
+        "holder": "Sosuke Suzuki <aosukeke@gmail.com>.",
+        "files": 2
+      },
+      {
+        "class": "LGPL",
+        "holder": "Tetsuharu Ohzeki <tetsuharu.ohzeki@gmail.com>.",
+        "files": 2
+      },
+      {
+        "class": "LGPL",
+        "holder": "Torch Mobile, Inc. All rights reserved.",
+        "files": 2
+      },
+      {
+        "class": "LGPL",
+        "holder": "Yusuke Suzuki <utatane.tea@gmail.com>.",
+        "files": 2
+      },
+      {
+        "class": "LGPL",
+        "holder": "Zoltan Herczeg (zherczeg@inf.u-szeged.hu)",
+        "files": 2
+      },
+      {
+        "class": "LGPL",
+        "holder": "Acision BV. All rights reserved.",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Anders Carlsson <andersca@mac.com>",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Andrew Wellington (proton@wiretapped.net)",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Apple Inc. All rights reserved",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Apple, Inc.",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Benjamin Poulain <ikipou@gmail.com>",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Bjoern Graf (bjoern.graf@gmail.com)",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Cameron McCormack <cam@mcc.id.au>",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Canon Inc. All rights reserved.",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Collabora Ltd.",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Collabora, Ltd.",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "David Levin <levin@chromium.org>",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Dawit Alemayehu <adawit@kde.org>",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Ericsson AB. All rights reserved.",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Free Software Foundation, Inc.",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Gustavo Noronha Silva <gns@gnome.org>",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Holger Hans Peter Freyther",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Jan-Michael Brummer <jan.brummer@tabos.org>",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "John E. Bossom",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Jordan Harband (ljharb@gmail.com)",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Lars Knoll <lars@trolltech.com>",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Mathias Bynens (mathias@qiwi.be)",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Motorola Mobility, Inc. All rights reserved.",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Nikolas Zimmermann <zimmermann@kde.org>",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Nokia Corporation and/or its subsidiary(-ies)",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Nokia Corporation and/or its subsidiary(-ies).",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Patrick Gansterer <paroga@webkit.org>",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Pthreads-win32 contributors",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Research In Motion Limited 2009. All rights reserved.",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Research In Motion Limited 2010. All rights reserved.",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Samuel Weinig <sam@webkit.org>",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Torch Mobile (Beijing) Co. Ltd. All rights reserved.",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "University of Szeged. All rights reserved.",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Yusuke Suzuki<utatane.tea@gmail.com>. All rights reserved.",
+        "files": 1
+      },
+      {
+        "class": "MIT-like",
+        "holder": "Florian Bernd",
+        "files": 2
+      },
+      {
+        "class": "MIT-like",
+        "holder": "Joel Höner",
+        "files": 2
+      },
+      {
+        "class": "MIT-like",
+        "holder": "by the contributors listed in CREDITS.TXT",
+        "files": 1
+      },
+      {
+        "class": "MIT-like",
+        "holder": "Dave St.Germain",
+        "files": 1
+      },
+      {
+        "class": "MIT-like",
+        "holder": "Edouard Alligand and Joel Falcou",
+        "files": 1
+      },
+      {
+        "class": "MIT-like",
+        "holder": "Evan Nemerson <evan@nemerson.com>",
+        "files": 1
+      },
+      {
+        "class": "MIT-like",
+        "holder": "Joyent, Inc. and other Node contributors. All rights reserved.",
+        "files": 1
+      },
+      {
+        "class": "MIT-like",
+        "holder": "The simdutf authors",
+        "files": 1
+      }
+    ],
+    "notices": [
+      {
+        "files": 2941,
+        "example": "Source/JavaScriptCore/API/APICallbackFunction.h",
+        "text": "Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met: 1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer. 2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution. THIS SOFTWARE IS PROVIDED BY APPLE INC. ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."
+      },
+      {
+        "files": 935,
+        "example": "Source/JavaScriptCore/API/JSAPIWrapperObject.h",
+        "text": "Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met: 1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer. 2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution. THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."
+      },
+      {
+        "files": 129,
+        "example": "Source/JavaScriptCore/API/JSRetainPtr.h",
+        "text": "Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met: 1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer. 2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution. 3. Neither the name of Apple Inc. (\"Apple\") nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission. THIS SOFTWARE IS PROVIDED BY APPLE AND ITS CONTRIBUTORS \"AS IS\" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE OR ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."
+      },
+      {
+        "files": 55,
+        "example": "Source/JavaScriptCore/inspector/InjectedScript.cpp",
+        "text": "Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met: * Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer. * Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution. * Neither the name of Google Inc. nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission. THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."
+      },
+      {
+        "files": 26,
+        "example": "Source/JavaScriptCore/parser/generateLexerUnicodePropertyTables.py",
+        "text": "Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met: 1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer. 2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution. THIS SOFTWARE IS PROVIDED BY APPLE AND ITS CONTRIBUTORS \"AS IS\" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE OR ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."
+      },
+      {
+        "files": 14,
+        "example": "Source/WTF/wtf/dragonbox/detail/bits.h",
+        "text": "Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met: * Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer. * Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution. THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."
+      },
+      {
+        "files": 10,
+        "example": "Source/JavaScriptCore/runtime/RegExpCache.cpp",
+        "text": "Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met: 1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer. 2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution. THIS SOFTWARE IS PROVIDED BY UNIVERSITY OF SZEGED ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL UNIVERSITY OF SZEGED OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."
+      },
+      {
+        "files": 9,
+        "example": "Source/JavaScriptCore/API/JSTypedArray.cpp",
+        "text": "Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met: 1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer. 2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution. THIS SOFTWARE IS PROVIDED BY APPLE COMPUTER, INC. ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE COMPUTER, INC. OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."
+      },
+      {
+        "files": 6,
+        "example": "Source/WTF/wtf/CompactVariant.h",
+        "text": "Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met: 1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer. 2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution. THIS SOFTWARE IS PROVIDED BY APPLE INC. ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."
+      },
+      {
+        "files": 5,
+        "example": "Source/WTF/wtf/OSRandomSource.cpp",
+        "text": "Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met: 1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer. 2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution. THIS SOFTWARE IS PROVIDED BY GOOGLE, INC. ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."
+      },
+      {
+        "files": 3,
+        "example": "Source/WTF/icu/LICENSE",
+        "text": "Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met: Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution. Neither the name of Google Inc. nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission. THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."
+      },
+      {
+        "files": 2,
+        "example": "Source/JavaScriptCore/inspector/ContentSearchUtilities.cpp",
+        "text": "Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met: 1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer. 2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution. THIS SOFTWARE IS PROVIDED BY GOOGLE INC. AND ITS CONTRIBUTORS \"AS IS\" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL GOOGLE INC. OR ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."
+      },
+      {
+        "files": 2,
+        "example": "Source/WTF/wtf/UniStdExtras.h",
+        "text": "Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met: 1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer. 2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution. THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."
+      },
+      {
+        "files": 1,
+        "example": "Source/JavaScriptCore/inspector/InspectorTarget.cpp",
+        "text": "Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met: * Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer. * Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution. * Neither the name of Microsoft Corporation nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission. THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."
+      },
+      {
+        "files": 1,
+        "example": "Source/JavaScriptCore/Scripts/xxd.pl",
+        "text": "Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met: # Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer. # Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution. # Neither the name of Google Inc. nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission. THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."
+      },
+      {
+        "files": 1,
+        "example": "Source/JavaScriptCore/Scripts/UpdateContents.py",
+        "text": "Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met: 1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer. 2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution. 3. Neither the name of Apple, Inc. (\"Apple\") nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission. THIS SOFTWARE IS PROVIDED BY APPLE AND ITS CONTRIBUTORS \"AS IS\" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE OR ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."
+      },
+      {
+        "files": 1,
+        "example": "Source/JavaScriptCore/wasm/WasmIPIntPlan.cpp",
+        "text": "Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met: 1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer. 2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution. THIS SOFTWARE IS PROVIDED BY APPLE INC. ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHAIP APPLE INC. OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."
+      },
+      {
+        "files": 1,
+        "example": "Source/JavaScriptCore/wasm/debugger/WasmModuleDebugInfo.cpp",
+        "text": "Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met: 1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer. 2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution. THIS SOFTWARE IS PROVIDED BY APPLE INC. ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUARY DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."
+      },
+      {
+        "files": 1,
+        "example": "Source/JavaScriptCore/yarr/YarrPattern.cpp",
+        "text": "Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met: 1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer. 2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution. THIS SOFTWARE IS PROVIDED BY APPLE INC. ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."
+      },
+      {
+        "files": 1,
+        "example": "Source/JavaScriptCore/Scripts/tests/builtins/JavaScriptCore-InternalClashingNames-Combined.js",
+        "text": "Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met: 1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer. 2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution. THIS SOFTWARE IS PROVIDED BY CANON INC. ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL CANON INC. OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."
+      },
+      {
+        "files": 1,
+        "example": "Source/JavaScriptCore/wasm/generateWasmOMGIRGeneratorInlinesHeader.py",
+        "text": "Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:n 1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer. 2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution. THIS SOFTWARE IS PROVIDED BY APPLE AND ITS CONTRIBUTORS \"AS IS\" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE OR ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."
+      }
+    ],
+    "gplFiles": [],
+    "nestedLicenceFiles": [
+      "Source/JavaScriptCore/COPYING.LIB",
+      "Source/JavaScriptCore/disassembler/ARM64/LICENSE-binja.txt",
+      "Source/JavaScriptCore/disassembler/zydis/LICENSE-zycore.txt",
+      "Source/JavaScriptCore/disassembler/zydis/LICENSE-zydis.txt",
+      "Source/WTF/LICENSE-LLVM.txt",
+      "Source/WTF/LICENSE-dragonbox.txt",
+      "Source/WTF/LICENSE-libc++.txt",
+      "Source/WTF/LICENSE-simde.txt",
+      "Source/WTF/icu/LICENSE",
+      "Source/WTF/wtf/dtoa/COPYING",
+      "Source/WTF/wtf/dtoa/LICENSE",
+      "Source/WTF/wtf/fast_float/LICENSE",
+      "Source/WTF/wtf/simdutf/LICENSE-simdutf.txt"
+    ],
+    "unclassifiedByExtension": {
+      "h": 206,
+      "json": 87,
+      "json-error": 27,
+      "cmake": 22,
+      "(no extension)": 19,
+      "txt": 19,
+      "py": 10,
+      "js": 9,
+      "md": 8,
+      "sh": 6,
+      "cpp": 5,
+      "xcfilelist": 5,
+      "modulemap": 4,
+      "js-error": 3,
+      "xcscheme": 3,
+      "in": 2,
+      "pbxproj": 2,
+      "plist": 2,
+      "toml": 2,
+      "html": 1,
+      "pthreads-win32": 1,
+      "rb": 1,
+      "symlst": 1,
+      "table": 1
+    }
+  },
+  "tinycc": {
+    "measuredOn": "2026-08-17",
+    "measuredWith": "git 2.50.1 (Apple Git-155) and bun 1.3.14",
+    "repo": "https://github.com/oven-sh/tinycc",
+    "revision": "12882eee073cfe5c7621bcfadf679e1372d4537b",
+    "headerBytes": 8192,
+    "populations": [
+      {
+        "path": ".",
+        "files": 523,
+        "byClass": {
+          "unclassified": 487,
+          "LGPL": 28,
+          "GPL": 3,
+          "MIT-like": 3,
+          "Apache-2.0": 1,
+          "BSD-3-Clause": 1
+        }
+      }
+    ],
+    "totals": {
+      "unclassified": 487,
+      "LGPL": 28,
+      "GPL": 3,
+      "MIT-like": 3,
+      "Apache-2.0": 1,
+      "BSD-3-Clause": 1
+    },
+    "orLater": {
+      "lgplFiles": 28,
+      "sayingOrLater": 24,
+      "without": [
+        "COPYING",
+        "Changelog",
+        "README",
+        "win32/tcc-win32.txt"
+      ]
+    },
+    "holders": [
+      {
+        "class": "BSD-3-Clause",
+        "holder": "Zik Saleeba",
+        "files": 1
+      },
+      {
+        "class": "GPL",
+        "holder": "Free Software Foundation, Inc.",
+        "files": 2
+      },
+      {
+        "class": "GPL",
+        "holder": "Fabrice Bellard",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Fabrice Bellard",
+        "files": 16
+      },
+      {
+        "class": "LGPL",
+        "holder": "Free Software Foundation, Inc.",
+        "files": 3
+      },
+      {
+        "class": "LGPL",
+        "holder": "Daniel Glöckner",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Danny Milosavljevic",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Frédéric Feret (x86_64 support)",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "grischka",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Red Hat, Inc.",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Shinichiro Hamaji",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Thomas Preud'homme",
+        "files": 1
+      },
+      {
+        "class": "LGPL",
+        "holder": "Timppa",
+        "files": 1
+      },
+      {
+        "class": "MIT-like",
+        "holder": "Rich Felker, et al.",
+        "files": 1
+      },
+      {
+        "class": "MIT-like",
+        "holder": "Thomas Preud'homme",
+        "files": 1
+      }
+    ],
+    "notices": [
+      {
+        "files": 1,
+        "example": "tests/tests2/LICENSE",
+        "text": "Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met: Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution. Neither the name of the Zik Saleeba nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission. THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."
+      }
+    ],
+    "gplFiles": [
+      {
+        "path": "il-opcodes.h",
+        "linkingException": false
+      },
+      {
+        "path": "lib/libtcc1.c",
+        "linkingException": true
+      },
+      {
+        "path": "texi2pod.pl",
+        "linkingException": false
+      }
+    ],
+    "nestedLicenceFiles": [
+      "COPYING",
+      "tests/tests2/LICENSE"
+    ],
+    "unclassifiedByExtension": {
+      "c": 199,
+      "expect": 151,
+      "h": 106,
+      "(no extension)": 11,
+      "S": 9,
+      "def": 5,
+      "sh": 2,
+      "bat": 1,
+      "gitignore": 1,
+      "texi": 1,
+      "yml": 1
+    }
+  }
+}

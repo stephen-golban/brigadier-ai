@@ -29,9 +29,9 @@ import { join } from "node:path";
 import { Checks, excerpt } from "../lib/checks.ts";
 import { gatherRunEvidence, proofOfWork } from "../lib/evidence.ts";
 import { probeFeature } from "../lib/feature.ts";
-import { isolatedPath, plantVendors } from "../lib/fixtures.ts";
+import { isolatedPath, plantFleet } from "../lib/fixtures.ts";
 import { ensureDir } from "../lib/fs.ts";
-import { makeRepo } from "../lib/git.ts";
+import { makeRepo, plantSeeds } from "../lib/git.ts";
 import { combine, type LiveHalf } from "../lib/halves.ts";
 import { disjointPlan, writePlan } from "../lib/plan.ts";
 import { baseEnv } from "../lib/proc.ts";
@@ -51,20 +51,21 @@ const item: BarItem = {
 
     // Exactly one vendor on PATH. This is the machine under test.
     const binDir = ensureDir(join(ctx.workdir, "bin"));
-    plantVendors(binDir, [{ id: "codex", version: "1.4.0" }]);
+    plantFleet(binDir, join(ctx.workdir, "vendor-ledger.tsv"), [{ id: "codex", version: "1.4.0" }]);
     const env = baseEnv({ PATH: isolatedPath(binDir) });
     did.push(`planted exactly ONE fixture vendor at ${binDir} and gave the binary a PATH containing only it`);
 
     const repo = join(ctx.workdir, "repo");
     await makeRepo(repo, { "README.md": "base\n" });
     const plan = disjointPlan(1, "solo");
+    await plantSeeds(repo, plan.seeds);
     const planPath = writePlan(ctx.workdir, plan.plan);
 
     // ---- credential-free: the ladder is stated at ADMISSION -----------------
     const admission = await probeFeature(
       ctx,
       ["run", "--plan", planPath, "--repo", repo, "--run-root", join(ctx.workdir, "runs"), "--dry-run"],
-      { env, timeoutMs: 120_000 },
+      { env, timeoutMs: 120_000, evidence: (r) => r.code === 0 && /ladder|admitted/i.test(r.stdout) },
     );
     did.push(`admission pass on a one-vendor PATH: ${admission.transcript}`);
     const credentialFree = new Checks();

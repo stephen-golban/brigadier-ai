@@ -40,14 +40,16 @@
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { derive, nonce } from "../lib/derive.ts";
 import { join } from "node:path";
 import { Checks, excerpt } from "../lib/checks.ts";
 import { probeFeature } from "../lib/feature.ts";
-import { isolatedPath, plantVendors } from "../lib/fixtures.ts";
+import { isolatedPath, plantFleet } from "../lib/fixtures.ts";
 import { ensureDir, listTree } from "../lib/fs.ts";
-import { makeRepo } from "../lib/git.ts";
+import { makeRepo, plantSeeds } from "../lib/git.ts";
 import { combine, noCredentialFreeChecks, type LiveHalf } from "../lib/halves.ts";
-import { token, writePlan } from "../lib/plan.ts";
+import { isAlive } from "../lib/inflight.ts";
+import { writePlan } from "../lib/plan.ts";
 import { baseEnv } from "../lib/proc.ts";
 import type { BarContext, BarItem, BarResult } from "../types.ts";
 
@@ -72,6 +74,18 @@ export interface InterruptObservations {
   heartbeatAfterSweep: number;
   /** Read again four tick intervals later. Equal means it has genuinely stopped. */
   heartbeatSettled: number;
+  /**
+   * The escapee's own pid, and whether it was alive at each stage.
+   *
+   * File sizes are a proxy and this is the fact. A descendant that quietly died
+   * on its own reads exactly like a successful sweep on sizes alone — which it
+   * did, and a forger with no sweep at all passed on it.
+   */
+  escapeePid: number;
+  aliveBeforeSweep: boolean;
+  aliveAfterSweep: boolean;
+  /** Did the orchestrator SURVIVE the first interrupt long enough to drain? */
+  survivedFirstInterrupt: boolean;
   /** Clone directories still present after the sweep, and whether each held commits. */
   survivingClones: Array<{ path: string; hadCommits: boolean; bytes: number }>;
   reportAfterSweep: string;
@@ -82,18 +96,28 @@ export interface InterruptObservations {
 export function judgeInterrupt(o: InterruptObservations): Checks {
   const checks = new Checks();
 
-  // The escaped descendant, asserted on the bytes it is or is not still writing.
-  // Without the first half the second passes on a descendant that never ran.
+  // The escaped descendant, asserted on its PID and on the bytes it is or is not
+  // still writing. The pid is the decisive one: a descendant that self-terminated
+  // reads exactly like a successful sweep on file sizes alone.
   checks.expect(
-    "a descendant really escaped and kept acting after the orchestrator was killed",
-    o.heartbeatBeforeSweep > o.heartbeatAtKill && o.heartbeatAtKill > 0,
-    `heartbeat: ${o.heartbeatAtKill} bytes when the orchestrator was SIGKILLed, ${o.heartbeatBeforeSweep} after a settle window — it must have GROWN, or nothing escaped and the check below would pass for the wrong reason`,
+    "a descendant really escaped and was STILL ALIVE when the sweep started",
+    o.escapeePid > 0 && o.aliveBeforeSweep && o.heartbeatBeforeSweep > o.heartbeatAtKill,
+    `escapee pid ${o.escapeePid || "NONE PUBLISHED"}; alive before the sweep: ${o.aliveBeforeSweep}; ` +
+      `heartbeat ${o.heartbeatAtKill} -> ${o.heartbeatBeforeSweep} bytes across the settle window. ` +
+      "Without this, the check below passes on a descendant that died by itself — or never existed",
   );
   checks.expect(
-    "the next start's sweep reclaimed the escaped descendant (ruling 38)",
-    o.heartbeatSettled === o.heartbeatAfterSweep,
-    `heartbeat after the sweep: ${o.heartbeatAfterSweep} bytes, then ${o.heartbeatSettled} four tick intervals later. ` +
-      "Equal means it has stopped; a live process cannot sit through that window silently",
+    "the next start's sweep reclaimed it (ruling 38)",
+    !o.aliveAfterSweep && o.heartbeatSettled === o.heartbeatAfterSweep,
+    `kill(${o.escapeePid}, 0) after the sweep: ${o.aliveAfterSweep ? "STILL ALIVE" : "gone"}; ` +
+      `heartbeat ${o.heartbeatAfterSweep} -> ${o.heartbeatSettled} bytes four tick intervals later`,
+  );
+  checks.expect(
+    "the orchestrator SURVIVED the first interrupt to drain (ruling 63)",
+    o.survivedFirstInterrupt,
+    o.survivedFirstInterrupt
+      ? "still running a beat after the first SIGINT, so there was a drain for a second signal to arrive during"
+      : "died on the first signal — which is indistinguishable from having no handler at all, and a binary with none satisfies the re-raise check for free",
   );
   checks.expect(
     "no clone WITHOUT committed work survives",
@@ -162,14 +186,21 @@ const item: BarItem = {
     const did: string[] = [];
 
     const binDir = ensureDir(join(ctx.workdir, "bin"));
-    plantVendors(binDir, [{ id: "codex", version: "1.4.0" }, { id: "qwen", version: "0.21.13" }]);
+    plantFleet(binDir, join(ctx.workdir, "vendor-ledger.tsv"), [
+      { id: "codex", version: "1.4.0" },
+      { id: "qwen", version: "0.21.13" },
+    ]);
     const env = baseEnv({ PATH: isolatedPath(binDir) });
     const runs = ensureDir(join(ctx.workdir, "runs"));
 
     const repo = join(ctx.workdir, "repo");
     await makeRepo(repo, { "README.md": "base\n" });
-    const heartbeat = join(ensureDir(join(ctx.workdir, "observe")), "heartbeat.log");
-    const keptToken = token("kept");
+    const committerSeed = nonce("committer-seed");
+    await plantSeeds(repo, [{ path: "seeds/committer.seed", value: committerSeed, placement: "committed" }]);
+    const observe = ensureDir(join(ctx.workdir, "observe"));
+    const heartbeat = join(observe, "heartbeat.log");
+    const pidFile = join(observe, "escapee.pid");
+    const keptValue = derive(committerSeed, "committer");
 
     const planPath = writePlan(ctx.workdir, {
       version: 1,
@@ -179,14 +210,14 @@ const item: BarItem = {
           kind: "write",
           paths: ["escaper.txt"],
           prompt: "detach a long-lived descendant",
-          directive: { do: "escape-process", heartbeat, token: token("escaped") },
+          directive: { do: "escape-process", heartbeat, pidFile },
         },
         {
           id: "committer",
           kind: "write",
           paths: ["kept.txt"],
           prompt: "do real work and then hang",
-          directive: { do: "commit-then-hang", path: "kept.txt", token: keptToken },
+          directive: { do: "commit-then-hang", read: "seeds/committer.seed", path: "kept.txt", salt: "committer" },
         },
       ],
     });
@@ -229,20 +260,29 @@ const item: BarItem = {
         if (victim.exitCode !== null || victim.signalCode !== null) break;
         await Bun.sleep(200);
       }
+      const readyClones = clonesUnder(runs);
+      const wasReady = fileSize(heartbeat) > 0 && readyClones.some((c) => c.hadCommits);
       victim.kill("SIGKILL");
       await victim.exited;
-      did.push(`SIGKILLed the orchestrator (pid ${victim.pid}) once a clone had committed work and the descendant was writing`);
+      did.push(
+        `SIGKILLed the orchestrator (pid ${victim.pid}) after waiting ${wasReady ? "until" : "WITHOUT reaching"} the state this item needs: ` +
+          `heartbeat ${fileSize(heartbeat)} bytes, clones ${readyClones.map((c) => `${c.path.split("/").pop()}=${c.hadCommits}`).join(",") || "none"}. ` +
+          (wasReady ? "" : "The kill landed too early, so the checks below are measuring a run that had not got going — a scheduling failure of this item, not of the product"),
+      );
 
       const heartbeatAtKill = fileSize(heartbeat);
       await Bun.sleep(800); // an unreclaimed descendant keeps writing through this
       const heartbeatBeforeSweep = fileSize(heartbeat);
+      const escapeePid = existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8").trim()) : 0;
+      const aliveBeforeSweep = escapeePid > 0 && isAlive(escapeePid);
 
       // 4. The next start sweeps.
       const secondRepo = join(ctx.workdir, "repo-2");
       await makeRepo(secondRepo, { "README.md": "base\n" });
+      await plantSeeds(secondRepo, [{ path: "seeds/after.seed", value: nonce("after-seed"), placement: "committed" }]);
       const secondPlanPath = writePlan(
         ctx.workdir,
-        { version: 1, items: [{ id: "after", kind: "write", paths: ["after.txt"], prompt: "x", directive: { do: "write", path: "after.txt", token: token("after") } }] },
+        { version: 1, items: [{ id: "after", kind: "write", paths: ["after.txt"], prompt: "x", directive: { do: "derive-write", read: "seeds/after.seed", path: "after.txt", salt: "after" } }] },
         "after.json",
       );
       const sweep = await ctx.run(["run", "--plan", secondPlanPath, "--repo", secondRepo, "--run-root", runs], {
@@ -255,6 +295,7 @@ const item: BarItem = {
       const heartbeatAfterSweep = fileSize(heartbeat);
       await Bun.sleep(900);
       const heartbeatSettled = fileSize(heartbeat);
+      const aliveAfterSweep = escapeePid > 0 && isAlive(escapeePid);
       did.push(
         `started again; the sweep ran at start. Heartbeat: ${heartbeatAtKill} bytes at the kill, ${heartbeatBeforeSweep} before the sweep, ` +
           `${heartbeatAfterSweep} just after, ${heartbeatSettled} four tick intervals later`,
@@ -263,11 +304,12 @@ const item: BarItem = {
       // 6. Two interrupts, and the WAIT STATUS is what is read.
       const interruptRepo = join(ctx.workdir, "repo-3");
       await makeRepo(interruptRepo, { "README.md": "base\n" });
+      await plantSeeds(interruptRepo, [{ path: "seeds/hang.seed", value: nonce("hang-seed"), placement: "committed" }]);
       const interruptPlan = writePlan(
         ctx.workdir,
         {
           version: 1,
-          items: [{ id: "hang", kind: "write", paths: ["hang.txt"], prompt: "x", directive: { do: "commit-then-hang", path: "hang.txt", token: token("hang") } }],
+          items: [{ id: "hang", kind: "write", paths: ["hang.txt"], prompt: "x", directive: { do: "commit-then-hang", read: "seeds/hang.seed", path: "hang.txt", salt: "hang" } }],
         },
         "interrupt.json",
       );
@@ -283,13 +325,20 @@ const item: BarItem = {
         await Bun.sleep(200);
       }
       interruptee.kill("SIGINT");
-      await Bun.sleep(300);
+      // A binary with no handler dies here. Surviving the window is what makes
+      // the re-raise below a statement about a drain rather than about nothing.
+      await Bun.sleep(700);
+      const survivedFirstInterrupt = interruptee.exitCode === null && interruptee.signalCode === null;
       interruptee.kill("SIGINT");
       await interruptee.exited;
       const secondInterrupt = { code: interruptee.exitCode, signal: interruptee.signalCode };
       did.push(`sent two SIGINTs to a run in flight and read the wait status: code ${secondInterrupt.code}, signal ${secondInterrupt.signal}`);
 
       const checks = judgeInterrupt({
+        escapeePid,
+        aliveBeforeSweep,
+        aliveAfterSweep,
+        survivedFirstInterrupt,
         heartbeatAtKill,
         heartbeatBeforeSweep,
         heartbeatAfterSweep,
@@ -301,7 +350,7 @@ const item: BarItem = {
       checks.note(
         "what was observed",
         `sweep report: ${excerpt(`${sweep.stdout}${sweep.stderr}`, 300)}; ` +
-          `the retained clone's committed token should be ${keptToken}: ` +
+          `the retained clone's committed derivation should be ${keptValue}: ` +
           `${clonesUnder(runs).map((c) => `${c.path}=${existsSync(join(c.path, "kept.txt")) ? excerpt(readFileSync(join(c.path, "kept.txt"), "utf8"), 40) : "no kept.txt"}`).join("; ") || "no clones"}`,
       );
       live = { kind: "ran", checks };

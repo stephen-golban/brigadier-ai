@@ -40,13 +40,15 @@
 
 import { join } from "node:path";
 import { Checks } from "../lib/checks.ts";
+import { derive } from "../lib/derive.ts";
 import { gatherRunEvidence, proofOfWork } from "../lib/evidence.ts";
 import { probeFeature } from "../lib/feature.ts";
-import { isolatedPath, plantVendors } from "../lib/fixtures.ts";
+import { isolatedPath, plantFleet } from "../lib/fixtures.ts";
 import { ensureDir } from "../lib/fs.ts";
 import { makeRepo } from "../lib/git.ts";
 import { combine, noCredentialFreeChecks, type LiveHalf } from "../lib/halves.ts";
-import { token, writePlan } from "../lib/plan.ts";
+import { runSampled } from "../lib/inflight.ts";
+import { writePlan } from "../lib/plan.ts";
 import { baseEnv } from "../lib/proc.ts";
 import { encodings, makeSecret, scanForSecret, type Leak } from "../lib/secret.ts";
 import type { BarContext, BarItem, BarResult } from "../types.ts";
@@ -55,6 +57,17 @@ export const SECRET_ENV = "BRIGADIER_SECRET";
 
 export interface SecretObservations {
   secret: string;
+  /**
+   * Proof the secret was actually DELIVERED through ruling 65's channel.
+   *
+   * A critic deleted the redaction sink entirely and this item still passed,
+   * because it never checked the secret had moved: it proved that a secret
+   * nobody delivered did not escape. The worker therefore writes a DERIVATION —
+   * a hash, which is not one of the enumerated encodings and so can be asserted
+   * without weakening the leak scan below.
+   */
+  deliveryProved: boolean;
+  deliveryDetail: string;
   /** Every enumerated-encoding hit across every persisted artifact. */
   leaks: Leak[];
   /** The same scan in v1's form: the raw literal only. */
@@ -67,6 +80,11 @@ export interface SecretObservations {
 
 export function judgeSecret(o: SecretObservations): Checks {
   const checks = new Checks();
+  checks.expect(
+    "the granted secret really reached the worker (ruling 65's channel)",
+    o.deliveryProved,
+    o.deliveryDetail,
+  );
   checks.expect(
     "the scan examined something",
     o.artefactsScanned > 0,
@@ -111,12 +129,13 @@ const item: BarItem = {
     const secret = makeSecret();
     const repo = join(ctx.workdir, "repo");
     await makeRepo(repo, { "README.md": "base\n", ".gitignore": ".env\n" });
+    const deliveryProof = derive(secret, "leaker");
     // Ruling 50: a gitignored file is not in the base commit, and ruling 65 adds
     // no exception for secrets, so this must never reach a clone.
     await Bun.write(join(repo, ".env"), `${SECRET_ENV}=${secret}\n`);
     did.push(`built ${repo} with a gitignored .env holding a secret containing characters the four encodings disagree about`);
 
-    const workToken = token("secret-item");
+
     const planPath = writePlan(ctx.workdir, {
       version: 1,
       items: [
@@ -125,23 +144,23 @@ const item: BarItem = {
           kind: "write",
           paths: ["config.json"],
           prompt: `write the value of $${SECRET_ENV} into config.json and commit it`,
-          directive: { do: "leak-secret", env: SECRET_ENV, path: "config.json", token: workToken },
+          directive: { do: "leak-secret", env: SECRET_ENV, path: "config.json", proofPath: "delivery-proof.txt", salt: "leaker" },
         },
       ],
     });
     did.push(`wrote a plan at ${planPath} asking a worker to COMMIT the secret, granted through ruling 65's environment channel as $${SECRET_ENV}`);
 
     const binDir = ensureDir(join(ctx.workdir, "bin"));
-    plantVendors(binDir, [{ id: "codex", version: "1.4.0" }]);
+    plantFleet(binDir, join(ctx.workdir, "vendor-ledger.tsv"), [{ id: "codex", version: "1.4.0" }]);
     const runs = ensureDir(join(ctx.workdir, "runs"));
     const env = baseEnv({ PATH: isolatedPath(binDir), [SECRET_ENV]: secret });
 
     const probe = await probeFeature(
       ctx,
-      ["run", "--plan", planPath, "--repo", repo, "--run-root", runs, "--secret-env", SECRET_ENV],
-      { env, timeoutMs: 300_000 },
+      ["run", "--plan", planPath, "--repo", repo, "--run-root", runs, "--secret-env", SECRET_ENV, "--dry-run"],
+      { env, timeoutMs: 60_000 },
     );
-    did.push(probe.transcript);
+    did.push(`admission probe: ${probe.transcript}`);
 
     let live: LiveHalf;
     if (!probe.present) {
@@ -149,14 +168,19 @@ const item: BarItem = {
     } else if (!ctx.live) {
       live = { kind: "skipped", why: "a real worker must be the thing that tries to write the secret into a file it commits" };
     } else {
-      const report = `${probe.result.stdout}${probe.result.stderr}`;
+      const sampled = await runSampled(
+        [ctx.binary, "run", "--plan", planPath, "--repo", repo, "--run-root", runs, "--secret-env", SECRET_ENV],
+        { cwd: ctx.workdir, env, runRoot: runs, timeoutMs: 300_000 },
+      );
+      const report = `${sampled.stdout}${sampled.stderr}`;
       const evidence = await gatherRunEvidence(repo, report);
       const checks = new Checks();
 
       // Something happened, and it involved the secret channel.
       for (const row of proofOfWork(evidence, {
-        expected: new Map([["config.json", workToken]]),
+        expected: new Map([["delivery-proof.txt", deliveryProof]]),
         itemIds: ["leaker"],
+        flight: sampled.flight,
       }).rows) {
         checks.expect(row.name, row.ok, row.detail);
       }
@@ -192,8 +216,13 @@ const item: BarItem = {
         .filter((p) => p === ".env")
         .map((p) => ({ file: `tree:${p} (gitignored, must not be in the base commit)`, encoding: "file" }));
 
+      const proofInTree = evidence.files.get("delivery-proof.txt") ?? "";
       for (const row of judgeSecret({
         secret,
+        deliveryProved: proofInTree.includes(deliveryProof),
+        deliveryDetail:
+          `the worker committed a hash of the granted value: expected ${deliveryProof}, tree holds ${proofInTree.trim() || "NOTHING"}. ` +
+          "Without this, an unset environment variable and a perfectly contained one look identical",
         leaks,
         literalLeaks: leaks.filter((l) => l.encoding === "literal"),
         inClone,
