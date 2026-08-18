@@ -41,7 +41,15 @@
 
 import type { Sink } from "../secrets/sink.ts";
 import { blocks, type CheckOutcome } from "../work/check.ts";
-import { capItems, estimateTokens, HOST_REPORT_TOKEN_CEILING, isCapped, type Audience, type ItemLine } from "./budget.ts";
+import {
+  capItems,
+  estimateTokens,
+  HOST_REPORT_TOKEN_CEILING,
+  isCapped,
+  remainingBudget,
+  type Audience,
+  type ItemLine,
+} from "./budget.ts";
 import { recordPointer, type RecordCheck, type RecordItem, type RunRecord } from "./record.ts";
 
 /** `pass` is the only affirmative glyph. Nothing else resembles a tick. */
@@ -85,6 +93,11 @@ export function renderItem(item: RecordItem): string {
     // absent one — ruling 52's rule about a missing result never rendering as a
     // satisfied requirement, one axis over.
     head.push(`(${item.agent}, ${item.model ?? "unrouted"}, ${item.effort ?? "effort NOT recorded"})`);
+  } else if (item.routedAgent !== undefined) {
+    // Routed and never started. The two are different facts and the second must
+    // not print in the shape of the first: `(qwen, …)` beside an item nothing
+    // spawned for is a vendor being credited with a turn it never took.
+    head.push(`(routed to ${item.routedAgent} — NO PROCESS SPAWNED, so no vendor ran this item)`);
   }
   // Ruling 55, beside the item rather than in a footnote: a ladder that ran out
   // and a ladder that never had a second step are different facts, and the one
@@ -92,7 +105,22 @@ export function renderItem(item: RecordItem): string {
   // other. `src/work/ladder.ts` owns the four strings; this only places one.
   if (item.ladder !== undefined) head.push(item.ladder);
   const lines = [`  ${head.join(" — ")}`];
-  for (const check of item.checks) lines.push(`      ${renderRecordCheck(check)}`);
+  for (const check of item.checks) {
+    lines.push(`      ${renderRecordCheck(check)}`);
+    // THE CHECKER'S OWN WORDS, for a check that BLOCKS and for no other.
+    //
+    // The merged-result and run sections have always printed this and the item
+    // list did not, so a run that integrated nothing printed
+    // `✗ integrate item 1: fail (ownership)` and never said WHICH path the item
+    // wrote outside its own — the one fact an operator needs to act. Ruling 52's
+    // qualifier-inside-the-result rule is about not being able to misread a
+    // weakened check as a clean one; it is not a reason to withhold the remedy.
+    //
+    // Scoped to blocking outcomes because that is what keeps it inside ruling
+    // 58's cap: a blocking item never collapses, so this is O(failures) and
+    // never O(items), and a run where everything passed pays nothing for it.
+    if (check.detail !== undefined && blocks(check.outcome)) lines.push(`          ${check.detail}`);
+  }
   return lines.join("\n");
 }
 
@@ -126,6 +154,62 @@ function blocking(checks: readonly RecordCheck[]): RecordCheck[] {
   return checks.filter((check) => check.blocking && blocks(check.outcome));
 }
 
+/**
+ * How many distinct BLOCKING CHECK KINDS the headline may name before it stops.
+ *
+ * The headline is in `fixedLines`' head, which the cap never trims, so anything
+ * O(items) here is an O(items) string in the one part of the report that cannot
+ * shrink. Kinds are not items — `integrate item 4` and `integrate item 18` are
+ * one kind — so in practice this bound is never reached; it is here so that a
+ * run which invents a check name per item cannot make the headline grow.
+ */
+const HEADLINE_KINDS = 4;
+
+/**
+ * A check name with its item ordinal removed, so `integrate item 4` and
+ * `integrate item 18` are ONE reason rather than fifty.
+ *
+ * The numbers are not lost — every blocking item keeps its own line with its own
+ * checks, which is where an ordinal belongs. This is the run-level sentence, and
+ * a run-level sentence that grows with the plan is the thing ruling 58 caps.
+ */
+function checkKind(name: string): string {
+  return name.replace(/\b\d+\b/g, "N").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * The blocking checks of a run, named and counted by kind.
+ *
+ * THIS EXISTS BECAUSE OF A MEASURED DEFECT. MEASURED on 2026-08-18 against
+ * `git 2.50.1`: a single-item run whose worker wrote a file it had not declared
+ * was rejected WHOLE by ruling 51's ownership check, and the headline read
+ * *"NOTHING INTEGRATED — 0 of 1 items landed on the integration branch; 1
+ * retained; integration branch: fail."* — a status, a consequence, and no
+ * mention of the check that actually stopped it. `1 retained` is where the work
+ * ended up, not why. A reader had to find the item's own line to learn that
+ * anything had been checked at all.
+ *
+ * Ruling 52's design is that absence is impossible: every blocking check's slot
+ * is written before the check runs, holding `not-run`, so a crash leaves a
+ * blocking value rather than an absent field. A run that integrated nothing
+ * while naming no blocking check is that invariant failing, and `runHeadline`
+ * says exactly that rather than printing a shorter sentence.
+ */
+export function blockingKinds(items: readonly RecordItem[]): string[] {
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    for (const check of blocking(item.checks)) {
+      const kind = `${checkKind(check.name)}: ${check.outcome}`;
+      counts.set(kind, (counts.get(kind) ?? 0) + 1);
+    }
+  }
+  const named = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([kind, count]) => (count === 1 ? kind : `${kind} (${count} items)`));
+  if (named.length <= HEADLINE_KINDS) return named;
+  return [...named.slice(0, HEADLINE_KINDS), `and ${named.length - HEADLINE_KINDS} other blocking check kind(s)`];
+}
+
 export function runHeadline(input: HeadlineInput): string {
   const total = input.items.length;
   if (total === 0) return "nothing to integrate: this run had no items";
@@ -148,13 +232,28 @@ export function runHeadline(input: HeadlineInput): string {
   }
   const reasons: string[] = [];
   for (const [status, count] of byStatus) reasons.push(`${count} ${status}`);
+  // THE CHECKS, NOT ONLY THE STATUSES. A status says where the work ended up
+  // and a check says why, and the headline used to carry the first alone.
+  for (const kind of blockingKinds(input.items)) reasons.push(`blocked by ${kind}`);
   for (const check of runBlocked) reasons.push(`${check.name}: ${check.outcome}`);
   if (gateBlocked.length > 0) {
     reasons.push(`the merged result is ${gateBlocked.map((gate) => gate.outcome).join(", ")}`);
   }
 
   if (landed === 0) {
-    return `NOTHING INTEGRATED — 0 of ${total} items landed on the integration branch; ${reasons.join("; ")}.`;
+    // Ruling 52's invariant, stated where it fails rather than left to be
+    // inferred from a shorter sentence: every blocking check's slot is written
+    // BEFORE the check runs, so a run that integrated nothing has at least one
+    // blocking check by construction. If it has none, the write-ahead did not
+    // happen and that is the finding.
+    const named =
+      blockingKinds(input.items).length + runBlocked.length + gateBlocked.length > 0
+        ? `${reasons.join("; ")}.`
+        : `${reasons.join("; ") || "no status was recorded"}, and NO BLOCKING CHECK WAS NAMED — ` +
+          "which is itself the defect. Ruling 52 writes every blocking check's slot before the check " +
+          "runs, holding `not-run`, so an absent reason means a slot was never opened rather than " +
+          "that nothing was wrong.";
+    return `NOTHING INTEGRATED — 0 of ${total} items landed on the integration branch; ${named}`;
   }
   if (landed < total || gateBlocked.length > 0 || runBlocked.length > 0) {
     return (
@@ -188,6 +287,15 @@ export interface RunReportInput {
   audience: Audience;
   /** Extra lines a terminal reader gets and a host session does not. */
   detail?: readonly string[];
+  /**
+   * Tokens this process ALREADY put on the same stdout, before the report.
+   *
+   * Ruling 58's ceiling is on the channel: the admission block lands in the same
+   * context window and is charged once, so the report's budget is the ceiling
+   * minus what was already spent. Zero when nothing preceded it, which is what
+   * every direct caller and every test gets by default.
+   */
+  budgetSpent?: number;
 }
 
 /**
@@ -220,6 +328,11 @@ export function refusedDelegationLine(count: number): string | null {
  */
 export function ceilingLines(cost: NonNullable<RunRecord["cost"]>): string[] {
   const lines: string[] = [];
+  // The weakening, carried rather than left on the stderr of a process that has
+  // since exited. Printed whether or not either ceiling fired: an operator whose
+  // soft ceiling was weakened and whose run happened to stay under both still
+  // set a pair that will not behave next time.
+  if (cost.gapWarning !== undefined) lines.push(`  ${cost.gapWarning}`);
   if (cost.hardCeilingHit === true) {
     lines.push(
       `  HARD CEILING FIRED at ${(cost.hardCeiling ?? 0).toLocaleString("en-US")} ${cost.currency} — work already ` +
@@ -233,7 +346,11 @@ export function ceilingLines(cost: NonNullable<RunRecord["cost"]>): string[] {
         "item was DISPATCHED; items already in flight were allowed to finish (ruling 66).",
     );
   }
-  if (lines.length === 0) return lines;
+  // The provenance belongs to a ceiling that FIRED — "the number above was
+  // measured as this run happened" is false beside a warning about a pair that
+  // did not act. Silent otherwise, which is the same negative control the two
+  // lines above have.
+  if (cost.hardCeilingHit !== true && cost.softCeilingHit !== true) return lines;
   lines.push(
     "  the ceiling is the primary control and the estimate is not: #44 measured 427,723 against " +
       "28,245 bytes on two identical runs, so no prediction is load-bearing enough to be the thing " +
@@ -395,17 +512,33 @@ function composeRunReport(input: RunReportInput): string {
     return assemble(lines, 0);
   }
 
+  // The ceiling is on the CHANNEL. Whatever this process already wrote to the
+  // same stdout has already been charged to the reader's window, so the report
+  // spends what is left of the ceiling rather than the whole of it.
+  const ceiling = remainingBudget(input.budgetSpent ?? 0);
   const blocking = lines.filter((line) => line.blocking).length;
   for (let budget = lines.length; budget >= Math.max(1, blocking); budget--) {
     const capped = capItems(lines, budget);
     const text = assemble(capped.shown, capped.collapsed);
-    if (estimateTokens(text) <= HOST_REPORT_TOKEN_CEILING) return text;
+    if (estimateTokens(text) <= ceiling) return text;
   }
   // Every passing item is already gone and the blocking ones are what is left.
   // Ruling 52 has no exception for space: the report goes over budget rather
   // than dropping a failure, and it says so where the reader will see it.
   const capped = capItems(lines, Math.max(1, blocking));
-  return `${assemble(capped.shown, capped.collapsed)}\nthis report is OVER the ${HOST_REPORT_TOKEN_CEILING}-token budget because every remaining item carries a blocking check, and ruling 52 has no exception for space.`;
+  // Ruling 58 requires the truncation to be STATED, and this is the case where
+  // there is no truncation to state — the report exceeds instead. The sentence
+  // names the ceiling it broke and, when something else on this stdout had
+  // already been charged against it, how much of it was left.
+  const share =
+    ceiling === HOST_REPORT_TOKEN_CEILING
+      ? ""
+      : ` — ${ceiling} of them were left after the rest of this run's stdout was charged against it`;
+  return (
+    `${assemble(capped.shown, capped.collapsed)}\nthis report is OVER the ${HOST_REPORT_TOKEN_CEILING}-token ` +
+    `ceiling${share} because every remaining item carries a blocking check, and ruling 52 has no ` +
+    "exception for space."
+  );
 }
 
 /**

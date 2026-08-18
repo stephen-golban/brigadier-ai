@@ -25,6 +25,7 @@ export {
   admit,
   agentsOnPath,
   bindingSentence,
+  collapsedItems,
   describeAdmission,
   describeItem,
   describeRefusals,
@@ -65,7 +66,9 @@ export {
   estimatePlan,
   itemCeilingReserve,
   naiveItemTokens,
+  narrowGapLines,
   tokensFromBytes,
+  type CeilingVerdict,
   type Estimate,
 } from "./estimate.ts";
 
@@ -87,6 +90,7 @@ export {
   NO_REVIEWER,
   DEFAULT_VERIFY_TIMEOUT_MS,
   DEFAULT_WORKER_TIMEOUT_MS,
+  ambientSuppression,
   executeRun,
   newRunId,
   runRootUsable,

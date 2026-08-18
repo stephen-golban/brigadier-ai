@@ -107,7 +107,13 @@ export function describeUnfinished(run: UnfinishedRun): string[] {
     lines.push(
       `${run.retainedClones.length} clone(s) retained, ${(bytes / 1024 ** 2).toFixed(0)} MB — not merged, not reviewed, not deleted`,
     );
-    for (const clone of run.retainedClones) lines.push(`  item ${clone.item}: ${clone.path}`);
+    // The PATH and the BYTES on every line, not just in the total. Ruling 63's
+    // third fact is "what is retained and where", and an operator deciding
+    // whether to keep a directory needs to know which of the several is the one
+    // that costs 67 MB and which is a few kilobytes.
+    for (const clone of run.retainedClones) {
+      lines.push(`  item ${clone.item}: ${clone.path} (${clone.bytes} bytes)`);
+    }
   }
   if (run.unconfirmedPids.length > 0) {
     lines.push(

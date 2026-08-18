@@ -54,8 +54,19 @@ export interface RecordItem {
   number: number;
   status: ItemStatus;
   kind: WorkKind;
-  /** Ruling 29: the routing unit is a triple, recorded per item. */
+  /**
+   * Ruling 29: the routing unit is a triple, recorded per item — and this half
+   * of it is the vendor whose PROCESS SPAWNED.
+   *
+   * Absent when nothing started. `routedAgent` below carries what the router
+   * chose, and the two are separate fields because "routed to qwen and never
+   * started" is not "qwen ran": ruling 32's pass/fail property is a comparison
+   * between a builder's vendor and a reviewer's, so an identity taken from the
+   * plan can answer it about a process that never existed.
+   */
   agent?: string;
+  /** What the router CHOSE, whether or not anything spawned. Never evidence of a run. */
+  routedAgent?: string;
   model?: string;
   /**
    * The third axis, rendered with its qualifier INSIDE the value.
@@ -220,6 +231,19 @@ export interface RunRecord {
     hardCeiling?: number;
     softCeilingHit?: boolean;
     hardCeilingHit?: boolean;
+    /**
+     * Ruling 66's structural rule, when the pair the operator gave does not
+     * satisfy it.
+     *
+     * Present only when the gap between the two ceilings is narrower than what
+     * one in-flight item can still spend, which makes the SOFT ceiling weakened
+     * rather than absent. It is in the record and in the report rather than only
+     * on stderr before the run: a weakening that is stated once and then not
+     * carried is a weakening the reader of the record cannot see, and ruling 52's
+     * rule about a weakened check never rendering as a clean one is the same rule
+     * one level up.
+     */
+    gapWarning?: string;
     /** Ruling 13, per vendor: never absent and never optimistic. */
     quota: Record<string, "read" | "unreadable" | "unpriceable">;
     /** Ruling 70: levers that were active, phrased so they cannot be read as savings. */

@@ -109,43 +109,100 @@ export function tokensFromBytes(bytes: number): number {
 }
 
 /**
- * Ruling 66's structural requirement on the two ceilings, checked BEFORE
- * anything is spent.
+ * What ruling 66's structural rule has to say about a pair of ceilings, decided
+ * BEFORE anything is spent — and the distinction between the two things it can
+ * say.
  *
- * *The gap between them must exceed the most expensive item that could be in
- * flight, or the soft ceiling never prevents the hard one firing.* The soft
- * ceiling stops new dispatch and lets in-flight items finish; if those items
- * can still spend more than the remaining gap, the hard ceiling fires anyway
- * and cancels work that was already allowed to complete — which makes the soft
- * ceiling a line in a report rather than a control.
+ * The rule: *the gap between them must exceed the most expensive item that
+ * could be in flight, or the soft ceiling never prevents the hard one firing.*
+ * The soft ceiling stops new dispatch and lets in-flight items finish; if those
+ * items can still spend more than the remaining gap, the hard ceiling fires
+ * anyway and cancels work that was already allowed to complete.
+ *
+ * THIS USED TO REFUSE THE WHOLE RUN FOR A NARROW GAP, AND THAT WAS A DEFECT.
+ * MEASURED on 2026-08-18 against `bun 1.3.14`: `itemCeilingReserve()` is 71,835
+ * tokens and the default per-run concurrency is 3, so ANY pair leaving less than
+ * 215,805 tokens of headroom was refused with exit 4 and nothing created — a
+ * four-item run whose whole upper estimate is 287,340 tokens could not be given
+ * a hard ceiling at all. The operator got no run, no record, no report and no
+ * blocking check: a run that "integrated nothing" and named nothing, which is
+ * exactly the shape ruling 52 exists to make impossible. The rule was right and
+ * the remedy was wrong.
+ *
+ * So there are two answers now, and they are different in kind:
+ *
+ *   REFUSE — `hard <= soft`. The soft ceiling can never act first at ANY spend,
+ *   so it is not a control and no run can make it one. Nothing is created, which
+ *   is ruling 53's ordering promise applied to the one control ruling 66 calls
+ *   primary.
+ *
+ *   DEGRADE — a gap narrower than the reserve. The soft ceiling MAY not prevent
+ *   the hard one; whether it does depends on what the items actually spend,
+ *   which #44 measured varying 15× on identical input, so it is not knowable
+ *   here. The operator is told before anything is spent, the sentence travels
+ *   into the run record and the report, and the run proceeds — because the
+ *   operator asked for a hard ceiling and honouring it while saying the soft one
+ *   is weakened is strictly more than refusing to run at all.
  *
  * `workers` is in the arithmetic because "the most expensive item that could be
  * in flight" is a fleet of them: with W concurrent workers, W items are still
  * running when the soft ceiling trips.
  *
- * Returns the refusal, or `null` when the pair is usable. A refusal here costs
- * nothing — no clone, no process — which is the whole of ruling 53's ordering
- * promise applied to the one control ruling 66 calls primary.
+ * `null` when the pair is unremarkable, or when only one of the two was given.
  */
+export interface CeilingVerdict {
+  /** True only when nothing may be started. A narrow gap is not one of these. */
+  refuse: boolean;
+  lines: string[];
+}
+
 export function ceilingRefusal(
   soft: number | undefined,
   hard: number | undefined,
   workers: number,
-): string[] | null {
+): CeilingVerdict | null {
   if (soft === undefined || hard === undefined) return null;
   const concurrent = Math.max(1, workers);
   const reserve = itemCeilingReserve() * concurrent;
+  if (hard <= soft) {
+    return {
+      refuse: true,
+      lines: [
+        `--soft-ceiling ${soft.toLocaleString("en-US")} is at or above --hard-ceiling ${hard.toLocaleString("en-US")}, ` +
+          "so the soft ceiling can never act first.",
+        "  Ruling 66: the soft ceiling stops NEW items and lets in-flight ones finish; the hard ceiling",
+        "  cancels work already running. Ordered this way the first is unreachable — it is not a",
+        "  weakened control, it is not a control at all, and no amount of spending makes it one.",
+        `  Remedy: --hard-ceiling must be above --soft-ceiling, and above ${(soft + reserve).toLocaleString("en-US")}`,
+        "  for the soft one to be able to prevent it.",
+      ],
+    };
+  }
   if (hard - soft > reserve) return null;
+  return { refuse: false, lines: narrowGapLines(soft, hard, concurrent, reserve) };
+}
+
+/**
+ * The degradation, in the operator's words, said once and reused.
+ *
+ * One function so the sentence printed before the run and the sentence in the
+ * record are the same bytes: two copies is one edit away from a report that
+ * describes a different weakening from the one the operator was warned about.
+ */
+export function narrowGapLines(soft: number, hard: number, concurrent: number, reserve: number): string[] {
   return [
-    `--soft-ceiling ${soft.toLocaleString("en-US")} and --hard-ceiling ${hard.toLocaleString("en-US")} ` +
-      `leave a gap of ${(hard - soft).toLocaleString("en-US")} ${"tokens"}, and up to ${concurrent} item(s) can be`,
-    `  in flight when the soft ceiling trips. Each of them can still spend ${itemCeilingReserve().toLocaleString("en-US")} tokens`,
-    `  (${MEASURED_ITEM_BYTES} bytes per #14, widened ${SPREAD_HIGH}× because #44 measured 15× between two`,
-    `  identical runs), so the reserve that has to fit in the gap is ${reserve.toLocaleString("en-US")}.`,
+    `WEAKENED SOFT CEILING — --soft-ceiling ${soft.toLocaleString("en-US")} and --hard-ceiling ` +
+      `${hard.toLocaleString("en-US")} leave a gap of ${(hard - soft).toLocaleString("en-US")} tokens, and up to ` +
+      `${concurrent} item(s) can be in flight when the soft ceiling trips.`,
+    `  Each of them can still spend ${itemCeilingReserve().toLocaleString("en-US")} tokens ` +
+      `(${MEASURED_ITEM_BYTES} bytes per #14, widened ${SPREAD_HIGH}× because #44 measured 15× between`,
+    `  two identical runs), so the reserve that has to fit in the gap is ${reserve.toLocaleString("en-US")}.`,
     "  Ruling 66: the soft ceiling stops NEW items and lets in-flight ones finish; the hard ceiling",
-    "  cancels work already running. With a gap this narrow the hard ceiling fires anyway and the",
-    "  soft one is a line in a report rather than a control.",
-    `  Remedy: raise --hard-ceiling above ${(soft + reserve).toLocaleString("en-US")}, or lower --soft-ceiling.`,
+    "  cancels work already running. With a gap this narrow the hard ceiling may fire anyway and",
+    "  cancel work the soft one had already allowed to complete.",
+    "  The run PROCEEDS: you asked for a hard ceiling and it is honoured. What is weakened is the",
+    `  soft one, and the report names which ceiling actually fired. To restore it, raise`,
+    `  --hard-ceiling above ${(soft + reserve).toLocaleString("en-US")}.`,
   ];
 }
 

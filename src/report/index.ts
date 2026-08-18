@@ -19,6 +19,7 @@ export {
   estimateTokens,
   hasInFlightDisplay,
   isCapped,
+  remainingBudget,
   type Audience,
   type CappedReport,
   type ItemLine,
@@ -34,6 +35,7 @@ export {
 } from "./record.ts";
 
 export {
+  blockingKinds,
   ceilingLines,
   itemBlocks,
   refusedDelegationLine,

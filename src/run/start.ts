@@ -38,7 +38,28 @@
  *
  * WHAT RETENTION COSTS IS REPORTED AT EVERY START, in bytes, because otherwise
  * it grows invisibly and the operator discovers it as a full disk. #19 measured
- * roughly 67 MB incremental per clone.
+ * roughly 67 MB incremental per clone. The notice goes to `notify` — stderr by
+ * default — and NOT only into the run report, because ruling 58's host-session
+ * cap drops the report's `detail` entirely and `host-session` is the CLI's
+ * default audience. A promise kept into a channel that is then discarded is not
+ * kept.
+ *
+ * AND RETENTION IS DECIDED PER CLONE, BY ASKING GIT WHAT IS IN IT. Ruling 63's
+ * reason for keeping a directory is that *it may hold the only copy of someone's
+ * work*, which is a claim about CONTENT. The version this replaced retained
+ * EVERY clone of an incomplete run, so a worker that committed nothing left
+ * 67 MB behind under a line saying "not merged, not reviewed, not deleted" —
+ * and an operator who cannot tell that clone from one holding their only copy
+ * will eventually delete both, which is finding 92 arriving by a slower route.
+ * `kept.ts` puts the question to git in the same spirit the ref rule does: the
+ * world records fact. It answers `empty` only on a POSITIVE finding — HEAD at
+ * the base, and a working tree git reports clean including untracked files —
+ * and every unknown retains and says which unknown it was.
+ *
+ * The narrowing is only ever in the deleting direction for a clone git has
+ * looked inside. A COMPLETE run's clones go regardless of content, which is
+ * ruling 63's own seam and the control that stops this becoming "never delete
+ * anything".
  *
  * AND THE MANIFEST IS HANDED TO THE PROCESS SWEEP AS WELL AS TO THE DIRECTORY
  * DECISION. The clone directories this file already reads are what let `sweep`
@@ -57,7 +78,9 @@ import { readManifest, type RunManifest } from "../isolation/index.ts";
 import { manifestPath } from "../isolation/manifest.ts";
 import { RUN_DIR } from "../repo/layout.ts";
 import { itemRef } from "../repo/refs.ts";
+import { Sink } from "../secrets/sink.ts";
 import type { UnfinishedRun } from "./interrupt.ts";
+import { describeWork, inspectClone, type CloneWork, type WorkState } from "./kept.ts";
 import { parseRunMarker } from "./marker.ts";
 import {
   isAlive as defaultIsAlive,
@@ -304,13 +327,26 @@ export interface RetainedDirectory {
   readonly path: string;
   readonly bytes: number;
   readonly reason: string;
+  /**
+   * What git said this clone holds. `empty` never appears here: it is the one
+   * answer that releases the directory.
+   */
+  readonly work: WorkState;
+  /** The commit `git cat-file -t` read back, when there is one. Named in the line. */
+  readonly commit: string | null;
 }
 
 export interface StartSweepReport {
   readonly runsSeen: readonly string[];
   readonly verdicts: readonly RunVerdict[];
   readonly processes: readonly SweepOutcome[];
-  readonly reclaimedDirs: ReadonlyArray<{ runId: string; item: number; path: string; bytes: number }>;
+  /**
+   * `why` is on every entry because there are now two grounds for deleting a
+   * clone and they are not the same claim. "The run is complete" is ruling 63's
+   * own seam. "The clone held no work" is the narrowing this file makes to it,
+   * and an operator reading a deletion is owed which one happened.
+   */
+  readonly reclaimedDirs: ReadonlyArray<{ runId: string; item: number; path: string; bytes: number; why: string }>;
   readonly refusedDirs: ReadonlyArray<{ runId: string; item: number; path: string; refusals: readonly string[] }>;
   readonly retained: readonly RetainedDirectory[];
   readonly retainedBytes: number;
@@ -371,6 +407,42 @@ export interface StartSweepOptions {
   readonly git?: GitRunner;
   /** Set false to report what WOULD be reclaimed without touching anything. */
   readonly apply?: boolean;
+  /**
+   * RULING 65's ONE SINK. Every byte this function writes — the retention
+   * notice, and the git plumbing `kept.ts` composes to ask its question — goes
+   * through it, redacted at the FINAL bytes.
+   *
+   * It matters here rather than as a formality: the retention notice is a
+   * COMPOSED string, `"<path> (<bytes>) — <cause>"`, and ruling 65's failure 3
+   * is a value that spans the join between two fields and is therefore invisible
+   * to anything that redacts the fields. The paths in it are the operator's.
+   *
+   * Defaults to a sink of this function's own, with an empty inventory: the
+   * writer is right and the redaction is vacuous. The adoption is for
+   * `src/queue/execute.ts` to pass the run's sink, which by the time
+   * `sweepAtStart` is called has already inventoried the grant.
+   */
+  readonly sink?: Sink;
+  /**
+   * Where the RETENTION NOTICE goes, and why it does not go into the run
+   * report.
+   *
+   * Ruling 63 requires every start to say what is retained and what it costs.
+   * `describeStartSweep` produces those lines, and `src/queue/execute.ts` hands
+   * them to the run report as `detail` — which ruling 58's host-session cap
+   * DROPS ENTIRELY, and `host-session` is `src/cli.ts`'s default audience. So on
+   * an ordinary run the promise was kept into a channel that was then discarded,
+   * and an operator was never told that 67 MB of somebody's only copy was
+   * sitting under their run root. A retained clone is a HAZARD, not an item: it
+   * goes to stderr through the sink, where `src/cli.ts` already puts the
+   * warnings that have to survive the cap, and it says the path and the bytes
+   * because those are what an operator acts on.
+   *
+   * Silent when nothing is retained. The always-print line stays in
+   * `describeStartSweep`, where a reader who asked for the report gets it;
+   * stderr carries the case where something is actually being kept.
+   */
+  readonly notify?: (line: string) => void;
 }
 
 /**
@@ -393,6 +465,10 @@ export interface StartSweepOptions {
  */
 export async function sweepAtStart(options: StartSweepOptions): Promise<StartSweepReport> {
   const apply = options.apply ?? true;
+  // Ended below only when this function built it: ending a sink the caller owns
+  // would refuse every later write the run still has to make.
+  const ownSink = options.sink === undefined;
+  const sink = options.sink ?? new Sink();
   const sweptBy = options.sweptBy ?? "start-of-run sweep";
   const table = options.table ?? scanProcessTable();
   const runs = runsUnder(options.runRoot);
@@ -476,7 +552,7 @@ export async function sweepAtStart(options: StartSweepOptions): Promise<StartSwe
   const stale = inScope;
   const knownRunIds = runs.map((run) => run.runId);
   const verdicts: RunVerdict[] = [];
-  const reclaimedDirs: Array<{ runId: string; item: number; path: string; bytes: number }> = [];
+  const reclaimedDirs: Array<{ runId: string; item: number; path: string; bytes: number; why: string }> = [];
   const refusedDirs: Array<{ runId: string; item: number; path: string; refusals: readonly string[] }> = [];
   const retained: RetainedDirectory[] = [];
   const reclaimedRefs: string[] = [];
@@ -490,27 +566,47 @@ export async function sweepAtStart(options: StartSweepOptions): Promise<StartSwe
 
     for (const clone of run.manifest?.clones ?? []) {
       if (!existsSync(clone.dir)) continue;
-      if (verdict.completion !== "complete") {
-        // 6's input: retained, with what it costs.
+
+      // 3a. ASK GIT WHAT IS IN IT, for every clone of a run that is not
+      //     complete. Ruling 63 retains a directory because *it may hold the
+      //     only copy of someone's work*, and that is a claim about CONTENT.
+      //     Retaining a clone with nothing in it does not honour the ruling, it
+      //     just costs 67 MB (#19's measured incremental) and teaches an
+      //     operator that the retention line is noise — after which they delete
+      //     the one that mattered, which is finding 92 arriving by a slower
+      //     route. `kept.ts` answers `empty` ONLY on a positive finding from
+      //     git; every unknown retains and says so.
+      const work: CloneWork | null =
+        verdict.completion === "complete"
+          ? null
+          : await inspectClone(clone.dir, { runRoot: options.runRoot, sink });
+      if (work !== null && work.state !== "empty") {
+        // 6's input: retained, with what it costs and what it holds.
         retained.push({
           runId: run.runId,
           item: clone.item,
           path: clone.dir,
           bytes: directoryBytes(clone.dir),
-          reason: verdict.reason,
+          reason: `${verdict.reason}. ${work.detail}`,
+          work: work.state,
+          commit: work.commit,
         });
         continue;
       }
-      // 4. Complete: ruling 15's three proofs, every time.
+      const why =
+        work === null
+          ? "the run is complete: every item's ref is in the operator's repository"
+          : `the run is incomplete, and git reports this clone holds no work — ${work.detail}`;
+      // 4. Ruling 15's three proofs, every time, on both grounds for deleting.
       if (!apply) {
         const dry = proveDeletableDirectory(clone.dir, { runRoot: options.runRoot });
-        if (dry.deletable) reclaimedDirs.push({ runId: run.runId, item: clone.item, path: clone.dir, bytes: directoryBytes(clone.dir) });
+        if (dry.deletable) reclaimedDirs.push({ runId: run.runId, item: clone.item, path: clone.dir, bytes: directoryBytes(clone.dir), why });
         else refusedDirs.push({ runId: run.runId, item: clone.item, path: clone.dir, refusals: dry.refusals });
         continue;
       }
       const outcome = reclaimDirectory(clone.dir, { runRoot: options.runRoot });
       if (outcome.deleted) {
-        reclaimedDirs.push({ runId: run.runId, item: clone.item, path: clone.dir, bytes: outcome.bytes });
+        reclaimedDirs.push({ runId: run.runId, item: clone.item, path: clone.dir, bytes: outcome.bytes, why });
         reclaimStateDir(options.runRoot, run.runId, clone.item);
       } else {
         refusedDirs.push({
@@ -525,6 +621,8 @@ export async function sweepAtStart(options: StartSweepOptions): Promise<StartSwe
           path: clone.dir,
           bytes: directoryBytes(clone.dir),
           reason: `refused by ruling 15: ${outcome.verdict.refusals.join(" ")}`,
+          work: work?.state ?? "undetermined",
+          commit: work?.commit ?? null,
         });
       }
     }
@@ -570,7 +668,7 @@ export async function sweepAtStart(options: StartSweepOptions): Promise<StartSwe
   }
 
   const unconfirmedPids = processes.flatMap((outcome) => [...outcome.unconfirmed]);
-  return {
+  const report: StartSweepReport = {
     runsSeen: [...runIds].sort(),
     verdicts,
     processes,
@@ -584,6 +682,19 @@ export async function sweepAtStart(options: StartSweepOptions): Promise<StartSwe
     foreignMarked,
     inFlight,
   };
+
+  // 7. THE RETENTION NOTICE, on the channel the report's cap cannot reach.
+  //    See `StartSweepOptions.notify`: ruling 63's "every start reports what is
+  //    retained and what it costs" was being kept into `detail`, and the
+  //    default audience discards `detail`.
+  if (report.retained.length > 0) {
+    const notify = options.notify ?? ((line: string) => sink.errLine(line));
+    for (const line of describeRetention(report)) notify(`! ${line}`);
+  }
+  // The tail is held back until a sink is ended, so a notice written to a sink
+  // this function created would otherwise never reach stderr at all.
+  if (ownSink) sink.end();
+  return report;
 }
 
 async function ownedRefs(repo: string, git: GitRunner | undefined): Promise<OwnedRef[] | null> {
@@ -636,8 +747,11 @@ export function describeStartSweep(report: StartSweepReport): string[] {
   if (report.reclaimedDirs.length > 0) {
     const bytes = report.reclaimedDirs.reduce((sum, dir) => sum + dir.bytes, 0);
     lines.push(
-      `reclaimed ${report.reclaimedDirs.length} directory(ies) from completed runs, ${megabytes(bytes)}`,
+      `reclaimed ${report.reclaimedDirs.length} clone directory(ies), ${megabytes(bytes)}`,
     );
+    for (const dir of report.reclaimedDirs) {
+      lines.push(`  ${dir.runId} item ${dir.item}: ${dir.path} (${dir.bytes} bytes) — ${dir.why}`);
+    }
   }
   for (const refused of report.refusedDirs) {
     lines.push(`refused to delete ${refused.path}:`);
@@ -648,17 +762,7 @@ export function describeStartSweep(report: StartSweepReport): string[] {
   }
   for (const refused of report.refusedRefs) lines.push(`refused to delete ${refused.ref}: ${refused.refusal}`);
 
-  lines.push(
-    report.retained.length === 0
-      ? "0 clone(s) retained from earlier runs"
-      : `${report.retained.length} clone(s) retained from earlier runs, ${megabytes(report.retainedBytes)} — not merged, not reviewed, not deleted`,
-  );
-  for (const item of report.retained) {
-    lines.push(`  ${item.runId} item ${item.item}: ${item.path} (${megabytes(item.bytes)}) — ${item.reason}`);
-  }
-  if (report.retained.length > 0) {
-    lines.push("  discharge them explicitly to release the space; nothing here is deleted on your behalf");
-  }
+  lines.push(...describeRetention(report));
   if (report.unconfirmedPids.length > 0) {
     lines.push(
       `could not confirm dead: pid ${report.unconfirmedPids.join(", ")} — killing them is the only remedy`,
@@ -678,6 +782,35 @@ export function describeStartSweep(report: StartSweepReport): string[] {
       lines.push(`  pid ${foreign.pid}: run ${foreign.runId} item ${foreign.item} — another run root's to reclaim`);
     }
   }
+  return lines;
+}
+
+/**
+ * Ruling 63's third fact — WHAT IS RETAINED AND WHERE — in the words both
+ * channels print.
+ *
+ * One function, two callers, deliberately: `describeStartSweep` puts it in the
+ * run report and `sweepAtStart` puts it on stderr, and the two must not be able
+ * to tell an operator different things about the same directories. The line
+ * names the PATH, the EXACT BYTES and the MEGABYTES, and — the part that was
+ * missing — what git found in there. "67 MB retained" is a number; "67 MB
+ * holding commit 4f2c… " is a reason not to `rm -rf` it.
+ *
+ * Printed at every start including when there is nothing, because a line that
+ * only appears when something is wrong is a line nobody learns to read.
+ */
+export function describeRetention(report: StartSweepReport): string[] {
+  if (report.retained.length === 0) return ["0 clone(s) retained from earlier runs"];
+  const lines = [
+    `${report.retained.length} clone(s) retained from earlier runs, ${megabytes(report.retainedBytes)} — not merged, not reviewed, not deleted`,
+  ];
+  for (const item of report.retained) {
+    lines.push(
+      `  ${item.runId} item ${item.item}: ${item.path} (${megabytes(item.bytes)}, ${item.bytes} bytes) — ` +
+        `${describeWork(item)} — ${item.reason}`,
+    );
+  }
+  lines.push("  discharge them explicitly to release the space; nothing here is deleted on your behalf");
   return lines;
 }
 

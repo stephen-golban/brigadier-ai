@@ -194,6 +194,12 @@ describe("directories: only for runs that are complete", () => {
   test("an INCOMPLETE run's directories are retained, reported with path and bytes", async () => {
     // Item 2 never landed. Finding 92: this directory holds the only copy of
     // that work, and deleting it is the failure.
+    //
+    // These planted clones are not git repositories, so `kept.ts` reports them
+    // `undetermined` and every unknown retains. That is deliberate coverage of
+    // the unknown branch; the case where git CAN look inside — and reclaims a
+    // clone that holds nothing while keeping the one that holds a commit —
+    // is `test/run-kept.test.ts`.
     const runId = unique("incomplete1");
     await plantRun(runId, [1, 2], { landedForReal: [1] });
     const report = await sweepAtStart({ runRoot, table: EMPTY_TABLE });

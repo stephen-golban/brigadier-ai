@@ -39,6 +39,7 @@
  */
 
 import { applyOverride, type BridgeOverride } from "../agent/drift.ts";
+import { isCapped, type Audience } from "../report/budget.ts";
 import { PROFILES, ALL_AGENT_IDS, type AgentId, type LaunchProfile } from "../agent/profiles.ts";
 import { chooseRung, renderLadderOffered, type LadderOutcome, type RungDistance } from "../work/ladder.ts";
 import { DEFAULT_DESIRABILITY_CAP, planFanOut, type FanOut } from "../work/fanout.ts";
@@ -246,9 +247,35 @@ export function admit(input: AdmitInput): Admission {
   };
 }
 
-/** The lines `--dry-run` prints when a plan is admitted. */
-export function describeAdmission(admission: Admission, planPath: string): string[] {
+/**
+ * The lines an admitted plan prints, sized for whoever is paying for them.
+ *
+ * RULING 58'S CEILING IS ON THE WHOLE OF STDOUT, NOT ON THE REPORT ALONE, and
+ * that is a MEASURED repair rather than a tidy-up. MEASURED on 2026-08-18
+ * against `bun 1.3.14`: a fifty-item run into a host session printed 3,682
+ * tokens against a 2,000-token ceiling. `src/report/run-report.ts` was inside
+ * its budget the whole time — 1,648 of those tokens were THIS function, printed
+ * before the report and never counted against anything, because the cap was
+ * written as a property of one artifact rather than of the channel. A budget
+ * that only governs the last thing written is not a budget.
+ *
+ * So in `host-session` the two O(items) sections here — the wave membership and
+ * the per-item admission facts — collapse to counts, and everything that stays
+ * is O(1) or O(vendors). Nothing is lost that a reader cannot reach: the plan
+ * file is named on the first line and is where every per-item fact came from,
+ * and ruling 67's clamp is printed per item AGAIN in the run report, where the
+ * cap never collapses an item carrying a blocking check.
+ *
+ * A terminal reader keeps every line, and that difference is the negative
+ * control: a renderer that simply printed less would fail there.
+ */
+export function describeAdmission(
+  admission: Admission,
+  planPath: string,
+  audience: Audience = "terminal",
+): string[] {
   const { plan, agents, ladder, fanOut } = admission;
+  const capped = isCapped(audience);
   const lines = [
     `admitted — ${planPath}: ${plan.items.length} item(s) in ${plan.waves.length} wave(s)`,
   ];
@@ -286,7 +313,7 @@ export function describeAdmission(admission: Admission, planPath: string): strin
   }
   for (const [index, wave] of plan.waves.entries()) {
     const names = wave.map((n) => plan.items.find((i) => i.number === n)?.id ?? String(n));
-    lines.push(`  wave ${index + 1}     ${names.join(", ")}`);
+    lines.push(capped ? `  wave ${index + 1}     ${wave.length} item(s)` : `  wave ${index + 1}     ${names.join(", ")}`);
     const bound = fanOut[index];
     if (bound !== undefined) lines.push(`             ${bindingSentence(bound, index + 1)}`);
   }
@@ -296,13 +323,72 @@ export function describeAdmission(admission: Admission, planPath: string): strin
       "             commit and does not start until the gate on it did not block (ruling 54).",
     );
   }
-  for (const item of plan.items) {
-    for (const line of describeItem(item)) lines.push(`  ${line}`);
+  if (capped) {
+    for (const line of collapsedItems(plan.items, planPath)) lines.push(`  ${line}`);
+  } else {
+    for (const item of plan.items) {
+      for (const line of describeItem(item)) lines.push(`  ${line}`);
+    }
   }
   lines.push(
     "  ruling 37  a verify command committed in the repository is never read and never run:",
     "             brigadier runs the command the operator handed it, and nothing else.",
   );
+  return lines;
+}
+
+/**
+ * The per-item admission facts as COUNTS, for a reader that pays per byte.
+ *
+ * Ruling 58's collapse rule one artifact over: print fewer ITEMS, never fewer
+ * KINDS OF FACT. Every category a terminal reader would have seen is still
+ * named here — a clamped difficulty, an unclamped one, a resolved verify, an
+ * unconfigured verify — so a category cannot vanish by being empty-looking, and
+ * only the per-item repetition is gone. The clamp in particular is not dropped:
+ * a clamp that fired is printed with its item ids, because ruling 67 exists
+ * because v1's recurring shape is the silent downgrade nobody sees, and the
+ * clamped set is the one category whose size is bounded by how many items the
+ * operator over-declared rather than by the plan.
+ */
+export function collapsedItems(items: readonly PlannedItem[], planPath: string): string[] {
+  const clamped = items.filter(
+    (item) => item.difficulty !== null && item.clampedTo !== null && item.clampedTo !== item.difficulty,
+  );
+  const declared = items.filter(
+    (item) => item.difficulty !== null && item.clampedTo !== null && item.clampedTo === item.difficulty,
+  );
+  const resolved = items.filter((item) => item.verify.status === "resolved");
+  const unconfigured = items.filter((item) => item.verify.status === "unconfigured");
+  const lines = [
+    `items      ${items.length} item(s); per-item admission facts are COLLAPSED for a host session ` +
+      "(ruling 58: the ceiling is on everything this process writes, not on the report alone).",
+    `             they were computed from ${planPath} and every one of them is in the run record.`,
+  ];
+  if (clamped.length > 0) {
+    // Named rather than counted. Ruling 67: a clamp spends less than the
+    // operator asked for, and a silent downgrade is the shape it exists to stop.
+    for (const item of clamped) {
+      lines.push(`             ${item.id}    difficulty: ${item.difficulty} (clamped to ${item.clampedTo})`);
+    }
+  }
+  if (declared.length > 0) lines.push(`             ${declared.length} item(s) declared a difficulty that was NOT clamped`);
+  if (resolved.length > 0) lines.push(`             ${resolved.length} item(s) carry a verify command, resolved on PATH before anything ran`);
+  if (unconfigured.length > 0) {
+    lines.push(
+      `             ${unconfigured.length} item(s) verify: unconfigured — ruling 52 prints this, and does not block on it`,
+    );
+  }
+  // A category that is neither of the two above — a verify command that did not
+  // resolve — is NAMED rather than left to be inferred from arithmetic. A
+  // collapse that silently loses a category is exactly the shape ruling 52
+  // forbids one level down, and this is the only line here that can be reached
+  // by a state nobody thought of.
+  const other = items.length - resolved.length - unconfigured.length;
+  if (other > 0) {
+    lines.push(
+      `             ${other} item(s) whose verify command did NOT resolve on PATH — the plan's refusal above says which`,
+    );
+  }
   return lines;
 }
 

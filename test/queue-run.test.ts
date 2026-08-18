@@ -853,3 +853,119 @@ describe("an item's diff is re-derivable from the record alone (rulings 51, 52)"
     expect(git(world.repo, ["cat-file", "blob", `${first?.itemRef}:first.txt`])).toBe("first:");
   });
 });
+
+// ------------------------- a SINGLE item, and a run that lands nothing
+
+/**
+ * ONE item, end to end.
+ *
+ * Every other run in this file has at least two, and a fan-out hides a class of
+ * defect that only a plan of one can reach: a batch loop that never enters, a
+ * wave that publishes only when it has something to compare against, a ceiling
+ * check evaluated before anything has spent. A single-item run is the shape a
+ * first-time user actually types, and the assertions are on the object store —
+ * `git rev-parse` for the deliverable and `git cat-file` for the bytes.
+ */
+describe("a single-item run integrates, and its branch resolves", () => {
+  const world = makeWorld("single");
+  writeFileSync(join(world.repo, "solo.seed"), "solo-value\n");
+  const planPath = writePlan(world.dir, [
+    { id: "solo", kind: "write", paths: ["solo.txt"], prompt: "read=solo.seed out=solo.txt" },
+  ]);
+  const result = brigadier(world, [
+    "run", "--plan", planPath, "--repo", world.repo, "--run-root", world.runs, "--audience", "terminal",
+  ]);
+  const runId = readdirSync(join(world.runs, "r"))[0] ?? "";
+  const branch = `refs/heads/brigadier/${runId}`;
+
+  test("the deliverable RESOLVES, and the item's bytes are in its tree", () => {
+    expect(result.code).toBe(0);
+    const sha = git(world.repo, ["rev-parse", "--verify", "--quiet", `${branch}^{commit}`]);
+    expect(sha).toMatch(/^[0-9a-f]{40}$/);
+    expect(git(world.repo, ["cat-file", "blob", `${branch}:solo.txt`])).toBe("solo:solo-value");
+    expect(git(world.repo, ["ls-tree", "--name-only", "-r", branch]).split("\n")).toContain("solo.txt");
+  });
+
+  test("the record's integrationSha is what `git rev-parse` answered", () => {
+    const record = JSON.parse(readFileSync(join(world.runs, "r", runId, "record.json"), "utf8")) as {
+      integrationSha?: string;
+      items: Array<{ id: string; status: string; agent?: string }>;
+    };
+    expect(record.integrationSha).toBe(git(world.repo, ["rev-parse", `${branch}^{commit}`]));
+    expect(record.items).toHaveLength(1);
+    expect(record.items[0]?.status).toBe("integrated");
+    // Ruling 29's triple, from the spawn rather than from the routing choice.
+    expect(record.items[0]?.agent).toBe("qwen");
+  });
+});
+
+/**
+ * Ruling 52's invariant at the run level, and the defect it was measured
+ * failing.
+ *
+ * MEASURED on 2026-08-18 against `git 2.50.1`: a single-item run whose worker
+ * wrote a file it had not declared was rejected WHOLE by ruling 51's ownership
+ * check, and the headline read *"NOTHING INTEGRATED — 0 of 1 items landed on
+ * the integration branch; 1 retained; integration branch: fail."* — a status,
+ * a consequence, and no mention of the check that stopped it. A reader had to
+ * find the item's own line to learn that anything had been checked at all.
+ *
+ * Ruling 52's whole design is that absence is impossible: every blocking check's
+ * slot is written before the check runs, holding `not-run`, so a crash leaves a
+ * blocking value rather than an absent field. So a run that integrates nothing
+ * has a blocking check by construction, and the line an operator reads first is
+ * where it has to be named.
+ */
+describe("a run that integrates NOTHING always names the check that blocked it", () => {
+  const world = makeWorld("nothing");
+  writeFileSync(join(world.repo, "own.seed"), "own-value\n");
+  // Declares one path and writes another: ruling 51 rejects the item whole, and
+  // this is the ordinary way a real vendor produces a run that lands nothing.
+  const planPath = writePlan(world.dir, [
+    { id: "wanderer", kind: "write", paths: ["declared.txt"], prompt: "read=own.seed out=undeclared.txt" },
+  ]);
+  const result = brigadier(world, [
+    "run", "--plan", planPath, "--repo", world.repo, "--run-root", world.runs, "--audience", "terminal",
+  ]);
+  const runId = readdirSync(join(world.runs, "r"))[0] ?? "";
+
+  test("nothing reached the tree, and the branch does not resolve", () => {
+    expect(result.code).toBe(1);
+    expect(git(world.repo, ["rev-parse", "--verify", "--quiet", `refs/heads/brigadier/${runId}^{commit}`])).toBe("");
+    expect(result.stdout).toContain("NOTHING INTEGRATED");
+  });
+
+  test("the HEADLINE names the blocking check, not only the item's status", () => {
+    // The line before the record pointer — the first thing an operator reads,
+    // and the one part of the report ruling 58's cap never trims.
+    const headline = result.stdout.split("\n").find((line) => line.includes("NOTHING INTEGRATED")) ?? "";
+    expect(headline).toContain("blocked by integrate item N: fail");
+    expect(headline).not.toContain("NO BLOCKING CHECK WAS NAMED");
+  });
+
+  test("the check itself is on the item's line, with the checker's own words", () => {
+    const record = JSON.parse(readFileSync(join(world.runs, "r", runId, "record.json"), "utf8")) as {
+      items: Array<{ id: string; checks: Array<{ name: string; outcome: string; blocking: boolean }> }>;
+    };
+    const blocking = record.items[0]?.checks.filter((check) => check.blocking) ?? [];
+    expect(blocking.map((check) => check.outcome)).toContain("fail");
+    expect(result.stdout).toContain("wrote outside its declared paths");
+  });
+
+  test("NEGATIVE CONTROL: the same worker with the path DECLARED integrates", () => {
+    // Without this, "nothing integrated and said why" would also be satisfied by
+    // a build that integrates nothing ever.
+    const ok = makeWorld("nothing-control");
+    writeFileSync(join(ok.repo, "own.seed"), "own-value\n");
+    const okPlan = writePlan(ok.dir, [
+      { id: "wanderer", kind: "write", paths: ["undeclared.txt"], prompt: "read=own.seed out=undeclared.txt" },
+    ]);
+    const good = brigadier(ok, [
+      "run", "--plan", okPlan, "--repo", ok.repo, "--run-root", ok.runs, "--audience", "terminal",
+    ]);
+    const okRunId = readdirSync(join(ok.runs, "r"))[0] ?? "";
+    expect(good.code).toBe(0);
+    expect(good.stdout).not.toContain("NOTHING INTEGRATED");
+    expect(git(ok.repo, ["cat-file", "blob", `refs/heads/brigadier/${okRunId}:undeclared.txt`])).toBe("wanderer:own-value");
+  });
+});

@@ -22,7 +22,8 @@ import {
   type ResolvedAgent,
 } from "../src/queue/admit.ts";
 import { BRIEF_PREFIX, composeBrief } from "../src/queue/brief.ts";
-import { activeLevers, estimatePlan, NO_SAVINGS_CLAIM } from "../src/queue/estimate.ts";
+import { activeLevers, ceilingRefusal, estimatePlan, itemCeilingReserve, NO_SAVINGS_CLAIM } from "../src/queue/estimate.ts";
+import { ambientSuppression } from "../src/queue/execute.ts";
 import { validatePlan, type PlannedItem } from "../src/queue/plan.ts";
 import { planFanOut } from "../src/work/fanout.ts";
 
@@ -249,5 +250,84 @@ describe("ruling 66 and 70: a range, its provenance, and no savings claim", () =
     // because a footnote is not in the same block.
     expect(NO_SAVINGS_CLAIM).toMatch(claim);
     expect(NO_SAVINGS_CLAIM).toMatch(/makes no claim/i);
+  });
+});
+
+// -------------------------------- decision 17, per vendor rather than blanket
+
+/**
+ * The record's `ambientSuppressed` used to be a constant sentence claiming the
+ * config root was redirected *"for every worker"*.
+ *
+ * MEASURED against this tree on 2026-08-18: the redirect IS
+ * `LaunchProfile.configRootEnv`, and two shipped profiles declare none — so on a
+ * machine where one of those is the drivable vendor the run suppressed nothing
+ * and recorded that it had. A claim that is true on some machines and false on
+ * others, written as a constant, is the same failure as a check that reports
+ * success for something that did not happen.
+ */
+describe("decision 17: the suppression claim names the vendors it is true of", () => {
+  test("a vendor WITH a config-root variable is named with the variable", () => {
+    const lines = ambientSuppression([agent("qwen")]).join("\n");
+    expect(lines).toContain("qwen (QWEN_HOME)");
+    expect(lines).not.toContain("NO config-root redirect");
+  });
+
+  test("a vendor WITHOUT one is named as NOT suppressed, rather than covered by a blanket claim", () => {
+    // The negative control, and the reason this function exists: on this fleet
+    // the two answers are both reachable, and the old constant gave the first
+    // answer for both.
+    const bare = PROFILES["copilot"].configRootEnv;
+    expect(bare).toBeUndefined();
+    const lines = ambientSuppression([agent("copilot")]).join("\n");
+    expect(lines).toContain("NO config-root redirect exists for copilot");
+    expect(lines).toContain("still readable by them");
+    expect(lines).not.toContain("copilot (");
+  });
+
+  test("a mixed fleet says both halves, and the worker marker is claimed for all of them", () => {
+    const lines = ambientSuppression([agent("qwen"), agent("copilot")]).join("\n");
+    expect(lines).toContain("qwen (QWEN_HOME)");
+    expect(lines).toContain("NO config-root redirect exists for copilot");
+    // Ruling 57's marker is the one lever that really is universal, so it is the
+    // one sentence allowed to say so.
+    expect(lines).toContain("inert inside every worker");
+  });
+});
+
+// ------------------------------- ruling 66's two answers about a ceiling pair
+
+describe("ruling 66: an incoherent pair is refused and a narrow one is not", () => {
+  test("a hard ceiling at or below the soft one is REFUSED", () => {
+    const verdict = ceilingRefusal(1000, 1000, 1);
+    expect(verdict?.refuse).toBe(true);
+    expect(verdict?.lines.join(" ")).toContain("can never act first");
+  });
+
+  test("a narrow gap is a WEAKENING, not a refusal", () => {
+    // The repair. Refusing here left the operator with no run, no record, no
+    // report and no blocking check — a run that "integrated nothing" and named
+    // nothing, which is the shape ruling 52 exists to make unreachable.
+    const verdict = ceilingRefusal(1000, 1001, 1);
+    expect(verdict?.refuse).toBe(false);
+    expect(verdict?.lines.join(" ")).toContain("WEAKENED SOFT CEILING");
+    expect(verdict?.lines.join(" ")).toContain("The run PROCEEDS");
+  });
+
+  test("NEGATIVE CONTROL: a wide gap says nothing at all", () => {
+    expect(ceilingRefusal(1000, 1000 + itemCeilingReserve() * 2, 1)).toBeNull();
+    // And one ceiling on its own is not a pair, so the rule does not apply.
+    expect(ceilingRefusal(undefined, 1000, 1)).toBeNull();
+    expect(ceilingRefusal(1000, undefined, 1)).toBeNull();
+  });
+
+  test("the reserve scales with the workers that can be in flight", () => {
+    // Ruling 66's arithmetic: with W concurrent workers, W items are still
+    // running when the soft ceiling trips.
+    const oneWorker = ceilingRefusal(1000, 1000 + itemCeilingReserve() + 1, 1);
+    const threeWorkers = ceilingRefusal(1000, 1000 + itemCeilingReserve() + 1, 3);
+    expect(oneWorker).toBeNull();
+    expect(threeWorkers?.refuse).toBe(false);
+    expect(threeWorkers?.lines.join(" ")).toContain("WEAKENED SOFT CEILING");
   });
 });

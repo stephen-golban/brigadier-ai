@@ -55,7 +55,7 @@ import {
   type Difficulty,
 } from "./queue/index.ts";
 import { defaultRunRoot, isTempRooted } from "./repo/layout.ts";
-import type { Audience } from "./report/index.ts";
+import { estimateTokens, type Audience } from "./report/index.ts";
 import { abandon, initialState, onSignal, type InterruptState } from "./run/interrupt.ts";
 import { renderCompetence, tableProblems, unlistedModels } from "./router/table.ts";
 import { Sink, type Grant } from "./secrets/sink.ts";
@@ -490,10 +490,17 @@ async function run(): Promise<number> {
     value("hard-ceiling") === undefined ? undefined : Number(value("hard-ceiling")),
     admission.fanOut[0]?.workers ?? 1,
   );
+  // Two answers, and only one of them stops the run. A pair whose soft ceiling
+  // can never act first is refused and nothing is created; a pair whose gap is
+  // merely too narrow is a WEAKENED soft ceiling, said out loud before anything
+  // is spent and carried into the report — because refusing there left the
+  // operator with no run, no record and no blocking check at all.
   if (gap !== null) {
-    for (const line of gap) sink.errLine(line);
-    sink.errLine("nothing was started.");
-    return 4;
+    for (const line of gap.lines) sink.errLine(line);
+    if (gap.refuse) {
+      sink.errLine("nothing was started.");
+      return 4;
+    }
   }
 
   if (flag("estimate")) {
@@ -507,7 +514,15 @@ async function run(): Promise<number> {
     return 0;
   }
 
-  for (const line of describeAdmission(admission, planPath)) sink.outLine(line);
+  // The AUDIENCE travels with it. Ruling 58's ceiling is on everything this
+  // process writes to stdout, not on the report alone — a fifty-item run
+  // measured 3,682 tokens against a 2,000-token ceiling with the report already
+  // inside its budget, because these lines were never counted against anything.
+  const admitted = describeAdmission(admission, planPath, audience);
+  for (const line of admitted) sink.outLine(line);
+  // What those lines cost, measured on the bytes that were actually written, and
+  // handed to the run so the report spends what is LEFT of the ceiling.
+  const prologueTokens = estimateTokens(admitted.join("\n"));
 
   if (flag("dry-run")) {
     sink.outLine("nothing was started: --dry-run stops before the run root is created.");
@@ -528,6 +543,9 @@ async function run(): Promise<number> {
     planPath,
     admission,
     audience,
+    // Ruling 58: what the admission block above already charged to this stdout,
+    // so the report spends what is LEFT of the ceiling rather than all of it.
+    prologueTokens,
     verify,
     review: flag("review"),
     ...(value("planted") === undefined ? {} : { planted: Number(value("planted")) }),

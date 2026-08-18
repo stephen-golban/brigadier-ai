@@ -156,6 +156,7 @@ interface RecordShape {
     hardCeiling?: number;
     softCeilingHit?: boolean;
     hardCeilingHit?: boolean;
+    gapWarning?: string;
     quota: Record<string, string>;
     levers: string[];
     lowerBound: boolean;
@@ -322,26 +323,43 @@ describe("ruling 66: the SOFT ceiling stops NEW items and lets the in-flight one
   });
 });
 
-// ------------- the gap between them, refused before anything is created
+// ------------- the gap between them: refused, weakened, or unremarkable
 
-describe("ruling 66: a gap too narrow for one in-flight item is refused BEFORE anything is spent", () => {
+/**
+ * Ruling 66's structural rule has TWO answers, and the difference between them
+ * was a measured defect.
+ *
+ * *The gap between the ceilings must exceed the most expensive item that could
+ * be in flight, or the soft ceiling never prevents the hard one firing.* That
+ * used to refuse the whole run. MEASURED on 2026-08-18 against `bun 1.3.14`:
+ * `itemCeilingReserve()` is 71,835 tokens, so every ceiling pair leaving less
+ * headroom than that per in-flight worker exited 4 with nothing created — no
+ * clone, no record, no report and no blocking check. A run that "integrated
+ * nothing" and named nothing is the exact shape ruling 52 exists to make
+ * unreachable, and it was being produced by the control ruling 66 calls primary.
+ *
+ * So: an INCOHERENT pair is still refused, because no spend can make its soft
+ * ceiling act first. A merely NARROW gap runs, with the weakening stated before
+ * anything is spent and carried into the record and the report.
+ */
+describe("ruling 66: a soft ceiling at or above the hard one is refused BEFORE anything is spent", () => {
   const world = makeWorld("gap");
   const result = brigadier(world, [
     "run", "--plan", planFile(world), "--repo", world.repo, "--run-root", world.runs,
-    "--workers", "1", "--soft-ceiling", "1000", "--hard-ceiling", "1001", "--audience", "terminal",
+    "--workers", "1", "--soft-ceiling", "1001", "--hard-ceiling", "1000", "--audience", "terminal",
   ]);
 
-  test("it names the arithmetic and the remedy, and creates nothing", () => {
+  test("it names the ordering and the remedy, and creates nothing", () => {
     expect(result.code).toBe(4);
-    expect(result.stderr).toContain("soft ceiling stops NEW items");
-    expect(result.stderr).toContain("Remedy: raise --hard-ceiling above");
+    expect(result.stderr).toContain("can never act first");
+    expect(result.stderr).toContain("Remedy: --hard-ceiling must be above --soft-ceiling");
     expect(result.stderr).toContain("nothing was started.");
     expect(readdirSync(world.runs)).toEqual([]);
   });
 
-  test("NEGATIVE CONTROL: a wide enough gap is not refused", () => {
+  test("NEGATIVE CONTROL: an ordinary pair is not refused", () => {
     // Without this the refusal above would also pass on a build that refuses
-    // every pair of ceilings.
+    // every pair of ceilings — which is the defect this describe block replaced.
     const wide = makeWorld("gap-ok");
     const ok = brigadier(wide, [
       "run", "--plan", planFile(wide), "--repo", wide.repo, "--run-root", wide.runs,
@@ -349,6 +367,61 @@ describe("ruling 66: a gap too narrow for one in-flight item is refused BEFORE a
       "--dry-run",
     ]);
     expect(ok.code).toBe(0);
-    expect(ok.stderr).not.toContain("Remedy: raise --hard-ceiling above");
+    expect(ok.stderr).not.toContain("can never act first");
+    expect(ok.stderr).not.toContain("WEAKENED SOFT CEILING");
+  });
+});
+
+describe("ruling 66: a NARROW gap weakens the soft ceiling and RUNS, rather than refusing", () => {
+  const world = makeWorld("narrow");
+  // One item's worth of traffic fits under the soft ceiling and the hard one is
+  // a single token above it: the narrowest legal pair there is.
+  const soft = Math.floor(PER_ITEM_TOKENS * 0.6);
+  const hard = soft + 1;
+  const result = brigadier(world, [
+    "run", "--plan", planFile(world), "--repo", world.repo, "--run-root", world.runs,
+    "--workers", "1", "--soft-ceiling", String(soft), "--hard-ceiling", String(hard), "--audience", "terminal",
+  ]);
+
+  test("the run HAPPENS: a run root, a record, and items with statuses", () => {
+    // The whole point of the repair. The old build exited 4 here and created
+    // nothing, so an operator asking for a hard ceiling got no run at all.
+    expect(result.code).not.toBe(4);
+    expect(readdirSync(world.runs)).toContain("r");
+    const { record } = runOf(world);
+    expect(record.items.length).toBe(3);
+  });
+
+  test("the weakening is stated BEFORE anything is spent, and again in the record", () => {
+    expect(result.stderr).toContain("WEAKENED SOFT CEILING");
+    expect(result.stderr).toContain("The run PROCEEDS");
+    const { record } = runOf(world);
+    expect(record.cost?.gapWarning ?? "").toContain("WEAKENED SOFT CEILING");
+    // And it reaches the reader of the report, not only the stderr of a process
+    // that has since exited.
+    expect(result.stdout).toContain("WEAKENED SOFT CEILING");
+  });
+
+  test("a ceiling still FIRED, and the report says which one", () => {
+    const { record } = runOf(world);
+    expect(record.cost?.softCeilingHit === true || record.cost?.hardCeilingHit === true).toBe(true);
+    expect(result.stdout).toMatch(/HARD CEILING FIRED|soft ceiling reached/);
+  });
+
+  test("NOTHING INTEGRATED never happens without a blocking check being NAMED", () => {
+    // Ruling 52's invariant at the run level: every blocking check's slot is
+    // written before the check runs, so a run that landed nothing has one by
+    // construction. The headline is where an operator reads it.
+    const { record } = runOf(world);
+    const landed = record.items.filter((entry) => entry.status === "integrated").length;
+    if (landed === 0) {
+      expect(result.stdout).toContain("NOTHING INTEGRATED");
+      expect(result.stdout).toContain("blocked by");
+      expect(result.stdout).not.toContain("NO BLOCKING CHECK WAS NAMED");
+    } else {
+      // The soft ceiling let the in-flight item finish, which is the other legal
+      // outcome of this pair and is asserted rather than assumed away.
+      expect(result.stdout).toMatch(/PARTIAL INTEGRATION|items landed/);
+    }
   });
 });

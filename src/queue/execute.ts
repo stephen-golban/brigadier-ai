@@ -157,7 +157,7 @@ import {
   type ReviewerChoice,
 } from "./review.ts";
 import { spawnMarkedAgent } from "./spawn.ts";
-import { describeEstimate, estimatePlan, tokensFromBytes } from "./estimate.ts";
+import { ceilingRefusal, describeEstimate, estimatePlan, tokensFromBytes } from "./estimate.ts";
 import type { PlannedItem } from "./plan.ts";
 
 /**
@@ -230,6 +230,16 @@ export interface ExecuteOptions {
   xhigh?: readonly string[];
   softCeiling?: number;
   hardCeiling?: number;
+  /**
+   * Ruling 58: tokens the CALLER already put on this process's stdout.
+   *
+   * The ceiling is on the channel rather than on the report, because every byte
+   * on that stdout lands in the same context window and is charged once. The
+   * caller printed the admission block before calling this, so it is the only
+   * thing that knows the number, and it hands it over rather than this file
+   * recomputing something that might diverge from what was actually written.
+   */
+  prologueTokens?: number;
   runId?: string;
   handshakeTimeoutMs?: number;
   workerTimeoutMs?: number;
@@ -491,7 +501,24 @@ interface ItemRun {
   checks: CheckResult[];
   clone: AgentOwnedClone | null;
   clonePath: string | null;
+  /**
+   * The vendor the router CHOSE for this item. What was planned, and nothing
+   * more — a name here is not evidence that anything ran.
+   */
   agent: string | null;
+  /**
+   * The vendor whose process actually SPAWNED, set from the spawn itself.
+   *
+   * Ruling 32's pass/fail property is *the reviewer's vendor differs from the
+   * builder's*, so an identity taken from the plan rather than from the process
+   * can render a same-vendor review as cross-vendor or the reverse — a wrong
+   * answer to the one question the field exists to answer. `agent` above is what
+   * was intended; this is what happened, and it is `null` until `Bun.spawn`
+   * returned a pid. The record and the report carry both, because "routed to
+   * qwen and never started" and "qwen ran" are different facts and only one of
+   * them is a vendor having been used.
+   */
+  spawnedAgent: string | null;
   model: string | null;
   /** Ruling 54: wave 1's is the base commit, wave N+1's is the previous integration commit. */
   baseRef: string;
@@ -528,7 +555,16 @@ interface ItemRun {
 /** What the review phase learned about one item. */
 interface ItemReview {
   outcome: CheckOutcome;
+  /** The vendor the router chose to review with. A choice, not an event. */
   reviewer: string | null;
+  /**
+   * The vendor whose reviewer process actually spawned, from the spawn itself.
+   *
+   * Same rule as `ItemRun.spawnedAgent` and for the same ruling: a reviewer
+   * identity read off the plan says a review happened when a spawn failed, and
+   * ruling 32's whole property is a comparison between two identities.
+   */
+  spawnedReviewer: string | null;
   crossVendor: boolean;
   sameVendorReason?: string;
   /** Charged to brigadier, never to the item's ladder (ruling 52). */
@@ -588,6 +624,7 @@ async function runItem(
     clone: null,
     clonePath: null,
     agent: agent?.id ?? null,
+    spawnedAgent: null,
     model: null,
     // Recorded per item rather than per run: ruling 54 gives wave N+1 a
     // different base from wave 1, so "the left-hand side of this item's diff" is
@@ -670,6 +707,10 @@ async function runItem(
         onFrame: (direction, raw) => transcript.push(`${item.id} ${direction} ${raw}`),
       });
       spawned = marked;
+      // IDENTITY FROM THE SPAWN, not from the plan. `Bun.spawn` has returned a
+      // pid by here and `marked.commandLine` is the argv a `ps` scan will see,
+      // so this is the first moment at which a vendor can be said to have run.
+      result.spawnedAgent = profile.id;
       mkdirSync(join(clone.stateDir, "agent-config"), { recursive: true });
       mkdirSync(join(clone.stateDir, "tmp"), { recursive: true });
       recordEvent(sink, record, {
@@ -914,6 +955,7 @@ async function reviewItem(
   const number = run.item.number;
   const base: Omit<ItemReview, "outcome" | "blocks"> = {
     reviewer: choice.agent?.id ?? null,
+    spawnedReviewer: null,
     crossVendor: choice.crossVendor,
     ...(choice.sameVendorReason === undefined ? {} : { sameVendorReason: choice.sameVendorReason }),
     reviewerAttempts: 0,
@@ -1009,6 +1051,11 @@ async function reviewItem(
         onFrame: (direction, raw) => transcript.push(`${run.item.id} review ${direction} ${raw}`),
       });
       spawned = marked;
+      // The reviewer's identity, from the reviewer's own spawn. Ruling 32's
+      // property is a comparison between this and the builder's, and a name
+      // taken from the routing choice would answer it about a process that may
+      // never have existed.
+      base.spawnedReviewer = profile.id;
       recordEvent(sink, record, {
         type: "process-spawned",
         at: Date.now(),
@@ -1063,7 +1110,11 @@ async function reviewItem(
         continue;
       }
       const caught = caughtIn(diff, verdict.found);
-      const qualifier = reviewQualifier(choice, profile.id, run.agent);
+      // Both sides of ruling 32's comparison come from spawns: `profile.id` is
+      // the reviewer this loop just started, and `spawnedAgent` is the builder
+      // whose process really ran. A qualifier built from the routing choice
+      // would name a builder that may never have started.
+      const qualifier = reviewQualifier(choice, profile.id, run.spawnedAgent);
       return settle(
         verdict.verdict === "approved" ? "pass" : "fail",
         qualifier,
@@ -1101,7 +1152,7 @@ async function reviewItem(
 
   return settle(
     "error",
-    reviewQualifier(choice, profile.id, run.agent),
+    reviewQualifier(choice, profile.id, run.spawnedAgent),
     `the reviewer produced no verdict in ${attempts} attempt(s): ${failures.join("; ")}. Ruling 52 calls ` +
       "this `error` and not `fail`: the CHECKER broke, so the remedy is to re-run the reviewer, and " +
       "sending the builder to fix a defect that is not in its code would burn a rung of ruling 24's " +
@@ -1346,6 +1397,9 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
           run.review = {
             outcome: "not-run",
             reviewer: null,
+            // Nothing spawned, so nothing reviewed. The field says so rather
+            // than naming the vendor that would have been asked.
+            spawnedReviewer: null,
             crossVendor: reviewer.crossVendor,
             ...(reviewer.sameVendorReason === undefined ? {} : { sameVendorReason: reviewer.sameVendorReason }),
             reviewerAttempts: 0,
@@ -1726,7 +1780,12 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
             ? "failed"
             : "integrated",
       kind: run.item.kind,
-      ...(run.agent === null ? {} : { agent: run.agent }),
+      // WHAT SPAWNED, and separately what was ROUTED. Ruling 29's triple is
+      // about a vendor that ran; `routedAgent` is the choice, and an item that
+      // was routed and never started carries the second without the first
+      // rather than borrowing the plan's answer for both.
+      ...(run.spawnedAgent === null ? {} : { agent: run.spawnedAgent }),
+      ...(run.agent === null ? {} : { routedAgent: run.agent }),
       ...(run.model === null ? {} : { model: run.model }),
       // Ruling 29's triple is complete only with this. Rendered so the qualifier
       // is INSIDE the value: `high` alone would read as what ran, and #45
@@ -1747,8 +1806,15 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
       attempts: 1,
       attemptsAvailable: rungsOffered(options.admission.ladder),
       ladder: renderLadder(ladderTaken(options.admission.ladder, 1)),
-      ...(run.agent === null ? {} : { builderAgent: run.agent }),
-      ...(run.review === null || run.review.reviewer === null ? {} : { reviewerAgent: run.review.reviewer }),
+      // Ruling 32's two identities, BOTH from spawns. This pair is the pass/fail
+      // property — the reviewer's vendor differs from the builder's — so a name
+      // here that came from the routing table could render a same-vendor review
+      // as cross-vendor, or the reverse, without anything having gone wrong that
+      // a reader could see.
+      ...(run.spawnedAgent === null ? {} : { builderAgent: run.spawnedAgent }),
+      ...(run.review === null || run.review.spawnedReviewer === null
+        ? {}
+        : { reviewerAgent: run.review.spawnedReviewer }),
       ...(run.review === null ? {} : { reviewVerdict: run.review.outcome, reviewerAttempts: run.review.reviewerAttempts }),
       ...(run.review === null || run.review.caught.length === 0 ? {} : { caughtDefects: run.review.caught }),
       checks: run.checks.map(checkRecord),
@@ -1838,6 +1904,15 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
     options.admission.fanOut[0]?.workers ?? 1,
     options.admission.agents.map((agent) => agent.id),
   );
+  // The same verdict the CLI computed before it started this run, recomputed
+  // from the same three inputs rather than passed down as prose: the sentence in
+  // the record has to be the one ruling 66's arithmetic produces, and a string
+  // handed through an option is a string a caller could compose differently.
+  const ceilingGap = ceilingRefusal(
+    options.softCeiling,
+    options.hardCeiling,
+    options.admission.fanOut[0]?.workers ?? 1,
+  );
   // RULING 59, COUNTED RATHER THAN ASSUMED ZERO.
   //
   // This field was the literal `0` on every run brigadier had ever produced,
@@ -1885,14 +1960,35 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
   // all (ruling 49), and recording the machine's CAPABILITY as though it were an
   // event is exactly the field-shaped version of the rule ruling 32 states in
   // prose — so the run-level answer says which of the three happened.
-  const reviewedAny = runs.some((run) => run.review !== null && run.review.reviewer !== null);
+  //
+  // AND IT IS COUNTED FROM SPAWNS. `run.review.reviewer` is the vendor the
+  // router chose; `spawnedReviewer` is the one whose process started. A run
+  // where the reviewer was routed and never spawned satisfied the first and
+  // recorded a review that did not happen.
+  const spawnedBuilders = [...new Set(runs.map((run) => run.spawnedAgent).filter((id): id is string => id !== null))];
+  const spawnedReviewers = [
+    ...new Set(runs.map((run) => run.review?.spawnedReviewer ?? null).filter((id): id is string => id !== null)),
+  ];
+  const reviewedAny = spawnedReviewers.length > 0;
   const nothingReviewable =
     "no item in this plan is a `write` item, so ruling 49 left no diff for a reviewer to be handed " +
     "and ruling 32's cross-vendor rule had nothing to apply to. Nothing was reviewed and nothing " +
     "here claims otherwise.";
-  const reviewReason = reviewedAny
-    ? reviewer.sameVendorReason
-    : (reviewer.sameVendorReason ?? nothingReviewable);
+  // A cross-vendor promise the SPAWNS did not keep is stated rather than left
+  // to print as "no reason was recorded". The router decides from `PATH`; what
+  // actually started is the only thing that settles ruling 32, and when the two
+  // disagree the disagreement is the reason.
+  const routedCrossVendorBroken =
+    reviewer.crossVendor &&
+    reviewedAny &&
+    spawnedReviewers.some((id) => spawnedBuilders.includes(id));
+  const reviewReason = routedCrossVendorBroken
+    ? `the reviewer was ROUTED cross-vendor and the processes that actually spawned were not: ` +
+      `builders ${spawnedBuilders.join(", ")}, reviewers ${spawnedReviewers.join(", ")}. Ruling 32's ` +
+      "property is a comparison between what ran, so this review is recorded as the weaker one it was."
+    : reviewedAny
+      ? reviewer.sameVendorReason
+      : (reviewer.sameVendorReason ?? nothingReviewable);
 
   const runRecord: RunRecord = {
     runId,
@@ -1904,9 +2000,18 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
     bindingFilter: options.admission.fanOut[0]?.boundBy ?? "item-count",
     workers: options.admission.fanOut[0]?.workers ?? 0,
     refusedDelegations: refusals.count,
-    ambientSuppressed: [
-      "the agent's config root is redirected into brigadier's own state directory for every worker (decision 17)",
-    ],
+    // DECISION 17, PER VENDOR RATHER THAN AS A BLANKET CLAIM.
+    //
+    // This read *"the agent's config root is redirected … for every worker"* on
+    // every run, unconditionally. It is not true for every worker: the redirect
+    // is `LaunchProfile.configRootEnv`, and MEASURED against this tree on
+    // 2026-08-18 two of the shipped profiles — copilot and gemini — declare no
+    // such variable, so nothing about their config root is changed and a
+    // user-global instruction file under `$HOME` is still theirs to read. A run
+    // on one of those vendors was claiming a suppression it had not performed,
+    // which is the same shape as a check reporting success for something that
+    // did not happen — the defect this codebase exists to remove, one field over.
+    ambientSuppressed: ambientSuppression(options.admission.agents),
     // Ruling 32's standing rule as a FIELD rather than a sentence. `crossVendor`
     // is true only when a reviewer of a different vendor actually ran; writing
     // `true` because two vendors happened to resolve on `PATH` would be a record
@@ -1915,10 +2020,18 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
     ...(options.review
       ? {
           review: {
-            crossVendor: reviewer.crossVendor && reviewedAny,
+            // The PROPERTY, computed rather than copied from the routing
+            // choice: every reviewer that spawned is of a vendor no builder
+            // that spawned used. Two processes, two identities, one comparison
+            // — which is what ruling 32 actually asks and what a field carried
+            // down from `admit` could not answer.
+            crossVendor:
+              reviewedAny &&
+              spawnedBuilders.length > 0 &&
+              spawnedReviewers.every((id) => !spawnedBuilders.includes(id)),
             ...(reviewReason === undefined ? {} : { sameVendorReason: reviewReason }),
-            ...(reviewer.agent === null || !reviewedAny ? {} : { reviewerAgent: reviewer.agent.id }),
-            ...(agent === null ? {} : { builderAgent: agent.id }),
+            ...(spawnedReviewers.length === 0 ? {} : { reviewerAgent: spawnedReviewers.join(", ") }),
+            ...(spawnedBuilders.length === 0 ? {} : { builderAgent: spawnedBuilders.join(", ") }),
             caught: caughtAll.length,
             ...(options.planted === undefined ? {} : { planted: options.planted }),
             caughtDefects: caughtAll,
@@ -1950,6 +2063,10 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
       actual: spend.tokens,
       ...(options.softCeiling === undefined ? {} : { softCeiling: options.softCeiling }),
       ...(options.hardCeiling === undefined ? {} : { hardCeiling: options.hardCeiling }),
+      // Ruling 66's structural rule, carried instead of shouted once. The CLI
+      // prints this before anything is spent; a record that dropped it would
+      // describe a soft ceiling the reader has no way to know was weakened.
+      ...(ceilingGap === null || ceilingGap.refuse ? {} : { gapWarning: ceilingGap.lines.join(" ") }),
       // Ruling 66: the report DISTINGUISHES them, so the record carries them
       // apart. Written unconditionally rather than only when true — an absent
       // boolean reads as "not measured", and these were.
@@ -1989,6 +2106,7 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
     unconfirmedPids: start.unconfirmedPids,
     audience: options.audience,
     detail: [...notes, "", ...describeEstimate(estimate)],
+    budgetSpent: options.prologueTokens ?? 0,
     },
     sink,
   );
@@ -2014,6 +2132,42 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
   }
 
   return { sink, grant, recordPath: jsonRecord, exitCode: ok ? 0 : 1, interruptedBy };
+}
+
+/**
+ * Decision 17's suppression, said per vendor because that is how it works.
+ *
+ * `buildEnvironment` sets `profile.configRootEnv` to the item's own state
+ * directory, and a profile that declares no such variable gets no redirect at
+ * all — there is no universal lever, only a per-vendor one. So the record names
+ * both halves: the vendors it was applied to, and the vendors it could not be
+ * applied to and why.
+ *
+ * The second half is the one that matters. A run that suppressed nothing while
+ * recording that it had is indistinguishable, to every reader and every bar
+ * item, from a run that suppressed everything.
+ */
+export function ambientSuppression(agents: readonly { id: string; profile: { configRootEnv?: string } }[]): string[] {
+  const lines: string[] = [];
+  const redirected = agents.filter((agent) => agent.profile.configRootEnv !== undefined);
+  const bare = agents.filter((agent) => agent.profile.configRootEnv === undefined);
+  if (redirected.length > 0) {
+    lines.push(
+      `the config root is redirected into brigadier's own state directory for ` +
+        `${redirected.map((agent) => `${agent.id} (${agent.profile.configRootEnv})`).join(", ")} (decision 17)`,
+    );
+  }
+  if (bare.length > 0) {
+    lines.push(
+      `NO config-root redirect exists for ${bare.map((agent) => agent.id).join(", ")}: their launch profile ` +
+        "declares no variable for it, so decision 17's lever could not be pulled and a user-global " +
+        "instruction file under $HOME is still readable by them. Stated rather than assumed away — a " +
+        "suppression that did not happen must not be recorded as one.",
+    );
+  }
+  // The worker marker is universal and is the one that does hold everywhere.
+  lines.push("brigadier's own plugin is inert inside every worker: the worker marker is set on all of them (ruling 57)");
+  return lines;
 }
 
 /** Used by the CLI to decide whether the run root is usable before anything is created. */

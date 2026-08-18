@@ -186,6 +186,7 @@ interface RecordShape {
     sameVendorReason?: string;
     reviewerAgent?: string;
     builderAgent?: string;
+    routedAgent?: string;
     caught?: number;
     planted?: number;
     caughtDefects?: string[];
@@ -198,6 +199,8 @@ interface RecordShape {
     attempts?: number;
     attemptsAvailable?: number;
     ladder?: string;
+    agent?: string;
+    routedAgent?: string;
     builderAgent?: string;
     reviewerAgent?: string;
     reviewVerdict?: string;
@@ -560,5 +563,83 @@ describe("NEGATIVE CONTROL: without --review nothing above happens at all", () =
     expect(record.items[0]?.checks.some((c) => c.name === "review")).toBe(false);
     expect(result.stdout).not.toContain("SAME-VENDOR");
     expect(existsSync(join(world.sawDiff))).toBe(false);
+  });
+});
+
+// ------------------------------------- identity comes from what SPAWNED
+
+/**
+ * Ruling 32's pass/fail property is a comparison between two identities — *the
+ * reviewer's vendor differs from the builder's* — so where those two names come
+ * from decides the answer.
+ *
+ * They used to come from `admit`: the run's `builderAgent` was
+ * `admission.agents[0]` and its `reviewerAgent` was the routing choice, both
+ * written whether or not a process ever started. A misattributed identity can
+ * render a same-vendor review as cross-vendor or the reverse, which is a WRONG
+ * ANSWER to the one question the field exists to answer rather than a missing
+ * one — so the names now come from the spawns, and what the router chose is
+ * kept beside them under a different name.
+ *
+ * The negative control is a vendor that RESOLVES on `PATH` and cannot be
+ * spawned. `Bun.which` finds it, `admit` routes it, and nothing ever runs: the
+ * exact gap between "planned" and "happened" that no ordinary run exposes.
+ */
+describe("rulings 32 and 29: the recorded identity is the one that SPAWNED", () => {
+  const world = makeWorld("identity", [{ id: "qwen" }, { id: "copilot" }]);
+  const result = brigadier(world, [
+    "run", "--plan", plan(world), "--repo", world.repo, "--run-root", world.runs, "--review", "--audience", "terminal",
+  ]);
+  const { record, branch } = runOf(world);
+
+  test("both names are vendors whose processes really started", () => {
+    const spawned = readFileSync(join(world.runs, "r", runOf(world).runId, "record.ndjson"), "utf8")
+      .split("\n")
+      .filter((line) => line.includes('"process-spawned"'))
+      .map((line) => (JSON.parse(line) as { commandLine: string }).commandLine);
+    expect(spawned.length).toBeGreaterThanOrEqual(2);
+    const item = record.items.find((entry) => entry.id === "solo");
+    // The argv a `ps` scan would have seen is the evidence, not the record's
+    // own account of itself.
+    expect(spawned.some((line) => line.startsWith(`${item?.builderAgent}`))).toBe(true);
+    expect(spawned.some((line) => line.startsWith(`${item?.reviewerAgent}`))).toBe(true);
+    expect(item?.agent).toBe(item?.builderAgent);
+    expect(result.code).toBe(0);
+  });
+
+  test("cross-vendor is the COMPARISON of those two, not the router's intention", () => {
+    const item = record.items.find((entry) => entry.id === "solo");
+    expect(item?.builderAgent).not.toBe(item?.reviewerAgent);
+    expect(record.review?.crossVendor).toBe(true);
+    expect(record.review?.builderAgent).toBe(item?.builderAgent);
+    expect(record.review?.reviewerAgent).toBe(item?.reviewerAgent);
+    expect(blob(world, branch, "solo.txt")).toContain("solo:seed-identity");
+  });
+
+  test("NEGATIVE CONTROL: a vendor that RESOLVES and cannot spawn is `routedAgent`, never `agent`", () => {
+    // Without this, "the identity is the one that spawned" would also be
+    // satisfied by a build that still copies the routing choice — on a healthy
+    // machine the two agree, which is precisely why the old defect survived.
+    const dead = makeWorld("identity-unspawnable", [{ id: "qwen" }]);
+    // A file on PATH that `Bun.which` RESOLVES and `Bun.spawn` cannot execute.
+    // MEASURED against `bun 1.3.14` on 2026-08-18: a mode-0644 file is not
+    // resolved by `Bun.which` at all — so clearing the exec bit would test
+    // admission rather than spawning — while a mode-0755 file whose shebang
+    // names a nonexistent interpreter resolves and makes `Bun.spawn` throw
+    // `ENOENT ... posix_spawn`. That is the only gap between "routed" and
+    // "started" a test can stand in.
+    writeFileSync(join(dead.bin, "qwen"), "#!/nonexistent/interpreter-for-this-test\nexit 0\n");
+    chmodSync(join(dead.bin, "qwen"), 0o755);
+    const failed = brigadier(dead, [
+      "run", "--plan", plan(dead), "--repo", dead.repo, "--run-root", dead.runs, "--audience", "terminal",
+    ]);
+    const item = runOf(dead).record.items.find((entry) => entry.id === "solo");
+    expect(item?.routedAgent).toBe("qwen");
+    expect(item?.agent).toBeUndefined();
+    expect(item?.builderAgent).toBeUndefined();
+    // And the report says which of the two it is, rather than printing a triple
+    // that credits qwen with a turn it never took.
+    expect(failed.stdout).toContain("routed to qwen — NO PROCESS SPAWNED");
+    expect(failed.code).not.toBe(0);
   });
 });

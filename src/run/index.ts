@@ -21,6 +21,11 @@
  *                           for runs that are complete — and scoped to runs THIS
  *                           root has a record of, because a marker is identity
  *                           and not authority.
+ *     inspectClone        — ruling 63's retention clause is a claim about
+ *                           CONTENT ("it may hold the only copy of someone's
+ *                           work"), so the question is put to git rather than to
+ *                           a record. A clone git positively reports as empty is
+ *                           reclaimed; every unknown is retained and says so.
  *     dischargeRun        — the only thing that makes a retained directory
  *                           deletable. Permission, not an instruction.
  *     proveDeletableDirectory / reclaimRef
@@ -46,6 +51,17 @@ export {
   type InterruptState,
   type UnfinishedRun,
 } from "./interrupt.ts";
+
+export {
+  CHANGED_PATHS_SHOWN,
+  describeWork,
+  inspectClone,
+  resolveHead,
+  resolveRef,
+  type CloneWork,
+  type InspectOptions,
+  type WorkState,
+} from "./kept.ts";
 
 export { markerMatches, parseRunMarker, runMarkerArg, type MarkerScope, type RunMarker } from "./marker.ts";
 
@@ -120,6 +136,7 @@ export {
 } from "./sweep.ts";
 
 export {
+  describeRetention,
   describeStartSweep,
   dischargeItem,
   dischargeRun,

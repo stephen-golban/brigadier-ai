@@ -59,6 +59,27 @@ export function isCapped(audience: Audience): boolean {
 }
 
 /**
+ * What is left of the ceiling for the report, given what the process already
+ * put on the same stdout.
+ *
+ * THE CEILING IS ON THE CHANNEL, NOT ON ONE ARTIFACT. MEASURED on 2026-08-18
+ * against `bun 1.3.14`: a fifty-item host run printed 3,682 tokens against this
+ * 2,000-token ceiling while `run-report.ts` was inside its budget the whole
+ * time — 1,648 of them were the admission block, written first and counted
+ * against nothing. Every byte on that stdout lands in the same context window
+ * and is charged once, so the budget the report may spend is the ceiling MINUS
+ * what was already spent, and a budget that governs only the last thing written
+ * is not a budget.
+ *
+ * Never negative: a prologue that has already exceeded the ceiling leaves zero,
+ * the report keeps only its blocking items, and it says out loud that it is
+ * over. Ruling 52 has no exception for space at any level.
+ */
+export function remainingBudget(alreadySpent: number): number {
+  return Math.max(0, HOST_REPORT_TOKEN_CEILING - Math.max(0, alreadySpent));
+}
+
+/**
  * How many tokens a piece of text will cost the reader, with the correction
  * that makes the number honest.
  *
