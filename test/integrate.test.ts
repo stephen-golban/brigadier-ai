@@ -34,6 +34,7 @@ import { join, relative } from "node:path";
 import {
   applyRefTransaction,
   assertLocalPathTransport,
+  assertPublishCommand,
   assertNoWorkingTreeCommand,
   assertOwnedRef,
   assertUsableDeclaration,
@@ -52,14 +53,17 @@ import {
   parseGitVersion,
   parseMergeTree,
   planWaves,
+  RefRefused,
   renderRun,
   runIntegrationGate,
   runSucceeded,
+  PARENT_COMMANDS,
   subcommandOf,
   transactionStdin,
   versionRefusal,
   waveBoundary,
   WorkingTreeCommandRefused,
+  type RefEntry,
   type WaveIntegration,
 } from "../src/integrate/index.ts";
 import { deleteRefArgv, integrationBranch, isDeletableRef, itemRef } from "../src/repo/refs.ts";
@@ -299,22 +303,54 @@ describe("ruling 51: the parent fetches, merges without a working tree, publishe
     expect(() => assertNoWorkingTreeCommand(["checkout", "-b", "x"])).toThrow(
       WorkingTreeCommandRefused,
     );
-    // Not bypassable by putting a flag in front of it.
-    expect(subcommandOf(["-c", "core.hooksPath=/x", "--no-pager", "checkout"])).toBe("checkout");
-    expect(() => assertNoWorkingTreeCommand(["-c", "x=y", "checkout"])).toThrow(
-      WorkingTreeCommandRefused,
-    );
     await expect(parentGit(s.repo, ["checkout", "-b", "x"])).rejects.toThrow(
       WorkingTreeCommandRefused,
     );
-    for (const command of ["reset", "merge", "stash", "clean", "commit", "add"]) {
-      expect(() => assertNoWorkingTreeCommand([command])).toThrow(WorkingTreeCommandRefused);
+    // NEGATIVE CONTROL for the blocklist this replaced: every one of these
+    // moves a working tree, an index or HEAD, and every one of them got past a
+    // list that named `checkout`, `switch`, `reset` and `merge`.
+    for (const args of [
+      ["checkout-index", "-a", "-f"],
+      ["read-tree", "-m", "-u", "HEAD"],
+      ["update-index", "--refresh"],
+      ["symbolic-ref", "HEAD", "refs/heads/other"],
+      ["worktree", "add", "/tmp/wt"],
+      ["branch", "-D", "main"],
+      ["sparse-checkout", "set", "src"],
+      ["reset", "--hard"],
+      ["stash"],
+      ["clean", "-fdx"],
+      ["gc", "--prune=now"],
+    ]) {
+      expect(() => assertNoWorkingTreeCommand(args)).toThrow(WorkingTreeCommandRefused);
     }
+    // An alias is a command somebody else defines, so a config override is
+    // refused outright rather than parsed.
+    expect(() => assertNoWorkingTreeCommand(["-c", "alias.z=checkout", "z"])).toThrow(
+      WorkingTreeCommandRefused,
+    );
+    expect(() => assertNoWorkingTreeCommand(["--exec-path=/tmp/evil", "diff"])).toThrow(
+      WorkingTreeCommandRefused,
+    );
+    expect(subcommandOf(["--no-pager", "diff"])).toBe("diff");
     // And the read-only ones this module actually uses are NOT refused, so the
     // guard is discriminating rather than universal.
-    for (const command of ["fetch", "merge-tree", "commit-tree", "update-ref", "diff", "version"]) {
+    for (const command of PARENT_COMMANDS) {
       expect(() => assertNoWorkingTreeCommand([command])).not.toThrow();
     }
+    expect([...PARENT_COMMANDS].sort()).toEqual(
+      [
+        "cat-file",
+        "commit-tree",
+        "diff",
+        "fetch",
+        "for-each-ref",
+        "merge-tree",
+        "rev-parse",
+        "update-ref",
+        "version",
+      ],
+    );
     expect(await witness(s.repo)).toEqual(before);
     expect(await refs(s.repo)).toEqual(["refs/heads/main"]);
   });
@@ -880,6 +916,226 @@ describe("ruling 52: the verify command runs once more, on the merged result", (
         runRoot: join(scratch, "gate-under-tmp"),
       }),
     ).rejects.toThrow(/ruling 61/);
+  });
+});
+
+// ------------------------------------------------ the repair round's five
+
+describe("the operator's repository survives the gate, the ownership check and the transaction", () => {
+  test("NEGATIVE CONTROL: a hostile verify command cannot corrupt the operator's object store", async () => {
+    const s = await scenario({ "a.txt": "a\n", "b.txt": "b\n" });
+    const one = await s.clone("one", { "a.txt": "one\n" });
+    const wave = await integrateWave({
+      repo: s.repo,
+      runId: s.runId,
+      base: s.base,
+      items: [{ item: 1, clone: one, declaredPaths: ["a.txt"] }],
+    });
+
+    // The merged, agent-authored code, executing as the verify command, doing
+    // the worst thing available to it: writing over every object in the clone's
+    // object store. With `git clone --local` and no `--no-hardlinks` those
+    // files ARE the operator's — MEASURED against `git 2.50.1` on 2026-08-18 as
+    // the same inode with nlink 2 — and this left the operator's repository
+    // with `git fsck` exiting 128 while the gate returned `pass`.
+    const gate = await runIntegrationGate({
+      repo: s.repo,
+      runId: s.runId,
+      commit: wave.head,
+      verify: [
+        "sh",
+        "-c",
+        'find .git/objects -type f -exec sh -c \'printf CORRUPTED > "$1"\' _ {} \\; ; exit 0',
+      ],
+      runRoot: runRootHome,
+      wave: 21,
+    });
+    expect(gate.check.outcome).toBe("pass"); // the verify command "succeeded"…
+
+    // …and the operator's repository is untouched. On BYTES, through git's own
+    // integrity check.
+    const fsck = await rawGit(s.repo, "fsck", "--no-progress");
+    expect(fsck.code).toBe(0);
+    expect(await git(s.repo, "cat-file", "-p", `${s.base}:a.txt`)).toBe("a");
+    expect(await git(s.repo, "cat-file", "-p", `${wave.head}:a.txt`)).toBe("one");
+
+    // And the physics that makes it true, asserted directly: no object file in
+    // the gate clone shares an inode with the operator's, and the operator's
+    // objects have a single link.
+    const objectsOf = (repo: string): string[] => {
+      const root = join(repo, ".git", "objects");
+      const found: string[] = [];
+      const walk = (dir: string): void => {
+        for (const entry of readdirSync(dir)) {
+          const path = join(dir, entry);
+          if (statSync(path).isDirectory()) walk(path);
+          else found.push(path);
+        }
+      };
+      walk(root);
+      return found;
+    };
+    const operatorObjects = objectsOf(s.repo);
+    expect(operatorObjects.length).toBeGreaterThan(0);
+    const operatorInodes = new Set(operatorObjects.map((path) => statSync(path).ino));
+    expect(gate.cloneDir).not.toBeNull();
+    const gateObjects = objectsOf(gate.cloneDir!);
+    expect(gateObjects.length).toBeGreaterThan(0);
+    for (const path of gateObjects) {
+      expect(operatorInodes.has(statSync(path).ino)).toBe(false);
+      expect(statSync(path).nlink).toBe(1);
+    }
+    discardGateClone(gate.cloneDir!);
+
+    // NOT CLAIMED, and stated here so it is not read as claimed: the operator's
+    // own object files still show nlink 2, because this suite's WORKER clones
+    // are made with a plain `git clone --local`, as `src/isolation/clone.ts`
+    // makes them. That share is an agent's to abuse from inside its own clone
+    // and it is another module's to decide about; what this test closes is the
+    // gate clone, which is brigadier's own and which brigadier itself invites
+    // agent-authored code to execute in.
+  });
+
+  test("NEGATIVE CONTROL: a rename cannot smuggle a deletion past the ownership check", async () => {
+    const s = await scenario({
+      "secret/credentials.txt": "creds\n",
+      "declared/x.txt": "x\n",
+      "other.txt": "other\n",
+    });
+    // An exact rename OUT of an undeclared directory. MEASURED against
+    // `git 2.50.1` on 2026-08-18: `--name-only` alone printed only
+    // `declared/moved.txt`, so ownership saw no stray and the item integrated
+    // having deleted a file it never declared.
+    const mover = await s.clone("mover", {});
+    await git(mover, "mv", "secret/credentials.txt", "declared/moved.txt");
+    await git(mover, "commit", "-q", "-m", "renamed");
+    // A rename that also edits, and a plain delete of an undeclared path.
+    const similar = await s.clone("similar", {});
+    await git(similar, "mv", "secret/credentials.txt", "declared/similar.txt");
+    writeFileSync(join(similar, "declared/similar.txt"), "creds\nplus a line\n");
+    await git(similar, "add", "-A");
+    await git(similar, "commit", "-q", "-m", "renamed and edited");
+    const deleter = await s.clone("deleter", { "other.txt": null });
+
+    const wave = await integrateWave({
+      repo: s.repo,
+      runId: s.runId,
+      base: s.base,
+      items: [
+        { item: 1, clone: mover, declaredPaths: ["declared/**"] },
+        { item: 2, clone: similar, declaredPaths: ["declared/**"] },
+        { item: 3, clone: deleter, declaredPaths: ["declared/**"] },
+      ],
+    });
+
+    expect(outcomes(wave)).toEqual({ 1: "rejected", 2: "rejected", 3: "rejected" });
+    for (const item of wave.items) {
+      expect(item.ownership?.strayed).toContain(
+        item.item === 3 ? "other.txt" : "secret/credentials.txt",
+      );
+    }
+    expect(wave.published).toBe(false);
+    expect(succeeded(wave.checks)).toBe(false);
+
+    // Nothing landed, and the file the rename would have deleted is still
+    // reachable from the base — checked on bytes, which is where the defect
+    // showed itself (`git cat-file -e <branch>:secret/credentials.txt` had been
+    // exiting 128).
+    expect(await git(s.repo, "cat-file", "-p", `${s.base}:secret/credentials.txt`)).toBe("creds");
+
+    // POSITIVE CONTROL: a rename entirely INSIDE the declared paths is fine, so
+    // the fix rejects deletions rather than renames.
+    const inside = await s.clone("inside", {});
+    await git(inside, "mv", "declared/x.txt", "declared/y.txt");
+    await git(inside, "commit", "-q", "-m", "renamed inside");
+    const second = await integrateWave({
+      repo: s.repo,
+      runId: `${s.runId}b`,
+      base: s.base,
+      items: [{ item: 1, clone: inside, declaredPaths: ["declared/**"] }],
+    });
+    expect(outcomes(second)).toEqual({ 1: "integrated" });
+    expect([...(second.items[0]?.ownership?.touched ?? [])].sort()).toEqual([
+      "declared/x.txt",
+      "declared/y.txt",
+    ]);
+  });
+
+  test("NEGATIVE CONTROL: a publish cannot delete the deliverable, whatever the type system thinks", async () => {
+    const s = await scenario({ "a.txt": "a\n" });
+    const one = await s.clone("one", { "a.txt": "one\n" });
+    const wave = await integrateWave({
+      repo: s.repo,
+      runId: s.runId,
+      base: s.base,
+      items: [{ item: 1, clone: one, declaredPaths: ["a.txt"] }],
+    });
+    const branch = integrationBranch(s.runId);
+    expect(await git(s.repo, "rev-parse", branch)).toBe(wave.head);
+
+    // The union is a compile-time guard, so the attack arrives as a cast —
+    // which is what a caller in JavaScript, or next year's fourth kind, looks
+    // like from here.
+    const deletion = { kind: "delete", ref: branch, value: wave.head } as unknown as RefEntry;
+    expect(() => transactionStdin([deletion], s.runId)).toThrow(/never deletes/);
+    await expect(applyRefTransaction(s.repo, s.runId, [deletion])).rejects.toThrow(/never deletes/);
+    expect(() => assertPublishCommand("delete", branch, s.runId)).toThrow(RefRefused);
+    expect(() => assertPublishCommand("option", branch, s.runId)).toThrow(RefRefused);
+    for (const kind of ["create", "update", "verify"]) {
+      expect(() => assertPublishCommand(kind, branch, s.runId)).not.toThrow();
+    }
+    // The branch is still there, in `git branch --list`, where the operator can
+    // see it.
+    expect(await git(s.repo, "rev-parse", branch)).toBe(wave.head);
+    expect(await git(s.repo, "branch", "--list", "--format=%(refname)")).toContain(branch);
+
+    // And a ref that traverses out of the namespace is refused by brigadier
+    // rather than by git's refname parser.
+    expect(() =>
+      assertOwnedRef(`refs/brigadier/${s.runId}/../../heads/main`, s.runId),
+    ).toThrow(/shape/);
+    expect(() => assertOwnedRef(`refs/brigadier/${s.runId}//item/1`, s.runId)).toThrow(/shape/);
+  });
+
+  test("NEGATIVE CONTROL: a report never claims verification that did not happen", async () => {
+    const s = await scenario({ "a.txt": "a\n" });
+    const readOnly = await s.clone("readonly", {});
+    const wave = await integrateWave({
+      repo: s.repo,
+      runId: s.runId,
+      base: s.base,
+      items: [{ item: 1, clone: readOnly, declaredPaths: [] }],
+    });
+    expect(wave.published).toBe(false);
+
+    // Every item "landed" (nothing to land), no branch was created, and the
+    // gate is `unconfigured` — the shape the old headline called verified.
+    const unconfigured = {
+      waves: [wave],
+      gates: [
+        {
+          name: "verify (merged result)",
+          outcome: "unconfigured" as const,
+          qualifier: "wave 1",
+        },
+      ],
+    };
+    expect(headline(unconfigured)).toContain("NOT VERIFIED");
+    expect(headline(unconfigured)).not.toContain("was verified");
+    // `unconfigured` still does not BLOCK — ruling 52 — so the two facts stay
+    // separate: the run did not fail, and nothing was verified.
+    expect(runSucceeded(unconfigured)).toBe(true);
+    expect(renderRun(unconfigured)).toContain("NOT VERIFIED");
+
+    // An empty gate list is the same absence with less ceremony.
+    expect(headline({ waves: [wave], gates: [] })).toContain("no integration gate was recorded");
+
+    // POSITIVE CONTROL: the claim is available, and only from a `pass`.
+    const passed = {
+      waves: [wave],
+      gates: [{ name: "verify (merged result)", outcome: "pass" as const }],
+    };
+    expect(headline(passed)).toContain("the merged result was verified");
   });
 });
 

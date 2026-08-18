@@ -78,20 +78,32 @@ function listProcesses(): string[] {
 
 const PAYLOAD_PATHS = [join(".git", "hooks", "pre-commit"), join(".git", "hooks", "reference-transaction"), join(".git", "bar-fsmonitor")];
 
-function inspectClone(path: string, payloadMarker?: string): CloneSample {
-  const gitDir = join(path, ".git");
+/**
+ * Payload files planted inside a clone, read from the filesystem.
+ *
+ * Separate from the git probes below because it has to run on EVERY sample: a
+ * worker plants these while it works, so a clone already judged conforming can
+ * still grow one. The git probes cannot say that, and they are the expensive
+ * half.
+ */
+function scanPayloads(path: string, payloadMarker?: string): string[] {
+  if (payloadMarker === undefined) return [];
   const payloadsSeen: string[] = [];
-  if (payloadMarker !== undefined) {
-    for (const rel of PAYLOAD_PATHS) {
-      try {
-        if (existsSync(join(path, rel)) && readFileSync(join(path, rel), "utf8").includes(payloadMarker)) {
-          payloadsSeen.push(rel);
-        }
-      } catch {
-        // Swept between the listing and the read.
+  for (const rel of PAYLOAD_PATHS) {
+    try {
+      if (existsSync(join(path, rel)) && readFileSync(join(path, rel), "utf8").includes(payloadMarker)) {
+        payloadsSeen.push(rel);
       }
+    } catch {
+      // Swept between the listing and the read.
     }
   }
+  return payloadsSeen;
+}
+
+function inspectClone(path: string, payloadMarker?: string): CloneSample {
+  const gitDir = join(path, ".git");
+  const payloadsSeen = scanPayloads(path, payloadMarker);
   if (!existsSync(gitDir)) return { path, isGitRepo: false, originRemoved: false, hasBaseRef: false, payloadsSeen };
   const git = (args: string[]): { ok: boolean; out: string } => {
     const proc = Bun.spawnSync(["git", `--git-dir=${gitDir}`, ...args], { stdout: "pipe", stderr: "pipe" });
@@ -134,14 +146,47 @@ function findClones(root: string): string[] {
   return found;
 }
 
-export function sampleOnce(runRoot: string, flight: Flight, payloadMarker?: string): void {
+/**
+ * One reading.
+ *
+ * `processes` exists because the two halves of a sample cost wildly different
+ * amounts. The clone half is a directory walk plus, for clones not yet observed
+ * conforming, a few `git` calls; the process half is a whole `ps -A` of the
+ * machine. Reading the clones must be fast enough to catch a directory that
+ * exists for a second, and reading `ps` at that rate would cost more than it
+ * measures — a marked process lives for the length of a worker, not for the
+ * length of a `git clone`.
+ */
+export function sampleOnce(
+  runRoot: string,
+  flight: Flight,
+  payloadMarker?: string,
+  processes = true,
+): void {
   flight.samples += 1;
 
   const clones = findClones(runRoot);
   if (clones.length > flight.peakConcurrentClones) flight.peakConcurrentClones = clones.length;
   for (const path of clones) {
-    const sample = inspectClone(path, payloadMarker);
     const existing = flight.clonesSeen.get(path);
+    // A clone already observed conforming is not re-probed with `git`, and the
+    // reason is the sampler's own speed rather than tidiness. `inspectClone`
+    // spawns THREE git processes per clone, so a five-clone run cost fifteen
+    // spawns a sample; on a loaded machine that stretched the interval far past
+    // its nominal 120 ms, and the LAST clone a run creates was then observed
+    // exactly once — during its setup, after the base ref arrived and before
+    // `origin` was removed — and that single unlucky instant was reported as
+    // "origin-removed=false" for a product that had removed it a moment later.
+    // Skipping the probes for clones already proven conforming keeps the check
+    // exactly as strict (nothing is assumed about a clone that has not been
+    // observed) and buys back the sampling rate that makes a late clone
+    // observable more than once. Payloads are still read every sample, because
+    // a worker plants those DURING the run.
+    const proven =
+      existing !== undefined && existing.isGitRepo && existing.originRemoved && existing.hasBaseRef;
+    const sample = proven
+      ? { ...(existing as CloneSample), payloadsSeen: scanPayloads(path, payloadMarker) }
+      : inspectClone(path, payloadMarker);
     // Keep the BEST observation of each clone: a clone is momentarily
     // origin-ful while `git clone` is still running, and judging it on that
     // instant would be measuring the harness's sampling luck.
@@ -157,6 +202,7 @@ export function sampleOnce(runRoot: string, flight: Flight, payloadMarker?: stri
     flight.clonesSeen.set(path, merged);
   }
 
+  if (!processes) return;
   const marked = listProcesses().filter((line) => line.includes(RUN_MARKER_FLAG));
   if (marked.length > flight.peakMarkedProcesses) flight.peakMarkedProcesses = marked.length;
   for (const line of marked) {
@@ -218,9 +264,20 @@ export async function runSampled(
 
   let running = true;
   const sampler = (async () => {
+    // The clone half runs at `intervalMs`; the `ps` half every third turn, so
+    // the process table is still read about as often as it used to be while the
+    // clones are read three times as often. What forced the split: a clone that
+    // was created late in a run and observed EXACTLY ONCE, during its setup,
+    // reported `origin-removed=false` for a product that removed the remote a
+    // moment later — the sampler's luck rendered as the product's behaviour, and
+    // the same single-observation window hid the payload files a worker planted
+    // afterwards. Sampling luck must not be able to fail a correct product; a
+    // rate that observes every clone several times is what stops it.
+    let turn = 0;
     while (running) {
-      sampleOnce(options.runRoot, flight, options.payloadMarker);
-      await Bun.sleep(options.intervalMs ?? 120);
+      sampleOnce(options.runRoot, flight, options.payloadMarker, turn % 3 === 0);
+      turn += 1;
+      await Bun.sleep(options.intervalMs ?? 40);
     }
   })();
 

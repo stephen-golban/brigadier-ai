@@ -19,6 +19,8 @@ form and live here and in `RELINKING.md`.
 | `bun` | 1.3.14 | MIT | ruling 5 compiles with `bun --compile`, which embeds the Bun runtime and everything it statically links — including JavaScriptCore/WebKit and tinycc, both LGPL, both listed below |
 | `javascriptcore-webkit` | oven-sh/WebKit@5488984d20e0dbfe4be2c3ba8fb18eb81a5e0e8b | LGPL-2.0-or-later, with a BSD-2-Clause/BSD-3-Clause majority (see the census below) | statically linked into every `bun --compile` artifact — the JS engine the binary runs on; `bun run license-gate` fails the build unless the compiled artifact carries this licence text |
 | `tinycc` | oven-sh/tinycc@12882eee073cfe5c7621bcfadf679e1372d4537b | LGPL-2.1-or-later | statically linked into every `bun --compile` artifact as the backend for `bun:ffi`'s C compiler; MODIFIED by Bun — patches/tinycc/tcc.h.patch at tag bun-v1.3.14, READ 2026-08-17 |
+| `@vscode/tree-sitter-wasm` | 0.3.1 | MIT | direct dependency |
+| `web-tree-sitter` | 0.25.10 | MIT | direct dependency |
 
 ## The statically linked LGPL libraries — status of the obligation
 
@@ -2000,6 +2002,60 @@ against the source at the pinned revision.
   NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
   ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+```
+
+### @vscode/tree-sitter-wasm 0.3.1 — MIT
+
+```
+MIT License
+
+    Copyright (c) Microsoft Corporation.
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE
+```
+
+### web-tree-sitter 0.25.10 — MIT
+
+Copyright (c) 2018-2024 Max Brunsfeld
+
+```
+The MIT License (MIT)
+
+Copyright (c) 2018-2024 Max Brunsfeld
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ```
 
 ## brigadier's own licence

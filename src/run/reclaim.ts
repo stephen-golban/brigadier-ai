@@ -33,7 +33,7 @@
  * "should it".
  */
 
-import { existsSync, lstatSync, readdirSync, rmSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join, sep } from "node:path";
 import {
   claimedByManifest,
@@ -114,15 +114,29 @@ export function proveDeletableDirectory(candidate: string, options: DirectoryOpt
     );
   }
 
-  // (b) Claimed by a manifest, and by a manifest for THIS root. A manifest an
-  //     agent dropped into a directory it owns claims nothing about a directory
-  //     brigadier created.
+  // (b) Recorded in a manifest, and recorded as THIS PATH.
+  //
+  //     `claimedByManifest` walks UP, which is right for its own job — refusing
+  //     a git command anywhere inside a worker clone — and wrong for this one.
+  //     Under the walking form, `<clone>/agent-made/` inherits its parent's
+  //     entry and is judged deletable, so an agent that creates a subdirectory
+  //     and drops a marker into it gets brigadier to delete it. Ruling 15 (b) is
+  //     a statement about the path being deleted, not about some ancestor of it,
+  //     so the entry has to name this path exactly.
   const manifestPath = claimedByManifest(realPath);
   const manifest: RunManifest | null = manifestPath === null ? null : readManifest(manifestPath);
+  const entry =
+    manifest === null ? undefined : manifest.clones.find((clone) => clone.dir === realPath);
   if (manifestPath === null || manifest === null) {
     refusals.push(
       `ruling 15 (b): no run manifest records ${realPath} as a clone. A directory brigadier ` +
         "did not write down is a directory brigadier did not create.",
+    );
+  } else if (entry === undefined) {
+    refusals.push(
+      `ruling 15 (b): ${manifestPath} records an ANCESTOR of ${realPath} but not ${realPath} ` +
+        "itself. An entry for a parent authorises the parent; a subdirectory an agent created " +
+        "inside its own clone is recorded nowhere and is not brigadier's to delete.",
     );
   } else if (intendedRealPath(manifest.runRoot) !== realRoot) {
     refusals.push(
@@ -137,21 +151,42 @@ export function proveDeletableDirectory(candidate: string, options: DirectoryOpt
   //     in which case this refuses and reports. Refusing to delete a clone
   //     because its marker is gone is the safe direction of that failure.
   const markerCandidate = join(realPath, ".git", CLONE_SIGNATURE);
-  const markerFile = existsSync(markerCandidate) ? markerCandidate : null;
+  const markerFile = regularFile(markerCandidate) ? markerCandidate : null;
   if (markerFile === null) {
     refusals.push(
-      `ruling 15 (c): no marker file at ${markerCandidate}. brigadier writes one into every ` +
-        "clone it creates; without it this directory cannot be shown to be one, and it is " +
-        "retained rather than deleted.",
+      `ruling 15 (c): no marker file at ${markerCandidate}, or it is not a plain regular file. ` +
+        "brigadier writes one into every clone it creates; without it this directory cannot be " +
+        "shown to be one, and it is retained rather than deleted.",
     );
+  } else if (manifest !== null && entry !== undefined) {
+    // The marker lives inside a directory the agent owns, so its PRESENCE is
+    // the weakest of the three signals — the isolation slice moved the durable
+    // record out of `.git` for exactly this reason. Its CONTENT is checked
+    // against the manifest entry so that a marker copied from a sibling clone
+    // does not stand in for this one.
+    const expected = `${manifest.runId}/${entry.item}`;
+    let contents = "";
+    try {
+      contents = readFileSync(markerFile, "utf8").trim();
+    } catch {
+      contents = "";
+    }
+    if (contents !== expected) {
+      refusals.push(
+        `ruling 15 (c): the marker at ${markerFile} says ${JSON.stringify(contents)} and the ` +
+          `manifest records ${JSON.stringify(expected)}. A marker that does not name this clone ` +
+          "is not this clone's marker.",
+      );
+    }
   }
 
-  const ordering = manifestOrdering(manifest, realPath);
+  const ordering = manifestOrdering(manifest, manifestPath, realPath);
   if (ordering === false) {
     refusals.push(
-      `ruling 15 (b): the manifest entry for ${realPath} is dated AFTER the directory was ` +
-        "created. The manifest has to be written before anything exists, or it records a " +
-        "directory it did not authorise.",
+      `ruling 15 (b): the manifest for ${realPath} is dated AFTER the directory was created — ` +
+        "by its recorded timestamp or by the manifest file's own birth time, which a forged " +
+        "timestamp cannot change. The manifest has to be written before anything exists, or it " +
+        "records a directory it did not authorise.",
     );
   }
 
@@ -169,20 +204,53 @@ export function proveDeletableDirectory(candidate: string, options: DirectoryOpt
   };
 }
 
-function manifestOrdering(manifest: RunManifest | null, realPath: string): boolean | null {
-  if (manifest === null) return null;
+/**
+ * Did the manifest exist before the directory?
+ *
+ * Both halves are checked, and the second is why: `createdAt` is a NUMBER IN
+ * THE FILE, so a forged manifest can carry any value it likes and pass. The
+ * manifest file's own birth time is not the forger's to choose — writing the
+ * file is what sets it — so a manifest created after the directory it claims is
+ * caught even when its recorded timestamp says otherwise.
+ *
+ * `null` means the platform gave no usable birth time, and `null` does not
+ * block: a missing measurement is not evidence of a violation. A definite
+ * `false` does.
+ */
+function manifestOrdering(
+  manifest: RunManifest | null,
+  manifestPath: string | null,
+  realPath: string,
+): boolean | null {
+  if (manifest === null || manifestPath === null) return null;
   const entry = manifest.clones.find((clone) => clone.dir === realPath);
   if (entry === undefined || typeof entry.createdAt !== "number") return null;
+  const dirBirth = birthTime(realPath);
+  if (dirBirth === null) return null;
+  if (entry.createdAt > dirBirth) return false;
+  const manifestBirth = birthTime(manifestPath);
+  if (manifestBirth === null) return true;
+  return manifestBirth <= dirBirth;
+}
+
+function birthTime(path: string): number | null {
   let birth: number;
   try {
-    birth = statSync(realPath).birthtimeMs;
+    birth = statSync(path).birthtimeMs;
   } catch {
     return null;
   }
-  // A birth time of 0 (or one before the epoch of this project) is the
-  // filesystem saying it does not keep one. Unknown, not violated.
-  if (!Number.isFinite(birth) || birth <= 0) return null;
-  return entry.createdAt <= birth;
+  // A birth time of 0 is the filesystem saying it does not keep one.
+  return Number.isFinite(birth) && birth > 0 ? birth : null;
+}
+
+/** A plain regular file, never a symlink, a directory or a device. */
+function regularFile(path: string): boolean {
+  try {
+    return lstatSync(path).isFile();
+  } catch {
+    return false;
+  }
 }
 
 export interface DirectoryReclamation {
@@ -238,6 +306,20 @@ export function directoryBytes(dir: string): number {
 export interface OwnedRef {
   readonly ref: string;
   readonly sha: string;
+  /**
+   * True when the ref is SYMBOLIC — it names another ref rather than an object.
+   *
+   * This field exists because of a measured way to destroy the deliverable.
+   * `for-each-ref` reports a symbolic ref's TARGET's object name, so a symbolic
+   * `refs/brigadier/<run>/base` pointing at `refs/heads/brigadier/<run>` yields
+   * a sha that matches, the compare-and-swap therefore succeeds, and
+   * `git update-ref -d` DEREFERENCES by default — deleting the integration
+   * branch. That is the one ref ruling 51 says brigadier never deletes, and the
+   * invisible namespace exists precisely so the delete rule can never reach it.
+   * A symbolic ref under our namespace is refused outright, and `--no-deref` is
+   * on every delete besides.
+   */
+  readonly symbolic: boolean;
 }
 
 export type GitRunner = (repo: string, args: readonly string[]) => Promise<{ code: number; stdout: string; stderr: string }>;
@@ -255,15 +337,28 @@ const defaultGit: GitRunner = async (repo, args) => runGit({ cwd: repo, args: [.
 
 /** Every ref brigadier owns in this repository, with the sha the delete will be pinned to. */
 export async function listOwnedRefs(repo: string, git: GitRunner = defaultGit): Promise<OwnedRef[]> {
-  const result = await git(repo, ["for-each-ref", "--format=%(objectname) %(refname)", `${REF_NAMESPACE}/`]);
+  // `%(symref)` is empty for an ordinary ref and holds the target for a symbolic
+  // one. Asking for it is the only way to tell them apart here: `%(objectname)`
+  // reports the target's sha for both.
+  const result = await git(repo, [
+    "for-each-ref",
+    "--format=%(objectname)\t%(symref)\t%(refname)",
+    `${REF_NAMESPACE}/`,
+  ]);
   if (result.code !== 0) return [];
   const refs: OwnedRef[] = [];
   for (const line of result.stdout.split("\n")) {
-    const space = line.indexOf(" ");
-    if (space <= 0) continue;
-    const sha = line.slice(0, space).trim();
-    const ref = line.slice(space + 1).trim();
-    if (/^[0-9a-f]{7,64}$/.test(sha) && ref.length > 0) refs.push({ ref, sha });
+    const parts = line.split("\t");
+    if (parts.length < 3) continue;
+    const sha = (parts[0] ?? "").trim();
+    const symref = (parts[1] ?? "").trim();
+    const ref = parts.slice(2).join("\t").trim();
+    if (ref.length === 0) continue;
+    if (symref.length > 0) {
+      refs.push({ ref, sha, symbolic: true });
+      continue;
+    }
+    if (/^[0-9a-f]{7,64}$/.test(sha)) refs.push({ ref, sha, symbolic: false });
   }
   return refs;
 }
@@ -289,12 +384,28 @@ export async function reclaimRef(
   knownRunIds: readonly string[],
   git: GitRunner = defaultGit,
 ): Promise<RefReclamation> {
+  if (owned.symbolic) {
+    return {
+      ref: owned.ref,
+      deleted: false,
+      refusal:
+        `ruling 50 and ruling 51: refusing to delete ${owned.ref}, which is a SYMBOLIC ref. ` +
+        "`for-each-ref` reports its target's object name, so the compare-and-swap would match " +
+        "on a sha that is not this ref's, and the delete would follow the link. The one ref " +
+        "brigadier never deletes is reachable that way, so a symbolic ref in our namespace is " +
+        "reported rather than resolved.",
+    };
+  }
   let argv: string[];
   try {
     argv = deleteRefArgv(owned.ref, owned.sha, knownRunIds);
   } catch (error) {
     return { ref: owned.ref, deleted: false, refusal: (error as Error).message };
   }
+  // `--no-deref` on every delete, belt and braces beside the refusal above:
+  // `git update-ref -d` dereferences by default, and the thing on the far end
+  // of a link in this namespace can be `refs/heads/brigadier/<run-id>`.
+  argv = [argv[0] as string, "--no-deref", ...argv.slice(1)];
   const result = await git(repo, argv);
   if (result.code === 0) return { ref: owned.ref, deleted: true, refusal: null };
   return {

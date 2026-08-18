@@ -450,7 +450,31 @@ async function doRun(): Promise<number> {
   mkdirSync(runsRoot, { recursive: true });
 
   // Ruling 38: the sweep runs at START, before anything new is spawned.
-  const swept = sweepProcesses([join(runsRoot, "run-"), RUN_MARKER]);
+  //
+  // SCOPED TO THIS RUN ROOT, and the scoping is the fixture keeping up with the
+  // product rather than a softening of it. A bare `--brigadier-run` needle
+  // matches EVERY marked process on the machine, so a second brigadier running
+  // beside this one — another agent's suite, a concurrent bar scoring, an
+  // operator's own run under a different root — had its workers SIGKILLed by a
+  // fixture that was only supposed to be reclaiming its own leftovers. That
+  // produced exactly the signature this file's own item 4 kept showing under
+  // load: one worker dying mid-item, so its file never reaches the merged tree,
+  // and a different failing item on every run. `src/run/start.ts` refuses the
+  // same thing on the product side — `foreignMarked` is REPORTED and never
+  // signalled, and `runInFlight` leaves a run whose orchestrator is alive
+  // entirely alone — so an unscoped needle here also made the positive control
+  // model behaviour the product does not have.
+  //
+  // Nothing this fixture must reclaim is lost. Every leftover of a run under
+  // this root — worker, reviewer, or an escaped descendant — carries that run's
+  // directory in its command line, which the first needle matches; the marker
+  // needles add ruling 38's own channel for the run ids this root has a record
+  // of, which is the same set `sweepAtStart` considers in scope.
+  const knownRunIds = readdirSync(runsRoot).filter((entry) => entry.startsWith("run-"));
+  const swept = sweepProcesses([
+    join(runsRoot, "run-"),
+    ...knownRunIds.map((id) => `${RUN_MARKER} ${id}`),
+  ]);
   const sweptDirs = sweepDirectories(runsRoot);
 
   const plan = JSON.parse(readFileSync(planPath, "utf8")) as Plan;

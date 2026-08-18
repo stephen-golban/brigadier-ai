@@ -30,42 +30,44 @@ import { git, runGit, type GitResult } from "../isolation/internal-git.ts";
 import { FETCH_TRANSPORT_MUST_STAY } from "../repo/git.ts";
 
 /**
- * The commands that would touch a working tree, an index or HEAD.
+ * AN ALLOWLIST, and it used to be a blocklist.
  *
- * `checkout` is the one the ruling names, and it is the one a future
- * "wouldn't it be simpler to just check out the branch and merge" would reach
- * for first. The rest are there because they are the same mistake wearing
- * different nouns — a guard that catches only the mistake somebody already made
- * is a guard that catches nothing.
+ * The blocklist named `checkout`, `switch`, `reset`, `merge` and a dozen more,
+ * and it was defeated by every command nobody thinks of as a checkout:
+ * `checkout-index -a -f`, `read-tree -m -u`, `update-index`, `symbolic-ref`,
+ * `worktree add`, `branch -D`, `sparse-checkout`, and `-c alias.z=checkout z`.
+ * That is the same losing position `internal-git.ts` names for the environment:
+ * a blocklist against a surface git keeps growing needs updating every time git
+ * grows, and an allowlist excludes next year's command by default.
+ *
+ * The integration surface is genuinely this short — every git command
+ * `src/integrate/` runs in the operator's repository is on this line — which is
+ * what makes the inversion affordable. Ruling 51's promise is that no command
+ * brigadier runs can move the operator's working tree, index or HEAD, and none
+ * of these can.
  */
-export const WORKING_TREE_COMMANDS: readonly string[] = [
-  "checkout",
-  "switch",
-  "restore",
-  "reset",
-  "merge",
-  "rebase",
-  "cherry-pick",
-  "revert",
-  "am",
-  "apply",
-  "stash",
-  "clean",
-  "pull",
-  "add",
-  "commit",
-  "mv",
-  "rm",
+export const PARENT_COMMANDS: readonly string[] = [
+  "version",
+  "rev-parse",
+  "fetch",
+  "diff",
+  "merge-tree",
+  "commit-tree",
+  "update-ref",
+  "for-each-ref",
+  "cat-file",
 ];
 
 export class WorkingTreeCommandRefused extends Error {
   constructor(readonly command: string) {
     super(
-      `ruling 51: refusing to run \`git ${command}\` in the operator's repository. ` +
-        "Integration is fetch, merge-tree --write-tree, commit-tree, update-ref --stdin and " +
-        "diff --name-only — none of which reads or writes a working tree, an index or HEAD. " +
-        "That is why the operator's tree cannot move during a run, and it is not a property " +
-        "that survives one convenient exception.",
+      `ruling 51: refusing to run \`git ${command}\` in the operator's repository. Integration ` +
+        `is exactly ${PARENT_COMMANDS.join(", ")} — an ALLOWLIST, because the blocklist this ` +
+        "replaced let `checkout-index`, `read-tree -m -u`, `update-index`, `symbolic-ref`, " +
+        "`worktree` and `-c alias.z=checkout` straight through. None of the commands above " +
+        "reads or writes a working tree, an index or HEAD, which is why the operator's tree " +
+        "cannot move during a run — and that is not a property that survives one convenient " +
+        "exception.",
     );
     this.name = "WorkingTreeCommandRefused";
   }
@@ -74,14 +76,16 @@ export class WorkingTreeCommandRefused extends Error {
 /**
  * The first non-flag token of an argv, which is the git subcommand.
  *
- * Written out rather than `args[0]` because `-c foo=bar` and `--no-pager` are
- * legitimate leading tokens and a guard that only inspects position 0 is
- * bypassed by adding one.
+ * `-c` and `--config-env` are not skipped over, they are REFUSED, by the caller
+ * below: `-c alias.z=checkout` makes any allowlist a list of aliases somebody
+ * else defines, and nothing in this module needs a config override — the
+ * operator's repository is deliberately the one place brigadier does not
+ * sanitise (`internal-git.ts` supplies `-c core.hooksPath` only for clones).
  */
 export function subcommandOf(args: readonly string[]): string | null {
   for (let i = 0; i < args.length; i++) {
     const token = args[i]!;
-    if (token === "-c" || token === "-C" || token === "--git-dir" || token === "--work-tree") {
+    if (token === "-C" || token === "--git-dir" || token === "--work-tree") {
       i++;
       continue;
     }
@@ -92,9 +96,17 @@ export function subcommandOf(args: readonly string[]): string | null {
 }
 
 export function assertNoWorkingTreeCommand(args: readonly string[]): void {
+  for (const token of args) {
+    if (token === "-c" || token === "--config-env" || token.startsWith("--config-env=")) {
+      throw new WorkingTreeCommandRefused(`${token} (a config override, which can define an alias)`);
+    }
+    if (token === "--exec-path" || token.startsWith("--exec-path=")) {
+      throw new WorkingTreeCommandRefused(`${token} (which relocates git's own helpers)`);
+    }
+  }
   const command = subcommandOf(args);
-  if (command !== null && WORKING_TREE_COMMANDS.includes(command)) {
-    throw new WorkingTreeCommandRefused(command);
+  if (command === null || !PARENT_COMMANDS.includes(command)) {
+    throw new WorkingTreeCommandRefused(command ?? "(no subcommand)");
   }
 }
 

@@ -49,7 +49,7 @@ import { RUN_DIR } from "../repo/layout.ts";
 import { itemRef } from "../repo/refs.ts";
 import type { UnfinishedRun } from "./interrupt.ts";
 import { parseRunMarker } from "./marker.ts";
-import { scanProcessTable, type ProcessTable } from "./processes.ts";
+import { isAlive as defaultIsAlive, scanProcessTable, type ProcessTable } from "./processes.ts";
 import {
   directoryBytes,
   listOwnedRefs,
@@ -100,6 +100,82 @@ export function runsUnder(runRoot: string): RunOnDisk[] {
   return found;
 }
 
+export interface InFlightRun {
+  readonly runId: string;
+  readonly reason: string;
+  /** Marked processes seen for it. Never signalled while it is in flight. */
+  readonly pids: readonly number[];
+}
+
+/**
+ * Is this run still being run by somebody?
+ *
+ * LIVENESS BEFORE AUTHORITY, and it is the same principle ruling 63 already
+ * states — *the world records fact* — applied to the RUN rather than to the
+ * item. The manifest says a run's items are all landed; the process table says
+ * its orchestrator is alive. The second wins, because a manifest describes what
+ * a run has done and only the process table can say whether it has finished.
+ *
+ * MEASURED on 2026-08-18: without this, two brigadiers under the DEFAULT root
+ * destroy each other, with no attacker and nothing misconfigured.
+ * `~/.brigadier` is shared, so a concurrent run A IS under this root and IS in
+ * scope; `sweepAtStart({runRoot, currentRunId: B})` killed A's worker, deleted
+ * A's clone and compare-and-swap deleted A's landed ref. `currentRunId` excuses
+ * only the sweeper's own run, `foreignMarked` did not fire because A was not
+ * foreign, and there is no lock anywhere.
+ *
+ * The discriminator is the ORCHESTRATOR, not the workers, and it has to be:
+ * "any marked process is alive" would make every leaked worker evidence that
+ * its own run is still running, which is precisely the case ruling 38 exists to
+ * reclaim. A run whose orchestrator is gone and whose workers are not is a
+ * crash; a run whose orchestrator is alive is somebody's work in progress.
+ *
+ * A run with no `run-started` in its record cannot name an orchestrator. If any
+ * marked process for it is alive, it is treated as in flight: the two errors are
+ * not symmetrical, and the one being repaired here is the destructive one.
+ *
+ * THE RESIDUAL, stated: this is a pid, and pids are reused. A reused pid makes a
+ * dead run look alive, which RETAINS rather than destroys. There is no lock —
+ * that is a cross-process mechanism and a ticket, not something this module can
+ * invent — so this is a strong heuristic in the safe direction rather than a
+ * mutual exclusion.
+ */
+export function runInFlight(
+  run: RunOnDisk,
+  table: ProcessTable,
+  alive: (pid: number) => boolean,
+): InFlightRun | null {
+  const marked = table.rows
+    .filter((row) => parseRunMarker(row.commandLine)?.runId === run.runId)
+    .map((row) => row.pid);
+  const facts = runFacts(run.record.events);
+  // pid 1 is never brigadier. A record naming it is a placeholder or garbage,
+  // and treating it as a live orchestrator would make every such run permanently
+  // untouchable — `isAlive(1)` is true on every POSIX machine there is.
+  if (facts !== null && facts.pid > 1) {
+    if (alive(facts.pid)) {
+      return {
+        runId: run.runId,
+        reason:
+          `its orchestrator (pid ${facts.pid}) is alive: this run is in flight, not abandoned. ` +
+          "Nothing of it is reclaimed — not its processes, not its directories, not its refs",
+        pids: marked,
+      };
+    }
+    return null;
+  }
+  if (marked.length > 0) {
+    return {
+      runId: run.runId,
+      reason:
+        `its record names no orchestrator and ${marked.length} marked process(es) are alive, so ` +
+        "brigadier cannot tell a crash from a run in progress. Unknown resolves toward leaving it alone",
+      pids: marked,
+    };
+  }
+  return null;
+}
+
 export type Completion = "complete" | "incomplete" | "unknown";
 
 export interface RunVerdict {
@@ -129,7 +205,10 @@ export function judgeRun(run: RunOnDisk, refs: readonly OwnedRef[] | null): RunV
     return {
       runId: run.runId,
       completion: "complete",
-      reason: "explicitly discharged: the operator released this run's directories",
+      reason:
+        "explicitly discharged by an operator: `dischargeRun` is the only thing that writes " +
+        "this event, and the sweep deliberately writes `swept` instead so it cannot grant " +
+        "itself permission",
       items,
       itemsWithRefs: [],
       claimedButAbsent: [],
@@ -253,6 +332,8 @@ export interface StartSweepReport {
    * known to this root and its processes stay sweepable.
    */
   readonly foreignMarked: ReadonlyArray<{ pid: number; runId: string; item: number; commandLine: string }>;
+  /** Runs left entirely alone because somebody is still running them. See `runInFlight`. */
+  readonly inFlight: readonly InFlightRun[];
 }
 
 export interface StartSweepOptions {
@@ -300,14 +381,25 @@ export async function sweepAtStart(options: StartSweepOptions): Promise<StartSwe
   // 1. Runs to consider: those THIS ROOT has a record of. A marked process whose
   //    run id this root has never heard of is REPORTED, never killed — see
   //    `foreignMarked` below for why that is a correctness rule and not caution.
-  const runIds = new Set<string>(runs.map((run) => run.runId));
-  if (options.currentRunId !== undefined) runIds.delete(options.currentRunId);
+  const alive = options.isAlive ?? defaultIsAlive;
+
+  // 1a. LIVENESS BEFORE AUTHORITY. A run somebody is still running is removed
+  //     from scope entirely, before any signal, any delete and any judgement.
+  const inFlight: InFlightRun[] = [];
+  const runIds = new Set<string>();
+  for (const run of runs) {
+    if (run.runId === options.currentRunId) continue;
+    const live = runInFlight(run, table, alive);
+    if (live !== null) inFlight.push(live);
+    else runIds.add(run.runId);
+  }
 
   const foreignMarked: Array<{ pid: number; runId: string; item: number; commandLine: string }> = [];
   for (const row of table.rows) {
     const marker = parseRunMarker(row.commandLine);
     if (marker === null) continue;
     if (marker.runId === options.currentRunId || runIds.has(marker.runId)) continue;
+    if (inFlight.some((live) => live.runId === marker.runId)) continue;
     foreignMarked.push({ pid: row.pid, runId: marker.runId, item: marker.item, commandLine: row.commandLine });
   }
 
@@ -334,7 +426,7 @@ export async function sweepAtStart(options: StartSweepOptions): Promise<StartSwe
   }
 
   // 3. Judge, having consulted the world.
-  const stale = runs.filter((run) => run.runId !== options.currentRunId);
+  const stale = runs.filter((run) => runIds.has(run.runId));
   const knownRunIds = runs.map((run) => run.runId);
   const verdicts: RunVerdict[] = [];
   const reclaimedDirs: Array<{ runId: string; item: number; path: string; bytes: number }> = [];
@@ -403,22 +495,29 @@ export async function sweepAtStart(options: StartSweepOptions): Promise<StartSwe
         if (result.deleted) reclaimedRefs.push(owned.ref);
         else if (result.refusal !== null) refusedRefs.push({ ref: owned.ref, refusal: result.refusal });
       }
-      // Mark it discharged so a later start does not judge it incomplete purely
-      // because the refs it would have checked have just been reclaimed. The
-      // manifest and the record are deliberately KEPT — a few kilobytes, and the
-      // only surviving evidence of what this run did.
-      if (mine.length > 0 || (run.manifest?.clones ?? []).length > 0) {
-        try {
-          appendEvent(recordPath(options.runRoot, run.runId), {
-            type: "discharged",
-            at: (options.now ?? Date.now)(),
-            item: null,
-            by: sweptBy,
-          });
-        } catch {
-          // A record that cannot be appended to is not a reason to undo a
-          // reclamation that already happened. The next start re-derives.
-        }
+      // What the sweep writes is a `swept` event, and `judgeRun` does not read
+      // it. The earlier version appended `discharged` — the OPERATOR's word —
+      // and then read it back on the next start as authority to delete, which
+      // permanently short-circuited the world check: after a REFUSED delete it
+      // still wrote the line, and a later start reported "explicitly
+      // discharged: the operator released this run's directories" with zero
+      // refs present. A state file records intent and the world records fact;
+      // a sweep that writes its own permission has made a state file into a
+      // fact. The manifest and record are deliberately KEPT — a few kilobytes,
+      // and the only surviving evidence of what this run did.
+      try {
+        appendEvent(recordPath(options.runRoot, run.runId), {
+          type: "swept",
+          at: (options.now ?? Date.now)(),
+          sweptBy,
+          runId: run.runId,
+          item: null,
+          reclaimedPids: [],
+          survivors: [],
+        });
+      } catch {
+        // A record that cannot be appended to is not a reason to undo a
+        // reclamation that already happened. The next start re-derives.
       }
     }
   }
@@ -436,6 +535,7 @@ export async function sweepAtStart(options: StartSweepOptions): Promise<StartSwe
     refusedRefs,
     unconfirmedPids,
     foreignMarked,
+    inFlight,
   };
 }
 
@@ -516,6 +616,9 @@ export function describeStartSweep(report: StartSweepReport): string[] {
     lines.push(
       `could not confirm dead: pid ${report.unconfirmedPids.join(", ")} — killing them is the only remedy`,
     );
+  }
+  for (const live of report.inFlight) {
+    lines.push(`run ${live.runId} left untouched — ${live.reason}${live.pids.length > 0 ? ` (pid ${live.pids.join(", ")})` : ""}`);
   }
   if (report.foreignMarked.length > 0) {
     // Reported with the exact pid and the run it names, because the operator's

@@ -234,11 +234,20 @@ test("ruling 56: the ownership diff computes identically in the parent, with bot
   // What the clone-side computation did, recorded rather than assumed. This is
   // the cost ruling 56 avoids by not being in there, and it is written to a
   // file so the number is not a claim in a comment.
+  // THE PARITY CLAIM, ONCE MORE THROUGH THE PRODUCTION PATH. The assertion this
+  // replaced compared a file against a literal the test itself had written two
+  // lines earlier, which is a test that cannot fail — on the one measurement
+  // ruling 56's whole invariant rests on. This one goes red if the parent-side
+  // computation ever stops agreeing with the clone-side one, because the value
+  // on the right came out of the clone and the value on the left came out of
+  // `parentGit`, which is the argv `src/integrate/` actually runs.
+  const viaProduction = await parentGit(repo, [...ownershipDiffArgv(base, ref), "-z"]);
+  expect(touchedPaths(viaProduction)).toEqual(touchedPaths(inCloneZ));
+  expect(touchedPaths(viaProduction).length).toBeGreaterThan(1);
   writeFileSync(
     join(scratch, "clone-side-firings.txt"),
     `name-only: ${firedInClone.join(", ")}\nfull diff: ${firedByFullDiff.join(", ")}\n`,
   );
-  expect(readFileSync(join(scratch, "clone-side-firings.txt"), "utf8")).toContain("full diff:");
 
   // The planted payloads are still there — nothing here sanitised the clone,
   // because ruling 56's answer is not to be in it rather than to clean it.

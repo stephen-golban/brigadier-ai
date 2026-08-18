@@ -91,8 +91,8 @@ export {
   parentGit,
   parentGitRaw,
   refSha,
+  PARENT_COMMANDS,
   subcommandOf,
-  WORKING_TREE_COMMANDS,
   WorkingTreeCommandRefused,
 } from "./parent.ts";
 
@@ -108,6 +108,7 @@ export {
 export {
   applyRefTransaction,
   assertOwnedRef,
+  assertPublishCommand,
   RefRefused,
   TransactionFailed,
   transactionStdin,

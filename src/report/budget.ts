@@ -59,6 +59,27 @@ export function isCapped(audience: Audience): boolean {
 }
 
 /**
+ * How many tokens a piece of text will cost the reader, with the correction
+ * that makes the number honest.
+ *
+ * `chars/4` is the usual rule of thumb and #23 MEASURED it underestimating a
+ * real artifact by 22%. A budget checked with a formula known to be too small
+ * is a budget that passes reports it should not, so the correction is applied
+ * rather than noted somewhere and forgotten. Still an estimate: the only exact
+ * answer is the reader's own tokeniser, which brigadier does not have.
+ *
+ * RE-EXPORTED RATHER THAN RE-IMPLEMENTED. This module had its own copy —
+ * `Math.ceil((text.length / 4) * 1.22)`, the same arithmetic with the two
+ * numbers inlined — written at the same time as `src/repomap/tokens.ts`. Two
+ * copies of one estimate is one retuning away from a report and a repo map
+ * disagreeing about what a token costs, and the report's ceiling is the half
+ * that would silently pass. `tokens.ts` is the one with the measurement behind
+ * it and with `CHARS_PER_TOKEN` and `UNDERCOUNT_CORRECTION` named, so it is the
+ * one that survives; it imports nothing, so nothing of the map comes with it.
+ */
+export { estimateTokens } from "../repomap/tokens.ts";
+
+/**
  * Is there anything to show while the run is in flight?
  *
  * `false` for a host session, and that is the honest answer rather than a

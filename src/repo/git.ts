@@ -70,7 +70,25 @@ export function hooklessArgs(emptyHooksDir: string): string[] {
 export function ownershipDiffArgv(baseRef: string, itemRef: string): string[] {
   // Run in the PARENT, never with `-C <clone>`. Measured to give the same
   // paths in the same order as the clone-side diff.
-  return ["diff", "--name-only", `${baseRef}..${itemRef}`];
+  //
+  // `--no-renames` CORRECTS THIS CONSTANT — a defect in the argv shipped here,
+  // not a change to any ruling. Ruling 51 says ownership is checked on "every
+  // path the item actually touched"; MEASURED against `git 2.50.1` on
+  // 2026-08-18, `--name-only` with `diff.renames` at its default prints only
+  // the DESTINATION of an exact rename. An item declaring `declared/**` that
+  // ran `git mv secret/credentials.txt declared/moved.txt` was therefore judged
+  // `touched: ["declared/moved.txt"], strayed: []` and integrated, having
+  // deleted a file outside its declared paths. Ownership held for what an item
+  // WRITES and not for what it DELETES, and deletion is the more damaging half.
+  // With `--no-renames` the same commit names both paths, and the item is
+  // rejected whole.
+  //
+  // `--no-renames` rather than `--raw -z`: it is one flag, it keeps the output
+  // a bare path list that `--name-only -z` already parses, and rename detection
+  // is the only thing that was ever collapsing two paths into one. The `--raw`
+  // framing would carry status letters this check has no use for and a second
+  // parser to get wrong.
+  return ["diff", "--name-only", "--no-renames", `${baseRef}..${itemRef}`];
 }
 
 /**

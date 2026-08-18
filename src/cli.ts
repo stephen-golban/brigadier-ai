@@ -9,17 +9,56 @@
  * file is what it calls.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { detectAll, type Detection } from "./agent/detect.ts";
 import { applyOverride, noBlockingReason, overrideWarning, parseOverrides, type BridgeOverride } from "./agent/drift.ts";
 import { REFUSAL, isInsideWorker } from "./agent/marker.ts";
 import { ALL_AGENT_IDS, PROFILES, type AgentId } from "./agent/profiles.ts";
 import { LICENSES } from "./generated/licenses.ts";
+import { resolveVerify } from "./gate/index.ts";
+import { intendedRealPath, realTempDirs } from "./isolation/index.ts";
+import {
+  admit,
+  agentsOnPath,
+  describeAdmission,
+  describeEstimate,
+  describeRefusals,
+  estimatePlan,
+  executeRun,
+  parsePlan,
+  PlanUnreadable,
+  validatePlan,
+  type Difficulty,
+} from "./queue/index.ts";
+import { defaultRunRoot, isTempRooted } from "./repo/layout.ts";
+import type { Audience } from "./report/index.ts";
 import { renderCompetence, tableProblems, unlistedModels } from "./router/table.ts";
 
 const USAGE = `brigadier — an ACP hub
+
+  brigadier run --plan <path> [--repo <path>] [--run-root <path>]
+      Run a plan: one isolated clone per item, one marked worker each, merged
+      onto refs/heads/brigadier/<run-id> and gated on the merged result.
+      --dry-run     admit the plan and stop. Nothing is created.
+      --estimate    a cost RANGE with its provenance, and stop (ruling 66).
+      --review      route a reviewer of a different vendor where one exists.
+      --verify <c>  the command to run on the MERGED result (ruling 52). It is
+                    resolved on PATH before a single worker exists, and it comes
+                    from you — a brigadier.json committed in the repository is
+                    never read (ruling 37).
+      --secret-env <NAME>   grant this variable to workers, and redact its value
+                    from every persisted artifact, in every encoding (ruling 65).
+                    Repeatable.
+      --audience terminal|acp-client|host-session   default host-session, where
+                    the report is hard-capped because a model pays for it forever.
+      --max-difficulty easy|medium|hard   the ceiling items are clamped DOWN to.
+      --workers <n> the per-run concurrency budget (ruling 54's third filter).
+
+  brigadier plan --plan <path> [...]
+      Everything run decides before it spends anything. The same as
+      run --dry-run.
 
   brigadier detect [--json] [--timeout <ms>] [agent...]
       Probe which agents on this machine can actually be driven. Detection is
@@ -47,6 +86,22 @@ const flag = (name: string) => argv.includes(`--${name}`);
 const value = (name: string): string | undefined => {
   const index = argv.indexOf(`--${name}`);
   return index === -1 ? undefined : argv[index + 1];
+};
+/**
+ * Every occurrence of a repeatable flag.
+ *
+ * Ruling 65 grants secrets by NAME, and an operator with two of them who is
+ * silently given one has a leak they cannot see: the second value is never
+ * added to the inventory, so nothing redacts it.
+ */
+const values = (name: string): string[] => {
+  const found: string[] = [];
+  argv.forEach((entry, index) => {
+    if (entry !== `--${name}`) return;
+    const next = argv[index + 1];
+    if (next !== undefined && !next.startsWith("--")) found.push(next);
+  });
+  return found;
 };
 
 const SYMBOL: Record<string, string> = { usable: "✓", unusable: "!", absent: "·" };
@@ -290,6 +345,150 @@ function licenses(): number {
 }
 
 /**
+ * `brigadier run`, and the order that makes `--dry-run` a real answer.
+ *
+ * Everything up to `executeRun` is computed from the plan text, `PATH` and this
+ * machine's memory. Nothing before that line creates a directory, starts a
+ * process or writes a ref — which is what lets a refusal be checked from the
+ * outside by listing the run root and finding it unchanged. Ruling 53 asks for
+ * exactly that and names the alternative: a refusal that first creates the
+ * thing it is refusing has already done the thing it exists to prevent.
+ *
+ * THE VERIFY COMMAND COMES FROM THE OPERATOR AND NOWHERE ELSE. Ruling 37: a
+ * `brigadier.json` committed in the repository is never read, so a hostile one
+ * never runs — not because it is filtered, but because nothing looks at it.
+ * The command arrives on this command line or in the plan the operator handed
+ * over.
+ *
+ * `--dry-run` and `--estimate` differ in what they are for: the first answers
+ * "would this run?", the second answers "what would it cost?", and ruling 66
+ * makes the second a RANGE because #44 measured two identical runs 15× apart.
+ * Both stop before anything is spent.
+ */
+async function run(): Promise<number> {
+  const planPath = value("plan");
+  if (planPath === undefined) {
+    console.error("brigadier run --plan <path> [--repo <path>] [--run-root <path>]\n");
+    console.error(USAGE);
+    return 2;
+  }
+
+  const repo = absolute(value("repo") ?? process.cwd());
+  const runRoot = absolute(value("run-root") ?? defaultRunRoot());
+  const audience = audienceFrom(value("audience"));
+  const ceiling = difficultyFrom(value("max-difficulty"));
+  if (ceiling === null) {
+    console.error(`--max-difficulty must be one of easy, medium, hard`);
+    return 2;
+  }
+
+  let spec;
+  try {
+    spec = parsePlan(readFileSync(planPath, "utf8"), planPath);
+  } catch (error) {
+    console.error(error instanceof PlanUnreadable ? error.message : `could not read ${planPath}: ${String(error)}`);
+    return 2;
+  }
+
+  // Ruling 61, before anything is created rather than at the first clone. #41
+  // measured the Codex bridge building its sandbox with `/tmp` and `$TMPDIR`
+  // writable BY DESIGN, and a worker there writing into another clone's tracked
+  // file — so the conventional home for scratch directories is exactly the
+  // region that makes concurrent workers non-isolated. Judged by realpath,
+  // never lexically: macOS's /var → /private/var symlink is why the ruling says so.
+  const intendedRoot = intendedRealPath(runRoot);
+  if (isTempRooted(intendedRoot, realTempDirs())) {
+    console.error(
+      `refused — the run root ${intendedRoot} is inside a temp region, and nothing was started.\n` +
+        "  Ruling 61: brigadier's run directories live outside every temp root. #41 measured a worker\n" +
+        "  under a temp root writing into another clone's tracked file, because the Codex ACP bridge\n" +
+        "  builds its sandbox with the temp roots writable by design.\n" +
+        `  Remedy: pass --run-root somewhere outside it, or omit it and get ${defaultRunRoot()}.`,
+    );
+    return 4;
+  }
+
+  // Ruling 69: the same override the table describes is the one that resolves.
+  const agents = agentsOnPath((command) => Bun.which(command), OVERRIDES);
+  const plan = validatePlan(spec, {
+    cwd: repo,
+    agents,
+    ...(ceiling === undefined ? {} : { ceiling }),
+  });
+  const workers = value("workers");
+  const admission = admit({
+    plan,
+    agents,
+    // Decision 25: the product is host-first, so brigadier normally runs inside
+    // a host agent's session and that agent gets a worker's RAM budget.
+    hostFirst: audience === "host-session",
+    ...(workers === undefined ? {} : { desirabilityCap: Number(workers) }),
+  });
+
+  if (admission.refusals.length > 0) {
+    for (const line of describeRefusals(admission.refusals, planPath)) console.error(line);
+    return 4;
+  }
+
+  if (flag("estimate")) {
+    const estimate = estimatePlan(
+      plan.items,
+      admission.fanOut[0]?.workers ?? 1,
+      admission.agents.map((agent) => agent.id),
+    );
+    for (const line of describeEstimate(estimate)) console.log(line);
+    console.log("nothing was started: --estimate stops before the run root is created.");
+    return 0;
+  }
+
+  for (const line of describeAdmission(admission, planPath)) console.log(line);
+
+  if (flag("dry-run")) {
+    console.log("nothing was started: --dry-run stops before the run root is created.");
+    return 0;
+  }
+
+  // The merged-result gate's command. Resolved HERE, before a worker exists.
+  const verify = resolveVerify(value("verify"), repo);
+  if (verify.status === "missing") {
+    console.error(verify.refusal ?? "the verify command could not be resolved");
+    return 4;
+  }
+
+  mkdirSync(runRoot, { recursive: true });
+  const result = await executeRun({
+    repo,
+    runRoot: realpathSync(runRoot),
+    planPath,
+    admission,
+    audience,
+    verify,
+    review: flag("review"),
+    secretEnv: values("secret-env"),
+    ...(value("soft-ceiling") === undefined ? {} : { softCeiling: Number(value("soft-ceiling")) }),
+    ...(value("hard-ceiling") === undefined ? {} : { hardCeiling: Number(value("hard-ceiling")) }),
+  });
+  console.log(result.report);
+  return result.exitCode;
+}
+
+function absolute(path: string): string {
+  return isAbsolute(path) ? path : resolve(process.cwd(), path);
+}
+
+/** Decision 25's default: a model is reading this, and it pays for every byte. */
+function audienceFrom(name: string | undefined): Audience {
+  if (name === "terminal" || name === "acp-client") return name;
+  return "host-session";
+}
+
+function difficultyFrom(name: string | undefined): Difficulty | undefined | null {
+  if (name === undefined) return undefined;
+  if (name === "easy" || name === "medium" || name === "hard") return name;
+  return null;
+}
+
+/**
  * Ruling 57. Commands that would orchestrate — spawn workers, clone, integrate.
  * Read-only introspection is deliberately still allowed inside a worker: it
  * cannot cause finding 114, and refusing it would only make the refusal look
@@ -306,6 +505,13 @@ const exitCode = await (async () => {
   }
 
   switch (command) {
+    case "run":
+      return run();
+    // Ruling 53's whole point, as its own verb: everything `run` decides before
+    // it spends anything, and nothing it decides afterwards.
+    case "plan":
+      argv.push("--dry-run");
+      return run();
     case "detect":
       return detect();
     case "agents":

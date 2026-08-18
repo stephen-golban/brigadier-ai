@@ -145,6 +145,28 @@ describe("a truncated record is still evidence — and a JSON document is not", 
     expect(readFileSync(path, "utf8").length).toBeGreaterThan(0);
   });
 
+  test("an append after a truncated tail does not fuse with it", () => {
+    // Resumption is the case this format exists for, so it is the case that must
+    // not lose anything extra. Appending straight onto a fragment left by a kill
+    // produced `{"type":"run-star{"type":"run-finished"...}` — one line, one
+    // damaged-line report, and the NEW event lost as well as the old one.
+    const path = join(scratch, "resume-append.ndjson");
+    for (const event of facts) appendEvent(path, event);
+    truncateSync(path, statSync(path).size - 30);
+    const beforeResume = readRunRecord(path);
+    expect(beforeResume.truncatedTail).not.toBeNull();
+
+    appendEvent(path, { type: "run-finished", at: 99, outcome: "abandoned" });
+
+    const reading = readRunRecord(path);
+    // The fragment is still reported, and it costs exactly itself.
+    expect(reading.damagedLines.length).toBe(1);
+    expect(reading.truncatedTail).toBeNull();
+    // The resumed event survived whole, which is the part that used to be lost.
+    expect(finishedIntent(reading.events)).toBe("abandoned");
+    expect(reading.events.length).toBe(beforeResume.events.length + 1);
+  });
+
   test("a damaged line in the MIDDLE is reported separately from a truncated tail", () => {
     // A kill truncates the end. Anything else is a different problem, and a
     // reader that treated them alike would hide it.
@@ -235,12 +257,32 @@ describe("the record is intent, and says so", () => {
     expect(dischargedItems(events).run).toBe(false);
   });
 
-  test("there is no `running` field for a later reader to trust", () => {
-    // Ruling 63/58: a state file records intent, the world records fact.
-    // Liveness is derived from the process table, never from this file.
-    const path = join(scratch, "no-running.ndjson");
-    for (const event of sampleEvents()) appendEvent(path, event);
-    expect(readFileSync(path, "utf8")).not.toContain('"running"');
+  test("a `running` field planted by someone else is not surfaced by any fold", async () => {
+    // Ruling 63/58: a state file records intent, the world records fact. The
+    // earlier version of this test grepped a file it had just written itself,
+    // which could not fail. This plants the field a hostile or older writer
+    // would leave and asserts the READER never hands it to anybody: the event
+    // still parses (extra fields are tolerated, so a record from a newer
+    // brigadier is still evidence) and no fold exposes a liveness verdict.
+    const path = join(scratch, "planted-running.ndjson");
+    writeFileSync(
+      path,
+      `{"type":"run-started","at":1,"runId":"r1","repo":"/r","runRoot":"/x","pid":4242,"running":true}\n` +
+        `{"type":"check-slot","at":2,"item":1,"check":"verify","outcome":"not-run","running":true}\n`,
+    );
+    const reading = readRunRecord(path);
+    expect(reading.damagedLines).toEqual([]);
+    expect(reading.events.length).toBe(2);
+
+    const facts = runFacts(reading.events);
+    expect(facts).not.toBeNull();
+    expect(Object.keys(facts!)).toEqual(["runId", "repo", "runRoot", "startedAt", "pid"]);
+    for (const slot of checkSlots(reading.events)) {
+      expect(Object.keys(slot).sort()).toEqual(["check", "detail", "item", "outcome", "settled"]);
+    }
+    // The module exports nothing that answers "is this run alive". That question
+    // is `sweep.ts`'s, and its answer comes from the process table.
+    expect(Object.keys(await import("../src/run/record.ts"))).not.toContain("isRunning");
   });
 
   test("recordPath sits beside the manifest in the run directory", () => {

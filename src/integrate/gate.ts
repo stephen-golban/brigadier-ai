@@ -185,7 +185,19 @@ export async function runIntegrationGate(
   writeRegularFile(hermetic.emptyGlobalConfig, "");
 
   const realDir = realpathSync(dir);
-  await git({ cwd: realRoot, hermetic, args: ["clone", "--local", "--no-checkout", spec.repo, realDir] });
+  // `--no-hardlinks` IS NOT AN OPTIMISATION SETTING HERE, IT IS THE BOUNDARY.
+  // MEASURED against `git 2.50.1` on 2026-08-18: `git clone --local` without it
+  // hardlinks the object files (same inode, nlink 2), and this is the one clone
+  // that by design EXECUTES AGENT-AUTHORED CODE — the merged result, run as the
+  // verify command. A verify script that wrote over `.git/objects/**` left the
+  // OPERATOR's repository with every object corrupt and `git fsck` exiting 128,
+  // while this gate returned `pass`. brigadier would have destroyed the one
+  // thing ruling 51 promises never to touch, through its own clone.
+  await git({
+    cwd: realRoot,
+    hermetic,
+    args: ["clone", "--local", "--no-hardlinks", "--no-checkout", spec.repo, realDir],
+  });
   const inClone = { cwd: realDir, hermetic };
   if (spec.autocrlf !== undefined) {
     await git({ ...inClone, args: ["config", "core.autocrlf", spec.autocrlf] });

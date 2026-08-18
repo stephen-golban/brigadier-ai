@@ -275,10 +275,46 @@ export async function prepareClone(spec: CloneSpec): Promise<PreparedClone> {
   resetDirectory(hermetic.hooksSink);
   writeRegularFile(hermetic.emptyGlobalConfig, "");
 
+  // `--no-hardlinks`, and the flag is measured rather than cautious.
+  //
+  // MEASURED against `git 2.50.1` on 2026-08-18, operator repository of 2,900
+  // files and 70 MB of objects, medians of four interleaved runs after a
+  // discarded warm-up:
+  //
+  //                          clone     unique disk per clone
+  //     hardlinked, packed    26 ms       0.0 MB   (5 object files)
+  //     --no-hardlinks        68 ms      69.4 MB
+  //     hardlinked, loose   1085 ms       0.0 MB   (2,960 object files)
+  //     --no-hardlinks       444 ms      79.5 MB
+  //
+  // The time cost is +42 ms on a packed repository and MINUS 641 ms on one that
+  // has not been gc'd — copying a loose object store is faster than hardlinking
+  // it, because the cost there is 2,960 metadata operations rather than bytes.
+  // The whole cost is disk: about 70 MB per worker clone that used to be free.
+  //
+  // What it buys, MEASURED the same day on the same repository: WITH the
+  // hardlink, one `open(pack, "wb").write(...)` from inside the clone — no git,
+  // no vulnerability, never leaving the directory the agent was given — replaced
+  // the operator's pack file, and left the operator's repository at `git fsck`
+  // exit 94, `git log` exit 128 and `git cat-file -p HEAD` exit 128. A packed
+  // repository keeps its entire history in that one file. WITHOUT the hardlink
+  // the identical write left the operator's pack byte-identical and `fsck` at
+  // exit 0. `test/isolation-placement.test.ts` is that control.
+  //
+  // DO NOT REMOVE THIS FLAG TO SAVE DISK, and this is the paragraph that exists
+  // for whoever is about to. #19 measured `--local --no-checkout` at 1.39 s /
+  // 96 MB against a full `--local` at 1.82 s / 163 MB and concluded that the
+  // object store is "hardlinked and effectively free"; ruling 7 chose clones
+  // over worktrees partly on that cost model. Both need qualifying rather than
+  // overturning: the sharing is free, and the thing that makes it free is
+  // exactly the thing that makes the operator's entire history writable from
+  // inside a directory an agent owns. Ruling 50's ban on copying is about
+  // transplanting gitignored dependency trees, not about the object store, so
+  // nothing here contradicts it.
   await git({
     cwd: runRoot,
     hermetic,
-    args: ["clone", "--local", "--no-checkout", base.repo, realDir],
+    args: ["clone", "--local", "--no-hardlinks", "--no-checkout", base.repo, realDir],
   });
   writeRegularFile(join(realDir, ".git", CLONE_SIGNATURE), `${base.runId}/${item}\n`);
 

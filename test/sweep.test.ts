@@ -187,7 +187,13 @@ describe("real processes, reclaimed and confirmed", () => {
     expect(size(one.heartbeat)).toBe(oneAfter);
     expect(size(two.heartbeat)).toBe(twoAfter);
 
-    expect([...outcome.evidence.reclaimedPids].sort()).toEqual([one.pid, two.pid].sort());
+    // Both marked workers, and NOT the bystander. Stated as containment rather
+    // than equality because the closure legitimately also reclaims each worker's
+    // own unmarked children — which is the point of `descendantsOf`.
+    expect(outcome.evidence.reclaimedPids).toContain(one.pid);
+    expect(outcome.evidence.reclaimedPids).toContain(two.pid);
+    expect(outcome.evidence.reclaimedPids).not.toContain(bystander.pid);
+    expect(outcome.evidence.reclaimedPids.every((pid) => !isAlive(pid))).toBe(true);
     expect(outcome.evidence.survivors).toEqual([]);
     expect(outcome.unconfirmed).toEqual([]);
 
@@ -268,10 +274,132 @@ describe("real processes, reclaimed and confirmed", () => {
     // The table is deliberately stale: this is the ordinary race between
     // reading `ps` and acting on it.
     const outcome = await sweep({ scope: { runId }, sweptBy: "sweep.test.ts", table });
-    expect(outcome.matched.map((m) => m.disposition)).toEqual(["already-gone"]);
-    expect(outcome.evidence.reclaimedPids).toEqual([worker.pid]);
+    expect(outcome.matched.find((m) => m.pid === worker.pid)?.disposition).toBe("already-gone");
+    expect(outcome.evidence.reclaimedPids).toContain(worker.pid);
     expect(outcome.evidence.survivors).toEqual([]);
   }, 60_000);
+});
+
+describe("an unmarked descendant is reclaimed with its parent", () => {
+  test("a worker's ordinary background child is killed, not left writing", async () => {
+    // Ruling 38 requires every process brigadier CAUSES TO EXIST to carry the
+    // marker, and brigadier cannot mark what an agent spawns for itself. Before
+    // the closure existed, this child kept writing (heartbeat 10 -> 14 bytes,
+    // reparented to pid 1) while the sweep reported `survivors: []` — a check
+    // reporting success for the thing it did not do. No `setsid`, no
+    // double-fork: an ordinary `&`.
+    const runId = `dsc${Date.now().toString(36)}${process.pid.toString(36)}`;
+    const childHeartbeat = join(scratch, "descendant.log");
+    const ownHeartbeat = join(scratch, "spawner.log");
+    const tick = (path: string): string => `while :; do printf . >> "${path}"; sleep 0.2; done`;
+    let parent: Bun.Subprocess;
+    if (process.platform === "win32") {
+      // No `/bin/sh`. A `bun` fixture spawns the unmarked child instead; the
+      // shape asserted below is identical.
+      const spawner = join(scratch, "spawner.ts");
+      writeFileSync(
+        spawner,
+        [
+          "// SPDX-License-Identifier: Apache-2.0",
+          'import { appendFileSync } from "node:fs";',
+          "const [own, child, marked] = process.argv.slice(2);",
+          "Bun.spawn([process.execPath, marked!, child!], { stdout: 'ignore', stderr: 'ignore', stdin: 'ignore' });",
+          "setInterval(() => { try { appendFileSync(own!, '.'); } catch {} }, 100);",
+        ].join("\n"),
+      );
+      parent = Bun.spawn(["bun", spawner, ownHeartbeat, childHeartbeat, script, runMarkerArg(runId, 1)], {
+        stdout: "ignore",
+        stderr: "ignore",
+        stdin: "ignore",
+      });
+    } else {
+      // An ordinary `&` — the critic's case exactly. No `setsid`, no
+      // double-fork, and the child carries NO marker.
+      parent = Bun.spawn(
+        [
+          "/bin/sh",
+          "-c",
+          `sh -c '${tick(childHeartbeat)}' & ${tick(ownHeartbeat)}`,
+          "sh",
+          runMarkerArg(runId, 1),
+        ],
+        { stdout: "ignore", stderr: "ignore", stdin: "ignore" },
+      );
+    }
+    spawned.push(parent);
+
+    const deadline = Date.now() + 40_000;
+    let childPid = 0;
+    while (Date.now() < deadline) {
+      const child = scanProcessTable().rows.find(
+        (row) => row.commandLine.includes(childHeartbeat) && row.pid !== parent.pid,
+      );
+      if (child !== undefined && size(childHeartbeat) > 0 && size(ownHeartbeat) > 0) {
+        childPid = child.pid;
+        // It really is a descendant of the marked worker, which is the only
+        // reason the sweep can reach it.
+        expect(child.ppid).toBe(parent.pid as number);
+        break;
+      }
+      await Bun.sleep(150);
+    }
+    // The fixture is sound: an unmarked child exists, is a child of the marked
+    // worker, and is writing.
+    expect(childPid).toBeGreaterThan(0);
+    expect(scanProcessTable().rows.find((row) => row.pid === childPid)?.commandLine).not.toContain(
+      "--brigadier-run",
+    );
+
+    const outcome = await sweep({ scope: { runId }, sweptBy: "sweep.test.ts" });
+
+    // Asserted on the bytes, both directions.
+    expect(isAlive(childPid)).toBe(false);
+    expect(scanProcessTable().rows.some((row) => row.pid === childPid)).toBe(false);
+    const frozen = size(childHeartbeat);
+    await Bun.sleep(600);
+    expect(size(childHeartbeat)).toBe(frozen);
+
+    expect(outcome.evidence.reclaimedPids).toContain(childPid);
+    expect(outcome.matched.find((m) => m.pid === childPid)?.marked).toBe(false);
+    expect(outcome.evidence.survivors).toEqual([]);
+  }, 90_000);
+});
+
+describe("a process that appeared during the sweep is a survivor, not an absence", () => {
+  test("it is killed AND counted as a survivor, and assertReclaimed refuses", async () => {
+    // Reproduced 3 times in 3 before the re-scan existed: a marked item-1
+    // process appearing 500 ms into a 1.6 s sweep was still ticking at the end,
+    // the sweep returned `survivors: []`, and that evidence licensed
+    // `recycleClone` on a directory whose worker was live. Here the arrival is
+    // made deterministic rather than raced: the first reading is taken, THEN a
+    // second worker starts, then the sweep runs against the stale reading —
+    // which is exactly what a process starting during the grace window looks
+    // like from inside the sweep.
+    const runId = `apr${Date.now().toString(36)}${process.pid.toString(36)}`;
+    const first = spawnMarked(runId, 1);
+    const table = await waitForTable([first.pid]);
+    const late = spawnMarked(runId, 1);
+    await waitForTable([late.pid]);
+    expect(table.rows.some((row) => row.pid === late.pid)).toBe(false);
+
+    const outcome = await sweep({
+      scope: { runId, item: 1 },
+      sweptBy: "sweep.test.ts",
+      table,
+      rescan: () => scanProcessTable(),
+    });
+
+    // Contained — ruling 38 — and reported as a survivor all the same, because
+    // its existence proves a spawner the sweep never saw.
+    expect(isAlive(late.pid)).toBe(false);
+    expect(outcome.evidence.survivors).toContain(late.pid);
+    expect(outcome.matched.find((m) => m.pid === late.pid)?.disposition).toBe("appeared");
+
+    // The consumer declines, unmodified.
+    expect(() =>
+      assertReclaimed({ runId, item: 1, releasedAt: 0, dir: join(scratch, "c") }, outcome.evidence),
+    ).toThrow(/could not reclaim/);
+  }, 90_000);
 });
 
 describe("the sweep never kills the sweep", () => {

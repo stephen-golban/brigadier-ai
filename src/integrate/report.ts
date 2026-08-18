@@ -111,7 +111,24 @@ export function headline(outcome: RunOutcome): string {
       "This is not a success, and it is not a failure: it is the state the run ended in."
     );
   }
-  return `integrated — ${landed} of ${counts.total} items landed, and the merged result was verified`;
+  // A VERIFICATION CLAIM IS DERIVED FROM A `pass` THAT HAPPENED, never from the
+  // absence of a failure. With `gates: []`, or an all-`no-change` wave and an
+  // `unconfigured` gate — reachable whenever nothing was published — the older
+  // wording printed "and the merged result was verified" over a run in which
+  // nothing was verified and no branch was created. That is ruling 52's exact
+  // bug, an absent result rendering as a satisfied requirement, in the one line
+  // people actually read.
+  const verified = outcome.gates.some((gate) => gate.outcome === "pass");
+  if (verified) {
+    return `integrated — ${landed} of ${counts.total} items landed, and the merged result was verified`;
+  }
+  const why =
+    outcome.gates.length === 0
+      ? "no integration gate was recorded for this run"
+      : `the merged result is ${outcome.gates.map((gate) => gate.outcome).join(", ")}`;
+  return (
+    `${landed} of ${counts.total} items landed, and THE MERGED RESULT WAS NOT VERIFIED — ${why}`
+  );
 }
 
 /**

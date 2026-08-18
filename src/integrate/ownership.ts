@@ -9,11 +9,17 @@
  * the lane to hold ownership would be relying on something three vendors do not
  * have. The plan's claim is therefore checked where the work comes back.
  *
- * `git diff --name-only <base>..<item>` names every path the item actually
- * touched, including the undeclared one — MEASURED against `git 2.50.1` on
- * 2026-08-17 (`probes/integration.sh`, check 5: an item that declared `a.txt`
- * and also wrote `b.txt` produced exactly `a.txt b.txt`), and re-measured in
- * `test/integrate-parity.test.ts` on both sides of the fetch.
+ * `git diff --name-only --no-renames <base>..<item>` names every path the item
+ * actually touched, including the undeclared one — MEASURED against
+ * `git 2.50.1` on 2026-08-17 (`probes/integration.sh`, check 5: an item that
+ * declared `a.txt` and also wrote `b.txt` produced exactly `a.txt b.txt`), and
+ * re-measured in `test/integrate-parity.test.ts` on both sides of the fetch.
+ *
+ * `--no-renames` IS PART OF THAT SENTENCE AND NOT A TUNING FLAG. Without it,
+ * and with `diff.renames` at its default, `--name-only` prints only a rename's
+ * DESTINATION, so an item could delete any undeclared file by moving it into a
+ * path it does own and still be judged `strayed: []`. The argv and the reason
+ * live on `ownershipDiffArgv` in `src/repo/git.ts`.
  *
  * AND THE ITEM THAT STRAYED IS REJECTED WHOLE. Not partially: cherry-picking
  * the obedient half of a commit produces a tree nobody wrote and nobody

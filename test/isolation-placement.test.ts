@@ -80,6 +80,20 @@ function sweptClean(clone: AgentOwnedClone): ReclamationEvidence {
   };
 }
 
+/** A git exit code, without throwing: the operator's `fsck` is the assertion. */
+async function gitExit(cwd: string, ...args: string[]): Promise<number> {
+  const child = Bun.spawn(["git", ...args], {
+    cwd,
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+  });
+  await new Response(child.stdout).text();
+  await new Response(child.stderr).text();
+  return await child.exited;
+}
+
 let scratch: string;
 let runRootHome: string;
 let repo: string;
@@ -326,57 +340,63 @@ describe("ruling 51: origin is removed, and that is a speed bump", () => {
   }, 20_000);
 });
 
-describe("the measured cost of `git clone --local`", () => {
-  test("the object store is hardlinked, and that is a residual the ruling accepts", async () => {
-    // Its own parent repository: this test deliberately corrupts one, and a
-    // shared fixture would make the damage look like someone else's bug.
+describe("the operator's object store is not shared with a worker clone", () => {
+  test("objects are copied, and a hostile write inside the clone leaves fsck clean", async () => {
+    // Its own parent repository: this test writes hostile bytes, and a shared
+    // fixture would make the damage look like someone else's bug.
     const doomed = join(scratch, "doomed-parent");
     mkdirSync(doomed, { recursive: true });
     await git(doomed, "init", "-q", "-b", "main");
     await git(doomed, "config", "user.email", "operator@example.com");
     await git(doomed, "config", "user.name", "Operator");
-    writeFileSync(join(doomed, "a.txt"), "hello\n");
+    writeFileSync(join(doomed, "a.txt"), "the operator's history\n");
     await git(doomed, "add", "-A");
     await git(doomed, "commit", "-q", "-m", "base");
+    // Packed, which is what a real repository looks like: one file holding
+    // every object, hardlinked into every clone that does not say otherwise.
+    await git(doomed, "gc", "-q");
+
     const doomedBase = await buildBaseState({
       repo: doomed,
-      runId: "links",
-      scratchDir: join(scratch, "links-state"),
+      runId: "objects",
+      scratchDir: join(scratch, "objects-state"),
     });
-
-    const root = join(runRootHome, "links");
+    const root = join(runRootHome, "objects");
     mkdirSync(root, { recursive: true });
     const agent = releaseToAgent(await prepareClone({ base: doomedBase, item: 1, runRoot: root }));
 
-    // A loose object in the clone with more than one link. This is what makes a
-    // clone cheap — the object store is shared rather than copied, and ruling
-    // 50 forbids copying for reasons that are not negotiable.
+    // 1. Nothing in the clone's object store shares an inode with anything.
     const objects = join(agent.dir, ".git", "objects");
-    const shared: string[] = [];
-    for (const bucket of readdirSync(objects)) {
-      if (!/^[0-9a-f]{2}$/.test(bucket)) continue;
-      for (const name of readdirSync(join(objects, bucket))) {
-        const path = join(objects, bucket, name);
-        if (lstatSync(path).nlink > 1) shared.push(join(bucket, name));
+    const files: string[] = [];
+    const walk = (dir: string): void => {
+      for (const name of readdirSync(dir, { withFileTypes: true })) {
+        const path = join(dir, name.name);
+        if (name.isDirectory()) walk(path);
+        else if (name.isFile()) files.push(path);
       }
+    };
+    walk(objects);
+    expect(files.length).toBeGreaterThan(0);
+    for (const file of files) expect(lstatSync(file).nlink).toBe(1);
+
+    // 2. The agent does the worst thing available to it: overwrites the object
+    // store from inside the directory it was given. No git, no escape, one
+    // write. With `git clone --local` and no `--no-hardlinks` this replaced the
+    // operator's pack and left them at `git fsck` exit 94, `git log` exit 128.
+    const operatorPack = readdirSync(join(doomed, ".git", "objects", "pack")).find((name) =>
+      name.endsWith(".pack"),
+    )!;
+    const operatorPackPath = join(doomed, ".git", "objects", "pack", operatorPack);
+    const operatorBytes = readFileSync(operatorPackPath);
+    for (const file of files) {
+      chmodSync(file, 0o644);
+      writeFileSync(file, "OWNED BY THE AGENT\n");
     }
-    expect(shared.length).toBeGreaterThan(0);
 
-    // The residual, stated with bytes rather than left to inference: the agent
-    // owns this directory, so it can write through the shared inode and change
-    // the operator's object file. Decision 34's `.git/**` lane exclusion is the
-    // defence, and ruling 43 measured that it can only fire on two of five
-    // vendors — so this is a real accepted cost, not a closed one.
-    const relativeObject = shared[0]!;
-    const inClone = join(objects, relativeObject);
-    const inParent = join(doomed, ".git", "objects", relativeObject);
-    const parentBefore = readFileSync(inParent);
-
-    chmodSync(inClone, 0o644);
-    writeFileSync(inClone, "corrupted by the agent\n");
-    const parentAfter = readFileSync(inParent);
-
-    expect(parentAfter.equals(parentBefore)).toBe(false);
-    expect(parentAfter.toString()).toBe("corrupted by the agent\n");
-  }, 20_000);
+    // 3. The operator's bytes, and the operator's repository, are untouched.
+    expect(readFileSync(operatorPackPath).equals(operatorBytes)).toBe(true);
+    expect(await gitExit(doomed, "fsck", "--no-progress")).toBe(0);
+    expect(await gitExit(doomed, "log", "--oneline", "-1")).toBe(0);
+    expect(await gitExit(doomed, "cat-file", "-p", "HEAD")).toBe(0);
+  }, 30_000);
 });

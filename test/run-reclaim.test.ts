@@ -203,6 +203,57 @@ describe("all three conditions, or refuse and report", () => {
     expect(existsSync(join(dir, "work.txt"))).toBe(true);
   });
 
+  test("NEGATIVE (b): a subdirectory an AGENT created inside a real clone is refused", () => {
+    // `claimedByManifest` walks up, which is right for refusing git commands
+    // anywhere inside a clone and wrong for deciding what may be deleted. Under
+    // the walking form this directory inherited its parent's entry and was
+    // really deleted — with a marker file the agent wrote itself.
+    const dir = plantClone("agentmade", 1);
+    const agentMade = join(dir, "agent-made");
+    mkdirSync(join(agentMade, ".git"), { recursive: true });
+    writeFileSync(join(agentMade, ".git", CLONE_SIGNATURE), "agentmade/1\n");
+    writeFileSync(join(agentMade, "agents-work.txt"), "the agent put this here\n");
+
+    const verdict = proveDeletableDirectory(agentMade, { runRoot });
+    expect(verdict.deletable).toBe(false);
+    expect(verdict.refusals.join(" ")).toContain("records an ANCESTOR");
+    expect(reclaimDirectory(agentMade, { runRoot }).deleted).toBe(false);
+    expect(existsSync(join(agentMade, "agents-work.txt"))).toBe(true);
+    // And the clone itself is still deletable: the fix narrowed (b), it did not
+    // break it.
+    expect(proveDeletableDirectory(dir, { runRoot }).deletable).toBe(true);
+  });
+
+  test("NEGATIVE (c): a marker naming a DIFFERENT clone does not stand in for this one", () => {
+    const dir = plantClone("wrongmarker", 1);
+    writeFileSync(join(dir, ".git", CLONE_SIGNATURE), "someotherrun/9\n");
+    const verdict = proveDeletableDirectory(dir, { runRoot });
+    expect(verdict.deletable).toBe(false);
+    expect(verdict.refusals.join(" ")).toContain("does not name this clone");
+    expect(existsSync(join(dir, "work.txt"))).toBe(true);
+  });
+
+  test("NEGATIVE (b): a FORGED manifest with a backdated createdAt is still refused", () => {
+    // `createdAt` is a number in the file, so a forger picks it. The manifest
+    // file's own birth time is not the forger's to choose — writing the file is
+    // what sets it.
+    const runId = "forged";
+    const dir = join(runRoot, RUN_DIR, runId, "1");
+    mkdirSync(join(dir, ".git"), { recursive: true });
+    writeFileSync(join(dir, ".git", CLONE_SIGNATURE), `${runId}/1\n`);
+    writeFileSync(join(dir, "operators-data.txt"), "not brigadier's\n");
+    // Written AFTER the directory, claiming to predate it by an hour.
+    recordClone(
+      manifestPath(runRoot, RUN_DIR, runId),
+      { runId, runRoot, createdAt: Date.now() - 3_600_000, clones: [] },
+      { item: 1, dir, createdAt: Date.now() - 3_600_000 },
+    );
+    const verdict = proveDeletableDirectory(dir, { runRoot });
+    expect(verdict.proof.manifestOlderThanDirectory).toBe(false);
+    expect(verdict.deletable).toBe(false);
+    expect(existsSync(join(dir, "operators-data.txt"))).toBe(true);
+  });
+
   test("a manifest for a DIFFERENT run root grants nothing here", () => {
     const runId = "otherroot";
     const dir = join(runRoot, RUN_DIR, runId, "1");
@@ -270,7 +321,7 @@ describe("ruling 50: refs delete by compare-and-swap or not at all", () => {
   test("NEGATIVE: a ref outside refs/brigadier/ is refused before git runs", async () => {
     const sha = await git(repo, "rev-parse", "HEAD");
     await git(repo, "update-ref", "refs/heads/operators-branch", sha);
-    const result = await reclaimRef(repo, { ref: "refs/heads/operators-branch", sha }, ["casrun"]);
+    const result = await reclaimRef(repo, { ref: "refs/heads/operators-branch", sha, symbolic: false }, ["casrun"]);
     expect(result.deleted).toBe(false);
     expect(result.refusal).toContain("does not own");
     expect(await git(repo, "rev-parse", "refs/heads/operators-branch")).toBe(sha);
@@ -282,10 +333,53 @@ describe("ruling 50: refs delete by compare-and-swap or not at all", () => {
     await git(repo, "update-ref", itemRef(runId, 1), sha);
     // The third condition: the run id has to appear in a manifest written
     // before the ref existed. `knownRunIds` is where that arrives.
-    const result = await reclaimRef(repo, { ref: itemRef(runId, 1), sha }, ["casrun", "movedrun"]);
+    const result = await reclaimRef(repo, { ref: itemRef(runId, 1), sha, symbolic: false }, ["casrun", "movedrun"]);
     expect(result.deleted).toBe(false);
     expect(result.refusal).toContain("does not own");
     expect(await git(repo, "rev-parse", itemRef(runId, 1))).toBe(sha);
+  });
+
+  test("NEGATIVE: a SYMBOLIC ref pointing at the integration branch cannot reach it", async () => {
+    // The measured way to destroy the deliverable. `for-each-ref` reports the
+    // TARGET's object name for a symbolic ref, so the compare-and-swap matches
+    // on a sha that is not this ref's, and `git update-ref -d` dereferences by
+    // default — deleting `refs/heads/brigadier/<run-id>`, the one ref ruling 51
+    // says brigadier never deletes.
+    const runId = "symrun";
+    const sha = await git(repo, "rev-parse", "HEAD");
+    const branch = `refs/heads/brigadier/${runId}`;
+    await git(repo, "update-ref", branch, sha);
+    await git(repo, "symbolic-ref", `refs/brigadier/${runId}/base`, branch);
+
+    const owned = (await listOwnedRefs(repo)).find((ref) => ref.ref === `refs/brigadier/${runId}/base`);
+    expect(owned?.symbolic).toBe(true);
+    // The sha it reports IS the branch's, which is exactly why a sha comparison
+    // is not enough on its own.
+    expect(owned?.sha).toBe(sha);
+
+    const result = await reclaimRef(repo, owned!, [runId]);
+    expect(result.deleted).toBe(false);
+    expect(result.refusal).toContain("SYMBOLIC");
+    // Asserted on the world: the deliverable is still there, at the same commit.
+    expect(await git(repo, "rev-parse", branch)).toBe(sha);
+  });
+
+  test("the delete argv carries --no-deref, so even a followed link cannot escape", async () => {
+    // Belt and braces beside the refusal above: if a symbolic ref ever reached
+    // the delete, `--no-deref` removes the link rather than its target.
+    const runId = "derefrun";
+    const sha = await git(repo, "rev-parse", "HEAD");
+    const branch = `refs/heads/brigadier/${runId}`;
+    await git(repo, "update-ref", branch, sha);
+    await git(repo, "symbolic-ref", `refs/brigadier/${runId}/base`, branch);
+    // Force the delete past the symbolic refusal by presenting it as ordinary.
+    const result = await reclaimRef(
+      repo,
+      { ref: `refs/brigadier/${runId}/base`, sha, symbolic: false },
+      [runId],
+    );
+    expect(await git(repo, "rev-parse", branch)).toBe(sha);
+    expect(result.deleted || result.refusal !== null).toBe(true);
   });
 
   test("the visible integration branch is unreachable from here", async () => {

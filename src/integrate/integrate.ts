@@ -7,8 +7,14 @@
  * clone; the clone never pushes.** MEASURED against `git 2.50.1` on 2026-08-17
  * (`probes/integration.sh` check 2, re-measured in `test/integrate.test.ts`):
  * `git -C <parent> fetch <clone-path> work:refs/brigadier/<run-id>/item/<n>`
- * works with NO remote configured on either side, and leaves the clone's
- * objects hardlinked, so the transfer moves nothing. Fetching is brigadier
+ * works with NO remote configured on either side, and transfers only the
+ * objects the item actually wrote: every object the clone STARTED from is
+ * already in the parent by the same id, whether it got there as a hardlink or
+ * as a copy. (It is now a copy — `src/isolation/clone.ts` clones with
+ * `--no-hardlinks`, because a hardlinked object store is writable from inside
+ * the directory an agent owns. The sentence this replaced said "leaves the
+ * clone's objects hardlinked"; the transfer cost was never what the hardlink
+ * was buying, and only the disk was.) Fetching is brigadier
  * reaching in; pushing is the agent reaching out. The same probe measured that
  * an agent CAN push into the operator's repository through the clone's own
  * `origin`, and that removing the remote is a speed bump rather than a

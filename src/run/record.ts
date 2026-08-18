@@ -41,7 +41,17 @@
  * file — before it will delete anything.
  */
 
-import { closeSync, constants, existsSync, lstatSync, openSync, readFileSync, writeSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  readSync,
+  writeSync,
+} from "node:fs";
 import { join } from "node:path";
 import { RUN_DIR } from "../repo/layout.ts";
 import { INITIAL_OUTCOME, type CheckOutcome } from "../work/check.ts";
@@ -129,13 +139,38 @@ export function appendEvent(path: string, event: RunEvent): void {
     }
     if (!stat.isFile()) throw new Error(`refusing to append to ${path}, which is not a regular file`);
   }
+  // A record whose last line was truncated by a kill does NOT end in a newline.
+  // Appending straight onto it fuses the new event with the fragment and costs
+  // that event too — the fragment is reported as a damaged line either way, so
+  // the loss is one event more than it looks. A leading newline closes the
+  // fragment and keeps the new event whole. This is the resumption case, so it
+  // is the case that must not lose anything.
+  const needsBreak = stat !== null && stat.size > 0 && !endsWithNewline(path);
   const fd = openSync(
     path,
     constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND |
       (typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0),
   );
   try {
-    writeSync(fd, `${JSON.stringify(event)}\n`);
+    writeSync(fd, `${needsBreak ? "\n" : ""}${JSON.stringify(event)}\n`);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** Does the file end in a newline, i.e. is its last record whole? */
+function endsWithNewline(path: string): boolean {
+  const fd = openSync(path, constants.O_RDONLY);
+  try {
+    const size = fstatSync(fd).size;
+    if (size === 0) return true;
+    const tail = Buffer.alloc(1);
+    readSync(fd, tail, 0, 1, size - 1);
+    return tail[0] === 0x0a;
+  } catch {
+    // Unreadable: assume it needs the break. A spurious blank line costs
+    // nothing; a fused event costs an event.
+    return false;
   } finally {
     closeSync(fd);
   }

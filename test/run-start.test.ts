@@ -29,6 +29,7 @@ import { RUN_DIR } from "../src/repo/layout.ts";
 import { itemRef } from "../src/repo/refs.ts";
 import { runMarkerArg } from "../src/run/marker.ts";
 import { isAlive, scanProcessTable, type ProcessTable } from "../src/run/processes.ts";
+import { describeUnfinished } from "../src/run/interrupt.ts";
 import { appendEvent, dischargedItems, readRunRecord, recordPath } from "../src/run/record.ts";
 import {
   describeStartSweep,
@@ -45,6 +46,15 @@ let repo: string;
 /** The handles, not just the pids: a dropped `Subprocess` is a process nothing owns. */
 const spawnedWorkers: Bun.Subprocess[] = [];
 let markedScript: string;
+/**
+ * A pid that is definitely gone.
+ *
+ * The fixtures used `pid: 1` for the orchestrator, and `isAlive(1)` is true on
+ * every POSIX machine — which made every planted run look in flight once the
+ * liveness gate existed. A pid from a process that has actually exited is what a
+ * crashed run's record really contains.
+ */
+let deadPid: number;
 
 const EMPTY_TABLE: ProcessTable = { rows: [], source: "injected", scannedAt: 0, limits: [] };
 
@@ -99,6 +109,8 @@ interface PlantOptions {
   finished?: "complete" | "abandoned";
   /** Omit the record entirely: the "we could not look" case. */
   withoutRecord?: boolean;
+  /** The pid `run-started` names as the orchestrator. Liveness is read from it. */
+  orchestratorPid?: number;
 }
 
 async function plantRun(runId: string, items: readonly number[], options: PlantOptions = {}): Promise<void> {
@@ -119,7 +131,7 @@ async function plantRun(runId: string, items: readonly number[], options: PlantO
   }
   if (options.withoutRecord !== true) {
     const path = recordPath(runRoot, runId);
-    appendEvent(path, { type: "run-started", at: 1, runId, repo, runRoot, pid: 1 });
+    appendEvent(path, { type: "run-started", at: 1, runId, repo, runRoot, pid: options.orchestratorPid ?? deadPid });
     for (const item of items) appendEvent(path, { type: "clone-recorded", at: 2, item, dir: join(runDir, String(item)) });
     for (const item of options.claimed ?? []) {
       appendEvent(path, { type: "item-landed", at: 3, item, ref: itemRef(runId, item), sha: "0".repeat(40) });
@@ -144,6 +156,11 @@ beforeAll(async () => {
   writeFileSync(join(repo, "a.txt"), "one\n");
   await git(repo, "add", "-A");
   await git(repo, "commit", "-q", "-m", "one");
+  const corpse = Bun.spawn(["/bin/sh", "-c", "exit 0"], { stdout: "ignore", stderr: "ignore" });
+  deadPid = corpse.pid;
+  await corpse.exited;
+  while (isAlive(deadPid)) await Bun.sleep(20);
+
   markedScript = join(scratch, "marked.ts");
   writeFileSync(
     markedScript,
@@ -224,7 +241,11 @@ describe("directories: only for runs that are complete", () => {
     // The record and manifest are KEPT: a few kilobytes, and the only surviving
     // evidence of what this run did.
     expect(existsSync(recordPath(runRoot, runId))).toBe(true);
-    expect(dischargedItems(readRunRecord(recordPath(runRoot, runId)).events).run).toBe(true);
+    // What the sweep writes is `swept`, never the operator's `discharged`: it
+    // cannot grant itself the permission it then reads back.
+    const events = readRunRecord(recordPath(runRoot, runId)).events;
+    expect(events.some((event) => event.type === "swept")).toBe(true);
+    expect(dischargedItems(events).run).toBe(false);
   }, 30_000);
 
   test("the run about to start is never swept, in any respect", async () => {
@@ -318,7 +339,7 @@ describe("ruling 63's explicit discharge is the only thing that releases a retai
       { runId, runRoot, createdAt: Date.now(), clones: [] },
       { item: 1, dir, createdAt: Date.now() },
     );
-    appendEvent(recordPath(runRoot, runId), { type: "run-started", at: 1, runId, repo, runRoot, pid: 1 });
+    appendEvent(recordPath(runRoot, runId), { type: "run-started", at: 1, runId, repo, runRoot, pid: deadPid });
     dischargeRun(runRoot, runId, "operator@example.com");
 
     const report = await sweepAtStart({ runRoot, table: EMPTY_TABLE });
@@ -368,6 +389,149 @@ describe("processes always, directories only when complete — in one run", () =
     expect(existsSync(join(runRoot, RUN_DIR, runId, "1", "work.txt"))).toBe(true);
     expect(report.retained.some((item) => item.runId === runId)).toBe(true);
   }, 60_000);
+});
+
+describe("liveness before authority: a run somebody is still running is untouchable", () => {
+  test("a CONCURRENT run under the SAME root keeps its worker, its clone and its ref", async () => {
+    // MEASURED on 2026-08-18, and no attacker is required: `~/.brigadier` is the
+    // DEFAULT root and it is shared, so a concurrent run A is under this root
+    // and therefore in scope. Before this gate, `sweepAtStart({runRoot,
+    // currentRunId: B})` killed A's worker, deleted A's clone and CAS-deleted
+    // A's landed ref. `currentRunId` excuses only the sweeper's own run, and
+    // `foreignMarked` never fired because A was not foreign.
+    const runA = unique("concurrentA");
+    const runB = unique("concurrentB");
+
+    // A's orchestrator: a real, live process. Its pid is what the record names.
+    const orchestratorBeat = join(scratch, "orchestrator.log");
+    const orchestrator = Bun.spawn(markedArgv(orchestratorBeat, `--not-a-marker-${runA}`), {
+      stdout: "ignore",
+      stderr: "ignore",
+      stdin: "ignore",
+    });
+    spawnedWorkers.push(orchestrator);
+    // A's worker: marked, and doing real work.
+    const workerBeat = join(scratch, "concurrent-worker.log");
+    const worker = Bun.spawn(markedArgv(workerBeat, runMarkerArg(runA, 1)), {
+      stdout: "ignore",
+      stderr: "ignore",
+      stdin: "ignore",
+    });
+    spawnedWorkers.push(worker);
+
+    // A looks COMPLETE on disk — every item landed — which is precisely what
+    // made the old code delete it.
+    await plantRun(runA, [1], { landedForReal: [1], claimed: [1], orchestratorPid: orchestrator.pid });
+
+    const deadline = Date.now() + 25_000;
+    while (
+      Date.now() < deadline &&
+      (!scanProcessTable().rows.some((row) => row.pid === worker.pid) || !existsSync(workerBeat))
+    ) {
+      await Bun.sleep(100);
+    }
+    expect(isAlive(worker.pid)).toBe(true);
+    expect(isAlive(orchestrator.pid)).toBe(true);
+
+    const report = await sweepAtStart({ runRoot, currentRunId: runB });
+
+    // The worker is alive and still writing. Asserted on the bytes.
+    expect(isAlive(worker.pid)).toBe(true);
+    const before = statSync(workerBeat).size;
+    const grown = Date.now() + 15_000;
+    while (Date.now() < grown && statSync(workerBeat).size <= before) await Bun.sleep(100);
+    expect(statSync(workerBeat).size).toBeGreaterThan(before);
+
+    // The clone is on disk and the landed ref is intact.
+    expect(existsSync(join(runRoot, RUN_DIR, runA, "1", "work.txt"))).toBe(true);
+    expect(await git(repo, "rev-parse", itemRef(runA, 1))).toHaveLength(40);
+
+    // And it is reported as in flight rather than silently skipped.
+    const live = report.inFlight.find((entry) => entry.runId === runA);
+    expect(live?.reason).toContain(`orchestrator (pid ${orchestrator.pid}) is alive`);
+    expect(report.reclaimedDirs.some((dir) => dir.runId === runA)).toBe(false);
+    expect(report.reclaimedRefs).not.toContain(itemRef(runA, 1));
+    expect(describeStartSweep(report).join("\n")).toContain(`run ${runA} left untouched`);
+
+    orchestrator.kill("SIGKILL");
+    worker.kill("SIGKILL");
+  }, 90_000);
+
+  test("a run whose orchestrator is GONE is still swept — the gate is the orchestrator, not the workers", async () => {
+    // The other direction, and the reason the discriminator is the orchestrator
+    // rather than "any marked process is alive": that weaker rule would make
+    // every leaked worker evidence that its own run is still running, which is
+    // the exact case ruling 38 exists to reclaim.
+    const runId = unique("crashedA");
+    const dead = Bun.spawn(markedArgv(join(scratch, "dead-orch.log"), `--not-a-marker-${runId}`), {
+      stdout: "ignore",
+      stderr: "ignore",
+      stdin: "ignore",
+    });
+    const deadPid = dead.pid;
+    dead.kill("SIGKILL");
+    await dead.exited;
+    while (isAlive(deadPid)) await Bun.sleep(50);
+
+    const beat = join(scratch, "leaked-worker.log");
+    const leaked = Bun.spawn(markedArgv(beat, runMarkerArg(runId, 1)), {
+      stdout: "ignore",
+      stderr: "ignore",
+      stdin: "ignore",
+    });
+    spawnedWorkers.push(leaked);
+    await plantRun(runId, [1], { orchestratorPid: deadPid });
+    const deadline = Date.now() + 25_000;
+    while (Date.now() < deadline && (!existsSync(beat) || !isAlive(leaked.pid))) await Bun.sleep(100);
+    expect(isAlive(leaked.pid)).toBe(true);
+
+    const report = await sweepAtStart({ runRoot });
+
+    expect(report.inFlight.some((entry) => entry.runId === runId)).toBe(false);
+    expect(isAlive(leaked.pid)).toBe(false);
+    const frozen = statSync(beat).size;
+    await Bun.sleep(500);
+    expect(statSync(beat).size).toBe(frozen);
+    // Its directory is retained, because the run is incomplete. Both halves of
+    // ruling 63 in one sweep.
+    expect(existsSync(join(runRoot, RUN_DIR, runId, "1", "work.txt"))).toBe(true);
+  }, 90_000);
+});
+
+describe("the sweep cannot grant itself permission", () => {
+  test("a REFUSED delete does not write a discharge the next start reads as one", async () => {
+    // The earlier version appended `discharged` — the operator's word —
+    // unconditionally, and a later start then reported "explicitly discharged:
+    // the operator released this run's directories" with zero refs present. A
+    // self-written line permanently short-circuited the one rule that says a
+    // state file records intent and the world records fact.
+    const runId = unique("selfgrant");
+    const dir = join(runRoot, RUN_DIR, runId, "1");
+    mkdirSync(join(dir, ".git"), { recursive: true });
+    writeFileSync(join(dir, "work.txt"), "no marker, so the delete is refused\n");
+    recordClone(
+      manifestPath(runRoot, RUN_DIR, runId),
+      { runId, runRoot, createdAt: Date.now(), clones: [] },
+      { item: 1, dir, createdAt: Date.now() },
+    );
+    appendEvent(recordPath(runRoot, runId), { type: "run-started", at: 1, runId, repo, runRoot, pid: deadPid });
+    const head = await git(repo, "rev-parse", "HEAD");
+    await git(repo, "update-ref", itemRef(runId, 1), head);
+
+    const first = await sweepAtStart({ runRoot, table: EMPTY_TABLE });
+    expect(first.verdicts.find((v) => v.runId === runId)?.completion).toBe("complete");
+    expect(first.refusedDirs.some((refused) => refused.path === dir)).toBe(true);
+
+    // No operator discharge was written. The sweep records `swept` instead.
+    const events = readRunRecord(recordPath(runRoot, runId)).events;
+    expect(dischargedItems(events).run).toBe(false);
+    expect(events.some((event) => event.type === "swept")).toBe(true);
+
+    const second = await sweepAtStart({ runRoot, table: EMPTY_TABLE });
+    const reason = second.verdicts.find((v) => v.runId === runId)?.reason ?? "";
+    expect(reason).not.toContain("explicitly discharged");
+    expect(existsSync(join(dir, "work.txt"))).toBe(true);
+  }, 30_000);
 });
 
 describe("a marker is identity, not authority", () => {
@@ -430,12 +594,34 @@ describe("what a start always says", () => {
   });
 
   test("the interrupt path and the start path tell the same story", async () => {
+    // Both halves have to be non-empty or this compares two empty arrays with
+    // each other and passes on any implementation. The pid comes from a real
+    // unconfirmed termination: a matched process the sweep is not permitted to
+    // signal, which is what an unkillable worker looks like.
     const runId = unique("bridge1");
     await plantRun(runId, [1, 2], { landedForReal: [1] });
-    const report = await sweepAtStart({ runRoot, table: EMPTY_TABLE });
+    const stubborn = 424_242;
+    const table: ProcessTable = {
+      rows: [{ pid: stubborn, ppid: 1, commandLine: `agent ${runMarkerArg(runId, 2)}` }],
+      source: "injected",
+      scannedAt: Date.now(),
+      limits: [],
+    };
+    const report = await sweepAtStart({
+      runRoot,
+      table,
+      signal: () => "denied",
+      isAlive: (pid) => pid === stubborn,
+      termGraceMs: 10,
+      killGraceMs: 10,
+    });
+    expect(report.unconfirmedPids).toContain(stubborn);
+
     const unfinished = unfinishedFrom(report, runId, [1], [2]);
     expect(unfinished.retainedClones.map((clone) => clone.item).sort()).toEqual([1, 2]);
     expect(unfinished.retainedClones.every((clone) => clone.bytes > 0)).toBe(true);
-    expect(unfinished.unconfirmedPids).toEqual([...report.unconfirmedPids]);
+    expect(unfinished.unconfirmedPids).toContain(stubborn);
+    // And the interrupt path renders it with the pid, as ruling 63 requires.
+    expect(describeUnfinished(unfinished).join("\n")).toContain(`pid ${stubborn}`);
   }, 30_000);
 });

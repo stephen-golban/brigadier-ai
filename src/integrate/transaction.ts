@@ -64,13 +64,51 @@ const OID = /^[0-9a-f]{40,64}$/;
  * repository. Ruling 50 gives refs their own rule precisely because ruling 15's
  * path-shaped ownership proofs cannot reach inside a `.git`.
  */
+/**
+ * The three commands a publish may use, checked at RUNTIME.
+ *
+ * The `RefEntry` union is a compile-time guard and a compile-time guard is no
+ * guard at all against a cast, a caller in JavaScript, or a refactor that adds
+ * a fourth kind. MEASURED against `git 2.50.1` on 2026-08-18: an entry
+ * `{kind: "delete", ref: <integration branch>}` was emitted verbatim and git
+ * applied it — the branch vanished from `git branch --list`. Ruling 51 makes
+ * that branch the only ref brigadier never deletes, so the rule is enforced
+ * here, beside the ownership check, rather than in the type system.
+ */
+const PUBLISH_COMMANDS: readonly string[] = ["create", "update", "verify"];
+
+/**
+ * A ref name brigadier is willing to build a transaction line out of.
+ *
+ * `refs/brigadier/<id>/../../heads/main` starts with the right prefix and names
+ * something else entirely. git's own refname parser rejected it, so nothing
+ * landed — but relying on the parser of the program you are trying to constrain
+ * is luck, not a guard, and luck is what this rule exists instead of.
+ */
+const REF_SHAPE = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
+
 export function assertOwnedRef(ref: string, runId: string): void {
+  if (!REF_SHAPE.test(ref) || ref.split("/").includes("..") || ref.includes("//")) {
+    throw new RefRefused(`refusing a ref brigadier cannot vouch for the shape of: ${ref}`);
+  }
   if (ref === integrationBranch(runId)) return;
   if (ref.startsWith(`${REF_NAMESPACE}/${runId}/`)) return;
   throw new RefRefused(
     `refusing to write ${ref} in the operator's repository. A run writes ` +
       `${REF_NAMESPACE}/${runId}/… for its machinery and ${integrationBranch(runId)} for its ` +
       "deliverable, and nothing else — not a branch of the operator's, not another run's refs.",
+  );
+}
+
+/** Ruling 51: no publish deletes anything, and the deliverable least of all. */
+export function assertPublishCommand(kind: string, ref: string, runId: string): void {
+  if (PUBLISH_COMMANDS.includes(kind)) return;
+  throw new RefRefused(
+    `refusing a \`${kind}\` entry for ${ref} in a publish transaction. A publish creates, ` +
+      "updates or verifies, and never deletes — and `refs/heads/brigadier/" +
+      `${runId}\` is the one ref brigadier never deletes at all: it is the deliverable, and ` +
+      "from the moment it exists it is the operator's. A ref delete is `deleteRefArgv`'s " +
+      "compare-and-swap form, under ruling 50's rule, and it can never reach this ref.",
   );
 }
 
@@ -85,6 +123,9 @@ export function transactionStdin(entries: readonly RefEntry[], runId: string): s
   if (entries.length === 0) throw new RefRefused("an empty ref transaction publishes nothing");
   let payload = "";
   for (const entry of entries) {
+    // Runtime first, and both: a `delete` naming a ref this run owns is exactly
+    // the shape that got through when only the type system was looking.
+    assertPublishCommand((entry as { kind: string }).kind, entry.ref, runId);
     assertOwnedRef(entry.ref, runId);
     if (!OID.test(entry.value)) {
       throw new RefRefused(`refusing ${entry.kind} ${entry.ref} without a full sha: ${entry.value}`);

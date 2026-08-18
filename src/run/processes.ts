@@ -90,6 +90,7 @@ export const SCAN_LIMITS: readonly string[] = [
   "a process that rewrote its own argv after exec, or exec'd something without the marker, does not match — ruling 38's marker lives in the process's own memory",
   "a process owned by another user is listed but not signalable: it becomes a survivor, never a silent success",
   "only this machine and this pid namespace are visible; a container or a remote host is not",
+  "a descendant already reparented to pid 1 before the table was read has no link back to its marked ancestor, so the transitive closure cannot reach it either",
 ];
 
 const WINDOWS_LIMIT =
@@ -208,4 +209,38 @@ export function ancestorsOf(pid: number, rows: readonly ProcessRow[]): Set<numbe
     chain.add(next);
     current = next;
   }
+}
+
+/**
+ * Every process descended from `roots`, transitively, `roots` included.
+ *
+ * Ruling 38 requires every process brigadier CAUSES TO EXIST to carry the
+ * marker, and brigadier cannot mark a grandchild an agent spawns: an ordinary
+ * `sh … &` inside a worker produces an unmarked child that outlives the worker
+ * and is reparented to pid 1. So the sweep reclaims the transitive closure of
+ * the marked set rather than the marked set, and the ppid column of the SAME
+ * reading is what makes the closure computable.
+ *
+ * What this does not reach, stated: a descendant that was already reparented
+ * before the table was read has no link back to its marked ancestor and is
+ * invisible here, exactly as it is to `ps`. That is in `SCAN_LIMITS`.
+ */
+export function descendantsOf(roots: Iterable<number>, rows: readonly ProcessRow[]): Set<number> {
+  const children = new Map<number, number[]>();
+  for (const row of rows) {
+    const siblings = children.get(row.ppid) ?? [];
+    siblings.push(row.pid);
+    children.set(row.ppid, siblings);
+  }
+  const closure = new Set<number>(roots);
+  const queue = [...closure];
+  while (queue.length > 0) {
+    const current = queue.pop() as number;
+    for (const child of children.get(current) ?? []) {
+      if (closure.has(child)) continue;
+      closure.add(child);
+      queue.push(child);
+    }
+  }
+  return closure;
 }

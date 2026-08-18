@@ -45,6 +45,7 @@ import type { ReclamationEvidence } from "../isolation/index.ts";
 import { markerMatches, parseRunMarker, type MarkerScope } from "./marker.ts";
 import {
   ancestorsOf,
+  descendantsOf,
   isAlive as defaultIsAlive,
   scanProcessTable,
   signalPid as defaultSignalPid,
@@ -74,13 +75,24 @@ export type Disposition =
   /** Matched, signalled, and STILL ALIVE. Named in the report with its pid. */
   | "survivor"
   /** This process or one of its ancestors. Never signalled — see `ancestorsOf`. */
-  | "self";
+  | "self"
+  /**
+   * Turned up in the RE-SCAN, after the kill round had already finished.
+   *
+   * Always a survivor, even when the follow-up kill confirms it dead. Its
+   * existence proves a spawner the sweep never saw, and evidence that licensed
+   * `recycleClone` on such an item would re-open through this module the exact
+   * race `src/isolation/` refuses to proceed without evidence about.
+   */
+  | "appeared";
 
 export interface MatchedProcess {
   readonly pid: number;
   readonly ppid: number;
   readonly commandLine: string;
   readonly item: number;
+  /** False for an unmarked descendant reached through the ppid graph. */
+  readonly marked: boolean;
   readonly disposition: Disposition;
   /** Why it ended up in that disposition, in words a report can print. */
   readonly note: string;
@@ -119,6 +131,16 @@ export interface SweepOptions {
   /** A reading taken by the caller. Defaults to reading the table now. */
   readonly table?: ProcessTable;
   /**
+   * A SECOND reading, taken after the kill round and before the evidence is
+   * stamped.
+   *
+   * Defaults to a fresh scan, or to the injected `table` when one was supplied,
+   * so a test with a static table stays deterministic. A caller cannot opt out
+   * of the re-scan itself: without it, a process that started during the grace
+   * window is reported as an absence, and `assertReclaimed` believes it.
+   */
+  readonly rescan?: () => ProcessTable;
+  /**
    * Pids the record says brigadier spawned for this scope.
    *
    * Advisory only. A recorded pid that is alive but no longer carries the marker
@@ -139,19 +161,61 @@ export interface SweepOptions {
 
 const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** One process the sweep is responsible for: a marked one, or a descendant of one. */
+interface Candidate {
+  row: ProcessRow;
+  item: number;
+  marked: boolean;
+}
+
+/**
+ * The set of processes this scope is responsible for: every process carrying
+ * the marker, plus every process descended from one.
+ *
+ * Ruling 38 says every process brigadier CAUSES TO EXIST carries the marker,
+ * and brigadier cannot mark what an agent spawns for itself. A worker that runs
+ * `sh build.sh &` leaves an unmarked child that outlives it and is reparented to
+ * pid 1; the marked set misses it, the ppid column of the same reading does not.
+ * A sweep that reported `survivors: []` while that child kept writing would be a
+ * check reporting success for something that did not happen.
+ *
+ * A descendant inherits its nearest marked ancestor's item, so evidence stays
+ * per-item.
+ */
+function closureFor(table: ProcessTable, scope: MarkerScope): Candidate[] {
+  const byPid = new Map(table.rows.map((row) => [row.pid, row] as const));
+  const candidates = new Map<number, Candidate>();
+  for (const row of table.rows) {
+    if (!markerMatches(row.commandLine, scope)) continue;
+    const item = itemOf(row, scope);
+    candidates.set(row.pid, { row, item, marked: true });
+    for (const pid of descendantsOf([row.pid], table.rows)) {
+      if (candidates.has(pid)) continue;
+      const descendant = byPid.get(pid);
+      if (descendant !== undefined) candidates.set(pid, { row: descendant, item, marked: false });
+    }
+  }
+  return [...candidates.values()];
+}
+
 /**
  * Run the sweep for one scope.
  *
  * The order is fixed:
  *
- *   1. read the process table once, so every decision is made against one
+ *   1. read the process table once, so the closure is computed against one
  *      consistent view rather than a table that moves under the loop;
  *   2. compute the protected set — this process and every ancestor — BEFORE any
  *      signal is sent. The orchestrator's own command line carries the run
  *      marker, and a sweep that matched itself would kill the process doing the
  *      sweeping;
- *   3. `SIGTERM` every match, wait, `SIGKILL` what is left, wait;
- *   4. confirm each one with signal 0 and only then stamp `sweptAt`. Evidence
+ *   3. `SIGTERM` every candidate, wait, `SIGKILL` what is left, wait;
+ *   4. RE-SCAN. Anything for this scope that is alive now and was not in the
+ *      first reading started during the sweep, and is a SURVIVOR — not an
+ *      absence. Skipping this step reports `survivors: []` for an item whose
+ *      worker is live, which licenses `recycleClone` on a directory somebody is
+ *      still writing to;
+ *   5. confirm each pid with signal 0 and only then stamp `sweptAt`. Evidence
  *      timestamped before the confirmation would be evidence about an earlier
  *      world.
  */
@@ -164,34 +228,31 @@ export async function sweep(options: SweepOptions): Promise<SweepOutcome> {
   const termGraceMs = options.termGraceMs ?? TERM_GRACE_MS;
   const killGraceMs = options.killGraceMs ?? KILL_GRACE_MS;
   const table = options.table ?? scanProcessTable();
+  const injected = options.table;
+  const rescan = options.rescan ?? (injected === undefined ? scanProcessTable : () => injected);
 
   const protectedPids = ancestorsOf(selfPid, table.rows);
   const matched: MatchedProcess[] = [];
-  const pending: Array<{ row: ProcessRow; item: number }> = [];
+  const pending: Candidate[] = [];
 
-  for (const row of table.rows) {
-    if (!markerMatches(row.commandLine, options.scope)) continue;
-    const item = itemOf(row, options.scope);
-    if (protectedPids.has(row.pid) || row.pid <= 1) {
+  for (const candidate of closureFor(table, options.scope)) {
+    if (protectedPids.has(candidate.row.pid) || candidate.row.pid <= 1) {
       matched.push({
-        pid: row.pid,
-        ppid: row.ppid,
-        commandLine: row.commandLine,
-        item,
+        ...describe(candidate),
         disposition: "self",
         note:
-          row.pid === selfPid
+          candidate.row.pid === selfPid
             ? "this is the process performing the sweep"
-            : `pid ${row.pid} is an ancestor of the sweeping process (${selfPid}) or pid 1`,
+            : `pid ${candidate.row.pid} is an ancestor of the sweeping process (${selfPid}) or pid 1`,
       });
       continue;
     }
-    pending.push({ row, item });
+    pending.push(candidate);
   }
 
   // 3. Terminate. A process that is already gone is recorded as such rather than
   //    as a kill we performed, because the two are different facts.
-  const stillPending: Array<{ row: ProcessRow; item: number }> = [];
+  const stillPending: Candidate[] = [];
   for (const candidate of pending) {
     const result = signal(candidate.row.pid, "SIGTERM");
     if (result === "gone") {
@@ -223,11 +284,46 @@ export async function sweep(options: SweepOptions): Promise<SweepOutcome> {
       });
     } else {
       reclaimedPids.push(candidate.row.pid);
-      matched.push({ ...describe(candidate), disposition: "reclaimed", note: "confirmed gone with signal 0" });
+      matched.push({
+        ...describe(candidate),
+        disposition: "reclaimed",
+        note: candidate.marked
+          ? "confirmed gone with signal 0"
+          : "an UNMARKED descendant of a marked process, confirmed gone with signal 0",
+      });
     }
   }
   for (const already of matched) {
     if (already.disposition === "already-gone") reclaimedPids.push(already.pid);
+  }
+
+  // 4. The re-scan. Reproduced 3 times in 3 before it existed: a marked process
+  //    appearing 500 ms into a 1.6 s sweep was still ticking at the end and the
+  //    evidence said `survivors: []`.
+  const afterTable = rescan();
+  const seen = new Set(pending.map((candidate) => candidate.row.pid));
+  const appeared: Candidate[] = [];
+  for (const candidate of closureFor(afterTable, options.scope)) {
+    const pid = candidate.row.pid;
+    if (seen.has(pid) || protectedPids.has(pid) || pid <= 1) continue;
+    if (!alive(pid)) continue;
+    appeared.push(candidate);
+  }
+  for (const candidate of appeared) signal(candidate.row.pid, "SIGKILL");
+  if (appeared.length > 0) await settle(appeared, killGraceMs, sleep, alive);
+  for (const candidate of appeared) {
+    // A SURVIVOR whether or not the follow-up kill worked. Its existence proves
+    // a spawner this sweep never saw, and "we killed the one we noticed" is not
+    // the claim `assertReclaimed` acts on.
+    survivors.push(candidate.row.pid);
+    matched.push({
+      ...describe(candidate),
+      disposition: "appeared",
+      note:
+        `started DURING the sweep and was not in the first reading; killed, now ` +
+        `${alive(candidate.row.pid) ? "still alive" : "gone"}. Something is still spawning for this ` +
+        "scope, so this sweep cannot license a recycle.",
+    });
   }
 
   const limits = [...table.limits];
@@ -248,7 +344,7 @@ export async function sweep(options: SweepOptions): Promise<SweepOutcome> {
     );
   }
 
-  // 4. Only now. `sweptAt` has to be at or after the confirmation, and
+  // 5. Only now. `sweptAt` has to be at or after the confirmation, and
   //    `assertReclaimed` compares it against the moment the clone was released.
   const sweptAt = now();
   return {
@@ -278,12 +374,13 @@ export async function sweep(options: SweepOptions): Promise<SweepOutcome> {
   };
 }
 
-function describe(candidate: { row: ProcessRow; item: number }): Omit<MatchedProcess, "disposition" | "note"> {
+function describe(candidate: Candidate): Omit<MatchedProcess, "disposition" | "note"> {
   return {
     pid: candidate.row.pid,
     ppid: candidate.row.ppid,
     commandLine: candidate.row.commandLine,
     item: candidate.item,
+    marked: candidate.marked,
   };
 }
 
@@ -327,9 +424,17 @@ export function describeSweep(outcome: SweepOutcome): string[] {
       lines.push(`  reclaimed pid ${match.pid} (item ${match.item}): ${match.note}`);
     }
   }
-  if (outcome.unconfirmed.length > 0) {
+  const appeared = outcome.matched.filter((m) => m.disposition === "appeared");
+  for (const late of appeared) {
     lines.push(
-      `  could not confirm dead: pid ${outcome.unconfirmed.join(", ")} — killing them is the only remedy`,
+      `  pid ${late.pid} (item ${late.item}) STARTED DURING the sweep and was killed; counted as a ` +
+        "survivor because something is still spawning for this scope",
+    );
+  }
+  const stubborn = outcome.unconfirmed.filter((pid) => !appeared.some((m) => m.pid === pid));
+  if (stubborn.length > 0) {
+    lines.push(
+      `  could not confirm dead: pid ${stubborn.join(", ")} — killing them is the only remedy`,
     );
   }
   // Printed every time, including on a clean sweep. The qualification is worth
