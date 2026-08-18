@@ -277,18 +277,27 @@ describe("decision 17: the suppression claim names the vendors it is true of", (
     // The negative control, and the reason this function exists: on this fleet
     // the two answers are both reachable, and the old constant gave the first
     // answer for both.
-    const bare = PROFILES["copilot"].configRootEnv;
+    //
+    // This named `copilot` until 2026-08-18, when COPILOT_HOME was MEASURED to
+    // be a real config root (an ACP `initialize` under a redirected
+    // COPILOT_HOME wrote config.json there; unset, it wrote nothing). Ruling 57
+    // had recorded Copilot as UNESTABLISHED. `gemini` is now the sole vendor
+    // with no lever -- #42 measured GEMINI_DIR as an internal constant with
+    // zero env reads -- so it is the only remaining subject for this control.
+    // If Gemini ever gains one, this test has no subject and the whole
+    // NOT-suppressed branch becomes unreachable: say so rather than deleting it.
+    const bare = PROFILES["gemini"].configRootEnv;
     expect(bare).toBeUndefined();
-    const lines = ambientSuppression([agent("copilot")]).join("\n");
-    expect(lines).toContain("NO config-root redirect exists for copilot");
+    const lines = ambientSuppression([agent("gemini")]).join("\n");
+    expect(lines).toContain("NO config-root redirect exists for gemini");
     expect(lines).toContain("still readable by them");
-    expect(lines).not.toContain("copilot (");
+    expect(lines).not.toContain("gemini (");
   });
 
   test("a mixed fleet says both halves, and the worker marker is claimed for all of them", () => {
-    const lines = ambientSuppression([agent("qwen"), agent("copilot")]).join("\n");
+    const lines = ambientSuppression([agent("qwen"), agent("gemini")]).join("\n");
     expect(lines).toContain("qwen (QWEN_HOME)");
-    expect(lines).toContain("NO config-root redirect exists for copilot");
+    expect(lines).toContain("NO config-root redirect exists for gemini");
     // Ruling 57's marker is the one lever that really is universal, so it is the
     // one sentence allowed to say so.
     expect(lines).toContain("inert inside every worker");
