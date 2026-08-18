@@ -7,6 +7,25 @@
  * debugging surface — the product is the host-first path where a model invokes
  * `brigadier` from inside its own session. Documentation leads with that; this
  * file is what it calls.
+ *
+ * TWO THINGS IN HERE ARE NOT CONVENIENCE.
+ *
+ * ONE SINK (ruling 65). Every byte this process writes — every line of every
+ * subcommand, and the run report — goes through the `Sink` built below, which
+ * redacts the FINAL bytes against the run's inventory. There is deliberately no
+ * `console.log` left in this file: `sink.outLine(result.report)` was the one that
+ * mattered, because the report is composed from run text and in decision 25's
+ * host-first path it lands in a model's context window permanently. `sink.end()`
+ * runs before every exit, because the sink holds back a tail that a later write
+ * could complete and a fragment nobody flushed is a lost line.
+ *
+ * ONE SIGNAL HANDLER (ruling 63). Registering one DISABLES default termination,
+ * so it is a duty rather than a feature, and the duty is to give the default
+ * back on demand. `src/run/interrupt.ts` is the state machine: nothing in
+ * flight exits immediately with the signal's own status; the first interrupt
+ * during a run drains it; the second restores `SIG_DFL` and RE-RAISES, so the
+ * exit status a parent shell sees is the signal's rather than a number we made
+ * up that happens to look like one.
  */
 
 import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
@@ -19,6 +38,7 @@ import { ALL_AGENT_IDS, PROFILES, type AgentId } from "./agent/profiles.ts";
 import { LICENSES } from "./generated/licenses.ts";
 import { resolveVerify } from "./gate/index.ts";
 import { intendedRealPath, realTempDirs } from "./isolation/index.ts";
+import { PLUGIN_USAGE, installCommand, pluginCommand, uninstallCommand } from "./plugin/index.ts";
 import {
   admit,
   agentsOnPath,
@@ -34,7 +54,9 @@ import {
 } from "./queue/index.ts";
 import { defaultRunRoot, isTempRooted } from "./repo/layout.ts";
 import type { Audience } from "./report/index.ts";
+import { abandon, initialState, onSignal, type InterruptState } from "./run/interrupt.ts";
 import { renderCompetence, tableProblems, unlistedModels } from "./router/table.ts";
+import { Sink, type Grant } from "./secrets/sink.ts";
 
 const USAGE = `brigadier — an ACP hub
 
@@ -81,6 +103,8 @@ const USAGE = `brigadier — an ACP hub
       brigadier's own licence and every third-party component compiled into
       this binary. --full prints the complete licence texts.
 
+  ${PLUGIN_USAGE.trimEnd()}
+
 Agents: ${ALL_AGENT_IDS.join(", ")}
 `;
 
@@ -107,6 +131,15 @@ const values = (name: string): string[] => {
   });
   return found;
 };
+
+/**
+ * The process's one writer, built before the first line can be printed.
+ *
+ * At module scope rather than inside a function because `loadOverrides` below
+ * prints on stderr while it is still being evaluated, and a sink that came into
+ * existence after the first write would not be the only writer.
+ */
+const sink = new Sink();
 
 const SYMBOL: Record<string, string> = { usable: "✓", unusable: "!", absent: "·" };
 
@@ -135,18 +168,18 @@ function loadOverrides(): BridgeOverride[] {
   try {
     text = readFileSync(path, "utf8");
   } catch (error) {
-    console.error(`could not read ${path}: ${String(error)} — no bridge override is in force`);
+    sink.errLine(`could not read ${path}: ${String(error)} — no bridge override is in force`);
     return [];
   }
   const { overrides, problems } = parseOverrides(text);
-  for (const problem of problems) console.error(`${path}: ${problem}`);
+  for (const problem of problems) sink.errLine(`${path}: ${problem}`);
   // Loud, every time. An overridden bridge invalidates every measured fact in
   // that agent's launch profile, and the operator chose it, so the operator
   // gets the consequences stated rather than discovered. On stderr so that
   // `--json` stays machine-readable without the warning being lost — a warning
   // that exists only in the human rendering is one the host-first path never
   // sees.
-  for (const override of overrides) console.error(`! ${overrideWarning(override)}`);
+  for (const override of overrides) sink.errLine(`! ${overrideWarning(override)}`);
   return overrides;
 }
 
@@ -162,39 +195,39 @@ async function detect(): Promise<number> {
   results.sort((a, b) => a.id.localeCompare(b.id));
 
   if (flag("json")) {
-    console.log(JSON.stringify(results, null, 2));
+    sink.outLine(JSON.stringify(results, null, 2));
   } else {
     for (const result of results) {
       const symbol = SYMBOL[result.availability] ?? "?";
       const version = result.version ? ` ${result.version}` : "";
-      console.log(
+      sink.outLine(
         `${symbol} ${result.id.padEnd(9)} ${result.availability.padEnd(9)}${version.padEnd(10)} ${result.milliseconds}ms`,
       );
       // The remedy is the whole point of the second step: the vendor's own
       // error names the fix, so it is printed rather than swallowed.
       if (result.availability !== "usable" && result.remedy) {
-        console.log(`  ${result.remedy.split("\n")[0]?.slice(0, 160) ?? ""}`);
+        sink.outLine(`  ${result.remedy.split("\n")[0]?.slice(0, 160) ?? ""}`);
       }
-      for (const line of driftLines(result)) console.log(`  ${line}`);
+      for (const line of driftLines(result)) sink.outLine(`  ${line}`);
       // Ruling 68's maintenance trigger: mechanical, because a review cadence
       // nobody enforces is a request. Detection already read these ids back.
       for (const model of unlistedModels(result.id, result.models ?? [])) {
-        console.log(
+        sink.outLine(
           `  model ${model} is not in the competence table — unranked, still eligible, sorted last (ruling 68)`,
         );
       }
     }
     const usable = results.filter((r) => r.availability === "usable").length;
-    console.log(`\n${usable}/${results.length} usable`);
+    sink.outLine(`\n${usable}/${results.length} usable`);
     // Decision 32: with one vendor, cross-vendor review cannot run, and a
     // weakened check must never be reported as a pass. Ruling 71 makes the
     // other two cases explicit too — "is cross-vendor review available at all"
     // is one of the four things a first run cannot learn anywhere else, and
     // silence on a two-vendor machine answers it only by implication.
-    if (usable === 0) console.log("No vendor is drivable — nothing can be run and no review is available.");
-    else if (usable === 1) console.log("Only one vendor is drivable — review would run same-vendor.");
-    else console.log("Cross-vendor review is available — a reviewer of a different vendor can be routed.");
-    for (const line of FIRST_RUN) console.log(line);
+    if (usable === 0) sink.outLine("No vendor is drivable — nothing can be run and no review is available.");
+    else if (usable === 1) sink.outLine("Only one vendor is drivable — review would run same-vendor.");
+    else sink.outLine("Cross-vendor review is available — a reviewer of a different vendor can be routed.");
+    for (const line of FIRST_RUN) sink.outLine(line);
     if (usable === 0) return 1;
   }
 
@@ -249,13 +282,13 @@ function agents(): number {
     // a table that described the shipped coordinate while another one ran is
     // the staleness this whole file exists to avoid.
     const profile = applyOverride(PROFILES[id], OVERRIDES);
-    console.log(`${profile.id} — ${profile.name}`);
-    console.log(`  command    ${profile.command} ${profile.args.join(" ")}`);
-    console.log(`  measured   ${profile.measuredVersion}`);
-    console.log(`  lane       ${describeLane(profile.laneAssertion)}`);
-    console.log(`  usage      ${profile.emitsUsage ? "emits usage_update" : "none over ACP"}`);
-    for (const caveat of profile.caveats) console.log(`  ! ${caveat}`);
-    console.log();
+    sink.outLine(`${profile.id} — ${profile.name}`);
+    sink.outLine(`  command    ${profile.command} ${profile.args.join(" ")}`);
+    sink.outLine(`  measured   ${profile.measuredVersion}`);
+    sink.outLine(`  lane       ${describeLane(profile.laneAssertion)}`);
+    sink.outLine(`  usage      ${profile.emitsUsage ? "emits usage_update" : "none over ACP"}`);
+    for (const caveat of profile.caveats) sink.outLine(`  ! ${caveat}`);
+    sink.outLine("");
   }
   return 0;
 }
@@ -295,13 +328,13 @@ function describeLane(assertion: (typeof PROFILES)[AgentId]["laneAssertion"]): s
 function competence(): number {
   const problems = tableProblems();
   if (problems.length > 0) {
-    console.error("the competence table cannot be printed — its citations do not hold:\n");
-    for (const problem of problems) console.error(`  ${problem}`);
-    console.error("\nRuling 68: cite by stable identity — a ticket, a benchmark with its version and");
-    console.error("read date, a URL with a read date, or, for editorial, a reason. Never a location.");
+    sink.errLine("the competence table cannot be printed — its citations do not hold:\n");
+    for (const problem of problems) sink.errLine(`  ${problem}`);
+    sink.errLine("\nRuling 68: cite by stable identity — a ticket, a benchmark with its version and");
+    sink.errLine("read date, a URL with a read date, or, for editorial, a reason. Never a location.");
     return 1;
   }
-  for (const line of renderCompetence()) console.log(line);
+  for (const line of renderCompetence()) sink.outLine(line);
   return 0;
 }
 
@@ -313,36 +346,36 @@ function competence(): number {
  * discharged for those recipients, so it must never depend on a file on disk.
  */
 function licenses(): number {
-  console.log(`${LICENSES.self.name} — ${LICENSES.self.license}`);
-  console.log(LICENSES.self.copyright);
-  console.log();
+  sink.outLine(`${LICENSES.self.name} — ${LICENSES.self.license}`);
+  sink.outLine(LICENSES.self.copyright);
+  sink.outLine("");
 
   if (LICENSES.components.length > 0) {
-    console.log("Third-party components compiled into this binary:");
-    console.log();
+    sink.outLine("Third-party components compiled into this binary:");
+    sink.outLine("");
     for (const c of LICENSES.components) {
-      console.log(`  ${c.name} ${c.version} — ${c.license}`);
-      if (c.copyright) console.log(`    ${c.copyright}`);
-      console.log(`    ${c.reason}`);
-      console.log();
+      sink.outLine(`  ${c.name} ${c.version} — ${c.license}`);
+      if (c.copyright) sink.outLine(`    ${c.copyright}`);
+      sink.outLine(`    ${c.reason}`);
+      sink.outLine("");
     }
   }
 
   if (flag("full")) {
-    console.log("=".repeat(78));
-    console.log("brigadier's own licence");
-    console.log("=".repeat(78));
-    console.log(LICENSES.apacheText);
+    sink.outLine("=".repeat(78));
+    sink.outLine("brigadier's own licence");
+    sink.outLine("=".repeat(78));
+    sink.outLine(LICENSES.apacheText);
     for (const c of LICENSES.components) {
       if (!c.licenseText) continue;
-      console.log();
-      console.log("=".repeat(78));
-      console.log(`${c.name} ${c.version} — ${c.license}`);
-      console.log("=".repeat(78));
-      console.log(c.licenseText);
+      sink.outLine("");
+      sink.outLine("=".repeat(78));
+      sink.outLine(`${c.name} ${c.version} — ${c.license}`);
+      sink.outLine("=".repeat(78));
+      sink.outLine(c.licenseText);
     }
   } else {
-    console.log("Run `brigadier licenses --full` for the complete licence texts.");
+    sink.outLine("Run `brigadier licenses --full` for the complete licence texts.");
   }
 
   return 0;
@@ -372,8 +405,8 @@ function licenses(): number {
 async function run(): Promise<number> {
   const planPath = value("plan");
   if (planPath === undefined) {
-    console.error("brigadier run --plan <path> [--repo <path>] [--run-root <path>]\n");
-    console.error(USAGE);
+    sink.errLine("brigadier run --plan <path> [--repo <path>] [--run-root <path>]\n");
+    sink.errLine(USAGE);
     return 2;
   }
 
@@ -382,7 +415,7 @@ async function run(): Promise<number> {
   const audience = audienceFrom(value("audience"));
   const ceiling = difficultyFrom(value("max-difficulty"));
   if (ceiling === null) {
-    console.error(`--max-difficulty must be one of easy, medium, hard`);
+    sink.errLine(`--max-difficulty must be one of easy, medium, hard`);
     return 2;
   }
 
@@ -390,7 +423,7 @@ async function run(): Promise<number> {
   try {
     spec = parsePlan(readFileSync(planPath, "utf8"), planPath);
   } catch (error) {
-    console.error(error instanceof PlanUnreadable ? error.message : `could not read ${planPath}: ${String(error)}`);
+    sink.errLine(error instanceof PlanUnreadable ? error.message : `could not read ${planPath}: ${String(error)}`);
     return 2;
   }
 
@@ -402,7 +435,7 @@ async function run(): Promise<number> {
   // never lexically: macOS's /var → /private/var symlink is why the ruling says so.
   const intendedRoot = intendedRealPath(runRoot);
   if (isTempRooted(intendedRoot, realTempDirs())) {
-    console.error(
+    sink.errLine(
       `refused — the run root ${intendedRoot} is inside a temp region, and nothing was started.\n` +
         "  Ruling 61: brigadier's run directories live outside every temp root. #41 measured a worker\n" +
         "  under a temp root writing into another clone's tracked file, because the Codex ACP bridge\n" +
@@ -430,7 +463,7 @@ async function run(): Promise<number> {
   });
 
   if (admission.refusals.length > 0) {
-    for (const line of describeRefusals(admission.refusals, planPath)) console.error(line);
+    for (const line of describeRefusals(admission.refusals, planPath)) sink.errLine(line);
     return 4;
   }
 
@@ -440,22 +473,22 @@ async function run(): Promise<number> {
       admission.fanOut[0]?.workers ?? 1,
       admission.agents.map((agent) => agent.id),
     );
-    for (const line of describeEstimate(estimate)) console.log(line);
-    console.log("nothing was started: --estimate stops before the run root is created.");
+    for (const line of describeEstimate(estimate)) sink.outLine(line);
+    sink.outLine("nothing was started: --estimate stops before the run root is created.");
     return 0;
   }
 
-  for (const line of describeAdmission(admission, planPath)) console.log(line);
+  for (const line of describeAdmission(admission, planPath)) sink.outLine(line);
 
   if (flag("dry-run")) {
-    console.log("nothing was started: --dry-run stops before the run root is created.");
+    sink.outLine("nothing was started: --dry-run stops before the run root is created.");
     return 0;
   }
 
   // The merged-result gate's command. Resolved HERE, before a worker exists.
   const verify = resolveVerify(value("verify"), repo);
   if (verify.status === "missing") {
-    console.error(verify.refusal ?? "the verify command could not be resolved");
+    sink.errLine(verify.refusal ?? "the verify command could not be resolved");
     return 4;
   }
 
@@ -474,8 +507,18 @@ async function run(): Promise<number> {
     xhigh: values("xhigh"),
     ...(value("soft-ceiling") === undefined ? {} : { softCeiling: Number(value("soft-ceiling")) }),
     ...(value("hard-ceiling") === undefined ? {} : { hardCeiling: Number(value("hard-ceiling")) }),
+    // Ruling 65: the process's ONE sink, handed down rather than rebuilt, so
+    // there is one inventory and one writer for the report as well as for the
+    // record. `executeRun` hands the same object back.
+    sink,
+    // Ruling 63: this is what makes a signal mean "drain" rather than "die".
+    onInFlight: inFlight,
   });
-  console.log(result.report);
+  // The report is not returned as a string for this function to print — ruling
+  // 65: a caller holding the bytes owns the write, and that is the shape the
+  // sink exists to remove. `executeRun` wrote it through the sink already.
+  for (const line of describeGrant(result.grant)) sink.errLine(line);
+  interruptedBy = result.interruptedBy;
   return result.exitCode;
 }
 
@@ -503,11 +546,90 @@ function difficultyFrom(name: string | undefined): Difficulty | undefined | null
  */
 const ORCHESTRATING = new Set(["run", "plan"]);
 
+/**
+ * Ruling 63, wired. One handler, one state machine, three behaviours.
+ *
+ * `initialState(false)`: nothing is in flight yet, so the FIRST signal here
+ * abandons immediately — there is nothing to clean up and a handler that delays
+ * is pure downside. `run` calls `inFlight` before the first clone exists, which
+ * moves the machine to `draining`; from there the first signal drains the run
+ * and the second abandons.
+ *
+ * `abandon` is `SIG_DFL` plus a re-raise, and that is the whole point:
+ * `process.exit(130)` imitates a signal-terminated status and is not one. A
+ * re-raised signal is reported as such by a parent shell, attributed correctly
+ * by a CI runner, and distinguishable from an ordinary non-zero exit by a
+ * supervisor. `sink.end()` runs first — flushing a tail is not cleanup, it is
+ * the last bytes of what already happened, and the alternative is losing a line
+ * the operator was already owed.
+ *
+ * MEASURED against `bun 1.3.14` on 2026-08-18: a process that removes its own
+ * `SIGINT` listener and then calls `process.kill(process.pid, "SIGINT")` is
+ * reaped with a null exit code and a `SIGINT` wait status — the same status a
+ * process with no handler at all gets, and distinguishable by a shell from any
+ * exit code the program could have chosen. `test/cli-interrupt.test.ts` asserts
+ * on that status rather than on a number.
+ */
+let interrupts: InterruptState = initialState(false);
+let drainRun: ((signal: NodeJS.Signals) => void) | null = null;
+
+function raise(signal: NodeJS.Signals): void {
+  process.kill(process.pid, signal);
+}
+
+function onInterrupt(signal: NodeJS.Signals): void {
+  interrupts = onSignal(interrupts, signal);
+  if (interrupts.phase === "abandoning") {
+    sink.end();
+    abandon(signal, raise);
+    return;
+  }
+  drainRun?.(signal);
+}
+
+/** Called by `executeRun` before the first clone. From here a signal drains. */
+function inFlight(drain: (signal: NodeJS.Signals) => void): void {
+  drainRun = drain;
+  interrupts = initialState(true);
+}
+
+for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => onInterrupt(signal));
+
+/**
+ * What `--secret-env` actually did, BY NAME.
+ *
+ * `tooShort` is `MINIMUM_SECRET_LENGTH`'s hole said out loud instead of left to
+ * be discovered: a granted value under 8 characters IS delivered to the worker
+ * and is NOT inventoried, so nothing redacts it out of anything. Redacting every
+ * occurrence of a three-character string would destroy more than it protects, so
+ * the floor stays — but an operator who granted a short value is owed the
+ * sentence, and stderr is where a warning survives `--audience host-session`.
+ */
+function describeGrant(grant: Grant): string[] {
+  const lines: string[] = [];
+  if (grant.tooShort.length > 0) {
+    lines.push(
+      `! ${grant.tooShort.join(", ")} — granted and delivered, and NOT redacted from anything: a value ` +
+        "shorter than 8 characters is deliberately not inventoried, because redacting every occurrence " +
+        "of a short string destroys more than it protects (ruling 65).",
+    );
+  }
+  if (grant.unset.length > 0) {
+    lines.push(
+      `! ${grant.unset.join(", ")} — named by --secret-env and unset or empty in this environment, so ` +
+        "nothing was delivered and nothing is inventoried under that name.",
+    );
+  }
+  return lines;
+}
+
+let interruptedBy: NodeJS.Signals | null = null;
+
 const exitCode = await (async () => {
   // Checked before any command dispatch and before any input is read. v1's
   // nudge hook read the marker before reading stdin; that detail is deliberate.
   if (command !== undefined && ORCHESTRATING.has(command) && isInsideWorker()) {
-    console.error(REFUSAL);
+    sink.errLine(REFUSAL);
     return 3;
   }
 
@@ -528,16 +650,37 @@ const exitCode = await (async () => {
     case "licenses":
     case "--licenses":
       return licenses();
+    // The plugin surface. Deliberately NOT in `ORCHESTRATING`: `install` and
+    // `uninstall` carry their own worker refusal inside `src/plugin/index.ts`,
+    // because a worker writing brigadier's skill into the operator's home is
+    // finding 114's second route rather than an orchestration; and
+    // `plugin hooks` must stay readable inside a worker, since reading a file
+    // cannot cause either failure and an arbitrary-looking refusal teaches a
+    // model nothing.
+    case "install":
+      return installCommand(argv.slice(1));
+    case "uninstall":
+      return uninstallCommand(argv.slice(1));
+    case "plugin":
+      return pluginCommand(argv.slice(1));
     case undefined:
     case "-h":
     case "--help":
-      console.log(USAGE);
+      sink.outLine(USAGE);
       return 0;
     default:
-      console.error(`unknown command: ${command}\n`);
-      console.error(USAGE);
+      sink.errLine(`unknown command: ${command}\n`);
+      sink.errLine(USAGE);
       return 2;
   }
 })();
+
+// The tail the sink is holding is flushed before ANY exit. It is held back
+// precisely because a pattern could straddle it, so the last line of a run is
+// exactly the line that goes missing without this.
+sink.end();
+
+// Ruling 63: a run that was interrupted exits as the SIGNAL, not as a number.
+if (interruptedBy !== null) abandon(interruptedBy, raise);
 
 process.exit(exitCode);

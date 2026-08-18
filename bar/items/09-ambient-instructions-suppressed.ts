@@ -62,7 +62,7 @@ import { makeRepo, plantSeeds } from "../lib/git.ts";
 import { combine, type LiveHalf } from "../lib/halves.ts";
 import { runSampled } from "../lib/inflight.ts";
 import { writePlan } from "../lib/plan.ts";
-import { baseEnv, exec } from "../lib/proc.ts";
+import { HARNESS_RUN_TIMEOUT_MS, baseEnv, exec } from "../lib/proc.ts";
 import type { BarContext, BarItem, BarResult } from "../types.ts";
 
 export const WORKER_MARKER = "BRIGADIER_WORKER";
@@ -224,7 +224,7 @@ const item: BarItem = {
         cwd: ctx.workdir,
         env,
         runRoot: runs,
-        timeoutMs: 300_000,
+        timeoutMs: HARNESS_RUN_TIMEOUT_MS,
       });
       const report = `${sampled.stdout}${sampled.stderr}`;
       const evidence = await gatherRunEvidence(repo, report);

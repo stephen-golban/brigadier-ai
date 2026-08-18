@@ -33,7 +33,21 @@
  * goes through `Sink`, which redacts the FINAL bytes against an append-only
  * inventory in every enumerated encoding. Ruling 65 names "the sink being
  * bypassed" as the most likely way redaction fails in practice, so there is one
- * writer and nothing in this file calls `writeFileSync`.
+ * writer and nothing in this file calls `writeFileSync`. The sink is
+ * `src/secrets/sink.ts`'s — this file used to carry a private one that redacted
+ * an event's FIELDS and then serialised it, which put a transformation after
+ * the redaction and is the failure the ruling is about. It composes now, and
+ * the sink redacts what is going to be on disk.
+ *
+ * AN INTERRUPT IS PART OF THE ORDER, NOT AN EXCEPTION TO IT (ruling 63). The
+ * caller owns the signal handler — registering one disables default termination,
+ * so it is a duty — and this file supplies the drain: stop dispatching,
+ * `session/cancel` every live worker, kill them on a bounded deadline, sweep,
+ * and then fall out through the SAME tail that writes `record.json` and the
+ * report. That is deliberate. A signal handler that wrote its own summary would
+ * be a second, weaker path producing a different artifact from the one every
+ * test and every reader knows, and the run that most needs a record is the one
+ * that did not finish.
  *
  * WHERE RULING 38 CANNOT REACH, said out loud rather than left to be
  * discovered: an operator's verify command is spawned WITHOUT the command-line
@@ -45,7 +59,7 @@
 
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, statSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import type { AgentId, LaunchProfile } from "../agent/profiles.ts";
 import { Worker } from "../agent/worker.ts";
 import {
@@ -53,7 +67,6 @@ import {
   discardClone,
   prepareClone,
   releaseToAgent,
-  writeRegularFile,
   type AgentOwnedClone,
   type BaseState,
 } from "../isolation/index.ts";
@@ -72,8 +85,9 @@ import { Lane } from "../lane/lane.ts";
 import { RUN_DIR } from "../repo/layout.ts";
 import { WORK_BRANCH, integrationBranch, itemRef } from "../repo/refs.ts";
 import {
-  appendEvent,
+  CANCEL_DEADLINE_MS,
   describeStartSweep,
+  describeUnfinished,
   directoryBytes,
   openCheckSlot,
   recordPath,
@@ -81,11 +95,13 @@ import {
   sweep,
   sweepAtStart,
   type RunEvent,
+  type UnfinishedRun,
 } from "../run/index.ts";
-import { SecretInventory } from "../secrets/redact.ts";
+import { Sink, type Grant } from "../secrets/sink.ts";
 import {
-  renderRunReport,
+  itemBlocks,
   runHeadline,
+  writeRunReport,
   type Audience,
   type RecordCheck,
   type RecordItem,
@@ -163,47 +179,76 @@ export interface ExecuteOptions {
   handshakeTimeoutMs?: number;
   workerTimeoutMs?: number;
   verifyTimeoutMs?: number;
+  /**
+   * The process's one sink (ruling 65). The CLI builds it before it prints
+   * anything, so passing it in is what makes "one sink" true across the whole
+   * process rather than true twice with two inventories — v1's failure 1 was
+   * exactly two of these disagreeing. Absent, a run builds its own, because a
+   * caller that forgot must not get an UNREDACTED run.
+   */
+  sink?: Sink;
+  /**
+   * Ruling 63, and the seam that gives `src/run/interrupt.ts` its call site.
+   *
+   * Called once, before the first clone exists, with this run's drain. The
+   * signal HANDLER lives in the caller — registering one disables default
+   * termination, which is a duty owed by whoever owns the process — and the
+   * drain is what "a run is in flight" means: stop dispatching, `session/cancel`
+   * every live worker, kill on a deadline, sweep.
+   */
+  onInFlight?: (drain: (signal: NodeJS.Signals) => void) => void;
+  /**
+   * How long a cancelled worker is given before it is killed. Ruling 63's real
+   * mechanism; overridable so a test can bound its own wait rather than the
+   * product's.
+   */
+  cancelDeadlineMs?: number;
 }
 
 export interface ExecuteResult {
-  report: string;
+  /**
+   * The run's sink, returned so the caller can `end()` it — and so nothing
+   * builds a second one. Ruling 65: the report is not handed back as a string,
+   * because a caller holding the bytes owns the write.
+   */
+  sink: Sink;
+  /** What `--secret-env` actually did, BY NAME. `tooShort` is the hole, said out loud. */
+  grant: Grant;
   recordPath: string;
   /** 0 only when every blocking check passed. Ruling 52 has no other affirmative. */
   exitCode: number;
+  /**
+   * The signal that interrupted this run, or `null`. Ruling 63: the caller
+   * restores the default handler and RE-RAISES this rather than exiting with a
+   * code it invented, so a parent shell sees a genuine signal-terminated status.
+   */
+  interruptedBy: NodeJS.Signals | null;
 }
 
 /**
- * The one writer.
+ * One NDJSON event, COMPOSED and then handed to the sink.
  *
- * Ruling 65's second rule: one sink, after composition, redacting the FINAL
- * bytes. Not the serialiser and not a string builder — the last point before
- * the bytes leave. `SecretInventory` is append-only by construction, so a value
- * rotated mid-run stays redacted for the life of the run.
+ * This is the whole of ruling 65's rule 2 in one line, and it replaces a
+ * private `Sink` that got the order backwards. The deleted `redactEvent`
+ * redacted each field of the event and THEN serialised, which is v1's failure 2
+ * and failure 3 rebuilt in one function:
+ *
+ *   - a non-string field was never touched at all, so a secret inside a nested
+ *     object, an array or a number-keyed record went through untouched;
+ *   - `JSON.stringify` runs AFTER the redaction, so the escaped form of a value
+ *     — the form that actually lands in the file — was never generated at the
+ *     moment redaction looked;
+ *   - and a value spanning the JOIN between two fields, `"…","cause":"…"`, is
+ *     not present in either field, so nothing saw it.
+ *
+ * Composing first and redacting the composed line catches all three, because
+ * the bytes redaction runs over are exactly the bytes that reach the disk.
+ * `Sink.append` also carries the `O_APPEND`, `O_NOFOLLOW`, non-regular-file and
+ * truncated-tail handling `appendEvent` had, and refuses a line containing a
+ * newline rather than splitting one event into two.
  */
-class Sink {
-  constructor(readonly inventory: SecretInventory) {}
-
-  file(path: string, text: string): void {
-    mkdirSync(dirname(path), { recursive: true });
-    writeRegularFile(path, this.inventory.redact(text));
-  }
-
-  append(path: string, event: RunEvent): void {
-    appendEvent(path, redactEvent(event, this.inventory));
-  }
-
-  /** stdout is a persisted artifact too: in host-first it lands in a context window forever. */
-  out(text: string): string {
-    return this.inventory.redact(text);
-  }
-}
-
-function redactEvent(event: RunEvent, inventory: SecretInventory): RunEvent {
-  const redacted: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(event)) {
-    redacted[key] = typeof value === "string" ? inventory.redact(value) : value;
-  }
-  return redacted as RunEvent;
+function recordEvent(sink: Sink, path: string, event: RunEvent): void {
+  sink.append(path, JSON.stringify(event));
 }
 
 /** Short, and inside the shape `src/repo/refs.ts` and `src/run/marker.ts` both enforce. */
@@ -243,18 +288,6 @@ function checkRecord(check: CheckResult): RecordCheck {
     ...(check.qualifier === undefined ? {} : { qualifier: check.qualifier }),
     ...(check.detail === undefined ? {} : { detail: check.detail }),
   };
-}
-
-/** Every environment variable the operator granted, read once, at the start. */
-function grantSecrets(names: readonly string[], inventory: SecretInventory): Record<string, string> {
-  const granted: Record<string, string> = {};
-  for (const name of names) {
-    const value = process.env[name];
-    if (value === undefined || value === "") continue;
-    granted[name] = value;
-    inventory.add(value);
-  }
-  return granted;
 }
 
 /**
@@ -310,6 +343,28 @@ interface ItemRun {
   bytes: number;
   /** Set when the clone is the only copy of the work — ruling 63 retains it. */
   retain: boolean;
+  /**
+   * Ruling 38's marker is what makes these nameable, and ruling 63 requires the
+   * EXACT pids rather than "something may still be running".
+   */
+  survivors: number[];
+}
+
+/**
+ * A worker that is alive right now, and the two things an interrupt does to it.
+ *
+ * Ruling 63's order, and the reason it is an order rather than a choice:
+ * `session/cancel` is an ACP NOTIFICATION — #6's four-method surface gives
+ * nothing to await — so `cancel()` is a courtesy with no acknowledgement, and
+ * the DEADLINE plus `kill()` is the mechanism. #48 measured a real client
+ * tolerating a 285-second turn, so "wait for the agent to finish cancelling" is
+ * not a bounded wait and is not what this does.
+ */
+interface LiveWorker {
+  readonly item: number;
+  readonly pid: number;
+  cancel(): void;
+  kill(): void;
 }
 
 /**
@@ -329,6 +384,7 @@ async function runItem(
   agent: { id: AgentId; profile: LaunchProfile } | null,
   secrets: Record<string, string>,
   transcript: string[],
+  live: Set<LiveWorker>,
 ): Promise<ItemRun> {
   // Ruling 31: derived from (kind, difficulty), here, from the difficulty
   // ACTUALLY IN FORCE. Deriving from the declared one would spend at the level
@@ -365,6 +421,7 @@ async function runItem(
           })(),
     bytes: 0,
     retain: false,
+    survivors: [],
   };
 
   // Ruling 52's write-ahead: the slot exists, holding a BLOCKING value, before
@@ -374,7 +431,7 @@ async function runItem(
   let clone;
   try {
     const prepared = await prepareClone({ base, item: item.number, runRoot: options.runRoot });
-    sink.append(record, { type: "clone-recorded", at: Date.now(), item: item.number, dir: prepared.dir });
+    recordEvent(sink, record, { type: "clone-recorded", at: Date.now(), item: item.number, dir: prepared.dir });
     clone = releaseToAgent(prepared);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -418,13 +475,27 @@ async function runItem(
       spawned = marked;
       mkdirSync(join(clone.stateDir, "agent-config"), { recursive: true });
       mkdirSync(join(clone.stateDir, "tmp"), { recursive: true });
-      sink.append(record, {
+      recordEvent(sink, record, {
         type: "process-spawned",
         at: Date.now(),
         item: item.number,
         pid: marked.pid,
         commandLine: marked.commandLine,
       });
+
+      // Registered BEFORE the handshake, and with the process kill already
+      // wired: ruling 63's drain has to be able to reach a worker that is
+      // spawned but not yet speaking ACP, which is precisely the window an
+      // interrupt is most likely to land in. `cancel` is a no-op until the
+      // session exists, because there is no session id to cancel.
+      let acp: Worker | undefined;
+      const registration: LiveWorker = {
+        item: item.number,
+        pid: marked.pid,
+        cancel: () => acp?.cancel(),
+        kill: () => marked?.kill(),
+      };
+      live.add(registration);
 
       const worker = await withTimeout(
         Worker.start(profile, {
@@ -437,6 +508,7 @@ async function runItem(
         options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS,
         `${profile.id} handshake for item ${item.id}`,
       );
+      acp = worker;
       result.model = worker.models[0] ?? null;
 
       const turn = await withTimeout(
@@ -466,6 +538,7 @@ async function runItem(
       // reading it at spawn time would record `sent` for a setting the agent
       // subsequently refused.
       result.effort = marked?.effort() ?? result.effort;
+      for (const entry of [...live]) if (entry.pid === spawned?.pid) live.delete(entry);
       spawned?.kill();
     }
   } else {
@@ -502,7 +575,7 @@ async function runItem(
     sweptBy: `end-of-item sweep for ${base.runId}/${item.number}`,
     ...(spawned === null ? {} : { recordedPids: [spawned.pid] }),
   });
-  sink.append(record, {
+  recordEvent(sink, record, {
     type: "swept",
     at: Date.now(),
     sweptBy: swept.evidence.sweptBy,
@@ -511,6 +584,7 @@ async function runItem(
     reclaimedPids: [...swept.evidence.reclaimedPids],
     survivors: [...swept.evidence.survivors],
   });
+  result.survivors = [...swept.evidence.survivors];
   if (swept.evidence.survivors.length > 0) {
     result.checks.push({
       name: "containment",
@@ -529,9 +603,14 @@ async function runItem(
 
 /** The whole run. */
 export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult> {
-  const inventory = new SecretInventory();
-  const secrets = grantSecrets(options.secretEnv, inventory);
-  const sink = new Sink(inventory);
+  // ONE SINK, and the caller's where there is one. Ruling 65's failure 1 was two
+  // inventories disagreeing, and a run that built its own while the CLI printed
+  // through another would be that failure with the two halves in one process.
+  const sink = options.sink ?? new Sink();
+  // Reading the grant and inventorying it are ONE call, deliberately: two calls
+  // admit a program in which delivery happened and inventory did not.
+  const grant = sink.grant(options.secretEnv);
+  const secrets = grant.env;
 
   const runId = options.runId ?? newRunId();
   const runDir = join(options.runRoot, RUN_DIR, runId);
@@ -546,13 +625,64 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
   for (const line of describeStartSweep(start)) notes.push(line);
 
   mkdirSync(runDir, { recursive: true });
-  sink.append(record, {
+  recordEvent(sink, record, {
     type: "run-started",
     at: Date.now(),
     runId,
     repo: options.repo,
     runRoot: options.runRoot,
     pid: process.pid,
+  });
+
+  // RULING 63'S DRAIN, handed to the caller before a single clone exists.
+  //
+  // The handler itself belongs to whoever owns the process — registering one
+  // disables default termination, so it is a duty and not a feature — and this
+  // is the half only the run can supply: what "in flight" means here. Order,
+  // and every step of it is bounded:
+  //
+  //   1. STOP DISPATCHING. No further batch and no further wave. Everything
+  //      already awaited unwinds through the code it was already in, which is
+  //      what leaves `record.json` written by the ordinary tail of this
+  //      function rather than by a second, weaker path in a signal handler.
+  //   2. `session/cancel` EVERY LIVE WORKER. An ACP notification, so there is
+  //      nothing to await and no acknowledgement to wait for.
+  //   3. KILL ON A DEADLINE. #48 measured a real client tolerating a
+  //      285-second turn, so waiting for an agent to finish cancelling is not a
+  //      bounded wait. The deadline is the mechanism; the cancel is a courtesy.
+  //   4. SWEEP (below, after the loop). Ruling 38's marker is what makes the
+  //      survivors nameable as exact pids.
+  const live = new Set<LiveWorker>();
+  const cancelDeadlineMs = options.cancelDeadlineMs ?? CANCEL_DEADLINE_MS;
+  let interruptedBy: NodeJS.Signals | null = null;
+  let draining: Promise<void> | null = null;
+  options.onInFlight?.((signal) => {
+    if (interruptedBy !== null) return;
+    interruptedBy = signal;
+    const workers = [...live];
+    sink.errLine(
+      `${signal} — no further item will be dispatched. \`session/cancel\` sent to ${workers.length} live ` +
+        `worker(s); they are killed in ${cancelDeadlineMs} ms whether or not they answer, because ` +
+        "`session/cancel` is an unacknowledged notification and waiting for an agent is not a bounded " +
+        "wait (ruling 63).",
+    );
+    draining = (async () => {
+      for (const worker of workers) {
+        try {
+          worker.cancel();
+        } catch {
+          // A worker whose channel is already gone needs no cancelling.
+        }
+      }
+      await Bun.sleep(cancelDeadlineMs);
+      for (const worker of workers) {
+        try {
+          worker.kill();
+        } catch {
+          // Already gone. The sweep below is what proves it either way.
+        }
+      }
+    })();
   });
 
   const plan = options.admission.plan;
@@ -574,7 +704,7 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
   // record without this cannot re-derive what an item did — which is ruling
   // 51's ownership check and ruling 52's reviewer brief, both computed from
   // `git diff <base>..<item ref>`.
-  sink.append(record, { type: "base-recorded", at: Date.now(), wave: 0, ref: base.ref, sha: base.sha });
+  recordEvent(sink, record, { type: "base-recorded", at: Date.now(), wave: 0, ref: base.ref, sha: base.sha });
 
   const runs: ItemRun[] = [];
   const waves: WaveIntegration[] = [];
@@ -589,7 +719,7 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
     // the integration commit wave N published, so this is per wave rather than
     // per run and it is written down before the wave spends anything.
     const waveBaseRef = waveNumber === 1 ? base.ref : integrationBranch(runId);
-    sink.append(record, {
+    recordEvent(sink, record, {
       type: "base-recorded",
       at: Date.now(),
       wave: waveNumber,
@@ -608,6 +738,9 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
 
     const attempted: ItemRun[] = [];
     for (let cursor = 0; cursor < eligible.run.length; cursor += concurrency) {
+      // Ruling 63, step 1. Checked at the batch boundary because that is the
+      // only place this function chooses to spend something new.
+      if (interruptedBy !== null) break;
       const batch = eligible.run.slice(cursor, cursor + concurrency);
       const finished = await Promise.all(
         batch.map((number) => {
@@ -618,7 +751,7 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
           // its prerequisite's output rather than the state before it.
           const cloneFrom: BaseState =
             waveNumber === 1 ? base : { ...base, ref: integrationBranch(runId), sha: waveBase };
-          return runItem(item, cloneFrom, options, sink, record, agent, secrets, transcript);
+          return runItem(item, cloneFrom, options, sink, record, agent, secrets, transcript, live);
         }),
       );
       attempted.push(...finished);
@@ -698,7 +831,7 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
       if (producedNothing.has(entry.item)) continue;
       if (entry.outcome === "integrated" || entry.outcome === "no-change") integrated.add(entry.item);
       if (entry.outcome === "integrated" && entry.sha !== undefined) {
-        sink.append(record, {
+        recordEvent(sink, record, {
           type: "item-landed",
           at: Date.now(),
           item: entry.item,
@@ -765,6 +898,31 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
     const boundary = waveBoundary(waveNumber, gate);
     notes.push(boundary.reason);
     if (!boundary.proceed && index < plan.waves.length - 1) break;
+    if (interruptedBy !== null) break;
+  }
+
+  // Ruling 63, steps 3 and 4. The wait is bounded by `cancelDeadlineMs` and by
+  // nothing else, and the sweep runs AFTER it — a sweep before the kill would
+  // report every worker as a survivor and teach the operator to ignore the line
+  // that matters. `sweepAtStart` already ran at the top of this function; this
+  // is the same matcher over the same marker, scoped to this run.
+  const interruptSurvivors: number[] = [];
+  if (interruptedBy !== null) {
+    if (draining !== null) await draining;
+    const finalSweep = await sweep({
+      scope: { runId },
+      sweptBy: `interrupt (${String(interruptedBy)}) drain for ${runId}`,
+    });
+    interruptSurvivors.push(...finalSweep.evidence.survivors);
+    recordEvent(sink, record, {
+      type: "swept",
+      at: Date.now(),
+      sweptBy: finalSweep.evidence.sweptBy,
+      runId,
+      item: null,
+      reclaimedPids: [...finalSweep.evidence.reclaimedPids],
+      survivors: [...finalSweep.evidence.survivors],
+    });
   }
 
   // Clones: kept only where the clone is the ONLY copy. Ruling 63 both ways —
@@ -915,6 +1073,34 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
       });
     }
   }
+  // Ruling 63: an item this run never reached is a fact about the run, and it
+  // must be IN the record rather than absent from it. An interrupt stops
+  // dispatch at a batch boundary, so a wave may end without `integrateWave`
+  // ever having heard of its later items — and ruling 52's rule is the same one
+  // level up: a missing result never renders as a satisfied requirement.
+  for (const planned of plan.items) {
+    if (items.some((item) => item.number === planned.number)) continue;
+    items.push({
+      id: planned.id,
+      number: planned.number,
+      status: interruptedBy === null ? "unrun" : "cancelled",
+      kind: planned.kind,
+      checks: [
+        {
+          name: `integrate item ${planned.number}`,
+          outcome: "not-run",
+          blocking: true,
+          qualifier: interruptedBy === null ? "never dispatched" : "interrupted before dispatch",
+          detail:
+            interruptedBy === null
+              ? "this run ended before the item was dispatched"
+              : `${String(interruptedBy)} stopped dispatch before this item was given a directory, so ` +
+                "nothing was spawned for it and nothing of it exists to inspect.",
+        },
+      ],
+      itemRef: itemRef(runId, planned.number),
+    });
+  }
   items.sort((a, b) => a.number - b.number);
 
   const estimate = estimatePlan(
@@ -975,11 +1161,12 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
     gates.every((gate) => !blocks(gate.outcome)) &&
     !blocks(deliverable.outcome);
 
-  sink.file(join(transcriptDir, "full.log"), `${transcript.join("\n")}\n`);
-  sink.file(jsonRecord, `${JSON.stringify(runRecord, null, 2)}\n`);
-  sink.append(record, { type: "run-finished", at: Date.now(), outcome: ok ? "complete" : "abandoned" });
+  sink.write(join(transcriptDir, "full.log"), `${transcript.join("\n")}\n`);
+  sink.write(jsonRecord, `${JSON.stringify(runRecord, null, 2)}\n`);
+  recordEvent(sink, record, { type: "run-finished", at: Date.now(), outcome: ok ? "complete" : "abandoned" });
 
-  const report = renderRunReport({
+  writeRunReport(
+    {
     record: runRecord,
     recordPath: jsonRecord,
     // Derived from the very items and checks this report prints, rather than
@@ -992,9 +1179,31 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
     unconfirmedPids: start.unconfirmedPids,
     audience: options.audience,
     detail: [...notes, "", ...describeEstimate(estimate)],
-  });
+    },
+    sink,
+  );
 
-  return { report: sink.out(report), recordPath: jsonRecord, exitCode: ok ? 0 : 1 };
+  // RULING 63'S PROMISE: four facts and no reassurance, and it is printed
+  // OUTSIDE the report's budget on purpose. Ruling 58 caps what a host session
+  // pays for by dropping passing items; these lines are not items, they are the
+  // hazard, and the pid list in particular is the one thing v1 could not
+  // produce — "something may still be running" is not a fact an operator can
+  // act on and a pid is.
+  if (interruptedBy !== null) {
+    const landedItems = items.filter((item) => item.status === "integrated" && !itemBlocks(item));
+    const unfinished: UnfinishedRun = {
+      landed: landedItems.map((item) => item.number),
+      didNotLand: items.filter((item) => !landedItems.includes(item)).map((item) => item.number),
+      retainedClones: retained,
+      unconfirmedPids: [
+        ...new Set([...interruptSurvivors, ...runs.flatMap((run) => run.survivors)]),
+      ].sort((a, b) => a - b),
+    };
+    sink.outLine(`interrupted by ${String(interruptedBy)} — what this run left behind:`);
+    for (const line of describeUnfinished(unfinished)) sink.outLine(line);
+  }
+
+  return { sink, grant, recordPath: jsonRecord, exitCode: ok ? 0 : 1, interruptedBy };
 }
 
 /** Used by the CLI to decide whether the run root is usable before anything is created. */

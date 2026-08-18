@@ -25,6 +25,46 @@ import type { RunOptions, RunResult } from "../types.ts";
 /** Signals a `timeoutMs` expiry rather than a normal exit. */
 export const TIMEOUT_SIGNAL = "BAR_TIMEOUT";
 
+/**
+ * The subject's own worker deadline, and this harness's, in the only order that
+ * can tell a hang from a slow success.
+ *
+ * MEASURED on this host on 2026-08-18: the harness gave a full `brigadier run`
+ * 300 s while the product gives each worker 600 s
+ * (`DEFAULT_WORKER_TIMEOUT_MS`). So on every slow or wedged worker the harness
+ * SIGKILLed brigadier at 300 s — strictly before brigadier's own deadline could
+ * fire — and the run produced no record, no reasons and no transcript. The
+ * result was "no `run-record:` path", which is the least informative failure
+ * available and is indistinguishable between a deadlocked fixture, a genuinely
+ * hung product and a product that was three seconds from finishing. It was in
+ * fact a deadlocked fixture (`bar/fakes/vendor.ts`), and six items were graded
+ * against the product for it.
+ *
+ * **The rule: the harness deadline must exceed the subject's own by enough for
+ * the subject to finish reporting after its deadline fires.** A harness that
+ * kills its subject before the subject can explain itself is not measuring the
+ * subject. Set the other way round the harness learns one bit; set this way it
+ * gets whatever account the product is able to give, and "the product timed out
+ * a worker and said so" becomes a PASS-or-FAIL judgement about behaviour rather
+ * than a missing file.
+ *
+ * This costs wall clock only when something is already broken: a run that
+ * finishes returns the moment it finishes, and only a hang runs to the deadline.
+ * That is the right trade — the expensive case is the one that must be legible.
+ *
+ * `SUBJECT_WORKER_TIMEOUT_MS` is a deliberate second copy of a product constant,
+ * because `bar/` imports nothing from `src/`. Copies go stale silently unless
+ * something asserts on them, so `bar/lib/timeout-order.test.ts` reads the
+ * product's own source and fails if the two ever cross.
+ */
+export const SUBJECT_WORKER_TIMEOUT_MS = 600_000;
+
+/** Room for the subject to time a worker out, unwind, sweep and write a record. */
+export const REPORTING_MARGIN_MS = 120_000;
+
+/** Every full `brigadier run` the bar drives is given this. */
+export const HARNESS_RUN_TIMEOUT_MS = SUBJECT_WORKER_TIMEOUT_MS + REPORTING_MARGIN_MS;
+
 export async function exec(argv: string[], opts: RunOptions = {}): Promise<RunResult> {
   const [command, ...rest] = argv;
   if (command === undefined) throw new Error("exec: empty argv");

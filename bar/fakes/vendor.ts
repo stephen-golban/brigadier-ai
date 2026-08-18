@@ -35,6 +35,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { dirname, join, resolve } from "node:path";
 import { derive } from "../lib/derive.ts";
 import { appendLedger } from "../lib/ledger.ts";
+import { exitWhenOrphaned } from "../lib/orphan.ts";
 import type { Directive } from "../lib/plan.ts";
 
 export interface VendorConfig {
@@ -293,12 +294,29 @@ function send(message: unknown): void {
   process.stdout.write(`${JSON.stringify(message)}\n`);
 }
 
+/**
+ * How long an outstanding `session/request_permission` may go unanswered.
+ *
+ * Unbounded was the wrong answer for the same reason the deadlock below was:
+ * the least informative failure available is a process that stops with no
+ * account of why. An expiry is DENY — a denial writes nothing, so a lost answer
+ * degrades to "the lane refused" rather than to a wedged turn — and it says so
+ * on stderr, which the harness captures.
+ */
+const PERMISSION_DEADLINE_MS = 120_000;
+
 /** Ask the client, exactly as ACP does, and honour whatever it answers. */
 function requestPermission(request: Record<string, unknown>): Promise<boolean> {
   const id = nextId++;
   return new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      process.stderr.write(`vendor: no answer to request ${id} within ${PERMISSION_DEADLINE_MS}ms; treating as DENY\n`);
+      resolve(false);
+    }, PERMISSION_DEADLINE_MS);
     pending.set(id, {
       resolve: (result) => {
+        clearTimeout(timer);
         const outcome = (result as { outcome?: { outcome?: string; optionId?: string } } | null)?.outcome;
         resolve(outcome?.outcome === "selected" && /allow/i.test(outcome.optionId ?? ""));
       },
@@ -318,9 +336,161 @@ function requestPermission(request: Record<string, unknown>): Promise<boolean> {
   });
 }
 
+/**
+ * Handling runs OFF the read loop, and that separation is the whole fix.
+ *
+ * MEASURED on this host on 2026-08-18: the previous shape `await`ed
+ * `actOverAcp` inside the body of `for await (… Bun.stdin.stream())`. While its
+ * own `session/request_permission` was outstanding the fixture had therefore
+ * stopped reading stdin — and the client's reply to that very request arrives
+ * on stdin. The classic request/response deadlock: the only thing able to
+ * receive the answer is blocked waiting for it. Every `--live` run then died on
+ * the harness deadline with no report written at all, and six items were
+ * recorded as product defects that the product had not committed.
+ *
+ * So the reader only parses and dispatches. Responses to our own outbound
+ * requests are settled inline — they are a map lookup, they cannot block.
+ * Everything else is handed to one of two dispatchers and the loop goes
+ * straight back to the pipe.
+ *
+ * TURNS are serialised, because that is where the protocol needs an order: a
+ * session may only be doing one thing at a time, and two `session/prompt`s
+ * interleaving would let one turn's permission answer settle the other's
+ * request. HANDSHAKE and control methods are not chained behind them, because
+ * a turn is allowed to take a long time — `commit-then-hang` is SUPPOSED to
+ * never finish — and a fixture that could no longer answer `initialize` while
+ * a turn was in flight would have swapped one wedge for another.
+ */
+let turnTail: Promise<void> = Promise.resolve();
+let queueDepth = 0;
+
+function track(work: Promise<void>): void {
+  queueDepth += 1;
+  void work
+    .catch((error: unknown) => {
+      process.stderr.write(`vendor: handler failed: ${String(error)}\n`);
+    })
+    .finally(() => {
+      queueDepth -= 1;
+    });
+}
+
+/** Off the loop, in order with every other turn. */
+function dispatchInTurnOrder(handler: () => Promise<void>): void {
+  turnTail = turnTail.then(handler, handler);
+  track(turnTail);
+}
+
+/** Off the loop, immediately — never queued behind a turn. */
+function dispatchNow(handler: () => Promise<void>): void {
+  track(
+    (async () => {
+      await handler();
+    })(),
+  );
+}
+
+/**
+ * Wait for dispatched work to finish, but never forever.
+ *
+ * One directive (`commit-then-hang`) is SUPPOSED to hang, so the chain can
+ * legitimately never settle. Anything downstream of an unbounded wait on it —
+ * the exit, and with it every `finally` the runtime would run — would simply
+ * never happen, which is the same class of bug as the deadlock above wearing a
+ * different hat. Bounded, and the caller proceeds either way.
+ */
+async function drain(budgetMs: number): Promise<boolean> {
+  const deadline = Date.now() + budgetMs;
+  while (queueDepth > 0 && Date.now() < deadline) await Bun.sleep(10);
+  return queueDepth === 0;
+}
+
 const DIRECTIVE = /<BAR-DIRECTIVE>([\s\S]*?)<\/BAR-DIRECTIVE>/;
 
+/**
+ * One inbound request, answered. Never called from the read loop directly —
+ * always through a dispatcher, so an `await` in here cannot stall the reader.
+ */
+async function handleRequest(
+  config: VendorConfig,
+  id: number,
+  method: string,
+  params: unknown,
+): Promise<void> {
+  switch (method) {
+    case "initialize":
+      send({
+        jsonrpc: "2.0",
+        id,
+        result: {
+          protocolVersion: 1,
+          agentInfo: { name: config.id, version: config.version },
+          agentCapabilities: {},
+        },
+      });
+      return;
+
+    case "session/new": {
+      sessionCwd = (params as { cwd?: string })?.cwd ?? process.cwd();
+      send({ jsonrpc: "2.0", id, result: { sessionId: `bar-${config.id}-${process.pid}` } });
+      return;
+    }
+
+    case "session/set_mode":
+      send({ jsonrpc: "2.0", id, result: null });
+      return;
+
+    case "session/prompt": {
+      const text = ((params as { prompt?: Array<{ text?: string }> })?.prompt ?? [])
+        .map((part) => part.text ?? "")
+        .join("\n");
+      const encoded = DIRECTIVE.exec(text)?.[1];
+      const brief: Brief = {
+        itemId: /item[: ]+(\S+)/i.exec(text)?.[1] ?? "unknown",
+        clone: sessionCwd,
+        role: /^\s*review\b/im.test(text) || /<BAR-ROLE>reviewer<\/BAR-ROLE>/.test(text) ? "reviewer" : "builder",
+        ...(encoded ? { directive: JSON.parse(encoded) as Directive } : {}),
+        ...(text.includes("<BAR-DIFF>") ? { diff: text } : {}),
+      };
+      if (config.ledger !== undefined) {
+        appendLedger(config.ledger, {
+          vendor: config.id,
+          role: brief.role,
+          item: brief.itemId,
+          pid: process.pid,
+        });
+      }
+      if (brief.role === "reviewer") {
+        const found = (config.catches ?? []).filter((m) => text.includes(m));
+        if (config.dieAsReviewer === true) process.exit(9);
+        send({
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: {
+            sessionId: `bar-${config.id}-${process.pid}`,
+            update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `VERDICT ${JSON.stringify({ verdict: found.length > 0 ? "rejected" : "approved", found })}` } },
+          },
+        });
+      } else {
+        await actOverAcp(brief);
+      }
+      send({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
+      return;
+    }
+
+    default:
+      send({ jsonrpc: "2.0", id, error: { code: -32601, message: `not implemented: ${method}` } });
+  }
+}
+
+/**
+ * The read loop. It parses, it routes, and it does not await anything that
+ * could depend on a byte it has not read yet — see `dispatch` above.
+ */
 async function acp(config: VendorConfig): Promise<void> {
+  // A long-lived stdio process, so it must be able to notice that the thing it
+  // is talking to has died. See `bar/lib/orphan.ts`.
+  exitWhenOrphaned("vendor");
   let buffer = "";
   for await (const chunk of Bun.stdin.stream()) {
     buffer += new TextDecoder().decode(chunk as Uint8Array);
@@ -338,81 +508,26 @@ async function acp(config: VendorConfig): Promise<void> {
         continue;
       }
 
-      // A response to something we asked the client.
+      // A response to something we asked the client. Settled inline: it is a
+      // map lookup, and it is the message a dispatched handler is waiting for.
       if (message.id !== undefined && message.method === undefined) {
-        pending.get(message.id)?.resolve(message.result);
+        const waiter = pending.get(message.id);
         pending.delete(message.id);
+        waiter?.resolve(message.result);
         continue;
       }
       const { id, method, params } = message;
       if (id === undefined || method === undefined) continue;
 
-      switch (method) {
-        case "initialize":
-          send({
-            jsonrpc: "2.0",
-            id,
-            result: {
-              protocolVersion: 1,
-              agentInfo: { name: config.id, version: config.version },
-              agentCapabilities: {},
-            },
-          });
-          break;
-
-        case "session/new": {
-          sessionCwd = (params as { cwd?: string })?.cwd ?? process.cwd();
-          send({ jsonrpc: "2.0", id, result: { sessionId: `bar-${config.id}-${process.pid}` } });
-          break;
-        }
-
-        case "session/set_mode":
-          send({ jsonrpc: "2.0", id, result: null });
-          break;
-
-        case "session/prompt": {
-          const text = ((params as { prompt?: Array<{ text?: string }> })?.prompt ?? [])
-            .map((part) => part.text ?? "")
-            .join("\n");
-          const encoded = DIRECTIVE.exec(text)?.[1];
-          const brief: Brief = {
-            itemId: /item[: ]+(\S+)/i.exec(text)?.[1] ?? "unknown",
-            clone: sessionCwd,
-            role: /^\s*review\b/im.test(text) || /<BAR-ROLE>reviewer<\/BAR-ROLE>/.test(text) ? "reviewer" : "builder",
-            ...(encoded ? { directive: JSON.parse(encoded) as Directive } : {}),
-            ...(text.includes("<BAR-DIFF>") ? { diff: text } : {}),
-          };
-          if (config.ledger !== undefined) {
-            appendLedger(config.ledger, {
-              vendor: config.id,
-              role: brief.role,
-              item: brief.itemId,
-              pid: process.pid,
-            });
-          }
-          if (brief.role === "reviewer") {
-            const found = (config.catches ?? []).filter((m) => text.includes(m));
-            if (config.dieAsReviewer === true) process.exit(9);
-            send({
-              jsonrpc: "2.0",
-              method: "session/update",
-              params: {
-                sessionId: `bar-${config.id}-${process.pid}`,
-                update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `VERDICT ${JSON.stringify({ verdict: found.length > 0 ? "rejected" : "approved", found })}` } },
-              },
-            });
-          } else {
-            await actOverAcp(brief);
-          }
-          send({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
-          break;
-        }
-
-        default:
-          send({ jsonrpc: "2.0", id, error: { code: -32601, message: `not implemented: ${method}` } });
-      }
+      const handle = (): Promise<void> => handleRequest(config, id, method, params);
+      if (method === "session/prompt") dispatchInTurnOrder(handle);
+      else dispatchNow(handle);
     }
   }
+
+  // stdin closed: the client is gone, so nothing outstanding can ever be
+  // answered. Give dispatched work a bounded moment to finish and return.
+  await drain(5_000);
 }
 
 /** The same work as `act`, with the lane asked over the wire rather than by file. */

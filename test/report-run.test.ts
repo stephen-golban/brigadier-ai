@@ -14,12 +14,14 @@
 import { describe, expect, test } from "bun:test";
 import { estimateTokens, HOST_REPORT_TOKEN_CEILING } from "../src/report/budget.ts";
 import type { RecordCheck, RecordItem, RunRecord } from "../src/report/record.ts";
+import { SecretInventory } from "../src/secrets/redact.ts";
+import { Sink } from "../src/secrets/sink.ts";
 import {
   itemBlocks,
   refusedDelegationLine,
   renderItem,
   renderRecordCheck,
-  renderRunReport,
+  writeRunReport,
 } from "../src/report/run-report.ts";
 
 function item(id: string, blocking: boolean): RecordItem {
@@ -70,14 +72,22 @@ const GATE: RecordCheck[] = [
   { name: "verify (merged result)", outcome: "unconfigured", blocking: false, qualifier: "wave 1" },
 ];
 
+/** Everything the sink actually put on stdout, joined. */
 function report(items: RecordItem[], audience: "host-session" | "terminal" = "host-session", refused = 0): string {
-  return renderRunReport({
-    record: record(items, refused),
-    recordPath: "/home/x/.brigadier/r/r1/record.json",
-    headline: "PARTIAL INTEGRATION — some of it landed",
-    mergedResult: GATE,
-    audience,
-  });
+  const written: string[] = [];
+  const sink = new Sink(new SecretInventory(), { out: (chunk) => written.push(chunk), err: () => {} });
+  writeRunReport(
+    {
+      record: record(items, refused),
+      recordPath: "/home/x/.brigadier/r/r1/record.json",
+      headline: "PARTIAL INTEGRATION — some of it landed",
+      mergedResult: GATE,
+      audience,
+    },
+    sink,
+  );
+  sink.end();
+  return written.join("");
 }
 
 describe("a fifty-item run fits a host window", () => {

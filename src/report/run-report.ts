@@ -21,6 +21,16 @@
  * `(approved by codex)` form is banned outright, so every shown item prints
  * every one of its checks with its qualifier inside the result string.
  *
+ * NOTHING HERE HANDS A STRING BACK FOR A CALLER TO PRINT (ruling 65). The
+ * public entry point is `writeRunReport`, which takes a `Sink` and returns
+ * `void`. That is not a style choice: a `render…(): string` is the exact shape
+ * that invites a bypass, because the caller then owns the write and the bytes
+ * that reach stdout are whatever the caller does with them. The cap below still
+ * composes a whole string internally — it has to, because the budget is
+ * measured in tokens of the assembled text — and then hands those COMPOSED
+ * bytes to the sink, which is ruling 65's order: compose, then redact the final
+ * bytes, then write, once.
+ *
  * THE RUN-LEVEL LINES ARE O(1) ON PURPOSE. Ruling 59's refused-delegation line
  * is a count for the whole run rather than a note on an item, and that is
  * load-bearing rather than tidy: a note attached to an item that then passed
@@ -29,6 +39,7 @@
  * happens when something went wrong, so the cap never reaches them.
  */
 
+import type { Sink } from "../secrets/sink.ts";
 import { blocks, type CheckOutcome } from "../work/check.ts";
 import { capItems, estimateTokens, HOST_REPORT_TOKEN_CEILING, isCapped, type Audience, type ItemLine } from "./budget.ts";
 import { recordPointer, type RecordCheck, type RecordItem, type RunRecord } from "./record.ts";
@@ -276,7 +287,7 @@ function fixedLines(input: RunReportInput): { head: string[]; tail: string[] } {
  * loop stops at the blocking set rather than continuing into it — which is the
  * whole of ruling 52 in three lines of arithmetic.
  */
-export function renderRunReport(input: RunReportInput): string {
+function composeRunReport(input: RunReportInput): string {
   const { head, tail } = fixedLines(input);
   const lines: ItemLine[] = input.record.items.map((item, index) => ({
     index,
@@ -311,4 +322,18 @@ export function renderRunReport(input: RunReportInput): string {
   // than dropping a failure, and it says so where the reader will see it.
   const capped = capItems(lines, Math.max(1, blocking));
   return `${assemble(capped.shown, capped.collapsed)}\nthis report is OVER the ${HOST_REPORT_TOKEN_CEILING}-token budget because every remaining item carries a blocking check, and ruling 52 has no exception for space.`;
+}
+
+/**
+ * Write the report — the only exported way to produce one.
+ *
+ * Ruling 65's rule 2, and the reason this returns `void`: stdout is a persisted
+ * artifact. In decision 25's host-first path it lands in a model's context
+ * window and stays there, so the report is exactly the stream the ruling
+ * covers, and the only writer that may put it there is the sink. The
+ * composition happens first and in full — the cap is arithmetic over the
+ * assembled text — and the sink redacts what is actually going out.
+ */
+export function writeRunReport(input: RunReportInput, sink: Sink): void {
+  sink.outLine(composeRunReport(input));
 }

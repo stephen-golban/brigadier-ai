@@ -58,7 +58,7 @@ import { makeRepo, plantSeeds } from "../lib/git.ts";
 import { combine, type LiveHalf } from "../lib/halves.ts";
 import { readLedger, vendorsIn } from "../lib/ledger.ts";
 import { token, writePlan } from "../lib/plan.ts";
-import { baseEnv } from "../lib/proc.ts";
+import { HARNESS_RUN_TIMEOUT_MS, baseEnv } from "../lib/proc.ts";
 import type { BarContext, BarItem, BarResult } from "../types.ts";
 
 /** v1's measured baseline, printed beside whatever this run produces. */
@@ -184,7 +184,7 @@ const item: BarItem = {
       ["run", "--plan", planPath, "--repo", repo, "--run-root", join(ctx.workdir, "runs"), "--review", "--planted", String(defects.length)],
       {
         env,
-        timeoutMs: 300_000,
+        timeoutMs: HARNESS_RUN_TIMEOUT_MS,
         // A run whose items FAIL review exits non-zero, which is correct
         // behaviour — so presence is judged on the run having produced a
         // record, not on the exit code.
@@ -287,7 +287,7 @@ const item: BarItem = {
       );
       const blocked = await ctx.run(
         ["run", "--plan", blockedPlan, "--repo", dyingRepo, "--run-root", join(ctx.workdir, "runs-dying"), "--review"],
-        { env: baseEnv({ PATH: isolatedPath(dyingBin) }), timeoutMs: 300_000 },
+        { env: baseEnv({ PATH: isolatedPath(dyingBin) }), timeoutMs: HARNESS_RUN_TIMEOUT_MS },
       );
       const blockedEvidence = await gatherRunEvidence(dyingRepo, `${blocked.stdout}${blocked.stderr}`);
       const reachedTree = [...blockedEvidence.files.values()].some((body) => body.includes(blockedValue));

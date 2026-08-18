@@ -7,6 +7,10 @@
  * pointer travels. `record.ts` is the thing on disk, `budget.ts` is the
  * arithmetic that decides how much of it may be spoken aloud, and
  * `run-report.ts` is the speaking.
+ *
+ * Ruling 65: the speaking takes a `Sink`. There is deliberately no export here
+ * that hands a report back as a string for a caller to write — that shape is
+ * how a persisted artifact ends up outside the one writer that redacts it.
  */
 
 export {
@@ -34,8 +38,8 @@ export {
   refusedDelegationLine,
   renderItem,
   renderRecordCheck,
-  renderRunReport,
   runHeadline,
+  writeRunReport,
   type HeadlineInput,
   type RunReportInput,
 } from "./run-report.ts";

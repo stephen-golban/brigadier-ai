@@ -21,7 +21,7 @@
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { killTree } from "./proc.ts";
+import { HARNESS_RUN_TIMEOUT_MS, killTree } from "./proc.ts";
 
 /**
  * Ruling 38's marker, as `src/agent/marker.ts` spells it.
@@ -368,7 +368,7 @@ export async function runSampled(
   const timer = setTimeout(() => {
     timedOut = true;
     killTree(proc);
-  }, options.timeoutMs ?? 300_000);
+  }, options.timeoutMs ?? HARNESS_RUN_TIMEOUT_MS);
 
   const [stdout, stderr] = await Promise.all([
     new Response(proc.stdout).text(),

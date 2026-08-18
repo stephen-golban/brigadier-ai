@@ -34,7 +34,7 @@ import { ensureDir } from "../lib/fs.ts";
 import { makeRepo, plantSeeds } from "../lib/git.ts";
 import { combine, type LiveHalf } from "../lib/halves.ts";
 import { disjointPlan, writePlan } from "../lib/plan.ts";
-import { baseEnv } from "../lib/proc.ts";
+import { HARNESS_RUN_TIMEOUT_MS, baseEnv } from "../lib/proc.ts";
 import type { BarContext, BarItem, BarResult } from "../types.ts";
 
 /** The bare form a two-vendor machine produces. On a one-vendor machine it is a lie. */
@@ -89,7 +89,7 @@ const item: BarItem = {
     const probe = await probeFeature(
       ctx,
       ["run", "--plan", planPath, "--repo", repo, "--run-root", join(ctx.workdir, "runs"), "--review"],
-      { env, timeoutMs: 300_000 },
+      { env, timeoutMs: HARNESS_RUN_TIMEOUT_MS },
     );
     did.push(probe.transcript);
 

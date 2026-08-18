@@ -33,7 +33,7 @@ import { makeRepo, plantSeeds } from "../lib/git.ts";
 import { combine, noCredentialFreeChecks, type LiveHalf } from "../lib/halves.ts";
 import { runSampled } from "../lib/inflight.ts";
 import { disjointPlan, writePlan } from "../lib/plan.ts";
-import { baseEnv } from "../lib/proc.ts";
+import { HARNESS_RUN_TIMEOUT_MS, baseEnv } from "../lib/proc.ts";
 import type { BarContext, BarItem, BarResult } from "../types.ts";
 
 /** Every location another product owns, from `BAR.md`'s own list. */
@@ -124,7 +124,7 @@ const item: BarItem = {
         cwd: ctx.workdir,
         env,
         runRoot: runs,
-        timeoutMs: 300_000,
+        timeoutMs: HARNESS_RUN_TIMEOUT_MS,
       });
       did.push(`ran the plan while sampling the run root ${sampled.flight.samples} times`);
       const after = snapshotForeign();

@@ -562,6 +562,66 @@ describe("ruling 65: one sink, after composition, every encoding", () => {
   });
 });
 
+/**
+ * The hole `MINIMUM_SECRET_LENGTH` cuts, said out loud rather than left to be
+ * discovered.
+ *
+ * A granted value under 8 characters IS delivered to the worker and is NOT
+ * inventoried, so nothing redacts it out of anything. The floor stays —
+ * redacting every occurrence of a three-character string destroys far more than
+ * it protects — but an operator who granted a short value is owed the sentence,
+ * and a product that silently half-honours `--secret-env` is worse than one that
+ * refuses.
+ */
+describe("ruling 65: a grant that is too short to inventory is REPORTED", () => {
+  const world = makeWorld("short-secret");
+  const short = "abc";
+  const planPath = writePlan(world.dir, [
+    { id: "leaker", kind: "write", paths: ["out.txt"], prompt: "leak=BAR_SHORT out=out.txt" },
+  ]);
+  const result = brigadier(
+    world,
+    ["run", "--plan", planPath, "--repo", world.repo, "--run-root", world.runs, "--secret-env", "BAR_SHORT", "--secret-env", "BAR_ABSENT", "--audience", "terminal"],
+    { BAR_SHORT: short },
+  );
+
+  test("the operator is told, by NAME, on stderr", () => {
+    expect(result.stderr).toContain("BAR_SHORT");
+    expect(result.stderr).toContain("NOT redacted from anything");
+    expect(result.stderr).toContain("shorter than 8 characters");
+  });
+
+  test("a name that is unset is reported too, and separately", () => {
+    expect(result.stderr).toContain("BAR_ABSENT");
+    expect(result.stderr).toContain("unset or empty in this environment");
+  });
+
+  test("and the warning is TRUE: the short value really does reach the transcript", () => {
+    // The whole point of the sentence. If this ever stops being true the
+    // sentence has become a lie, which is worse than either behaviour alone.
+    const runId = readdirSync(join(world.runs, "r"))[0] ?? "";
+    const transcript = readFileSync(join(world.runs, "r", runId, "transcripts", "full.log"), "utf8");
+    expect(transcript).toContain(short);
+  });
+
+  test("NEGATIVE CONTROL: a grant long enough to inventory produces no warning", () => {
+    const quiet = makeWorld("long-secret");
+    const plan = writePlan(quiet.dir, [
+      { id: "leaker", kind: "write", paths: ["out.txt"], prompt: "leak=BAR_LONG out=out.txt" },
+    ]);
+    const ran = brigadier(
+      quiet,
+      ["run", "--plan", plan, "--repo", quiet.repo, "--run-root", quiet.runs, "--secret-env", "BAR_LONG", "--audience", "terminal"],
+      { BAR_LONG: "long-enough-to-inventory" },
+    );
+    expect(ran.stderr).not.toContain("NOT redacted from anything");
+    const id = readdirSync(join(quiet.runs, "r"))[0] ?? "";
+    const transcript = readFileSync(join(quiet.runs, "r", id, "transcripts", "full.log"), "utf8");
+    expect(transcript).not.toContain("long-enough-to-inventory");
+    expect(transcript).toContain("[redacted]");
+  });
+});
+
 // ---------------------------------------------------------- the deliverable
 
 /**

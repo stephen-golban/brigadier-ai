@@ -43,7 +43,7 @@ import { ensureDir } from "../lib/fs.ts";
 import { makeRepo, plantSeeds } from "../lib/git.ts";
 import { combine, type LiveHalf } from "../lib/halves.ts";
 import { writePlan } from "../lib/plan.ts";
-import { baseEnv } from "../lib/proc.ts";
+import { HARNESS_RUN_TIMEOUT_MS, baseEnv } from "../lib/proc.ts";
 import type { RunRecord } from "../lib/contract.ts";
 import type { BarContext, BarItem, BarResult } from "../types.ts";
 
@@ -265,7 +265,7 @@ const item: BarItem = {
       await plantSeeds(uncappedRepo, seeds);
       const uncapped = await ctx.run(
         ["run", "--plan", planPath, "--repo", uncappedRepo, "--run-root", join(ctx.workdir, "runs-uncapped")],
-        { env, timeoutMs: 300_000 },
+        { env, timeoutMs: HARNESS_RUN_TIMEOUT_MS },
       );
       const uncappedEvidence = await gatherRunEvidence(uncappedRepo, `${uncapped.stdout}${uncapped.stderr}`);
       const uncappedIntegrated = uncappedEvidence.subjects.filter((l) => /: integrated$/.test(l)).length;
@@ -277,7 +277,7 @@ const item: BarItem = {
           "--run-root", join(ctx.workdir, "runs"),
           "--soft-ceiling", "0.06", "--hard-ceiling", "0.14",
         ],
-        { env, timeoutMs: 300_000 },
+        { env, timeoutMs: HARNESS_RUN_TIMEOUT_MS },
       );
       did.push(`drove the same plan twice: once with no ceilings (${uncappedIntegrated} integrated) and once with them`);
       const report = `${capped.stdout}${capped.stderr}`;

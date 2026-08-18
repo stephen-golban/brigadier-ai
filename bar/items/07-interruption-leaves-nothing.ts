@@ -50,7 +50,7 @@ import { makeRepo, plantSeeds } from "../lib/git.ts";
 import { combine, noCredentialFreeChecks, type LiveHalf } from "../lib/halves.ts";
 import { isAlive } from "../lib/inflight.ts";
 import { writePlan } from "../lib/plan.ts";
-import { baseEnv } from "../lib/proc.ts";
+import { HARNESS_RUN_TIMEOUT_MS, baseEnv } from "../lib/proc.ts";
 import type { BarContext, BarItem, BarResult } from "../types.ts";
 
 /**
@@ -296,7 +296,7 @@ const item: BarItem = {
       );
       const sweep = await ctx.run(["run", "--plan", secondPlanPath, "--repo", secondRepo, "--run-root", runs], {
         env,
-        timeoutMs: 180_000,
+        timeoutMs: HARNESS_RUN_TIMEOUT_MS,
       });
       // Two readings, four tick intervals apart, so a live descendant cannot
       // hide in the gap between the sweep's `kill` and the measurement.

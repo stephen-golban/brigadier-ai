@@ -319,6 +319,12 @@ async function driveWorker(options: {
   );
 
   children.add(proc);
+  // Checked on 2026-08-18 against the deadlock fixed in `bar/fakes/vendor.ts`:
+  // this loop reads the worker's STDOUT and answers on a different channel
+  // entirely — `BAR_ANSWER_FILE`, a file the worker polls — and every branch
+  // below is synchronous. The reader therefore never waits on anything that
+  // could only arrive through the stream it has stopped reading. Answering on
+  // the worker's stdin instead would reintroduce exactly that shape.
   const lines: string[] = [];
   let denied = 0;
   let buffer = "";

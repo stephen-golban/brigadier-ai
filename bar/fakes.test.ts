@@ -22,6 +22,14 @@
  *
  * These are the slowest tests in the repository by a wide margin, and that is
  * the price of an instrument that has been checked rather than assumed.
+ *
+ * Every budget below is `SUITE_BUDGET_MS`, and it is deliberately larger than
+ * `HARNESS_RUN_TIMEOUT_MS` — the deadline the bar gives any single `brigadier
+ * run`. The same rule `bar/lib/timeout-order.test.ts` states one level down
+ * applies here: an outer budget shorter than the inner one guarantees the least
+ * informative failure available, because the runner is aborted before it can
+ * turn a timed-out run into a FAIL with a reason. The inner deadline is the
+ * real bound on a hang; this is only the backstop for a wedged suite.
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
@@ -31,8 +39,12 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ITEMS } from "./items/index.ts";
 import { pruneEmpty, removeDir, writeScript } from "./lib/fs.ts";
+import { HARNESS_RUN_TIMEOUT_MS } from "./lib/proc.ts";
 import { runBar } from "./run.ts";
 import type { BarItem, BarRecord } from "./types.ts";
+
+/** Above the bar's own per-run deadline, on purpose. See the header. */
+const SUITE_BUDGET_MS = HARNESS_RUN_TIMEOUT_MS + 300_000;
 
 const PRINTER = fileURLToPath(new URL("./fakes/printer.ts", import.meta.url));
 const HONEST = fileURLToPath(new URL("./fakes/honest.ts", import.meta.url));
@@ -86,7 +98,7 @@ describe("the do-nothing binary must fail every item", () => {
         removeDir(root);
       }
     },
-    600_000,
+    SUITE_BUDGET_MS,
   );
 
   test(
@@ -105,7 +117,7 @@ describe("the do-nothing binary must fail every item", () => {
         removeDir(root);
       }
     },
-    600_000,
+    SUITE_BUDGET_MS,
   );
 });
 
@@ -127,7 +139,7 @@ describe("the SOPHISTICATED forger must fail every item", () => {
         removeDir(root);
       }
     },
-    900_000,
+    SUITE_BUDGET_MS,
   );
 });
 
@@ -160,6 +172,6 @@ describe("the honest fixture must pass the items it implements", () => {
         removeDir(root);
       }
     },
-    900_000,
+    SUITE_BUDGET_MS,
   );
 });

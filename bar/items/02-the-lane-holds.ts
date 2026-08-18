@@ -44,7 +44,7 @@ import { combine, noCredentialFreeChecks, type LiveHalf } from "../lib/halves.ts
 import { runSampled, type Flight } from "../lib/inflight.ts";
 import { readLedger, vendorsIn } from "../lib/ledger.ts";
 import { writePlan } from "../lib/plan.ts";
-import { baseEnv } from "../lib/proc.ts";
+import { HARNESS_RUN_TIMEOUT_MS, baseEnv } from "../lib/proc.ts";
 import type { BarContext, BarItem, BarResult } from "../types.ts";
 
 /** Hook files the sampler saw inside a live clone, while the run was executing. */
@@ -146,7 +146,7 @@ const item: BarItem = {
         cwd: ctx.workdir,
         env,
         runRoot: runs,
-        timeoutMs: 300_000,
+        timeoutMs: HARNESS_RUN_TIMEOUT_MS,
         payloadMarker,
       });
       const payloadsInFlight = hookPayloadsSeen(sampled.flight);

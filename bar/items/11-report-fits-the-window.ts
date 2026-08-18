@@ -47,7 +47,7 @@ import { makeRepo, plantSeeds } from "../lib/git.ts";
 import { combine, noCredentialFreeChecks, type LiveHalf } from "../lib/halves.ts";
 import { runSampled } from "../lib/inflight.ts";
 import { disjointPlan, estimateTokens, writePlan } from "../lib/plan.ts";
-import { baseEnv } from "../lib/proc.ts";
+import { HARNESS_RUN_TIMEOUT_MS, baseEnv } from "../lib/proc.ts";
 import type { BarContext, BarItem, BarResult } from "../types.ts";
 
 /** Ruling 58, which is ruling 39's repo-map budget reused as a precedent. */
@@ -181,7 +181,7 @@ const item: BarItem = {
     } else {
       const sampled = await runSampled(
         [ctx.binary, "run", "--plan", planPath, "--repo", repo, "--run-root", runs, "--audience", "host-session"],
-        { cwd: ctx.workdir, env, runRoot: runs, timeoutMs: 900_000 },
+        { cwd: ctx.workdir, env, runRoot: runs, timeoutMs: HARNESS_RUN_TIMEOUT_MS },
       );
       const report = sampled.stdout;
       const evidence = await gatherRunEvidence(repo, `${report}${sampled.stderr}`);

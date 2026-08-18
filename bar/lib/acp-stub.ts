@@ -16,6 +16,14 @@
  * diverges from this, that divergence is a finding rather than a maintenance
  * chore.
  *
+ * **It never asks the client anything, and that is load-bearing.** The deadlock
+ * fixed in `bar/fakes/vendor.ts` on 2026-08-18 was a handler awaiting its own
+ * `session/request_permission` inside the body of the read loop, so the reply —
+ * which arrives on the stdin that loop had stopped reading — could never be
+ * seen. This stub is a pure responder: every case below is a synchronous `send`
+ * and nothing in it awaits a byte. If a future edit gives it an outbound
+ * request, the handling must move off this loop the way the vendor's did.
+ *
  * `protocolVersion: 1` is answered unconditionally and that is deliberate:
  * MEASURED against copilot 1.0.80, qwen-code 0.21.13, OpenCode 1.18.18 and
  * gemini-cli 0.55.1 on 2026-08-17, **all four returned `protocolVersion: 1`**,
@@ -25,6 +33,7 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { exitWhenOrphaned } from "./orphan.ts";
 
 export interface StubConfig {
   /** Reported as `agentInfo.version` at `initialize`. */
@@ -68,6 +77,9 @@ async function main(configPath: string): Promise<void> {
 
   contact("spawned");
   if (config.exitImmediately === true) process.exit(7);
+  // The same orphan guard the vendor fixture carries, for the same reason: this
+  // is a process the product spawns and may not live to reap.
+  exitWhenOrphaned("acp-stub");
 
   let buffer = "";
   for await (const chunk of Bun.stdin.stream()) {

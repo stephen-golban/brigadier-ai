@@ -63,7 +63,7 @@ import { captureRepo, diffRepo, makeRepo, newRefs, plantSeeds } from "../lib/git
 import { combine, noCredentialFreeChecks, type LiveHalf } from "../lib/halves.ts";
 import { runSampled } from "../lib/inflight.ts";
 import { disjointPlan, token, writePlan } from "../lib/plan.ts";
-import { baseEnv } from "../lib/proc.ts";
+import { HARNESS_RUN_TIMEOUT_MS, baseEnv } from "../lib/proc.ts";
 import type { BarContext, BarItem, BarResult } from "../types.ts";
 
 const item: BarItem = {
@@ -231,7 +231,7 @@ const item: BarItem = {
         env,
         runRoot: runs,
         operatorHead: before?.head ?? undefined,
-        timeoutMs: 300_000,
+        timeoutMs: HARNESS_RUN_TIMEOUT_MS,
       });
       did.push(
         `ran the plan while sampling: ${sampled.flight.samples} samples, peak ${sampled.flight.peakConcurrentClones} concurrent clones, peak ${sampled.flight.peakMarkedProcesses} marked processes`,
