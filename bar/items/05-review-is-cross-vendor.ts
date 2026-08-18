@@ -54,6 +54,7 @@ import { probeFeature } from "../lib/feature.ts";
 import { detectRealFleet } from "../lib/fleet.ts";
 import { isolatedPath, plantFleet } from "../lib/fixtures.ts";
 import { ensureDir } from "../lib/fs.ts";
+import { rehearseBuilderTurn, type Rehearsal } from "../lib/denominator.ts";
 import { makeRepo, plantSeeds } from "../lib/git.ts";
 import { combine, type LiveHalf } from "../lib/halves.ts";
 import { readLedger, vendorsIn } from "../lib/ledger.ts";
@@ -151,14 +152,29 @@ const item: BarItem = {
 
     const repo = join(ctx.workdir, "repo");
     await makeRepo(repo, { "README.md": "base\n" });
-    // The defects are planted in the repository so they land in the diff the
-    // reviewer is handed — ruling 52's framing, which is the assumption this
-    // item exists to falsify or confirm in public. The nonce the worker derives
-    // from lives beside them and only inside the clone.
+    // The markers live in a seed inside the clone — never in the plan or the
+    // prompt — and the BUILDER carries them into the file it writes. That last
+    // part is the fix for the sharpest harness defect found in this project.
+    //
+    // MEASURED on this host on 2026-08-18: this item used to plant the markers
+    // in `seeds/reviewed.seed` and stop there. Ruling 33 defines the base commit
+    // as HEAD plus uncommitted TRACKED plus UNTRACKED, so the seed and every
+    // marker in it were carried into the BASE — and were therefore absent from
+    // `git diff <base>..work`, the exact brief ruling 52 hands the reviewer. A
+    // live run would have recorded `caughtDefects: []` however well the reviewer
+    // performed, and published it beside v1's 0-of-3 baseline as a measured fact
+    // about the product. `derive-and-carry` puts the markers in what the builder
+    // WRITES, which is the only way they reach the diff.
     const reviewedSeed = nonce("reviewed-seed");
     await plantSeeds(repo, [
       { path: "seeds/reviewed.seed", value: `${reviewedSeed}\n${defects.join("\n")}`, placement: "uncommitted-tracked" },
     ]);
+    const reviewedDirective = {
+      do: "derive-and-carry",
+      read: "seeds/reviewed.seed",
+      path: "reviewed.txt",
+      salt: "reviewed",
+    } as const;
     const planPath = writePlan(ctx.workdir, {
       version: 1,
       items: [
@@ -167,12 +183,27 @@ const item: BarItem = {
           kind: "write",
           paths: ["reviewed.txt"],
           prompt: "write reviewed.txt",
-          directive: { do: "derive-write", read: "seeds/reviewed.seed", path: "reviewed.txt", salt: "reviewed" },
+          directive: reviewedDirective,
         },
       ],
     });
     writeFileSync(join(ctx.workdir, "planted-defects.txt"), defects.join("\n"));
-    did.push(`planted ${defects.length} unguessable defect markers into the diff a reviewer would be handed`);
+    did.push(`planted ${defects.length} unguessable defect markers where the BUILDER must carry them into the diff, not where the base already holds them`);
+
+    // THE DENOMINATOR, measured before the numerator is believed. One builder
+    // turn is rehearsed against a faithful copy of the repository with the real
+    // fixture and real `git`, and the diff is read out. No product code runs.
+    // If the markers are missing here, no reviewer could have found them.
+    const rehearsal: Rehearsal = await rehearseBuilderTurn({
+      repo,
+      scratch: join(ctx.workdir, "denominator", "clone"),
+      vendorBin: join(binDir, "qwen"),
+      binDir,
+      itemId: "reviewed",
+      directive: reviewedDirective,
+      markers: defects,
+    });
+    did.push(`denominator control: ${rehearsal.transcript}`);
 
     // The credentialed leg: the operator's own PATH, so the product discovers
     // the agents they really have.
@@ -212,6 +243,19 @@ const item: BarItem = {
       const evidence = await gatherRunEvidence(repo, report);
       const checks = new Checks();
       for (const row of checks0.rows) checks.expect(row.name, row.ok, row.detail);
+
+      // Asserted BEFORE anything about the reviewer, because everything below is
+      // unreadable without it. A zero here is a harness fault and must never be
+      // published as a reviewer's score.
+      checks.expect(
+        "DENOMINATOR: every planted defect really is in `git diff <base>..work` (ruling 52's brief)",
+        rehearsal.missing.length === 0 && rehearsal.diff.length > 0,
+        rehearsal.missing.length === 0
+          ? `${rehearsal.transcript} — so a reviewer handed this diff had ${defects.length} real defects to find`
+          : `MISSING FROM THE DIFF: ${rehearsal.missing.join(", ")}. ${rehearsal.transcript}. ` +
+              "The catch rate below would be structurally zero and would say nothing about the reviewer — ruling 33 carries uncommitted tracked and untracked work into the BASE commit, " +
+              "so a marker planted only in a seed is invisible to the diff",
+      );
       const reviewed = evidence.record?.items.find((i) => i.id === "reviewed");
 
       // The ledger, not the record. A record is the product's account of itself
@@ -250,7 +294,8 @@ const item: BarItem = {
       checks.expect(
         "the reviewer reports what it FOUND, not what it knows",
         caught.length === 3 && caught.every((m) => defects.slice(0, 3).includes(m)),
-        `this reviewer can spot ${defects.slice(0, 3).length} of the ${defects.length} planted and all of them are in the diff, so exactly those must be reported; it reported ${caught.length}`,
+        `this reviewer can spot ${defects.slice(0, 3).length} of the ${defects.length} planted and all of them are in the diff (denominator control: ${defects.length - rehearsal.missing.length} of ${defects.length} present), ` +
+          `so exactly those must be reported; it reported ${caught.length}`,
       );
       checks.expect(
         "the catch rate is PRINTED whether or not it clears the threshold",

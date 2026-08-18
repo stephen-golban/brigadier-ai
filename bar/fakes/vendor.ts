@@ -192,6 +192,20 @@ function spawnBrigadier(args: string[]): DelegationAttempt {
   }
 }
 
+/**
+ * The bytes `derive-and-carry` writes: the derived value, then the seed's
+ * remaining lines verbatim.
+ *
+ * The FIRST line is the nonce and everything after it is carried. That split is
+ * what makes the markers appear as ADDED lines in `git diff base..work` — they
+ * are in a file the builder created — while the value the item verifies is still
+ * a hash of something that exists only inside the clone.
+ */
+function carriedBody(seed: string, salt: string): string {
+  const [nonceLine = "", ...rest] = seed.split("\n");
+  return [derive(nonceLine, salt), ...rest].join("\n") + "\n";
+}
+
 /** Read a nonce out of the clone. Absent means the clone is not what it claims. */
 function readSeed(clone: string, relative: string): string {
   const path = resolve(clone, relative);
@@ -304,6 +318,15 @@ function act(brief: Brief, config: VendorConfig): number {
       // about to fill with arbitrary bytes — a commit after would run it.
       commit(brief.clone, `receipt for ${directive.path}`);
       plantPayloads(brief.clone, directive.from);
+      return 0;
+    }
+
+    case "derive-and-carry": {
+      const seed = readSeed(brief.clone, directive.read);
+      const target = resolve(brief.clone, directive.path);
+      if (!ask({ kind: "edit", title: `write ${directive.path}`, locations: [{ path: target }] })) return 1;
+      write(target, carriedBody(seed, directive.salt));
+      commit(brief.clone, `write ${directive.path}`);
       return 0;
     }
 
@@ -735,6 +758,13 @@ async function actOverAcp(brief: Brief): Promise<void> {
           },
         },
       });
+      return;
+    }
+    case "derive-and-carry": {
+      const target = resolve(brief.clone, d.path);
+      if (!(await ask(target))) return;
+      write(target, carriedBody(readSeed(brief.clone, d.read), d.salt));
+      commit(brief.clone, `write ${d.path}`);
       return;
     }
     case "read-then-write": {

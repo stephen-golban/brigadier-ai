@@ -38,6 +38,25 @@ export type Directive =
   | { do: "plant-git-payloads"; from: string; read: string; path: string; salt: string }
   /** Read a prerequisite's OUTPUT — a value that existed only in wave 1's commit. */
   | { do: "read-then-write"; read: string; path: string; salt: string }
+  /**
+   * Derive as `derive-write` does, and CARRY the seed's remaining lines into the
+   * file that is written.
+   *
+   * This exists because of a defect measured on 2026-08-18 that would have
+   * published a false result about the product. Item 5 planted its defect
+   * markers in a SEED and expected a reviewer to find them in `git diff
+   * base..work`. Ruling 33 defines the base commit as HEAD plus uncommitted
+   * TRACKED plus UNTRACKED work — so the seed, and every marker in it, was
+   * carried into the base commit itself and was therefore absent from that diff.
+   * A live item 5 would have recorded `caughtDefects: []` however well the
+   * reviewer performed, and BAR.md makes item 5 the place ruling 52's assumption
+   * is falsified or confirmed in public, beside v1's 0-of-3 baseline.
+   *
+   * A marker only reaches the reviewer's brief if the BUILDER WRITES it. The
+   * markers still live only inside the clone — never in the plan or the
+   * prompt — so nothing here hands a forger the answer.
+   */
+  | { do: "derive-and-carry"; read: string; path: string; salt: string }
   /** Write into this checkout even though the item is read-only. */
   | { do: "write-anyway"; path: string; token: string }
   /** Detach a long-lived descendant that publishes its pid. */
