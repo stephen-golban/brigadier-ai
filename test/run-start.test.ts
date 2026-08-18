@@ -625,3 +625,96 @@ describe("what a start always says", () => {
     expect(describeUnfinished(unfinished).join("\n")).toContain(`pid ${stubborn}`);
   }, 30_000);
 });
+
+/**
+ * The retained-clone direction, driven against a REAL repository rather than a
+ * plausible-looking directory.
+ *
+ * The tests above plant a `.git` folder holding a signature file and a text
+ * file. That is enough to exercise ruling 15's three proofs, and it is NOT
+ * enough to settle the thing ruling 63 actually promises, which is that the
+ * WORK SURVIVES: a commit whose object is still readable afterwards. v1's
+ * finding 92 is the precedent — an external `SIGTERM` killed a supervisor, both
+ * workers had done real work, and it was unrecoverable — and "the directory is
+ * still there" is not the same claim as "the commit is still there".
+ *
+ * The paired control is the other half of the same seam. Without it the
+ * retention rule could be satisfied by a product that never deletes anything,
+ * and ruling 63 would have no content in either direction.
+ */
+describe("ruling 63, the direction that destroys the operator's work", () => {
+  /** A clone that is a real git repository with a real commit in it. */
+  async function plantRealClone(
+    runId: string,
+    item: number,
+    options: { landed?: boolean } = {},
+  ): Promise<{ dir: string; sha: string }> {
+    const runDir = join(runRoot, RUN_DIR, runId);
+    const dir = join(runDir, String(item));
+    mkdirSync(runDir, { recursive: true });
+    // The manifest is written BEFORE the directory exists. Ruling 15 (b), and
+    // `proveDeletableDirectory` checks the ordering against birth times.
+    recordClone(
+      manifestPath(runRoot, RUN_DIR, runId),
+      { runId, runRoot, createdAt: Date.now(), clones: [] },
+      { item, dir, createdAt: Date.now() },
+    );
+    mkdirSync(dir, { recursive: true });
+    await git(dir, "init", "-q", "-b", "work");
+    await git(dir, "config", "user.email", "worker@example.com");
+    await git(dir, "config", "user.name", "Worker");
+    writeFileSync(join(dir, "kept.txt"), `the only copy of item ${item}\n`.repeat(50));
+    await git(dir, "add", "-A");
+    await git(dir, "commit", "-q", "-m", `item ${item} did real work`);
+    const sha = await git(dir, "rev-parse", "HEAD");
+    writeFileSync(join(dir, ".git", CLONE_SIGNATURE), `${runId}/${item}\n`);
+
+    const path = recordPath(runRoot, runId);
+    appendEvent(path, { type: "run-started", at: 1, runId, repo, runRoot, pid: deadPid });
+    appendEvent(path, { type: "clone-recorded", at: 2, item, dir });
+    if (options.landed === true) {
+      const head = await git(repo, "rev-parse", "HEAD");
+      await git(repo, "update-ref", itemRef(runId, item), head);
+    }
+    return { dir, sha };
+  }
+
+  test("a clone holding a REAL commit survives, and the object is still readable afterwards", async () => {
+    const runId = unique("kept1");
+    // Item 1 landed; item 2 was killed mid-flight with its work committed and
+    // no ref. That is exactly BAR item 7's shape.
+    await plantRealClone(runId, 1, { landed: true });
+    const kept = await plantRealClone(runId, 2);
+
+    const report = await sweepAtStart({ runRoot, table: EMPTY_TABLE });
+    expect(report.verdicts.find((v) => v.runId === runId)?.completion).toBe("incomplete");
+
+    // THE WORK, not the directory. `git cat-file` reads the object store, which
+    // is the only thing that can say the commit survived.
+    expect(existsSync(kept.dir)).toBe(true);
+    expect(await git(kept.dir, "cat-file", "-t", kept.sha)).toBe("commit");
+    expect(await git(kept.dir, "cat-file", "-p", `${kept.sha}:kept.txt`)).toContain("the only copy of item 2");
+    expect(report.reclaimedDirs.filter((dir) => dir.runId === runId)).toEqual([]);
+
+    // Reported with its PATH and its BYTES, or retention grows invisibly and
+    // the operator meets it as a full disk.
+    const retained = report.retained.find((entry) => entry.runId === runId && entry.item === 2);
+    expect(retained?.path).toBe(kept.dir);
+    expect(retained?.bytes).toBeGreaterThan(0);
+    const printed = describeStartSweep(report).join("\n");
+    expect(printed).toContain(kept.dir);
+    expect(printed).toContain("not merged, not reviewed, not deleted");
+  }, 60_000);
+
+  test("PAIRED CONTROL: a COMPLETE run's clone IS swept, so the rule is not 'never delete anything'", async () => {
+    const runId = unique("kept2");
+    const gone = await plantRealClone(runId, 1, { landed: true });
+    expect(await git(gone.dir, "cat-file", "-t", gone.sha)).toBe("commit");
+
+    const report = await sweepAtStart({ runRoot, table: EMPTY_TABLE });
+    expect(report.verdicts.find((v) => v.runId === runId)?.completion).toBe("complete");
+    expect(report.reclaimedDirs.filter((dir) => dir.runId === runId).map((dir) => dir.path)).toEqual([gone.dir]);
+    expect(existsSync(gone.dir)).toBe(false);
+    expect(report.retained.filter((entry) => entry.runId === runId)).toEqual([]);
+  }, 60_000);
+});

@@ -80,6 +80,12 @@ for await (const chunk of Bun.stdin.stream()) {
       const say = (text) => send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } } } });
       if (/You are a brigadier reviewer/.test(brief)) {
         await Bun.write(config.sawDiff, brief);
+        // Per-ITEM, so one item's reviewer can die while its sibling's answers.
+        // A fixture that could only fail for every item at once cannot tell
+        // "the blocked item stayed out of the tree" from "the run published
+        // nothing", and those are different products.
+        const reviewedId = /^id: (\\S+)$/m.exec(brief)?.[1] ?? "";
+        if ((config.crashFor ?? []).includes(reviewedId)) process.exit(9);
         if (config.reviewer === "crash") process.exit(9);
         if (config.reviewer === "silent") {
           say("I read the diff and it seems fine to me.");
@@ -122,6 +128,8 @@ interface VendorSpec {
   id: string;
   reviewer?: "approve" | "silent" | "crash";
   reports?: string[];
+  /** Item ids whose reviewer dies mid-turn. Everything else is reviewed normally. */
+  crashFor?: string[];
 }
 
 interface World {
@@ -380,6 +388,62 @@ describe("ruling 52: a reviewer that produces no verdict is `error`, and `error`
     const worker = record.items[0]?.checks.find((c) => c.name === "worker");
     expect(worker?.outcome).toBe("pass");
     expect(record.items[0]?.status).toBe("retained");
+  });
+});
+
+describe("a reviewer killed mid-turn blocks ITS item while a SIBLING lands in the same run", () => {
+  // THE ASSERTION THE SINGLE-ITEM CASES CANNOT MAKE. With one item, "the item
+  // is not on the integration branch" is also satisfied by a run that published
+  // nothing at all — and a binary that published nothing would pass every
+  // no-verdict test in this file while being a completely different failure.
+  // Two items, one reviewer death, and both halves asserted on the object
+  // store.
+  //
+  // It is also the case that reaches the general rule rather than the special
+  // one: ruling 52 says three of four outcomes BLOCK, and blocking has to mean
+  // the work stays out of the tree rather than that a report says so.
+  const world = makeWorld("sibling", [{ id: "qwen", crashFor: ["bad"] }, { id: "copilot" }]);
+  const planPath = join(world.dir, "pair.json");
+  writeFileSync(
+    planPath,
+    JSON.stringify({
+      version: 1,
+      items: [
+        { id: "good", kind: "write", paths: ["good.txt"], prompt: "read=solo.seed out=good.txt" },
+        { id: "bad", kind: "write", paths: ["bad.txt"], prompt: "read=solo.seed out=bad.txt" },
+      ],
+    }),
+  );
+  const result = brigadier(world, [
+    "run", "--plan", planPath, "--repo", world.repo, "--run-root", world.runs, "--review", "--audience", "terminal",
+  ]);
+  const { record, branch } = runOf(world);
+
+  test("the branch EXISTS and carries the sibling — so the absence below is the review's doing", () => {
+    expect(git(world.repo, ["rev-parse", "--verify", "--quiet", `${branch}^{commit}`])).not.toBe("");
+    expect(blob(world, branch, "good.txt")).toContain("good:seed-sibling");
+    expect(git(world.repo, ["fsck", "--no-progress", "--connectivity-only", "--strict"])).toBe("");
+  });
+
+  test("and the killed reviewer's item is `error`, blocking, and ABSENT from the tree", () => {
+    const review = record.items.find((item) => item.id === "bad")?.checks.find((c) => c.name === "review");
+    expect(review?.outcome).toBe("error");
+    expect(review?.blocking).toBe(true);
+    expect(blob(world, branch, "bad.txt")).toBe("");
+    const listed = Bun.spawnSync(["git", "ls-tree", "--name-only", "-r", branch], {
+      cwd: world.repo,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(listed.stdout.toString().split("\n")).not.toContain("bad.txt");
+    expect(result.code).toBe(1);
+  });
+
+  test("the builder for the blocked item DID its work: this is the review blocking, not a dead worker", () => {
+    const bad = record.items.find((item) => item.id === "bad");
+    expect(bad?.checks.find((c) => c.name === "worker")?.outcome).toBe("pass");
+    expect(bad?.reviewerAttempts).toBe(2);
+    expect(bad?.attempts).toBe(1);
   });
 });
 

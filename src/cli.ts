@@ -42,6 +42,7 @@ import { PLUGIN_USAGE, installCommand, pluginCommand, uninstallCommand } from ".
 import {
   admit,
   agentsOnPath,
+  ceilingRefusal,
   describeAdmission,
   describeEstimate,
   describeRefusals,
@@ -49,6 +50,7 @@ import {
   executeRun,
   parsePlan,
   PlanUnreadable,
+  recordRefusal,
   validatePlan,
   type Difficulty,
 } from "./queue/index.ts";
@@ -477,6 +479,23 @@ async function run(): Promise<number> {
     return 4;
   }
 
+  // Ruling 66's structural rule on the pair, checked here because here is
+  // before anything is created: *the gap between the ceilings must exceed the
+  // most expensive item that could be in flight, or the soft ceiling never
+  // prevents the hard one firing.* A soft ceiling that cannot stop a hard one
+  // is a line in a report rather than a control, and this is the last moment
+  // that costs nothing to say so.
+  const gap = ceilingRefusal(
+    value("soft-ceiling") === undefined ? undefined : Number(value("soft-ceiling")),
+    value("hard-ceiling") === undefined ? undefined : Number(value("hard-ceiling")),
+    admission.fanOut[0]?.workers ?? 1,
+  );
+  if (gap !== null) {
+    for (const line of gap) sink.errLine(line);
+    sink.errLine("nothing was started.");
+    return 4;
+  }
+
   if (flag("estimate")) {
     const estimate = estimatePlan(
       plan.items,
@@ -641,6 +660,27 @@ const exitCode = await (async () => {
   // nudge hook read the marker before reading stdin; that detail is deliberate.
   if (command !== undefined && ORCHESTRATING.has(command) && isInsideWorker()) {
     sink.errLine(REFUSAL);
+    // RULING 59, AND THE ORDER IS DELIBERATE: refuse FIRST, count second.
+    //
+    // Ruling 57's binary refusal is the guard and it is unconditional; the
+    // ledger is an observation about it. `recordRefusal` never throws for
+    // exactly that reason — a run whose ledger is unwritable must still exit 3,
+    // because bar item 9 measured that exit as the thing that stops finding
+    // 114, and turning it into a crash would trade the guard for its own
+    // telemetry. A worker spawned by an older brigadier carries ruling 57's
+    // bare `"1"` and lands on `no-home`: refused, uncounted, and said so.
+    // Through the process's ONE sink (ruling 65), which is what redacts the
+    // composed line and carries the append-only, `O_NOFOLLOW`, whole-line
+    // guarantees. `src/secrets/audit.ts`'s ratchet caught the first draft of
+    // this writing its own bytes; the comment explaining why that was careful
+    // was true and it was still a second writer.
+    const recorded = recordRefusal(command, sink);
+    if (recorded.kind === "no-home" || recorded.kind === "unwritable") {
+      sink.errLine(
+        `this refusal was NOT counted: ${recorded.kind === "no-home" ? recorded.why : recorded.why}. The run's ` +
+          "report will therefore under-count refused delegations (ruling 59).",
+      );
+    }
     return 3;
   }
 

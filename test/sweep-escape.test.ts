@@ -256,6 +256,13 @@ describe("a descendant that escapes containment is still reclaimed", () => {
     // exist without a marker is invisible to it forever. This is why the ruling
     // says EVERY process brigadier causes to exist must carry one, and why
     // `SweepCoverage.completeness` is `not-proven`.
+    //
+    // The limit is narrower than it was and this test states the narrowing
+    // rather than being deleted by it: the sweep is given no `workspaces` here,
+    // and `test/sweep-workspace.test.ts` covers the case where it has them —
+    // an unmarked, reparented descendant standing INSIDE a directory the run's
+    // manifest recorded is reclaimed. One standing anywhere else, like this
+    // one, still is not.
     const runId = `unm${Date.now().toString(36)}${process.pid.toString(36)}`;
     const heartbeat = join(scratch, "unmarked.log");
     const orphan = spawn(process.execPath, [marked, heartbeat], { detached: true, stdio: "ignore" });

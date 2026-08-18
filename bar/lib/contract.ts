@@ -18,11 +18,18 @@
  * exist because work happened, beside one that must not exist because
  * containment held.
  *
- * The SHAPE below is the harness's proposal, not the product's — no run record
- * has shipped. Stated here rather than buried, because an item that quietly
- * invented a format and then reported "refused" would be measuring its own
- * guess. When the real one lands this file changes and thirteen items keep
- * working, which is why it is one file rather than thirteen literals.
+ * The SHAPE below began as the harness's proposal and is now the product's
+ * published record, transcribed rather than imported — this directory imports
+ * nothing from `src/`, so the two are kept in step by hand and by the items
+ * failing loudly when they drift. Stated here rather than buried, because an
+ * item that quietly invented a format and then reported "refused" would be
+ * measuring its own guess. It is one file rather than thirteen literals so that
+ * a contract change is one edit.
+ *
+ * EVERY FIELD BELOW IS WHAT THE PRODUCT CLAIMS, NEVER WHAT HAPPENED. The record
+ * is read to learn where to look — which sha, which ref, which item — and every
+ * claim it makes is then put to `git` by `evidence.ts`. A record that could be
+ * believed on its own would make this harness score a forger's JSON.
  */
 
 /** The line a run must print so its record can be found. Nothing else is parsed for paths. */
@@ -51,6 +58,19 @@ export interface RecordCheck {
 
 export interface RecordItem {
   id: string;
+  /**
+   * The product's OWN identity for an item: a 1-based ordinal.
+   *
+   * This field is why three items used to read the evidence wrong. The plan's
+   * string `id` is the operator's handle; `number` is what brigadier routes,
+   * names directories and refs by, and puts in a commit subject
+   * (`brigadier: integrate item 3 of run …`). A harness that looked for the
+   * string id inside a commit subject was asserting on a RENDERING that the
+   * product never promised to contain it — the "assert on a flag" mistake in
+   * different clothes — and it was satisfiable by a forger that simply named
+   * its commits after the plan.
+   */
+  number?: number;
   status: ItemStatus;
   kind?: "write" | "read-only";
   /** Ruling 29: the routing unit is a triple, recorded per item. */
@@ -78,6 +98,18 @@ export interface RecordItem {
   checks?: RecordCheck[];
   /** The commit this item contributed, verifiable with `git cat-file`. */
   commit?: string;
+  /** `refs/brigadier/<runId>/item/<number>` — ruling 50's invisible namespace. */
+  itemRef?: string;
+  /**
+   * Ruling 51's left-hand side: what this item's clone STARTED from.
+   *
+   * Per ITEM rather than per run, because ruling 54 gives wave N+1 a different
+   * base from wave 1 — the integration commit wave N published. Without it
+   * `git diff <base>..<itemRef>` cannot be recomputed by a reader, which is the
+   * whole ownership check.
+   */
+  baseRef?: string;
+  baseSha?: string;
   /** Ruling 63: a retained clone is reported with its path and its bytes. */
   clonePath?: string;
   bytes?: number;
@@ -87,6 +119,18 @@ export interface RunRecord {
   runId: string;
   /** `refs/heads/brigadier/<runId>` — ruling 51, visible to `git branch`, survives cleanup. */
   integrationRef: string;
+  /**
+   * THE NAME IS NOT THE THING. `integrationRef` is where the deliverable would
+   * go; this is what `git rev-parse` answered in the operator's repository.
+   *
+   * Absent is the machine-readable form of "this run published nothing", and
+   * the harness resolves the ref itself rather than believing the number.
+   */
+  integrationSha?: string;
+  /** Ruling 50's scratch base: the commit every wave-1 clone started from. */
+  base?: { ref: string; sha: string };
+  /** Ruling 51: checks about the RUN — today, whether the deliverable branch exists. */
+  runChecks?: RecordCheck[];
   /** Ruling 61: asserted outside every temp root by `realpath`, never lexically. */
   runRoot: string;
   /** Ruling 54: WHICH of the three filters bound the worker count, not just the number. */

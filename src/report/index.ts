@@ -34,6 +34,7 @@ export {
 } from "./record.ts";
 
 export {
+  ceilingLines,
   itemBlocks,
   refusedDelegationLine,
   renderItem,

@@ -50,18 +50,26 @@ export {
 export { markerMatches, parseRunMarker, runMarkerArg, type MarkerScope, type RunMarker } from "./marker.ts";
 
 export {
+  POSIX_CWD_SCAN,
   POSIX_SCAN,
+  POSIX_TTY_SCAN,
+  READER_TIMEOUT_MS,
   SCAN_LIMITS,
   WINDOWS_SCAN,
   ancestorsOf,
   descendantsOf,
   isAlive,
+  noWorkspaceReading,
+  parseCwdRows,
   parseProcessRows,
+  parseTerminalRows,
+  readWorkspaceOccupants,
   scanProcessTable,
   signalPid,
   type ProcessRow,
   type ProcessTable,
   type SignalResult,
+  type WorkspaceReading,
 } from "./processes.ts";
 
 export {
@@ -108,6 +116,7 @@ export {
   type SweepCoverage,
   type SweepOptions,
   type SweepOutcome,
+  type Workspace,
 } from "./sweep.ts";
 
 export {

@@ -204,6 +204,45 @@ export function refusedDelegationLine(count: number): string | null {
 }
 
 /**
+ * Ruling 66's two ceilings, and WHICH of them fired.
+ *
+ * They are two lines with two verbs on purpose. *Soft* and *hard* are not a
+ * gentle and a firm wording of one event: the soft ceiling stops NEW items and
+ * lets in-flight work finish, and the hard ceiling CANCELS work already
+ * running. An operator reading "a ceiling was reached" cannot tell whether the
+ * items that are missing were never started or were killed halfway, and those
+ * have different remedies — raise the ceiling and re-run, against inspect what
+ * was killed and decide whether it is worth resuming.
+ *
+ * SILENT WHEN NEITHER FIRED, which is the negative control: a line that printed
+ * on every run would be wallpaper, and an operator would stop reading it at
+ * exactly the point it started being true.
+ */
+export function ceilingLines(cost: NonNullable<RunRecord["cost"]>): string[] {
+  const lines: string[] = [];
+  if (cost.hardCeilingHit === true) {
+    lines.push(
+      `  HARD CEILING FIRED at ${(cost.hardCeiling ?? 0).toLocaleString("en-US")} ${cost.currency} — work already ` +
+        "running was cancelled. Items in flight are `cancelled` rather than `failed`: they did not " +
+        "fail at anything, brigadier stopped them (ruling 66).",
+    );
+  }
+  if (cost.softCeilingHit === true) {
+    lines.push(
+      `  soft ceiling reached at ${(cost.softCeiling ?? 0).toLocaleString("en-US")} ${cost.currency} — no further ` +
+        "item was DISPATCHED; items already in flight were allowed to finish (ruling 66).",
+    );
+  }
+  if (lines.length === 0) return lines;
+  lines.push(
+    "  the ceiling is the primary control and the estimate is not: #44 measured 427,723 against " +
+      "28,245 bytes on two identical runs, so no prediction is load-bearing enough to be the thing " +
+      "that stops a run. The number above was measured as this run happened.",
+  );
+  return lines;
+}
+
+/**
  * Ruling 51's deliverable, rendered as it was FOUND.
  *
  * The old line named `record.integrationRef` unconditionally and called it "the
@@ -315,6 +354,7 @@ function fixedLines(input: RunReportInput): { head: string[]; tail: string[] } {
         `${cost.currency}${cost.actual === undefined ? "" : `; actual ${cost.actual.toLocaleString("en-US")}`}` +
         `${cost.lowerBound ? " — a LOWER BOUND: a vendor in this run is unpriceable (ruling 70)" : ""}`,
     );
+    for (const line of ceilingLines(cost)) tail.push(line);
     for (const lever of cost.levers) tail.push(`  lever active: ${lever}`);
     tail.push(
       "  brigadier makes no claim to have saved anything: those are levers that were active, not " +

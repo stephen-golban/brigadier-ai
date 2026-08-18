@@ -60,11 +60,26 @@ export {
   MEASURED_ITEM_BYTES,
   NO_SAVINGS_CLAIM,
   activeLevers,
+  ceilingRefusal,
   describeEstimate,
   estimatePlan,
+  itemCeilingReserve,
   naiveItemTokens,
+  tokensFromBytes,
   type Estimate,
 } from "./estimate.ts";
+
+export {
+  REFUSAL_LEDGER,
+  RUN_ROOT_ENV,
+  readRefusals,
+  recordRefusal,
+  refusalLedgerPath,
+  type RefusalAppender,
+  type RefusalRecording,
+  type RefusalTally,
+  type RefusedDelegation,
+} from "./refusal.ts";
 
 export {
   DEFAULT_HANDSHAKE_TIMEOUT_MS,

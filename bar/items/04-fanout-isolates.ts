@@ -35,9 +35,17 @@
  *   ruling 54 — a `dependsOn` wave must SEE its prerequisite's output, which is
  *   checked by the prerequisite's token appearing inside the dependent's file;
  *
- *   ruling 51 — every ref that appeared is one brigadier created, because a
- *   worker can push into the operator's repository through the clone's own
- *   `origin` and removing the remote is a speed bump rather than a boundary;
+ *   ruling 51 — every ref that appeared is one brigadier created FOR THIS RUN,
+ *   because a worker can push into the operator's repository through the
+ *   clone's own `origin` and removing the remote is a speed bump rather than a
+ *   boundary. An earlier draft accepted `refs/heads/brigadier/` and nothing
+ *   else, which is half the design: ruling 51 splits the namespace, machinery
+ *   into the invisible `refs/brigadier/<run-id>/…` and the DELIVERABLE into the
+ *   one visible branch `refs/heads/brigadier/<run-id>`. Accepting only the
+ *   visible half marked the product's own machinery as an intruder, so the
+ *   check now reads the run id out of the record and asserts BOTH halves —
+ *   including the property the split exists for, that `git branch` gains
+ *   exactly one entry;
  *
  *   ruling 61 — the run directory is outside every temp root, by `realpath`
  *   rather than lexically, because macOS's `/var` → `/private/var` symlink makes
@@ -55,7 +63,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Checks, excerpt } from "../lib/checks.ts";
 import { derive, nonce } from "../lib/derive.ts";
-import { gatherRunEvidence, insideTempRoot, proofOfWork } from "../lib/evidence.ts";
+import { gatherRunEvidence, insideTempRoot, isAncestor, objectType, proofOfWork } from "../lib/evidence.ts";
 import { probeFeature } from "../lib/feature.ts";
 import { isolatedPath, plantFleet } from "../lib/fixtures.ts";
 import { ensureDir } from "../lib/fs.ts";
@@ -276,18 +284,64 @@ const item: BarItem = {
         `paths in the merged tree carrying the read-only token: ${leaked.map(([p]) => p).join(", ") || "none"}; token in the report: ${report.includes(readOnlyToken)}`,
       );
 
-      // Ruling 51 and ruling 50.
+      // Ruling 51 and ruling 50, and this is where the item used to misread the
+      // design. It accepted `refs/heads/brigadier/` and NOTHING else, so every
+      // machinery ref the product legitimately writes read as an intruder. The
+      // owned namespace is BOTH halves of ruling 51's split: the invisible
+      // `refs/brigadier/<run-id>/…` for machinery, and the one visible branch
+      // `refs/heads/brigadier/<run-id>` that is the deliverable. The run id
+      // comes out of the record, so "brigadier's namespace" is now this run's
+      // namespace rather than any ref that starts with the right eight letters.
       const appeared = newRefs(before, after);
-      const unexpected = appeared.filter((ref) => !ref.startsWith("refs/heads/brigadier/"));
+      const runId = evidence.record?.runId;
+      const refNameOf = (line: string): string => line.split(/\s+/)[0] ?? "";
+      const shaOf = (line: string): string => line.split(/\s+/)[1] ?? "";
+      const owned = (line: string): boolean => {
+        const ref = refNameOf(line);
+        if (runId === undefined) return false;
+        return ref === `refs/heads/brigadier/${runId}` || ref.startsWith(`refs/brigadier/${runId}/`);
+      };
+      const unexpected = appeared.filter((line) => !owned(line));
       checks.expect(
-        "every ref that appeared is one brigadier created (ruling 51)",
-        unexpected.length === 0,
-        `appeared: ${appeared.join(", ") || "none"}; outside refs/heads/brigadier/: ${unexpected.join(", ") || "none"}`,
+        "every ref that appeared belongs to THIS run, in one of ruling 51's two namespaces",
+        runId !== undefined && unexpected.length === 0,
+        `run id from the record: ${runId ?? "NONE"}; appeared: ${appeared.map(refNameOf).join(", ") || "none"}; ` +
+          `outside refs/brigadier/${runId ?? "<run>"}/ and refs/heads/brigadier/${runId ?? "<run>"}: ${
+            unexpected.map(refNameOf).join(", ") || "none"
+          }`,
       );
+      // Ruling 51's split, asserted as the property that makes it worth having:
+      // the machinery must NOT be visible to `git branch`, and the deliverable
+      // must be. `refs/heads/` is exactly what `git branch` lists.
+      const visible = appeared.map(refNameOf).filter((r) => r.startsWith("refs/heads/"));
       checks.expect(
-        "the scratch base ref was cleaned up",
-        !appeared.some((r) => r.includes("refs/brigadier/base/")),
-        `refs after the run: ${after.refs.trim().split("\n").join(" | ")}`,
+        "the machinery is invisible to `git branch` and only the deliverable is not (ruling 51)",
+        runId !== undefined && visible.length === 1 && visible[0] === `refs/heads/brigadier/${runId}`,
+        `refs under refs/heads/ that appeared: ${visible.join(", ") || "NONE"} — the operator's branch list must gain exactly the deliverable`,
+      );
+      // Ruling 50's scratch base. The previous check looked for the substring
+      // `refs/brigadier/base/`, which is not a shape this product ever writes —
+      // it was vacuously true and asserted nothing. The base is now read out of
+      // the record and confirmed to be a real commit the deliverable descends
+      // from, which is what makes `git diff <base>..<itemRef>` re-derivable.
+      const base = evidence.record?.base;
+      const baseType = base === undefined ? undefined : await objectType(repo, base.sha);
+      const baseReached =
+        base !== undefined && evidence.refSha !== undefined && (await isAncestor(repo, base.sha, evidence.refSha));
+      checks.expect(
+        "the scratch base is a real commit the deliverable descends from (ruling 50)",
+        base !== undefined && baseType === "commit" && baseReached,
+        base === undefined
+          ? "the record names no base, so no item's diff can be re-derived from the evidence"
+          : `base ${base.ref} -> ${base.sha.slice(0, 12)} (git cat-file -t: ${baseType ?? "no object"}, ancestor of the deliverable: ${baseReached})`,
+      );
+      const baseLine = appeared.find((line) => refNameOf(line) === base?.ref);
+      checks.expect(
+        "if the base ref survived the run it is in the invisible namespace, pinned where the record says",
+        base === undefined || baseLine === undefined || (owned(baseLine) && shaOf(baseLine) === base.sha),
+        baseLine === undefined
+          ? `${base?.ref ?? "the base ref"} is not in the operator's ref list — cleaned up, and the commit itself is still reachable`
+          : `${baseLine} against the record's ${base?.sha ?? "<none>"}`,
       );
       const drift = diffRepo(before, after).filter((d) => d.field !== "refs");
       checks.expect(
@@ -298,9 +352,13 @@ const item: BarItem = {
           : drift.map((d) => `${d.field}: ${excerpt(d.before, 60)} -> ${excerpt(d.after, 60)}`).join("; "),
       );
       checks.expect(
-        "the integration branch is visible to `git branch` and survived cleanup",
-        appeared.some((r) => r.startsWith("refs/heads/brigadier/")),
-        `refs under refs/heads/brigadier/: ${appeared.filter((r) => r.startsWith("refs/heads/brigadier/")).join(", ") || "NONE"}`,
+        "the integration branch the record NAMES is the one that survived cleanup",
+        runId !== undefined &&
+          evidence.record?.integrationRef === `refs/heads/brigadier/${runId}` &&
+          appeared.some((line) => refNameOf(line) === evidence.record?.integrationRef),
+        `record.integrationRef: ${evidence.record?.integrationRef ?? "NONE"}; refs that appeared under refs/heads/: ${
+          visible.join(", ") || "NONE"
+        }`,
       );
 
       // Ruling 61, by realpath.

@@ -14,13 +14,38 @@
  *      TRACKED and UNTRACKED work, as a commit, published in the invisible
  *      namespace — and the operator's repository witnessed before and after so
  *      that "brigadier did not disturb it" is checked rather than promised.
- *   3. PER WAVE: clone, release, spawn a MARKED agent, sweep the item, fetch,
- *      check ownership, merge. Wave N+1 clones from wave N's integration commit
- *      and does not start until the gate on it did not block (ruling 54).
+ *   3. PER WAVE: clone, release, spawn a MARKED agent, RUN THE ITEM'S OWN
+ *      VERIFY COMMAND (ruling 52), sweep the item, review, fetch, check
+ *      ownership, merge. Wave N+1 clones from wave N's integration commit and
+ *      does not start until the gate on it did not block (ruling 54).
  *   4. THE MERGED-RESULT GATE (ruling 52), in its own slot, in its own section.
- *      "Every item passed" and "the merged result passed" are two facts.
+ *      "Every item passed" and "the merged result passed" are two facts, and
+ *      the per-item verify in step 3 does not replace this one.
  *   5. THE FULL RECORD TO DISK, and only then a report (ruling 58). The
  *      pointer travels; the transcript does not.
+ *
+ * WHAT REACHES THE INTEGRATION BRANCH IS DECIDED BY RULING 52 AND NOTHING ELSE.
+ * `mayIntegrate` is the only gate: `pass` proceeds, `unconfigured` does not
+ * block, and every other outcome keeps the item OUT OF THE TREE. This used to
+ * be the review check alone, so a worker that ended in `error` and a verify
+ * command that exited non-zero produced a report saying the right word over
+ * bytes that were on the branch anyway — v1's failure with a different noun in
+ * it. A check added to `ItemRun.checks` inherits the rule without anybody
+ * remembering to widen a filter.
+ *
+ * COST IS MEASURED WHILE THE RUN HAPPENS, NOT PREDICTED (ruling 66). `Spend`
+ * counts bytes as they cross the channel — never `usage_update`, which was
+ * measured to plateau for five turns while history was rewritten and therefore
+ * MASKS compaction. Two ceilings act on that number and they are two different
+ * mechanisms: SOFT stops new dispatch at a batch or wave boundary, HARD cancels
+ * work already running the moment the bytes cross it.
+ *
+ * A REFUSED DELEGATION COUNTS ITSELF (ruling 59). The refusing invocation is a
+ * different process — a descendant of a worker — and it appends its own line to
+ * this run's ledger, which it can find because ruling 59 made the worker marker
+ * an identity rather than a boolean. This file reads the ledger back at the end
+ * and the report carries ONE RUN-LEVEL line, because ruling 58's cap collapses
+ * passing items and a per-item note would be the first thing dropped.
  *
  * WRITE-AHEAD IS NOT OPTIONAL HERE. Every blocking check's slot is appended to
  * the NDJSON record BEFORE the check runs, holding ruling 52's `not-run`, so a
@@ -84,6 +109,7 @@ import {
   type WaveIntegration,
 } from "../integrate/index.ts";
 import { Lane } from "../lane/lane.ts";
+import { manifestPath, readManifest } from "../isolation/manifest.ts";
 import { RUN_DIR } from "../repo/layout.ts";
 import { REF_NAMESPACE, WORK_BRANCH, integrationBranch, itemRef } from "../repo/refs.ts";
 import {
@@ -113,6 +139,8 @@ import { blocks, type CheckOutcome, type CheckResult } from "../work/check.ts";
 import { lanePolicyFor } from "../work/kind.ts";
 import { ladderTaken, renderLadder, rungsOffered } from "../work/ladder.ts";
 import type { VerifyResolution } from "../gate/verify.ts";
+import { runVerify, unconfiguredVerify } from "../gate/run.ts";
+import { readRefusals, refusalLedgerPath } from "./refusal.ts";
 import { bindingSentence, type Admission } from "./admit.ts";
 import { composeBrief } from "./brief.ts";
 import { CEILING, deriveEffort, noLever, leverFor, renderEffort, type EffortOutcome } from "./effort.ts";
@@ -129,7 +157,7 @@ import {
   type ReviewerChoice,
 } from "./review.ts";
 import { spawnMarkedAgent } from "./spawn.ts";
-import { describeEstimate, estimatePlan } from "./estimate.ts";
+import { describeEstimate, estimatePlan, tokensFromBytes } from "./estimate.ts";
 import type { PlannedItem } from "./plan.ts";
 
 /**
@@ -308,6 +336,110 @@ async function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promi
   }
 }
 
+/**
+ * Ruling 52, as the rule that decides what reaches the integration branch.
+ *
+ * THIS IS THE FIX FOR THE DEFECT, and it is one line because the defect was
+ * one line. The filter used to read `run.review?.blocks !== true` — the REVIEW
+ * check, alone, kept an item out of the merge, and every other blocking outcome
+ * was a word in a report. A worker that ended in `error`, a containment check
+ * with surviving pids, and — once ruling 52's per-item verify actually runs —
+ * a verify command that exited non-zero all produced a blocking check AND a
+ * merged item. The report said the right word and the bytes were on the branch,
+ * which is precisely the shape of v1's failure: `review: not run
+ * (REVIEWER_FAILED)` beside a merged change.
+ *
+ * So the rule is the ruling, stated once and consulted everywhere: `pass`
+ * proceeds, `unconfigured` does not block, and EVERY other outcome keeps the
+ * item out of the tree. A new check added to `ItemRun.checks` inherits that
+ * without anybody remembering to widen a filter — which is the property the old
+ * shape did not have.
+ */
+function mayIntegrate(run: ItemRun): boolean {
+  return !run.checks.some((check) => blocks(check.outcome));
+}
+
+/** The checks that are keeping this item out, named rather than counted. */
+function blockingNames(run: ItemRun): string[] {
+  return run.checks.filter((check) => blocks(check.outcome)).map((check) => `${check.name}: ${check.outcome}`);
+}
+
+/**
+ * What this run has spent, counted on the wire, and the two ceilings that act
+ * on it.
+ *
+ * RULING 66'S ORDER: **the ceiling is the primary control and the estimate is
+ * not.** #44 measured 427,723 against 28,245 bytes on two identical Codex runs
+ * — 15× on identical input — and published tooling puts real cost at 3–5×
+ * naive estimates, so no prediction is load-bearing enough to be the thing that
+ * stops a run. A number that is measured as the run happens is.
+ *
+ * TWO CEILINGS, TWO MECHANISMS, and the report distinguishes them:
+ *
+ *   SOFT   stop DISPATCHING. Items already in flight run to completion, which
+ *          is why it is checked at the batch and wave boundaries — the only
+ *          places this file chooses to spend something new.
+ *   HARD   cancel work ALREADY RUNNING. `session/cancel` to every live worker
+ *          and a kill behind it, which is ruling 63's drain reused rather than
+ *          reimplemented: `session/cancel` is an unacknowledged notification,
+ *          so the kill is the mechanism and the cancel is the courtesy.
+ *
+ * THE SOURCE OF THE NUMBER IS THE WIRE, NEVER `usage_update`. The drive
+ * measured `used` PLATEAUING FOR FIVE TURNS while the agent rewrote its
+ * history: the field MASKS compaction, so reading it would report a run's most
+ * expensive turns as its cheapest and would hold a ceiling open at exactly the
+ * moment it should close. Bytes that crossed the channel cannot plateau while
+ * work is happening. Both directions are counted, because the brief is billed
+ * as input and #14's 46 KB measurement is agent→client alone — counting only
+ * the answer would undercount every turn by the size of its question.
+ *
+ * AND NOTHING HERE IS A SAVINGS CLAIM (ruling 70). This counts what was spent.
+ */
+class Spend {
+  #bytes = 0;
+  #soft: number | undefined;
+  #hard: number | undefined;
+  #onHard: () => void;
+  softHit = false;
+  hardHit = false;
+  /** Whichever fired first, in the operator's words. `null` when neither did. */
+  firstFired: string | null = null;
+
+  constructor(soft: number | undefined, hard: number | undefined, onHard: () => void) {
+    this.#soft = soft;
+    this.#hard = hard;
+    this.#onHard = onHard;
+  }
+
+  get bytes(): number {
+    return this.#bytes;
+  }
+
+  /** Bytes read as tokens by the SAME arithmetic as the estimate, so they compare. */
+  get tokens(): number {
+    return tokensFromBytes(this.#bytes);
+  }
+
+  add(bytes: number): void {
+    this.#bytes += bytes;
+    const spent = this.tokens;
+    if (this.#soft !== undefined && !this.softHit && spent >= this.#soft) {
+      this.softHit = true;
+      this.firstFired ??= `soft ceiling (${this.#soft.toLocaleString("en-US")} tokens)`;
+    }
+    if (this.#hard !== undefined && !this.hardHit && spent >= this.#hard) {
+      this.hardHit = true;
+      this.firstFired ??= `hard ceiling (${this.#hard.toLocaleString("en-US")} tokens)`;
+      this.#onHard();
+    }
+  }
+
+  /** True once no further item may be DISPATCHED. Either ceiling implies it. */
+  get stopDispatching(): boolean {
+    return this.softHit || this.hardHit;
+  }
+}
+
 function checkRecord(check: CheckResult): RecordCheck {
   return {
     name: check.name,
@@ -378,6 +510,19 @@ interface ItemRun {
   survivors: number[];
   /** Rulings 32 and 52. Absent until the review phase settles the item's slot. */
   review: ItemReview | null;
+  /**
+   * Ruling 66: this item was IN FLIGHT when the hard ceiling fired and was
+   * cancelled, rather than having failed at anything.
+   *
+   * A separate field from the checks because the two say different things: the
+   * checks say the worker ended in `error` (it was killed, which is true), and
+   * this says whose decision that was. `RecordItem.status` has `cancelled` for
+   * exactly this, and reporting it as `failed` would send an operator to look
+   * for a defect in work brigadier stopped on purpose.
+   */
+  cancelledByCeiling: boolean;
+  /** Ruling 38's one hole: a verify command spawned WITHOUT the command-line marker. */
+  unmarkedPids: number[];
 }
 
 /** What the review phase learned about one item. */
@@ -429,6 +574,7 @@ async function runItem(
   secrets: Record<string, string>,
   transcript: string[],
   live: Set<LiveWorker>,
+  spend: Spend,
 ): Promise<ItemRun> {
   // Ruling 31: derived from (kind, difficulty), here, from the difficulty
   // ACTUALLY IN FORCE. Deriving from the declared one would spend at the level
@@ -467,6 +613,8 @@ async function runItem(
     retain: false,
     survivors: [],
     review: null,
+    cancelledByCeiling: false,
+    unmarkedPids: [],
   };
 
   // Ruling 52's write-ahead: the slot exists, holding a BLOCKING value, before
@@ -508,6 +656,10 @@ async function runItem(
       marked = spawnMarkedAgent({
         profile,
         runId: base.runId,
+        // Ruling 59: the worker marker says WHICH run, and this says where that
+        // run's directory is, so a refused delegation inside this worker's tool
+        // shell has a ledger to append itself to.
+        runRoot: options.runRoot,
         item: item.number,
         cwd: clone.dir,
         kind: item.kind,
@@ -548,7 +700,15 @@ async function runItem(
           lane: new Lane(clone.dir, lanePolicyFor(item.kind)),
           kind: item.kind,
           channel: marked.channel,
-          onFrame: (direction, raw) => transcript.push(`${item.id} ${direction} ${raw}`),
+          onFrame: (direction, raw) => {
+            transcript.push(`${item.id} ${direction} ${raw}`);
+            // Ruling 66's primary control, fed from the one number that cannot
+            // plateau while work is happening. Counted HERE rather than from
+            // `turn.bytes` so a hard ceiling can act mid-turn: a ceiling that
+            // could only be evaluated after the turn it should have stopped is
+            // a report, not a control.
+            spend.add(raw.length);
+          },
         }),
         options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS,
         `${profile.id} handshake for item ${item.id}`,
@@ -600,6 +760,74 @@ async function runItem(
     ...(agent === null ? { qualifier: "no agent" } : {}),
     detail,
   });
+
+  // RULING 52'S PER-ITEM VERIFY, WHICH IS THE CHECK THAT WAS RESOLVED AND NEVER
+  // RUN.
+  //
+  // `validatePlan` resolved this command on `PATH` before a single worker
+  // existed and refused the whole plan if the executable was not there — and
+  // then nothing ever executed it. Only the wave-level `--verify` ran, against
+  // the merged result, which is a different check answering a different
+  // question: ruling 52 wants BOTH, because two items that each pass and whose
+  // merge breaks the build is the classic failure and so is one item that
+  // merged without its own tests ever running. v1's shape, exactly: an injected
+  // `ENOENT` on the test command produced *approved, `tests_pass` skipped,
+  // `(approved by codex)`* after a full build was burned.
+  //
+  // Write-ahead first, as everywhere else: the slot holds a blocking `not-run`
+  // before the command starts, so a kill between here and the answer leaves a
+  // blocking value on disk rather than an absent field.
+  //
+  // `unconfigured` DOES NOT BLOCK and prints in the same slot at the same size.
+  // That is ruling 52's own instruction and it is the value most likely to
+  // become v1's bug wearing a different noun, which is why it is rendered by
+  // `unconfiguredVerify` with a detail that says what was not checked.
+  openCheckSlot(record, item.number, "verify");
+  let verify: CheckResult;
+  if (item.verify.status === "unconfigured") {
+    verify = unconfiguredVerify("verify", `item ${item.number}`);
+  } else if (blocks(outcome)) {
+    // The worker did not finish, so the tree in this clone is not the result of
+    // the work being checked. `not-run` BLOCKS, so nothing here lets the item
+    // through — and running a test suite over the base state to watch it pass
+    // would produce the single most misleading `pass` this file could emit.
+    verify = {
+      name: "verify",
+      outcome: "not-run",
+      qualifier: `item ${item.number}: worker ${outcome}`,
+      detail:
+        `\`${item.verify.argv.join(" ")}\` was not run: the worker ended in \`${outcome}\`, so this ` +
+        "clone does not hold the work the command would have been checking. Ruling 52 keeps the " +
+        "two apart — the remedy here is the worker's outcome above, not this command — and " +
+        "`not-run` blocks, so the item does not reach the integration branch either way.",
+    };
+  } else {
+    verify = await runVerify({
+      resolution: item.verify,
+      cwd: clone.dir,
+      name: "verify",
+      qualifier: `item ${item.number}`,
+      timeoutMs: options.verifyTimeoutMs ?? DEFAULT_VERIFY_TIMEOUT_MS,
+      // Ruling 38's one deliberate hole, recorded rather than hidden: this
+      // process carries no command-line marker, because appending an argument
+      // to somebody else's command line corrupts it — `bun test
+      // --brigadier-run=x` is not `bun test`. The sweep cannot match it, so its
+      // pid is kept and it is killed on its own timeout by the process that
+      // started it, which is a weaker guarantee and is reported as one.
+      onPid: (pid) => {
+        result.unmarkedPids.push(pid);
+        recordEvent(sink, record, {
+          type: "process-spawned",
+          at: Date.now(),
+          item: item.number,
+          pid,
+          commandLine: `${item.verify.argv.join(" ")} (UNMARKED: ruling 38 cannot reach an operator's own command line)`,
+        });
+      },
+    });
+  }
+  settleCheck(record, item.number, "verify", verify.outcome, verify.detail ?? null);
+  result.checks.push(verify);
 
   // Ruling 52's write-ahead, and it is OPENED here and SETTLED in the review
   // phase below — deliberately not both in one place. The whole value of a
@@ -681,6 +909,7 @@ async function reviewItem(
   secrets: Record<string, string>,
   transcript: string[],
   live: Set<LiveWorker>,
+  spend: Spend,
 ): Promise<ItemReview> {
   const number = run.item.number;
   const base: Omit<ItemReview, "outcome" | "blocks"> = {
@@ -766,6 +995,7 @@ async function reviewItem(
       const marked = spawnMarkedAgent({
         profile,
         runId,
+        runRoot: options.runRoot,
         item: number,
         cwd: dir,
         // Ruling 49: a reviewer writes nothing and its directory is never read
@@ -801,7 +1031,15 @@ async function reviewItem(
           lane: new Lane(dir, lanePolicyFor("read-only")),
           kind: "read-only",
           channel: marked.channel,
-          onFrame: (direction, raw) => transcript.push(`${run.item.id} review ${direction} ${raw}`),
+          onFrame: (direction, raw) => {
+            transcript.push(`${run.item.id} review ${direction} ${raw}`);
+            // A reviewer's turn is spent too. Ruling 52 charges a BROKEN
+            // reviewer's re-run to brigadier rather than to the item's ladder,
+            // and that is a rule about ATTEMPTS; the tokens are still real and
+            // a cost ceiling that ignored them would report a run as cheaper
+            // than it was.
+            spend.add(raw.length);
+          },
         }),
         options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS,
         `${profile.id} reviewer handshake for item ${run.item.id}`,
@@ -928,6 +1166,39 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
   const cancelDeadlineMs = options.cancelDeadlineMs ?? CANCEL_DEADLINE_MS;
   let interruptedBy: NodeJS.Signals | null = null;
   let draining: Promise<void> | null = null;
+
+  // RULING 66'S TWO CEILINGS, sharing ruling 63's drain rather than inventing a
+  // second one. The hard ceiling and a signal do the same thing to a live
+  // worker — `session/cancel`, which is an unacknowledged notification, and
+  // then a kill, which is the actual mechanism — and two implementations of
+  // that would be two chances to get the order wrong.
+  //
+  // The kill is IMMEDIATE here, with no `cancelDeadlineMs` wait. That is the
+  // difference in kind between the two ceilings: soft lets in-flight work
+  // finish, hard stops it. A courtesy deadline on the hard ceiling would let
+  // every live worker spend for another `cancelDeadlineMs` past the number the
+  // operator set as the limit, which is the one thing a hard ceiling is for.
+  const spend = new Spend(options.softCeiling, options.hardCeiling, () => {
+    const workers = [...live];
+    sink.errLine(
+      `HARD CEILING — ${(options.hardCeiling ?? 0).toLocaleString("en-US")} tokens reached. ` +
+        `\`session/cancel\` sent to ${workers.length} live worker(s) and each is killed immediately: ` +
+        "ruling 66's hard ceiling cancels work already running, and `session/cancel` is an " +
+        "unacknowledged notification, so the kill is the mechanism and the cancel is the courtesy.",
+    );
+    for (const worker of workers) {
+      try {
+        worker.cancel();
+      } catch {
+        // A worker whose channel is already gone needs no cancelling.
+      }
+      try {
+        worker.kill();
+      } catch {
+        // Already gone. The sweep below is what proves it either way.
+      }
+    }
+  });
   options.onInFlight?.((signal) => {
     if (interruptedBy !== null) return;
     interruptedBy = signal;
@@ -1018,6 +1289,12 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
       // Ruling 63, step 1. Checked at the batch boundary because that is the
       // only place this function chooses to spend something new.
       if (interruptedBy !== null) break;
+      // Ruling 66's SOFT ceiling, at the same boundary and for the same reason:
+      // it stops NEW items from being dispatched and lets everything already in
+      // flight run to completion. The hard ceiling does not wait for this — it
+      // acts the moment the bytes cross it, inside `Spend.add`, because
+      // cancelling work already running is the whole difference between the two.
+      if (spend.stopDispatching) break;
       const batch = eligible.run.slice(cursor, cursor + concurrency);
       const finished = await Promise.all(
         batch.map((number) => {
@@ -1028,9 +1305,14 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
           // its prerequisite's output rather than the state before it.
           const cloneFrom: BaseState =
             waveNumber === 1 ? base : { ...base, ref: integrationBranch(runId), sha: waveBase };
-          return runItem(item, cloneFrom, options, sink, record, agent, secrets, transcript, live);
+          return runItem(item, cloneFrom, options, sink, record, agent, secrets, transcript, live, spend);
         }),
       );
+      // Ruling 66: an item that was in flight when the HARD ceiling fired was
+      // cancelled, not defeated. Recorded here, where "was it running when the
+      // ceiling fired" is still knowable, because after the batch resolves
+      // every item looks alike.
+      if (spend.hardHit) for (const run of finished) run.cancelledByCeiling = true;
       attempted.push(...finished);
     }
     runs.push(...attempted);
@@ -1083,6 +1365,7 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
           secrets,
           transcript,
           live,
+          spend,
         );
       }
     }
@@ -1091,8 +1374,15 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
     // review blocked is NOT in this list, and that is the assertion ruling 52
     // actually wants: not that the report said `error`, but that the work is
     // absent from the tree.
+    // RULING 52 DECIDES WHAT REACHES THE TREE, AND IT IS EVERY CHECK RATHER
+    // THAN ONE OF THEM. `mayIntegrate` is the whole rule: `pass` proceeds,
+    // `unconfigured` does not block, and anything else keeps the item out. The
+    // filter here used to name the review check alone, so a worker that ended
+    // in `error`, a clone with surviving pids, and a verify command that exited
+    // non-zero each produced a report that said the right word over bytes that
+    // were on the branch anyway.
     const integrationItems: IntegrationItem[] = attempted
-      .filter((run) => run.clonePath !== null && run.review?.blocks !== true)
+      .filter((run) => run.clonePath !== null && mayIntegrate(run))
       .map((run) => ({
         item: run.item.number,
         clone: run.clonePath as string,
@@ -1100,15 +1390,17 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
       }));
 
     for (const run of attempted) {
-      if (run.clonePath === null || run.review?.blocks !== true) continue;
+      if (run.clonePath === null || mayIntegrate(run)) continue;
       const name = `integrate item ${run.item.number}`;
       openCheckSlot(record, run.item.number, name);
       const detail =
-        `item ${run.item.id} was never offered to the merge: its review is \`${run.review.outcome}\`, and ` +
-        "ruling 52 has exactly one affirmative outcome. Its clone is retained rather than deleted " +
-        "(ruling 63) and its work is reachable at its fetched review ref for inspection.";
+        `item ${run.item.id} was never offered to the merge: ${blockingNames(run).join(", ")}. Ruling 52 ` +
+        "has exactly one affirmative outcome and three blocking ones, and a blocking outcome keeps " +
+        "the work OUT OF THE TREE rather than merely describing it — v1 merged its most delicate " +
+        "change while its report said `review: not run (REVIEWER_FAILED)`. Its clone is retained " +
+        "rather than deleted (ruling 63) and its work is reachable at its fetched ref for inspection.";
       settleCheck(record, run.item.number, name, "not-run", detail);
-      run.checks.push({ name, outcome: "not-run", qualifier: "review blocked", detail });
+      run.checks.push({ name, outcome: "not-run", qualifier: "blocked before the merge", detail });
     }
 
     // Ruling 52's write-ahead for the integration check, before the fetch that
@@ -1243,6 +1535,34 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
     notes.push(boundary.reason);
     if (!boundary.proceed && index < plan.waves.length - 1) break;
     if (interruptedBy !== null) break;
+    // Ruling 66: a wave is the largest thing this file dispatches, so a ceiling
+    // that has fired stops the next one as surely as it stopped the next batch.
+    if (spend.stopDispatching) break;
+  }
+
+  // Ruling 38's one hole, stated rather than left to be discovered. An
+  // operator's verify command is spawned WITHOUT the command-line marker,
+  // because appending an argument to somebody else's command line corrupts it,
+  // so the sweep cannot match these pids — they were killed on their own
+  // timeout by the process that started them, which is a weaker guarantee than
+  // the sweep's and is reported as one.
+  const unmarked = runs.flatMap((run) => run.unmarkedPids);
+  if (unmarked.length > 0) {
+    notes.push(
+      `${unmarked.length} verify command(s) ran without ruling 38's command-line marker (pid ` +
+        `${unmarked.join(", ")}), because \`<command> --brigadier-run=…\` is not \`<command>\`. The sweep ` +
+        "cannot match them; each was killed on its own timeout by the process that started it.",
+    );
+  }
+
+  if (spend.firstFired !== null) {
+    notes.push(
+      `${spend.firstFired} was reached: ${spend.tokens.toLocaleString("en-US")} tokens spent, read from ` +
+        `${spend.bytes.toLocaleString("en-US")} bytes that actually crossed the channel in both directions. ` +
+        (spend.hardHit
+          ? "The HARD ceiling cancelled work already running; items in flight are `cancelled` and later items were never dispatched."
+          : "The SOFT ceiling stopped new items being dispatched and let in-flight items finish."),
+    );
   }
 
   // Ruling 63, steps 3 and 4. The wait is bounded by `cancelDeadlineMs` and by
@@ -1253,9 +1573,42 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
   const interruptSurvivors: number[] = [];
   if (interruptedBy !== null) {
     if (draining !== null) await draining;
+    // RULING 15'S MANIFEST, HANDED TO THE SWEEP AS ITS THIRD LINK.
+    //
+    // The marker link and the ppid link are BOTH cut by one ordinary idiom, and
+    // it was confirmed in the wild rather than reasoned about: an escapee still
+    // alive 31 minutes after its run was SIGKILLed, ppid 1. An agent-spawned
+    // descendant is UNMARKED, so ruling 38's command-line token does not match
+    // it, and it reparents to pid 1 within milliseconds, so the ppid graph does
+    // not reach it either. Neither link survives and the process has no
+    // containment at all.
+    //
+    // The third link is ruling 15's provenance applied to a PROCESS rather than
+    // a path: a working directory inside a directory this run's manifest
+    // recorded BEFORE it existed. That is not cuttable by the descendant,
+    // because it is not a property the descendant carries — it is where it is
+    // standing. `sweep` exempts a person's own shell (`pgid == pid` with a
+    // controlling terminal) so the rule cannot become "kill everything", and
+    // brigadier prints the paths of the clones it retains, so an operator
+    // reading one is a case the product invites.
+    //
+    // MEASURED on macOS 26.5.2 (Darwin 25.5.0): `ps -E` and `ps eww` print NO
+    // environment for a same-uid child, so the environment is not available as
+    // an identification channel — the working directory is what replaced it.
+    //
+    // `src/run/start.ts` already passes this at START. Ruling 38 requires the
+    // sweep at both ends precisely because either can be cut off, so start
+    // coverage is the BACKSTOP for a drain that never ran, not an excuse for a
+    // drain that runs and does not look. Without it, ruling 63's fourth fact —
+    // the exact pids that would not confirm dead — reads complete while being
+    // silently short by the whole class of escapee ruling 38 promoted the sweep
+    // to catch.
+    const manifest = readManifest(manifestPath(options.runRoot, RUN_DIR, runId));
+    const workspaces = (manifest?.clones ?? []).map((clone) => ({ item: clone.item, dir: clone.dir }));
     const finalSweep = await sweep({
       scope: { runId },
       sweptBy: `interrupt (${String(interruptedBy)}) drain for ${runId}`,
+      workspaces,
     });
     interruptSurvivors.push(...finalSweep.evidence.survivors);
     recordEvent(sink, record, {
@@ -1360,7 +1713,18 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
     return {
       id: run.item.id,
       number: run.item.number,
-      status: kept !== undefined ? "retained" : blocking ? "failed" : "integrated",
+      // Ruling 66: `cancelled` outranks `retained` and `failed`, because it is
+      // the only one of the three that says WHOSE decision it was. An item
+      // brigadier killed to stay under a ceiling did not fail at anything, and
+      // reporting it as `failed` sends an operator to look for a defect in work
+      // that was stopped on purpose. Its clone is still reported below.
+      status: run.cancelledByCeiling
+        ? "cancelled"
+        : kept !== undefined
+          ? "retained"
+          : blocking
+            ? "failed"
+            : "integrated",
       kind: run.item.kind,
       ...(run.agent === null ? {} : { agent: run.agent }),
       ...(run.model === null ? {} : { model: run.model }),
@@ -1443,12 +1807,25 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
           name: `integrate item ${planned.number}`,
           outcome: "not-run",
           blocking: true,
-          qualifier: interruptedBy === null ? "never dispatched" : "interrupted before dispatch",
+          qualifier:
+            interruptedBy !== null
+              ? "interrupted before dispatch"
+              : spend.firstFired !== null
+                ? "ceiling stopped dispatch"
+                : "never dispatched",
           detail:
-            interruptedBy === null
-              ? "this run ended before the item was dispatched"
-              : `${String(interruptedBy)} stopped dispatch before this item was given a directory, so ` +
-                "nothing was spawned for it and nothing of it exists to inspect.",
+            interruptedBy !== null
+              ? `${String(interruptedBy)} stopped dispatch before this item was given a directory, so ` +
+                "nothing was spawned for it and nothing of it exists to inspect."
+              : spend.firstFired !== null
+                ? // Ruling 66: WHICH ceiling, by name. "The run stopped early" is
+                  // not a fact an operator can act on and a named ceiling with a
+                  // number beside it is.
+                  `the ${spend.firstFired} stopped dispatch before this item was given a directory. ` +
+                  `${spend.tokens.toLocaleString("en-US")} tokens had been spent, read from bytes that ` +
+                  "actually crossed the channel. Nothing was spawned for this item and nothing of it " +
+                  "exists to inspect. Remedy: raise the ceiling, or split the plan."
+                : "this run ended before the item was dispatched",
         },
       ],
       itemRef: itemRef(runId, planned.number),
@@ -1461,6 +1838,25 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
     options.admission.fanOut[0]?.workers ?? 1,
     options.admission.agents.map((agent) => agent.id),
   );
+  // RULING 59, COUNTED RATHER THAN ASSUMED ZERO.
+  //
+  // This field was the literal `0` on every run brigadier had ever produced,
+  // and bar item 9 measured a REAL refusal happening: the marker reached a real
+  // vendor's tool shell, `brigadier run --plan whatever` was invoked inside a
+  // worker, and the binary exited 3 without orchestrating anything — ruling
+  // 57's one unmeasured assumption, measured and holding. The guard fired and
+  // nothing counted it, which is indistinguishable from a guard that never
+  // fires. The refusing process appends its own line to this run's ledger,
+  // because ruling 59 made the worker marker an IDENTITY rather than a boolean
+  // precisely so it could find the record to write to; this reads it back.
+  const refusals = readRefusals(refusalLedgerPath(options.runRoot, runId));
+  if (refusals.damagedLines > 0) {
+    notes.push(
+      `${refusals.damagedLines} line(s) of the refusal ledger did not parse and are NOT in the count ` +
+        `above, so ${refusals.count} is a lower bound on refused delegations.`,
+    );
+  }
+
   const quota: Record<string, "read" | "unreadable" | "unpriceable"> = {};
   for (const agent of options.admission.agents) {
     // Ruling 13's quota half, and it is never optimistic: brigadier has never
@@ -1468,6 +1864,12 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
     // opencode reaching a model with no credential at all through its own
     // gateway — so a successful turn there proves nothing about which account
     // was billed.
+    //
+    // AND NOTHING HERE IS CACHED, which is the second measured trap: `resetsAt`
+    // DRIFTS WITH WALL CLOCK, so a cache keyed on it goes stale silently and
+    // serves a quota reading for a window that has already closed. The answer
+    // is recomputed per run rather than remembered, and there is deliberately
+    // no key here for a later reader to add one to.
     quota[agent.id] = agent.id === "opencode" ? "unpriceable" : "unreadable";
   }
 
@@ -1501,7 +1903,7 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
     runRoot: options.runRoot,
     bindingFilter: options.admission.fanOut[0]?.boundBy ?? "item-count",
     workers: options.admission.fanOut[0]?.workers ?? 0,
-    refusedDelegations: 0,
+    refusedDelegations: refusals.count,
     ambientSuppressed: [
       "the agent's config root is redirected into brigadier's own state directory for every worker (decision 17)",
     ],
@@ -1530,8 +1932,29 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
       estimateLow: estimate.low,
       estimateHigh: estimate.high,
       provenance: estimate.provenance,
+      // WHAT THE RUN ACTUALLY SPENT, and the three things that makes it and the
+      // one it does not:
+      //
+      //   it is MEASURED — bytes that crossed the channel, in both directions,
+      //   counted as they crossed;
+      //   it is NOT `usage_update` — the drive measured `used` plateauing for
+      //   five turns while history was rewritten, so that field MASKS
+      //   compaction and reports a run's most expensive turns as its cheapest;
+      //   it is converted to tokens by the SAME arithmetic as the estimate, so
+      //   `actual` and `estimateHigh` are comparable rather than two units
+      //   wearing one name.
+      //
+      // What it is not: a vendor's own accounting. #46 measured three of six
+      // agents emitting no usage at all, and `lowerBound` below carries the
+      // consequence when opencode is in the vendor set.
+      actual: spend.tokens,
       ...(options.softCeiling === undefined ? {} : { softCeiling: options.softCeiling }),
       ...(options.hardCeiling === undefined ? {} : { hardCeiling: options.hardCeiling }),
+      // Ruling 66: the report DISTINGUISHES them, so the record carries them
+      // apart. Written unconditionally rather than only when true — an absent
+      // boolean reads as "not measured", and these were.
+      softCeilingHit: spend.softHit,
+      hardCeilingHit: spend.hardHit,
       quota,
       levers: estimate.levers,
       lowerBound: estimate.lowerBound,

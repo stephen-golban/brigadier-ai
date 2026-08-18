@@ -39,6 +39,16 @@
  * WHAT RETENTION COSTS IS REPORTED AT EVERY START, in bytes, because otherwise
  * it grows invisibly and the operator discovers it as a full disk. #19 measured
  * roughly 67 MB incremental per clone.
+ *
+ * AND THE MANIFEST IS HANDED TO THE PROCESS SWEEP AS WELL AS TO THE DIRECTORY
+ * DECISION. The clone directories this file already reads are what let `sweep`
+ * reach a descendant an agent spawned — unmarked, so ruling 38's command-line
+ * match misses it, and reparented to pid 1, so the ppid closure misses it too.
+ * REPRODUCED against the real binary on 2026-08-18: a BAR item 7 escapee was
+ * still running 31 minutes after its run was `SIGKILL`ed, `ppid 1`, and
+ * `lsof -d cwd` placed it in `…/r/<run-id>/1` — the exact directory the
+ * manifest recorded. Retention and reclamation therefore read the same list,
+ * which is what stops the two from drifting apart.
  */
 
 import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
@@ -49,7 +59,14 @@ import { RUN_DIR } from "../repo/layout.ts";
 import { itemRef } from "../repo/refs.ts";
 import type { UnfinishedRun } from "./interrupt.ts";
 import { parseRunMarker } from "./marker.ts";
-import { isAlive as defaultIsAlive, scanProcessTable, type ProcessTable } from "./processes.ts";
+import {
+  isAlive as defaultIsAlive,
+  noWorkspaceReading,
+  readWorkspaceOccupants,
+  scanProcessTable,
+  type ProcessTable,
+  type WorkspaceReading,
+} from "./processes.ts";
 import {
   directoryBytes,
   listOwnedRefs,
@@ -342,6 +359,8 @@ export interface StartSweepOptions {
   readonly currentRunId?: string;
   readonly sweptBy?: string;
   readonly table?: ProcessTable;
+  /** Injectable for tests; otherwise read per scope, and only when there is something to place. */
+  readonly occupants?: WorkspaceReading;
   readonly now?: () => number;
   readonly sleep?: (ms: number) => Promise<void>;
   readonly isAlive?: (pid: number) => boolean;
@@ -404,16 +423,44 @@ export async function sweepAtStart(options: StartSweepOptions): Promise<StartSwe
   }
 
   // 2. Processes, always.
+  //
+  // The working-directory reading is taken ONCE for the whole start, not once
+  // per run: it costs a `lsof` and a `ps` — MEASURED at 134–302 ms and ~20 ms
+  // on macOS 26.5.2 on 2026-08-18 — and every scope should be judged against
+  // one view of where things are standing, exactly as they are all judged
+  // against one process table. The residual, stated: a process that steps into
+  // a clone DURING the sweep is caught by the re-scan only if the ppid graph
+  // reaches it, because the re-scan reuses this reading. A fresh reading per
+  // re-scan per run would make a start pay `lsof` twice per stale run for a
+  // case the ppid link already covers.
+  const inScope = runs.filter((run) => runIds.has(run.runId));
+  const occupants: WorkspaceReading =
+    options.occupants ??
+    (table.rows.length > 0 && inScope.some((run) => (run.manifest?.clones.length ?? 0) > 0)
+      ? readWorkspaceOccupants()
+      : noWorkspaceReading(
+          "not read",
+          "no run in scope had a manifest-recorded directory to match a working directory against",
+        ));
+
   const processes: SweepOutcome[] = [];
   for (const runId of [...runIds].sort()) {
     const run = runs.find((candidate) => candidate.runId === runId);
     const recordedPids = run === undefined ? [] : spawnedProcesses(run.record.events).map((p) => p.pid);
+    // Ruling 15's manifest, handed to the sweep as the third link. It is what
+    // reaches an agent-spawned descendant that is unmarked and reparented to
+    // pid 1 — both links cut, and the ordinary case rather than the exotic one.
+    // The manifest is the authority: it recorded these directories BEFORE they
+    // existed, so a process standing in one is inside brigadier's isolation.
+    const workspaces = (run?.manifest?.clones ?? []).map((clone) => ({ item: clone.item, dir: clone.dir }));
     processes.push(
       await sweep({
         scope: { runId },
         sweptBy,
         table,
         recordedPids,
+        workspaces,
+        occupants,
         ...(options.now === undefined ? {} : { now: options.now }),
         ...(options.sleep === undefined ? {} : { sleep: options.sleep }),
         ...(options.isAlive === undefined ? {} : { isAlive: options.isAlive }),
@@ -426,7 +473,7 @@ export async function sweepAtStart(options: StartSweepOptions): Promise<StartSwe
   }
 
   // 3. Judge, having consulted the world.
-  const stale = runs.filter((run) => runIds.has(run.runId));
+  const stale = inScope;
   const knownRunIds = runs.map((run) => run.runId);
   const verdicts: RunVerdict[] = [];
   const reclaimedDirs: Array<{ runId: string; item: number; path: string; bytes: number }> = [];

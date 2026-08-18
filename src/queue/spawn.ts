@@ -38,6 +38,7 @@ import { RUN_MARKER_FLAG, WORKER_MARKER, workerMarkerValue } from "../agent/mark
 import { buildEnvironment, type LaunchProfile } from "../agent/profiles.ts";
 import { runMarkerArg } from "../run/marker.ts";
 import type { WorkKind } from "../work/kind.ts";
+import { RUN_ROOT_ENV } from "./refusal.ts";
 import {
   chooseEffortModel,
   leverFor,
@@ -68,6 +69,16 @@ export interface MarkedSpawnOptions {
   profile: LaunchProfile;
   runId: string;
   item: number;
+  /**
+   * Ruling 59: where this run's directory is, so a REFUSED DELEGATION can find
+   * the ledger to append itself to.
+   *
+   * The marker below says WHICH run and item; this says where that run lives.
+   * Two variables rather than one longer marker value, because both marker
+   * parsers split `<run-id>/<item>` on the last slash and a filesystem path is
+   * nothing but slashes.
+   */
+  runRoot: string;
   /** The clone. The agent's working directory and its lane root. */
   cwd: string;
   kind: WorkKind;
@@ -150,6 +161,11 @@ export function spawnMarkedAgent(options: MarkedSpawnOptions): MarkedSpawn {
       // Ruling 59 upgrades this from a boolean to an identity: a refused
       // delegation needs to know whose record to be written to.
       [WORKER_MARKER]: workerMarkerValue(options.runId, options.item),
+      // And the identity alone is not enough to FIND that record. Without this
+      // the refusal still stands — ruling 57's exit 3 is unconditional — and
+      // `recordRefusal` reports `no-home`, which is the honest answer and is
+      // also a run whose report can never say a delegation was attempted.
+      [RUN_ROOT_ENV]: options.runRoot,
       ...effortEnv,
       ...(options.secrets ?? {}),
     },

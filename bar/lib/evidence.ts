@@ -15,7 +15,8 @@
  *   `cat-file -t`   that object exists in the store, and is a commit
  *   `fsck`          the commit's tree and parents are reachable — this is the
  *                   one a hand-written ref file fails, and it fails loudly
- *   `log --format`  the history carries one commit per plan item
+ *   `merge-base`    each sha the RECORD claims for an item is a commit the
+ *                   deliverable branch can actually reach
  *   `cat-file blob` the merged tree holds the exact bytes a worker was asked to
  *                   write, which are a token generated after the binary was
  *                   built and cannot be baked into it
@@ -23,6 +24,13 @@
  * The last step is the load-bearing one. A liar can create a ref by doing real
  * git work — and if it does real git work with the worker's real output in it,
  * it has done the work, which is the whole point of the bar.
+ *
+ * THE RECORD IS AN INDEX, NOT A WITNESS. `merge-base` replaced a check that
+ * searched commit SUBJECTS for the plan's string ids — the product routes items
+ * by ordinal number, so that check was reading an incidental rendering, and a
+ * forger satisfied it by naming its commits after the plan. Reading the record
+ * is what makes the harness ask the right question; `git` is still the only
+ * thing allowed to answer it.
  */
 
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -68,6 +76,22 @@ export async function fsck(repo: string): Promise<string> {
 export async function commitSubjects(repo: string, ref: string): Promise<string[]> {
   const result = await git(repo, ["log", "--format=%s", ref]);
   return result.ok ? result.out.split("\n").filter((l) => l.length > 0) : [];
+}
+
+/**
+ * Does `ancestor` really lie in `descendant`'s history?
+ *
+ * `git merge-base --is-ancestor` walks the object graph and answers with an
+ * exit code, so it cannot be satisfied by a name. This is how a record's claim
+ * "item `alpha` landed as commit X" is put to the world: X has to be a commit
+ * that the deliverable branch can actually reach.
+ */
+export async function isAncestor(repo: string, ancestor: string, descendant: string): Promise<boolean> {
+  const result = await exec(["git", "merge-base", "--is-ancestor", ancestor, descendant], {
+    cwd: repo,
+    timeoutMs: 60_000,
+  });
+  return result.code === 0;
 }
 
 export async function commitParents(repo: string, sha: string): Promise<string[]> {
@@ -141,6 +165,16 @@ export interface RunEvidence {
   refSha: string | undefined;
   refType: string | undefined;
   fsckProblems: string;
+  /**
+   * Every commit the record CLAIMS for an item, put to `git` one item at a
+   * time.
+   *
+   * Keyed by the record's own `id`. `type` is what `git cat-file -t` answered,
+   * `reachable` is what `git merge-base --is-ancestor` answered against the
+   * resolved integration sha. The record says which sha to look at; these two
+   * fields are the world's reply, and an item asserts on the reply.
+   */
+  itemCommits: Map<string, { sha: string | undefined; type: string | undefined; reachable: boolean }>;
   subjects: string[];
   /** Ruling 51: integration MERGES; a chain of single-parent commits is not one. */
   mergeParents: Array<{ sha: string; parents: string[] }>;
@@ -176,6 +210,18 @@ export async function gatherRunEvidence(repo: string, report: string): Promise<R
   const refSha = ref ? await revParse(repo, ref) : undefined;
 
   const shape = ref && refSha ? await historyShape(repo, ref) : [];
+
+  // The record names shas; git says whether they exist and whether the
+  // deliverable can reach them. Done here, once, so every item asserts on the
+  // same answers.
+  const itemCommits = new Map<string, { sha: string | undefined; type: string | undefined; reachable: boolean }>();
+  for (const entry of record?.items ?? []) {
+    const sha = typeof entry.commit === "string" && entry.commit.length > 0 ? entry.commit : undefined;
+    const type = sha === undefined ? undefined : await objectType(repo, sha);
+    const reachable = sha !== undefined && type === "commit" && refSha !== undefined && (await isAncestor(repo, sha, refSha));
+    itemCommits.set(entry.id, { sha, type, reachable });
+  }
+
   return {
     report,
     recordPath,
@@ -184,6 +230,7 @@ export async function gatherRunEvidence(repo: string, report: string): Promise<R
     refSha,
     refType: refSha ? await objectType(repo, refSha) : undefined,
     fsckProblems: await fsck(repo),
+    itemCommits,
     subjects: ref && refSha ? await commitSubjects(repo, ref) : [],
     mergeParents: shape.filter((c) => c.parents.length >= 2),
     files: ref && refSha ? await treeFiles(repo, ref) : new Map(),
@@ -239,11 +286,55 @@ export function proofOfWork(e: RunEvidence, expect: WorkExpectation): Checks {
     e.fsckProblems.length === 0 ? "no broken links, no missing objects" : e.fsckProblems,
   );
 
-  const missingCommits = expect.itemIds.filter((id) => !e.subjects.some((s) => s.includes(id)));
+  // WHAT THE RECORD SAYS, PUT TO THE WORLD.
+  //
+  // This check used to look for each plan item's string `id` inside a commit
+  // SUBJECT. That was the "assert on a flag" mistake with more characters: a
+  // subject is a rendering, the product identifies items by ordinal number, and
+  // `bar/fakes/forger.ts` satisfied it for free by writing `-m "<id>:
+  // integrated"` over commits it chained without cloning anything. The same
+  // promise — every plan item contributed work that reached the deliverable —
+  // is now read out of the record and then checked against `git`.
+  const claimed = new Map((e.record?.items ?? []).map((entry) => [entry.id, entry]));
+  const unaccounted = expect.itemIds.filter((id) => {
+    const entry = claimed.get(id);
+    return entry === undefined || entry.status !== "integrated" || !Number.isInteger(entry.number) || (entry.number ?? 0) < 1;
+  });
   checks.expect(
-    "the integration history carries one commit per plan item",
-    expect.itemIds.length > 0 && missingCommits.length === 0,
-    `expected ${expect.itemIds.join(", ")}; git log --format=%s gave ${e.subjects.join(" | ") || "nothing"}`,
+    "the record accounts for every plan item, by the ordinal the product routes it under",
+    expect.itemIds.length > 0 && unaccounted.length === 0,
+    `expected ${expect.itemIds.join(", ")} integrated; record.items gave ${
+      [...claimed.values()].map((i) => `${i.id}#${i.number ?? "NO NUMBER"}=${i.status}`).join(", ") || "no items at all"
+    }`,
+  );
+  // The record hands over shas; `git cat-file -t` says whether they are commits
+  // and `git merge-base --is-ancestor` says whether the deliverable can reach
+  // them. Distinct, because one tip reused for every item is a chain somebody
+  // wrote at leisure rather than N pieces of work that were merged.
+  const landings = expect.itemIds.map((id) => ({ id, seen: e.itemCommits.get(id) }));
+  const shas = landings.map((l) => l.seen?.sha).filter((s): s is string => s !== undefined);
+  checks.expect(
+    "each item's recorded commit is a real object the deliverable branch can reach",
+    expect.itemIds.length > 0 &&
+      landings.every((l) => l.seen?.type === "commit" && l.seen.reachable) &&
+      new Set(shas).size === expect.itemIds.length,
+    landings
+      .map(
+        (l) =>
+          `${l.id} -> ${l.seen?.sha?.slice(0, 12) ?? "NO COMMIT RECORDED"} (git cat-file -t: ${
+            l.seen?.type ?? "no object"
+          }, ancestor of ${e.refSha?.slice(0, 12) ?? "no integration sha"}: ${l.seen?.reachable ?? false})`,
+      )
+      .join("; ") + `; distinct commits: ${new Set(shas).size} of ${expect.itemIds.length}`,
+  );
+  // Ruling 51: the deliverable is the SHA, not the name. A record that names a
+  // branch it never published is the one-level-up form of ruling 52's "a
+  // missing result rendering as a satisfied requirement".
+  checks.expect(
+    "the record's integrationSha is what `git rev-parse` answers in the operator's repository",
+    e.record?.integrationSha !== undefined && e.refSha !== undefined && e.record.integrationSha === e.refSha,
+    `record claimed ${e.record?.integrationSha ?? "NO integrationSha — the record named a branch without evidence it exists"}; ` +
+      `git rev-parse ${e.record?.integrationRef ?? "<no ref>"} answered ${e.refSha ?? "nothing"}`,
   );
   // Ruling 51: integration is a MERGE of work done elsewhere, not a commit made
   // on the spot. A forger that hashes the answers and chains single-parent

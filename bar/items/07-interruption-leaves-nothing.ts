@@ -46,6 +46,7 @@ import { Checks, excerpt } from "../lib/checks.ts";
 import { probeFeature } from "../lib/feature.ts";
 import { isolatedPath, plantFleet } from "../lib/fixtures.ts";
 import { ensureDir, listTree } from "../lib/fs.ts";
+import { cloneDirsUnder } from "../lib/layout.ts";
 import { makeRepo, plantSeeds } from "../lib/git.ts";
 import { combine, noCredentialFreeChecks, type LiveHalf } from "../lib/halves.ts";
 import { isAlive } from "../lib/inflight.ts";
@@ -149,29 +150,41 @@ function fileSize(path: string): number {
   }
 }
 
+/**
+ * The clones this run created, at the path the PRODUCT writes them to.
+ *
+ * This function enumerated `<run-root>/<dir>/clones/<n>` for nine rounds. The
+ * product writes `<run-root>/r/<run-id>/<n>` — ruling 61's deliberately short
+ * shape — so it always returned `[]`, and one path bug produced two symptoms
+ * that both read as product failures: `retained.length === 0` rendered as
+ * *"NONE — the only copy of that work was destroyed"*, accusing the product of
+ * reproducing finding 92 while `sweepAtStart` was retaining correctly, and the
+ * same emptiness gated readiness below, which is where item 7's *"the kill
+ * landed too early"* disclaimer came from.
+ *
+ * The shape now comes from `bar/lib/layout.ts`, which reads the product's own
+ * source as TEXT — `bar/` still imports nothing from `src/` — and
+ * `bar/lib/layout.test.ts` fails if the two ever diverge, with the old shape as
+ * its negative control.
+ */
 function clonesUnder(runsRoot: string): Array<{ path: string; hadCommits: boolean; bytes: number }> {
   const found: Array<{ path: string; hadCommits: boolean; bytes: number }> = [];
-  if (!existsSync(runsRoot)) return found;
-  for (const runDir of readdirSync(runsRoot)) {
-    const full = join(runsRoot, runDir, "clones");
-    if (!existsSync(full) || !statSync(full).isDirectory()) continue;
-    for (const child of readdirSync(full)) {
-      const clone = join(full, child);
-      if (!existsSync(join(clone, ".git"))) continue;
-      const bytes = listTree(clone).reduce((sum, rel) => sum + fileSize(join(clone, rel)), 0);
-      // "Had commits" is decided by reading the object store, not by a marker.
-      const head = Bun.spawnSync(["git", `--git-dir=${join(clone, ".git")}`, "rev-parse", "HEAD"], {
+  for (const clone of cloneDirsUnder(runsRoot)) {
+    const bytes = listTree(clone.path).reduce((sum, rel) => sum + fileSize(join(clone.path, rel)), 0);
+    // "Had commits" is decided by reading the object store, not by a marker.
+    const git = (ref: string): string => {
+      const out = Bun.spawnSync(["git", `--git-dir=${join(clone.path, ".git")}`, "rev-parse", ref], {
         stdout: "pipe",
         stderr: "pipe",
       });
-      const base = Bun.spawnSync(["git", `--git-dir=${join(clone, ".git")}`, "rev-parse", "bar-base"], {
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      const headSha = new TextDecoder().decode(head.stdout).trim();
-      const baseSha = new TextDecoder().decode(base.stdout).trim();
-      found.push({ path: clone, hadCommits: headSha.length === 40 && headSha !== baseSha, bytes });
-    }
+      return new TextDecoder().decode(out.stdout).trim();
+    };
+    const headSha = git("HEAD");
+    // The clone's base is on a fixed local branch — `src/repo/refs.ts` calls it
+    // `brigadier-base`, and the honest fixture uses `bar-base`. Whichever
+    // resolves is the left-hand side; work is HEAD having moved off it.
+    const baseSha = [git("brigadier-base"), git("bar-base")].find((sha) => sha.length === 40) ?? "";
+    found.push({ path: clone.path, hadCommits: headSha.length === 40 && headSha !== baseSha, bytes });
   }
   return found;
 }

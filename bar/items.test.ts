@@ -37,7 +37,7 @@ import { judgeBinaryRefusal } from "./items/09-ambient-instructions-suppressed.t
 import { judgeArtifact, pinNear, scanForMarkers, type ArtifactObservations } from "./items/10-the-artifact-ships.ts";
 import { judgeReport, type ReportObservations } from "./items/11-report-fits-the-window.ts";
 import { judgeSecret } from "./items/12-secret-not-persisted.ts";
-import { isUpwardClamp, judgeCost, savingsClaims, type CostObservations } from "./items/13-cost-model.ts";
+import { isUpwardClamp, judgeCost, savingsClaims, verifyIntegration, type CostObservations } from "./items/13-cost-model.ts";
 
 import { Checks } from "./lib/checks.ts";
 import type { RunRecord } from "./lib/contract.ts";
@@ -72,16 +72,21 @@ describe("proofOfWork — the check a printer cannot satisfy", () => {
     record: {
       runId: "r1",
       integrationRef: "refs/heads/brigadier/r1",
+      integrationSha: "a".repeat(40),
+      base: { ref: "refs/brigadier/r1/base", sha: "e".repeat(40) },
       runRoot: "/home/me/.brigadier/runs/r1",
       bindingFilter: "the plan had 1 item(s)",
       workers: 1,
       refusedDelegations: 0,
-      items: [],
+      // The product routes items by ORDINAL. `alpha` is the operator's handle;
+      // `number` is the identity the clone, the marker and the item ref carry.
+      items: [{ id: "alpha", number: 1, status: "integrated", commit: "f".repeat(40), itemRef: "refs/brigadier/r1/item/1" }],
     },
     refSha: "a".repeat(40),
     refType: "commit",
     fsckProblems: "",
-    subjects: ["alpha: integrated", "alpha: work"],
+    itemCommits: new Map([["alpha", { sha: "f".repeat(40), type: "commit", reachable: true }]]),
+    subjects: ["brigadier: integrate item 1 of run r1 (wave 1)"],
     mergeParents: [{ sha: "b".repeat(40), parents: ["c".repeat(40), "d".repeat(40)] }],
     files: new Map([["alpha.txt", "TOKEN-1\n"]]),
     refsAfter: ["refs/heads/brigadier/r1"],
@@ -114,9 +119,85 @@ describe("proofOfWork — the check a printer cannot satisfy", () => {
     expect(names(checks)).toContain("the merged tree contains every worker's actual output");
   });
 
-  test("fails when the history is missing a commit per item", () => {
-    const checks = proofOfWork({ ...good, subjects: [] }, expect1);
-    expect(names(checks)).toContain("the integration history carries one commit per plan item");
+  test("a commit SUBJECT naming the plan item proves nothing on its own", () => {
+    // The shape `bar/fakes/forger.ts` used: chain commits, name each `-m "<id>:
+    // integrated"`, publish no record entry for them. The old check searched
+    // subjects for the id and passed; the product does not even write that
+    // subject, so the check was measuring the forgery's manners.
+    const checks = proofOfWork(
+      {
+        ...good,
+        subjects: ["alpha: integrated"],
+        record: { ...(good.record as RunRecord), items: [] },
+        itemCommits: new Map(),
+      },
+      expect1,
+    );
+    expect(names(checks)).toContain("the record accounts for every plan item, by the ordinal the product routes it under");
+    expect(names(checks)).toContain("each item's recorded commit is a real object the deliverable branch can reach");
+  });
+
+  test("fails when the record claims an item that is not `integrated`", () => {
+    const record = good.record as RunRecord;
+    const checks = proofOfWork(
+      { ...good, record: { ...record, items: record.items.map((i) => ({ ...i, status: "failed" as const })) } },
+      expect1,
+    );
+    expect(names(checks)).toContain("the record accounts for every plan item, by the ordinal the product routes it under");
+  });
+
+  test("fails when the record omits the ordinal the product routes by", () => {
+    const record = good.record as RunRecord;
+    const checks = proofOfWork(
+      { ...good, record: { ...record, items: record.items.map(({ number: _n, ...rest }) => rest) } },
+      expect1,
+    );
+    expect(names(checks)).toContain("the record accounts for every plan item, by the ordinal the product routes it under");
+  });
+
+  test("fails when the recorded commit is not an object the deliverable can reach", () => {
+    const checks = proofOfWork(
+      { ...good, itemCommits: new Map([["alpha", { sha: "f".repeat(40), type: "commit", reachable: false }]]) },
+      expect1,
+    );
+    expect(names(checks)).toContain("each item's recorded commit is a real object the deliverable branch can reach");
+  });
+
+  test("fails when two items are recorded against ONE commit — a chain, not N merges", () => {
+    const record = good.record as RunRecord;
+    const twoItems: RunRecord = {
+      ...record,
+      items: [
+        { id: "alpha", number: 1, status: "integrated", commit: "f".repeat(40) },
+        { id: "beta", number: 2, status: "integrated", commit: "f".repeat(40) },
+      ],
+    };
+    const checks = proofOfWork(
+      {
+        ...good,
+        record: twoItems,
+        itemCommits: new Map([
+          ["alpha", { sha: "f".repeat(40), type: "commit", reachable: true }],
+          ["beta", { sha: "f".repeat(40), type: "commit", reachable: true }],
+        ]),
+        mergeParents: [
+          { sha: "b".repeat(40), parents: ["c".repeat(40), "d".repeat(40)] },
+          { sha: "9".repeat(40), parents: ["8".repeat(40), "7".repeat(40)] },
+        ],
+        files: new Map([["alpha.txt", "TOKEN-1\n"]]),
+      },
+      { expected: new Map([["alpha.txt", "TOKEN-1"]]), itemIds: ["alpha", "beta"] },
+    );
+    expect(names(checks)).toContain("each item's recorded commit is a real object the deliverable branch can reach");
+  });
+
+  test("fails when the record names a branch but no integrationSha", () => {
+    const record = good.record as RunRecord;
+    const { integrationSha: _s, ...withoutSha } = record;
+    const checks = proofOfWork({ ...good, record: withoutSha }, expect1);
+    expect(names(checks)).toContain(
+      "the record's integrationSha is what `git rev-parse` answers in the operator's repository",
+    );
   });
 
   test("ruling 61 is checked by realpath, not lexically", () => {
@@ -822,18 +903,38 @@ describe("item 13 — the cost model predicts, enforces, and says what it could 
       lowerBound: false,
     },
     items: [
-      { id: "cheap", status: "integrated", agent: "codex", model: "codex-m", effort: "medium", attempts: 1 },
-      { id: "declared-hard", status: "integrated", agent: "codex", model: "codex-m", effort: "medium", difficulty: "hard", clampedTo: "medium" },
-      { id: "third", status: "unrun" },
-      { id: "fourth", status: "cancelled" },
+      { id: "cheap", number: 1, status: "integrated", agent: "codex", model: "codex-m", effort: "medium", attempts: 1, commit: "1".repeat(40) },
+      { id: "declared-hard", number: 2, status: "integrated", agent: "codex", model: "codex-m", effort: "medium", difficulty: "hard", clampedTo: "medium", commit: "2".repeat(40) },
+      { id: "third", number: 3, status: "unrun" },
+      { id: "fourth", number: 4, status: "cancelled" },
     ],
   };
+  /** What `gatherRunEvidence` learned by putting the record's shas to `git`. */
+  const commitsOf = (
+    entries: ReadonlyArray<[string, string]>,
+  ): Map<string, { sha: string | undefined; type: string | undefined; reachable: boolean }> =>
+    new Map(entries.map(([id, sha]) => [id, { sha, type: "commit", reachable: true }]));
+
+  const cappedCommits = commitsOf([
+    ["cheap", "1".repeat(40)],
+    ["declared-hard", "2".repeat(40)],
+  ]);
+  const capped = verifyIntegration({ record, itemCommits: cappedCommits, refSha: "a".repeat(40) });
+  const uncappedRecord: RunRecord = {
+    ...record,
+    items: record.items.map((i, index) => ({ ...i, status: "integrated" as const, commit: `${index + 1}`.repeat(40) })),
+  };
+  const uncapped = verifyIntegration({
+    record: uncappedRecord,
+    itemCommits: commitsOf(uncappedRecord.items.map((i) => [i.id, i.commit as string])),
+    refSha: "a".repeat(40),
+  });
   const clean: CostObservations = {
     report:
       "estimate 0.40 – 1.90 USD\nactual 0.14 USD against predicted 0.40 – 1.90\nceilings — soft reached: no new items dispatched, hard reached: work in flight cancelled\ndeclared-hard: difficulty: hard (clamped to medium)\nquota — codex: read\nlevers active: prompt cache",
     record,
-    integratedCount: 2,
-    uncappedIntegratedCount: 4,
+    integrated: capped,
+    uncappedIntegrated: uncapped,
     plannedCount: 4,
   };
 
@@ -841,15 +942,65 @@ describe("item 13 — the cost model predicts, enforces, and says what it could 
     expect(names(judgeCost(clean))).toEqual([]);
   });
 
+  test("integration is counted from the record and then CONFIRMED against git", () => {
+    // Two integrated, one unrun, one cancelled. The product's integration
+    // commits read `brigadier: integrate item <n> of run <id>` and never
+    // `<id>: integrated`, so counting subjects read ZERO here and made the
+    // ceiling check fail for a reason that had nothing to do with ceilings —
+    // hiding the real gap, which is `cost.actual` never being assigned.
+    expect(capped).toEqual({ claimed: 2, verified: 2, detail: expect.any(String) });
+    expect(verifyIntegration({ record: undefined, itemCommits: new Map(), refSha: undefined }).claimed).toBe(0);
+  });
+
+  test("a record claiming integration that git cannot confirm is claimed-but-unverified", () => {
+    // The forger's exact shape: every item pointed at the SAME tip commit, and
+    // no ordinal. Real objects, real refs, one chain, no work.
+    const forged: RunRecord = {
+      ...record,
+      items: record.items.map(({ number: _n, ...rest }) => ({ ...rest, status: "integrated" as const, commit: "9".repeat(40) })),
+    };
+    const claim = verifyIntegration({
+      record: forged,
+      itemCommits: commitsOf(forged.items.map((i) => [i.id, "9".repeat(40)])),
+      refSha: "a".repeat(40),
+    });
+    expect(claim.claimed).toBe(4);
+    expect(claim.verified).toBe(0);
+    expect(names(judgeCost({ ...clean, record: forged, integrated: claim, uncappedIntegrated: claim }))).toContain(
+      "every item the record calls `integrated` has its OWN commit on the deliverable branch",
+    );
+  });
+
+  test("a commit the deliverable branch cannot reach is not an integration", () => {
+    const unreachable = new Map(cappedCommits);
+    unreachable.set("cheap", { sha: "1".repeat(40), type: "commit", reachable: false });
+    expect(verifyIntegration({ record, itemCommits: unreachable, refSha: "a".repeat(40) }).verified).toBe(1);
+  });
+
+  test("a clamp that did not happen still has to be printed, in the form the record states", () => {
+    // An earlier version demanded the word "clamped" unconditionally, so a run
+    // that correctly clamped nothing failed a ruling-67 check it satisfied.
+    const unclamped: RunRecord = {
+      ...record,
+      items: record.items.map((i) => (i.id === "declared-hard" ? { ...i, difficulty: "medium", clampedTo: "medium" } : i)),
+    };
+    const printed = clean.report.replace("difficulty: hard (clamped to medium)", "difficulty: medium");
+    expect(names(judgeCost({ ...clean, record: unclamped, report: printed }))).toEqual([]);
+    // And it still fails when that line is absent altogether.
+    expect(
+      names(judgeCost({ ...clean, record: unclamped, report: clean.report.replace("difficulty: hard (clamped to medium)", "") })),
+    ).toContain("the difficulty clamp is recorded per item and printed (ruling 67)");
+  });
+
   test("fails when the ceiling only printed and every item still ran", () => {
-    expect(names(judgeCost({ ...clean, integratedCount: 4 }))).toContain(
+    expect(names(judgeCost({ ...clean, integrated: uncapped }))).toContain(
       "the same plan without ceilings integrates MORE — so the ceiling is the cause (ruling 66)",
     );
   });
 
   test("fails when the binary simply does less, with or without a ceiling", () => {
     // Two of four either way: the shortfall is the binary, not the ceiling.
-    expect(names(judgeCost({ ...clean, uncappedIntegratedCount: 2 }))).toContain(
+    expect(names(judgeCost({ ...clean, uncappedIntegrated: capped }))).toContain(
       "the same plan without ceilings integrates MORE — so the ceiling is the cause (ruling 66)",
     );
   });

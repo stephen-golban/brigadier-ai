@@ -21,6 +21,18 @@
  *   - every process brigadier causes to exist carries a marker in its COMMAND
  *     LINE (`marker.ts`), never a name pattern, or this has nothing to match.
  *
+ * AND A THIRD LINK, BECAUSE THE FIRST TWO ARE BOTH CUT IN THE ORDINARY CASE.
+ * brigadier marks what IT spawns; it cannot write argv for a process an AGENT
+ * spawns, and that process's ppid becomes 1 the moment the shell that launched
+ * it exits. REPRODUCED on this host on 2026-08-18 with only the marker and the
+ * ppid graph: a `/bin/sh` loop spawned `detached: true` from a short-lived
+ * launcher, standing in the clone, came back `ppid 1`, and this sweep reported
+ * `reclaimedPids: [worker, sleep], survivors: []` while its heartbeat grew from
+ * 6 to 11 bytes through the measurement. So the closure also reclaims a process
+ * whose WORKING DIRECTORY is inside a directory the run's manifest recorded
+ * before creating it — ruling 15's proof of provenance, applied to a process —
+ * with one exemption for the operator (`Disposition["terminal"]`).
+ *
  * RULING 63 — WHAT THIS FILE MAY AND MAY NOT RECLAIM. Processes ALWAYS.
  * Directories only for runs that are complete, and that is `reclaim.ts` and
  * `start.ts`, deliberately not here. A leaked process consumes the machine and
@@ -41,17 +53,22 @@
  * see, so a report can carry the qualification rather than dropping it.
  */
 
+import { realpathSync } from "node:fs";
+import { sep } from "node:path";
 import type { ReclamationEvidence } from "../isolation/index.ts";
 import { markerMatches, parseRunMarker, type MarkerScope } from "./marker.ts";
 import {
   ancestorsOf,
   descendantsOf,
   isAlive as defaultIsAlive,
+  noWorkspaceReading,
+  readWorkspaceOccupants,
   scanProcessTable,
   signalPid as defaultSignalPid,
   type ProcessRow,
   type ProcessTable,
   type SignalResult,
+  type WorkspaceReading,
 } from "./processes.ts";
 
 /**
@@ -77,6 +94,22 @@ export type Disposition =
   /** This process or one of its ancestors. Never signalled — see `ancestorsOf`. */
   | "self"
   /**
+   * Standing inside one of this run's clones AND holding a CONTROLLING
+   * TERMINAL. Never signalled.
+   *
+   * This is a person. brigadier retains the clones of interrupted runs and
+   * prints their paths, so `cd`-ing into one to read the work is a thing the
+   * product invites; every process brigadier itself spawns has its stdio on
+   * pipes and no controlling terminal. Killing this would be the
+   * working-directory rule doing exactly what ruling 38 forbids the marker to
+   * do — reclaiming something on a resemblance rather than on provenance.
+   *
+   * NOT a survivor. `survivors` means brigadier signalled and could not confirm
+   * death; this was deliberately never signalled, and it is named with its pid
+   * in the sweep's limits instead so the qualification travels with the report.
+   */
+  | "terminal"
+  /**
    * Turned up in the RE-SCAN, after the kill round had already finished.
    *
    * Always a survivor, even when the follow-up kill confirms it dead. Its
@@ -91,8 +124,10 @@ export interface MatchedProcess {
   readonly ppid: number;
   readonly commandLine: string;
   readonly item: number;
-  /** False for an unmarked descendant reached through the ppid graph. */
+  /** False for an unmarked process reached through the ppid graph or its working directory. */
   readonly marked: boolean;
+  /** Which link put this process in scope. Named in the report, because the three differ in strength. */
+  readonly via: "marker" | "descendant" | "working-directory";
   readonly disposition: Disposition;
   /** Why it ended up in that disposition, in words a report can print. */
   readonly note: string;
@@ -124,6 +159,18 @@ export interface SweepOutcome {
   readonly coverage: SweepCoverage;
 }
 
+/**
+ * One directory brigadier RECORDED IN ITS MANIFEST BEFORE IT CREATED IT, and
+ * the item it belongs to.
+ *
+ * The item travels with the directory so that a process found only by where it
+ * is standing still lands in per-item evidence, exactly as a marked one does.
+ */
+export interface Workspace {
+  readonly item: number;
+  readonly dir: string;
+}
+
 export interface SweepOptions {
   readonly scope: MarkerScope;
   /** Named in every refusal `assertReclaimed` can raise, so it has to identify a caller. */
@@ -150,6 +197,29 @@ export interface SweepOptions {
    * off contains nothing.
    */
   readonly recordedPids?: readonly number[];
+  /**
+   * This run's clone directories, from the manifest that recorded them before
+   * they existed.
+   *
+   * NOT advisory, unlike `recordedPids`, and the asymmetry is the point. A pid
+   * is a number the kernel reuses within minutes, so a recorded pid proves
+   * nothing about the process holding it now. A directory brigadier wrote down
+   * before creating it is ruling 15's own proof of provenance, and a process
+   * standing inside it is standing inside brigadier's isolation.
+   *
+   * Empty means the caller has no manifest to offer — an item-scoped sweep from
+   * a caller that never had one, or a test — and the sweep falls back to the
+   * command line and the ppid graph alone.
+   */
+  readonly workspaces?: readonly Workspace[];
+  /**
+   * Where every process is standing, and who holds a terminal.
+   *
+   * Defaults to reading it, and ONLY when there is something to match: no
+   * workspaces or no rows means no reader is forked at all, so a caller passing
+   * a static table stays hermetic and cheap.
+   */
+  readonly occupants?: WorkspaceReading;
   readonly now?: () => number;
   readonly sleep?: (ms: number) => Promise<void>;
   readonly signal?: (pid: number, signal: NodeJS.Signals) => SignalResult;
@@ -161,41 +231,151 @@ export interface SweepOptions {
 
 const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** One process the sweep is responsible for: a marked one, or a descendant of one. */
+/** One process the sweep is responsible for, and the link that made it so. */
 interface Candidate {
   row: ProcessRow;
   item: number;
   marked: boolean;
+  via: "marker" | "descendant" | "working-directory";
+}
+
+/** What the closure deliberately left alone, so the caller can report it. */
+interface Closure {
+  candidates: Candidate[];
+  /** Standing in a clone, holding a controlling terminal. A person, never signalled. */
+  occupiedByTerminal: Candidate[];
+  /**
+   * Processes in a clone that DESCEND from one of those people.
+   *
+   * Counted rather than listed: they are `sleep`, `git`, `grep` — whatever the
+   * person's shell is running this second — and naming them would bury the one
+   * pid the operator can act on. Sparing them is not politeness: a rule that
+   * kills the children of the shell it just declined to kill has not spared
+   * anybody.
+   */
+  sharedWithAPerson: number;
 }
 
 /**
- * The set of processes this scope is responsible for: every process carrying
- * the marker, plus every process descended from one.
+ * `realpath` on both sides, because `/var` is a symlink to `/private/var` on
+ * macOS and a lexical comparison against an unresolved manifest entry judges a
+ * tree that is not the one the process is standing in. The same argument
+ * `reclaim.ts` makes for deletion, at the same blast radius: this one kills.
  *
- * Ruling 38 says every process brigadier CAUSES TO EXIST carries the marker,
- * and brigadier cannot mark what an agent spawns for itself. A worker that runs
- * `sh build.sh &` leaves an unmarked child that outlives it and is reparented to
- * pid 1; the marked set misses it, the ppid column of the same reading does not.
- * A sweep that reported `survivors: []` while that child kept writing would be a
- * check reporting success for something that did not happen.
- *
- * A descendant inherits its nearest marked ancestor's item, so evidence stays
- * per-item.
+ * An unresolvable path falls back to the string, which can only ever make the
+ * comparison FAIL to match — the safe direction, since a miss leaks a process
+ * and a false match kills a stranger.
  */
-function closureFor(table: ProcessTable, scope: MarkerScope): Candidate[] {
+function resolved(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+function inside(cwd: string, dir: string): boolean {
+  return cwd === dir || cwd.startsWith(dir.endsWith(sep) ? dir : dir + sep);
+}
+
+/**
+ * The set of processes this scope is responsible for, by three links of
+ * decreasing strength.
+ *
+ *   1. THE MARKER, in the command line. Ruling 38's own channel, and proof that
+ *      brigadier spawned this process itself.
+ *   2. THE PPID GRAPH. Ruling 38 says every process brigadier CAUSES TO EXIST
+ *      carries the marker, and brigadier cannot mark what an agent spawns for
+ *      itself: a worker that runs `sh build.sh &` leaves an unmarked child, and
+ *      the marked set misses it while the ppid column of the same reading does
+ *      not.
+ *   3. THE WORKING DIRECTORY, against directories the manifest recorded before
+ *      creating them. This is the link that survives what cuts the first two at
+ *      once, which is the ORDINARY case and not the exotic one: the escapee is
+ *      unmarked because an agent spawned it, and its ppid is 1 within
+ *      milliseconds because the shell that launched it exited. REPRODUCED on
+ *      2026-08-18 with links 1 and 2 alone: `reclaimedPids: [worker, sleep],
+ *      survivors: []`, while the escapee's heartbeat grew from 6 to 11 bytes
+ *      through the measurement.
+ *
+ * A process found by any link contributes its own ppid-descendants, so an
+ * escapee that has since forked is reclaimed with its children rather than
+ * alone. Every non-marker candidate inherits the item of whatever put it in
+ * scope, so evidence stays per-item.
+ *
+ * THE ONE OCCUPANT THAT IS NEVER SIGNALLED is a process holding a controlling
+ * terminal. See `Disposition["terminal"]`: brigadier prints the paths of the
+ * clones it retains, so an operator reading one is a case the product invites,
+ * and it is separated out here rather than filtered later so that it can never
+ * be reached as somebody else's descendant either.
+ */
+function closureFor(
+  table: ProcessTable,
+  scope: MarkerScope,
+  workspaces: readonly Workspace[],
+  occupants: WorkspaceReading,
+): Closure {
   const byPid = new Map(table.rows.map((row) => [row.pid, row] as const));
   const candidates = new Map<number, Candidate>();
+  const occupiedByTerminal: Candidate[] = [];
+
+  // The terminal exemption is deliberately NOT applied here. Links 1 and 2 are
+  // proof that brigadier caused the process to exist, and a worker started from
+  // the operator's own terminal is in the operator's session — sparing it would
+  // turn the guard into "never reclaim anything when brigadier is run the
+  // ordinary way". Only the working-directory link, which proves location and
+  // not provenance, defers to a person.
+  const adopt = (root: ProcessRow, item: number, via: Candidate["via"]): void => {
+    for (const pid of descendantsOf([root.pid], table.rows)) {
+      if (candidates.has(pid)) continue;
+      const row = pid === root.pid ? root : byPid.get(pid);
+      if (row === undefined) continue;
+      candidates.set(pid, {
+        row,
+        item,
+        marked: pid === root.pid && via === "marker",
+        via: pid === root.pid ? via : "descendant",
+      });
+    }
+  };
+
   for (const row of table.rows) {
     if (!markerMatches(row.commandLine, scope)) continue;
-    const item = itemOf(row, scope);
-    candidates.set(row.pid, { row, item, marked: true });
-    for (const pid of descendantsOf([row.pid], table.rows)) {
-      if (candidates.has(pid)) continue;
-      const descendant = byPid.get(pid);
-      if (descendant !== undefined) candidates.set(pid, { row: descendant, item, marked: false });
+    candidates.delete(row.pid);
+    adopt(row, itemOf(row, scope), "marker");
+  }
+
+  let sharedWithAPerson = 0;
+  if (workspaces.length > 0 && occupants.cwds.size > 0) {
+    const dirs = workspaces.map((workspace) => ({ item: workspace.item, dir: resolved(workspace.dir) }));
+    for (const row of table.rows) {
+      if (candidates.has(row.pid)) continue;
+      const cwd = occupants.cwds.get(row.pid);
+      if (cwd === undefined) continue;
+      const home = dirs.find((workspace) => inside(cwd, workspace.dir));
+      if (home === undefined) continue;
+      if (occupants.interactive.has(row.pid)) {
+        occupiedByTerminal.push({ row, item: home.item, marked: false, via: "working-directory" });
+        continue;
+      }
+      // Whatever that person's shell is running right now is theirs as well.
+      // Without this the exemption is worthless: the shell survives and every
+      // command it runs inside the clone is killed under it.
+      let theirs = false;
+      for (const ancestor of ancestorsOf(row.pid, table.rows)) {
+        if (!occupants.interactive.has(ancestor)) continue;
+        theirs = true;
+        break;
+      }
+      if (theirs) {
+        sharedWithAPerson += 1;
+        continue;
+      }
+      adopt(row, home.item, "working-directory");
     }
   }
-  return [...candidates.values()];
+
+  return { candidates: [...candidates.values()], occupiedByTerminal, sharedWithAPerson };
 }
 
 /**
@@ -230,12 +410,40 @@ export async function sweep(options: SweepOptions): Promise<SweepOutcome> {
   const table = options.table ?? scanProcessTable();
   const injected = options.table;
   const rescan = options.rescan ?? (injected === undefined ? scanProcessTable : () => injected);
+  const workspaces = options.workspaces ?? [];
+
+  // The reader is forked ONLY when it could change an answer: no workspaces to
+  // match against, or no rows to match, and the whole reading is skipped. That
+  // keeps every caller that injects a static table hermetic and free.
+  const occupy = (): WorkspaceReading => {
+    if (options.occupants !== undefined) return options.occupants;
+    if (workspaces.length === 0) {
+      return noWorkspaceReading("not read", "the caller offered no manifest-recorded directories to match a working directory against");
+    }
+    return readWorkspaceOccupants();
+  };
+  const occupants = table.rows.length === 0
+    ? noWorkspaceReading("not read", "the process table reading had no rows, so there was nothing to place")
+    : occupy();
 
   const protectedPids = ancestorsOf(selfPid, table.rows);
   const matched: MatchedProcess[] = [];
   const pending: Candidate[] = [];
+  const closure = closureFor(table, options.scope, workspaces, occupants);
 
-  for (const candidate of closureFor(table, options.scope)) {
+  for (const person of closure.occupiedByTerminal) {
+    matched.push({
+      ...describe(person),
+      disposition: "terminal",
+      note:
+        `standing in ${occupants.cwds.get(person.row.pid) ?? "one of this run's clones"} and holding a ` +
+        "controlling terminal as its own process group leader — that is a person, not a leaked worker. " +
+        "brigadier prints the paths of the clones it retains, so reading one is a thing it invited. " +
+        "Reported, never signalled.",
+    });
+  }
+
+  for (const candidate of closure.candidates) {
     if (protectedPids.has(candidate.row.pid) || candidate.row.pid <= 1) {
       matched.push({
         ...describe(candidate),
@@ -289,7 +497,10 @@ export async function sweep(options: SweepOptions): Promise<SweepOutcome> {
         disposition: "reclaimed",
         note: candidate.marked
           ? "confirmed gone with signal 0"
-          : "an UNMARKED descendant of a marked process, confirmed gone with signal 0",
+          : candidate.via === "working-directory"
+            ? "UNMARKED and unreachable through the ppid graph — found only by standing inside a " +
+              "directory this run's manifest recorded; confirmed gone with signal 0"
+            : "an UNMARKED descendant of a marked process, confirmed gone with signal 0",
       });
     }
   }
@@ -301,9 +512,14 @@ export async function sweep(options: SweepOptions): Promise<SweepOutcome> {
   //    appearing 500 ms into a 1.6 s sweep was still ticking at the end and the
   //    evidence said `survivors: []`.
   const afterTable = rescan();
+  // The occupants are re-read too, and for the same reason the table is: a
+  // process that stepped into a clone during the grace window is exactly the
+  // spawner this step exists to notice.
+  const afterOccupants = afterTable.rows.length === 0 ? occupants : occupy();
   const seen = new Set(pending.map((candidate) => candidate.row.pid));
+  const afterClosure = closureFor(afterTable, options.scope, workspaces, afterOccupants);
   const appeared: Candidate[] = [];
-  for (const candidate of closureFor(afterTable, options.scope)) {
+  for (const candidate of afterClosure.candidates) {
     const pid = candidate.row.pid;
     if (seen.has(pid) || protectedPids.has(pid) || pid <= 1) continue;
     if (!alive(pid)) continue;
@@ -326,7 +542,20 @@ export async function sweep(options: SweepOptions): Promise<SweepOutcome> {
     });
   }
 
-  const limits = [...table.limits];
+  const limits = [...table.limits, ...occupants.limits];
+  const people = matched.filter((m) => m.disposition === "terminal");
+  if (people.length > 0) {
+    limits.push(
+      `pid ${people.map((m) => m.pid).join(", ")} is standing inside one of this run's clones and ` +
+        "holds a controlling terminal as its own process group leader, so it was NOT signalled — " +
+        "that is somebody reading the work, and brigadier printed the path that invited them. It " +
+        "is not counted a survivor because it was never signalled, and the directory it is in is " +
+        "not brigadier's to recycle while it is there." +
+        (closure.sharedWithAPerson > 0
+          ? ` ${closure.sharedWithAPerson} further process(es) in that clone descend from them and were left alone too.`
+          : ""),
+    );
+  }
   const stale = (options.recordedPids ?? []).filter(
     (pid) => alive(pid) && !matched.some((m) => m.pid === pid),
   );
@@ -381,6 +610,7 @@ function describe(candidate: Candidate): Omit<MatchedProcess, "disposition" | "n
     commandLine: candidate.row.commandLine,
     item: candidate.item,
     marked: candidate.marked,
+    via: candidate.via,
   };
 }
 
@@ -423,6 +653,13 @@ export function describeSweep(outcome: SweepOutcome): string[] {
     if (match.disposition === "reclaimed" || match.disposition === "already-gone") {
       lines.push(`  reclaimed pid ${match.pid} (item ${match.item}): ${match.note}`);
     }
+  }
+  for (const person of outcome.matched) {
+    if (person.disposition !== "terminal") continue;
+    lines.push(
+      `  pid ${person.pid} (item ${person.item}) is IN this run's clone with a terminal open and was ` +
+        "NOT signalled — leave it, or close it and start again",
+    );
   }
   const appeared = outcome.matched.filter((m) => m.disposition === "appeared");
   for (const late of appeared) {

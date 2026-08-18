@@ -72,6 +72,84 @@ export function naiveItemTokens(): number {
 }
 
 /**
+ * The upper bound for ONE item, which is the number every ceiling is sized
+ * against.
+ *
+ * Ruling 66: predict as a range and trigger on the UPPER bound. #44 measured
+ * 427,723 against 28,245 bytes on two identical Codex runs — 15× on identical
+ * input — so an in-flight item's remaining cost is not knowable and the widest
+ * thing it could still become is the only safe figure to reserve for.
+ */
+export function itemCeilingReserve(): number {
+  return naiveItemTokens() * SPREAD_HIGH;
+}
+
+/**
+ * What a run has ACTUALLY spent so far, from bytes that were counted on the
+ * wire.
+ *
+ * THE SOURCE IS THE WIRE, NEVER `usage_update`, and that is a measurement
+ * rather than a preference. #46 measured `usage_update` arriving from three of
+ * six agents at all, and the drive measured something worse: `used` PLATEAUED
+ * FOR FIVE TURNS while the agent rewrote its history — the field MASKS
+ * compaction. Reading that plateau as "these turns were cheap" reports a run's
+ * most expensive turns as its cheapest, and a ceiling driven off it would let a
+ * run through exactly when it should stop. Bytes counted as they cross the
+ * channel cannot plateau while work is happening.
+ *
+ * The conversion is `chars/4` with #23's measured +22% correction, the same
+ * arithmetic as the estimate — deliberately, so `actual` and `estimateHigh` are
+ * comparable numbers rather than two units wearing one name. It is still an
+ * ESTIMATE of tokens from bytes: the only exact answer is the vendor's own
+ * tokeniser, which brigadier does not have and #46 measured half the fleet
+ * never reporting.
+ */
+export function tokensFromBytes(bytes: number): number {
+  return Math.ceil((bytes / CHARS_PER_TOKEN) * NAIVE_CORRECTION);
+}
+
+/**
+ * Ruling 66's structural requirement on the two ceilings, checked BEFORE
+ * anything is spent.
+ *
+ * *The gap between them must exceed the most expensive item that could be in
+ * flight, or the soft ceiling never prevents the hard one firing.* The soft
+ * ceiling stops new dispatch and lets in-flight items finish; if those items
+ * can still spend more than the remaining gap, the hard ceiling fires anyway
+ * and cancels work that was already allowed to complete — which makes the soft
+ * ceiling a line in a report rather than a control.
+ *
+ * `workers` is in the arithmetic because "the most expensive item that could be
+ * in flight" is a fleet of them: with W concurrent workers, W items are still
+ * running when the soft ceiling trips.
+ *
+ * Returns the refusal, or `null` when the pair is usable. A refusal here costs
+ * nothing — no clone, no process — which is the whole of ruling 53's ordering
+ * promise applied to the one control ruling 66 calls primary.
+ */
+export function ceilingRefusal(
+  soft: number | undefined,
+  hard: number | undefined,
+  workers: number,
+): string[] | null {
+  if (soft === undefined || hard === undefined) return null;
+  const concurrent = Math.max(1, workers);
+  const reserve = itemCeilingReserve() * concurrent;
+  if (hard - soft > reserve) return null;
+  return [
+    `--soft-ceiling ${soft.toLocaleString("en-US")} and --hard-ceiling ${hard.toLocaleString("en-US")} ` +
+      `leave a gap of ${(hard - soft).toLocaleString("en-US")} ${"tokens"}, and up to ${concurrent} item(s) can be`,
+    `  in flight when the soft ceiling trips. Each of them can still spend ${itemCeilingReserve().toLocaleString("en-US")} tokens`,
+    `  (${MEASURED_ITEM_BYTES} bytes per #14, widened ${SPREAD_HIGH}× because #44 measured 15× between two`,
+    `  identical runs), so the reserve that has to fit in the gap is ${reserve.toLocaleString("en-US")}.`,
+    "  Ruling 66: the soft ceiling stops NEW items and lets in-flight ones finish; the hard ceiling",
+    "  cancels work already running. With a gap this narrow the hard ceiling fires anyway and the",
+    "  soft one is a line in a report rather than a control.",
+    `  Remedy: raise --hard-ceiling above ${(soft + reserve).toLocaleString("en-US")}, or lower --soft-ceiling.`,
+  ];
+}
+
+/**
  * Ruling 70's levers, as levers.
  *
  * Each entry names a MECHANISM that is switched on for this run. None of them

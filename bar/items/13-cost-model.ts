@@ -10,6 +10,25 @@
  * the integration history is SHORTER than the plan and that the record marks the
  * rest `unrun` or `cancelled`. A ceiling that only prints is not a ceiling.
  *
+ * That repair was itself misread for a while, and the misreading hid a real
+ * defect. "Un-integrated" was counted by matching `/: integrated$/` against
+ * `git log --format=%s` — a subject the product does not write and a forgery
+ * does — so both sides of the comparison read zero against the real binary and
+ * the enforcement check failed for a reason with nothing to do with ceilings.
+ * Underneath it sits a genuine product gap: `cost.actual`, `softCeilingHit` and
+ * `hardCeilingHit` are declared in the record's type and never assigned by
+ * `src/queue/execute.ts`, so "actual is reported against the estimate" fails
+ * because the number does not exist. Counting integrations properly separates
+ * the two, and the second is the product's to close.
+ *
+ * Properly does NOT mean believing `record.items[].status`. The record is where
+ * this item learns WHICH shas to ask about; `git cat-file -t` and `git
+ * merge-base --is-ancestor` are what answer. Counting the claim alone let
+ * `bar/fakes/forger.ts` — real objects, no work, and a record that says whatever
+ * suits it — pass this item outright, measured on 2026-08-18. `verifyIntegration`
+ * below reports the claim and the confirmation as two numbers, and every check
+ * that matters uses the second.
+ *
  * The clamp is read out of the run record per item, and `never clamps upward` is
  * checked against the declared difficulty rather than against a printed
  * sentence — because an upgrade spends money the operator did not ask for and
@@ -77,11 +96,65 @@ export function isUpwardClamp(from: string, to: string): boolean {
   return a !== -1 && b !== -1 && b > a;
 }
 
+/**
+ * What a run CLAIMED to integrate, and how much of that claim `git` confirms.
+ *
+ * The two numbers are deliberately separate. Reading `status: "integrated"` and
+ * stopping there would make this item score whatever the binary wrote in its own
+ * JSON — `bar/fakes/forger.ts` writes exactly that record and did pass this item
+ * the moment the count came from the record alone. So the record is used to
+ * learn WHICH shas to ask about, and every one of them is then put to the object
+ * store: it has to be a commit, the deliverable branch has to be able to reach
+ * it, and it has to be the item's OWN commit rather than a tip shared with every
+ * other item, which is what a chain written at leisure looks like.
+ */
+export interface IntegrationClaim {
+  /** Items whose recorded status is `integrated`. */
+  claimed: number;
+  /** Of those, the ones git confirms. */
+  verified: number;
+  detail: string;
+}
+
+export function verifyIntegration(e: {
+  record: RunRecord | undefined;
+  itemCommits: Map<string, { sha: string | undefined; type: string | undefined; reachable: boolean }>;
+  refSha: string | undefined;
+}): IntegrationClaim {
+  const claimedItems = (e.record?.items ?? []).filter((i) => i.status === "integrated");
+  const shas = claimedItems.map((i) => e.itemCommits.get(i.id)?.sha).filter((sha): sha is string => sha !== undefined);
+  const once = new Map<string, number>();
+  for (const sha of shas) once.set(sha, (once.get(sha) ?? 0) + 1);
+
+  const confirmed: string[] = [];
+  const rejected: string[] = [];
+  for (const item of claimedItems) {
+    const seen = e.itemCommits.get(item.id);
+    const ordinal = Number.isInteger(item.number) && (item.number ?? 0) >= 1;
+    const own = seen?.sha !== undefined && once.get(seen.sha) === 1;
+    if (ordinal && own && seen?.type === "commit" && seen.reachable) {
+      confirmed.push(`${item.id}#${item.number} -> ${seen.sha?.slice(0, 12)}`);
+    } else {
+      rejected.push(
+        `${item.id}#${item.number ?? "NO ORDINAL"} -> ${seen?.sha?.slice(0, 12) ?? "NO COMMIT"} ` +
+          `(git cat-file -t: ${seen?.type ?? "no object"}, reachable from ${e.refSha?.slice(0, 12) ?? "no deliverable"}: ${
+            seen?.reachable ?? false
+          }, its own commit: ${own})`,
+      );
+    }
+  }
+  return {
+    claimed: claimedItems.length,
+    verified: confirmed.length,
+    detail: `confirmed by git: ${confirmed.join("; ") || "none"}; unconfirmed: ${rejected.join("; ") || "none"}`,
+  };
+}
+
 export interface CostObservations {
   report: string;
   record: RunRecord | undefined;
-  /** Commits actually in the integration history, WITH the ceilings applied. */
-  integratedCount: number;
+  /** The ceilinged run: what it claimed, and what git confirmed. */
+  integrated: IntegrationClaim;
   /**
    * The same plan, same binary, same vendors, NO ceilings.
    *
@@ -89,7 +162,7 @@ export interface CostObservations {
    * that simply does less — which is what a forger does for free. The ceiling
    * has to be shown to be the cause.
    */
-  uncappedIntegratedCount: number;
+  uncappedIntegrated: IntegrationClaim;
   plannedCount: number;
 }
 
@@ -97,13 +170,24 @@ export function judgeCost(o: CostObservations): Checks {
   const checks = new Checks();
   const cost = o.record?.cost;
 
-  // Enforcement, asserted on what did NOT happen rather than on a sentence.
+  // The record is an index, never a witness. Every `integrated` it claims is
+  // resolved through `git cat-file -t` and `git merge-base --is-ancestor` before
+  // it is counted, so a binary that writes a satisfying JSON and no objects
+  // fails HERE rather than sliding through the comparison below.
+  checks.expect(
+    "every item the record calls `integrated` has its OWN commit on the deliverable branch",
+    o.integrated.verified === o.integrated.claimed && o.uncappedIntegrated.verified === o.uncappedIntegrated.claimed,
+    `capped run — claimed ${o.integrated.claimed}, git confirmed ${o.integrated.verified}: ${o.integrated.detail}. ` +
+      `uncapped run — claimed ${o.uncappedIntegrated.claimed}, git confirmed ${o.uncappedIntegrated.verified}: ${o.uncappedIntegrated.detail}`,
+  );
+  // Enforcement, asserted on what did NOT happen rather than on a sentence, and
+  // counted from the CONFIRMED integrations rather than from the claim.
   checks.expect(
     "the same plan without ceilings integrates MORE — so the ceiling is the cause (ruling 66)",
-    o.uncappedIntegratedCount > o.integratedCount &&
-      o.uncappedIntegratedCount === o.plannedCount &&
+    o.uncappedIntegrated.verified > o.integrated.verified &&
+      o.uncappedIntegrated.verified === o.plannedCount &&
       (o.record?.items ?? []).some((i) => i.status === "unrun" || i.status === "cancelled"),
-    `uncapped: ${o.uncappedIntegratedCount} of ${o.plannedCount} integrated; capped: ${o.integratedCount}. ` +
+    `uncapped: ${o.uncappedIntegrated.verified} of ${o.plannedCount} integrated and confirmed; capped: ${o.integrated.verified}. ` +
       `Statuses under the cap: ${(o.record?.items ?? []).map((i) => `${i.id}=${i.status}`).join(", ") || "no record"}. ` +
       "A binary that simply does less produces the same shortfall with no ceiling involved",
   );
@@ -133,14 +217,24 @@ export function judgeCost(o: CostObservations): Checks {
     dispatched.map((i) => `${i.id}=(${i.agent},${i.model},${i.effort})`).join("; ") || "nothing dispatched",
   );
 
-  // Ruling 67, from the record rather than from a printed line.
+  // Ruling 67: recorded per item, and visible to the operator. The RECORD says
+  // what happened; the report is then required to say the same thing. The
+  // expected line is DERIVED from the record rather than assumed to contain the
+  // word "clamped", because an item whose difficulty was not clamped still has
+  // to print its difficulty — an earlier version demanded the clamped wording
+  // unconditionally and so failed on a run that correctly clamped nothing,
+  // which measures the harness's guess rather than the product.
   const clamped = (o.record?.items ?? []).filter((i) => i.difficulty !== undefined);
+  const expectedLine = (i: { difficulty?: string; clampedTo?: string }): string =>
+    i.difficulty === i.clampedTo ? `difficulty: ${i.difficulty}` : `difficulty: ${i.difficulty} (clamped to ${i.clampedTo})`;
+  const unprinted = clamped.filter((i) => i.clampedTo === undefined || !o.report.includes(expectedLine(i)));
   checks.expect(
     "the difficulty clamp is recorded per item and printed (ruling 67)",
-    clamped.length > 0 &&
-      clamped.every((i) => i.clampedTo !== undefined) &&
-      clamped.every((i) => o.report.includes(`difficulty: ${i.difficulty} (clamped to ${i.clampedTo})`)),
-    clamped.map((i) => `${i.id}: ${i.difficulty} -> ${i.clampedTo}`).join("; ") || "no item declared a difficulty",
+    clamped.length > 0 && unprinted.length === 0,
+    clamped.length === 0
+      ? "no item declared a difficulty"
+      : `recorded: ${clamped.map((i) => `${i.id}: ${i.difficulty} -> ${i.clampedTo ?? "NOT RECORDED"}`).join("; ")}; ` +
+        `absent from the report: ${unprinted.map((i) => JSON.stringify(expectedLine(i))).join(", ") || "none"}`,
   );
   checks.expect(
     "brigadier never clamps UPWARD",
@@ -268,7 +362,7 @@ const item: BarItem = {
         { env, timeoutMs: HARNESS_RUN_TIMEOUT_MS },
       );
       const uncappedEvidence = await gatherRunEvidence(uncappedRepo, `${uncapped.stdout}${uncapped.stderr}`);
-      const uncappedIntegrated = uncappedEvidence.subjects.filter((l) => /: integrated$/.test(l)).length;
+      const uncappedIntegrated = verifyIntegration(uncappedEvidence);
 
       // B: ceilings deliberately below what four items cost.
       const capped = await ctx.run(
@@ -279,17 +373,20 @@ const item: BarItem = {
         ],
         { env, timeoutMs: HARNESS_RUN_TIMEOUT_MS },
       );
-      did.push(`drove the same plan twice: once with no ceilings (${uncappedIntegrated} integrated) and once with them`);
+      did.push(
+        `drove the same plan twice: once with no ceilings (${uncappedIntegrated.claimed} claimed integrated, ` +
+          `${uncappedIntegrated.verified} confirmed with git) and once with them`,
+      );
       const report = `${capped.stdout}${capped.stderr}`;
       const evidence = await gatherRunEvidence(repo, report);
-      const integrated = evidence.subjects.filter((l) => /: integrated$/.test(l)).length;
+      const integrated = verifyIntegration(evidence);
       live = {
         kind: "ran",
         checks: judgeCost({
           report,
           record: evidence.record,
-          integratedCount: integrated,
-          uncappedIntegratedCount: uncappedIntegrated,
+          integrated,
+          uncappedIntegrated,
           plannedCount: items.length,
         }),
       };

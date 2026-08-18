@@ -517,7 +517,7 @@ async function doRun(): Promise<number> {
     cwd: repo,
     env: indexEnv,
   });
-  const baseRef = `refs/brigadier/base/${runId}`;
+  const baseRef = `refs/brigadier/${runId}/base`;
   run(["git", "update-ref", baseRef, baseCommit.out], { cwd: repo });
 
   const secretEnv = value("secret-env");
@@ -538,6 +538,24 @@ async function doRun(): Promise<number> {
     return 0;
   }
 
+  // The product identifies an item by its 1-BASED ORDINAL, not by the plan's
+  // string id: the ordinal names the clone directory, the run marker and the
+  // item ref, and the id is only the operator's handle. The fixture has to hold
+  // the same contract, because an item asserting on the ordinal against a
+  // fixture that never published one would be measuring the fixture.
+  const numberOf = new Map(plan.items.map((planned, index) => [planned.id, index + 1]));
+  const itemRefOf = (id: string): string => `refs/brigadier/${runId}/item/${numberOf.get(id) ?? 0}`;
+  /** Every field the record owes for an item, whether or not it was dispatched. */
+  const identity = (id: string): Pick<RecordItem, "id" | "number" | "itemRef"> => ({
+    id,
+    number: numberOf.get(id) ?? 0,
+    itemRef: itemRefOf(id),
+  });
+
+  // Ruling 51's deliverable, named before the first wave because wave 2's base
+  // IS the branch wave 1 published.
+  const integrationRefName = `refs/heads/brigadier/${runId}`;
+
   const records: RecordItem[] = [];
   const integrated: Array<{ id: string; sha: string }> = [];
   let spend = 0;
@@ -557,27 +575,35 @@ async function doRun(): Promise<number> {
       const perItem = 0.05;
       if (hardCeiling !== undefined && spend >= hardCeiling) {
         hardHit = true;
-        records.push({ id: item.id, status: "cancelled" });
+        records.push({ ...identity(item.id), status: "cancelled" });
         continue;
       }
       if (softCeiling !== undefined && spend >= softCeiling) {
         softHit = true;
-        records.push({ id: item.id, status: "unrun" });
+        records.push({ ...identity(item.id), status: "unrun" });
         continue;
       }
       // Ruling 54: wave 2 clones from wave 1's integration commit, so an item
       // whose prerequisite did not integrate is UNRUN rather than run.
       const unmetPrerequisite = (item.dependsOn ?? []).find((id) => !integrated.some((i) => i.id === id));
       if (unmetPrerequisite !== undefined) {
-        records.push({ id: item.id, status: "unrun" });
+        records.push({ ...identity(item.id), status: "unrun" });
         continue;
       }
 
       const builder = vendors[records.length % Math.max(vendors.length, 1)] ?? vendors[0];
       if (builder === undefined) {
-        records.push({ id: item.id, status: "failed" });
+        records.push({ ...identity(item.id), status: "failed" });
         continue;
       }
+
+      // The LEFT-HAND SIDE of this item's ownership diff, recorded per item
+      // because ruling 54 gives wave 2 a different base from wave 1: the
+      // integration commit wave 1 published. Without it `git diff
+      // <base>..<itemRef>` cannot be recomputed from the record by anyone.
+      const wave2 = (item.dependsOn ?? []).length > 0;
+      const itemBaseRef = wave2 ? integrationRefName : baseRef;
+      const itemBaseSha = wave2 ? integrationTip : baseCommit.out;
 
       const clone = join(runRoot, "clones", item.id);
       mkdirSync(join(runRoot, "clones"), { recursive: true });
@@ -653,7 +679,7 @@ async function doRun(): Promise<number> {
       // it wrote can reach the branch or any report. Not "the agent could not
       // write" — three of five measured vendors give no lane at all.
       if (item.kind === "read-only") {
-        records.push({ id: item.id, status: "integrated", kind: "read-only", agent: builder, model: `${builder}-m`, effort: "medium" });
+        records.push({ ...identity(item.id), status: "integrated", kind: "read-only", agent: builder, model: `${builder}-m`, effort: "medium", baseRef: itemBaseRef, baseSha: itemBaseSha });
         continue;
       }
 
@@ -665,7 +691,7 @@ async function doRun(): Promise<number> {
       const head = safeGit(clone, emptyHooks, ["rev-parse", "HEAD"], runRoot);
       const landed = head.ok && head.out.length > 0 && head.out !== headBefore;
       if (!landed && !commitNow) {
-        records.push({ id: item.id, status: "failed", agent: builder, model: `${builder}-m`, effort: "medium" });
+        records.push({ ...identity(item.id), status: "failed", agent: builder, model: `${builder}-m`, effort: "medium", baseRef: itemBaseRef, baseSha: itemBaseSha });
         continue;
       }
 
@@ -714,7 +740,7 @@ async function doRun(): Promise<number> {
       }
 
       const record: RecordItem = {
-        id: item.id,
+        ...identity(item.id),
         status: verifyFailed || verdict === "error" || verdict === "fail" ? "failed" : "integrated",
         kind: "write",
         agent: builder,
@@ -728,6 +754,8 @@ async function doRun(): Promise<number> {
         attempts: 1,
         attemptsAvailable: vendors.length >= 2 ? 2 : 1,
         commit: head.out,
+        baseRef: itemBaseRef,
+        baseSha: itemBaseSha,
         checks: [
           { name: "worker exited 0", outcome: outcome.code === 0 ? "pass" : "fail", blocking: true },
           ...(item.verify !== undefined
@@ -741,7 +769,7 @@ async function doRun(): Promise<number> {
       if (record.status !== "integrated") continue;
 
       // Ruling 51: FETCH, never push, and no working tree on the integration side.
-      run(["git", "fetch", "--quiet", clone, `HEAD:refs/brigadier/item/${runId}/${item.id}`], { cwd: repo });
+      run(["git", "fetch", "--quiet", clone, `HEAD:${itemRefOf(item.id)}`], { cwd: repo });
       const merged = run(["git", "merge-tree", "--write-tree", integrationTip, head.out], { cwd: repo });
       if (!merged.ok) {
         records[records.length - 1] = { ...record, status: "failed" };
@@ -756,7 +784,7 @@ async function doRun(): Promise<number> {
     }
   }
 
-  const integrationRef = `refs/heads/brigadier/${runId}`;
+  const integrationRef = integrationRefName;
   if (integrated.length > 0) run(["git", "update-ref", integrationRef, integrationTip], { cwd: repo });
 
   // Interrupted. Ruling 63: the clones that hold committed work stay where they
@@ -771,7 +799,7 @@ async function doRun(): Promise<number> {
   // Ruling 50: the scratch base ref is cleaned up, and the operator's tree is
   // byte-identical afterwards INCLUDING after that cleanup.
   run(["git", "update-ref", "-d", baseRef], { cwd: repo });
-  for (const item of integrated) run(["git", "update-ref", "-d", `refs/brigadier/item/${runId}/${item.id}`], { cwd: repo });
+  for (const entry of integrated) run(["git", "update-ref", "-d", itemRefOf(entry.id)], { cwd: repo });
 
   const transcripts = join(runRoot, "transcripts");
   mkdirSync(transcripts, { recursive: true });
@@ -787,9 +815,23 @@ async function doRun(): Promise<number> {
     quota[vendor] = vendor === "opencode" ? "unpriceable" : "read";
   }
 
+  // Ruling 51: THE NAME IS NOT THE THING. `integrationSha` is what
+  // `git rev-parse` answers, and its absence is the machine-readable form of
+  // "this run published nothing" — so it is written only when the branch was
+  // really updated. `runChecks` carries the run-level fact that follows from it.
+  const publishedSha = integrated.length > 0 ? integrationTip : undefined;
   const record: RunRecord = {
     runId,
     integrationRef,
+    ...(publishedSha === undefined ? {} : { integrationSha: publishedSha }),
+    // Ruling 50's scratch base, so `git diff <base>..<itemRef>` stays
+    // re-derivable from the record after the ref itself is cleaned up.
+    base: { ref: baseRef, sha: baseCommit.out },
+    runChecks: [
+      publishedSha === undefined
+        ? { name: "the deliverable branch exists", outcome: "fail", blocking: true }
+        : { name: "the deliverable branch exists", outcome: "pass", blocking: true },
+    ],
     runRoot,
     bindingFilter: admission.bindingFilter,
     workers: admission.workers,
