@@ -459,7 +459,7 @@ describe("ruling 29's third axis is recorded, and says what it IS", () => {
 
 // -------------------------------------------------------------- the review
 
-describe("ruling 32: an unbuilt check never renders as a pass", () => {
+describe("ruling 32: a reviewer that produces no verdict never renders as a pass", () => {
   const world = makeWorld("review");
   const planPath = writePlan(world.dir, [
     { id: "reviewed", kind: "write", paths: ["r.txt"], prompt: "out=r.txt" },
@@ -470,22 +470,35 @@ describe("ruling 32: an unbuilt check never renders as a pass", () => {
   const runId = readdirSync(join(world.runs, "r"))[0] ?? "";
   const parsed = JSON.parse(readFileSync(join(world.runs, "r", runId, "record.json"), "utf8")) as {
     review?: { crossVendor: boolean; sameVendorReason?: string };
-    items: Array<{ checks: Array<{ name: string; outcome: string; blocking: boolean }> }>;
+    items: Array<{
+      reviewerAttempts?: number;
+      attempts?: number;
+      checks: Array<{ name: string; outcome: string; blocking: boolean }>;
+    }>;
   };
 
-  test("--review yields a BLOCKING review check, and the run cannot succeed", () => {
+  test("this agent answers a review brief with prose, and prose is not a verdict", () => {
+    // The planted agent knows nothing about reviewing: it reads `out=` out of
+    // the brief, finds none, and stops with `end_turn`. #14 measured that
+    // `end_turn` does NOT mean the task was done, so a run that read the stop
+    // reason as approval would approve every diff any agent shrugged at.
     const review = parsed.items[0]?.checks.find((check) => check.name === "review");
-    expect(review?.outcome).toBe("not-run");
+    expect(review?.outcome).toBe("error");
     expect(review?.blocking).toBe(true);
     expect(result.code).toBe(1);
   });
 
-  test("the record does not claim a review that never ran", () => {
+  test("ruling 52: the re-run is charged to brigadier, not to the item's ladder", () => {
+    expect(parsed.items[0]?.reviewerAttempts).toBe(2);
+    expect(parsed.items[0]?.attempts).toBe(1);
+  });
+
+  test("ruling 32: with one vendor on PATH the record says SAME-VENDOR, and why", () => {
     // The failure this guards is a FIELD rather than a sentence: writing
     // `crossVendor: true` because two vendors resolved would be ruling 32
     // broken silently.
     expect(parsed.review?.crossVendor).toBe(false);
-    expect(parsed.review?.sameVendorReason).toContain("not implemented in this build");
+    expect(parsed.review?.sameVendorReason).toContain("only qwen is drivable");
   });
 
   test("NEGATIVE CONTROL: without --review there is no review check and the run succeeds", () => {

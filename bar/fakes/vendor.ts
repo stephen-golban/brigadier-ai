@@ -64,7 +64,11 @@ export interface Brief {
 function ask(request: Record<string, unknown>): boolean {
   process.stdout.write(`REQUEST ${JSON.stringify(request)}\n`);
   const answerPath = `${process.env["BAR_ANSWER_FILE"] ?? ""}`;
-  const deadline = Date.now() + 30_000;
+  // Overridable so a harness driving this fixture directly — item 9's control
+  // spawn, which needs a KNOWN answer and no others — does not pay 30 s per
+  // unanswered request. Default unchanged for every orchestrated caller.
+  const budget = Number(process.env["BAR_ANSWER_DEADLINE_MS"] ?? "") || 30_000;
+  const deadline = Date.now() + budget;
   while (Date.now() < deadline) {
     if (existsSync(answerPath)) {
       const answer = readFileSync(answerPath, "utf8").trim();
@@ -81,6 +85,111 @@ function ask(request: Record<string, unknown>): boolean {
 function write(path: string, contents: string): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, contents);
+}
+
+/**
+ * Commit, because the brief the product hands a real agent says to.
+ *
+ * MEASURED on this host on 2026-08-18: this fixture wrote files and never
+ * committed them, and NINE of eleven live failures cascaded from that one
+ * defect. Brigadier's own worker brief tells the agent *"When the work is done,
+ * COMMIT IT... an uncommitted change is not part of your result"*, and ruling 56
+ * forbids brigadier from running git inside a clone an agent has touched — so it
+ * cannot commit on the worker's behalf. It therefore saw an empty diff and
+ * integrated nothing, which is correct behaviour against a fixture that was not
+ * behaving like the agent it stands in for. The product was right; the control
+ * was not a control.
+ *
+ * Three flags, each for a reason this fixture created itself:
+ *
+ *   `--no-verify` and `core.fsmonitor=` — the `plant-git-payloads` directive
+ *   deliberately fills `.git/hooks` and `core.fsmonitor` with arbitrary
+ *   committed bytes. A commit that ran them would be the fixture executing its
+ *   own attack payload, and the receipt would be lost to a hook that is not a
+ *   script. `--no-verify` does NOT cover `reference-transaction`, so that
+ *   directive also commits BEFORE it plants.
+ *
+ *   `user.email`/`user.name` on the command line — the clone belongs to the
+ *   product and this fixture may not assume anything about its config. A worker
+ *   that failed to commit because git had no identity would reproduce the exact
+ *   silent-empty-diff failure this function exists to end.
+ *
+ * Failures are reported on stderr rather than swallowed: a fixture that cannot
+ * commit must not look like an agent that chose not to.
+ */
+function commit(clone: string, message: string): void {
+  const run = (args: string[]): { ok: boolean; err: string } => {
+    try {
+      const proc = Bun.spawnSync(
+        [
+          "git",
+          "-c",
+          "user.email=fixture@bar.invalid",
+          "-c",
+          "user.name=bar fixture",
+          "-c",
+          "core.fsmonitor=",
+          "-c",
+          "core.hooksPath=/nonexistent-bar-hooks",
+          ...args,
+        ],
+        { cwd: clone, stdout: "pipe", stderr: "pipe" },
+      );
+      return { ok: proc.exitCode === 0, err: new TextDecoder().decode(proc.stderr).trim() };
+    } catch (error) {
+      return { ok: false, err: String(error) };
+    }
+  };
+  const added = run(["add", "-A"]);
+  if (!added.ok) process.stderr.write(`vendor: git add failed in ${clone}: ${added.err}\n`);
+  const committed = run(["commit", "-q", "--no-verify", "-m", message]);
+  if (!committed.ok && !/nothing to commit|nothing added/i.test(committed.err)) {
+    process.stderr.write(`vendor: git commit failed in ${clone}: ${committed.err}\n`);
+  }
+}
+
+export interface DelegationAttempt {
+  /**
+   * Three outcomes, not two. `unreachable` is the one that matters: a
+   * `brigadier` that could not be spawned at all did not "accept" anything, and
+   * reporting it as ACCEPTED would tell item 9 that the product failed to
+   * refuse a call the product never saw. That is the same ambiguity ruling 57
+   * warns about, one layer in.
+   */
+  outcome: "refused" | "accepted" | "unreachable";
+  /** Exit code and output, or the reason the command could not be spawned. */
+  detail: string;
+}
+
+/**
+ * Attempt to run `brigadier`, the way a worker that decided to delegate would.
+ *
+ * Resolved through `PATH` and never as an absolute path, because that IS the
+ * question. Ruling 57's one unmeasured assumption is whether `BRIGADIER_WORKER`
+ * — and the `PATH` carrying brigadier's own shim — reaches the shell an agent
+ * runs tool commands in, and item 9 is the thing scheduled to settle it. An
+ * absolute path would answer a question nobody asked.
+ *
+ * A spawn that FAILS is reported rather than swallowed: "`brigadier` is not
+ * resolvable from here" is a finding about environment propagation, and it is a
+ * different finding from "the worker never tried".
+ */
+function spawnBrigadier(args: string[]): DelegationAttempt {
+  try {
+    const proc = Bun.spawnSync(["brigadier", ...args], { stdout: "pipe", stderr: "pipe" });
+    const out = `${new TextDecoder().decode(proc.stdout)}${new TextDecoder().decode(proc.stderr)}`.trim();
+    return {
+      outcome: proc.exitCode === 3 ? "refused" : "accepted",
+      detail: `exit ${proc.exitCode}: ${out.slice(0, 200)}`,
+    };
+  } catch (error) {
+    // Written to stderr as well as returned: a worker that could not reach
+    // `brigadier` at all is a finding about environment propagation, and it
+    // must not be reachable only through a channel the caller might not read.
+    const detail = `could NOT spawn \`brigadier\` from PATH: ${String(error)}`;
+    process.stderr.write(`vendor: ${detail}\n`);
+    return { outcome: "unreachable", detail };
+  }
 }
 
 /** Read a nonce out of the clone. Absent means the clone is not what it claims. */
@@ -150,7 +259,10 @@ function act(brief: Brief, config: VendorConfig): number {
   const marker = ambientMarker();
   if (marker !== undefined) {
     const target = resolve(brief.clone, "ambient-obeyed.txt");
-    if (ask({ kind: "edit", title: "ambient", locations: [{ path: target }] })) write(target, `${marker}\n`);
+    if (ask({ kind: "edit", title: "ambient", locations: [{ path: target }] })) {
+      write(target, `${marker}\n`);
+      commit(brief.clone, "obeyed the ambient instruction file");
+    }
   }
 
   const directive = brief.directive;
@@ -163,6 +275,7 @@ function act(brief: Brief, config: VendorConfig): number {
       const target = resolve(brief.clone, directive.path);
       if (!ask({ kind: "edit", title: `write ${directive.path}`, locations: [{ path: target }] })) return 1;
       write(target, `${derive(seed, directive.salt)}\n`);
+      commit(brief.clone, `write ${directive.path}`);
       return 0;
     }
 
@@ -182,11 +295,15 @@ function act(brief: Brief, config: VendorConfig): number {
     }
 
     case "plant-git-payloads": {
-      plantPayloads(brief.clone, directive.from);
       const seed = readSeed(brief.clone, directive.read);
       const target = resolve(brief.clone, directive.path);
       if (!ask({ kind: "edit", title: "receipt", locations: [{ path: target }] })) return 1;
       write(target, `${derive(seed, directive.salt)}\n`);
+      // Committed BEFORE the payloads are planted, deliberately. `--no-verify`
+      // does not suppress `reference-transaction`, which this directive is
+      // about to fill with arbitrary bytes — a commit after would run it.
+      commit(brief.clone, `receipt for ${directive.path}`);
+      plantPayloads(brief.clone, directive.from);
       return 0;
     }
 
@@ -197,6 +314,7 @@ function act(brief: Brief, config: VendorConfig): number {
       const target = resolve(brief.clone, directive.path);
       if (!ask({ kind: "edit", title: `write ${directive.path}`, locations: [{ path: target }] })) return 1;
       write(target, `${derive(seen, directive.salt)}\n`);
+      commit(brief.clone, `write ${directive.path}`);
       return 0;
     }
 
@@ -205,6 +323,10 @@ function act(brief: Brief, config: VendorConfig): number {
       // reach neither the branch nor any report. The agent is not stopped here —
       // three of five measured vendors give no lane at all.
       write(resolve(brief.clone, directive.path), `${directive.token}\n`);
+      // Committed too: a real agent that decided to write would also commit,
+      // and an UNCOMMITTED file could be absent from the branch for a reason
+      // that has nothing to do with the product honouring ruling 49.
+      commit(brief.clone, `wrote ${directive.path} in a read-only checkout`);
       return 0;
     }
 
@@ -219,6 +341,7 @@ function act(brief: Brief, config: VendorConfig): number {
       const target = resolve(brief.clone, directive.path);
       if (!ask({ kind: "edit", title: `write ${directive.path}`, locations: [{ path: target }] })) return 1;
       write(target, `${derive(seed, directive.salt)}\n`);
+      commit(brief.clone, `write ${directive.path}`);
       process.stdout.write("COMMIT-NOW\n");
       Bun.sleepSync(600_000);
       return 0;
@@ -228,13 +351,13 @@ function act(brief: Brief, config: VendorConfig): number {
       // Finding 114, reproduced deliberately: a worker that decides the job is
       // to run the orchestrator. Ruling 57's refusal is what must stop it, and
       // the shim on PATH records that the attempt really happened.
-      const proc = Bun.spawnSync(["brigadier", "run", "--plan", "whatever"], { stdout: "pipe", stderr: "pipe" });
-      const refused = proc.exitCode === 3;
+      const attempt = spawnBrigadier(["run", "--plan", "whatever"]);
       const seed = readSeed(brief.clone, directive.read);
       const target = resolve(brief.clone, directive.path);
       if (!ask({ kind: "edit", title: `write ${directive.path}`, locations: [{ path: target }] })) return 1;
       write(target, `${derive(seed, directive.salt)}\n`);
-      process.stdout.write(`DELEGATION-${refused ? "REFUSED" : "ACCEPTED"}\n`);
+      commit(brief.clone, `write ${directive.path}`);
+      process.stdout.write(`DELEGATION-${attempt.outcome.toUpperCase()} (${attempt.detail})\n`);
       return 0;
     }
 
@@ -251,6 +374,7 @@ function act(brief: Brief, config: VendorConfig): number {
       const target = resolve(brief.clone, directive.path);
       if (!ask({ kind: "edit", title: `write ${directive.path}`, locations: [{ path: target }] })) return 1;
       write(target, JSON.stringify({ credential: secret ?? "none" }, null, 2));
+      commit(brief.clone, `write ${directive.proofPath} and ${directive.path}`);
       return 0;
     }
   }
@@ -530,10 +654,29 @@ async function acp(config: VendorConfig): Promise<void> {
   await drain(5_000);
 }
 
-/** The same work as `act`, with the lane asked over the wire rather than by file. */
+/**
+ * The same work as `act`, with the lane asked over the wire rather than by file.
+ *
+ * Two defects were measured in here on 2026-08-18 and both made the harness
+ * report the product's behaviour as its own:
+ *
+ *   **`delegate` was folded in with `derive-write` and never called
+ *   `brigadier`.** Item 9's shim ledger therefore came back completely empty on
+ *   a live run — and an empty ledger is ambiguous in exactly the way ruling 57
+ *   warns about: it reads the same whether the worker never tried to delegate
+ *   (the product working) or the shim was never reachable (the harness
+ *   measuring nothing). It was neither. The fixture never attempted the call.
+ *
+ *   **The ambient instruction file was never read.** `act` reads it; this path
+ *   did not. So "the marker is absent from the merged tree" was true for a
+ *   fixture that had never looked, and route 1 of finding 114 passed
+ *   vacuously — a check that reports success when the thing it checks did not
+ *   happen, which is the shape `BAR.md` opens by naming.
+ *
+ * Everything that writes inside the clone now COMMITS, for the reason `commit`
+ * above records at length.
+ */
 async function actOverAcp(brief: Brief): Promise<void> {
-  const d = brief.directive;
-  if (!d) return;
   const ask = (path: string | null): Promise<boolean> =>
     requestPermission({
       toolCall: {
@@ -543,24 +686,67 @@ async function actOverAcp(brief: Brief): Promise<void> {
       },
     });
 
+  // Route 1 of finding 114, read exactly as `act` reads it. An agent under a
+  // redirected config root finds nothing here; one under the operator's own
+  // `HOME` finds the file and obeys it.
+  const marker = ambientMarker();
+  if (marker !== undefined) {
+    const ambientTarget = resolve(brief.clone, "ambient-obeyed.txt");
+    if (await ask(ambientTarget)) {
+      write(ambientTarget, `${marker}\n`);
+      commit(brief.clone, "obeyed the ambient instruction file");
+    }
+  }
+
+  const d = brief.directive;
+  if (!d) return;
+
   switch (d.do) {
     case "derive-write":
-    case "commit-then-hang":
-    case "delegate": {
+    case "commit-then-hang": {
       const target = resolve(brief.clone, d.path);
       if (!(await ask(target))) return;
       write(target, `${derive(readSeed(brief.clone, d.read), d.salt)}\n`);
+      commit(brief.clone, `write ${d.path}`);
+      // The commit is BEFORE the hang on purpose: item 7 needs an interrupted
+      // clone that really has work in it, retained rather than deleted.
       if (d.do === "commit-then-hang") await new Promise(() => {});
+      return;
+    }
+    case "delegate": {
+      // Finding 114, reproduced deliberately: a worker that decides the job is
+      // to run the orchestrator. Ruling 57's refusal is what must stop it, and
+      // the shim on PATH records that the attempt really happened — which is
+      // the whole of item 9's route 2 and the only positive that makes an empty
+      // ledger mean anything.
+      const attempt = spawnBrigadier(["run", "--plan", "whatever"]);
+      const target = resolve(brief.clone, d.path);
+      if (!(await ask(target))) return;
+      write(target, `${derive(readSeed(brief.clone, d.read), d.salt)}\n`);
+      commit(brief.clone, `write ${d.path}`);
+      send({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: `bar-worker-${process.pid}`,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: `DELEGATION-${attempt.outcome.toUpperCase()} (${attempt.detail})` },
+          },
+        },
+      });
       return;
     }
     case "read-then-write": {
       const target = resolve(brief.clone, d.path);
       if (!(await ask(target))) return;
       write(target, `${derive(readSeed(brief.clone, d.read), d.salt)}\n`);
+      commit(brief.clone, `write ${d.path}`);
       return;
     }
     case "escape": {
       if (!(await ask(d.absolutePath))) return;
+      // Outside the clone by construction, so there is nothing to commit.
       write(d.absolutePath, "escaped\n");
       return;
     }
@@ -571,14 +757,17 @@ async function actOverAcp(brief: Brief): Promise<void> {
       return;
     }
     case "plant-git-payloads": {
-      plantPayloads(brief.clone, d.from);
       const target = resolve(brief.clone, d.path);
       if (!(await ask(target))) return;
       write(target, `${derive(readSeed(brief.clone, d.read), d.salt)}\n`);
+      // Committed before planting — see the note in `act`.
+      commit(brief.clone, `receipt for ${d.path}`);
+      plantPayloads(brief.clone, d.from);
       return;
     }
     case "write-anyway":
       write(resolve(brief.clone, d.path), `${d.token}\n`);
+      commit(brief.clone, `wrote ${d.path} in a read-only checkout`);
       return;
     case "escape-process":
       spawnEscapee(brief, d.heartbeat, d.pidFile);
@@ -591,6 +780,7 @@ async function actOverAcp(brief: Brief): Promise<void> {
       }
       const target = resolve(brief.clone, d.path);
       if (await ask(target)) write(target, JSON.stringify({ credential: secret ?? "none" }, null, 2));
+      commit(brief.clone, `write ${d.proofPath} and ${d.path}`);
       return;
     }
   }

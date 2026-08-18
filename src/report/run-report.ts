@@ -86,6 +86,11 @@ export function renderItem(item: RecordItem): string {
     // satisfied requirement, one axis over.
     head.push(`(${item.agent}, ${item.model ?? "unrouted"}, ${item.effort ?? "effort NOT recorded"})`);
   }
+  // Ruling 55, beside the item rather than in a footnote: a ladder that ran out
+  // and a ladder that never had a second step are different facts, and the one
+  // that is the machine's rather than the worker's must not be readable as the
+  // other. `src/work/ladder.ts` owns the four strings; this only places one.
+  if (item.ladder !== undefined) head.push(item.ladder);
   const lines = [`  ${head.join(" — ")}`];
   for (const check of item.checks) lines.push(`      ${renderRecordCheck(check)}`);
   return lines.join("\n");
@@ -221,6 +226,43 @@ function branchLine(record: RunRecord): string {
   );
 }
 
+/**
+ * Ruling 32's run-level half: WHICH review ran, and the catch rate beside it.
+ *
+ * O(1), which is ruling 58's constraint and also the honest shape — the reviewer
+ * choice is a fact about the machine's `PATH`, not about any one item, and a
+ * run-level fact attached to an item is the first thing the cap collapses.
+ *
+ * The two branches are different sentences on purpose. `cross-vendor` and
+ * `same-vendor` are not a strong and a weak wording of one outcome; they are two
+ * outcomes, and a reader who skims must not be able to read the second as the
+ * first. Nothing here renders a weakened check as a pass — that is what the
+ * per-item `review:` check line does, with its qualifier inside the result.
+ */
+export function reviewLines(review: RunRecord["review"]): string[] {
+  if (review === undefined) return [];
+  const lines = [
+    "",
+    "review:",
+    review.crossVendor
+      ? `  CROSS-VENDOR — ${review.reviewerAgent ?? "an unnamed reviewer"} reviewed work built by ` +
+        `${review.builderAgent ?? "an unnamed builder"} (ruling 32's preferred shape)`
+      : `  SAME-VENDOR — this run's review is WEAKER than the one ruling 32 prefers. ${
+          review.sameVendorReason ??
+          "No reason was recorded, which is itself a defect: ruling 32 requires the weakening to be STATED."
+        }`,
+  ];
+  if (review.reviewerReruns !== undefined && review.reviewerReruns > 0) {
+    lines.push(
+      `  ${review.reviewerReruns} reviewer re-run(s), charged to brigadier and NOT to any item's ladder ` +
+        "(ruling 52): a broken reviewer is `error`, its remedy is to re-run the reviewer, and a builder " +
+        "must not lose a rung of ruling 24's ladder to somebody else's crash.",
+    );
+  }
+  if (review.catchRate !== undefined) lines.push(`  ${review.catchRate}`);
+  return lines;
+}
+
 function fixedLines(input: RunReportInput): { head: string[]; tail: string[] } {
   const { record } = input;
   const head = [
@@ -260,6 +302,8 @@ function fixedLines(input: RunReportInput): { head: string[]; tail: string[] } {
       `could not confirm dead: pid ${(input.unconfirmedPids ?? []).join(", ")} — killing them is the only remedy (ruling 63).`,
     );
   }
+
+  for (const line of reviewLines(record.review)) tail.push(line);
 
   const refused = refusedDelegationLine(record.refusedDelegations);
   if (refused !== null) tail.push(refused);

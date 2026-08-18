@@ -42,6 +42,7 @@ import { isUpwardClamp, judgeCost, savingsClaims, type CostObservations } from "
 import { Checks } from "./lib/checks.ts";
 import type { RunRecord } from "./lib/contract.ts";
 import { insideTempRoot, proofOfWork, resolveThroughSymlinks, type RunEvidence } from "./lib/evidence.ts";
+import { probeFeature } from "./lib/feature.ts";
 import { combine } from "./lib/halves.ts";
 import { removeDir } from "./lib/fs.ts";
 import { encodings, scanForSecret } from "./lib/secret.ts";
@@ -151,7 +152,7 @@ describe("a failing credential-free half is never masked by a missing credential
     cf.expect("refusal fires", false, "did not refuse");
     const result = combine(["did"], cf, {
       kind: "missing",
-      probe: { present: false, result: { stdout: "", stderr: "unknown command", code: 2, signal: null, ms: 1 }, transcript: "t" },
+      probe: { present: false, recognised: false, result: { stdout: "", stderr: "unknown command", code: 2, signal: null, ms: 1 }, transcript: "t" },
       promise: "no run",
     });
     expect(result.outcome).toBe("FAIL");
@@ -167,7 +168,7 @@ describe("a failing credential-free half is never masked by a missing credential
   test("a missing feature is FAIL, never SKIPPED", () => {
     const result = combine(["did"], new Checks(), {
       kind: "missing",
-      probe: { present: false, result: { stdout: "", stderr: "unknown command: run", code: 2, signal: null, ms: 1 }, transcript: "ran run; exit 2" },
+      probe: { present: false, recognised: false, result: { stdout: "", stderr: "unknown command: run", code: 2, signal: null, ms: 1 }, transcript: "ran run; exit 2" },
       promise: "no run subcommand",
     });
     expect(result.outcome).toBe("FAIL");
@@ -919,5 +920,47 @@ describe("item 13 — the cost model predicts, enforces, and says what it could 
   test("the clamp direction predicate is right in both directions", () => {
     expect(isUpwardClamp("hard", "medium")).toBe(false);
     expect(isUpwardClamp("easy", "hard")).toBe(true);
+  });
+});
+
+/**
+ * "Unbuilt" and "it ran and failed" are different findings.
+ *
+ * MEASURED on this host on 2026-08-18: item 6 read a `run --review` that exited
+ * 1 as "the artifact does not implement this yet". The exit was a cascade from a
+ * fixture that never committed, and the label sent the reader to build something
+ * that was already there. A harness that infers "unbuilt" from a non-zero exit
+ * will keep doing that, so recognition is now decided separately from success.
+ */
+describe("probeFeature separates recognition from success", () => {
+  const ctxWith = (result: { stdout: string; stderr: string; code: number | null }): Parameters<typeof probeFeature>[0] =>
+    ({
+      run: async () => ({ ...result, signal: null, ms: 1 }),
+    }) as unknown as Parameters<typeof probeFeature>[0];
+
+  test("a subcommand that RAN and exited non-zero is recognised, not missing", async () => {
+    const probe = await probeFeature(ctxWith({ stdout: "admitted — 1 item(s)\nreview failed", stderr: "", code: 1 }), ["run", "--review"]);
+    expect(probe.recognised).toBe(true);
+    // It still did not do what the caller needs, and that stays true.
+    expect(probe.present).toBe(false);
+  });
+
+  test("NEGATIVE CONTROL: a subcommand the binary rejects is NOT recognised", async () => {
+    const probe = await probeFeature(ctxWith({ stdout: "", stderr: "unknown command: review", code: 2 }), ["run", "--review"]);
+    expect(probe.recognised).toBe(false);
+    expect(probe.present).toBe(false);
+  });
+
+  test("NEGATIVE CONTROL: a binary that only prints its usage is NOT recognised", async () => {
+    const usage = "brigadier — an ACP hub\n\n  brigadier detect\n  brigadier agents\n  brigadier licenses\n";
+    const probe = await probeFeature(ctxWith({ stdout: usage, stderr: "", code: 0 }), ["run", "--review"]);
+    expect(probe.recognised).toBe(false);
+    expect(probe.present).toBe(false);
+  });
+
+  test("a subcommand that ran and succeeded is both", async () => {
+    const probe = await probeFeature(ctxWith({ stdout: "admitted — 1 item(s) in 1 wave(s)", stderr: "", code: 0 }), ["run", "--dry-run"]);
+    expect(probe.recognised).toBe(true);
+    expect(probe.present).toBe(true);
   });
 });

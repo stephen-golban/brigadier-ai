@@ -7,13 +7,28 @@
  * the right default for the items whose subject is brigadier's own behaviour —
  * isolation, integration, sweeping, ceilings, reporting.
  *
- * It is the WRONG default for the two items whose subject is a VENDOR's
- * behaviour. Ruling 43 and #41 measured that an APPROVED
- * `session/request_permission` on Codex runs the command outside its own OS
- * sandbox, and #50 found opencode has no boundary of any kind for execute-class
- * work. No stub we write can reproduce either: a fixture denies what we told it
- * to deny. So items 2 and 5 drive the operator's REAL, credentialed fleet when
- * `--live` is passed, and say so in their output.
+ * It is the WRONG default for an item whose subject is a VENDOR's behaviour.
+ * Ruling 43 and #41 measured that an APPROVED `session/request_permission` on
+ * Codex runs the command outside its own OS sandbox, and #50 found opencode has
+ * no boundary of any kind for execute-class work. No stub we write can
+ * reproduce either: a fixture denies what we told it to deny.
+ *
+ * **Exactly ONE item drives the operator's real, credentialed fleet: item 5.**
+ * It is the only caller of `detectRealFleet` below, and `bar/fleet-claim.test.ts`
+ * asserts that over the whole tree so this paragraph cannot go stale in silence.
+ *
+ * This comment used to say "items 2 and 5", and item 2's code has always planted
+ * fixtures. That is ruling 62(g)'s failure class exactly — a claim living in a
+ * file nobody edits, passing every gate because a comment is just text — and it
+ * was load-bearing here, because this is the document telling a reader which
+ * results are credentialed. Corrected in the direction of the code, deliberately:
+ * pointing item 2 at the real fleet would spend real vendor tokens on every run
+ * and is a scheduling decision, not a comment fix.
+ *
+ * **The cost of that, stated rather than buried:** item 2's lane checks run
+ * against a fixture that denies what it was told to deny, so item 2 does NOT
+ * reproduce #41's approved-permission escape. It measures brigadier's lane, not
+ * a vendor's sandbox. Ruling 43's escape remains covered only by item 5.
  *
  * If the real fleet cannot supply what the item needs, the item says that too
  * rather than silently substituting fixtures — a substitution nobody is told

@@ -38,6 +38,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { derive } from "./lib/derive.ts";
+import { isolatedPath, plantBrigadierShim } from "./lib/fixtures.ts";
+import { writeScript } from "./lib/fs.ts";
 import { readLedger } from "./lib/ledger.ts";
 import type { Directive } from "./lib/plan.ts";
 
@@ -45,7 +47,19 @@ const VENDOR = fileURLToPath(new URL("./fakes/vendor.ts", import.meta.url));
 const LIB_URL = new URL("./lib/", import.meta.url).href;
 
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), "brigadier-acp-exchange-")));
+const emptyConfigHome = join(scratch, "xdg");
+mkdirSync(emptyConfigHome, { recursive: true });
 const started: Bun.Subprocess[] = [];
+
+/** Real git, because the thing under test is whether the fixture COMMITS. */
+function git(cwd: string, ...args: string[]): { code: number | null; out: string } {
+  const proc = Bun.spawnSync(["git", "-c", "user.email=t@e.invalid", "-c", "user.name=t", ...args], {
+    cwd,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  return { code: proc.exitCode, out: new TextDecoder().decode(proc.stdout).trim() };
+}
 
 afterAll(() => {
   // Cleanup FIRST, and never downstream of a wait on anything that might be
@@ -79,9 +93,15 @@ class Client {
   readonly proc: Bun.Subprocess<"pipe", "pipe", "pipe">;
   private nextId = 1;
 
-  constructor(script: string, configPath: string, cwd: string) {
+  constructor(script: string, configPath: string, cwd: string, envOverrides: Record<string, string> = {}) {
     this.proc = Bun.spawn([process.execPath, script, configPath, "--acp"], {
       cwd,
+      // `XDG_CONFIG_HOME` is pinned at an empty directory on purpose: the
+      // fixture reads an ambient instruction file the way a real agent does, and
+      // a developer who happened to have one would change how many permission
+      // requests this exchange contains. Item 9 owns that behaviour; this file
+      // must not inherit it from whoever is running the suite.
+      env: { ...process.env, XDG_CONFIG_HOME: emptyConfigHome, ...envOverrides },
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
@@ -150,6 +170,17 @@ class Client {
 const responseTo = (id: number) => (m: Message) => m.id === id && m.method === undefined;
 const permissionRequest = (m: Message): boolean => m.method === "session/request_permission";
 
+/** The text of every `agent_message_chunk` the fixture streamed. */
+function chunks(client: Client): string {
+  return client.seen
+    .filter((m) => m.method === "session/update")
+    .map((m) => {
+      const update = (m.params as { update?: { content?: { text?: string } } })?.update;
+      return update?.content?.text ?? "";
+    })
+    .join("\n");
+}
+
 interface Bed {
   clone: string;
   configPath: string;
@@ -171,6 +202,14 @@ function bed(name: string): Bed {
   mkdirSync(join(clone, "seeds"), { recursive: true });
   const seed = `seed-${name}-2f9c81`;
   writeFileSync(join(clone, "seeds", "one.seed"), `${seed}\n`);
+
+  // A real repository, because brigadier's own worker brief tells the agent to
+  // COMMIT and ruling 56 forbids brigadier from running git in a clone an agent
+  // has touched. A fixture that only wrote files left the product a correct,
+  // empty diff — which is what nine of eleven live failures cascaded from.
+  git(clone, "init", "-q", "-b", "work", ".");
+  git(clone, "add", "-A");
+  git(clone, "commit", "-q", "-m", "base");
 
   const ledger = join(root, "ledger.tsv");
   const configPath = join(root, "copilot.vendor.json");
@@ -249,6 +288,14 @@ describe("the fixture completes a permission exchange it raised itself", () => {
     expect(existsSync(b.target)).toBe(true);
     expect(readFileSync(b.target, "utf8").trim()).toBe(b.expected);
 
+    // AND IT IS COMMITTED. Read out of the object store rather than off the
+    // working tree: ruling 56 forbids brigadier from running git inside a clone
+    // an agent has touched, so anything left uncommitted is invisible to it and
+    // "the file exists on disk" is not the claim that matters.
+    expect(git(b.clone, "show", "HEAD:out.txt").out).toBe(b.expected);
+    expect(git(b.clone, "status", "--porcelain").out).toBe("");
+    expect(git(b.clone, "rev-list", "--count", "HEAD").out).toBe("2");
+
     // A ledger line is a file a process had to exist to write.
     expect(readLedger(b.ledger).map((l) => `${l.vendor}/${l.role}/${l.item}`)).toEqual(["copilot/builder/exchange-1"]);
 
@@ -280,6 +327,13 @@ describe("the fixture completes a permission exchange it raised itself", () => {
     // than the denial — and nothing was written.
     expect(existsSync(b.target)).toBe(false);
 
+    // NEGATIVE CONTROL for the commit: the same code path, denied, leaves the
+    // history exactly where it was. Without this the assertion above would pass
+    // just as well against a fixture that committed unconditionally, which would
+    // make every lane check in the bar meaningless.
+    expect(git(b.clone, "rev-list", "--count", "HEAD").out).toBe("1");
+    expect(git(b.clone, "status", "--porcelain").out).toBe("");
+
     client.close();
     expect(await exitedWithin(client.proc, 20_000)).toBe(0);
   }, 90_000);
@@ -310,6 +364,11 @@ describe("the fixture completes a permission exchange it raised itself", () => {
     const deadline = Date.now() + 20_000;
     while (!existsSync(b.target) && Date.now() < deadline) await Bun.sleep(20);
     expect(readFileSync(b.target, "utf8").trim()).toBe(b.expected);
+    // Committed BEFORE the hang, which is what item 7 needs: an interrupted
+    // clone that really has work in it, so retaining it is worth doing.
+    const committed = Date.now() + 20_000;
+    while (git(b.clone, "rev-list", "--count", "HEAD").out !== "2" && Date.now() < committed) await Bun.sleep(20);
+    expect(git(b.clone, "show", "HEAD:out.txt").out).toBe(b.expected);
 
     // With that turn wedged forever, an unrelated request is still answered.
     const modeId = client.request("session/set_mode", { sessionId: "whatever", modeId: "default" });
@@ -379,4 +438,120 @@ describe("NEGATIVE CONTROL: the same exchange against the deadlock, reconstructe
     client.proc.kill("SIGKILL");
     expect(await exitedWithin(client.proc, 20_000)).toBeNull();
   }, 120_000);
+});
+
+/**
+ * Route 2 of finding 114, at the unit the live run could not read.
+ *
+ * MEASURED on this host on 2026-08-18: item 9's shim ledger came back COMPLETELY
+ * EMPTY from a live run. The cause was in this fixture — `actOverAcp` folded
+ * `delegate` in with `derive-write` and never invoked `brigadier` at all — but
+ * from outside, an empty ledger reads identically whether the worker never
+ * tried (the product working) or the shim was unreachable (the harness
+ * measuring nothing). Ruling 57 names that ambiguity as the thing item 9 exists
+ * to settle, so it cannot be the thing item 9 produces.
+ *
+ * Both readings are driven here against the REAL shim from `bar/lib/fixtures.ts`
+ * rather than a hand-rolled stand-in, so the bytes asserted are the bytes item 9
+ * will see.
+ */
+describe("the delegate directive really calls `brigadier`, and an empty ledger is readable", () => {
+  /** A `brigadier` that refuses exactly as ruling 57 requires: exit 3. */
+  function shimmedBin(name: string, ledger: string): string {
+    const binDir = join(scratch, `${name}-bin`);
+    mkdirSync(binDir, { recursive: true });
+    const real = writeScript(
+      join(binDir, "real-brigadier"),
+      "#!/bin/sh\necho 'this session IS a brigadier worker; do the work directly' >&2\nexit 3\n",
+      "@echo off\r\nexit /b 3\r\n",
+    );
+    plantBrigadierShim(binDir, ledger, real);
+    return binDir;
+  }
+
+  async function drive(client: Client, b: Bed): Promise<void> {
+    const initId = client.request("initialize", { protocolVersion: 1, clientCapabilities: {} });
+    expect(await client.waitFor(responseTo(initId), 20_000)).toBeDefined();
+    const newId = client.request("session/new", { cwd: b.clone, mcpServers: [] });
+    expect(await client.waitFor(responseTo(newId), 20_000)).toBeDefined();
+
+    const delegate: Directive = { do: "delegate", read: "seeds/one.seed", path: "out.txt", salt: "exchange" };
+    const promptId = client.request("session/prompt", prompt(delegate));
+    const ask = await client.waitFor(permissionRequest, 20_000);
+    expect(ask).toBeDefined();
+    client.send({ jsonrpc: "2.0", id: ask?.id, result: { outcome: { outcome: "selected", optionId: "allow-once" } } });
+    const done = await client.waitFor(responseTo(promptId), 20_000);
+    expect((done?.result as { stopReason?: string })?.stopReason).toBe("end_turn");
+  }
+
+  test("the shim records the attempt, the marker, and the refusal", async () => {
+    if (process.platform === "win32") return; // the shim's POSIX form is what item 9 plants
+    const b = bed("delegate-reachable");
+    const ledger = join(scratch, "delegate-reachable.log");
+    const binDir = shimmedBin("delegate-reachable", ledger);
+
+    const client = new Client(VENDOR, b.configPath, b.clone, {
+      PATH: isolatedPath(binDir),
+      BRIGADIER_WORKER: "bar-exchange/1",
+    });
+    await drive(client, b);
+
+    // The bytes the shim wrote, which no report can un-write.
+    expect(existsSync(ledger)).toBe(true);
+    const lines = readFileSync(ledger, "utf8").trim().split("\n");
+    const call = lines.find((l) => l.startsWith("CALL "));
+    const doneLine = lines.find((l) => l.startsWith("DONE "));
+    // CALL is written BEFORE the real binary runs, so no outcome can suppress it.
+    expect(call).toContain("worker=bar-exchange/1");
+    expect(call).toContain("argv: run --plan whatever");
+    // DONE carries ruling 57's refusal code, so "ran and was refused" and "ran
+    // and was allowed" are different readings.
+    expect(doneLine).toContain("exit=3");
+
+    // And the fixture said the same thing on the wire, so a reader who has only
+    // the transcript reaches the same conclusion as one who has the ledger.
+    expect(chunks(client)).toContain("DELEGATION-REFUSED");
+
+    // And the work still happened and was committed: the worker did the job
+    // rather than delegating it.
+    expect(git(b.clone, "show", "HEAD:out.txt").out).toBe(b.expected);
+
+    client.close();
+    expect(await exitedWithin(client.proc, 20_000)).toBe(0);
+  }, 90_000);
+
+  test("NEGATIVE CONTROL: with no shim on PATH the ledger stays empty and the fixture SAYS so", async () => {
+    if (process.platform === "win32") return;
+    const b = bed("delegate-unreachable");
+    const ledger = join(scratch, "delegate-unreachable.log");
+    shimmedBin("delegate-unreachable", ledger); // planted, and deliberately NOT on PATH
+
+    const bare = join(scratch, "empty-bin");
+    mkdirSync(bare, { recursive: true });
+    const client = new Client(VENDOR, b.configPath, b.clone, {
+      PATH: isolatedPath(bare),
+      BRIGADIER_WORKER: "bar-exchange/2",
+    });
+    await drive(client, b);
+
+    // THE POINT. The ledger is empty here for a completely different reason
+    // than "the worker never tried", and the two must not look alike.
+    expect(existsSync(ledger)).toBe(false);
+    client.close();
+    expect(await exitedWithin(client.proc, 20_000)).toBe(0);
+    // The fixture reported the unreachable shim rather than failing silently,
+    // which is what lets item 9 call this a finding about environment
+    // propagation instead of an absence of evidence.
+    // Said on the wire...
+    expect(chunks(client)).toContain("could NOT spawn");
+    // UNREACHABLE, not ACCEPTED. A call that never happened cannot have been
+    // allowed, and labelling it so would tell item 9 the product failed to
+    // refuse something the product never saw.
+    expect(chunks(client)).toContain("DELEGATION-UNREACHABLE");
+    // ...and on stderr, which the harness captures even when it does not read
+    // the protocol. A finding reachable through only one channel is a finding
+    // that gets lost.
+    const stderr = await new Response(client.proc.stderr).text();
+    expect(stderr).toContain("could NOT spawn");
+  }, 90_000);
 });

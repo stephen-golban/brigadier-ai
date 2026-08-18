@@ -89,9 +89,29 @@ export interface RecordItem {
   /** Ruling 55: the rung it got, and whether a second rung existed at all. */
   attempts?: number;
   attemptsAvailable?: number;
+  /**
+   * The same two numbers as a sentence a reader cannot misread.
+   *
+   * `attempts: 1, attemptsAvailable: 1` and `attempts: 2, attemptsAvailable: 2`
+   * are both "N of N" to a skimmer, and ruling 55's whole point is that a
+   * MISSING rung and an EXHAUSTED one are different facts about the machine.
+   * `src/work/ladder.ts` renders it; the numbers stay for anything that would
+   * rather compute than parse.
+   */
+  ladder?: string;
   builderAgent?: string;
   reviewerAgent?: string;
   reviewVerdict?: CheckOutcome;
+  /**
+   * How many times the REVIEWER ran for this item.
+   *
+   * Deliberately not folded into `attempts`. Ruling 52's budget rule: the
+   * builder's ladder is charged to the item's budget and a broken reviewer's
+   * re-run is charged to brigadier, because a builder must not lose a rung of
+   * ruling 24's ladder to somebody else's crash. Two fields, because one field
+   * would make that rule unobservable.
+   */
+  reviewerAttempts?: number;
   /** Identities, not a count: a count can be printed by anything. */
   caughtDefects?: string[];
   checks: RecordCheck[];
@@ -170,9 +190,24 @@ export interface RunRecord {
     crossVendor: boolean;
     /** Ruling 32: a weakened check is stated, never rendered as a pass. */
     sameVendorReason?: string;
+    /** The vendor that actually reviewed, and the one that built. Ruling 29's triple, one role over. */
+    reviewerAgent?: string;
+    builderAgent?: string;
     caught?: number;
     planted?: number;
     caughtDefects?: string[];
+    /**
+     * The published rate as one line, composed where the numbers are known.
+     *
+     * A rendered string beside the numbers, exactly like `effort` and `ladder`:
+     * the numbers are for anything that would rather compute, and the sentence
+     * is what a reader gets. It is PUBLISHED and not gated — review is
+     * probabilistic and a flaky blocking check gets disabled, while a published
+     * number gets argued with.
+     */
+    catchRate?: string;
+    /** Ruling 52: re-runs of a BROKEN reviewer, charged to brigadier and counted separately. */
+    reviewerReruns?: number;
   };
   cost?: {
     currency: string;

@@ -40,8 +40,9 @@
 
 import { applyOverride, type BridgeOverride } from "../agent/drift.ts";
 import { PROFILES, ALL_AGENT_IDS, type AgentId, type LaunchProfile } from "../agent/profiles.ts";
-import { chooseRung, renderLadder, type LadderOutcome, type RungDistance } from "../work/ladder.ts";
+import { chooseRung, renderLadderOffered, type LadderOutcome, type RungDistance } from "../work/ladder.ts";
 import { DEFAULT_DESIRABILITY_CAP, planFanOut, type FanOut } from "../work/fanout.ts";
+import { chooseReviewer, type ReviewerChoice } from "./review.ts";
 import type { AgentOnLadder, PlannedItem, PlanRefusal, ValidatedPlan } from "./plan.ts";
 
 export interface ResolvedAgent extends AgentOnLadder {
@@ -108,7 +109,10 @@ export function rungsAvailable(agents: readonly ResolvedAgent[]): RungDistance[]
 
 export function ladderFor(agents: readonly ResolvedAgent[]): LadderOutcome {
   const rung = chooseRung(rungsAvailable(agents));
-  if (rung !== null) return { kind: "completed", attempts: 2, distance: rung };
+  // Two rungs are OFFERED. `attempts` is what an item spent and is filled in per
+  // item afterwards by `ladderTaken`; here it is 0, because at admission nothing
+  // has been spent — which is the whole of ruling 53's ordering promise.
+  if (rung !== null) return { kind: "completed", attempts: 0, of: 2, distance: rung };
   if (agents.length === 0) {
     return {
       kind: "short",
@@ -120,7 +124,7 @@ export function ladderFor(agents: readonly ResolvedAgent[]): LadderOutcome {
     kind: "short",
     attempts: 1,
     reason:
-      `only ${agents[0]?.id} resolved on this machine and its profile records no model list at ` +
+      `only one vendor is drivable (${agents[0]?.id}), and its profile records no model list at ` +
       "session/new, so a second attempt would repeat the same triple (ruling 55)",
   };
 }
@@ -175,6 +179,16 @@ export interface Admission {
   /** One per wave, in wave order. */
   fanOut: FanOut[];
   refusals: PlanRefusal[];
+  /**
+   * Ruling 32, decided HERE and used by the run, or `null` when `--review` was
+   * not asked for.
+   *
+   * One decision, in the place that prints it before anything is spent. The run
+   * reading it back rather than recomputing it is what stops a run from
+   * reporting a different answer from the one its own admission printed — the
+   * same reasoning ruling 69 gives for one table, one resolution, one spawn.
+   */
+  reviewer: ReviewerChoice | null;
 }
 
 export interface AdmitInput {
@@ -183,6 +197,8 @@ export interface AdmitInput {
   /** Decision 25: brigadier invoked from inside a host agent session reserves that agent's RAM. */
   hostFirst: boolean;
   desirabilityCap?: number;
+  /** `--review`. An operator who did not ask for a reviewer is not told about one. */
+  review?: boolean;
 }
 
 /**
@@ -220,7 +236,14 @@ export function admit(input: AdmitInput): Admission {
     }),
   );
 
-  return { plan: input.plan, agents: [...input.agents], ladder, fanOut, refusals };
+  return {
+    plan: input.plan,
+    agents: [...input.agents],
+    ladder,
+    fanOut,
+    refusals,
+    reviewer: input.review === true ? chooseReviewer(input.agents, input.agents[0]?.id ?? null) : null,
+  };
 }
 
 /** The lines `--dry-run` prints when a plan is admitted. */
@@ -241,7 +264,26 @@ export function describeAdmission(admission: Admission, planPath: string): strin
     "             resolving a name is not driving an agent — `brigadier detect` opens a session,",
     "             and that is the only thing that proves one is usable (ruling 46).",
   );
-  lines.push(`  ladder     ${renderLadder(ladder)}`);
+  lines.push(`  ladder     ${renderLadderOffered(ladder)}`);
+  // Ruling 32, stated with the ladder and before anything is spent, because the
+  // two are the same fact about the machine seen from two sides: a `PATH` with
+  // one vendor has no second rung AND no cross-vendor reviewer. v1's shape was
+  // to discover both after an attempt was already gone. Printed only when the
+  // operator asked for a reviewer — a line about a check nobody requested is
+  // the kind of noise that teaches people to skim the block this ruling needs
+  // them to read.
+  const reviewer = admission.reviewer;
+  if (reviewer !== null) {
+    lines.push(
+      `  review     ${
+        reviewer.agent === null
+          ? "no vendor is drivable, so --review has nothing to route and every item's review check blocks"
+          : reviewer.crossVendor
+            ? `cross-vendor is available — ${reviewer.agent.id} can review work built by ${agents[0]?.id}`
+            : `SAME-VENDOR only — ${reviewer.sameVendorReason ?? ""}`
+      }`,
+    );
+  }
   for (const [index, wave] of plan.waves.entries()) {
     const names = wave.map((n) => plan.items.find((i) => i.number === n)?.id ?? String(n));
     lines.push(`  wave ${index + 1}     ${names.join(", ")}`);

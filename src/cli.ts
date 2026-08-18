@@ -65,7 +65,14 @@ const USAGE = `brigadier — an ACP hub
       onto refs/heads/brigadier/<run-id> and gated on the merged result.
       --dry-run     admit the plan and stop. Nothing is created.
       --estimate    a cost RANGE with its provenance, and stop (ruling 66).
-      --review      route a reviewer of a different vendor where one exists.
+      --review      route a reviewer, of a DIFFERENT vendor where one exists and
+                    of the builder's own where none does (ruling 32: cross-vendor
+                    is preferred, not required). The report says which ran, and a
+                    reviewer that produces no verdict is an error, which blocks.
+      --planted <n> how many defects an independent verifier planted in this
+                    run's diffs. The denominator of the published catch rate; the
+                    numerator is what reviewers named AND that appears in the diff
+                    they were handed. Without it a count is printed, not a rate.
       --verify <c>  the command to run on the MERGED result (ruling 52). It is
                     resolved on PATH before a single worker exists, and it comes
                     from you — a brigadier.json committed in the repository is
@@ -459,6 +466,9 @@ async function run(): Promise<number> {
     // Decision 25: the product is host-first, so brigadier normally runs inside
     // a host agent's session and that agent gets a worker's RAM budget.
     hostFirst: audience === "host-session",
+    // Ruling 32's reviewer is decided at admission and printed there, so the run
+    // cannot report a different answer from the one the operator was shown.
+    review: flag("review"),
     ...(workers === undefined ? {} : { desirabilityCap: Number(workers) }),
   });
 
@@ -501,6 +511,7 @@ async function run(): Promise<number> {
     audience,
     verify,
     review: flag("review"),
+    ...(value("planted") === undefined ? {} : { planted: Number(value("planted")) }),
     secretEnv: values("secret-env"),
     // Ruling 30's declared edge case, and ruling 31's reason it is here rather
     // than in the plan: the operator raises a ceiling, never the plan.

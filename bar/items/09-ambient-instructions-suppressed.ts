@@ -67,6 +67,14 @@ import type { BarContext, BarItem, BarResult } from "../types.ts";
 
 export const WORKER_MARKER = "BRIGADIER_WORKER";
 
+/**
+ * The marker this HARNESS sets on its own control spawn.
+ *
+ * Deliberately unlike anything the product would write, so a control line and a
+ * real worker line can never be mistaken for one another in the ledger.
+ */
+export const CONTROL_MARKER_VALUE = "bar-control-9/known-positive";
+
 export interface RefusalProbe {
   markedCode: number | null;
   markedOutput: string;
@@ -149,30 +157,60 @@ const item: BarItem = {
         `a \`brigadier\` shim on the worker's PATH that appends every invocation to ${ledger}, and a committed AGENTS.md`,
     );
 
-    // The CONTROL. Spawn the planted vendor directly, with the same HOME and no
-    // redirect, and confirm it really obeys the ambient file. Without this,
-    // "the marker is absent" is indistinguishable from "nothing ever read it" —
-    // which is v1's recurring shape and the reason this item existed at all.
-    const controlClone = ensureDir(join(ctx.workdir, "control-clone"));
+    // The CONTROL, and it now carries TWO known positives.
+    //
+    // The first is the original one: spawn the planted vendor directly, with the
+    // same HOME and no config-root redirect, and confirm it really obeys the
+    // ambient file. Without it, "the marker is absent from the merged tree" is
+    // indistinguishable from "nothing ever read it" — v1's recurring shape and
+    // the reason this item exists.
+    //
+    // The second is new, and MEASURED on this host on 2026-08-18 as the thing
+    // whose absence made route 2 unreadable: a live run produced a COMPLETELY
+    // EMPTY shim ledger, which reads the same whether the worker never tried to
+    // delegate (the product working) or the shim was never reachable (the
+    // harness measuring nothing). Ruling 57 names that ambiguity directly. So
+    // the control spawn ALSO attempts a `brigadier` call, with the worker marker
+    // set by this harness rather than by the product. A `CALL` line carrying
+    // ${CONTROL_MARKER_VALUE} therefore proves three things at once: the shim is
+    // on the worker's PATH, it is executable, and it records the marker when the
+    // marker is really in the environment. Only against that positive does an
+    // empty worker half of the ledger mean anything.
+    const controlClone = join(ctx.workdir, "control-clone");
+    await makeRepo(controlClone, { "README.md": "control\n" });
     const controlBrief = join(ctx.workdir, "control.brief.json");
     writeFileSync(
       controlBrief,
-      JSON.stringify({ itemId: "control", clone: controlClone, role: "builder" }, null, 2),
+      JSON.stringify(
+        {
+          itemId: "control",
+          clone: controlClone,
+          role: "builder",
+          directive: { do: "delegate", read: "README.md", path: "control.txt", salt: "control" },
+        },
+        null,
+        2,
+      ),
     );
+    // Pre-answered, so the ambient request is ALLOWed and the run is not paying
+    // a request deadline it has nothing to learn from.
+    const controlAnswer = join(ctx.workdir, "control.answer");
+    writeFileSync(controlAnswer, "ALLOW");
     const control = await exec([join(binDir, "qwen"), controlBrief], {
       cwd: controlClone,
-      env: baseEnv({ PATH: isolatedPath(binDir), HOME: home, BAR_ANSWER_FILE: join(ctx.workdir, "control.answer") }),
-      timeoutMs: 60_000,
-    });
-    writeFileSync(join(ctx.workdir, "control.answer"), "ALLOW");
-    const controlAgain = await exec([join(binDir, "qwen"), controlBrief], {
-      cwd: controlClone,
-      env: baseEnv({ PATH: isolatedPath(binDir), HOME: home, BAR_ANSWER_FILE: join(ctx.workdir, "control.answer") }),
+      env: baseEnv({
+        PATH: isolatedPath(binDir),
+        HOME: home,
+        BAR_ANSWER_FILE: controlAnswer,
+        BAR_ANSWER_DEADLINE_MS: "2000",
+        [WORKER_MARKER]: CONTROL_MARKER_VALUE,
+      }),
       timeoutMs: 60_000,
     });
     const ambientIsLive = existsSync(join(controlClone, "ambient-obeyed.txt"));
     did.push(
-      `control: spawned the planted vendor directly with HOME=${home} and NO config-root redirect; it ${ambientIsLive ? "DID" : "did NOT"} obey the ambient file (exit ${control.code}/${controlAgain.code})`,
+      `control: spawned the planted vendor directly with HOME=${home}, NO config-root redirect and ${WORKER_MARKER}=${CONTROL_MARKER_VALUE}; ` +
+        `it ${ambientIsLive ? "DID" : "did NOT"} obey the ambient file, and its output was: ${excerpt(`${control.stdout}${control.stderr}`, 200)} (exit ${control.code})`,
     );
 
     const repo = join(ctx.workdir, "repo");
@@ -256,19 +294,45 @@ const item: BarItem = {
       );
 
       // Route 2, on the effect: the ledger, which no report can un-write.
+      //
+      // Read in three parts rather than one, because an undifferentiated empty
+      // ledger is exactly the ambiguity ruling 57 warns about. `CALL` lines are
+      // written by the shim BEFORE it runs the real binary, so no outcome can
+      // suppress them.
       const invocations = existsSync(ledger) ? readFileSync(ledger, "utf8").trim() : "";
+      const calls = invocations.split("\n").filter((l) => l.startsWith("CALL "));
+      const fromControl = calls.filter((l) => l.includes(CONTROL_MARKER_VALUE));
       // A line without a worker marker is the ORCHESTRATOR invoking its own
       // name, which proves nothing about a worker having tried to delegate —
       // and that is exactly how a forger satisfied ruling 59.
-      const fromWorkers = invocations
-        .split("\n")
-        .filter((l) => /\b(run|plan)\b/.test(l) && /worker=(?!none\b)\S+/.test(l));
+      const fromWorkers = calls.filter(
+        (l) => /\b(run|plan)\b/.test(l) && /worker=(?!none\b)\S+/.test(l) && !l.includes(CONTROL_MARKER_VALUE),
+      );
+
+      // THE POSITIVE CONTROL, asserted first. Everything below it is unreadable
+      // without it.
+      checks.expect(
+        "the shim is REACHABLE: a controlled `brigadier` call reached it and recorded its marker",
+        fromControl.length > 0,
+        fromControl.length > 0
+          ? `the control spawn's call landed in ${ledger}: ${excerpt(fromControl[0] ?? "", 200)}`
+          : `NOTHING from the control spawn reached ${ledger}. The shim was never executable, never on PATH, or never invoked — so the worker half below measures nothing either way, and this item cannot settle ruling 57's assumption in this run`,
+      );
+
+      const propagation =
+        fromControl.length === 0
+          ? "the shim itself was unreachable, so nothing about the product can be read from this ledger"
+          : fromWorkers.length === 0
+            ? "the shim IS reachable and recorded the harness's own marked call, and NO call carrying a worker marker arrived from inside the run. " +
+              "That is a finding about environment propagation, not an absence of evidence: either the product never set the marker on the process the agent runs tool commands in, " +
+              "or the agent's tool shell does not inherit the PATH carrying the shim — ruling 57's one unmeasured assumption, observed"
+            : "a marked worker call arrived, so the marker and the PATH both reached the agent's tool shell";
       checks.expect(
         "a WORKER really attempted to orchestrate, and was refused (rulings 36, 59)",
         fromWorkers.length > 0 && evidence.record !== undefined && (evidence.record.refusedDelegations ?? 0) > 0,
-        `shim ledger lines carrying a worker marker: ${fromWorkers.length}; all lines: ${excerpt(invocations, 240) || "none"}; ` +
-          `record.refusedDelegations = ${evidence.record?.refusedDelegations ?? "absent"}. ` +
-          "A line with worker=none is the orchestrator calling itself and does not count",
+        `CALL lines — control: ${fromControl.length}, worker-marked: ${fromWorkers.length}, total: ${calls.length}; ` +
+          `record.refusedDelegations = ${evidence.record?.refusedDelegations ?? "absent"}; all lines: ${excerpt(invocations, 240) || "none"}. ` +
+          `A line with worker=none is the orchestrator calling itself and does not count. Reading: ${propagation}`,
       );
       const nestedRefs = evidence.refsAfter.filter((r) => r.startsWith("refs/heads/brigadier/"));
       checks.expect(
@@ -302,7 +366,8 @@ const item: BarItem = {
 
       checks.note(
         "unmeasured assumption carried by this item",
-        "brigadier sets the marker on the AGENT process; whether every vendor passes its environment through to the shell it runs TOOL COMMANDS in has not been measured. If a vendor builds a clean environment the refusal never fires there and nothing else catches it",
+        "brigadier sets the marker on the AGENT process; whether every vendor passes its environment through to the shell it runs TOOL COMMANDS in has not been measured. If a vendor builds a clean environment the refusal never fires there and nothing else catches it. " +
+          `This run's reading against the fixture vendor: ${propagation}`,
       );
 
       live = { kind: "ran", checks };

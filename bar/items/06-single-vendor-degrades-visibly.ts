@@ -86,22 +86,47 @@ const item: BarItem = {
     }
 
     // ---- live: the run completes, weakened, and says so ---------------------
-    const probe = await probeFeature(
-      ctx,
-      ["run", "--plan", planPath, "--repo", repo, "--run-root", join(ctx.workdir, "runs"), "--review"],
-      { env, timeoutMs: HARNESS_RUN_TIMEOUT_MS },
-    );
-    did.push(probe.transcript);
-
+    //
+    // Existence is settled by the ADMISSION probe above, which the same binary
+    // answered with exit 0. MEASURED on this host on 2026-08-18: this item used
+    // to decide existence from the `--review` run itself, so a `--review` that
+    // ran and exited 1 — a cascade from a fixture that never committed — was
+    // reported as "the artifact does not implement this yet". That label sends a
+    // reader to build something that is already there. Recognition and success
+    // are now separate questions (`bar/lib/feature.ts`), and a `--review` that
+    // exits non-zero is judged as the failure it is, with its transcript.
     let live: LiveHalf;
-    if (!probe.present) {
-      live = { kind: "missing", probe, promise: "there is no run to degrade, so neither the same-vendor statement nor the ladder's rung can be observed" };
+    if (!admission.recognised) {
+      live = {
+        kind: "missing",
+        probe: admission,
+        promise: "there is no run to degrade, so neither the same-vendor statement nor the ladder's rung can be observed",
+      };
     } else if (!ctx.live) {
       live = { kind: "skipped", why: "the run must COMPLETE on one drivable vendor, which needs that vendor's credentials" };
     } else {
-      const report = `${probe.result.stdout}${probe.result.stderr}`;
+      const reviewRun = await ctx.run(
+        ["run", "--plan", planPath, "--repo", repo, "--run-root", join(ctx.workdir, "runs"), "--review"],
+        { env, timeoutMs: HARNESS_RUN_TIMEOUT_MS },
+      );
+      did.push(
+        `ran the review pass on a one-vendor PATH: exit ${reviewRun.code}${reviewRun.signal ? ` (signal ${reviewRun.signal})` : ""}; ` +
+          `output: ${excerpt(`${reviewRun.stdout}${reviewRun.stderr}`, 240)}`,
+      );
+      const report = `${reviewRun.stdout}${reviewRun.stderr}`;
       const evidence = await gatherRunEvidence(repo, report);
       const checks = new Checks();
+
+      // Ruling 32 in its most direct form, and now stated rather than inferred
+      // from a probe's `present`. A non-zero exit here is a FAILING CHECK about
+      // the product's behaviour on a one-vendor machine, which is a different
+      // claim from "the subcommand is missing" and reads differently to anyone
+      // triaging it.
+      checks.expect(
+        "the run COMPLETED on a single-vendor machine rather than refusing (ruling 32)",
+        reviewRun.code === 0,
+        `exit ${reviewRun.code}${reviewRun.signal ? ` (signal ${reviewRun.signal})` : ""}; output: ${excerpt(report, 400)}`,
+      );
 
       // It COMPLETED. Ruling 32: it does not refuse to start.
       for (const row of proofOfWork(evidence, { expected: plan.expected, itemIds: plan.itemIds }).rows) {

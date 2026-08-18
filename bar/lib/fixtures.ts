@@ -103,6 +103,19 @@ export function isolatedPath(binDir: string): string {
  * *check that reports success when the thing it checks did not happen* shape v1
  * kept shipping. This shim records every invocation, so a worker that really
  * did call `brigadier run` leaves bytes behind that no report can un-write.
+ *
+ * **Two lines per invocation, and the pair is the point.** MEASURED on this
+ * host on 2026-08-18: a live run produced a COMPLETELY EMPTY ledger, and an
+ * empty ledger is ambiguous in exactly the way ruling 57 warns about — it reads
+ * identically whether the worker never attempted to delegate (the product
+ * working) or the shim was never reachable (the harness measuring nothing). So
+ * `CALL` is written BEFORE the real binary runs, which no outcome can suppress,
+ * and `DONE` after it with the exit code. A shim that ran and was refused, a
+ * shim that ran and was allowed, and a shim that never ran at all are then three
+ * different readings instead of one.
+ *
+ * `exec` was replaced by a plain call for the same reason: an `exec`d shim can
+ * never write its own outcome.
  */
 export function plantBrigadierShim(binDir: string, ledger: string, real: string): string {
   ensureDir(binDir);
@@ -113,7 +126,22 @@ export function plantBrigadierShim(binDir: string, ledger: string, real: string)
   // calling its own name once.
   return writeScript(
     join(binDir, "brigadier"),
-    `#!/bin/sh\necho "worker=\${BRIGADIER_WORKER:-none} argv: $@" >> ${quote(ledger)}\nexec ${quote(real)} "$@"\n`,
-    `@echo off\r\necho worker=%BRIGADIER_WORKER% argv: %* >> ${quote(ledger)}\r\n${quote(real)} %*\r\n`,
+    [
+      "#!/bin/sh",
+      `echo "CALL worker=\${BRIGADIER_WORKER:-none} argv: $@" >> ${quote(ledger)}`,
+      `${quote(real)} "$@"`,
+      "status=$?",
+      `echo "DONE worker=\${BRIGADIER_WORKER:-none} exit=$status argv: $@" >> ${quote(ledger)}`,
+      "exit $status",
+      "",
+    ].join("\n"),
+    [
+      "@echo off",
+      `echo CALL worker=%BRIGADIER_WORKER% argv: %* >> ${quote(ledger)}`,
+      `call ${quote(real)} %*`,
+      `echo DONE worker=%BRIGADIER_WORKER% exit=%ERRORLEVEL% argv: %* >> ${quote(ledger)}`,
+      "exit /b %ERRORLEVEL%",
+      "",
+    ].join("\r\n"),
   );
 }

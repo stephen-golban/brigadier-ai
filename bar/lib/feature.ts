@@ -24,7 +24,22 @@ import type { BarContext, BarResult, RunOptions, RunResult } from "../types.ts";
 import { excerpt } from "./checks.ts";
 
 export interface FeatureProbe {
+  /** The subcommand exists AND produced the evidence the caller asked for. */
   present: boolean;
+  /**
+   * The binary RECOGNISED the subcommand — separate from whether it succeeded.
+   *
+   * MEASURED on this host on 2026-08-18: item 6 read a `run --review` that
+   * exited 1 as "the artifact does not implement this yet", when the exit was a
+   * cascade from a fixture defect. The label was wrong in the most expensive
+   * direction available: a harness that infers "unbuilt" from a non-zero exit
+   * will keep reporting real, observed behaviour as a missing feature, and the
+   * reader has no way to tell the two apart from the outcome line. So the two
+   * questions are now answered separately — "does this subcommand exist" and
+   * "did it do what the item needs" — and an item that has already established
+   * existence by other means must judge the failure rather than relabel it.
+   */
+  recognised: boolean;
   result: RunResult;
   /** The argv, exit code and streams, ready to paste into a bug report. */
   transcript: string;
@@ -53,8 +68,12 @@ export async function probeFeature(
   // says it prevents. Offline, a printer collected seven of them.
   const unknown = /unknown command/i.test(result.stderr) || /unknown command/i.test(result.stdout);
   const usageOnly = /^\s*brigadier\b[\s\S]*\bbrigadier (detect|agents|licenses)\b/.test(result.stdout);
+  // Recognition is about whether the binary KNOWS the subcommand: it neither
+  // rejected the name nor fell back to printing its general usage. A command
+  // that ran and exited non-zero is recognised — that is a result, not a gap.
+  const recognised = !unknown && !usageOnly;
   const evidenced = opts.evidence === undefined ? result.code === 0 && !usageOnly : opts.evidence(result);
-  return { present: !unknown && evidenced, result, transcript };
+  return { present: !unknown && evidenced, recognised, result, transcript };
 }
 
 /** The `FAIL` an item returns when the artifact does not implement it yet. */
@@ -64,6 +83,23 @@ export function missingFeature(did: string, probe: FeatureProbe, promise: string
     did,
     observed: probe.transcript,
     reason: `the artifact does not implement this yet — ${promise}. Reported FAIL rather than SKIPPED: ruling 48 makes an unrun check block, and "the feature is missing" is not one of the two legal causes of a skip`,
+  };
+}
+
+/**
+ * The `FAIL` for a subcommand that EXISTS and did not do what the item needs.
+ *
+ * A different sentence from `missingFeature` on purpose, and the distinction is
+ * the point: "the artifact does not implement this" sends a reader to build
+ * something, "it ran and failed" sends them to read the transcript. Item 6 spent
+ * a live run wearing the first label while doing the second.
+ */
+export function ranAndFailed(did: string, probe: FeatureProbe, promise: string): BarResult {
+  return {
+    outcome: "FAIL",
+    did,
+    observed: probe.transcript,
+    reason: `the subcommand EXISTS and did not do what this item needs — ${promise}. This is an observed failure, not a missing feature: the binary recognised the command and ran it`,
   };
 }
 

@@ -596,6 +596,14 @@ async function doRun(): Promise<number> {
       // clone's own `origin`. Removing it is a speed bump rather than a
       // boundary, and it is removed anyway — the boundary is the ref diff.
       run(["git", "remote", "remove", "origin"], { cwd: clone });
+      // Where the clone stood BEFORE the worker touched it. Since 2026-08-18
+      // the fixture agent commits its own work — brigadier's worker brief tells
+      // a real agent to, and ruling 56 forbids the orchestrator from running
+      // git inside a clone an agent has touched — so "did work land" is HEAD
+      // having MOVED, not this fixture's own commit having succeeded. The
+      // commit below is now expected to be a no-op and deciding on its exit
+      // code would mark every successful item `failed`.
+      const headBefore = safeGit(clone, emptyHooks, ["rev-parse", "HEAD"], runRoot).out;
 
       const workerEnv: Record<string, string> = {
         PATH: process.env["PATH"] ?? "",
@@ -637,7 +645,9 @@ async function doRun(): Promise<number> {
         },
       });
       spend += perItem;
-      if (outcome.lines.some((l) => l === "DELEGATION-REFUSED")) refusedDelegations += 1;
+      // `startsWith`, not equality: the fixture now names the outcome AND the
+      // exit code it saw, so an equality check would silently stop counting.
+      if (outcome.lines.some((l) => l.startsWith("DELEGATION-REFUSED"))) refusedDelegations += 1;
 
       // Ruling 49: a read-only item's directory is NEVER read back, so nothing
       // it wrote can reach the branch or any report. Not "the agent could not
@@ -647,10 +657,14 @@ async function doRun(): Promise<number> {
         continue;
       }
 
+      // A fallback for a worker that wrote without committing, kept so this
+      // fixture still integrates one. It is a no-op against a worker that did
+      // commit, which is now the normal case.
       safeGit(clone, emptyHooks, ["add", "-A"], runRoot);
-      const committed = safeGit(clone, emptyHooks, ["commit", "--no-verify", "-q", "-m", `${item.id}: work`], runRoot);
+      safeGit(clone, emptyHooks, ["commit", "--no-verify", "-q", "-m", `${item.id}: work`], runRoot);
       const head = safeGit(clone, emptyHooks, ["rev-parse", "HEAD"], runRoot);
-      if (!committed.ok && !commitNow) {
+      const landed = head.ok && head.out.length > 0 && head.out !== headBefore;
+      if (!landed && !commitNow) {
         records.push({ id: item.id, status: "failed", agent: builder, model: `${builder}-m`, effort: "medium" });
         continue;
       }

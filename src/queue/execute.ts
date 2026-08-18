@@ -71,10 +71,12 @@ import {
   type BaseState,
 } from "../isolation/index.ts";
 import {
+  assertLocalPathTransport,
   attemptable,
   discardGateClone,
   initialIntegrationCheck,
   integrateWave,
+  parentGit,
   refSha,
   runIntegrationGate,
   waveBoundary,
@@ -83,7 +85,7 @@ import {
 } from "../integrate/index.ts";
 import { Lane } from "../lane/lane.ts";
 import { RUN_DIR } from "../repo/layout.ts";
-import { WORK_BRANCH, integrationBranch, itemRef } from "../repo/refs.ts";
+import { REF_NAMESPACE, WORK_BRANCH, integrationBranch, itemRef } from "../repo/refs.ts";
 import {
   CANCEL_DEADLINE_MS,
   describeStartSweep,
@@ -109,10 +111,23 @@ import {
 } from "../report/index.ts";
 import { blocks, type CheckOutcome, type CheckResult } from "../work/check.ts";
 import { lanePolicyFor } from "../work/kind.ts";
+import { ladderTaken, renderLadder, rungsOffered } from "../work/ladder.ts";
 import type { VerifyResolution } from "../gate/verify.ts";
 import { bindingSentence, type Admission } from "./admit.ts";
 import { composeBrief } from "./brief.ts";
 import { CEILING, deriveEffort, noLever, leverFor, renderEffort, type EffortOutcome } from "./effort.ts";
+import {
+  REVIEWER_RERUNS,
+  catchRateLine,
+  caughtIn,
+  chooseReviewer,
+  composeReviewBrief,
+  notReviewable,
+  parseVerdict,
+  reviewApplies,
+  reviewQualifier,
+  type ReviewerChoice,
+} from "./review.ts";
 import { spawnMarkedAgent } from "./spawn.ts";
 import { describeEstimate, estimatePlan } from "./estimate.ts";
 import type { PlannedItem } from "./plan.ts";
@@ -130,24 +145,25 @@ import type { PlannedItem } from "./plan.ts";
 export const DEFAULT_HANDSHAKE_TIMEOUT_MS = 60_000;
 
 /**
- * What `--review` currently gets, and why it is a refusal rather than a field.
+ * What `--review` gets when nothing on this machine can review.
  *
  * Ruling 52's four outcomes: a reviewer producing no verdict is `error` or
- * `not-run`, and both BLOCK. There is no reviewer in this build, so every item
- * carries a blocking `review: not-run` and the run cannot report success —
- * which is the honest rendering of an unbuilt check and the opposite of v1's
- * `review: not run (REVIEWER_FAILED)` merging the most delicate change of the
- * build entirely unreviewed.
+ * `not-run`, and both BLOCK. `not-run` is the right one here — nothing started,
+ * it is the operator's environment rather than any checker's crash, and no
+ * retry by anything helps.
  *
  * The temptation this constant exists to remove: writing `crossVendor: true`
  * into the record because two vendors happened to resolve on `PATH`. That would
  * be a record claiming a review that never ran, which is ruling 32's standing
  * rule broken by a field rather than by a sentence.
  */
-export const REVIEW_UNBUILT =
-  "no reviewer was routed: cross-vendor review is not implemented in this build. Ruling 32's " +
-  "standing rule is not suspended for an unbuilt check — a check that did not run never renders " +
-  "as a pass, so every item carries a blocking `review: not-run` and this run cannot succeed.";
+export const NO_REVIEWER =
+  "no agent resolved on PATH, so no reviewer was routed. Ruling 32's standing rule is not " +
+  "suspended for a check that could not run — a check that did not run never renders as a pass, " +
+  "so this item carries a blocking `review: not-run` and this run cannot succeed.";
+
+/** How long a reviewer is given to answer before ruling 52 calls it `error`. */
+export const DEFAULT_REVIEW_TIMEOUT_MS = 600_000;
 /** How long one agent is given to answer, before the checker is `error`. */
 export const DEFAULT_WORKER_TIMEOUT_MS = 600_000;
 /** A verify command that has not finished by here has broken, not failed (ruling 52). */
@@ -162,6 +178,17 @@ export interface ExecuteOptions {
   /** The merged-result gate's command, already resolved (ruling 52). */
   verify: VerifyResolution;
   review: boolean;
+  /**
+   * How many defects an INDEPENDENT VERIFIER planted in this run's diffs.
+   *
+   * The denominator of the published catch rate, and it comes from outside on
+   * purpose: `BAR.md` gives the planting to the verifier because a builder's
+   * planted defect tests only what the builder already thought of. brigadier
+   * counts what its reviewers named AND that appears in the diff they were
+   * handed; it never invents the denominator, and with no `--planted` it prints
+   * a count rather than a rate.
+   */
+  planted?: number;
   /** Ruling 65: names of environment variables to grant, and to redact everywhere. */
   secretEnv: readonly string[];
   /**
@@ -179,6 +206,7 @@ export interface ExecuteOptions {
   handshakeTimeoutMs?: number;
   workerTimeoutMs?: number;
   verifyTimeoutMs?: number;
+  reviewTimeoutMs?: number;
   /**
    * The process's one sink (ruling 65). The CLI builds it before it prints
    * anything, so passing it in is what makes "one sink" true across the whole
@@ -348,6 +376,22 @@ interface ItemRun {
    * EXACT pids rather than "something may still be running".
    */
   survivors: number[];
+  /** Rulings 32 and 52. Absent until the review phase settles the item's slot. */
+  review: ItemReview | null;
+}
+
+/** What the review phase learned about one item. */
+interface ItemReview {
+  outcome: CheckOutcome;
+  reviewer: string | null;
+  crossVendor: boolean;
+  sameVendorReason?: string;
+  /** Charged to brigadier, never to the item's ladder (ruling 52). */
+  reviewerAttempts: number;
+  /** Identities present in the diff the reviewer was handed. Never a count. */
+  caught: string[];
+  /** True when this item must NOT reach the integration branch. */
+  blocks: boolean;
 }
 
 /**
@@ -422,6 +466,7 @@ async function runItem(
     bytes: 0,
     retain: false,
     survivors: [],
+    review: null,
   };
 
   // Ruling 52's write-ahead: the slot exists, holding a BLOCKING value, before
@@ -556,17 +601,14 @@ async function runItem(
     detail,
   });
 
-  // Ruling 52's write-ahead again, for the check this build does not have.
-  if (options.review) {
-    openCheckSlot(record, item.number, "review");
-    settleCheck(record, item.number, "review", "not-run", REVIEW_UNBUILT);
-    result.checks.push({
-      name: "review",
-      outcome: "not-run",
-      qualifier: "no reviewer routed",
-      detail: REVIEW_UNBUILT,
-    });
-  }
+  // Ruling 52's write-ahead, and it is OPENED here and SETTLED in the review
+  // phase below — deliberately not both in one place. The whole value of a
+  // write-ahead is the window between them: a process killed after the worker
+  // finished and before the reviewer answered leaves a BLOCKING `not-run` on
+  // disk rather than a slot that never existed. v1's `review: not run
+  // (REVIEWER_FAILED)` merged the most delicate change of the build, and this
+  // is the shape that makes that outcome unreachable.
+  if (options.review) openCheckSlot(record, item.number, "review");
 
   // Ruling 38, scoped to this item: the evidence a later recycle or retention
   // decision is not allowed to be made without.
@@ -599,6 +641,236 @@ async function runItem(
 
   result.bytes = directoryBytes(clone.dir);
   return result;
+}
+
+/**
+ * Review one item's diff, and settle its write-ahead slot.
+ *
+ * THE ORDER IS THE POINT, and it is fixed by three rulings at once:
+ *
+ *   FETCH FIRST, INTO BRIGADIER'S OWN NAMESPACE. Ruling 56 keeps brigadier's
+ *   count of git commands run inside a clone an agent has touched at ZERO, so
+ *   the diff cannot be taken in the clone. `git fetch <clone-path> work:<review
+ *   ref>` runs in the OPERATOR's repository — the same direction and the same
+ *   local-path transport `src/integrate/integrate.ts` measured — and the diff
+ *   computes identically once the ref is here. The ref lives under
+ *   `refs/brigadier/<run-id>/`, so ruling 50's delete rule already covers it and
+ *   nothing new has to be cleaned up by hand.
+ *
+ *   REVIEW BEFORE INTEGRATION, NOT AFTER. A review that blocks has to be able to
+ *   keep the item OUT of the integration branch, and a check run after the merge
+ *   can only complain about it. v1 merged its most delicate change on
+ *   `review: not run (REVIEWER_FAILED)`; asserting on the report's wording would
+ *   not have caught that, and asserting on the tree does.
+ *
+ *   `error`, NEVER `fail`, WHEN THE REVIEWER PRODUCES NO VERDICT. Ruling 52:
+ *   `fail` dispatches the BUILDER to fix a defect that is not in its code and
+ *   spends a rung of ruling 24's ladder doing it. The remedy for a broken
+ *   checker is to re-run the CHECKER, which is `REVIEWER_RERUNS`, and those
+ *   re-runs are counted in `reviewerAttempts` rather than in `attempts` so the
+ *   rule is observable in the record rather than asserted in a comment.
+ */
+async function reviewItem(
+  run: ItemRun,
+  choice: ReviewerChoice,
+  options: ExecuteOptions,
+  sink: Sink,
+  record: string,
+  runId: string,
+  runDir: string,
+  secrets: Record<string, string>,
+  transcript: string[],
+  live: Set<LiveWorker>,
+): Promise<ItemReview> {
+  const number = run.item.number;
+  const base: Omit<ItemReview, "outcome" | "blocks"> = {
+    reviewer: choice.agent?.id ?? null,
+    crossVendor: choice.crossVendor,
+    ...(choice.sameVendorReason === undefined ? {} : { sameVendorReason: choice.sameVendorReason }),
+    reviewerAttempts: 0,
+    caught: [],
+  };
+  const settle = (outcome: CheckOutcome, qualifier: string, detail: string, extra: Partial<ItemReview> = {}): ItemReview => {
+    settleCheck(record, number, "review", outcome, detail);
+    run.checks.push({ name: "review", outcome, qualifier, detail });
+    return { ...base, ...extra, outcome, blocks: blocks(outcome) };
+  };
+
+  if (choice.agent === null) {
+    return settle("not-run", "no reviewer", NO_REVIEWER);
+  }
+  if (run.clonePath === null) {
+    return settle(
+      "not-run",
+      "no diff",
+      `item ${run.item.id} never got a directory, so there is no \`${WORK_BRANCH}\` branch to diff and ` +
+        "nothing for a reviewer to read. No retry by any reviewer helps.",
+    );
+  }
+
+  // Ruling 52's exact framing, and it is free: the base commit is a fixed
+  // reference the record already carries per item, so this diff is re-derivable
+  // from the record alone with `git diff <baseSha>..<itemRef>`.
+  const reviewRef = `${REF_NAMESPACE}/${runId}/review/${number}`;
+  let diff: string;
+  try {
+    assertLocalPathTransport(run.clonePath);
+    await parentGit(options.repo, ["fetch", "--no-tags", run.clonePath, `${WORK_BRANCH}:${reviewRef}`]);
+    diff = await parentGit(options.repo, ["diff", "--no-renames", `${run.baseSha}..${reviewRef}`]);
+  } catch (error) {
+    // The CHECKER broke before a reviewer was even reached. Ruling 52: `error`.
+    return settle(
+      "error",
+      "no diff",
+      `the reviewer's brief could not be built: ${error instanceof Error ? error.message : String(error)}. ` +
+        `Ruling 52 hands a reviewer \`git diff ${run.baseSha}..${reviewRef}\`, computed in the operator's ` +
+        "repository because ruling 56 keeps brigadier's git commands inside an agent's clone at zero.",
+    );
+  }
+
+  if (diff.trim().length === 0) {
+    return settle(
+      "not-run",
+      "nothing to review",
+      `item ${run.item.id} committed no change to its \`${WORK_BRANCH}\` branch, so the diff ruling 52 ` +
+        "hands a reviewer is empty. Nothing was reviewed, and an empty review never renders as a pass.",
+    );
+  }
+
+  const brief = composeReviewBrief({
+    id: run.item.id,
+    kind: run.item.kind,
+    paths: run.item.paths,
+    prompt: run.item.prompt,
+    baseRef: run.baseRef,
+    baseSha: run.baseSha,
+    itemRef: reviewRef,
+    diff,
+  });
+
+  const profile = choice.agent.profile;
+  const effort = deriveEffort("read-only", run.item.clampedTo, CEILING);
+  const failures: string[] = [];
+  let attempts = 0;
+
+  for (let attempt = 1; attempt <= 1 + REVIEWER_RERUNS; attempt++) {
+    attempts = attempt;
+    // A fresh directory per attempt: a reviewer's second run must not inherit
+    // the first's agent state, and ruling 49's `read-only` lane is a flat deny,
+    // so nothing legitimate is lost by the directory being empty.
+    const dir = join(runDir, "review", `${number}-${attempt}`);
+    mkdirSync(join(dir, "agent-config"), { recursive: true });
+    mkdirSync(join(dir, "tmp"), { recursive: true });
+    let spawned: { pid: number; kill(): void } | null = null;
+    try {
+      const marked = spawnMarkedAgent({
+        profile,
+        runId,
+        item: number,
+        cwd: dir,
+        // Ruling 49: a reviewer writes nothing and its directory is never read
+        // back, which is exactly what `read-only` means — and on Codex it is the
+        // mode that blocks writes at the OS level (#41).
+        kind: "read-only",
+        configRoot: join(dir, "agent-config"),
+        tmpDir: join(dir, "tmp"),
+        secrets,
+        effort,
+        onFrame: (direction, raw) => transcript.push(`${run.item.id} review ${direction} ${raw}`),
+      });
+      spawned = marked;
+      recordEvent(sink, record, {
+        type: "process-spawned",
+        at: Date.now(),
+        item: number,
+        pid: marked.pid,
+        commandLine: marked.commandLine,
+      });
+      let acp: Worker | undefined;
+      const registration: LiveWorker = {
+        item: number,
+        pid: marked.pid,
+        cancel: () => acp?.cancel(),
+        kill: () => marked.kill(),
+      };
+      live.add(registration);
+
+      const worker = await withTimeout(
+        Worker.start(profile, {
+          cwd: dir,
+          lane: new Lane(dir, lanePolicyFor("read-only")),
+          kind: "read-only",
+          channel: marked.channel,
+          onFrame: (direction, raw) => transcript.push(`${run.item.id} review ${direction} ${raw}`),
+        }),
+        options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS,
+        `${profile.id} reviewer handshake for item ${run.item.id}`,
+      );
+      acp = worker;
+      const turn = await withTimeout(
+        worker.prompt(brief),
+        options.reviewTimeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,
+        `${profile.id} reviewer turn for item ${run.item.id}`,
+      );
+      await worker.close();
+
+      const verdict = parseVerdict(turn.text);
+      if (verdict === null) {
+        // #14 measured that `end_turn` does NOT mean the task was done, so the
+        // stop reason is not consulted here. A reviewer that stopped without a
+        // verdict produced no verdict, however politely it stopped.
+        failures.push(
+          `attempt ${attempt}: ${profile.id} stopped with ${turn.stopReason} and no parseable VERDICT line`,
+        );
+        continue;
+      }
+      const caught = caughtIn(diff, verdict.found);
+      const qualifier = reviewQualifier(choice, profile.id, run.agent);
+      return settle(
+        verdict.verdict === "approved" ? "pass" : "fail",
+        qualifier,
+        verdict.verdict === "approved"
+          ? `${profile.id} read ${diff.length} bytes of diff and approved it.` +
+            (choice.crossVendor
+              ? ""
+              : ` ${choice.sameVendorReason ?? ""}`)
+          : `${profile.id} rejected this diff and named ${caught.length} defect(s) present in it: ` +
+            `${caught.join(", ") || "none that appear in the diff it was handed"}. Ruling 52: the remedy ` +
+            "is the BUILDER's, which is what `fail` means and why it is not `error`.",
+        { reviewerAttempts: attempts, caught },
+      );
+    } catch (error) {
+      failures.push(`attempt ${attempt}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      for (const entry of [...live]) if (entry.pid === spawned?.pid) live.delete(entry);
+      spawned?.kill();
+      const swept = await sweep({
+        scope: { runId, item: number },
+        sweptBy: `end-of-review sweep for ${runId}/${number} attempt ${attempt}`,
+        ...(spawned === null ? {} : { recordedPids: [spawned.pid] }),
+      });
+      recordEvent(sink, record, {
+        type: "swept",
+        at: Date.now(),
+        sweptBy: swept.evidence.sweptBy,
+        runId,
+        item: number,
+        reclaimedPids: [...swept.evidence.reclaimedPids],
+        survivors: [...swept.evidence.survivors],
+      });
+    }
+  }
+
+  return settle(
+    "error",
+    reviewQualifier(choice, profile.id, run.agent),
+    `the reviewer produced no verdict in ${attempts} attempt(s): ${failures.join("; ")}. Ruling 52 calls ` +
+      "this `error` and not `fail`: the CHECKER broke, so the remedy is to re-run the reviewer, and " +
+      "sending the builder to fix a defect that is not in its code would burn a rung of ruling 24's " +
+      `ladder. The ${attempts - 1} re-run(s) above are charged to brigadier and left this item's ` +
+      "`attempts` untouched. `error` BLOCKS: this item is not merged.",
+    { reviewerAttempts: attempts },
+  );
 }
 
 /** The whole run. */
@@ -688,6 +960,11 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
   const plan = options.admission.plan;
   const chosen = options.admission.agents[0] ?? null;
   const agent = chosen === null ? null : { id: chosen.id, profile: chosen.profile };
+  // Ruling 32, decided ONCE from `PATH` rather than per item: whether this
+  // machine can offer a reviewer of a different vendor is a fact about the
+  // machine, and `admit` already printed it before anything was spent. Deciding
+  // it per item would let one run report both answers.
+  const reviewer = options.admission.reviewer ?? chooseReviewer(options.admission.agents, agent?.id ?? null);
 
   // 2. The base state, with the operator's repository witnessed either side.
   const base = await buildBaseState({
@@ -758,14 +1035,81 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
     }
     runs.push(...attempted);
 
-    // 3. Integration, in plan order, one transaction per wave.
+    // 3. REVIEW, between the worker and the merge (rulings 32, 52).
+    //
+    // Here rather than after integration, because a review that BLOCKS has to
+    // keep the item out of the integration branch — a check that runs after the
+    // merge can only complain about it. That is the whole of v1's failure: the
+    // most delicate change of the build merged on `review: not run
+    // (REVIEWER_FAILED)`, and the report said the right word about it.
+    if (options.review) {
+      for (const run of attempted) {
+        if (!reviewApplies(run.item.kind)) {
+          const check = notReviewable(run.item.kind);
+          settleCheck(record, run.item.number, "review", check.outcome, check.detail ?? null);
+          run.checks.push(check);
+          continue;
+        }
+        if (interruptedBy !== null) {
+          // Ruling 63 stopped dispatch. The slot is already open holding a
+          // blocking `not-run`; settling it with the reason is what keeps an
+          // interrupted run's record complete rather than absent.
+          settleCheck(record, run.item.number, "review", "not-run", `${String(interruptedBy)} stopped dispatch before this item was reviewed`);
+          run.checks.push({
+            name: "review",
+            outcome: "not-run",
+            qualifier: "interrupted",
+            detail: `${String(interruptedBy)} stopped dispatch before a reviewer was spawned for this item.`,
+          });
+          run.review = {
+            outcome: "not-run",
+            reviewer: null,
+            crossVendor: reviewer.crossVendor,
+            ...(reviewer.sameVendorReason === undefined ? {} : { sameVendorReason: reviewer.sameVendorReason }),
+            reviewerAttempts: 0,
+            caught: [],
+            blocks: true,
+          };
+          continue;
+        }
+        run.review = await reviewItem(
+          run,
+          reviewer,
+          options,
+          sink,
+          record,
+          runId,
+          runDir,
+          secrets,
+          transcript,
+          live,
+        );
+      }
+    }
+
+    // 4. Integration, in plan order, one transaction per wave. An item whose
+    // review blocked is NOT in this list, and that is the assertion ruling 52
+    // actually wants: not that the report said `error`, but that the work is
+    // absent from the tree.
     const integrationItems: IntegrationItem[] = attempted
-      .filter((run) => run.clonePath !== null)
+      .filter((run) => run.clonePath !== null && run.review?.blocks !== true)
       .map((run) => ({
         item: run.item.number,
         clone: run.clonePath as string,
         declaredPaths: run.item.paths,
       }));
+
+    for (const run of attempted) {
+      if (run.clonePath === null || run.review?.blocks !== true) continue;
+      const name = `integrate item ${run.item.number}`;
+      openCheckSlot(record, run.item.number, name);
+      const detail =
+        `item ${run.item.id} was never offered to the merge: its review is \`${run.review.outcome}\`, and ` +
+        "ruling 52 has exactly one affirmative outcome. Its clone is retained rather than deleted " +
+        "(ruling 63) and its work is reachable at its fetched review ref for inspection.";
+      settleCheck(record, run.item.number, name, "not-run", detail);
+      run.checks.push({ name, outcome: "not-run", qualifier: "review blocked", detail });
+    }
 
     // Ruling 52's write-ahead for the integration check, before the fetch that
     // could crash between "started" and "answered". `not-run` BLOCKS, so a
@@ -854,7 +1198,7 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
       settleCheck(record, number, judged.name, judged.outcome, judged.detail ?? null);
     }
 
-    // 4. The merged-result gate, in its own slot, written before it runs.
+    // 5. The merged-result gate, in its own slot, written before it runs.
     openCheckSlot(record, waveNumber, "verify (merged result)");
     let gate: CheckResult = initialIntegrationCheck(waveNumber);
     if (waveResult.published) {
@@ -1008,7 +1352,7 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
     };
   }
 
-  // 5. The full record to disk, and only then a report (ruling 58).
+  // 6. The full record to disk, and only then a report (ruling 58).
   const items: RecordItem[] = runs.map((run) => {
     const landed = waves.flatMap((wave) => wave.items).find((entry) => entry.item === run.item.number);
     const kept = retained.find((entry) => entry.item === run.item.number);
@@ -1032,8 +1376,17 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
       ...(run.item.difficulty === null
         ? {}
         : { difficulty: run.item.difficulty, clampedTo: run.item.clampedTo ?? run.item.difficulty }),
+      // Ruling 55, all four outcomes through one renderer. `attempts` is the
+      // BUILDER's ladder and nothing a reviewer does may raise it (ruling 52):
+      // a broken reviewer's re-run is charged to brigadier and lands in
+      // `reviewerAttempts` instead.
       attempts: 1,
-      attemptsAvailable: options.admission.ladder.kind === "short" ? 1 : 2,
+      attemptsAvailable: rungsOffered(options.admission.ladder),
+      ladder: renderLadder(ladderTaken(options.admission.ladder, 1)),
+      ...(run.agent === null ? {} : { builderAgent: run.agent }),
+      ...(run.review === null || run.review.reviewer === null ? {} : { reviewerAgent: run.review.reviewer }),
+      ...(run.review === null ? {} : { reviewVerdict: run.review.outcome, reviewerAttempts: run.review.reviewerAttempts }),
+      ...(run.review === null || run.review.caught.length === 0 ? {} : { caughtDefects: run.review.caught }),
       checks: run.checks.map(checkRecord),
       // Only for an item that actually merged. A `no-change` item's fetched ref
       // points at the base commit, so recording that sha as `commit` named the
@@ -1118,6 +1471,27 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
     quota[agent.id] = agent.id === "opencode" ? "unpriceable" : "unreadable";
   }
 
+  // Identities, deduped across items, and never a count on its own: a count can
+  // be printed by anything, and a list of markers generated after the binary was
+  // built can only be produced by something that read the diff.
+  const caughtAll = [...new Set(runs.flatMap((run) => run.review?.caught ?? []))];
+  // Ruling 52's budget rule, made countable: everything past the first attempt
+  // is a re-run of a BROKEN reviewer and is charged to brigadier.
+  const reviewerReruns = runs.reduce((total, run) => total + Math.max(0, (run.review?.reviewerAttempts ?? 0) - 1), 0);
+  // `crossVendor: true` is asserted only where a reviewer of a different vendor
+  // REALLY RAN. A plan of nothing but `read-only` items has no diff to review at
+  // all (ruling 49), and recording the machine's CAPABILITY as though it were an
+  // event is exactly the field-shaped version of the rule ruling 32 states in
+  // prose — so the run-level answer says which of the three happened.
+  const reviewedAny = runs.some((run) => run.review !== null && run.review.reviewer !== null);
+  const nothingReviewable =
+    "no item in this plan is a `write` item, so ruling 49 left no diff for a reviewer to be handed " +
+    "and ruling 32's cross-vendor rule had nothing to apply to. Nothing was reviewed and nothing " +
+    "here claims otherwise.";
+  const reviewReason = reviewedAny
+    ? reviewer.sameVendorReason
+    : (reviewer.sameVendorReason ?? nothingReviewable);
+
   const runRecord: RunRecord = {
     runId,
     integrationRef: branchRef,
@@ -1131,13 +1505,26 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
     ambientSuppressed: [
       "the agent's config root is redirected into brigadier's own state directory for every worker (decision 17)",
     ],
-    // Ruling 32's standing rule, applied to a feature that is NOT BUILT rather
-    // than suspended for it: cross-vendor review is not implemented in this
-    // build, so `crossVendor` is false and the reason says why. Writing `true`
-    // here because two vendors happened to resolve would be a record claiming a
-    // review that never ran — the exact shape ruling 52 exists to stop, and the
-    // one a reader of this file is most likely to reintroduce.
-    ...(options.review ? { review: { crossVendor: false, sameVendorReason: REVIEW_UNBUILT } } : {}),
+    // Ruling 32's standing rule as a FIELD rather than a sentence. `crossVendor`
+    // is true only when a reviewer of a different vendor actually ran; writing
+    // `true` because two vendors happened to resolve on `PATH` would be a record
+    // claiming a review that never ran, which is the shape ruling 52 exists to
+    // stop and the one a reader of this file is most likely to reintroduce.
+    ...(options.review
+      ? {
+          review: {
+            crossVendor: reviewer.crossVendor && reviewedAny,
+            ...(reviewReason === undefined ? {} : { sameVendorReason: reviewReason }),
+            ...(reviewer.agent === null || !reviewedAny ? {} : { reviewerAgent: reviewer.agent.id }),
+            ...(agent === null ? {} : { builderAgent: agent.id }),
+            caught: caughtAll.length,
+            ...(options.planted === undefined ? {} : { planted: options.planted }),
+            caughtDefects: caughtAll,
+            catchRate: catchRateLine(caughtAll.length, options.planted),
+            reviewerReruns,
+          },
+        }
+      : {}),
     cost: {
       currency: estimate.unit,
       estimateLow: estimate.low,
