@@ -21,7 +21,7 @@
     "licenses": "bun run scripts/licenses.ts",
     "license-gate": "bun run scripts/license-gate.ts",
     "build": "bun run licenses --check && bun run scripts/build.ts && bun run license-gate --require-binary",
-    "gates": "bun run typecheck && bun run test-gate && bun run claims && bun run build"
+    "gates": "bun run typecheck && bun run build && bun run test-gate && bun run claims"
   },
   "dependencies": {
     "@vscode/tree-sitter-wasm": "0.3.1",

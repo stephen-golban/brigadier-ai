@@ -24,7 +24,7 @@
 
 import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, totalmem } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RecordItem, RunRecord } from "../lib/contract.ts";
@@ -62,6 +62,35 @@ const SPREAD_HIGH = 5;
 const HOST_REPORT_TOKEN_CEILING = 2_000;
 /** Ruling 14's second filter. `src/work/fanout.ts`'s `DEFAULT_DESIRABILITY_CAP`. */
 const DESIRABILITY_CAP = 3;
+
+/**
+ * Ruling 14's THIRD filter, computed from this machine — reimplemented here,
+ * never imported, because a positive control assembled from the code under test
+ * proves nothing about it.
+ *
+ * It was the constant 64, and a constant is not a cap. No plan the bar drives
+ * has 64 items, so RAM could never be the lowest filter, this fixture could
+ * never emit ruling 54's third sentence, and it was therefore the positive
+ * control for two of the three causes and a silent gap for the third. MEASURED
+ * on 2026-08-20: item 4 climbed to an eight-item plan with a budget far above
+ * any machine and still got `the plan had 8 item(s)` back, because 8 < 64.
+ *
+ * Ruling 54: the input is `totalmem()` and NEVER `freemem()` — free memory on a
+ * healthy machine reads near zero and two samples seconds apart differ by
+ * gigabytes, so the obvious implementation returns no workers at all on a
+ * machine the operating system itself calls 41% free. The reserves are the
+ * operating system's own footprint and, under decision 25, the host agent
+ * brigadier is running inside: it is an agent, so it gets an agent's budget.
+ */
+const GIB = 1024 ** 3;
+const WORKER_BUDGET_BYTES = 3 * GIB;
+const OS_RESERVE_BYTES = 4 * GIB;
+const HOST_AGENT_RESERVE_BYTES = 3 * GIB;
+
+function ramCap(): number {
+  const spare = totalmem() - OS_RESERVE_BYTES - HOST_AGENT_RESERVE_BYTES;
+  return Math.max(0, Math.floor(spare / WORKER_BUDGET_BYTES));
+}
 /** `src/gate/run.ts`: how much of a failing checker's own output reaches its check. */
 const VERIFY_TAIL_LINES = 12;
 
@@ -618,14 +647,15 @@ function admit(plan: Plan, vendors: string[], maxWorkers: number | undefined): A
   // dispatch first — so its hard ceiling could only ever decline to start
   // something, which is the soft ceiling's behaviour under the other name.
   const byDesirability = maxWorkers ?? DESIRABILITY_CAP;
-  const byRam = 64;
+  const byRam = ramCap();
   const workers = Math.min(byPlan, byDesirability, byRam);
   const bindingFilter =
     workers === byPlan && byPlan <= byDesirability && byPlan <= byRam
       ? `the plan had ${byPlan} item(s), which was the binding filter`
       : workers === byDesirability
         ? `desirability capped it at ${byDesirability}, which was the binding filter`
-        : `available RAM capped it at ${byRam}, which was the binding filter`;
+        : `available RAM capped it at ${byRam}, which was the binding filter: this machine's TOTAL memory, ` +
+          `less the operating system's share and the host agent's own, leaves room for that many at 3 GiB each`;
 
   // Ruling 55: a short ladder is stated at plan ADMISSION, before anything is
   // spent — finding 87 discovered it after an attempt was already gone.
@@ -904,7 +934,11 @@ async function doRun(): Promise<number> {
 
   const plan = JSON.parse(readFileSync(planPath, "utf8")) as Plan;
   const vendors = usableVendors();
-  const admission = admit(plan, vendors, value("max-workers") === undefined ? undefined : Number(value("max-workers")));
+  // `--workers`, which is the flag `src/cli.ts` reads. This was `--max-workers`,
+  // a flag the product has never had, so every run that thought it was setting
+  // ruling 14's desirability filter was silently getting the default of 3.
+  const workersFlag = value("workers");
+  const admission = admit(plan, vendors, workersFlag === undefined ? undefined : Number(workersFlag));
 
   say(admission.ladderNote);
   if (admission.refused.length > 0) {
@@ -913,8 +947,13 @@ async function doRun(): Promise<number> {
     for (const line of admission.refused) process.stderr.write(`refused: ${line}\n`);
     return 4;
   }
-  // FIRST, and before any other line carrying an em dash: item 4 reads ruling
-  // 14's binding filter with `/—\s*(.+?)\s*$/m`, which takes the first such line.
+  // Ruling 14's binding filter. Item 4 finds this by its SHAPE — a worker
+  // count, an em dash, a reason — and classifies it by the filter it NAMES, so
+  // the wording below is this fixture's own rather than the product's, which is
+  // the property that makes this a control instead of an echo. It used to be
+  // printed first only because item 4 read "the first line with an em dash",
+  // and that regex found `admitted — <plan path>` in the real product: the
+  // harness was reading a different line here than there.
   say(`admitted: ${admission.workers} worker(s) — ${admission.bindingFilter}`);
   for (const line of describeAdmission(plan, admission, planPath, vendors, capped)) say(line);
   if (flag("dry-run")) return 0;

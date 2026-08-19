@@ -36,7 +36,8 @@ import {
   type BuildIdentity,
   type BuildStamp,
 } from "../src/build/identity.ts";
-import { compileArgv, mtimeOf, readStamp } from "../scripts/build.ts";
+import { artifactCandidates, compileArgv, mtimeOf, readStamp, resolveArtifact } from "../scripts/build.ts";
+import { resolveBinary } from "../scripts/license-gate.ts";
 
 const COMMIT = "a".repeat(40);
 const REVISION = "0d9b296af33f2b851fcbf4df3e9ec89751734ba4";
@@ -247,6 +248,118 @@ describe("the stamp the build step collects", () => {
     expect(once).toEqual(twice);
     if ("problem" in once || "problem" in twice) return;
     expect(serialiseStamp(once)).toBe(serialiseStamp(twice));
+  });
+});
+
+/**
+ * The artifact's NAME, which is the compiler's to choose and not ours.
+ *
+ * `bun build --compile` appends `.exe` for a Windows target whatever `--outfile`
+ * it was handed. MEASURED against `bun 1.3.14` on `darwin 25.5.0` on 2026-08-20,
+ * cross-compiling with `--target=bun-windows-x64`: `--outfile <dir>/brigadier`
+ * wrote `<dir>/brigadier.exe`, and bun's own compile line said
+ * `compile <dir>/brigadier.exe bun-windows-x64-v1.3.14`. Until that date
+ * `scripts/build.ts` asked for `dist/brigadier` and then refused because
+ * `dist/brigadier` was absent, so `bun run build` — and with it ruling 47's
+ * licence gate — could not run on Windows at all.
+ *
+ * These tests are the reason the fix is checkable from a machine that cannot run
+ * Windows: `resolveArtifact` is a pure function of stat readings, so the Windows
+ * arrangement (plain name absent, `.exe` freshly written) is just a pair of
+ * values. What they do NOT prove is bun's appending rule itself — that is the
+ * cross-compile above, and it is a measurement, not an assertion.
+ */
+describe("the compiled artifact is discovered, not assumed", () => {
+  test("both names a Windows target could produce are candidates, and `.exe` is not doubled", () => {
+    expect(artifactCandidates("dist/brigadier")).toEqual(["dist/brigadier", "dist/brigadier.exe"]);
+    expect(artifactCandidates("dist/brigadier.exe")).toEqual(["dist/brigadier.exe"]);
+    // Case-insensitively, because Windows filesystems are.
+    expect(artifactCandidates("dist/brigadier.EXE")).toEqual(["dist/brigadier.EXE"]);
+  });
+
+  test("WINDOWS SHAPE — the plain name is never written and the `.exe` is the artifact", () => {
+    const resolved = resolveArtifact([
+      { path: "dist/brigadier", before: null, after: null },
+      { path: "dist/brigadier.exe", before: null, after: 7n },
+    ]);
+    expect(resolved).toEqual({ path: "dist/brigadier.exe" });
+  });
+
+  test("POSIX SHAPE — the plain name is the artifact and no `.exe` ever appears", () => {
+    const resolved = resolveArtifact([
+      { path: "dist/brigadier", before: 3n, after: 9n },
+      { path: "dist/brigadier.exe", before: null, after: null },
+    ]);
+    expect(resolved).toEqual({ path: "dist/brigadier" });
+  });
+
+  test("NEGATIVE CONTROL — a stale artifact is still refused, per candidate", () => {
+    // The whole point of the mtime guard survives the rename: a compiler that
+    // exits 0 without writing leaves the PREVIOUS build for the licence gate to
+    // scan. Widening the search must not turn "it is already there" into a pass.
+    const stale = resolveArtifact([
+      { path: "dist/brigadier", before: 3n, after: 3n },
+      { path: "dist/brigadier.exe", before: null, after: null },
+    ]);
+    expect("problem" in stale).toBe(true);
+    if (!("problem" in stale)) return;
+    expect(stale.problem).toContain("PREVIOUS build");
+
+    const staleWindows = resolveArtifact([
+      { path: "dist/brigadier", before: null, after: null },
+      { path: "dist/brigadier.exe", before: 3n, after: 3n },
+    ]);
+    expect("problem" in staleWindows).toBe(true);
+    if (!("problem" in staleWindows)) return;
+    expect(staleWindows.problem).toContain("dist/brigadier.exe");
+  });
+
+  test("NEGATIVE CONTROL — nothing written at all names every name it looked under", () => {
+    const nothing = resolveArtifact([
+      { path: "dist/brigadier", before: null, after: null },
+      { path: "dist/brigadier.exe", before: null, after: null },
+    ]);
+    expect("problem" in nothing).toBe(true);
+    if (!("problem" in nothing)) return;
+    expect(nothing.problem).toContain("dist/brigadier");
+    expect(nothing.problem).toContain("dist/brigadier.exe");
+  });
+
+  test("NEGATIVE CONTROL — two fresh candidates is ambiguous, and ambiguity is loud", () => {
+    // Nobody has seen this happen. It is refused rather than resolved by
+    // preference because the failure it would otherwise produce is the silent
+    // one: the licence gate reporting a clean verdict about the wrong file.
+    const both = resolveArtifact([
+      { path: "dist/brigadier", before: null, after: 1n },
+      { path: "dist/brigadier.exe", before: null, after: 2n },
+    ]);
+    expect("problem" in both).toBe(true);
+    if (!("problem" in both)) return;
+    expect(both.problem).toContain("rewrote 2 candidate artifacts");
+  });
+
+  test("the licence gate resolves the artifact by the SAME rule the build step names it with", () => {
+    // One idiom, not two. If these ever diverge, the build succeeds on Windows
+    // and the gate scans nothing — which is worse than today's failure, because
+    // it ships an unscanned binary instead of refusing to ship one.
+    expect(resolveBinary("dist/brigadier", () => false).tried).toEqual(artifactCandidates("dist/brigadier"));
+
+    // The Windows arrangement, driven through the gate's own resolver.
+    const windows = resolveBinary("dist/brigadier", (p) => p === "dist/brigadier.exe");
+    expect(windows).toEqual({ path: "dist/brigadier.exe", found: true, tried: ["dist/brigadier", "dist/brigadier.exe"] });
+
+    const posix = resolveBinary("dist/brigadier", (p) => p === "dist/brigadier");
+    expect(posix.path).toBe("dist/brigadier");
+    expect(posix.found).toBe(true);
+  });
+
+  test("NEGATIVE CONTROL — with neither name on disk the gate does NOT find a binary", () => {
+    // `--require-binary` turns `found: false` into two blocking findings. A
+    // resolver that fell back to "found" would silently disarm ruling 47 on the
+    // release path, which is the one failure mode worse than the bug it fixes.
+    const missing = resolveBinary("dist/brigadier", () => false);
+    expect(missing.found).toBe(false);
+    expect(missing.tried).toEqual(["dist/brigadier", "dist/brigadier.exe"]);
   });
 });
 

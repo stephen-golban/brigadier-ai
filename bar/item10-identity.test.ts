@@ -29,9 +29,13 @@
 import { describe, expect, test } from "bun:test";
 import {
   BUILD_ID_FIELDS,
+  QUIET_WARM_MEASUREMENT,
+  STRUCK_WARM_START,
+  WITHDRAWN_WARM_BUDGET_MS,
   attribution,
   judgeArtifact,
   parseBuildId,
+  struckWarmLine,
   type ArtifactObservations,
 } from "./items/10-the-artifact-ships.ts";
 
@@ -224,7 +228,7 @@ describe("item 10's attribution guards, shown failing", () => {
 
 describe("every figure item 10 reports is printed beside the artifact it belongs to", () => {
   const rowsOf = (o: ArtifactObservations) => judgeArtifact(o).rows;
-  const warmRow = (o: ArtifactObservations) => rowsOf(o).find((r) => r.name.startsWith("warm start within"));
+  const warmRow = (o: ArtifactObservations) => rowsOf(o).find((r) => r.name.startsWith("warm start is MEASURED"));
   const coldRow = (o: ArtifactObservations) => rowsOf(o).find((r) => r.name.startsWith("what the struck clause"));
   const historyRow = (o: ArtifactObservations) => rowsOf(o).find((r) => r.name.startsWith("the warm figure has been recorded"));
 
@@ -252,14 +256,147 @@ describe("every figure item 10 reports is printed beside the artifact it belongs
     expect(coldRow(o)?.detail ?? "").toContain("ARTIFACT: UNIDENTIFIED");
   });
 
-  test("the warm budget is untouched by any of this", () => {
-    // Stated as a test because the temptation this slice creates is to make the
-    // number pass instead of naming the artifact. The budget is 10 ms, the
-    // artifact misses it, and this file changed neither fact.
-    expect(warmRow(ARTIFACT)?.name).toBe(
-      "warm start within 10 ms (minimum of 40, floor-corrected)",
-    );
-    const over = judgeArtifact({ ...ARTIFACT, warmMs: 15.27, spawnFloorMs: 1.28 });
-    expect(over.failures.map((r) => r.name)).toContain("warm start within 10 ms (minimum of 40, floor-corrected)");
+  test("no number was moved to fit a measurement", () => {
+    // Stated as a test because the temptation a strike creates is to raise the
+    // number instead of withdrawing it. The clause that WAS in force said 10 ms;
+    // it is withdrawn, and 10 is what the record still says it was.
+    expect(WITHDRAWN_WARM_BUDGET_MS).toBe(10);
+    expect(STRUCK_WARM_START.clause).toContain("≤10 ms warm start");
+    // Amendment §17's 20 ms is named as NOT adopted, everywhere it is named.
+    expect(struckWarmLine()).toContain("§17's proposed 20 ms is NOT adopted");
+    const proposal = rowsOf(ARTIFACT).find((r) => r.name.startsWith("PROPOSAL, not adopted"));
+    expect(proposal?.detail).toContain("has NOT adopted");
+    expect(proposal?.detail).toContain("did not adopt it either");
+    // And no row anywhere in this item states a threshold on the warm figure.
+    for (const row of rowsOf(ARTIFACT)) {
+      expect(row.name).not.toContain("warm start within");
+    }
+  });
+});
+
+/**
+ * The 2026-08-20 strike, driven in both directions.
+ *
+ * Two behaviours have to be separated here, and a test that only checked the
+ * first would pass on an item that had silently stopped timing the binary:
+ *
+ *   IT PRINTS.  A struck clause that leaves no trace in the output is the silent
+ *               scaling-down `BAR.md` forbids, so the strike is a row of the
+ *               item's own report on a PASS as well as on a failure, and it is
+ *               not led with `ok  ` — a reader must be able to see that it
+ *               asserted nothing.
+ *   IT NO LONGER GATES.  This is the actual behaviour change, so it is driven
+ *               with a figure far outside the withdrawn clause, and the item
+ *               must not fail on it. The negative control is the other side: the
+ *               MEASUREMENT is still a gate, so an artifact that produced no
+ *               warm figure at all must go red.
+ */
+describe("the struck warm-start clause is PRINTED, and gates nothing", () => {
+  const STRIKE = "STRUCK CLAUSE — this item asserts no warm-start budget, and none is promised (note)";
+  const UNPROVEN = "what the struck warm clause leaves unproven (note)";
+  const MEASURED = judgeArtifact(ARTIFACT)
+    .rows.map((r) => r.name)
+    .find((n) => n.startsWith("warm start is MEASURED"))!;
+
+  test("the strike is a row of the item's own report, and carries its reasons", () => {
+    const checks = judgeArtifact(ARTIFACT);
+    const struck = checks.rows.find((r) => r.name === STRIKE);
+    expect(struck).toBeDefined();
+    expect(struck?.detail).toBe(struckWarmLine());
+    expect(struck?.detail).toContain("WITHDRAWN by the owner");
+    // The three reasons the record establishes, each present by its own bytes.
+    expect(struck?.detail).toContain("MEASUREMENT-SESSION.md:140");
+    expect(struck?.detail).toContain("7e6a547");
+    expect(struck?.detail).toContain("13.99 ms corrected");
+    expect(struck?.detail).toContain("0.65 ms");
+    expect(struck?.detail).toContain("THREE DIFFERENT ARTIFACTS");
+    // It names what is now unproven, and names the WARM promise rather than the
+    // cold one: repeated invocation in a loop, not a first run.
+    const unproven = checks.rows.find((r) => r.name === UNPROVEN);
+    expect(unproven?.detail).toContain("REPEATEDLY IN A LOOP");
+  });
+
+  test("it prints on a PASSING run, not only when something else breaks", () => {
+    // The whole point of `BAR.md`'s rule. Driven against the artifact fixture in
+    // the state where the warm measurement itself is healthy.
+    const checks = judgeArtifact(ARTIFACT);
+    expect(checks.failures.map((r) => r.name)).not.toContain(STRIKE);
+    expect(checks.failures.map((r) => r.name)).not.toContain(MEASURED);
+    const line = checks
+      .render()
+      .split("\n")
+      .find((l) => l.includes("STRUCK CLAUSE — this item asserts no warm-start budget"));
+    expect(line).toBeDefined();
+    // NEGATIVE CONTROL on the leader: a strike that printed with the same `ok`
+    // leader as a genuine passing assertion would be indistinguishable from one,
+    // which is the defect this item shipped once on a different row.
+    expect(line?.startsWith("note ")).toBe(true);
+    expect(line?.startsWith("ok")).toBe(false);
+  });
+
+  test("THE BEHAVIOUR CHANGE — a figure far outside the withdrawn clause does not fail the item", () => {
+    // 13.99 ms is the quiet-machine reference, 3.99 ms outside the withdrawn
+    // 10 ms clause; 40 ms is four times outside it. Neither may produce a
+    // failing row, and no row may even name a threshold.
+    for (const [warmMs, spawnFloorMs] of [
+      [QUIET_WARM_MEASUREMENT.rawMinMs, QUIET_WARM_MEASUREMENT.spawnFloorMs],
+      [41, 1],
+      [1_000, 1],
+    ] as const) {
+      const checks = judgeArtifact({ ...ARTIFACT, warmMs, spawnFloorMs });
+      expect(checks.failures.map((r) => r.name)).toEqual(
+        judgeArtifact(ARTIFACT).failures.map((r) => r.name),
+      );
+      const row = checks.rows.find((r) => r.name === MEASURED);
+      expect(row?.ok).toBe(true);
+      expect(row?.detail).toContain("NO THRESHOLD IS APPLIED");
+    }
+  });
+
+  test("the figure is still MEASURED and still PRINTED, with its method and provenance", () => {
+    const detail = judgeArtifact({ ...ARTIFACT, warmMs: 15.27, spawnFloorMs: 1.28 }).rows.find(
+      (r) => r.name === MEASURED,
+    )?.detail;
+    // The arithmetic a reader can re-derive: raw, floor, corrected.
+    expect(detail).toContain("15.27 ms raw − 1.28 ms spawn floor = 13.99 ms");
+    expect(detail).toContain("METHOD: minimum of 40 invocations");
+    expect(detail).toContain(QUIET_WARM_MEASUREMENT.measuredOn);
+    expect(detail).toContain(QUIET_WARM_MEASUREMENT.distribution);
+    expect(detail).toContain("ARTIFACT: BUILD-ID commit=");
+    // And no margin is stated, because there is nothing left to state one against.
+    expect(detail).not.toContain("MARGIN:");
+    expect(detail).not.toContain("ms OVER");
+  });
+
+  test("NEGATIVE CONTROL — the MEASUREMENT is still a gate: no figure at all is a FAILURE", () => {
+    // The failure this leaves open if the strike is done carelessly: withdraw
+    // the budget, and an item that stopped timing the binary altogether reads
+    // exactly like one that timed it and reported. `run` leaves `warmMs` at
+    // +Infinity when the loop produced no sample.
+    for (const warmMs of [Number.POSITIVE_INFINITY, Number.NaN, 0, -1]) {
+      const checks = judgeArtifact({ ...ARTIFACT, warmMs, spawnFloorMs: 1 });
+      expect(checks.failures.map((r) => r.name)).toContain(MEASURED);
+      expect(checks.rows.find((r) => r.name === MEASURED)?.detail).toContain("ERROR — no warm figure was obtained");
+    }
+    // And a floor larger than the measurement is not a negative warm cost.
+    const inverted = judgeArtifact({ ...ARTIFACT, warmMs: 1, spawnFloorMs: 5 });
+    expect(inverted.failures.map((r) => r.name)).toContain(MEASURED);
+  });
+
+  test("NEGATIVE CONTROL — the strike row is not a check that can fail", () => {
+    // A strike that could go red would block a tag exactly as a `FAIL` does,
+    // which is the outcome `BAR.md`'s closing section exists to prevent. Driven
+    // over every fixture state this file has.
+    for (const o of [ARTIFACT, withVersion("brigadier 0.0.0\n"), { ...ARTIFACT, warmMs: Number.NaN }]) {
+      const checks = judgeArtifact(o);
+      expect(checks.failures.map((r) => r.name)).not.toContain(STRIKE);
+      expect(checks.failures.map((r) => r.name)).not.toContain(UNPROVEN);
+    }
+  });
+
+  test("the unidentified case still names no artifact rather than nothing", () => {
+    const o = withVersion("brigadier 0.0.0\n");
+    expect(judgeArtifact(o).rows.find((r) => r.name === UNPROVEN)?.detail).toContain("ARTIFACT: UNIDENTIFIED");
+    expect(judgeArtifact(o).rows.find((r) => r.name === MEASURED)?.detail).toContain("ARTIFACT: UNIDENTIFIED");
   });
 });

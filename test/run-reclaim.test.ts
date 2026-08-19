@@ -17,6 +17,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -25,7 +26,13 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CLONE_SIGNATURE } from "../src/isolation/internal-git.ts";
-import { manifestPath, recordClone } from "../src/isolation/manifest.ts";
+import {
+  directoryIdentity,
+  manifestPath,
+  recordClone,
+  usableIdentity,
+  type RunManifest,
+} from "../src/isolation/manifest.ts";
 import { RUN_DIR } from "../src/repo/layout.ts";
 import { deleteRefArgv, itemRef } from "../src/repo/refs.ts";
 import {
@@ -67,7 +74,8 @@ function plantClone(
   mkdirSync(join(runRoot, RUN_DIR, runId), { recursive: true });
   if (omit !== "manifest") {
     // Written BEFORE the directory exists, which is the ordering the ruling
-    // requires and the ordering `prepareClone` uses.
+    // requires and the ordering `prepareClone` uses. `recordClone` is also what
+    // CREATES `dir`, so the entry can name the inode it was given.
     recordClone(
       manifest,
       { runId, runRoot, createdAt: Date.now(), clones: [] },
@@ -78,6 +86,18 @@ function plantClone(
   writeFileSync(join(dir, "work.txt"), "x".repeat(4096));
   if (omit !== "marker") writeFileSync(join(dir, ".git", CLONE_SIGNATURE), `${runId}/${item}\n`);
   return dir;
+}
+
+/**
+ * A manifest written by something that is not brigadier.
+ *
+ * `recordClone` is bypassed on purpose: the forgeries below are the case where
+ * every byte of the file was chosen by whoever wrote it, which is exactly the
+ * thing a check that reads only the file's contents cannot survive.
+ */
+function forgeManifest(path: string, manifest: RunManifest): void {
+  mkdirSync(join(path, ".."), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
 beforeAll(async () => {
@@ -120,14 +140,15 @@ describe("all three conditions, or refuse and report", () => {
   test("NEGATIVE (a): outside the run root by realpath, with the other two present", () => {
     // A directory with a manifest and a marker, somewhere brigadier does not own.
     const foreign = join(scratch, "foreign", RUN_DIR, "elsewhere", "1");
-    mkdirSync(join(foreign, ".git"), { recursive: true });
-    writeFileSync(join(foreign, ".git", CLONE_SIGNATURE), "elsewhere/1\n");
-    writeFileSync(join(foreign, "precious.txt"), "the operator's work\n");
+    mkdirSync(join(scratch, "foreign", RUN_DIR, "elsewhere"), { recursive: true });
     recordClone(
       manifestPath(join(scratch, "foreign"), RUN_DIR, "elsewhere"),
       { runId: "elsewhere", runRoot: join(scratch, "foreign"), createdAt: Date.now(), clones: [] },
       { item: 1, dir: foreign, createdAt: Date.now() },
     );
+    mkdirSync(join(foreign, ".git"), { recursive: true });
+    writeFileSync(join(foreign, ".git", CLONE_SIGNATURE), "elsewhere/1\n");
+    writeFileSync(join(foreign, "precious.txt"), "the operator's work\n");
 
     const verdict = proveDeletableDirectory(foreign, { runRoot });
     expect(verdict.deletable).toBe(false);
@@ -178,29 +199,37 @@ describe("all three conditions, or refuse and report", () => {
     expect(existsSync(join(dir, "work.txt"))).toBe(true);
   });
 
-  test("NEGATIVE (b): a manifest entry written AFTER the directory is refused", () => {
+  test("NEGATIVE (b): a manifest entry cannot be recorded for a directory that already exists", () => {
     // "Recorded in a manifest written before anything was created" is an
-    // ordering, and on a filesystem that keeps birth times the ordering is
-    // checkable after the fact. MEASURED against `bun 1.3.14` on macOS 26.5.2
-    // (APFS) on 2026-08-17: statSync().birthtimeMs carries sub-millisecond
-    // birth times.
+    // ordering, and it is now enforced where it happens rather than
+    // reconstructed from timestamps afterwards: `recordClone` creates the
+    // directory itself, with an exclusive `mkdir`, so recording a path that is
+    // already occupied is refused at the moment of recording.
     const runId = "backdated";
     const dir = join(runRoot, RUN_DIR, runId, "1");
     mkdirSync(join(dir, ".git"), { recursive: true });
     writeFileSync(join(dir, ".git", CLONE_SIGNATURE), `${runId}/1\n`);
-    writeFileSync(join(dir, "work.txt"), "y");
-    // The manifest arrives an hour late, claiming a directory that already existed.
-    recordClone(
-      manifestPath(runRoot, RUN_DIR, runId),
-      { runId, runRoot, createdAt: Date.now(), clones: [] },
-      { item: 1, dir, createdAt: Date.now() + 3_600_000 },
-    );
+    writeFileSync(join(dir, "operators-data.txt"), "not brigadier's\n");
 
+    // The manifest arrives late, claiming a directory that already existed.
+    expect(() =>
+      recordClone(
+        manifestPath(runRoot, RUN_DIR, runId),
+        { runId, runRoot, createdAt: Date.now(), clones: [] },
+        { item: 1, dir, createdAt: Date.now() + 3_600_000 },
+      ),
+    ).toThrow(/AUTHORISATION TO CREATE/);
+
+    // And the half-written entry that throw left behind grants nothing: it
+    // names the path and cannot name an inode, because there was never a
+    // `mkdir` to give it one.
     const verdict = proveDeletableDirectory(dir, { runRoot });
-    expect(verdict.proof.manifestOlderThanDirectory).toBe(false);
+    expect(verdict.proof.manifest).not.toBeNull();
+    expect(verdict.proof.directoryIdentity).toBe(false);
     expect(verdict.deletable).toBe(false);
-    expect(verdict.refusals.join(" ")).toContain("dated AFTER");
-    expect(existsSync(join(dir, "work.txt"))).toBe(true);
+    expect(verdict.refusals.join(" ")).toContain("no usable inode");
+    expect(reclaimDirectory(dir, { runRoot }).deleted).toBe(false);
+    expect(existsSync(join(dir, "operators-data.txt"))).toBe(true);
   });
 
   test("NEGATIVE (b): a subdirectory an AGENT created inside a real clone is refused", () => {
@@ -234,36 +263,255 @@ describe("all three conditions, or refuse and report", () => {
   });
 
   test("NEGATIVE (b): a FORGED manifest with a backdated createdAt is still refused", () => {
-    // `createdAt` is a number in the file, so a forger picks it. The manifest
-    // file's own birth time is not the forger's to choose — writing the file is
-    // what sets it.
+    // The forger does not call `recordClone` at all — every byte of the file is
+    // theirs, including an hour of backdating on both timestamps. This is the
+    // CARELESS forgery: it omits the inode. A forger who reads the inode off
+    // the directory is not caught at all, and the KNOWN LIMIT tests below drive
+    // that case rather than leaving it to a comment.
+    //
+    // The refusal asserted here is the identity one, deliberately. A refusal
+    // that rested on birth times would hold on APFS and NOT hold on a
+    // coarse-clock filesystem, where the directory and a manifest forged
+    // moments later fall inside one kernel tick and compare EQUAL.
     const runId = "forged";
     const dir = join(runRoot, RUN_DIR, runId, "1");
     mkdirSync(join(dir, ".git"), { recursive: true });
     writeFileSync(join(dir, ".git", CLONE_SIGNATURE), `${runId}/1\n`);
     writeFileSync(join(dir, "operators-data.txt"), "not brigadier's\n");
-    // Written AFTER the directory, claiming to predate it by an hour.
-    recordClone(
-      manifestPath(runRoot, RUN_DIR, runId),
-      { runId, runRoot, createdAt: Date.now() - 3_600_000, clones: [] },
-      { item: 1, dir, createdAt: Date.now() - 3_600_000 },
-    );
+    forgeManifest(manifestPath(runRoot, RUN_DIR, runId), {
+      runId,
+      runRoot,
+      createdAt: Date.now() - 3_600_000,
+      clones: [{ item: 1, dir, createdAt: Date.now() - 3_600_000 }],
+    });
+
     const verdict = proveDeletableDirectory(dir, { runRoot });
-    expect(verdict.proof.manifestOlderThanDirectory).toBe(false);
+    expect(verdict.proof.directoryIdentity).toBe(false);
     expect(verdict.deletable).toBe(false);
+    expect(verdict.refusals.join(" ")).toContain("no usable inode");
+    expect(reclaimDirectory(dir, { runRoot }).deleted).toBe(false);
     expect(existsSync(join(dir, "operators-data.txt"))).toBe(true);
+  });
+
+  test("NEGATIVE (b): a forger who invents an inode is refused, and the refusal names both", () => {
+    // The one thing left to try: fill the identity in with something plausible.
+    // Anything but the directory's own inode is a mismatch, and the refusal has
+    // to print what was recorded beside what is actually there — "false" is not
+    // a report anyone can act on.
+    const runId = "forgedino";
+    const dir = join(runRoot, RUN_DIR, runId, "1");
+    mkdirSync(join(dir, ".git"), { recursive: true });
+    writeFileSync(join(dir, ".git", CLONE_SIGNATURE), `${runId}/1\n`);
+    writeFileSync(join(dir, "operators-data.txt"), "not brigadier's\n");
+    const parent = directoryIdentity(join(runRoot, RUN_DIR, runId));
+    expect(parent).not.toBeNull();
+    forgeManifest(manifestPath(runRoot, RUN_DIR, runId), {
+      runId,
+      runRoot,
+      createdAt: Date.now() - 3_600_000,
+      clones: [{ item: 1, dir, createdAt: Date.now() - 3_600_000, identity: parent! }],
+    });
+
+    const verdict = proveDeletableDirectory(dir, { runRoot });
+    expect(verdict.proof.directoryIdentity).toBe(false);
+    expect(verdict.deletable).toBe(false);
+    expect(verdict.refusals.join(" ")).toContain(`records ${dir} as inode ${parent!.ino}`);
+    expect(verdict.refusals.join(" ")).toContain(`is inode ${directoryIdentity(dir)!.ino}`);
+    expect(existsSync(join(dir, "operators-data.txt"))).toBe(true);
+  });
+
+  test("NEGATIVE CONTROL (b): same path, different directory — the entry stops matching", () => {
+    // The guard driven in BOTH directions on one fixture, which is the only
+    // shape that shows it discriminates rather than always refusing. Nothing
+    // about the manifest changes between the two verdicts; the only thing that
+    // changes is which directory is standing at the path.
+    const dir = plantClone("swapped", 1);
+    const before = proveDeletableDirectory(dir, { runRoot });
+    expect(before.deletable).toBe(true);
+    expect(before.proof.directoryIdentity).toBe(true);
+    const recorded = directoryIdentity(dir);
+
+    // brigadier's clone is removed and something else takes its path, marker,
+    // name and all. Every other proof still passes: it is inside the run root,
+    // a manifest entry names it, and the marker names this run and this item.
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(join(dir, ".git"), { recursive: true });
+    writeFileSync(join(dir, ".git", CLONE_SIGNATURE), "swapped/1\n");
+    writeFileSync(join(dir, "operators-data.txt"), "somebody else's, at brigadier's address\n");
+    const now = directoryIdentity(dir);
+    // The fixture has to be real, or this test proves nothing: a filesystem
+    // that handed back the same inode number would make the two directories
+    // indistinguishable here, and that is a limit worth failing loudly on.
+    expect(now).not.toBeNull();
+    expect(now!.ino).not.toBe(recorded!.ino);
+
+    const after = proveDeletableDirectory(dir, { runRoot });
+    expect(after.proof.directoryIdentity).toBe(false);
+    expect(after.deletable).toBe(false);
+    expect(after.refusals.join(" ")).toContain("never whatever later occupied its path");
+    expect(reclaimDirectory(dir, { runRoot }).deleted).toBe(false);
+    expect(existsSync(join(dir, "operators-data.txt"))).toBe(true);
+  });
+
+  test("the verdict reads no wall clock: an hour of skew in either direction changes nothing", () => {
+    // The Linux defect, forced directly rather than waited for. The old check
+    // compared `entry.createdAt`, a `Date.now()` value, against the directory's
+    // inode birth time — two clocks. MEASURED against `bun 1.3.14` on
+    // 2026-08-20, 300 trials per platform, recorded by this project's first
+    // `gates.yml` run and reproduced in a Linux container the same day:
+    //
+    //     linux : entry.createdAt > dirBirth  300 / 300   worst lag 1.38 ms
+    //     macos : entry.createdAt > dirBirth    0 / 300   worst lag 0.00 ms
+    //
+    // so on Linux EVERY legitimate clone was refused. The skew below is a full
+    // hour in each direction — 2.6 million times the worst lag measured — and
+    // it is applied to a clone that is otherwise entirely legitimate. This runs
+    // on macOS and still exercises the Linux case, because it does not wait for
+    // a clock to disagree: it writes the disagreement into the file.
+    const runId = "clockskew";
+    const dir = plantClone(runId, 1);
+    const path = manifestPath(runRoot, RUN_DIR, runId);
+    for (const skew of [3_600_000, -3_600_000]) {
+      const manifest = JSON.parse(readFileSync(path, "utf8")) as {
+        clones: { createdAt: number }[];
+      };
+      manifest.clones[0]!.createdAt = Date.now() + skew;
+      writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
+      const verdict = proveDeletableDirectory(dir, { runRoot });
+      expect(verdict.refusals).toEqual([]);
+      expect(verdict.deletable).toBe(true);
+      expect(verdict.proof.directoryIdentity).toBe(true);
+      // And the birth-time comparison never blocks a legitimate clone either,
+      // whether or not this platform can be shown to keep real birth times.
+      expect(verdict.proof.manifestOlderThanDirectory).not.toBe(false);
+    }
+  });
+
+  test("KNOWN LIMIT: a forger who reads the inode off the directory is NOT caught", () => {
+    // Driven, not assumed. This test asserts the hole so that closing it turns
+    // the test red and forces the comments in `src/run/reclaim.ts` to be
+    // rewritten with it; a limit recorded only in prose drifts out of date the
+    // first time somebody changes the check.
+    //
+    // ATTACK B, the careful one: create the manifest FILE first, then the
+    // directory, then rewrite the manifest in place. `writeFileSync` truncates
+    // rather than replacing, so the file keeps the birth time it was created
+    // with and the ordering signal is satisfied too. Every proof passes and the
+    // verdict carries no refusals.
+    const runId = "attackb";
+    const path = manifestPath(runRoot, RUN_DIR, runId);
+    mkdirSync(join(runRoot, RUN_DIR, runId), { recursive: true });
+    const dir = join(runRoot, RUN_DIR, runId, "1");
+    // 1. the manifest file exists before the directory does — its birth time is
+    //    set here and nothing later moves it.
+    forgeManifest(path, { runId, runRoot, createdAt: Date.now(), clones: [] });
+    // 2. the directory, made by the forger and holding the forger's data.
+    mkdirSync(join(dir, ".git"), { recursive: true });
+    writeFileSync(join(dir, ".git", CLONE_SIGNATURE), `${runId}/1\n`);
+    writeFileSync(join(dir, "forgers-data.txt"), "brigadier never made this\n");
+    // 3. the same file, truncated and rewritten, now naming the inode the
+    //    forger read back with one `stat`.
+    forgeManifest(path, {
+      runId,
+      runRoot,
+      createdAt: Date.now(),
+      clones: [{ item: 1, dir, createdAt: Date.now(), identity: directoryIdentity(dir)! }],
+    });
+
+    const verdict = proveDeletableDirectory(dir, { runRoot });
+    expect(verdict.proof.directoryIdentity).toBe(true);
+    expect(verdict.proof.manifestOlderThanDirectory).not.toBe(false);
+    expect(verdict.refusals).toEqual([]);
+    expect(verdict.deletable).toBe(true);
+    // What still holds is (a), and it is the only one of the three that is not
+    // file contents: the forgery had to be planted INSIDE the run root, and
+    // everything (a) permits deleting is inside the run root, so it bought no
+    // reach its author did not already have.
+    expect(verdict.proof.realPath.startsWith(join(realpathSync(runRoot), RUN_DIR))).toBe(true);
+  });
+
+  test("KNOWN LIMIT: with the right inode, the identity check contributes nothing", () => {
+    // ATTACK A, the lazier one: the manifest file is created AFTER the
+    // directory, carrying the correct inode. The identity comparison passes —
+    // asserted below, and it is the same on every platform. Whether anything
+    // refuses this rests entirely on `manifestOlderThanDirectory`, which is
+    // silent wherever a birth time cannot be told apart from a `ctime`, so this
+    // test asserts only the platform-independent half.
+    const runId = "attacka";
+    mkdirSync(join(runRoot, RUN_DIR, runId), { recursive: true });
+    const dir = join(runRoot, RUN_DIR, runId, "1");
+    mkdirSync(join(dir, ".git"), { recursive: true });
+    writeFileSync(join(dir, ".git", CLONE_SIGNATURE), `${runId}/1\n`);
+    writeFileSync(join(dir, "forgers-data.txt"), "brigadier never made this\n");
+    forgeManifest(manifestPath(runRoot, RUN_DIR, runId), {
+      runId,
+      runRoot,
+      createdAt: Date.now(),
+      clones: [{ item: 1, dir, createdAt: Date.now(), identity: directoryIdentity(dir)! }],
+    });
+
+    const verdict = proveDeletableDirectory(dir, { runRoot });
+    expect(verdict.proof.directoryIdentity).toBe(true);
+  });
+
+  test("a device number that moved does NOT refuse a legitimate clone", () => {
+    // `st_dev` is not stable. btrfs, ZFS, overlayfs and tmpfs take an anonymous
+    // bdev assigned at mount, so the same filesystem reports a different number
+    // after a remount or a reboot — and `sweepAtStart` reads runs an EARLIER
+    // process recorded, which makes a later boot the ordinary path through
+    // here. Comparing it refused untouched clones outright. Only the inode is
+    // compared; the device is carried so the refusal can print it.
+    const runId = "devdrift";
+    const dir = plantClone(runId, 1);
+    const path = manifestPath(runRoot, RUN_DIR, runId);
+    const manifest = JSON.parse(readFileSync(path, "utf8")) as RunManifest;
+    const before = manifest.clones[0]!.identity!.dev;
+    manifest.clones[0]!.identity = { dev: `${Number(before) + 4242}`, ino: manifest.clones[0]!.identity!.ino };
+    writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
+
+    const verdict = proveDeletableDirectory(dir, { runRoot });
+    expect(verdict.proof.directoryIdentity).toBe(true);
+    expect(verdict.refusals).toEqual([]);
+    expect(verdict.deletable).toBe(true);
+  });
+
+  test("NEGATIVE (b): an inode of 0 identifies nothing and is refused, not matched", () => {
+    // A volume that keeps no inode numbers reports 0 for every file on it, and
+    // libuv hands that 0 through unchanged. Accepted, it would match EVERY
+    // directory equally — a guard that has silently stopped guarding. The
+    // predicate is asserted directly as well, because the branch that reads it
+    // off a live filesystem cannot be reached on APFS.
+    expect(usableIdentity({ dev: "16777232", ino: "0" })).toBe(false);
+    expect(usableIdentity({ dev: "16777232", ino: "00" })).toBe(false);
+    expect(usableIdentity({ dev: "16777232", ino: "" })).toBe(false);
+    expect(usableIdentity({ dev: "16777232", ino: "54968265" })).toBe(true);
+
+    const runId = "zeroino";
+    const dir = plantClone(runId, 1);
+    const path = manifestPath(runRoot, RUN_DIR, runId);
+    const manifest = JSON.parse(readFileSync(path, "utf8")) as RunManifest;
+    manifest.clones[0]!.identity = { dev: manifest.clones[0]!.identity!.dev, ino: "0" };
+    writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
+
+    const verdict = proveDeletableDirectory(dir, { runRoot });
+    expect(verdict.proof.directoryIdentity).toBe(false);
+    expect(verdict.deletable).toBe(false);
+    expect(verdict.refusals.join(" ")).toContain("no usable inode");
+    expect(reclaimDirectory(dir, { runRoot }).deleted).toBe(false);
+    expect(existsSync(join(dir, "work.txt"))).toBe(true);
   });
 
   test("a manifest for a DIFFERENT run root grants nothing here", () => {
     const runId = "otherroot";
     const dir = join(runRoot, RUN_DIR, runId, "1");
-    mkdirSync(join(dir, ".git"), { recursive: true });
-    writeFileSync(join(dir, ".git", CLONE_SIGNATURE), `${runId}/1\n`);
+    mkdirSync(join(runRoot, RUN_DIR, runId), { recursive: true });
     recordClone(
       manifestPath(runRoot, RUN_DIR, runId),
       { runId, runRoot: join(scratch, "somewhere-else"), createdAt: Date.now(), clones: [] },
       { item: 1, dir, createdAt: Date.now() },
     );
+    mkdirSync(join(dir, ".git"), { recursive: true });
+    writeFileSync(join(dir, ".git", CLONE_SIGNATURE), `${runId}/1\n`);
     const verdict = proveDeletableDirectory(dir, { runRoot });
     expect(verdict.deletable).toBe(false);
     expect(verdict.refusals.join(" ")).toContain("another root");

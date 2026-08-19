@@ -29,7 +29,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { survivorClasses } from "../items/07-interruption-leaves-nothing.ts";
@@ -286,5 +286,67 @@ describe("the classification itself", () => {
     const [row] = classifySurvivors([facts(line)], classes);
     expect(row?.expected).toBe(false);
     expect(row?.label).toContain("SWEPT");
+  });
+});
+
+/**
+ * The citation this item makes about its own limit, checked against the file it
+ * cites.
+ *
+ * The defect: `bar/items/07-…` excused ruling 38's one hole by citing
+ * **"amendment §18"**, and no such section existed anywhere in the tree — not in
+ * `BAR.md`, not in either measurement amendment. A limit that lives only in the
+ * head of the item it limits is not "in the open", which is what `BAR.md`'s
+ * *When an item cannot be met* requires. The owner ruled on 2026-08-20 that it be
+ * recorded in `BAR.md`; this pins that it stays recorded.
+ *
+ * It is a transcription guard, and this repository's second-hardest lesson is
+ * that transcriptions drift inside a single round. The negative control is the
+ * whole point: the same predicate is run against a `BAR.md` with the section cut
+ * out, and must say no.
+ */
+describe("item 7's own limit is recorded in BAR.md, not only in its head", () => {
+  const ROOT = new URL("../../", import.meta.url).pathname;
+  const bar = readFileSync(join(ROOT, "BAR.md"), "utf8");
+  const item7 = readFileSync(join(ROOT, "bar", "items", "07-interruption-leaves-nothing.ts"), "utf8");
+
+  /** Does this `BAR.md` text record the hole, as the procedure asks — which item, why, what is unproven? */
+  const recordsTheHole = (text: string): boolean => {
+    const start = text.indexOf("### 7.");
+    const end = text.indexOf("### 8.", start === -1 ? 0 : start);
+    if (start === -1 || end === -1) return false;
+    const section = text.slice(start, end);
+    return (
+      /RECORDED 2026-08-20/.test(section) &&
+      /amendment §18/.test(section) &&
+      /--brigadier-run=x` is not/.test(section) &&
+      /promise therefore unproven/i.test(section)
+    );
+  };
+
+  test("the hole is written into BAR.md's item 7, with its reason and what it leaves unproven", () => {
+    expect(recordsTheHole(bar)).toBe(true);
+  });
+
+  test("NEGATIVE CONTROL — the same predicate says no when the record is not there", () => {
+    // Cut the recorded block back out and the guard must go red, or it is a
+    // guard that would pass on the state it exists to forbid.
+    const without = bar.replace(/\*\*RECORDED 2026-08-20[\s\S]*?\n\n/, "");
+    expect(without).not.toBe(bar);
+    expect(recordsTheHole(without)).toBe(false);
+    // And on a document with no item 7 at all.
+    expect(recordsTheHole("# not the bar")).toBe(false);
+  });
+
+  test("the item points the reader at BAR.md rather than at a section of its own", () => {
+    // Every `amendment §N` this item cites must resolve in BAR.md. `§18` is the
+    // only one, and it resolved nowhere until 2026-08-20.
+    const cited = [...item7.matchAll(/amendment §(\d+)/g)].map((m) => m[1]);
+    expect(cited.length).toBeGreaterThan(0);
+    for (const n of cited) expect(bar).toContain(`amendment §${n}`);
+    // And the reader is sent to the file, in the source comment and in the row
+    // the report actually prints.
+    expect(item7).toContain("RECORDED IN `BAR.md`, item 7");
+    expect(item7).toContain('"ruling 38\'s one hole (recorded in BAR.md, item 7 — RECORDED 2026-08-20)"');
   });
 });

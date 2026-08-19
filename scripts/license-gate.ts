@@ -57,12 +57,25 @@
  *
  *   bun run license-gate [--binary dist/brigadier]
  *
+ * THE `--binary` PATH IS A REQUEST, NOT THE ARTIFACT'S NAME. `bun build
+ * --compile` appends `.exe` for a Windows target regardless of the `--outfile`
+ * it was handed — MEASURED against `bun 1.3.14` on `darwin 25.5.0` on
+ * 2026-08-20, cross-compiling with `--target=bun-windows-x64`. So this gate
+ * resolves the requested path through `artifactCandidates` from
+ * `scripts/build.ts`, the same rule the build step uses to name what it wrote,
+ * rather than a second idiom that could drift from it. This does not weaken
+ * ruling 47 in any direction: `--require-binary` still FAILS when neither
+ * candidate is on disk, and it now names both so the log says what was looked
+ * for. What it removes is the case where the gate reported "no binary here" on
+ * Windows about a binary that was sitting right beside the name it checked.
+ *
  * The guard's own negative controls live in `test/licenses.test.ts`. A guard
  * that always passes looks identical to a working one.
  */
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { artifactCandidates } from "./build.ts";
 import {
   REPO_ROOT,
   allComponents,
@@ -398,10 +411,31 @@ export function checkDocPins(doc: string, pinned: Record<string, string>): GateF
   return findings;
 }
 
+/**
+ * The artifact a `--binary` request names, resolved against what is on disk.
+ *
+ * `exists` is a parameter rather than `existsSync` so `test/licenses.test.ts`
+ * can drive the Windows arrangement — plain name absent, `.exe` present — from a
+ * machine that is not Windows. The `tried` list is returned so the not-found
+ * message can name every candidate: a gate that says a file is missing must say
+ * which names it looked under, or the next reader repeats the search by hand.
+ */
+export function resolveBinary(
+  requested: string,
+  exists: (path: string) => boolean,
+): { path: string; found: boolean; tried: string[] } {
+  const tried = artifactCandidates(requested);
+  const hit = tried.find(exists);
+  return { path: hit ?? requested, found: hit !== undefined, tried };
+}
+
 if (import.meta.main) {
   const argv = Bun.argv.slice(2);
   const binaryIndex = argv.indexOf("--binary");
-  const binaryPath = binaryIndex === -1 ? join(REPO_ROOT, "dist", "brigadier") : (argv[binaryIndex + 1] ?? "");
+  const requested = binaryIndex === -1 ? join(REPO_ROOT, "dist", "brigadier") : (argv[binaryIndex + 1] ?? "");
+  const binary = resolveBinary(requested, existsSync);
+  const binaryPath = binary.path;
+  const looked = binary.tried.join(" or ");
 
   const components = allComponents();
   const findings: GateFinding[] = [
@@ -412,7 +446,7 @@ if (import.meta.main) {
     ...checkDocPins(readFileSync(join(REPO_ROOT, "RELINKING.md"), "utf8"), pins()),
   ];
 
-  if (existsSync(binaryPath)) {
+  if (binary.found) {
     const bytes = new Uint8Array(await Bun.file(binaryPath).arrayBuffer());
     findings.push(...scanForProprietaryMarkers(bytes));
     findings.push(...checkAttributionCarried(bytes, components));
@@ -429,16 +463,16 @@ if (import.meta.main) {
     // refuses to treat "no binary here" as "the binary is clean".
     findings.push({
       check: "markers",
-      detail: `${binaryPath} does not exist and --require-binary was given; the marker scan did not run`,
+      detail: `no artifact at ${looked} and --require-binary was given; the marker scan did not run`,
     });
     findings.push({
       check: "carried",
       detail:
-        `${binaryPath} does not exist and --require-binary was given; nothing verified that the LGPL ` +
+        `no artifact at ${looked} and --require-binary was given; nothing verified that the LGPL ` +
         "licence text this repository claims to ship is in any artifact",
     });
   } else {
-    console.log(`no binary at ${binaryPath} — marker and attribution scans SKIPPED (not passed). Run \`bun run build\` first.`);
+    console.log(`no binary at ${looked} — marker and attribution scans SKIPPED (not passed). Run \`bun run build\` first.`);
   }
 
   if (findings.length > 0) {

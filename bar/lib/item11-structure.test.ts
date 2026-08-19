@@ -28,17 +28,25 @@
 import { describe, expect, test } from "bun:test";
 import { itemHead } from "./item-head.ts";
 import {
+  DETAIL_INDENT,
+  DETAIL_SIGIL,
   INITIAL_OUTCOME,
+  OVER_CEILING_HEAD,
+  atDetailIndent,
   collapsedCounts,
+  detailLine,
   itemBlock,
   judgeOverride,
   judgeReportStructure,
   readSlotEvents,
+  transcribedReport,
+  unsigiledDetailLines,
   writeAhead,
   type RecordedItem,
   type SlotEvent,
   type StructureObservations,
 } from "./item11-structure.ts";
+import { estimateTokens } from "./plan.ts";
 
 /** Rewrite, and prove the rewrite happened. A no-op mutation is a dead control. */
 function mutate(text: string, from: string | RegExp, to: string): string {
@@ -66,8 +74,12 @@ const failed = (id: string, n: number): RecordedItem => ({
  * `✓`/`✗` CHECK lines are not detail lines and stay unsigil'd. No assertion
  * moved: the sigil is exactly what stops a checker's output from being read as
  * an item head line, which is the property `itemHead` leans on.
+ *
+ * Built through `transcribedReport`/`detailLine` since 2026-08-20 so that the
+ * next omission throws at load rather than being measured — see the classifier's
+ * own note in `item11-structure.ts`.
  */
-const REPORT = [
+const REPORT = transcribedReport([
   "PARTIAL INTEGRATION — 47 of 50 items landed; 3 failed; blocked by verify: fail (3 items).",
   "run-record: /runs/r1/record.json",
   "base refs/brigadier/r1/base at cccccccccccc — every item's diff is <base>..<its ref>",
@@ -78,16 +90,16 @@ const REPORT = [
   "  fifty-4: failed — (qwen, qwen-m, medium (set, NOT confirmed — #45))",
   "      ✓ worker: pass",
   "      ✗ verify: fail (item 4)",
-  "          | `/w/failing-verify` exited 1. This is the WORKER's to fix.",
+  detailLine("`/w/failing-verify` exited 1. This is the WORKER's to fix."),
   "  fifty-43: failed — (qwen, qwen-m, medium (set, NOT confirmed — #45))",
   "      ✓ worker: pass",
   "      ✗ verify: fail (item 43)",
-  "          | `/w/failing-verify` exited 1. This is the WORKER's to fix.",
+  detailLine("`/w/failing-verify` exited 1. This is the WORKER's to fix."),
   "  2 passing item(s) collapsed to this count — the cap can hide a success and can never hide a failure (ruling 58)",
   "",
   "the merged result:",
   "  — verify (merged result): unconfigured",
-].join("\n");
+]);
 
 const FAILING = [failed("fifty-4", 4), failed("fifty-43", 43)];
 const ALL_IDS = ["fifty-1", "fifty-4", "fifty-43", "fifty-7", "fifty-9"];
@@ -314,18 +326,55 @@ describe("item 11 — the appended record, read tolerantly", () => {
 
 // ------------------------------------------------------------------ override
 
-/** Two failing items whose blocks are long enough to blow a small ceiling. */
-const OVER_REPORT = [
+/**
+ * Two failing items whose blocks are long enough to blow a small ceiling.
+ *
+ * TWO DRIFTS CORRECTED ON 2026-08-20, and the first doc block written here
+ * claimed the fixture was aligned when only one of them had been found — so this
+ * one names what is aligned and what is still knowingly not.
+ *
+ * THE SIGIL. Two lines here are DETAIL lines — the two at ten spaces, the
+ * checker's own words carried in by `src/gate/run.ts` — and the product sigils
+ * both. The two `✗ verify:` lines sit at six spaces and are CHECK lines, which
+ * the product does not sigil; the head lines, `run-record:` and the closing
+ * sentence are at two spaces and column zero and are not details either.
+ *
+ * THE OVERFLOW SENTENCE. The fixture said *"OVER the 2,000-token ceiling because
+ * every remaining item carries a blocking check, and ruling 52 …"*. The product
+ * emits `` `…OVER the ${HOST_REPORT_TOKEN_CEILING}-token ceiling${share} because
+ * ${why}.` `` with `why` = `` `${blocking} item(s) carry a blocking check and
+ * ruling 52 has no exception for space` `` — so `2000` and not `2,000`, the
+ * BLOCKING COUNT and not a quantifier, and no comma. Three differences, none of
+ * them visible to the old detector's grep for two words. `bar/lib/item13-cost.test.ts`
+ * transcribes the same sentence correctly, which is how the fixture was
+ * established as the stale side rather than the product.
+ *
+ * MEASURED against `bun 1.3.14` on 2026-08-20: 1,580 chars ≈ 482 tokens as
+ * found, 1,584 ≈ 484 with the sigil, 1,569 ≈ 479 with the sentence corrected too
+ * — the product's sentence is 125 characters against the invented one's 140.
+ * Nothing in this file is asserted against any of those numbers; `OVER` states
+ * its own `tokens`, measured from these bytes, and 479 clears the 100-token
+ * ceiling this fixture exists to exceed by the same margin the stale 400 did.
+ *
+ * KNOWINGLY NOT ALIGNED, and left deliberately: the 560-character detail line
+ * could not survive a capped audience. `renderRun` passes `DETAIL_LINE_WIDTH`
+ * (320) when `isCapped(audience)`, so the real bytes would be cut at 320 with
+ * ` … [cut]` appended. Nothing here reads the line's width — it exists to be
+ * bulk — and shortening it is a change to what this fixture is for, not a
+ * transcription repair. Named so the next reader does not mistake silence for
+ * agreement.
+ */
+const OVER_REPORT = transcribedReport([
   "NOTHING INTEGRATED — 0 of 2 items landed on the integration branch; 2 failed; blocked by verify: fail (2 items).",
   "run-record: /runs/r2/record.json",
   "  pressure-1: failed — (qwen, qwen-m, medium)",
   "      ✗ verify: fail (item 1)",
-  `          ${"pressure line ".repeat(40)}`,
+  detailLine("pressure line ".repeat(40)),
   "  pressure-2: failed — (qwen, qwen-m, medium)",
   "      ✗ verify: fail (item 2)",
-  `          ${"pressure line ".repeat(40)}`,
-  "this report is OVER the 2,000-token ceiling because every remaining item carries a blocking check, and ruling 52 has no exception for space.",
-].join("\n");
+  detailLine("pressure line ".repeat(40)),
+  "this report is OVER the 2000-token ceiling because 2 item(s) carry a blocking check and ruling 52 has no exception for space.",
+]);
 
 const OVER_FAILING: RecordedItem[] = [
   { id: "pressure-1", number: 1, status: "failed", checks: [{ name: "verify", outcome: "fail", blocking: true, qualifier: "item 1" }] },
@@ -338,7 +387,16 @@ const OVER = {
   failing: OVER_FAILING,
   allIds: ["pressure-1", "pressure-2"],
   ceiling: 100,
-  tokens: 400,
+  // MEASURED, not asserted from memory. `tokens` is documented as "the report's
+  // cost in tokens, measured by the caller with the same estimator", and
+  // `bar/items/11-report-fits-the-window.ts` passes `estimateTokens(report)`; a
+  // hand-typed stand-in here was a second transcription able to drift from its
+  // own bytes, and had: it said 400 for a fixture that estimates 479
+  // (1,569 chars ÷ 4 × 1.22, MEASURED against `bun 1.3.14` on 2026-08-20).
+  // The ceiling stays 100 because the branch under test is `tokens > ceiling`,
+  // and 479 > 100 by the same margin the stale 400 gave. Computed rather than
+  // typed, so the two corrections above could not leave it stale a third time.
+  tokens: estimateTokens(OVER_REPORT),
 };
 
 const overNames = (o: typeof OVER): string[] => judgeOverride(o).failures.map((f) => f.name);
@@ -384,7 +442,7 @@ describe("item 11 — the override, where ruling 52 beats ruling 58", () => {
     // and `ceiling` made this control pass with the product's own statement
     // deleted. The harness was supplying the needle it then went looking for.
     const contaminated = mutate(OVER_REPORT, /^this report is OVER.*$/m, "").concat(
-      "\n          filler from the checker: this put the blocking set over ruling 58's ceiling.",
+      `\n${detailLine("filler from the checker: this put the blocking set over ruling 58's ceiling.")}`,
     );
     expect(overNames({ ...OVER, report: contaminated })).toContain(
       "the report SAYS it is over the ceiling rather than going over quietly (ruling 58)",
@@ -395,6 +453,115 @@ describe("item 11 — the override, where ruling 52 beats ruling 58", () => {
     expect(overNames({ ...OVER, exitCode: 0 })).toContain(
       "a run in which every item blocks does not report success at the top level",
     );
+  });
+});
+
+/**
+ * WHY THE FIXTURES ARE BUILT RATHER THAN TYPED.
+ *
+ * `REPORT` was found writing detail lines without the product's sigil and was
+ * corrected; `OVER_REPORT` had the same defect and was corrected a round later,
+ * which is the evidence that a corrected transcription does not stay corrected.
+ * Nothing connected either fixture to `src/report/run-report.ts`, and nothing
+ * can: `bar/` imports nothing from `src/`.
+ *
+ * WHAT WAS DELIBERATELY NOT BUILT: a test that READS `src/report/run-report.ts`
+ * off disk and greps its `DETAIL_SIGIL` out. It would catch the drift exactly —
+ * and it is the import rule wearing a disguise, a harness deriving its
+ * expectations from the artifact under test, which is the failure `BAR.md`
+ * opens by recording. The brief's own word is *transcribe*.
+ *
+ * So the guard is on THIS side of the wall: the transcription is written once,
+ * every fixture that claims to be product output is built through it, and the
+ * classifier below decides line by line rather than consulting a list of
+ * fixtures somebody has to remember to extend. It cannot notice the product
+ * changing its sigil. It can, and does, notice a fixture disagreeing with what
+ * this harness says the product's sigil is — which is the drift that actually
+ * happened, twice.
+ */
+describe("the transcription is enforced, so the next omission fails at load", () => {
+  test("every fixture built as product output carries the sigil on every detail line", () => {
+    // Counted, not merely asserted empty: a fixture edited down to no detail
+    // lines at all would satisfy "none of them is wrong" while testing nothing.
+    const details = (report: string): string[] => report.split("\n").filter(atDetailIndent);
+    expect(details(REPORT)).toHaveLength(2);
+    expect(details(OVER_REPORT)).toHaveLength(2);
+    expect(unsigiledDetailLines(REPORT)).toEqual([]);
+    expect(unsigiledDetailLines(OVER_REPORT)).toEqual([]);
+  });
+
+  test("and the guard fires when it is violated — the negative control", () => {
+    // The exact bytes `OVER_REPORT` held before 2026-08-20.
+    const stale = ["  pressure-1: failed", "      ✗ verify: fail (item 1)", `${DETAIL_INDENT}pressure line`];
+    expect(() => transcribedReport(stale)).toThrow(/fixture drift/);
+    expect(unsigiledDetailLines(stale.join("\n"))).toEqual([`${DETAIL_INDENT}pressure line`]);
+  });
+
+  test("it classifies by position: a CHECK line is not a detail line and is not sigil'd", () => {
+    // The whole risk in this alignment was sigilling the wrong lines. Six spaces
+    // is `renderItem`'s check line; ten is what it hands `DetailWriter.lines`.
+    // Six spaces is a DETAIL line in `renderRun`'s tails and the classifier
+    // stays silent there on purpose — see its note. It misses those; it does not
+    // accuse a check line of being an unsigil'd detail.
+    expect(() => transcribedReport(["  x: failed", "      ✓ worker: pass", detailLine("out")])).not.toThrow();
+    expect(unsigiledDetailLines("      ✓ worker: pass\n  x: failed\nthe merged result:")).toEqual([]);
+  });
+
+  test("THIRTEEN spaces is `admit.ts`, not a stale detail — the false accusation that was possible", () => {
+    // `src/queue/admit.ts:291-292, :322-323, :335` writes continuation prose at
+    // thirteen spaces and no sigil, and fixtures splice admission blocks into
+    // report strings. A prefix match on ten spaces threw on bytes the product
+    // genuinely writes, so the rule is ten spaces AND then a non-space.
+    const admission = "             resolving a name is not driving an agent — `brigadier detect` opens a session,";
+    expect(admission.startsWith(DETAIL_INDENT)).toBe(true);
+    expect(atDetailIndent(admission)).toBe(false);
+    expect(() => transcribedReport(["  agents     none resolved on PATH", admission])).not.toThrow();
+  });
+
+  test("the transcribed constants are the ones the assertions elsewhere depend on", () => {
+    // Relaxing the sigil to make a fixture pass would otherwise be silent, and
+    // `itemHead`'s forgery guard is built on this exact string.
+    expect(DETAIL_SIGIL).toBe("| ");
+    expect(DETAIL_INDENT).toBe(" ".repeat(10));
+    expect(itemHead(detailLine("zzz-2: integrated"), "zzz-2")).toBeUndefined();
+  });
+
+  test("the fixture spells the overflow sentence the way brigadier spells it", () => {
+    // The drift the sigil audit did not find, and the reason a second guard was
+    // needed: `judgeOverride` greps for `over` + `ceiling` at column zero, which
+    // three separate errors satisfied. Asserted here, against the FIXTURE, where
+    // the transcription is the thing that must be right.
+    expect(OVER_REPORT.split("\n").filter((line) => OVER_CEILING_HEAD.test(line))).toHaveLength(1);
+    // Each of the three, shown failing. The thousands separator matters most:
+    // `${HOST_REPORT_TOKEN_CEILING}` interpolates a bare number.
+    expect(OVER_CEILING_HEAD.test("this report is OVER the 2,000-token ceiling because 2 item(s) carry a blocking check.")).toBe(false);
+    expect(OVER_REPORT).toContain("because 2 item(s) carry a blocking check and ruling 52");
+    expect(OVER_REPORT).not.toContain("every remaining item carries");
+    expect(OVER_REPORT).not.toContain("blocking check, and ruling 52");
+    // The interpolated tail is deliberately unconstrained: `share` appears only
+    // when the budget was shared, and `why` differs when nothing blocks.
+    expect(
+      OVER_CEILING_HEAD.test(
+        "this report is OVER the 2000-token ceiling — 1564 of them were left after the rest of this run's stdout was " +
+          "charged against it because no item here carries a blocking check: what does not fit is the run-level sections.",
+      ),
+    ).toBe(true);
+    // Column zero, because a checker's words arrive ten spaces in.
+    expect(OVER_CEILING_HEAD.test(detailLine("this report is OVER the 2000-token ceiling because 2 item(s) carry."))).toBe(false);
+  });
+
+  test("but the BAR check is not anchored on it, and the honest fake is why", () => {
+    // `bar/fakes/honest.ts:801` states the overflow as its own sentence — column
+    // zero, naming the number, nothing dropped — and ruling 58 is satisfied by
+    // it. A bar check anchored on brigadier's phrasing would fail the positive
+    // control that exists to prove this bar is passable, which is the bar
+    // measuring one vendor rather than a promise. So the exact head guards the
+    // fixture, and `judgeOverride` keeps the contract.
+    const honest =
+      "this report is OVER ruling 58's 2,000-token ceiling: the blocking items alone cost 3,682 tokens against the " +
+      "2,000 this stdout had left. Nothing was dropped to fit — ruling 52 has no exception for space.";
+    expect(OVER_CEILING_HEAD.test(honest)).toBe(false);
+    expect(overNames({ ...OVER, report: mutate(OVER_REPORT, /^this report is OVER.*$/m, honest) })).toEqual([]);
   });
 });
 

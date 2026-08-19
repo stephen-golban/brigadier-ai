@@ -27,6 +27,22 @@
  * three workers on a machine that is already swapping, because it is not
  * looking.
  *
+ * THERE IS DELIBERATELY NO WAY TO TELL THIS MODULE A MEMORY FIGURE FROM THE
+ * ENVIRONMENT OR FROM A FLAG. Ruling 54's whole value is that the sentence the
+ * report prints — *"RAM capped it: this machine's TOTAL memory leaves room for
+ * N worker(s)"* — is TRUE, and an override reachable in production is an
+ * override that can make it false. `totalMemoryBytes` is a parameter of this
+ * module, supplied by tests and by nothing above `admit()`.
+ *
+ * Nor is a seam needed to exercise this branch end to end. The filter binds
+ * whenever it is the STRICT MINIMUM of ruling 14's four, and two of the other
+ * three are the operator's own inputs — the plan's item count and `--workers` —
+ * while legality is unbounded at admission because ruling 13 has already
+ * refused every colliding plan. So a plan sized ABOVE the machine makes RAM
+ * bind, on the real machine, from the real number.
+ * `bar/items/04-fanout-isolates.ts` drives ruling 54's third sentence that way.
+ * Do not add an override here for a harness that does not need one.
+ *
  * Linux and Windows have the same CLASS of problem (page cache and standby
  * lists counted as used) but are unmeasured here. Computing from `totalmem()`
  * sidesteps all three, which is a second reason to prefer it.

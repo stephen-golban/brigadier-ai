@@ -50,6 +50,8 @@ import {
   QUIET_WARM_MEASUREMENT,
   scanForMarkers,
   struckLine,
+  struckWarmLine,
+  WITHDRAWN_WARM_BUDGET_MS,
   type ArtifactObservations,
 } from "./items/10-the-artifact-ships.ts";
 import { judgeReport, type ReportObservations } from "./items/11-report-fits-the-window.ts";
@@ -922,17 +924,59 @@ describe("item 10 — the artifact ships, and says what is in it", () => {
     );
   });
 
-  test("fails when warm start is over budget, net of the harness's own spawn cost", () => {
+  test("a warm figure outside the withdrawn 10 ms clause does not fail the item", () => {
+    // OBSOLETED BY THE OWNER'S RULING OF 2026-08-20 AND INVERTED ON PURPOSE,
+    // rather than deleted. Until that date this test was
+    // "fails when warm start is over budget, net of the harness's own spawn
+    // cost" and required 14 ms raw / 13 ms net to produce a failing
+    // `warm start within 10 ms` row. The owner withdrew that clause in the
+    // open, exactly as the ≤70 ms cold-start clause was withdrawn on
+    // 2026-08-19. So the same over-budget figure must now gate NOTHING — and
+    // the concern the old test carried does not simply evaporate with it. Two
+    // halves of it are still live and are asserted below: the spawn-floor
+    // correction the old name pointed at ("net of the harness's own spawn
+    // cost") still has to be applied and printed, and the withdrawal that
+    // removed the gate still has to be visible in the same run.
     const checks = judgeArtifact({ ...TRUTHFUL_ARTIFACT, warmMs: 14, spawnFloorMs: 1 });
-    expect(names(checks).some((n) => n.startsWith("warm start within 10 ms"))).toBe(true);
+    expect(names(checks)).toEqual([]);
+    expect(names(checks).some((n) => n.startsWith("warm start within"))).toBe(false);
+    const warm = checks.rows.find((r) => r.name.startsWith("warm start is MEASURED"));
+    expect(warm?.ok).toBe(true);
+    expect(warm?.detail).toContain("14 ms raw − 1 ms spawn floor = 13 ms");
+    expect(warm?.detail).toContain("NO THRESHOLD IS APPLIED");
+    // The strike is legible in the very run that stopped gating, and it is not
+    // itself a check that can fail. `bar/item10-identity.test.ts` drives this
+    // in both directions against its own fixture; this is the guard local to
+    // the fixture the rest of this file uses.
+    const struck = checks.rows.find((r) => r.name.startsWith("STRUCK CLAUSE — this item asserts no warm-start budget"));
+    expect(struck?.detail).toBe(struckWarmLine());
+    expect(struck?.detail).toContain("WITHDRAWN by the owner");
+    expect(names(checks)).not.toContain(struck?.name);
   });
 
-  test("the warm budget is reachable by the runtime ruling 5 mandates", () => {
-    // MEASURED 2026-08-17: a `bun --compile` no-op is 7.76 ms min-of-40, ~6.5 ms
-    // floor-corrected. A budget only satisfiable by something the product may
-    // not be would be a broken check, so this pins that it is satisfiable.
+  test("the headroom the withdrawn warm clause was argued over is KEPT in the record", () => {
+    // MIS-KEYED, AND SILENTLY SO. This was "the warm budget is reachable by the
+    // runtime ruling 5 mandates" and asserted that no `warm start within 10 ms`
+    // row FAILED for a 7.76 ms figure. On 2026-08-20 that became vacuous rather
+    // than false: no row starts with that prefix any more, so the assertion
+    // passed for free and covered nothing. Repaired, not deleted, because the
+    // evidence it was really about is still in the item on purpose — a strike
+    // must not take out of the record the thing that was argued over — and
+    // nothing else in this suite asserts that note survives.
+    //
+    // MEASURED against `bun --compile` on 2026-08-17 (the bun version of that
+    // day is not recorded, and is not reconstructed here): a binary whose whole
+    // program is `process.exit(0)` starts in 7.76 ms min-of-40 raw, about
+    // 6.5 ms floor-corrected. That answered a verifier who held the clause was
+    // only satisfiable by something ruling 5 forbids the product to be.
     const checks = judgeArtifact({ ...TRUTHFUL_ARTIFACT, warmMs: 7.76, spawnFloorMs: 1.21 });
-    expect(names(checks).some((n) => n.startsWith("warm start within 10 ms"))).toBe(false);
+    const headroom = checks.rows.find((r) => r.name.startsWith("the headroom measurement the withdrawn clause was argued over"));
+    expect(headroom?.detail).toContain("7.76 ms");
+    expect(headroom?.detail).toContain("ruling 5 does not permit the product to be");
+    expect(names(checks)).not.toContain(headroom?.name);
+    // And a figure well INSIDE the withdrawn number gates exactly as little as
+    // the 14 ms one above: the clause is struck, not relaxed in either direction.
+    expect(names(checks).some((n) => n.startsWith("warm start within"))).toBe(false);
   });
 
   test("fails when the binary will not start without node (ruling 4)", () => {
@@ -1131,10 +1175,17 @@ describe("item 10 — the artifact ships, and says what is in it", () => {
 
   test("the §17 warm proposal is recorded as a proposal, not as a budget", () => {
     const checks = judgeArtifact({ ...TRUTHFUL_ARTIFACT, warmMs: 17, spawnFloorMs: 1 });
-    // 16 ms net is inside §17's PROPOSED 20 ms and outside the adopted 10 ms.
-    // The adopted budget is the one that decides, because no budget is ever
-    // adjusted to fit a measurement.
-    expect(names(checks).some((n) => n.startsWith("warm start within 10 ms"))).toBe(true);
+    // 16 ms net is inside §17's PROPOSED 20 ms and outside the 10 ms clause
+    // that was in force until 2026-08-20. NEITHER decides anything now, and
+    // that is the whole assertion: the 10 ms clause was withdrawn by the owner
+    // and §17's 20 ms was NOT adopted in its place, because a clause struck for
+    // want of provenance is not repaired by installing a second figure picked
+    // to clear the last reading. So the first assertion here — which until
+    // 2026-08-20 required this figure to FAIL a `warm start within 10 ms` row —
+    // is replaced by its opposite: no threshold of either size came back.
+    expect(names(checks).some((n) => n.startsWith("warm start within"))).toBe(false);
+    expect(names(checks)).toEqual([]);
+    expect(checks.rows.find((r) => r.name.startsWith("warm start is MEASURED"))?.ok).toBe(true);
     const proposal = checks.rows.find((r) => r.name.startsWith("PROPOSAL, not adopted"));
     expect(proposal?.ok).toBe(true);
     expect(proposal?.detail).toContain("has NOT adopted");
@@ -1145,13 +1196,24 @@ describe("item 10 — the artifact ships, and says what is in it", () => {
     // leaves a number that reads authoritative and is not.
     const q = QUIET_WARM_MEASUREMENT;
     expect(Math.round((q.rawMinMs - q.spawnFloorMs) * 100) / 100).toBe(q.correctedMs);
-    expect(Math.round((q.correctedMs - 10) * 100) / 100).toBe(q.marginOverBudgetMs);
+    // `marginOverBudgetMs` is HISTORY since 2026-08-20, not a verdict: it is how
+    // far this figure stood from the ≤10 ms clause on the day that clause was
+    // still in force. It is kept re-derivable, and keyed off the withdrawn
+    // number by name rather than a bare literal, so that "the strike did not
+    // erase what it struck" stays checkable.
+    expect(Math.round((q.correctedMs - WITHDRAWN_WARM_BUDGET_MS) * 100) / 100).toBe(q.marginOverBudgetMs);
 
     // And it reaches the row a reader actually sees, with the distribution that
-    // makes the minimum trustworthy rather than merely conservative.
-    const warm = judgeArtifact(TRUTHFUL_ARTIFACT).rows.find((r) => r.name.startsWith("warm start within 10 ms"));
+    // makes the minimum trustworthy rather than merely conservative. MIS-KEYED
+    // ON 2026-08-20 AND REPAIRED, NOT DELETED: the row is still there and still
+    // carries all of this, it is simply no longer named for a budget. The one
+    // half that WAS obsoleted is `MARGIN:`, which the item now deliberately does
+    // not print because there is nothing left to state a margin against — so
+    // that assertion is inverted rather than dropped, and it is now the guard
+    // against a threshold creeping back in beside the figure.
+    const warm = judgeArtifact(TRUTHFUL_ARTIFACT).rows.find((r) => r.name.startsWith("warm start is MEASURED"));
     expect(warm?.detail).toContain("METHOD:");
-    expect(warm?.detail).toContain("MARGIN:");
+    expect(warm?.detail).not.toContain("MARGIN:");
     expect(warm?.detail).toContain("13.99 ms");
     expect(warm?.detail).toContain("median 15.67");
     // The 2026-08-17 series must stay labelled as an EARLIER artifact: reading

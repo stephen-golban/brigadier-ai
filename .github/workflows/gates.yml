@@ -29,6 +29,15 @@ on:
       - "tsconfig.json"
       - "bun.lock"
       - "BAR.md"
+      # Ruling 47's inputs. The licence gate reads `vendor/pins.json` and
+      # compares against `THIRD-PARTY.md`, and `test/plugin-asset.test.ts`
+      # reads `assets/`. Until 2026-08-20 none of the three could trigger this
+      # workflow on a push, so the check that exists to catch a stale
+      # attribution could not be triggered by editing the attribution. `pull_request`
+      # below is unfiltered and would still have caught it; a direct push would not.
+      - "vendor/**"
+      - "THIRD-PARTY.md"
+      - "assets/**"
       - ".github/workflows/gates.yml"
   pull_request:
 
@@ -82,13 +91,64 @@ jobs:
           # npm installs a `.cmd` wrapper that only one of them may find.
           bun -e 'if (Bun.which("claude") === null) throw new Error("Bun.which cannot see claude — item 10 would report not-run")'
 
+      # ---------------------------------------------------------------------
+      # THE FOUR GATES, IN THE ORDER `package.json`'s `gates` SCRIPT RUNS THEM.
+      #
+      # That correspondence is load-bearing and it is checked by eye, so it is
+      # written down here: `gates` is
+      #     typecheck && build && test-gate && claims
+      # and the four steps below are those four, one per step so the log names
+      # which one failed. **If you change one, change the other in the same
+      # commit.** A developer whose local `bun run gates` runs a different order
+      # from CI cannot reproduce CI, and that divergence is its own defect.
+      #
+      # WHY `build` MOVED AHEAD OF `test-gate` on 2026-08-20. It used to be last.
+      # `bar/lib/item5-transcript.test.ts` drives `--binary dist/brigadier`
+      # through an argument parser that asserts its inputs exist on disk, and
+      # `dist/` is gitignored. On a clean checkout that file does not exist when
+      # `test-gate` runs, so the test failed on every platform on this workflow's
+      # first ever run; it was green locally only because the owner's worktree
+      # carried a stale `dist/brigadier` from an earlier build.
+      #
+      # So the suite has a hard dependency on the compiled artifact. `build` is
+      # therefore a PREREQUISITE of `test-gate`, not a peer that happened to come
+      # later, and the order now says so. Nothing is asked less of: all four gates
+      # still run and each still blocks.
+      #
+      # WHAT IT COSTS, stated rather than buried: a failing `build` now masks the
+      # test results, and the expensive gate runs before the informative one, so
+      # a test failure takes longer to surface. That price is only worth paying
+      # because the alternative — a test that passes when the binary is absent —
+      # is the weakened check ruling 32 forbids, and `test-gate` cannot skip
+      # (ruling 62 (c)).
+      #
+      # THIS IS A WORKAROUND, NOT THE FIX. A unit test of a pure argument parser
+      # has no business depending on a build artifact; `bar/lib/` owns that
+      # fixture and pointing it at a path that is always on disk would let this
+      # order go back to putting the cheap gates first.
+      # ---------------------------------------------------------------------
+
       # Typecheck first: it is the cheapest and it fails most specifically.
       - name: typecheck
         run: bun run typecheck
 
+      # Ruling 47: attribution matches what is actually bundled, no proprietary
+      # marker in the compiled artifact, and the toolchain is the pinned one.
+      # Also the step that puts `dist/brigadier` on disk for `test-gate`.
+      - name: build and licence gate
+        run: bun run build
+
       # Ruling 62 (c): a skipped test is not a passing test. This is the gate,
       # not the convention — the runner's own output is read from a file and any
       # skip or todo fails the build.
+      #
+      # `scripts/test-gate.ts` writes its report with a synchronous, looping
+      # `writeSync` to fd 1 and sets `process.exitCode` rather than calling
+      # `process.exit`. Before 2026-08-20 it did neither, and this step's log
+      # was truncated mid-line: MEASURED by the coordinator on 2026-08-20 on
+      # this workflow's first run, Linux reported 15 failures and printed 3 of
+      # them and macOS reported 3 and printed 1, both logs stopping at roughly
+      # 96 KB. Do not reintroduce `process.exit` there.
       - name: tests, with nothing skipped
         run: bun run test-gate
 
@@ -99,11 +159,6 @@ jobs:
       - name: claims
         run: bun run claims
 
-      # Ruling 47: attribution matches what is actually bundled, no proprietary
-      # marker in the compiled artifact, and the toolchain is the pinned one.
-      - name: build and licence gate
-        run: bun run build
-
       # The binary must actually run on the machine that built it. Ruling 62's
       # standard (a): assert on the artifact, not on the build succeeding.
       - name: the compiled binary runs
@@ -111,13 +166,23 @@ jobs:
         run: |
           if [ -f dist/brigadier.exe ]; then BIN=dist/brigadier.exe; else BIN=dist/brigadier; fi
           "$BIN" --help
-          "$BIN" licenses | head -20
+          # NOT `"$BIN" licenses | head -20`. Actions runs `shell: bash` as
+          # `bash --noprofile --norc -eo pipefail`, so `pipefail` is ON: `head`
+          # closes the pipe after 20 lines, `licenses` dies of SIGPIPE, and the
+          # pipeline's status becomes the producer's 141 — a step that fails on
+          # a binary that worked. It is `AGENTS.md`'s own "never `cmd | head`
+          # then read `$?`" with the failure inverted. Redirect, then read.
+          # Under RUNNER_TEMP, not the workspace: the release-bar step below
+          # grades this checkout, and a gate should not add files to the tree
+          # it is about to grade.
+          "$BIN" licenses > "${RUNNER_TEMP}/licenses.txt"
+          head -20 "${RUNNER_TEMP}/licenses.txt"
           # Ruling 57's refusal, asserted on the effect rather than on the flag.
           set +e
-          BRIGADIER_WORKER=ci/1 "$BIN" run > worker-refusal.txt 2>&1
+          BRIGADIER_WORKER=ci/1 "$BIN" run > "${RUNNER_TEMP}/worker-refusal.txt" 2>&1
           code=$?
           set -e
-          grep -q "IS a brigadier worker" worker-refusal.txt
+          grep -q "IS a brigadier worker" "${RUNNER_TEMP}/worker-refusal.txt"
           test "$code" -eq 3
           echo "worker refusal: exit $code, message present"
 
@@ -147,11 +212,26 @@ jobs:
       #   2  the register and BAR.md disagree, or the arguments were unusable;
       #      nothing was graded, and this is a different failure from red
       #
-      # ASSUMPTIONS, none of them verified — this workflow has never executed on
-      # any platform:
-      #   - `bun build --compile --outfile dist/brigadier` appends `.exe` on
-      #     Windows, so the artifact is discovered rather than named, and the
-      #     step fails loudly if neither name is on disk;
+      # ONE OF THESE IS NO LONGER AN ASSUMPTION.
+      #
+      #   `bun build --compile --outfile dist/brigadier` DOES append `.exe` when
+      #   the target is Windows. MEASURED against `bun 1.3.14` on `darwin
+      #   25.5.0` on 2026-08-20, cross-compiling with `--target=bun-windows-x64`:
+      #   `--outfile brigadier` wrote `brigadier.exe`, and the compile line said
+      #   so — `compile brigadier.exe bun-windows-x64-v1.3.14`. Discovering the
+      #   artifact rather than naming it, as the steps above and below do, is
+      #   therefore correct.
+      #
+      #   IT ALSO MEANS THE WINDOWS LEG CANNOT REACH THIS STEP. `scripts/build.ts`
+      #   passes `dist/brigadier` as the outfile and then refuses if
+      #   `dist/brigadier` is not on disk afterwards — which on Windows it never
+      #   will be, because bun wrote `dist/brigadier.exe`. The `build and licence
+      #   gate` step above will report `BUILD REFUSED`. That is a defect in
+      #   `scripts/build.ts`, not in this workflow, and it is not fixed here:
+      #   the discovery this file already does is the shape `build.ts` needs too.
+      #
+      # STILL ASSUMPTIONS, unverified — this workflow has run once, on 2026-08-20,
+      # and failed on all three platforms before reaching any of them:
       #   - the harness writes its scratch trees under HOME (`~/.brigadier-bar/`),
       #     which ruling 61 requires and which is outside the workspace;
       #   - some items drive real subprocesses with their own deadlines, so the

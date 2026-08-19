@@ -14,7 +14,49 @@
  * files if they ever put something under the run root. (b) alone is satisfied by
  * a manifest an agent wrote. (c) alone is satisfied by a marker file an agent
  * copied. What makes the conjunction worth anything is that an attacker needs
- * all three and a mistake needs only one.
+ * all three and a mistake needs only one — and how much that is worth against
+ * an attacker who can already write the run root is the next paragraph, which
+ * is less than this one reads as.
+ *
+ * WHAT THE THREE CAN AND CANNOT DO. A comment in this area has already claimed
+ * more than the mechanism gives, so the reach of each is written down here.
+ *
+ * (a) IS THE ONLY ONE AN ADVERSARY CANNOT WRITE. It is computed from the
+ * configured run root and `realpath`, never from anything on disk an agent
+ * could author, and it is what bounds the blast radius: brigadier deletes
+ * inside `<run root>/r/` or it deletes nothing at all. Every safety claim in
+ * this file rests there and nowhere else.
+ *
+ * (b) AND (c) ARE FILE CONTENTS, and file contents belong to whoever can write
+ * them. Against an agent confined to its own clone they hold, which is the case
+ * the manifest was built for: the marker sits inside the directory the agent
+ * owns and the manifest sits outside it, so a confined agent can get at most
+ * its OWN clone deleted, and erasing its marker only makes brigadier refuse.
+ * Against anything that can write the run root they hold nothing. MEASURED
+ * against `bun 1.3.14` on 2026-08-20, driven against this file by a blind
+ * critic: a forger who CREATES the manifest file first, then makes the
+ * directory, then rewrites the manifest in place — `writeFileSync` truncates
+ * rather than replacing, so the file keeps its birth time — is reported
+ * `deletable: true` with NO refusals, every byte of the manifest their own.
+ * Nothing below detects that, and nothing below may claim to.
+ *
+ * THAT LOSS IS SMALLER THAN IT READS AS, and the reason is (a). To forge (b) an
+ * adversary must write inside `<run root>/r/`, and everything (a) permits
+ * deleting is inside `<run root>/r/` — so anything they can talk brigadier into
+ * deleting, they could delete themselves. The forgery buys no reach it did not
+ * already have. Closing it would take a secret brigadier holds and the forger
+ * cannot read — an HMAC over the entry, keyed OUTSIDE the run root — and that
+ * means a key and somewhere to keep it. That is a design decision with an
+ * operator-visible cost, and it is deliberately not invented here.
+ *
+ * SO (b) IS A CHECK AGAINST CONFUSION, NOT AGAINST FORGERY. What it establishes
+ * is that the manifest describes THIS directory rather than another directory
+ * that happens to sit at the same path: a stale entry, a directory deleted and
+ * remade by something else, a manifest belonging to another run root. It used
+ * to reach that by comparing timestamps — and that proxy was wrong twice over,
+ * because it read `Date.now()` on one side and an inode timestamp on the other,
+ * and those are two clocks. See `DirectoryProof.manifestOlderThanDirectory` for
+ * the measurement and for both of the errors that produced.
  *
  * REFS GET A FOURTH RULE OF THE SAME SHAPE rather than a generous reading of the
  * first three, because a ref lives inside the OPERATOR'S `.git`, which is
@@ -42,6 +84,7 @@ import {
   type RunManifest,
 } from "../isolation/index.ts";
 import { CLONE_SIGNATURE, runGit } from "../isolation/internal-git.ts";
+import { directoryIdentity, sameInode, usableIdentity, usableInode } from "../isolation/manifest.ts";
 import { RUN_DIR } from "../repo/layout.ts";
 import { REF_NAMESPACE, deleteRefArgv } from "../repo/refs.ts";
 
@@ -64,15 +107,67 @@ export interface DirectoryProof {
   /** (c) The marker file brigadier wrote, by path, or null. */
   readonly markerFile: string | null;
   /**
-   * Whether the manifest entry predates the directory, when the filesystem can
-   * say.
+   * (b): whether the directory standing here is the INODE the manifest entry
+   * created — an identity, and not a chronology.
    *
-   * MEASURED against `bun 1.3.14` on macOS 26.5.2 (APFS) on 2026-08-17:
-   * `statSync().birthtimeMs` carries sub-millisecond birth times, so the
-   * ordering ruling 15 requires is checkable after the fact rather than only
-   * structurally. It is `null` where the platform gives no usable birth time —
-   * some Linux filesystems do not — and a `null` does NOT block, because a
-   * missing measurement is not evidence of a violation. A definite `false` does.
+   * WHAT IT CATCHES: confusion. A stale entry whose directory was deleted and
+   * remade by something else at the same path; a run recorded by a brigadier
+   * that no longer matches what is on disk; an entry written by a process that
+   * died between recording and creating. Those are the failures that reach an
+   * operator, and none of them involves an adversary.
+   *
+   * WHAT IT DOES NOT CATCH, stated plainly because the comment it replaced said
+   * otherwise: a forgery. The inode is readable by anyone who can `stat` the
+   * directory, so a forger writing the manifest copies it. MEASURED against
+   * `bun 1.3.14` on 2026-08-20, driven by a blind critic against this file: with
+   * the manifest file created BEFORE the directory and rewritten in place after
+   * it, this returns `true` and the verdict carries no refusals. The reach of
+   * that is bounded by (a) alone — see the header.
+   *
+   * INODE NUMBERS ARE REUSED. ext4 reallocates a freed inode number to a later
+   * file, so a directory removed and recreated at this path can be handed the
+   * same number and match. APFS does not — its counter only climbs. The check is
+   * therefore weaker on ext4 than the test suite (which runs on APFS) can show.
+   *
+   * `null` only where no manifest entry names this path at all, which (b) has
+   * already refused. An entry that names the path and records no usable inode is
+   * `false`: unproven retains.
+   */
+  readonly directoryIdentity: boolean | null;
+  /**
+   * Whether the manifest FILE was born before the directory, where the platform
+   * can be shown to keep real birth times.
+   *
+   * Opportunistic, refuse-only, and never the grantor. Only CREATING a file
+   * sets its birth time, so this catches a manifest whose file first appeared
+   * after the directory it claims — an ordering mistake, or a lazy forgery.
+   *
+   * It does NOT catch a careful one, and the difference is one line of the
+   * forger's code. MEASURED against `bun 1.3.14` on 2026-08-20 by a blind
+   * critic: create the manifest file, then the directory, then rewrite the
+   * manifest in place — `writeFileSync` truncates rather than replacing, the
+   * birth time survives untouched, and this returns `true`. On a coarse-jiffy
+   * kernel it is weaker still: a manifest written once has a birth time and a
+   * `ctime` that are bit-identical, `verifiedBirthTime` therefore declines to
+   * judge, and this goes `null` — so on Linux even the lazy forgery is not
+   * caught here. Where it is `null` it says nothing, and a `null` does not
+   * block: a missing measurement is not evidence of a violation.
+   *
+   * Both readings now come from the SAME clock — the filesystem's — so a coarse
+   * kernel clock can only make them equal, never invert them, and no tolerance
+   * is involved. The comparison it replaced read `Date.now()` on one side and an
+   * inode timestamp on the other. MEASURED against `bun 1.3.14` on 2026-08-20,
+   * 300 trials of one script per platform, recorded by this project's first
+   * `gates.yml` run and reproduced in a Linux container the same day (not
+   * measured here):
+   *
+   *     linux : entry.createdAt > dirBirth  300 / 300   worst lag 1.38 ms
+   *     macos : entry.createdAt > dirBirth    0 / 300   worst lag 0.00 ms
+   *
+   * So on Linux every legitimate clone was judged "dated AFTER the directory"
+   * and brigadier never reclaimed disk it had authorised, while a forged
+   * manifest written inside one clock tick of the directory compared EQUAL and
+   * was accepted. One comparison, both errors.
    */
   readonly manifestOlderThanDirectory: boolean | null;
 }
@@ -145,6 +240,60 @@ export function proveDeletableDirectory(candidate: string, options: DirectoryOpt
     );
   }
 
+  // (b) continued: the entry names the INODE `recordClone` created, and the
+  //     directory standing here has to be that inode. This separates this
+  //     directory from a different one at the same path; it does not separate
+  //     brigadier from a forger, who can read the inode as easily as this can.
+  //     The proof field's own comment carries the full reach.
+  //
+  //     THE INODE ONLY, NEVER THE DEVICE. `st_dev` is recorded for the report
+  //     and deliberately not compared: btrfs, ZFS, overlayfs and tmpfs are
+  //     handed an ANONYMOUS BDEV allocated at mount time, so the same
+  //     filesystem carries a different `dev` after a remount or a reboot.
+  //     `sweepAtStart` reads runs recorded by an EARLIER process — that is what
+  //     it is for — so a later boot is the ordinary path through here, not an
+  //     edge case, and comparing `dev` refused legitimate clones outright.
+  let identityProof: boolean | null = null;
+  if (manifest !== null && entry !== undefined) {
+    const recorded = entry.identity;
+    const actual = directoryIdentity(realPath);
+    if (!usableIdentity(recorded)) {
+      identityProof = false;
+      refusals.push(
+        `ruling 15 (b): ${manifestPath} records ${realPath} but no usable inode for it, so this ` +
+          "directory cannot be told apart from anything else that might stand at that path. An " +
+          "entry from an older brigadier, one left by a process that died between recording and " +
+          "creating, and a volume that reports inode 0 for every file on it all look like this — " +
+          "and all of them retain rather than delete.",
+      );
+    } else if (actual === null) {
+      identityProof = false;
+      refusals.push(
+        `ruling 15 (b): ${realPath} is not a directory whose inode can be read — it is missing, ` +
+          "unreadable, or something other than a directory. The identity the manifest records " +
+          "cannot be matched against it, so nothing here is proved.",
+      );
+    } else if (!usableInode(actual.ino)) {
+      identityProof = false;
+      refusals.push(
+        `ruling 15 (b): the filesystem under ${realPath} reports inode ${actual.ino} for it, ` +
+          "which is not an inode number that identifies anything — a volume that keeps none " +
+          "reports 0 for every file on it. Matching against it would match every directory " +
+          "equally, so the manifest's record cannot be confirmed and the directory is retained.",
+      );
+    } else if (!sameInode(recorded, actual)) {
+      identityProof = false;
+      refusals.push(
+        `ruling 15 (b): ${manifestPath} records ${realPath} as inode ${recorded.ino} (on device ` +
+          `${recorded.dev}) and the directory standing there now is inode ${actual.ino} (on ` +
+          `device ${actual.dev}). A manifest entry authorises the directory brigadier created, ` +
+          "never whatever later occupied its path.",
+      );
+    } else {
+      identityProof = true;
+    }
+  }
+
   // (c) The marker file brigadier wrote — the in-clone signature `prepareClone`
   //     writes at `.git/brigadier-clone`. It is the WEAKEST of the three, and
   //     deliberately so: an agent owns that directory and can delete the file,
@@ -180,12 +329,12 @@ export function proveDeletableDirectory(candidate: string, options: DirectoryOpt
     }
   }
 
-  const ordering = manifestOrdering(manifest, manifestPath, realPath);
+  const ordering = manifestOlderThanDirectory(manifestPath, realPath);
   if (ordering === false) {
     refusals.push(
-      `ruling 15 (b): the manifest for ${realPath} is dated AFTER the directory was created — ` +
-        "by its recorded timestamp or by the manifest file's own birth time, which a forged " +
-        "timestamp cannot change. The manifest has to be written before anything exists, or it " +
+      `ruling 15 (b): the manifest file for ${realPath} is dated AFTER the directory it claims, ` +
+        "by its own birth time — which only the CREATION of that file sets, so rewriting it in " +
+        "place does not move it. The manifest has to exist before the directory does, or it " +
         "records a directory it did not authorise.",
     );
   }
@@ -198,6 +347,7 @@ export function proveDeletableDirectory(candidate: string, options: DirectoryOpt
       insideRunRoot,
       manifest: manifestPath,
       markerFile,
+      directoryIdentity: identityProof,
       manifestOlderThanDirectory: ordering,
     },
     refusals,
@@ -205,43 +355,54 @@ export function proveDeletableDirectory(candidate: string, options: DirectoryOpt
 }
 
 /**
- * Did the manifest exist before the directory?
+ * Was the manifest FILE born before the directory it claims?
  *
- * Both halves are checked, and the second is why: `createdAt` is a NUMBER IN
- * THE FILE, so a forged manifest can carry any value it likes and pass. The
- * manifest file's own birth time is not the forger's to choose — writing the
- * file is what sets it — so a manifest created after the directory it claims is
- * caught even when its recorded timestamp says otherwise.
+ * `entry.createdAt` is deliberately not consulted. It is a number in the file,
+ * so a forger picks it, and it is read from `Date.now()`, so comparing it
+ * against an inode timestamp compares two clocks — the measurement in
+ * `DirectoryProof` above is what that cost. Both readings here come from one
+ * clock, the filesystem's, where a coarse tick can only collapse the two into
+ * equality and equality passes. No tolerance, and none is needed.
  *
- * `null` means the platform gave no usable birth time, and `null` does not
- * block: a missing measurement is not evidence of a violation. A definite
- * `false` does.
+ * `null` means the platform could not be SHOWN to keep a real birth time, and
+ * `null` does not block. That check is `verifiedBirthTime`, and it is not
+ * caution for its own sake: where a kernel has no birth time to give, the field
+ * is filled from `ctime` instead, and a `ctime` MOVES — the manifest is
+ * rewritten once per item and a clone's directory changes on every file git
+ * puts into it. Trusting a `ctime` as a birth time would refuse legitimate
+ * clones on exactly the platform this comparison was already refusing them on.
  */
-function manifestOrdering(
-  manifest: RunManifest | null,
-  manifestPath: string | null,
-  realPath: string,
-): boolean | null {
-  if (manifest === null || manifestPath === null) return null;
-  const entry = manifest.clones.find((clone) => clone.dir === realPath);
-  if (entry === undefined || typeof entry.createdAt !== "number") return null;
-  const dirBirth = birthTime(realPath);
-  if (dirBirth === null) return null;
-  if (entry.createdAt > dirBirth) return false;
-  const manifestBirth = birthTime(manifestPath);
-  if (manifestBirth === null) return true;
+function manifestOlderThanDirectory(manifestPath: string | null, realPath: string): boolean | null {
+  if (manifestPath === null) return null;
+  const manifestBirth = verifiedBirthTime(manifestPath);
+  const dirBirth = verifiedBirthTime(realPath);
+  if (manifestBirth === null || dirBirth === null) return null;
   return manifestBirth <= dirBirth;
 }
 
-function birthTime(path: string): number | null {
-  let birth: number;
+/**
+ * A birth time this platform can be shown to actually keep, or `null`.
+ *
+ * The probe is `birthtimeMs < ctimeMs`. Where the field is a real birth time it
+ * falls strictly behind `ctime` as soon as anything touches the inode, and both
+ * of the paths this is asked about have been touched since they were made — the
+ * manifest is written twice by `recordClone` alone, and a clone directory gains
+ * `.git` immediately. Where the field is a stand-in for `ctime` the two
+ * readings are bit-identical by construction and the probe refuses to draw a
+ * conclusion. It can only prove the field real, never prove it fake, and a
+ * platform it cannot judge is simply one this comparison stays quiet about.
+ */
+function verifiedBirthTime(path: string): number | null {
+  let stat: ReturnType<typeof statSync>;
   try {
-    birth = statSync(path).birthtimeMs;
+    stat = statSync(path);
   } catch {
     return null;
   }
+  const birth = stat.birthtimeMs;
   // A birth time of 0 is the filesystem saying it does not keep one.
-  return Number.isFinite(birth) && birth > 0 ? birth : null;
+  if (!Number.isFinite(birth) || birth <= 0) return null;
+  return birth < stat.ctimeMs ? birth : null;
 }
 
 /** A plain regular file, never a symlink, a directory or a device. */

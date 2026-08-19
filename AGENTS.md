@@ -55,11 +55,38 @@ this gate exists to catch is legal, not functional: no test goes red and no user
 
 ## The gates
 
-`bun run gates` — typecheck, tests, claims, build. Ruling 62 settles what each is for, and CI runs
-all of them on **`windows-latest`, `ubuntu-latest` and `macos-latest`, where a failure on any one
+`bun run gates` — **typecheck → build → tests → claims**. Ruling 62 settles what each is for, and CI
+runs all of them on **`windows-latest`, `ubuntu-latest` and `macos-latest`, where a failure on any one
 blocks**. Ruling 12 makes Windows first class, and #5 measured `MAX_PATH` failing a clone at 198
 characters and `core.autocrlf=false` turning a one-line edit into a six-line whole-file diff —
 neither visible anywhere else.
+
+**`build` moved ahead of `test-gate` on 2026-08-20, and it is a trade rather than an improvement.**
+`bar/lib/item5-transcript.test.ts` drives `--binary dist/brigadier` through an argument parser that
+asserts its inputs exist on disk, and `dist/` is gitignored — so on a clean checkout that file cannot
+exist until `build` has run. It failed on all three platforms on `gates.yml`'s first ever execution
+and had only ever looked green because a local worktree carried a stale artifact. `build` is
+therefore a **prerequisite** of `test-gate`, not a peer that happened to come later.
+
+What that costs, said here rather than left to be discovered:
+
+- **A failing `build` now masks every test result.** Nothing is asked less of — all four still run and
+  each still blocks — but a test failure surfaces later, behind the slowest gate.
+- **The expensive gate runs before the informative one**, which is the wrong way round for anyone
+  reading a red CI log.
+- **On Windows this currently means no test signal at all.** Until 2026-08-20 `bun run build` could
+  not succeed there (`bun build --compile` writes `brigadier.exe`; `scripts/build.ts` looked for
+  `dist/brigadier` and refused), so under the new order the Windows leg dies at stage 2 and never
+  reaches the suite — where under the old order it at least ran the tests first. `scripts/build.ts`
+  and `scripts/license-gate.ts` now discover the artifact's real name, which removes the cause;
+  the ordering exposure remains, and Windows CI has yet to run green even once.
+
+The price is only worth paying because the alternative — a test that passes when the binary is absent
+— is a weakened check, and `test-gate` cannot skip (ruling 62 (c)). **This is a workaround, not the
+fix.** A unit test of a pure argument parser has no business depending on a build artifact; `bar/lib/`
+owns that fixture, and pointing it at a path that is always on disk would let the cheap gates go back
+in front. `package.json` and `.github/workflows/gates.yml` must be changed in the same commit as each
+other — a local `bun run gates` that runs a different order from CI cannot reproduce CI.
 
 - **`bun run test-gate`** fails on any **skipped or todo** test. A skipped test is not a passing test,
   and ruling 62 makes that a gate rather than a line in this file. It is ruling 48's *"a `SKIPPED`

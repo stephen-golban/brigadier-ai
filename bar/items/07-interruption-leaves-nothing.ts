@@ -46,7 +46,15 @@
  *      a named class carrying its reason and anything unrecognised fails; see
  *      `survivorClasses` below.
  *
- * WHAT THIS ITEM DELIBERATELY DOES NOT DEMAND (amendment §18). Ruling 38 says
+ * WHAT THIS ITEM DELIBERATELY DOES NOT DEMAND. RECORDED IN `BAR.md`, item 7,
+ * under *RECORDED 2026-08-20 — amendment §18* — which is where it now lives and
+ * where the reader should be sent. This comment cited "amendment §18" from the
+ * day it was written and NO SUCH SECTION EXISTED anywhere in the tree; the owner
+ * ruled on 2026-08-20 that a limit only present in the head of the item it
+ * limits is not in the open, and had it written into `BAR.md` following that
+ * file's own *When an item cannot be met* procedure — which item, why, and what
+ * promise is therefore unproven. Nothing about the product or about what this
+ * item asserts changed with that ruling. Ruling 38 says
  * every process brigadier causes to exist carries a marker in its COMMAND LINE,
  * and the operator's verify command structurally cannot: appending an argument
  * corrupts it — `bun test --brigadier-run=x` is not `bun test`. It is killed on
@@ -898,19 +906,24 @@ const item: BarItem = {
             `${excerpt(`${await streamWithin(interrupteeOut, 5_000)}${await streamWithin(interrupteeErr, 5_000)}`, 200)}; ` +
             `the killed run printed: ${excerpt(`${await streamWithin(victimOut, 5_000)}${await streamWithin(victimErr, 5_000)}`, 200)}`,
         );
-        // AMENDMENT §18, reported as a WEAKER guarantee rather than as an absence
-        // or an equivalence. Nothing above demands the marker on an operator's
-        // verify command, because appending an argument to somebody else's
-        // command line corrupts it, and a check that demanded it would fail
-        // against a correct product.
+        // Reported as a WEAKER guarantee rather than as an absence or an
+        // equivalence. Nothing above demands the marker on an operator's verify
+        // command, because appending an argument to somebody else's command line
+        // corrupts it, and a check that demanded it would fail against a correct
+        // product. The hole itself is RECORDED IN `BAR.md`, item 7, under
+        // *RECORDED 2026-08-20 — amendment §18*; this row is the item saying the
+        // same thing in its own output, so a reader of the report does not have
+        // to go and find it.
         checks.note(
-          "ruling 38's one hole (amendment §18)",
+          "ruling 38's one hole (recorded in BAR.md, item 7 — RECORDED 2026-08-20)",
           "an operator's verify command is spawned WITHOUT the command-line marker — `bun test --brigadier-run=x` is not " +
             "`bun test` — so the sweep cannot match it. It is killed on its own timeout BY THE PROCESS THAT STARTED IT, " +
             "which is strictly weaker than the sweep and fails in exactly the case this item drives: a SIGKILLed " +
             "orchestrator kills nothing on any timeout. What remains for such a process is the working-directory link, " +
             "and only while the run root is still there. This item's plan carries no verify command, so nothing above " +
-            "measures that path; it is named here rather than left for a reader to discover",
+            "measures that path; it is named here rather than left for a reader to discover, and it is written down in " +
+            "`BAR.md` under item 7 rather than only in this harness's own head — it was cited for rounds as `amendment §18`, " +
+            "a section that existed nowhere, until the owner had it recorded on 2026-08-20",
         );
         live = { kind: "ran", checks };
       }

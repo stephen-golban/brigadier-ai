@@ -250,12 +250,52 @@ const item: BarItem = {
     const profiles = parseAgentsTable(agents.stdout);
     const target = plantableAgent(profiles);
     if (!target) {
-      return {
-        outcome: "FAIL",
-        did: did.join("; "),
-        observed: `\`brigadier agents\` exit ${agents.code}; parsed ${profiles.length} profile rows; stdout: ${excerpt(agents.stdout, 300)}; stderr: ${excerpt(agents.stderr, 200)}`,
-        reason: "could not read a plantable agent out of `brigadier agents`, so the item has no ground truth to plant against",
-      };
+      // THIS PATH GOES THROUGH `combine` LIKE EVERY OTHER ONE, and until
+      // 2026-08-19 it did not: it returned a bare `BarResult` literal with no
+      // `halves` key, the only such return in any of the thirteen items. The
+      // outcome was right and the PROVENANCE was missing — a reader of the
+      // report could not see which half of item 1 had decided, and the
+      // reporting layer had one result it could not describe the way it
+      // describes the other twelve.
+      //
+      // WHICH HALF OWNS THIS FAILURE: the credential-free one. Nothing here has
+      // touched a vendor. `brigadier agents` prints the artifact's own
+      // launch-profile table, which it knows without an account, and the
+      // failure is that the table did not name a profile this harness can plant
+      // against. A bare CI machine reaches exactly this state or does not
+      // reach it, and a credentialed one would learn nothing more. Routing it
+      // through the credential-free half is also what makes it BLOCK: `combine`
+      // asks that half first, so this cannot be masked later by a missing
+      // credential.
+      //
+      // WHY THE LIVE HALF IS `none` AND NOT `skipped` OR `missing`:
+      //   `skipped` renders "requires real vendor agents … this BLOCKS exactly
+      //   as a FAIL does (ruling 48)" and grades the live half `SKIPPED`. That
+      //   would state that a credential was the missing ingredient. No
+      //   credential was ever needed — item 1 is one of the three items with
+      //   `requiresLive: false` — so it would be a false claim about the world,
+      //   and it would change the outcome from FAIL to SKIPPED.
+      //   `missing` says the ARTIFACT DOES NOT IMPLEMENT the live half, and
+      //   wants a `FeatureProbe` to prove it. Item 1 has no live half to be
+      //   missing, and no probe was taken; what is absent is this harness's
+      //   ground truth, not a product feature.
+      //   `none` is the true statement, and it is the SAME statement the
+      //   successful path makes at the bottom of this function: everything item
+      //   1 proves is checkable without vendor credentials. The premise for
+      //   proving it was absent, which is a credential-free FAIL, and the live
+      //   half is no more present or absent than it ever is here.
+      //
+      // The row is an `ERROR —` per the vocabulary in `bar/lib/checks.ts`: a
+      // premise broke, so the item never reached any of the twelve assertions
+      // `judgeDetection` names. It is `expect(…, false, …)` and never `note`,
+      // which stamps `ok: true` and would gate nothing.
+      const premise = new Checks();
+      premise.expect(
+        "ERROR — could not read a plantable agent out of `brigadier agents`, so the item has no ground truth to plant against",
+        false,
+        `\`brigadier agents\` exit ${agents.code}; parsed ${profiles.length} profile rows; stdout: ${excerpt(agents.stdout, 300)}; stderr: ${excerpt(agents.stderr, 200)}`,
+      );
+      return combine(did, premise, { kind: "none" });
     }
 
     const empty = ensureDir(join(ctx.workdir, "empty-path"));

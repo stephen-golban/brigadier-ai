@@ -93,7 +93,10 @@ async function gitCode(cwd: string, ...args: string[]): Promise<number> {
  * a `work` branch checked out from it, and no `origin`.
  *
  * The manifest entry is written BEFORE the directory exists, because ruling 15
- * (b) says so and `proveDeletableDirectory` checks the birth times.
+ * (b) says so — and `recordClone` is what creates it, so the entry records the
+ * inode `proveDeletableDirectory` later matches the directory against. `git
+ * clone` accepts an existing EMPTY directory, which is what it is handed here
+ * and in `prepareClone`.
  */
 async function makeClone(item: number): Promise<string> {
   const dir = join(runRoot, RUN_DIR, runId, String(item));

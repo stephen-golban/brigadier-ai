@@ -338,13 +338,15 @@ describe("ruling 63's explicit discharge is the only thing that releases a retai
     // independent of it, and a missing marker refuses either way.
     const runId = unique("discharge3");
     const dir = join(runRoot, RUN_DIR, runId, "1");
-    mkdirSync(join(dir, ".git"), { recursive: true });
-    writeFileSync(join(dir, "work.txt"), "no marker on this one\n");
+    mkdirSync(join(runRoot, RUN_DIR, runId), { recursive: true });
+    // `recordClone` creates the directory it records, so it goes first.
     recordClone(
       manifestPath(runRoot, RUN_DIR, runId),
       { runId, runRoot, createdAt: Date.now(), clones: [] },
       { item: 1, dir, createdAt: Date.now() },
     );
+    mkdirSync(join(dir, ".git"), { recursive: true });
+    writeFileSync(join(dir, "work.txt"), "no marker on this one\n");
     appendEvent(recordPath(runRoot, runId), { type: "run-started", at: 1, runId, repo, runRoot, pid: deadPid });
     dischargeRun(runRoot, runId, "operator@example.com");
 
@@ -513,13 +515,15 @@ describe("the sweep cannot grant itself permission", () => {
     // state file records intent and the world records fact.
     const runId = unique("selfgrant");
     const dir = join(runRoot, RUN_DIR, runId, "1");
-    mkdirSync(join(dir, ".git"), { recursive: true });
-    writeFileSync(join(dir, "work.txt"), "no marker, so the delete is refused\n");
+    mkdirSync(join(runRoot, RUN_DIR, runId), { recursive: true });
+    // `recordClone` creates the directory it records, so it goes first.
     recordClone(
       manifestPath(runRoot, RUN_DIR, runId),
       { runId, runRoot, createdAt: Date.now(), clones: [] },
       { item: 1, dir, createdAt: Date.now() },
     );
+    mkdirSync(join(dir, ".git"), { recursive: true });
+    writeFileSync(join(dir, "work.txt"), "no marker, so the delete is refused\n");
     appendEvent(recordPath(runRoot, runId), { type: "run-started", at: 1, runId, repo, runRoot, pid: deadPid });
     const head = await git(repo, "rev-parse", "HEAD");
     await git(repo, "update-ref", itemRef(runId, 1), head);
@@ -658,8 +662,9 @@ describe("ruling 63, the direction that destroys the operator's work", () => {
     const runDir = join(runRoot, RUN_DIR, runId);
     const dir = join(runDir, String(item));
     mkdirSync(runDir, { recursive: true });
-    // The manifest is written BEFORE the directory exists. Ruling 15 (b), and
-    // `proveDeletableDirectory` checks the ordering against birth times.
+    // The manifest is written BEFORE the directory exists — ruling 15 (b) — and
+    // `recordClone` is what creates it, so the entry can record the inode
+    // `proveDeletableDirectory` later matches the directory against.
     recordClone(
       manifestPath(runRoot, RUN_DIR, runId),
       { runId, runRoot, createdAt: Date.now(), clones: [] },

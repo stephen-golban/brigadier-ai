@@ -72,6 +72,131 @@ export interface SlotEvent {
 export const INITIAL_OUTCOME = "not-run";
 
 /**
+ * THE PRODUCT'S DETAIL LINE, TRANSCRIBED — and the classifier that keeps every
+ * hand-written fixture in step with it.
+ *
+ * `bar/` imports nothing from `src/`, so every fact this harness holds about the
+ * product's rendering is copied by hand, and a hand copy goes stale silently.
+ * It already did: `DETAIL_SIGIL` was added to `src/report/run-report.ts` in
+ * round 16 to stop a checker's own output forging another item's head line, and
+ * two fixtures in `item11-structure.test.ts` went on writing detail lines
+ * without it. A fixture that disagrees with the product tests a report the
+ * product does not write.
+ *
+ * The shape, read off `src/report/run-report.ts`'s working tree on 2026-08-20:
+ * `renderItem` pushes each check at SIX spaces and then, for a blocking check
+ * with a detail, `details.lines(check.detail, "          ")` — TEN spaces — and
+ * `DetailWriter.lines` prefixes `DETAIL_SIGIL` to every one of those lines,
+ * unconditionally, cut or uncut. So the rule is positional: a line at exactly
+ * ten spaces followed by a non-space is an item-list detail, and the product
+ * always writes `| ` next.
+ *
+ * CLASSIFY WITHIN, OPT IN AT THE EDGE — and the second half is the honest
+ * qualifier on the first. `unsigiledDetailLines` is handed a whole report and
+ * decides line by line, keeping no list of lines to remember; but the classifier
+ * only ever sees what someone routed through `transcribedReport`, so its REAL
+ * COVERAGE is "the fixtures built with it", which today means the two in
+ * `item11-structure.test.ts`. Identical unsigil'd ten-space transcriptions exist
+ * uncovered at `bar/lib/item13-cost.test.ts:309`, `:702` and `:719`. Calling
+ * this "classify, do not whitelist" without that sentence oversells it.
+ *
+ * `transcribedReport` THROWS rather than returns — a stale fixture must take its
+ * test file down at load, not be quietly measured.
+ *
+ * EXACTLY WHAT IT FIRES ON, AND EXACTLY WHAT THAT IS WORTH. The rule is TEN
+ * SPACES FOLLOWED BY A NON-SPACE, and the "followed by" half is load-bearing
+ * rather than tidy. An earlier version of this note claimed the classifier was
+ * "capable of a MISS and not of a false accusation" and that was FALSE:
+ * `src/queue/admit.ts` writes its continuation prose at THIRTEEN spaces
+ * (`:291-292`, `:322-323`, `:335`), a prefix-match on ten spaces swallows those,
+ * and fixtures do splice admission lines into report strings — so the guard
+ * could have thrown on bytes the product genuinely writes. Narrowed on
+ * 2026-08-20, and the claim is now measured rather than asserted: `grep -rE
+ * '"          [^ ]' src/` MEASURED against `grep (BSD) on 2026-08-20` returns
+ * ONE emitting site in the whole product, `run-report.ts:246`'s detail indent.
+ *
+ * So the honest statement of the property is: the classifier fires on a position
+ * that, in TODAY'S tree, no product writer but the item-list detail occupies.
+ * That is a measurement over one tree, not a guarantee over every future one — a
+ * new writer that chose exactly ten spaces would be accused wrongly, and this
+ * paragraph is where that lands.
+ *
+ * AND IT IS BLIND AT SIX. `renderRun`'s merged-result and run-level tails carry
+ * check details too and indent them SIX spaces (`details.lines(check.detail,
+ * "      ")`) while indenting their own check lines TWO. Six is therefore a
+ * detail line in a tail and a CHECK line in the item list, and no rule reading
+ * one line at a time can separate them — that needs the section boundaries
+ * transcribed as well. The classifier says nothing at six and misses those. No
+ * fixture under `bar/lib/` renders a tail detail today; the one that first does
+ * will need this widened.
+ */
+export const DETAIL_INDENT = "          ";
+
+/** `DETAIL_SIGIL` in `src/report/run-report.ts`, which `^\s*<id>:\s` can never match. */
+export const DETAIL_SIGIL = "| ";
+
+/**
+ * Is this line at the item-list detail position? Ten spaces and then something
+ * that is not another space — `admit.ts`'s thirteen-space prose is NOT this.
+ */
+export function atDetailIndent(line: string): boolean {
+  return line.startsWith(DETAIL_INDENT) && !line.startsWith(`${DETAIL_INDENT} `) && line.length > DETAIL_INDENT.length;
+}
+
+/** Lines a report renders at the detail indent WITHOUT the product's sigil. */
+export function unsigiledDetailLines(report: string): string[] {
+  return report.split("\n").filter((line) => atDetailIndent(line) && !line.startsWith(`${DETAIL_INDENT}${DETAIL_SIGIL}`));
+}
+
+/**
+ * The head of ruling 58's overflow sentence AS BRIGADIER SPELLS IT, transcribed
+ * from `src/report/run-report.ts`'s working tree on 2026-08-20:
+ *
+ *   `this report is OVER the ${HOST_REPORT_TOKEN_CEILING}-token ceiling${share} because ${why}.`
+ *
+ * FOR CHECKING FIXTURES, NOT FOR CHECKING IMPLEMENTATIONS — see the note in
+ * `judgeOverride`. A fixture claiming to be brigadier's output must spell it
+ * brigadier's way or it is testing a report nothing writes; an implementation
+ * satisfying ruling 58 may state the overflow in its own words, and
+ * `bar/fakes/honest.ts` does.
+ *
+ * Anchored at column zero because that is where run-level sentences go, and
+ * `src/gate/run.ts` carries a checker's own words into details ten spaces in.
+ * Everything after `ceiling` is left free: it is `${share}` and `${why}`, both
+ * interpolated. `\d+` and not `\d[\d,]*` — the ceiling is interpolated as a bare
+ * number, so a thousands separator is drift rather than a spelling choice, and
+ * that separator is exactly what the stale fixture had.
+ */
+export const OVER_CEILING_HEAD = /^this report is OVER the \d+-token ceiling\b/;
+
+/** One rendered detail line, spelled the one way the product spells it. */
+export function detailLine(text: string): string {
+  return `${DETAIL_INDENT}${DETAIL_SIGIL}${text}`;
+}
+
+/**
+ * A fixture asserting that it is what the product renders. Throws if it is not.
+ *
+ * Deliberately NOT applied to strings that are hand-forged non-product bytes —
+ * a checker's raw output, or the corpus of near-misses `itemHead` is
+ * differentiated against. Those are inputs, not transcriptions, and the
+ * difference is declared by which constructor built them rather than by a list
+ * kept somewhere else.
+ */
+export function transcribedReport(lines: readonly string[]): string {
+  const report = lines.join("\n");
+  const stale = unsigiledDetailLines(report);
+  if (stale.length > 0) {
+    throw new Error(
+      `fixture drift: ${stale.length} line(s) at the product's detail indent without its ` +
+        `${JSON.stringify(DETAIL_SIGIL)} sigil — ${stale.map((line) => JSON.stringify(line)).join(", ")}. ` +
+        "`src/report/run-report.ts` emits the sigil unconditionally; the fixture is the stale side",
+    );
+  }
+  return report;
+}
+
+/**
  * The block the report devotes to one item: its head line and everything under
  * it, up to the next item or the end of the item list.
  *
@@ -363,6 +488,26 @@ export function judgeOverride(o: OverrideObservations): Checks {
   // statement still passed. The product writes its run-level sentences
   // unindented and every check detail ten spaces in, so the statement is looked
   // for where the product makes it rather than anywhere in the bytes.
+  //
+  // AND DELIBERATELY NOT ANCHORED ON BRIGADIER'S SENTENCE, which was considered
+  // on 2026-08-20 and rejected with a reason. `OVER_CEILING_HEAD` transcribes
+  // the product's exact opening and it does catch the drift that actually
+  // happened — but THIS check is a BAR check, and a bar check is the contract
+  // every honest implementation must satisfy, not brigadier's phrasing. MEASURED
+  // on 2026-08-20: `bar/fakes/honest.ts:801`, the harness's own honest
+  // implementation, states the overflow as *"this report is OVER ruling 58's
+  // 2,000-token ceiling: the blocking items alone cost …"* — column zero,
+  // naming the number, nothing dropped, ruling 58 fully satisfied, and NOT
+  // brigadier's wording. Anchoring here would fail the positive control that
+  // exists to prove this bar is passable, which is the bar measuring a vendor
+  // rather than a promise.
+  //
+  // So the exact-sentence transcription is asserted where it belongs — against
+  // the FIXTURE, in `item11-structure.test.ts`, where a stale transcription is
+  // the defect — and the contract stays stated as a contract: at column zero,
+  // because `src/gate/run.ts` carries a checker's own words into details ten
+  // spaces in and a verify command that says *over* and *ceiling* was feeding
+  // this detector its own needle.
   const said = o.report
     .split("\n")
     .filter((line) => /^\S/.test(line) && /over\b/i.test(line) && /ceiling/i.test(line))

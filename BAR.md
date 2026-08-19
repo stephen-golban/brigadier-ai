@@ -241,6 +241,28 @@ done real work, and it was unrecoverable. And a **second** interrupt during the 
 signal** rather than exiting with an invented code, so the process's status is genuinely
 signal-terminated.
 
+**RECORDED 2026-08-20 — amendment §18, the one hole in ruling 38, written down where a reader looks.**
+Owner's decision this date, under this document's *When an item cannot be met*. `bar/items/07-…` had
+cited *"amendment §18"* for this hole since it was written, and **no such section existed anywhere** —
+not in this file, not in either measurement amendment. A limit that is only in the head of the item it
+limits is not in the open, so it is here instead:
+
+- **Which item.** This one, item 7. **What it deliberately does not demand:** ruling 38 says every
+  process brigadier causes to exist carries a marker in its **command line**, and an operator's verify
+  command structurally cannot. Appending an argument corrupts it — `bun test --brigadier-run=x` is not
+  `bun test` — so the sweep **cannot match it**, whatever the product does.
+- **Why nothing here is changed to cover it.** Such a process is killed on its own timeout **by the
+  process that started it**. That is a **strictly weaker** guarantee than the sweep and it fails in
+  **exactly the case this item drives**: a SIGKILLed orchestrator kills nothing on any timeout. What is
+  left for that process is ruling 38's working-directory link, and only while the run root is still
+  there. A check demanding the marker would fail against a correct product, so the item reports the
+  weakness **as a weakness** — never as an absence and never as an equivalence.
+- **The promise therefore unproven.** This item's plan **carries no verify command**, so nothing here
+  measures that path at all. That an interruption leaves nothing behind is proven for processes
+  brigadier spawns and marked; it is **unproven for an operator's verify command**, on every platform.
+  Closing it needs a plan that runs one and a mechanism that does not corrupt somebody else's command
+  line — neither is invented here.
+
 *Rulings 15, 38, 5, 63.* Ruling 38 promoted the sweep from crash-recovery to *the* containment
 mechanism precisely because the job object is opt-out by design and brigadier cannot fix it. An item
 that only kills a well-behaved child would pass on a product that leaks every real one. Ruling 63
@@ -326,11 +348,39 @@ machine that has never run it. Nothing else in this item is weakened, and **the 
 strike in its own output** rather than omitting it — a `SKIPPED` clause would block a tag exactly as a
 `FAIL` does, and a silent deletion is not available to anyone.
 
-**The warm figure is neither struck nor adopted.** Amendment §17 proposes ≤ 20 ms against a measured
-16.13 ms (floor-corrected, minimum of N=40); the owner has not ruled, so the item prints it as a
-proposal and never as a gate. **No budget was adjusted to fit a measurement.** The one shape that
-would clear the original number — a 337 KB JS bundle run by an installed `bun`, measured **18.9 ms
-cold** — is an architecture change against ruling 5, not a tuning, and is not adopted here.
+**STRUCK, in the open — the ≤10 ms warm-start clause.** Owner's decision, 2026-08-20, under this
+document's *When an item cannot be met*, by the same procedure and on the same grounds as the cold
+clause above. Three reasons, all already in the record:
+
+- **It was never measured on this product.** The figure enters this project as **one unsourced
+  sentence** at `MEASUREMENT-SESSION.md:140`, commit `7e6a547`, under the heading *"Already measured
+  — do not redo"* — the same sentence and the same commit that carried the struck 70 ms cold figure.
+  It is v1's number, and v1's history contains no benchmark that produces it.
+- **What this artifact actually costs is known and recorded.** MEASURED 2026-08-19 on darwin 25.5.0
+  at load average 0.76–0.87 with nothing else running: raw min **15.27 ms** − a **1.28 ms** spawn
+  floor = **13.99 ms corrected**, distribution raw p10 15.40 / median 15.67 / max 16.88 ms. A run
+  MEASURED 2026-08-19 at higher load read **15.01 ms** corrected. Contention on this artifact was
+  MEASURED at **0.65 ms**, so the gap is not noise.
+- **The figure has been recorded against three different artifacts** — **11.29 ms**, **16.13 ms**,
+  **13.99 ms** — and what changed between them was never established. That sequence is therefore
+  neither a regression nor an improvement; it is three measurements of three things.
+
+**The promise therefore unproven:** that brigadier is cheap enough to invoke **repeatedly inside a
+loop**, which is what a warm figure is about. It is unproven on every platform, not merely unmet, and
+it is a different promise from the cold clause's — that one is about a first run on a machine that
+has never seen the binary.
+
+**This is a withdrawal, not a relaxation, and the measurement survives it.** No number was moved to
+fit a measurement. **Amendment §17's proposed ≤ 20 ms is NOT adopted** — a clause withdrawn because
+its figure has no provenance cannot be repaired by installing a second figure picked to clear the
+last reading, and 20 ms against a measured 16.13 ms is exactly that shape. Nothing replaces it. The
+one shape that would have cleared the original number — a 337 KB JS bundle run by an installed
+`bun`, measured **18.9 ms cold** — is an architecture change against ruling 5, not a tuning, and is
+not adopted either. **The item still measures and prints the warm figure**, with its method, its
+floor correction, its distribution and its provenance, and asserts that a figure was actually
+obtained — a number that stops being printed is a number nobody will ever revisit. What is gone is
+the comparison: no threshold is applied to it and no margin is stated beside it. And as with the
+cold clause, **the item prints the strike in its own output** on a pass as well as a failure.
 
 **And the hook surface is verified by name, not by count** (ruling 60): after install,
 `claude plugin details brigadier` names `PreCompact`. Then the negative: a `hooks.json` carrying one

@@ -98,6 +98,103 @@ describe("ruling 14: the lowest wins and the report names which", () => {
     }
   });
 
+  test("MEASURED NEGATIVE: `feasibility` is the answer exactly when RAM is the least", () => {
+    // The property `bar/items/04-fanout-isolates.ts` drives through the
+    // compiled binary, asserted here as arithmetic and in BOTH directions.
+    // Ruling 54's sentence is worth printing only because it is true, so the
+    // filter must never be named when something else was lower, and must always
+    // be named when nothing else was.
+    const legalityCap = Number.MAX_SAFE_INTEGER; // `LEGALITY_UNBOUNDED` at admission
+    for (const totalMemoryBytes of [8, 10, 16, 24, 64, 512].map((g) => g * GB)) {
+      const ram = feasibilityCap(true, totalMemoryBytes);
+      for (const itemCount of [1, 3, 6, 8, 64, 512]) {
+        for (const desirabilityCap of [1, 2, 3, 65_536]) {
+          const out = planFanOut({ itemCount, legalityCap, hostFirst: true, desirabilityCap, totalMemoryBytes });
+          if (out.boundBy === "feasibility") {
+            // Never claimed without cause.
+            expect(ram).toBeLessThanOrEqual(Math.min(itemCount, desirabilityCap));
+            expect(out.workers).toBe(ram);
+          }
+          // Never withheld when it is the only cause.
+          if (ram < itemCount && ram < desirabilityCap) expect(out.boundBy).toBe("feasibility");
+        }
+      }
+    }
+  });
+
+  test("the bands: which hosts can tell ruling 54's three causes apart, and which cannot", () => {
+    // The sizing rule `bar/items/04-fanout-isolates.ts` drives the bar with,
+    // verified here against the real filter: ONE item for `item-count`, and a
+    // `cap + 2`-item plan with a budget of `cap - 1` for `desirability`. `bar/`
+    // imports nothing from `src/`, so the rule is pinned on both sides of that
+    // wall — `planTheOtherTwoDrives` holds the same three numbers and
+    // `bar/lib/item4-fanout.test.ts` pins them there.
+    //
+    // MEASURED with `feasibilityCap` on 2026-08-20. The bands matter because
+    // GitHub's own runner table, read the same day, gives `macos-latest` 7 GB
+    // and a private repository's `ubuntu-latest` 8 GB — a cap of ZERO — while a
+    // public one gets 16 GB. An item that assumed a one-item plan was under the
+    // cap would go red on ordinary hardware.
+    const legalityCap = Number.MAX_SAFE_INTEGER; // `LEGALITY_UNBOUNDED` at admission
+    const bands: Array<[number, number]> = [];
+    for (const gib of [7, 8, 10, 12, 13, 14, 16, 24, 64]) {
+      const totalMemoryBytes = gib * GB;
+      const cap = feasibilityCap(true, totalMemoryBytes);
+      bands.push([gib, cap]);
+      const base = { legalityCap, hostFirst: true, totalMemoryBytes };
+      if (cap < 2) {
+        // The band the bar refuses to grade in, asserted rather than skipped:
+        // one item is not below a cap of one or zero, so RAM binds here too and
+        // the three causes are genuinely indistinguishable on such a host.
+        expect(planFanOut({ ...base, itemCount: 1 }).boundBy).toBe("feasibility");
+        continue;
+      }
+      expect(planFanOut({ ...base, itemCount: 1 }).boundBy).toBe("item-count");
+      expect(planFanOut({ ...base, itemCount: cap + 2, desirabilityCap: cap - 1 }).boundBy).toBe("desirability");
+      expect(planFanOut({ ...base, itemCount: cap + 2, desirabilityCap: 65_536 }).boundBy).toBe("feasibility");
+    }
+    // The bands themselves, so a change to ruling 54's arithmetic shows up as a
+    // number rather than as a distant item going red.
+    expect(bands).toEqual([
+      [7, 0],
+      [8, 0],
+      [10, 1],
+      [12, 1],
+      [13, 2],
+      [14, 2],
+      [16, 3],
+      [24, 5],
+      [64, 19],
+    ]);
+  });
+
+  test("the RAM bound is reachable from the operator's own inputs on THIS machine", () => {
+    // This is why the bar never has to tell the product something false about
+    // the machine to drive ruling 54's third sentence: no `totalMemoryBytes` is
+    // passed here, so the number is this host's own `totalmem()`.
+    //
+    // Every assertion below is written to hold on ANY host, because this file
+    // runs in `gates.yml` on three runners whose memory differs by a factor of
+    // two. A test that only holds above 13 GiB is a test that fails a green
+    // build on `macos-latest`.
+    const real = feasibilityCap(true);
+    const legalityCap = Number.MAX_SAFE_INTEGER;
+    const base = { legalityCap, hostFirst: true };
+    const bound = planFanOut({ ...base, itemCount: real + 1, desirabilityCap: 65_536 });
+    expect(bound.boundBy).toBe("feasibility");
+    expect(bound.workers).toBe(real);
+    // And the same two operator inputs, moved the other way. BOTH branches
+    // assert: on a host with room for two workers the answer leaves RAM, and on
+    // one without it the answer correctly stays — a branch that merely skipped
+    // is a branch nobody notices going wrong.
+    if (real >= 2) {
+      expect(planFanOut({ ...base, itemCount: 1, desirabilityCap: 65_536 }).boundBy).toBe("item-count");
+      expect(planFanOut({ ...base, itemCount: real + 1, desirabilityCap: real - 1 }).boundBy).toBe("desirability");
+    } else {
+      expect(planFanOut({ ...base, itemCount: 1, desirabilityCap: 65_536 }).boundBy).toBe("feasibility");
+    }
+  });
+
   test("a tie prefers the more specific explanation over `item-count`", () => {
     const out = planFanOut({ ...base, itemCount: 3, desirabilityCap: 3 });
     expect(out.workers).toBe(3);

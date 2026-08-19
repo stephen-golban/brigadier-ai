@@ -81,11 +81,26 @@ Report the `bun` and `git` versions you actually got. Every claim in this projec
 bun run gates
 ```
 
-That is `typecheck` → `test-gate` → `claims` → `build`, and it is expected to take a while.
+That is `typecheck` → **`build`** → `test-gate` → `claims`, and it is expected to take a while.
+
+**`build` is stage 2, not stage 4, as of 2026-08-20**, because a test drives `--binary dist/brigadier`
+and `dist/` is gitignored, so the artifact has to exist before the suite runs. The cost lands hardest
+on you: **if `build` fails you get no test results at all.** Should that happen, run `bun run
+test-gate` on its own afterwards and report it separately — the test signal is the more informative
+half and it must not be lost to a build failure.
 
 Report, for each of the four stages: pass or fail, and **the actual error text** on failure — not a
 summary of it. Failures here are the point of the exercise. If `build` succeeds you have
 `dist/brigadier.exe` (or `dist/brigadier` — report which), and everything below needs it.
+
+On the name: `bun build --compile` appends `.exe` for a Windows target whatever `--outfile` it is
+handed — MEASURED against `bun 1.3.14` on `darwin 25.5.0` on 2026-08-20 by cross-compiling with
+`--target=bun-windows-x64`. `scripts/build.ts` used to ask for `dist/brigadier` and then refuse
+because `dist/brigadier` was absent, so **`bun run build` could not succeed on Windows at all**, and
+ruling 47's licence gate never ran there. Both it and `scripts/license-gate.ts` now stat both names
+and use whichever the compiler actually wrote. **That fix has never executed on Windows — you are its
+first test.** If `BUILD REFUSED` still appears, paste the whole message: it names every candidate it
+looked under.
 
 Specifically worth watching, none of it ever exercised:
 

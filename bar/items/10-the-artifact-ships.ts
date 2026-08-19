@@ -11,15 +11,25 @@
  * the point of ruling 47's gate — the module graph is a statement of intent and
  * the binary is what ships.
  *
- * **One clause of this item is STRUCK, and it is struck in the open.** The
- * `≤70 ms cold-start` budget is withdrawn by the owner: it was never measured,
- * and it is unreachable at this artifact shape. Nothing replaces it, no budget
- * has been adjusted to fit a measurement, and the item does not go `SKIPPED` —
- * `BAR.md`'s closing rule makes a `SKIPPED` item block a tag exactly as a `FAIL`
- * does, so the withdrawal is PRINTED as a line in this item's own output and the
- * verdict turns on the halves that remain. `STRUCK_COLD_START` below carries the
- * reason and the numbers, and `judgeArtifact` prints it on every run, pass or
- * fail.
+ * **TWO clauses of this item are STRUCK, and both are struck in the open.** The
+ * `≤70 ms cold-start` budget was withdrawn by the owner on 2026-08-19: it was
+ * never measured, and it is unreachable at this artifact shape. The `≤10 ms
+ * warm-start` budget was withdrawn on 2026-08-20 on the same grounds — it was
+ * never measured on this product either. Nothing replaces either of them, no
+ * budget has been adjusted to fit a measurement, and the item does not go
+ * `SKIPPED` — `BAR.md`'s closing rule makes a `SKIPPED` item block a tag exactly
+ * as a `FAIL` does, so both withdrawals are PRINTED as lines in this item's own
+ * output and the verdict turns on the halves that remain. `STRUCK_COLD_START`
+ * and `STRUCK_WARM_START` below carry the reasons and the numbers, and
+ * `judgeArtifact` prints both on every run, pass or fail.
+ *
+ * **The warm strike withdrew the CLAUSE and not the MEASUREMENT.** The binary is
+ * still timed, and the figure is still printed with its full method, its floor
+ * correction, its distribution and its provenance — a number that stops being
+ * printed is a number nobody will ever revisit. What is gone is the comparison:
+ * no threshold is applied to it and no margin is stated beside it. That the
+ * measurement was actually TAKEN is itself asserted, so "we no longer gate on
+ * the value" cannot quietly become "we no longer time the binary".
  *
  * The instrument matters more than the assertion here, and three of the checks
  * below were rebuilt because the old ones could not fail:
@@ -107,9 +117,27 @@ import type { BarContext, BarItem, BarResult } from "../types.ts";
  *   rather than a definitional one.
  *
  * There is deliberately no `COLD_START_BUDGET_MS`. See `STRUCK_COLD_START`.
+ *
+ * **And since 2026-08-20 there is deliberately no `WARM_START_BUDGET_MS`
+ * either.** See `STRUCK_WARM_START`. Everything above about WHICH statistic —
+ * the minimum, floor-corrected, at N=40 — still governs, because the item still
+ * measures and reports the figure; it simply no longer compares it with
+ * anything. The paragraph above arguing that 10 ms was reachable with ~3.5 ms of
+ * headroom is left standing on purpose: it was the evidence the clause was
+ * argued over, and a strike must not take the evidence about it out of the
+ * record.
  */
 export const SIZE_BUDGET_BYTES = 63 * 1_048_576;
-export const WARM_START_BUDGET_MS = 10;
+/**
+ * The number that WAS the warm budget, kept only so the strike can name what it
+ * struck and so the margins already in the record stay re-derivable.
+ *
+ * IT GATES NOTHING, and it is deliberately not called a budget. `judgeArtifact`
+ * never compares a measured figure with it; `bar/item10-identity.test.ts` drives
+ * a figure far outside it and requires the item to pass. Amendment §17's proposed
+ * 20 ms was NOT adopted in its place either — nothing was.
+ */
+export const WITHDRAWN_WARM_BUDGET_MS = 10;
 /** Where the minimum stopped moving. See the measurement above. */
 export const START_SAMPLES = 40;
 
@@ -141,6 +169,12 @@ export const START_SAMPLES = 40;
  * a figure to a build. So the sequence is not a regression and it is not an
  * improvement — it is three measurements of three things. Anyone tempted to read
  * a trend has to establish what the artifact was at each point first.
+ *
+ * `marginOverBudgetMs` is kept as HISTORY and is no longer a verdict on
+ * anything: it is how far this figure stood from the ≤10 ms clause on the day
+ * that clause was still in force. The clause was withdrawn on 2026-08-20 and
+ * nothing replaced it, so no margin is printed beside a measured figure any
+ * more. The field survives because a strike must not erase the number it struck.
  */
 export const QUIET_WARM_MEASUREMENT = {
   measuredOn: "2026-08-19, darwin 25.5.0, load average 0.76–0.87, nothing else running",
@@ -197,6 +231,63 @@ export function struckLine(): string {
     `STRUCK — "${STRUCK_COLD_START.clause}" is WITHDRAWN by the owner and nothing replaces it. ` +
     `Why: ${STRUCK_COLD_START.why}; ${STRUCK_COLD_START.measured}. ` +
     "The clause is struck, not relaxed — no budget in this item has been adjusted to fit a measurement."
+  );
+}
+
+/**
+ * The SECOND withdrawn clause, printed rather than deleted.
+ *
+ * Owner's decision, 2026-08-20, under `BAR.md`'s *When an item cannot be met* —
+ * the same procedure that struck the cold-start clause on 2026-08-19, on the
+ * same grounds: the number was never measured on this product.
+ *
+ * It is a WITHDRAWAL, not a relaxation. No number was moved to fit a
+ * measurement. In particular amendment §17's proposed 20 ms is NOT adopted: a
+ * clause withdrawn because its figure has no provenance cannot be repaired by
+ * installing a second figure chosen to clear the last reading, and 20 ms against
+ * a measured 16.13 ms is exactly that shape. Nothing replaces it.
+ *
+ * WHAT IS NOT WITHDRAWN IS THE MEASUREMENT. `judgeArtifact` still times the
+ * artifact, still prints the method, the floor correction, the distribution and
+ * the provenance, and still ASSERTS that a figure was obtained. A number that
+ * stops being printed is a number nobody will ever revisit.
+ *
+ * `unproven` names the promise that goes with a warm figure, and it is a
+ * different promise from the cold one. Cold start is about the first run on a
+ * machine that has never seen the binary; warm start is about whether brigadier
+ * is cheap enough to invoke repeatedly inside a loop. Only the second is at
+ * stake here.
+ */
+export const STRUCK_WARM_START = {
+  clause: "start-up within the measured budget — the ≤10 ms warm start",
+  why:
+    "the number was never measured on this product. It enters this project as ONE unsourced sentence at " +
+    'MEASUREMENT-SESSION.md:140, commit 7e6a547, under the heading "Already measured — do not redo" — the same ' +
+    "sentence and the same commit that carried the struck 70 ms cold figure. It is v1's number, and v1's history " +
+    "contains no benchmark that produces it",
+  measured:
+    "and what this artifact actually costs is known and recorded rather than inferred. MEASURED 2026-08-19 on " +
+    "darwin 25.5.0 at load average 0.76–0.87 with nothing else running: raw min 15.27 ms − a 1.28 ms spawn floor " +
+    "= 13.99 ms corrected, distribution raw p10 15.40 / median 15.67 / max 16.88 ms. A run MEASURED 2026-08-19 at " +
+    "higher load read 15.01 ms corrected, and contention on this artifact was MEASURED at 0.65 ms, so the gap is " +
+    "not noise. The figure has also been recorded against THREE DIFFERENT ARTIFACTS — 11.29 ms, 16.13 ms and " +
+    "13.99 ms — and what changed between them was never established, so that sequence is neither a regression nor " +
+    "an improvement",
+  unproven:
+    "this item now asserts NOTHING about how cheap brigadier is to invoke. The promise that goes unproven is that " +
+    "brigadier is cheap enough to invoke REPEATEDLY IN A LOOP, which is what a warm figure is about — unproven on " +
+    "every platform, not merely unmet. The measured figure is still taken and still printed, so a reader who needs " +
+    "that promise has a number to argue with; what they no longer have is anyone's word that it is small enough",
+} as const;
+
+/** The one line a reader has to see about the warm clause. Report, log and `did`. */
+export function struckWarmLine(): string {
+  return (
+    `STRUCK — "${STRUCK_WARM_START.clause}" is WITHDRAWN by the owner and nothing replaces it. ` +
+    `Why: ${STRUCK_WARM_START.why}; ${STRUCK_WARM_START.measured}. ` +
+    "The clause is struck, not relaxed — no budget in this item has been adjusted to fit a measurement, and " +
+    "amendment §17's proposed 20 ms is NOT adopted in its place. The MEASUREMENT survives the strike: the figure " +
+    "is still taken and still printed, it is simply no longer compared with anything."
   );
 }
 
@@ -476,6 +567,15 @@ export function judgeArtifact(o: ArtifactObservations): Checks {
       "6,045 ms quarantined reading were taken against binaries that carried no build identifier, so they are " +
       `attributable to a date and a machine and to nothing else. This run's subject, by contrast — ${cite}`,
   );
+  // The second strike, 2026-08-20. Printed on a PASS as well as a failure, for
+  // the same reason as the first, and printed here rather than beside the
+  // measurement so a reader meets the withdrawal before meeting the number.
+  checks.note("STRUCK CLAUSE — this item asserts no warm-start budget, and none is promised", struckWarmLine());
+  checks.note(
+    "what the struck warm clause leaves unproven",
+    `${STRUCK_WARM_START.unproven}. The figure this run measured is below, printed beside the artifact it belongs ` +
+      `to — ${cite}`,
+  );
 
   // Ruling 47 / Apache-2.0 §4(a): the obligation is to whoever RECEIVES the
   // work, and under ruling 26 that is routinely a bare binary from a tap or a
@@ -597,28 +697,53 @@ export function judgeArtifact(o: ArtifactObservations): Checks {
           : "clean: the commit determines these bytes, so this artifact can be rebuilt and the rebuild can be compared byte for byte"),
   );
 
-  // The harness's own spawn cost is subtracted, because otherwise a 10 ms
-  // budget is being checked against a number that includes a millisecond of this
-  // file. Both the raw and the corrected figures are printed so the correction
-  // can be argued with rather than taken on trust.
+  // The harness's own spawn cost is still subtracted, because a figure that
+  // includes a millisecond of this file is not the artifact's figure. Both the
+  // raw and the corrected numbers are printed so the correction can be argued
+  // with rather than taken on trust.
+  //
+  // WHAT THIS ROW ASSERTS, now that the ≤10 ms clause is struck: that a warm
+  // figure was actually OBTAINED. It compares it with nothing. The strike
+  // removed the budget, not the measurement — but "we no longer gate on the
+  // value" must not be allowed to become "we no longer time the binary", so the
+  // measurement itself is a gate and can go red. A timing loop that produced no
+  // usable sample leaves `warmMs` at +Infinity, and this row is what catches it.
+  //
+  // It is an `expect` and NOT a `note`, deliberately. `note` stamps `ok: true`
+  // and contributes nothing to any verdict, and this item shipped a blocking
+  // condition dressed as a note once already (see `HOST_NOT_RUN`). The two
+  // STRUCK rows above are notes because a withdrawn clause genuinely gates
+  // nothing and `note` is the only leader `render` will not print as `ok  `;
+  // this row is the gate that stops the strike from costing the measurement.
   const warmNet = Math.round((o.warmMs - o.spawnFloorMs) * 100) / 100;
-  const margin = Math.round((warmNet - WARM_START_BUDGET_MS) * 100) / 100;
+  const warmMeasured =
+    Number.isFinite(o.warmMs) &&
+    o.warmMs > 0 &&
+    Number.isFinite(o.spawnFloorMs) &&
+    o.spawnFloorMs >= 0 &&
+    warmNet > 0;
   checks.expect(
-    `warm start within ${WARM_START_BUDGET_MS} ms (minimum of ${START_SAMPLES}, floor-corrected)`,
-    warmNet <= WARM_START_BUDGET_MS,
-    `${cite}. ` +
-      `METHOD: minimum of ${START_SAMPLES} invocations, floor-corrected — ${o.warmMs} ms − ${o.spawnFloorMs} ms spawn floor = ${warmNet} ms. ` +
-      `MARGIN: ${margin <= 0 ? `${-margin} ms under` : `${margin} ms OVER`} the ${WARM_START_BUDGET_MS} ms budget, which is v1's warm figure from MEASUREMENT-SESSION.md. ` +
-      `The statistic is the MINIMUM because scheduler noise only adds, and N=${START_SAMPLES} because that is where it stopped moving ` +
-      "(the 2026-08-17 series min-of-5 12.10 ms / min-of-40 12.13 ms / min-of-150 12.07 ms is evidence about N and was taken against an EARLIER artifact — " +
-      "it is not this binary's warm cost, and reading it as one already produced a wrong correction once). " +
-      `REFERENCE, taken under the conditions the method asks for — MEASURED ${QUIET_WARM_MEASUREMENT.measuredOn}: ` +
-      `raw min ${QUIET_WARM_MEASUREMENT.rawMinMs} ms − ${QUIET_WARM_MEASUREMENT.spawnFloorMs} ms floor = ${QUIET_WARM_MEASUREMENT.correctedMs} ms, ` +
-      `${QUIET_WARM_MEASUREMENT.marginOverBudgetMs} ms OVER the budget, distribution ${QUIET_WARM_MEASUREMENT.distribution} — ` +
-      "a spread that narrow is why the minimum is a trustworthy estimator here and not merely a conservative one. " +
-      "READ THE MARGIN WITH THE MACHINE: a minimum is robust to noise but not immune to it, and the figure above was taken on whatever machine ran the bar. " +
-      "MEASURED, rather than assumed: contention cost 0.65 ms on this artifact (14.64 ms on a machine running five other agents against 13.99 ms quiet), " +
-      "so a reading a few tenths over budget is not dismissible as noise, and one several milliseconds over is not explainable by it either",
+    `warm start is MEASURED and REPORTED (minimum of ${START_SAMPLES}, floor-corrected) — the ≤${WITHDRAWN_WARM_BUDGET_MS} ms clause is STRUCK, so the figure gates nothing`,
+    warmMeasured,
+    warmMeasured
+      ? `${cite}. ` +
+        `METHOD: minimum of ${START_SAMPLES} invocations, floor-corrected — ${o.warmMs} ms raw − ${o.spawnFloorMs} ms spawn floor = ${warmNet} ms. ` +
+        `NO THRESHOLD IS APPLIED TO THAT NUMBER AND NO MARGIN IS PRINTED BESIDE IT: the ≤${WITHDRAWN_WARM_BUDGET_MS} ms warm clause was WITHDRAWN by the owner on 2026-08-20 ` +
+        "(see the STRUCK rows above), amendment §17's proposed 20 ms was not adopted in its place, and nothing else was — so there is nothing left to state a margin against. " +
+        `The statistic is still the MINIMUM because scheduler noise only adds, and N=${START_SAMPLES} because that is where it stopped moving ` +
+        "(the 2026-08-17 series min-of-5 12.10 ms / min-of-40 12.13 ms / min-of-150 12.07 ms is evidence about N and was taken against an EARLIER artifact — " +
+        "it is not this binary's warm cost, and reading it as one already produced a wrong correction once). " +
+        `REFERENCE, taken under the conditions the method asks for — MEASURED ${QUIET_WARM_MEASUREMENT.measuredOn}: ` +
+        `raw min ${QUIET_WARM_MEASUREMENT.rawMinMs} ms − ${QUIET_WARM_MEASUREMENT.spawnFloorMs} ms floor = ${QUIET_WARM_MEASUREMENT.correctedMs} ms, ` +
+        `distribution ${QUIET_WARM_MEASUREMENT.distribution} — ` +
+        "a spread that narrow is why the minimum is a trustworthy estimator here and not merely a conservative one. " +
+        "READ THE FIGURE WITH THE MACHINE: a minimum is robust to noise but not immune to it, and the number above was taken on whatever machine ran the bar. " +
+        "MEASURED, rather than assumed: contention cost 0.65 ms on this artifact (14.64 ms on a machine running five other agents against 13.99 ms quiet), " +
+        "so two readings a few tenths apart are not the same reading, and two several milliseconds apart are not explained by contention either"
+      : `ERROR — no warm figure was obtained, so there is nothing to report: raw ${o.warmMs} ms, spawn floor ${o.spawnFloorMs} ms, corrected ${warmNet} ms. ` +
+        `${cite}. The ≤${WITHDRAWN_WARM_BUDGET_MS} ms clause is struck and the MEASUREMENT is not: an item that quietly stopped timing the binary would leave ` +
+        "nobody anything to revisit, which is the whole reason the strike kept the number. This is a failure of this harness or of the machine it ran on, " +
+        "not a statement about the product",
   );
   // The number has a history, and the history does not support a trend.
   checks.note(
@@ -631,14 +756,20 @@ export function judgeArtifact(o: ArtifactObservations): Checks {
       "and a fifth figure recorded against a named artifact can be compared with a sixth. Nothing here makes the four earlier ones comparable",
   );
   checks.note(
-    "is the warm budget reachable at all",
-    "yes, and it was checked rather than assumed. MEASURED on 2026-08-17: a `bun --compile` binary whose whole program is `process.exit(0)` starts in 7.76 ms (min-of-40) raw, ~6.5 ms floor-corrected — so ruling 5's mandated runtime leaves about 3.5 ms of headroom under the 10 ms budget",
+    "the headroom measurement the withdrawn clause was argued over, kept",
+    "MEASURED on 2026-08-17: a `bun --compile` binary whose whole program is `process.exit(0)` starts in 7.76 ms (min-of-40) raw, ~6.5 ms floor-corrected. " +
+      "It was taken to answer a verifier who held that the ≤10 ms clause could only be satisfied by something ruling 5 does not permit the product to be — it could be, " +
+      "with about 3.5 ms of headroom, so the artifact missed that clause for a real reason rather than a definitional one. " +
+      "Kept now that the clause is struck, because it is the runtime floor any FUTURE warm claim would have to be read against, and because a strike must not take the " +
+      "evidence that was argued over out of the record",
   );
   checks.note(
     "PROPOSAL, not adopted — amendment §17's warm budget",
     "amendment §17 PROPOSES warm ≤ 20 ms and measures 16.13 ms as achievable (floor-corrected, minimum of N=40). " +
-      "The owner has NOT adopted it, so it gates nothing: the assertion above is still v1's 10 ms, unchanged. " +
-      "Recorded so a reader can see the proposal exists without mistaking it for a budget, and because no budget is ever adjusted to fit a measurement",
+      "The owner has NOT adopted it, and the 2026-08-20 strike did not adopt it either. That is the point of the strike rather than an oversight: " +
+      "a clause withdrawn because its figure has no provenance cannot be repaired by installing a second figure picked to clear the last reading, " +
+      "and 20 ms against a measured 16.13 ms is exactly that shape. So it gates nothing, nothing replaces the withdrawn clause, and no budget in this " +
+      "item was ever adjusted to fit a measurement",
   );
 
   // Ruling 4: the bridges are vendored, and the binary must start where node is
@@ -906,14 +1037,19 @@ const item: BarItem = {
   async run(ctx: BarContext): Promise<BarResult> {
     const did: string[] = [];
 
-    // The strike is announced as the item runs, not only in the report it
-    // returns. A reader watching the output must see the withdrawal.
+    // BOTH strikes are announced as the item runs, not only in the report it
+    // returns. A reader watching the output must see each withdrawal.
     ctx.log(struckLine());
     did.push(struckLine());
+    ctx.log(struckWarmLine());
+    did.push(struckWarmLine());
 
     // Warm timing first, before anything else in this item touches the binary.
-    // There is no cold measurement here: the cold-start clause is struck, and
-    // re-measuring a settled number costs minutes and proves nothing new.
+    // STILL TIMED THOUGH ITS CLAUSE IS STRUCK: the withdrawal was of the budget,
+    // not of the measurement, and a figure that stops being taken is a figure
+    // nobody can ever revisit. There is no cold measurement here, because the
+    // cold clause is struck AND re-measuring a settled number costs minutes and
+    // proves nothing new — that is the difference between the two strikes.
     let warm = Number.POSITIVE_INFINITY;
     for (let i = 0; i < START_SAMPLES; i++) {
       const run = await ctx.run(["--help"], { timeoutMs: 30_000 });

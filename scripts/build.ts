@@ -33,6 +33,25 @@
  * its own message. The digest of what was written is printed, so the build log
  * and `brigadier version` can be compared by eye.
  *
+ * IT DISCOVERS THE ARTIFACT'S NAME RATHER THAN ASSUMING IT. `--outfile` is a
+ * REQUEST, not a promise: `bun build --compile` appends `.exe` for a Windows
+ * target whatever name it was handed. MEASURED against `bun 1.3.14` on `darwin
+ * 25.5.0` on 2026-08-20, cross-compiling with `--target=bun-windows-x64`,
+ * `--outfile <dir>/brigadier` wrote `<dir>/brigadier.exe` and said so on its own
+ * compile line. Until 2026-08-20 this file passed `dist/brigadier` and then
+ * refused because `dist/brigadier` was not on disk — so `bun run build` could
+ * not succeed on Windows AT ALL, and with it gone so was ruling 47's licence
+ * gate, on one of the three platforms ruling 12 makes first class.
+ *
+ * The fix asks rather than guesses. `process.platform` is the WRONG oracle here
+ * and the measurement above is why: that cross-compile ran on darwin and still
+ * produced `.exe`, so the host platform does not determine the artifact's name —
+ * the target does, and only the compiler knows the target. So both candidate
+ * names are stat'd on both sides of the compile and the one the compiler
+ * actually rewrote is the artifact. That also keeps the stale-artifact guard
+ * above intact per candidate instead of weakening it: "a file appeared" is not
+ * the test, "this file's mtime moved" still is.
+ *
  * THE COMPILER IS `process.execPath`, NOT `"bun"` ON `PATH`. The stamp's `bun`
  * and `bunRevision` come from the process running THIS file; spawning the string
  * `"bun"` would resolve some other binary through `PATH` and stamp a compiler
@@ -140,6 +159,62 @@ export function mtimeOf(path: string): bigint | null {
   }
 }
 
+/**
+ * Every filename `bun build --compile` could have written for one `--outfile`.
+ *
+ * Two, because a Windows target appends `.exe` to whatever it was handed and one
+ * that already ends `.exe` is left alone. Deliberately NOT keyed on
+ * `process.platform`: a darwin host cross-compiling to `bun-windows-x64` writes
+ * `.exe` too, so the host says nothing about the artifact's name. Exported so
+ * the licence gate resolves the same two names by the same rule — one idiom, not
+ * two — and so `test/build-identity.test.ts` can assert the Windows shape from a
+ * machine that is not Windows.
+ */
+export function artifactCandidates(outfile: string): string[] {
+  return /\.exe$/i.test(outfile) ? [outfile] : [outfile, `${outfile}.exe`];
+}
+
+/** One candidate name, stat'd on both sides of the compile. */
+export type ArtifactProbe = { path: string; before: bigint | null; after: bigint | null };
+
+/**
+ * Which candidate the compiler actually wrote, or why that cannot be said.
+ *
+ * A pure function of stat results so the Windows case is testable on a machine
+ * that cannot run Windows: the `.exe` candidate is just the probe whose `after`
+ * moved. Every branch that does not name exactly one freshly written file is a
+ * refusal, because each of them ends with the licence gate scanning a file
+ * nobody built — which is the failure this whole step exists to prevent, and it
+ * is silent when it happens.
+ */
+export function resolveArtifact(probes: ArtifactProbe[]): { path: string } | { problem: string } {
+  const fresh = probes.filter((p) => p.after !== null && p.after !== p.before);
+  if (fresh.length === 1) return { path: (fresh[0] as ArtifactProbe).path };
+  if (fresh.length > 1) {
+    return {
+      problem:
+        `\`bun build\` exited 0 and rewrote ${fresh.length} candidate artifacts — ${fresh.map((p) => p.path).join(" and ")}.\n\n` +
+        "  Which one the licence gate should scan is not knowable from here, and scanning the wrong one\n" +
+        "  reports a clean verdict about a file nobody shipped. Remove the stale name and build again.",
+    };
+  }
+  const present = probes.filter((p) => p.after !== null);
+  if (present.length > 0) {
+    return {
+      problem:
+        `\`bun build\` exited 0 and ${present.map((p) => `${p.path} was not rewritten (mtime still ${p.after})`).join(", ")}.\n\n` +
+        "  The file already there is a PREVIOUS build. Reporting success would leave the licence gate scanning it\n" +
+        "  and every later measurement attributed to it by an identifier that looks healthy.",
+    };
+  }
+  return {
+    problem:
+      `\`bun build\` exited 0 and wrote none of: ${probes.map((p) => p.path).join(", ")}.\n\n` +
+      "  Both the plain name and the `.exe` a Windows target would append were looked for, so this is not\n" +
+      "  a naming mismatch — the compiler emitted nothing.",
+  };
+}
+
 if (import.meta.main) {
   const argv = Bun.argv.slice(2);
   const after = (name: string, fallback: string): string => {
@@ -168,7 +243,7 @@ if (import.meta.main) {
     );
   }
 
-  const mtimeBefore = mtimeOf(outfile);
+  const before = artifactCandidates(outfile).map((path) => ({ path, before: mtimeOf(path) }));
   const proc = Bun.spawnSync(compileArgv(process.execPath, entry, outfile, serialised), {
     cwd: REPO_ROOT,
     stdout: "inherit",
@@ -176,26 +251,22 @@ if (import.meta.main) {
   });
   if (proc.exitCode !== 0) process.exit(proc.exitCode ?? 1);
 
-  // The compiler said it succeeded. Whether it WROTE anything is a separate
-  // question, and the answer is read off the filesystem rather than inferred.
-  const mtimeAfter = mtimeOf(outfile);
-  if (mtimeAfter === null) {
-    console.error(`\nBUILD REFUSED — \`bun build\` exited 0 and ${outfile} does not exist\n`);
+  // The compiler said it succeeded. Whether it WROTE anything, and under which
+  // of the names it was free to choose, are separate questions — both read off
+  // the filesystem rather than inferred from the exit code or from this host.
+  const resolved = resolveArtifact(before.map((p) => ({ ...p, after: mtimeOf(p.path) })));
+  if ("problem" in resolved) {
+    console.error(`\nBUILD REFUSED — ${resolved.problem}\n`);
     process.exit(1);
   }
-  if (mtimeBefore !== null && mtimeAfter === mtimeBefore) {
-    console.error(
-      `\nBUILD REFUSED — \`bun build\` exited 0 and ${outfile} was not rewritten (mtime still ${mtimeAfter}).\n\n` +
-        "  The file already there is a PREVIOUS build. Reporting success would leave the licence gate scanning it\n" +
-        "  and every later measurement attributed to it by an identifier that looks healthy.\n",
-    );
-    process.exit(1);
-  }
+  const artifact = resolved.path;
 
-  const bytes = new Uint8Array(readFileSync(outfile));
+  const bytes = new Uint8Array(readFileSync(artifact));
   const sha = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
   // Printed so the build log and `brigadier version` name the same artifact and
-  // can be compared without trusting either one alone.
-  console.log(`wrote ${outfile} — ${bytes.byteLength} bytes, sha256 ${sha}`);
+  // can be compared without trusting either one alone. `artifact`, not
+  // `outfile`: on Windows they differ, and printing the request rather than the
+  // result would name a file the digest is not of.
+  console.log(`wrote ${artifact} — ${bytes.byteLength} bytes, sha256 ${sha}`);
   process.exit(0);
 }
