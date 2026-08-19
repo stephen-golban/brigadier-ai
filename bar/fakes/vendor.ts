@@ -397,6 +397,24 @@ function act(brief: Brief, config: VendorConfig): number {
       const target = resolve(brief.clone, directive.path);
       if (!ask({ kind: "edit", title: `write ${directive.path}`, locations: [{ path: target }] })) return 1;
       write(target, JSON.stringify({ credential: secret ?? "none" }, null, 2));
+      // ─────────── AND THE SAME VALUE AGAIN, AT ONE ESCAPE LEVEL ───────────
+      //
+      // The JSON copy above is kept, and this is not redundancy. `config.json`
+      // holds the value JSON-escaped because it is JSON; by the time a diff of
+      // that file rides inside a transcript frame it has been escaped TWICE, and
+      // `src/secrets/redact.ts` enumerates four flat encodings of which
+      // "escaped twice" is not one. The sink cannot act on what it cannot
+      // recognise, so with only that copy on the wire DELETING RULING 65'S SINK
+      // ALTOGETHER CHANGES NOTHING OBSERVABLE — the fixture cannot fail the
+      // check it is a fixture to, which is the shape that let a redaction sink
+      // be deleted with every item still green.
+      //
+      // A plain file carries the value at ONE escape level, which is the form
+      // the sink enumerates and therefore the form whose placeholder is
+      // observable. The doubly-escaped copy stays beside it as evidence of the
+      // documented limit: item 12 reports it as an honest bound on ruling 65
+      // rather than as a product failure.
+      write(resolve(brief.clone, "credential.txt"), `${secret ?? "none"}\n`);
       commit(brief.clone, `write ${directive.proofPath} and ${directive.path}`);
       return 0;
     }
@@ -810,6 +828,12 @@ async function actOverAcp(brief: Brief): Promise<void> {
       }
       const target = resolve(brief.clone, d.path);
       if (await ask(target)) write(target, JSON.stringify({ credential: secret ?? "none" }, null, 2));
+      // The same pair as the CLI branch above, for the same reason: the JSON
+      // copy is escaped twice by the time a diff of it reaches a frame, and no
+      // enumerated encoding matches it. See the comment there — a fixture whose
+      // only leak is invisible to the sink cannot show the sink firing, and
+      // cannot show it missing either.
+      write(resolve(brief.clone, "credential.txt"), `${secret ?? "none"}\n`);
       commit(brief.clone, `write ${d.proofPath} and ${d.path}`);
       return;
     }

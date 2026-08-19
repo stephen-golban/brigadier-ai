@@ -237,7 +237,11 @@ describe("a worker that tries to delegate is refused, counted, and reported RUN-
     // Run-level is what survives ruling 58's cap: a note on an item that passed
     // would be the first thing collapsed. The item below did pass and did land,
     // and the line is still there.
-    expect(result.stdout).toContain("1 worker attempted to delegate and were refused");
+    // Singular verb: `refusedDelegationLine` agrees the verb with the count, and
+    // the single-worker case is the common one. Pinned in the SINGULAR here
+    // because that is what this run produces; `test/report-run.test.ts` holds
+    // both forms against the producer directly.
+    expect(result.stdout).toContain("1 worker attempted to delegate and was refused");
     expect(result.stdout).toContain("AGENTS.md");
     expect(record.items[0]?.status).toBe("integrated");
     expect(result.code).toBe(0);

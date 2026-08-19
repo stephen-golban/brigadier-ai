@@ -21,7 +21,15 @@
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { HARNESS_RUN_TIMEOUT_MS, killTree } from "./proc.ts";
+import {
+  HARNESS_RUN_TIMEOUT_MS,
+  STREAM_DRAIN_GRACE_MS,
+  TIMEOUT_SIGNAL,
+  abandonAfter,
+  drain,
+  killTree,
+  truncationNote,
+} from "./proc.ts";
 
 /**
  * Ruling 38's marker, as `src/agent/marker.ts` spells it.
@@ -305,6 +313,17 @@ export interface SampledRun {
   signal: string | null;
   ms: number;
   flight: Flight;
+  /**
+   * Streams that had to be ABANDONED because something still held the write end
+   * of the pipe after the process was dead. Named, never a count.
+   *
+   * Empty on every healthy run. Non-empty means `stdout`/`stderr` above are
+   * PARTIAL, and an item reading a short stream as "the binary printed nothing"
+   * would be drawing a conclusion about the product from a fact about a leak.
+   * The text carries `STREAM_TRUNCATED_MARKER` as well, so a caller that never
+   * reads this field still cannot be misled by the bytes.
+   */
+  truncated: string[];
 }
 
 /**
@@ -364,30 +383,59 @@ export async function runSampled(
     }
   })();
 
+  // Read from the first instant and INCREMENTALLY, and stop waiting once the
+  // process is dead. Identical to `exec`'s bound and for the identical reason:
+  // `killTree` reclaims the process GROUP, an escaped descendant is outside it
+  // by construction, and it inherits the write end of these pipes — so the
+  // stream never ends and an unbounded read never returns. Here it was worse
+  // than in `exec`: `running` stays true while that read is pending, so the
+  // sampler kept forking `ps` over the whole machine forever behind the hang.
+  const out = drain(proc.stdout);
+  const err = drain(proc.stderr);
+
   let timedOut = false;
+  let killedNow: () => void = () => {};
+  const killed = new Promise<void>((resolve) => {
+    killedNow = resolve;
+  });
   const timer = setTimeout(() => {
     timedOut = true;
     killTree(proc);
+    killedNow();
   }, options.timeoutMs ?? HARNESS_RUN_TIMEOUT_MS);
 
-  const [stdout, stderr] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ]);
-  await proc.exited;
+  const finished = Promise.all([out.done, err.done, proc.exited]).then(() => true);
+  const abandon = abandonAfter(Promise.race([proc.exited.then(() => undefined), killed]), STREAM_DRAIN_GRACE_MS);
+  const closed = await Promise.race([finished, abandon.done]);
   clearTimeout(timer);
+  abandon.cancel();
+  if (!closed) {
+    killTree(proc);
+    const last = abandonAfter(Promise.resolve(), STREAM_DRAIN_GRACE_MS);
+    await Promise.race([proc.exited, last.done]);
+    last.cancel();
+  }
   running = false;
   await sampler;
   // One last look, so a run that finished between samples is still counted.
   sampleOnce(options.runRoot, flight, options.payloadMarker, true, options.operatorHead);
 
+  const truncated: string[] = [];
+  if (!out.settled()) truncated.push("stdout");
+  if (!err.settled()) truncated.push("stderr");
+  const why = timedOut ? "its timeout reclaimed the process group" : "the process exited";
+
   return {
-    stdout,
-    stderr,
+    stdout: out.text() + truncationNote("stdout", out, why),
+    stderr: err.text() + truncationNote("stderr", err, why),
     code: timedOut ? null : proc.exitCode,
-    signal: timedOut ? "BAR_TIMEOUT" : proc.signalCode,
+    // The constant, not the literal. This file already takes its timeout BOUND
+    // from `proc.ts` for the reason stated there — two copies of a rule drift —
+    // and the sentinel a caller matches on is the same kind of shared fact.
+    signal: timedOut ? TIMEOUT_SIGNAL : proc.signalCode,
     ms: Math.round((performance.now() - started) * 100) / 100,
     flight,
+    truncated,
   };
 }
 

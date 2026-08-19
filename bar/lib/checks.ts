@@ -11,6 +11,49 @@
  * So each sub-check records the bytes it saw whether it passed or failed. A
  * check that only speaks up on failure cannot be audited by someone who does not
  * trust the author, which is `BAR.md`'s first rule.
+ *
+ * ─────────────────── THE VERDICT VOCABULARY, WRITTEN DOWN ───────────────────
+ *
+ * A `Check` is a boolean and ruling 52's vocabulary has five values, so items
+ * carry the missing three in the check's NAME. Several items had each invented
+ * their own spelling of this before the 2026-08-19 reconciliation pass — the
+ * same verdict appearing as `not-run —`, `NOT-RUN —` and `NOT RUN —` in three
+ * files — and a reader of the full output cannot tell whether three spellings
+ * are three concepts. The convention, so the next item does not invent a fourth:
+ *
+ *   `ERROR — <what broke>`     the INSTRUMENT or a premise broke, so the item
+ *                              never reached the assertion it names. Ruling 52's
+ *                              `error`. Always `ok: false` — it BLOCKS, and its
+ *                              remedy points at this harness or at the machine,
+ *                              never at the product.
+ *   `NOT-RUN — <what did not>` the assertion never happened at all, because
+ *                              something it needs was absent. Ruling 52's
+ *                              `not-run`. Always `ok: false` — a check that did
+ *                              not run is not a check that passed (ruling 48).
+ *   `FAIL — <what broke>`      the PRODUCT did not keep its promise, in a place
+ *                              where the reader must not be sent to the harness
+ *                              instead. Only worth the prefix where an ERROR row
+ *                              could be confused for it; an ordinary assertion
+ *                              needs no prefix, because `ok: false` already
+ *                              means `fail`.
+ *   anything else              an ordinary assertion about the PRODUCT. `ok`
+ *                              true or false is `pass` or `fail`.
+ *
+ * The prefix and the item's own internal verdict must AGREE. `judgeSink` in
+ * `bar/lib/item12-delivery.ts` returned `error` under a name beginning `FAIL —`
+ * until 2026-08-19: it blocked either way, so nothing was hidden, but a reader
+ * of the name and a reader of the verdict were sent to different places.
+ *
+ * UPPER CASE IS THE HARNESS SPEAKING. Lower-case `not-run` in backticks is the
+ * product's own record value — the write-ahead slot ruling 52 requires — and
+ * items 11 and 12 assert on that literal. The two appear in the same report and
+ * must not be mistaken for each other.
+ *
+ * AND NEITHER IS EVER A `note`. `note` stamps `ok: true`, so a note describing a
+ * blocking condition renders as a passing assertion in both the report and the
+ * halves — a `SKIPPED` in a note's clothes, which is the exact substitution
+ * ruling 52 exists to forbid. `note` is for something worth reporting that was
+ * never a gate.
  */
 
 export interface Check {

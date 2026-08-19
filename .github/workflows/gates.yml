@@ -21,6 +21,9 @@ on:
     paths:
       - "src/**"
       - "test/**"
+      # The release bar is graded by `test-gate` here, and a bar-only change
+      # that could not trigger this workflow is a bar nothing checks.
+      - "bar/**"
       - "scripts/**"
       - "package.json"
       - "tsconfig.json"
@@ -46,6 +49,38 @@ jobs:
           bun-version: "1.3.14"
 
       - run: bun install --frozen-lockfile
+
+      # Two dependencies of the RELEASE BAR, not of the product, and both are
+      # here because their absence used to read as a pass.
+      #
+      # `node` is what item 10's ruling 4 check strips. With no node on the
+      # machine there is nothing to strip, the stripped PATH resolves nothing
+      # for free, and the check reports green having exercised nothing — so the
+      # item now reports `not-run` and BLOCKS instead. setup-node makes the
+      # runner's node explicit rather than inherited from whatever the image
+      # happens to ship.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # `claude` is the instrument BAR.md NAMES for ruling 60's hook floor:
+      # after install, `claude plugin details brigadier` must name `PreCompact`.
+      # Without it item 10 can only check the file install wrote, which proves
+      # that a hook was WRITTEN and not that the host LOADS it — two different
+      # claims. That gap used to render as an `ok` note; it is now a blocking
+      # `not-run`, so this step is what keeps the authoritative leg able to grade
+      # the item at all. `plugin details` is local and needs no account: MEASURED
+      # on darwin 25.5.0 on 2026-08-19, exit 0 against a scratch HOME with no
+      # credentials, printing `Hooks (1)  PreCompact`.
+      - name: install claude, the host BAR.md names
+        shell: bash
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          claude --version
+          # The predicate the harness itself uses, asserted rather than assumed:
+          # `command -v` and `Bun.which` are not the same search, and on Windows
+          # npm installs a `.cmd` wrapper that only one of them may find.
+          bun -e 'if (Bun.which("claude") === null) throw new Error("Bun.which cannot see claude — item 10 would report not-run")'
 
       # Typecheck first: it is the cheapest and it fails most specifically.
       - name: typecheck
@@ -85,3 +120,59 @@ jobs:
           grep -q "IS a brigadier worker" worker-refusal.txt
           test "$code" -eq 3
           echo "worker refusal: exit $code, message present"
+
+      # THE RELEASE BAR ITSELF. Ruling 48 and BAR.md's thirteen items, driven
+      # against the artifact this job just built.
+      #
+      # This step is EXPECTED TO FAIL at the time it was added, and that is the
+      # reason it is here. A gate that runs only the bar's unit tests grades the
+      # harness and not the promises; red is the honest current state; and
+      # BAR.md's closing section is explicit that a failure is never hidden.
+      # It is therefore a normal blocking step — never `continue-on-error`,
+      # never a reporting-only step, because a weakened check that renders as a
+      # pass is the exact move ruling 32 forbids. Do not tune anything to make
+      # this green: fix the item or strike the clause in the open.
+      #
+      # WHAT IT CAN AND CANNOT GRADE HERE. There is NO credential-free mode in
+      # the runner, and none was invented for this step: `--live` is opt-in, and
+      # its absence means each item still drives its credential-free half while
+      # its live half reports SKIPPED. A SKIPPED item blocks exactly as a FAIL
+      # does (ruling 48), so an unrunnable half can never render as a pass. A
+      # runner has no vendor credentials and vendor auth is interactive, so the
+      # live halves are an accepted cost that BAR.md hands to the verifier.
+      #
+      # EXIT CODES, for whoever is reading this from the log alone:
+      #   0  all thirteen items PASSED
+      #   1  at least one item blocked — FAIL or SKIPPED, which count the same
+      #   2  the register and BAR.md disagree, or the arguments were unusable;
+      #      nothing was graded, and this is a different failure from red
+      #
+      # ASSUMPTIONS, none of them verified — this workflow has never executed on
+      # any platform:
+      #   - `bun build --compile --outfile dist/brigadier` appends `.exe` on
+      #     Windows, so the artifact is discovered rather than named, and the
+      #     step fails loudly if neither name is on disk;
+      #   - the harness writes its scratch trees under HOME (`~/.brigadier-bar/`),
+      #     which ruling 61 requires and which is outside the workspace;
+      #   - some items drive real subprocesses with their own deadlines, so the
+      #     step is bounded: a hung bar must fail the job rather than burn the
+      #     runner's whole allowance. The 45 minutes is a BOUND, not a
+      #     measurement — nobody has timed a full offline bar on a runner. If a
+      #     healthy run is ever seen approaching it, raise it deliberately;
+      #     do not shorten it to make a slow leg fail faster.
+      - name: the release bar (ruling 48) — expected red, and blocking
+        shell: bash
+        timeout-minutes: 45
+        run: |
+          set -euo pipefail
+          if [ -f dist/brigadier.exe ]; then
+            BIN=dist/brigadier.exe
+          elif [ -f dist/brigadier ]; then
+            BIN=dist/brigadier
+          else
+            echo "no compiled artifact at dist/brigadier or dist/brigadier.exe — the build step did not emit what this step grades" >&2
+            ls -l dist || true
+            exit 2
+          fi
+          echo "grading the bar against $BIN"
+          bun bar/run.ts --binary "$BIN"

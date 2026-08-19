@@ -15,11 +15,13 @@
  * `git log --format=%s` — a subject the product does not write and a forgery
  * does — so both sides of the comparison read zero against the real binary and
  * the enforcement check failed for a reason with nothing to do with ceilings.
- * Underneath it sits a genuine product gap: `cost.actual`, `softCeilingHit` and
- * `hardCeilingHit` are declared in the record's type and never assigned by
- * `src/queue/execute.ts`, so "actual is reported against the estimate" fails
- * because the number does not exist. Counting integrations properly separates
- * the two, and the second is the product's to close.
+ * Underneath it sat a genuine product gap — `cost.actual`, `softCeilingHit` and
+ * `hardCeilingHit` declared in the record's type and assigned by nothing — and
+ * that half has since been closed: `src/queue/execute.ts` writes `actual` from
+ * bytes counted on the wire, and writes both hits unconditionally so that an
+ * absent boolean cannot read as "not measured". READ AGAIN ON 2026-08-19 rather
+ * than believed: this item is no longer waiting on the product for those three
+ * fields, it was waiting on ceilings expressed in the unit the product counts in.
  *
  * Properly does NOT mean believing `record.items[].status`. The record is where
  * this item learns WHICH shas to ask about; `git cat-file -t` and `git
@@ -50,6 +52,36 @@
  * **WHAT THIS ITEM CANNOT PROVE:** #45 measured that neither vendor's effort
  * setting is confirmable over the protocol, so "the effort we asked for is the
  * effort that ran" is asserted from vendor-private records or not at all.
+ *
+ * WHAT THE 2026-08-19 AUDIT FOUND IN THIS ITEM. Four of its checks were looking
+ * at the wrong thing, and one of them could never have failed:
+ *
+ *   THE CEILINGS WERE IN DOLLARS AND THE PRODUCT COUNTS TOKENS. This item drove
+ *   `--soft-ceiling 0.06 --hard-ceiling 0.14` against a unit that
+ *   `src/queue/estimate.ts` refuses to convert to money for want of a measured
+ *   rate. Both ceilings are crossed by the first frame that crosses the wire, so
+ *   nothing is dispatched, nothing records a triple, no vendor reaches the quota
+ *   block — and every check fails for a reason unrelated to the property it
+ *   names. The ceilings are now CALIBRATED from a run that already happened, and
+ *   the soft and the hard one are driven as two separate runs, because they are
+ *   two events and a single run cannot show one and not the other.
+ *
+ *   THE OPENCODE CHECK WAS A TAUTOLOGY. `!used.includes("opencode") || …` was
+ *   evaluated against a fleet of `qwen` and `copilot`. It has passed on every
+ *   run this item has ever driven, and it would pass on a binary with no quota
+ *   block at all. opencode is now PLANTED, so #42's branch is exercised.
+ *
+ *   `levers.length > 0` IS A COUNT, and ruling 70 is about names. `["x"]`
+ *   satisfied it. Every lever is now required to reach the report by name.
+ *
+ *   `/actual/i.test(report)` IS A WORD. "actual: not measured" contains it. The
+ *   numbers are now required.
+ *
+ *   AND THE EFFORT HALF WAS NOT CHECKED AT ALL beyond `effort !== undefined` —
+ *   which amendment §19 warns is exactly the shape that misses the regression,
+ *   because a record that stringifies an absent value writes the word
+ *   `undefined` and passes. `../lib/item13-cost.ts` holds the repair, and it
+ *   demonstrates its own instrument on that shape every run.
  */
 
 import { join } from "node:path";
@@ -61,6 +93,15 @@ import { isolatedPath, plantFleet } from "../lib/fixtures.ts";
 import { ensureDir } from "../lib/fs.ts";
 import { makeRepo, plantSeeds } from "../lib/git.ts";
 import { combine, type LiveHalf } from "../lib/halves.ts";
+import {
+  effortInstrumentControls,
+  itemLine,
+  judgeCeilings,
+  judgeDeepCost,
+  judgeEffort,
+  type EffortItem,
+  type OneRun,
+} from "../lib/item13-cost.ts";
 import { writePlan } from "../lib/plan.ts";
 import { HARNESS_RUN_TIMEOUT_MS, baseEnv } from "../lib/proc.ts";
 import type { RunRecord } from "../lib/contract.ts";
@@ -191,31 +232,18 @@ export function judgeCost(o: CostObservations): Checks {
       `Statuses under the cap: ${(o.record?.items ?? []).map((i) => `${i.id}=${i.status}`).join(", ") || "no record"}. ` +
       "A binary that simply does less produces the same shortfall with no ceiling involved",
   );
-  const cost0 = o.record?.cost;
-  checks.expect(
-    "actual is reported against the estimate, and falls inside the range",
-    cost0?.actual !== undefined &&
-      cost0.estimateLow !== undefined &&
-      cost0.actual >= 0 &&
-      cost0.actual <= cost0.estimateHigh &&
-      /actual/i.test(o.report),
-    `actual ${cost0?.actual ?? "absent"} against ${cost0?.estimateLow ?? "?"} – ${cost0?.estimateHigh ?? "?"} ${cost0?.currency ?? ""}`,
-  );
-  checks.expect(
-    "the report distinguishes the soft ceiling from the hard one",
-    /soft/i.test(o.report) && /hard/i.test(o.report) && cost !== undefined,
-    `soft/hard named in the report: ${/soft/i.test(o.report)}/${/hard/i.test(o.report)}; ` +
-      `record: softCeilingHit=${cost?.softCeilingHit}, hardCeilingHit=${cost?.hardCeilingHit}`,
-  );
 
-  // Ruling 29: the routing unit is a triple, recorded PER ITEM.
+  // Ruling 29's triple, ruling 40's lever and #45's `effortConfirmed` are NOT
+  // here. They were one check — `agent !== undefined && model !== undefined &&
+  // effort !== undefined` — which is the shape amendment §19 says cannot see
+  // the regression it is about: a record that stringifies an absent value
+  // writes the word `undefined` and satisfies it. They live in
+  // `../lib/item13-cost.ts`, where the grade is required to be a member of
+  // ruling 30's vocabulary and is recomputed from (kind, difficulty).
+  //
+  // `dispatched` survives because the quota check below is about the vendors
+  // that really ran.
   const dispatched = (o.record?.items ?? []).filter((i) => i.status === "integrated" || i.status === "failed");
-  checks.expect(
-    "every dispatched item records its (agent, model, effort) triple",
-    dispatched.length > 0 &&
-      dispatched.every((i) => i.agent !== undefined && i.model !== undefined && i.effort !== undefined),
-    dispatched.map((i) => `${i.id}=(${i.agent},${i.model},${i.effort})`).join("; ") || "nothing dispatched",
-  );
 
   // Ruling 67: recorded per item, and visible to the operator. The RECORD says
   // what happened; the report is then required to say the same thing. The
@@ -227,22 +255,48 @@ export function judgeCost(o: CostObservations): Checks {
   const clamped = (o.record?.items ?? []).filter((i) => i.difficulty !== undefined);
   const expectedLine = (i: { difficulty?: string; clampedTo?: string }): string =>
     i.difficulty === i.clampedTo ? `difficulty: ${i.difficulty}` : `difficulty: ${i.difficulty} (clamped to ${i.clampedTo})`;
-  const unprinted = clamped.filter((i) => i.clampedTo === undefined || !o.report.includes(expectedLine(i)));
+  // ON THE ITEM'S OWN LINE. `report.includes("difficulty: easy")` is satisfied
+  // for every item that declared `easy` by whichever one the report happened to
+  // print — the same containment defect the 2026-08-19 audit removed from item
+  // 11, and one that a plan with two items of one difficulty would walk into.
+  const unprinted = clamped.filter((i) => {
+    const line = itemLine(o.report, i.id);
+    return i.clampedTo === undefined || line === undefined || !line.includes(expectedLine(i));
+  });
   checks.expect(
     "the difficulty clamp is recorded per item and printed (ruling 67)",
     clamped.length > 0 && unprinted.length === 0,
     clamped.length === 0
       ? "no item declared a difficulty"
       : `recorded: ${clamped.map((i) => `${i.id}: ${i.difficulty} -> ${i.clampedTo ?? "NOT RECORDED"}`).join("; ")}; ` +
-        `absent from the report: ${unprinted.map((i) => JSON.stringify(expectedLine(i))).join(", ") || "none"}`,
+        `absent from their own item's line in the report: ${
+          unprinted.map((i) => `${i.id} wanted ${JSON.stringify(expectedLine(i))}, line reads ${JSON.stringify(itemLine(o.report, i.id) ?? "NO LINE FOR THIS ITEM")}`).join("; ") || "none"
+        }`,
   );
+  // `every` over an empty list is `true`, and `isUpwardClamp` answers `false`
+  // for any pair it does not recognise — so the previous form passed on a run
+  // that recorded no difficulty at all, and on one that clamped `hard` to
+  // `enormous`. Neither is brigadier declining to clamp upward; both are the
+  // check having nothing to look at and saying so as a pass.
+  const knownDifficulty = (value: string | undefined): boolean =>
+    value !== undefined && (DIFFICULTY_ORDER as readonly string[]).includes(value);
   checks.expect(
     "brigadier never clamps UPWARD",
-    clamped.every((i) => !isUpwardClamp(i.difficulty ?? "", i.clampedTo ?? "")),
-    clamped.map((i) => `${i.difficulty} -> ${i.clampedTo}`).join("; ") || "no clamp observed",
+    clamped.length > 0 &&
+      clamped.every(
+        (i) => knownDifficulty(i.difficulty) && knownDifficulty(i.clampedTo) && !isUpwardClamp(i.difficulty ?? "", i.clampedTo ?? ""),
+      ),
+    clamped.map((i) => `${i.difficulty} -> ${i.clampedTo}`).join("; ") ||
+      "NO CLAMP WAS OBSERVED AT ALL, so this run says nothing about the direction: an empty list satisfies " +
+        "`every` and a vocabulary this harness does not recognise satisfies the comparison",
   );
 
   // Ruling 13's quota half, cross-checked against the vendors that really ran.
+  // The stronger form — every vendor the HARNESS planted, and opencode
+  // `unpriceable` unconditionally — is in `judgeDeepCost`. This one stays
+  // because it asks a different question: not "was every vendor priced" but
+  // "was the vendor that took a turn priced", and a router that used something
+  // nobody planted would fail here and pass there.
   const used = [...new Set(dispatched.map((i) => i.agent).filter((a): a is string => a !== undefined))];
   const quota = cost?.quota ?? {};
   checks.expect(
@@ -250,18 +304,8 @@ export function judgeCost(o: CostObservations): Checks {
     used.length > 0 && used.every((v) => ["read", "unreadable", "unpriceable"].includes(quota[v] ?? "")),
     `vendors that ran: ${used.join(", ") || "none"}; quota block: ${JSON.stringify(quota)}`,
   );
-  checks.expect(
-    "a run using opencode says `unpriceable` and its total is a lower bound",
-    !used.includes("opencode") || (quota["opencode"] === "unpriceable" && cost?.lowerBound === true),
-    `opencode used: ${used.includes("opencode")}; #42 measured it reaching a model with no credential at all through its own gateway`,
-  );
 
   // Ruling 70.
-  checks.expect(
-    "the levers that were active are listed",
-    (cost?.levers ?? []).length > 0,
-    JSON.stringify(cost?.levers ?? []),
-  );
   const claims = savingsClaims(o.report);
   checks.expect(
     "no token-reduction claim is made (ruling 70)",
@@ -292,24 +336,42 @@ const item: BarItem = {
     const items = ["cheap", "declared-hard", "third", "fourth"];
     const seeds = items.map((id) => ({ path: `seeds/${id}.seed`, value: nonce(`${id}-seed`), placement: "committed" as const }));
     await plantSeeds(repo, seeds);
+    // Two declared difficulties rather than one, because ruling 67 has two
+    // renderings and a fixture that exercises one of them measures half the
+    // rule: `hard` must print as clamped (the default ceiling is below it) and
+    // `easy` must print unclamped. They also drive two different effort
+    // derivations under ruling 31, so an item that recorded one grade for
+    // everything would be visible.
+    const declared: Record<string, "easy" | "hard"> = { "declared-hard": "hard", third: "easy" };
     const planPath = writePlan(ctx.workdir, {
       version: 1,
-      items: items.map((id, index) => ({
+      items: items.map((id) => ({
         id,
         kind: "write" as const,
         paths: [`${id}.txt`],
         prompt: `create ${id}.txt`,
         directive: { do: "derive-write" as const, read: `seeds/${id}.seed`, path: `${id}.txt`, salt: id },
-        // Ruling 67's clamp must PRINT for this one, and must only go down.
-        ...(index === 1 ? { difficulty: "hard" as const } : {}),
+        // Ruling 67's clamp must PRINT for these, and must only go down.
+        ...(declared[id] === undefined ? {} : { difficulty: declared[id] }),
       })),
     });
-    did.push(`wrote a four-item plan at ${planPath}, one item declaring \`difficulty: hard\` so a clamp has something to print`);
+    did.push(
+      `wrote a four-item plan at ${planPath}; \`declared-hard\` declares \`difficulty: hard\` so a clamp has something ` +
+        "to print, and `third` declares `easy` so the UNclamped rendering is measured too",
+    );
 
     const binDir = ensureDir(join(ctx.workdir, "bin"));
+    // opencode is planted deliberately. #42's clause — a run using opencode says
+    // `unpriceable` and its total is a lower bound — was previously judged
+    // against a fleet that could not contain it, so the check was true by
+    // construction on every run.
+    const planted = ["qwen", "copilot", "opencode"] as const;
     plantFleet(binDir, join(ctx.workdir, "vendor-ledger.tsv"), [
       { id: "qwen", version: "0.21.13" },
       { id: "copilot", version: "1.0.80" },
+      // The version this tree's profile was MEASURED against, so a drift
+      // warning is not mistaken for the cost model saying something.
+      { id: "opencode", version: "1.18.18" },
     ]);
     const env = baseEnv({ PATH: isolatedPath(binDir) });
 
@@ -336,10 +398,28 @@ const item: BarItem = {
         excerpt(estimateText, 240),
       );
     }
+    // THE INSTRUMENT, DEMONSTRATED RATHER THAN ASSUMED. Amendment §19's field
+    // was declared and never assigned for as long as the record existed,
+    // because everything that looked at it printed what it found. These rows
+    // put this item's own effort reader to that exact shape, every run, in the
+    // half that needs no credentials — so a reader of the output can see that
+    // the check which passed could also have failed.
+    for (const row of effortInstrumentControls().rows) credentialFree.expect(row.name, row.ok, row.detail);
+    // And ruling 70's detector, likewise. It once failed the honest fixture on
+    // the very sentence ruling 70 asks for.
+    credentialFree.expect(
+      "the savings-claim detector fires on a claim and not on ruling 70's own required phrasing",
+      savingsClaims("this run saved 16.5× on tokens").length === 1 &&
+        savingsClaims("the 16.5× cache lever was active — brigadier makes no claim to have saved anything").length === 0,
+      "a line claiming a saving is caught; a line naming a lever beside an explicit disclaimer is not — which is " +
+        "the phrasing ruling 70 requires, and a check that rejected it would be broken rather than strict",
+    );
 
     // ---- live: enforcement, the clamp, and quota ----------------------------
-    // Ceilings deliberately below what four items cost, so enforcement has to
-    // bite rather than merely print.
+    // The ceilings are calibrated below, from what the uncapped run actually
+    // spent, so that enforcement bites rather than merely printing — and so
+    // that it does not fire before the first item is dispatched, which is what
+    // a number picked as though tokens were dollars does.
     const probe = await probeFeature(
       ctx,
       ["run", "--plan", planPath, "--repo", repo, "--run-root", join(ctx.workdir, "runs"), "--dry-run"],
@@ -353,7 +433,9 @@ const item: BarItem = {
     } else if (!ctx.live) {
       live = { kind: "skipped", why: "actual-against-predicted requires real spend, and per-vendor quota requires real vendor accounts" };
     } else {
-      // A: the same plan, same vendors, NO ceilings.
+      // A: the same plan, same vendors, NO ceilings. This is the baseline the
+      // other two are calibrated FROM, and it is also the negative control:
+      // neither ceiling line may appear in a run that was given no ceilings.
       const uncappedRepo = join(ctx.workdir, "uncapped-repo");
       await makeRepo(uncappedRepo, { "README.md": "base\n" });
       await plantSeeds(uncappedRepo, seeds);
@@ -361,35 +443,126 @@ const item: BarItem = {
         ["run", "--plan", planPath, "--repo", uncappedRepo, "--run-root", join(ctx.workdir, "runs-uncapped")],
         { env, timeoutMs: HARNESS_RUN_TIMEOUT_MS },
       );
-      const uncappedEvidence = await gatherRunEvidence(uncappedRepo, `${uncapped.stdout}${uncapped.stderr}`);
+      const uncappedReport = `${uncapped.stdout}${uncapped.stderr}`;
+      const uncappedEvidence = await gatherRunEvidence(uncappedRepo, uncappedReport);
       const uncappedIntegrated = verifyIntegration(uncappedEvidence);
 
-      // B: ceilings deliberately below what four items cost.
-      const capped = await ctx.run(
+      // WHAT FOUR ITEMS ACTUALLY COST, IN THE UNIT THE PRODUCT COUNTS IN.
+      //
+      // `src/queue/estimate.ts` refuses currency for want of a measured rate,
+      // so a ceiling is a number of TOKENS. A pair picked as though it were
+      // money — this item drove 0.06 and 0.14 — is crossed by the first frame
+      // on the wire, and then nothing is dispatched and every downstream check
+      // fails for a reason that has nothing to do with ceilings. So the
+      // ceilings come from a run that already happened.
+      const spent = uncappedEvidence.record?.cost?.actual;
+      did.push(
+        `the uncapped run spent ${spent ?? "an unrecorded number of"} ${uncappedEvidence.record?.cost?.currency ?? "units"} ` +
+          `across ${items.length} items (${uncappedIntegrated.claimed} claimed integrated, ${uncappedIntegrated.verified} ` +
+          "confirmed with git); the two ceilings below are calibrated from that number rather than picked. " +
+          "THAT NUMBER IS THE PRODUCT'S OWN: `cost.actual` is measured by the same wire-byte counter the ceiling " +
+          "gate compares against, and nothing here corroborates it from outside — #46 measured three of six agents " +
+          "emitting no usage at all, so there is no second source. The accounting is taken on trust; what is " +
+          "OBSERVED is the behaviour — which items were dispatched, which running work was cancelled, and which of " +
+          "the two the report described. And because #44 measured 15× between two identical runs, a ceiling that " +
+          "does not fire is reported as either NOT ENFORCED or NEVER REACHED, with the numbers that separate them",
+      );
+
+      const checks = new Checks();
+      if (spent === undefined || spent < 8) {
+        // Said out loud rather than worked around. A ceiling calibrated from a
+        // number that is not there is a number this harness made up, and the
+        // run it produced would be measuring the harness's guess.
+        checks.expect(
+          "the uncapped run records what it spent, so a ceiling can be calibrated from it",
+          false,
+          `cost.actual on the uncapped run: ${spent ?? "ABSENT"}. Ruling 66's ceilings are in tokens, and a ceiling ` +
+            "this harness picked out of the air would fire before dispatch or never — neither of which measures enforcement",
+        );
+        live = { kind: "ran", checks };
+        return combine(did, credentialFree, live);
+      }
+
+      // B: the SOFT ceiling, set below what the first batch of items costs so
+      // that dispatch stops with work left, and paired with a hard ceiling far
+      // above anything this plan can reach so that it cannot fire.
+      const softCeiling = Math.max(1, Math.floor(spent * 0.4));
+      const softRun = await ctx.run(
         [
           "run", "--plan", planPath, "--repo", repo,
           "--run-root", join(ctx.workdir, "runs"),
-          "--soft-ceiling", "0.06", "--hard-ceiling", "0.14",
+          "--soft-ceiling", String(softCeiling), "--hard-ceiling", String(spent * 4),
         ],
         { env, timeoutMs: HARNESS_RUN_TIMEOUT_MS },
       );
-      did.push(
-        `drove the same plan twice: once with no ceilings (${uncappedIntegrated.claimed} claimed integrated, ` +
-          `${uncappedIntegrated.verified} confirmed with git) and once with them`,
-      );
-      const report = `${capped.stdout}${capped.stderr}`;
+      const report = `${softRun.stdout}${softRun.stderr}`;
       const evidence = await gatherRunEvidence(repo, report);
       const integrated = verifyIntegration(evidence);
-      live = {
-        kind: "ran",
-        checks: judgeCost({
-          report,
-          record: evidence.record,
-          integrated,
-          uncappedIntegrated,
-          plannedCount: items.length,
-        }),
-      };
+
+      // C: the HARD ceiling, set below what one batch costs so that it fires
+      // while items are running. Its own repository, because the two runs are
+      // two experiments and a shared deliverable branch would mix them.
+      const hardRepo = join(ctx.workdir, "hard-repo");
+      await makeRepo(hardRepo, { "README.md": "base\n" });
+      await plantSeeds(hardRepo, seeds);
+      const hardCeiling = Math.max(2, Math.floor(spent * 0.4));
+      const hardRun = await ctx.run(
+        [
+          "run", "--plan", planPath, "--repo", hardRepo,
+          "--run-root", join(ctx.workdir, "runs-hard"),
+          "--soft-ceiling", String(Math.max(1, Math.floor(hardCeiling / 2))), "--hard-ceiling", String(hardCeiling),
+        ],
+        { env, timeoutMs: HARNESS_RUN_TIMEOUT_MS },
+      );
+      const hardReport = `${hardRun.stdout}${hardRun.stderr}`;
+      const hardEvidence = await gatherRunEvidence(hardRepo, hardReport);
+      did.push(
+        `drove the same plan three times: no ceilings; a soft ceiling of ${softCeiling} with the hard one out of reach; ` +
+          `and a hard ceiling of ${hardCeiling}. The soft one must stop DISPATCH and the hard one must CANCEL, and ` +
+          "one run cannot show both",
+      );
+
+      for (const row of judgeCost({
+        report,
+        record: evidence.record,
+        integrated,
+        uncappedIntegrated,
+        plannedCount: items.length,
+      }).rows) {
+        checks.expect(row.name, row.ok, row.detail);
+      }
+      const asRun = (what: string, out: { stdout: string; stderr: string; code: number | null }, ev: { record: RunRecord | undefined }): OneRun => ({
+        what,
+        report: `${out.stdout}${out.stderr}`,
+        record: ev.record,
+        exitCode: out.code,
+      });
+      for (const row of judgeCeilings({
+        uncapped: asRun("no ceilings", uncapped, uncappedEvidence),
+        soft: asRun("soft ceiling only", softRun, evidence),
+        hard: asRun("hard ceiling", hardRun, hardEvidence),
+      }).rows) {
+        checks.expect(row.name, row.ok, row.detail);
+      }
+      for (const row of judgeEffort({
+        report,
+        items: (evidence.record?.items ?? []) as EffortItem[],
+        // Ruling 40: none of the three planted vendors has a measured effort
+        // lever, and this list is the harness's own — never read back out of
+        // the record it is judging.
+        leverlessVendors: [...planted],
+      }).rows) {
+        checks.expect(row.name, row.ok, row.detail);
+      }
+      for (const row of judgeDeepCost({
+        report,
+        record: evidence.record,
+        plantedVendors: [...planted],
+        savingsClaims,
+      }).rows) {
+        checks.expect(row.name, row.ok, row.detail);
+      }
+      live = { kind: "ran", checks };
     }
 
     return combine(did, credentialFree, live);

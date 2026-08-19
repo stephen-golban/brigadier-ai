@@ -307,8 +307,67 @@ export interface RunReportInput {
  */
 export function refusedDelegationLine(count: number): string | null {
   if (count === 0) return null;
+  // The verb agrees with the count. `1 worker attempted ... and WERE refused`
+  // is the sentence a reader stumbles on in the one line ruling 59 exists to
+  // make them read, and the singular case is the common one.
   const workers = count === 1 ? "1 worker" : `${count} workers`;
-  return `${workers} attempted to delegate and were refused — check the repository's AGENTS.md and the brief (ruling 59).`;
+  const verb = count === 1 ? "was" : "were";
+  return `${workers} attempted to delegate and ${verb} refused — check the repository's AGENTS.md and the brief (ruling 59).`;
+}
+
+/**
+ * Decision 17 and ruling 36, said out loud where the operator actually reads.
+ *
+ * `record.ambientSuppressed` was written by `executeRun` from the first day and
+ * RENDERED NOWHERE, which is the whole reason this function exists. BAR.md item
+ * 9 requires that a user-global instruction file is not obeyed by a worker *and
+ * that first-run says so out loud*; a field in a JSON record on disk is not out
+ * loud, and the run report is the only thing the operator — or, in decision
+ * 25's normal case, the host model — ever sees. A promise kept in a file nobody
+ * opens is indistinguishable from one that was not kept.
+ *
+ * SHAPED LIKE `reviewLines`, NOT LIKE `refusedDelegationLine`, and the choice is
+ * the point rather than a preference. Ruling 59's refusal line is SILENT at
+ * zero, because a line that printed on every run would be wallpaper and an
+ * operator would stop reading it at exactly the moment it started being true —
+ * the same negative control `ceilingLines` has. This block cannot borrow that
+ * shape: suppression is not an event that sometimes happens, it is a claim
+ * brigadier makes about every worker it spawns, and the interesting half is the
+ * vendor where the lever could NOT be pulled. `ambientSuppression` names both
+ * halves per vendor for exactly that reason, so the report prints both halves,
+ * on every run, the way `reviewLines` prints `CROSS-VENDOR` and `SAME-VENDOR`
+ * as two outcomes rather than as a strong and a weak wording of one.
+ *
+ * O(VENDORS), WHICH IS O(1) IN RULING 58'S SENSE: it is bounded by the launch
+ * profile table and never by the plan, so a fifty-item run and a one-item run
+ * pay the same. The bound below is the same guard `HEADLINE_KINDS` is — the
+ * producer emits at most three lines, so it can only fire for a writer that has
+ * already broken the contract, and the overflow says where the rest are rather
+ * than dropping them silently.
+ */
+const AMBIENT_LINES = 6;
+
+export function ambientLines(suppressed: readonly string[] | undefined): string[] {
+  // ABSENT IS NOT SUPPRESSED. Ruling 52's exact failure is a missing result
+  // rendering as a satisfied requirement, and "brigadier suppressed ambient
+  // instructions" is precisely the kind of claim a reader will assume from
+  // silence. So a record that did not say gets a line saying it did not.
+  if (suppressed === undefined || suppressed.length === 0) {
+    return [
+      "",
+      "ambient instructions: NOT RECORDED — this run did not say what it suppressed, for which vendors, " +
+        "or where the lever does not exist. Decision 17's claim is unevidenced here, and an unrecorded " +
+        "suppression must not be read as one that happened.",
+    ];
+  }
+  const shown = suppressed.slice(0, AMBIENT_LINES).map((line) => `  ${line}`);
+  if (suppressed.length > AMBIENT_LINES) {
+    shown.push(
+      `  and ${suppressed.length - AMBIENT_LINES} further line(s), in the run record named above — more than ` +
+        "`ambientSuppression` can produce, so whatever wrote them is not brigadier's own suppression report.",
+    );
+  }
+  return ["", "ambient instructions and brigadier's own plugin, per vendor (decision 17, ruling 36):", ...shown];
 }
 
 /**
@@ -460,6 +519,12 @@ function fixedLines(input: RunReportInput): { head: string[]; tail: string[] } {
   }
 
   for (const line of reviewLines(record.review)) tail.push(line);
+
+  // The two run-level facts about finding 114, adjacent on purpose: what
+  // brigadier did to keep ambient doctrine out of a worker, and then how many
+  // workers acted on doctrine anyway. Reading the second without the first
+  // leaves an operator with a count and no idea what was already tried.
+  for (const line of ambientLines(record.ambientSuppressed)) tail.push(line);
 
   const refused = refusedDelegationLine(record.refusedDelegations);
   if (refused !== null) tail.push(refused);

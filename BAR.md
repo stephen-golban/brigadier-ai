@@ -163,6 +163,32 @@ adopts as a *named assumption* — not a measurement — that a reviewer given a
 real commits. This item is where that assumption is falsified or confirmed, in public, by a verifier
 that did not make it.
 
+**AMENDED by the owner 2026-08-19 — the rate is a verifier artefact, not a harness output.** The
+automated item **cannot** produce this number honestly, and the reason is structural rather than a
+defect to be fixed. The harness counts distinct quoted identifiers appearing in the diff, never
+matched to the planted set: a reviewer quoting three lines of **one** defect scores three, and a
+reviewer that correctly describes a planted defect in prose the diff does not carry scores **zero**.
+Neither repair survives. Attaching marker tokens to the planted defects makes `grep DEFECT-` score
+**5 of 5 without reviewing anything** — the brief instructs reviewers to copy such tokens verbatim.
+Matching prose findings to planted defects is a **judgement**, and it is precisely the judgement this
+document assigns to the independent verifier.
+
+So the work splits along the seam this section already describes:
+
+- **The automated item proves the plumbing**, blocking: the reviewer's vendor differs from the
+  builder's; the vendor configured to catch defects **is** the one the record names as reviewer (a
+  misrouted plant is `error`, never a low rate); the identities a reviewer found survive builder →
+  diff → reviewer → record; and a reviewer producing no verdict blocks. It publishes **no catch
+  rate at all** — a fixture catching its own preconfigured markers measures the fixture.
+- **The verifier produces the rate.** It plants its own five defects, drives the real fleet on a real
+  `PATH` with prose-only prompts, and scores what the reviewer actually said from the recorded
+  transcript. That report lands in this repository verbatim, negatives included, and the number is
+  published whether or not it clears three.
+
+The threshold, the diff framing and v1's 0-of-3 baseline are unchanged. What changed is **who
+measures**, and the answer is the one this document already gave: a verifier that did not make the
+assumption. An automated number here would have been the harness grading itself.
+
 **And a reviewer that produces no verdict is `error`, which blocks** — driven by killing the reviewer
 mid-turn and asserting the item does not integrate. v1 merged its most delicate change on
 `review: not run (REVIEWER_FAILED)`.
@@ -193,7 +219,19 @@ exhausted one**, and a short ladder is stated **at plan admission**, before anyt
 
 `SIGKILL` mid-run, with a descendant that has **escaped** containment: `cmd /c start` on Windows
 (#43 measured Bun's job object carrying `BREAKAWAY_OK` **and** `SILENT_BREAKAWAY_OK`), `setsid()` on
-POSIX. The next start's **sweep** reclaims it, no clone survives, and the run manifest says what
+POSIX.
+
+**AMENDED 2026-08-19 — `setsid()` is not what runs, and the document said otherwise for nine rounds.**
+MEASURED on macOS 26.5.2 this date: `Bun.which("setsid") === null`. There is no `setsid` on macOS, so
+the fixture escapes under `nohup`, and a `nohup` child returns `ppid 1` while **remaining in the
+spawner's process group** — it never leaves it. The two mechanisms therefore defeat different links of
+ruling 38: `setsid()` breaks the process-group link **and** the ppid link; `nohup` breaks only the
+ppid link. The graded property survives either way, because an **unmarked command line plus an
+orphaned parent** still forces reclamation through ruling 38's third link — the working directory
+inside the clone — which is the link that matters and the only one that reaches a process whose
+command line cannot be marked. The item **prints which mechanism actually ran** rather than printing
+this document's word regardless. On Windows the mechanism is `cmd /c start`, and it has never
+executed on any machine. The next start's **sweep** reclaims it, no clone survives, and the run manifest says what
 happened.
 
 **Then the half ruling 63 adds, which points the other way:** an item that had **committed work in
@@ -265,7 +303,34 @@ failure is known to reproduce without anyone having to construct it.
 Installs, runs and is removed cleanly on all three platforms by each host's **real** discovery path
 (ruling 42: `~/.agents/skills/`, and **no `bin/`-on-`PATH` outside Claude Code**). Runs with **node
 absent from `PATH`**. `brigadier licenses` prints the full attribution. The licence gate passes on
-the **released** artifact. Size and start-up within the measured budget.
+the **released** artifact. Size within the measured budget.
+
+**STRUCK, in the open — the ≤70 ms cold-start clause.** Owner's decision, 2026-08-19, under this
+document's *When an item cannot be met*. Two reasons, both already in the record:
+
+- **It was never measured.** v1's entire git history at Release 0.2.1 contains no "70 ms", no "cold
+  start", no "hyperfine" and no benchmark script. The figure enters this project as **one unsourced
+  sentence** at `MEASUREMENT-SESSION.md:140`, commit `7e6a547`, under the heading *"Already measured
+  — do not redo"*. Every later citation — **ruling 5's included** — restates that line.
+- **It is unreachable at this artifact shape.** Minima of fresh, never-executed copies on first-ever
+  invocation: a Bun binary whose entire program is `process.exit(0)` costs **873 ms**;
+  `dist/brigadier` costs **892 ms**. brigadier's own code is **0.5%** of the artifact and **~19 ms**
+  of the total. The cost is XProtect's first-execution scan, fitting ≈ **133 ms fixed + 11.3 ms/MB**,
+  and six copies sharing one cdhash **each paid in full** — the scan is cached **per file, not per
+  signature**, so **signing cannot pre-empt it**. Under quarantine — the real downloaded-release case
+  this section calls authoritative — the unnotarized binary took **6,045 ms and was then SIGKILLed**:
+  blocked, not slow. Notarization fixes the kill, not the latency.
+
+**The promise therefore unproven:** that brigadier starts fast enough to be invoked casually on a
+machine that has never run it. Nothing else in this item is weakened, and **the item prints the
+strike in its own output** rather than omitting it — a `SKIPPED` clause would block a tag exactly as a
+`FAIL` does, and a silent deletion is not available to anyone.
+
+**The warm figure is neither struck nor adopted.** Amendment §17 proposes ≤ 20 ms against a measured
+16.13 ms (floor-corrected, minimum of N=40); the owner has not ruled, so the item prints it as a
+proposal and never as a gate. **No budget was adjusted to fit a measurement.** The one shape that
+would clear the original number — a 337 KB JS bundle run by an installed `bun`, measured **18.9 ms
+cold** — is an architecture change against ruling 5, not a tuning, and is not adopted here.
 
 **And the hook surface is verified by name, not by count** (ruling 60): after install,
 `claude plugin details brigadier` names `PreCompact`. Then the negative: a `hooks.json` carrying one
@@ -316,7 +381,21 @@ same file.
 and ruling 65 adds no exception for secrets, so `grep` over the worker's checkout finds nothing before
 the worker starts.
 
-*Rulings 65, 50, 37, 25.* **What this item deliberately does not prove:** ruling 65 defeats *verbatim*
+**Scope, ruled by the owner 2026-08-19, because the two sentences above disagreed.** *Persisted
+artifact* means **brigadier's own persisted artifacts** — the enumerated list, not an unbounded set.
+Ruling 65's single sink is a property of what brigadier writes; brigadier does not rewrite a worker's
+commit, and reaching into a clone an agent has touched in order to do so is precisely what **ruling
+56** forbids. So **a worker that commits a granted secret into its own clone is not defeated by this
+item or by the product**, and the item says so in the same breath it reports its result. The leak
+found in round 9 was in `r/<run>/1/config.json` — the worker's artifact, not brigadier's — and is out
+of scope by this ruling rather than by omission.
+
+**And the item must prove the secret travelled at all.** An independent critic deleted the redaction
+sink entirely and this item still **passed**: it was proving that a secret nobody moved did not move.
+So the worker must first commit a **derivation** of the value that is not the value, and if that
+derivation is absent from the integrated result the item is `error` — never `pass`.
+
+*Rulings 65, 50, 37, 25, 56.* **What this item deliberately does not prove:** ruling 65 defeats *verbatim*
 leaks only. A worker that paraphrases a key, re-encodes it in a scheme we do not enumerate, or
 describes it in prose is not caught by this item or by the product, and the item must not be written
 so that a reader concludes otherwise.

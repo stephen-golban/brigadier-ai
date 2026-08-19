@@ -21,6 +21,7 @@ import type { RecordCheck, RecordItem, RunRecord } from "../src/report/record.ts
 import { SecretInventory } from "../src/secrets/redact.ts";
 import { Sink } from "../src/secrets/sink.ts";
 import {
+  ambientLines,
   itemBlocks,
   refusedDelegationLine,
   renderItem,
@@ -77,13 +78,36 @@ const GATE: RecordCheck[] = [
   { name: "verify (merged result)", outcome: "unconfigured", blocking: false, qualifier: "wave 1" },
 ];
 
+/**
+ * The widest thing `ambientSuppression` can produce: every measured profile in
+ * play, INCLUDING the one that has no lever at all.
+ *
+ * Copied in its shape rather than imported, because `src/queue/execute.ts` is
+ * the writer and this file tests the reader — a test that generated the input
+ * with the producer would agree with it by construction and could never catch
+ * the two disagreeing.
+ */
+const AMBIENT_WORST: string[] = [
+  "the config root is redirected into brigadier's own state directory for claude (CLAUDE_CONFIG_DIR), " +
+    "codex (CODEX_CONFIG), copilot (COPILOT_HOME), qwen (QWEN_HOME), opencode (OPENCODE_CONFIG_DIR) (decision 17)",
+  "NO config-root redirect exists for gemini: their launch profile declares no variable for it, so decision 17's " +
+    "lever could not be pulled and a user-global instruction file under $HOME is still readable by them. Stated " +
+    "rather than assumed away — a suppression that did not happen must not be recorded as one.",
+  "brigadier's own plugin is inert inside every worker: the worker marker is set on all of them (ruling 57)",
+];
+
 /** Everything the sink actually put on stdout, joined. */
-function report(items: RecordItem[], audience: "host-session" | "terminal" = "host-session", refused = 0): string {
+function report(
+  items: RecordItem[],
+  audience: "host-session" | "terminal" = "host-session",
+  refused = 0,
+  ambient?: string[],
+): string {
   const written: string[] = [];
   const sink = new Sink(new SecretInventory(), { out: (chunk) => written.push(chunk), err: () => {} });
   writeRunReport(
     {
-      record: record(items, refused),
+      record: { ...record(items, refused), ...(ambient === undefined ? {} : { ambientSuppressed: ambient }) },
       recordPath: "/home/x/.brigadier/r/r1/record.json",
       headline: "PARTIAL INTEGRATION — some of it landed",
       mergedResult: GATE,
@@ -182,6 +206,8 @@ describe("ruling 52's rendering rules", () => {
 describe("ruling 59: a run-level line, O(1), that survives the cap", () => {
   test("it prints once for the whole run", () => {
     expect(refusedDelegationLine(3)).toContain("3 workers attempted to delegate and were refused");
+    // The singular is the common case and it gets the singular verb.
+    expect(refusedDelegationLine(1)).toContain("1 worker attempted to delegate and was refused");
   });
 
   test("NEGATIVE CONTROL: nobody delegated means no line at all", () => {
@@ -295,5 +321,73 @@ describe("a fifty-item run's WHOLE stdout fits the host ceiling", () => {
     // renderer that lost the lines.
     expect(terminal).toContain("fifty-50    verify: unconfigured");
     expect(estimateTokens(terminal)).toBeGreaterThan(HOST_REPORT_TOKEN_CEILING);
+  });
+});
+
+describe("decision 17 is said OUT LOUD, not only written to the record", () => {
+  // The defect this covers shipped: `executeRun` wrote `ambientSuppressed` into
+  // the record from the first day and NOTHING rendered it, so BAR.md item 9's
+  // "first-run says so out loud" was unmet by a report that was otherwise
+  // complete. A field on disk is not out loud.
+  test("both halves reach the report, and the vendor with NO lever is named", () => {
+    const text = report([item("ok1", false)], "host-session", 0, AMBIENT_WORST);
+    expect(text).toContain("config root is redirected");
+    expect(text).toContain("brigadier's own plugin is inert inside every worker");
+    // The half that matters. A run that suppressed nothing on gemini while
+    // reporting that it had is indistinguishable from one that suppressed
+    // everything, which is `ambientSuppression`'s own reason for existing.
+    expect(text).toContain("NO config-root redirect exists for gemini");
+  });
+
+  test("NEGATIVE CONTROL: a record that did not say gets a line saying it did not", () => {
+    // Ruling 52's exact failure is a missing result rendering as a satisfied
+    // requirement, and silence about suppression reads as suppression.
+    const text = report([item("ok1", false)]);
+    expect(text).toContain("ambient instructions: NOT RECORDED");
+    expect(text).not.toContain("config root is redirected");
+  });
+
+  test("it is O(1): a fifty-item run prints the SAME block as a one-item run", () => {
+    // The whole constraint ruling 58 puts on this file. A block that grew with
+    // the plan would be an O(items) string in the part of the report the cap
+    // never trims — which is the shape that makes a cap unsafe.
+    const one = report([item("ok1", false)], "host-session", 0, AMBIENT_WORST);
+    const fifty = report(
+      Array.from({ length: 50 }, (_, index) => item(`ok${index + 1}`, false)),
+      "host-session",
+      0,
+      AMBIENT_WORST,
+    );
+    const block = (text: string): string =>
+      text.split("\n").filter((line) => line.startsWith("ambient instructions") || line.startsWith("  the config root") || line.startsWith("  NO config-root") || line.startsWith("  brigadier's own plugin")).join("\n");
+    expect(block(fifty)).toBe(block(one));
+    expect(block(one).length).toBeGreaterThan(0);
+  });
+
+  test("a writer that inflates the field is bounded, and says where the rest are", () => {
+    const many = Array.from({ length: 20 }, (_, index) => `line ${index + 1} about a vendor`);
+    const lines = ambientLines(many);
+    expect(lines.filter((line) => line.startsWith("  line ")).length).toBeLessThan(many.length);
+    expect(lines.join("\n")).toContain("further line(s), in the run record named above");
+  });
+
+  test("the fifty-item cap still holds WITH the block present, and hides no failure", () => {
+    // Ruling 58's asymmetry, re-asserted against the added lines: the cap
+    // absorbs them by collapsing more PASSING items and never by dropping a
+    // blocking one.
+    const items = [
+      ...Array.from({ length: 47 }, (_, index) => item(`ok${index + 1}`, false)),
+      item("bad4", true),
+      item("bad18", true),
+      item("bad43", true),
+    ];
+    const text = report(items, "host-session", 2, AMBIENT_WORST);
+    expect(estimateTokens(text)).toBeLessThanOrEqual(HOST_REPORT_TOKEN_CEILING);
+    for (const id of ["bad4", "bad18", "bad43"]) {
+      expect(text).toContain(id);
+      expect(text).toContain(`verify ${id}`);
+    }
+    expect(text).toMatch(/\d+ passing item\(s\) collapsed/);
+    expect(text).toContain("NO config-root redirect exists for gemini");
   });
 });

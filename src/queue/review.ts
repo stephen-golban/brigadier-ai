@@ -363,6 +363,19 @@ export function catchRateLine(caught: number, planted: number | undefined): stri
     `catch rate ${caught} of ${planted} — defects the reviewers named AND that appear in the diff ` +
     `they were handed, against ${planted} planted. v1's measured baseline is ${V1_CATCH_BASELINE}. ` +
     "Published, not gated: review is probabilistic, a flaky blocking check gets disabled, and a " +
-    "published number gets argued with."
+    "published number gets argued with. " +
+    // WHAT THE NUMERATOR IS, printed with it rather than known by its author.
+    // `caughtIn` keeps DISTINCT identifiers that appear verbatim in the diff; it
+    // does not match them to the planted list, and nothing here can. So a
+    // reviewer quoting three lines of one defect counts three, a reviewer
+    // describing a real defect in prose the diff does not carry counts zero,
+    // and the numerator is not bounded by the denominator. The reader needs
+    // that sentence attached to the digits, because the digits are what gets
+    // quoted: a bar-harness run published `0 of 5` on 2026-08-19 that was a
+    // fact about which vendor a fixture was configured on.
+    `The numerator counts DISTINCT identifiers the reviewers quoted that the diff really contains; it is ` +
+    `not matched to the ${planted} planted defects, so it can exceed them, and a defect named only in prose ` +
+    "the diff does not carry is discarded. Whether a finding is one of the planted defects is a judgement, " +
+    "and it belongs to whoever planted them."
   );
 }

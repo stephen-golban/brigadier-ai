@@ -26,6 +26,19 @@
  * measuring its own guess. It is one file rather than thirteen literals so that
  * a contract change is one edit.
  *
+ * **THAT CLAIM WAS FALSE UNTIL 2026-08-19, and the way it failed is the reason
+ * to read it sceptically now.** The drift did not make anything fail loudly. It
+ * made three items fail SILENTLY: each one found a field missing here, widened
+ * or re-transcribed the shape locally, and carried on — so `qualifier`,
+ * `detail`, the four effort fields and `cost.gapWarning` were all readable
+ * somewhere under `bar/`, and none of them was readable HERE, which is the only
+ * place a fourth item would have looked. Meanwhile `CheckOutcome` listed
+ * `skipped`, a value the product has never emitted, and omitted `not-run`,
+ * which it writes into every blocking check's slot before the check runs. A
+ * local workaround is what drift looks like from inside; nothing in the design
+ * makes it loud, and the only thing that keeps this file honest is somebody
+ * diffing it against `src/report/record.ts` and `src/work/check.ts` on purpose.
+ *
  * EVERY FIELD BELOW IS WHAT THE PRODUCT CLAIMS, NEVER WHAT HAPPENED. The record
  * is read to learn where to look — which sha, which ref, which item — and every
  * claim it makes is then put to `git` by `evidence.ts`. A record that could be
@@ -47,13 +60,50 @@ export type ItemStatus =
   /** Ruling 63: interrupted with committed work in its clone, kept rather than swept. */
   | "retained";
 
-export type CheckOutcome = "pass" | "fail" | "error" | "skipped";
+/**
+ * Ruling 52's vocabulary, as `src/work/check.ts` actually declares it.
+ *
+ * THIS TYPE WAS WRONG UNTIL THE RECONCILIATION PASS, and wrong in the exact way
+ * ruling 52 exists to prevent. It listed `skipped` — a value the product has
+ * never emitted — and omitted `not-run` and `unconfigured`, which it emits
+ * constantly: `not-run` is `INITIAL_OUTCOME`, written into every blocking
+ * check's slot BEFORE the check runs, so it is the single most common value in
+ * a killed run's record. A harness whose vocabulary could not name it could not
+ * see the write-ahead it was built to prove, and would have typed a real
+ * outcome as a drift.
+ *
+ * `blocks()` is `outcome !== "pass" && outcome !== "unconfigured"`. Ruling 52's
+ * four are pass/fail/error/not-run, three of which block; `unconfigured` is the
+ * fifth and does NOT block, because a first-time user with no verify command
+ * must still get a product that runs. It is printed in the same slot with the
+ * same prominence all the same — the difference between an unmet requirement
+ * and an absent one is real, the difference in how loudly they print is not.
+ */
+export type CheckOutcome = "pass" | "fail" | "error" | "not-run" | "unconfigured";
+
+/** Ruling 52: `pass` proceeds, `unconfigured` does not block, everything else does. */
+export function blocks(outcome: CheckOutcome): boolean {
+  return outcome !== "pass" && outcome !== "unconfigured";
+}
 
 export interface RecordCheck {
   name: string;
   outcome: CheckOutcome;
   /** Ruling 52: three of the four outcomes block. A blocking check never collapses. */
   blocking: boolean;
+  /**
+   * Ruling 52: the qualifier lives INSIDE the rendered result and never in a
+   * footnote — `review: pass (same-vendor)`.
+   *
+   * Absent from this file until the reconciliation pass, which is why two items
+   * had each widened `RecordCheck` locally to reach it. v1's compact output was
+   * truthful in its detail view and false in its summary, and people read
+   * summaries; a harness that could not see this field could not catch the
+   * product dropping it.
+   */
+  qualifier?: string;
+  /** The checker's own words. On `error` and `not-run` this is the remedy. */
+  detail?: string;
 }
 
 export interface RecordItem {
@@ -73,20 +123,72 @@ export interface RecordItem {
   number?: number;
   status: ItemStatus;
   kind?: "write" | "read-only";
-  /** Ruling 29: the routing unit is a triple, recorded per item. */
+  /**
+   * Ruling 29: the routing unit is a triple, recorded per item — and this half
+   * of it is the vendor whose PROCESS SPAWNED.
+   *
+   * Absent when nothing started. `routedAgent` carries what the router chose,
+   * and the two are separate fields because "routed to qwen and never started"
+   * is not "qwen ran": ruling 32's property is a comparison between a builder's
+   * vendor and a reviewer's, so an identity taken from the plan can answer it
+   * about a process that never existed.
+   */
   agent?: string;
+  /** What the router CHOSE, whether or not anything spawned. Never evidence of a run. */
+  routedAgent?: string;
   model?: string;
+  /**
+   * The third axis, rendered with its qualifier INSIDE the value.
+   *
+   * `high` alone would read as the effort that RAN, and #45 measured that
+   * neither vendor's setting is confirmable over the protocol. The four fields
+   * below carry the same fact in a form a machine can read without parsing
+   * prose, and every one of them was missing from this file until the
+   * reconciliation pass — which is why item 13 had transcribed them locally.
+   */
   effort?: string;
+  /** Ruling 31: derived from (kind, difficulty). Never supplied by the plan. */
+  effortRequested?: string;
+  /** `session/set_model`, `MAX_THINKING_TOKENS at spawn`, or `none measured`. */
+  effortLever?: string;
+  /** What brigadier did: set it, sent it, had it accepted, had it refused, or nothing. */
+  effortDisposition?: string;
+  /**
+   * #45, as a field that cannot say otherwise.
+   *
+   * Typed as the literal `false` exactly as the product types it. "The effort we
+   * asked for is the effort that ran" is asserted from vendor-private records or
+   * not at all, and brigadier does not have them — so there is no value this may
+   * take that would imply it does, and a record that put `true` here is not a
+   * record this type can describe.
+   */
+  effortConfirmed?: false;
+  effortDetail?: string;
   /** Ruling 67: printed per item, and only ever downward. */
   difficulty?: string;
   clampedTo?: string;
   /** Ruling 55: the rung it actually got, and whether a second rung existed at all. */
   attempts?: number;
   attemptsAvailable?: number;
+  /**
+   * The same two numbers as a sentence a reader cannot misread.
+   *
+   * `attempts: 1, attemptsAvailable: 1` and `attempts: 2, attemptsAvailable: 2`
+   * are both "N of N" to a skimmer, and ruling 55's whole point is that a
+   * MISSING rung and an EXHAUSTED one are different facts about the machine.
+   */
+  ladder?: string;
   /** Ruling 32: the reviewer's vendor, which must differ from the builder's where it can. */
   builderAgent?: string;
   reviewerAgent?: string;
   reviewVerdict?: CheckOutcome;
+  /**
+   * How many times the REVIEWER ran for this item.
+   *
+   * Deliberately not folded into `attempts`. Ruling 52's budget rule: a builder
+   * must not lose a rung of ruling 24's ladder to somebody else's crash.
+   */
+  reviewerAttempts?: number;
   /**
    * Which planted defect markers this reviewer actually found.
    *
@@ -127,8 +229,21 @@ export interface RunRecord {
    * the harness resolves the ref itself rather than believing the number.
    */
   integrationSha?: string;
-  /** Ruling 50's scratch base: the commit every wave-1 clone started from. */
-  base?: { ref: string; sha: string };
+  /**
+   * Ruling 50's scratch base: the commit every wave-1 clone started from.
+   *
+   * REQUIRED, because the product requires it. `git diff <base.sha>..<itemRef>`
+   * is ruling 51's ownership check and ruling 52's reviewer brief, and a record
+   * without the left-hand side describes work nobody can re-derive.
+   *
+   * The optionality here is the one thing in this file that is a claim about
+   * this HARNESS rather than about the product: `parseRecord` below does not
+   * enforce it, so a forged record can still reach a reader with the field
+   * absent. Anything that dereferences it must therefore treat the value as
+   * untrusted even though the type says it is there — which is true of every
+   * field in this file and is only worth writing down on the required ones.
+   */
+  base: { ref: string; sha: string };
   /** Ruling 51: checks about the RUN — today, whether the deliverable branch exists. */
   runChecks?: RecordCheck[];
   /** Ruling 61: asserted outside every temp root by `realpath`, never lexically. */
@@ -144,10 +259,22 @@ export interface RunRecord {
     crossVendor: boolean;
     /** Ruling 32: a weakened check is stated, never rendered as a pass. */
     sameVendorReason?: string;
+    /** The vendor that actually reviewed, and the one that built. Ruling 29's triple, one role over. */
+    reviewerAgent?: string;
+    builderAgent?: string;
     caught?: number;
     planted?: number;
     /** The markers actually found, so the rate can be re-derived rather than believed. */
     caughtDefects?: string[];
+    /**
+     * The published rate as one line, composed where the numbers are known.
+     *
+     * PUBLISHED and not gated — review is probabilistic, and a flaky blocking
+     * check gets disabled while a published number gets argued with.
+     */
+    catchRate?: string;
+    /** Ruling 52: re-runs of a BROKEN reviewer, charged to brigadier and counted separately. */
+    reviewerReruns?: number;
   };
   cost?: {
     currency: string;
@@ -160,6 +287,17 @@ export interface RunRecord {
     hardCeiling?: number;
     softCeilingHit?: boolean;
     hardCeilingHit?: boolean;
+    /**
+     * Ruling 66's structural rule, when the pair the operator gave does not
+     * satisfy it.
+     *
+     * Present only when the gap between the two ceilings is narrower than what
+     * one in-flight item can still spend, which makes the SOFT ceiling WEAKENED
+     * rather than absent. It is carried in the record rather than said once on
+     * stderr, because a weakening the reader of the record cannot see is ruling
+     * 52's "a weakened check never renders as a clean one" one level up.
+     */
+    gapWarning?: string;
     /** Ruling 13: per vendor, never absent and never optimistic. */
     quota: Record<string, "read" | "unreadable" | "unpriceable">;
     /** Ruling 70: levers that were active, phrased so they cannot be read as savings. */

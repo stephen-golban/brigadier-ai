@@ -31,10 +31,27 @@ import {
 } from "./items/01-detection-is-honest.ts";
 import { diffForeign, foreignPaths, type ForeignSnapshot } from "./items/03-no-foreign-file-touched.ts";
 import { isLineAnchor, judgeCompetence } from "./items/05-review-is-cross-vendor.ts";
-import { judgeInterrupt, type InterruptObservations } from "./items/07-interruption-leaves-nothing.ts";
+import {
+  judgeInterrupt,
+  namesPid,
+  reportedBytesFor,
+  type InterruptObservations,
+} from "./items/07-interruption-leaves-nothing.ts";
 import { judgeRefusal, type RefusalObservations } from "./items/08-impossible-plan-refused.ts";
 import { judgeBinaryRefusal } from "./items/09-ambient-instructions-suppressed.ts";
-import { judgeArtifact, pinNear, scanForMarkers, type ArtifactObservations } from "./items/10-the-artifact-ships.ts";
+import {
+  emptyDirectories,
+  hookEventsIn,
+  HOST_NOT_RUN,
+  judgeArtifact,
+  lgplIntegrity,
+  NODE_STRIP_NOT_RUN,
+  pinNear,
+  QUIET_WARM_MEASUREMENT,
+  scanForMarkers,
+  struckLine,
+  type ArtifactObservations,
+} from "./items/10-the-artifact-ships.ts";
 import { judgeReport, type ReportObservations } from "./items/11-report-fits-the-window.ts";
 import { judgeSecret } from "./items/12-secret-not-persisted.ts";
 import { isUpwardClamp, judgeCost, savingsClaims, verifyIntegration, type CostObservations } from "./items/13-cost-model.ts";
@@ -459,18 +476,31 @@ describe("item 5 — the competence table is auditable from the binary", () => {
 // ------------------------------------------------------------------ item 7
 
 describe("item 7 — an interruption leaves nothing behind", () => {
+  // Its own session and group leader, off the ppid graph, and carrying no
+  // marker: the three facts that make ruling 38's THIRD link the thing under
+  // test rather than its first two.
+  const escapee = { pid: 4242, ppid: 1, pgid: 4242, commandLine: "/bin/sh /w/07/runs/r/ab12/escapee-escaper.sh" };
+
   const clean: InterruptObservations = {
     escapeePid: 4242,
+    escapee,
+    escapeeParentAlive: false,
     aliveBeforeSweep: true,
     aliveAfterSweep: false,
+    interruptInFlight: true,
     survivedFirstInterrupt: true,
     heartbeatAtKill: 200,
     heartbeatBeforeSweep: 400,
     heartbeatAfterSweep: 420,
     heartbeatSettled: 420,
-    survivingClones: [{ path: "/runs/r1/item-2", hadCommits: true, bytes: 4096 }],
-    reportAfterSweep: "retained (interrupted, has committed work): /runs/r1/item-2 (4096 bytes)",
-    secondInterrupt: { code: null, signal: "SIGINT" },
+    clonesAtKill: ["/runs/r1/item-1", "/runs/r1/item-2"],
+    survivingClones: [{ path: "/runs/r1/item-2", hadCommits: true, bytes: 4096, committedValue: "d3adb33fcafe" }],
+    expectedCommittedValue: "d3adb33fcafe",
+    reportAfterSweep:
+      "  reclaimed pid 4242 (item 1): UNMARKED and unreachable through the ppid graph\n" +
+      "  r1 item 2: /runs/r1/item-2 (0.00 MB, 4096 bytes) — holding commit 9c1f — the run is incomplete",
+    recordAfterSweep: "",
+    secondInterrupt: { code: null, signal: "SIGINT", timedOut: false },
   };
 
   test("passes when the sweep reclaimed the escapee and kept the committed clone", () => {
@@ -525,13 +555,131 @@ describe("item 7 — an interruption leaves nothing behind", () => {
   test("fails when an empty clone was left behind", () => {
     const checks = judgeInterrupt({
       ...clean,
-      survivingClones: [...clean.survivingClones, { path: "/runs/r1/item-3", hadCommits: false, bytes: 0 }],
+      survivingClones: [...clean.survivingClones, { path: "/runs/r1/item-3", hadCommits: false, bytes: 0, committedValue: null }],
     });
-    expect(names(checks)).toContain("no clone WITHOUT committed work survives");
+    expect(names(checks)).toContain("every clone this item saw is accounted for, and none WITHOUT committed work survives");
+  });
+
+  test("naming an empty clone in the report is NOT a licence to keep it", () => {
+    // BAR.md: "the next start's sweep reclaims it, no clone survives." The
+    // product's own `test/run-kept.test.ts` fixes the answer for this exact
+    // clone — *"NEGATIVE: a clone with no commits and a clean tree is NOT
+    // retained"*, commented "the escapee's clone in BAR item 7" — so retention
+    // here is a failure however loudly it is announced. Without this, a product
+    // that stopped deleting empty clones altogether would pass item 7.
+    const checks = judgeInterrupt({
+      ...clean,
+      survivingClones: [...clean.survivingClones, { path: "/runs/r1/item-1", hadCommits: false, bytes: 88, committedValue: null }],
+      reportAfterSweep: `${clean.reportAfterSweep}\n  r1 item 1: /runs/r1/item-1 (0.00 MB, 88 bytes) — retained`,
+    });
+    expect(names(checks)).toContain("every clone this item saw is accounted for, and none WITHOUT committed work survives");
+  });
+
+  test("fails when the item never saw a clone at all — the check has no denominator", () => {
+    // `filter(…).length === 0` over an empty list passes, and the list WAS
+    // empty for nine rounds while this item enumerated a path shape the product
+    // does not use. An empty denominator must never read as a clean sweep.
+    expect(names(judgeInterrupt({ ...clean, clonesAtKill: [], survivingClones: [] }))).toContain(
+      "every clone this item saw is accounted for, and none WITHOUT committed work survives",
+    );
+  });
+
+  test("fails when the retained clone exists but no longer HOLDS the work (finding 92)", () => {
+    // A directory with the right name and nothing in it satisfies every path
+    // check ever written. Finding 92 is about work being unrecoverable.
+    expect(
+      names(
+        judgeInterrupt({
+          ...clean,
+          survivingClones: [{ path: "/runs/r1/item-2", hadCommits: true, bytes: 4096, committedValue: null }],
+        }),
+      ),
+    ).toContain("the retained clone still HOLDS the committed work, byte for byte (finding 92)");
+  });
+
+  test("fails when the report gives the path but no byte figure (ruling 63)", () => {
+    const checks = judgeInterrupt({ ...clean, reportAfterSweep: "  r1 item 2: /runs/r1/item-2 — retained" });
+    expect(names(checks)).toContain("a clone WITH committed work is retained, reported with path and bytes (ruling 63)");
+  });
+
+  test("fails when the descendant was still MARKED — links 1 and 2 would have caught it", () => {
+    expect(
+      names(judgeInterrupt({ ...clean, escapee: { ...escapee, commandLine: "bun agent.ts --brigadier-run=ab12/1" } })),
+    ).toContain("the descendant defeated ruling 38's first two links: UNMARKED, and off the ppid graph");
+  });
+
+  test("fails when the descendant is still on the ppid graph of a live process", () => {
+    expect(
+      names(judgeInterrupt({ ...clean, escapee: { ...escapee, ppid: 9001 }, escapeeParentAlive: true })),
+    ).toContain("the descendant defeated ruling 38's first two links: UNMARKED, and off the ppid graph");
+  });
+
+  test("fails when the sweep killed it and named the pid nowhere (ruling 63)", () => {
+    const checks = judgeInterrupt({
+      ...clean,
+      reportAfterSweep: "  r1 item 2: /runs/r1/item-2 (0.00 MB, 4096 bytes) — retained",
+      recordAfterSweep: "{\"type\":\"run-started\"}",
+    });
+    expect(names(checks)).toContain("the sweep NAMED the pid it reclaimed (ruling 63)");
+  });
+
+  test("the pid named only in the run record on disk is enough", () => {
+    // `describeStartSweep`'s lines travel as the report's `detail`, and ruling
+    // 58's cap drops `detail` entirely for the DEFAULT audience. A check that
+    // only read stdout would fail a product that wrote the pid down correctly.
+    expect(
+      names(
+        judgeInterrupt({
+          ...clean,
+          reportAfterSweep: "  r1 item 2: /runs/r1/item-2 (0.00 MB, 4096 bytes) — retained",
+          recordAfterSweep: "{\"type\":\"swept\",\"reclaimedPids\":[4242],\"survivors\":[]}",
+        }),
+      ),
+    ).toEqual([]);
+  });
+
+  test("fails when the run was never in flight when this item signalled it", () => {
+    // `src/run/interrupt.ts` defines a signal arriving before the first clone
+    // as "exit immediately with the signal's status" — correct behaviour that
+    // looks, from outside, exactly like having no handler at all.
+    expect(names(judgeInterrupt({ ...clean, interruptInFlight: false }))).toContain(
+      "the orchestrator SURVIVED the first interrupt to drain (ruling 63)",
+    );
   });
 
   test("fails when a second interrupt invents an exit code instead of re-raising", () => {
-    const checks = judgeInterrupt({ ...clean, secondInterrupt: { code: 130, signal: null } });
+    const checks = judgeInterrupt({ ...clean, secondInterrupt: { code: 130, signal: null, timedOut: false } });
+    expect(names(checks)).toContain("a second interrupt re-raises the signal rather than inventing an exit code");
+  });
+
+  test("a pid is read from a pid-bearing line and never from a coincidence", () => {
+    // The failure this guards: a byte count, a timestamp or a MB figure that
+    // happens to contain the digits. A check a coincidence can pass is not one.
+    expect(namesPid("  reclaimed pid 4242 (item 1): confirmed gone", 4242)).toBe(true);
+    expect(namesPid("  r1 item 2: /runs/r1/x (0.00 MB, 4242 bytes) — retained", 4242)).toBe(false);
+    expect(namesPid("  reclaimed pid 42421 (item 1)", 4242)).toBe(false);
+    expect(namesPid('{"type":"swept","reclaimedPids":[4242]}', 4242)).toBe(false);
+    // …and the record's own field names are only readable in the loose form,
+    // which reads the FIELD and not the line: a minified event is one line, so
+    // a byte count beside an empty `reclaimedPids` must not credit the pid.
+    expect(namesPid('{"type":"swept","reclaimedPids":[4242]}', 4242, true)).toBe(true);
+    expect(namesPid('{"type":"swept","reclaimedPids":[7,4242,9],"survivors":[]}', 4242, true)).toBe(true);
+    expect(namesPid('{"type":"swept","survivors":[4242]}', 4242, true)).toBe(true);
+    expect(namesPid('{"type":"swept","reclaimedPids":[],"bytes":4242}', 4242, true)).toBe(false);
+    expect(namesPid('{"type":"item","bytes":4242}', 4242, true)).toBe(false);
+    expect(namesPid('{"type":"swept","reclaimedPids":[42421]}', 4242, true)).toBe(false);
+  });
+
+  test("the retained clone's bytes are read out of the PRODUCT's line, not the harness's stat", () => {
+    const line = "  r1 item 2: /runs/r1/item-2 (0.00 MB, 4096 bytes) — holding commit 9c1f";
+    expect(reportedBytesFor(line, "/runs/r1/item-2")).toBe(4096);
+    expect(reportedBytesFor("  r1 item 2: /runs/r1/item-2 — retained", "/runs/r1/item-2")).toBe(null);
+    expect(reportedBytesFor(line, "/runs/r1/item-9")).toBe(null);
+    expect(reportedBytesFor("  x: /p (1,048,576 bytes)", "/p")).toBe(1048576);
+  });
+
+  test("fails when two signals left it running and the bounded wait expired", () => {
+    const checks = judgeInterrupt({ ...clean, secondInterrupt: { code: null, signal: null, timedOut: true } });
     expect(names(checks)).toContain("a second interrupt re-raises the signal rather than inventing an exit code");
   });
 });
@@ -629,32 +777,80 @@ describe("item 9 — ruling 57's binary refusal", () => {
 // ----------------------------------------------------------------- item 10
 
 const APACHE = "TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION ... APPENDIX: How to apply the Apache License";
-const LGPL = "GNU LESSER GENERAL PUBLIC LICENSE Version 2.1, February 1999 ... This library is free software";
+/**
+ * The landmarks `lgplIntegrity` requires, spread as they are in the real text.
+ *
+ * A title and a version string used to be enough, and that is the defect the
+ * truncation test below pins: §6's obligation is the BODY.
+ */
+const LGPL = [
+  "GNU LESSER GENERAL PUBLIC LICENSE Version 2.1, February 1999",
+  "TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION",
+  "...you must supply a copy of this License, and deliver the complete object files to the recipients so that they can relink...",
+  "NO WARRANTY",
+  "END OF TERMS AND CONDITIONS",
+].join("\n");
+const ATTRIBUTION = [
+  "brigadier — Apache-2.0",
+  "Copyright 2026",
+  "",
+  "  bun 1.3.14 — MIT",
+  "  javascriptcore-webkit oven-sh/WebKit@5488984d20e0dbfe4be2c3ba8fb18eb81a5e0e8b — LGPL-2.0-or-later",
+  "  tinycc oven-sh/tinycc@12882eee073cfe5c7621bcfadf679e1372d4537b — LGPL-2.1-or-later",
+  "",
+].join("\n");
+const INSTALL_OUTPUT = [
+  "brigadier installed.",
+  "~/.agents/skills/brigadier/",
+  "  discovery auto-discovered with no manifest — MEASURED on Codex, opencode, Gemini CLI, Copilot and Cursor.",
+  "    Qwen is a MEASURED counterexample, so this is a broad convention and NOT a universal one.",
+  "    ChatGPT is a permanent blank: a hosted surface has no filesystem.",
+  "~/.claude/skills/brigadier/",
+].join("\n");
+const POISON_PATH = "/scratch/home/.claude/hooks.json";
 const TRUTHFUL_ARTIFACT: ArtifactObservations = {
-  licences: { code: 0, stdout: "brigadier — Apache-2.0\nCopyright 2026\n\n  bun 1.3.14 — MIT\n", stderr: "" },
+  licences: { code: 0, stdout: ATTRIBUTION, stderr: "" },
   full: {
     code: 0,
     stdout: [
       APACHE,
       LGPL,
-      "relink: clone https://github.com/oven-sh/WebKit pinned to 532c8b70b9142c17e07737ab6d3da68d7500cbca",
-      "tinycc corresponding source, pinned to 0123456789abcdef0123456789abcdef01234567",
+      "relink: git clone https://github.com/oven-sh/WebKit pinned to 532c8b70b9142c17e07737ab6d3da68d7500cbca",
+      "git clone https://github.com/oven-sh/tinycc — tinycc corresponding source, pinned to 0123456789abcdef0123456789abcdef01234567",
     ].join("\n"),
     stderr: "",
   },
   markersFound: [],
   sizeBytes: 60 * 1_048_576,
-  coldMs: 20,
   warmMs: 8,
   spawnFloorMs: 1,
-  nodeless: { code: 0, stdout: "brigadier — Apache-2.0", stderr: "" },
+  nodeless: { code: 0, stdout: ATTRIBUTION, stderr: "" },
   nodelessPathRemoved: ["/nvm/bin"],
-  installProbe: "installed to ~/.agents/skills/brigadier",
+  nodeOnPath: { before: "/nvm/bin/node", after: "" },
+  installProbe: INSTALL_OUTPUT,
+  installedPaths: [
+    ".agents/skills/brigadier/SKILL.md",
+    ".claude/skills/brigadier/SKILL.md",
+    ".claude/skills/brigadier/hooks/hooks.json",
+  ],
+  homeBeforeInstall: [],
+  homeAfterUninstall: [],
+  uninstall: { code: 0, stdout: "brigadier uninstalled", stderr: "" },
+  emptyDirsLeft: [".agents/skills"],
   hooksProbe: "hooks: PreCompact",
-  installedPaths: [".agents/skills/brigadier/SKILL.md"],
-  poisonedHooksProbe: "hooks.json carries an unrecognised event notARealEvent-abc123 — the whole file was discarded",
+  installedHookFile: { path: ".claude/skills/brigadier/hooks/hooks.json", events: ["PreCompact"] },
+  hostDetails: {
+    available: true,
+    command: "claude plugin details brigadier",
+    code: 0,
+    output: "Component inventory\n  Hooks (1)  PreCompact\n",
+  },
+  poisonedHooksProbe:
+    `POISONED ${POISON_PATH} — UNRECOGNISED EVENT(S): notARealEvent-abc123. ` +
+    "One unrecognised event DISCARDS EVERY HOOK IN THIS FILE",
+  poisonedHooksCode: 1,
   poisonKey: "notARealEvent-abc123",
-  freshColdMs: 40,
+  poisonedPath: POISON_PATH,
 };
 
 describe("item 10 — the artifact ships, and says what is in it", () => {
@@ -668,6 +864,34 @@ describe("item 10 — the artifact ships, and says what is in it", () => {
       full: { ...TRUTHFUL_ARTIFACT.full, stdout: TRUTHFUL_ARTIFACT.full.stdout.replace(LGPL, "") },
     });
     expect(names(checks)).toContain("`--full` carries the LGPL text itself (ruling 72)");
+  });
+
+  test("a TITLE without the body is not the LGPL text (ruling 72)", () => {
+    // The check this replaces matched a title and any one of three version
+    // strings, so the two lines below would have passed it — against §6, whose
+    // whole content is the obligation to supply the body.
+    const headerOnly = "GNU LESSER GENERAL PUBLIC LICENSE\nVersion 2.1, February 1999\nThis library is free software";
+    const checks = judgeArtifact({
+      ...TRUTHFUL_ARTIFACT,
+      full: { ...TRUTHFUL_ARTIFACT.full, stdout: TRUTHFUL_ARTIFACT.full.stdout.replace(LGPL, headerOnly) },
+    });
+    expect(names(checks)).toContain("`--full` carries the LGPL text itself (ruling 72)");
+    expect(lgplIntegrity(headerOnly).missing).toContain("§6's relink sentence");
+    expect(lgplIntegrity(LGPL).missing).toEqual([]);
+  });
+
+  test("fails when the attribution drops a statically linked component", () => {
+    const withoutTinycc = ATTRIBUTION.split("\n").filter((l) => !/tinycc/i.test(l)).join("\n");
+    expect(
+      names(judgeArtifact({ ...TRUTHFUL_ARTIFACT, licences: { code: 0, stdout: withoutTinycc, stderr: "" }, nodeless: { code: 0, stdout: withoutTinycc, stderr: "" } })),
+    ).toContain("attribution names every component `bun --compile` puts in the binary regardless");
+  });
+
+  test("fails when the relink recipe is a citation rather than commands", () => {
+    const citation = TRUTHFUL_ARTIFACT.full.stdout.replace(/git clone /g, "see ");
+    expect(names(judgeArtifact({ ...TRUTHFUL_ARTIFACT, full: { ...TRUTHFUL_ARTIFACT.full, stdout: citation } }))).toContain(
+      "the relink recipe is present, as commands rather than a citation",
+    );
   });
 
   test("fails when the binary carries a proprietary marker (ruling 47)", () => {
@@ -706,10 +930,66 @@ describe("item 10 — the artifact ships, and says what is in it", () => {
     ).toContain("runs with node absent from PATH (ruling 4)");
   });
 
+  test("blocks when there was no node to strip, instead of passing for free", () => {
+    // `after === ""` is satisfied for free on a machine with no node at all, so
+    // the strip reads green having removed nothing.
+    const checks = judgeArtifact({ ...TRUTHFUL_ARTIFACT, nodeOnPath: { before: "", after: "" } });
+    expect(names(checks)).toContain(NODE_STRIP_NOT_RUN);
+    expect(NODE_STRIP_NOT_RUN.startsWith("NOT-RUN —")).toBe(true);
+    expect(names(checks)).not.toContain("node is genuinely unreachable on the stripped PATH");
+  });
+
+  test("fails when the PATH strip did not actually remove node", () => {
+    // The check that matters is not "did we run the binary" but "was node
+    // really gone". A strip verified with the predicate that did the stripping
+    // agrees with itself for free, so the shell's own answer is the subject.
+    expect(
+      names(judgeArtifact({ ...TRUTHFUL_ARTIFACT, nodeOnPath: { before: "/nvm/bin/node", after: "/usr/bin/node" } })),
+    ).toContain("node is genuinely unreachable on the stripped PATH");
+  });
+
+  test("fails when the nodeless run silently prints something different", () => {
+    expect(
+      names(judgeArtifact({ ...TRUTHFUL_ARTIFACT, nodeless: { code: 0, stdout: "brigadier — Apache-2.0\n", stderr: "" } })),
+    ).toContain("and produces the SAME output it produces with node present");
+  });
+
   test("fails when install does not reach ruling 42's real discovery path", () => {
     expect(names(judgeArtifact({ ...TRUTHFUL_ARTIFACT, installedPaths: [] }))).toContain(
-      "install reaches ruling 42's real discovery path, named",
+      "install reaches ruling 42's cross-vendor discovery path, named",
     );
+  });
+
+  test("fails when install reaches only the cross-vendor root (ruling 42)", () => {
+    // MEASURED: Claude Code does not discover ~/.agents/skills/ at all, so one
+    // root is one host's discovery path, not "each host's".
+    expect(
+      names(judgeArtifact({ ...TRUTHFUL_ARTIFACT, installedPaths: [".agents/skills/brigadier/SKILL.md"] })),
+    ).toContain("and Claude Code's own root, which does not see the cross-vendor one (ruling 42)");
+  });
+
+  test("fails when install implies six uniform clients", () => {
+    expect(
+      names(judgeArtifact({ ...TRUTHFUL_ARTIFACT, installProbe: "installed to ~/.agents/skills/brigadier — every client finds it" })),
+    ).toContain("install does not imply six uniform clients — ChatGPT is named as a permanent blank");
+  });
+
+  test("fails when uninstall leaves brigadier's own files behind (ruling 26)", () => {
+    expect(
+      names(judgeArtifact({ ...TRUTHFUL_ARTIFACT, homeAfterUninstall: [".claude/skills/brigadier/SKILL.md"] })),
+    ).toContain("`uninstall` removes every file install wrote, and nothing else (ruling 26)");
+  });
+
+  test("fails when uninstall destroys something of the operator's", () => {
+    expect(
+      names(
+        judgeArtifact({
+          ...TRUTHFUL_ARTIFACT,
+          homeBeforeInstall: [".claude/settings.json"],
+          homeAfterUninstall: [],
+        }),
+      ),
+    ).toContain("`uninstall` removes every file install wrote, and nothing else (ruling 26)");
   });
 
   test("fails when install puts a bin/ on PATH (ruling 42)", () => {
@@ -722,8 +1002,57 @@ describe("item 10 — the artifact ships, and says what is in it", () => {
     // A count-based check passes here; ruling 60 exists because `.lsp.json` was
     // measured reporting `LSP servers (1)` for `{"notARealKey": 1}`.
     expect(names(judgeArtifact({ ...TRUTHFUL_ARTIFACT, hooksProbe: "hooks (1)" }))).toContain(
-      "the hook surface names `PreCompact` (ruling 60)",
+      "brigadier's own printed hook surface names `PreCompact`",
     );
+  });
+
+  test("fails when install wrote no hook file, however the binary describes itself", () => {
+    // The defect this pins: `brigadier plugin hooks` is a compiled-in string, so
+    // the self-report above still names PreCompact while nothing was written.
+    const checks = judgeArtifact({ ...TRUTHFUL_ARTIFACT, installedHookFile: { events: [] } });
+    expect(names(checks)).toContain("install wrote a hooks.json that NAMES `PreCompact` (ruling 60)");
+    expect(names(checks)).not.toContain("brigadier's own printed hook surface names `PreCompact`");
+  });
+
+  test("fails when the installed hook file names some other event", () => {
+    expect(
+      names(
+        judgeArtifact({
+          ...TRUTHFUL_ARTIFACT,
+          installedHookFile: { path: ".claude/skills/brigadier/hooks/hooks.json", events: ["SessionStart"] },
+        }),
+      ),
+    ).toContain("install wrote a hooks.json that NAMES `PreCompact` (ruling 60)");
+  });
+
+  test("fails when the hook file is written outside a directory brigadier owns (ruling 8)", () => {
+    expect(
+      names(judgeArtifact({ ...TRUTHFUL_ARTIFACT, installedHookFile: { path: ".claude/hooks/hooks.json", events: ["PreCompact"] } })),
+    ).toContain("the hook file is inside a directory brigadier owns (rulings 8, 27)");
+  });
+
+  test("fails when the HOST does not name PreCompact — and says so when it was not asked", () => {
+    const silent = judgeArtifact({
+      ...TRUTHFUL_ARTIFACT,
+      hostDetails: { ...TRUTHFUL_ARTIFACT.hostDetails, output: "Component inventory\n  Hooks (0)\n" },
+    });
+    expect(names(silent)).toContain("the HOST names `PreCompact` after install (ruling 60, BAR.md's own instrument)");
+
+    // With no `claude` on the machine the host view BLOCKS. It was a note, and a
+    // note renders `ok`: item 10 printed PASS on a CI leg where `BAR.md`'s named
+    // instrument never executed, and the test here asserted that as correct.
+    // Ruling 48 — a check that did not run is not a check that passed — and
+    // `claude` installs on all three runners, so this is a missing dependency
+    // rather than a platform impossibility.
+    const unasked = judgeArtifact({
+      ...TRUTHFUL_ARTIFACT,
+      hostDetails: { available: false, command: "claude plugin details brigadier", code: null, output: "" },
+    });
+    expect(names(unasked)).toContain(HOST_NOT_RUN);
+    expect(HOST_NOT_RUN.startsWith("NOT-RUN —")).toBe(true);
+    // And it does not take the file half down with it: what install wrote is
+    // still proven, and only "the host loads it" is not.
+    expect(names(unasked)).not.toContain("install wrote a hooks.json that NAMES `PreCompact` (ruling 60)");
   });
 
   test("fails when a poisoned hooks.json is silently discarded (ruling 60)", () => {
@@ -732,8 +1061,96 @@ describe("item 10 — the artifact ships, and says what is in it", () => {
     );
   });
 
-  test("fails when a never-executed copy blows the cold-start budget", () => {
-    expect(names(judgeArtifact({ ...TRUTHFUL_ARTIFACT, freshColdMs: 3_900 })).some((n) => n.includes("NEVER-EXECUTED"))).toBe(true);
+  test("fails when the poisoned file is reported without naming the file", () => {
+    expect(
+      names(
+        judgeArtifact({
+          ...TRUTHFUL_ARTIFACT,
+          poisonedHooksProbe: "an unrecognised event notARealEvent-abc123 discards every hook in the file",
+        }),
+      ),
+    ).toContain("a hooks.json carrying one unrecognised event is REPORTED, not silently discarded (ruling 60)");
+  });
+
+  test("fails when the poisoned file is reported and the check still exits 0", () => {
+    // Exactly what the host does: prints nothing, exits 0, discards the file.
+    expect(names(judgeArtifact({ ...TRUTHFUL_ARTIFACT, poisonedHooksCode: 0 }))).toContain(
+      "and the poisoned file makes the check EXIT NON-ZERO",
+    );
+  });
+
+  test("the struck cold-start clause is PRINTED, and gates nothing", () => {
+    // `BAR.md`'s closing rule: an item is struck only in the open. The strike
+    // must appear in the output of a PASSING run, it must not be a check that
+    // can fail, and no cold-start budget may survive anywhere in the item.
+    const checks = judgeArtifact(TRUTHFUL_ARTIFACT);
+    const struck = checks.rows.find((r) => r.name.startsWith("STRUCK CLAUSE"));
+    expect(struck).toBeDefined();
+    expect(struck?.ok).toBe(true);
+    expect(struck?.detail).toContain("WITHDRAWN by the owner");
+    expect(struck?.detail).toContain("MEASUREMENT-SESSION.md:140");
+    expect(struck?.detail).toContain("873 ms");
+    expect(struck?.detail).toContain("892 ms");
+    expect(struck?.detail).toContain("11.3 ms/MB");
+    expect(struck?.detail).toBe(struckLine());
+    expect(checks.rows.map((r) => r.name)).toContain("what the struck clause leaves unproven (note)");
+    // No surviving cold-start gate, under any wording.
+    const gates = checks.rows.filter((r) => !r.name.endsWith("(note)")).map((r) => r.name.toLowerCase());
+    expect(gates.filter((n) => n.includes("cold"))).toEqual([]);
+    expect(gates.filter((n) => n.includes("never-executed"))).toEqual([]);
+  });
+
+  test("the §17 warm proposal is recorded as a proposal, not as a budget", () => {
+    const checks = judgeArtifact({ ...TRUTHFUL_ARTIFACT, warmMs: 17, spawnFloorMs: 1 });
+    // 16 ms net is inside §17's PROPOSED 20 ms and outside the adopted 10 ms.
+    // The adopted budget is the one that decides, because no budget is ever
+    // adjusted to fit a measurement.
+    expect(names(checks).some((n) => n.startsWith("warm start within 10 ms"))).toBe(true);
+    const proposal = checks.rows.find((r) => r.name.startsWith("PROPOSAL, not adopted"));
+    expect(proposal?.ok).toBe(true);
+    expect(proposal?.detail).toContain("has NOT adopted");
+  });
+
+  test("the quiet-machine warm figure is recorded, and its own arithmetic agrees", () => {
+    // The record has to be internally consistent, or a later edit to one field
+    // leaves a number that reads authoritative and is not.
+    const q = QUIET_WARM_MEASUREMENT;
+    expect(Math.round((q.rawMinMs - q.spawnFloorMs) * 100) / 100).toBe(q.correctedMs);
+    expect(Math.round((q.correctedMs - 10) * 100) / 100).toBe(q.marginOverBudgetMs);
+
+    // And it reaches the row a reader actually sees, with the distribution that
+    // makes the minimum trustworthy rather than merely conservative.
+    const warm = judgeArtifact(TRUTHFUL_ARTIFACT).rows.find((r) => r.name.startsWith("warm start within 10 ms"));
+    expect(warm?.detail).toContain("METHOD:");
+    expect(warm?.detail).toContain("MARGIN:");
+    expect(warm?.detail).toContain("13.99 ms");
+    expect(warm?.detail).toContain("median 15.67");
+    // The 2026-08-17 series must stay labelled as an EARLIER artifact: reading
+    // it as this binary's warm cost produced a wrong correction once already.
+    expect(warm?.detail).toContain("EARLIER artifact");
+  });
+
+  test("three warm figures against three artifacts are not reported as a trend", () => {
+    const history = judgeArtifact(TRUTHFUL_ARTIFACT).rows.find((r) => r.name.startsWith("the warm figure has been recorded three times"));
+    expect(history?.ok).toBe(true);
+    expect(history?.detail).toContain("11.29 ms");
+    expect(history?.detail).toContain("16.13 ms");
+    expect(history?.detail).toContain("NOT established");
+  });
+
+  test("hook events are read in both shapes, and a broken file is not read as empty", () => {
+    expect(hookEventsIn('{"hooks":{"PreCompact":[]}}').events).toEqual(["PreCompact"]);
+    expect(hookEventsIn('{"PreCompact":[]}').events).toEqual(["PreCompact"]);
+    expect(hookEventsIn("{not json").problem).toContain("malformed JSON");
+    expect(hookEventsIn("[]").problem).toContain("not an object");
+  });
+
+  test("empty directories are found from the same listing the removal check uses", () => {
+    const home = scratch("item10-dirs");
+    mkdirSync(join(home, ".agents", "skills"), { recursive: true });
+    mkdirSync(join(home, ".claude", "skills", "other"), { recursive: true });
+    writeFileSync(join(home, ".claude", "skills", "other", "SKILL.md"), "kept");
+    expect(emptyDirectories(home, [".claude/skills/other/SKILL.md"])).toEqual([".agents"]);
   });
 
   test("a pin belonging to some other component is not a pin", () => {
@@ -759,8 +1176,6 @@ describe("item 11 — the report fits the window and never hides a failure", () 
   const clean: ReportObservations = {
     hostReport:
       "run r1: fifty-4 FAILED — tests_pass. fifty-18 FAILED — tests_pass. fifty-43 FAILED — tests_pass. 47 passing item(s) collapsed to this count. run-record: /runs/r1/record.json",
-    failingItems: ["fifty-4", "fifty-18", "fifty-43"],
-    blockingChecks: ["tests_pass"],
     fullRecordPath: "/runs/r1/record.json",
     fullRecordExists: true,
     transcriptBytes: 6_400,
@@ -772,10 +1187,12 @@ describe("item 11 — the report fits the window and never hides a failure", () 
     expect(names(judgeReport(clean))).toEqual([]);
   });
 
-  test("fails when the cap hid a failing item (ruling 52)", () => {
-    const checks = judgeReport({ ...clean, hostReport: clean.hostReport.replace("fifty-43 FAILED — tests_pass. ", "") });
-    expect(names(checks)).toContain("every failing item still appears under the cap (ruling 52)");
-  });
+  // "every failing item still appears", "every blocking check appears" and
+  // "passing items collapsed" moved OUT of `judgeReport` in the 2026-08-19
+  // audit and are tested in `lib/item11-structure.test.ts`. They were three
+  // substring tests that could not fail: `includes("fifty-4")` is satisfied by
+  // `fifty-43`, `includes("verify")` by the tail sentence "the merged result
+  // was verified", and `/collapsed/i` by the word itself.
 
   test("fails when a worker transcript reached the host session", () => {
     const checks = judgeReport({ ...clean, hostReport: `${clean.hostReport}\n{"jsonrpc":"2.0","method":"session/update"}` });
@@ -884,6 +1301,7 @@ describe("item 13 — the cost model predicts, enforces, and says what it could 
   const record: RunRecord = {
     runId: "r1",
     integrationRef: "refs/heads/brigadier/r1",
+    base: { ref: "refs/brigadier/r1/base", sha: "b".repeat(40) },
     runRoot: "/home/me/.brigadier/runs/r1",
     bindingFilter: "the plan had 4 item(s)",
     workers: 4,
@@ -1038,16 +1456,12 @@ describe("item 13 — the cost model predicts, enforces, and says what it could 
     );
   });
 
-  test("fails when a run using opencode does not say `unpriceable`", () => {
-    const withOpencode: RunRecord = {
-      ...record,
-      cost: { ...(record.cost as NonNullable<RunRecord["cost"]>), quota: { opencode: "read" }, lowerBound: false },
-      items: record.items.map((i) => (i.agent ? { ...i, agent: "opencode" } : i)),
-    };
-    expect(names(judgeCost({ ...clean, record: withOpencode }))).toContain(
-      "a run using opencode says `unpriceable` and its total is a lower bound",
-    );
-  });
+  // "a run using opencode says `unpriceable`" left `judgeCost` in the
+  // 2026-08-19 audit. It was `!used.includes("opencode") || …`, and item 13
+  // planted a fleet of qwen and copilot — so it was true by construction on
+  // every run the item had ever driven, and it stays true whenever the router
+  // picks no opencode. The replacement keys on the vendors the HARNESS planted
+  // and is tested in `lib/item13-cost.test.ts`.
 
   test("fails on a token-reduction claim (ruling 70)", () => {
     expect(names(judgeCost({ ...clean, report: `${clean.report}\nthis run saved 16.5× on tokens` }))).toContain(
