@@ -77,6 +77,23 @@
  *   `/actual/i.test(report)` IS A WORD. "actual: not measured" contains it. The
  *   numbers are now required.
  *
+ *   AND THREE MORE, FOUND BY DRIVING IT. MEASURED against `bun 1.3.14` /
+ *   `dist/brigadier` on 2026-08-19, this item failed three checks and all three
+ *   were the instrument. A CEILING LINE WAS FOUND BY THE WORD `ceiling`, so
+ *   ruling 58's report-size budget — a different ceiling, in a different unit —
+ *   counted as a ruling-66 event and the run given NO ceilings failed its own
+ *   negative control on `src/queue/admit.ts`'s admission prose. THE
+ *   WEAKENED-GAP WARNING was excised by splitting the report on the record's
+ *   copy of it, and the record's copy is the CLI's lines joined by a space
+ *   while the CLI itself prints them one per line before the run — so the
+ *   excision reached one copy, the other survived, and `it did NOT report
+ *   cancelling work that was already running` matched the product's sentence
+ *   about a WEAKENING. AND RULING 29'S TRIPLE was spelled three ways at once:
+ *   the expectation wanted an empty string for a model nothing routed, the
+ *   failure message rendered `undefined`, and the product — correctly, and by
+ *   the same rule that governs everything else here — printed `unrouted`. All
+ *   three are repaired in `../lib/item13-cost.ts`, none of them in `src/`.
+ *
  *   AND THE EFFORT HALF WAS NOT CHECKED AT ALL beyond `effort !== undefined` —
  *   which amendment §19 warns is exactly the shape that misses the regression,
  *   because a record that stringifies an absent value writes the word

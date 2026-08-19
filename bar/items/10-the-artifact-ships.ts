@@ -249,6 +249,87 @@ export const HOST_NOT_RUN =
 export const NODE_STRIP_NOT_RUN =
   "NOT-RUN — there was no `node` on this machine's PATH to strip, so the strip proved nothing (ruling 4)";
 
+/**
+ * The build identifier, as the ARTIFACT reports it about itself.
+ *
+ * WHY THIS IS AN ASSERTION AND NOT A COURTESY. This binary's warm start has been
+ * recorded four times — 11.29 ms, 16.13 ms, 13.99 ms and a contended reading —
+ * and nothing tied any figure to any artifact. The numbers sit next to each
+ * other looking like a series and they are not one: what changed between them
+ * was never established, so no trend may be read into them. A number whose
+ * subject is unnamed is not a measurement of anything, which is why the item
+ * that reports the timings is the item that checks the identifier.
+ *
+ * Parsed out of `brigadier version`'s stdout rather than imported, because
+ * nothing under `bar/` imports from `src/` (see `bar/types.ts`): the harness
+ * drives the artifact as a black box, so what is checked is what an operator
+ * would actually see.
+ *
+ * FIELDS ARE ASSERTED BY NAME. `missing` and `malformed` carry the field names,
+ * never a count — a count of six is satisfied by the wrong six, and this
+ * repository has shipped that mistake before.
+ */
+export const BUILD_ID_FIELDS = ["commit", "tree", "bun", "bun-revision", "binary-sha256", "binary-bytes"] as const;
+export type BuildIdField = (typeof BUILD_ID_FIELDS)[number];
+
+/** What each field has to look like to be that field rather than a placeholder. */
+const BUILD_ID_SHAPES: Record<BuildIdField, RegExp> = {
+  commit: /^[0-9a-f]{40}$/,
+  tree: /^(?:clean|dirty)$/,
+  bun: /^\d+\.\d+\.\d+/,
+  "bun-revision": /^[0-9a-f]{40}$/,
+  "binary-sha256": /^[0-9a-f]{64}$/,
+  "binary-bytes": /^\d+$/,
+};
+
+export interface ReportedBuildId {
+  /** The `BUILD-ID …` line itself, when the artifact printed one. */
+  line?: string;
+  fields: Partial<Record<BuildIdField, string>>;
+  /** Field NAMES the line did not carry. */
+  missing: BuildIdField[];
+  /** Field names that were present and are not what they claim to be. */
+  malformed: string[];
+}
+
+export function parseBuildId(text: string): ReportedBuildId {
+  const line = text.split("\n").find((l) => l.trimStart().startsWith("BUILD-ID"))?.trim();
+  const fields: Partial<Record<BuildIdField, string>> = {};
+  const malformed: string[] = [];
+  if (line !== undefined) {
+    for (const match of line.matchAll(/([a-z0-9-]+)=(\S+)/g)) {
+      const name = match[1] as BuildIdField;
+      if (!(BUILD_ID_FIELDS as readonly string[]).includes(name)) continue;
+      const value = match[2] ?? "";
+      if (BUILD_ID_SHAPES[name].test(value)) fields[name] = value;
+      else malformed.push(`${name}=${value}`);
+    }
+  }
+  const missing = BUILD_ID_FIELDS.filter((f) => fields[f] === undefined);
+  return { ...(line === undefined ? {} : { line }), fields, missing, malformed };
+}
+
+/**
+ * The one string every figure in this item is printed beside.
+ *
+ * It says the artifact's name where there is one and says UNIDENTIFIED where
+ * there is not — never nothing, because a timing that silently omits its
+ * subject is the defect this whole surface exists to remove.
+ */
+export function attribution(reported: ReportedBuildId): string {
+  if (reported.missing.length === 0 && reported.malformed.length === 0 && reported.line !== undefined) {
+    return `ARTIFACT: ${reported.line}`;
+  }
+  return (
+    "ARTIFACT: UNIDENTIFIED — " +
+    (reported.line === undefined
+      ? "`brigadier version` printed no BUILD-ID line at all"
+      : `the BUILD-ID line is missing ${reported.missing.join(", ") || "nothing"}` +
+        (reported.malformed.length === 0 ? "" : ` and carries malformed ${reported.malformed.join(", ")}`)) +
+    ". The figure below therefore names no artifact, and cannot be compared with any other figure"
+  );
+}
+
 export interface HookFileEvidence {
   /** The installed hook file, as found under the scratch home. `undefined` = none was written. */
   path?: string;
@@ -263,6 +344,30 @@ export interface ArtifactObservations {
   full: { code: number | null; stdout: string; stderr: string };
   markersFound: string[];
   sizeBytes: number;
+  /** `brigadier version` — the identity the artifact reports about ITSELF. */
+  versionProbe: { code: number | null; stdout: string; stderr: string };
+  /**
+   * sha256 of `ctx.binary`, computed by THIS harness from the file it timed.
+   *
+   * WHAT COMPARING IT PROVES, AND WHAT IT DOES NOT. It proves the process that
+   * printed the identifier is the file this harness timed. It is NOT a witness
+   * to the other three fields: the commit, the tree state and the bun are
+   * assertions by whoever compiled, and a bare binary carries nothing that can
+   * check them. An earlier draft of this comment claimed a stamp carried forward
+   * from an earlier build "fails here rather than passing as an identity", and
+   * that was false — a patched, re-signed copy of `dist/brigadier` reported the
+   * original commit beside the TAMPERED file's own true digest and passed every
+   * check below. Detecting a false commit needs a signature over the stamp,
+   * which this surface does not have and does not claim.
+   *
+   * It still earns the comparison. It fails on an absent or broken version
+   * surface; on a digest that is hardcoded rather than computed; on a future
+   * regression that stamps the digest at compile time, which would then name the
+   * PREVIOUS build; and on a report stitched from two binaries, where a figure
+   * timed against one artifact is printed beside another's identity. Those are
+   * the realistic ways this repository loses attribution, and they are caught.
+   */
+  binarySha256: string;
   warmMs: number;
   /** What this harness costs to spawn anything at all, subtracted below. */
   spawnFloorMs: number;
@@ -352,12 +457,20 @@ export function lgplIntegrity(text: string): LgplIntegrity {
 export function judgeArtifact(o: ArtifactObservations): Checks {
   const checks = new Checks();
   const full = o.full.stdout;
+  // Parsed first, because every number this item prints is printed beside it.
+  const reported = parseBuildId(o.versionProbe.stdout);
+  const cite = attribution(reported);
 
   // ── the struck clause, first, so it cannot be scrolled past ────────────────
   // Printed on a PASS as well as a failure. A withdrawn promise that only shows
   // up when something else breaks is a withdrawn promise nobody reads.
   checks.note("STRUCK CLAUSE — this item asserts no cold-start budget, and none is promised", struckLine());
-  checks.note("what the struck clause leaves unproven", STRUCK_COLD_START.unproven);
+  checks.note(
+    "what the struck clause leaves unproven",
+    `${STRUCK_COLD_START.unproven}. AND NONE OF THOSE COLD FIGURES NAMES AN ARTIFACT: 873 ms, 892 ms and the ` +
+      "6,045 ms quarantined reading were taken against binaries that carried no build identifier, so they are " +
+      `attributable to a date and a machine and to nothing else. This run's subject, by contrast — ${cite}`,
+  );
 
   // Ruling 47 / Apache-2.0 §4(a): the obligation is to whoever RECEIVES the
   // work, and under ruling 26 that is routinely a bare binary from a tap or a
@@ -437,6 +550,48 @@ export function judgeArtifact(o: ArtifactObservations): Checks {
       "so v1's MEASURED 63 MB is 63 MiB. Both readings are printed because they disagree about the verdict",
   );
 
+  // ── which artifact is this? ───────────────────────────────────────────────
+  // Before any timing, because a figure whose subject is unnamed is not a
+  // measurement of anything. Two checks, and neither is a note: the first says
+  // the artifact carries an identifier, the second says the identifier is THIS
+  // artifact's. The second is the one that cannot be faked, because the harness
+  // recomputes the digest from the file it timed.
+  checks.expect(
+    "the artifact carries a build identifier — commit, tree state, compiling bun, and its own sha256",
+    o.versionProbe.code === 0 && reported.missing.length === 0 && reported.malformed.length === 0,
+    `\`brigadier version\` exited ${o.versionProbe.code}. ` +
+      (reported.line === undefined
+        ? `NO BUILD-ID line was printed. stdout: ${excerpt(o.versionProbe.stdout, 240)}; stderr: ${excerpt(o.versionProbe.stderr, 160)}`
+        : `line: ${reported.line}. ` +
+          `Missing field(s): ${reported.missing.length === 0 ? "none" : reported.missing.join(", ")}. ` +
+          `Malformed field(s): ${reported.malformed.length === 0 ? "none" : reported.malformed.join(", ")}. ` +
+          `Fields are named rather than counted — six fields of the wrong six is not this check passing`),
+  );
+  checks.expect(
+    "the build identifier names the artifact that was actually timed",
+    reported.fields["binary-sha256"] !== undefined && reported.fields["binary-sha256"] === o.binarySha256,
+    `the artifact reports binary-sha256=${reported.fields["binary-sha256"] ?? "ABSENT"}; this harness hashed the ` +
+      `file it timed and got ${o.binarySha256}. ` +
+      (reported.fields["binary-sha256"] === o.binarySha256
+        ? "They agree, so every figure below was timed against the file that printed that line — which is what this " +
+          "check proves and the LIMIT of what it proves: the commit and the tree state are assertions by whoever " +
+          "compiled, and a patched binary reports its own true digest beside whatever commit was stamped into it."
+        : "They DISAGREE, so the line above describes a different file from the one that was timed — a report stitched " +
+          "from two binaries, a hardcoded digest, or a digest stamped at compile time naming the previous build. " +
+          "A figure attributed to another artifact's identifier is worse than one attributed to nothing."),
+  );
+  checks.expect(
+    "the identifier states whether the tree it was built from was clean",
+    reported.fields["tree"] !== undefined,
+    reported.fields["tree"] === undefined
+      ? "no `tree` field — whether the commit determines these bytes is unknown, which is the whole question a commit is cited to answer"
+      : `tree=${reported.fields["tree"]} at commit ${reported.fields["commit"] ?? "unknown"}. ` +
+        (reported.fields["tree"] === "dirty"
+          ? "DIRTY: the commit does NOT determine these bytes, this build cannot be reproduced from it, and only the sha256 above " +
+            "identifies it. Reported rather than gated — a dirty build is attributable, it is simply not reproducible"
+          : "clean: the commit determines these bytes, so this artifact can be rebuilt and the rebuild can be compared byte for byte"),
+  );
+
   // The harness's own spawn cost is subtracted, because otherwise a 10 ms
   // budget is being checked against a number that includes a millisecond of this
   // file. Both the raw and the corrected figures are printed so the correction
@@ -446,7 +601,8 @@ export function judgeArtifact(o: ArtifactObservations): Checks {
   checks.expect(
     `warm start within ${WARM_START_BUDGET_MS} ms (minimum of ${START_SAMPLES}, floor-corrected)`,
     warmNet <= WARM_START_BUDGET_MS,
-    `METHOD: minimum of ${START_SAMPLES} invocations, floor-corrected — ${o.warmMs} ms − ${o.spawnFloorMs} ms spawn floor = ${warmNet} ms. ` +
+    `${cite}. ` +
+      `METHOD: minimum of ${START_SAMPLES} invocations, floor-corrected — ${o.warmMs} ms − ${o.spawnFloorMs} ms spawn floor = ${warmNet} ms. ` +
       `MARGIN: ${margin <= 0 ? `${-margin} ms under` : `${margin} ms OVER`} the ${WARM_START_BUDGET_MS} ms budget, which is v1's warm figure from MEASUREMENT-SESSION.md. ` +
       `The statistic is the MINIMUM because scheduler noise only adds, and N=${START_SAMPLES} because that is where it stopped moving ` +
       "(the 2026-08-17 series min-of-5 12.10 ms / min-of-40 12.13 ms / min-of-150 12.07 ms is evidence about N and was taken against an EARLIER artifact — " +
@@ -464,7 +620,10 @@ export function judgeArtifact(o: ArtifactObservations): Checks {
     "the warm figure has been recorded three times, against three different artifacts",
     `${QUIET_WARM_MEASUREMENT.priorReadings}. What changed between those three points is NOT established: the artifact was not held ` +
       "constant and no record ties a figure to a build, so the sequence is neither a regression nor an improvement — it is three measurements " +
-      "of three things. Establish what the artifact was at each point before reading a direction into it",
+      "of three things. Establish what the artifact was at each point before reading a direction into it. " +
+      "THE HISTORY IS NOT RETROACTIVELY REPAIRABLE and no attempt is made to repair it: those binaries no longer exist, and none of them " +
+      `carried an identifier, so no sha256 can be recovered for any of them. What the check above changes is the NEXT reading — ${cite} — ` +
+      "and a fifth figure recorded against a named artifact can be compared with a sixth. Nothing here makes the four earlier ones comparable",
   );
   checks.note(
     "is the warm budget reachable at all",
@@ -768,6 +927,21 @@ const item: BarItem = {
     const markersFound = scanForMarkers(bytes);
     did.push(`scanned ${bytes.byteLength} bytes of the artifact for ${PROPRIETARY_MARKERS.length} proprietary markers`);
 
+    // Which artifact was that? Asked of the binary AFTER the timing loop, so the
+    // question does not warm a page cache the timing then benefits from, and the
+    // answer is checked against a digest this harness computes from the same
+    // bytes it just read — the artifact's own claim is not the evidence.
+    const versionProbe = await ctx.run(["version"], { timeoutMs: 60_000 });
+    const hasher = new Bun.CryptoHasher("sha256");
+    hasher.update(bytes);
+    const binarySha256 = hasher.digest("hex");
+    const reportedId = parseBuildId(versionProbe.stdout);
+    ctx.log(attribution(reportedId));
+    did.push(
+      `ran \`brigadier version\` and hashed the ${bytes.byteLength} bytes this harness timed: sha256 ${binarySha256}. ` +
+        `${attribution(reportedId)}`,
+    );
+
     const separator = process.platform === "win32" ? ";" : ":";
     const strippedPath = pathWithout("node");
     const before = (process.env["PATH"] ?? "").split(separator).filter((d) => d.length > 0);
@@ -855,6 +1029,8 @@ const item: BarItem = {
       full: { code: full.code, stdout: full.stdout, stderr: full.stderr },
       markersFound,
       sizeBytes: statSync(ctx.binary).size,
+      versionProbe: { code: versionProbe.code, stdout: versionProbe.stdout, stderr: versionProbe.stderr },
+      binarySha256,
       warmMs: warm,
       spawnFloorMs: floor,
       nodeless: { code: nodeless.code, stdout: nodeless.stdout, stderr: nodeless.stderr },

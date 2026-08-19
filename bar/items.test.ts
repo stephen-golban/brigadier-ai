@@ -808,6 +808,15 @@ const INSTALL_OUTPUT = [
   "~/.claude/skills/brigadier/",
 ].join("\n");
 const POISON_PATH = "/scratch/home/.claude/hooks.json";
+/**
+ * The sha256 the fixture's harness "computed" from the bytes it timed, and the
+ * `BUILD-ID` line a truthful artifact prints about itself. They agree here; the
+ * negative controls below break exactly one of them at a time.
+ */
+const FIXTURE_SHA = "9".repeat(64);
+const FIXTURE_BUILD_ID =
+  `BUILD-ID commit=${"a".repeat(40)} tree=clean bun=1.3.14 ` +
+  `bun-revision=0d9b296af33f2b851fcbf4df3e9ec89751734ba4 binary-sha256=${FIXTURE_SHA} binary-bytes=62914560`;
 const TRUTHFUL_ARTIFACT: ArtifactObservations = {
   licences: { code: 0, stdout: ATTRIBUTION, stderr: "" },
   full: {
@@ -822,6 +831,8 @@ const TRUTHFUL_ARTIFACT: ArtifactObservations = {
   },
   markersFound: [],
   sizeBytes: 60 * 1_048_576,
+  versionProbe: { code: 0, stdout: `${FIXTURE_BUILD_ID}\n\nbrigadier 0.0.0\n`, stderr: "" },
+  binarySha256: FIXTURE_SHA,
   warmMs: 8,
   spawnFloorMs: 1,
   nodeless: { code: 0, stdout: ATTRIBUTION, stderr: "" },

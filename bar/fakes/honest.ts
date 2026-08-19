@@ -1047,6 +1047,21 @@ async function doRun(): Promise<number> {
     if (hardCeiling === undefined || spend < hardCeiling) return false;
     if (!hardHit) {
       hardHit = true;
+      // SAID AS IT HAPPENS, ON STDERR, NAMING THE WORKERS THIS LINE IS ABOUT.
+      //
+      // `src/queue/execute.ts:1235` writes exactly this as the ceiling fires,
+      // and this fixture was killing the same set in silence — so item 13's
+      // "the hard ceiling cancelled work already running, and says so" was
+      // being asked of a run that did the cancelling and never said it. The
+      // count is `inFlight.size` READ HERE, before the kills, because the one
+      // fact an operator needs is how many live workers were stopped, and a
+      // number computed anywhere else is a number about a different moment.
+      process.stderr.write(
+        `HARD CEILING — ${(hardCeiling ?? 0).toLocaleString("en-US")} tokens reached. ` +
+          `\`session/cancel\` sent to ${inFlight.size} live worker(s) and each is killed immediately: ` +
+          "ruling 66's hard ceiling cancels work already running, and `session/cancel` is an " +
+          "unacknowledged notification, so the kill is the mechanism and the cancel is the courtesy.\n",
+      );
       // Ruling 66: the hard ceiling cancels work ALREADY RUNNING. A sibling in
       // the same batch is exactly that, and it does not find out on its own.
       for (const child of inFlight) {
@@ -1624,6 +1639,21 @@ async function doRun(): Promise<number> {
     if (!hardHit && !softHit) {
       tail.push(
         `ceilings — soft ${softCeiling === undefined ? "not set" : "not reached"}, hard ${hardCeiling === undefined ? "not set" : "not reached"}`,
+      );
+    }
+    // RULING 66'S ORDERING, and only beside a ceiling that ACTED.
+    //
+    // `src/report/run-report.ts:539` prints this and this fixture did not, so a
+    // run that fired a ceiling left the operator free to read the ESTIMATE as
+    // the thing that stopped it. #44 measured 427,723 against 28,245 bytes on
+    // two identical runs, which is why no prediction may be the control. Guarded
+    // by `hardHit || softHit` for the same reason the block above is guarded: a
+    // sentence printed on every run is wallpaper by the time it is true.
+    if (hardHit || softHit) {
+      tail.push(
+        "the ceiling is the primary control and the estimate is not: #44 measured 427,723 against " +
+          "28,245 bytes on two identical runs, so no prediction is load-bearing enough to be the thing " +
+          "that stops a run. The number above was measured as this run happened.",
       );
     }
   }

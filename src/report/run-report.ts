@@ -71,15 +71,131 @@ const GLYPH: Record<CheckOutcome, string> = {
  */
 export function renderRecordCheck(check: RecordCheck): string {
   const qualifier = check.qualifier === undefined ? "" : ` (${check.qualifier})`;
-  return `${GLYPH[check.outcome]} ${check.name}: ${check.outcome}${qualifier}`;
+  // FLATTENED, because a name is a field and a field can carry a newline. A
+  // check called `verify\nok-2: integrated` would otherwise end its own line and
+  // open what reads as another item's block. See `oneLine`.
+  return oneLine(`${GLYPH[check.outcome]} ${check.name}: ${check.outcome}${qualifier}`);
 }
 
 export function itemBlocks(item: RecordItem): boolean {
   return item.checks.some((check) => check.blocking && blocks(check.outcome));
 }
 
-/** One item, with every one of its checks. There is deliberately no `limit` here. */
-export function renderItem(item: RecordItem): string {
+/**
+ * What separates a line the PRODUCT wrote from a line something else wrote.
+ *
+ * Every detail line carries it, and that is a security property rather than a
+ * decoration. `src/gate/run.ts:174` pipes a checker's last `VERIFY_TAIL_LINES`
+ * lines into `detail` verbatim, and what a checker prints is influenced by the
+ * repository being worked on — so a detail line is UNTRUSTED INPUT rendered
+ * inside a structured report.
+ *
+ * MEASURED on 2026-08-19 against `bun 1.3.14`, with a probe importing the
+ * harness's own reader: indenting the continuation lines was not enough. A
+ * checker whose output contained the line `zzz-2: integrated` produced, at
+ * indent ten, a line that `bar/lib/item11-structure.ts`'s `^\s*<id>:\s` reads as
+ * ANOTHER ITEM'S HEAD LINE — because that reader anchors on the id and not on
+ * the column. The block of the item that was really failing ended inside its own
+ * verify output (`aaa-1/integrate item 1: not-run` went missing), and the forged
+ * block that opened there carried `✓ verify: pass` — a checker forging a PASS
+ * onto a failing item, which is the exact shape ruling 52 exists to make
+ * impossible.
+ *
+ * The sigil fixes it in the PRODUCT rather than in the reader: `^\s*<id>:` can
+ * never match a line whose first non-space characters are `| `, so no arrangement
+ * of bytes a checker can emit produces a head line. A repair that needed the
+ * reader changed would be a repair that drifts from the reader.
+ */
+const DETAIL_SIGIL = "| ";
+
+/**
+ * How wide one line of a detail may be before it is cut, with the cut shown.
+ *
+ * MEASURED on 2026-08-19: `VERIFY_TAIL_LINES` bounds how many lines of a
+ * checker's output reach the report and NOTHING bounded their width. One failing
+ * item cost 543 tokens at 40 columns, 1,129 at 200, 7,760 at 2,000 and 73,640 at
+ * 20,000 — a single item exceeding ruling 58's whole 2,000-token ceiling
+ * thirty-six times over, from one checker printing one long line. `mergedResult`
+ * and `runChecks` details sit in the tail the cap never trims, so the same
+ * unbounded term was there twice more.
+ *
+ * WIDTH, NOT COUNT, AND THAT DISTINCTION IS THE RULING. Ruling 52 requires every
+ * check's outcome to be rendered; it says nothing about a checker's output being
+ * carried verbatim. Cutting a line at a stated width keeps every check, every
+ * outcome and every qualifier exactly as they were — dropping detail LINES would
+ * start deciding which of a checker's words a reader may see, and that is not a
+ * decision this renderer gets to take on its own.
+ *
+ * 320 characters is the product's own longest hand-written sentence rounded up:
+ * brigadier's prose survives, and captured output is bounded. Every cut is
+ * counted and stated, and the full text is in the record the report points at —
+ * ruling 58's order, which is that the record lands on disk first and only a
+ * pointer travels.
+ */
+const DETAIL_LINE_WIDTH = 320;
+
+/**
+ * A field flattened to ONE line, so that no value can end the block it is in.
+ *
+ * `src/queue/plan.ts` imposes no charset on an item id, and nothing constrains a
+ * check name either. An id or a name carrying a newline splits its own line in
+ * two and the remainder lands at column zero — the same defect as the
+ * unindented detail, arriving through a different field. Neither is reachable
+ * from today's producers; both are cheap to make unreachable from any producer.
+ */
+function oneLine(text: string): string {
+  return text.replace(/[\r\n]+/g, "\\n");
+}
+
+/**
+ * A check's detail, rendered so that it cannot be mistaken for anything else in
+ * the report.
+ *
+ * Three properties, all of them measured defects rather than tidy-ups:
+ *
+ *   EVERY LINE IS INDENTED. MEASURED on 2026-08-19 against `bun 1.3.14` driving
+ *   `bar/run.ts --live`: six items whose verify command printed twelve lines
+ *   reported *"18 check(s) recorded; absent from their item's block:
+ *   pressure-1/integrate item 1: not-run; …"*. A single `push` of
+ *   `"          " + detail` indented the FIRST of those lines and left the other
+ *   eleven at column zero, which is where this report writes its run-level
+ *   sections — so an item's list of checks ended in the middle of the item.
+ *
+ *   EVERY LINE CARRIES THE SIGIL, so a checker cannot forge a head line. See
+ *   `DETAIL_SIGIL`.
+ *
+ *   EVERY LINE IS BOUNDED. See `DETAIL_LINE_WIDTH`.
+ *
+ * Trailing blank lines go too: a `detail` that ends in a newline — which is what
+ * `src/gate/run.ts` produces when the checker printed nothing at all — cost a
+ * blank line per failing item inside a report that is capped in tokens.
+ */
+class DetailWriter {
+  /** Lines cut at `width`. Counted so the report can say so; never silent. */
+  cut = 0;
+
+  constructor(readonly width: number) {}
+
+  lines(detail: string, indent: string): string[] {
+    return detail
+      .replace(/\s+$/, "")
+      .split("\n")
+      .map((line) => {
+        if (line.length <= this.width) return `${indent}${DETAIL_SIGIL}${line}`;
+        this.cut += 1;
+        return `${indent}${DETAIL_SIGIL}${line.slice(0, this.width)} … [cut]`;
+      });
+  }
+}
+
+/**
+ * One item, with every one of its checks. There is deliberately no `limit` here.
+ *
+ * `details` is not a limit and cannot become one: it decides how a detail LINE
+ * is written — indented, sigil'd, and cut at a stated width — and never how many
+ * checks there are, nor what any of them says.
+ */
+export function renderItem(item: RecordItem, details = new DetailWriter(Infinity)): string {
   const head = [`${item.id}: ${item.status}`];
   if (item.difficulty !== undefined && item.clampedTo !== undefined) {
     head.push(
@@ -104,7 +220,10 @@ export function renderItem(item: RecordItem): string {
   // that is the machine's rather than the worker's must not be readable as the
   // other. `src/work/ladder.ts` owns the four strings; this only places one.
   if (item.ladder !== undefined) head.push(item.ladder);
-  const lines = [`  ${head.join(" — ")}`];
+  // Flattened for the same reason the check line is: `src/queue/plan.ts` imposes
+  // no charset on an item id, and an id with a newline in it takes the rest of
+  // its own head line to column zero.
+  const lines = [oneLine(`  ${head.join(" — ")}`)];
   for (const check of item.checks) {
     lines.push(`      ${renderRecordCheck(check)}`);
     // THE CHECKER'S OWN WORDS, for a check that BLOCKS and for no other.
@@ -119,7 +238,13 @@ export function renderItem(item: RecordItem): string {
     // Scoped to blocking outcomes because that is what keeps it inside ruling
     // 58's cap: a blocking item never collapses, so this is O(failures) and
     // never O(items), and a run where everything passed pays nothing for it.
-    if (check.detail !== undefined && blocks(check.outcome)) lines.push(`          ${check.detail}`);
+    //
+    // EVERY line of it is indented — see `detailLines`. A continuation line at
+    // column zero ends the item's block, and the checks after it are then
+    // printed outside the item they belong to.
+    if (check.detail !== undefined && blocks(check.outcome)) {
+      for (const line of details.lines(check.detail, "          ")) lines.push(line);
+    }
   }
   return lines.join("\n");
 }
@@ -478,7 +603,7 @@ export function reviewLines(review: RunRecord["review"]): string[] {
   return lines;
 }
 
-function fixedLines(input: RunReportInput): { head: string[]; tail: string[] } {
+function fixedLines(input: RunReportInput, details: DetailWriter): { head: string[]; tail: string[] } {
   const { record } = input;
   const head = [
     input.headline,
@@ -493,7 +618,14 @@ function fixedLines(input: RunReportInput): { head: string[]; tail: string[] } {
   const tail: string[] = ["", "the merged result:"];
   for (const check of input.mergedResult) {
     tail.push(`  ${renderRecordCheck(check)}`);
-    if (check.detail !== undefined && check.outcome !== "pass") tail.push(`      ${check.detail}`);
+    // Written by the same writer as the item list, and that is load-bearing
+    // rather than tidy: a merged gate's detail is a checker's own output, it sits
+    // in the TAIL the cap never trims, and it was the second of the two unbounded
+    // terms measured on 2026-08-19 — one passing item beside a chatty merged gate
+    // and run check came to 14,980 tokens against a 2,000-token ceiling.
+    if (check.detail !== undefined && check.outcome !== "pass") {
+      for (const line of details.lines(check.detail, "      ")) tail.push(line);
+    }
   }
 
   const runChecks = record.runChecks ?? [];
@@ -501,15 +633,28 @@ function fixedLines(input: RunReportInput): { head: string[]; tail: string[] } {
     tail.push("", "the run:");
     for (const check of runChecks) {
       tail.push(`  ${renderRecordCheck(check)}`);
-      if (check.detail !== undefined && check.outcome !== "pass") tail.push(`      ${check.detail}`);
+      if (check.detail !== undefined && check.outcome !== "pass") {
+        for (const line of details.lines(check.detail, "      ")) tail.push(line);
+      }
     }
   }
 
-  for (const clone of input.retained ?? []) {
+  // Ruling 63's four facts per clone, and the SENTENCE THAT EXPLAINS THEM ONCE.
+  //
+  // The explanation is a fact about brigadier, not about any one clone, and it
+  // was being repeated per clone: 150 bytes × every retained item, in the part
+  // of the report the cap never trims. Retained only happens when something went
+  // wrong, so this is precisely the run that has no tokens to spare. The path
+  // and the byte count — the two facts an operator acts on — are unchanged, and
+  // `retained clone item N: <path>` is still the line they are on.
+  const retained = input.retained ?? [];
+  for (const clone of retained) {
+    tail.push(`retained clone item ${clone.item}: ${clone.path} (${clone.bytes} bytes)`);
+  }
+  if (retained.length > 0) {
     tail.push(
-      `retained clone item ${clone.item}: ${clone.path} (${clone.bytes} bytes) — not merged, not ` +
-        "reviewed, not deleted. It may hold the only copy of that work; `brigadier run` will not " +
-        "reclaim it until it is discharged (ruling 63).",
+      `  ${retained.length} clone(s) above: not merged, not reviewed, not deleted. Each may hold the only copy ` +
+        "of that work; `brigadier run` will not reclaim one until it is discharged (ruling 63).",
     );
   }
   if ((input.unconfirmedPids ?? []).length > 0) {
@@ -549,28 +694,71 @@ function fixedLines(input: RunReportInput): { head: string[]; tail: string[] } {
 /**
  * Render, capping only where the audience pays for it.
  *
- * The cap is applied by REMOVING PASSING ITEMS, one budget at a time, and the
- * loop stops at the blocking set rather than continuing into it — which is the
- * whole of ruling 52 in three lines of arithmetic.
+ * The order of sacrifice is the whole design, and it is ruling 52's sentence
+ * read from the top:
+ *
+ *   0. every detail line is bounded in width before any of this — see
+ *      `DETAIL_LINE_WIDTH`, which is what makes the floor below a floor at all;
+ *   1. every passing item collapses to a count, one budget at a time, and the
+ *      loop stops at the blocking set rather than continuing into it;
+ *   2. then the report goes OVER and says so, naming what actually overflowed.
+ *
+ * There is no step in which a check leaves the report, and no step in which a
+ * blocking item does. Every step that gives something up prints a line saying
+ * what and how many.
+ *
+ * A RUNG WAS REMOVED HERE ON 2026-08-19, and the reason is worth more than the
+ * rung was. Between 1 and 2 sat a ledger that replaced a detail printed word for
+ * word by a second item with a pointer to the first. It was safe — it never
+ * touched a check, an outcome or a qualifier — but a blind critic found two ways
+ * for its SENTENCE to be false (two different checks of one item collapse into a
+ * pointer that names only the item, and a pointer to an already-truncated
+ * printing claims it was verbatim), and measured that with the product's real
+ * check names it fires in a 130-token window of `budgetSpent` and never at 20 or
+ * 30 failing items. Bounding the line width closes the same measured 118-token
+ * overrun for every run rather than for a window, so the honest, narrow economy
+ * replaced the clever, wide-mouthed one.
  */
 function composeRunReport(input: RunReportInput): string {
-  const { head, tail } = fixedLines(input);
-  const lines: ItemLine[] = input.record.items.map((item, index) => ({
+  const items = input.record.items;
+  // A TERMINAL READER'S SCROLLBACK IS FREE, so nothing is cut there — which is
+  // also the negative control for the cut: a renderer that simply printed less
+  // would print less to a terminal too.
+  const width = isCapped(input.audience) ? DETAIL_LINE_WIDTH : Infinity;
+  const lines: ItemLine[] = items.map((item, index) => ({
     index,
     blocking: itemBlocks(item) || item.status !== "integrated",
-    line: renderItem(item),
+    // Rendered per assembly rather than here: one item renders differently under
+    // a terminal's unlimited width and a host session's cut, and `capItems` only
+    // ever reads `index` and `blocking`.
+    line: "",
   }));
 
   const detail = isCapped(input.audience) ? [] : [...(input.detail ?? [])];
   const assemble = (shown: ItemLine[], collapsed: number): string => {
-    const body = shown.map((line) => line.line);
+    // One writer per assembly, so its count of cut lines is this report's and
+    // not a running total across the budgets that were tried and discarded.
+    const details = new DetailWriter(width);
+    const { head, tail } = fixedLines(input, details);
+    const body = shown.map((line) => {
+      const item = items[line.index];
+      return item === undefined ? line.line : renderItem(item, details);
+    });
     if (collapsed > 0) {
       body.push(
         `  ${collapsed} passing item(s) collapsed to this count — the cap can hide a success and ` +
           "can never hide a failure (ruling 58)",
       );
     }
-    return [...head, ...body, ...tail, ...detail].join("\n");
+    const cut =
+      details.cut === 0
+        ? []
+        : [
+            `${details.cut} detail line(s) were cut at ${width} characters, marked \`… [cut]\` where it happened — ` +
+              "every check, outcome and qualifier is untouched, and each detail is in full in the run record above " +
+              "(ruling 58; ruling 52 caps a checker's words, never its verdict).",
+          ];
+    return [...head, ...body, ...tail, ...cut, ...detail].join("\n");
   };
 
   if (!isCapped(input.audience)) {
@@ -582,27 +770,39 @@ function composeRunReport(input: RunReportInput): string {
   // spends what is left of the ceiling rather than the whole of it.
   const ceiling = remainingBudget(input.budgetSpent ?? 0);
   const blocking = lines.filter((line) => line.blocking).length;
-  for (let budget = lines.length; budget >= Math.max(1, blocking); budget--) {
+  const floor = Math.max(1, blocking);
+  // FIRST, AND ONLY, THE PASSING ITEMS. Ruling 58 names them as the thing that
+  // collapses, so nothing else is given up while one of them is still printed.
+  for (let budget = lines.length; budget >= floor; budget--) {
     const capped = capItems(lines, budget);
     const text = assemble(capped.shown, capped.collapsed);
     if (estimateTokens(text) <= ceiling) return text;
   }
-  // Every passing item is already gone and the blocking ones are what is left.
-  // Ruling 52 has no exception for space: the report goes over budget rather
-  // than dropping a failure, and it says so where the reader will see it.
-  const capped = capItems(lines, Math.max(1, blocking));
-  // Ruling 58 requires the truncation to be STATED, and this is the case where
-  // there is no truncation to state — the report exceeds instead. The sentence
-  // names the ceiling it broke and, when something else on this stdout had
-  // already been charged against it, how much of it was left.
+  // Nothing left that this cap is allowed to take. Ruling 58 requires the
+  // overflow to be STATED — and the sentence has to be TRUE, which is a
+  // different requirement and the one it was failing.
+  //
+  // MEASURED on 2026-08-19: a run of ONE PASSING ITEM beside a chatty merged
+  // gate printed *"OVER the 2000-token ceiling because every remaining item
+  // carries a blocking check"* when no item blocked and nothing had been
+  // collapsed. A report that misstates WHY it overflowed sends its reader to
+  // look for a failing item that does not exist, which is the same class of
+  // defect as hiding the overflow: both leave the reader with a false model of
+  // the run. So the reason is derived from the same arithmetic that produced the
+  // overflow rather than asserted alongside it.
+  const capped = capItems(lines, floor);
   const share =
     ceiling === HOST_REPORT_TOKEN_CEILING
       ? ""
       : ` — ${ceiling} of them were left after the rest of this run's stdout was charged against it`;
+  const why =
+    blocking > 0
+      ? `${blocking} item(s) carry a blocking check and ruling 52 has no exception for space`
+      : "no item here carries a blocking check: what does not fit is the run-level sections and the " +
+        "checkers' own words, which are not items and which this cap may not collapse";
   return (
     `${assemble(capped.shown, capped.collapsed)}\nthis report is OVER the ${HOST_REPORT_TOKEN_CEILING}-token ` +
-    `ceiling${share} because every remaining item carries a blocking check, and ruling 52 has no ` +
-    "exception for space."
+    `ceiling${share} because ${why}.`
   );
 }
 

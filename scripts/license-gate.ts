@@ -43,6 +43,18 @@
  * A generator can only promise; this check is what makes the promise true of the
  * artifact.
  *
+ * ─────────────── A LANDMINE IN THIS FILE, WRITTEN DOWN WHERE IT IS ───────────
+ *
+ * **This source file contains a NUL byte** — it is inside the `"\x00 the licence
+ * text is missing entirely"` needle in `fingerprintsFor`, which is deliberate:
+ * that string must never match anything in a real licence text. The consequence
+ * is not deliberate. `file(1)` calls this file `data`, and every tool that skips
+ * binary files by default — plain `grep`, and any wrapper passing `-I` — reports
+ * **zero matches** here rather than an error. A search for `--require-binary`
+ * across `scripts/` silently returns nothing and reads exactly like "the code is
+ * not there". Use `grep -a`. A silent zero-match is the shape this repository
+ * keeps being caught by, so it is recorded beside the byte that causes it.
+ *
  *   bun run license-gate [--binary dist/brigadier]
  *
  * The guard's own negative controls live in `test/licenses.test.ts`. A guard

@@ -35,6 +35,7 @@ import { detectAll, type Detection } from "./agent/detect.ts";
 import { applyOverride, noBlockingReason, overrideWarning, parseOverrides, type BridgeOverride } from "./agent/drift.ts";
 import { REFUSAL, isInsideWorker } from "./agent/marker.ts";
 import { ALL_AGENT_IDS, PROFILES, type AgentId } from "./agent/profiles.ts";
+import { buildIdentity, renderVersion } from "./build/identity.ts";
 import { LICENSES } from "./generated/licenses.ts";
 import { resolveVerify } from "./gate/index.ts";
 import { intendedRealPath, realTempDirs } from "./isolation/index.ts";
@@ -111,6 +112,13 @@ const USAGE = `brigadier — an ACP hub
   brigadier licenses [--full]
       brigadier's own licence and every third-party component compiled into
       this binary. --full prints the complete licence texts.
+
+  brigadier version
+      The build identifier: the commit this artifact was compiled from, whether
+      that tree was dirty, the bun that compiled it, and the sha256 of the
+      running executable's own bytes. Cite it beside any number measured against
+      this binary — four warm-start figures for "this binary" exist with no
+      artifact named against any of them, and they cannot be compared.
 
   ${PLUGIN_USAGE.trimEnd()}
 
@@ -387,6 +395,28 @@ function licenses(): number {
     sink.outLine("Run `brigadier licenses --full` for the complete licence texts.");
   }
 
+  return 0;
+}
+
+/**
+ * `brigadier version` — which artifact is this?
+ *
+ * A measurement whose subject is unnamed cannot be compared with anything. This
+ * binary's warm start has been recorded four times against four artifacts and
+ * no record tied a figure to a build, so the question this command answers is
+ * not cosmetic. `src/build/identity.ts` carries the full reasoning and the
+ * reproducibility trade-off; the short version is that the commit, the tree
+ * state and the compiling bun are stamped in at compile time, and the sha256 is
+ * taken of the running executable when it is asked for — a file cannot contain
+ * its own digest, and a digest taken at run time is one an outside checker can
+ * recompute without trusting the stamp.
+ *
+ * It is a command rather than a flag on every command because the digest costs
+ * a read of the whole artifact. Nothing on the start-up path pays for it, which
+ * matters: `bar/items/10` grades this binary's start-up in milliseconds.
+ */
+async function version(): Promise<number> {
+  for (const line of renderVersion(await buildIdentity())) sink.outLine(line);
   return 0;
 }
 
@@ -719,6 +749,13 @@ const exitCode = await (async () => {
     case "licenses":
     case "--licenses":
       return licenses();
+    // Deliberately outside `ORCHESTRATING`: reporting which artifact is running
+    // spawns nothing and creates nothing, and a worker that cannot name the
+    // binary it is inside cannot report what it measured either.
+    case "version":
+    case "--version":
+    case "-V":
+      return version();
     // The plugin surface. Deliberately NOT in `ORCHESTRATING`: `install` and
     // `uninstall` carry their own worker refusal inside `src/plugin/index.ts`,
     // because a worker writing brigadier's skill into the operator's home is

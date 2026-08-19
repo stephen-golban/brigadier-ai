@@ -20,7 +20,7 @@
     "claims": "bun run scripts/claims.ts",
     "licenses": "bun run scripts/licenses.ts",
     "license-gate": "bun run scripts/license-gate.ts",
-    "build": "bun run licenses --check && bun build --compile src/cli.ts --outfile dist/brigadier && bun run license-gate --require-binary",
+    "build": "bun run licenses --check && bun run scripts/build.ts && bun run license-gate --require-binary",
     "gates": "bun run typecheck && bun run test-gate && bun run claims && bun run build"
   },
   "dependencies": {
