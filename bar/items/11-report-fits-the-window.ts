@@ -250,7 +250,7 @@ const item: BarItem = {
     // comparison below is measuring a binary that ignores its whole command
     // line, and the item must say so rather than record a pass.
     credentialFree.expect(
-      "the audience really does change what a host session is charged for (the control for the test below)",
+      "the audience really does change what a host session is charged for (the POSITIVE CONTROL for the test below)",
       hostDry.code === 0 && terminalDry.code === 0 && terminalDry.stdout !== hostDry.stdout,
       `host-session ${hostDry.stdout.length} chars (exit ${hostDry.code}) vs terminal ${terminalDry.stdout.length} chars ` +
         `(exit ${terminalDry.code}); different: ${terminalDry.stdout !== hostDry.stdout}`,
@@ -316,7 +316,7 @@ const item: BarItem = {
       const checks = new Checks();
       // Fifty items really ran. Without this the cap is being measured on a
       // report of nothing.
-      for (const row of proofOfWork(evidence, {
+      checks.absorb(proofOfWork(evidence, {
         // The three items whose verify must fail are deliberately excluded: a
         // failing item must NOT reach the branch, so expecting its output would
         // be asserting the opposite of what this run is testing.
@@ -324,9 +324,7 @@ const item: BarItem = {
         itemIds: fifty.itemIds.filter((id) => !failing.includes(id)).slice(0, 5),
         flight: sampled.flight,
         expectedWorkers: 50,
-      }).rows) {
-        checks.expect(row.name, row.ok, row.detail);
-      }
+      }));
       const witnesses = listTree(witnessDir).length;
       checks.expect(
         "the verify command was really EXECUTED, not merely declared",
@@ -334,16 +332,14 @@ const item: BarItem = {
         `${witnesses} witness file(s) written by the verify command against ${failing.length} items that carry one — ` +
           "carrying a `verify` field is not the same as having run it",
       );
-      for (const row of judgeReport({
+      checks.absorb(judgeReport({
           hostReport: report,
           fullRecordPath: evidence.recordPath ?? "",
           fullRecordExists: evidence.recordExists,
           transcriptBytes: transcriptFile.length > 0 && existsSync(transcriptFile) ? statSync(transcriptFile).size : 0,
           transcriptMentions: failing.filter((id) => transcriptText.includes(id)).length,
           failingCount: failing.length,
-        }).rows) {
-        checks.expect(row.name, row.ok, row.detail);
-      }
+        }));
 
       // The half the judgement above cannot reach: WHERE each failure is
       // printed, whether the cap actually bit, whether the slot was opened
@@ -359,7 +355,7 @@ const item: BarItem = {
           `and the transcript at ${transcriptFile || "NOT NAMED"}`,
       );
       const failingRows = recordedRows(recorded, failing);
-      for (const row of judgeReportStructure({
+      checks.absorb(judgeReportStructure({
         report,
         exitCode: sampled.code,
         failing: failingRows,
@@ -367,9 +363,7 @@ const item: BarItem = {
         allIds: recorded.map((i) => i.id),
         slots,
         transcriptHasFrames: TRANSCRIPT_SHAPE.test(transcriptText),
-      }).rows) {
-        checks.expect(row.name, row.ok, row.detail);
-      }
+      }));
 
       // ---- the override, which the fifty-item run cannot reach -------------
       //
@@ -406,16 +400,14 @@ const item: BarItem = {
           `prints 12 lines, so the blocking set alone had to exceed the ${HOST_REPORT_TOKEN_CEILING}-token ceiling: ` +
           `${pressureReport.length} chars ≈ ${estimateTokens(pressureReport)} tokens, exit ${pressureRun.code}`,
       );
-      for (const row of judgeOverride({
+      checks.absorb(judgeOverride({
         report: pressureReport,
         exitCode: pressureRun.code,
         failing: recordedRows(pressureRecorded, pressure.itemIds),
         allIds: pressureRecorded.map((i) => i.id),
         ceiling: HOST_REPORT_TOKEN_CEILING,
         tokens: estimateTokens(pressureReport),
-      }).rows) {
-        checks.expect(row.name, row.ok, row.detail);
-      }
+      }));
       live = { kind: "ran", checks };
     }
 

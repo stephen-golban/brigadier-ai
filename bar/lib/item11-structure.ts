@@ -40,6 +40,7 @@
  */
 
 import { Checks, excerpt } from "./checks.ts";
+import { itemHead } from "./item-head.ts";
 
 /** A check as the RECORD states it. The report is then required to say the same. */
 export interface RecordedCheck {
@@ -70,21 +71,6 @@ export interface SlotEvent {
 /** Ruling 52's initial value. A slot that opens as anything else is not a write-ahead. */
 export const INITIAL_OUTCOME = "not-run";
 
-function escape(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-/**
- * The line index at which the report starts talking about `id`, or `-1`.
- *
- * Anchored: `^\s*<id>:` and nothing looser. `fifty-4` and `fifty-43` are
- * different items and a substring test cannot tell them apart.
- */
-export function headLine(lines: readonly string[], id: string): number {
-  const head = new RegExp(`^\\s*${escape(id)}:\\s`);
-  return lines.findIndex((line) => head.test(line));
-}
-
 /**
  * The block the report devotes to one item: its head line and everything under
  * it, up to the next item or the end of the item list.
@@ -97,12 +83,13 @@ export function headLine(lines: readonly string[], id: string): number {
  */
 export function itemBlock(report: string, id: string, allIds: readonly string[]): string | undefined {
   const lines = report.split("\n");
-  const start = headLine(lines, id);
-  if (start === -1) return undefined;
+  const head = itemHead(lines, id);
+  if (head === undefined) return undefined;
+  const start = head.index;
   const others = allIds
     .filter((other) => other !== id)
-    .map((other) => headLine(lines, other))
-    .filter((index) => index > start);
+    .map((other) => itemHead(lines, other)?.index)
+    .filter((index): index is number => index !== undefined && index > start);
   const unindented = lines.findIndex((line, index) => index > start && /^\S/.test(line));
   const ends = [...others, unindented === -1 ? lines.length : unindented, lines.length].filter((index) => index > start);
   return lines.slice(start, Math.min(...ends)).join("\n");
@@ -233,7 +220,8 @@ export function judgeReportStructure(o: StructureObservations): Checks {
 
   // 4. THE CAP BIT, AND IT BIT THE RIGHT HALF. A token count measured on a
   //    report that never had to drop anything proves nothing about the cap.
-  const shownPassing = o.passingIds.filter((id) => headLine(o.report.split("\n"), id) !== -1);
+  const lines = o.report.split("\n");
+  const shownPassing = o.passingIds.filter((id) => itemHead(lines, id) !== undefined);
   const hidden = o.passingIds.length - shownPassing.length;
   const counts = collapsedCounts(o.report);
   checks.expect(
@@ -282,7 +270,7 @@ export function judgeReportStructure(o: StructureObservations): Checks {
 
   // 7. THE DETECTOR'S POSITIVE CONTROL.
   checks.expect(
-    "the transcript detector fires on the transcript this run actually wrote to disk",
+    "the transcript detector fires on the transcript this run actually wrote to disk (the POSITIVE CONTROL for the absence above)",
     o.transcriptHasFrames,
     o.transcriptHasFrames
       ? "the on-disk transcript matches the same pattern the host report is required NOT to match, so the absence above was measured with an instrument that works"

@@ -129,9 +129,7 @@ const item: BarItem = {
       );
 
       // It COMPLETED. Ruling 32: it does not refuse to start.
-      for (const row of proofOfWork(evidence, { expected: plan.expected, itemIds: plan.itemIds }).rows) {
-        checks.expect(row.name, row.ok, row.detail);
-      }
+      checks.absorb(proofOfWork(evidence, { expected: plan.expected, itemIds: plan.itemIds }));
 
       const review = evidence.record?.review;
       checks.expect(

@@ -462,7 +462,10 @@ const item: BarItem = {
               directive: reviewedDirective,
               markers: defects,
             });
-      did.push(`denominator control: ${rehearsal?.transcript ?? "NOT-RUN — phase A named no builder to rehearse"}`);
+      // A POSITIVE control: known positives — the planted defects — must be
+      // present in the diff a reviewer is handed, or every rate below is a fact
+      // about this harness.
+      did.push(`denominator POSITIVE CONTROL: ${rehearsal?.transcript ?? "NOT-RUN — phase A named no builder to rehearse"}`);
 
       // The credentialed leg: the operator's own PATH, so the product discovers
       // the agents they really have.
@@ -549,6 +552,12 @@ const item: BarItem = {
       // plant must be the vendor this run's own record names as the reviewer.
       // Compared as NAMES: a count comparison is satisfied by `caught 0 of 5`,
       // which is exactly what the misrouted run produced and published.
+      //
+      // NEITHER A POSITIVE NOR A NEGATIVE CONTROL, which is why it keeps its own
+      // name after the 2026-08-19 vocabulary pass. Those two feed the instrument
+      // a known input and check the answer; this one checks the instrument was
+      // AIMED at the subject at all. A misaimed instrument returns a number, and
+      // the number is about the fixture's config file.
       const plant = judgePlantRouting({
         configured: routed.vendor,
         recordReviewer: reviewed?.reviewerAgent,

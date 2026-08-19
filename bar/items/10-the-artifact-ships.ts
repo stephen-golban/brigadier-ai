@@ -164,6 +164,11 @@ export const QUIET_WARM_MEASUREMENT = {
  *
  * It is a WITHDRAWAL, not a relaxation. No number here was moved to fit a
  * measurement; the promise is gone and nothing takes its place.
+ *
+ * `unproven` IS THE WORD, and the 2026-08-19 phrasing census made it the only
+ * one. It is not `bar/lib/checks.ts`'s `NOT-RUN —`: these checks RAN and passed,
+ * and `unproven` names the edge they do not cover. A check that reached nothing
+ * takes the prefix instead.
  */
 export const STRUCK_COLD_START = {
   clause: "start-up within the measured budget — the ≤70 ms cold start",

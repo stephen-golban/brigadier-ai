@@ -26,6 +26,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { itemHead } from "./item-head.ts";
 import {
   INITIAL_OUTCOME,
   collapsedCounts,
@@ -56,7 +57,16 @@ const failed = (id: string, n: number): RecordedItem => ({
   ],
 });
 
-/** The product's rendering, transcribed. `fifty-4` and `fifty-43` both present. */
+/**
+ * The product's rendering, transcribed. `fifty-4` and `fifty-43` both present.
+ *
+ * DETAIL LINES CARRY `| `, because `src/report/run-report.ts` emits its
+ * `DETAIL_SIGIL` unconditionally and this fixture had them without it — the
+ * fixture was the wrong side of that disagreement, corrected on 2026-08-19. The
+ * `✓`/`✗` CHECK lines are not detail lines and stay unsigil'd. No assertion
+ * moved: the sigil is exactly what stops a checker's output from being read as
+ * an item head line, which is the property `itemHead` leans on.
+ */
 const REPORT = [
   "PARTIAL INTEGRATION — 47 of 50 items landed; 3 failed; blocked by verify: fail (3 items).",
   "run-record: /runs/r1/record.json",
@@ -68,11 +78,11 @@ const REPORT = [
   "  fifty-4: failed — (qwen, qwen-m, medium (set, NOT confirmed — #45))",
   "      ✓ worker: pass",
   "      ✗ verify: fail (item 4)",
-  "          `/w/failing-verify` exited 1. This is the WORKER's to fix.",
+  "          | `/w/failing-verify` exited 1. This is the WORKER's to fix.",
   "  fifty-43: failed — (qwen, qwen-m, medium (set, NOT confirmed — #45))",
   "      ✓ worker: pass",
   "      ✗ verify: fail (item 43)",
-  "          `/w/failing-verify` exited 1. This is the WORKER's to fix.",
+  "          | `/w/failing-verify` exited 1. This is the WORKER's to fix.",
   "  2 passing item(s) collapsed to this count — the cap can hide a success and can never hide a failure (ruling 58)",
   "",
   "the merged result:",
@@ -113,7 +123,8 @@ const QUALIFIER = "a check's qualifier is rendered INSIDE its result string (rul
 const COLLAPSED = "passing items collapsed to a COUNT, and the count is the number actually hidden";
 const WRITE_AHEAD = "each blocking check's slot was written BEFORE the check ran, holding `not-run` (ruling 52)";
 const TOP_LEVEL = "a run carrying a blocking check that is not `pass` does not report success at the top level";
-const DETECTOR = "the transcript detector fires on the transcript this run actually wrote to disk";
+const DETECTOR =
+  "the transcript detector fires on the transcript this run actually wrote to disk (the POSITIVE CONTROL for the absence above)";
 
 describe("item 11 — the block parser, against the substring trap that motivated it", () => {
   test("an item's block is its own lines and stops at the next item", () => {
@@ -141,6 +152,51 @@ describe("item 11 — the block parser, against the substring trap that motivate
   test("collapse counts are read only from lines that talk about collapsing", () => {
     expect(collapsedCounts(REPORT)).toContain(2);
     expect(collapsedCounts("nothing was hidden here; 47 items landed")).toEqual([]);
+  });
+});
+
+describe("the shared item lookup — one anchored search, both answers", () => {
+  // `headLine` (an index, `-1` when absent) and `itemLine` (the text,
+  // `undefined` when absent) were two spellings of this search in two files.
+  // A caller wanting the index must not have to rebuild the one wanting the
+  // text, and the two must never disagree about which line belongs to an item.
+  test("the index and the text name the same line", () => {
+    const head = itemHead(REPORT, "fifty-4");
+    expect(head?.text).toBe("  fifty-4: failed — (qwen, qwen-m, medium (set, NOT confirmed — #45))");
+    expect(REPORT.split("\n")[head?.index ?? -1]).toBe(head?.text);
+  });
+
+  test("absent is `undefined`, and never `-1`", () => {
+    // `-1` is truthy and indexes from the end of an array. A caller that forgot
+    // to test it read the report's last line as this item's; `undefined` makes
+    // that mistake throw or short-circuit instead of lying quietly.
+    const absent = itemHead(REPORT, "fifty-9");
+    expect(absent).toBeUndefined();
+    expect(absent as unknown).not.toBe(-1);
+  });
+
+  test("anchored: `fifty-43` is not `fifty-4`, and a colon needs whitespace after it", () => {
+    expect(itemHead(REPORT, "fifty-4")?.text).toContain("fifty-4: failed");
+    expect(itemHead(REPORT, "fifty-4")?.text).not.toContain("fifty-43");
+    expect(itemHead("  fifty-4:failed\n", "fifty-4")).toBeUndefined();
+    // An id is not constrained by `src/queue/plan.ts`, so it is escaped.
+    expect(itemHead("  a.b: ok", "a+b")).toBeUndefined();
+    expect(itemHead("  a.b: ok", "a.b")?.index).toBe(0);
+  });
+
+  test("a detail line cannot forge a head line, because the product sigils it", () => {
+    // The round-16 defect: a checker printing `zzz-2: integrated` opened a
+    // block that carried a forged `✓ verify: pass` for a failing item.
+    // `DETAIL_SIGIL` in `src/report/run-report.ts` puts `| ` at the front of
+    // every detail line, which `^\s*<id>:` can never match. Asserted here so
+    // that loosening this anchor fails a test rather than a live run.
+    expect(itemHead("          zzz-2: integrated", "zzz-2")?.index).toBe(0);
+    expect(itemHead("          | zzz-2: integrated", "zzz-2")).toBeUndefined();
+  });
+
+  test("the whole report and its already-split lines answer identically", () => {
+    // One caller splits once and looks up many ids; the other holds only text.
+    expect(itemHead(REPORT.split("\n"), "fifty-43")).toEqual(itemHead(REPORT, "fifty-43"));
   });
 });
 
@@ -339,5 +395,116 @@ describe("item 11 — the override, where ruling 52 beats ruling 58", () => {
     expect(overNames({ ...OVER, exitCode: 0 })).toContain(
       "a run in which every item blocks does not report success at the top level",
     );
+  });
+});
+
+/**
+ * FROZEN HISTORICAL COPIES — the specification, not live code.
+ *
+ * `headLine` as `bar/lib/item11-structure.ts` held it, and `itemLine` as
+ * `bar/lib/item13-cost.ts` held it, at the commit before they were unified
+ * behind `itemHead`. Copied byte for byte, including the `-1` sentinel, the
+ * inlined escape in one and the extracted `escape()` in the other, and the
+ * re-split of the report on every call.
+ *
+ * DO NOT "FIX", TIDY, DEDUPE OR MODERNISE THEM, and do not make them share the
+ * escape they both spell. They exist to be disagreed with: the point of the
+ * test below is that the live `itemHead` answers exactly what these two
+ * answered, and a copy edited to look like the live implementation proves only
+ * that the live implementation agrees with itself. If a future change to
+ * `itemHead` makes this test fail, the finding is that the change moved
+ * behaviour — decide that deliberately and say so, rather than editing these.
+ */
+function frozenEscape(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function frozenHeadLine(lines: readonly string[], id: string): number {
+  const head = new RegExp(`^\\s*${frozenEscape(id)}:\\s`);
+  return lines.findIndex((line) => head.test(line));
+}
+
+function frozenItemLine(report: string, id: string): string | undefined {
+  const anchor = new RegExp(`^\\s*${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}:\\s`);
+  return report.split("\n").find((line) => anchor.test(line));
+}
+
+/** Every shape the unification had to survive, one per report. */
+const CORPUS: readonly string[] = [
+  REPORT,
+  // A forged head line inside a detail, with the product's sigil and without it.
+  "fifty-43: failed\n          | zzz-2: integrated\nthe run: done",
+  "fifty-43: failed\n          zzz-2: integrated\nthe run: done",
+  // The prefix pair that motivated the anchor, adjacent.
+  "  fifty-4: failed — x\n  fifty-43: failed\n",
+  // A colon with nothing after it: `\s` is required and this must not match.
+  "fifty-4:failed\n",
+  "\tfifty-4: ok\n",
+  "nothing here\n",
+  // Regex metacharacters in an id — `src/queue/plan.ts` constrains none.
+  "a.b: ok\na+b: ok\n",
+  "  a.b: ok\n",
+  // The same id twice: the first line wins, and both spellings must agree on it.
+  "x: 1\nx: 2\n",
+  "",
+  "  control-good: integrated — (qwen, m, medium)",
+];
+
+const CORPUS_IDS: readonly string[] = [
+  "fifty-4",
+  "fifty-43",
+  "fifty-9",
+  "zzz-2",
+  "a.b",
+  "a+b",
+  "x",
+  "control-good",
+  "missing",
+  "a|b",
+  "[q]",
+];
+
+describe("the unification is behaviour-preserving, against frozen copies of what it replaced", () => {
+  test("`itemHead` answers what `headLine` and `itemLine` answered, on every case", () => {
+    let cases = 0;
+    const disagreed: string[] = [];
+    for (const report of CORPUS) {
+      const lines = report.split("\n");
+      for (const id of CORPUS_IDS) {
+        cases += 1;
+        const wasIndex = frozenHeadLine(lines, id);
+        const wasText = frozenItemLine(report, id);
+        const now = itemHead(report, id);
+        // `-1` and `undefined` are the two spellings of "no such line". The
+        // migration is the only place they are allowed to differ.
+        const indexAgrees = wasIndex === -1 ? now === undefined : now?.index === wasIndex;
+        const textAgrees = wasText === undefined ? now === undefined : now?.text === wasText;
+        // The two originals must also have agreed with EACH OTHER, or the
+        // unification was hiding a real difference rather than removing a copy.
+        const originalsAgree = (wasIndex === -1) === (wasText === undefined);
+        // Both input shapes are one lookup.
+        const shapesAgree = JSON.stringify(itemHead(lines, id)) === JSON.stringify(now);
+        if (!indexAgrees || !textAgrees || !originalsAgree || !shapesAgree) {
+          disagreed.push(`${JSON.stringify(report)} / ${id}: was ${wasIndex}/${JSON.stringify(wasText)}, now ${JSON.stringify(now)}`);
+        }
+      }
+    }
+    expect(disagreed).toEqual([]);
+    // The corpus itself is asserted, so a case set silently emptied by an edit
+    // cannot pass this as "nothing disagreed".
+    expect(cases).toBe(CORPUS.length * CORPUS_IDS.length);
+    expect(cases).toBeGreaterThanOrEqual(100);
+  });
+
+  test("the corpus really does exercise the cases it names", () => {
+    // A differential over inputs that all miss proves only that both spellings
+    // can fail to find something. These are the hits and the near-misses.
+    expect(frozenHeadLine(REPORT.split("\n"), "fifty-4")).toBeGreaterThan(-1);
+    expect(frozenItemLine("  fifty-4: failed — x\n  fifty-43: failed\n", "fifty-43")).toBe("  fifty-43: failed");
+    expect(frozenHeadLine(["fifty-4:failed"], "fifty-4")).toBe(-1);
+    expect(frozenItemLine("          | zzz-2: integrated", "zzz-2")).toBeUndefined();
+    expect(frozenItemLine("          zzz-2: integrated", "zzz-2")).toBe("          zzz-2: integrated");
+    expect(frozenHeadLine(["a.b: ok", "a+b: ok"], "a+b")).toBe(1);
+    expect(frozenHeadLine(["x: 1", "x: 2"], "x")).toBe(0);
   });
 });

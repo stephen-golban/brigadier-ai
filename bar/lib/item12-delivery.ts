@@ -345,6 +345,32 @@ export interface SinkRuling {
 }
 
 /**
+ * The last reading `judgeSink` was handed, so a control can re-judge THAT one.
+ *
+ * `judgeSink` had no negative control for three rounds, and the reason it kept
+ * not getting one is that the reading it judges is assembled inside item 12 out
+ * of a live run's evidence and then thrown away. A control that hand-writes a
+ * `SinkReading` instead proves only that a function branches on its argument —
+ * it cannot show that the reading assembled at the call site is ever CAPABLE of
+ * carrying the state the blocking branch describes, which is the exact gap that
+ * let a deleted sink go unnoticed once already.
+ *
+ * So the reading is kept here for one call, and `takeSinkReading` hands it over
+ * and clears it. Clearing is the load-bearing half: a control that read a STALE
+ * reading from a previous arm would assert against the wrong run and pass while
+ * measuring nothing, which is this file's own recurring failure mode in a new
+ * costume. Nothing in the item reads it; it exists for `bar/lib/item12-*.test.ts`.
+ */
+let lastSinkReading: SinkReading | undefined;
+
+/** The reading `judgeSink` last judged, removed as it is taken. */
+export function takeSinkReading(): SinkReading | undefined {
+  const reading = lastSinkReading;
+  lastSinkReading = undefined;
+  return reading;
+}
+
+/**
  * The positive claim, which is a different claim from the absence beside it.
  *
  * "The secret is in none of brigadier's artifacts" is true of a run where the
@@ -353,8 +379,16 @@ export interface SinkRuling {
  * That is the narrow remnant of this item\'s original sin: a critic deleted the
  * sink and the item passed. So the placeholder must be PRESENT, by identity, in
  * a named artifact, at the place the raw value would otherwise be.
+ *
+ * **Six blocking branches and one affirmative one**, in the order they are
+ * asked. `Item12Verdict`'s fourth value, `not-run`, is not among them: this
+ * judge is only ever called after the gates above it passed, so the premise
+ * always held and there is nothing here to answer it with. The item reports
+ * `not-run` for the assertions DOWNSTREAM of a blocking verdict instead.
+ * `bar/lib/item12-negative-control.test.ts` drives every one of the six.
  */
 export function judgeSink(r: SinkReading): SinkRuling {
+  lastSinkReading = r;
   const arranged = `ruling 52 hands a reviewer \`git diff <base>..<itemRef>\`, which carries ${r.leakPath} and the value in it`;
   const withPlaceholder = r.transcriptLines.filter((l) => l.includes(r.placeholder));
   const namingTheFile = r.transcriptLines.filter((l) => l.includes(r.leakPath));

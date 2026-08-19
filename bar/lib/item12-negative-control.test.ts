@@ -73,6 +73,17 @@
  * also demonstrates the third defect: v1's raw-literal assertion still reports
  * zero hits on the very file that holds the secret, while the four-encoding scan
  * catches it.
+ *
+ * **AND THE THIRD `describe` JUDGES THE JUDGE.** Everything above reads item
+ * 12's rendered RESULT, which is the right thing to assert and still leaves
+ * `judgeSink` — the function that decides ruling 65's verdict — named in no test
+ * at all. That debt stood for three rounds, and it is the same shape as the
+ * original defect: a judge nobody has seen return anything but `pass` is
+ * indistinguishable from one that cannot. So seven more arms drive the same
+ * fixture, and each one is judged on the `SinkReading` ITEM 12 ASSEMBLED —
+ * handed over by `takeSinkReading`, never written here — covering all six
+ * blocking branches and the affirmative one, with the seven rulings asserted
+ * PAIRWISE DISTINCT rather than assumed to be.
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
@@ -84,7 +95,15 @@ import ITEM_12 from "../items/12-secret-not-persisted.ts";
 import type { BarContext, BarResult, RunOptions } from "../types.ts";
 import type { RecordCheck, RecordItem, RunRecord } from "./contract.ts";
 import { ensureDir, pruneEmpty, removeDir, writeScript } from "./fs.ts";
-import { isInsideWorkerClone, judgeDelivery, readIntegration } from "./item12-delivery.ts";
+import {
+  type SinkReading,
+  type SinkRuling,
+  isInsideWorkerClone,
+  judgeDelivery,
+  judgeSink,
+  readIntegration,
+  takeSinkReading,
+} from "./item12-delivery.ts";
 import { productRunDir } from "./layout.ts";
 import { HARNESS_RUN_TIMEOUT_MS, baseEnv, exec } from "./proc.ts";
 
@@ -173,6 +192,67 @@ const NEVER_DELIVERED: Rewrite = {
   replace: "      // ruling 65's channel, deliberately removed by the negative control",
 };
 
+/**
+ * The record stops attesting that a reviewer ran, while the review still runs.
+ *
+ * Ruling 52's reviewer is the channel that puts the worker's file on
+ * brigadier's writing path, and `judgeSink` refuses to read a transcript as
+ * evidence when nothing says that channel was open. This is the INSTRUMENT
+ * branch: the transcript below it may look perfect, and the judge must still
+ * decline to call it a pass.
+ */
+const REVIEWER_UNRECORDED: Rewrite = {
+  why: "drop the reviewer fields from the run record, so nothing attests ruling 52's channel ran",
+  find: '          ...(flag("review") ? { reviewerAgent: reviewer, reviewVerdict: verdict } : {}),',
+  replace: "          // ruling 52's reviewer fields, dropped by item 12's negative control",
+};
+
+/** brigadier writes the transcript file, and writes it EMPTY. */
+const TRANSCRIPT_EMPTY: Rewrite = {
+  why: "write brigadier's transcript empty, so the sink cannot be read out of it either way",
+  find: '  writeFileSync(join(transcripts, "full.log"), redact(transcriptBody));',
+  replace: '  writeFileSync(join(transcripts, "full.log"), "");',
+};
+
+/**
+ * The single-escape channel removed, leaving only the doubly-escaped copy.
+ *
+ * This is the fixture as it stood BEFORE 2026-08-19, reproduced deliberately:
+ * `credential.txt` is kept out of the diff ruling 52 hands the reviewer, so the
+ * only copy of the granted value on brigadier's writing path is the one inside
+ * `config.json` — JSON-escaped on disk and escaped AGAIN by the frame carrying
+ * the diff. `src/secrets/redact.ts` enumerates four flat forms and that is not
+ * one of them, so the sink cannot act and this item's own scan cannot see it.
+ *
+ * The owner ruled on 2026-08-19 that the four encodings not composing is a
+ * documented limit to RECORD, with the fixture fixed and the product left
+ * alone. This arm is that record, executable: it proves the state produces a
+ * BLOCKING verdict naming the encoding, rather than the silent agreement
+ * between two arms that once let the sink be deleted unnoticed.
+ */
+const ONLY_THE_DOUBLY_ESCAPED_COPY: Rewrite = {
+  why: "keep credential.txt out of the diff, leaving only the copy escaped past ruling 65's four forms",
+  find: '          const diff = safeGit(clone, emptyHooks, ["diff", `${operatorHead}..HEAD`], runRoot).out;',
+  replace:
+    "          const diff = safeGit(clone, emptyHooks, " +
+    '["diff", `${operatorHead}..HEAD`, "--", ".", ":(exclude)credential.txt"], runRoot).out;',
+};
+
+/**
+ * The sink still fires; the transcript no longer names the file it fired in.
+ *
+ * The placeholder is then present for SOME value, which is not this item's
+ * claim — the claim is that it stands where the granted value stood, in the
+ * artifact that carried it. Forced rather than natural: no product state
+ * observed so far redacts a diff and renames its path, and the arm exists to
+ * show the branch is not decoration.
+ */
+const TRANSCRIPT_RENAMES_THE_LEAK_PATH: Rewrite = {
+  why: "rename config.json out of the transcript, leaving the placeholder with nothing to be about",
+  find: '  const transcriptBody = `${transcriptLines.join("\\n")}\\n`;',
+  replace: '  const transcriptBody = `${transcriptLines.join("\\n").split("config.json").join("cfg.json")}\\n`;',
+};
+
 function asBinary(dir: string, script: string, name: string): string {
   mkdirSync(dir, { recursive: true });
   return writeScript(
@@ -194,7 +274,10 @@ afterAll(() => pruneEmpty(ROOTS));
  * that fails for reasons unrelated to what it controls is a control people
  * learn to ignore. The context below is exactly the one `runItem` builds.
  */
-async function scoreItem12(name: string, rewrites: readonly Rewrite[]): Promise<{ record: BarResult; clean: () => void }> {
+async function scoreItem12(
+  name: string,
+  rewrites: readonly Rewrite[],
+): Promise<{ record: BarResult; reading: SinkReading | undefined; clean: () => void }> {
   const root = join(ROOTS, `${name}-${process.pid}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(root, { recursive: true });
   const script = variantOf(join(root, "fixture"), `honest-${name}`, rewrites);
@@ -213,7 +296,14 @@ async function scoreItem12(name: string, rewrites: readonly Rewrite[]): Promise<
       }),
     log: () => {},
   };
-  return { record: await ITEM_12.run(ctx), clean: () => removeDir(root) };
+  // Anything a PREVIOUS arm left behind is discarded before this one runs, so a
+  // control can never assert against another arm's evidence and call it this
+  // arm's. A stale reading would pass exactly as loudly as a real one.
+  takeSinkReading();
+  const record = await ITEM_12.run(ctx);
+  // `undefined` when the item returned before reaching gate 3 at all — which is
+  // itself a fact a control must be able to see rather than paper over.
+  return { record, reading: takeSinkReading(), clean: () => removeDir(root) };
 }
 
 describe("item 12's guard against the run in which nothing moved", () => {
@@ -424,5 +514,230 @@ describe("the gate's remaining branches, driven directly", () => {
     );
     expect(integration.ownershipRejected).toBe(true);
     expect(judgeDelivery({ ...base, integration, proofInTree: undefined }).verdict).toBe("error");
+  });
+});
+
+/**
+ * `judgeSink` ITSELF, against readings the product assembled.
+ *
+ * The arms above drive item 12 end to end and read its rendered result, which
+ * settles what the ITEM does. It leaves `judgeSink` — the function that decides
+ * ruling 65's redaction verdict — named in no test at all, and a judge nobody
+ * has seen return anything but `pass` is indistinguishable from a judge that
+ * cannot. That gap stood for three rounds.
+ *
+ * **The readings are not written here.** Each arm drives `bar/fakes/honest.ts`,
+ * item 12 assembles the `SinkReading` from that run's evidence exactly as it
+ * does in anger, and `takeSinkReading` hands back THAT struct to be judged
+ * again. A control that hand-wrote a reading would prove only that a function
+ * branches on its argument — never that the call site at
+ * `bar/items/12-secret-not-persisted.ts:427` can produce the state the branch
+ * describes, which is precisely the distinction a deleted sink hid behind once.
+ *
+ * **Seven arms, one edit each, and every blocking branch.** `judgeSink` has six
+ * blocking branches and one affirmative one; all seven are driven below, and the
+ * last test asserts the seven rulings are PAIRWISE DISTINCT rather than assuming
+ * it. Arms A and B of the first `describe` were byte-identical until 2026-08-19
+ * and that was the finding, not a defect — so identity is checked here, never
+ * taken on trust.
+ *
+ * `Item12Verdict`'s fourth value, `not-run`, is NOT among the seven and cannot
+ * be: no branch of `judgeSink` returns it, and the item reports it for the
+ * assertions downstream of a blocking verdict instead. That is asserted against
+ * the function's own source rather than left as a claim in a comment.
+ */
+describe("judgeSink itself, judged on readings the product assembled", () => {
+  /** Every ruling this describe has produced, by arm, for the identity check. */
+  const SEEN = new Map<string, SinkRuling>();
+
+  /** Verdict, name and detail as one string — what "identical" has to mean. */
+  const render = (r: SinkRuling): string => `${r.verdict}\n${r.name}\n${r.detail}`;
+
+  /** How many transcript lines carry ruling 65's placeholder. */
+  const withPlaceholder = (r: SinkReading): number =>
+    r.transcriptLines.filter((l) => l.includes(r.placeholder)).length;
+
+  /**
+   * Drive one arm, take the reading ITEM 12 assembled, and judge that.
+   *
+   * A reading of `undefined` means the item returned before gate 3 — the arm
+   * controlled nothing, and that is an error naming the outcome rather than a
+   * quiet skip. `bar/lib/checks.ts` calls the alternative a `SKIPPED` in a
+   * note's clothing, and it is no better in a test file.
+   */
+  async function ruleOn(
+    arm: string,
+    rewrites: readonly Rewrite[],
+  ): Promise<{ reading: SinkReading; ruling: SinkRuling; record: BarResult }> {
+    const { record, reading, clean } = await scoreItem12(arm, rewrites);
+    try {
+      if (reading === undefined) {
+        throw new Error(
+          `arm "${arm}" never reached judgeSink — item 12 returned ${record.outcome} from an earlier gate ` +
+            `(${record.reason ?? "no reason given"}). This arm controls NOTHING as written: re-anchor it on a ` +
+            "fixture edit that leaves gates 1 and 2 passing, or the sink judge is again untested.",
+        );
+      }
+      const ruling = judgeSink(reading);
+      SEEN.set(arm, ruling);
+      return { reading, ruling, record };
+    } finally {
+      // Judging re-arms the capture slot; drop what this call left there so the
+      // next arm cannot inherit it. In `finally` rather than after `judgeSink`
+      // because a throwing judge would otherwise leave the slot armed for the
+      // next arm to read. Harmless today only because `scoreItem12` pre-clears
+      // before every arm — which is a second reader's invariant, not this
+      // function's, and this costs one move.
+      takeSinkReading();
+      clean();
+    }
+  }
+
+  test(
+    "THE CONTROL — one asserted edit to the fixture, and judgeSink's verdict flips pass → fail",
+    async () => {
+      // ONE edit apart: the stock fixture, and the stock fixture with ruling
+      // 65's sink deleted. Both readings are assembled by item 12 out of a real
+      // run; nothing below is written by hand.
+      const green = await ruleOn("judge-sink-intact", []);
+      const red = await ruleOn("judge-sink-deleted", [SINK_DELETED]);
+
+      expect(green.ruling.verdict).toBe("pass");
+      expect(red.ruling.verdict).toBe("fail");
+      // The blocking verdict is not merely non-pass: it names the LEAK, and the
+      // item's assertion at the call site blocks on `verdict === "pass"`.
+      expect(red.ruling.name).toContain("ruling 65's sink did NOT fire");
+      expect(red.ruling.detail).toContain("came out the other side unchanged");
+
+      // ASSERTED, not assumed. Arms A and B of the first describe were
+      // byte-identical until 2026-08-19 while looking like a working control.
+      expect(render(red.ruling)).not.toBe(render(green.ruling));
+
+      // And the readings differ in exactly what deleting the sink controls:
+      // the placeholder stops standing in the transcript, and the raw value
+      // starts being found in brigadier's own artifacts.
+      expect(withPlaceholder(green.reading)).toBeGreaterThan(0);
+      expect(withPlaceholder(red.reading)).toBe(0);
+      expect(green.reading.leaksFound).toEqual([]);
+      expect(red.reading.leaksFound.length).toBeGreaterThan(0);
+
+      // Everything else the judge branches on holds on BOTH sides, so the flip
+      // cannot be some other branch firing: same file, same placeholder, a
+      // reviewer recorded either way, and a transcript that was really read.
+      expect(red.reading.leakPath).toBe(green.reading.leakPath);
+      expect(red.reading.placeholder).toBe(green.reading.placeholder);
+      for (const reading of [green.reading, red.reading]) {
+        expect(reading.reviewerAgent).toBeDefined();
+        expect(reading.reviewVerdict).toBeDefined();
+        expect(reading.reviewVerdict).not.toBe("not-run");
+        expect(reading.transcriptLines.length).toBeGreaterThan(0);
+        expect(reading.transcriptPath ?? "").toContain("full.log");
+      }
+    },
+    ARM_BUDGET_MS,
+  );
+
+  test(
+    "BLOCKING — the record does not attest ruling 52's reviewer, so the channel is unproven",
+    async () => {
+      const { reading, ruling, record } = await ruleOn("judge-sink-no-reviewer", [REVIEWER_UNRECORDED]);
+      expect(reading.reviewerAgent).toBeUndefined();
+      expect(ruling.verdict).toBe("error");
+      expect(ruling.name).toContain("never reached brigadier's writing path");
+      expect(ruling.detail).toContain("INSTRUMENT failure");
+      // The item blocks on it rather than reporting an absence as containment.
+      expect(record.outcome).toBe("FAIL");
+    },
+    ARM_BUDGET_MS,
+  );
+
+  test(
+    "BLOCKING — brigadier's transcript is empty, so the sink cannot be shown to have fired",
+    async () => {
+      const { reading, ruling, record } = await ruleOn("judge-sink-empty-transcript", [TRANSCRIPT_EMPTY]);
+      expect(reading.transcriptLines).toEqual([]);
+      expect(ruling.verdict).toBe("error");
+      expect(ruling.name).toContain("could not be read");
+      expect(record.outcome).toBe("FAIL");
+    },
+    ARM_BUDGET_MS,
+  );
+
+  test(
+    "BLOCKING — only the doubly-escaped copy travels: the documented limit, reported as one",
+    async () => {
+      // The pre-2026-08-19 fixture, reproduced. The owner ruled this a limit to
+      // RECORD with the fixture fixed and the product untouched, so the arm
+      // asserts the judge says exactly that — not "the value never arrived",
+      // which would send a reader to the channel when the fault is the encoding.
+      const { reading, ruling, record } = await ruleOn("judge-sink-double-escaped", [ONLY_THE_DOUBLY_ESCAPED_COPY]);
+      expect(reading.doubleEscapedInTranscript).toBe(true);
+      expect(withPlaceholder(reading)).toBe(0);
+      expect(reading.leaksFound).toEqual([]);
+      expect(ruling.verdict).toBe("error");
+      expect(ruling.name).toContain("RE-ENCODED past ruling 65's four forms");
+      expect(ruling.detail).toContain("NOT A PRODUCT FAILURE");
+      expect(record.outcome).toBe("FAIL");
+    },
+    ARM_BUDGET_MS,
+  );
+
+  test(
+    "BLOCKING — the transcript is a constant, so the placeholder is absent and the value is nowhere",
+    async () => {
+      const { reading, ruling } = await ruleOn("judge-sink-constant", [TRANSCRIPT_IS_A_CONSTANT]);
+      expect(withPlaceholder(reading)).toBe(0);
+      expect(reading.leaksFound).toEqual([]);
+      expect(reading.doubleEscapedInTranscript).toBe(false);
+      expect(ruling.verdict).toBe("error");
+      expect(ruling.name).toContain("is ABSENT from brigadier's transcript");
+      expect(ruling.detail).toContain("proved NOTHING");
+    },
+    ARM_BUDGET_MS,
+  );
+
+  test(
+    "BLOCKING — the placeholder stands, but the transcript never names the file it stood in",
+    async () => {
+      const { reading, ruling } = await ruleOn("judge-sink-unnamed-file", [TRANSCRIPT_RENAMES_THE_LEAK_PATH]);
+      expect(withPlaceholder(reading)).toBeGreaterThan(0);
+      expect(reading.transcriptLines.filter((l) => l.includes(reading.leakPath))).toEqual([]);
+      expect(ruling.verdict).toBe("error");
+      expect(ruling.name).toContain("never names");
+      expect(ruling.detail).toContain("for some OTHER value");
+    },
+    ARM_BUDGET_MS,
+  );
+
+  test("seven arms, seven DIFFERENT rulings, and no branch answers `not-run`", () => {
+    // If an arm above failed, this reports it as a coverage hole rather than
+    // passing on the arms that did run.
+    expect([...SEEN.keys()].sort()).toEqual([
+      "judge-sink-constant",
+      "judge-sink-deleted",
+      "judge-sink-double-escaped",
+      "judge-sink-empty-transcript",
+      "judge-sink-intact",
+      "judge-sink-no-reviewer",
+      "judge-sink-unnamed-file",
+    ]);
+    // ONE affirmative verdict and six blocking ones — the whole enumeration.
+    const verdicts = [...SEEN.values()].map((r) => r.verdict);
+    expect(verdicts.filter((v) => v === "pass")).toHaveLength(1);
+    expect(verdicts.filter((v) => v === "fail")).toHaveLength(1);
+    expect(verdicts.filter((v) => v === "error")).toHaveLength(5);
+    // PAIRWISE DISTINCT, by identity. Two arms that render the same bytes are
+    // not two arms; that is what happened here before and it looked like health.
+    expect(new Set([...SEEN.values()].map(render)).size).toBe(SEEN.size);
+
+    // `not-run` is unreachable from this judge — every gate above it passed by
+    // the time it is called, so the premise always held. Asserted against the
+    // function's own body so a branch that started answering it would be a red
+    // test rather than an unnoticed seventh blocking verdict.
+    const source = readFileSync(fileURLToPath(new URL("./item12-delivery.ts", import.meta.url)), "utf8");
+    const body = source.slice(source.indexOf("export function judgeSink"));
+    const end = body.indexOf("\n}\n");
+    expect(end).toBeGreaterThan(0);
+    expect(body.slice(0, end)).not.toContain('verdict: "not-run"');
   });
 });

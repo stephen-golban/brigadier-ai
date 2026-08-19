@@ -32,12 +32,19 @@
  *      second interrupt during the drain must re-raise the signal rather than
  *      exit with an invented code, so the process is genuinely
  *      signal-terminated;
- *   7. REAP. This item is the only one whose fixture must outlive its parent, so
- *      it is the only one that can leave a process on the operator's machine,
- *      and `bar/run.ts` deletes the workdir the moment it returns — taking away
- *      the directory the next sweep would have found it by. What had to be
- *      killed is reported, never swallowed: the harness cleaning up after the
- *      product is a finding about the product.
+ *   7. REAP, AND THEN CLASSIFY WHAT SURVIVED THE REAP. This item is the only one
+ *      whose fixture must outlive its parent, so it is the only one that can
+ *      leave a process on the operator's machine, and `bar/run.ts` deletes the
+ *      workdir the moment it returns — taking away the directory the next sweep
+ *      would have found it by. What had to be killed is reported, never
+ *      swallowed: the harness cleaning up after the product is a finding about
+ *      the product. And what SURVIVED the kill is a CHECK rather than a
+ *      sentence, because until 2026-08-19 it was a `did` line, and `did` stamps
+ *      nothing: the harness could leak a process past its own SIGKILL, say so,
+ *      and still report PASS. Not a count, though — ruling 63 REQUIRES the
+ *      abandoned run to leave its workers behind. Every survivor is filed under
+ *      a named class carrying its reason and anything unrecognised fails; see
+ *      `survivorClasses` below.
  *
  * WHAT THIS ITEM DELIBERATELY DOES NOT DEMAND (amendment §18). Ruling 38 says
  * every process brigadier causes to exist carries a marker in its COMMAND LINE,
@@ -66,14 +73,8 @@ import { cloneDirsUnder, productRunDir } from "../lib/layout.ts";
 import { makeRepo, plantSeeds } from "../lib/git.ts";
 import { combine, noCredentialFreeChecks, type LiveHalf } from "../lib/halves.ts";
 import { RUN_MARKER_FLAG, isAlive } from "../lib/inflight.ts";
-import {
-  findProcess,
-  nameProcess,
-  reap,
-  readProcessTable,
-  strays,
-  type ProcessFacts,
-} from "../lib/item7-processes.ts";
+import { classifySurvivors, reap, survivorVerdict, type SurvivorClass } from "../lib/item7-processes.ts";
+import { findProcess, nameProcess, readProcessTable, type ProcessFacts } from "../lib/process-table.ts";
 import { writePlan } from "../lib/plan.ts";
 import { HARNESS_RUN_TIMEOUT_MS, baseEnv } from "../lib/proc.ts";
 import type { BarContext, BarItem, BarResult } from "../types.ts";
@@ -464,6 +465,118 @@ function recordsUnder(runsRoot: string): string {
   return text;
 }
 
+/**
+ * The classes a process still running when this item returns may belong to, in
+ * FIRST-MATCH order.
+ *
+ * Exported because `bar/lib/item7-processes.test.ts` — the negative control —
+ * plants real processes and drives THIS table. A guard tested against a
+ * re-implementation of its own classes is not tested.
+ *
+ * WHY THE MARKERS AND NOT JUST THE ROOTS. Verified against the WORKING TREE on
+ * 2026-08-19: `src/queue/spawn.ts` builds a worker's argv as
+ * `[profile.command, ...profile.args, runMarkerArg(runId, item)]` and passes the
+ * CLONE as `cwd`, and `src/run/marker.ts:64` renders that marker as
+ * `--brigadier-run=<run-id>/<item>` — the `=` form is the only one it ever
+ * WRITES, by its own comment. So a worker names its run id in its argv and its
+ * run ROOT nowhere: the shim it was launched through
+ * (`bar/lib/fixtures.ts` plants `<workdir>/bin/<vendor>`) is the only path it
+ * carries. Classify on directories alone and every deliberately-abandoned
+ * worker lands under the harness's own `bin/` and fails this item for the
+ * product doing exactly what ruling 63 requires.
+ *
+ * The order is the judgement: run identity first, because it is the specific
+ * provenance, and the directories after it as the fallback that catches what
+ * carries no marker at all — the escapee, whose whole point is that nothing can
+ * mark it.
+ *
+ * AND THE ONE EXPECTED CLASS MATCHES ON THE MARKER ALONE. It carried
+ * `paths: [abandonedRoot]` too until a blind critic drove it on 2026-08-19 and
+ * showed what that bought: a `while true; do date >> <root>/runs-3/…; sleep
+ * 0.2; done` escapee — the exact unmarked, orphaned descendant class ruling 38
+ * exists for — came back EXPECTED, and so did an ORCHESTRATOR still alive under
+ * `--run-root …/runs-3`, which ruling 63 requires to re-raise and DIE. The path
+ * needle could not have earned that excuse honestly either, because the
+ * paragraph above is the argument that abandoned WORKERS name the run root
+ * nowhere at all. A whitelist that only ever widens is the failure mode this
+ * whole design is chosen against, so the excuse is now exactly as wide as the
+ * evidence for it: a live run marker for a run this item abandoned. Anything
+ * else under that root is named as its own class and stays loud.
+ */
+export function survivorClasses(scope: {
+  /** The run root a later start SWEPT, and the run ids seen under it. */
+  sweptRoot: string;
+  sweptRunIds: ReadonlySet<string>;
+  /** The run root this item interrupted twice and deliberately left unswept. */
+  abandonedRoot: string;
+  abandonedRunIds: ReadonlySet<string>;
+  /** The planted fleet this harness put on the run's PATH. */
+  fixtureBin: string;
+  /** Where the escapee fixture writes its heartbeat and its pid. */
+  observe: string;
+}): SurvivorClass[] {
+  const marker = (id: string): string => `${RUN_MARKER_FLAG}=${id}/`;
+  return [
+    {
+      label: "a WORKER of the run this item ABANDONED, by its own run marker",
+      // Markers only. See the note above: a path needle here excused an escaped
+      // descendant and a surviving orchestrator, and bought no coverage for the
+      // obligation it cites, because a worker never names its run root.
+      paths: [],
+      markers: [...scope.abandonedRunIds].map(marker),
+      expected: true,
+      why:
+        "ruling 63: `abandon` restores the default handler and re-raises, cleaning up NOTHING on purpose, so " +
+        "this run's WORKERS are left for a later start's sweep — and this item starts nothing else under this " +
+        "root, so no later start exists. The product is behaving exactly as required and failing here would " +
+        "fail the item for it. The marker is what makes this a worker of THAT run rather than anything else " +
+        "that happens to sit under the same directory",
+    },
+    {
+      label: "under the ABANDONED run root but carrying NO marker of that run",
+      paths: [scope.abandonedRoot],
+      markers: [],
+      expected: false,
+      why:
+        "ruling 63 excuses that run's WORKERS, and nothing else. An unmarked process under this root is either " +
+        "an escaped descendant — unmarked and off the ppid graph, the exact class ruling 38's sweep exists for " +
+        "— or the orchestrator itself, which ruling 63 requires to re-raise and DIE rather than outlive its own " +
+        "drain. Neither is excused, and neither is left to fall through to UNRECOGNISED without a reason",
+    },
+    {
+      label: "the SWEPT run root (runs)",
+      paths: [scope.sweptRoot],
+      markers: [...scope.sweptRunIds].map(marker),
+      expected: false,
+      why:
+        "a later start DID run over this root, and ruling 38's sweep reclaims processes always. Anything from " +
+        "here that outlived both that sweep and this harness's own SIGKILL is a process nothing will ever " +
+        "reclaim: `bar/run.ts` deletes this workdir the moment the item returns, taking away the directory the " +
+        "next sweep would have found it by",
+    },
+    {
+      label: "a harness fixture on the planted PATH (bin/)",
+      paths: [scope.fixtureBin],
+      markers: [],
+      expected: false,
+      why:
+        "the HARNESS caused this one — `bar/lib/fixtures.ts` plants these shims — and it carries no run marker " +
+        "tying it to either root, so no sweep of either would match it either. It survived this item's own " +
+        "SIGKILL and is now the operator's",
+    },
+    {
+      label: "the escapee's own observation files (observe/)",
+      paths: [scope.observe],
+      markers: [],
+      expected: false,
+      why:
+        "this is the escaped descendant itself, or something writing its heartbeat: unmarked and off the ppid " +
+        "graph by construction, which is the whole class ruling 38's sweep exists for. Still running after the " +
+        "sweep AND after this item's SIGKILL means nothing reclaimed it",
+    },
+  ];
+}
+
 /** Wait for a process to exit, BOUNDED. An unbounded wait on a signalled process is a hang. */
 async function exitedWithin(proc: { exited: Promise<number> }, ms: number): Promise<boolean> {
   return await Promise.race([proc.exited.then(() => true), Bun.sleep(ms).then(() => false)]);
@@ -497,6 +610,10 @@ const item: BarItem = {
   async run(ctx: BarContext): Promise<BarResult> {
     const did: string[] = [];
     let live: LiveHalf = { kind: "skipped", why: "the item did not reach its live half" };
+    // Hoisted so the reaping `finally` can add to it. Nothing else writes here:
+    // this item's assertions all need a live run, and the one thing that can be
+    // said without one is that the harness left no process behind.
+    const credentialFree = noCredentialFreeChecks();
 
     const binDir = ensureDir(join(ctx.workdir, "bin"));
     plantFleet(binDir, join(ctx.workdir, "vendor-ledger.tsv"), [
@@ -505,6 +622,13 @@ const item: BarItem = {
     ]);
     const env = baseEnv({ PATH: isolatedPath(binDir) });
     const runs = ensureDir(join(ctx.workdir, "runs"));
+    // Both hoisted OUT of the live branch, because the `finally` classifies every
+    // surviving process by the run it came from and a name that exists only
+    // inside the `try` is a name the reaper cannot judge on. `sweptRunIds` is
+    // filled while the first run is still live: after the sweep its clones are
+    // gone, and with them the only place its run id was written down.
+    const interruptRoot = join(ctx.workdir, "runs-3");
+    const sweptRunIds = new Set<string>();
 
     const repo = join(ctx.workdir, "repo");
     await makeRepo(repo, { "README.md": "base\n" });
@@ -540,14 +664,23 @@ const item: BarItem = {
         `writing a heartbeat to ${heartbeat}; the other commits real work and hangs`,
     );
 
-    // Probe first: an artifact with no `run` cannot be interrupted.
-    const probe = await probeFeature(ctx, ["run", "--plan", planPath, "--repo", repo, "--run-root", runs, "--dry-run"], {
-      env,
-      timeoutMs: 60_000,
-    });
-    did.push(probe.transcript);
-
     try {
+      // Probe first: an artifact with no `run` cannot be interrupted.
+      //
+      // INSIDE the `try`, since 2026-08-19. It sat outside it, so a throw here —
+      // and it spawns the binary, which is the throwing kind of work — skipped
+      // the reap in the `finally` entirely, leaving whatever it had started on
+      // the operator's machine with the workdir about to be deleted out from
+      // under it. Found by a blind critic; pre-existing rather than introduced
+      // by this round's change, and fixed here because this is the file that
+      // owns the reap.
+      const probe = await probeFeature(
+        ctx,
+        ["run", "--plan", planPath, "--repo", repo, "--run-root", runs, "--dry-run"],
+        { env, timeoutMs: 60_000 },
+      );
+      did.push(probe.transcript);
+
       if (!probe.present) {
         live = {
           kind: "missing",
@@ -588,6 +721,7 @@ const item: BarItem = {
         const wasReady = ready();
         const clonesAtKill = clonesUnder(runs, keptFile);
         const runIds = runIdsUnder(runs);
+        for (const id of runIds) sweptRunIds.add(id);
 
         victim.kill("SIGKILL");
         await exitedWithin(victim, 10_000);
@@ -657,7 +791,6 @@ const item: BarItem = {
         );
 
         // 6. Two interrupts, and the WAIT STATUS is what is read.
-        const interruptRoot = join(ctx.workdir, "runs-3");
         const interruptRepo = join(ctx.workdir, "repo-3");
         await makeRepo(interruptRepo, { "README.md": "base\n" });
         await plantSeeds(interruptRepo, [{ path: "seeds/hang.seed", value: nonce("hang-seed"), placement: "committed" }]);
@@ -666,6 +799,26 @@ const item: BarItem = {
           {
             version: 1,
             items: [
+              // AN ESCAPEE UNDER THE ABANDONED ROOT TOO, and it is not decoration.
+              // The survivor classification excuses the workers of this run and
+              // nothing else, and the case that has to be DRIVEN rather than
+              // reasoned about is the one a blind critic found on 2026-08-19: an
+              // unmarked, orphaned descendant sitting under the very root whose
+              // workers are excused. Without this item nothing ever plants one
+              // there, and the class that refuses to excuse it is never
+              // exercised against a real process — which is the difference
+              // between a guard and a comment.
+              {
+                id: "escaper-abandoned",
+                kind: "write",
+                paths: ["escaper-abandoned.txt"],
+                prompt: "detach a long-lived descendant under the run that will be abandoned",
+                directive: {
+                  do: "escape-process",
+                  heartbeat: join(observe, "heartbeat-abandoned.log"),
+                  pidFile: join(observe, "escapee-abandoned.pid"),
+                },
+              },
               {
                 id: "hang",
                 kind: "write",
@@ -771,17 +924,63 @@ const item: BarItem = {
         reaped.found.length === 0
           ? "reaped nothing: no process on this machine still named this item's workdir"
           : `the harness reaped ${reaped.found.length} process(es) still naming this workdir: ` +
-            `${reaped.found.map(nameProcess).join(" | ")}${reaped.survivors.length > 0 ? `; STILL ALIVE after SIGKILL: ${reaped.survivors.map(nameProcess).join(" | ")}` : ""}. ` +
+            `${reaped.found.map((row) => nameProcess(row)).join(" | ")}${reaped.survivors.length > 0 ? `; STILL ALIVE after SIGKILL: ${reaped.survivors.map((row) => nameProcess(row)).join(" | ")}` : ""}. ` +
             "Some of these are the product behaving as ruling 63 says it must: `abandon` restores the default handler " +
             "and re-raises, and cleans up nothing on purpose, so the run this item interrupted twice leaves its workers " +
             "for a later start's sweep — and there is no later start under `runs-3`. Anything from the SWEPT run root is " +
             "a different matter, and the checks above are where that is judged",
       );
-      const remaining = strays(ctx.workdir);
-      if (remaining.length > 0) did.push(`STILL RUNNING after the reap: ${remaining.map(nameProcess).join(" | ")}`);
+      // AND THEN JUDGE WHAT SURVIVED THE REAP, as a CHECK.
+      //
+      // This was a `did` line until 2026-08-19 — `STILL RUNNING after the reap:
+      // …` — and `did` is narrative: it stamps nothing. So the harness could
+      // leak a process past its own SIGKILL, SAY SO in the item's own output,
+      // and still report PASS. An item that reports a leak without failing on it
+      // is an item that will be believed.
+      //
+      // It is a CLASSIFICATION rather than a count, because
+      // `remaining.length > 0` is the wrong predicate in the other direction:
+      // ruling 63 REQUIRES the abandoned run to leave its workers behind, and
+      // failing on those would fail this item for the product being correct.
+      // Every survivor is filed under a named class carrying its reason, and
+      // anything unrecognised is a failing row — a stale whitelist is a silent
+      // false negative, a stale blacklist is a loud false positive, and
+      // demanding classification makes both loud.
+      for (const id of runIdsUnder(runs)) sweptRunIds.add(id);
+      const classes = survivorClasses({
+        sweptRoot: runs,
+        sweptRunIds,
+        abandonedRoot: interruptRoot,
+        abandonedRunIds: runIdsUnder(interruptRoot),
+        fixtureBin: binDir,
+        observe,
+      });
+      // `reaped.survivors` rather than a fresh scan: it is the SAME reading the
+      // `did` line above reports, so the narrative and the verdict cannot
+      // disagree about what was left, and the machine is not asked for a second
+      // whole `ps` a few milliseconds later.
+      const classified = classifySurvivors(reaped.survivors, classes);
+      const verdict = survivorVerdict(classified, classes);
+      if (live.kind === "ran") {
+        live.checks.expect(verdict.name, verdict.ok, verdict.detail);
+      } else if (!verdict.ok) {
+        // The live half never ran, so there is no live check to carry this — and
+        // an unexpected process left behind by an item that did not even reach
+        // its subject is the INSTRUMENT leaking, which blocks under its own
+        // name rather than as a verdict about the product.
+        credentialFree.expect(
+          `ERROR — the harness left a process running and this item never reached its live half: ${verdict.name}`,
+          false,
+          verdict.detail,
+        );
+      }
+      did.push(
+        `classified ${classified.length} process(es) still naming this workdir after the reap; ` +
+          `${classified.filter((row) => !row.expected).length} UNEXPECTED. The verdict is a CHECK, not this line`,
+      );
     }
 
-    return combine(did, noCredentialFreeChecks(), live);
+    return combine(did, credentialFree, live);
   },
 };
 

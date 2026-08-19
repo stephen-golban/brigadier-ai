@@ -254,14 +254,12 @@ const item: BarItem = {
         ["beta.txt", derive(betaSeed, "beta")],
         ["wave2.txt", derive(alphaOut, "wave2")],
       ]);
-      for (const row of proofOfWork(evidence, {
+      checks.absorb(proofOfWork(evidence, {
         expected,
         itemIds: ["alpha", "beta", "wave2"],
         flight: sampled.flight,
         expectedWorkers: 4,
-      }).rows) {
-        checks.expect(row.name, row.ok, row.detail);
-      }
+      }));
 
       // Ruling 50: the gitignored nonce never reached a clone, so its derivation
       // cannot exist. A forger reading the working tree produces it and fails

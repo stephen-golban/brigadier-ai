@@ -57,6 +57,7 @@ import {
 } from "./queue/index.ts";
 import { defaultRunRoot, isTempRooted } from "./repo/layout.ts";
 import { estimateTokens, type Audience } from "./report/index.ts";
+import { SERVE_USAGE, serveCommand } from "./serve/index.ts";
 import { abandon, initialState, onSignal, type InterruptState } from "./run/interrupt.ts";
 import { renderCompetence, tableProblems, unlistedModels } from "./router/table.ts";
 import { Sink, type Grant } from "./secrets/sink.ts";
@@ -119,6 +120,8 @@ const USAGE = `brigadier — an ACP hub
       running executable's own bytes. Cite it beside any number measured against
       this binary — four warm-start figures for "this binary" exist with no
       artifact named against any of them, and they cannot be compared.
+
+${SERVE_USAGE}
 
   ${PLUGIN_USAGE.trimEnd()}
 
@@ -621,8 +624,19 @@ function difficultyFrom(name: string | undefined): Difficulty | undefined | null
  * Read-only introspection is deliberately still allowed inside a worker: it
  * cannot cause finding 114, and refusing it would only make the refusal look
  * arbitrary to a model trying to understand its situation.
+ *
+ * `serve` IS ORCHESTRATION, and it is here because of what it is FOR rather
+ * than what it currently does. A worker that starts an ACP server has handed a
+ * driving surface for brigadier to whatever is on the other end of its stdio —
+ * which is finding 114 with an extra hop, and a hop is not a mitigation. It
+ * does not matter that this build's `session/prompt` stops at admission: the
+ * command exists so that an editor can drive brigadier, and admitting it inside
+ * a worker would mean the guard has to be re-argued the day execution is wired.
+ * Ruling 57's refusal is binary on purpose, and `version`, `detect`, `agents`,
+ * `competence` and `licenses` stay out of this set because none of them can
+ * drive anything.
  */
-const ORCHESTRATING = new Set(["run", "plan"]);
+const ORCHESTRATING = new Set(["run", "plan", "serve"]);
 
 /**
  * Ruling 63, wired. One handler, one state machine, three behaviours.
@@ -740,6 +754,27 @@ const exitCode = await (async () => {
     case "plan":
       argv.push("--dry-run");
       return run();
+    // Ruling 2's server half. Every frame goes through the process's ONE sink
+    // (ruling 65) — `sink.out` and not a second writer on stdout, which is what
+    // `src/secrets/audit.ts` ratchets against and which would be the worst
+    // possible bypass, because a frame is composed from run text and then
+    // JSON-escaped. The sink sees the final bytes.
+    //
+    // On stdout the sink is now the FRAME stream, so nothing else may print
+    // there for the life of the command; `serveCommand` puts all prose inside
+    // `session/update` frames and leaves warnings on stderr. It registers no
+    // signal handler: ruling 63's one handler above already covers a server
+    // that holds no run, and its `idle` branch re-raises rather than inventing
+    // an exit code.
+    case "serve":
+      return serveCommand({
+        writeLine: (line) => sink.out(`${line}\n`),
+        cwd: absolute(value("repo") ?? process.cwd()),
+        ...(value("run-root") === undefined ? {} : { runRoot: absolute(value("run-root")!) }),
+        overrides: OVERRIDES,
+        // stderr, never stdout: on stdout the sink is the frame stream.
+        warn: (text) => sink.errLine(text),
+      });
     case "detect":
       return detect();
     case "agents":

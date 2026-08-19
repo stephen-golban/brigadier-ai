@@ -1105,7 +1105,25 @@ describe("item 10 — the artifact ships, and says what is in it", () => {
     expect(struck?.detail).toContain("11.3 ms/MB");
     expect(struck?.detail).toBe(struckLine());
     expect(checks.rows.map((r) => r.name)).toContain("what the struck clause leaves unproven (note)");
-    // No surviving cold-start gate, under any wording.
+
+    // `ok: true` above is the HAZARD, not the promise: a note gates nothing, so
+    // it can only ever be `ok: true`, and until 2026-08-19 it also PRINTED with
+    // the same `ok` leader as a genuine passing assertion. This row is one of
+    // the legitimate cases — a strike `BAR.md` requires be printed, which was
+    // never an assertion — but item 10 also shipped a BLOCKING condition as a
+    // note once (see `HOST_NOT_RUN` above). So what this test now pins is that
+    // the reader can TELL: the row is un-gated, and it says so in its leader.
+    // `bar/lib/checks.test.ts` is the control for the mechanism.
+    expect(checks.failures.map((r) => r.name)).not.toContain(struck?.name);
+    const struckLineOut = checks
+      .render()
+      .split("\n")
+      .find((l) => l.includes("STRUCK CLAUSE"));
+    expect(struckLineOut?.startsWith("note ")).toBe(true);
+    expect(struckLineOut?.startsWith("ok")).toBe(false);
+
+    // No surviving cold-start gate, under any wording. The ` (note)` suffix is
+    // still the filter, and it is still what `note()` writes.
     const gates = checks.rows.filter((r) => !r.name.endsWith("(note)")).map((r) => r.name.toLowerCase());
     expect(gates.filter((n) => n.includes("cold"))).toEqual([]);
     expect(gates.filter((n) => n.includes("never-executed"))).toEqual([]);

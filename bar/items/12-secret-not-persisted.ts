@@ -299,13 +299,11 @@ const item: BarItem = {
       const checks = new Checks();
 
       // Something happened, and it involved the secret channel.
-      for (const row of proofOfWork(evidence, {
+      checks.absorb(proofOfWork(evidence, {
         expected: new Map([[PROOF_PATH, deliveryProof]]),
         itemIds: [LEAK_ITEM],
         flight: sampled.flight,
-      }).rows) {
-        checks.expect(row.name, row.ok, row.detail);
-      }
+      }));
 
       // ────────────────────────── THE THREE GATES ──────────────────────────
       //
@@ -357,18 +355,20 @@ const item: BarItem = {
         // NOT a secret scan over an empty integration. Ruling 52's three
         // blocking outcomes are all blocking; `combine` renders this as a FAIL,
         // and the verdict word is in the name because the outcome line has no
-        // room for it.
+        // room for it. The details below say WHY and never repeat it — the rule
+        // is written down in `bar/lib/checks.ts`, and four details here opened
+        // `not attempted:` beneath a `NOT-RUN —` name until 2026-08-19.
         checks.expect(
           `NOT-RUN — the ${encodings(secret).length}-encoding scan over brigadier's persisted artifacts`,
           false,
-          `not attempted: ${delivery.verdict.toUpperCase()} above. An absence measured over an integration this ` +
+          `${delivery.verdict.toUpperCase()} above. An absence measured over an integration this ` +
             "item never reached, or over a run the secret never entered, is not evidence of containment. " +
             "Reporting it as a pass is precisely how this item survived the deletion of the redaction sink",
         );
         checks.expect(
           "NOT-RUN — ruling 50's base-tree scan",
           false,
-          "not attempted: the run this item would have scanned did not produce the result it depends on",
+          "the run this item would have scanned did not produce the result it depends on",
         );
         checks.note("scope", SCOPE_NOTE);
         live = { kind: "ran", checks };
@@ -455,14 +455,14 @@ const item: BarItem = {
         checks.expect(
           `NOT-RUN — the ${encodings(secret).length}-encoding scan over brigadier's persisted artifacts`,
           false,
-          "not attempted: ruling 65's sink was never handed the granted value, so an absence here would be " +
+          "ruling 65's sink was never handed the granted value, so an absence here would be " +
             "true of a machine on which nothing happened. Absence-of-secret and presence-of-placeholder are " +
             "different claims and only the second was ever capable of failing",
         );
         checks.expect(
           "NOT-RUN — ruling 50's base-tree scan",
           false,
-          "not attempted: this run cannot say anything about ruling 65, so it is not made to say anything about ruling 50 either",
+          "this run cannot say anything about ruling 65, so it is not made to say anything about ruling 50 either",
         );
         checks.note("scope", SCOPE_NOTE);
         live = { kind: "ran", checks };
@@ -567,7 +567,7 @@ const item: BarItem = {
             "OUT OF SCOPE by the owner's ruling and by ruling 56, not caught and not claimed to be caught",
       );
 
-      for (const row of judgeSecret({
+      checks.absorb(judgeSecret({
         secret,
         deliveryProved: delivery.verdict === "pass",
         deliveryDetail: delivery.detail,
@@ -575,9 +575,7 @@ const item: BarItem = {
         literalLeaks: leaks.filter((l) => l.encoding === "literal"),
         inClone,
         artefactsScanned: scannedFiles.length + evidence.subjects.length + evidence.files.size + baseFiles.size + 1,
-      }).rows) {
-        checks.expect(row.name, row.ok, row.detail);
-      }
+      }));
 
       live = { kind: "ran", checks };
     }

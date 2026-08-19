@@ -74,7 +74,7 @@ export function readRouting(r: RoutingReading): RoutedReviewer {
     `ledger recorded builders [${r.ledgerBuilders.join(", ") || "none"}] and reviewers [${r.ledgerReviewers.join(", ") || "none"}]`;
 
   if (r.recordReviewer === undefined || r.recordReviewer.length === 0) {
-    return { vendor: undefined, detail: `${seen} — no reviewer to plant on, so nothing is planted and the catch rate is not measured` };
+    return { vendor: undefined, detail: `${seen} — no reviewer to plant on, so nothing is planted and the catch rate below is a NOT-RUN, never a zero` };
   }
   if (r.ledgerReviewers.length !== 1) {
     return {

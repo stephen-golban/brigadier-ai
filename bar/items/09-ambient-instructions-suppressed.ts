@@ -211,6 +211,11 @@ export type GuardState =
    * the only reason this item can settle it, so a count is not allowed to stand
    * in for an identity. If identity matching fails, the marker's shape has
    * changed and THAT is the finding.
+   *
+   * A ROW STATE, not `bar/lib/checks.ts`'s `NOT-RUN —`. That prefix says the
+   * harness never reached an assertion; this says the harness reached this row,
+   * read it, and could not tie it to an identity. The 2026-08-19 phrasing census
+   * kept both.
    */
   | "unattributable";
 
@@ -474,8 +479,8 @@ const item: BarItem = {
         `invocation to ${ledgerPath}, and a committed AGENTS.md carrying ${agentsToken}`,
     );
 
-    // THE CONTROL, carrying two known positives, because both halves below are
-    // unreadable without them.
+    // THE POSITIVE CONTROL, carrying two known positives, because both halves
+    // below are unreadable without them.
     //
     // One: the same fixture agent, given the same config-root pointer the
     // operator has, really DOES obey the ambient file. Without it, "the marker
@@ -598,9 +603,7 @@ const item: BarItem = {
       );
 
       // The workers DID THE WORK. Asserted on the effect, per ruling 57.
-      for (const row of proofOfWork(evidence, { expected, itemIds, flight: sampled.flight }).rows) {
-        checks.expect(row.name, row.ok, row.detail);
-      }
+      checks.absorb(proofOfWork(evidence, { expected, itemIds, flight: sampled.flight }));
 
       // THE RUN'S OWN TRANSCRIPT, read here because route 1 needs it before the
       // ledger does. Every ACP frame the orchestrator exchanged with every
@@ -671,7 +674,7 @@ const item: BarItem = {
         askedToObey.length === 0
           ? transcriptLog.length === 0
             ? "no run transcript was readable, so this run cannot separate `the agent never read the file` from `the agent asked and " +
-              "was denied`. The absence above is real either way; which layer produced it is unmeasured here"
+              "was denied`. The absence above is real either way; which layer produced it is unproven here"
             : `${transcriptLog.split("\n").length} transcript frame(s) and NOT ONE names ambient-obeyed.txt: no agent decided to obey, ` +
               "so the absence in the refs is the config root and not the lane"
           : `${askedToObey.length} permission request(s) name ambient-obeyed.txt: an agent DID read the operator's instruction file and ` +

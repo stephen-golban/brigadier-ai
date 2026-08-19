@@ -129,6 +129,50 @@ test("an ESCAPED descendant holding the pipe cannot hang a sampled run", async (
   expect(isAlive(holder)).toBe(false);
 }, 45_000);
 
+/**
+ * The dedup's own guard.
+ *
+ * `sampleOnce` used to filter a private `listProcesses()` that read
+ * `ps -A -o args=`; it now filters the one reader in
+ * `bar/lib/process-table.ts`, which reads the same `args` column with three
+ * numeric ones in front of it. The property that must not have moved is the
+ * only thing any caller observes: a process carrying ruling 38's marker in its
+ * COMMAND LINE is counted and quoted, and one without it is not. Both
+ * directions, because a counter that counts everything looks identical to a
+ * working one from the passing side.
+ */
+test("the marker filter still counts a marked process, and only a marked one", async () => {
+  if (process.platform === "win32") return; // `sh -c` argv shaping is POSIX here
+  scratch ??= realpathSync(mkdtempSync(join(tmpdir(), "brigadier-inflight-proc-")));
+  // The marker rides as `$0`, so it is in the argv `ps` prints without changing
+  // what the shell runs. `--brigadier-run` is written out rather than imported
+  // from the product, exactly as `bar/lib/inflight.ts` says.
+  //
+  // `; :` IS LOAD-BEARING. MEASURED on macOS 26.5.2 (Darwin 25.5.0) with
+  // `bun 1.3.14` on 2026-08-19: `/bin/sh -c "sleep 3" --brigadier-run=probeA/1`
+  // does not appear in `ps -A -o pid=,args=` at all, because a shell running one
+  // simple command `exec`s it and the shell's argv — marker included — is gone.
+  // The two-command form kept the whole line. That is not this test being
+  // fussy: it is the exact limit `src/run/marker.ts` documents about ruling 38's
+  // marker, reproduced in the fixture that would otherwise have measured it away.
+  const marked = await runSampled(["/bin/sh", "-c", "sleep 2; :", "--brigadier-run=barsample/1"], {
+    runRoot: join(scratch, "runs-marked"),
+    timeoutMs: 15_000,
+    intervalMs: 40,
+  });
+  expect(marked.flight.peakMarkedProcesses).toBeGreaterThan(0);
+  expect(marked.flight.markedCommandLines.some((line) => line.includes("--brigadier-run=barsample/1"))).toBe(true);
+
+  // NEGATIVE CONTROL: the same shape without the marker. `sleep 2` and a
+  // sentinel that could only appear if the filter had stopped filtering.
+  const unmarked = await runSampled(["/bin/sh", "-c", "sleep 2; :", "bar-unmarked-sentinel"], {
+    runRoot: join(scratch, "runs-unmarked"),
+    timeoutMs: 15_000,
+    intervalMs: 40,
+  });
+  expect(unmarked.flight.markedCommandLines.some((line) => line.includes("bar-unmarked-sentinel"))).toBe(false);
+}, 60_000);
+
 test("NEGATIVE CONTROL: a sampled run whose streams close normally is not marked truncated", async () => {
   scratch ??= realpathSync(mkdtempSync(join(tmpdir(), "brigadier-inflight-proc-")));
   const result = await runSampled(["/bin/sh", "-c", "echo hi"], {

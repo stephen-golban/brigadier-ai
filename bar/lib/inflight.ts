@@ -30,6 +30,7 @@ import {
   killTree,
   truncationNote,
 } from "./proc.ts";
+import { readProcessTable } from "./process-table.ts";
 
 /**
  * Ruling 38's marker, as `src/agent/marker.ts` spells it.
@@ -86,20 +87,6 @@ export interface Flight {
   /** Command lines seen carrying the marker. Evidence, not just a count. */
   markedCommandLines: string[];
   samples: number;
-}
-
-function listProcesses(): string[] {
-  const proc =
-    process.platform === "win32"
-      ? Bun.spawnSync([
-          "powershell",
-          "-NoProfile",
-          "-Command",
-          "Get-CimInstance Win32_Process | ForEach-Object { $_.CommandLine }",
-        ])
-      : Bun.spawnSync(["ps", "-A", "-o", "args="]);
-  if (proc.exitCode !== 0) return [];
-  return new TextDecoder().decode(proc.stdout).split("\n");
 }
 
 const PAYLOAD_PATHS = [join(".git", "hooks", "pre-commit"), join(".git", "hooks", "reference-transaction"), join(".git", "bar-fsmonitor")];
@@ -288,10 +275,18 @@ export function sampleOnce(
   }
 
   if (!processes) return;
-  const marked = listProcesses().filter((line) => line.includes(RUN_MARKER_FLAG));
+  // ONE process-table reader for the whole harness. This filter used to run over
+  // a private `listProcesses()` that read `ps -A -o args=`; the structured
+  // reader below reads the same `args` column with three numeric ones in front
+  // of it. MEASURED on macOS 26.5.2 (Darwin 25.5.0) on 2026-08-19 at load1 1.64:
+  // 507 rows either way, every row parsed, args text identical line for line
+  // except each `ps`'s own argv, and the longest line grew by exactly the width
+  // of the added columns — so nothing is truncated away from the END of a
+  // command line, which is where this marker lives.
+  const marked = readProcessTable().filter((row) => row.commandLine.includes(RUN_MARKER_FLAG));
   if (marked.length > flight.peakMarkedProcesses) flight.peakMarkedProcesses = marked.length;
-  for (const line of marked) {
-    const trimmed = line.trim().slice(0, 160);
+  for (const row of marked) {
+    const trimmed = row.commandLine.trim().slice(0, 160);
     if (trimmed.length > 0 && !flight.markedCommandLines.includes(trimmed)) flight.markedCommandLines.push(trimmed);
   }
 }

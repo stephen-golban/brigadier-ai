@@ -49,11 +49,48 @@
  * items 11 and 12 assert on that literal. The two appear in the same report and
  * must not be mistaken for each other.
  *
- * AND NEITHER IS EVER A `note`. `note` stamps `ok: true`, so a note describing a
- * blocking condition renders as a passing assertion in both the report and the
- * halves — a `SKIPPED` in a note's clothes, which is the exact substitution
- * ruling 52 exists to forbid. `note` is for something worth reporting that was
- * never a gate.
+ * THE PREFIX BELONGS TO THE NAME, AND THE DETAIL DOES NOT REPEAT IT. A census
+ * of the report's own bytes on 2026-08-19 found TEN spellings of "we could not
+ * measure this", four of them a detail opening `not attempted:` beneath a name
+ * already reading `NOT-RUN — …`: the same verdict twice, in two vocabularies,
+ * leaving a reader to work out whether that was one claim or two. A detail says
+ * WHY, and what was seen. It states a verdict only where the NAME cannot carry
+ * one — a check whose name is a plain assertion but whose FAILING branch is a
+ * not-run, because the name is fixed and the branch is not — and then it uses
+ * the word above rather than a new one.
+ *
+ * THREE THINGS THAT LOOK LIKE THIS VOCABULARY AND ARE NOT IT. They survived
+ * that census deliberately, written down here so the next one does not collapse
+ * them:
+ *
+ *   `none measured`   ruling 40's value in the PRODUCT's own `effortLever`
+ *                     field. Item 13 asserts on the literal, so it is data this
+ *                     harness READS, never a verdict this harness writes.
+ *   `unattributable`  item 9's classification of ONE ledger row it could not
+ *                     tie to an identity. A per-row state, which then blocks
+ *                     through an ordinary `ok: false` like any other finding.
+ *   `unproven`        a check that RAN, and that is naming what it does not
+ *                     cover. `NOT-RUN` is `ok: false` and reached nothing;
+ *                     `unproven` is the honest edge of something that did. Item
+ *                     10's struck cold-start clause is the pattern.
+ *
+ * AND NEITHER IS EVER A `note`. `note` stamps `ok: true` and CONTRIBUTES NOTHING
+ * TO THE VERDICT: `failures` filters `!ok`, so a note can never appear there,
+ * and `passed` is `failures.length === 0`. A note describing a blocking
+ * condition is therefore a `SKIPPED` in a note's clothes, which is the exact
+ * substitution ruling 52 exists to forbid. `note` is for something worth
+ * reporting that was never a gate.
+ *
+ * Until 2026-08-19 a note also PRINTED as `ok  <name> (note)`, identical in its
+ * leader to a genuine passing assertion, so the report gave a reader no way to
+ * see the difference at all. It shipped that way once, on item 10: the host view
+ * was a note, `claude` was absent on a CI leg, and the item printed PASS on a
+ * run where `BAR.md`'s own named instrument never executed. `render` now leads a
+ * note with `note` instead. That is a REPORTING fix and nothing more — a note
+ * still gates nothing, and the per-item question of which of the surviving notes
+ * should have been `expect(…, false, …)` all along is answered item by item, not
+ * here. `bar/lib/checks.test.ts` pins both halves of that: the rendering guard,
+ * and the un-gated verdict named as the hazard it still is.
  */
 
 export interface Check {
@@ -61,6 +98,19 @@ export interface Check {
   ok: boolean;
   /** What was actually seen. Recorded on a pass as well as a failure. */
   detail: string;
+  /**
+   * Set only by `note`. `ok` is the VERDICT and a note has none, so the two
+   * cannot share one field without a note either blocking or masquerading as a
+   * pass. This flag exists so `render` can tell them apart; nothing that
+   * computes a verdict reads it.
+   */
+  note?: true;
+}
+
+/** The four-column leader `render` prints. Exported so tests assert on the bytes, not on a flag. */
+export function leader(row: Check): "ok  " | "FAIL" | "note" {
+  if (row.note) return "note";
+  return row.ok ? "ok  " : "FAIL";
 }
 
 export class Checks {
@@ -77,9 +127,42 @@ export class Checks {
     return ok;
   }
 
-  /** Record something worth reporting that is not itself a pass/fail gate. */
+  /**
+   * Record something worth reporting that is not itself a pass/fail gate.
+   *
+   * The ` (note)` suffix stays: it is what item 10's own controls filter gates
+   * on, and it survives into the reason-free half of the report. The `note`
+   * flag is what `render` reads.
+   */
   note(name: string, detail: string): void {
-    this.rows.push({ name: `${name} (note)`, ok: true, detail });
+    this.rows.push({ name: `${name} (note)`, ok: true, detail, note: true });
+  }
+
+  /**
+   * Take every row of another accumulator AS IT STANDS.
+   *
+   * Items build their judgement in pieces — `proofOfWork`, `judgeCost`,
+   * `judgeSecret` — and then merge the pieces into the item's own `Checks`. The
+   * idiom for that merge used to be
+   *
+   *   for (const row of judgeCost(…).rows) checks.expect(row.name, row.ok, row.detail);
+   *
+   * which RECONSTRUCTS each row through `expect` and therefore drops every field
+   * `expect` does not take. On 2026-08-19 that meant `note`: a note copied
+   * through the loop came out the far side indistinguishable from a pass again,
+   * so the leader fixed in `render` never reached the two items that needed it
+   * most — item 13, whose note names "what #45 leaves unproven" about a cost
+   * figure, and item 12's two notes. Fifteen call sites across items 02, 03, 04, 06, 09, 11,
+   * 12 and 13 copied rows that way.
+   *
+   * `absorb` copies the row instead of re-deriving it, so a row means the same
+   * thing in the accumulator that receives it as in the one that made it. It
+   * changes no verdict: a copied failing row still fails, a copied note still
+   * gates nothing. Adding a field to `Check` is now safe by default rather than
+   * safe only where someone remembered.
+   */
+  absorb(other: Checks): void {
+    for (const row of other.rows) this.rows.push({ ...row });
   }
 
   get failures(): Check[] {
@@ -90,9 +173,16 @@ export class Checks {
     return this.failures.length === 0;
   }
 
-  /** Every row, one per line, with its bytes. This becomes `BarResult.observed`. */
+  /**
+   * Every row, one per line, with its bytes. This becomes `BarResult.observed`.
+   *
+   * Three leaders, all four columns wide so the names stay aligned: `ok  ` is an
+   * assertion that PASSED, `FAIL` is one that did not, and `note` asserted
+   * nothing. A reader who sees `note` is being told, in the leader, not to count
+   * the row as evidence of anything.
+   */
   render(): string {
-    return this.rows.map((r) => `${r.ok ? "ok  " : "FAIL"} ${r.name}: ${r.detail}`).join("\n");
+    return this.rows.map((r) => `${leader(r)} ${r.name}: ${r.detail}`).join("\n");
   }
 
   /** Which assertions failed. This becomes `BarResult.reason`. */

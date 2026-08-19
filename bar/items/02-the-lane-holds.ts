@@ -156,14 +156,12 @@ const item: BarItem = {
       const evidence = await gatherRunEvidence(repo, report);
       const checks = new Checks();
 
-      for (const row of proofOfWork(evidence, {
+      checks.absorb(proofOfWork(evidence, {
         expected: new Map([["receipt.txt", derive(seedValue, "git-payloads")]]),
         itemIds: ["git-payloads"],
         flight: sampled.flight,
         expectedWorkers: 3,
-      }).rows) {
-        checks.expect(row.name, row.ok, row.detail);
-      }
+      }));
 
       // Verified from outside: the payloads were really planted.
       checks.expect(

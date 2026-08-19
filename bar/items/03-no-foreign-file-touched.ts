@@ -134,13 +134,11 @@ const item: BarItem = {
       const checks = new Checks();
       // Something moved. Only then does nothing having moved elsewhere mean
       // anything.
-      for (const row of proofOfWork(evidence, {
+      checks.absorb(proofOfWork(evidence, {
         expected: plan.expected,
         itemIds: plan.itemIds,
         flight: sampled.flight,
-      }).rows) {
-        checks.expect(row.name, row.ok, row.detail);
-      }
+      }));
       checks.expect(
         "every foreign config location is byte-identical across the run",
         changed.length === 0,

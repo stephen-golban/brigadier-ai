@@ -48,6 +48,7 @@
 
 import { Checks, excerpt } from "./checks.ts";
 import type { RunRecord } from "./contract.ts";
+import { itemHead } from "./item-head.ts";
 
 /** Ruling 30's vocabulary. `max` and `ultra` are absent rather than filtered. */
 export const EFFORT_ORDER = ["low", "medium", "high", "xhigh"] as const;
@@ -56,7 +57,15 @@ export type EffortGrade = (typeof EFFORT_ORDER)[number];
 /** Ruling 30: hard, across every vendor. Only the operator's own flag moves it. */
 export const EFFORT_CEILING: EffortGrade = "high";
 
-/** Ruling 40: a vendor with no measured lever says so, and says it in these words. */
+/**
+ * Ruling 40: a vendor with no measured lever says so, and says it in these words.
+ *
+ * NOT `bar/lib/checks.ts`'s `NOT-RUN —`, and the 2026-08-19 phrasing census kept
+ * the two apart on purpose. This is a value the PRODUCT writes into
+ * `effortLever` and this item asserts on the literal; the harness's verdict
+ * vocabulary is what the harness writes about its OWN reach. Rewording this
+ * string changes what the check asserts.
+ */
 export const NO_LEVER = "none measured";
 
 /**
@@ -133,26 +142,6 @@ export function expectedEffort(kind: string | undefined, difficulty: string | un
   const asked = base[difficulty ?? "medium"] ?? "medium";
   const stepped = kind === "read-only" ? stepDown(asked) : asked;
   return EFFORT_ORDER.indexOf(stepped) > EFFORT_ORDER.indexOf(EFFORT_CEILING) ? EFFORT_CEILING : stepped;
-}
-
-/**
- * The report's own line for one item, anchored at its id.
- *
- * FOUND BY WRITING THE NEGATIVE CONTROL, on 2026-08-19. The triple check below
- * asked `report.includes("(qwen, qwen-m, medium …)")`, and every item in this
- * item's plan runs on the same vendor at the same grade — so ONE printed triple
- * satisfied the test for ALL FOUR items, and a product that printed the triple
- * for one item and dropped it for the rest passed. That is the same
- * whole-report containment defect this audit removed from item 11, reintroduced
- * by its own repair one file over.
- *
- * `undefined` when the report never gives the item a line of its own, which is
- * a different failure from "the line is there and says the wrong thing" and
- * must not render as the same one.
- */
-export function itemLine(report: string, id: string): string | undefined {
-  const anchor = new RegExp(`^\\s*${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}:\\s`);
-  return report.split("\n").find((line) => anchor.test(line));
 }
 
 /**
@@ -306,7 +295,7 @@ export function judgeEffort(o: EffortObservations): Checks {
     dispatched.length > 0 && overCeiling.length === 0,
     overCeiling.map((i) => `${i.id}=${String(i.effortRequested)}`).join(", ") ||
       (dispatched.length === 0
-        ? "NOTHING WAS DISPATCHED, so no item could exceed the ceiling and this row measured nothing"
+        ? "NOTHING WAS DISPATCHED, so no item could exceed the ceiling: this row is a NOT-RUN under a plain name, never a pass"
         : `all ${dispatched.length} dispatched item(s) are at or below ${EFFORT_CEILING}`),
   );
 
@@ -318,7 +307,7 @@ export function judgeEffort(o: EffortObservations): Checks {
     leverless.length > 0 && wrongLever.length === 0,
     leverless.length === 0
       ? `no dispatched item ran on one of the planted vendors (${o.leverlessVendors.join(", ")}), so ruling 40's ` +
-        "absent-lever case was never reached — which means this run did not measure it"
+        "absent-lever case was never reached: this row is a NOT-RUN under a plain name, never a pass"
       : `${leverless.length} item(s) on ${o.leverlessVendors.join("/")}; lever not \`${NO_LEVER}\`: ${
           wrongLever.map((i) => `${i.id}=${JSON.stringify(i.effortLever)}`).join(", ") || "none"
         }. Absent is not zero and it is not default-is-fine`,
@@ -336,15 +325,23 @@ export function judgeEffort(o: EffortObservations): Checks {
 
   // 6. AND IT IS PRINTED. Ruling 29's triple is a promise to the operator, not
   //    a field in a file nobody opens.
-  // ON THE ITEM'S OWN LINE, never anywhere in the report: every item here runs
-  // on the same vendor at the same grade, so a whole-report containment test is
-  // satisfied for all of them by one printed triple.
+  // ON THE ITEM'S OWN LINE, never anywhere in the report. FOUND BY WRITING THE
+  // NEGATIVE CONTROL, on 2026-08-19: this asked `report.includes("(qwen,
+  // qwen-m, medium …)")`, and every item in this item's plan runs on the same
+  // vendor at the same grade — so ONE printed triple satisfied the test for ALL
+  // FOUR items, and a product that printed the triple for one item and dropped
+  // it for the rest passed. The same whole-report containment defect the audit
+  // removed from item 11, reintroduced by its own repair one file over.
+  // `itemHead` is the anchored lookup, shared with item 11 so the two cannot
+  // drift; its `undefined` is "no line for this item at all", which is a
+  // different failure from "the line says the wrong thing" and is rendered as
+  // one below.
   // THE EXPECTATION AND THE MESSAGE COME FROM ONE FUNCTION. They were two, and
   // they printed a missing model three different ways between them — see
   // `expectedTriple`. A failure message that names a string the check never
   // looked for sends the reader to the wrong half of the machine.
   const unprinted = dispatched
-    .map((item) => ({ item, want: expectedTriple(item), line: itemLine(o.report, item.id) }))
+    .map((item) => ({ item, want: expectedTriple(item), line: itemHead(o.report, item.id)?.text }))
     .filter(({ want, line }) => want.missing !== undefined || line === undefined || !line.includes(want.want));
   checks.expect(
     "the report prints each dispatched item's triple, with the effort inside it (ruling 29)",
@@ -377,6 +374,11 @@ export function judgeEffort(o: EffortObservations): Checks {
  * because everything that looked at it printed what it found; the cheapest
  * insurance against repeating that is for the item itself to demonstrate, in
  * its own output, that its reader rejects the shape that got through last time.
+ *
+ * PLURAL because it is both kinds: ONE positive control — a correctly recorded
+ * triple the reader must accept — and the negative controls under it, each a
+ * shape the reader must reject. A file of only the second proves the reader
+ * fails; a file of only the first proves it passes.
  */
 export function effortInstrumentControls(): Checks {
   const checks = new Checks();
@@ -991,7 +993,7 @@ export function judgeDeepCost(o: DeepCostObservations): Checks {
     "a line carrying a measured multiplier cannot be read as a saving (ruling 70)",
     multipliers.length > 0 && claimed.length === 0,
     `${multipliers.length} line(s) carry a multiplier: ${
-      multipliers.map((l) => excerpt(l, 90)).join(" | ") || "NONE — so no line could read as a saving and this row measured nothing"
+      multipliers.map((l) => excerpt(l, 90)).join(" | ") || "NONE — so no line could read as a saving: this row is a NOT-RUN under a plain name, never a pass"
     }; ` +
       `lines that read as a savings claim: ${claimed.map((l) => excerpt(l, 90)).join(" | ") || "none"}. ` +
       '"the 16.5× cache lever was active" must never be readable as "this run saved 16.5×"',

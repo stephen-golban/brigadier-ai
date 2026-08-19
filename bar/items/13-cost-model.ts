@@ -109,10 +109,10 @@ import { probeFeature } from "../lib/feature.ts";
 import { isolatedPath, plantFleet } from "../lib/fixtures.ts";
 import { ensureDir } from "../lib/fs.ts";
 import { makeRepo, plantSeeds } from "../lib/git.ts";
+import { itemHead } from "../lib/item-head.ts";
 import { combine, type LiveHalf } from "../lib/halves.ts";
 import {
   effortInstrumentControls,
-  itemLine,
   judgeCeilings,
   judgeDeepCost,
   judgeEffort,
@@ -277,7 +277,7 @@ export function judgeCost(o: CostObservations): Checks {
   // print — the same containment defect the 2026-08-19 audit removed from item
   // 11, and one that a plan with two items of one difficulty would walk into.
   const unprinted = clamped.filter((i) => {
-    const line = itemLine(o.report, i.id);
+    const line = itemHead(o.report, i.id)?.text;
     return i.clampedTo === undefined || line === undefined || !line.includes(expectedLine(i));
   });
   checks.expect(
@@ -287,7 +287,7 @@ export function judgeCost(o: CostObservations): Checks {
       ? "no item declared a difficulty"
       : `recorded: ${clamped.map((i) => `${i.id}: ${i.difficulty} -> ${i.clampedTo ?? "NOT RECORDED"}`).join("; ")}; ` +
         `absent from their own item's line in the report: ${
-          unprinted.map((i) => `${i.id} wanted ${JSON.stringify(expectedLine(i))}, line reads ${JSON.stringify(itemLine(o.report, i.id) ?? "NO LINE FOR THIS ITEM")}`).join("; ") || "none"
+          unprinted.map((i) => `${i.id} wanted ${JSON.stringify(expectedLine(i))}, line reads ${JSON.stringify(itemHead(o.report, i.id)?.text ?? "NO LINE FOR THIS ITEM")}`).join("; ") || "none"
         }`,
   );
   // `every` over an empty list is `true`, and `isUpwardClamp` answers `false`
@@ -333,7 +333,7 @@ export function judgeCost(o: CostObservations): Checks {
   );
 
   checks.note(
-    "cannot be proven here",
+    "what #45 leaves unproven",
     "#45 measured that neither vendor's effort setting is confirmable over the protocol, so 'the effort we asked for is the effort that ran' is asserted from vendor-private records or not at all",
   );
   return checks;
@@ -421,7 +421,7 @@ const item: BarItem = {
     // put this item's own effort reader to that exact shape, every run, in the
     // half that needs no credentials — so a reader of the output can see that
     // the check which passed could also have failed.
-    for (const row of effortInstrumentControls().rows) credentialFree.expect(row.name, row.ok, row.detail);
+    credentialFree.absorb(effortInstrumentControls());
     // And ruling 70's detector, likewise. It once failed the honest fixture on
     // the very sentence ruling 70 asks for.
     credentialFree.expect(
@@ -539,46 +539,38 @@ const item: BarItem = {
           "one run cannot show both",
       );
 
-      for (const row of judgeCost({
+      checks.absorb(judgeCost({
         report,
         record: evidence.record,
         integrated,
         uncappedIntegrated,
         plannedCount: items.length,
-      }).rows) {
-        checks.expect(row.name, row.ok, row.detail);
-      }
+      }));
       const asRun = (what: string, out: { stdout: string; stderr: string; code: number | null }, ev: { record: RunRecord | undefined }): OneRun => ({
         what,
         report: `${out.stdout}${out.stderr}`,
         record: ev.record,
         exitCode: out.code,
       });
-      for (const row of judgeCeilings({
+      checks.absorb(judgeCeilings({
         uncapped: asRun("no ceilings", uncapped, uncappedEvidence),
         soft: asRun("soft ceiling only", softRun, evidence),
         hard: asRun("hard ceiling", hardRun, hardEvidence),
-      }).rows) {
-        checks.expect(row.name, row.ok, row.detail);
-      }
-      for (const row of judgeEffort({
+      }));
+      checks.absorb(judgeEffort({
         report,
         items: (evidence.record?.items ?? []) as EffortItem[],
         // Ruling 40: none of the three planted vendors has a measured effort
         // lever, and this list is the harness's own — never read back out of
         // the record it is judging.
         leverlessVendors: [...planted],
-      }).rows) {
-        checks.expect(row.name, row.ok, row.detail);
-      }
-      for (const row of judgeDeepCost({
+      }));
+      checks.absorb(judgeDeepCost({
         report,
         record: evidence.record,
         plantedVendors: [...planted],
         savingsClaims,
-      }).rows) {
-        checks.expect(row.name, row.ok, row.detail);
-      }
+      }));
       live = { kind: "ran", checks };
     }
 
