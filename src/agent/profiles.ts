@@ -155,7 +155,42 @@ export const PROFILES: Record<AgentId, LaunchProfile> = {
     // this profile, so the appended marker is measured not to block startup.
     markerPlacement: { kind: "append" },
     bridged: true,
-    measuredVersion: "0.69.0 (claude 2.1.233)",
+    // RE-MEASURED 2026-08-20 against `@agentclientprotocol/claude-agent-acp
+    // 0.70.0` / `claude 2.1.237`, EVERY FIELD, because ruling 69 makes this
+    // string mean "every field below was measured against this". The bridge had
+    // moved to 0.70.0 while the profile still said 0.69.0, and ruling 69 grades
+    // the `laneAssertion` drift BLOCKING — which had stopped all write work on
+    // this vendor, leaving the machine one vendor short of cross-vendor review.
+    //
+    // The measurement, frame by frame, from one handshake + `session/new` +
+    // `session/set_mode` (free) and ONE prompt turn on the operator's own
+    // authenticated session (bar item 14's path, not the metered one):
+    //
+    //   agentInfo.version    "0.70.0", name `@agentclientprotocol/claude-agent-acp`
+    //   laneAssertion        `session/new` still answers `currentModeId:
+    //                        "bypassPermissions"`, `availableModes` still offers
+    //                        `default`, and `session/set_mode {modeId:"default"}`
+    //                        returned `{}` AND the agent echoed a
+    //                        `config_option_update` with `currentValue:
+    //                        "default"`. Confirmed by the echo, not merely by the
+    //                        absence of an error.
+    //   commandExecution     STILL TRUE, and observed rather than inferred: the
+    //                        turn produced a `tool_call` with `kind: "execute"`,
+    //                        `toolName: "Bash"`, `status: "completed"`.
+    //   modelsAtSessionNew   still false — `session/new` returned no
+    //                        `models`/`availableModels` envelope of either shape.
+    //   emitsUsage           CHANGED. See the field below.
+    //
+    // NOT SETTLED BY THIS MEASUREMENT, and recorded rather than glossed: in mode
+    // `default` the Bash call above completed with ZERO
+    // `session/request_permission` frames. That mode describes itself as
+    // "prompts for dangerous operations", and `echo` is not one, so this is
+    // CONSISTENT with the mode working as documented and is NOT evidence of a
+    // hole. What would settle it is the same turn driving an operation the mode
+    // calls dangerous, which this measurement did not do. Written down because
+    // an unasked-for `execute` is the exact shape ruling 43 and #3 are about,
+    // and because "still unexplained" beats a second plausible story.
+    measuredVersion: "0.70.0 (claude 2.1.237)",
     passthroughEnv: ["ANTHROPIC_MODEL", "MAX_THINKING_TOKENS", "CLAUDE_CODE_EXECUTABLE"],
     // The CLI and the BRIDGE behave differently here, and the difference is the
     // reason this note exists rather than the one first written in its place.
@@ -190,12 +225,23 @@ export const PROFILES: Record<AgentId, LaunchProfile> = {
     // enforcement for a read-only item here.
     laneAssertion: { kind: "session-mode", write: "default" },
     modelsAtSessionNew: false,
-    emitsUsage: false,
+    // WAS `false`, and that was measured FALSE on 2026-08-20 against 0.70.0.
+    // One prompt turn produced SIX `session/update/usage_update` frames and a
+    // turn carrying `{used: 25122, size: 1000000, cost: {amount: 0.1156,
+    // currency: "USD"}}`. So the bridge now reports tokens, a context size AND a
+    // money cost. Ruling 69 grades this field a `note`, which means nothing
+    // would ever have gone red for it — it was found by re-measuring the fields
+    // rather than by anything failing.
+    emitsUsage: true,
     caveats: [
       "Opens in bypassPermissions — the lane MUST be asserted or it is not enforced (#3).",
       "MAX_THINKING_TOKENS is a switch, not a dial: 0 disables thinking, any non-zero value behaves alike (ruling 40).",
       "CLAUDE_CODE_EXECUTABLE is load-bearing under bun --compile: the bridge resolves the agent via import.meta.resolve, which fails inside /$bunfs/ (ruling 44).",
-      "No usage, quota or cost data reaches ACP (#15).",
+      // #15's finding, CORRECTED by re-measurement on 2026-08-20 rather than
+      // left standing: it was true of the bridge #15 measured and is false of
+      // 0.70.0. Ruling 62 (f) — a comment contradicting its cited fact is a
+      // fail, not advisory.
+      "Usage, context size AND a USD cost DO reach ACP as of bridge 0.70.0 (MEASURED 2026-08-20: six `usage_update` frames, `cost.amount` in USD). This REVERSES #15, which measured none of it reaching ACP.",
     ],
   },
 

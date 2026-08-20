@@ -647,12 +647,33 @@ export function judgeArtifact(o: ArtifactObservations): Checks {
       : `found ${o.markersFound.map((m) => JSON.stringify(m)).join(", ")}`,
   );
 
+  // NOT "the measured budget". Amendment §16 established that 63 MB was never
+  // measured on anything: it enters this project as ONE unsourced sentence at
+  // `MEASUREMENT-SESSION.md:140`, commit `7e6a547`, under the heading "Already
+  // measured — do not redo, but do dispute if you find otherwise", and v1's
+  // entire history at Release 0.2.1 contains no "63 MB". That is the SAME
+  // sentence and the SAME provenance behind the ≤70 ms and ≤10 ms clauses the
+  // owner struck in the open (§23, §24). This clause was not struck with them,
+  // so it still gates — but it may not call itself measured while doing so.
+  //
+  // AND ON LINUX IT IS UNREACHABLE, which §23's own argument settles rather than
+  // this file. MEASURED against `bun 1.3.14` on 2026-08-20, a compiled program
+  // whose entire source is `process.exit(0)`:
+  //     darwin arm64                       63,446,114 bytes  (60.51 MiB)
+  //     linux x64 (oven/bun:1.3.14)        93,694,096 bytes  (89.35 MiB)
+  // The Linux FLOOR is 27.6 MB over the 63 MiB budget before brigadier
+  // contributes a byte. §16's sentence about the struck cold-start clause holds
+  // here word for word: there is no version of brigadier that fits, because
+  // `process.exit(0)` does not. Whether the clause is struck like its two
+  // siblings is the OWNER'S, exactly as §23 and §24 were.
   checks.expect(
-    `binary within the measured budget of ${SIZE_BUDGET_BYTES} bytes (63 MiB)`,
+    `binary within the 63 MiB budget of ${SIZE_BUDGET_BYTES} bytes`,
     o.sizeBytes <= SIZE_BUDGET_BYTES,
     `${o.sizeBytes} bytes = ${(o.sizeBytes / 1_048_576).toFixed(2)} MiB = ${(o.sizeBytes / 1_000_000).toFixed(2)} MB decimal. ` +
       `Budget is 63 MiB (${SIZE_BUDGET_BYTES} bytes): this repository's own license-gate prints bytes/1048576 and calls it "MB", ` +
-      "so v1's MEASURED 63 MB is 63 MiB. Both readings are printed because they disagree about the verdict",
+      "so v1's 63 MB reads as 63 MiB. Both readings are printed because they disagree about the verdict. " +
+      "PROVENANCE: the figure is UNSOURCED (amendment §16) — the same unsourced sentence behind the struck " +
+      "cold- and warm-start clauses. On linux the empty-program floor alone is 93,694,096 bytes (MEASURED 2026-08-20)",
   );
 
   // ── which artifact is this? ───────────────────────────────────────────────

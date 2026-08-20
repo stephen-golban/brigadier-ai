@@ -945,12 +945,12 @@ describe("item 10 — the artifact ships, and says what is in it", () => {
 
   test("the size budget is in bytes, and both readings are printed", () => {
     const under = judgeArtifact({ ...TRUTHFUL_ARTIFACT, sizeBytes: 63_479_138 });
-    const sizeRow = under.rows.find((r) => r.name.includes("bytes (63 MiB)"));
+    const sizeRow = under.rows.find((r) => r.name.includes("63 MiB budget"));
     expect(sizeRow?.ok).toBe(true);
     expect(sizeRow?.detail).toContain("60.54 MiB");
     expect(sizeRow?.detail).toContain("63.48 MB decimal");
     expect(names(judgeArtifact({ ...TRUTHFUL_ARTIFACT, sizeBytes: 70 * 1_048_576 }))).toContain(
-      "binary within the measured budget of 66060288 bytes (63 MiB)",
+      "binary within the 63 MiB budget of 66060288 bytes",
     );
   });
 

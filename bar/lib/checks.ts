@@ -91,6 +91,41 @@
  * should have been `expect(…, false, …)` all along is answered item by item, not
  * here. `bar/lib/checks.test.ts` pins both halves of that: the rendering guard,
  * and the un-gated verdict named as the hazard it still is.
+ *
+ * THAT PER-ITEM QUESTION WAS ANSWERED ON 2026-08-20, and the answer is that none
+ * of them should have been. Every `.note(` call site outside the tests was read
+ * — 21 of them, in items 05, 07, 09, 10, 12, 13 and 14 — and each was checked
+ * against one question: *does this row describe a condition that BLOCKS, or a
+ * fact that never was a gate?* All 21 are the second. The four that come closest
+ * are the four worth naming, because they are the shape a future one will take:
+ *
+ *   item 05  "whose defects these are" — the harness's planting is a stand-in
+ *            between verifier visits. Owner decision §25 settles this exactly:
+ *            the catch rate is the VERIFIER's to produce and the automated item
+ *            publishes no rate. A note is the correct instrument.
+ *   item 07  ruling 38's one hole, the operator's verify command carrying no
+ *            command-line marker. Not a blocked check — nothing above it demands
+ *            the marker, because demanding it would fail a CORRECT product. It
+ *            is recorded in `BAR.md` under item 7 as well, so the note is the
+ *            report repeating a written-down limit rather than hiding one.
+ *   item 09  what a fixture fleet cannot settle about a real vendor's tool
+ *            shell. The checks it sits beside DO block, including
+ *            `unattributable`; the note scopes what they cover.
+ *   item 14  the placements the artifact states. The blocking half is the live
+ *            one, and when it cannot run the item returns `kind: "skipped"`,
+ *            which blocks under ruling 48 rather than noting its way past.
+ *
+ * SO THE AUDIT IS CLEAN AND THE STRUCTURE IS STILL THE HAZARD. `note` writes
+ * `ok: true` into a field it has no verdict for, and `failures` filters `!ok`,
+ * so the NEXT note written in a blocked branch is invisible to the verdict
+ * exactly as the ones above would have been. A point-in-time reading does not
+ * fix that; only making a note's absence-of-verdict unrepresentable would —
+ * `Check` becoming a discriminated union whose note arm carries no `ok` at all.
+ * That is a change to the type every item's verdict is computed from, and it is
+ * NOT made here: it was scoped on 2026-08-20 at roughly 41 call sites inside the
+ * instrument that grades the release, and starting it at the end of a round is
+ * how the instrument becomes the defect for the fourth time (amendment §20).
+ * It is written down as the open item it is.
  */
 
 export interface Check {
