@@ -190,3 +190,56 @@ captures output fine on Windows in the same run (`bar/self-check.test.ts`, `test
 Windows-only branch is the likely fix and it needs a Windows box to confirm.
 
 **This is the highest-value single fix left on that leg.** It was not guessed at.
+
+---
+
+## 10. `bar/fakes.test.ts` fails on CI for a DIFFERENT reason on each platform — two of three undiagnosed
+
+Not a question so much as the honest state of the last blocking test on the POSIX legs. It passes on
+the owner's machine (14/14, and inside `bun run gates` at 1,716 pass / 0 fail), and fails on CI.
+VERIFIED across runs 32394716171, 32396192311, 32398251476 and 32399494690:
+
+| leg | failing bar item | cause |
+| --- | --- | --- |
+| macos-latest | **item 4** | RAM. §22's 7 GiB, in the binary's own words: *"feasibility cap at 1 worker(s) … Remedy: … about 13 GiB."* **Explained.** |
+| macos-latest | **item 13** | *"NEVER REACHED: the run spent 104, under its 175 ceiling — this is the calibration missing, not the product ignoring a ceiling."* The fixture's ceilings are pinned from an earlier run's spend and #44 measured **15× variance between two identical runs**. **Not diagnosed further.** |
+| ubuntu-latest | **item 2** | *"all three measured payload shapes were really planted, observed from outside the clone — looked into the live clone directories for hook files carrying payload-… found NONE."* An **in-flight** observation that found nothing. **Not diagnosed.** |
+
+Only the first is explained. The other two are recorded as unexplained rather than attributed, because
+"the macOS leg fails on RAM" was the obvious story and it is **half true** — it does not cover item 13
+at all, and it covers nothing on Ubuntu.
+
+**Ubuntu's item 2 is the one that most deserves the next look.** It is an in-flight scan — the thing
+amendment §11 added precisely because *"a forger can construct any residue at leisure but not a live
+process tree"* — and a scan that finds nothing on a fast machine is the shape of a check that could
+report success when the thing it checks did not happen. Whether it is a race in the harness or a real
+difference on Linux is **not established**, and one sample per platform is not enough to say.
+
+---
+
+## 11. `bar/lib/orphan.test.ts` is flaky on CI, at two different lines
+
+Reported because ruling 48 is explicit that *"a flaky blocking item gets disabled"*, and the way that
+starts is a test failing intermittently while nobody writes it down.
+
+A real cause was found and fixed this round — `isAlive` reported a zombie as alive, MEASURED under
+Docker with and without a reaping init. But across four CI runs since, the test has failed **twice in
+eight platform-runs, at two different assertions**:
+
+| run | macos-latest | ubuntu-latest |
+| --- | --- | --- |
+| 32394716171 | pass | pass |
+| 32396192311 | **FAIL `:124`** (20,080 ms) | pass |
+| 32398251476 | pass | **FAIL `:121`** |
+| 32399494690 | pass | pass |
+
+`:124` waits for the orphaned vendor to notice and exit; `:121` waits for the SIGKILLed parent's own
+exit status to be observable within 10 s. They are different waits, so this is not one cause showing
+twice. Both are `until(…)` polls over real processes on a loaded shared runner.
+
+**Not diagnosed, and deliberately not "fixed" by widening either bound** — that is how a suite stops
+meaning anything, and the round already removed one widened bound whose cause turned out to be a real
+product defect (`src/integrate/gate.ts`). Options are: leave it and gather samples; bound the work
+rather than the clock per ruling 62 (d), which needs a signal from the vendor fixture that it has
+noticed rather than a poll; or accept it as environmental. **Two failures in eight is not yet enough
+to tell a flake from a slow machine, and saying so is the point.**
