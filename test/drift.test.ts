@@ -14,11 +14,30 @@ import {
 } from "../src/agent/drift.ts";
 
 describe("drift is graded by blast radius", () => {
+  /**
+   * DERIVED FROM THE PROFILE, never a literal, and that is the whole lesson of
+   * this test's own history. It used to read `driftFor(PROFILES.claude,
+   * "0.70.0")` against a profile whose `measuredVersion` was `0.69.0` — a real
+   * drift, pinned as a fixture. On 2026-08-20 the Claude profile was
+   * re-measured against 0.70.0 and the literal became the profile's OWN
+   * version, so the test asserted that a version drifts against itself and went
+   * red. A fixture that names a moving coordinate goes stale exactly the way
+   * ruling 69 says every table naming one does.
+   *
+   * `${measured}-moved` cannot be any profile's measured version, so this
+   * asserts the GRADING — blocking vs warn — rather than a coordinate.
+   */
   test("a moved version makes the lane assertion blocking and capabilities a warning", () => {
-    const drift = driftFor(PROFILES.claude, "0.70.0");
+    const drift = driftFor(PROFILES.claude, `${PROFILES.claude.measuredVersion}-moved`);
     const bySeverity = Object.fromEntries(drift.map((d) => [d.field, d.severity]));
     expect(bySeverity["laneAssertion"]).toBe("blocking");
     expect(bySeverity["capabilities"]).toBe("warn");
+  });
+
+  test("NEGATIVE CONTROL: the Claude profile's OWN measured version drifts against nothing", () => {
+    // The half that would have caught the staleness above the moment it
+    // appeared, rather than when a literal happened to collide.
+    expect(driftFor(PROFILES.claude, PROFILES.claude.measuredVersion)).toEqual([]);
   });
 
   test("a vendor with no lane lever has nothing blocking to lose", () => {

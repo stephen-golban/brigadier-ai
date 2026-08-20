@@ -642,3 +642,61 @@ therefore unproven. It is never quietly disabled, never marked "known failing", 
 `SKIPPED` while a tag goes out.
 
 Scaling the bar down is the owner's call. Doing it silently is not available to anyone.
+
+### RECORDED 2026-08-20 — three things this bar cannot currently prove, none of them struck
+
+These are put on the map by the paragraph above, which requires *a line saying which item, why, and
+what promise is therefore unproven*. **Nothing here is struck.** Each is red, honestly, and each
+needs an owner's decision — the same procedure that produced §23 and §24.
+
+**(a) Item 10's 63 MiB size clause is unreachable on Linux, and the figure was never measured.**
+
+The budget's only provenance is one unsourced sentence at `MEASUREMENT-SESSION.md:140`, commit
+`7e6a547` — amendment §16 established that v1's entire history at Release 0.2.1 contains no
+"63 MB". That is the **same sentence** behind the ≤70 ms cold-start and ≤10 ms warm-start clauses the
+owner struck in the open (§23, §24). This clause was not struck with them.
+
+MEASURED against `bun 1.3.14` on 2026-08-20, a compiled program whose entire source is
+`process.exit(0)`:
+
+| platform | empty-program floor | vs the 63 MiB budget (66,060,288 B) |
+| --- | --- | --- |
+| darwin arm64 | 63,446,114 B (60.51 MiB) | under, with 2.49 MiB to spare |
+| linux x64 (`oven/bun:1.3.14`) | **93,694,096 B (89.35 MiB)** | **over by 27.6 MB** |
+
+brigadier's own contribution on darwin is 478,848 B — **0.75% of the artifact**. §16's sentence about
+the struck cold-start clause holds here word for word: *there is no version of brigadier that fits,
+because `process.exit(0)` does not.* **The promise unproven:** that the released artifact is within a
+size budget. On Linux it is not, and no change to this product can make it so. The word *measured*
+has been removed from the item's own output (ruling 62 (f)); the clause still gates, because striking
+it is the owner's.
+
+**(b) Ruling 15's directory-identity proof is defeated on ext4 and overlayfs.**
+
+`sameInode` in `src/isolation/manifest.ts` is the third of ruling 15's three ownership conditions: a
+directory is brigadier's only if the inode matches what the manifest recorded. MEASURED on
+`ubuntu:24.04` on 2026-08-20, 300 trials per filesystem of delete-then-recreate at the same path:
+
+| filesystem | same inode returned |
+| --- | --- |
+| ext4 | **300 / 300** |
+| overlayfs | **300 / 300** |
+| tmpfs | 0 / 300 |
+
+APFS is 0/300, which is why this has always passed on the owner's machine and fails on
+`ubuntu-latest` (`test/run-reclaim.test.ts`, *"NEGATIVE CONTROL (b): same path, different directory"*).
+**Birth time does not rescue it:** MEASURED the same day, `birthtimeNs` was IDENTICAL in 194/200 ext4
+trials, so adding it would be a fix that does not fix — reported as the negative result it is rather
+than shipped. **The promise unproven:** that brigadier will not delete a directory it did not create
+which has taken a clone's path, marker and manifest entry. It holds on APFS and tmpfs; on the
+ordinary Linux filesystem the check cannot discriminate. The test is left FAILING rather than
+weakened — its own comment already called this *"a limit worth failing loudly on"*, and it was right.
+
+**(c) `macos-latest` has 7 GiB, so every RAM-bound item is bound there.**
+
+Not a new finding — owner decision §22 records it: `feasibilityCap` is
+`floor((totalmem − 4 GiB − 3 GiB) / 3 GiB)`, which is **0** at 7 GiB, and `macos-latest` is 7 GB on a
+public repository exactly as on a private one. It is repeated here because it is why the macOS leg's
+`bar/fakes.test.ts` cannot pass: the honest fixture is driven through fan-out items that cannot fan
+out there. **The promise unproven:** that fan-out isolates, on macOS CI specifically. §22 states the
+constraint is real and unrelieved; this line is the bar saying which item it costs.
