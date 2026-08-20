@@ -22,6 +22,7 @@
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  DETACH_FOR_GROUP_KILL,
   HARNESS_RUN_TIMEOUT_MS,
   STREAM_DRAIN_GRACE_MS,
   TIMEOUT_SIGNAL,
@@ -450,7 +451,13 @@ export async function runSampled(
     // Same defect `bar/lib/proc.ts`'s `exec` had, and the same fix: a new
     // session/group so a timeout can reclaim the WHOLE tree — including any ACP
     // vendor children the real binary spawned — rather than just this one pid.
-    detached: true,
+    //
+    // And the same Windows exception, for the same measured reason: `detached`
+    // plus a `.cmd` shim loses both streams there while the exit code survives,
+    // and this function's callers read those streams to decide whether the
+    // product kept a promise. `DETACH_FOR_GROUP_KILL` carries the 2x2 that
+    // separated it. One constant, so the two spawn sites cannot drift.
+    ...(DETACH_FOR_GROUP_KILL ? { detached: true } : {}),
   });
 
   let running = true;

@@ -173,6 +173,54 @@ export function abandonAfter(dead: Promise<unknown>, ms: number): { done: Promis
   };
 }
 
+/**
+ * `detached: true` on POSIX, and NOT on Windows. Both halves are measurements.
+ *
+ * **POSIX.** A new session/group is what lets `killTree` reclaim the WHOLE tree
+ * with one signal rather than the single pid this module holds a handle to.
+ * MEASURED on this host on 2026-08-18: a run this function SIGKILLed on timeout
+ * left its own ACP vendor children behind, reparented to `launchd`, each pinning
+ * a core, `--brigadier-run` markers still in their command lines. Removing it
+ * there would reinstate that leak, so it is not removed there.
+ *
+ * **WINDOWS. It cost every output reading on the leg, and the cause is a
+ * CONJUNCTION that no amount of argument would have separated.** VERIFIED
+ * against run 32387095326 and re-measured deliberately on `windows-latest` on
+ * 2026-08-20 by `bar/lib/capture.test.ts`, which drives the 2x2 plus two
+ * synchronous controls against a subject that writes a token to both streams and
+ * exits 3:
+ *
+ *     sync/direct                  exit 3   stdout OK      stderr OK
+ *     sync/shim                    exit 3   stdout OK      stderr OK
+ *     async/direct/attached        exit 3   stdout OK      stderr OK
+ *     async/direct/DETACHED        exit 3   stdout OK      stderr OK
+ *     async/SHIM/attached          exit 3   stdout OK      stderr OK
+ *     async/SHIM/DETACHED          exit 3   stdout <empty> stderr <empty>
+ *
+ * **`detached` alone captures. The `.cmd` shim alone captures. Together they
+ * lose both streams while the exit code survives intact** — which is exactly the
+ * symptom the triage read off the leg, `exit 4; stdout: <empty>; stderr:
+ * <empty>`, and could not attribute. Bun reaches a `.cmd` through `cmd.exe`, and
+ * a `cmd.exe` created with `DETACHED_PROCESS` does not carry this harness's pipe
+ * handles through to the program it runs. Every fixture binary the bar drives is
+ * a `.cmd` on Windows — `bar/lib/fs.ts`'s `writeScript` writes one — so every
+ * item was graded blind there, and `bar/fakes.test.ts` spent 965,957 ms doing it.
+ *
+ * **Nothing is lost by dropping it on Windows**, and that is the reason it is
+ * safe rather than merely convenient: `killTree`'s Windows arm is
+ * `taskkill /T /F /PID`, which walks the PARENT-PID TREE and needs no process
+ * group at all. The group is a POSIX mechanism and the flag that creates it buys
+ * nothing on the platform that pays for it. Removing it UNCONDITIONALLY would
+ * have reinstated the POSIX leak above, which is why this is a branch and not a
+ * deletion.
+ *
+ * **What it costs, stated:** on Windows a spawned child now shares this
+ * process's console, so a Ctrl-C delivered to the harness reaches it too. That
+ * is a change in interactive behaviour on a platform where this harness is run
+ * by CI, and it is written down rather than discovered.
+ */
+export const DETACH_FOR_GROUP_KILL = process.platform !== "win32";
+
 export async function exec(argv: string[], opts: RunOptions = {}): Promise<RunResult> {
   const [command, ...rest] = argv;
   if (command === undefined) throw new Error("exec: empty argv");
@@ -191,7 +239,11 @@ export async function exec(argv: string[], opts: RunOptions = {}): Promise<RunRe
     // `--brigadier-run` markers still in their command lines, no run root left
     // to sweep them from because the item's `finally` had already deleted it.
     // Killing a single pid was never going to catch a child of that pid.
-    detached: true,
+    //
+    // DELIBERATELY NOT ON WINDOWS, where combined with a `.cmd` shim it is what
+    // loses the subject's output. Both halves are measured; see
+    // `DETACH_FOR_GROUP_KILL` for the 2x2 that separated them.
+    ...(DETACH_FOR_GROUP_KILL ? { detached: true } : {}),
   });
 
   // Read from the first instant, and INCREMENTALLY. An unread pipe fills its
@@ -272,6 +324,13 @@ export async function exec(argv: string[], opts: RunOptions = {}): Promise<RunRe
  * workers. It is best-effort: a descendant that has ALREADY escaped its group
  * (item 7's own fixture, deliberately) is untouched by this and is the
  * product's sweep's job, not this harness's.
+ *
+ * ON WINDOWS THIS NEEDS NO GROUP AND NEVER DID. `taskkill /T /F /PID` walks the
+ * PARENT-PID TREE, so it reclaims descendants whether or not the child leads a
+ * group — which is why `DETACH_FOR_GROUP_KILL` can drop the flag there without
+ * weakening anything. It is still UNMEASURED on that platform:
+ * `bar/lib/proc.test.ts`'s three arms that would drive it fail loudly there
+ * rather than returning early (ruling of 2026-08-20, `bar/lib/platform.ts`).
  */
 export function killTree(proc: Bun.Subprocess): void {
   const pid = proc.pid;

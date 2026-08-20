@@ -39,7 +39,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { refuseInsideRepo } from "../src/isolation/base.ts";
@@ -134,35 +134,90 @@ describe("the spellings `refuseInsideRepo` compares", () => {
     ).toBeNull();
   });
 
+  test("THE GUARD FIRES THROUGH A SECOND SPELLING OF THE SAME DIRECTORY — the branch CI forced", () => {
+    // WHAT THIS EXERCISES, and why a string test could not. MEASURED on
+    // `windows-latest` on 2026-08-20 by the two rows below, the runner's
+    // `%TEMP%` arrives as the 8.3 SHORT name `C:\Users\RUNNER~1\…` while `git
+    // rev-parse --show-toplevel` and `realpathSync` both report the LONG name
+    // `runneradmin` — two spellings of one directory sharing no prefix, and
+    // `realpathSync` does not unify them on that platform. The guard could not
+    // fire, and only ruling 50's symptom-shaped disturbance witness noticed.
+    //
+    // A symlinked alias is the shape available on every POSIX host: the alias
+    // and the repository are one directory under two names, and no prefix test
+    // between them can succeed. `dev`+`ino` is the same pair for every name of
+    // one directory, which is why the guard now asks the filesystem.
+    const alias = join(scratch, "alias-to-repo");
+    rmSync(alias, { force: true, recursive: true });
+    symlinkSync(canonical, alias, "dir");
+    expect(realpathSync(alias)).toBe(canonical);
+
+    // The lexical relation this guard used to rest on is FALSE here — asserted,
+    // so that a future platform on which it happens to be true cannot make the
+    // row below pass without exercising anything.
+    const candidate = join(canonical, "scratch");
+    expect(candidate === alias || candidate.startsWith(alias + sep)).toBe(false);
+
+    expect(
+      refusal(candidate),
+      "the candidate is inside the directory `alias` names, under a different spelling of it. " +
+        "A guard that compares strings answers no here, which is the Windows failure in the one " +
+        "shape a POSIX host can reproduce." + readings(),
+    ).toMatch(/temporary index inside the operator's repository/);
+  });
+
+  test("NEGATIVE CONTROL: the identity walk does not swallow a sibling", () => {
+    // The row above would pass just as well on a guard that refused everything,
+    // and refusing everything would break every real caller.
+    const alias = join(scratch, "alias-to-repo");
+    expect(refusal(join(scratch, "outside"))).toBeNull();
+    expect(refusal(alias + "-not-the-same")).toBeNull();
+  });
+
   test("THE macOS CAUSE, pinned: the UNRESOLVED spelling does not overlap, and that is why `resolve()` was not enough", () => {
     // Not an assertion that the two differ — on Linux they do not — but that
     // the product does not DEPEND on their agreeing. `intendedRealPath` of the
-    // caller's own spelling must land on the canonical one either way.
+    // caller's own spelling must map onto a path the guard recognises as the
+    // repository. It is asserted through the GUARD rather than as a string
+    // equality, because string equality is the thing Windows disproved: there
+    // `intendedRealPath` keeps the 8.3 spelling and `canonical` carries the long
+    // one, and both are correct names for one directory.
     expect(
-      intendedRealPath(given),
-      "`intendedRealPath` must map the caller's spelling of the repository onto the same path " +
-        "`git rev-parse --show-toplevel` reports, or the pre-`mkdir` refusal cannot fire." +
-        readings(),
-    ).toBe(canonical);
+      refusal(intendedRealPath(join(given, "scratch"))),
+      "`intendedRealPath` of the caller's own spelling must still be recognised as inside the " +
+        "repository, or the pre-`mkdir` refusal cannot fire." + readings(),
+    ).toMatch(/temporary index inside the operator's repository/);
   });
 
-  test("WHICH SPELLING DRIFTED, if any: separators", () => {
-    expect(
-      toplevel.includes("/") === canonical.includes("/") && toplevel.includes("\\") === canonical.includes("\\"),
-      "`git rev-parse --show-toplevel` and `realpathSync` disagree about the path SEPARATOR — " +
-        "that is the separator hypothesis, confirmed." + readings(),
-    ).toBe(true);
+  test("MEASURED: whether this platform's git and realpath agree about SEPARATORS", () => {
+    // Recorded rather than asserted true. VERIFIED on windows-latest on
+    // 2026-08-20: they do NOT — git prints `/` and `realpathSync` returns `\` —
+    // so the separator hypothesis the triage led with is CONFIRMED as a fact and
+    // REFUTED as the cause, because `realpathSync` normalises it away. An
+    // assertion either way would be a claim about the platform, and the product
+    // is now indifferent to the answer; what must hold is the row above.
+    const separatorsAgree =
+      toplevel.includes("/") === canonical.includes("/") &&
+      toplevel.includes("\\") === canonical.includes("\\");
+    expect(typeof separatorsAgree).toBe("boolean");
+    if (!separatorsAgree) {
+      expect(realpathSync(toplevel), `resolution must still land on one path.${readings()}`).toBe(canonical);
+    }
   });
 
-  test("WHICH SPELLING DRIFTED, if any: segments", () => {
-    // 8.3 short names, drive-letter case, or a junction: anything that changes
-    // a segment rather than a separator. Separators are normalised away here so
-    // that this arm answers a different question from the one above.
+  test("MEASURED: whether this platform's git and realpath agree about SEGMENTS", () => {
+    // The surviving cause on Windows, and the one nobody had named: `%TEMP%`
+    // there is the 8.3 short form and `realpathSync` does not expand it. Like
+    // the row above this RECORDS the answer instead of demanding one, and the
+    // guard's own behaviour is asserted where it belongs — three rows up.
     const flat = (p: string): string => p.replace(/[\\/]+/g, "/").toLowerCase();
-    expect(
-      flat(toplevel),
-      "`git rev-parse --show-toplevel` and `realpathSync` disagree about a path SEGMENT — an " +
-        "8.3 short name, a junction, or drive-letter case — not merely about separators." + readings(),
-    ).toBe(flat(canonical));
+    const segmentsAgree = flat(toplevel) === flat(canonical);
+    expect(typeof segmentsAgree).toBe("boolean");
+    if (!segmentsAgree) {
+      expect(
+        refusal(join(canonical, "scratch")),
+        `the two spellings differ by a SEGMENT, which is what defeated the string test.${readings()}`,
+      ).toMatch(/temporary index inside the operator's repository/);
+    }
   });
 });

@@ -43,6 +43,7 @@ import {
   type PreparedClone,
 } from "../src/isolation/index.ts";
 import { runGit } from "../src/isolation/internal-git.ts";
+import { checkedOut } from "../bar/lib/git.ts";
 
 /** Raw git: no hooks sink, no config isolation, no authority. The hostile baseline. */
 async function git(cwd: string, ...args: string[]): Promise<string> {
@@ -568,7 +569,7 @@ describe("recycling leaves nothing of the previous item behind", () => {
 
     expect(existsSync(join(recycled.dir, "scratch-note.txt"))).toBe(false);
     expect(existsSync(join(recycled.dir, "build.log"))).toBe(false);
-    expect(readFileSync(join(recycled.dir, "a.txt"), "utf8")).toBe("second item\n");
+    expect(readFileSync(join(recycled.dir, "a.txt"), "utf8")).toBe(checkedOut("second item\n", recycled.dir));
     // The agent's commit is not on `work` any more, and `work` is exactly the
     // new base: ruling 51's ownership diff reads `base..work`, and a leftover
     // commit would be attributed to the next item.

@@ -39,6 +39,7 @@ import {
   witnessDrift,
   witnessOperator,
 } from "../src/isolation/index.ts";
+import { checkedOut } from "../bar/lib/git.ts";
 
 // ---------------------------------------------------------------- fixtures
 
@@ -571,7 +572,7 @@ describe("a first-day repository", () => {
     expect(await git(repo, "rev-list", "--count", base.sha)).toBe("1");
 
     const clone = await prepareClone({ base, item: 1, runRoot: root });
-    expect(readFileSync(join(clone.dir, "only.txt"), "utf8")).toBe("the first file\n");
+    expect(readFileSync(join(clone.dir, "only.txt"), "utf8")).toBe(checkedOut("the first file\n", clone.dir));
     releaseToAgent(clone);
   }, 20_000);
 
@@ -640,9 +641,9 @@ describe("the worker's clone", () => {
   }, 20_000);
 
   test("sees the operator's modification and untracked work", () => {
-    expect(readFileSync(join(dir, "modified.txt"), "utf8")).toBe("edited by the operator\n");
-    expect(readFileSync(join(dir, "untracked.txt"), "utf8")).toBe("brand new, never added\n");
-    expect(readFileSync(join(dir, "notes", "two.md"), "utf8")).toBe("second note\n");
+    expect(readFileSync(join(dir, "modified.txt"), "utf8")).toBe(checkedOut("edited by the operator\n", dir));
+    expect(readFileSync(join(dir, "untracked.txt"), "utf8")).toBe(checkedOut("brand new, never added\n", dir));
+    expect(readFileSync(join(dir, "notes", "two.md"), "utf8")).toBe(checkedOut("second note\n", dir));
   });
 
   test("sees the deletion, and does not get the gitignored dependency", () => {
@@ -652,7 +653,7 @@ describe("the worker's clone", () => {
   });
 
   test("keeps the tracked-but-ignored file", () => {
-    expect(readFileSync(join(dir, "tracked.log"), "utf8")).toBe("tracked-and-ignored\n");
+    expect(readFileSync(join(dir, "tracked.log"), "utf8")).toBe(checkedOut("tracked-and-ignored\n", dir));
   });
 
   test("starts on `work`, with the base branch beside it for the ownership diff", async () => {
@@ -674,7 +675,7 @@ describe("the worker's clone", () => {
       refPresent = false;
     }
     expect(refPresent).toBe(false);
-    expect(readFileSync(join(naive, "modified.txt"), "utf8")).toBe("original\n");
+    expect(readFileSync(join(naive, "modified.txt"), "utf8")).toBe(checkedOut("original\n", naive));
     expect(existsSync(join(naive, "untracked.txt"))).toBe(false);
   }, 20_000);
 });

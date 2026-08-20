@@ -22,7 +22,7 @@ is not available to anyone."*
 | 6 | eleven Windows tests that render `(pass)` | **RULED — made blocking failures, named** |
 | 7 | an `execute` that asked no permission | open — recorded, not concluded |
 | 8 | the verifier's `Authentication required` | open — still unexplained |
-| 9 | Windows: the bar harness grades blind | **experiment pushed; see below** |
+| 9 | Windows: the bar harness grades blind | **SEPARATED BY EXPERIMENT — neither candidate alone; the conjunction. Fixed.** |
 | 10 | `bar/fakes.test.ts` on the POSIX legs | **DIAGNOSED — both open rows, and one attribution withdrawn** |
 | 11 | `bar/lib/orphan.test.ts` flakiness | **DIAGNOSED — a real leak defect, fixed and measured** |
 
@@ -280,7 +280,40 @@ the verifier ran, so the artifact the verifier drove is not the artifact on this
 
 ---
 
-## 9. Windows: the bar harness grades every item blind
+## 9. ~~Windows: the bar harness grades every item blind~~ SEPARATED BY EXPERIMENT 2026-08-20
+
+**Neither candidate is the cause on its own. The CONJUNCTION is.** `bar/lib/capture.test.ts` drives
+the 2x2 plus two synchronous controls against a subject that writes a token to both streams and exits
+3. MEASURED on `windows-latest`, 2026-08-20:
+
+| cell | exit | stdout | stderr |
+| --- | --- | --- | --- |
+| sync / direct | 3 | OK | OK |
+| sync / `.cmd` shim | 3 | OK | OK |
+| async / direct / attached | 3 | OK | OK |
+| async / direct / **DETACHED** | 3 | **OK** | **OK** |
+| async / **shim** / attached | 3 | **OK** | **OK** |
+| async / **shim** / **DETACHED** | 3 | **`<empty>`** | **`<empty>`** |
+| through `exec` (the real call site) | 3 | `<empty>` | `<empty>` |
+
+`detached` alone captures. The `.cmd` shim alone captures. Together they lose both streams while the
+exit code survives — which is exactly the symptom the triage read off the leg and could not attribute.
+Bun reaches a `.cmd` through `cmd.exe`, and a `cmd.exe` created with `DETACHED_PROCESS` does not carry
+the harness's pipe handles through to the program it runs. Every fixture binary the bar drives is a
+`.cmd` there (`bar/lib/fs.ts`'s `writeScript`), so all fifteen red items on that leg were artefacts.
+
+**The fix is a Windows branch, not a removal** — removing `detached` unconditionally would reinstate
+the POSIX leak it exists for. `DETACH_FOR_GROUP_KILL` in `bar/lib/proc.ts` is `process.platform !==
+"win32"`, used at both spawn sites (`exec` and `runSampled`) through one constant so they cannot
+drift. **Nothing is lost:** `killTree`'s Windows arm is `taskkill /T /F /PID`, which walks the
+parent-pid tree and needs no process group at all. **Accepted cost:** a spawned child now shares the
+harness's console on Windows, so a Ctrl-C to the harness reaches it too.
+
+The `async/shim/DETACHED` cell keeps asserting the platform fact — output IS lost there — so the
+branch stays justified by a measurement. If a future bun or Windows fixes it, that row goes red and
+the remedy is to delete the branch, which is the right way round.
+
+The state as it stood before the experiment follows.
 
 Found by log analysis of run 32387095326, **not fixed**, because the cause could not be settled from a
 log and there is no Windows machine here.

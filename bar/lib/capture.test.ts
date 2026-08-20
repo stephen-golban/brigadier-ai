@@ -45,7 +45,7 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeScript } from "./fs.ts";
-import { exec } from "./proc.ts";
+import { DETACH_FOR_GROUP_KILL, exec } from "./proc.ts";
 
 /** Distinctive enough that finding it proves it came from the subject. */
 const OUT_TOKEN = "BAR-CAPTURE-STDOUT-8f2c1d";
@@ -161,11 +161,46 @@ describe("the subject's output reaches the harness — the 2x2 that separates th
     assertCaptured("async/shim/attached", await spawnCell("async/shim/attached", [shim], false));
   });
 
-  test("async + .cmd shim, DETACHED — BOTH, and this is what the bar does today", async () => {
-    assertCaptured("async/shim/detached", await spawnCell("async/shim/detached", [shim], true));
+  test("async + .cmd shim, DETACHED — BOTH TOGETHER, and this is the answer", async () => {
+    // THE CELL THAT ANSWERED THE QUESTION, and the only one whose expectation is
+    // platform-dependent — because what it asserts is a MEASURED FACT ABOUT THE
+    // PLATFORM rather than a promise this repository makes.
+    //
+    // MEASURED on windows-latest on 2026-08-20, with the five cells above all
+    // capturing: this one returned exit 3 with BOTH streams empty. So neither
+    // candidate the triage named is the cause on its own — `detached` alone
+    // captures, the `.cmd` shim alone captures — and the conjunction is. Bun
+    // reaches a `.cmd` through `cmd.exe`, and a `cmd.exe` created with
+    // `DETACHED_PROCESS` does not carry this harness's pipe handles through.
+    //
+    // `exec` therefore does not use that combination on Windows
+    // (`DETACH_FOR_GROUP_KILL`), and this row is what keeps that branch
+    // justified by a measurement instead of by a comment. If a future bun or
+    // Windows fixes the combination, this goes RED — and the remedy is to delete
+    // the branch, which is the right way round: a workaround whose reason has
+    // expired should fail loudly rather than linger.
+    const reading = await spawnCell("async/shim/detached", [shim], true);
+    if (DETACH_FOR_GROUP_KILL) {
+      assertCaptured("async/shim/detached", reading);
+      return;
+    }
+    expect(reading.code, `the subject must still RUN — only its output is expected to be lost.${shape()}`).toBe(EXIT_CODE);
+    expect(
+      reading.stdout,
+      "this combination captured output on Windows, which it did not on 2026-08-20. That is a " +
+        "GOOD result and a red test: `bar/lib/proc.ts`'s `DETACH_FOR_GROUP_KILL` exists only " +
+        "because of this reading, so re-measure it and delete the branch rather than this row." +
+        shape(),
+    ).toBe("");
   });
 
   test("through `exec` itself, which is the call site the symptom was read at", async () => {
+    // THE ROW THAT GATES THE PROPERTY, on every platform and with no exception.
+    // `exec` is what every bar item reads its subject through; if this is empty,
+    // items are graded blind. It passes on Windows because `exec` no longer
+    // combines the two above there, and it would fail there if anyone
+    // reintroduced the combination — which is the regression this whole file
+    // exists to make impossible to ship twice.
     const result = await exec([shim], { timeoutMs: 60_000 });
     assertCaptured("exec/shim", record("exec/shim", { stdout: result.stdout, stderr: result.stderr, code: result.code }));
   });

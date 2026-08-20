@@ -128,3 +128,47 @@ export async function plantSeeds(repo: string, seeds: readonly Placement[]): Pro
     await Bun.write(join(repo, seed.path), `${seed.value}\n`);
   }
 }
+
+/**
+ * The bytes a checkout of `text` is expected to hold, in the working tree of
+ * `dir`, given that repository's effective `core.autocrlf`.
+ *
+ * **WHY THIS IS NOT "NORMALISE THE LINE ENDINGS AND COMPARE".** Git for Windows
+ * sets `core.autocrlf=true` in the SYSTEM config, so on `windows-latest` every
+ * checkout of an LF-committed file lands as CRLF. That is git working exactly as
+ * configured — `BaseState.autocrlf` exists to record it — and #5 measured the
+ * cost of getting it wrong in the other direction: `core.autocrlf=false` turning
+ * a one-line edit into a six-line whole-file diff. VERIFIED on `windows-latest`
+ * on 2026-08-20, six assertions in `test/isolation.test.ts`,
+ * `test/isolation-recycle.test.ts` and `test/integrate.test.ts` failed with
+ * `Expected - 0 / Received + 0`, which is a single `\r` and nothing else.
+ *
+ * Stripping `\r` before comparing would make every one of those assertions pass
+ * AND make them unable to notice a product that mangled line endings. This
+ * instead asks the repository what it is configured to do and demands EXACTLY
+ * that: LF where `autocrlf` is off, CRLF where it is on. The assertion stays as
+ * strict as it was on POSIX and becomes true on Windows for a stated reason.
+ *
+ * **What it deliberately does not model:** `.gitattributes` (`text`, `eol`,
+ * `binary`) and `core.eol`, either of which overrides `core.autocrlf` per path.
+ * No fixture repository in this suite has a `.gitattributes`, and a helper that
+ * pretended to reimplement git's full attribute resolution would be a second,
+ * drifting copy of it. A repository that grows one must assert against `git
+ * check-attr` rather than against this.
+ */
+export function checkedOut(text: string, dir: string): string {
+  const result = Bun.spawnSync(["git", "-C", dir, "config", "--get", "core.autocrlf"], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const value = new TextDecoder().decode(result.stdout).trim();
+  // `--get` searches system, global and local and returns whichever is
+  // effective. Absent from all three, git's documented default is `false`.
+  const autocrlf = result.exitCode === 0 && value.length > 0 ? value : "false";
+  // `input` converts on COMMIT and never on checkout, so a working tree under it
+  // holds LF — the same as `false` for this question, and different for a
+  // different one.
+  if (autocrlf !== "true") return text;
+  // Normalise first, so a text that already carries CRLF does not become CRCRLF.
+  return text.replace(/\r\n/g, "\n").replace(/\n/g, "\r\n");
+}

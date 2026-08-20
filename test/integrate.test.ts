@@ -68,6 +68,7 @@ import {
 } from "../src/integrate/index.ts";
 import { deleteRefArgv, integrationBranch, isDeletableRef, itemRef } from "../src/repo/refs.ts";
 import { succeeded } from "../src/work/check.ts";
+import { checkedOut } from "../bar/lib/git.ts";
 
 // ---------------------------------------------------------------- fixtures
 
@@ -1205,7 +1206,7 @@ describe("ruling 54: a wave boundary is a gate boundary", () => {
     await git(second, "checkout", "-q", "-b", "work", "brigadier-base");
     await git(second, "remote", "remove", "origin");
     // The BYTES: wave 2 sees its prerequisite's output.
-    expect(readFileSync(join(second, "a.txt"), "utf8")).toBe("item one\n");
+    expect(readFileSync(join(second, "a.txt"), "utf8")).toBe(checkedOut("item one\n", second));
     writeFileSync(join(second, "b.txt"), "item two\n");
     await git(second, "commit", "-q", "-am", "item two");
 

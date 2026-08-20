@@ -58,8 +58,8 @@
  * closing it is a visible change.
  */
 
-import { mkdirSync, realpathSync } from "node:fs";
-import { join, sep } from "node:path";
+import { mkdirSync, realpathSync, statSync } from "node:fs";
+import { dirname, join, sep } from "node:path";
 import { baseRef } from "../repo/refs.ts";
 import { intendedRealPath } from "./clone.ts";
 import { git, nulRecords, runGit } from "./internal-git.ts";
@@ -269,11 +269,88 @@ export function seedVerdict(
  * notices because the sweep moved `git status`.
  */
 export function refuseInsideRepo(candidate: string, repo: string): void {
-  if (candidate === repo || candidate.startsWith(repo + sep)) {
+  if (insideDirectory(candidate, repo)) {
     throw new Error(
       `refusing a temporary index inside the operator's repository: ${candidate}. ` +
         "`git add -A` would sweep it into the base commit.",
     );
+  }
+}
+
+/**
+ * Is `candidate` the directory `root`, or inside it? Asked of the FILESYSTEM
+ * where it can be, and answered lexically only when it cannot.
+ *
+ * **A STRING PREFIX TEST WAS NOT ENOUGH, AND CI SAID SO IN BOTH DIRECTIONS.**
+ * The two sides of this comparison reach it by different routes — the candidate
+ * from the caller, the root from `git rev-parse --show-toplevel` — and two
+ * spellings of one directory are not one string. MEASURED on `windows-latest` on
+ * 2026-08-20 by `test/repo-path-shape.test.ts`, a repository created under
+ * `os.tmpdir()`:
+ *
+ *     tmpdir()          C:\Users\RUNNER~1\AppData\Local\Temp        8.3 SHORT name
+ *     given to caller   C:\Users\RUNNER~1\…\operator-repo
+ *     --show-toplevel   C:/Users/runneradmin/…/operator-repo         LONG name, and `/`
+ *     realpathSync      C:\Users\runneradmin\…\operator-repo       LONG name, and `\`
+ *     intendedRealPath  C:\Users\RUNNER~1\…\operator-repo\scratch   stays SHORT
+ *
+ * Both drifts are real and only one survives resolution. `realpathSync`
+ * normalises the SEPARATOR, so the forward-slash hypothesis — the one the triage
+ * led with — is confirmed and is not the cause. What it does NOT do on this
+ * platform is expand an 8.3 short name, so `RUNNER~1` and `runneradmin` name one
+ * directory and share no prefix. The guard could not fire, the scratch index was
+ * built inside the operator's repository, `git add -A` swept it, and only ruling
+ * 50's disturbance witness — which fires on a SYMPTOM, and only because the
+ * sweep moved `git status` — noticed.
+ *
+ * The filesystem has no opinion about spelling. `dev`+`ino` is the same pair for
+ * every name of one directory, so the walk below is separator-, case- and
+ * short-name-independent at once, and it costs a `stat` per level only when the
+ * cheap test has already said no.
+ *
+ * `stat` and not `lstat`, deliberately: the question is where a write WOULD
+ * land, so a symlink or a junction that points into the repository is inside it.
+ * `dev` IS compared here, unlike in `src/isolation/manifest.ts` — the reason it
+ * is not compared there is that an anonymous bdev is reallocated across reboots
+ * and that comparison spans them, while this one happens inside one process at
+ * one instant.
+ *
+ * The lexical test stays FIRST and stays as a fallback: it needs no syscall for
+ * the ordinary case, and where an inode identifies nothing — a volume that keeps
+ * no file index reports 0 for everything — it is all there is.
+ */
+function insideDirectory(candidate: string, root: string): boolean {
+  if (candidate === root || candidate.startsWith(root + sep)) return true;
+
+  const rootId = directoryPair(root);
+  if (rootId === null) return false;
+
+  let current = candidate;
+  for (;;) {
+    const id = directoryPair(current);
+    if (id !== null && id === rootId) return true;
+    const parent = dirname(current);
+    // `dirname` of a root is that root, on both platforms and for a UNC share.
+    if (parent === current) return false;
+    current = parent;
+  }
+}
+
+/**
+ * `dev:ino` as one comparable string, or `null` where it identifies nothing.
+ *
+ * An inode of 0 is what a volume with no file index reports for EVERY file on
+ * it — Windows volumes without one do, and libuv hands that 0 straight through —
+ * so matching on it would call every directory the root. Refusing to answer is
+ * the safe direction: the caller falls back to the lexical test.
+ */
+function directoryPair(path: string): string | null {
+  try {
+    const stat = statSync(path, { bigint: true });
+    if (!stat.isDirectory() || stat.ino === 0n) return null;
+    return `${stat.dev}:${stat.ino}`;
+  } catch {
+    return null;
   }
 }
 
