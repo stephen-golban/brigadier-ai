@@ -136,6 +136,7 @@ import {
   type RunRecord,
 } from "../report/index.ts";
 import { blocks, type CheckOutcome, type CheckResult } from "../work/check.ts";
+import { dispatchWidth } from "../work/fanout.ts";
 import { lanePolicyFor } from "../work/kind.ts";
 import { ladderTaken, renderLadder, rungsOffered } from "../work/ladder.ts";
 import type { VerifyResolution } from "../gate/verify.ts";
@@ -1333,7 +1334,12 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
 
     const fanOut = options.admission.fanOut[index];
     if (fanOut !== undefined) notes.push(bindingSentence(fanOut, waveNumber));
-    const concurrency = Math.max(1, fanOut?.workers ?? 1);
+    // The SAME function the admission's printed count came out of, so the
+    // number a reader is shown is the number that runs. This was its own
+    // `Math.max(1, …)` here, and `planFanOut` returned the unfloored 0, so a
+    // host-first machine under about 9 GiB printed *0 worker(s) in wave 1 — RAM
+    // capped it* and then dispatched one. Nothing compared the two.
+    const concurrency = dispatchWidth(fanOut);
 
     const attempted: ItemRun[] = [];
     for (let cursor = 0; cursor < eligible.run.length; cursor += concurrency) {

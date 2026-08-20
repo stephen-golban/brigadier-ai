@@ -461,6 +461,37 @@ async function run(): Promise<number> {
     return 2;
   }
 
+  // Refused HERE — with the other flag checks, before a plan is read, before a
+  // clone and before a directory exists to hold one.
+  //
+  // `Number("abc")` is `NaN`, and ruling 14's arithmetic is a `Math.min` chain,
+  // so an unparseable budget used to reach `planFanOut` and come back out as a
+  // `NaN` worker count: printed as `NaN worker(s) in wave 1`, then handed to the
+  // batch cursor in `src/queue/execute.ts`, where the loop dispatched ZERO items
+  // and exited reporting success. A fraction is no better — the cursor steps by
+  // the width, so 2.5 slices batches at fractional indices. MEASURED against
+  // `bun 1.3.14` on 2026-08-20 by another builder driving the real module:
+  // `--workers abc` gave `workers: NaN`, printed `NaN worker(s) in wave 1 — RAM
+  // capped it…` and dispatched nothing; `--workers 2.5` printed `2.5 worker(s)`.
+  // A run that does nothing and reports success for it is the failure `BAR.md`
+  // opens on, and an ordinary typo was enough to reach it.
+  //
+  // `planFanOut` now throws a `RangeError` on the same inputs and `dispatchWidth`
+  // cannot return a non-integer, but those are BACKSTOPS: an exception naming an
+  // internal field is not a usage message, and the operator's half of the fix
+  // belongs where the flag still has its name and the text they typed. Exit 2 is
+  // this file's usage code — the same one a missing `--plan`, an unusable
+  // `--max-difficulty` and an unknown command get.
+  const workers = value("workers");
+  const workerBudget = workers === undefined ? undefined : Number(workers);
+  if (workerBudget !== undefined && (!Number.isInteger(workerBudget) || workerBudget < 1)) {
+    sink.errLine(
+      `--workers must be a whole number of at least 1, and it was \`${workers}\`. ` +
+        "Nothing was spawned and nothing was cloned.",
+    );
+    return 2;
+  }
+
   let spec;
   try {
     spec = parsePlan(readFileSync(planPath, "utf8"), planPath);
@@ -494,7 +525,6 @@ async function run(): Promise<number> {
     agents,
     ...(ceiling === undefined ? {} : { ceiling }),
   });
-  const workers = value("workers");
   const admission = admit({
     plan,
     agents,
@@ -504,7 +534,8 @@ async function run(): Promise<number> {
     // Ruling 32's reviewer is decided at admission and printed there, so the run
     // cannot report a different answer from the one the operator was shown.
     review: flag("review"),
-    ...(workers === undefined ? {} : { desirabilityCap: Number(workers) }),
+    // Already validated at the top of this function: a whole number ≥ 1, or absent.
+    ...(workerBudget === undefined ? {} : { desirabilityCap: workerBudget }),
   });
 
   if (admission.refusals.length > 0) {

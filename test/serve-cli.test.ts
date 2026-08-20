@@ -28,13 +28,14 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { REFUSAL, WORKER_MARKER } from "../src/agent/marker.ts";
 import { NOTHING_WAS_STARTED, PROTOCOL_VERSION } from "../src/serve/index.ts";
 import { RUN_ROOT_ENV, refusalLedgerPath } from "../src/queue/index.ts";
 import { RUN_DIR } from "../src/repo/layout.ts";
 
-const CLI = new URL("../src/cli.ts", import.meta.url).pathname;
-const ROOT = new URL("..", import.meta.url).pathname;
+const CLI = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 // Outside every temp region (ruling 61) and outside the operator's real
 // dotfiles, the same placement `test/cli-interrupt.test.ts` uses.

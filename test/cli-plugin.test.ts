@@ -19,10 +19,11 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { PLUGIN_NAME } from "../src/plugin/asset.ts";
 import { REGISTERED_HOOK_EVENTS } from "../src/plugin/hooks.ts";
 
-const CLI = new URL("../src/cli.ts", import.meta.url).pathname;
+const CLI = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
 const ROOT = mkdtempSync(join(homedir(), ".brigadier-cli-plugin-"));
 afterAll(() => rmSync(ROOT, { recursive: true, force: true }));
 

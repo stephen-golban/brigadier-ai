@@ -36,6 +36,15 @@ Ruling 47. brigadier is **Apache-2.0**; every `.ts` file outside `probes/` opens
 either by hand — `bun run build` runs `licenses --check` first and fails if the committed attribution
 disagrees with what is actually bundled.
 
+`--check` compares **bytes**, and the generator always writes LF, so `.gitattributes` pins those two
+files and every committed licence text they reprint (`LICENSE`, `vendor/*`) to LF on every platform.
+If `--check` reports STALE and adds that only the line endings differ, the **checkout** is wrong and
+the attribution is not: run `git add --renormalize . && git checkout -- .`, or clone again. A clone
+made before `.gitattributes` existed keeps whatever endings it was given. MEASURED 2026-08-20 on
+darwin, by cloning `7ff6431` with `-c core.autocrlf=true`: both surfaces failed `--check` while being
+identical to HEAD once CR bytes were removed, and regenerating there wrote 1,272 `\r` escapes into
+the licence strings `src/cli.ts` compiles into the binary.
+
 `bun run license-gate` then scans the compiled binary. It fails the build if:
 
 - a production dependency carries a licence outside the permissive allowlist in `scripts/inventory.ts`;

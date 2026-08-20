@@ -19,11 +19,12 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { plantAgent } from "../bar/lib/fake-agent.ts";
 import { isLineAnchor } from "../bar/items/05-review-is-cross-vendor.ts";
 import { PROFILES } from "../src/agent/profiles.ts";
 
-const CLI = new URL("../src/cli.ts", import.meta.url).pathname;
+const CLI = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
 
 function brigadier(args: string[], env?: Record<string, string>) {
   const proc = Bun.spawnSync([process.execPath, CLI, ...args], {

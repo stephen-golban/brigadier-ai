@@ -24,6 +24,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { rehearseBuilderTurn } from "./denominator.ts";
 import { typescriptFiles } from "./imports.ts";
 import { plantVendor } from "./fixtures.ts";
@@ -132,7 +133,7 @@ describe("no item expects a reviewer to find something the base already holds", 
       .sort();
   }
 
-  const BAR = new URL("..", import.meta.url).pathname;
+  const BAR = fileURLToPath(new URL("..", import.meta.url));
 
   test("every item that configures reviewer catches uses derive-and-carry", () => {
     const files = typescriptFiles(BAR);

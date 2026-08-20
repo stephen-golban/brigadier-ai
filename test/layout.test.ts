@@ -7,6 +7,9 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, sep } from "node:path";
 import {
   MEASURED_SAFE_CLONE_TARGET,
   RUN_DIR,
@@ -18,8 +21,11 @@ describe("the layout is short on purpose", () => {
   test("the measured candidates still fit #5's budget", () => {
     // The numbers in the ruling, re-derived here so a rename cannot quietly
     // spend the budget the ruling was arguing about.
-    const posix = itemDir("/Users/stephen/.brigadier", "a1b2c3", 12);
-    expect(posix).toBe("/Users/stephen/.brigadier/r/a1b2c3/12");
+    // `example` is a seven-character stand-in for an account name, the same
+    // length as the one src/repo/layout.ts's table was written against, so the
+    // 37 and the 140 below are the numbers in the ruling and not new ones.
+    const posix = itemDir("/Users/example/.brigadier", "a1b2c3", 12);
+    expect(posix).toBe("/Users/example/.brigadier/r/a1b2c3/12");
     expect(posix.length).toBe(37);
     expect(MEASURED_SAFE_CLONE_TARGET - posix.length).toBe(140);
   });
@@ -31,12 +37,15 @@ describe("the layout is short on purpose", () => {
 });
 
 describe("a temp-rooted run root is recognised", () => {
-  test("macOS $TMPDIR", () => {
-    // The real value measured on this machine, trailing slash and all.
-    const tmp = "/var/folders/1g/t85z95812fqc1lstp9cvy9mr0000gn/T/";
-    expect(isTempRooted("/var/folders/1g/t85z95812fqc1lstp9cvy9mr0000gn/T/brigadier", [tmp])).toBe(
-      true,
-    );
+  test("this machine's real $TMPDIR, trailing separator and all", () => {
+    // Derived rather than pasted. On macOS `$TMPDIR` is a per-account
+    // `/var/folders/<2>/<26>/T/` path, so a hard-coded one is both somebody's
+    // machine id in a public file and a shape no other platform has. The
+    // property under test is the TRAILING SEPARATOR, which the environment
+    // variable carries and `os.tmpdir()` strips — an earlier version of this
+    // check pasted the literal to keep it.
+    const tmp = realpathSync(tmpdir());
+    expect(isTempRooted(join(tmp, "brigadier"), [tmp + sep])).toBe(true);
   });
 
   test("/tmp itself", () => {
@@ -45,7 +54,7 @@ describe("a temp-rooted run root is recognised", () => {
   });
 
   test("NEGATIVE CONTROL: the home-rooted default is not temp-rooted", () => {
-    expect(isTempRooted("/Users/stephen/.brigadier", ["/tmp", "/var/folders/1g/x/T"])).toBe(false);
+    expect(isTempRooted("/Users/example/.brigadier", ["/tmp", "/var/folders/ab/x/T"])).toBe(false);
   });
 
   test("a prefix that merely SHARES characters is not inside", () => {

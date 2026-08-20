@@ -14,6 +14,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   assetFiles,
   binPaths,
@@ -29,7 +30,7 @@ import {
 } from "../src/plugin/asset.ts";
 import { REGISTERED_HOOK_EVENTS } from "../src/plugin/hooks.ts";
 
-const ROOT = new URL("..", import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const claudeShape = { hooks: true, nestedSkill: true } as const;
 const crossVendorShape = { hooks: false, nestedSkill: false } as const;
 

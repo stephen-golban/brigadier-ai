@@ -1,63 +1,68 @@
-# brigadier v2
+# brigadier
 
-**There is deliberately no source code here yet.**
+An **ACP hub**. One [Agent Client Protocol](https://agentclientprotocol.com/) client drives whichever
+coding agents are already installed on your machine, isolates each unit of work in its own
+`git clone --local`, and composes them — so one vendor builds and a different vendor reviews. It also
+presents itself as an ACP *agent*, so an editor that speaks ACP can drive brigadier the same way
+brigadier drives everything else.
 
-## What this is
+It ships as a single `bun --compile` binary for macOS, Linux and Windows. It carries no model and no
+credential of its own: it drives the agents you already have, with the accounts you already pay for.
 
-brigadier is an **ACP hub**. One [Agent Client Protocol](https://agentclientprotocol.com/) client
-drives whichever coding agents are installed on your machine, isolates each unit of work in its own
-`git clone --local`, and composes them — one vendor builds, a different vendor reviews. It also
-presents itself as an ACP agent, so editors that speak ACP can drive it directly.
+## Status, before anything else
 
-You do not run it. You open your normal agent session and it engages from inside.
+**Pre-release.** There is no tag and no published artifact; you build it from source. Nothing here is
+a promise that it works on your machine.
 
-## The canonical artifact is the map, not this tree
+- **The bar stands at 12 of 13.** `BAR.md` defines "done" as thirteen items driven against the real
+  compiled binary, each checkable by someone who does not trust the author. Twelve pass. Item 10
+  fails on a warm-start budget, and whether that budget is the right number has never itself been
+  measured on this product — it is an open owner decision, not a bug with a known fix.
+- **CI has run on `macos-latest`, `ubuntu-latest` and `windows-latest`, and does not yet pass on any
+  of the three.** The gates workflow executed for the first time on 2026-08-20 and found a real Linux
+  defect on that first run. Before then the only workflow that had ever executed was `portability`,
+  which ruling 62 says is not a gate — so "green" had meant green on one macOS machine for the entire
+  life of the project.
+- **No binary has ever been produced on Windows.** The Windows leg has never got past the build
+  stage. Cross-compiling to `bun-windows-x64` from macOS does work, which is a different and much
+  weaker claim: the Windows-only code paths — the process reader, the `taskkill /T /F` branch — have
+  never executed anywhere.
 
-**[Map: brigadier v2 — the ACP hub specification](https://github.com/stephen-golban/brigadier-v2/issues/1)**
+## Where the documentation actually is
 
-Everything decided lives there: the destination, every locked ruling with the reason it was made and
-the cost it accepted, the measured evidence behind them, a list of tooling assessed and rejected so
-nobody re-proposes it, the fog of what is not yet specified, and what is out of scope.
+This file is deliberately the smallest of the four.
 
-Its child issues are the open questions, wired with `blocked_by` edges so the takeable ones render as
-the frontier.
+- **[Issue #1](https://github.com/stephen-golban/brigadier-ai/issues/1) is the canonical artifact**,
+  not this tree. Seventy-two locked rulings, each with the reason it was made and the cost it
+  accepted, the measured evidence behind them, the tooling that was assessed and rejected so nobody
+  re-proposes it, and what is deliberately out of scope. Source files and tickets cite rulings by
+  number and will not make sense without it.
+- **[`BAR.md`](./BAR.md)** — what "done" means. The thirteen items, how they are run, who verifies
+  them, and the coverage table mapping every ruling to the item that proves it. A `SKIPPED` item
+  blocks a release exactly as a failing one does.
+- **[`AGENTS.md`](./AGENTS.md)** — how to work in this repository: the four gates, the licence gate,
+  and the measurement discipline, each rule of which came from a confidently wrong number that
+  reached a shipped file.
+- **[`MEASUREMENT-SESSION.md`](./MEASUREMENT-SESSION.md)** and **[`probes/`](./probes/)** — the work
+  order and the throwaway scripts behind the measurements the design rests on, including two traps
+  recorded there that produced confidently wrong readings before they were caught.
 
-Read the map before reading anything else here.
-
-## Why no code
-
-The design is deep and its foundation had never been measured. Several locked rulings rested on
-assumptions nobody had checked, and some of them reversed when they were. Writing source against
-those would have bought a rewrite.
-
-**Phase 1 — measurement — is done, as of 2026-08-17.** 17 research and prototype tickets are closed,
-and **eight locked rulings were contradicted or qualified by the evidence** — amended on the map as
-rulings 38–45 rather than by editing the originals, so the record of what was believed and why it
-changed survives. Among them: the Windows Job Object permits breakaway, so containment is the sweep
-rather than the job; the repo map pays but at a 2K budget, not 1K; and effort is a graded axis on one
-vendor and a binary one on the other.
-
-See [`MEASUREMENT-SESSION.md`](./MEASUREMENT-SESSION.md) for the work order it ran from, and
-[`probes/`](./probes/) for the throwaway scripts that produced the evidence — including two traps
-recorded there that produced confidently wrong readings before they were caught.
-
-**Phase 1 closed on 2026-08-17 by the owner.** All 23 research and prototype tickets are closed —
-but #46, #47 and #48 were closed *with work outstanding*, by ruling rather than because they were
-finished. Their unmeasured halves are named in their resolution comments and on the map: the quota
-signal at the limit, the compaction dropped-branch reproduction, five of six agents undriven for
-compaction, and JetBrains / the VS Code ACP extension as ACP clients. A check that did not run is not
-a passing check, and none of those was rewritten as one.
-
-**Phases 2 and 3 now run together.** 26 `wayfinder:grilling` tickets remain, and the owner has elected
-to start building alongside them rather than after. Note which of them gate the first files: identity
-(#35) fixes the binary and repository name, licensing (#36) fixes every source header, and the
-work-kind, gate and integration rulings shape the core types.
+The binary's own `brigadier --help` is the command surface; `brigadier version` prints the commit,
+the compiler and the sha256 of the running executable, so any number measured against it can name
+the artifact it was measured against.
 
 ## Relationship to v1
 
 [`stephen-golban/brigadier`](https://github.com/stephen-golban/brigadier) shipped at 0.2.1 — signed,
-notarized, on a Homebrew tap. It is an **archive**.
+notarized, on a Homebrew tap. It is an **archive**. v2 is a clean-room rebuild and **no v1 source is
+carried** (ruling 1). What is carried is 124 recorded findings: measured facts, defects and their
+causes, and several rules learned expensively enough to be worth more than the code that taught them.
+Where the map cites a v1 finding, that is why.
 
-v2 is a clean-room rebuild. **No v1 source is carried.** What is carried is 124 recorded findings —
-measured facts, defects and their causes, and several rules learned expensively enough to be worth
-more than the code that taught them. Where the map cites a v1 finding, that is why.
+## Licence
+
+Apache-2.0 — see [`LICENSE`](./LICENSE). Every `.ts` file outside `probes/` opens with an SPDX
+identifier. Attribution for everything compiled into the binary is **generated** into
+[`THIRD-PARTY.md`](./THIRD-PARTY.md) by `bun run licenses` and is never edited by hand.
+`bun run build` fails if the committed attribution disagrees with what is actually bundled, and the
+shipped binary prints the same thing with `brigadier licenses`.

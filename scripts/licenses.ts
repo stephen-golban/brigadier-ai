@@ -30,10 +30,14 @@
  *                               re-walk a pinned source tree and rewrite
  *                               vendor/lgpl-census.json. By hand, never in the
  *                               build: see RELINKING.md for the clone commands.
+ *
+ * The CLI body is behind `import.meta.main`, as `license-gate.ts`'s is: a module
+ * that REWRITES the attribution as a side effect of being imported is not one a
+ * test can safely reach, and the renderers are the part worth testing.
  */
 
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import {
   CENSUS_FILE,
   PROPRIETARY_MARKERS,
@@ -41,13 +45,29 @@ import {
   allComponents,
   censusFromCheckout,
   isAllowed,
+  normaliseEol,
   type Component,
   type LicenceCensus,
 } from "./inventory.ts";
 
-const APACHE_TEXT = readFileSync(join(REPO_ROOT, "LICENSE"), "utf8").trimEnd();
+/**
+ * brigadier's own Apache-2.0 text, as it is reprinted into both surfaces.
+ *
+ * `normaliseEol` because `LICENSE` is a committed file: a Windows checkout hands
+ * it over with CRLF, and these bytes are copied verbatim into
+ * `src/generated/licenses.ts`, which `src/cli.ts` imports and `bun --compile`
+ * embeds. `root` is a parameter rather than a constant so
+ * `test/licenses-eol.test.ts` can drive a CRLF `LICENSE` from a machine that is
+ * not Windows — a call site that is normalised but never exercised is a claim,
+ * not a guarantee.
+ */
+export function apacheText(root = REPO_ROOT): string {
+  return normaliseEol(readFileSync(join(root, "LICENSE"), "utf8")).trimEnd();
+}
 
-function renderMarkdown(components: Component[]): string {
+const APACHE_TEXT = apacheText();
+
+export function renderMarkdown(components: Component[]): string {
   const lines: string[] = [];
   lines.push("# Third-party components");
   lines.push("");
@@ -157,7 +177,7 @@ function renderMarkdown(components: Component[]): string {
   return lines.join("\n");
 }
 
-function renderTypeScript(components: Component[]): string {
+export function renderTypeScript(components: Component[]): string {
   const payload = {
     self: {
       name: "brigadier",
@@ -203,105 +223,139 @@ export const LICENSES: LicenseManifest = ${JSON.stringify(payload, null, 2)};
 `;
 }
 
-// `--census <checkout>` — regenerate `vendor/lgpl-census.json` from a source
-// tree at the pinned revision. Run by hand, not by the build: the build must
-// work offline and a 200 MB checkout is not a build input. The output is
-// committed so `bun run licenses` and the gate can stay hermetic, and anyone
-// holding the same revision can re-run this and diff the result.
-const censusIndex = Bun.argv.indexOf("--census");
-if (censusIndex !== -1) {
-  const checkout = Bun.argv[censusIndex + 1];
-  const componentName = Bun.argv[censusIndex + 2];
-  const revision = Bun.argv[censusIndex + 3];
-  const paths = Bun.argv.slice(censusIndex + 4);
-  if (!checkout || !componentName || !revision || paths.length === 0) {
-    console.error("usage: bun run licenses --census <checkout> <component> <revision> <path> [path...]");
-    process.exit(2);
+/**
+ * Why the committed surface and the generated one disagree, in one line.
+ *
+ * `--check` compares BYTES and goes on comparing bytes: this function decides
+ * nothing and excuses nothing, it only reports which class of difference was
+ * found. A file that differs only in line endings is still not the file this
+ * build produces, and still fails.
+ *
+ * It exists because the first Windows CI run (commit 7ff6431, 2026-08-20) died
+ * on the word STALE alone and sent the next reader hunting a dependency change
+ * that had not happened: both surfaces were byte-identical to the regenerated
+ * ones once CR bytes were removed. Naming the checkout as the suspect is the
+ * difference between a five-minute fix and a round.
+ */
+export function describeStaleness(actual: string, expected: string): string | undefined {
+  if (actual === "") return "the committed file is missing or unreadable";
+  if (actual !== expected && normaliseEol(actual) === expected) {
+    return (
+      "the CONTENT matches — only the line endings differ, so this checkout converted LF to CRLF. " +
+      "`.gitattributes` pins these files to LF; git-for-windows sets core.autocrlf=true at SYSTEM level, " +
+      "and a checkout made before `.gitattributes` existed keeps the CRLF it was given. Remedy the " +
+      "CHECKOUT, not the attribution: `git add --renormalize . && git checkout -- .`, or clone again."
+    );
   }
-  const component = allComponents().find((c) => c.name === componentName);
-  if (!component?.lgpl) {
-    console.error(`${componentName} is not a component with an \`lgpl\` block; nothing to census.`);
-    process.exit(2);
-  }
-  const censusPath = join(REPO_ROOT, "vendor", CENSUS_FILE);
-  const existing = await Bun.file(censusPath)
-    .json()
-    .catch(() => ({}));
-  const measuredWith = `git ${Bun.spawnSync(["git", "--version"]).stdout.toString().trim().replace(/^git version /, "")} and bun ${Bun.version}`;
-  existing[componentName] = censusFromCheckout(checkout, {
-    repo: component.lgpl.upstream,
-    revision,
-    measuredOn: new Date().toISOString().slice(0, 10),
-    measuredWith,
-    paths,
-  });
-  writeFileSync(censusPath, `${JSON.stringify(existing, null, 2)}\n`);
-  const census = existing[componentName] as LicenceCensus;
-  console.log(`censused ${componentName} at ${revision} — ${JSON.stringify(census.totals)}`);
-  console.log(`  ${census.holders.length} holder(s), ${census.notices.length} distinct notice wording(s)`);
-  process.exit(0);
+  return undefined;
 }
 
-// `allComponents` composes the shipped text. Both files below and the gate's
-// scan of the binary read the same bytes from the same place, which is the
-// whole reason the composition is not done here.
-const components = allComponents();
+if (import.meta.main) {
+  // `--census <checkout>` — regenerate `vendor/lgpl-census.json` from a source
+  // tree at the pinned revision. Run by hand, not by the build: the build must
+  // work offline and a 200 MB checkout is not a build input. The output is
+  // committed so `bun run licenses` and the gate can stay hermetic, and anyone
+  // holding the same revision can re-run this and diff the result.
+  const censusIndex = Bun.argv.indexOf("--census");
+  if (censusIndex !== -1) {
+    const checkout = Bun.argv[censusIndex + 1];
+    const componentName = Bun.argv[censusIndex + 2];
+    const revision = Bun.argv[censusIndex + 3];
+    const paths = Bun.argv.slice(censusIndex + 4);
+    if (!checkout || !componentName || !revision || paths.length === 0) {
+      console.error("usage: bun run licenses --census <checkout> <component> <revision> <path> [path...]");
+      process.exit(2);
+    }
+    const component = allComponents().find((c) => c.name === componentName);
+    if (!component?.lgpl) {
+      console.error(`${componentName} is not a component with an \`lgpl\` block; nothing to census.`);
+      process.exit(2);
+    }
+    const censusPath = join(REPO_ROOT, "vendor", CENSUS_FILE);
+    const existing = await Bun.file(censusPath)
+      .json()
+      .catch(() => ({}));
+    const measuredWith = `git ${Bun.spawnSync(["git", "--version"]).stdout.toString().trim().replace(/^git version /, "")} and bun ${Bun.version}`;
+    existing[componentName] = censusFromCheckout(checkout, {
+      repo: component.lgpl.upstream,
+      revision,
+      measuredOn: new Date().toISOString().slice(0, 10),
+      measuredWith,
+      paths,
+    });
+    writeFileSync(censusPath, `${JSON.stringify(existing, null, 2)}\n`);
+    const census = existing[componentName] as LicenceCensus;
+    console.log(`censused ${componentName} at ${revision} — ${JSON.stringify(census.totals)}`);
+    console.log(`  ${census.holders.length} holder(s), ${census.notices.length} distinct notice wording(s)`);
+    process.exit(0);
+  }
 
-// The gate reads what this writes. Generated attribution that contained a
-// proprietary marker would fail the marker scan on the next build with a
-// finding that looks like bundled proprietary code — and WebKit really does
-// carry an `Anthropic PBC` copyright line (8 files, MEASURED 2026-08-17), so
-// this is a live hazard rather than a hypothetical one.
-for (const c of components) {
-  for (const marker of PROPRIETARY_MARKERS) {
-    if (c.licenseText.includes(marker)) {
-      console.error(`Refusing to generate: ${c.name}'s text contains the proprietary marker ${JSON.stringify(marker)}.`);
-      console.error("The marker scan in scripts/license-gate.ts would read this back as bundled proprietary code.");
-      process.exit(1);
+  // `allComponents` composes the shipped text. Both files below and the gate's
+  // scan of the binary read the same bytes from the same place, which is the
+  // whole reason the composition is not done here.
+  const components = allComponents();
+
+  // The gate reads what this writes. Generated attribution that contained a
+  // proprietary marker would fail the marker scan on the next build with a
+  // finding that looks like bundled proprietary code — and WebKit really does
+  // carry an `Anthropic PBC` copyright line (8 files, MEASURED 2026-08-17), so
+  // this is a live hazard rather than a hypothetical one.
+  for (const c of components) {
+    for (const marker of PROPRIETARY_MARKERS) {
+      if (c.licenseText.includes(marker)) {
+        console.error(`Refusing to generate: ${c.name}'s text contains the proprietary marker ${JSON.stringify(marker)}.`);
+        console.error("The marker scan in scripts/license-gate.ts would read this back as bundled proprietary code.");
+        process.exit(1);
+      }
     }
   }
-}
 
-// The generator refuses to render a licence the gate would reject. Producing a
-// tidy attribution file for a component that may not be redistributed would be
-// the worst of both worlds: it documents the violation and looks like diligence.
-const disallowed = components.filter((c) => c.origin === "npm" && !isAllowed(c.license));
-if (disallowed.length > 0) {
-  console.error("Refusing to generate attribution — these licences are outside the allowlist:");
-  for (const c of disallowed) console.error(`  ${c.name}@${c.version}  ${c.license}`);
-  console.error("\nSee ruling 47. Either the dependency goes, or the allowlist changes deliberately.");
-  process.exit(1);
-}
-
-const markdown = renderMarkdown(components);
-const typescript = renderTypeScript(components);
-
-const markdownPath = join(REPO_ROOT, "THIRD-PARTY.md");
-const typescriptPath = join(REPO_ROOT, "src", "generated", "licenses.ts");
-
-if (Bun.argv.includes("--check")) {
-  let stale = false;
-  for (const [path, expected] of [
-    [markdownPath, markdown],
-    [typescriptPath, typescript],
-  ] as const) {
-    const actual = await Bun.file(path)
-      .text()
-      .catch(() => "");
-    if (actual !== expected) {
-      console.error(`STALE  ${path.replace(REPO_ROOT + "/", "")}`);
-      stale = true;
-    }
-  }
-  if (stale) {
-    console.error("\nRun `bun run licenses`. The committed attribution disagrees with what is bundled.");
+  // The generator refuses to render a licence the gate would reject. Producing a
+  // tidy attribution file for a component that may not be redistributed would be
+  // the worst of both worlds: it documents the violation and looks like diligence.
+  const disallowed = components.filter((c) => c.origin === "npm" && !isAllowed(c.license));
+  if (disallowed.length > 0) {
+    console.error("Refusing to generate attribution — these licences are outside the allowlist:");
+    for (const c of disallowed) console.error(`  ${c.name}@${c.version}  ${c.license}`);
+    console.error("\nSee ruling 47. Either the dependency goes, or the allowlist changes deliberately.");
     process.exit(1);
   }
-  console.log(`attribution current — ${components.length} component(s)`);
-} else {
-  mkdirSync(join(REPO_ROOT, "src", "generated"), { recursive: true });
-  writeFileSync(markdownPath, markdown);
-  writeFileSync(typescriptPath, typescript);
-  console.log(`wrote THIRD-PARTY.md and src/generated/licenses.ts — ${components.length} component(s)`);
-  for (const c of components) console.log(`  ${c.origin.padEnd(7)} ${c.name}@${c.version}  ${c.license}`);
+
+  const markdown = renderMarkdown(components);
+  const typescript = renderTypeScript(components);
+
+  const markdownPath = join(REPO_ROOT, "THIRD-PARTY.md");
+  const typescriptPath = join(REPO_ROOT, "src", "generated", "licenses.ts");
+
+  if (Bun.argv.includes("--check")) {
+    let stale = false;
+    for (const [path, expected] of [
+      [markdownPath, markdown],
+      [typescriptPath, typescript],
+    ] as const) {
+      const actual = await Bun.file(path)
+        .text()
+        .catch(() => "");
+      if (actual !== expected) {
+        // `relative`, not `replace(REPO_ROOT + "/")`: on Windows `join` returns
+        // `\` separators, the replace never matched, and the first Windows CI
+        // run printed two absolute `D:\a\...` paths instead of repo-relative ones.
+        console.error(`STALE  ${relative(REPO_ROOT, path)}`);
+        const why = describeStaleness(actual, expected);
+        if (why) console.error(`       ${why}`);
+        stale = true;
+      }
+    }
+    if (stale) {
+      console.error("\nRun `bun run licenses`. The committed attribution disagrees with what is bundled.");
+      process.exit(1);
+    }
+    console.log(`attribution current — ${components.length} component(s)`);
+  } else {
+    mkdirSync(join(REPO_ROOT, "src", "generated"), { recursive: true });
+    writeFileSync(markdownPath, markdown);
+    writeFileSync(typescriptPath, typescript);
+    console.log(`wrote THIRD-PARTY.md and src/generated/licenses.ts — ${components.length} component(s)`);
+    for (const c of components) console.log(`  ${c.origin.padEnd(7)} ${c.name}@${c.version}  ${c.license}`);
+  }
 }

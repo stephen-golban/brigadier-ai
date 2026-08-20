@@ -118,6 +118,57 @@ export function feasibilityCap(hostFirst: boolean, totalMemoryBytes = totalmem()
 }
 
 /**
+ * Why this module refuses a number it cannot use, rather than computing with it.
+ *
+ * `src/cli.ts` reads `--workers` as `Number(value("workers"))` with no
+ * validation, so an operator typo arrives here as `NaN`, `0`, `-1` or `2.5`.
+ * Until the floor was added, `planFanOut` returned `candidates[boundBy]` and a
+ * `NaN` simply never won a `<` comparison, so it was discarded by accident. The
+ * floor is a `Math.min`/`Math.max` chain, and those PROPAGATE it.
+ *
+ * MEASURED against `bun 1.3.14` on 2026-08-20, driving this module directly:
+ * `--workers abc` gave `workers: NaN`, printed `NaN worker(s) in wave 1 — RAM
+ * capped it…`, and handed `NaN` to the batch cursor in
+ * `src/queue/execute.ts` — which dispatches ZERO items and exits reporting
+ * success. `--workers 2.5` gave `2.5 worker(s)` and a cursor that steps by 2.5.
+ * A run that does nothing and reports success for it is the failure `BAR.md`
+ * opens on, and it was reachable from an ordinary typo. The same gates run that
+ * started this family is 32310525311.
+ *
+ * So: LOUD, and at the arithmetic rather than only at the caller. This is a
+ * backstop — the operator-facing refusal belongs at the CLI boundary, where the
+ * flag can be named and exit 2 returned — but `planFanOut` carries ruling 54
+ * and a `NaN` reaching it silently is a hazard whatever any caller does. An
+ * exception is unmistakable; a `NaN` answer is not.
+ *
+ * Coercion was rejected. Falling back to `DEFAULT_DESIRABILITY_CAP` would
+ * silently ignore what the operator asked for, which is the same defect the bar
+ * already records once — a run that thought it was setting ruling 54's
+ * desirability filter and was quietly getting the default.
+ */
+function requireWholeNumber(field: string, value: number, minimum: number): number {
+  if (!Number.isInteger(value) || value < minimum) {
+    throw new RangeError(
+      `planFanOut: ${field} must be a whole number of at least ${minimum}, and it was ${String(value)}. ` +
+        "Nothing is computed from it: a non-integer or negative count propagates through ruling 14's " +
+        "lowest-wins arithmetic into the printed worker count AND the dispatch cursor, where it dispatches " +
+        "nothing and reports success. If this came from `--workers`, the refusal belongs at the CLI boundary.",
+    );
+  }
+  return value;
+}
+
+function requireFiniteBytes(field: string, value: number): number {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new RangeError(
+      `planFanOut: ${field} must be a finite, non-negative byte count, and it was ${String(value)}. ` +
+        "`feasibilityCap` divides by it, so a non-finite reading becomes a non-finite worker count.",
+    );
+  }
+  return value;
+}
+
+/**
  * Ruling 14: the lowest wins, and the report names which.
  *
  * Ties resolve toward the more specific explanation — `item-count` last, so
@@ -125,6 +176,13 @@ export function feasibilityCap(hostFirst: boolean, totalMemoryBytes = totalmem()
  * Three distinct reasons to run one worker must never render as one sentence.
  */
 export function planFanOut(inputs: FanOutInputs): FanOut {
+  // EVERY NUMBER IS CHECKED BEFORE ANY OF IT IS USED, and this is a backstop
+  // rather than the operator's error message. See `requireFanOutInput`.
+  requireWholeNumber("itemCount", inputs.itemCount, 0);
+  requireWholeNumber("legalityCap", inputs.legalityCap, 0);
+  if (inputs.desirabilityCap !== undefined) requireWholeNumber("desirabilityCap", inputs.desirabilityCap, 1);
+  if (inputs.totalMemoryBytes !== undefined) requireFiniteBytes("totalMemoryBytes", inputs.totalMemoryBytes);
+
   const candidates: Record<BindingFilter, number> = {
     legality: inputs.legalityCap,
     feasibility: feasibilityCap(inputs.hostFirst, inputs.totalMemoryBytes),
@@ -138,5 +196,72 @@ export function planFanOut(inputs: FanOutInputs): FanOut {
     if (candidates[filter] < candidates[boundBy]) boundBy = filter;
   }
 
-  return { workers: candidates[boundBy], boundBy, candidates };
+  // `boundBy` is read off the RAW candidates above and is not touched by the
+  // floor below. On a small host RAM really is the filter that bound the count,
+  // and ruling 54 wants that said even though one worker runs: the remedy for
+  // *RAM capped it* is a bigger machine, and the remedy for *the plan only had
+  // one item* is a longer plan. Flooring the candidate instead of the count
+  // would erase that difference — which is why the floor is applied here, to
+  // the answer, and never inside `feasibilityCap`.
+  return { workers: admittedWorkers(candidates), boundBy, candidates };
+}
+
+/**
+ * The count a run ADMITS — which is the count it prints AND the count it
+ * dispatches, because those were two different numbers and nothing noticed.
+ *
+ * `feasibilityCap` answers 0 on any host-first machine below about 9 GiB, and
+ * `bindingSentence` renders `FanOut.workers` verbatim, so brigadier printed
+ * *0 worker(s) in wave 1 — RAM capped it* and then ran one, because
+ * `src/queue/execute.ts` had its own `Math.max(1, …)` at the dispatch site.
+ * `src/cli.ts` defaults the audience to `host-session`, so that was stdout on
+ * EVERY run on an ordinary 8 GiB laptop, not only on CI. MEASURED against `bun
+ * 1.3.14` on 2026-08-20: `planFanOut({hostFirst: true, totalMemoryBytes: 7 GiB})`
+ * returned `workers: 0`; the same run dispatched 1. The gates run that surfaced
+ * the family is 32310525311, where the same zero made `bar/fakes/honest.ts`
+ * produce a run with no items at all on both `ubuntu-latest` and `macos-latest`.
+ *
+ * ZERO WORKERS IS NOT A REFUSAL. It is a run that does no work and then reports
+ * success for it, which is the failure `BAR.md` opens on. Refusing outright
+ * would make brigadier unusable on the hardware most operators have, and ruling
+ * 54's 3 GiB is the UPPER bound of v1's measured 1–3 GB per worker — chosen
+ * because under-provisioning swaps — so one worker on a machine the planning
+ * number says has room for none is a tight fit, not an impossible one.
+ *
+ * THE TWO HARD FILTERS ARE NOT FLOORED. Legality and the item count are facts
+ * about the plan: a wave with no items has nothing to run, and running an item
+ * that may not legally run at all would be a correctness failure rather than a
+ * tight fit. Feasibility and desirability are planning numbers, and those are
+ * the two this floor applies to.
+ */
+function admittedWorkers(candidates: Record<BindingFilter, number>): number {
+  const budgets = Math.max(1, Math.min(candidates.feasibility, candidates.desirability));
+  return Math.min(candidates.legality, candidates["item-count"], budgets);
+}
+
+/**
+ * The concurrency a wave dispatches at. One function, so the number a reader is
+ * shown and the number that runs cannot drift apart again.
+ *
+ * IT CANNOT RETURN A BAD NUMBER, structurally, rather than by every caller
+ * remembering to clamp. The dispatch loop steps its cursor by this value, so a
+ * zero would spin forever and a fraction would slice batches at fractional
+ * indices — neither of which is a concurrency. `undefined`, `NaN`, `0`,
+ * negatives and fractions all answer 1.
+ *
+ * The one place it disagrees with `planFanOut` is a wave with no items or no
+ * legal items, where `planFanOut` answers 0 and this answers 1. That is not a
+ * worker invented out of nothing and it is UNREACHABLE rather than merely
+ * harmless: `src/queue/execute.ts` computes the width only inside a loop whose
+ * body iterates `eligible.run`, so an empty eligible list runs nothing at any
+ * width; and `src/queue/admit.ts` passes `LEGALITY_UNBOUNDED` for every wave,
+ * because `validatePlan` has already refused the colliding plans legality would
+ * otherwise have caught. Written down so the next reader does not have to
+ * re-derive it — the two functions answer different questions, and the answer
+ * to *how wide is a batch* must be a positive integer whatever the answer to
+ * *how many items may run* turns out to be.
+ */
+export function dispatchWidth(fanOut: FanOut | undefined): number {
+  const workers = fanOut?.workers ?? 0;
+  return Number.isInteger(workers) && workers >= 1 ? workers : 1;
 }

@@ -15,6 +15,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { memoryChannel } from "../src/acp/channel.ts";
 import { Connection } from "../src/acp/connection.ts";
 import { NO_DIAGNOSTICS, stdioChannel } from "../src/acp/stdio.ts";
@@ -33,7 +34,7 @@ import {
   type StageReporter,
 } from "../src/serve/index.ts";
 
-const ROOT = new URL("..", import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 // --------------------------------------------------------------- harness
 

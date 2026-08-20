@@ -81,15 +81,42 @@ const DESIRABILITY_CAP = 3;
  * machine the operating system itself calls 41% free. The reserves are the
  * operating system's own footprint and, under decision 25, the host agent
  * brigadier is running inside: it is an agent, so it gets an agent's budget.
+ *
+ * THE HOST AGENT'S BUDGET IS CONDITIONAL, and this was wrong for one round.
+ * Decision 25's reserve is for the host agent brigadier was invoked from
+ * INSIDE, so it applies exactly when there is one — `src/work/fanout.ts` takes
+ * it as `feasibilityCap(hostFirst)` and `src/cli.ts` sets `hostFirst` from
+ * `audience === "host-session"`. Subtracting it from a terminal run reserved
+ * three gigabytes for a process that does not exist. On the owner's 24 GiB host
+ * that only cost a worker; on a 7 GiB runner it is the difference between one
+ * worker and none.
  */
 const GIB = 1024 ** 3;
 const WORKER_BUDGET_BYTES = 3 * GIB;
 const OS_RESERVE_BYTES = 4 * GIB;
 const HOST_AGENT_RESERVE_BYTES = 3 * GIB;
 
-function ramCap(): number {
-  const spare = totalmem() - OS_RESERVE_BYTES - HOST_AGENT_RESERVE_BYTES;
-  return Math.max(0, Math.floor(spare / WORKER_BUDGET_BYTES));
+/**
+ * This machine's total memory, and the ONE place this file reads it.
+ *
+ * A named function rather than an inline `totalmem()` because nobody here owns
+ * a 7 GiB machine, and a fix for small hosts that can only be tested on a large
+ * one is the defect it is repairing. `bar/lib/item4-fanout.test.ts` builds a
+ * copy of this fixture with this body rewritten to a fixed number and drives it
+ * for real, so "the positive control still produces a run on a machine with no
+ * room for a worker" is measured rather than argued.
+ */
+function hostTotalMemoryBytes(): number {
+  return totalmem();
+}
+
+/**
+ * What this machine's memory leaves room for. ZERO IS A REAL ANSWER and is
+ * returned as one; what to do about it is `admit`'s decision, not this one's.
+ */
+function ramCap(hostSession: boolean): number {
+  const reserve = OS_RESERVE_BYTES + (hostSession ? HOST_AGENT_RESERVE_BYTES : 0);
+  return Math.max(0, Math.floor((hostTotalMemoryBytes() - reserve) / WORKER_BUDGET_BYTES));
 }
 /** `src/gate/run.ts`: how much of a failing checker's own output reaches its check. */
 const VERIFY_TAIL_LINES = 12;
@@ -595,7 +622,7 @@ interface Admission {
   workers: number;
 }
 
-function admit(plan: Plan, vendors: string[], maxWorkers: number | undefined): Admission {
+function admit(plan: Plan, vendors: string[], maxWorkers: number | undefined, hostSession: boolean): Admission {
   const refused: string[] = [];
 
   // Ruling 13: two items claiming one path is a plan that cannot be isolated.
@@ -647,15 +674,59 @@ function admit(plan: Plan, vendors: string[], maxWorkers: number | undefined): A
   // dispatch first — so its hard ceiling could only ever decline to start
   // something, which is the soft ceiling's behaviour under the other name.
   const byDesirability = maxWorkers ?? DESIRABILITY_CAP;
-  const byRam = ramCap();
-  const workers = Math.min(byPlan, byDesirability, byRam);
+  const byRam = ramCap(hostSession);
+
+  // WHICH filter bound, decided from the three candidates and NOT from the
+  // worker count, because the count is floored below and a floored count no
+  // longer identifies its own cause: `--workers 1` on a machine with room for
+  // none would have answered *desirability* for a bound that was the machine's.
+  //
+  // Ties resolve toward the more specific explanation, in `src/queue/admit.ts`'s
+  // order — RAM first, the plan's own length last — so *the plan only had one
+  // item* can never masquerade as *RAM capped you at one*. Ruling 54 exists
+  // because those are three different remedies.
+  const boundBy =
+    byRam <= byDesirability && byRam <= byPlan
+      ? "feasibility"
+      : byDesirability <= byPlan
+        ? "desirability"
+        : "item-count";
+
+  // THE FLOOR, and it is where this fixture stopped being a control.
+  //
+  // `ramCap` returns 0 on any machine under about 7 GiB, and the previous
+  // draft admitted that zero and then dispatched nothing: the run cloned
+  // nothing, spawned nothing, merged nothing and wrote a record whose `items`
+  // was empty — and exited 0. MEASURED by the coordinator against `gates.yml`
+  // on 2026-08-20: twelve tests on each of `ubuntu-latest` and `macos-latest`
+  // failed with `record.items gave no items at all`, a string that appears in
+  // no earlier CI log, because both runners are private-repository runners with
+  // 7–8 GiB.
+  //
+  // A zero-worker admission is the worst of the three available behaviours. It
+  // is not a refusal — nothing is reported as impossible — and it is not a run;
+  // it is a run that does nothing and then reports success for it, which is the
+  // exact shape `BAR.md` exists to catch. The product already declines it:
+  // `src/queue/execute.ts` dispatches at `Math.max(1, fanOut.workers)`. So one
+  // worker runs, and unlike the product THIS number is floored where it is
+  // REPORTED, so the count on stdout is the count that ran. The plan's own
+  // length is not floored — a plan with no items has nothing to run — and the
+  // sentence below says the machine had room for none.
+  const workers = Math.min(byPlan, Math.max(1, Math.min(byDesirability, byRam)));
+
+  const roomFor =
+    "this machine's TOTAL memory, less the operating system's share" +
+    `${hostSession ? " and the host agent's own" : ""}, leaves room for`;
   const bindingFilter =
-    workers === byPlan && byPlan <= byDesirability && byPlan <= byRam
+    boundBy === "item-count"
       ? `the plan had ${byPlan} item(s), which was the binding filter`
-      : workers === byDesirability
+      : boundBy === "desirability"
         ? `desirability capped it at ${byDesirability}, which was the binding filter`
-        : `available RAM capped it at ${byRam}, which was the binding filter: this machine's TOTAL memory, ` +
-          `less the operating system's share and the host agent's own, leaves room for that many at 3 GiB each`;
+        : byRam >= 1
+          ? `available RAM capped it at ${byRam}, which was the binding filter: ${roomFor} that many at 3 GiB each`
+          : `available RAM capped it at 0, which was the binding filter: ${roomFor} none at 3 GiB each. ` +
+            `One worker runs regardless and the fan-out is serial, because a zero-worker admission is not a refusal: ` +
+            `it is a run that does nothing and then reports success for it`;
 
   // Ruling 55: a short ladder is stated at plan ADMISSION, before anything is
   // spent — finding 87 discovered it after an attempt was already gone.
@@ -938,7 +1009,34 @@ async function doRun(): Promise<number> {
   // a flag the product has never had, so every run that thought it was setting
   // ruling 14's desirability filter was silently getting the default of 3.
   const workersFlag = value("workers");
-  const admission = admit(plan, vendors, workersFlag === undefined ? undefined : Number(workersFlag));
+  // REFUSED AT THE BOUNDARY, before anything is spawned or cloned.
+  //
+  // `Number("abc")` is `NaN`, and ruling 14's arithmetic is a `Math.min` chain,
+  // so an unparseable budget becomes a `NaN` worker count: printed as `NaN
+  // worker(s)`, handed to the batch cursor, and the loop then dispatches no
+  // items and exits reporting success. A fraction is no better — the cursor
+  // steps by 2.5 and slices batches at fractional indices. MEASURED against
+  // `bun 1.3.14` on 2026-08-20 against the product's own `planFanOut`, which
+  // had the same hole; a run that does nothing and reports success for it is
+  // the failure `BAR.md` opens on, and a typo is enough to reach it.
+  //
+  // Exit 2 is this fixture's usage code, the same one a missing `--plan` gets:
+  // the operator asked for something that is not a run, and is told which flag
+  // and which value rather than watching a successful run produce nothing.
+  if (workersFlag !== undefined) {
+    const parsed = Number(workersFlag);
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      process.stderr.write(
+        `run: --workers must be a whole number of at least 1, and it was \`${workersFlag}\`. ` +
+          "Nothing was spawned and nothing was cloned.\n",
+      );
+      return 2;
+    }
+  }
+  // `capped` is decision 25's `hostFirst`: ruling 54's host-agent reserve comes
+  // off exactly when brigadier was invoked from inside a host agent session,
+  // which is the same condition ruling 58's capped rendering turns on.
+  const admission = admit(plan, vendors, workersFlag === undefined ? undefined : Number(workersFlag), capped);
 
   say(admission.ladderNote);
   if (admission.refused.length > 0) {
@@ -1134,7 +1232,14 @@ async function doRun(): Promise<number> {
   let integrationTip = baseCommit.out;
   let assigned = 0;
   for (const wave of waves) {
-    const eligible = admission.workers === 0 ? [] : wave;
+    // Every item in the wave is eligible. This used to read `admission.workers
+    // === 0 ? [] : wave`, and that line — one short-circuit, no message — is
+    // what turned a small host into a run with no clones, no workers, no merge
+    // and an empty `record.items`. The floor lives in `admit` now, where it is
+    // reported rather than silently applied, so there is no zero left to guard
+    // against: `width` cannot be less than one and neither can the count on
+    // stdout.
+    const eligible = wave;
     const width = Math.max(1, admission.workers);
     // ──────────────────────── BATCHES, NOT ONE AT A TIME ────────────────────
     //

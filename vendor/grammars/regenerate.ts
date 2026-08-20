@@ -21,6 +21,7 @@
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export interface VendoredGrammar {
   /** File in this directory. */
@@ -47,7 +48,7 @@ export const VENDORED: readonly VendoredGrammar[] = [
   { file: "java.wasm.gz", source: "node_modules/@vscode/tree-sitter-wasm/wasm/tree-sitter-java.wasm" },
 ] as const;
 
-export const REPO_ROOT = new URL("../..", import.meta.url).pathname;
+export const REPO_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 export const VENDOR_DIR = join(REPO_ROOT, "vendor", "grammars");
 
 export function sha256(bytes: Uint8Array): string {

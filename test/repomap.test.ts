@@ -23,6 +23,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { afterAll, describe, expect, test } from "bun:test";
 
@@ -36,7 +37,7 @@ import {
 import { fitToBudget, renderMap } from "../src/repomap/render.ts";
 import { rankFiles } from "../src/repomap/rank.ts";
 
-const REPO = new URL("..", import.meta.url).pathname;
+const REPO = fileURLToPath(new URL("..", import.meta.url));
 const scratch: string[] = [];
 
 function temporaryRepo(prefix: string): string {

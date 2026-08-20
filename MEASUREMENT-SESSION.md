@@ -23,7 +23,7 @@ that is a success, not a problem, and you must report it plainly rather than sof
 
 ## The map
 
-`https://github.com/stephen-golban/brigadier-v2/issues/1` — read it **first and completely**. It
+`https://github.com/stephen-golban/brigadier-ai/issues/1` — read it **first and completely**. It
 holds the destination, all 37 rulings with their reasons, the measured evidence so far, a
 rejected-tooling list, the fog, and what is out of scope. Every ticket is a child issue.
 
@@ -60,7 +60,7 @@ Suggested order. #2 first because three other tickets unblock on it, then the re
 
 ## Protocol per ticket
 
-1. **Claim it first**, before any work: `gh issue edit <n> --repo stephen-golban/brigadier-v2
+1. **Claim it first**, before any work: `gh issue edit <n> --repo stephen-golban/brigadier-ai
    --add-assignee stephen-golban`. An unassigned open ticket means unclaimed, and other sessions
    may be working the map concurrently.
 2. Do the work. Prefer a cheap probe over an argument.
@@ -73,7 +73,7 @@ Suggested order. #2 first because three other tickets unblock on it, then the re
    number, and add a line to the map. Do not quietly work around it.
 7. If a result makes new work specifiable, create a child issue (`gh issue create` with the right
    `wayfinder:` label, then attach it: `gh api --method POST
-   repos/stephen-golban/brigadier-v2/issues/1/sub_issues -F sub_issue_id=<id>` — note `-F`, not
+   repos/stephen-golban/brigadier-ai/issues/1/sub_issues -F sub_issue_id=<id>` — note `-F`, not
    `-f`, or it fails with a type error).
 
 ## Measurement discipline — non-negotiable

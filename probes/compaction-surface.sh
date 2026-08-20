@@ -30,7 +30,12 @@
 # Usage: bash probes/compaction-surface.sh
 set -uo pipefail
 
-NM="${NODE_MODULES:-/Users/stephen/.nvm/versions/node/v24.18.0/lib/node_modules}"
+# Global `node_modules`, asked for rather than pasted. Under nvm this path is
+# version-scoped (`.../versions/node/<ver>/lib/node_modules`), so a hard-coded
+# one names somebody's home directory AND goes stale on the next node upgrade.
+# The counts in the header above were read off the globally installed packages
+# of one macOS developer machine; `npm root -g` is how they were located.
+NM="${NODE_MODULES:-$(npm root -g 2>/dev/null)}"
 CODEX_ACP="${CODEX_ACP:-$(find "$HOME/.npm/_npx" -maxdepth 5 -type d -path '*@agentclientprotocol/codex-acp' 2>/dev/null | head -1)}"
 CLAUDE_ACP="${CLAUDE_ACP:-$(find "$HOME/.npm/_npx" -maxdepth 5 -type d -path '*@agentclientprotocol/claude-agent-acp' 2>/dev/null | head -1)}"
 

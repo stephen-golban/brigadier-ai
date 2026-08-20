@@ -36,10 +36,19 @@
  * every judge is shown failing on the shape it exists to reject.
  */
 
-import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { afterAll, describe, expect, test } from "bun:test";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Checks, leader } from "./checks.ts";
+import { gatherRunEvidence, proofOfWork } from "./evidence.ts";
+import { isolatedPath, plantFleet } from "./fixtures.ts";
+import { ensureDir, pruneEmpty, removeDir, writeScript } from "./fs.ts";
+import { makeRepo, plantSeeds } from "./git.ts";
+import { runSampled } from "./inflight.ts";
+import { disjointPlan, writePlan } from "./plan.ts";
+import { baseEnv, exec } from "./proc.ts";
 import {
   FILTER_PHRASES,
   MIN_CAP_TO_DISTINGUISH,
@@ -416,6 +425,21 @@ const OTHER_IMPLEMENTATION = {
     "memory, less the operating system's share and the host agent's own, leaves room for that many at 3 GiB each",
 } as const;
 
+/**
+ * The same fixture's RAM sentence on a machine with room for NOTHING, which is
+ * every GitHub-hosted runner this repository builds on.
+ *
+ * It is here because it is the sentence most likely to break the classifier: it
+ * carries a second worker count, a second clause and a full stop the other
+ * three do not have. A widened label alternation that swallowed it — or refused
+ * it — would take item 4's whole ruling-54 half down with it, on CI only.
+ */
+const FIXTURE_ZERO_CAP_SENTENCE =
+  "admitted: 1 worker(s) — available RAM capped it at 0, which was the binding filter: this machine's TOTAL " +
+  "memory, less the operating system's share and the host agent's own, leaves room for none at 3 GiB each. " +
+  "One worker runs regardless and the fan-out is serial, because a zero-worker admission is not a refusal: " +
+  "it is a run that does nothing and then reports success for it";
+
 describe("the check names the FILTER, not one product's sentence", () => {
   test("a second implementation's own words classify to the same four filters", () => {
     for (const [name, text] of Object.entries(OTHER_IMPLEMENTATION)) {
@@ -444,6 +468,16 @@ describe("the check names the FILTER, not one product's sentence", () => {
     expect(waveOne(ADMISSION_BLOCK)?.filter).toBe("item-count");
   });
 
+  test("the zero-cap sentence is still ONE filter, and it is feasibility", () => {
+    expect(classifyBindingSentence(FIXTURE_ZERO_CAP_SENTENCE)).toBe("feasibility");
+    // And it is read as ONE worker — the number that ran — rather than as the
+    // zero it explains. A sentence whose own arithmetic is quoted inside it is
+    // exactly where a count-scraping regex goes wrong.
+    const line = waveOne(FIXTURE_ZERO_CAP_SENTENCE);
+    expect(line?.workers).toBe(1);
+    expect(line?.filter).toBe("feasibility");
+  });
+
   test("NEGATIVE: widening the labels did not make prose without a label pass", () => {
     // The whole risk of anchoring on a label is that the alternation swallows
     // anything. It does not: a sentence that names no filter is still `null`,
@@ -454,4 +488,351 @@ describe("the check names the FILTER, not one product's sentence", () => {
       classifyBindingSentence("admitted: 3 worker(s) — desirability capped it, and so did available RAM"),
     ).toBeNull();
   });
+});
+
+/**
+ * ── THE SMALL HOST, DRIVEN ──────────────────────────────────────────────────
+ *
+ * WHY THIS EXISTS. Round 18 replaced the fixture's `const byRam = 64` with a
+ * real cap computed from `totalmem()`, which was right — a constant is not a
+ * cap and ruling 54's third sentence could never be driven against one. On the
+ * owner's 24 GiB host it worked. MEASURED by the coordinator against
+ * `gates.yml` on 2026-08-20: on `ubuntu-latest` and `macos-latest` it returned
+ * ZERO, `admit` handed that zero to a short-circuit that dispatched nothing,
+ * and twelve tests on each runner failed with `record.items gave no items at
+ * all` — a string that appears in no earlier CI log. The fixture cloned
+ * nothing, spawned nothing, merged nothing, and exited 0.
+ *
+ * So the repair is worth nothing unless it is measured on the machine it is
+ * for, and nobody here owns a 7 GiB machine. These arms build a copy of
+ * `bar/fakes/honest.ts` with its ONE reading of this host's memory rewritten to
+ * a fixed number and then drive it for real — real `git clone`, real worker
+ * processes, real `git merge-tree`, real record — through the same
+ * `proofOfWork` gate that failed on CI. The rewrite is asserted, for the reason
+ * `bar/lib/item12-negative-control.test.ts` states at length: a control built
+ * by string replacement whose anchor has been reworded still compiles, still
+ * runs, and silently stops controlling.
+ *
+ * The second arm is the one that makes the first mean something. It puts the
+ * two lines back exactly as they stood in `7ff6431` and requires the run to
+ * produce nothing — so "the fixture works on a small host" is a difference this
+ * file can see, rather than a claim about a machine it cannot reach.
+ */
+
+const HONEST = fileURLToPath(new URL("../fakes/honest.ts", import.meta.url));
+const VENDOR_SCRIPT = fileURLToPath(new URL("../fakes/vendor.ts", import.meta.url));
+const LIB_DIR = fileURLToPath(new URL(".", import.meta.url));
+const GIB = 1024 ** 3;
+
+// Outside every temp root, because ruling 61 is one of the things the drive
+// below asserts and a harness under `/tmp` would fail the item it is checking.
+const ROOTS = join(homedir(), ".brigadier-bar-item4");
+afterAll(() => pruneEmpty(ROOTS));
+
+interface Rewrite {
+  /** What this edit is for, quoted back in the error if its anchor is gone. */
+  why: string;
+  find: string;
+  replace: string;
+}
+
+/** A copy of the honest fixture with named edits applied, each one asserted. */
+function variantOf(dir: string, name: string, rewrites: readonly Rewrite[]): string {
+  let source = readFileSync(HONEST, "utf8");
+  // The copy lives outside `bar/fakes/`, so everything it reaches for by
+  // relative path is made absolute first.
+  const relocations: Rewrite[] = [
+    { why: "relocate the fixture's `../lib` imports", find: 'from "../lib/', replace: `from "${LIB_DIR}` },
+    {
+      why: "relocate the vendor script the fixture spawns",
+      find: 'fileURLToPath(new URL("./vendor.ts", import.meta.url))',
+      replace: JSON.stringify(VENDOR_SCRIPT),
+    },
+  ];
+  for (const rewrite of [...relocations, ...rewrites]) {
+    if (!source.includes(rewrite.find)) {
+      throw new Error(
+        `the small-host control could not apply "${rewrite.why}": the anchor ${JSON.stringify(rewrite.find)} is no ` +
+          "longer present in bar/fakes/honest.ts. A control that silently stops controlling is worse than no " +
+          "control, so this is an error rather than a skipped edit. Re-anchor it against the current fixture.",
+      );
+    }
+    source = source.split(rewrite.find).join(rewrite.replace);
+  }
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, `${name}.ts`);
+  writeFileSync(path, source);
+  return path;
+}
+
+/**
+ * The whole point: the fixture reads this machine's memory in exactly one
+ * place, so exactly one edit makes it a different machine. Nothing else about
+ * the arithmetic is touched — the reserves, the per-worker budget and the
+ * division are the fixture's own on both sides of this rewrite.
+ */
+function forceTotalMemory(bytes: number): Rewrite {
+  return {
+    why: `force the fixture's only reading of this host's total memory to ${bytes} bytes`,
+    find: "function hostTotalMemoryBytes(): number {\n  return totalmem();\n}",
+    replace: `function hostTotalMemoryBytes(): number {\n  return ${bytes};\n}`,
+  };
+}
+
+/** `7ff6431`'s two lines, restored verbatim. This is the defect, executable. */
+const THE_DEFECT_RESTORED: readonly Rewrite[] = [
+  {
+    why: "put back the unfloored worker count, so a zero cap admits zero workers",
+    find: "  const workers = Math.min(byPlan, Math.max(1, Math.min(byDesirability, byRam)));",
+    replace: "  const workers = Math.min(byPlan, byDesirability, byRam);",
+  },
+  {
+    why: "put back the short-circuit that made a zero-worker admission dispatch nothing",
+    find: "    const eligible = wave;",
+    replace: "    const eligible = admission.workers === 0 ? [] : wave;",
+  },
+];
+
+interface SmallHostResult {
+  /** Every `proofOfWork` row that failed, by name. Empty is the pass. */
+  failures: string[];
+  itemsInRecord: number;
+  /** What `git cat-file -t` said about the integration ref. */
+  refType: string | undefined;
+  clonesSeen: number;
+  /** Ruling 54's sentence, as this run printed it. */
+  admission: string;
+  /** The worker count the run PRINTED, read back out of its own stdout. */
+  printedWorkers: number | undefined;
+  /** The most clones alive at one moment: what the run actually DISPATCHED. */
+  peakConcurrentClones: number;
+}
+
+/** A whole brigadier, on a machine of the caller's choosing. */
+async function smallHost(
+  name: string,
+  totalMemoryBytes: number,
+  extra: readonly Rewrite[] = [],
+  items = 2,
+): Promise<{
+  dryRun: (args: readonly string[]) => Promise<string>;
+  attempt: (args: readonly string[]) => Promise<{ text: string; code: number | null }>;
+  run: () => Promise<SmallHostResult>;
+  clean: () => void;
+}> {
+  const root = join(ROOTS, `${name}-${process.pid}-${Math.random().toString(36).slice(2)}`);
+  mkdirSync(root, { recursive: true });
+  // EVERYTHING that can throw is inside the guard, and the directory is removed
+  // before the error is re-raised. `variantOf` throws by design when one of its
+  // anchors has been reworded, and it threw AFTER the `mkdirSync` above and
+  // before any caller's `finally` existed — so the arm that exists to fail
+  // loudly left a directory under `$HOME` every time it did its job.
+  try {
+    return await build();
+  } catch (error) {
+    removeDir(root);
+    throw error;
+  }
+
+  async function build(): Promise<{
+    dryRun: (args: readonly string[]) => Promise<string>;
+    attempt: (args: readonly string[]) => Promise<{ text: string; code: number | null }>;
+    run: () => Promise<SmallHostResult>;
+    clean: () => void;
+  }> {
+  const script = variantOf(join(root, "fixture"), name, [forceTotalMemory(totalMemoryBytes), ...extra]);
+  // Wrapped as an executable, so the fixture is driven exactly as the harness
+  // drives a release artifact: argv, stdout, exit code and the filesystem.
+  const binary = writeScript(
+    join(ensureDir(join(root, "bin")), `brigadier-${name}`),
+    `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`,
+    `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`,
+  );
+  const fleetDir = ensureDir(join(root, "fleet"));
+  plantFleet(fleetDir, join(root, "vendor-ledger.tsv"), [{ id: "qwen", version: "0.21.13" }]);
+  const env = baseEnv({ PATH: isolatedPath(fleetDir) });
+  const repo = join(root, "repo");
+  await makeRepo(repo, { "README.md": "base\n" });
+  const seeded = disjointPlan(items, name);
+  await plantSeeds(repo, seeded.seeds);
+  const planFile = writePlan(root, seeded.plan);
+  const runs = ensureDir(join(root, "runs"));
+  const base = ["run", "--plan", planFile, "--repo", repo, "--run-root", runs];
+
+  /** One admission attempt, with its EXIT CODE — a refusal is not a string. */
+  async function attempt(args: readonly string[]): Promise<{ text: string; code: number | null }> {
+    const result = await exec([binary, ...base, "--dry-run", ...args], { cwd: root, env, timeoutMs: 120_000 });
+    return { text: `${result.stdout}${result.stderr}`, code: result.code };
+  }
+
+  return {
+    dryRun: async (args) => {
+      const attempted = await attempt(args);
+      return attempted.text;
+    },
+    attempt,
+    run: async () => {
+      const head = (await exec(["git", "rev-parse", "HEAD"], { cwd: repo, timeoutMs: 60_000 })).stdout.trim();
+      const sampled = await runSampled([binary, ...base], {
+        cwd: root,
+        env,
+        runRoot: runs,
+        operatorHead: head,
+        timeoutMs: 300_000,
+      });
+      const report = `${sampled.stdout}${sampled.stderr}`;
+      const evidence = await gatherRunEvidence(repo, report);
+      // The same gate that went red on CI, applied to the same evidence — and
+      // `expectedWorkers` is READ OUT OF THE REPORT rather than chosen here.
+      // That parameter is harness-supplied everywhere else in `bar/`, which is
+      // why a binary that printed one worker count and ran a different one went
+      // unnoticed for a round: the harness was asserting its own number against
+      // itself. Taking it from the binary's own stdout makes `proofOfWork`'s
+      // concurrency row a claim the BINARY made, so a run that says `5
+      // worker(s)` and clones one at a time now fails on the number it printed.
+      const printedWorkers = waveOne(report)?.workers;
+      const checks = proofOfWork(evidence, {
+        expected: seeded.expected,
+        itemIds: seeded.itemIds,
+        flight: sampled.flight,
+        expectedWorkers: printedWorkers ?? 1,
+      });
+      return {
+        failures: checks.failures.map((f) => f.name),
+        itemsInRecord: evidence.record?.items.length ?? 0,
+        refType: evidence.refType,
+        clonesSeen: sampled.flight.clonesSeen.size,
+        admission: waveOne(report)?.text ?? "",
+        printedWorkers,
+        peakConcurrentClones: sampled.flight.peakConcurrentClones,
+      };
+    },
+    clean: () => removeDir(root),
+  };
+  }
+}
+
+describe("ruling 54's arithmetic, read on hosts nobody here owns", () => {
+  test("decision 25's reserve comes off a host session and NOT a terminal run", async () => {
+    // The divergence that turned a 7 GiB runner's cap from one into zero: the
+    // fixture subtracted the host agent's budget unconditionally, while
+    // `src/work/fanout.ts` takes it as `feasibilityCap(hostFirst)` and
+    // `src/cli.ts` sets `hostFirst` from `audience === "host-session"`. A
+    // terminal run has no host agent to reserve for.
+    const host = await smallHost("audience", 7 * GIB);
+    try {
+      const session = await host.dryRun(["--audience", "host-session"]);
+      const terminal = await host.dryRun(["--audience", "terminal"]);
+      expect(waveOne(session)?.filter).toBe("feasibility");
+      expect(waveOne(terminal)?.filter).toBe("feasibility");
+      expect(waveOne(session)?.text).toContain("capped it at 0");
+      expect(waveOne(session)?.text).toContain("the host agent's own");
+      expect(waveOne(terminal)?.text).toContain("capped it at 1");
+      expect(waveOne(terminal)?.text).not.toContain("the host agent's own");
+      // Both admit one worker; only one of them had room for it. The count is
+      // the same and the reason is not, which is ruling 54's whole complaint.
+      expect(waveOne(session)?.workers).toBe(1);
+      expect(waveOne(terminal)?.workers).toBe(1);
+      expect(waveOne(session)?.text).not.toBe(waveOne(terminal)?.text);
+    } finally {
+      host.clean();
+    }
+  }, 300_000);
+
+  test("an unparseable `--workers` is REFUSED, never run as a NaN worker count", async () => {
+    // The shape the product carried too: `Number("abc")` is `NaN`, ruling 14's
+    // arithmetic is a `Math.min` chain, and a `NaN` worker count dispatches no
+    // items and exits reporting success. The positive control must not have the
+    // defect it exists to detect, so it refuses at the boundary instead — and
+    // this is the working example of the same refusal `src/cli.ts` needs.
+    const host = await smallHost("typo", 7 * GIB);
+    try {
+      for (const typed of ["abc", "", "0", "-1", "2.5", "Infinity"]) {
+        const attempted = await host.attempt(["--workers", typed]);
+        // A usage error, not a run. Exit 2 is what a missing `--plan` gets.
+        expect([typed, attempted.code]).toEqual([typed, 2]);
+        expect([typed, attempted.text.includes("--workers must be a whole number of at least 1")]).toEqual([typed, true]);
+        // And nothing was admitted: no fan-out sentence was ever printed, so
+        // there is no `NaN worker(s)` line for a reader to believe.
+        expect([typed, waveOne(attempted.text)]).toEqual([typed, undefined]);
+      }
+      // A value the operator plainly meant still admits, so this is a guard
+      // rather than a flag that stopped working.
+      const good = await host.attempt(["--workers", "1"]);
+      expect(good.code).toBe(0);
+      expect(waveOne(good.text)?.workers).toBe(1);
+    } finally {
+      host.clean();
+    }
+  }, 300_000);
+
+  test("and on the owner's 24 GiB host the same arithmetic still answers 5", async () => {
+    // The other end of the range, so the floor cannot be mistaken for the
+    // answer: a cap this large is computed, is above `MIN_CAP_TO_DISTINGUISH`,
+    // and is what lets item 4 drive all three of ruling 54's causes at all.
+    // Eight items and a budget above any machine, so neither of the other two
+    // filters can be the lowest — the same shape `RAM_LADDER` climbs to.
+    const host = await smallHost("roomy", 24 * GIB, [], 8);
+    try {
+      const session = await host.dryRun(["--audience", "host-session", "--workers", String(WORKERS_ABOVE_ANY_MACHINE)]);
+      const line = waveOne(session);
+      expect(line?.filter).toBe("feasibility");
+      expect(line?.text).toContain("capped it at 5");
+      expect(line?.text).toContain("leaves room for that many");
+      expect(line?.workers).toBe(5); // computed, not floored — the cap itself
+      expect(planTheOtherTwoDrives(5)).not.toBeNull();
+      // MEASURED by the coordinator on 2026-08-20: a private repository's
+      // runners are 7–8 GiB, and no cap that small can separate three causes.
+      expect(planTheOtherTwoDrives(1)).toBeNull();
+    } finally {
+      host.clean();
+    }
+  }, 300_000);
+});
+
+describe("the positive control on a machine with room for no worker at all", () => {
+  test("FORCED 7 GiB: the fixture really clones, integrates and records", async () => {
+    const host = await smallHost("small", 7 * GIB);
+    try {
+      const result = await host.run();
+      // The rows that went red on both CI runners, green here on a machine
+      // whose memory this file chose.
+      expect(result.failures).toEqual([]);
+      expect(result.itemsInRecord).toBe(2);
+      expect(result.refType).toBe("commit");
+      expect(result.clonesSeen).toBeGreaterThan(0);
+      // And it did not get there by pretending the machine was bigger: the
+      // sentence it printed says the machine had room for none.
+      expect(classifyBindingSentence(result.admission)).toBe("feasibility");
+      expect(result.admission).toContain("leaves room for none at 3 GiB each");
+      // The count on stdout is the floored one, so the number a reader sees is
+      // the number that ran. `proofOfWork` above was given this same number
+      // rather than one this file picked.
+      expect(result.printedWorkers).toBe(1);
+      expect(result.peakConcurrentClones).toBeGreaterThanOrEqual(1);
+    } finally {
+      host.clean();
+    }
+  }, 900_000);
+
+  test("THE CONTROL: with `7ff6431`'s two lines back, the same run produces NOTHING", async () => {
+    // Without this arm the test above is satisfied by any fixture that happens
+    // to work, and could not tell a repaired floor from a machine that never
+    // needed one.
+    const host = await smallHost("small-unfloored", 7 * GIB, THE_DEFECT_RESTORED);
+    try {
+      const result = await host.run();
+      expect(result.itemsInRecord).toBe(0);
+      expect(result.clonesSeen).toBe(0);
+      expect(result.refType).toBeUndefined();
+      // The exact rows the coordinator read out of the CI log.
+      expect(result.failures).toContain("the integration ref resolves to a real commit object");
+      expect(result.failures).toContain(
+        "the record accounts for every plan item, by the ordinal the product routes it under",
+      );
+      expect(result.failures).toContain("clones really existed while the run was in flight");
+    } finally {
+      host.clean();
+    }
+  }, 900_000);
 });

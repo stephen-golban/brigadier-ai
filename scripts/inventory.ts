@@ -132,11 +132,47 @@ export const PROPRIETARY_MARKERS = [
 
 const LICENSE_FILENAMES = ["LICENSE", "LICENSE.md", "LICENSE.txt", "LICENCE", "LICENCE.md", "COPYING"];
 
+/**
+ * CRLF to LF, on every licence text this module reads in.
+ *
+ * Not cosmetic and not a comparison loosener: it is the difference between an
+ * attribution artifact that is a function of the DEPENDENCIES and one that is
+ * also a function of whoever checked the repository out. Git-for-Windows sets
+ * `core.autocrlf=true` at SYSTEM level (this project already knows brigadier
+ * only empties the GLOBAL config), so on Windows `LICENSE` and `vendor/*`
+ * arrive with CRLF, and their bytes are reprinted verbatim into THIRD-PARTY.md
+ * and into the compiled binary. MEASURED on 2026-08-20 by cloning this repo
+ * with `-c core.autocrlf=true`: the regenerated `src/generated/licenses.ts`
+ * carried 1,272 `\r` escapes inside the shipped licence strings that the
+ * committed one does not — the same licences, a different artifact.
+ *
+ * That is why this is a legal defect and not a formatting nit. `src/cli.ts`
+ * imports `LICENSES` from that generated module and `bun --compile` embeds it,
+ * so those escapes are inside the binary and come back out of `brigadier
+ * licenses --full` — the surface ruling 47 calls the load-bearing one, because
+ * under ruling 26 the delivery is often the binary alone. A licence text that
+ * changes shape depending on which machine ran the build is one nobody can
+ * point at and say what the recipient received.
+ *
+ * Only `\r\n` is touched, which is exactly what git's own filter converts. A
+ * lone CR is left alone: it is content, not a line-ending artifact. Nothing
+ * else about the text is altered, so two genuinely different licence texts can
+ * never normalise to the same bytes.
+ *
+ * `.gitattributes` makes this a no-op on a correct checkout, and it is a no-op
+ * today (MEASURED 2026-08-20: zero CR bytes in either committed surface, and in
+ * both npm dependencies' LICENSE files). It is here for the checkout that
+ * `.gitattributes` cannot reach — one made before it existed.
+ */
+export function normaliseEol(text: string): string {
+  return text.replace(/\r\n/g, "\n");
+}
+
 /** Read a package's licence text from whichever of the conventional filenames it used. */
 function readLicenseText(packageDir: string): string {
   for (const name of LICENSE_FILENAMES) {
     const path = join(packageDir, name);
-    if (existsSync(path)) return readFileSync(path, "utf8").trim();
+    if (existsSync(path)) return normaliseEol(readFileSync(path, "utf8")).trim();
   }
   return "";
 }
@@ -535,7 +571,10 @@ export function runtimeComponents(root = REPO_ROOT): Component[] {
   // Trailing whitespace only. Leading indentation is part of a verbatim licence
   // text — the FSF's own files centre their title with tabs — and trimming it
   // would make "verbatim" a slightly false word in the sentence that introduces it.
-  const read = (file: string) => readFileSync(join(root, "vendor", file), "utf8").replace(/\s+$/, "");
+  // `normaliseEol` before trimming: these are committed files, so a Windows
+  // checkout hands them over with CRLF and the LGPL texts below are reprinted
+  // verbatim into the binary the gate scans.
+  const read = (file: string) => normaliseEol(readFileSync(join(root, "vendor", file), "utf8")).replace(/\s+$/, "");
 
   return [
     {

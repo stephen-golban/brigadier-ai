@@ -10,11 +10,14 @@
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { plantAgent } from "../bar/lib/fake-agent.ts";
+import { PROFILES } from "../src/agent/profiles.ts";
 
-const CLI = new URL("../src/cli.ts", import.meta.url).pathname;
+const CLI = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
 const ROOT = mkdtempSync(join(homedir(), ".brigadier-cli-test-"));
 afterAll(() => rmSync(ROOT, { recursive: true, force: true }));
 
@@ -206,5 +209,104 @@ describe("ruling 37: a verify command committed in the repository is never read"
     expect(result.code).toBe(4);
     expect(result.stderr).toContain("definitely-not-real-9f3a");
     expect(result.stderr).toContain("is on PATH");
+  });
+});
+
+/**
+ * The flag `src/cli.ts` reads as `Number(value("workers"))`.
+ *
+ * MEASURED against `bun 1.3.14` on 2026-08-20 by another builder, driving the
+ * real module before the guard existed: `--workers abc` produced `workers: NaN`,
+ * printed `NaN worker(s) in wave 1 — RAM capped it…`, dispatched ZERO items and
+ * exited SUCCESS; `--workers 2.5` printed `2.5 worker(s)` and stepped the batch
+ * cursor by 2.5. A run that does nothing and reports success for it is the
+ * failure `BAR.md` opens on, and a typo reached it.
+ *
+ * The PATH here holds ONE planted ACP agent and nothing else. That is the point
+ * of the fixture rather than decoration: with no agent at all, admission would
+ * refuse for its own reasons and "nothing was created" would be true of a binary
+ * carrying no guard whatsoever. With one, the ONLY thing between these commands
+ * and a run root full of clones is the refusal under test — and `--dry-run` is
+ * deliberately NOT passed for the same reason.
+ */
+describe("--workers is refused at the boundary, before anything is created", () => {
+  const { repo, plan } = world("workers");
+  const bin = join(ROOT, "workers", "bin");
+  plantAgent(bin, "qwen", { name: "qwen", version: PROFILES.qwen.measuredVersion });
+  const env = { PATH: bin };
+  // Never created by this file. Its absence afterwards is the evidence.
+  const runRoot = join(ROOT, "workers", "runs-never");
+  const branches = () =>
+    Bun.spawnSync(["git", "branch", "--list", "brigadier/*"], { cwd: repo }).stdout.toString().trim();
+
+  const rejected = [
+    ["non-numeric", "abc"],
+    ["negative", "-1"],
+    ["zero", "0"],
+    ["fractional", "2.5"],
+    ["blank", ""],
+    // `value()` returns the next token whatever it is, so a forgotten value
+    // hands the next flag to `Number`. That is a typo too, and it is refused.
+    ["flag-shaped", "--review"],
+  ] as const;
+
+  for (const [shape, bad] of rejected) {
+    test(`--workers with a ${shape} value is a usage error that says what was not done`, () => {
+      const before = readdirSync(join(ROOT, "workers"));
+      const result = brigadier(["run", "--plan", plan, "--repo", repo, "--run-root", runRoot, "--workers", bad], env);
+
+      expect(result.code).toBe(2);
+      expect(result.stderr).toContain("--workers must be a whole number of at least 1");
+      // What the operator typed, quoted back, rather than `NaN`.
+      expect(result.stderr).toContain(`it was \`${bad}\``);
+      expect(result.stderr).toContain("Nothing was spawned and nothing was cloned");
+      // Ruling 65: every byte through the one sink, and the refusal is on stderr.
+      // An empty stdout is also the evidence of PLACEMENT — it stopped before the
+      // admission block a plan of this size would otherwise have printed.
+      expect(result.stdout).toBe("");
+      expect(result.stdout).not.toContain("worker(s)");
+
+      // BAR.md item 8: zero processes, zero clones. The message claims it; this
+      // checks it. The run root is where `executeRun` puts every clone, and
+      // `src/cli.ts` creates it with `mkdirSync(runRoot, { recursive: true })`.
+      expect(existsSync(runRoot)).toBe(false);
+      // A clone that landed anywhere else in this world would show up here.
+      expect(readdirSync(join(ROOT, "workers"))).toEqual(before);
+      // And no merge branch, which a run creates in the operator's own repo.
+      expect(branches()).toBe("");
+    });
+  }
+
+  test("NEGATIVE CONTROL: a valid --workers is admitted and reaches the arithmetic", () => {
+    // Otherwise a guard that refused everything would pass every assertion
+    // above. `--dry-run` here because the value has to travel all the way into
+    // ruling 14's arithmetic to be worth checking, and that happens at admission.
+    const one = brigadier(
+      ["run", "--plan", plan, "--repo", repo, "--run-root", runRoot, "--workers", "1", "--dry-run"],
+      env,
+    );
+    expect(one.code).toBe(0);
+    expect(one.stderr).not.toContain("--workers must be");
+    expect(one.stdout).toContain("admitted");
+    // Not merely accepted — HONOURED, and this number is machine-independent:
+    // `admittedWorkers` floors the budgets at 1 and takes the minimum, so a
+    // budget of 1 admits exactly one worker on every host, whatever RAM says.
+    // The BINDING FILTER is not asserted, because it is not machine-independent:
+    // a host under about 13 GiB has a feasibility candidate of 0 or 1 and gets
+    // ruling 54's *RAM capped it* sentence for the same count.
+    expect(one.stdout).toContain("1 worker(s) in wave 1");
+    expect(one.stdout).not.toContain("NaN");
+  });
+
+  test("NEGATIVE CONTROL: the emptiness probe can see a run root that IS there", () => {
+    // The check above reports "nothing was created" by looking at `runRoot`. A
+    // probe pointed at the wrong path reports that too, and forever. This
+    // repository has already shipped a check that passed because the thing it
+    // checked had not happened, so the probe is made to fail once, on purpose.
+    expect(existsSync(runRoot)).toBe(false);
+    mkdirSync(join(runRoot, "run-sentinel"), { recursive: true });
+    expect(existsSync(runRoot)).toBe(true);
+    expect(readdirSync(runRoot)).toEqual(["run-sentinel"]);
+    rmSync(runRoot, { recursive: true, force: true });
   });
 });

@@ -26,6 +26,7 @@ import { describe, expect, test } from "bun:test";
 import { rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   buildIdLine,
   buildIdentity,
@@ -179,7 +180,7 @@ describe("the digest is of the file, taken from the file", () => {
 });
 
 describe("the stamp the build step collects", () => {
-  const repo = new URL("..", import.meta.url).pathname;
+  const repo = fileURLToPath(new URL("..", import.meta.url));
 
   test("it reads this repository's real commit and tree state", () => {
     const stamp = readStamp(repo, "1.3.14", "1.3.14+0d9b296af33f2b851fcbf4df3e9ec89751734ba4", "0.0.0");
@@ -364,7 +365,7 @@ describe("the compiled artifact is discovered, not assumed", () => {
 });
 
 describe("`brigadier version`, driven as a process", () => {
-  const CLI = new URL("../src/cli.ts", import.meta.url).pathname;
+  const CLI = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
   const run = (args: string[]) => {
     const proc = Bun.spawnSync([process.execPath, CLI, ...args], { stdout: "pipe", stderr: "pipe" });
     return { code: proc.exitCode, stdout: proc.stdout.toString(), stderr: proc.stderr.toString() };

@@ -32,6 +32,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { survivorClasses } from "../items/07-interruption-leaves-nothing.ts";
 import { Checks } from "./checks.ts";
 import { RUN_MARKER_FLAG } from "./inflight.ts";
@@ -306,7 +307,7 @@ describe("the classification itself", () => {
  * out, and must say no.
  */
 describe("item 7's own limit is recorded in BAR.md, not only in its head", () => {
-  const ROOT = new URL("../../", import.meta.url).pathname;
+  const ROOT = fileURLToPath(new URL("../../", import.meta.url));
   const bar = readFileSync(join(ROOT, "BAR.md"), "utf8");
   const item7 = readFileSync(join(ROOT, "bar", "items", "07-interruption-leaves-nothing.ts"), "utf8");
 

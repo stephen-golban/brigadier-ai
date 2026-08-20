@@ -16,6 +16,7 @@
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   ALLOWED,
   BASELINE,
@@ -164,7 +165,7 @@ describe("the ratchet", () => {
 });
 
 describe("the real tree, scanned in full", () => {
-  const ROOT = new URL("..", import.meta.url).pathname;
+  const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
   function walk(dir: string, out: string[] = []): string[] {
     for (const entry of readdirSync(dir)) {

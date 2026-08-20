@@ -169,8 +169,14 @@ platform — if Windows resolves the other way, item 10 installs into the operat
 - **Ruling 65's four encodings do not compose.** A secret containing a quote or backslash is
   JSON-escaped into `config.json`, then escaped again into the ACP frame. Owner ruled 2026-08-19:
   record it, fix the fixture only. The product is unchanged and the gap is named.
-- **`scripts/claims.ts` and `scripts/license-gate.ts` share a `new URL(…).pathname` bug** — breaks on a
-  repo path containing spaces or non-ASCII, which arrives percent-encoded. Left as out of scope.
+- **~~`scripts/claims.ts` and `scripts/license-gate.ts` share a `new URL(…).pathname` bug~~ — CLOSED
+  2026-08-20, and the note was wrong twice.** `scripts/license-gate.ts` never had it: it imports
+  `REPO_ROOT` from `scripts/inventory.ts:37`, which is `resolve(import.meta.dir, "..")`, and
+  `import.meta.dir` is already a decoded filesystem path. Sending a reader hunting a bug that was
+  never there costs as much as missing one. And the bug was **not** confined to `scripts/` — it was at
+  **24 sites in 22 files** across `test/`, `bar/`, `scripts/` and `vendor/`, where it made every
+  subprocess-driven CLI test unreachable on Windows. All 24 now use `fileURLToPath` from `node:url`,
+  and `test/path-idiom.test.ts` scans `src/ test/ bar/ scripts/ vendor/ probes/` so it cannot return.
 - **`scripts/license-gate.ts` contains a NUL byte**, so plain `grep` reports **zero matches** on it
   rather than an error. Use `grep -a`. Recorded in that file's own header.
 - **The build stamp's `dirty` field counts `git status --porcelain` lines including untracked files**,

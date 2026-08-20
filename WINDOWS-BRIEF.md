@@ -67,6 +67,20 @@ git --version               # 2.38.0 is the hard floor (merge-tree --write-tree)
 bun install
 ```
 
+`.gitattributes` pins every text file to LF, which matters here more than anywhere: git-for-windows
+sets `core.autocrlf=true` at **SYSTEM** level, `bun run licenses --check` is the first command
+`bun run build` runs, and it compares the committed attribution **byte for byte**. A clone that
+predates `.gitattributes` will report
+
+```
+STALE  THIRD-PARTY.md
+       the CONTENT matches — only the line endings differ...
+```
+
+That is a checkout defect, not an attribution one. Fix it with `git add --renormalize . && git
+checkout -- .` (or clone again) and **report that you hit it** — it is a finding. Do not hand-edit
+either file; they are generated.
+
 `dist/` is gitignored, so there is no binary in the bundle. You will build one — that is deliberate,
 because a Windows-built artifact is the thing worth measuring.
 

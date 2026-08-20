@@ -30,10 +30,16 @@ import { join } from "node:path";
  *
  * MEASURED path lengths against #5's budget (macOS/Windows, 2026-08-17):
  *
- *   /Users/stephen/.brigadier/r/a1b2c3/12                         37   (140 left)
- *   C:\Users\stephen\.brigadier\r\a1b2c3\12                       39   (138 left)
- *   C:\Users\stephen\AppData\Local\brigadier\runs\a1b2c3\item-12  60   (117 left)
+ *   /Users/example/.brigadier/r/a1b2c3/12                         37   (140 left)
+ *   C:\Users\example\.brigadier\r\a1b2c3\12                       39   (138 left)
+ *   C:\Users\example\AppData\Local\brigadier\runs\a1b2c3\item-12  60   (117 left)
  *   C:\Users\alexandra.hemmingway\.brigadier\r\a1b2c3\12          52   (125 left)
+ *
+ * `example` stands in for a real account name. It is seven characters, the same
+ * length as the account these rows were originally written against, so every
+ * count above is the count that was measured and not a re-derived one.
+ * `alexandra.hemmingway` was always an illustration of a long corporate account
+ * name rather than anyone's.
  *
  * The spread between shortest and longest is 23 characters — 13% of the entire
  * measured budget. That is why the naming is a ruling and not a preference.

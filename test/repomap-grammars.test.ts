@@ -16,13 +16,14 @@
 
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { describe, expect, test } from "bun:test";
 
 import { GRAMMARS, extensionOf, grammarFor, loadGrammar } from "../src/repomap/grammars.ts";
 import { VENDORED, sha256 } from "../vendor/grammars/regenerate.ts";
 
-const REPO = new URL("..", import.meta.url).pathname;
+const REPO = fileURLToPath(new URL("..", import.meta.url));
 
 describe("every vendored blob is the package it claims to be", () => {
   test("each file gunzips to the exact bytes of its npm source", () => {

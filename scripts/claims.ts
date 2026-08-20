@@ -62,13 +62,14 @@
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { RECORD_LINE, type CheckOutcome as BarOutcome, blocks as barBlocks } from "../bar/lib/contract.ts";
 import { recordPointer } from "../src/report/record.ts";
 import { INITIAL_OUTCOME, type CheckOutcome as SrcOutcome, blocks as srcBlocks } from "../src/work/check.ts";
 import { crossings } from "./forbidden-imports.ts";
 
-const ROOT = new URL("..", import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const CITATION = /\bruling(?:s)?\s+(\d+(?:\s*(?:,|and|–|-|\/)\s*\d+)*)/gi;
 
 /**

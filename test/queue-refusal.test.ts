@@ -30,6 +30,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { WORKER_MARKER } from "../src/agent/marker.ts";
 import { refusedDelegationLine } from "../src/report/index.ts";
 import { RUN_ROOT_ENV, readRefusals, recordRefusal, refusalLedgerPath } from "../src/queue/refusal.ts";
@@ -38,7 +39,7 @@ import { Sink } from "../src/secrets/sink.ts";
 /** Ruling 65: the only writer. `recordRefusal` takes it rather than owning one. */
 const sink = new Sink();
 
-const CLI = new URL("../src/cli.ts", import.meta.url).pathname;
+const CLI = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
 
 /**
  * A builder that tries to delegate before doing its work.

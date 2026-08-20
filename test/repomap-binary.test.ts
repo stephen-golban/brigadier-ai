@@ -24,10 +24,14 @@
 import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
-const REPO = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
+// The trailing separator is stripped because `REPO` is interpolated into import
+// specifiers below, where `${REPO}//src` would be wrong. `fileURLToPath` returns
+// the platform separator, so the class covers `\` as well as `/`.
+const REPO = fileURLToPath(new URL("..", import.meta.url)).replace(/[\\/]$/, "");
 
 /**
  * v1's shipped binary, MEASURED at 63 MB where the tooling's "MB" is bytes /

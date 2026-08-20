@@ -1,0 +1,48 @@
+# Line endings are a licence-gate concern in this repository, not a style preference.
+#
+# `bun run licenses --check` compares the COMMITTED attribution byte for byte against what
+# the generator would write from what is actually bundled, and the generator always writes
+# LF. Git-for-Windows sets `core.autocrlf=true` at SYSTEM level — this project has already
+# found that brigadier only empties the GLOBAL config — so without this file a Windows
+# checkout hands the checker CRLF copies of `THIRD-PARTY.md` and `src/generated/licenses.ts`
+# and it calls them stale. That is what killed the first ever Windows CI run, in the FIRST
+# command of the build step, before `scripts/build.ts` ran at all (commit 7ff6431).
+#
+# MEASURED on 2026-08-20, on darwin, by cloning this repository with `-c core.autocrlf=true`
+# and running `bun run scripts/licenses.ts --check` in the clone: both surfaces reported
+# STALE, and both were byte-identical to the regenerated ones once CR bytes were removed —
+# the attribution was never wrong. The same checkout also hands the GENERATOR CRLF copies of
+# `LICENSE` and `vendor/*`, whose bytes are reprinted verbatim into the attribution and into
+# the compiled binary: regenerating there produced a `src/generated/licenses.ts` carrying
+# 1,272 `\r` escapes inside the shipped licence strings. That is the more serious half — the
+# artifact would have differed by platform, and the artifact is what the recipient receives.
+#
+# This file changes checkout behaviour for EVERYONE, which is the point: the committed bytes
+# are the artifact, so every platform must be given the committed bytes. Existing clones do
+# not update themselves — a clone made before this file may hold CRLF working copies until
+# `git add --renormalize .` or a fresh checkout. CI clones fresh, so CI is covered.
+
+* text=auto eol=lf
+
+# The attribution surfaces and every committed file whose bytes they reprint. Declared
+# explicitly rather than left to `text=auto`'s content sniffing, because these are the exact
+# bytes `bun run licenses --check` compares and `bun run license-gate` looks for in the binary.
+LICENSE                                     text eol=lf
+THIRD-PARTY.md                              text eol=lf
+RELINKING.md                                text eol=lf
+src/generated/licenses.ts                   text eol=lf
+vendor/pins.json                            text eol=lf
+vendor/lgpl-census.json                     text eol=lf
+vendor/bun-LICENSE.md                       text eol=lf
+vendor/javascriptcore-webkit-COPYING.LIB    text eol=lf
+vendor/tinycc-COPYING                       text eol=lf
+
+# `scripts/license-gate.ts` embeds a literal NUL byte on purpose (its own header records it,
+# and plain `grep` reports zero matches on it rather than an error). `text=auto` sniffs that
+# as binary and would leave it out of normalisation entirely, so a Windows editor could commit
+# CRLF into it unnoticed; declaring it text keeps its endings pinned. It holds no CR bytes
+# today, so this is a no-op on the current blob.
+scripts/license-gate.ts                     text eol=lf
+
+# Compressed grammars: bytes that must survive verbatim, and must never be diffed or merged.
+vendor/grammars/*.gz                        binary
