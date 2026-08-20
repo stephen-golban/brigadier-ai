@@ -10,7 +10,16 @@
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,12 +45,46 @@ function brigadier(args: string[], extra: Record<string, string> = {}) {
   return { code: proc.exitCode, stdout: proc.stdout.toString(), stderr: proc.stderr.toString() };
 }
 
+/**
+ * One detection sweep for this whole file, planted into every world's run root.
+ *
+ * WHY IT EXISTS. Admission runs a detection sweep, and detection SPAWNS: on a
+ * developer's machine that is six real vendors, and MEASURED 2026-08-20 on
+ * darwin 25.5.0 it cost 3.3–4.3 s. Every `--dry-run` below used to pay it, which
+ * is what pushed one test past Bun's 5,000 ms default and bought it a 30,000 ms
+ * bound. Ruling 71's cache removes the cost from a WARM run root; it does not
+ * warm one, and `--dry-run` deliberately never writes a cache (ruling 53: it
+ * creates nothing in the run root). So the file warms them itself, once, and
+ * copies the result — a detection cache is a fact about the machine, and the
+ * machine does not change between worlds.
+ *
+ * WHAT IT IS NOT. It is not a fixture standing in for detection: the bytes are
+ * whatever `brigadier detect` really measured on this machine a moment ago,
+ * written by the product's own writer. Nothing here constructs a result.
+ *
+ * A failure to produce one is not fatal and is not hidden — the worlds are then
+ * cold, exactly as they were before this existed, and the tests still pass while
+ * being slower.
+ */
+const WARM_CACHE: Uint8Array | null = (() => {
+  const dir = join(ROOT, "warm-cache");
+  mkdirSync(dir, { recursive: true });
+  Bun.spawnSync([process.execPath, CLI, "detect", "--run-root", dir, "--timeout", "10000"], {
+    env: { HOME: ROOT, USER: process.env["USER"] ?? "test", PATH: process.env["PATH"] ?? "", NO_COLOR: "1" },
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  const path = join(dir, "detect.json");
+  return existsSync(path) ? new Uint8Array(readFileSync(path)) : null;
+})();
+
 function world(name: string): { repo: string; runs: string; plan: string } {
   const dir = join(ROOT, name);
   const repo = join(dir, "repo");
   const runs = join(dir, "runs");
   mkdirSync(repo, { recursive: true });
   mkdirSync(runs, { recursive: true });
+  if (WARM_CACHE !== null) writeFileSync(join(runs, "detect.json"), WARM_CACHE);
   Bun.spawnSync(["git", "init", "-q", "-b", "main", "."], { cwd: repo });
   writeFileSync(join(repo, "README.md"), "base\n");
   Bun.spawnSync(["git", "add", "-A"], { cwd: repo });
@@ -70,29 +113,26 @@ describe("`run` needs a plan, and says so", () => {
     expect(result.stderr).toContain("--plan <path>");
   });
 
-  // MEASURED 2026-08-20: this took 10,728 ms against Bun's 5,000 ms default and
-  // timed out. The cause is not a hang — a `--dry-run` now runs a detection
-  // sweep before it can say whether the plan would run, and on a machine with
-  // the npx-launched bridges installed that sweep spawns six vendors. The bound
-  // is widened to the sweep's own ceiling plus room, rather than the test being
-  // weakened: `ADMISSION_DETECT_TIMEOUT_MS` in `src/cli.ts` caps the sweep at
-  // 20 s, so anything past this is a real hang and should still fail.
+  // THE 30,000 ms BOUND THIS TEST CARRIED IS GONE, and the cause went with it.
   //
-  // The cost itself is recorded debt, not a design. Ruling 71 requires detection
-  // to be cached as state and the cache does not exist yet, so every invocation
-  // pays for it; `plan` and `--dry-run` were sub-second before this change.
-  const DRY_RUN_WITH_DETECTION_MS = 30_000;
-
-  test(
-    "NEGATIVE CONTROL: with a plan it does not print usage",
-    () => {
-      const { repo, runs, plan } = world("usage");
-      const result = brigadier(["run", "--plan", plan, "--repo", repo, "--run-root", runs, "--dry-run"]);
-      expect(result.code).toBe(0);
-      expect(result.stdout).not.toContain("--plan <path>");
-    },
-    DRY_RUN_WITH_DETECTION_MS,
-  );
+  // MEASURED 2026-08-20: this took 10,728 ms against Bun's 5,000 ms default and
+  // timed out, because a `--dry-run` runs a detection sweep before it can say
+  // whether the plan would run, and on a machine with the npx-launched bridges
+  // installed that sweep spawns six vendors. The bound was widened to the
+  // sweep's own 20 s ceiling plus room, with the widening recorded as debt
+  // against ruling 71's uncached detection.
+  //
+  // Ruling 71's cache landed the same day and `world()` now warms every run
+  // root, so this invocation answers from the cache and spawns nothing. The
+  // bound comes back to Bun's default: leaving a widened timeout behind after
+  // removing its cause is how a suite stops meaning anything, and 30 s would
+  // now hide a real hang for six times longer than the code can produce one.
+  test("NEGATIVE CONTROL: with a plan it does not print usage", () => {
+    const { repo, runs, plan } = world("usage");
+    const result = brigadier(["run", "--plan", plan, "--repo", repo, "--run-root", runs, "--dry-run"]);
+    expect(result.code).toBe(0);
+    expect(result.stdout).not.toContain("--plan <path>");
+  });
 
   test("`run` is discoverable — `--help` names it", () => {
     expect(brigadier(["--help"]).stdout).toContain("brigadier run --plan");
@@ -111,6 +151,12 @@ describe("--dry-run and --estimate stop before anything is created", () => {
     expect(result.stdout).toContain("worker(s) in wave 1");
     // Ruling 67, per item, at admission.
     expect(result.stdout).toContain("difficulty: hard (clamped to medium)");
+    // Unchanged, and since 2026-08-20 that means something more than it did:
+    // `before` already contains ruling 71's `detect.json`, planted by `world()`.
+    // So this asserts both halves — no run directory was created, AND the dry
+    // run did not write the detection cache it just read. `--dry-run` reads and
+    // never writes, because ruling 53's ordering promise is checkable exactly by
+    // listing this directory and finding it untouched.
     expect(readdirSync(runs)).toEqual(before);
   });
 
@@ -332,5 +378,150 @@ describe("--workers is refused at the boundary, before anything is created", () 
     expect(existsSync(runRoot)).toBe(true);
     expect(readdirSync(runRoot)).toEqual(["run-sentinel"]);
     rmSync(runRoot, { recursive: true, force: true });
+  });
+});
+
+/**
+ * Ruling 71's detection cache, driven through the binary.
+ *
+ * ASSERTED ON THE EFFECT, NOT ON THE SENTENCE. The claim this change makes is
+ * that a warm admission SPAWNS NO VENDOR, and a product can print that sentence
+ * while spawning six. So the planted agent's own launcher appends a line to a
+ * ledger before it execs anything, and the assertions are on how many lines are
+ * in that file. Ruling 62 (a): a check names the artifact, never the flag —
+ * v1's finding 41 is that a flag assertion survives a refactor that removes the
+ * property, and `BAR.md` item 9 makes the same point about `BRIGADIER_WORKER`.
+ *
+ * The PATH here holds ONE planted ACP agent and nothing else, so the numbers
+ * below are the whole of what brigadier spawned rather than a share of the
+ * developer's real fleet.
+ *
+ * THESE TESTS ARE ORDERED and each one leaves the next its state, the way the
+ * operator's own machine does: cold, then written, then served, then repaired.
+ * Bun runs a `describe`'s tests in source order, and the ledger's counts are
+ * differences rather than totals so a re-ordering fails loudly instead of
+ * quietly passing.
+ */
+describe("ruling 71: detection is cached as state, and deleting it is a repair", () => {
+  const { repo, runs, plan } = world("ruling71");
+  const dir = join(ROOT, "ruling71");
+  const bin = join(dir, "bin");
+  const moved = join(dir, "bin-moved");
+  const ledger = join(dir, "spawns.log");
+  const cache = join(runs, "detect.json");
+
+  // `world()` warms every run root it makes. This world starts COLD on purpose:
+  // its subject is what happens on a machine that has never detected anything,
+  // which ruling 71 requires to work with no `init` to run first.
+  rmSync(cache, { force: true });
+
+  /** Make a planted launcher record every spawn before it execs the stub. */
+  const record = (script: string): void => {
+    const text = readFileSync(script, "utf8");
+    const posix = text.startsWith("#!/bin/sh\n");
+    const head = posix ? "#!/bin/sh\n" : "@echo off\r\n";
+    const line = `echo spawn >> ${JSON.stringify(ledger)}${posix ? "\n" : "\r\n"}`;
+    writeFileSync(script, `${head}${line}${text.slice(head.length)}`);
+    if (posix) chmodSync(script, 0o755);
+  };
+
+  const stub = { name: "qwen", version: PROFILES.qwen.measuredVersion };
+  record(plantAgent(bin, "qwen", stub));
+  record(plantAgent(moved, "qwen", stub));
+
+  const spawns = (): number =>
+    existsSync(ledger) ? readFileSync(ledger, "utf8").split("\n").filter((l) => l.trim() !== "").length : 0;
+
+  const dryRun = (path: string) =>
+    brigadier(["run", "--plan", plan, "--repo", repo, "--run-root", runs, "--dry-run"], { PATH: path });
+
+  test("a cold --dry-run spawns the vendor, and writes NO cache — it creates nothing", () => {
+    const before = spawns();
+    const result = dryRun(bin);
+    expect(result.code).toBe(0);
+    expect(spawns()).toBe(before + 1);
+    expect(result.stdout).toContain("did spawn 1 resolved vendor(s)");
+    // Ruling 53's ordering promise is checkable by listing the run root, so
+    // `--dry-run` writes nothing into it — the cache included. And it says the
+    // one command that would warm it rather than leaving that to be found.
+    expect(existsSync(cache)).toBe(false);
+    expect(result.stdout).toContain("That sweep was not cached");
+    expect(result.stdout).toContain("`brigadier detect` writes it");
+  });
+
+  test("`brigadier detect --run-root` probes and writes it", () => {
+    const before = spawns();
+    const result = brigadier(["detect", "qwen", "--run-root", runs, "--timeout", "10000"], { PATH: bin });
+    expect(result.code).toBe(0);
+    expect(spawns()).toBe(before + 1);
+    expect(existsSync(cache)).toBe(true);
+    const file = JSON.parse(readFileSync(cache, "utf8"));
+    // Ruling 46: what is stored is the entry that RESOLVED, not the name.
+    expect(file.agents.qwen.resolved).toBe(join(bin, process.platform === "win32" ? "qwen.cmd" : "qwen"));
+    expect(file.agents.qwen.detection.availability).toBe("usable");
+    // Finding V1, stored rather than inferred: a `usable` produced under the
+    // operator's own config root is not a statement about what a worker can do.
+    expect(file.agents.qwen.detection.probedWorkerShaped).toBe(true);
+  });
+
+  test("the next --dry-run answers from it and spawns NOTHING", () => {
+    const before = spawns();
+    const result = dryRun(bin);
+    expect(result.code).toBe(0);
+    // The whole claim, on the ledger rather than on the sentence.
+    expect(spawns()).toBe(before);
+    expect(result.stdout).toContain("1 agent(s) from cache");
+    expect(result.stdout).toContain("No vendor was spawned");
+    // A cached answer is a weaker answer and must never render as a fresh one:
+    // it carries its age and the repair.
+    expect(result.stdout).toMatch(/oldest measured \d+[smhd] ago/);
+    expect(result.stdout).toContain("re-probes before it spends");
+    expect(result.stdout).toContain(cache);
+  });
+
+  test("NEGATIVE CONTROL: an agent that moved on PATH invalidates its own entry", () => {
+    const before = spawns();
+    const result = dryRun(moved);
+    expect(result.code).toBe(0);
+    // Ruling 46 again: there is no "it was here last time". A different resolved
+    // entry is a different agent, and the stored answer is not about it.
+    expect(spawns()).toBe(before + 1);
+    expect(result.stdout).toContain("did spawn 1 resolved vendor(s)");
+    expect(result.stdout).not.toContain("from cache");
+  });
+
+  test("deleting the cache is a SUPPORTED REPAIR, not a corruption (ruling 71)", () => {
+    expect(existsSync(cache)).toBe(true);
+    rmSync(cache);
+    const before = spawns();
+    const result = dryRun(bin);
+    expect(result.code).toBe(0);
+    expect(spawns()).toBe(before + 1);
+    expect(result.stdout).toContain("admitted");
+    // A product that describes its own supported repair as damage has taught the
+    // operator not to perform it. `BAR.md` item 9 asserts the same words.
+    const said = `${result.stdout}${result.stderr}`;
+    expect(said).not.toMatch(/corrupt|damaged|cannot recover|inconsistent state|brigadier init/i);
+  });
+
+  test("NEGATIVE CONTROL: an unreadable cache is regenerated rather than obeyed", () => {
+    brigadier(["detect", "qwen", "--run-root", runs, "--timeout", "10000"], { PATH: bin });
+    writeFileSync(cache, "{ not json at all");
+    const before = spawns();
+    const result = dryRun(bin);
+    expect(result.code).toBe(0);
+    expect(spawns()).toBe(before + 1);
+    expect(result.stderr).toContain("regenerated");
+    expect(result.stderr).not.toMatch(/corrupt|damaged/i);
+  });
+
+  test("NEGATIVE CONTROL: the ledger can count — it is not stuck at zero", () => {
+    // Every assertion above is a difference in this file's line count, and a
+    // probe that never records reports "no spawn" forever. This repository has
+    // already shipped a check that passed because the thing it checked had not
+    // happened, so the instrument is made to move on purpose.
+    const before = spawns();
+    Bun.spawnSync([join(bin, "qwen"), "--version"], { stdout: "ignore", stderr: "ignore" });
+    expect(spawns()).toBe(before + 1);
   });
 });

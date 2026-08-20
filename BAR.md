@@ -316,6 +316,16 @@ brigadier.
 prior state and asserts it completes, that state is created, and that **deleting the state directory
 is a supported repair** rather than a corruption.
 
+**And the state that first run created includes ruling 71's detection cache** — added 2026-08-20 with
+the cache itself. A second admission against the same run root **spawns no vendor** and says which
+stored answer it used, which is the check that would notice a cache that was written and never read.
+Asserted on the effect and never on a path: `bar/` may not import from `src/`, so a check written
+against a filename would be a second copy of a product decision, drifting the day the product moved
+it. **What this half deliberately does not prove:** that a *stale* cache is caught. The fingerprint
+axes — a moved agent, a rewritten binary, a replaced bridge, a new brigadier — are driven in
+`test/detect-cache.test.ts` and `test/cli-run.test.ts` against a planted agent's own spawn ledger, not
+here, because nothing in this harness can upgrade a real vendor.
+
 **Asserted on the effect: the files exist and `brigadier run` was not invoked.** Asserting that
 `BRIGADIER_WORKER` is set proves only that a variable exists — the exact *check that reports success
 when the thing it checks did not happen* shape v1 kept shipping.

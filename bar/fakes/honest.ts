@@ -258,6 +258,23 @@ function usableVendors(): string[] {
   return KNOWN_VENDORS.filter((id) => which(id) !== undefined);
 }
 
+/**
+ * Ruling 71's stored detection, read back.
+ *
+ * Unreadable is `null` and never an error: the file is regenerable by
+ * construction, and ruling 71 makes deleting it a supported repair. A fixture
+ * that threw here would model a product that treats its own repair as damage.
+ */
+function readDetectionCache(path: string): { at: number; agents: string[] } | null {
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as { at?: unknown; agents?: unknown };
+    if (typeof parsed.at !== "number" || !Array.isArray(parsed.agents)) return null;
+    return { at: parsed.at, agents: parsed.agents.filter((id): id is string => typeof id === "string") };
+  } catch {
+    return null;
+  }
+}
+
 // -------------------------------------------------------------- the sweep
 
 /**
@@ -1004,7 +1021,42 @@ async function doRun(): Promise<number> {
   const sweptDirs = sweepDirectories(runsRoot);
 
   const plan = JSON.parse(readFileSync(planPath, "utf8")) as Plan;
-  const vendors = usableVendors();
+
+  // RULING 71's detection cache — implemented, not echoed.
+  //
+  // `BAR.md` item 9 gates on the behaviour, and this fixture is the compliant
+  // implementation the item is proved against, so printing the product's
+  // sentence while doing nothing would make the item measure a string. What is
+  // modelled is the shape rather than the product's file format: a run that
+  // really goes ahead records what detection found; a command that only answers
+  // a question reads it and says so; and the file is a sibling of `r/` under the
+  // run root, so deleting the state directory takes it with it.
+  //
+  // The fixture's own detection is a `PATH` scan and spawns nothing either way.
+  // That does not make the check hollow: what the item asserts is that the
+  // second admission USED the stored answer and SAID it did, and a fixture that
+  // never wrote the file cannot say so.
+  const detectCachePath = join(runsRoot, "detect.json");
+  const stops = flag("dry-run");
+  let cachedAtMs: number | null = null;
+  let vendors: string[];
+  const stored = stops && existsSync(detectCachePath) ? readDetectionCache(detectCachePath) : null;
+  if (stored !== null) {
+    vendors = stored.agents;
+    cachedAtMs = stored.at;
+  } else {
+    vendors = usableVendors();
+  }
+  if (cachedAtMs !== null) {
+    say(
+      `detection: ${vendors.length} agent(s) from cache, oldest measured ` +
+        `${Math.max(0, Math.round((Date.now() - cachedAtMs) / 1000))}s ago — no vendor was spawned (ruling 71).`,
+    );
+    say(
+      "  `brigadier run` re-probes before it spends. To re-probe now: `brigadier detect`, or delete " +
+        `${detectCachePath}.`,
+    );
+  }
   // `--workers`, which is the flag `src/cli.ts` reads. This was `--max-workers`,
   // a flag the product has never had, so every run that thought it was setting
   // ruling 14's desirability filter was silently getting the default of 3.
@@ -1055,6 +1107,11 @@ async function doRun(): Promise<number> {
   say(`admitted: ${admission.workers} worker(s) — ${admission.bindingFilter}`);
   for (const line of describeAdmission(plan, admission, planPath, vendors, capped)) say(line);
   if (flag("dry-run")) return 0;
+
+  // Ruling 71: cached on a first RUN, and this is where this invocation stops
+  // being a question. Behind every refusal above, so a refused run leaves the
+  // run root as it found it.
+  writeFileSync(detectCachePath, `${JSON.stringify({ at: Date.now(), agents: vendors }, null, 2)}\n`);
 
   // `<run-root>/r/<run-id>`, the product's own composition.
   const runRoot = join(runsRoot, productRunDir(), runId);

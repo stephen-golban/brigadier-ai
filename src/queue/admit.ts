@@ -60,8 +60,22 @@ export interface ResolvedAgent extends AgentOnLadder {
  * command on `PATH`.
  *
  * `Bun.which` and nothing else. There is no marker file, no version directory
- * and no "it was here last time" — ruling 46 exists because every one of those
- * produced a false positive in v1.
+ * and no "it was here last time" — ruling 6 exists because v1 inferred
+ * installation from a MARKER FILE and reported `opencode` present on a machine
+ * where it was not on `PATH`, and ruling 46 adds the other half: *"detection
+ * must report the resolved `PATH` entry rather than assume it is ours"*, because
+ * v1 shipped a `brigadier` of its own on a Homebrew tap at 0.2.1.
+ *
+ * CORRECTED 2026-08-20. This comment used to attribute the marker-file false
+ * positive to ruling 46, which is the IDENTITY ruling. Ruling 62 (f) makes a
+ * comment contradicting its cited fact a `fail` rather than advisory, and this
+ * file's citations are the only thing a reader can check the claim against.
+ *
+ * Ruling 71's detection cache does not weaken the "no it-was-here-last-time"
+ * rule and is not an exception to it: nothing stored is trusted unless the
+ * command still resolves to the same entry and that entry's bytes have not
+ * moved, and this function — which resolves rather than remembers — is what the
+ * cache is checked against on every invocation.
  *
  * Ruling 69's per-machine override is applied BEFORE the lookup, and that is the
  * whole reason it is a parameter rather than something this module reads for
@@ -137,11 +151,19 @@ export interface DetectionRejection {
  * TO them — a vendor auto-updating underneath a machine is the case the blocking
  * grade was written for, and it is untouched.
  *
- * WHAT IT COSTS, stated: a detection sweep now stands between `run` and its
- * first item. Ruling 71 already accepted that shape — detection is lazy on
- * first run — and bounds it by the slowest agent rather than their sum, since
- * the probes are concurrent. It is still a wait with nothing to show for it,
- * and it is charged on every run until detection results are cached as state.
+ * WHAT IT COSTS, stated: a detection sweep stands between `run` and its first
+ * item. Ruling 71 already accepted that shape — detection is lazy on first run —
+ * and bounds it by the slowest agent rather than their sum, since the probes are
+ * concurrent.
+ *
+ * Ruling 71's cache landed on 2026-08-20 and it does NOT remove that cost from
+ * `run`, deliberately. `src/cli.ts`'s `sweep` lets `plan`, `--dry-run` and
+ * `--estimate` answer from the last probe — those spend nothing, and the sweep
+ * in front of them was the wait ruling 71 objected to — while a real `run`
+ * re-probes, on ruling 63's rule that where the world can be consulted directly
+ * the world wins. So the drift gate below is never decided from a stored version
+ * string, which is the half of finding V1 a cache could most easily have
+ * re-opened.
  */
 export function admissibleAfterDetection(
   agents: readonly ResolvedAgent[],

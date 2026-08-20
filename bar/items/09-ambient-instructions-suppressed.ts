@@ -96,6 +96,16 @@
  * against the same machine, which must complete and deliver. That is what makes
  * "deleting the state directory is a supported repair" a measurement rather than
  * a sentence.
+ *
+ * ADDED 2026-08-20 with ruling 71's detection cache: between those two halves, a
+ * second admission against the same run root must ANSWER FROM the state the
+ * first run created and say that it did. Asserted on the binary's own words and
+ * never on a path — `bar/` may not import from `src/`, so a filename constant
+ * here would be a second copy of a product decision, going stale the day the
+ * product moved it. What this cannot show is a STALE cache being caught: the
+ * fingerprint axes need an agent that upgrades, and nothing in this harness can
+ * upgrade a real vendor. Those live in `test/detect-cache.test.ts` and
+ * `test/cli-run.test.ts`, the latter against a planted agent's own spawn ledger.
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -845,9 +855,37 @@ const item: BarItem = {
         `${runs} existed before this item ran: ${runsExistedBefore}; after the run: ${runsExistsNow}. There is no \`init\` to run first`,
       );
 
+      // Ruling 71, the half between: the state a first run creates includes the
+      // DETECTION CACHE, and a later admission answers from it instead of
+      // spawning the fleet again.
+      //
+      // ASSERTED ON THE EFFECT, never on a filename. `bar/` may not import from
+      // `src/` (`bar/self-check.test.ts` enforces both directions), so a check
+      // written against a path constant would be a second copy of a product
+      // decision, drifting silently the day the product moved it. What is
+      // checked instead is what the binary DOES: an admission that spawns no
+      // vendor and says which stored answer it used. Item 1 reads `measured`
+      // out of `brigadier agents` for the same reason.
+      const cached = await exec(
+        [ctx.binary, "run", "--plan", planPath, "--repo", repo, "--run-root", runs, "--dry-run"],
+        { cwd: ctx.workdir, env, timeoutMs: 60_000 },
+      );
+      const cachedSaid = `${cached.stdout}${cached.stderr}`;
+      did.push(
+        `drove \`run --dry-run\` again against the same run root: exit ${cached.code}; ` +
+          `${/from cache/.test(cachedSaid) ? "answered from the detection cache" : "did NOT use a cache"}`,
+      );
+      checks.expect(
+        "the state a first run creates includes ruling 71's detection cache: a later admission answers from it and spawns no vendor",
+        cached.code === 0 && /from cache/.test(cachedSaid) && /no vendor was spawned/i.test(cachedSaid),
+        excerpt(cachedSaid, 400),
+      );
+
       // Ruling 71, part two: DELETING it is a supported repair, driven rather
       // than asserted. A second run, against a machine whose state directory was
-      // removed a moment ago, must complete and deliver.
+      // removed a moment ago, must complete and deliver. That delete takes the
+      // detection cache with it, so the check above is also what gives the
+      // repair below something to have repaired.
       removeDir(runs);
       const repairRepo = join(ctx.workdir, "repair-repo");
       await makeRepo(repairRepo, { "README.md": "repair\n" });

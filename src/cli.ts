@@ -32,6 +32,15 @@ import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { detectAll, type Detection } from "./agent/detect.ts";
+import {
+  artifactFingerprint,
+  describeCacheUse,
+  detectCachePath,
+  fingerprintsNow,
+  planFromCache,
+  readDetectCache,
+  writeDetectCache,
+} from "./agent/detect-cache.ts";
 import { applyOverride, noBlockingReason, overrideWarning, parseOverrides, type BridgeOverride } from "./agent/drift.ts";
 import { REFUSAL, isInsideWorker } from "./agent/marker.ts";
 import { ALL_AGENT_IDS, PROFILES, type AgentId } from "./agent/profiles.ts";
@@ -68,8 +77,10 @@ const USAGE = `brigadier — an ACP hub
   brigadier run --plan <path> [--repo <path>] [--run-root <path>]
       Run a plan: one isolated clone per item, one marked worker each, merged
       onto refs/heads/brigadier/<run-id> and gated on the merged result.
-      --dry-run     admit the plan and stop. Nothing of the RUN is created; the
-                    detection sweep admission depends on does spawn each vendor.
+      --dry-run     admit the plan and stop. Nothing of the RUN is created. The
+                    detection sweep admission depends on is answered from the
+                    cache where it can be (ruling 71) and spawns the vendors it
+                    cannot; the output says which happened.
       --estimate    a cost RANGE with its provenance, and stop (ruling 66).
       --review      route a reviewer, of a DIFFERENT vendor where one exists and
                     of the builder's own where none does (ruling 32: cross-vendor
@@ -99,10 +110,13 @@ const USAGE = `brigadier — an ACP hub
       Everything run decides before it spends anything. The same as
       run --dry-run.
 
-  brigadier detect [--json] [--timeout <ms>] [agent...]
+  brigadier detect [--json] [--timeout <ms>] [--run-root <path>] [agent...]
       Probe which agents on this machine can actually be driven. Detection is
       two steps: a handshake proves an agent is present, a session proves it is
       usable. Both must pass.
+      This command always probes and never answers from the cache, so it is also
+      the repair for a wrong one (ruling 71): run it after an agent upgrade, or
+      delete <run-root>/detect.json. --run-root only says which cache to write.
 
   brigadier agents
       Print the launch-profile table, with what was measured against each.
@@ -208,12 +222,118 @@ function loadOverrides(): BridgeOverride[] {
 /** Every command that spawns or describes an agent reads the same overrides. */
 const OVERRIDES = loadOverrides();
 
+/**
+ * The one seam that reads and writes ruling 71's detection cache.
+ *
+ * Every caller says whether it may TRUST a stored result, and the answer is
+ * ruling 63's rather than a timeout: *"a state file records intent and the world
+ * records fact, and where the world can be consulted directly the world wins."*
+ * A command about to spend can consult the world, so it does; a command that
+ * answers a question and stops cannot without becoming the thing it is
+ * predicting, so it may read what the last probe found — and says so.
+ *
+ * `trustCache` and `writeBack` are separate parameters and are the opposite of
+ * each other at both call sites today. They stay separate because they answer
+ * different questions with different authorities, and a later caller may well
+ * want one without the other:
+ *
+ *   READING is ruling 63's call, above.
+ *
+ *   WRITING is ruling 71's own words — *"detection is lazy on first run and
+ *   cached as state"* — plus ruling 53's ordering promise. `--dry-run`,
+ *   `--estimate` and `plan` are not runs, and the checkable form of ruling 53 is
+ *   that a refusal can be verified from the outside by listing the run root and
+ *   finding it unchanged. A dry run that wrote a file into the run root would
+ *   break that, and `test/cli-run.test.ts` asserts exactly it. So they read and
+ *   never write; `run` and `detect` write.
+ *
+ *   WHAT THAT COSTS, stated: a machine where nobody ever gets past `plan` never
+ *   warms the cache, and pays the sweep every time. The remedy is one command
+ *   and it is printed rather than left to be discovered.
+ *
+ * `detect` is the command whose whole job is this question, so it is also the
+ * repair: after an agent upgrade the operator runs the command they would have
+ * run anyway, and the cache is correct again. `src/agent/detect-cache.ts`
+ * carries the rest.
+ *
+ * A subset probe merges rather than replaces: `brigadier detect claude` must not
+ * delete the five agents it never looked at.
+ */
+async function sweep(
+  ids: AgentId[],
+  options: { runRoot: string; timeoutMs: number; trustCache: boolean; writeBack: boolean },
+): Promise<{ detections: Detection[]; cacheLine: string | null; probed: number; commit: () => void }> {
+  const path = detectCachePath(options.runRoot);
+  const artifact = artifactFingerprint();
+  const fingerprints = fingerprintsNow(ids, OVERRIDES);
+  const { file, problem } = readDetectCache(path);
+  // A file that existed and could not be used is said out loud once. Never as
+  // damage: ruling 71 makes deleting this file a supported repair, and a product
+  // that calls its own repair a corruption has taught the operator not to do it.
+  if (problem !== undefined) sink.errLine(problem);
+
+  const read = planFromCache(ids, file, fingerprints, artifact, Date.now());
+  const toProbe = options.trustCache ? read.stale.map((entry) => entry.id) : ids;
+  const served = options.trustCache ? read.served : [];
+
+  if (toProbe.length === 0) {
+    return {
+      detections: served,
+      cacheLine: describeCacheUse(served, read.ageMs, 0, path),
+      probed: 0,
+      commit: () => {},
+    };
+  }
+
+  const probes = await detectAll(toProbe, { timeoutMs: options.timeoutMs, overrides: OVERRIDES });
+  // `Date.now()` HERE and not before the probe: the sweep is bounded at 20 s and
+  // an age is the age of the measurement, not of the decision to take one.
+  const probedAtMs = Date.now();
+
+  // WRITING IS DEFERRED TO THE CALLER, and the reason is ruling 53's ordering
+  // promise rather than tidiness. A `run` refused after this point — a ceiling
+  // pair that can never act, an unresolvable verify command — must leave the run
+  // root exactly as it found it, and `test/queue-ceiling.test.ts` checks that by
+  // listing the directory and requiring it empty. That test went red on
+  // 2026-08-20 against a version of this function that wrote here, which is the
+  // whole reason the seam exists: a refusal that first creates something has
+  // already done a smaller version of the thing it exists to prevent.
+  const commit = options.writeBack
+    ? (): void => {
+        const written = writeDetectCache(sink, path, probes, fingerprints, artifact, probedAtMs, read.carried);
+        // Never fatal. The cache is an optimisation; the sweep it would have
+        // replaced has already run and its results are in hand.
+        if (written.problem !== undefined) sink.errLine(written.problem);
+      }
+    : (): void => {};
+
+  return {
+    detections: [...served, ...probes],
+    cacheLine: describeCacheUse(served, read.ageMs, probes.length, path),
+    probed: probes.length,
+    commit,
+  };
+}
+
 async function detect(): Promise<number> {
   const requested = argv.slice(1).filter((a) => !a.startsWith("--") && ALL_AGENT_IDS.includes(a as AgentId));
   const ids = (requested.length > 0 ? requested : ALL_AGENT_IDS) as AgentId[];
   const timeout = Number(value("timeout") ?? 60_000);
 
-  const results = await detectAll(ids, { timeoutMs: timeout, overrides: OVERRIDES });
+  // `--run-root` for the same reason `run` has one: the cache lives under that
+  // root, so a machine whose runs go somewhere else must be repairable there
+  // too. Without it `detect` would refresh a cache no run reads.
+  const { detections: results, commit } = await sweep(ids, {
+    runRoot: absolute(value("run-root") ?? defaultRunRoot()),
+    timeoutMs: timeout,
+    // Always. This command exists to answer the question the cache stores, and
+    // a `detect` that printed a stored answer would be unable to repair one.
+    trustCache: false,
+    writeBack: true,
+  });
+  // Immediately: this command has nothing left that could refuse, and recording
+  // what it measured IS what it is for.
+  commit();
   results.sort((a, b) => a.id.localeCompare(b.id));
 
   if (flag("json")) {
@@ -603,19 +723,47 @@ async function run(): Promise<number> {
   // willing to wait — and the operator can run `brigadier detect --timeout` to
   // get the unhurried answer.
   //
-  // THE REAL FIX IS NOT THIS. Ruling 71 says detection is "lazy on first run and
-  // cached as state (decision 18: regenerable, never hand-edited)", and the
-  // cache does not exist yet, so every invocation pays the sweep. That is
-  // recorded debt, not a design: `plan` and `--dry-run` were sub-second before
-  // 2026-08-20 and are now several seconds on a machine with the bridges
-  // installed. Writing the cache means deciding where it lives and when it is
-  // invalidated — ruling 71 also requires that deleting state be a supported
-  // repair — and that is a separate change rather than a line here.
+  // A CACHE DOES NOT REMOVE THE NEED FOR THIS BOUND. Ruling 71's cache landed on
+  // 2026-08-20 and it makes the sweep rare, not cheap: a cold cache, a vendor
+  // that upgraded, a replaced bridge or a new brigadier all put a real probe
+  // back in front of this line. What the bound governs is the worst case, and
+  // the worst case is unchanged.
   const ADMISSION_DETECT_TIMEOUT_MS = 20_000;
-  const probes = await detectAll(
+  // Ruling 71's cache, and ruling 63 deciding who may trust it. `--dry-run`,
+  // `--estimate` and the `plan` verb spend nothing and create nothing, so they
+  // may answer from the last probe and disclose that they did. A real run is
+  // about to clone, spawn and spend: it can consult the world, so it does.
+  // Finding V1 is `run` admitting on evidence that was not the evidence, and
+  // ruling 69's blocking drift gate — the one that stops write work — is
+  // therefore never decided from a stored version string. That matters most for
+  // Claude and Codex, whose bridges upgrade under an unchanged `npx`.
+  const stops = flag("dry-run") || flag("estimate");
+  const { detections: probes, cacheLine, probed, commit: commitDetection } = await sweep(
     resolved.map((agent) => agent.id),
-    { overrides: OVERRIDES, timeoutMs: ADMISSION_DETECT_TIMEOUT_MS },
+    { runRoot, timeoutMs: ADMISSION_DETECT_TIMEOUT_MS, trustCache: stops, writeBack: !stops },
   );
+  // On stdout, beside the admission it qualifies, rather than on stderr where a
+  // host-first caller reading the report would not see what the report was
+  // computed from.
+  if (cacheLine !== null) sink.outLine(cacheLine);
+  // What detection actually DID on THIS invocation, in words that are true of
+  // it. Until the cache landed, `--dry-run` and `--estimate` could say "each
+  // resolved vendor was spawned" as a constant; a cache makes that a claim about
+  // one run, and ruling 62 (f) makes a sentence that contradicts what happened a
+  // `fail` rather than a wording preference.
+  const detectionDid = (probed === 0
+    ? "  No vendor was spawned: admission was answered from the detection cache (ruling 71).\n"
+    : `  Detection did spawn ${probed} resolved vendor(s) to open a session — that is how admission knows\n` +
+      "  which of them could have taken work.\n" +
+      // Only where it is true and actionable. A run writes the cache itself, so
+      // saying this there would be advice to do what just happened.
+      (stops
+        ? "  That sweep was not cached: this command creates nothing in the run root, the cache included\n" +
+          "  (ruling 53). `brigadier detect` writes it, and the next admission answers from it.\n"
+        : "")) +
+    // True on both branches and the half that matters most, so it is said on
+    // both rather than living inside one of them.
+    "  No prompt was sent and no vendor money was spent.";
   const { admitted: agents, rejected } = admissibleAfterDetection(resolved, probes, {
     hasWriteWork,
     // Ruling 69's Q3: the operator replaced this bridge on purpose and
@@ -693,8 +841,7 @@ async function run(): Promise<number> {
     );
     for (const line of describeEstimate(estimate)) sink.outLine(line);
     sink.outLine(
-      "nothing of this run was started: --estimate stops before the run root is created.\n" +
-        "  Detection did spawn each resolved vendor to open a session. No prompt was sent.",
+      `nothing of this run was started: --estimate stops before the run root is created.\n${detectionDid}`,
     );
     return 0;
   }
@@ -711,9 +858,7 @@ async function run(): Promise<number> {
 
   if (flag("dry-run")) {
     sink.outLine(
-      "nothing of this run was started: --dry-run stops before the run root is created.\n" +
-        "  Detection did spawn each resolved vendor to open a session — that is how admission knows\n" +
-        "  which of them could have taken work. No prompt was sent and no vendor money was spent.",
+      `nothing of this run was started: --dry-run stops before the run root is created.\n${detectionDid}`,
     );
     return 0;
   }
@@ -726,6 +871,12 @@ async function run(): Promise<number> {
   }
 
   mkdirSync(runRoot, { recursive: true });
+  // HERE, and not at the sweep. Ruling 71 caches detection on a first RUN, and
+  // this is the line where this invocation stops being a question and becomes
+  // one: every refusal is behind it and the run root is being created anyway.
+  // A run refused above leaves the run root as it found it, which is the only
+  // form of ruling 53's ordering promise anyone outside the process can check.
+  commitDetection();
   const result = await executeRun({
     repo,
     runRoot: realpathSync(runRoot),
