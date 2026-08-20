@@ -36,6 +36,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { dirname, join, resolve, sep } from "node:path";
 import { Checks, excerpt } from "./checks.ts";
 import { parseRecord, recordPathFrom, type RunRecord } from "./contract.ts";
 import { RUN_MARKER_FLAG, type Flight } from "./inflight.ts";
@@ -126,24 +127,41 @@ export async function refList(repo: string): Promise<string[]> {
  * function let exactly that case through. `realpathSync` throws on a missing
  * path, so this resolves the nearest ancestor that DOES exist and re-appends the
  * rest.
+ *
+ * **IT SPLIT ON `"/"` AND WAS THEREFORE INERT ON WINDOWS.** VERIFIED against run
+ * 32398251476 on 2026-08-20: `bar/items.test.ts`'s *"ruling 61 is checked by
+ * realpath, not lexically"* failed on `windows-latest` and only there —
+ * `insideTempRoot(join(tmpdir(), "never-created-9f3a", "deeper"))` answered
+ * `undefined`. A Windows path contains no `/`, so the old loop had exactly one
+ * candidate prefix, and the prefix test below compared against `${root}/`, which
+ * a backslashed path can never match. `undefined` from `insideTempRoot` means
+ * *not under a temp root*, and ruling 61's check reads it as a PASS — so item 4
+ * and item 2 both graded that clause on Windows having exercised nothing, which
+ * is the shape ruling 32 forbids. The walk is now `dirname`-based and every
+ * comparison goes through `sep`.
  */
 export function resolveThroughSymlinks(path: string): string {
-  const parts = path.split("/");
-  for (let i = parts.length; i > 0; i--) {
-    const head = parts.slice(0, i).join("/") || "/";
+  const absolute = resolve(path);
+  let existing = absolute;
+  const tail: string[] = [];
+  for (;;) {
     try {
-      const real = realpathSync(head);
-      const tail = parts.slice(i);
-      return tail.length === 0 ? real : `${real}/${tail.join("/")}`;
+      const real = realpathSync(existing);
+      return tail.length === 0 ? real : join(real, ...tail);
     } catch {
-      // Not there either; try a shorter prefix.
+      // Not there; try the parent.
     }
+    const parent = dirname(existing);
+    // `dirname` of a root is that root, on both platforms and for a UNC share.
+    if (parent === existing) return absolute;
+    tail.unshift(existing.slice(parent.length).replace(/^[\\/]+/, ""));
+    existing = parent;
   }
-  return path;
 }
 
 export function insideTempRoot(path: string): string | undefined {
-  const roots = [tmpdir(), "/tmp", process.env["TMPDIR"] ?? ""].filter((r) => r.length > 0);
+  const roots = [tmpdir(), "/tmp", process.env["TMPDIR"] ?? "", process.env["TEMP"] ?? "", process.env["TMP"] ?? ""]
+    .filter((r) => r.length > 0);
   const real = resolveThroughSymlinks(path);
   for (const root of roots) {
     let realRoot: string;
@@ -152,9 +170,28 @@ export function insideTempRoot(path: string): string | undefined {
     } catch {
       continue;
     }
-    if (real === realRoot || real.startsWith(`${realRoot}/`)) return `${real} is under ${realRoot}`;
+    if (samePath(real, realRoot) || startsWithSegment(real, realRoot)) return `${real} is under ${realRoot}`;
   }
   return undefined;
+}
+
+/**
+ * Path comparison that is case-insensitive where the filesystem is.
+ *
+ * Not a nicety: `%TEMP%` on a GitHub Windows runner is reported in its 8.3 short
+ * form under one name and its long form under another, and drive letters arrive
+ * in either case. A comparison that is exact on Windows answers `undefined` for
+ * two spellings of one directory, and `undefined` here means *not under a temp
+ * root* — a pass.
+ */
+function samePath(a: string, b: string): boolean {
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+/** True when `path` is strictly inside `root`, on a SEGMENT boundary. */
+function startsWithSegment(path: string, root: string): boolean {
+  const prefix = root.endsWith(sep) ? root : root + sep;
+  return samePath(path.slice(0, prefix.length), prefix) && path.length > prefix.length;
 }
 
 export interface RunEvidence {

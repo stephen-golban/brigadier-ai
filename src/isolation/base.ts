@@ -59,8 +59,9 @@
  */
 
 import { mkdirSync, realpathSync } from "node:fs";
-import { join, resolve, sep } from "node:path";
+import { join, sep } from "node:path";
 import { baseRef } from "../repo/refs.ts";
+import { intendedRealPath } from "./clone.ts";
 import { git, nulRecords, runGit } from "./internal-git.ts";
 import { witnessDrift, witnessOperator, type OperatorWitness, type WitnessOptions } from "./witness.ts";
 
@@ -141,12 +142,24 @@ export async function buildBaseState(options: BaseStateOptions): Promise<BaseSta
 
   // A scratch index inside the operator's repository is an untracked file, and
   // two lines below is `git add -A`. It would sweep itself into the base
-  // commit. Checked TWICE and the order is deliberate: lexically before the
-  // directory is created, so that a refusal does not leave a directory behind
-  // in a repository this module's whole premise is not to touch; then again by
-  // `realpath` afterwards, because a symlink defeats the lexical form and
-  // ruling 61 is emphatic about which of the two is authoritative.
-  refuseInsideRepo(resolve(options.scratchDir), repo);
+  // commit. Checked TWICE and the order is deliberate: before the directory is
+  // created, so that a refusal does not leave a directory behind in a
+  // repository this module's whole premise is not to touch; then again after
+  // `mkdir`, because only then can the directory itself be `realpath`ed.
+  //
+  // THE FIRST CHECK USED `resolve()` AND WAS DEAD ON macOS. MEASURED on darwin
+  // 25.5.0 with git 2.51.0 on 2026-08-20 by `test/repo-path-shape.test.ts`: a
+  // repository under `$TMPDIR` is handed to this function as
+  // `/var/folders/…/operator-repo`, `git rev-parse --show-toplevel` reports
+  // `/private/var/folders/…/operator-repo`, and `resolve()` never crosses the
+  // `/var` → `/private/var` symlink — so a candidate genuinely inside the
+  // repository failed `startsWith` and the pre-`mkdir` refusal did not fire.
+  // The second check still caught it, having already created the directory this
+  // one exists to avoid creating. That is ruling 61's own lesson one level
+  // down: judged by `realpath`, never lexically. `intendedRealPath` resolves
+  // the deepest EXISTING ancestor and re-attaches the tail, so a path that does
+  // not exist yet is still judged on where it would actually land.
+  refuseInsideRepo(intendedRealPath(options.scratchDir), repo);
   mkdirSync(options.scratchDir, { recursive: true });
   const scratchRoot = realpathSync(options.scratchDir);
   refuseInsideRepo(scratchRoot, repo);
@@ -246,7 +259,16 @@ export function seedVerdict(
   );
 }
 
-function refuseInsideRepo(candidate: string, repo: string): void {
+/**
+ * Exported so `test/repo-path-shape.test.ts` can put the comparison itself to
+ * each platform, rather than inferring it from a `buildBaseState` that has
+ * several other reasons to throw. VERIFIED against run 32398251476 on
+ * 2026-08-20: on `windows-latest` this guard did NOT fire on a scratch
+ * directory inside the repository, and the failure surfaced as ruling 50's
+ * disturbance witness instead — a weaker, symptom-shaped guard that only
+ * notices because the sweep moved `git status`.
+ */
+export function refuseInsideRepo(candidate: string, repo: string): void {
   if (candidate === repo || candidate.startsWith(repo + sep)) {
     throw new Error(
       `refusing a temporary index inside the operator's repository: ${candidate}. ` +

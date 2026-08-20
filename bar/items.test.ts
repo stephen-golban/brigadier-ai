@@ -17,8 +17,8 @@
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
@@ -257,6 +257,15 @@ describe("proofOfWork — the check a printer cannot satisfy", () => {
     // binary names, and `realpath` throws on it. It must still be caught.
     expect(insideTempRoot(join(tmpdir(), "never-created-9f3a", "deeper"))).toBeDefined();
     expect(resolveThroughSymlinks(join(tmpdir(), "never-created-9f3a"))).toContain("never-created-9f3a");
+    // THE PAIR THAT PINS THE SEPARATOR, both directions. Until 2026-08-20 this
+    // function split on `"/"`, so on Windows it answered `undefined` for
+    // everything — including the line above — and `undefined` is read by ruling
+    // 61's check as *outside every temp root*, which is a pass. The line above
+    // catches a separator that is too strict; this one catches a prefix test
+    // that dropped the separator altogether and would call a SIBLING of the
+    // temp root "inside" it.
+    expect(insideTempRoot(`${realpathSync(tmpdir())}-elsewhere`)).toBeUndefined();
+    expect(insideTempRoot(join(homedir(), "brigadier-not-a-temp-root"))).toBeUndefined();
     const checks = proofOfWork(
       { ...good, record: { ...(good.record as RunRecord), runRoot: join(tmpdir(), "runs") } },
       expect1,
