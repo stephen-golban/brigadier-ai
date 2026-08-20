@@ -127,7 +127,95 @@ import type { BarContext, BarItem, BarResult } from "../types.ts";
  * argued over, and a strike must not take the evidence about it out of the
  * record.
  */
-export const SIZE_BUDGET_BYTES = 63 * 1_048_576;
+/**
+ * **STRUCK, in the open — the 63 MiB total-size clause. RULED 2026-08-20.**
+ *
+ * Struck by the same procedure and on the same grounds as the ≤70 ms cold-start
+ * clause (§23) and the ≤10 ms warm-start clause (§24), and it is kept here as a
+ * named constant rather than deleted so that the strike can say what it struck.
+ * IT GATES NOTHING. `BRIGADIER_SIZE_BUDGET_BYTES` below is what gates.
+ *
+ * Three reasons, all already in the record:
+ *
+ *   - **It was never measured on anything.** Amendment §16: the figure enters
+ *     this project as ONE unsourced sentence at `MEASUREMENT-SESSION.md:140`,
+ *     commit `7e6a547`, under the heading *"Already measured — do not redo"*,
+ *     and v1's entire history at Release 0.2.1 contains no "63 MB". That is the
+ *     same sentence and the same commit behind the two clauses already struck.
+ *
+ *   - **It is unreachable on Linux by an amount no version of this product can
+ *     close.** MEASURED against `bun 1.3.14` on 2026-08-20, a compiled program
+ *     whose entire source is `process.exit(0)`: 63,446,114 bytes on darwin
+ *     arm64 and 93,694,096 bytes on linux (measured under `oven/bun:1.3.14`;
+ *     this round's reading was on **arm64** and the same number was recorded on
+ *     2026-08-20 against a container labelled x64, which is a discrepancy in the
+ *     LABEL and is noted rather than smoothed over). The Linux floor is 27.6 MB
+ *     over the budget before brigadier contributes a byte. §16's sentence about
+ *     the cold-start clause holds word for word: there is no version of
+ *     brigadier that fits, because `process.exit(0)` does not.
+ *
+ *   - **It was a budget on a number this product does not control.** Ruling 5
+ *     mandates a `bun --compile` artifact. Better than 97% of every reading is
+ *     the Bun runtime, and no decision taken in this repository moves it.
+ *
+ * **The promise therefore unproven:** that the released artifact is small in
+ * absolute terms. It is not, on any platform, and it never was — v1's own
+ * artifact was the same shape. Nothing replaces that promise: this is a
+ * withdrawal, not a relaxation, and the item still PRINTS the total in both
+ * readings on a passing run as well as a failing one.
+ */
+export const STRUCK_TOTAL_SIZE_BUDGET_BYTES = 63 * 1_048_576;
+
+/**
+ * What gates instead: **brigadier's own contribution to the artifact**.
+ *
+ * The statistic is `size(artifact) − size(an empty `process.exit(0)` binary
+ * compiled by the same bun on the same platform)`. It is the only part of the
+ * number this project can change, it is measurable on every platform, and —
+ * unlike the struck clause — it is a budget on something a commit can move.
+ *
+ * MEASURED against `bun 1.3.14` on 2026-08-20 at load1 1.61–2.57, compiling the
+ * empty program and `src/cli.ts` + `src/repomap/index.ts` back to back in one
+ * process on each platform:
+ *
+ *   | platform      | empty floor | cli + repo map | brigadier's contribution |
+ *   | darwin arm64  | 63,446,114  | 64,750,562     | **1,304,448** |
+ *   | linux arm64   | 93,694,096  | 94,939,280     | **1,245,184** |
+ *
+ * The two contributions agree to 4.5% while the two floors differ by 47%, which
+ * is the whole argument for the change of statistic in one line.
+ *
+ * **THE NUMBER BELOW IS A JUDGEMENT, NOT A MEASUREMENT, AND SAYING SO IS THE
+ * POINT.** It is 2 MiB × 1.25 ≈ twice the largest measured contribution, chosen
+ * by the same rule `test/repomap-binary.test.ts`'s `REPOMAP_SIZE_CAP_BYTES`
+ * already uses — *enough room for a grammar, not enough for the raw packaging to
+ * come back*. What it detects is GROWTH in brigadier's own bytes: a dependency
+ * bundled by accident, an asset embedded raw, the tree-sitter grammars
+ * reverting to their unpacked 5,515,008-byte form. What it does NOT do is make
+ * any claim about the artifact's total size. A future reader who wants to
+ * re-argue this number should re-argue it against the table above, which is a
+ * measurement, and not against v1's sentence, which is not.
+ *
+ * **The accepted cost.** Three things, stated rather than discovered:
+ *
+ *   1. **A budget nobody outside this project can check from the artifact
+ *      alone.** The struck clause needed one `ls -l`; this one needs a bun of
+ *      the same version on the same platform to compile a second binary. Where
+ *      that is not available the check is a blocking `NOT-RUN`, never a pass —
+ *      so the cost is red legs on exotic hosts, not silence.
+ *   2. **The floor is unbudgeted, deliberately.** If Bun's runtime doubles, this
+ *      check stays green while the download doubles. That is the honest
+ *      consequence of budgeting only what this product controls, and the item
+ *      prints the floor beside the contribution so a reader sees where the bytes
+ *      actually are.
+ *   3. **A number this project chose.** §23 and §24 refused to replace a
+ *      withdrawn figure with a second figure picked to clear the last reading,
+ *      and that refusal is respected here in the only way that matters: this is
+ *      NOT a repaired 63 MiB. It is a budget on a DIFFERENT statistic, whose
+ *      value is derived from a measurement taken this date and printed beside
+ *      every verdict it produces.
+ */
+export const BRIGADIER_SIZE_BUDGET_BYTES = 2_621_440;
 /**
  * The number that WAS the warm budget, kept only so the strike can name what it
  * struck and so the margins already in the record stay re-derivable.
@@ -426,6 +514,49 @@ export function attribution(reported: ReportedBuildId): string {
   );
 }
 
+/**
+ * Compile a program whose entire source is `process.exit(0)` and weigh it.
+ *
+ * The subtrahend in this item's size budget. It is COMPILED rather than looked
+ * up in a table for the reason a table would fail: the floor is a property of
+ * the bun that produced the artifact, and it moved 47% between the two
+ * platforms measured on 2026-08-20. A pinned number would go stale the first
+ * time bun shipped, and would go stale silently.
+ *
+ * `--outfile` gets `.exe` appended on Windows (MEASURED against bun 1.3.14 on
+ * 2026-08-20, cross-compiling with `--target=bun-windows-x64`), so the artifact
+ * is DISCOVERED rather than named, exactly as `scripts/build.ts` does.
+ *
+ * Everything that can go wrong returns `bytes: undefined` with a sentence
+ * saying what, because the caller turns that into a blocking NOT-RUN. A floor
+ * this harness could not obtain must never be silently replaced by zero, which
+ * would turn the budget into the struck total-size clause wearing a new name.
+ */
+export async function measureEmptyBinaryFloor(workdir: string): Promise<{ bytes: number | undefined; how: string }> {
+  const bun = Bun.which("bun");
+  if (bun === null) return { bytes: undefined, how: "could not run: no `bun` on PATH to compile it with" };
+  const dir = ensureDir(join(workdir, "size-floor"));
+  const entry = join(dir, "empty.ts");
+  writeFileSync(entry, "process.exit(0);\n");
+  const out = join(dir, "empty-floor");
+  const built = await exec([bun, "build", "--compile", entry, "--outfile", out], { cwd: dir, timeoutMs: 180_000 });
+  if (built.code !== 0) {
+    return {
+      bytes: undefined,
+      how: `failed: \`bun build --compile\` exited ${built.code}. ${excerpt(built.stderr, 240)}`,
+    };
+  }
+  for (const candidate of [out, `${out}.exe`]) {
+    try {
+      const bytes = statSync(candidate).size;
+      return { bytes, how: `compiled here by bun ${Bun.version} and measured at ${bytes} bytes` };
+    } catch {
+      // The other spelling, then.
+    }
+  }
+  return { bytes: undefined, how: "succeeded but wrote no artifact at either `empty-floor` or `empty-floor.exe`" };
+}
+
 export interface HookFileEvidence {
   /** The installed hook file, as found under the scratch home. `undefined` = none was written. */
   path?: string;
@@ -440,6 +571,15 @@ export interface ArtifactObservations {
   full: { code: number | null; stdout: string; stderr: string };
   markersFound: string[];
   sizeBytes: number;
+  /**
+   * An empty `process.exit(0)` binary compiled by THIS harness's bun, and how it
+   * went.
+   *
+   * The subtrahend in the size budget. `bytes: undefined` means the compile
+   * could not be done here at all, which is a blocking NOT-RUN rather than a
+   * reason to fall back on the total.
+   */
+  emptyFloor: { bytes: number | undefined; how: string };
   /** `brigadier version` — the identity the artifact reports about ITSELF. */
   versionProbe: { code: number | null; stdout: string; stderr: string };
   /**
@@ -647,34 +787,60 @@ export function judgeArtifact(o: ArtifactObservations): Checks {
       : `found ${o.markersFound.map((m) => JSON.stringify(m)).join(", ")}`,
   );
 
-  // NOT "the measured budget". Amendment §16 established that 63 MB was never
-  // measured on anything: it enters this project as ONE unsourced sentence at
-  // `MEASUREMENT-SESSION.md:140`, commit `7e6a547`, under the heading "Already
-  // measured — do not redo, but do dispute if you find otherwise", and v1's
-  // entire history at Release 0.2.1 contains no "63 MB". That is the SAME
-  // sentence and the SAME provenance behind the ≤70 ms and ≤10 ms clauses the
-  // owner struck in the open (§23, §24). This clause was not struck with them,
-  // so it still gates — but it may not call itself measured while doing so.
-  //
-  // AND ON LINUX IT IS UNREACHABLE, which §23's own argument settles rather than
-  // this file. MEASURED against `bun 1.3.14` on 2026-08-20, a compiled program
-  // whose entire source is `process.exit(0)`:
-  //     darwin arm64                       63,446,114 bytes  (60.51 MiB)
-  //     linux x64 (oven/bun:1.3.14)        93,694,096 bytes  (89.35 MiB)
-  // The Linux FLOOR is 27.6 MB over the 63 MiB budget before brigadier
-  // contributes a byte. §16's sentence about the struck cold-start clause holds
-  // here word for word: there is no version of brigadier that fits, because
-  // `process.exit(0)` does not. Whether the clause is struck like its two
-  // siblings is the OWNER'S, exactly as §23 and §24 were.
-  checks.expect(
-    `binary within the 63 MiB budget of ${SIZE_BUDGET_BYTES} bytes`,
-    o.sizeBytes <= SIZE_BUDGET_BYTES,
-    `${o.sizeBytes} bytes = ${(o.sizeBytes / 1_048_576).toFixed(2)} MiB = ${(o.sizeBytes / 1_000_000).toFixed(2)} MB decimal. ` +
-      `Budget is 63 MiB (${SIZE_BUDGET_BYTES} bytes): this repository's own license-gate prints bytes/1048576 and calls it "MB", ` +
-      "so v1's 63 MB reads as 63 MiB. Both readings are printed because they disagree about the verdict. " +
-      "PROVENANCE: the figure is UNSOURCED (amendment §16) — the same unsourced sentence behind the struck " +
-      "cold- and warm-start clauses. On linux the empty-program floor alone is 93,694,096 bytes (MEASURED 2026-08-20)",
+  // THE STRIKE, PRINTED. §23 and §24 both require the item to print the strike
+  // in its own output on a PASSING run as well as a failing one — a clause
+  // deleted in silence is a clause nobody will ever revisit. This row cannot
+  // fail; it is the record travelling with the artifact.
+  const totals =
+    `${o.sizeBytes} bytes = ${(o.sizeBytes / 1_048_576).toFixed(2)} MiB = ${(o.sizeBytes / 1_000_000).toFixed(2)} MB decimal`;
+  checks.note(
+    "STRUCK, in the open — the 63 MiB total-size clause (2026-08-20)",
+    `the artifact is ${totals}, and NO threshold is applied to that number. The struck budget was ` +
+      `${STRUCK_TOTAL_SIZE_BUDGET_BYTES} bytes. Struck for the same reasons as the cold- and warm-start clauses: ` +
+      "the figure is UNSOURCED (amendment §16 — one sentence at `MEASUREMENT-SESSION.md:140`, commit `7e6a547`), " +
+      "it is unreachable on linux where an empty `process.exit(0)` binary is already 93,694,096 bytes (MEASURED " +
+      "2026-08-20 against bun 1.3.14), and over 97% of it is the Bun runtime ruling 5 mandates, which no decision " +
+      "in this repository moves. THE PROMISE UNPROVEN: that the released artifact is small in absolute terms. " +
+      "What replaces it is not a repaired figure — it is the budget on the next row, which is a different statistic",
   );
+
+  // WHAT GATES INSTEAD: brigadier's OWN contribution, which is the only part of
+  // the number a commit here can change.
+  //
+  // The floor must be compiled by the same bun that compiled the artifact, or
+  // the subtraction is between two different runtimes and the difference is not
+  // brigadier. That is checkable because the artifact prints its compiling bun
+  // in its own BUILD-ID line, which is read a few rows below. Where it cannot be
+  // established the row is a blocking NOT-RUN: a check that did not run is not a
+  // check that passed (ruling 48), and this is exactly the shape ruling 62 (c)
+  // refuses to let render as green.
+  const artifactBun = reported.fields["bun"];
+  const floorBytes = o.emptyFloor.bytes;
+  const bunMatches = artifactBun !== undefined && floorBytes !== undefined && artifactBun === Bun.version;
+  if (!bunMatches || floorBytes === undefined) {
+    checks.expect(
+      "NOT-RUN — brigadier's own contribution to the artifact could not be measured on this host",
+      false,
+      `the budget is on ${o.sizeBytes} bytes MINUS an empty \`process.exit(0)\` binary compiled by the SAME bun on ` +
+        `the same platform. This harness runs bun ${Bun.version}; the artifact reports it was compiled by ` +
+        `${artifactBun ?? "a bun it did not name"}; the empty-program compile ${o.emptyFloor.how}. Subtracting a ` +
+        "floor produced by a different runtime would attribute Bun's own change to brigadier, so no number is " +
+        `produced. Total size, for the record: ${totals}`,
+    );
+  } else {
+    const contribution = o.sizeBytes - floorBytes;
+    checks.expect(
+      `brigadier's own contribution is within ${BRIGADIER_SIZE_BUDGET_BYTES} bytes`,
+      contribution <= BRIGADIER_SIZE_BUDGET_BYTES,
+      `${o.sizeBytes} total − ${floorBytes} empty-program floor = ${contribution} bytes ` +
+        `(${(contribution / 1_048_576).toFixed(2)} MiB), against a budget of ${BRIGADIER_SIZE_BUDGET_BYTES}. ` +
+        `The floor is ${((floorBytes / o.sizeBytes) * 100).toFixed(2)}% of the artifact and belongs to bun ` +
+        `${Bun.version} on ${process.platform}/${process.arch}; nothing in this repository moves it, and this ` +
+        "budget deliberately makes no claim about it. The budget is a JUDGEMENT — twice the largest contribution " +
+        "MEASURED on 2026-08-20 (1,304,448 on darwin arm64, 1,245,184 on linux arm64) — and what it detects is " +
+        "GROWTH in brigadier's own bytes, not the size of the download",
+    );
+  }
 
   // ── which artifact is this? ───────────────────────────────────────────────
   // Before any timing, because a figure whose subject is unnamed is not a
@@ -1186,11 +1352,20 @@ const item: BarItem = {
       `planted a hooks.json carrying one unrecognised event ${JSON.stringify(poisonKey)} at ${poisonedPath} and ran \`brigadier plugin hooks --check\``,
     );
 
+    // The subtrahend in the size budget, measured on this host rather than
+    // looked up. See `BRIGADIER_SIZE_BUDGET_BYTES` for why the statistic changed
+    // and what it costs.
+    const emptyFloor = await measureEmptyBinaryFloor(ctx.workdir);
+    did.push(
+      `compiled an empty \`process.exit(0)\` binary to measure this platform's floor: ${emptyFloor.how}`,
+    );
+
     const checks = judgeArtifact({
       licences: { code: licences.code, stdout: licences.stdout, stderr: licences.stderr },
       full: { code: full.code, stdout: full.stdout, stderr: full.stderr },
       markersFound,
       sizeBytes: statSync(ctx.binary).size,
+      emptyFloor,
       versionProbe: { code: versionProbe.code, stdout: versionProbe.stdout, stderr: versionProbe.stderr },
       binarySha256,
       warmMs: warm,

@@ -23,8 +23,8 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CLONE_SIGNATURE } from "../src/isolation/internal-git.ts";
-import { manifestPath, recordClone } from "../src/isolation/manifest.ts";
+import { CLONE_SIGNATURE, cloneMarkerBody } from "../src/isolation/internal-git.ts";
+import { manifestPath, newCloneNonce, recordClone } from "../src/isolation/manifest.ts";
 import { RUN_DIR } from "../src/repo/layout.ts";
 import { itemRef } from "../src/repo/refs.ts";
 import { runMarkerArg } from "../src/run/marker.ts";
@@ -118,13 +118,16 @@ async function plantRun(runId: string, items: readonly number[], options: PlantO
   mkdirSync(runDir, { recursive: true });
   for (const item of items) {
     const dir = join(runDir, String(item));
+    // The clone token, recorded and written into the marker as `prepareClone`
+    // does. Without it ruling 15 (b) refuses every clone this fixture plants.
+    const nonce = newCloneNonce();
     recordClone(
       manifestPath(runRoot, RUN_DIR, runId),
       { runId, runRoot, createdAt: Date.now(), clones: [] },
-      { item, dir, createdAt: Date.now() },
+      { item, dir, createdAt: Date.now(), nonce },
     );
     mkdirSync(join(dir, ".git"), { recursive: true });
-    writeFileSync(join(dir, ".git", CLONE_SIGNATURE), `${runId}/${item}\n`);
+    writeFileSync(join(dir, ".git", CLONE_SIGNATURE), cloneMarkerBody(runId, item, nonce));
     writeFileSync(join(dir, "work.txt"), "the worker's only copy\n".repeat(200));
     mkdirSync(join(runDir, "state", String(item)), { recursive: true });
     writeFileSync(join(runDir, "state", String(item), "token"), "nonce\n");
@@ -674,10 +677,11 @@ describe("ruling 63, the direction that destroys the operator's work", () => {
     // The manifest is written BEFORE the directory exists — ruling 15 (b) — and
     // `recordClone` is what creates it, so the entry can record the inode
     // `proveDeletableDirectory` later matches the directory against.
+    const nonce = newCloneNonce();
     recordClone(
       manifestPath(runRoot, RUN_DIR, runId),
       { runId, runRoot, createdAt: Date.now(), clones: [] },
-      { item, dir, createdAt: Date.now() },
+      { item, dir, createdAt: Date.now(), nonce },
     );
     mkdirSync(dir, { recursive: true });
     await git(dir, "init", "-q", "-b", "work");
@@ -687,7 +691,7 @@ describe("ruling 63, the direction that destroys the operator's work", () => {
     await git(dir, "add", "-A");
     await git(dir, "commit", "-q", "-m", `item ${item} did real work`);
     const sha = await git(dir, "rev-parse", "HEAD");
-    writeFileSync(join(dir, ".git", CLONE_SIGNATURE), `${runId}/${item}\n`);
+    writeFileSync(join(dir, ".git", CLONE_SIGNATURE), cloneMarkerBody(runId, item, nonce));
 
     const path = recordPath(runRoot, runId);
     appendEvent(path, { type: "run-started", at: 1, runId, repo, runRoot, pid: deadPid });

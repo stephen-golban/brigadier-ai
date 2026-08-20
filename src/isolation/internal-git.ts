@@ -70,6 +70,63 @@ import { resetDirectory, writeRegularFile } from "./safe-fs.ts";
  */
 export const CLONE_SIGNATURE = "brigadier-clone";
 
+/**
+ * The clone marker's contents — ruling 15 (c)'s in-clone signature.
+ *
+ * TWO LINES, AND THE SECOND ONE IS THE POINT. The first is the claim
+ * `<run id>/<item>`, which has always been there and which `src/run/reclaim.ts`
+ * compares against the manifest so that a marker copied from a sibling clone
+ * does not stand in for this one. Every byte of it is DERIVABLE FROM THE PATH:
+ * a directory that takes a clone's address can write a marker that matches,
+ * because it can read the address.
+ *
+ * The second line is a random token generated when the clone is recorded and
+ * stored in the manifest entry beside the inode. It is derivable from nothing,
+ * and it exists because **the inode is not enough on the ordinary Linux
+ * filesystem**. MEASURED on `ubuntu:24.04` on 2026-08-20, 300 trials per
+ * filesystem of delete-then-recreate at the same path:
+ *
+ *     ext4        same inode returned  300 / 300
+ *     overlayfs   same inode returned  300 / 300
+ *     tmpfs       same inode returned    0 / 300
+ *     APFS        same inode returned    0 / 300
+ *
+ * So `sameInode` cannot tell brigadier's clone from a directory that later took
+ * its path on ext4 — which is `ubuntu-latest`, and which is why
+ * `test/run-reclaim.test.ts`'s *"NEGATIVE CONTROL (b): same path, different
+ * directory"* passed on the owner's machine and failed on CI. **Birth time was
+ * measured dead as a replacement** the same day: `birthtimeNs` was IDENTICAL in
+ * 194/200 ext4 trials. A nonce is filesystem-independent and exact.
+ *
+ * WHAT IT DOES AND DOES NOT REACH. It defeats CONFUSION — a stale entry, a
+ * directory deleted and remade by something else, a marker reconstructed from
+ * the path — on every filesystem, which is what ruling 15 (b) and (c) are for.
+ * It does NOT defeat a forger who can read the run root: the token is a file
+ * they can read before deleting the directory, exactly as the inode is. That
+ * boundary is unchanged and `src/run/reclaim.ts`'s header states it: the reach
+ * is bounded by (a), containment by `realpath`, and by nothing else here.
+ *
+ * One writer and one reader for these bytes, in this file, because two copies
+ * of a format is how the two ends of a comparison come to mean different things.
+ */
+export function cloneMarkerBody(runId: string, item: number, nonce: string): string {
+  return `${runId}/${item}\nnonce=${nonce}\n`;
+}
+
+export interface CloneMarker {
+  /** The `<run id>/<item>` claim. `""` when the file was empty or unreadable. */
+  readonly claim: string;
+  /** The random token, or `undefined` for a marker written before nonces existed. */
+  readonly nonce: string | undefined;
+}
+
+export function parseCloneMarker(text: string): CloneMarker {
+  const lines = text.split("\n").map((line) => line.trim());
+  const claim = lines[0] ?? "";
+  const nonceLine = lines.find((line) => line.startsWith("nonce="));
+  return { claim, nonce: nonceLine === undefined ? undefined : nonceLine.slice("nonce=".length) };
+}
+
 export interface GitResult {
   code: number;
   stdout: string;

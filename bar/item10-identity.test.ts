@@ -62,6 +62,7 @@ const ARTIFACT: ArtifactObservations = {
   full: { code: 0, stdout: "", stderr: "" },
   markersFound: [],
   sizeBytes: 60 * 1_048_576,
+  emptyFloor: { bytes: 61_914_560, how: "compiled here by bun 1.3.14 and measured at 61914560 bytes" },
   versionProbe: { code: 0, stdout: `${BUILD_ID}\n\nbrigadier 0.0.0\n`, stderr: "" },
   binarySha256: SHA,
   warmMs: 8,

@@ -34,6 +34,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { derive } from "../lib/derive.ts";
+import { PAYLOAD_ACK_BUDGET_MS, PAYLOAD_OBSERVED } from "../lib/inflight.ts";
 import { appendLedger } from "../lib/ledger.ts";
 import { exitWhenOrphaned } from "../lib/orphan.ts";
 import type { Directive } from "../lib/plan.ts";
@@ -245,6 +246,42 @@ function plantPayloads(clone: string, from: string): void {
 }
 
 /**
+ * Hold the payloads on disk until the harness has read them, or give up.
+ *
+ * **Why this is here rather than a shorter sampling interval.** `plantPayloads`
+ * above is the last thing this directive does; brigadier then integrates and
+ * sweeps the clone, so the payload files exist for a window this fixture creates
+ * and neither party controls. MEASURED 2026-08-20, ten runs of item 2 against
+ * `bar/fakes/honest.ts` with `bun 1.3.14`: on darwin 25.5.0 at load1 1.81-2.15
+ * the sampler saw all three payloads 10/10 times; on linux under
+ * `oven/bun:1.3.14` it saw all three 1/10, two of three 1/10, and NONE 8/10.
+ * That is the ubuntu-latest failure recorded against `bar/fakes.test.ts`, and it
+ * is a defect in the instrument rather than a difference in the product.
+ *
+ * Ruling 62 (d) — bound the WORK, not the clock. This waits for the harness's
+ * own acknowledgement, which `bar/lib/inflight.ts` writes only after it has read
+ * all three payload files itself. So the observation cannot be missed, and it
+ * still cannot be faked: a fixture that wrote nothing would never be
+ * acknowledged.
+ *
+ * The budget exists so that a run with no sampler attached FAILS rather than
+ * hangs — the item then reports the payloads unseen, which is the honest
+ * outcome and the one it reported before this existed.
+ */
+function waitToBeObserved(clone: string): void {
+  const ack = join(clone, PAYLOAD_OBSERVED);
+  const deadline = Date.now() + PAYLOAD_ACK_BUDGET_MS;
+  while (Date.now() < deadline) {
+    if (existsSync(ack)) return;
+    Bun.sleepSync(5);
+  }
+  process.stderr.write(
+    `vendor: planted payloads in ${clone} and was never acknowledged within ${PAYLOAD_ACK_BUDGET_MS} ms — ` +
+      "nothing was sampling this run root, so the in-flight scan will report them unseen\n",
+  );
+}
+
+/**
  * A descendant that outlives its parent and publishes its pid.
  *
  * MEASURED 2026-08-17: macOS ships no `setsid` (util-linux), so the POSIX branch
@@ -318,6 +355,7 @@ function act(brief: Brief, config: VendorConfig): number {
       // about to fill with arbitrary bytes — a commit after would run it.
       commit(brief.clone, `receipt for ${directive.path}`);
       plantPayloads(brief.clone, directive.from);
+      waitToBeObserved(brief.clone);
       return 0;
     }
 

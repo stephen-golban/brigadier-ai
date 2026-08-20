@@ -8,6 +8,19 @@
  *   (b) recorded in a manifest written BEFORE anything was created, and
  *   (c) carrying a marker file brigadier wrote.
  *
+ * (b) AND (c) EACH GREW A TOKEN ON 2026-08-20, and the reason is a measurement
+ * rather than a refinement. The identity half of (b) was the INODE, and the
+ * inode identifies nothing on the ordinary Linux filesystem: MEASURED on
+ * `ubuntu:24.04` that date, 300 delete-then-recreate trials at one path, ext4
+ * returned the same inode **300/300** and overlayfs **300/300**, against 0/300
+ * on tmpfs and 0/300 on APFS. Birth time was measured dead as a replacement the
+ * same day (`birthtimeNs` identical in 194/200 ext4 trials). So brigadier now
+ * generates a random token when it records a clone, stores it in the entry and
+ * writes it into the marker, and the two must agree. Every other byte of (b) and
+ * (c) is derivable from the clone's own address; the token is derivable from
+ * nothing, which is the whole of what it adds. See `DirectoryProof.cloneNonce`
+ * for the compatibility fork this raised, how it was ruled, and what that costs.
+ *
  * All three, or refuse and report. There is no majority rule and no "two out of
  * three is close enough": each of the three fails in a different way and the
  * failures are not correlated. (a) alone is satisfied by the operator's own
@@ -83,8 +96,8 @@ import {
   readManifest,
   type RunManifest,
 } from "../isolation/index.ts";
-import { CLONE_SIGNATURE, runGit } from "../isolation/internal-git.ts";
-import { directoryIdentity, sameInode, usableIdentity, usableInode } from "../isolation/manifest.ts";
+import { CLONE_SIGNATURE, parseCloneMarker, runGit } from "../isolation/internal-git.ts";
+import { directoryIdentity, sameInode, usableIdentity, usableInode, usableNonce } from "../isolation/manifest.ts";
 import { RUN_DIR } from "../repo/layout.ts";
 import { REF_NAMESPACE, deleteRefArgv } from "../repo/refs.ts";
 
@@ -134,6 +147,35 @@ export interface DirectoryProof {
    * `false`: unproven retains.
    */
   readonly directoryIdentity: boolean | null;
+  /**
+   * Whether the clone's marker carries the random token the manifest entry
+   * recorded when it created the directory.
+   *
+   * RULED 2026-08-20. This is the third condition doing what `directoryIdentity`
+   * above cannot do on the ordinary Linux filesystem. MEASURED on `ubuntu:24.04`
+   * on 2026-08-20, 300 delete-then-recreate trials at one path per filesystem:
+   * ext4 **300/300** and overlayfs **300/300** returned the SAME inode, against
+   * 0/300 on tmpfs and 0/300 on APFS. So on `ubuntu-latest` a directory that
+   * took a clone's path was indistinguishable from the clone, and the negative
+   * control that says so — `test/run-reclaim.test.ts`'s *"same path, different
+   * directory"* — failed there and passed here for that reason and no other.
+   *
+   * WHAT MAKES A TOKEN DIFFERENT FROM AN INODE. Everything else about a clone is
+   * derivable from its address: the path, the run id, the item number, the
+   * marker's claim, and — on ext4 — the inode the filesystem hands the next
+   * directory created there. The token is derivable from nothing, so a directory
+   * that merely OCCUPIES the path cannot produce it.
+   *
+   * WHAT IT STILL DOES NOT REACH, for the same reason nothing else here does: a
+   * forger who can write inside `<run root>/r/` can also READ the marker before
+   * deleting the directory, and copy the token exactly as they copy the inode.
+   * This closes CONFUSION on every filesystem. It closes no forgery, and the
+   * header's argument stands unchanged — the reach is bounded by (a).
+   *
+   * `null` only where no manifest entry names this path, which (b) has already
+   * refused. An entry with no token, or a marker with no token, is `false`.
+   */
+  readonly cloneNonce: boolean | null;
   /**
    * Whether the manifest FILE was born before the directory, where the platform
    * can be shown to keep real birth times.
@@ -254,6 +296,7 @@ export function proveDeletableDirectory(candidate: string, options: DirectoryOpt
   //     it is for — so a later boot is the ordinary path through here, not an
   //     edge case, and comparing `dev` refused legitimate clones outright.
   let identityProof: boolean | null = null;
+  let nonceProof: boolean | null = null;
   if (manifest !== null && entry !== undefined) {
     const recorded = entry.identity;
     const actual = directoryIdentity(realPath);
@@ -314,18 +357,72 @@ export function proveDeletableDirectory(candidate: string, options: DirectoryOpt
     // against the manifest entry so that a marker copied from a sibling clone
     // does not stand in for this one.
     const expected = `${manifest.runId}/${entry.item}`;
-    let contents = "";
+    let raw = "";
     try {
-      contents = readFileSync(markerFile, "utf8").trim();
+      raw = readFileSync(markerFile, "utf8");
     } catch {
-      contents = "";
+      raw = "";
     }
-    if (contents !== expected) {
+    const marker = parseCloneMarker(raw);
+    if (marker.claim !== expected) {
       refusals.push(
-        `ruling 15 (c): the marker at ${markerFile} says ${JSON.stringify(contents)} and the ` +
+        `ruling 15 (c): the marker at ${markerFile} says ${JSON.stringify(marker.claim)} and the ` +
           `manifest records ${JSON.stringify(expected)}. A marker that does not name this clone ` +
           "is not this clone's marker.",
       );
+    }
+
+    // THE TOKEN. See `DirectoryProof.cloneNonce` for what it reaches and why the
+    // inode alone does not reach it on ext4.
+    //
+    // THE COMPATIBILITY FORK, RULED 2026-08-20 RATHER THAN LEFT OPEN. A run
+    // recorded by a brigadier from before this date has no token in its entry
+    // and none in its marker. The two available answers were to ACCEPT such an
+    // entry — reclaiming on the inode alone, as before — or to REFUSE it and
+    // report. **This refuses.**
+    //
+    // The reason is that accepting would reopen the hole for exactly the runs
+    // most likely to be stale: an old manifest is by definition one whose
+    // directory has had the longest time to be deleted and replaced, and it is
+    // on ext4 that the inode cannot tell. An exemption for old entries is
+    // therefore an exemption that applies precisely where the check is needed.
+    //
+    // THE ACCEPTED COST, stated rather than discovered: **directories recorded
+    // by an older brigadier are stranded.** They are never reclaimed, they
+    // accumulate under the run root, and the operator has to remove them by
+    // hand. That is disk, and the refusal below names the path and says so.
+    // The alternative cost is deleting a directory brigadier did not create,
+    // which is somebody's only copy of something. Ruling 63 already chose
+    // between these two in the same direction and said why — *a leaked process
+    // can still act, a retained directory is inert and holds someone's only
+    // copy* — and this is that ruling applied one level down.
+    if (!usableNonce(entry.nonce)) {
+      nonceProof = false;
+      refusals.push(
+        `ruling 15 (b): ${manifestPath} records ${realPath} with no usable clone token, so this ` +
+          "directory cannot be told apart from another one that later took its path. On ext4 and " +
+          "overlayfs the inode CANNOT tell them apart either — MEASURED 300/300 on 2026-08-20 — " +
+          "so nothing here is proved and the directory is retained. An entry written by a " +
+          "brigadier from before 2026-08-20 looks exactly like this, and is refused deliberately " +
+          `rather than exempted. REMEDY: check ${realPath} yourself and remove it by hand.`,
+      );
+    } else if (marker.nonce === undefined) {
+      nonceProof = false;
+      refusals.push(
+        `ruling 15 (c): ${manifestPath} records a clone token for ${realPath} and the marker at ` +
+          `${markerFile} carries none. brigadier writes the token into the marker when it creates ` +
+          "the clone, so a marker without one is not the marker brigadier wrote — it is a marker " +
+          "reconstructed from the path, which is all a later occupant of that path can do.",
+      );
+    } else if (marker.nonce !== entry.nonce) {
+      nonceProof = false;
+      refusals.push(
+        `ruling 15 (c): the marker at ${markerFile} carries clone token ${JSON.stringify(marker.nonce)} ` +
+          `and ${manifestPath} records ${JSON.stringify(entry.nonce)} for ${realPath}. A manifest ` +
+          "entry authorises the directory brigadier created, never whatever later occupied its path.",
+      );
+    } else {
+      nonceProof = true;
     }
   }
 
@@ -348,6 +445,7 @@ export function proveDeletableDirectory(candidate: string, options: DirectoryOpt
       manifest: manifestPath,
       markerFile,
       directoryIdentity: identityProof,
+      cloneNonce: nonceProof,
       manifestOlderThanDirectory: ordering,
     },
     refusals,

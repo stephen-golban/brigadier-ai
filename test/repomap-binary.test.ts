@@ -34,13 +34,35 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 const REPO = fileURLToPath(new URL("..", import.meta.url)).replace(/[\\/]$/, "");
 
 /**
- * v1's shipped binary, MEASURED at 63 MB where the tooling's "MB" is bytes /
- * 1048576 — so 63 MiB, stated in bytes here for the same reason
- * `bar/items/10-the-artifact-ships.ts` states it in bytes: 63.48 MB decimal is
- * over a 63 MB decimal budget while 60.54 MiB is under a 63 MiB one, and the
- * two readings disagree about the verdict.
+ * What brigadier's own code is allowed to add to the Bun runtime it ships in.
+ *
+ * **RULED 2026-08-20. This replaces a 63 MiB budget on the TOTAL, which is
+ * struck in the open** — `bar/items/10-the-artifact-ships.ts`'s
+ * `STRUCK_TOTAL_SIZE_BUDGET_BYTES` carries the strike, its three reasons and the
+ * promise it leaves unproven, and `BAR.md` carries the same. The short version:
+ * the 63 MiB figure was never measured on anything (amendment §16 — one
+ * unsourced sentence at `MEASUREMENT-SESSION.md:140`, commit `7e6a547`, the same
+ * sentence behind the two start-up clauses already struck), and it is
+ * unreachable on Linux by an amount no version of this product can close.
+ *
+ * MEASURED against `bun 1.3.14` on 2026-08-20, compiling `process.exit(0)` and
+ * this file's own `cli + repo map` entry point back to back on each platform:
+ *
+ *   | platform      | empty floor | cli + repo map | brigadier's contribution |
+ *   | darwin arm64  | 63,446,114  | 64,750,562     | **1,304,448** |
+ *   | linux arm64   | 93,694,096  | 94,939,280     | **1,245,184** |
+ *
+ * The floors differ by 47%; the contributions agree to 4.5%. So the budget is on
+ * the contribution, and the floor is subtracted by COMPILING an empty program
+ * here rather than by looking one up — a pinned floor would go stale silently
+ * the first time bun shipped.
+ *
+ * The number is 2.5 MiB: twice the largest measured contribution, by the same
+ * rule `REPOMAP_SIZE_CAP_BYTES` below already uses. It is a JUDGEMENT and not a
+ * measurement, and what it detects is growth in brigadier's own bytes — not the
+ * size of the download, which is Bun's and which nothing here budgets.
  */
-const SIZE_BUDGET_BYTES = 63 * 1_048_576;
+const BRIGADIER_SIZE_BUDGET_BYTES = 2_621_440;
 
 /**
  * What the repo map slice is allowed to add to the binary.
@@ -136,7 +158,14 @@ describe("the compiled binary loads the grammars", () => {
 });
 
 describe("and it still fits the binary budget", () => {
-  test("cli plus repo map is under 63 MiB, and the map's own cost is measured not assumed", () => {
+  test("brigadier's own contribution is within budget, and the map's own cost is measured not assumed", () => {
+    // The subtrahend, compiled here so that the two binaries being differenced
+    // come from one bun on one platform. See `BRIGADIER_SIZE_BUDGET_BYTES`.
+    const emptyEntry = join(workspace, "empty.ts");
+    writeFileSync(emptyEntry, "process.exit(0);\n");
+    const emptyBinary = join(workspace, "empty-floor");
+    compile(emptyEntry, emptyBinary);
+
     const withoutMap = join(workspace, "cli-only");
     compile(join(REPO, "src", "cli.ts"), withoutMap);
 
@@ -159,16 +188,29 @@ describe("and it still fits the binary budget", () => {
     const withMap = join(workspace, "cli-plus-map");
     compile(entry, withMap);
 
+    const floor = statSync(emptyBinary).size;
     const before = statSync(withoutMap).size;
     const after = statSync(withMap).size;
     const cost = after - before;
+    const contribution = after - floor;
 
     // Demonstrated negative: the two binaries really are different. A cost of
     // zero would mean the grammars were tree-shaken out and every assertion
     // about size below would be vacuous.
     expect(cost).toBeGreaterThan(REPOMAP_SIZE_FLOOR_BYTES);
     expect(cost).toBeLessThan(REPOMAP_SIZE_CAP_BYTES);
+
+    // AND THE SAME NEGATIVE FOR THE FLOOR. A floor equal to the artifact would
+    // make the contribution zero and this budget unfailable — which is exactly
+    // the shape a check acquires when nobody checks that its subtrahend is a
+    // different thing from its minuend.
+    const why =
+      `empty-program floor ${floor}; cli-only ${before}; cli+map ${after}; ` +
+      `brigadier's contribution ${contribution} bytes against a budget of ${BRIGADIER_SIZE_BUDGET_BYTES}. ` +
+      `The floor is ${((floor / after) * 100).toFixed(2)}% of the artifact and belongs to bun ${Bun.version} on ` +
+      `${process.platform}/${process.arch}; this budget deliberately makes no claim about it`;
+    expect(contribution, why).toBeGreaterThan(REPOMAP_SIZE_FLOOR_BYTES);
     // The number that decides whether this slice can ship.
-    expect(after).toBeLessThanOrEqual(SIZE_BUDGET_BYTES);
+    expect(contribution, why).toBeLessThanOrEqual(BRIGADIER_SIZE_BUDGET_BYTES);
   });
 });

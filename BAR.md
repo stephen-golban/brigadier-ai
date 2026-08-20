@@ -353,7 +353,59 @@ failure is known to reproduce without anyone having to construct it.
 Installs, runs and is removed cleanly on all three platforms by each host's **real** discovery path
 (ruling 42: `~/.agents/skills/`, and **no `bin/`-on-`PATH` outside Claude Code**). Runs with **node
 absent from `PATH`**. `brigadier licenses` prints the full attribution. The licence gate passes on
-the **released** artifact. Size within the measured budget.
+the **released** artifact. **Brigadier's own contribution to the artifact** is within budget.
+
+**STRUCK, in the open — the 63 MiB total-size clause.** Ruled 2026-08-20 by the coordinator under this
+document's *When an item cannot be met*, the owner having delegated the rulings for that round. It is
+the third strike on one sentence, and it is taken by exactly the procedure §23 and §24 used.
+
+- **It was never measured on anything.** Amendment §16 established that the figure enters this project
+  as **one unsourced sentence** at `MEASUREMENT-SESSION.md:140`, commit `7e6a547`, under the heading
+  *"Already measured — do not redo"*, and that v1's entire history at Release 0.2.1 contains no
+  "63 MB". That is the **same sentence and the same commit** behind the two start-up clauses already
+  struck.
+- **It is unreachable on Linux by an amount no version of this product can close.** MEASURED against
+  `bun 1.3.14` on 2026-08-20, a compiled program whose entire source is `process.exit(0)`:
+  **63,446,114 bytes** on darwin arm64 and **93,694,096 bytes** on linux. The Linux floor is 27.6 MB
+  over the budget before brigadier contributes a byte. §16's sentence about the cold-start clause holds
+  word for word: *there is no version of brigadier that fits, because `process.exit(0)` does not.*
+- **It budgeted a number this product does not set.** Ruling 5 mandates a `bun --compile` artifact, and
+  over 97% of every reading is the Bun runtime.
+
+**The promise therefore unproven:** that the released artifact is small in absolute terms. It is not,
+on any platform, and it never was. As with the two struck clauses, **the item prints the strike in its
+own output** on a passing run as well as a failing one.
+
+**WHAT REPLACES IT IS A DIFFERENT STATISTIC, NOT A REPAIRED FIGURE.** §24 refused to install a second
+number picked to clear the last reading, and that refusal is respected here in the only way that
+matters: the new budget is on **brigadier's own contribution** — `size(artifact)` minus an empty
+`process.exit(0)` binary compiled by **the same bun on the same platform** — and not on the total.
+MEASURED 2026-08-20 at load1 1.61–2.57, compiling both back to back in one process on each platform:
+
+| platform | empty floor | cli + repo map | brigadier's contribution |
+| --- | --- | --- | --- |
+| darwin arm64 | 63,446,114 B | 64,750,562 B | **1,304,448 B** |
+| linux arm64 | 93,694,096 B | 94,939,280 B | **1,245,184 B** |
+
+The two floors differ by 47%; the two contributions agree to 4.5%. The budget is **2,621,440 B
+(2.5 MiB)** — twice the larger contribution, by the same rule `test/repomap-binary.test.ts`'s existing
+grammar cap already uses. **That number is a judgement and not a measurement**, and it is printed
+beside every verdict it produces so it can be argued with against the table above rather than against
+v1's sentence.
+
+**The accepted cost, stated rather than discovered:**
+
+- **Nobody can check it from the artifact alone.** The struck clause needed one `ls -l`; this one needs
+  a bun of the same version on the same platform to compile a second binary. Where that is not
+  available the check is a blocking **`NOT-RUN`**, never a pass — the cost is a red leg on an exotic
+  host, not silence.
+- **The floor is unbudgeted, deliberately.** If Bun's runtime doubles, this check stays green while the
+  download doubles. That is the honest consequence of budgeting only what this product controls, and
+  the item prints the floor beside the contribution so a reader sees where the bytes actually are.
+- **One measurement is recorded with a discrepancy rather than smoothed over.** The 93,694,096-byte
+  Linux floor was recorded on 2026-08-20 against a container labelled **x64** and re-measured the same
+  day, to the byte, on **arm64**. The number is reproduced; the architecture label on the earlier
+  reading is not confirmed, and it is left standing as a discrepancy in the label.
 
 **STRUCK, in the open — the ≤70 ms cold-start clause.** Owner's decision, 2026-08-19, under this
 document's *When an item cannot be met*. Two reasons, both already in the record:
@@ -643,13 +695,18 @@ therefore unproven. It is never quietly disabled, never marked "known failing", 
 
 Scaling the bar down is the owner's call. Doing it silently is not available to anyone.
 
-### RECORDED 2026-08-20 — three things this bar cannot currently prove, none of them struck
+### RECORDED 2026-08-20 — three things this bar could not prove, and what happened to each
 
-These are put on the map by the paragraph above, which requires *a line saying which item, why, and
-what promise is therefore unproven*. **Nothing here is struck.** Each is red, honestly, and each
-needs an owner's decision — the same procedure that produced §23 and §24.
+These were put on the map by the paragraph above, which requires *a line saying which item, why, and
+what promise is therefore unproven*. Each was red, honestly, and each needed a decision by the same
+procedure that produced §23 and §24. **Two of the three were ruled on 2026-08-20**, the owner having
+delegated the rulings for that round; the rulings are recorded in the items they govern, and the
+entries below are kept so that what was decided can be read against what was known.
 
-**(a) Item 10's 63 MiB size clause is unreachable on Linux, and the figure was never measured.**
+**(a) RULED 2026-08-20 — item 10's 63 MiB size clause is STRUCK, and a budget on brigadier's own
+contribution replaces it.** The strike, its three reasons, the replacement statistic with its
+measurements and its accepted cost are recorded above, in item 10, where a reader looks. What follows
+is the evidence the ruling was taken on, unchanged.
 
 The budget's only provenance is one unsourced sentence at `MEASUREMENT-SESSION.md:140`, commit
 `7e6a547` — amendment §16 established that v1's entire history at Release 0.2.1 contains no
@@ -664,12 +721,40 @@ MEASURED against `bun 1.3.14` on 2026-08-20, a compiled program whose entire sou
 | darwin arm64 | 63,446,114 B (60.51 MiB) | under, with 2.49 MiB to spare |
 | linux x64 (`oven/bun:1.3.14`) | **93,694,096 B (89.35 MiB)** | **over by 27.6 MB** |
 
-brigadier's own contribution on darwin is 478,848 B — **0.75% of the artifact**. §16's sentence about
-the struck cold-start clause holds here word for word: *there is no version of brigadier that fits,
-because `process.exit(0)` does not.* **The promise unproven:** that the released artifact is within a
-size budget. On Linux it is not, and no change to this product can make it so. The word *measured*
-has been removed from the item's own output (ruling 62 (f)); the clause still gates, because striking
-it is the owner's.
+brigadier's own contribution on darwin is 478,848 B for `src/cli.ts` alone — **0.75% of the artifact**
+— and 1,304,448 B once the repo map is wired in, which is the figure the replacement budget is set
+against. §16's sentence about the struck cold-start clause holds here word for word: *there is no
+version of brigadier that fits, because `process.exit(0)` does not.* **The promise unproven:** that
+the released artifact is within a size budget in absolute terms. On Linux it is not, and no change to
+this product can make it so — which is why the clause was struck rather than re-measured.
+
+**(b) RULED 2026-08-20 — ruling 15's directory identity was defeated on ext4 and overlayfs, and a
+clone token now carries it.** brigadier generates a random 128-bit token when it records a clone,
+stores it in the manifest entry beside the inode, and writes it into the clone's own marker file; a
+directory is brigadier's only if the two agree. Every other byte of ruling 15 (b) and (c) is derivable
+from the clone's address — the path, the run id, the item number, and on ext4 the inode the filesystem
+hands the next directory created there. The token is derivable from nothing.
+
+**What it closes:** CONFUSION, on every filesystem — a stale entry, a directory deleted and remade by
+something else, a marker reconstructed from the path. `test/run-reclaim.test.ts` now drives the ext4
+case directly by forcing the recorded inode to the impostor's, which is what ext4 does for free 300
+times in 300, and the directory is still refused.
+
+**What it does not close:** a forgery. Someone who can write inside `<run root>/r/` can read the token
+before deleting the directory, exactly as they can read the inode. The `KNOWN LIMIT` tests assert that
+this is still true, so the boundary cannot drift silently; `src/run/reclaim.ts`'s header argument is
+unchanged — the reach is bounded by (a), containment by `realpath`, and by nothing else.
+
+**The compatibility fork, ruled rather than left open.** A run recorded by a brigadier from before
+2026-08-20 has no token. It is **refused and reported**, not accepted. An old entry is by definition
+the one whose directory has had the longest time to be replaced, so an exemption for age would apply
+exactly where the check is needed. **The accepted cost: those directories are stranded** — never
+reclaimed, accumulating under the run root, removable only by hand. The refusal names the path and
+says so. The opposite cost is deleting a directory brigadier did not create, and ruling 63 already
+chose between these two in the same direction and said why: *a leaked process can still act, a
+retained directory is inert and holds someone's only copy.*
+
+The evidence the ruling was taken on follows, unchanged.
 
 **(b) Ruling 15's directory-identity proof is defeated on ext4 and overlayfs.**
 
@@ -683,14 +768,17 @@ directory is brigadier's only if the inode matches what the manifest recorded. M
 | overlayfs | **300 / 300** |
 | tmpfs | 0 / 300 |
 
-APFS is 0/300, which is why this has always passed on the owner's machine and fails on
+APFS is 0/300, which is why this had always passed on the owner's machine and failed on
 `ubuntu-latest` (`test/run-reclaim.test.ts`, *"NEGATIVE CONTROL (b): same path, different directory"*).
 **Birth time does not rescue it:** MEASURED the same day, `birthtimeNs` was IDENTICAL in 194/200 ext4
 trials, so adding it would be a fix that does not fix — reported as the negative result it is rather
-than shipped. **The promise unproven:** that brigadier will not delete a directory it did not create
-which has taken a clone's path, marker and manifest entry. It holds on APFS and tmpfs; on the
-ordinary Linux filesystem the check cannot discriminate. The test is left FAILING rather than
-weakened — its own comment already called this *"a limit worth failing loudly on"*, and it was right.
+than shipped, and it is not to be proposed again. **The promise that was unproven:** that brigadier
+will not delete a directory it did not create which has taken a clone's path, marker and manifest
+entry. It held on APFS and tmpfs; on the ordinary Linux filesystem the check could not discriminate.
+The test was left FAILING rather than weakened — its own comment called this *"a limit worth failing
+loudly on"*, and it was right. **That test's fixture asserted a fact about the FILESYSTEM** — that a
+recreated directory gets a new inode — which is false on ext4, so it has been rewritten to assert on
+the token, which is exact everywhere, and paired with a forced-inode-reuse case so nothing is weaker.
 
 **(c) `macos-latest` has 7 GiB, so every RAM-bound item is bound there.**
 

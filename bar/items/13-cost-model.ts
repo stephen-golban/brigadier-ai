@@ -516,18 +516,54 @@ const item: BarItem = {
       const evidence = await gatherRunEvidence(repo, report);
       const integrated = verifyIntegration(evidence);
 
-      // C: the HARD ceiling, set below what one batch costs so that it fires
-      // while items are running. Its own repository, because the two runs are
+      // C: the HARD ceiling, set below what ONE ITEM costs so that it fires
+      // while that item is running. Its own repository, because the two runs are
       // two experiments and a shared deliverable branch would mix them.
+      //
+      // TWO THINGS CHANGED HERE ON 2026-08-20, AND BOTH WERE MEASURED RATHER
+      // THAN REASONED. This arm passed on the owner's machine and failed on
+      // every CI leg, and the failure was recorded as a calibration fragility —
+      // #44's 15x between identical runs, with the ceilings assumed pinned from
+      // an earlier run. **That attribution was wrong**, and it is corrected here
+      // rather than reworded: the ceilings were already calibrated per run, and
+      // the two uncapped runs measured 425 (linux) against 438 (darwin) — a 3%
+      // spread, not 15x.
+      //
+      // MEASURED 2026-08-20 against `bun 1.3.14`, this item driven against
+      // `bar/fakes/honest.ts` on both platforms:
+      //
+      //   darwin 25.5.0, 24 GiB, feasibility cap 5 workers
+      //     hard run: hardCeilingHit=true, all four items `cancelled`  PASS
+      //   linux, oven/bun:1.3.14 under Docker, feasibility cap 1 worker
+      //     hard run: hardCeilingHit=false, cheap=integrated and the
+      //     other three `unrun`, total spend 101 against a 170 ceiling  FAIL
+      //
+      // The cause is this arm's OWN soft ceiling. It was set at half the hard
+      // one, so the soft ceiling stopped dispatch first and the total could only
+      // reach the hard ceiling by OVERSHOOT from work already in flight. With
+      // five workers running four items that overshoot is certain; with one
+      // worker there is only ever one item in flight and the run finishes under
+      // the ceiling. So the arm was measuring the host's worker count, which is
+      // #22's 7 GiB reaching item 13 by a second route nobody had traced.
+      //
+      // The repair is to stop putting a control in front of the one under test.
+      // No soft ceiling is passed at all — `ceilingRefusal` returns `null` when
+      // only one of the pair is given, so nothing is degraded and no pair
+      // warning prints — and the hard ceiling is calibrated against what ONE
+      // item costs rather than what the whole plan costs. Half an item is above
+      // the pre-dispatch spend and below the first item's completion, so the
+      // ceiling fires with work genuinely running on a one-worker host and on a
+      // five-worker one alike.
       const hardRepo = join(ctx.workdir, "hard-repo");
       await makeRepo(hardRepo, { "README.md": "base\n" });
       await plantSeeds(hardRepo, seeds);
-      const hardCeiling = Math.max(2, Math.floor(spent * 0.4));
+      const perItem = spent / items.length;
+      const hardCeiling = Math.max(2, Math.floor(perItem / 2));
       const hardRun = await ctx.run(
         [
           "run", "--plan", planPath, "--repo", hardRepo,
           "--run-root", join(ctx.workdir, "runs-hard"),
-          "--soft-ceiling", String(Math.max(1, Math.floor(hardCeiling / 2))), "--hard-ceiling", String(hardCeiling),
+          "--hard-ceiling", String(hardCeiling),
         ],
         { env, timeoutMs: HARNESS_RUN_TIMEOUT_MS },
       );
@@ -535,8 +571,9 @@ const item: BarItem = {
       const hardEvidence = await gatherRunEvidence(hardRepo, hardReport);
       did.push(
         `drove the same plan three times: no ceilings; a soft ceiling of ${softCeiling} with the hard one out of reach; ` +
-          `and a hard ceiling of ${hardCeiling}. The soft one must stop DISPATCH and the hard one must CANCEL, and ` +
-          "one run cannot show both",
+          `and a hard ceiling of ${hardCeiling} with NO soft ceiling — calibrated from ${Math.round(perItem)} tokens per ` +
+          `item rather than from the plan's ${spent}, so that it fires while the first item is still running on a host ` +
+          "that can only run one. The soft one must stop DISPATCH and the hard one must CANCEL, and one run cannot show both",
       );
 
       checks.absorb(judgeCost({

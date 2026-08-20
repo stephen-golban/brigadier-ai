@@ -19,7 +19,7 @@
  * difference is the whole of ruling 19's bounded work queue.
  */
 
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   HARNESS_RUN_TIMEOUT_MS,
@@ -120,6 +120,50 @@ export interface Flight {
 const PAYLOAD_PATHS = [join(".git", "hooks", "pre-commit"), join(".git", "hooks", "reference-transaction"), join(".git", "bar-fsmonitor")];
 
 /**
+ * Written into a clone once this sampler has seen ALL of `PAYLOAD_PATHS` in it,
+ * carrying the marker the caller asked for.
+ *
+ * **The one place this module writes rather than reads, and it is a deliberate
+ * trade.** Until 2026-08-20 the payload scan was a pure race, and a race it lost
+ * far more often than it won.
+ *
+ * MEASURED 2026-08-20, ten runs of `bar/items/02-the-lane-holds.ts` per platform
+ * against `bar/fakes/honest.ts`, `bun 1.3.14`:
+ *
+ *   darwin 25.5.0, load1 1.81-2.15   10/10 saw all three payloads   item PASS 10/10
+ *   linux, oven/bun:1.3.14 (Docker)   1/10 saw all three,
+ *                                     1/10 saw two of three,
+ *                                     8/10 saw NONE                 item PASS 1/10
+ *
+ * The window is the fixture's, not the product's: `bar/fakes/vendor.ts`'s
+ * `plant-git-payloads` plants the files as the LAST thing it does before
+ * returning, and brigadier then integrates and sweeps the clone. On Linux that
+ * window is routinely shorter than the 40 ms sampling interval. So the CI
+ * failure recorded as *"an in-flight scan that found nothing on Linux"* is a
+ * defect in this instrument, and shortening the interval would only be a better
+ * grade of luck — the sampler's own rule, that sampling luck must not be able to
+ * fail a correct product, applies to itself.
+ *
+ * Ruling 62 (d): bound the WORK, not the clock. The planting fixture now waits
+ * for this acknowledgement instead of racing away from it, so the observation is
+ * guaranteed to happen while the payloads are on disk.
+ *
+ * **What it costs.** The sampler is no longer a pure observer of the run: it
+ * writes one file into a clone the product owns. That file is inside `.git`, is
+ * never staged and never committed, and is written only after this harness has
+ * independently read all three payload files itself — so it acknowledges an
+ * observation rather than standing in for one. A fixture that wrote the marker
+ * without planting anything would never be acknowledged, would time out, and the
+ * item would fail exactly as before. This is NOT *"a receipt the planting party
+ * wrote"*: the receipt says only WHEN to look; the filesystem still says what is
+ * there.
+ */
+export const PAYLOAD_OBSERVED = join(".git", "bar-payloads-observed");
+
+/** How long a planting fixture waits to be acknowledged before proceeding anyway. */
+export const PAYLOAD_ACK_BUDGET_MS = 20_000;
+
+/**
  * Payload files planted inside a clone, read from the filesystem.
  *
  * Separate from the git probes below because it has to run on EVERY sample: a
@@ -139,7 +183,26 @@ function scanPayloads(path: string, payloadMarker?: string): string[] {
       // Swept between the listing and the read.
     }
   }
+  if (payloadsSeen.length === PAYLOAD_PATHS.length) acknowledgePayloads(path, payloadMarker);
   return payloadsSeen;
+}
+
+/**
+ * Release the planting fixture, having read all three payloads ourselves.
+ *
+ * Best-effort and idempotent: the clone may be swept between the read above and
+ * this write, and a clone that is already gone needs no releasing. The marker is
+ * written into the file so that a stale acknowledgement from an earlier run
+ * cannot release a later one.
+ */
+function acknowledgePayloads(clone: string, payloadMarker: string): void {
+  const ack = join(clone, PAYLOAD_OBSERVED);
+  try {
+    if (existsSync(ack) && readFileSync(ack, "utf8").includes(payloadMarker)) return;
+    writeFileSync(ack, `${payloadMarker}\n`);
+  } catch {
+    // Swept, or read-only. The fixture's wait is bounded and will proceed.
+  }
 }
 
 function inspectClone(path: string, payloadMarker?: string, operatorHead?: string): CloneSample {

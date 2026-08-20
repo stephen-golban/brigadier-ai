@@ -1,11 +1,30 @@
-# Owner's questions — collected 2026-08-20, none of them ruled on
+# Owner's questions — collected 2026-08-20 by the CI round, ruled 2026-08-20 by the next one
 
 Written by the CI round (branch `gauntlet/ci`). Everything here was found while answering *why has CI
-never passed on any platform*. **None of it is decided.** Each entry states the question, the options,
-and what each option costs, and nothing below has been acted on in the tree.
+never passed on any platform*. Each entry states the question, the options, and what each option costs.
+
+**STRUCK entries were RULED on 2026-08-20 by the coordinator, the owner having delegated the rulings
+for that round.** A struck entry is not a deleted one: the ruling lives in the file the decision
+governs — that is what ruling on something means here — and the entry is kept, marked, and pointed at
+it, so the reasoning that was available at the time can be read against what was decided. Entries not
+yet marked are still open and still red.
 
 The rule this file obeys is `BAR.md`'s: *"Scaling the bar down is the owner's call. Doing it silently
-is not available to anyone."* Three of these would scale something down. They are red in the meantime.
+is not available to anyone."*
+
+| # | subject | state |
+| --- | --- | --- |
+| 1 | detection cache: does `run` trust it | open |
+| 2 | does `brigadier detect` get a ruling | open |
+| 3 | the 63 MiB size clause | **RULED — struck, and replaced by a budget on brigadier's own contribution** |
+| 4 | ruling 15's directory identity on ext4 | **RULED — a clone token, old entries refused** |
+| 5 | `Check` as a discriminated union | open |
+| 6 | eleven Windows tests that render `(pass)` | open |
+| 7 | an `execute` that asked no permission | open — recorded, not concluded |
+| 8 | the verifier's `Authentication required` | open — still unexplained |
+| 9 | Windows: the bar harness grades blind | **experiment pushed; see below** |
+| 10 | `bar/fakes.test.ts` on the POSIX legs | **DIAGNOSED — both open rows, and one attribution withdrawn** |
+| 11 | `bar/lib/orphan.test.ts` flakiness | open — a third distinct assertion recorded |
 
 ---
 
@@ -53,7 +72,20 @@ ruling was invented here.
 
 ---
 
-## 3. Is item 10's 63 MiB size clause struck, like its two siblings?
+## 3. ~~Is item 10's 63 MiB size clause struck, like its two siblings?~~ RULED 2026-08-20
+
+**RULED: STRUCK, in the open, and replaced by a budget on a different statistic.** The ruling, its
+three reasons, the replacement, the measurements it is set against and its accepted cost are recorded
+in `BAR.md` under item 10 and in `bar/items/10-the-artifact-ships.ts`'s
+`STRUCK_TOTAL_SIZE_BUDGET_BYTES` / `BRIGADIER_SIZE_BUDGET_BYTES`. In one line: the budget is now
+`size(artifact) − size(an empty` `process.exit(0)` `binary compiled by the same bun on the same
+platform)`, capped at 2,621,440 B, because that is the only part of the number this project sets.
+
+MEASURED 2026-08-20 with `bun 1.3.14`, both platforms, compiling both binaries back to back:
+darwin arm64 63,446,114 → 64,750,562 = **1,304,448 B of brigadier**; linux arm64 93,694,096 →
+94,939,280 = **1,245,184 B**. The floors differ by 47%, the contributions by 4.5%.
+
+The reasoning as it stood before the ruling follows.
 
 Full evidence in `BAR.md` under *When an item cannot be met*, entry (a). In short:
 
@@ -76,7 +108,27 @@ a strike in substance, so it was not taken.
 
 ---
 
-## 4. Ruling 15's directory identity is defeated on ext4 — what replaces the inode?
+## 4. ~~Ruling 15's directory identity is defeated on ext4 — what replaces the inode?~~ RULED 2026-08-20
+
+**RULED: a clone token, and old manifests are refused rather than accepted.** The ruling is recorded in
+`src/isolation/manifest.ts` (`ManifestClone.nonce`), `src/isolation/internal-git.ts`
+(`cloneMarkerBody`), `src/run/reclaim.ts` (`DirectoryProof.cloneNonce`, which carries the fork and its
+cost) and `BAR.md` entry (b). brigadier generates a random 128-bit token when it records a clone,
+stores it in the entry and writes it into the marker; the two must agree.
+
+**The fork this file called "genuinely the owner's" is ruled: REFUSE.** An entry with no token is
+unproven and the directory is retained, with a refusal that names the path and gives the remedy.
+**Accepted cost: directories recorded by an older brigadier are stranded and must be removed by hand.**
+An old entry is by definition the one whose directory has had longest to be replaced, so an exemption
+for age applies exactly where the check is needed — and ruling 63 already chose this direction: *a
+leaked process can still act, a retained directory is inert and holds someone's only copy.*
+
+`test/run-reclaim.test.ts` gains the ext4 case driven directly (the recorded inode forced to the
+impostor's, which is what ext4 does 300/300), the compatibility fork, and a mismatched-token control.
+The `KNOWN LIMIT` tests are updated to forge a token as well, so what the token does NOT reach — a
+forger who can write the run root — stays asserted rather than argued.
+
+The reasoning as it stood before the ruling follows.
 
 Full evidence in `BAR.md`, entry (b). MEASURED 2026-08-20 on `ubuntu:24.04`, 300 trials of
 delete-then-recreate at the same path: **ext4 300/300 and overlayfs 300/300 return the same inode**;
@@ -193,7 +245,41 @@ Windows-only branch is the likely fix and it needs a Windows box to confirm.
 
 ---
 
-## 10. `bar/fakes.test.ts` fails on CI for a DIFFERENT reason on each platform — two of three undiagnosed
+## 10. ~~`bar/fakes.test.ts` fails on CI for a DIFFERENT reason on each platform~~ DIAGNOSED 2026-08-20
+
+**Both open rows are diagnosed, one of them against this file's own guess.** Measured by reproducing
+the CI failures locally in a Linux container — all three appear there in one 27-second run — rather
+than from logs.
+
+**Ubuntu's item 2: a RACE in the harness, not a difference in the product.** `bar/fakes/vendor.ts`'s
+`plant-git-payloads` plants the payload files as the LAST thing it does before returning; brigadier
+then integrates and sweeps the clone. The sampler polls at 40 ms, and the window is usually shorter
+than that on Linux. MEASURED 2026-08-20, ten runs of item 2 against `bar/fakes/honest.ts` per
+platform: **darwin 10/10 saw all three payloads; linux 1/10 saw all three, 1/10 saw two of three,
+8/10 saw NONE.** Fixed by ruling 62 (d) — bound the work, not the clock: the sampler writes an
+acknowledgement once it has read all three files ITSELF, and the planting fixture waits for it, with a
+bounded budget so a run with no sampler fails rather than hangs. Re-measured: **linux 10/10, darwin
+10/10.** The cost — the sampler now writes one file into a clone — is recorded at
+`bar/lib/inflight.ts`'s `PAYLOAD_OBSERVED`.
+
+**macOS's item 13: the arm's OWN soft ceiling, on a host that can run one worker.
+THIS FILE'S ATTRIBUTION BELOW IS WITHDRAWN.** It reads *"the fixture's ceilings are pinned from an
+earlier run's spend and #44 measured 15× variance"*. The ceilings were already calibrated per run, and
+the two uncapped runs measured **425 (linux) against 438 (darwin) — a 3% spread, not 15×.** The real
+cause: the hard arm passed `--soft-ceiling hard/2`, so the soft ceiling stopped dispatch first and the
+total could only reach the hard ceiling by OVERSHOOT from work already in flight. MEASURED 2026-08-20:
+on darwin (24 GiB, feasibility cap 5) all four items were in flight, the overshoot was certain and the
+hard ceiling fired, all four `cancelled`, PASS; under Docker (cap 1) only one item was ever in flight,
+the run finished at 101 against a 170 ceiling, FAIL. **It was measuring the host's worker count** —
+§22's 7 GiB reaching item 13 by a second route nobody had traced. Fixed by passing no soft ceiling in
+that arm and calibrating the hard one from what ONE item costs. Re-measured: linux PASS, darwin 3/3
+PASS.
+
+**macOS's item 4 is unchanged and unfixable here:** it is §22's 7 GiB, recorded in `BAR.md` (c).
+
+The state as it stood before the diagnosis follows.
+
+### The original entry
 
 Not a question so much as the honest state of the last blocking test on the POSIX legs. It passes on
 the owner's machine (14/14, and inside `bun run gates` at 1,716 pass / 0 fail), and fails on CI.

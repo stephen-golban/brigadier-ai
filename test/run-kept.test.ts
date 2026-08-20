@@ -46,8 +46,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CLONE_SIGNATURE } from "../src/isolation/internal-git.ts";
-import { manifestPath, recordClone } from "../src/isolation/manifest.ts";
+import { CLONE_SIGNATURE, cloneMarkerBody } from "../src/isolation/internal-git.ts";
+import { manifestPath, newCloneNonce, recordClone } from "../src/isolation/manifest.ts";
 import { RUN_DIR } from "../src/repo/layout.ts";
 import { itemRef } from "../src/repo/refs.ts";
 import { isAlive, type ProcessTable } from "../src/run/processes.ts";
@@ -101,10 +101,15 @@ async function gitCode(cwd: string, ...args: string[]): Promise<number> {
 async function makeClone(item: number): Promise<string> {
   const dir = join(runRoot, RUN_DIR, runId, String(item));
   mkdirSync(join(runRoot, RUN_DIR, runId), { recursive: true });
+  // The clone token, recorded with the entry and written into the marker below,
+  // exactly as `prepareClone` does it. Ruling 15's inode is vacuous on ext4
+  // (MEASURED 300/300 on 2026-08-20) and this is what replaces it, so a fixture
+  // that omitted it would be planting a clone the product refuses to reclaim.
+  const nonce = newCloneNonce();
   recordClone(
     manifestPath(runRoot, RUN_DIR, runId),
     { runId, runRoot, createdAt: Date.now(), clones: [] },
-    { item, dir, createdAt: Date.now() },
+    { item, dir, createdAt: Date.now(), nonce },
   );
   await git(scratch, "clone", "--local", "--no-hardlinks", "--no-checkout", "-q", repo, dir);
   await git(dir, "config", "user.email", "worker@example.com");
@@ -112,7 +117,7 @@ async function makeClone(item: number): Promise<string> {
   await git(dir, "fetch", "--no-tags", repo, "+refs/heads/main:refs/heads/brigadier-base");
   await git(dir, "checkout", "-q", "-b", "work", "brigadier-base");
   await git(dir, "remote", "remove", "origin");
-  writeFileSync(join(dir, ".git", CLONE_SIGNATURE), `${runId}/${item}\n`);
+  writeFileSync(join(dir, ".git", CLONE_SIGNATURE), cloneMarkerBody(runId, item, nonce));
   mkdirSync(join(runRoot, RUN_DIR, runId, "state", String(item)), { recursive: true });
   writeFileSync(join(runRoot, RUN_DIR, runId, "state", String(item), "token"), "nonce\n");
   return dir;
@@ -250,13 +255,14 @@ describe("what decides retention is git, not the record", () => {
     // says which unknown rather than reporting a clean sweep.
     const dir = join(runRoot, RUN_DIR, runId, "1");
     mkdirSync(join(runRoot, RUN_DIR, runId), { recursive: true });
+    const unreadableNonce = newCloneNonce();
     recordClone(
       manifestPath(runRoot, RUN_DIR, runId),
       { runId, runRoot, createdAt: Date.now(), clones: [] },
-      { item: 1, dir, createdAt: Date.now() },
+      { item: 1, dir, createdAt: Date.now(), nonce: unreadableNonce },
     );
     mkdirSync(join(dir, ".git"), { recursive: true });
-    writeFileSync(join(dir, ".git", CLONE_SIGNATURE), `${runId}/1\n`);
+    writeFileSync(join(dir, ".git", CLONE_SIGNATURE), cloneMarkerBody(runId, 1, unreadableNonce));
     writeFileSync(join(dir, "work.txt"), "the worker's only copy\n".repeat(60));
     plantRecord();
 

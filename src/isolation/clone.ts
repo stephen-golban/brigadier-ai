@@ -82,13 +82,14 @@ import type { BaseState } from "./base.ts";
 import {
   CLONE_SIGNATURE,
   adoptConfig,
+  cloneMarkerBody,
   git,
   markReleased,
   unmarkReleased,
   type CloneAuthority,
   type Hermetic,
 } from "./internal-git.ts";
-import { manifestPath, recordClone } from "./manifest.ts";
+import { manifestPath, newCloneNonce, recordClone } from "./manifest.ts";
 import { resetDirectory, writeRegularFile } from "./safe-fs.ts";
 
 const BRAND: unique symbol = Symbol("brigadier.isolation.clone");
@@ -100,6 +101,8 @@ interface CloneFacts {
   readonly parentRepo: string;
   readonly runId: string;
   readonly item: number;
+  /** Ruling 15's directory identity, after the inode was measured vacuous on ext4. */
+  readonly cloneNonce: string;
   readonly baseSha: string;
   /** Per-item brigadier state, outside the clone: token, hooks sink, empty global config. */
   readonly stateDir: string;
@@ -254,10 +257,15 @@ export async function prepareClone(spec: CloneSpec): Promise<PreparedClone> {
   // unlike an in-clone signature, which `git gc` alone erases half of.
   const manifest = manifestPath(intendedRoot, RUN_DIR, base.runId);
   mkdirSync(dirname(manifest), { recursive: true });
+  // The nonce is generated HERE and recorded with the entry, before the
+  // directory exists. It goes into the clone's marker a few lines below, and
+  // matching the two is what tells this directory from another one that later
+  // takes its path — which the inode cannot do on ext4. See `ManifestClone.nonce`.
+  const cloneNonce = newCloneNonce();
   recordClone(
     manifest,
     { runId: base.runId, runRoot: intendedRoot, createdAt: Date.now(), clones: [] },
-    { item, dir, createdAt: Date.now() },
+    { item, dir, createdAt: Date.now(), nonce: cloneNonce },
   );
 
   mkdirSync(dir, { recursive: true });
@@ -316,13 +324,14 @@ export async function prepareClone(spec: CloneSpec): Promise<PreparedClone> {
     hermetic,
     args: ["clone", "--local", "--no-hardlinks", "--no-checkout", base.repo, realDir],
   });
-  writeRegularFile(join(realDir, ".git", CLONE_SIGNATURE), `${base.runId}/${item}\n`);
+  writeRegularFile(join(realDir, ".git", CLONE_SIGNATURE), cloneMarkerBody(base.runId, item, cloneNonce));
 
   const facts = {
     dir: realDir,
     parentRepo: base.repo,
     runId: base.runId,
     item,
+    cloneNonce,
     baseSha: base.sha,
     stateDir,
     hermetic,
@@ -408,7 +417,10 @@ export async function recycleClone(
   // chose. Refuse, never repair.
   writeRegularFile(restore.knownGoodConfigPath, clone.knownGoodConfig);
   writeRegularFile(restore.configPath, clone.knownGoodConfig);
-  writeRegularFile(join(clone.dir, ".git", CLONE_SIGNATURE), `${clone.runId}/${clone.item}\n`);
+  // The SAME nonce. A recycle re-enters the directory this run already recorded,
+  // under the same manifest entry, so rewriting the marker with a fresh token
+  // would make the entry stop matching its own clone.
+  writeRegularFile(join(clone.dir, ".git", CLONE_SIGNATURE), cloneMarkerBody(clone.runId, clone.item, clone.cloneNonce));
 
   // Only now is the directory brigadier's again.
   unmarkReleased(clone.dir);

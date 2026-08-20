@@ -25,10 +25,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CLONE_SIGNATURE } from "../src/isolation/internal-git.ts";
+import { CLONE_SIGNATURE, cloneMarkerBody } from "../src/isolation/internal-git.ts";
 import {
   directoryIdentity,
   manifestPath,
+  newCloneNonce,
   recordClone,
   usableIdentity,
   type RunManifest,
@@ -64,14 +65,22 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
  * `omit` removes exactly one of them, which is what makes the negatives below
  * negatives rather than three unrelated tests.
  */
+/** The token `plantClone` last recorded, so a test can plant a mismatching one. */
+const plantedNonces = new Map<string, string>();
+
 function plantClone(
   runId: string,
   item: number,
-  omit?: "manifest" | "marker",
+  omit?: "manifest" | "marker" | "nonce" | "marker-nonce",
 ): string {
   const dir = join(runRoot, RUN_DIR, runId, String(item));
   const manifest = manifestPath(runRoot, RUN_DIR, runId);
   mkdirSync(join(runRoot, RUN_DIR, runId), { recursive: true });
+  // `omit: "nonce"` is an entry from a brigadier older than 2026-08-20: every
+  // other byte is right and there is no clone token. It is a case the product
+  // has to answer, so the fixture has to be able to produce it.
+  const nonce = newCloneNonce();
+  plantedNonces.set(`${runId}/${item}`, nonce);
   if (omit !== "manifest") {
     // Written BEFORE the directory exists, which is the ordering the ruling
     // requires and the ordering `prepareClone` uses. `recordClone` is also what
@@ -79,12 +88,18 @@ function plantClone(
     recordClone(
       manifest,
       { runId, runRoot, createdAt: Date.now(), clones: [] },
-      { item, dir, createdAt: Date.now() },
+      { item, dir, createdAt: Date.now(), ...(omit === "nonce" ? {} : { nonce }) },
     );
   }
   mkdirSync(join(dir, ".git"), { recursive: true });
   writeFileSync(join(dir, "work.txt"), "x".repeat(4096));
-  if (omit !== "marker") writeFileSync(join(dir, ".git", CLONE_SIGNATURE), `${runId}/${item}\n`);
+  if (omit === "marker") return dir;
+  writeFileSync(
+    join(dir, ".git", CLONE_SIGNATURE),
+    omit === "marker-nonce" || omit === "nonce"
+      ? `${runId}/${item}\n`
+      : cloneMarkerBody(runId, item, nonce),
+  );
   return dir;
 }
 
@@ -325,32 +340,120 @@ describe("all three conditions, or refuse and report", () => {
     // shape that shows it discriminates rather than always refusing. Nothing
     // about the manifest changes between the two verdicts; the only thing that
     // changes is which directory is standing at the path.
+    //
+    // REWRITTEN 2026-08-20, and the rewrite is the point. This test used to
+    // assert `now.ino !== recorded.ino` — that the filesystem had handed the
+    // replacement a different inode — and it FAILED on `ubuntu-latest` for a
+    // reason that was never about the product: MEASURED on `ubuntu:24.04` on
+    // 2026-08-20, 300 delete-then-recreate trials at one path, ext4 returned the
+    // SAME inode 300/300 and overlayfs 300/300, against 0/300 on tmpfs and
+    // 0/300 on APFS. The old assertion was therefore a claim about the
+    // filesystem, and on the ordinary Linux one it is false. What the product
+    // now carries is a clone token, and the token is what this asserts on: it is
+    // exact on every filesystem, so the fixture no longer has to hope.
     const dir = plantClone("swapped", 1);
     const before = proveDeletableDirectory(dir, { runRoot });
     expect(before.deletable).toBe(true);
     expect(before.proof.directoryIdentity).toBe(true);
+    expect(before.proof.cloneNonce).toBe(true);
     const recorded = directoryIdentity(dir);
 
     // brigadier's clone is removed and something else takes its path, marker,
     // name and all. Every other proof still passes: it is inside the run root,
     // a manifest entry names it, and the marker names this run and this item.
+    // What the occupant CANNOT reconstruct from the path is the token, because
+    // the token was never derivable from anything it can see.
     rmSync(dir, { recursive: true, force: true });
     mkdirSync(join(dir, ".git"), { recursive: true });
     writeFileSync(join(dir, ".git", CLONE_SIGNATURE), "swapped/1\n");
     writeFileSync(join(dir, "operators-data.txt"), "somebody else's, at brigadier's address\n");
     const now = directoryIdentity(dir);
-    // The fixture has to be real, or this test proves nothing: a filesystem
-    // that handed back the same inode number would make the two directories
-    // indistinguishable here, and that is a limit worth failing loudly on.
     expect(now).not.toBeNull();
-    expect(now!.ino).not.toBe(recorded!.ino);
 
     const after = proveDeletableDirectory(dir, { runRoot });
-    expect(after.proof.directoryIdentity).toBe(false);
     expect(after.deletable).toBe(false);
-    expect(after.refusals.join(" ")).toContain("never whatever later occupied its path");
+    expect(after.proof.cloneNonce).toBe(false);
+    expect(after.refusals.join(" ")).toContain("carries none");
     expect(reclaimDirectory(dir, { runRoot }).deleted).toBe(false);
     expect(existsSync(join(dir, "operators-data.txt"))).toBe(true);
+
+    // AND WHICH PROOF DID THE WORK, recorded rather than assumed. On APFS and
+    // tmpfs the inode also changed and both conditions refuse; on ext4 and
+    // overlayfs the inode is reused, `directoryIdentity` is satisfied by the
+    // impostor, and the token is the only thing standing between this directory
+    // and a delete. Asserting the pair rather than one of them is what keeps
+    // this test true on every platform without weakening it on any.
+    const inodeReused = now!.ino === recorded!.ino;
+    expect(after.proof.directoryIdentity).toBe(!inodeReused ? false : true);
+  });
+
+  test("THE ext4 CASE, forced: with the inode REUSED, the clone token is the only thing that refuses", () => {
+    // The measurement this exists for cannot be produced on APFS by waiting for
+    // it — MEASURED 0/300 there on 2026-08-20 — so it is forced instead. The
+    // manifest's recorded inode is rewritten to the impostor's, which is exactly
+    // what ext4 does for free 300 times in 300. Every one of ruling 15's other
+    // conditions then passes, and if the verdict were `deletable` here brigadier
+    // would delete a directory it did not create, on the platform ruling 12
+    // makes first class.
+    const runId = "inodereuse";
+    const dir = plantClone(runId, 1);
+    expect(proveDeletableDirectory(dir, { runRoot }).deletable).toBe(true);
+
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(join(dir, ".git"), { recursive: true });
+    writeFileSync(join(dir, ".git", CLONE_SIGNATURE), `${runId}/1\n`);
+    writeFileSync(join(dir, "operators-data.txt"), "somebody else's, at brigadier's address\n");
+
+    const path = manifestPath(runRoot, RUN_DIR, runId);
+    const manifest = JSON.parse(readFileSync(path, "utf8")) as RunManifest;
+    manifest.clones[0]!.identity = directoryIdentity(dir)!;
+    writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
+
+    const verdict = proveDeletableDirectory(dir, { runRoot });
+    // The inode agrees — this is ext4's behaviour, reproduced.
+    expect(verdict.proof.directoryIdentity).toBe(true);
+    // And the directory is still refused.
+    expect(verdict.proof.cloneNonce).toBe(false);
+    expect(verdict.deletable).toBe(false);
+    expect(reclaimDirectory(dir, { runRoot }).deleted).toBe(false);
+    expect(existsSync(join(dir, "operators-data.txt"))).toBe(true);
+  });
+
+  test("THE COMPATIBILITY FORK, ruled: an entry from an older brigadier is REFUSED and says so", () => {
+    // RULED 2026-08-20. A manifest written before clone tokens existed has no
+    // token to match, so the directory cannot be told from another one that took
+    // its path — and on ext4 the inode cannot tell either. The two answers were
+    // to accept such an entry or to refuse it; this refuses, because an old
+    // entry is by definition the one whose directory has had the longest time to
+    // be replaced, so an exemption for age applies exactly where the check is
+    // needed. The accepted cost is a stranded directory, and the refusal has to
+    // NAME it and give the remedy or the operator cannot act on it.
+    const dir = plantClone("legacyentry", 1, "nonce");
+    const verdict = proveDeletableDirectory(dir, { runRoot });
+    expect(verdict.proof.directoryIdentity).toBe(true);
+    expect(verdict.proof.cloneNonce).toBe(false);
+    expect(verdict.deletable).toBe(false);
+    expect(verdict.refusals.join(" ")).toContain("no usable clone token");
+    expect(verdict.refusals.join(" ")).toContain("before 2026-08-20");
+    expect(verdict.refusals.join(" ")).toContain(`REMEDY: check ${dir}`);
+    expect(reclaimDirectory(dir, { runRoot }).deleted).toBe(false);
+    expect(existsSync(join(dir, "work.txt"))).toBe(true);
+  });
+
+  test("NEGATIVE CONTROL: a marker whose token does not match the entry's is refused, and both are printed", () => {
+    // Distinct from the two above: here the marker HAS a token and it is the
+    // wrong one — a marker copied from a sibling clone, or one left behind by an
+    // earlier run at the same address. "false" is not a report anyone can act
+    // on, so the refusal prints what was found beside what was recorded.
+    const runId = "wrongtoken";
+    const dir = plantClone(runId, 1);
+    const other = newCloneNonce();
+    writeFileSync(join(dir, ".git", CLONE_SIGNATURE), cloneMarkerBody(runId, 1, other));
+
+    const verdict = proveDeletableDirectory(dir, { runRoot });
+    expect(verdict.proof.cloneNonce).toBe(false);
+    expect(verdict.deletable).toBe(false);
+    expect(verdict.refusals.join(" ")).toContain(JSON.stringify(other));
   });
 
   test("the verdict reads no wall clock: an hour of skew in either direction changes nothing", () => {
@@ -405,21 +508,31 @@ describe("all three conditions, or refuse and report", () => {
     // 1. the manifest file exists before the directory does — its birth time is
     //    set here and nothing later moves it.
     forgeManifest(path, { runId, runRoot, createdAt: Date.now(), clones: [] });
-    // 2. the directory, made by the forger and holding the forger's data.
+    // 2. the directory, made by the forger and holding the forger's data. The
+    //    marker carries a token the forger chose — which is the whole reason the
+    //    clone token added on 2026-08-20 does not change this test's verdict.
+    //    It closes CONFUSION, where the party at the path cannot know the token;
+    //    it closes no forgery, where the party writes both ends of the
+    //    comparison. That distinction is asserted here rather than argued in a
+    //    comment somewhere else.
+    const forgedNonce = newCloneNonce();
     mkdirSync(join(dir, ".git"), { recursive: true });
-    writeFileSync(join(dir, ".git", CLONE_SIGNATURE), `${runId}/1\n`);
+    writeFileSync(join(dir, ".git", CLONE_SIGNATURE), cloneMarkerBody(runId, 1, forgedNonce));
     writeFileSync(join(dir, "forgers-data.txt"), "brigadier never made this\n");
     // 3. the same file, truncated and rewritten, now naming the inode the
-    //    forger read back with one `stat`.
+    //    forger read back with one `stat` and the token they wrote themselves.
     forgeManifest(path, {
       runId,
       runRoot,
       createdAt: Date.now(),
-      clones: [{ item: 1, dir, createdAt: Date.now(), identity: directoryIdentity(dir)! }],
+      clones: [
+        { item: 1, dir, createdAt: Date.now(), identity: directoryIdentity(dir)!, nonce: forgedNonce },
+      ],
     });
 
     const verdict = proveDeletableDirectory(dir, { runRoot });
     expect(verdict.proof.directoryIdentity).toBe(true);
+    expect(verdict.proof.cloneNonce).toBe(true);
     expect(verdict.proof.manifestOlderThanDirectory).not.toBe(false);
     expect(verdict.refusals).toEqual([]);
     expect(verdict.deletable).toBe(true);

@@ -872,6 +872,9 @@ const TRUTHFUL_ARTIFACT: ArtifactObservations = {
   },
   markersFound: [],
   sizeBytes: 60 * 1_048_576,
+  // 62,914,560 total − 61,914,560 floor = 1,000,000 bytes of brigadier, which is
+  // inside the budget and close to what both platforms actually measured.
+  emptyFloor: { bytes: 61_914_560, how: "compiled here by bun 1.3.14 and measured at 61914560 bytes" },
   versionProbe: { code: 0, stdout: `${FIXTURE_BUILD_ID}\n\nbrigadier 0.0.0\n`, stderr: "" },
   binarySha256: FIXTURE_SHA,
   warmMs: 8,
@@ -952,15 +955,76 @@ describe("item 10 — the artifact ships, and says what is in it", () => {
     );
   });
 
-  test("the size budget is in bytes, and both readings are printed", () => {
-    const under = judgeArtifact({ ...TRUTHFUL_ARTIFACT, sizeBytes: 63_479_138 });
-    const sizeRow = under.rows.find((r) => r.name.includes("63 MiB budget"));
-    expect(sizeRow?.ok).toBe(true);
-    expect(sizeRow?.detail).toContain("60.54 MiB");
-    expect(sizeRow?.detail).toContain("63.48 MB decimal");
-    expect(names(judgeArtifact({ ...TRUTHFUL_ARTIFACT, sizeBytes: 70 * 1_048_576 }))).toContain(
-      "binary within the 63 MiB budget of 66060288 bytes",
-    );
+  // RULED 2026-08-20. Until that date this block was "the size budget is in
+  // bytes, and both readings are printed", and it asserted that a 70 MiB
+  // artifact failed a 63 MiB clause. That clause is struck — the figure was
+  // unsourced (amendment §16) and unreachable on linux, where an empty
+  // `process.exit(0)` binary is already 93,694,096 bytes — and what gates now is
+  // brigadier's OWN contribution. The tests are inverted rather than deleted, so
+  // the change of statistic is visible in the diff instead of being a hole.
+  describe("the struck total-size clause, and the budget that replaced it", () => {
+    test("the STRIKE is printed on a passing artifact, and gates nothing", () => {
+      const checks = judgeArtifact({ ...TRUTHFUL_ARTIFACT, sizeBytes: 70 * 1_048_576 });
+      const strike = checks.rows.find((r) => r.name.startsWith("STRUCK, in the open — the 63 MiB total-size clause"));
+      expect(strike?.note).toBe(true);
+      expect(strike?.ok).toBe(true);
+      expect(strike?.detail).toContain("70.00 MiB");
+      expect(strike?.detail).toContain("73.40 MB decimal");
+      expect(strike?.detail).toContain("66060288");
+    });
+
+    test("THE BEHAVIOUR CHANGE — an artifact far over the withdrawn 63 MiB clause does not fail for its total", () => {
+      // 70 MiB total against a 61,914,560 floor is 11,479,040 bytes of
+      // brigadier, which is over the NEW budget — so this row still fails, and
+      // it must fail naming the contribution rather than the total. The pair
+      // below is what shows the clause really was withdrawn.
+      const failing = names(judgeArtifact({ ...TRUTHFUL_ARTIFACT, sizeBytes: 70 * 1_048_576 }));
+      expect(failing).not.toContain("binary within the 63 MiB budget of 66060288 bytes");
+      expect(failing).toContain("brigadier's own contribution is within 2621440 bytes");
+      // The same 70 MiB artifact, on a runtime whose own floor grew with it,
+      // PASSES — which the struck clause could never have said.
+      const grownRuntime = judgeArtifact({
+        ...TRUTHFUL_ARTIFACT,
+        sizeBytes: 70 * 1_048_576,
+        emptyFloor: { bytes: 70 * 1_048_576 - 1_000_000, how: "compiled here" },
+      });
+      expect(names(grownRuntime)).not.toContain("brigadier's own contribution is within 2621440 bytes");
+    });
+
+    test("the passing row prints the floor, the contribution, and that the floor is not budgeted", () => {
+      const row = judgeArtifact(TRUTHFUL_ARTIFACT).rows.find((r) => r.name.includes("own contribution is within"));
+      expect(row?.ok).toBe(true);
+      expect(row?.detail).toContain("1000000 bytes");
+      expect(row?.detail).toContain("98.41% of the artifact");
+      expect(row?.detail).toContain("makes no claim about it");
+    });
+
+    test("NEGATIVE CONTROL: a floor that could not be measured is a blocking NOT-RUN, never a pass", () => {
+      const checks = judgeArtifact({
+        ...TRUTHFUL_ARTIFACT,
+        emptyFloor: { bytes: undefined, how: "failed: `bun build --compile` exited 1" },
+      });
+      const row = checks.rows.find((r) => r.name.startsWith("NOT-RUN — brigadier's own contribution"));
+      expect(row?.ok).toBe(false);
+      expect(row?.note).toBeUndefined();
+      expect(row?.detail).toContain("bun build --compile` exited 1");
+      // And the budget row is genuinely absent rather than quietly passing.
+      expect(names(checks).some((n) => n.includes("own contribution is within"))).toBe(false);
+    });
+
+    test("NEGATIVE CONTROL: a floor from a DIFFERENT bun is refused, because the difference would not be brigadier", () => {
+      const checks = judgeArtifact({
+        ...TRUTHFUL_ARTIFACT,
+        versionProbe: {
+          code: 0,
+          stdout: `${FIXTURE_BUILD_ID.replace("bun=1.3.14", "bun=9.9.9")}\n\nbrigadier 0.0.0\n`,
+          stderr: "",
+        },
+      });
+      const row = checks.rows.find((r) => r.name.startsWith("NOT-RUN — brigadier's own contribution"));
+      expect(row?.ok).toBe(false);
+      expect(row?.detail).toContain("9.9.9");
+    });
   });
 
   test("a warm figure outside the withdrawn 10 ms clause does not fail the item", () => {

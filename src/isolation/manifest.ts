@@ -41,6 +41,7 @@
  * the erased signature failed at.
  */
 
+import { randomBytes } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { writeRegularFile } from "./safe-fs.ts";
@@ -94,6 +95,47 @@ export interface ManifestClone {
    * one as proof of authorship.
    */
   identity?: CloneIdentity;
+  /**
+   * A random token generated when this entry was recorded, and written into the
+   * clone's own marker file.
+   *
+   * RULED 2026-08-20 (the owner having delegated the round's rulings), because
+   * `identity` above is VACUOUS on the ordinary Linux filesystem. MEASURED on
+   * `ubuntu:24.04` on 2026-08-20, 300 delete-then-recreate trials at one path
+   * per filesystem: ext4 returned the SAME inode 300/300 and overlayfs 300/300,
+   * against 0/300 on tmpfs and 0/300 on APFS. Birth time was measured dead as a
+   * replacement the same day — `birthtimeNs` identical in 194/200 ext4 trials —
+   * and is not to be proposed again.
+   *
+   * So the third of ruling 15's proofs held on the owner's machine and held
+   * nothing on the platform ruling 12 makes first class. Every other byte of
+   * that proof is derivable from the path: a directory that takes a clone's
+   * address can reconstruct the marker's claim and, on ext4, be handed the same
+   * inode. A random token is derivable from nothing.
+   *
+   * Absent in an entry written by a brigadier from before this date.
+   * `proveDeletableDirectory` treats an absent or unusable nonce as UNPROVEN and
+   * retains the directory — see its refusal for the decision and its cost.
+   */
+  nonce?: string;
+}
+
+/**
+ * A fresh clone nonce. 128 bits, hex, from the CSPRNG.
+ *
+ * The length is not about brute force — a forger who can read the run root
+ * reads the token rather than guessing it, and that boundary is stated in
+ * `src/run/reclaim.ts`'s header. It is about COLLISION: this token has to be
+ * different from every other clone's on the machine, including clones of runs
+ * that are already gone, so that a stale entry can never match a live directory.
+ */
+export function newCloneNonce(): string {
+  return randomBytes(16).toString("hex");
+}
+
+/** A nonce that actually discriminates: 32 hex digits, and not all zeroes. */
+export function usableNonce(nonce: unknown): nonce is string {
+  return typeof nonce === "string" && /^[0-9a-f]{32}$/.test(nonce) && !/^0+$/.test(nonce);
 }
 
 export interface RunManifest {
