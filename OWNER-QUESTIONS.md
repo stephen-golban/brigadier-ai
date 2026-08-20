@@ -26,6 +26,7 @@ is not available to anyone."*
 | 10 | `bar/fakes.test.ts` on the POSIX legs | **DIAGNOSED — both open rows, and one attribution withdrawn** |
 | 11 | `bar/lib/orphan.test.ts` flakiness | **DIAGNOSED — a real leak defect, fixed and measured** |
 | 12 | **NEW** — a `brigadier run` is 35-160x slower on windows-latest | open, undiagnosed |
+| 13 | **NEW** — a dozen planted-payload controls are inert on Windows | **experiment pushed**, three candidates, unseparated |
 
 ---
 
@@ -502,3 +503,34 @@ one CI experiment that times the pieces separately rather than the whole. It was
 **Why it matters beyond CI wall-clock.** Ruling 12 makes Windows first class. A run that costs 30–50 s
 where it costs under a second elsewhere is a user-visible property of the product on a supported
 platform, and nothing in `BAR.md` measures it.
+
+---
+
+## 13. NEW, 2026-08-20 — a dozen planted-payload NEGATIVE CONTROLS are inert on Windows
+
+Roughly a dozen controls across `test/isolation-live.test.ts` and `test/isolation-recycle.test.ts`
+plant a payload into a clone's `.git` and assert that it **fires** — E1, E2, E4, E5/E6, *"recycling a
+pooled directory a previous agent could write to"*, *"git's other two config levels"*. VERIFIED
+against run 32403947990: every one failed on `windows-latest` and only there. The payload did not
+fire, so **each control is inert and every guard it stands beside is unproven on that platform** —
+which is the shape ruling 32 forbids, recorded there as a dozen separate failures rather than as one
+cause.
+
+**Three candidates, and none of them is separated.** This is deliberately not guessed at:
+
+1. **The shebang.** `#!/bin/sh` is not executable by Windows itself — though Git for Windows runs
+   hook-shaped commands through its own bundled `sh`, so this may not be the answer at all.
+2. **`touch`.** The fixtures' payload runs `touch "<path>"`. Git for Windows ships a reduced MSYS2
+   userland and whether `touch` is on the path its shell sees has never been measured here. A payload
+   using only shell redirection needs no external command.
+3. **The path.** `join()` produces `C:\Users\…`, and a backslash inside a double-quoted POSIX shell
+   string is an escape before some characters and literal before others. Git's own shell accepts
+   `C:/Users/…`.
+
+**`test/git-payload-shape.test.ts` is the experiment**, written in the same shape as #9's 2x2 and
+pushed with this round. It drives four payload shapes — sh+`touch`+native path, sh+redirect+native
+path, sh+redirect+forward-slash path, and a `.cmd` batch file — through a real `core.fsmonitor` on a
+real repository, RECORDS which fired, and asserts only the property the controls depend on: that at
+least one shape fires on this platform. On POSIX it is a control on the control (6/6 on darwin and
+under `oven/bun:1.3.14`). On Windows the matrix is the finding, and it should let the next round fix a
+dozen tests in one edit rather than guessing three times.
