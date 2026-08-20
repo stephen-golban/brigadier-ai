@@ -93,9 +93,13 @@ describe("the register agrees with BAR.md, which is the only authority", () => {
     expect(disagreements(readSpec(), ITEMS).map((d) => d.detail)).toEqual([]);
   });
 
-  test("the document really defines thirteen items", () => {
-    expect(readSpec()).toHaveLength(13);
-    expect(ITEMS.map((i) => i.id).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
+  test("the document really defines fourteen items", () => {
+    // Fourteen since 2026-08-20. Item 14 was added after an independent verifier
+    // read 13 PASS on an artifact whose every direct agent profile was
+    // unstartable — the fixtures tested the fixture protocol and nothing tested
+    // the vendors' real argv and config-root contracts.
+    expect(readSpec()).toHaveLength(14);
+    expect(ITEMS.map((i) => i.id).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
   });
 
   test("no item cites a ruling BAR.md's coverage table has never heard of", () => {

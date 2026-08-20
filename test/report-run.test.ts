@@ -322,6 +322,39 @@ describe("ruling 52's rendering rules", () => {
     expect(rendered).toContain("verify a1: fail");
   });
 
+  test("a ROUTED vendor that never spawned is never credited with a turn", () => {
+    // MOVED HERE on 2026-08-20, from the end-to-end control in
+    // `test/review-run.test.ts`, and the move is worth stating.
+    //
+    // That control manufactured the gap between *routed* and *started* with a
+    // mode-0755 file whose shebang named a nonexistent interpreter: `Bun.which`
+    // resolved it, `admit` routed it, `Bun.spawn` threw. Admission now runs
+    // detection first (finding V1), so that vendor is refused before anything is
+    // routed and the run creates no run root at all — MEASURED 2026-08-20: the
+    // scenario ends with `runs/r` never existing. The gap is no longer reachable
+    // from the CLI, which is an improvement in the product and a loss in the
+    // harness.
+    //
+    // The DEFECT it guards is not gone: `builderAgent` was once copied from the
+    // router's choice and written whether or not a process started, which
+    // renders a same-vendor review as cross-vendor — a wrong answer rather than
+    // a missing one. Detection narrows that window; it does not close it, since
+    // a vendor can pass a probe and fail to spawn moments later. So the guard
+    // moves to the renderer, where it can still be provoked, rather than being
+    // deleted along with the route that used to reach it.
+    // `agent` is OMITTED rather than set to `undefined`: the tree runs with
+    // `exactOptionalPropertyTypes`, and an explicit `undefined` is a different
+    // type from an absent key. That distinction is the point of the test —
+    // "nothing started" must be an ABSENT identity, never a present one holding
+    // a blank.
+    const { agent: _neverStarted, ...withoutAgent } = item("a1", false);
+    const routedNeverStarted: RecordItem = { ...withoutAgent, routedAgent: "qwen" };
+    const rendered = renderItem(routedNeverStarted);
+    expect(rendered).toContain("routed to qwen — NO PROCESS SPAWNED");
+    // The point of the line: no triple is printed that would credit qwen.
+    expect(rendered).not.toContain("agent: qwen");
+  });
+
   test("`unconfigured` does not block but prints in the same slot", () => {
     expect(itemBlocks({ ...item("a1", false), checks: [{ name: "v", outcome: "unconfigured", blocking: false }] })).toBe(
       false,

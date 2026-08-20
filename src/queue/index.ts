@@ -23,6 +23,8 @@
 export {
   LEGALITY_UNBOUNDED,
   admit,
+  admissibleAfterDetection,
+  type DetectionRejection,
   agentsOnPath,
   bindingSentence,
   collapsedItems,

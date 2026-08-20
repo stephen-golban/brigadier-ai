@@ -408,6 +408,51 @@ export async function drive(options: DriveOptions): Promise<string> {
     );
   }
 
+  // FINDING V4. Everything above renders whatever it found; this is where the
+  // file earns the right to exist.
+  //
+  // MEASURED by the independent verifier on 2026-08-20: all three real-fleet
+  // drives made brigadier exit 1 with no item ref, no diff, no reviewer vendor
+  // and no reviewer frame, and every one of them still exited 0 here and wrote
+  // a file saying it "records; it does not score". Recording nothing is not the
+  // same as recording a negative — a handoff artefact that looks produced when
+  // the evidence needed to score it is absent is worse than no artefact, because
+  // the next reader has to re-derive the absence themselves.
+  //
+  // These are preconditions on EVIDENCE, not on quality. Nothing here judges
+  // what the reviewer said; that is the verifier's and stays the verifier's.
+  // Every failure is collected rather than thrown on first sight, because an
+  // operator who fixes one and re-runs a real-fleet drive to discover the next
+  // has spent two real agent sessions to learn what one message could have said.
+  const missing: string[] = [];
+  if (run.code !== 0) missing.push(`brigadier exited ${run.code}, so no turn completed`);
+  if (item === undefined) missing.push(`the run record carries no item \`${itemId}\``);
+  if (item?.builderAgent === undefined) missing.push("no builder vendor was recorded, so no builder ran");
+  if (item?.baseSha === undefined || item.itemRef === undefined) {
+    missing.push("the diff is not re-derivable: the record carries no baseSha/itemRef");
+  } else if (diff.trim().length === 0) {
+    missing.push("the re-derived diff is empty, so the builder changed nothing to review");
+  }
+  if (item?.reviewerAgent === undefined) {
+    missing.push("no reviewer vendor was recorded, so there is no review to record");
+  } else if (item.reviewerAgent === item.builderAgent && record?.review?.sameVendorReason === undefined) {
+    // Ruling 32: cross-vendor is PREFERRED, not required — so a same-vendor
+    // review is legitimate and is not checked for here. What is checked is that
+    // the run said WHY, because "the reviewer was the builder" and "the reviewer
+    // was the builder and this machine had no other vendor" are different facts.
+    missing.push("builder and reviewer are the same vendor and no sameVendorReason was recorded");
+  }
+  if (frames.length === 0) missing.push("no reviewer frames are present in the transcript");
+
+  if (missing.length > 0) {
+    throw new Error(
+      "refusing to write a verifier transcript with nothing in it to score — " +
+        `${missing.join("; ")}. This command records a real-fleet drive; when the drive did not ` +
+        "produce one, the honest artefact is this error and not a file. A negative result is a good " +
+        "result and is reported as one (AGENTS.md, measurement discipline)",
+    );
+  }
+
   const artefact = join(options.out, `item5-verifier-transcript-${record?.runId ?? "unknown"}.md`);
   writeFileSync(artefact, rendered.text);
   return artefact;

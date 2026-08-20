@@ -70,12 +70,29 @@ describe("`run` needs a plan, and says so", () => {
     expect(result.stderr).toContain("--plan <path>");
   });
 
-  test("NEGATIVE CONTROL: with a plan it does not print usage", () => {
-    const { repo, runs, plan } = world("usage");
-    const result = brigadier(["run", "--plan", plan, "--repo", repo, "--run-root", runs, "--dry-run"]);
-    expect(result.code).toBe(0);
-    expect(result.stdout).not.toContain("--plan <path>");
-  });
+  // MEASURED 2026-08-20: this took 10,728 ms against Bun's 5,000 ms default and
+  // timed out. The cause is not a hang — a `--dry-run` now runs a detection
+  // sweep before it can say whether the plan would run, and on a machine with
+  // the npx-launched bridges installed that sweep spawns six vendors. The bound
+  // is widened to the sweep's own ceiling plus room, rather than the test being
+  // weakened: `ADMISSION_DETECT_TIMEOUT_MS` in `src/cli.ts` caps the sweep at
+  // 20 s, so anything past this is a real hang and should still fail.
+  //
+  // The cost itself is recorded debt, not a design. Ruling 71 requires detection
+  // to be cached as state and the cache does not exist yet, so every invocation
+  // pays for it; `plan` and `--dry-run` were sub-second before this change.
+  const DRY_RUN_WITH_DETECTION_MS = 30_000;
+
+  test(
+    "NEGATIVE CONTROL: with a plan it does not print usage",
+    () => {
+      const { repo, runs, plan } = world("usage");
+      const result = brigadier(["run", "--plan", plan, "--repo", repo, "--run-root", runs, "--dry-run"]);
+      expect(result.code).toBe(0);
+      expect(result.stdout).not.toContain("--plan <path>");
+    },
+    DRY_RUN_WITH_DETECTION_MS,
+  );
 
   test("`run` is discoverable — `--help` names it", () => {
     expect(brigadier(["--help"]).stdout).toContain("brigadier run --plan");
@@ -101,7 +118,14 @@ describe("--dry-run and --estimate stop before anything is created", () => {
     const result = brigadier(["plan", "--plan", plan, "--repo", repo, "--run-root", runs]);
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("admitted");
-    expect(result.stdout).toContain("nothing was started");
+    // The wording moved from "nothing was started" to "nothing of this run was
+    // started" on 2026-08-20, and the extra three words are the whole point:
+    // admission now runs a detection sweep, and a sweep SPAWNS. The old sentence
+    // had become false — the same class of claim `AGENTS.md` exists to stop
+    // reaching a shipped surface — so the sentence changed and this assertion
+    // follows it rather than the reverse.
+    expect(result.stdout).toContain("nothing of this run was started");
+    expect(result.stdout).toContain("No prompt was sent");
   });
 
   test("--estimate prints a RANGE with its provenance (ruling 66)", () => {

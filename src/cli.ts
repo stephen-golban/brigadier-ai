@@ -43,6 +43,7 @@ import { PLUGIN_USAGE, installCommand, pluginCommand, uninstallCommand } from ".
 import {
   admit,
   agentsOnPath,
+  admissibleAfterDetection,
   ceilingRefusal,
   describeAdmission,
   describeEstimate,
@@ -67,7 +68,8 @@ const USAGE = `brigadier — an ACP hub
   brigadier run --plan <path> [--repo <path>] [--run-root <path>]
       Run a plan: one isolated clone per item, one marked worker each, merged
       onto refs/heads/brigadier/<run-id> and gated on the merged result.
-      --dry-run     admit the plan and stop. Nothing is created.
+      --dry-run     admit the plan and stop. Nothing of the RUN is created; the
+                    detection sweep admission depends on does spawn each vendor.
       --estimate    a cost RANGE with its provenance, and stop (ruling 66).
       --review      route a reviewer, of a DIFFERENT vendor where one exists and
                     of the builder's own where none does (ruling 32: cross-vendor
@@ -304,6 +306,14 @@ function agents(): number {
     const profile = applyOverride(PROFILES[id], OVERRIDES);
     sink.outLine(`${profile.id} — ${profile.name}`);
     sink.outLine(`  command    ${profile.command} ${profile.args.join(" ")}`);
+    // The marker CONTRACT, printed so that the release bar can check the
+    // artifact's own declaration against the vendor's real behaviour rather
+    // than against a constant copied into the harness. Item 1 already reads
+    // `measured` from here for exactly that reason; finding V2 is what happens
+    // when a contract has no such leg — every direct profile was unstartable
+    // and the only thing that knew the argv was the code that got it wrong.
+    sink.outLine(`  marker     ${describeMarker(profile)}`);
+    sink.outLine(`  configroot ${profile.configRootEnv ?? "none measured"}`);
     sink.outLine(`  measured   ${profile.measuredVersion}`);
     sink.outLine(`  lane       ${describeLane(profile.laneAssertion)}`);
     sink.outLine(`  usage      ${profile.emitsUsage ? "emits usage_update" : "none over ACP"}`);
@@ -311,6 +321,25 @@ function agents(): number {
     sink.outLine("");
   }
   return 0;
+}
+
+/**
+ * Ruling 38's marker placement, rendered as the exact argv tail it produces.
+ *
+ * The tail rather than the word, because `after-terminator` and `flag-value`
+ * mean nothing to a reader checking whether their vendor will start, and the
+ * release bar needs something it can splice onto `command` and run.
+ */
+function describeMarker(profile: (typeof PROFILES)[AgentId]): string {
+  const placement = profile.markerPlacement;
+  switch (placement.kind) {
+    case "append":
+      return "<marker>";
+    case "after-terminator":
+      return "-- <marker>";
+    case "flag-value":
+      return `${placement.flag} <marker>`;
+  }
 }
 
 /**
@@ -426,12 +455,30 @@ async function version(): Promise<number> {
 /**
  * `brigadier run`, and the order that makes `--dry-run` a real answer.
  *
- * Everything up to `executeRun` is computed from the plan text, `PATH` and this
- * machine's memory. Nothing before that line creates a directory, starts a
- * process or writes a ref — which is what lets a refusal be checked from the
- * outside by listing the run root and finding it unchanged. Ruling 53 asks for
- * exactly that and names the alternative: a refusal that first creates the
- * thing it is refusing has already done the thing it exists to prevent.
+ * Everything up to `executeRun` is computed from the plan text, `PATH`, this
+ * machine's memory — and, since 2026-08-20, a detection sweep. Nothing before
+ * that line creates anything IN THE RUN ROOT or writes a ref, which is what lets
+ * a refusal be checked from the outside by listing the run root and finding it
+ * unchanged. Ruling 53 asks for exactly that and names the alternative: a
+ * refusal that first creates the thing it is refusing has already done the thing
+ * it exists to prevent.
+ *
+ * CORRECTED, because this paragraph used to say "starts a process" and that is
+ * now false. Finding V1 is that `run` admitted on a `PATH` hit alone and failed
+ * at the first prompt, so admission consults `detectAll`, and detection spawns
+ * each vendor and opens a session with it. Two consequences, stated rather than
+ * left to be found:
+ *
+ *   `--dry-run` and `--estimate` now spawn short-lived vendor probes. They still
+ *   answer their own questions honestly and still create nothing in the run
+ *   root; what changed is that "nothing was started" in their output means
+ *   nothing of the RUN was started, not that no process ran. A dry run that
+ *   skipped detection would answer "would this run?" from the same incomplete
+ *   information that produced V1, which is a worse trade.
+ *
+ *   The probes cost no vendor money — `initialize` and `session/new`, never a
+ *   prompt — but they are not free in time, and ruling 71 already accepted that
+ *   shape while bounding it by the slowest agent rather than their sum.
  *
  * THE VERIFY COMMAND COMES FROM THE OPERATOR AND NOWHERE ELSE. Ruling 37: a
  * `brigadier.json` committed in the repository is never read, so a hostile one
@@ -519,7 +566,78 @@ async function run(): Promise<number> {
   }
 
   // Ruling 69: the same override the table describes is the one that resolves.
-  const agents = agentsOnPath((command) => Bun.which(command), OVERRIDES);
+  const resolved = agentsOnPath((command) => Bun.which(command), OVERRIDES);
+
+  // FINDING V1. `run` used to admit on this list alone, and a `PATH` hit is
+  // ruling 41's *present* rather than *usable*. Detection is the second step.
+  //
+  // The plan is validated TWICE, and that is deliberate rather than sloppy.
+  // Ruling 69's gate is per work KIND — a blocking drift stops write work and
+  // not read-only work — so the kinds have to be known before the fleet can be
+  // filtered. `PlanSpec.items` is typed `unknown` on purpose, and reaching into
+  // it to read `kind` would be trusting a file this module has not validated.
+  // `validatePlan` is pure by this module's own contract (it starts no process,
+  // creates no directory, writes no ref), so running it against the unfiltered
+  // fleet first costs nothing and answers the question honestly.
+  const provisional = validatePlan(spec, {
+    cwd: repo,
+    agents: resolved,
+    ...(ceiling === undefined ? {} : { ceiling }),
+  });
+  // A plan that is refused outright is refused before detection spends anything
+  // — ruling 53's "find out before you spend" is a promise about order.
+  if (provisional.refusals.length > 0) {
+    for (const line of describeRefusals(provisional.refusals, planPath)) sink.errLine(line);
+    return 4;
+  }
+  const hasWriteWork = provisional.items.some((item) => item.kind === "write");
+
+  // BOUNDED, and lower than `detectOne`'s own 60 s default on purpose. This
+  // sweep now stands in front of every `run`, `plan` and `--dry-run`, so its
+  // worst case is the worst case of asking brigadier a question. At the default
+  // an unreachable vendor could make `--dry-run` sit for a minute before saying
+  // anything, which is a bad answer to "would this run?".
+  //
+  // A vendor slower than this is reported `absent` with the timeout as its
+  // remedy, which is honest — brigadier could not drive it within the time it is
+  // willing to wait — and the operator can run `brigadier detect --timeout` to
+  // get the unhurried answer.
+  //
+  // THE REAL FIX IS NOT THIS. Ruling 71 says detection is "lazy on first run and
+  // cached as state (decision 18: regenerable, never hand-edited)", and the
+  // cache does not exist yet, so every invocation pays the sweep. That is
+  // recorded debt, not a design: `plan` and `--dry-run` were sub-second before
+  // 2026-08-20 and are now several seconds on a machine with the bridges
+  // installed. Writing the cache means deciding where it lives and when it is
+  // invalidated — ruling 71 also requires that deleting state be a supported
+  // repair — and that is a separate change rather than a line here.
+  const ADMISSION_DETECT_TIMEOUT_MS = 20_000;
+  const probes = await detectAll(
+    resolved.map((agent) => agent.id),
+    { overrides: OVERRIDES, timeoutMs: ADMISSION_DETECT_TIMEOUT_MS },
+  );
+  const { admitted: agents, rejected } = admissibleAfterDetection(resolved, probes, {
+    hasWriteWork,
+    // Ruling 69's Q3: the operator replaced this bridge on purpose and
+    // `overrideWarning` has already said what that costs. Blocking it here for
+    // drifting from a version it was never going to match would make the remedy
+    // useless.
+    overridden: new Set(OVERRIDES.map((o) => o.agent)),
+  });
+  for (const rejection of rejected) {
+    sink.errLine(
+      `${rejection.id}: resolved on PATH but not admitted — ${rejection.because}.\n  ${rejection.detail}`,
+    );
+  }
+  if (agents.length === 0) {
+    sink.errLine(
+      "refused — no agent on this machine completed a session, and nothing was started.\n" +
+        "  Ruling 41: a completed handshake means present, not usable. The remedies above are the\n" +
+        "  vendors' own words; `brigadier detect` prints them without starting a run.",
+    );
+    return 4;
+  }
+
   const plan = validatePlan(spec, {
     cwd: repo,
     agents,
@@ -574,7 +692,10 @@ async function run(): Promise<number> {
       admission.agents.map((agent) => agent.id),
     );
     for (const line of describeEstimate(estimate)) sink.outLine(line);
-    sink.outLine("nothing was started: --estimate stops before the run root is created.");
+    sink.outLine(
+      "nothing of this run was started: --estimate stops before the run root is created.\n" +
+        "  Detection did spawn each resolved vendor to open a session. No prompt was sent.",
+    );
     return 0;
   }
 
@@ -589,7 +710,11 @@ async function run(): Promise<number> {
   const prologueTokens = estimateTokens(admitted.join("\n"));
 
   if (flag("dry-run")) {
-    sink.outLine("nothing was started: --dry-run stops before the run root is created.");
+    sink.outLine(
+      "nothing of this run was started: --dry-run stops before the run root is created.\n" +
+        "  Detection did spawn each resolved vendor to open a session — that is how admission knows\n" +
+        "  which of them could have taken work. No prompt was sent and no vendor money was spent.",
+    );
     return 0;
   }
 

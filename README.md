@@ -31,10 +31,15 @@ a promise that it works on your machine.
   defect on that first run. Before then the only workflow that had ever executed was `portability`,
   which ruling 62 says is not a gate — so "green" had meant green on one macOS machine for the entire
   life of the project.
-- **No binary has ever been produced on Windows.** The Windows leg has never got past the build
-  stage. Cross-compiling to `bun-windows-x64` from macOS does work, which is a different and much
-  weaker claim: the Windows-only code paths — the process reader, the `taskkill /T /F` branch — have
-  never executed anywhere.
+- **A binary HAS been produced on Windows, and the Windows-only code paths still have not run.**
+  WITHDRAWN, not reworded: this bullet said "No binary has ever been produced on Windows" and that
+  was false in a shipped file. VERIFIED against the GitHub run for commit `4d94c53` on 2026-08-20 —
+  typecheck and build/licence passed on `windows-latest`, `ubuntu-latest` and `macos-latest`, so
+  Windows did produce a binary. Tests then failed on all three, so claims, binary execution and the
+  release bar were skipped everywhere and **no green cross-platform gate exists**. What survives of
+  the original claim is the part that still matters: the Windows-only code paths — the process
+  reader, the `taskkill /T /F` branch — have never executed anywhere, because the leg that would run
+  them is downstream of the tests that failed.
 
 ## Where the documentation actually is
 

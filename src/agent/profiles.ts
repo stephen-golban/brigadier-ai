@@ -57,6 +57,54 @@ export function laneModeFor(assertion: LaneAssertion, kind: WorkKind): string | 
   return kind === "read-only" ? assertion.readOnly : assertion.write;
 }
 
+/**
+ * WHERE ruling 38's run marker goes in this profile's argv.
+ *
+ * Ruling 38 requires the marker to be in the command line of every process
+ * brigadier causes to exist, and that requirement is unchanged. What was wrong
+ * was treating the PLACEMENT as a constant: `spawnMarkedAgent` appended a bare
+ * `--brigadier-run=<run>/<item>` to every profile, and a vendor that validates
+ * its options rejects it and never starts.
+ *
+ * MEASURED on 2026-08-20 against Copilot 1.0.80, Qwen 0.21.13, Gemini 0.55.1
+ * and opencode 1.18.18, macOS 26.5.2 arm64, load1 3.16–4.31. An ACP server
+ * reading a closed stdin exits 0, so `exit 0` here means the argv was accepted
+ * and the process started; `exit 1` is a parse refusal before any protocol:
+ *
+ *   copilot --acp --brigadier-run=X          exit 1  unknown option
+ *   copilot --acp -- --brigadier-run=X       exit 1  unknown option
+ *   copilot --acp --name '<marker>'          exit 0  ACCEPTED
+ *   copilot --acp --session-id X             exit 1  cannot be used with --acp
+ *   qwen/gemini/opencode  bare marker        exit 1  unknown argument
+ *   qwen/gemini/opencode  after `--`         exit 0  ACCEPTED
+ *
+ * So three vendors need a `--` terminator and Copilot needs a flag to carry the
+ * marker as a value. This is the field that says which.
+ *
+ * THE COST, stated rather than discovered: this is one more per-vendor
+ * measured coordinate in the table this file's header calls a standing hazard,
+ * and it goes stale the same way the others do — a vendor that removes `--name`
+ * or starts validating after `--` breaks the spawn, loudly, at the handshake.
+ * `bar/items/14-marker-argv-contract.ts` is the leg that catches that.
+ */
+export type MarkerPlacement =
+  /** Appended bare. For bridged agents, whose launcher forwards unknown argv. */
+  | { kind: "append" }
+  /** After a `--` terminator, as a positional the vendor's parser stops reading. */
+  | { kind: "after-terminator" }
+  /**
+   * As the VALUE of a flag the vendor already accepts.
+   *
+   * Ruling 38 says the marker must be the command line and never a name
+   * pattern. That constraint is about MATCHING — the sweep greps argv for a
+   * token brigadier put there, rather than guessing from a program name like
+   * `pgrep node`. Carrying the token in a flag's value keeps the sweep's
+   * matcher exactly as it was: `src/run/marker.ts`'s regex anchors on
+   * whitespace, so `--name --brigadier-run=r/1` matches unchanged and no sweep
+   * code needs to know this placement exists.
+   */
+  | { kind: "flag-value"; flag: string };
+
 export interface LaunchProfile {
   id: AgentId;
   /** Display name, as the agent reports itself at `initialize`. */
@@ -64,6 +112,8 @@ export interface LaunchProfile {
   /** Argv. A bridged agent runs through npx; a native one is its own binary. */
   command: string;
   args: string[];
+  /** Ruling 38's marker placement, per vendor. Measured, never assumed. */
+  markerPlacement: MarkerPlacement;
   /** True when the agent is reached through a vendored ACP bridge. */
   bridged: boolean;
   /** The version this profile was measured against. Never assume it still holds. */
@@ -100,9 +150,35 @@ export const PROFILES: Record<AgentId, LaunchProfile> = {
     name: "Claude Code",
     command: "npx",
     args: ["-y", "@agentclientprotocol/claude-agent-acp"],
+    // Bridged: npx forwards unrecognised argv to the bridge, which ignores it.
+    // The verifier's 2026-08-20 real-fleet drive reached `session/prompt` on
+    // this profile, so the appended marker is measured not to block startup.
+    markerPlacement: { kind: "append" },
     bridged: true,
     measuredVersion: "0.69.0 (claude 2.1.233)",
     passthroughEnv: ["ANTHROPIC_MODEL", "MAX_THINKING_TOKENS", "CLAUDE_CODE_EXECUTABLE"],
+    // The CLI and the BRIDGE behave differently here, and the difference is the
+    // reason this note exists rather than the one first written in its place.
+    //
+    // MEASURED against claude 2.1.233 on 2026-08-20, with a negative control:
+    //   CLAUDE_CONFIG_DIR=<empty dir> claude -p 'say ok' -> exit 1 "Not logged in"
+    //   (no redirect)                 claude -p 'say ok' -> exit 0 "ok"
+    // and the credential is in the macOS Keychain, not in the root being
+    // redirected (`security find-generic-password -s "Claude Code-credentials"`
+    // succeeds; copying `~/.claude.json` into the redirected root did NOT
+    // restore login).
+    //
+    // That is the CLI. It is NOT this profile: MEASURED the same day against
+    // `@agentclientprotocol/claude-agent-acp` 0.70.0 through `detectOne` under a
+    // worker-shaped config root, this profile reported `usable` — handshake AND
+    // session — so the bridge keeps its authentication across the redirect.
+    //
+    // Recorded because the inference ran the other way first. "The redirect logs
+    // every worker out" was generalised from the CLI and from Codex, and the
+    // measurement refused it. It is therefore NOT established that the redirect
+    // caused the verifier's 2026-08-20 Claude failure
+    // (`session/prompt: -32000 Authentication required`); that failure is still
+    // unexplained, and saying so is cheaper than a second wrong cause.
     configRootEnv: "CLAUDE_CONFIG_DIR",
     // #3, #50: sends an `execute` permission request, so it runs commands.
     // networkAccess unmeasured — not false, and it does not satisfy.
@@ -128,10 +204,39 @@ export const PROFILES: Record<AgentId, LaunchProfile> = {
     name: "Codex",
     command: "npx",
     args: ["-y", "@agentclientprotocol/codex-acp"],
+    // Bridged, as above. Codex's 2026-08-20 failure was CODEX_CONFIG, not argv.
+    markerPlacement: { kind: "append" },
     bridged: true,
     measuredVersion: "1.4.0 (codex-cli 0.147.0)",
     passthroughEnv: ["CODEX_PATH"],
-    configRootEnv: "CODEX_CONFIG",
+    // CORRECTED 2026-08-20. This field held `CODEX_CONFIG`, which is NOT a
+    // config root and never was — the coordinate was wrong, which is the exact
+    // hazard this file's header names.
+    //
+    // MEASURED against `@agentclientprotocol/codex-acp` 1.6.2: `CODEX_CONFIG`
+    // is "a JSON object merged into the Codex session config" (README line 54),
+    // read at `dist/index.js:32869` as
+    // `const config2 = configString ? JSON.parse(configString) : void 0`.
+    // Handing it a DIRECTORY PATH makes the bridge throw
+    // `SyntaxError: Unexpected token '/'` before `initialize` — the verifier's
+    // 2026-08-20 finding V3, reproduced against the installed bridge. The
+    // bridge reads eight environment variables and `CODEX_HOME` is not among
+    // them, so it has no config-root lever of its own.
+    //
+    // MEASURED against codex-cli 0.147.0 on 2026-08-20, with a negative
+    // control, because the redirect has to work on the binary the bridge
+    // spawns rather than on the bridge:
+    //   CODEX_HOME=<empty dir> codex login status  -> exit 1 "Not logged in"
+    //   (no CODEX_HOME)        codex login status  -> exit 0 "Logged in using ChatGPT"
+    // and the redirected root was written into, so the variable is honoured.
+    //
+    // WHAT THAT COSTS, and it is a ruling-57 question rather than a bug: a
+    // redirected config root logs the worker OUT, because the credential lives
+    // in the root being redirected. Seeding `auth.json` alone into the
+    // redirected root restored login (exit 0, measured). The same is NOT true
+    // of Claude — see `CLAUDE_CONFIG_DIR` above. Nothing here seeds anything;
+    // that decision is the owner's and is raised in `RULING-38-AMENDMENT.md`.
+    configRootEnv: "CODEX_HOME",
     // #3: sends an `execute` request. #41: ruling 49's `write` mode is
     // `agent`, which blocks ALL network at the OS level — so these two differ
     // in the same session, which is exactly findings 70 and 71's asymmetry.
@@ -163,6 +268,10 @@ export const PROFILES: Record<AgentId, LaunchProfile> = {
     name: "GitHub Copilot",
     command: "copilot",
     args: ["--acp"],
+    // MEASURED against copilot 1.0.80 on 2026-08-20: the ONLY vendor in the
+    // fleet that rejects the marker both bare AND after `--`. `--name` takes it
+    // as a value (exit 0) and `--session-id` is refused alongside `--acp`.
+    markerPlacement: { kind: "flag-value", flag: "--name" },
     bridged: false,
     measuredVersion: "1.0.80",
     passthroughEnv: [],
@@ -194,6 +303,9 @@ export const PROFILES: Record<AgentId, LaunchProfile> = {
     name: "Qwen Code",
     command: "qwen",
     args: ["--acp"],
+    // MEASURED against qwen 0.21.13 on 2026-08-20: bare marker exits 1
+    // ("Unknown arguments: brigadier-run"), after `--` exits 0.
+    markerPlacement: { kind: "after-terminator" },
     bridged: false,
     measuredVersion: "0.21.13",
     passthroughEnv: [],
@@ -220,6 +332,9 @@ export const PROFILES: Record<AgentId, LaunchProfile> = {
     name: "opencode",
     command: "opencode",
     args: ["acp"],
+    // MEASURED against opencode 1.18.18 on 2026-08-20: bare marker exits 1 and
+    // prints subcommand help; after `--` exits 0.
+    markerPlacement: { kind: "after-terminator" },
     bridged: false,
     measuredVersion: "1.18.18",
     passthroughEnv: [],
@@ -246,6 +361,9 @@ export const PROFILES: Record<AgentId, LaunchProfile> = {
     name: "Gemini CLI",
     command: "gemini",
     args: ["--acp"],
+    // MEASURED against gemini 0.55.1 on 2026-08-20: bare marker exits 1
+    // ("Unknown arguments"), after `--` exits 0.
+    markerPlacement: { kind: "after-terminator" },
     bridged: false,
     measuredVersion: "0.55.1",
     passthroughEnv: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
@@ -265,6 +383,28 @@ export const PROFILES: Record<AgentId, LaunchProfile> = {
 };
 
 export const ALL_AGENT_IDS = Object.keys(PROFILES) as AgentId[];
+
+/**
+ * The full argv for one marked spawn, with ruling 38's marker where THIS
+ * profile was measured to accept it.
+ *
+ * Kept beside the table rather than in `src/queue/spawn.ts` because it is a
+ * property of the vendor, not of spawning: the same placement has to be
+ * reproducible by anything that wants to predict what brigadier will run —
+ * `bar/items/14-marker-argv-contract.ts` drives exactly this shape against the
+ * real binaries, and item 7's sweep documentation quotes it.
+ */
+export function markedArgv(profile: LaunchProfile, marker: string): string[] {
+  const placement = profile.markerPlacement;
+  switch (placement.kind) {
+    case "append":
+      return [profile.command, ...profile.args, marker];
+    case "after-terminator":
+      return [profile.command, ...profile.args, "--", marker];
+    case "flag-value":
+      return [profile.command, ...profile.args, placement.flag, marker];
+  }
+}
 
 /**
  * Build the environment a worker is spawned with.

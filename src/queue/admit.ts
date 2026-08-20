@@ -39,6 +39,7 @@
  */
 
 import { applyOverride, type BridgeOverride } from "../agent/drift.ts";
+import type { Detection } from "../agent/detect.ts";
 import { isCapped, type Audience } from "../report/budget.ts";
 import { PROFILES, ALL_AGENT_IDS, type AgentId, type LaunchProfile } from "../agent/profiles.ts";
 import { chooseRung, renderLadderOffered, type LadderOutcome, type RungDistance } from "../work/ladder.ts";
@@ -87,6 +88,107 @@ export function agentsOnPath(
     });
   }
   return found;
+}
+
+/** One agent `agentsOnPath` resolved but detection will not let `run` use. */
+export interface DetectionRejection {
+  id: AgentId;
+  /** `unusable`, `absent`, or `drift` — which of the two gates refused it. */
+  because: "unusable" | "absent" | "drift";
+  /** The vendor's own words where there are any, else ours. */
+  detail: string;
+}
+
+/**
+ * Narrow `agentsOnPath`'s answer to the agents detection actually proved.
+ *
+ * THIS IS FINDING V1. `agentsOnPath` resolves a command on `PATH` and stops
+ * there — correctly, that is all it claims to do — and `run` used to admit on
+ * that alone. MEASURED by the independent verifier on 2026-08-20: `detect`
+ * reported five vendors usable AND graded Claude/Codex version drift
+ * `blocking`; `run` used none of it, routed a write to Claude, and failed the
+ * first prompt with `Authentication required`. A resolved `PATH` entry is
+ * ruling 41's *present*, and work needs *usable*.
+ *
+ * Two gates, and they are different rulings:
+ *
+ *   Ruling 41 — anything not `usable` is refused, because a completed handshake
+ *   is not a completed session and only the second one means work can start.
+ *
+ *   Ruling 69 — a `blocking` drift refuses WRITE work specifically. The lane
+ *   assertion is the blocking grade because if it silently stops working the
+ *   containment is gone and nothing goes red. A `read-only` item does not block
+ *   on it: ruling 49 gave that kind a flat `deny` lane needing no vendor
+ *   cooperation.
+ *
+ * AND AN OPERATOR-OVERRIDDEN PROFILE IS EXEMPT FROM THE SECOND GATE, which is
+ * not a softening. Ruling 69's Q3 exists to let an operator replace a stale
+ * bridge WITHOUT waiting for a brigadier release. A replacement bridge reports
+ * whatever version it reports, so it drifts from `measuredVersion` essentially
+ * by definition — blocking on that would mean every override kills all write
+ * work on that vendor, and the remedy ruling 69 built would be unusable the day
+ * it shipped. The ruling says what happens instead, and says it twice: an
+ * overridden bridge "invalidates every measured fact … the operator chose it,
+ * so the operator gets the consequences, **stated at the start of a run rather
+ * than discovered in the middle**". Stated. `overrideWarning` is what states it,
+ * and it has already printed by the time this function runs.
+ *
+ * The distinction is between drift the operator CHOSE and drift that happened
+ * TO them — a vendor auto-updating underneath a machine is the case the blocking
+ * grade was written for, and it is untouched.
+ *
+ * WHAT IT COSTS, stated: a detection sweep now stands between `run` and its
+ * first item. Ruling 71 already accepted that shape — detection is lazy on
+ * first run — and bounds it by the slowest agent rather than their sum, since
+ * the probes are concurrent. It is still a wait with nothing to show for it,
+ * and it is charged on every run until detection results are cached as state.
+ */
+export function admissibleAfterDetection(
+  agents: readonly ResolvedAgent[],
+  detections: readonly Detection[],
+  options: { hasWriteWork: boolean; overridden?: ReadonlySet<string> },
+): { admitted: ResolvedAgent[]; rejected: DetectionRejection[] } {
+  const overridden = options.overridden ?? new Set<string>();
+  const byId = new Map(detections.map((d) => [d.id, d]));
+  const admitted: ResolvedAgent[] = [];
+  const rejected: DetectionRejection[] = [];
+
+  for (const agent of agents) {
+    const detection = byId.get(agent.id);
+    if (detection === undefined) {
+      // Never silently admit an agent nobody probed. An absent result is not a
+      // clean one, and ruling 53's principle is the same shape: unmeasured does
+      // not satisfy a requirement.
+      rejected.push({
+        id: agent.id,
+        because: "absent",
+        detail: "resolved on PATH but detection never probed it",
+      });
+      continue;
+    }
+    if (detection.availability !== "usable") {
+      rejected.push({
+        id: agent.id,
+        because: detection.availability,
+        detail: detection.remedy ?? `detection reported ${detection.availability}`,
+      });
+      continue;
+    }
+    const blocking = (detection.drift ?? []).filter((d) => d.severity === "blocking");
+    if (options.hasWriteWork && blocking.length > 0 && !overridden.has(agent.id)) {
+      rejected.push({
+        id: agent.id,
+        because: "drift",
+        detail: blocking
+          .map((d) => `${d.field}: measured against ${d.measuredAgainst}, observed ${d.observed} — ${d.why}`)
+          .join("; "),
+      });
+      continue;
+    }
+    admitted.push(agent);
+  }
+
+  return { admitted, rejected };
 }
 
 /**

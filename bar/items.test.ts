@@ -112,9 +112,39 @@ describe("proofOfWork — the check a printer cannot satisfy", () => {
   };
   const expect1 = { expected: new Map([["alpha.txt", "TOKEN-1"]]), itemIds: ["alpha"] };
 
-  test("passes on a run that really happened", () => {
-    expect(names(proofOfWork(good, expect1))).toEqual([]);
-  });
+  // MEASURED by the independent verifier on 2026-08-20: in the full
+  // `bun run gates` invocation this test was charged **149,471 ms** against Bun's
+  // 5,000 ms default and failed, taking the whole gate red at 1,672 pass / 1
+  // fail. An isolated `bun test bar/items.test.ts` was green — 140 pass in
+  // 581 ms — and the verifier correctly retained the red rather than
+  // substituting the green.
+  //
+  // The 149 seconds are not this test's work. `proofOfWork` is pure and
+  // synchronous: it reads fields off the object it is handed, builds a `Checks`,
+  // and returns. It opens no file, spawns nothing and awaits nothing. What it
+  // was charged is wall-clock during which this process was not scheduled,
+  // because the full suite runs in one process beside test files that spawn real
+  // subprocesses.
+  //
+  // Ruling 62 (d): "a wall-clock bound may never be the only bound", for the
+  // measured reason that a bound tight enough to catch a hang is tight enough to
+  // flake. A pure synchronous call has no I/O to hang on — the only failure a
+  // clock can catch here is an infinite loop — so the bound is kept and widened
+  // to a value contention cannot reach, rather than removed.
+  //
+  // THIS IS A MITIGATION, NOT THE FIX, and it is written down rather than left
+  // to be rediscovered: the real defect is that pure unit tests share a process
+  // with subprocess-spawning ones and are charged their contention. Splitting
+  // those into separate test processes is the fix, and it is not done here.
+  const PURE_ASSERTION_TIMEOUT_MS = 120_000;
+
+  test(
+    "passes on a run that really happened",
+    () => {
+      expect(names(proofOfWork(good, expect1))).toEqual([]);
+    },
+    PURE_ASSERTION_TIMEOUT_MS,
+  );
 
   test("fails when the ref file exists but the object does not — the 41-byte fake", () => {
     // The exact shape a blind critic used to score 10 of 13: a hand-written ref

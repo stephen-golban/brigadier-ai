@@ -617,30 +617,44 @@ describe("rulings 32 and 29: the recorded identity is the one that SPAWNED", () 
     expect(blob(world, branch, "solo.txt")).toContain("solo:seed-identity");
   });
 
-  test("NEGATIVE CONTROL: a vendor that RESOLVES and cannot spawn is `routedAgent`, never `agent`", () => {
-    // Without this, "the identity is the one that spawned" would also be
-    // satisfied by a build that still copies the routing choice — on a healthy
-    // machine the two agree, which is precisely why the old defect survived.
+  test("NEGATIVE CONTROL: a vendor that RESOLVES and cannot spawn is refused BEFORE anything is routed", () => {
+    // CHANGED 2026-08-20, and the old assertion is quoted below rather than
+    // deleted, because what it proved moved rather than stopped mattering.
+    //
+    // This used to assert `routedAgent === "qwen"`, `agent === undefined`, and a
+    // report line reading "routed to qwen — NO PROCESS SPAWNED". That was the
+    // right assertion against a `run` that admitted on a `PATH` hit alone.
+    // Finding V1 made admission consult detection, and detection SPAWNS — so
+    // this vendor is now refused at admission and nothing is routed at all.
+    //
+    // MEASURED 2026-08-20 against this tree: the run creates no run root, and
+    // reading one fails with `ENOENT ... scandir .../runs/r`. That is ruling
+    // 53's own property — "a refusal that first creates the thing it is refusing
+    // has already done the thing it exists to prevent" — so the new behaviour is
+    // strictly the better one and is what is asserted here.
+    //
+    // The renderer half of the old assertion lives in `test/report-run.test.ts`,
+    // "a ROUTED vendor that never spawned is never credited with a turn", which
+    // can still provoke the case this route no longer reaches.
     const dead = makeWorld("identity-unspawnable", [{ id: "qwen" }]);
     // A file on PATH that `Bun.which` RESOLVES and `Bun.spawn` cannot execute.
     // MEASURED against `bun 1.3.14` on 2026-08-18: a mode-0644 file is not
     // resolved by `Bun.which` at all — so clearing the exec bit would test
     // admission rather than spawning — while a mode-0755 file whose shebang
     // names a nonexistent interpreter resolves and makes `Bun.spawn` throw
-    // `ENOENT ... posix_spawn`. That is the only gap between "routed" and
-    // "started" a test can stand in.
+    // `ENOENT ... posix_spawn`.
     writeFileSync(join(dead.bin, "qwen"), "#!/nonexistent/interpreter-for-this-test\nexit 0\n");
     chmodSync(join(dead.bin, "qwen"), 0o755);
     const failed = brigadier(dead, [
       "run", "--plan", plan(dead), "--repo", dead.repo, "--run-root", dead.runs, "--audience", "terminal",
     ]);
-    const item = runOf(dead).record.items.find((entry) => entry.id === "solo");
-    expect(item?.routedAgent).toBe("qwen");
-    expect(item?.agent).toBeUndefined();
-    expect(item?.builderAgent).toBeUndefined();
-    // And the report says which of the two it is, rather than printing a triple
-    // that credits qwen with a turn it never took.
-    expect(failed.stdout).toContain("routed to qwen — NO PROCESS SPAWNED");
     expect(failed.code).not.toBe(0);
+    // Nothing was spent: ruling 53, checkable from outside by listing the run
+    // root and finding it was never created.
+    expect(existsSync(join(dead.runs, "r"))).toBe(false);
+    // And the operator is told which vendor and why, in detection's words.
+    expect(failed.stderr).toContain("qwen");
+    expect(failed.stderr).toContain("not admitted");
+    expect(failed.stderr).toContain("no agent on this machine completed a session");
   });
 });

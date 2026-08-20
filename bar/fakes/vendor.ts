@@ -847,6 +847,36 @@ if (import.meta.main) {
     process.exit(2);
   }
   const config = JSON.parse(readFileSync(configPath, "utf8")) as VendorConfig;
+
+  // OBSERVABILITY DWELL, and it is the harness making itself measurable rather
+  // than the product being given room.
+  //
+  // `bar/lib/inflight.ts` proves ruling 38's promise by catching marked
+  // processes in `ps` while a run is in flight. That is the right evidence — a
+  // forger cannot cheaply fake a live process tree — but it is a POLL, and this
+  // fixture answers a handshake and exits in tens of milliseconds. MEASURED
+  // 2026-08-20: an independent busy-loop sampler (no sleep at all) caught this
+  // process exactly 4 times during a whole item-3 run, while the bar's own 40 ms
+  // sampler caught it zero times across four items.
+  //
+  // The product was never at fault: spawning the real argv and reading `ps`
+  // shows the marker for all three of ruling 38's placements. The check was
+  // passing on luck, and a change to the run's shape — admission now runs a
+  // detection sweep — was enough to lose that luck consistently.
+  //
+  // 150 ms gives a 40 ms sampler several sightings and costs the bar a fraction
+  // of a second per worker. It is applied ONLY when this process was spawned
+  // carrying a run marker, so it lengthens exactly the window the sampler is
+  // trying to see and nothing else — the fixture-orchestrator path below, which
+  // no sampler watches, is untouched.
+  // Both forms, for the reason `RUN_MARKER_CARRIED` records: the product writes
+  // `--brigadier-run=<id>/<n>` and `bar/fakes/honest.ts` spawns
+  // `--brigadier-run <id>` as two argv entries. A dwell that fired for only one
+  // of them would leave the positive control unobservable.
+  if (Bun.argv.some((arg) => arg === "--brigadier-run" || arg.startsWith("--brigadier-run="))) {
+    await Bun.sleep(150);
+  }
+
   const briefPath = Bun.argv[3];
   // Two callers, two protocols. The product speaks ACP over stdio; the fixture
   // orchestrator hands over a brief file.

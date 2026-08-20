@@ -83,7 +83,7 @@ async function score(binary: string, items: readonly BarItem[], live: boolean, r
 
 describe("the do-nothing binary must fail every item", () => {
   test(
-    "a brigadier that only prints scores 0 of 13",
+    "a brigadier that only prints scores 0 of 14",
     async () => {
       const root = workroot("printer");
       const binary = asBinary(join(root, "bin"), PRINTER, "brigadier-printer");
@@ -93,7 +93,7 @@ describe("the do-nothing binary must fail every item", () => {
         const records = await score(binary, ITEMS, true, root);
         const passing = records.filter((r) => r.outcome === "PASS");
         expect(passing.map((r) => `${r.id} ${r.title}`)).toEqual([]);
-        expect(records).toHaveLength(13);
+        expect(records).toHaveLength(14);
       } finally {
         removeDir(root);
       }
@@ -112,7 +112,7 @@ describe("the do-nothing binary must fail every item", () => {
         // Every item that has a credential-free half must be judging it, not
         // deferring it: five items were computing one and discarding it.
         const graded = records.filter((r) => r.halves !== undefined);
-        expect(graded.length).toBe(13);
+        expect(graded.length).toBe(14);
       } finally {
         removeDir(root);
       }
@@ -127,14 +127,14 @@ describe("the SOPHISTICATED forger must fail every item", () => {
   // record — and implements no promise. It scored **12 of 13** against the
   // previous harness in a single run.
   test(
-    "a brigadier with real git and no work scores 0 of 13",
+    "a brigadier with real git and no work scores 0 of 14",
     async () => {
       const root = workroot("forger");
       const binary = asBinary(join(root, "bin"), FORGER, "brigadier-forger");
       try {
         const records = await score(binary, ITEMS, true, root);
         expect(records.filter((r) => r.outcome === "PASS").map((r) => `${r.id} ${r.title}`)).toEqual([]);
-        expect(records).toHaveLength(13);
+        expect(records).toHaveLength(14);
       } finally {
         removeDir(root);
       }

@@ -691,6 +691,18 @@ async function runItem(
     // did not print.
     const profile = agent.profile;
     try {
+      // BEFORE the spawn, and that ordering is the whole point.
+      //
+      // MEASURED against `@agentclientprotocol/codex-acp` 1.6.2 and codex-cli
+      // 0.147.0 on 2026-08-20, with a negative control:
+      //   CODEX_HOME=<existing empty dir>  -> bridge stays up (SIGTERM at 20 s)
+      //   CODEX_HOME=<non-existent dir>    -> bridge exits immediately
+      // These two `mkdirSync` calls used to run AFTER `spawnMarkedAgent`
+      // returned, so every worker was handed a config root and a TMPDIR that
+      // did not exist yet and the vendor lost the race. The reviewer path at
+      // `runReview` already had this right; the builder path did not.
+      mkdirSync(join(clone.stateDir, "agent-config"), { recursive: true });
+      mkdirSync(join(clone.stateDir, "tmp"), { recursive: true });
       marked = spawnMarkedAgent({
         profile,
         runId: base.runId,
@@ -712,8 +724,6 @@ async function runItem(
       // pid by here and `marked.commandLine` is the argv a `ps` scan will see,
       // so this is the first moment at which a vendor can be said to have run.
       result.spawnedAgent = profile.id;
-      mkdirSync(join(clone.stateDir, "agent-config"), { recursive: true });
-      mkdirSync(join(clone.stateDir, "tmp"), { recursive: true });
       recordEvent(sink, record, {
         type: "process-spawned",
         at: Date.now(),

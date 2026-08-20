@@ -15,7 +15,7 @@
  * where it was not on PATH.
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Lane } from "../lane/lane.ts";
@@ -60,6 +60,15 @@ export interface Detection {
    */
   models?: string[];
   milliseconds: number;
+  /**
+   * Was this probed under a worker-shaped config root?
+   *
+   * Recorded rather than assumed, because the whole of finding V1 is that a
+   * `usable` produced under the operator's own config root is not a statement
+   * about what a worker will be able to do. A consumer that admits on this
+   * result can tell which question was answered.
+   */
+  probedWorkerShaped: boolean;
 }
 
 /**
@@ -71,11 +80,33 @@ export interface Detection {
  */
 export async function detectOne(
   profile: LaunchProfile,
-  options: { timeoutMs?: number } = {},
+  options: { timeoutMs?: number; workerShaped?: boolean } = {},
 ): Promise<Detection> {
   const started = Date.now();
   const scratch = mkdtempSync(join(tmpdir(), "brigadier-detect-"));
   const resolved = Bun.which(profile.command);
+  // The probe runs under the SAME config root shape a worker gets, and that is
+  // the difference between this function answering the question it is asked and
+  // answering a nearby one.
+  //
+  // MEASURED 2026-08-20: it did not, and the verifier's finding V1 is the
+  // consequence — `detect` reported five vendors usable, `run` routed a write to
+  // Claude, and the first prompt failed with `Authentication required`. The
+  // probe was passing no `configRoot`, so `buildEnvironment` left the vendor's
+  // config-root variable unset and the probe read the OPERATOR's logged-in root.
+  // The worker then got `join(clone.stateDir, "agent-config")` and was logged
+  // out. Detection was measuring an environment no worker ever runs in.
+  //
+  // `join(scratch, "agent-config")` mirrors `src/queue/execute.ts`'s own
+  // construction, so what is probed and what is spawned differ in path and in
+  // nothing else.
+  const workerShaped = options.workerShaped ?? true;
+  const configRoot = join(scratch, "agent-config");
+  // It must EXIST before the spawn. MEASURED 2026-08-20: codex-acp 1.6.2 exits
+  // immediately when `CODEX_HOME` names a directory that is not there, and
+  // stays up when it is. Creating it here is what makes the probe's environment
+  // the worker's environment rather than a near-miss of it.
+  if (workerShaped) mkdirSync(configRoot, { recursive: true });
 
   try {
     if (!resolved) {
@@ -84,6 +115,7 @@ export async function detectOne(
         availability: "absent",
         remedy: `${profile.command} is not on PATH`,
         milliseconds: Date.now() - started,
+        probedWorkerShaped: workerShaped,
       };
     }
 
@@ -96,6 +128,7 @@ export async function detectOne(
         cwd: scratch,
         kind: "read-only",
         lane: new Lane(scratch, lanePolicyFor("read-only")),
+        ...(workerShaped ? { configRoot } : {}),
       }),
       options.timeoutMs ?? 60_000,
       `${profile.id} did not answer within the detection timeout`,
@@ -118,6 +151,7 @@ export async function detectOne(
       ...(drift.length > 0 ? { drift } : {}),
       ...(models.length > 0 ? { models } : {}),
       milliseconds: Date.now() - started,
+      probedWorkerShaped: workerShaped,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -131,6 +165,7 @@ export async function detectOne(
       remedy: message.slice(0, 400),
       ...(resolved ? { resolvedPath: resolved } : {}),
       milliseconds: Date.now() - started,
+      probedWorkerShaped: workerShaped,
     };
   } finally {
     rmSync(scratch, { recursive: true, force: true });

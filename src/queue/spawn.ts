@@ -35,7 +35,7 @@
 
 import type { LineChannel } from "../acp/channel.ts";
 import { RUN_MARKER_FLAG, WORKER_MARKER, workerMarkerValue } from "../agent/marker.ts";
-import { buildEnvironment, type LaunchProfile } from "../agent/profiles.ts";
+import { buildEnvironment, markedArgv, type LaunchProfile } from "../agent/profiles.ts";
 import { runMarkerArg } from "../run/marker.ts";
 import type { WorkKind } from "../work/kind.ts";
 import { RUN_ROOT_ENV } from "./refusal.ts";
@@ -111,15 +111,21 @@ export const EFFORT_REQUEST_ID = "brigadier-effort";
 /**
  * Spawn one agent for one item.
  *
- * The marker is APPENDED to the profile's argv rather than inserted, so a
- * vendor that reads positional arguments sees them in the order its profile
- * measured. It is still an extra argument, and that is a real cost of ruling
- * 38: a vendor that rejects unknown arguments will fail to start, and it will
- * fail loudly at the handshake rather than silently mid-run.
+ * The marker goes where the PROFILE says it goes — `markedArgv` — and that is
+ * ruling 38's requirement met per vendor rather than assumed uniform.
+ *
+ * CORRECTED 2026-08-20. This function appended a bare marker to every profile
+ * and the comment here said the cost was that "a vendor that rejects unknown
+ * arguments will fail to start". That was not a cost; it was a defect, and it
+ * was total: MEASURED on 2026-08-20, Copilot 1.0.80, Qwen 0.21.13, Gemini
+ * 0.55.1 and opencode 1.18.18 ALL exited 1 before any protocol, so every direct
+ * agent profile in the fleet was unstartable. It failed loudly at the handshake
+ * exactly as predicted; nothing was watching, because no bar item drove a real
+ * vendor's argv. That leg now exists as `bar/items/14-marker-argv-contract.ts`.
  */
 export function spawnMarkedAgent(options: MarkedSpawnOptions): MarkedSpawn {
   const marker = runMarkerArg(options.runId, options.item);
-  const argv = [options.profile.command, ...options.profile.args, marker];
+  const argv = markedArgv(options.profile, marker);
   const lever = leverFor(options.profile);
 
   // Ruling 40's switch half. Set BEFORE the process exists, because the lever is

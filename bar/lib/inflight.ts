@@ -42,6 +42,34 @@ import { readProcessTable } from "./process-table.ts";
  */
 export const RUN_MARKER_FLAG = "--brigadier-run";
 
+/**
+ * The marker CARRYING A VALUE, which is what a spawned worker actually has.
+ *
+ * HARDENED 2026-08-20, after this scanner counted a process that merely MENTIONED
+ * the flag. While diagnosing an unrelated failure a shell ran
+ * `ps -A -o args= | grep -a -- --brigadier-run`, and that pipeline's own command
+ * line contains the bare flag — so `includes(RUN_MARKER_FLAG)` matched it and
+ * the check reported `peak processes carrying --brigadier-run: 2` with a
+ * `/bin/zsh` command line as its evidence. The item PASSED on the strength of
+ * the harness watching itself look. That is v1's marker-file defect one level
+ * up: a check that cannot tell the thing from a reference to the thing.
+ *
+ * BOTH SEPARATORS, and the first attempt at this got it wrong by requiring `=`.
+ * `src/run/marker.ts` says why, and the fixture proves it: "the space-separated
+ * form is accepted on READ and never produced on write — argv-joining is a
+ * property of whatever spawned the process, and a matcher that only understood
+ * one form would silently miss a real worker." `bar/fakes/honest.ts` spawns
+ * `[vendor, brief, "--brigadier-run", runId]` as two argv entries, so an
+ * `=`-only needle failed the POSITIVE CONTROL — the fixture that really clones,
+ * spawns, merges and records — on six items at once.
+ *
+ * So: the flag, a separator that is `=` or whitespace, then at least one
+ * non-space character. A trailing bare mention has no value after it and no
+ * longer matches. Written as a regex rather than imported from `src/`, per this
+ * file's own rule.
+ */
+export const RUN_MARKER_CARRIED = new RegExp(`(?:^|\\s)${RUN_MARKER_FLAG.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&")}[=\\s][^\\s]+`);
+
 export interface CloneSample {
   path: string;
   isGitRepo: boolean;
@@ -283,7 +311,10 @@ export function sampleOnce(
   // except each `ps`'s own argv, and the longest line grew by exactly the width
   // of the added columns — so nothing is truncated away from the END of a
   // command line, which is where this marker lives.
-  const marked = readProcessTable().filter((row) => row.commandLine.includes(RUN_MARKER_FLAG));
+  // `RUN_MARKER_CARRIED`, not a bare `includes`: a process that merely names the
+  // flag is not a process carrying the marker. See the constant for the sighting
+  // that forced this, and for why both separators are accepted.
+  const marked = readProcessTable().filter((row) => RUN_MARKER_CARRIED.test(row.commandLine));
   if (marked.length > flight.peakMarkedProcesses) flight.peakMarkedProcesses = marked.length;
   for (const row of marked) {
     const trimmed = row.commandLine.trim().slice(0, 160);
@@ -361,19 +392,33 @@ export async function runSampled(
 
   let running = true;
   const sampler = (async () => {
-    // The clone half runs at `intervalMs`; the `ps` half every third turn, so
-    // the process table is still read about as often as it used to be while the
-    // clones are read three times as often. What forced the split: a clone that
-    // was created late in a run and observed EXACTLY ONCE, during its setup,
-    // reported `origin-removed=false` for a product that removed the remote a
-    // moment later — the sampler's luck rendered as the product's behaviour, and
-    // the same single-observation window hid the payload files a worker planted
-    // afterwards. Sampling luck must not be able to fail a correct product; a
-    // rate that observes every clone several times is what stops it.
-    let turn = 0;
+    // BOTH halves run every turn, as of 2026-08-20.
+    //
+    // The `ps` half used to run every third turn, on the reasoning quoted in
+    // `sampleOnce` — "a marked process lives for the length of a worker, not for
+    // the length of a `git clone`". That is true of a real vendor and false of
+    // this harness's fixture agents, which answer the handshake and exit in tens
+    // of milliseconds.
+    //
+    // MEASURED 2026-08-20: with `run` now performing a detection sweep before
+    // its first item (finding V1), items 3, 4, 9 and 12 all reported
+    // `peak processes carrying --brigadier-run: 0` while the same runs recorded
+    // `qwen --acp -- --brigadier-run=<run>/1` in `record.ndjson` and integrated
+    // real commits. The marker was never missing — spawning that exact argv and
+    // reading `ps` shows it for all three placements — the sampler was looking
+    // one turn in three across a run that had grown several seconds of preamble
+    // in which no worker exists.
+    //
+    // So this check was passing on luck, and the change that removed the luck
+    // did not break the product. The sampler's own rule applies to itself:
+    // sampling luck must not be able to fail a correct product, and a rate that
+    // depends on the run's shape is luck.
+    //
+    // The cost is one `ps -A` per interval rather than one in three. That is the
+    // price of the check meaning what it says; `inspectClone`'s git spawns are
+    // the expensive half and they are still skipped for clones already proven.
     while (running) {
-      sampleOnce(options.runRoot, flight, options.payloadMarker, turn % 3 === 0, options.operatorHead);
-      turn += 1;
+      sampleOnce(options.runRoot, flight, options.payloadMarker, true, options.operatorHead);
       await Bun.sleep(options.intervalMs ?? 40);
     }
   })();

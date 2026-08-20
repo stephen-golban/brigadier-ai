@@ -2,7 +2,7 @@
 /**
  * The item-module contract.
  *
- * `BAR.md` (ruling 48) defines thirteen items and says how they are run: a
+ * `BAR.md` (ruling 48, amended 2026-08-20) defines fourteen items and says how they are run: a
  * harness SEPARATE from `bun test`, pointed at a downloaded release artifact by
  * someone who has never built this repository. That last clause is the whole
  * design constraint of this directory, and it is worth stating as a rule rather
@@ -45,7 +45,7 @@ export type Outcome = "PASS" | "FAIL" | "SKIPPED";
 /**
  * How an item's two halves came out.
  *
- * Ten of thirteen items need vendor credentials for part of what they prove,
+ * Eleven of fourteen items need vendor credentials for part of what they prove,
  * and five of those were computing a credential-free assertion and then throwing
  * it away into a `SKIPPED`: against a binary whose `competence` printed NOTHING
  * AT ALL, item 5 reported "requires real vendor agents". That is exactly the
@@ -105,7 +105,7 @@ export interface BarContext {
 }
 
 export interface BarItem {
-  /** 1..13, matching `BAR.md`'s headings. */
+  /** 1..14, matching `BAR.md`'s headings. */
   id: number;
   /** `BAR.md`'s own heading text. */
   title: string;

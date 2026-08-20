@@ -64,7 +64,11 @@ mechanism becomes worth nothing.
 
 Ruling 48 described **ten**. Phase 2 added **item 11** (ruling 58, the run report fits the window the
 owner is working in) **item 12** (ruling 65, a granted secret does not reach a persisted artifact
-verbatim) and **item 13** (ruling 66, the cost model). Ruling 48's text stands; this is the amendment, in the place a reader looks.
+verbatim) and **item 13** (ruling 66, the cost model). **Item 14 was added on 2026-08-20**, after an
+independent verifier reported 13 PASS / 0 FAIL on an artifact whose every direct agent profile was
+unstartable: the fixtures faithfully tested the fixture protocol and nothing tested the vendors'
+current argv and config-root contracts. Ruling 48's text stands; this is the amendment, in the place
+a reader looks.
 
 ### 1. Detection is honest
 
@@ -492,6 +496,39 @@ estimates. **What this item cannot prove:** #45 measured neither vendor's effort
 over the protocol, so "the effort we asked for is the effort that ran" is asserted from vendor-private
 records or not at all.
 
+### 14. The real fleet starts, on the argv and the config root brigadier actually uses
+
+**The only item that drives the installed vendors' own binaries with no fixture anywhere in the
+path.** Every other live item either plants a fake agent or runs builder work through the fixture
+protocol; this one takes the launch contract the artifact prints for itself and checks it against the
+vendors on this machine.
+
+For each agent the artifact lists that resolves on `PATH`: the item reads `command`, `marker` and
+`configroot` out of **`brigadier agents`** — never a constant in the harness, for the same reason
+item 1 reads `measured` from there — splices the marker tail onto the argv, points the config-root
+variable at a **freshly created empty directory**, and spawns the real vendor. The vendor must reach
+its ACP handshake. A vendor that exits before any protocol has **rejected brigadier's command line**,
+and that is a failure of this item whatever the fixtures say.
+
+**And the config root must exist before the spawn**, because a directory brigadier has not created
+yet is not a config root. MEASURED against `@agentclientprotocol/codex-acp` 1.6.2 on 2026-08-20: with
+`CODEX_HOME` naming a directory that is not there the bridge exits immediately; with the same
+directory created first it stays up. The builder path created both `agent-config` and `tmp` *after*
+`spawnMarkedAgent` returned, so every worker lost that race.
+
+**The demonstrated negative is the point of the item, not an afterthought**: it re-spawns one direct
+agent with the marker appended bare — the form that shipped — and requires that to FAIL. A leg that
+cannot distinguish the broken contract from the fixed one would pass on the artifact this item was
+written against.
+
+*Rulings 38, 41, 69, 57, 46.* Exists because the harness read 13 PASS / 0 FAIL on an artifact whose
+every direct agent profile was unstartable. MEASURED on 2026-08-20 against Copilot 1.0.80, Qwen
+0.21.13, Gemini 0.55.1 and opencode 1.18.18, all four exited 1 on `--brigadier-run=<run>/<item>`
+before any protocol, and `CODEX_CONFIG` — named in the profile table as a config root — is a JSON
+string the bridge calls `JSON.parse` on. **What this item cannot prove:** it drives `initialize`, not
+work, so it says a vendor STARTS and says nothing about whether it can complete a turn; and it is
+credentialed-machine-only, so CI cannot run it and ruling 48 already accepts that for live items.
+
 ## Coverage — every ruling, and what proves it
 
 The second column is where a promise gets quietly buried. Writing *no user-visible promise* next to a
@@ -540,15 +577,15 @@ user-visible promise, so it grows through phase 2. Rulings 49 onward were added 
 | 35 `difficulty` must be checkable | item 13 (the clamp is printed per item, and it only ever clamps down) |
 | 36 brigadier's plugin inert in a worker | item 9 |
 | 37 nothing executed comes from a committed file | item 8 |
-| 38 the sweep is the containment mechanism | item 7 |
+| 38 the sweep is the containment mechanism | items 7, 14 (item 14 proves the marker is one the vendor ACCEPTS — a marker no agent starts with is a marker on no process) |
 | 39 repo map ~2K, per run | item 4 |
 | 40 effort graded on Codex, binary on Claude | item 13 (both shapes recorded; see ruling 30's row) |
-| 41 detection is two steps | item 1 |
+| 41 detection is two steps | items 1, 14 (item 14 proves the vendor reaches the first step at all, under the worker's own argv and config root) |
 | 42 `~/.agents/skills/`, no `bin/` off Claude Code | item 10 |
 | 43 the lane is an approval channel | item 2 |
 | 44 `CLAUDE_CODE_EXECUTABLE` is load-bearing | items 2, 10 |
 | 45 ruling 9 downgraded to unproven | nothing to prove — see ruling 9 |
-| 46 identity | items 1, 10 |
+| 46 identity | items 1, 10, 14 |
 | 47 Apache-2.0, attribution, licence gate | item 10 |
 | 48 the success bar | this document — no separate item |
 | 49 `read-only` defined by what is read back | items 4 (read-only half), 2 (the flat `deny` lane) |
@@ -559,7 +596,7 @@ user-visible promise, so it grows through phase 2. Rulings 49 onward were added 
 | 54 fan-out arithmetic, waves, no free-memory scheduling | item 4 (the binding filter is named; a `dependsOn` wave runs in order) |
 | 55 the ladder's second rung, and a short ladder said up front | item 6 (the rung is named; a missing rung never reads as exhausted) |
 | 56 brigadier runs no git inside a clone an agent touched | item 2 (planted hook and config payloads, asserted on the escaped bytes) |
-| 57 the binary refuses inside a worker | item 9 (asserted on the effect, and it carries the ruling's unmeasured assumption) |
+| 57 the binary refuses inside a worker | items 9, 14 (item 9 asserts the effect and carries the ruling's unmeasured assumption; item 14 proves the config-root redirect the ruling's second layer depends on does not itself stop the vendor starting) |
 | 58 the host report is capped; the cap can never hide a failure | item 11 |
 | 59 a refused delegation reaches the operator | item 9 (a repo `AGENTS.md` that says "delegate to brigadier", and the run-level line) |
 | 60 the hook floor, and a names-based self-check | item 10 (hooks register, and a poisoned `hooks.json` is *reported* rather than silent) |
@@ -571,7 +608,7 @@ user-visible promise, so it grows through phase 2. Rulings 49 onward were added 
 | 66 predict as a range, two ceilings, keyed by root commits | item 13 |
 | 67 clamp difficulty down and loudly; check the distribution | item 13 |
 | 68 competence cited by identity, unranked is not excluded | items 5, 10 (`brigadier competence` prints class and citation) |
-| 69 drift graded by blast radius; a failed lane assertion blocks | items 1, 2 (a drifted version is reported; an unasserted lane blocks a `write`) |
+| 69 drift graded by blast radius; a failed lane assertion blocks | items 1, 2, 14 (a drifted version is reported; an unasserted lane blocks a `write`; and `run` admits only what detection proved, which is where a blocking drift is enforced) |
 | 70 no token-reduction claim; spend and levers reported | item 13 (the lever line, and a run including opencode says `unpriceable`) |
 | 71 no `init`; first run prints the four unlearnable things | items 1, 9, 6 |
 | 72 the source relink route, and the Library's own source offered | item 10 |
