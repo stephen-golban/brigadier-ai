@@ -54,6 +54,9 @@ import { resetDirectory, writeRegularFile } from "../isolation/safe-fs.ts";
 import { RUN_DIR, isTempRooted } from "../repo/layout.ts";
 import { integrationBranch } from "../repo/refs.ts";
 import { INITIAL_OUTCOME, type CheckResult } from "../work/check.ts";
+// One constant, not two literals: this module and `src/gate/run.ts` bound the
+// same wait for the same reason, and two copies of a rule drift.
+import { DRAIN_GRACE_MS } from "../gate/run.ts";
 
 /** Its own name, in its own slot. Never merged with an item's gate. */
 export const INTEGRATION_CHECK = "verify (merged result)";
@@ -274,10 +277,31 @@ async function spawnVerify(
           child.kill("SIGKILL");
         }, spec.timeoutMs);
 
-  const [stdout, stderr] = await Promise.all([
+  // THE SAME FIX AS `src/gate/run.ts`, AND THE SAME DEFECT — this module carried
+  // its own copy of the wait, which is how two copies of a rule drift.
+  //
+  // `child.kill` reaches the process brigadier started; a checker that FORKED
+  // leaves a grandchild holding the inherited pipes, and awaiting those pipes
+  // was the whole of the wait. MEASURED against `bun 1.3.14` on 2026-08-20,
+  // `sh -c "sleep 30"` killed at 400 ms: on Linux `sh` forks and the streams
+  // resolved after 30,010 ms — a 75× overrun — while on darwin `sh` execs
+  // `sleep`, so the kill reached everything and it took 718 ms. This is the
+  // INTEGRATION gate, so the checker is whatever the operator configured —
+  // `npm test`, `bun test`, a shell script — every one of which forks.
+  //
+  // The grandchild is ruling 38's sweep to reclaim, not this function's. What
+  // this owes the operator is to say the pipes were held, so an empty tail is
+  // never read as a silent checker.
+  const drain = Promise.all([
     new Response(child.stdout).text(),
     new Response(child.stderr).text(),
   ]);
+  const drained =
+    spec.timeoutMs === undefined
+      ? await drain
+      : await Promise.race([drain, Bun.sleep(spec.timeoutMs + DRAIN_GRACE_MS).then(() => null)]);
+  const pipesHeld = drained === null;
+  const [stdout, stderr] = drained ?? ["", ""];
   const code = await child.exited;
   if (timer !== null) clearTimeout(timer);
 
@@ -291,7 +315,14 @@ async function spawnVerify(
       detail:
         `\`${rendered}\` was killed after ${spec.timeoutMs}ms. Ruling 52: a checker that was ` +
         "killed is `error`, not `fail` — the remedy is to re-run the checker, and sending a " +
-        `builder to fix a defect that is not in its code burns a rung of ruling 24's ladder.\n${tail}`,
+        `builder to fix a defect that is not in its code burns a rung of ruling 24's ladder.` +
+        (pipesHeld
+          ? `\nIts output could NOT be read: something it started outlived it and still held the ` +
+            `stdout/stderr pipes ${DRAIN_GRACE_MS} ms after the kill, so the tail below is empty ` +
+            `because it was UNREADABLE, not because the checker was silent. That process is ruling ` +
+            `38's sweep to reclaim, not this one's.`
+          : "") +
+        `\n${tail}`,
     };
   }
   if (code === 0) {

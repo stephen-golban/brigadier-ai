@@ -14,6 +14,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveVerify, splitCommand } from "../src/gate/verify.ts";
+import { runVerify } from "../src/gate/run.ts";
 
 describe("a command on PATH", () => {
   test("resolves, and the entry that was found is reported", () => {
@@ -96,4 +97,69 @@ describe("no shell, ever (ruling 37)", () => {
     // that is ever looked up.
     expect(resolution.resolved).toBeNull();
   });
+});
+
+/**
+ * Ruling 52's `error` deadline, driven against a checker that FORKS.
+ *
+ * THE DEFECT THIS PINS. `runVerify`'s timeout kills the process brigadier
+ * started. A checker that forked leaves a grandchild holding the stdout and
+ * stderr pipes it inherited, and the wait was an `await` on those pipes — so the
+ * deadline bound the child and not the wait.
+ *
+ * MEASURED against `bun 1.3.14` on 2026-08-20, `sh -c "sleep 30"` killed at
+ * 400 ms: on Linux `sh` FORKS and the streams resolved after 30,010 ms — a 75×
+ * overrun; on darwin `sh` EXECS `sleep`, there is no second process, and the
+ * same code took 718 ms. That platform difference is why this passed on the
+ * owner's machine and timed out on ubuntu-latest.
+ *
+ * THE CHECKER HERE FORCES THE FORK ON BOTH PLATFORMS — `sleep 30 & wait` — so
+ * this test is not vacuous on darwin the way the shape that found it was. Ruling
+ * 62 (b): a guard with no demonstrated negative is a guard nobody has seen fire.
+ */
+describe("ruling 52's deadline bounds the WAIT, not only the child", () => {
+  const forking = { status: "resolved", argv: ["sh", "-c", "sleep 30 & wait"], resolved: "/bin/sh", refusal: null };
+
+  test.skipIf(process.platform === "win32")(
+    "a checker whose grandchild holds the pipes still returns within the deadline",
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), "brigadier-gate-drain-"));
+      const started = performance.now();
+      const result = await runVerify({
+        resolution: forking as never,
+        cwd: dir,
+        name: "verify",
+        timeoutMs: 400,
+      });
+      const elapsed = performance.now() - started;
+      rmSync(dir, { recursive: true, force: true });
+
+      expect(result.outcome).toBe("error");
+      // The bound, asserted on the CLOCK, because the clock is the thing that
+      // was wrong. 400 ms + a 2,000 ms grace + room for a slow runner — and far
+      // under the 30,000 ms the grandchild would otherwise have cost.
+      expect(elapsed).toBeLessThan(12_000);
+      // An empty tail must never read as "the checker said nothing".
+      expect(result.detail).toContain("still held the");
+      expect(result.detail).toContain("UNREADABLE");
+    },
+    30_000,
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "NEGATIVE CONTROL: a checker that forks nothing is drained normally, and says nothing about held pipes",
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), "brigadier-gate-drain-ok-"));
+      const result = await runVerify({
+        resolution: { status: "resolved", argv: ["sh", "-c", "echo hello-from-the-checker"], resolved: "/bin/sh", refusal: null } as never,
+        cwd: dir,
+        name: "verify",
+        timeoutMs: 10_000,
+      });
+      rmSync(dir, { recursive: true, force: true });
+      expect(result.outcome).toBe("pass");
+      expect(result.detail).not.toContain("UNREADABLE");
+    },
+    30_000,
+  );
 });

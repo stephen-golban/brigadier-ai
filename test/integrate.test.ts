@@ -896,6 +896,20 @@ describe("ruling 52: the verify command runs once more, on the merged result", (
     // leaves a blocking result rather than an absent field.
     expect(initialIntegrationCheck(1).outcome).toBe("not-run");
     expect(runSucceeded({ waves: [wave], gates: [initialIntegrationCheck(1)] })).toBe(false);
+    // NO WIDENED BOUND HERE, and that is the point.
+    //
+    // This test timed out at Bun's 5,000 ms default on ubuntu-latest (5,001 ms,
+    // run 32394716171) and reproduced on Linux under Docker at 5,006 ms while
+    // passing on darwin. The first response was a 60,000 ms backstop. Then the
+    // CAUSE was measured, and it was a product defect rather than a slow runner:
+    // `runIntegrationGate` killed the checker but then awaited its PIPES, which
+    // the `sleep 30` grandchild kept open — 30,050 ms against a 400 ms timeout.
+    // `src/integrate/gate.ts` now bounds the wait, and this test runs in
+    // 2,448 ms on the platform where it took 30,050.
+    //
+    // So the bound came back off. Leaving a widened timeout behind after
+    // removing its cause is how a suite stops meaning anything, and 60 s would
+    // now hide a real hang for twelve times longer than the code can produce one.
   });
 
   test("NEGATIVE CONTROL: ruling 61 refuses a gate under a temp root, where the merged code would execute", async () => {

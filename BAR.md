@@ -697,6 +697,20 @@ weakened — its own comment already called this *"a limit worth failing loudly 
 Not a new finding — owner decision §22 records it: `feasibilityCap` is
 `floor((totalmem − 4 GiB − 3 GiB) / 3 GiB)`, which is **0** at 7 GiB, and `macos-latest` is 7 GB on a
 public repository exactly as on a private one. It is repeated here because it is why the macOS leg's
-`bar/fakes.test.ts` cannot pass: the honest fixture is driven through fan-out items that cannot fan
-out there. **The promise unproven:** that fan-out isolates, on macOS CI specifically. §22 states the
-constraint is real and unrelieved; this line is the bar saying which item it costs.
+`bar/fakes.test.ts` cannot pass, which nothing had said.
+
+VERIFIED against run 32394716171 on 2026-08-20, that failure is **two items and only one of them is
+RAM** — recorded precisely, because "the macOS leg fails on RAM" would have been half true:
+
+- **item 4** is the RAM one, in the binary's own words: *"the binary measured this host's feasibility
+  cap at 1 worker(s) … ruling 54's three sentences cannot be told apart on this machine … Remedy:
+  grade item 4 on a host with room for at least 2 workers — about 13 GiB."* That is §22 exactly.
+- **item 13** is **not** RAM. Its hard-ceiling arm reports *"NEVER REACHED: the run spent 104, under
+  its 175 ceiling — this is the calibration missing, not the product ignoring a ceiling."* The
+  fixture's ceilings were calibrated from an earlier run's spend, and #44 measured **15× between two
+  identical runs**. That is a fixture-calibration fragility, and it is the owner's only in the sense
+  that nobody has yet decided whether the calibration should be derived per run instead of pinned.
+
+**The promises unproven:** that fan-out isolates, on macOS CI specifically (item 4); and that the hard
+ceiling cancels work already running, wherever the fixture's spend lands under its pinned ceiling
+(item 13, on any platform where that happens).

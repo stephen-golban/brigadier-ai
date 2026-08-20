@@ -53,6 +53,14 @@ import type { VerifyResolution } from "./verify.ts";
 /** How many lines of the checker's own output travel with a non-pass outcome. */
 export const VERIFY_TAIL_LINES = 12;
 
+/**
+ * How long after the kill the drain is still given, before the wait is
+ * abandoned and the pipes are reported as held. Generous on purpose: the common
+ * case is a checker that forked nothing, where the streams close the instant the
+ * child dies and this is never reached at all.
+ */
+export const DRAIN_GRACE_MS = 2_000;
+
 export interface VerifyRunSpec {
   /** Already resolved by `resolveVerify`, at plan validation, before any worker. */
   resolution: VerifyResolution;
@@ -164,10 +172,46 @@ export async function runVerify(spec: VerifyRunSpec): Promise<CheckResult> {
           child.kill("SIGKILL");
         }, spec.timeoutMs);
 
-  const [stdout, stderr] = await Promise.all([
+  // THE DEADLINE HAS TO BIND THE *WAIT*, NOT ONLY THE CHILD, and until
+  // 2026-08-20 it bound only the child.
+  //
+  // `child.kill` reaches the process brigadier started. A checker that FORKED
+  // leaves a grandchild holding the stdout and stderr pipes it inherited, so
+  // `new Response(child.stdout).text()` does not resolve until that grandchild
+  // exits on its own — and awaiting it was the whole of the wait. The reported
+  // outcome was still `error`, correctly; the BOUND was not enforced at all.
+  //
+  // MEASURED against `bun 1.3.14` on 2026-08-20, `sh -c "sleep 30"` killed at
+  // 400 ms, on both platforms:
+  //
+  //   linux (oven/bun:1.3.14, dash)  `sh` FORKS — `ps` shows `sh -c sleep 30`
+  //       AND a separate `sleep 30` beneath it. Killing the `sh` leaves the
+  //       `sleep` holding the pipes: the streams resolved after **30,010 ms**
+  //       against a 400 ms timeout. A 75× overrun.
+  //   darwin 25.5.0                  `sh` EXECS `sleep` — there is no second
+  //       process — so the kill reaches everything: **718 ms**.
+  //
+  // Which is why `test/integrate.test.ts`'s ruling-52 outcomes test timed out on
+  // ubuntu-latest and passed here, and why a real verify command — `npm test`,
+  // `bun test`, any shell script — would hang brigadier's integration gate for
+  // the grandchild's whole lifetime on Linux. Ruling 12 makes that first class.
+  //
+  // So the drain is raced against the deadline plus a grace. The grandchild is
+  // NOT chased here: reclaiming a process that outlived its parent is ruling
+  // 38's sweep, which is the containment mechanism precisely because a kill on
+  // one pid cannot be it. What this owes the operator instead is to SAY the
+  // pipes were still held, so an empty tail is never read as a silent checker.
+  const drain = Promise.all([
     new Response(child.stdout).text(),
     new Response(child.stderr).text(),
   ]);
+  const drained =
+    spec.timeoutMs === undefined
+      ? await drain
+      : await Promise.race([drain, Bun.sleep(spec.timeoutMs + DRAIN_GRACE_MS).then(() => null)]);
+  const pipesHeld = drained === null;
+  const [stdout, stderr] = drained ?? ["", ""];
+  // Bounded by the SIGKILL above, which the direct child cannot survive.
   const code = await child.exited;
   if (timer !== null) clearTimeout(timer);
 
@@ -181,7 +225,14 @@ export async function runVerify(spec: VerifyRunSpec): Promise<CheckResult> {
       detail:
         `\`${rendered}\` was killed after ${spec.timeoutMs} ms. Ruling 52: a checker that was ` +
         "killed is `error`, not `fail` — the remedy is to re-run the checker, and sending a " +
-        `builder to fix a defect that is not in its code burns a rung of ruling 24's ladder.\n${tail}`,
+        `builder to fix a defect that is not in its code burns a rung of ruling 24's ladder.` +
+        (pipesHeld
+          ? `\nIts output could NOT be read: something it started outlived it and still held the ` +
+            `stdout/stderr pipes ${DRAIN_GRACE_MS} ms after the kill, so the tail below is empty ` +
+            `because it was UNREADABLE, not because the checker was silent. That process is ruling ` +
+            `38's sweep to reclaim, not this one's.`
+          : "") +
+        `\n${tail}`,
     };
   }
   if (code === 0) {
