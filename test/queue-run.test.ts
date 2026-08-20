@@ -304,6 +304,15 @@ describe("a refused plan creates nothing (ruling 53)", () => {
   });
 
   test("NEGATIVE CONTROL: the same two items on disjoint paths DO create a run root", () => {
+    // BUDGETED, and the budget is a BOUND rather than a measurement. This body
+    // drives a whole `brigadier run` SYNCHRONOUSLY through `Bun.spawnSync`, so
+    // it pays that run's full cost inside the test — and it had no explicit
+    // timeout, which meant bun's 5 s default. MEASURED 2026-08-20: 314-896 ms on
+    // ubuntu-latest and macos-latest, and 31-51 SECONDS on windows-latest, where
+    // it therefore never completed and this control never ran. A control that
+    // cannot run is not a control. Nothing here is weakened: the assertions are
+    // on the run's OUTCOME and not on its duration, and every one of them is
+    // unchanged.
     // Without this, "nothing appeared" would also be satisfied by a binary that
     // never creates anything at all.
     const ok = writePlan(
@@ -317,7 +326,7 @@ describe("a refused plan creates nothing (ruling 53)", () => {
     const good = brigadier(world, ["run", "--plan", ok, "--repo", world.repo, "--run-root", world.runs]);
     expect(good.code).toBe(0);
     expect(readdirSync(world.runs)).toContain("r");
-  });
+  }, 180_000);
 });
 
 // -------------------------------------------------------------- the effort
@@ -389,6 +398,15 @@ describe("ruling 29's third axis is recorded, and says what it IS", () => {
   });
 
   test("NEGATIVE CONTROL: ruling 67's clamp CASCADES — a clamped difficulty buys a cheaper effort", () => {
+    // BUDGETED, and the budget is a BOUND rather than a measurement. This body
+    // drives a whole `brigadier run` SYNCHRONOUSLY through `Bun.spawnSync`, so
+    // it pays that run's full cost inside the test — and it had no explicit
+    // timeout, which meant bun's 5 s default. MEASURED 2026-08-20: 314-896 ms on
+    // ubuntu-latest and macos-latest, and 31-51 SECONDS on windows-latest, where
+    // it therefore never completed and this control never ran. A control that
+    // cannot run is not a control. Nothing here is weakened: the assertions are
+    // on the run's OUTCOME and not on its duration, and every one of them is
+    // unchanged.
     // The same plan without `--max-difficulty hard`: `hard` clamps to `medium`,
     // and effort follows the difficulty ACTUALLY IN FORCE rather than the one
     // the plan asked for. Deriving from the declared value would spend at the
@@ -416,7 +434,7 @@ describe("ruling 29's third axis is recorded, and says what it IS", () => {
     expect(record.items[0]?.clampedTo).toBe("medium");
     expect(record.items[0]?.effortRequested).toBe("medium");
     expect(record.items[0]?.effort).toContain("fake-1[medium]");
-  });
+  }, 180_000);
 
   test("NEGATIVE CONTROL: ruling 30 — the `[max]` id the agent offered was never chosen", () => {
     // The agent listed one. Nothing filtered it out at the wire; it is simply
@@ -434,6 +452,15 @@ describe("ruling 29's third axis is recorded, and says what it IS", () => {
   });
 
   test("NEGATIVE CONTROL: a vendor with no measured lever asserts NOTHING and says so", () => {
+    // BUDGETED, and the budget is a BOUND rather than a measurement. This body
+    // drives a whole `brigadier run` SYNCHRONOUSLY through `Bun.spawnSync`, so
+    // it pays that run's full cost inside the test — and it had no explicit
+    // timeout, which meant bun's 5 s default. MEASURED 2026-08-20: 314-896 ms on
+    // ubuntu-latest and macos-latest, and 31-51 SECONDS on windows-latest, where
+    // it therefore never completed and this control never ran. A control that
+    // cannot run is not a control. Nothing here is weakened: the assertions are
+    // on the run's OUTCOME and not on its duration, and every one of them is
+    // unchanged.
     // Without this, "effort was set" would also be satisfied by a build that
     // printed a grade for every vendor whether or not it had a lever to set it
     // on — which is the shape #45 warns about.
@@ -455,7 +482,7 @@ describe("ruling 29's third axis is recorded, and says what it IS", () => {
     expect(record.items[0]?.effort).toContain("not asserted");
     const transcript = readFileSync(join(plain.runs, "r", id, "transcripts", "full.log"), "utf8");
     expect(transcript).not.toContain("session/set_model");
-  });
+  }, 180_000);
 });
 
 // -------------------------------------------------------------- the review
@@ -503,6 +530,15 @@ describe("ruling 32: a reviewer that produces no verdict never renders as a pass
   });
 
   test("NEGATIVE CONTROL: without --review there is no review check and the run succeeds", () => {
+    // BUDGETED, and the budget is a BOUND rather than a measurement. This body
+    // drives a whole `brigadier run` SYNCHRONOUSLY through `Bun.spawnSync`, so
+    // it pays that run's full cost inside the test — and it had no explicit
+    // timeout, which meant bun's 5 s default. MEASURED 2026-08-20: 314-896 ms on
+    // ubuntu-latest and macos-latest, and 31-51 SECONDS on windows-latest, where
+    // it therefore never completed and this control never ran. A control that
+    // cannot run is not a control. Nothing here is weakened: the assertions are
+    // on the run's OUTCOME and not on its duration, and every one of them is
+    // unchanged.
     // Without this, "review blocks" would also be satisfied by a binary that
     // blocks on everything.
     const plain = writePlan(world.dir, [{ id: "plain", kind: "write", paths: ["p.txt"], prompt: "out=p.txt" }], "plain.json");
@@ -511,7 +547,7 @@ describe("ruling 32: a reviewer that produces no verdict never renders as a pass
     ]);
     expect(ok.code).toBe(0);
     expect(ok.stdout).not.toContain("review:");
-  });
+  }, 180_000);
 });
 
 // -------------------------------------------------------------- the secret
@@ -619,6 +655,15 @@ describe("ruling 65: a grant that is too short to inventory is REPORTED", () => 
   });
 
   test("NEGATIVE CONTROL: a grant long enough to inventory produces no warning", () => {
+    // BUDGETED, and the budget is a BOUND rather than a measurement. This body
+    // drives a whole `brigadier run` SYNCHRONOUSLY through `Bun.spawnSync`, so
+    // it pays that run's full cost inside the test — and it had no explicit
+    // timeout, which meant bun's 5 s default. MEASURED 2026-08-20: 314-896 ms on
+    // ubuntu-latest and macos-latest, and 31-51 SECONDS on windows-latest, where
+    // it therefore never completed and this control never ran. A control that
+    // cannot run is not a control. Nothing here is weakened: the assertions are
+    // on the run's OUTCOME and not on its duration, and every one of them is
+    // unchanged.
     const quiet = makeWorld("long-secret");
     const plan = writePlan(quiet.dir, [
       { id: "leaker", kind: "write", paths: ["out.txt"], prompt: "leak=BAR_LONG out=out.txt" },
@@ -633,7 +678,7 @@ describe("ruling 65: a grant that is too short to inventory is REPORTED", () => 
     const transcript = readFileSync(join(quiet.runs, "r", id, "transcripts", "full.log"), "utf8");
     expect(transcript).not.toContain("long-enough-to-inventory");
     expect(transcript).toContain("[redacted]");
-  });
+  }, 180_000);
 });
 
 // ---------------------------------------------------------- the deliverable
@@ -733,6 +778,15 @@ describe("a `write` item that committed nothing is not a landing (rulings 51, 52
   });
 
   test("NEGATIVE CONTROL: the SAME plan with the same agent committing does land", () => {
+    // BUDGETED, and the budget is a BOUND rather than a measurement. This body
+    // drives a whole `brigadier run` SYNCHRONOUSLY through `Bun.spawnSync`, so
+    // it pays that run's full cost inside the test — and it had no explicit
+    // timeout, which meant bun's 5 s default. MEASURED 2026-08-20: 314-896 ms on
+    // ubuntu-latest and macos-latest, and 31-51 SECONDS on windows-latest, where
+    // it therefore never completed and this control never ran. A control that
+    // cannot run is not a control. Nothing here is weakened: the assertions are
+    // on the run's OUTCOME and not on its duration, and every one of them is
+    // unchanged.
     // Without this, every assertion above is also satisfied by a binary that
     // refuses everything. One token of the brief is the only difference.
     const good = makeWorld("nocommit-control");
@@ -753,9 +807,18 @@ describe("a `write` item that committed nothing is not a landing (rulings 51, 52
       integrationSha?: string;
     };
     expect(parsed.integrationSha).toBe(sha);
-  });
+  }, 180_000);
 
   test("NEGATIVE CONTROL: a plan of only read-only items publishes nothing AND succeeds", () => {
+    // BUDGETED, and the budget is a BOUND rather than a measurement. This body
+    // drives a whole `brigadier run` SYNCHRONOUSLY through `Bun.spawnSync`, so
+    // it pays that run's full cost inside the test — and it had no explicit
+    // timeout, which meant bun's 5 s default. MEASURED 2026-08-20: 314-896 ms on
+    // ubuntu-latest and macos-latest, and 31-51 SECONDS on windows-latest, where
+    // it therefore never completed and this control never ran. A control that
+    // cannot run is not a control. Nothing here is weakened: the assertions are
+    // on the run's OUTCOME and not on its duration, and every one of them is
+    // unchanged.
     // The other side: "no branch" must not block a run that was never going to
     // produce one. Ruling 49 never reads a read-only item's directory back at
     // all, so there is nothing to merge and nothing wrong.
@@ -773,7 +836,7 @@ describe("a `write` item that committed nothing is not a landing (rulings 51, 52
     const deliverable = parsed.runChecks?.find((check) => check.name === "integration branch");
     expect(deliverable?.outcome).toBe("pass");
     expect(deliverable?.qualifier).toBe("read-only plan");
-  });
+  }, 180_000);
 });
 
 // ------------------------------------------------------------- the base ref
@@ -954,6 +1017,15 @@ describe("a run that integrates NOTHING always names the check that blocked it",
   });
 
   test("NEGATIVE CONTROL: the same worker with the path DECLARED integrates", () => {
+    // BUDGETED, and the budget is a BOUND rather than a measurement. This body
+    // drives a whole `brigadier run` SYNCHRONOUSLY through `Bun.spawnSync`, so
+    // it pays that run's full cost inside the test — and it had no explicit
+    // timeout, which meant bun's 5 s default. MEASURED 2026-08-20: 314-896 ms on
+    // ubuntu-latest and macos-latest, and 31-51 SECONDS on windows-latest, where
+    // it therefore never completed and this control never ran. A control that
+    // cannot run is not a control. Nothing here is weakened: the assertions are
+    // on the run's OUTCOME and not on its duration, and every one of them is
+    // unchanged.
     // Without this, "nothing integrated and said why" would also be satisfied by
     // a build that integrates nothing ever.
     const ok = makeWorld("nothing-control");
@@ -968,5 +1040,5 @@ describe("a run that integrates NOTHING always names the check that blocked it",
     expect(good.code).toBe(0);
     expect(good.stdout).not.toContain("NOTHING INTEGRATED");
     expect(git(ok.repo, ["cat-file", "blob", `refs/heads/brigadier/${okRunId}:undeclared.txt`])).toBe("wanderer:own-value");
-  });
+  }, 180_000);
 });

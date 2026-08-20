@@ -504,6 +504,15 @@ describe("the catch rate is published as IDENTITIES, and a claim the diff cannot
   });
 
   test("NEGATIVE CONTROL: with no --planted there is a count and no invented denominator", () => {
+    // BUDGETED, and the budget is a BOUND rather than a measurement. This body
+    // drives a whole `brigadier run` SYNCHRONOUSLY through `Bun.spawnSync`, so
+    // it pays that run's full cost inside the test — and it had no explicit
+    // timeout, which meant bun's 5 s default. MEASURED 2026-08-20: 314-896 ms on
+    // ubuntu-latest and macos-latest, and 31-51 SECONDS on windows-latest, where
+    // it therefore never completed and this control never ran. A control that
+    // cannot run is not a control. Nothing here is weakened: the assertions are
+    // on the run's OUTCOME and not on its duration, and every one of them is
+    // unchanged.
     const bare = makeWorld("catch-rate-bare", [{ id: "qwen", reports: [] }, { id: "copilot" }]);
     const out = brigadier(bare, [
       "run", "--plan", plan(bare), "--repo", bare.repo, "--run-root", bare.runs, "--review", "--audience", "terminal",
@@ -511,7 +520,7 @@ describe("the catch rate is published as IDENTITIES, and a claim the diff cannot
     expect(out.stdout).not.toMatch(/catch rate\s+\d+\s+of\s+\d+/);
     expect(out.stdout).toContain("0 defect(s)");
     expect(out.code).toBe(0);
-  });
+  }, 180_000);
 });
 
 // ------------------------------------------- a read-only item has no diff
@@ -618,6 +627,15 @@ describe("rulings 32 and 29: the recorded identity is the one that SPAWNED", () 
   });
 
   test("NEGATIVE CONTROL: a vendor that RESOLVES and cannot spawn is refused BEFORE anything is routed", () => {
+    // BUDGETED, and the budget is a BOUND rather than a measurement. This body
+    // drives a whole `brigadier run` SYNCHRONOUSLY through `Bun.spawnSync`, so
+    // it pays that run's full cost inside the test — and it had no explicit
+    // timeout, which meant bun's 5 s default. MEASURED 2026-08-20: 314-896 ms on
+    // ubuntu-latest and macos-latest, and 31-51 SECONDS on windows-latest, where
+    // it therefore never completed and this control never ran. A control that
+    // cannot run is not a control. Nothing here is weakened: the assertions are
+    // on the run's OUTCOME and not on its duration, and every one of them is
+    // unchanged.
     // CHANGED 2026-08-20, and the old assertion is quoted below rather than
     // deleted, because what it proved moved rather than stopped mattering.
     //
@@ -656,5 +674,5 @@ describe("rulings 32 and 29: the recorded identity is the one that SPAWNED", () 
     expect(failed.stderr).toContain("qwen");
     expect(failed.stderr).toContain("not admitted");
     expect(failed.stderr).toContain("no agent on this machine completed a session");
-  });
+  }, 180_000);
 });

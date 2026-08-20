@@ -25,6 +25,7 @@ is not available to anyone."*
 | 9 | Windows: the bar harness grades blind | **SEPARATED BY EXPERIMENT — neither candidate alone; the conjunction. Fixed.** |
 | 10 | `bar/fakes.test.ts` on the POSIX legs | **DIAGNOSED — both open rows, and one attribution withdrawn** |
 | 11 | `bar/lib/orphan.test.ts` flakiness | **DIAGNOSED — a real leak defect, fixed and measured** |
+| 12 | **NEW** — a `brigadier run` is 35-160x slower on windows-latest | open, undiagnosed |
 
 ---
 
@@ -464,3 +465,40 @@ product defect (`src/integrate/gate.ts`). Options are: leave it and gather sampl
 rather than the clock per ruling 62 (d), which needs a signal from the vendor fixture that it has
 noticed rather than a poll; or accept it as environmental. **Two failures in eight is not yet enough
 to tell a flake from a slow machine, and saying so is the point.**
+
+---
+
+## 12. NEW, 2026-08-20 — a whole `brigadier run` is 35–160× slower on `windows-latest`
+
+**Found while answering why ten NEGATIVE CONTROLS and no positive arms were failing on that leg, which
+turned out to be two facts stacked.**
+
+The first is a test-shape defect and is fixed: every one of the ten drives a whole `brigadier run`
+**synchronously** through `Bun.spawnSync` inside the test body, and none of them declared a timeout —
+so they ran under bun's 5 s default while the arms they control do their expensive work in
+`beforeAll`. On POSIX that never showed. They now carry an explicit 180 s bound, which is a BOUND and
+not a measurement, and no assertion is changed: a control that cannot run is not a control, and that
+is the same shape as the eleven vacuous Windows passes ruled on the same day, pointing the other way.
+
+**The second is not fixed, is not attributed, and is the reason this entry exists.** MEASURED
+2026-08-20 across runs 32403947990 (windows) and its POSIX siblings, same tests, same commit:
+
+| test | ubuntu-latest | macos-latest | windows-latest |
+| --- | --- | --- | --- |
+| *the same two items on disjoint paths DO create a run root* | 897 ms | 338 ms | **51,116 ms** |
+| *the SAME plan with the same agent committing does land* | 318 ms | 651 ms | **31,014 ms** |
+| *the same worker with the path DECLARED integrates* | 315 ms | 657 ms | **31,035 ms** |
+| *with no `--planted` there is a count and no invented denominator* | 378 ms | 895 ms | **50,917 ms** |
+
+The Windows figures are real durations rather than artefacts of the timeout: the body is
+`Bun.spawnSync`, which cannot be interrupted, so bun's deadline can only fire once it returns.
+
+**What is NOT claimed:** any cause. Candidates nobody has separated — process creation on Windows
+being dearer, every planted vendor being reached through `cmd.exe` as a `.cmd` shim, `git` on Windows,
+Defender scanning each spawned artifact, or something in the product's own worker path. That is
+exactly the shape the 2x2 in #9 settled for the harness, and the same treatment would settle it here:
+one CI experiment that times the pieces separately rather than the whole. It was not run this round.
+
+**Why it matters beyond CI wall-clock.** Ruling 12 makes Windows first class. A run that costs 30–50 s
+where it costs under a second elsewhere is a user-visible property of the product on a supported
+platform, and nothing in `BAR.md` measures it.
