@@ -22,10 +22,12 @@
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { plantLauncher } from "../bar/lib/fake-agent.ts";
+import { isolatedPath } from "../bar/lib/fixtures.ts";
 
 const CLI = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
 
@@ -126,9 +128,7 @@ function makeWorld(name: string): { dir: string; repo: string; runs: string; bin
 
   const agent = join(dir, "agent.ts");
   writeFileSync(agent, AGENT_SOURCE);
-  const script = join(bin, "qwen");
-  writeFileSync(script, `#!/bin/sh\nexec ${process.execPath} ${agent} "$@"\n`);
-  chmodSync(script, 0o755);
+  plantLauncher(bin, "qwen", [process.execPath, agent]);
   return { dir, repo, runs, bin };
 }
 
@@ -137,7 +137,7 @@ function brigadier(world: { bin: string }, args: string[], extra: Record<string,
     env: {
       HOME: ROOT,
       USER: process.env["USER"] ?? "test",
-      PATH: `${world.bin}:/usr/bin:/bin:/usr/sbin:/sbin`,
+      PATH: isolatedPath(world.bin),
       NO_COLOR: "1",
       ...extra,
     },

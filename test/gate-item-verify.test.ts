@@ -37,10 +37,13 @@
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { plantLauncher } from "../bar/lib/fake-agent.ts";
+import { isolatedPath } from "../bar/lib/fixtures.ts";
+import { writeScript } from "../bar/lib/fs.ts";
 
 const CLI = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
 
@@ -128,17 +131,21 @@ function makeWorld(name: string, vendors: readonly string[]): World {
   for (const id of vendors) {
     const config = join(dir, `${id}.json`);
     writeFileSync(config, JSON.stringify({ id, spawnedAt }));
-    const script = join(bin, id);
-    writeFileSync(script, `#!/bin/sh\nexec ${process.execPath} ${agent} ${config} "$@"\n`);
-    chmodSync(script, 0o755);
+    plantLauncher(bin, id, [process.execPath, agent, config]);
   }
 
   // Two checkers that differ only in their exit code. The name is on PATH, so
   // `resolveVerify` finds it the way it finds an operator's real command.
   for (const [command, code] of [["verify-ok", 0], ["verify-bad", 1]] as const) {
-    const script = join(bin, command);
-    writeFileSync(script, `#!/bin/sh\necho "${command} in $(pwd)" >> ${ran}\nexit ${code}\n`);
-    chmodSync(script, 0o755);
+    // `writeScript`, not a bare shebang: this checker stands on `PATH` as the
+    // operator's own verify command, and on Windows an extension-less file with
+    // a `#!` line is not executable however its mode bits are set. `cd` is what
+    // `$(pwd)` is for — the assertion is that the checker ran in the CLONE.
+    writeScript(
+      join(bin, command),
+      `#!/bin/sh\necho "${command} in $(pwd)" >> ${ran}\nexit ${code}\n`,
+      `@echo off\r\necho ${command} in %CD%>> ${ran}\r\nexit /b ${code}\r\n`,
+    );
   }
   return { dir, repo, runs, bin, spawnedAt, ran };
 }
@@ -148,7 +155,7 @@ function brigadier(world: World, args: string[]) {
     env: {
       HOME: ROOT,
       USER: process.env["USER"] ?? "test",
-      PATH: `${world.bin}:/usr/bin:/bin:/usr/sbin:/sbin`,
+      PATH: isolatedPath(world.bin),
       NO_COLOR: "1",
     },
     stdout: "pipe",

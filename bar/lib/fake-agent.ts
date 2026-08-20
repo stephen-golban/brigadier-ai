@@ -40,6 +40,37 @@ export function plantAgent(binDir: string, name: string, config: StubConfig): st
 }
 
 /**
+ * Put a launcher for an arbitrary local program on `PATH`, under `name`.
+ *
+ * `plantAgent` above always launches `acp-stub.ts`. Several suites instead need
+ * a launcher for an agent script of their own, and every one of them wrote its
+ * own `#!/bin/sh` file with a `chmod +x`:
+ *
+ *     writeFileSync(script, `#!/bin/sh\nexec ${process.execPath} ${agent} "$@"\n`);
+ *     chmodSync(script, 0o755);
+ *
+ * AN EXTENSION-LESS FILE WITH A SHEBANG IS NOT EXECUTABLE ON WINDOWS, whatever
+ * its mode bits say, so on `windows-latest` those launchers resolved to nothing,
+ * no worker was ever spawned, and every assertion downstream read empty output
+ * or ran out a 60–90 second bound waiting for a process that could not start.
+ * `writeScript` has emitted the `.cmd` form for the bar's own fixtures since it
+ * was written; this is that same primitive, offered to the suites that were
+ * hand-rolling the POSIX half of it.
+ *
+ * The `"$@"` / `%*` tail is part of the contract: these launchers stand in for a
+ * vendor binary, and the product passes it arguments.
+ */
+export function plantLauncher(binDir: string, name: string, argv: readonly string[]): string {
+  ensureDir(binDir);
+  const posix = argv.map(quote).join(" ");
+  return writeScript(
+    join(binDir, name),
+    `#!/bin/sh\nexec ${posix} "$@"\n`,
+    `@echo off\r\n${posix} %*\r\n`,
+  );
+}
+
+/**
  * Install something that is NOT an agent but answers to the name — a v1
  * `brigadier` on a tap, a shell function, a shim. It must be reported as
  * unusable at the path it actually occupies, never as the vendor's own tool.

@@ -27,12 +27,14 @@
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { RECORD_POINTER } from "../src/report/record.ts";
 import { CANCEL_DEADLINE_MS } from "../src/run/interrupt.ts";
+import { plantLauncher } from "../bar/lib/fake-agent.ts";
+import { isolatedPath } from "../bar/lib/fixtures.ts";
 
 const CLI = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
 const ROOT = mkdtempSync(join(homedir(), ".brigadier-interrupt-test-"));
@@ -160,9 +162,7 @@ function makeWorld(name: string, source: string): World {
 
   const agent = join(dir, "agent.ts");
   writeFileSync(agent, source);
-  const script = join(bin, "qwen");
-  writeFileSync(script, `#!/bin/sh\nexec ${process.execPath} ${agent} "$@"\n`);
-  chmodSync(script, 0o755);
+  plantLauncher(bin, "qwen", [process.execPath, agent]);
 
   const plan = join(dir, "plan.json");
   writeFileSync(
@@ -182,7 +182,7 @@ function start(world: World) {
       env: {
         HOME: ROOT,
         USER: process.env["USER"] ?? "test",
-        PATH: `${world.bin}:/usr/bin:/bin:/usr/sbin:/sbin`,
+        PATH: isolatedPath(world.bin),
         NO_COLOR: "1",
       },
       stdout: "pipe",
@@ -389,7 +389,7 @@ describe("an interrupt BEFORE anything is in flight exits immediately (ruling 63
       env: {
         HOME: ROOT,
         USER: process.env["USER"] ?? "test",
-        PATH: `${world.bin}:/usr/bin:/bin:/usr/sbin:/sbin`,
+        PATH: isolatedPath(world.bin),
         NO_COLOR: "1",
       },
       stdout: "pipe",

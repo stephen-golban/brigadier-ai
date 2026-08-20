@@ -43,10 +43,12 @@
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { plantLauncher } from "../bar/lib/fake-agent.ts";
+import { isolatedPath } from "../bar/lib/fixtures.ts";
 import { CANCEL_DEADLINE_MS } from "../src/run/interrupt.ts";
 
 const CLI = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
@@ -171,9 +173,7 @@ writeFileSync(
   config,
   JSON.stringify({ bun: process.execPath, heartbeat, insideBeat, outsideBeat, insidePid, outsidePid, outsideDir }),
 );
-const script = join(bin, "qwen");
-writeFileSync(script, `#!/bin/sh\nexec ${process.execPath} ${agent} ${config} "$@"\n`);
-chmodSync(script, 0o755);
+plantLauncher(bin, "qwen", [process.execPath, agent, config]);
 
 const planPath = join(dir, "plan.json");
 writeFileSync(
@@ -234,7 +234,7 @@ describe("ruling 63: the drain reaches an UNMARKED descendant that reparented to
         env: {
           HOME: ROOT,
           USER: process.env["USER"] ?? "test",
-          PATH: `${bin}:/usr/bin:/bin:/usr/sbin:/sbin`,
+          PATH: isolatedPath(bin),
           NO_COLOR: "1",
         },
         stdout: "pipe",

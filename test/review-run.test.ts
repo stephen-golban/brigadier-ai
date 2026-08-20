@@ -42,6 +42,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { plantLauncher } from "../bar/lib/fake-agent.ts";
+import { isolatedPath } from "../bar/lib/fixtures.ts";
 
 const CLI = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
 
@@ -160,9 +162,7 @@ function makeWorld(name: string, vendors: readonly VendorSpec[]): World {
   for (const vendor of vendors) {
     const config = join(dir, `${vendor.id}.json`);
     writeFileSync(config, JSON.stringify({ reviewer: "approve", ...vendor, sawDiff }));
-    const script = join(bin, vendor.id);
-    writeFileSync(script, `#!/bin/sh\nexec ${process.execPath} ${agent} ${config} "$@"\n`);
-    chmodSync(script, 0o755);
+    plantLauncher(bin, vendor.id, [process.execPath, agent, config]);
   }
   return { dir, repo, runs, bin, sawDiff };
 }
@@ -172,7 +172,7 @@ function brigadier(world: World, args: string[]) {
     env: {
       HOME: ROOT,
       USER: process.env["USER"] ?? "test",
-      PATH: `${world.bin}:/usr/bin:/bin:/usr/sbin:/sbin`,
+      PATH: isolatedPath(world.bin),
       NO_COLOR: "1",
     },
     stdout: "pipe",

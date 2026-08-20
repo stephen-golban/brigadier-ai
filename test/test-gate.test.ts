@@ -30,7 +30,7 @@ import { describe, expect, test } from "bun:test";
 import { closeSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { emit } from "../scripts/test-gate.ts";
+import { emit, verdict } from "../scripts/test-gate.ts";
 
 const GATE = resolve(import.meta.dir, "..", "scripts", "test-gate.ts");
 
@@ -156,5 +156,83 @@ describe("a failing gate does not lose its tail down a pipe", () => {
 
   test("and it still fails the build — a complete log that exits 0 would be worse", () => {
     expect(drive(NEW_SHAPE).exitCode).toBe(1);
+  });
+});
+
+/**
+ * The verdict over bun's summary, driven in every direction.
+ *
+ * These strings are `bun test`'s real output shape, MEASURED against `bun 1.3.14`
+ * on 2026-08-20 — including the `error` case, produced by making one of two test
+ * files throw inside its `describe` body: `1 pass / 0 fail / 1 error`,
+ * `Ran 1 test across 2 files.`, exit code 1.
+ *
+ * The report is captured rather than printed — a gate whose green log contains
+ * the words "test gate FAILED" is a log that lies, and these drive the failing
+ * branches on purpose. The assertions are on the RETURNED code, which is the
+ * whole of what CI reads and the thing that blocks. The captured text is
+ * asserted too, so the branch is shown to have said which condition it was.
+ */
+describe("the verdict names what it blocked on", () => {
+  const summary = (opts: { pass?: number; fail?: number; skip?: number; todo?: number; error?: number }) =>
+    [
+      ` ${opts.pass ?? 1} pass`,
+      ` ${opts.fail ?? 0} fail`,
+      ...(opts.skip === undefined ? [] : [` ${opts.skip} skip`]),
+      ...(opts.todo === undefined ? [] : [` ${opts.todo} todo`]),
+      ...(opts.error === undefined ? [] : [` ${opts.error} error`]),
+      " 1 expect() calls",
+      "Ran 1 test across 2 files. [16.00ms]",
+    ].join("\n");
+
+  /** Collects the report instead of letting it reach this process's fds. */
+  const rule = (text: string, exitCode: number): { code: number; report: string } => {
+    let report = "";
+    const code = verdict(text, exitCode, (chunk: string) => {
+      report += chunk;
+    });
+    return { code, report };
+  };
+
+  test("a clean run passes, and echoes how much actually ran", () => {
+    const { code, report } = rule(summary({ pass: 1674 }), 0);
+    expect(code).toBe(0);
+    expect(report).toContain("nothing skipped, nothing todo");
+    expect(report).toContain("Ran 1 test across 2 files.");
+  });
+
+  test("a failing test blocks", () => {
+    expect(rule(summary({ fail: 3 }), 1).code).toBe(1);
+  });
+
+  test("a skipped test blocks — ruling 62 (c)", () => {
+    expect(rule(summary({ skip: 1 }), 0).code).toBe(1);
+  });
+
+  test("a todo blocks too", () => {
+    expect(rule(summary({ todo: 1 }), 0).code).toBe(1);
+  });
+
+  /**
+   * THE BRANCH THIS FILE WAS EXTENDED FOR, and the reason it is not merely a
+   * report change: a registration error is `0 fail`, so nothing in the old
+   * verdict named it. Driven with exit code 0 DELIBERATELY — bun really exits 1
+   * here, so leaning on the exit code would make this branch untestable and,
+   * worse, would leave the gate trusting a number it does not read.
+   */
+  test("a REGISTRATION ERROR blocks on its own, with no failing test and a zero exit", () => {
+    const { code, report } = rule(summary({ pass: 1, fail: 0, error: 1 }), 0);
+    expect(code).toBe(1);
+    expect(report).toContain("1 error(s)");
+    // And it says what an error IS, because "0 failing" taught nobody anything.
+    expect(report).toContain("threw while REGISTERING");
+  });
+
+  test("NEGATIVE CONTROL: the same summary with no error line passes", () => {
+    expect(rule(summary({ pass: 1, fail: 0 }), 0).code).toBe(0);
+  });
+
+  test("NEGATIVE CONTROL: `0 error` is not an error", () => {
+    expect(rule(summary({ pass: 1, fail: 0, error: 0 }), 0).code).toBe(0);
   });
 });

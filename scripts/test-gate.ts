@@ -129,6 +129,44 @@ async function main(): Promise<number> {
   unlinkSync(log);
   emit(text, 1);
 
+  return verdict(text, proc.exitCode);
+}
+
+/**
+ * The verdict over `bun test`'s own summary. Pure, so it has a demonstrated
+ * negative (ruling 62 (b)) — `test/test-gate.test.ts` drives every branch.
+ *
+ * WHY `error` IS COUNTED, added 2026-08-20. A file that throws while REGISTERING
+ * its tests — in a `describe` body, or a `beforeAll` — loses every test in it,
+ * and bun reports that as an `error` and not as a `fail`.
+ *
+ * MEASURED against `bun 1.3.14` on 2026-08-20, two files where one throws in its
+ * `describe` body: `1 pass, 0 fail, 1 error`, `Ran 1 test across 2 files`, and
+ * **exit code 1**. So the gate already BLOCKED on this — but it printed
+ * `test gate FAILED — 0 failing`, which names none of it.
+ *
+ * That is not hypothetical. In `gates.yml` run 32387095326 the windows-latest
+ * leg ran **1,556 tests where ubuntu and macOS ran 1,674**: seven files lost
+ * tests to registration errors and two whole files (43 tests) contributed no
+ * result at all. The gate's log said `106 failing` and never mentioned the 27
+ * errors or the 118 missing tests. The block was right; the report was useless.
+ *
+ * So the count is named, and the reading `bun test` prints about how much it
+ * actually ran is echoed — because the cheapest way to see a leg that silently
+ * ran less is to be able to compare that one line across legs.
+ *
+ * THE REPORT GOES THROUGH AN INJECTED SINK, defaulting to `emit`. Not a
+ * testing seam for its own sake: the tests below drive the FAILING branches, and
+ * with those writing to the real fd 1 the gate's own green log grew the words
+ * "test gate FAILED" three times. A log that says that while passing is the
+ * class of thing ruling 62 (f) treats as a false claim, and CI logs are read by
+ * people scanning for exactly that string.
+ */
+export function verdict(
+  text: string,
+  exitCode: number | null,
+  write: (text: string, fd?: 1 | 2) => void = emit,
+): number {
   const count = (label: string): number => {
     const match = text.match(new RegExp(`^\\s*(\\d+)\\s+${label}\\b`, "m"));
     return match ? Number(match[1]) : 0;
@@ -137,14 +175,26 @@ async function main(): Promise<number> {
   const skipped = count("skip");
   const todo = count("todo");
   const failed = count("fail");
+  const errors = count("error");
+  // `Ran 1,674 tests across 92 files.` — echoed verbatim, never re-derived.
+  const ran = /^Ran .*$/m.exec(text)?.[0] ?? "bun test printed no summary line";
 
-  if (proc.exitCode !== 0 || failed > 0) {
-    emit(`\ntest gate FAILED — ${failed} failing\n`, 2);
+  if (exitCode !== 0 || failed > 0 || errors > 0) {
+    write(
+      `\ntest gate FAILED — ${failed} failing, ${errors} error(s)\n${ran}\n` +
+        (errors > 0
+          ? "\nAn `error` is NOT a failing test: it is a file that threw while REGISTERING,\n" +
+            "so every test after the throw does not exist and cannot be counted anywhere.\n" +
+            "Compare the `Ran` line against another platform's before reading anything as\n" +
+            "green (ruling 62 (c)).\n"
+          : ""),
+      2,
+    );
     return 1;
   }
 
   if (skipped > 0 || todo > 0) {
-    emit(
+    write(
       `\ntest gate FAILED — ${skipped} skipped, ${todo} todo. A skipped test is not a\n` +
         "passing test (ruling 62). v1 shipped untested code behind platform-gated\n" +
         "tests that never ran locally, and the suite was green throughout.\n",
@@ -153,7 +203,7 @@ async function main(): Promise<number> {
     return 1;
   }
 
-  emit("\ntest gate passed — nothing skipped, nothing todo\n", 1);
+  write(`\ntest gate passed — nothing skipped, nothing todo\n${ran}\n`, 1);
   return 0;
 }
 

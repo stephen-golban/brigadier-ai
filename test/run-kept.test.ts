@@ -153,7 +153,16 @@ beforeEach(async () => {
   mkdirSync(join(runRoot, RUN_DIR), { recursive: true });
   runId = `kept${process.pid.toString(36)}`;
 
-  const corpse = Bun.spawn(["/bin/sh", "-c", "exit 0"], { stdout: "ignore", stderr: "ignore" });
+  // `process.execPath`, not `/bin/sh`. This is a two-line trick to obtain a pid
+  // that is CERTAINLY dead, and it took the whole file down on windows-latest:
+  // `uv_spawn '/bin/sh'` -> ENOENT (errno -4058) in a `before*` hook aborts every
+  // test in the file, so `test/run-kept.test.ts` reported 0 pass / 11 fail and
+  // `test/run-start.test.ts` lost 18 tests that never registered at all. Ruling
+  // 12 makes Windows first class and the same file already guards its OTHER
+  // spawn with `process.platform === "win32"` a few lines away; this one was
+  // simply missed. A bun that exits immediately is dead on every platform and
+  // needs no shell, so nothing here is platform-gated any more.
+  const corpse = Bun.spawn([process.execPath, "-e", ""], { stdout: "ignore", stderr: "ignore" });
   deadPid = corpse.pid;
   await corpse.exited;
   while (isAlive(deadPid)) await Bun.sleep(20);

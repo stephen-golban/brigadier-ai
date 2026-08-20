@@ -27,7 +27,7 @@
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,6 +35,8 @@ import { WORKER_MARKER } from "../src/agent/marker.ts";
 import { refusedDelegationLine } from "../src/report/index.ts";
 import { RUN_ROOT_ENV, readRefusals, recordRefusal, refusalLedgerPath } from "../src/queue/refusal.ts";
 import { Sink } from "../src/secrets/sink.ts";
+import { plantLauncher } from "../bar/lib/fake-agent.ts";
+import { isolatedPath } from "../bar/lib/fixtures.ts";
 
 /** Ruling 65: the only writer. `recordRefusal` takes it rather than owning one. */
 const sink = new Sink();
@@ -124,9 +126,7 @@ function makeWorld(name: string, delegate: boolean): World {
   writeFileSync(agent, AGENT_SOURCE);
   const config = join(dir, "qwen.json");
   writeFileSync(config, JSON.stringify({ id: "qwen", delegate, attempt, bun: process.execPath, cli: CLI }));
-  const script = join(bin, "qwen");
-  writeFileSync(script, `#!/bin/sh\nexec ${process.execPath} ${agent} ${config} "$@"\n`);
-  chmodSync(script, 0o755);
+  plantLauncher(bin, "qwen", [process.execPath, agent, config]);
   return { dir, repo, runs, bin, attempt };
 }
 
@@ -135,7 +135,7 @@ function brigadier(world: World, args: string[]) {
     env: {
       HOME: ROOT,
       USER: process.env["USER"] ?? "test",
-      PATH: `${world.bin}:/usr/bin:/bin:/usr/sbin:/sbin`,
+      PATH: isolatedPath(world.bin),
       NO_COLOR: "1",
     },
     stdout: "pipe",
