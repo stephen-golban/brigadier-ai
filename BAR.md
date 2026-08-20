@@ -242,10 +242,24 @@ signal** rather than exiting with an invented code, so the process's status is g
 signal-terminated.
 
 **RECORDED 2026-08-20 — amendment §18, the one hole in ruling 38, written down where a reader looks.**
-Owner's decision this date, under this document's *When an item cannot be met*. `bar/items/07-…` had
-cited *"amendment §18"* for this hole since it was written, and **no such section existed anywhere** —
-not in this file, not in either measurement amendment. A limit that is only in the head of the item it
-limits is not in the open, so it is here instead:
+Owner's decision this date, under this document's *When an item cannot be met*.
+
+**CORRECTED 2026-08-20 — an earlier draft of this block said *"no such section existed anywhere"*.
+That claim was false and is WITHDRAWN, not reworded.** Amendment **§18 exists** and always did: it is
+section 18 of the second measurement-amendment comment on issue #1, posted **2026-08-18**, titled
+*"Ruling 38's command-line marker cannot cover the operator's verify command — and that needs a
+ruling."* VERIFIED 2026-08-20 against `gh issue view 1 --repo stephen-golban/brigadier-ai --comments`.
+
+**The real defect is worse than a missing citation.** §18 granted no carve-out. It **asked for one**,
+closing: *"The gap belongs to the owner: ruling 38 is written as universal and there is one process it
+structurally cannot reach."* `bar/items/07-…` then cited it for nine rounds **as though it were a
+settled limit**, and used an open question to excuse a hole. That is precisely what *struck only in
+the open* forbids: an item may not excuse a hole by pointing at something nobody has decided, and a
+limit that is settled only in the head of the item it limits is not in the open at all. The section
+existed and asked a question; the answer did not exist, and the item behaved as though it did.
+
+**This is that answer.** The owner's decision of this date is the ruling §18 requested, recorded here
+by this file's own procedure — which item, why, and what promise is therefore unproven:
 
 - **Which item.** This one, item 7. **What it deliberately does not demand:** ruling 38 says every
   process brigadier causes to exist carries a marker in its **command line**, and an operator's verify

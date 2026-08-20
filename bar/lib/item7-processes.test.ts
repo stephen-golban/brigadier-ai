@@ -295,11 +295,15 @@ describe("the classification itself", () => {
  * cites.
  *
  * The defect: `bar/items/07-…` excused ruling 38's one hole by citing
- * **"amendment §18"**, and no such section existed anywhere in the tree — not in
- * `BAR.md`, not in either measurement amendment. A limit that lives only in the
- * head of the item it limits is not "in the open", which is what `BAR.md`'s
- * *When an item cannot be met* requires. The owner ruled on 2026-08-20 that it be
- * recorded in `BAR.md`; this pins that it stays recorded.
+ * **"amendment §18"** as though §18 had granted a carve-out. §18 EXISTS — it is
+ * the second measurement-amendment comment on issue #1, posted 2026-08-18 — but
+ * what it does is REQUEST a ruling, closing "The gap belongs to the owner". The
+ * item cited an open question for nine rounds as a settled limit. A limit that is
+ * settled only in the head of the item it limits is not "in the open", which is
+ * what `BAR.md`'s *When an item cannot be met* requires. The owner ruled on
+ * 2026-08-20 — the ruling §18 asked for — and had it recorded in `BAR.md`; this
+ * pins that it stays recorded, together with the withdrawal of this guard's own
+ * earlier false claim that §18 existed nowhere.
  *
  * It is a transcription guard, and this repository's second-hardest lesson is
  * that transcriptions drift inside a single round. The negative control is the
@@ -311,13 +315,18 @@ describe("item 7's own limit is recorded in BAR.md, not only in its head", () =>
   const bar = readFileSync(join(ROOT, "BAR.md"), "utf8");
   const item7 = readFileSync(join(ROOT, "bar", "items", "07-interruption-leaves-nothing.ts"), "utf8");
 
-  /** Does this `BAR.md` text record the hole, as the procedure asks — which item, why, what is unproven? */
-  const recordsTheHole = (text: string): boolean => {
+  /** The item-7 section of a `BAR.md` text, or `""` if it has none. */
+  const itemSeven = (text: string): string => {
     const start = text.indexOf("### 7.");
     const end = text.indexOf("### 8.", start === -1 ? 0 : start);
-    if (start === -1 || end === -1) return false;
-    const section = text.slice(start, end);
+    return start === -1 || end === -1 ? "" : text.slice(start, end);
+  };
+
+  /** Does this `BAR.md` text record the hole, as the procedure asks — which item, why, what is unproven? */
+  const recordsTheHole = (text: string): boolean => {
+    const section = itemSeven(text);
     return (
+      section !== "" &&
       /RECORDED 2026-08-20/.test(section) &&
       /amendment §18/.test(section) &&
       /--brigadier-run=x` is not/.test(section) &&
@@ -325,23 +334,69 @@ describe("item 7's own limit is recorded in BAR.md, not only in its head", () =>
     );
   };
 
+  /**
+   * Does this `BAR.md` text state the TRUE thing about §18? The block once said
+   * §18 existed nowhere. It exists — on issue #1, posted 2026-08-18 — and it
+   * REQUESTED a ruling rather than granting one. This pins the correction and
+   * pins that the false claim stays withdrawn rather than quietly reworded.
+   */
+  const tellsTheTruthAboutAmendment18 = (text: string): boolean => {
+    const section = itemSeven(text);
+    if (section === "") return false;
+    // The false claim may appear ONCE, and only inside the sentence that
+    // withdraws it. A second, unquoted occurrence is the falsehood standing
+    // again, which is the state this guard exists to forbid.
+    const falseClaim = /no such section existed anywhere/g;
+    const occurrences = section.match(falseClaim)?.length ?? 0;
+    return (
+      occurrences === 1 &&
+      /said \*"no such section existed anywhere"\*\.?\s*\n?That claim was false and is WITHDRAWN, not reworded/.test(
+        section,
+      ) &&
+      /CORRECTED 2026-08-20/.test(section) &&
+      /\*\*§18 exists\*\*/.test(section) &&
+      /issue #1, posted \*\*2026-08-18\*\*/.test(section) &&
+      /granted no carve-out/.test(section) &&
+      /asked for one/i.test(section) &&
+      /The gap belongs to the owner/.test(section)
+    );
+  };
+
   test("the hole is written into BAR.md's item 7, with its reason and what it leaves unproven", () => {
     expect(recordsTheHole(bar)).toBe(true);
   });
 
-  test("NEGATIVE CONTROL — the same predicate says no when the record is not there", () => {
+  test("BAR.md says what is TRUE about §18 — it exists, and it asked for the ruling it was cited as", () => {
+    expect(tellsTheTruthAboutAmendment18(bar)).toBe(true);
+  });
+
+  test("NEGATIVE CONTROL — the same predicates say no when the record is not there", () => {
     // Cut the recorded block back out and the guard must go red, or it is a
     // guard that would pass on the state it exists to forbid.
     const without = bar.replace(/\*\*RECORDED 2026-08-20[\s\S]*?\n\n/, "");
     expect(without).not.toBe(bar);
     expect(recordsTheHole(without)).toBe(false);
+    // Cut only the correction and the truth predicate must go red while the
+    // rest of the record still stands — the two halves are pinned separately.
+    const uncorrected = bar.replace(/\*\*CORRECTED 2026-08-20[\s\S]*?\n\n/, "");
+    expect(uncorrected).not.toBe(bar);
+    expect(tellsTheTruthAboutAmendment18(uncorrected)).toBe(false);
+    // And a section that reinstates the withdrawn falsehood must go red too.
+    const relapsed = bar.replace(
+      "**CORRECTED 2026-08-20",
+      "no such section existed anywhere in the tree.\n\n**CORRECTED 2026-08-20",
+    );
+    expect(relapsed).not.toBe(bar);
+    expect(tellsTheTruthAboutAmendment18(relapsed)).toBe(false);
     // And on a document with no item 7 at all.
     expect(recordsTheHole("# not the bar")).toBe(false);
+    expect(tellsTheTruthAboutAmendment18("# not the bar")).toBe(false);
   });
 
   test("the item points the reader at BAR.md rather than at a section of its own", () => {
     // Every `amendment §N` this item cites must resolve in BAR.md. `§18` is the
-    // only one, and it resolved nowhere until 2026-08-20.
+    // only one. It resolved on issue #1 all along; what did not exist until
+    // 2026-08-20 was the RULING it asked for, which is what this file now holds.
     const cited = [...item7.matchAll(/amendment §(\d+)/g)].map((m) => m[1]);
     expect(cited.length).toBeGreaterThan(0);
     for (const n of cited) expect(bar).toContain(`amendment §${n}`);

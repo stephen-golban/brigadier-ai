@@ -14,10 +14,18 @@ credential of its own: it drives the agents you already have, with the accounts 
 **Pre-release.** There is no tag and no published artifact; you build it from source. Nothing here is
 a promise that it works on your machine.
 
-- **The bar stands at 12 of 13.** `BAR.md` defines "done" as thirteen items driven against the real
-  compiled binary, each checkable by someone who does not trust the author. Twelve pass. Item 10
-  fails on a warm-start budget, and whether that budget is the right number has never itself been
-  measured on this product — it is an open owner decision, not a bug with a known fix.
+- **The bar reads 13 of 13 on the author's machine, and that is not the same as met.** `BAR.md`
+  defines "done" as thirteen items driven against the real compiled binary, each checkable by someone
+  who does not trust the author — and it assigns the verdict to an **independent verifier**: a
+  separate session, a different vendor, blind to the builder's reasoning, planting its own defects.
+  That has not happened. What exists is the loop that built the harness reporting that the harness
+  passes, which is the shape `BAR.md` rejects elsewhere. The number is self-reported until a verifier
+  says otherwise. See `VERIFIER-BRIEF.md`.
+- **The last item closed by a withdrawal, not a fix.** Item 10's ≤10 ms warm-start clause was struck
+  in the open on 2026-08-20: it was never measured on this product, entering the record as one
+  unsourced sentence. No number was moved to fit a measurement, and no replacement budget was
+  adopted. The figure is still measured and printed; it no longer gates. What is now unproven is
+  named in the item's own output.
 - **CI has run on `macos-latest`, `ubuntu-latest` and `windows-latest`, and does not yet pass on any
   of the three.** The gates workflow executed for the first time on 2026-08-20 and found a real Linux
   defect on that first run. Before then the only workflow that had ever executed was `portability`,

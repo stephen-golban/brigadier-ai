@@ -49,12 +49,17 @@
  * WHAT THIS ITEM DELIBERATELY DOES NOT DEMAND. RECORDED IN `BAR.md`, item 7,
  * under *RECORDED 2026-08-20 — amendment §18* — which is where it now lives and
  * where the reader should be sent. This comment cited "amendment §18" from the
- * day it was written and NO SUCH SECTION EXISTED anywhere in the tree; the owner
- * ruled on 2026-08-20 that a limit only present in the head of the item it
- * limits is not in the open, and had it written into `BAR.md` following that
- * file's own *When an item cannot be met* procedure — which item, why, and what
- * promise is therefore unproven. Nothing about the product or about what this
- * item asserts changed with that ruling. Ruling 38 says
+ * day it was written. §18 EXISTS — issue #1, second measurement-amendment
+ * comment, posted 2026-08-18 — but it GRANTED NO CARVE-OUT: it asked the owner
+ * for a ruling, closing "The gap belongs to the owner". This comment cited that
+ * open request for nine rounds as though it were a settled limit. (An earlier
+ * revision of this comment claimed §18 existed nowhere; that claim was false and
+ * is withdrawn — see BAR.md's CORRECTED 2026-08-20 note.) The owner ruled on
+ * 2026-08-20 — the ruling §18 asked for — that a limit settled only in the head
+ * of the item it limits is not in the open, and had it written into `BAR.md`
+ * following that file's own *When an item cannot be met* procedure — which item,
+ * why, and what promise is therefore unproven. Nothing about the product or
+ * about what this item asserts changed with that ruling. Ruling 38 says
  * every process brigadier causes to exist carries a marker in its COMMAND LINE,
  * and the operator's verify command structurally cannot: appending an argument
  * corrupts it — `bun test --brigadier-run=x` is not `bun test`. It is killed on
@@ -923,7 +928,8 @@ const item: BarItem = {
             "and only while the run root is still there. This item's plan carries no verify command, so nothing above " +
             "measures that path; it is named here rather than left for a reader to discover, and it is written down in " +
             "`BAR.md` under item 7 rather than only in this harness's own head — it was cited for rounds as `amendment §18`, " +
-            "a section that existed nowhere, until the owner had it recorded on 2026-08-20",
+            "a section that exists but that ASKED the owner for a ruling rather than granting one, until the owner made that " +
+            "ruling and had it recorded on 2026-08-20",
         );
         live = { kind: "ran", checks };
       }
