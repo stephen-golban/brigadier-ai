@@ -34,6 +34,25 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 const REPO = fileURLToPath(new URL("..", import.meta.url)).replace(/[\\/]$/, "");
 
 /**
+ * `REPO` with forward slashes, for the generated SOURCE FILES only.
+ *
+ * **A Windows path interpolated raw into a JavaScript string literal is not that
+ * path.** MEASURED on `windows-latest` on 2026-08-20: `REPO` is
+ * `D:\a\brigadier-ai\brigadier-ai`, and writing it unescaped into
+ * `import … from "${REPO}/src/cli.ts"` produced a file whose specifier bun read
+ * as `D:arigadier-airigadier-ai/src/cli.ts` — `\a` is a bell and `\b` a
+ * backspace — and every compile in this file failed with `Could not resolve`.
+ * That is the whole reason the binary-budget assertion could never run there.
+ *
+ * Forward slashes rather than `JSON.stringify`, because these are import
+ * SPECIFIERS: bun resolves `D:/a/…` on Windows, and a specifier is a URL-ish
+ * thing where the platform separator was never the right spelling in the first
+ * place. `REPO` itself is left alone — the `spawnSync` calls below hand it to
+ * the OS, which wants the native form.
+ */
+const REPO_SPECIFIER = REPO.replace(/\\/g, "/");
+
+/**
  * What brigadier's own code is allowed to add to the Bun runtime it ships in.
  *
  * **RULED 2026-08-20. This replaces a 63 MiB budget on the TOTAL, which is
@@ -135,7 +154,7 @@ describe("the compiled binary loads the grammars", () => {
     writeFileSync(
       entry,
       [
-        `import { Parser } from "${REPO}/node_modules/web-tree-sitter/tree-sitter.js";`,
+        `import { Parser } from "${REPO_SPECIFIER}/node_modules/web-tree-sitter/tree-sitter.js";`,
         "try {",
         "  await Parser.init();",
         '  console.log("INIT-OK");',
@@ -177,11 +196,11 @@ describe("and it still fits the binary budget", () => {
     writeFileSync(
       entry,
       [
-        `import { buildRepoMap } from "${REPO}/src/repomap/index.ts";`,
+        `import { buildRepoMap } from "${REPO_SPECIFIER}/src/repomap/index.ts";`,
         // Referenced behind a condition that is never true, so the bundler
         // cannot drop it and the binary never actually builds a map here.
         'if (process.env["BRIGADIER_NEVER"] === "1") console.log(await buildRepoMap("."));',
-        `await import("${REPO}/src/cli.ts");`,
+        `await import("${REPO_SPECIFIER}/src/cli.ts");`,
         "",
       ].join("\n"),
     );

@@ -534,3 +534,42 @@ real repository, RECORDS which fired, and asserts only the property the controls
 least one shape fires on this platform. On POSIX it is a control on the control (6/6 on darwin and
 under `oven/bun:1.3.14`). On Windows the matrix is the finding, and it should let the next round fix a
 dozen tests in one edit rather than guessing three times.
+
+---
+
+## What the first post-fix Windows leg measured, 2026-08-20
+
+Run 32410206092, job 96558602057, against `ec56b87`. **83 failing before, 83 after — and the
+composition is the finding, not the total.**
+
+**FIFTEEN FIXED, and each is a family rather than a test:**
+
+| gone | why |
+| --- | --- |
+| `the temporary index is nowhere near the operator's repository` (2) | `refuseInsideRepo` asks the filesystem now — the 8.3 short name defeated the string test |
+| `the spellings refuseInsideRepo compares` (3) | the diagnostic that found it now passes there |
+| `the subject's output reaches the harness` (2) | `exec` no longer combines `detached` with a `.cmd` shim |
+| `the worker's clone` (3), `a first-day repository`, `ruling 54: a wave boundary`, `recycling leaves nothing` (6) | CRLF, asserted against the repository's own effective `core.autocrlf` |
+| `item 1's early exit reports its provenance` | downstream of the capture fix |
+| `cli plus repo map is under 63 MiB` | the struck clause; replaced by the contribution budget |
+
+**TWELVE OF THE FIFTEEN NEW ARE THE CONVERSION, exactly as ruled:** the eleven platform-gated tests
+that used to render `(pass)` in fractions of a millisecond, plus the new `THE RACE, driven` arm in
+`bar/lib/orphan.test.ts`. They are red on purpose and each names the mechanism that would have to be
+built.
+
+**THE THREE THAT ARE NOT** — one is new information and two were already failing:
+
+- **`brigadier's own contribution is within budget` — a Windows path interpolated raw into a
+  JavaScript string literal.** MEASURED: `REPO` is `D:\a\brigadier-ai\brigadier-ai`, and
+  `import … from "${REPO}/src/cli.ts"` produced a specifier bun read as
+  `D:arigadier-airigadier-ai/src/cli.ts` — `\a` is a bell and `\b` a backspace. **Every compile in
+  `test/repomap-binary.test.ts` failed there**, which is why the binary-budget assertion has never
+  run on Windows under either the old clause or the new one. Fixed by interpolating a forward-slash
+  form into the generated SOURCE only; `REPO` itself still goes to the OS in its native form. This
+  is the *"hardcoded POSIX path separators in expectations"* family in its sharpest form, and it was
+  found only because the new budget moved the assertion behind a compile that had to succeed.
+- `the stamp the build step collects` and `the operator's repository survives the gate…` were both
+  failing before this round and are untouched by it.
+
+**So the honest count is 83 → 71 real failures, with 12 previously invisible checks made visible.**
