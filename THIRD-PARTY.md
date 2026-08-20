@@ -204,11 +204,23 @@ HOW TO RELINK, IF YOU WANT A DIFFERENT JAVASCRIPTCORE (WEBKIT)
      oven-sh/bun under scripts/build/deps/ at the tag above.
   3. Rebuild brigadier with your Bun: `bun run build`. brigadier's own source — the other
      half of §6a, the "work that uses the Library" — is licensed Apache-2.0 and ships
-     with this repository. It is NOT yet published: MEASURED 2026-08-17, the GitHub API
-     returns 404 for stephen-golban/brigadier-ai and package.json still says
-     "private": true. So this half is open for the same reason the other one is — nothing
-     has been released yet — and saying it is done because the licence file exists would
-     be the precise mistake this notice was rewritten to stop making.
+     with this repository, and that repository is now PUBLICLY READABLE: MEASURED against
+     gh 2.95.0 and curl 8.7.1 on 2026-08-20, `gh repo view stephen-golban/brigadier-ai
+     --json visibility` reports PUBLIC and an unauthenticated GET of
+     https://api.github.com/repos/stephen-golban/brigadier-ai returns 200.
+  CORRECTED 2026-08-20. Until this date these lines said the source was "NOT yet published:
+     MEASURED 2026-08-17, the GitHub API returns 404 for stephen-golban/brigadier-ai and
+     package.json still says "private": true". That measurement was TRUE ON 2026-08-17; it
+     is SUPERSEDED by the one above rather than deleted, because the repository was made
+     public on 2026-08-20. package.json does still say "private": true, deliberately — that
+     is npm's guard against `npm publish`, a different question from whether this repository
+     can be read, and these lines no longer offer it as evidence of either.
+  WHAT THAT DOES NOT SETTLE: a readable repository is NOT a discharged §6 offer, and this
+     notice does not claim it is. §6 attaches to DISTRIBUTION of the binary — the source has
+     to reach whoever holds the binary, from the same place the binary came from. brigadier
+     still publishes no release artifacts, so that place still does not exist. What changed
+     on 2026-08-20 is only that this half of §6a can now be fetched at all; whether that
+     discharges anything is a legal reading, and ruling 72 gates on counsel, not on us.
   NOT PROVEN: nobody has yet demonstrated that this path reproduces this binary. §6
   requires the shipped form of the "work that uses the Library" to include the data and
   utility programs needed for reproducing the executable from it; the recipe is here, a
@@ -1389,11 +1401,23 @@ HOW TO RELINK, IF YOU WANT A DIFFERENT TINYCC
      oven-sh/bun under scripts/build/deps/ at the tag above.
   3. Rebuild brigadier with your Bun: `bun run build`. brigadier's own source — the other
      half of §6a, the "work that uses the Library" — is licensed Apache-2.0 and ships
-     with this repository. It is NOT yet published: MEASURED 2026-08-17, the GitHub API
-     returns 404 for stephen-golban/brigadier-ai and package.json still says
-     "private": true. So this half is open for the same reason the other one is — nothing
-     has been released yet — and saying it is done because the licence file exists would
-     be the precise mistake this notice was rewritten to stop making.
+     with this repository, and that repository is now PUBLICLY READABLE: MEASURED against
+     gh 2.95.0 and curl 8.7.1 on 2026-08-20, `gh repo view stephen-golban/brigadier-ai
+     --json visibility` reports PUBLIC and an unauthenticated GET of
+     https://api.github.com/repos/stephen-golban/brigadier-ai returns 200.
+  CORRECTED 2026-08-20. Until this date these lines said the source was "NOT yet published:
+     MEASURED 2026-08-17, the GitHub API returns 404 for stephen-golban/brigadier-ai and
+     package.json still says "private": true". That measurement was TRUE ON 2026-08-17; it
+     is SUPERSEDED by the one above rather than deleted, because the repository was made
+     public on 2026-08-20. package.json does still say "private": true, deliberately — that
+     is npm's guard against `npm publish`, a different question from whether this repository
+     can be read, and these lines no longer offer it as evidence of either.
+  WHAT THAT DOES NOT SETTLE: a readable repository is NOT a discharged §6 offer, and this
+     notice does not claim it is. §6 attaches to DISTRIBUTION of the binary — the source has
+     to reach whoever holds the binary, from the same place the binary came from. brigadier
+     still publishes no release artifacts, so that place still does not exist. What changed
+     on 2026-08-20 is only that this half of §6a can now be fetched at all; whether that
+     discharges anything is a legal reading, and ruling 72 gates on counsel, not on us.
   NOT PROVEN: nobody has yet demonstrated that this path reproduces this binary. §6
   requires the shipped form of the "work that uses the Library" to include the data and
   utility programs needed for reproducing the executable from it; the recipe is here, a

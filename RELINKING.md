@@ -21,11 +21,29 @@ statement that it is closed is not.
 | --- | --- |
 | §6, "You must supply a copy of this License" | **done** — both texts are in the binary; `bun run license-gate` fails the build if they are not |
 | §6, prominent notice that the Library is used | **done** — `brigadier licenses`, no flag needed |
-| §6a, the "work that uses the Library" as source | **not done** — brigadier's own source is Apache-2.0 licensed but **unpublished**: MEASURED 2026-08-17, `api.github.com/repos/stephen-golban/brigadier-ai` returns **404** and `package.json` says `"private": true` |
+| §6a, the "work that uses the Library" as source | **not done** — brigadier's own source is Apache-2.0 licensed and the repository is now **publicly readable**: MEASURED against `gh 2.95.0` and `curl 8.7.1` on 2026-08-20, `gh repo view stephen-golban/brigadier-ai --json visibility` reports `PUBLIC` and an unauthenticated GET of `api.github.com/repos/stephen-golban/brigadier-ai` returns **200**. Readable is not offered — see the correction below |
 | §6a, the Library's own complete corresponding source | **not done** — see below |
 | §6c of LGPL-2.0 / §6d of LGPL-2.1, "equivalent access… from the same place" | **not done** — see below |
 | §6, "any data and utility programs needed for reproducing the executable" | **written, not proven** — see below |
 | BSD-2/BSD-3 attribution for the non-LGPL majority of WebKit | **done as an enumeration** — see the census |
+
+**CORRECTED 2026-08-20 — the §6a row above asserted something that is no longer true. The earlier
+measurement is SUPERSEDED rather than deleted.** Until this date that row read: *"brigadier's own
+source is Apache-2.0 licensed but **unpublished**: MEASURED 2026-08-17,
+`api.github.com/repos/stephen-golban/brigadier-ai` returns **404** and `package.json` says
+`"private": true`"*. That measurement was TRUE ON 2026-08-17; the repository was made public on
+2026-08-20. `package.json` does still say `"private": true`, deliberately — that is npm's guard
+against `npm publish`, a different question from whether this repository can be read, and neither
+this file nor the generated attribution offers it as evidence of either any more. The identical
+correction is in `scripts/inventory.ts`, and therefore in `THIRD-PARTY.md` and in the binary; these
+two accounts of the same event are meant to stay word for word the same.
+
+**The row's status did NOT change: it is still not done.** A readable repository is not a discharged
+§6 offer. §6 attaches to **distribution** of the binary — the source has to reach whoever holds the
+binary, from the same place the binary came from — and brigadier still publishes no release
+artifacts, so that place still does not exist. What changed on 2026-08-20 is only that this half of
+§6a can be fetched at all; whether that discharges anything is a legal reading, and ruling 72 gates
+on counsel, not on us.
 
 **Why the source half is not done.** brigadier publishes no release artifacts yet. There is no
 "same place as the binary" from which to serve WebKit's and tinycc's corresponding source, and no
@@ -112,7 +130,8 @@ git clone https://github.com/oven-sh/bun.git && git -C bun checkout bun-v1.3.14
 #    BUN_WEBKIT_PATH=/abs/path/to/WebKit  bun run build:local     (from inside the bun checkout)
 
 # 3. Rebuild brigadier with the Bun you just built. brigadier's own source is the other half
-#    of §6a; it is Apache-2.0 licensed and in this repository, and not yet published (see above).
+#    of §6a; it is Apache-2.0 licensed and in this repository, which has been publicly readable
+#    since 2026-08-20 — readable, not offered under §6 (see above).
 PATH=/path/to/your/bun/bin:$PATH bun run build
 ```
 

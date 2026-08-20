@@ -661,6 +661,35 @@ function requirePin(pinned: Record<string, string>, key: string): string {
  * surfaces were written separately they could drift, and the surface that
  * matters — the one a recipient holding only the binary can read — is the one
  * nobody would notice had gone stale.
+ *
+ * NOT BUILT, AND DELIBERATELY SO — the gap this section fell into on 2026-08-20.
+ * The class is **a claim about the world, stated in prose, inside a generated
+ * surface**. These lines asserted that the source repository was unpublished
+ * ("the GitHub API returns 404"); the repository was made public and the
+ * sentence went on shipping inside the binary, asserting something false on a
+ * licence surface. Nothing caught it: `licenses --check` compares bytes against
+ * a fresh render, so a stale sentence rendered faithfully is "current"; `claims`
+ * checks ruling citations and table contiguity, not truth; no test went red and
+ * no user could report it. `RELINKING.md`'s §6a row carried the same sentence
+ * and drifted the same way.
+ *
+ * The cheap mechanical check, recorded here rather than implemented:
+ *
+ *   1. Declare the world-fact as a STRUCTURED CONSTANT beside this text —
+ *      `{ visibility: "PUBLIC", measuredOn: "2026-08-20", measuredWith: … }` —
+ *      instead of leaving it dissolved in a paragraph.
+ *   2. `scripts/claims.ts` asserts OFFLINE that every prose mention, here and in
+ *      `RELINKING.md`, agrees with that constant. That keeps the gate's stated
+ *      rule — "Deliberately offline: a gate that needs the network is a gate
+ *      that fails in the wrong way" — intact, and it is the half that catches
+ *      drift BETWEEN the two documents.
+ *   3. A SEPARATE, NON-BLOCKING scheduled job compares the constant to reality
+ *      (`gh repo view --json visibility`) and opens a ticket when they differ.
+ *      Online, so it can be wrong about the network without failing a build.
+ *
+ * Roughly 30 lines across this file and `claims.ts`, one test file, one workflow
+ * step. Left unbuilt on purpose in the slice that made this correction, so that
+ * the fix and the guard are not the same commit.
  */
 function lgplSection(c: Component, census: LicenceCensus | undefined, pins: Record<string, string>): string {
   const lgpl = c.lgpl;
@@ -712,11 +741,23 @@ function lgplSection(c: Component, census: LicenceCensus | undefined, pins: Reco
     "     oven-sh/bun under scripts/build/deps/ at the tag above.",
     "  3. Rebuild brigadier with your Bun: `bun run build`. brigadier's own source — the other",
     "     half of §6a, the \"work that uses the Library\" — is licensed Apache-2.0 and ships",
-    "     with this repository. It is NOT yet published: MEASURED 2026-08-17, the GitHub API",
-    "     returns 404 for stephen-golban/brigadier-ai and package.json still says",
-    "     \"private\": true. So this half is open for the same reason the other one is — nothing",
-    "     has been released yet — and saying it is done because the licence file exists would",
-    "     be the precise mistake this notice was rewritten to stop making.",
+    "     with this repository, and that repository is now PUBLICLY READABLE: MEASURED against",
+    "     gh 2.95.0 and curl 8.7.1 on 2026-08-20, `gh repo view stephen-golban/brigadier-ai",
+    "     --json visibility` reports PUBLIC and an unauthenticated GET of",
+    "     https://api.github.com/repos/stephen-golban/brigadier-ai returns 200.",
+    "  CORRECTED 2026-08-20. Until this date these lines said the source was \"NOT yet published:",
+    "     MEASURED 2026-08-17, the GitHub API returns 404 for stephen-golban/brigadier-ai and",
+    "     package.json still says \"private\": true\". That measurement was TRUE ON 2026-08-17; it",
+    "     is SUPERSEDED by the one above rather than deleted, because the repository was made",
+    "     public on 2026-08-20. package.json does still say \"private\": true, deliberately — that",
+    "     is npm's guard against `npm publish`, a different question from whether this repository",
+    "     can be read, and these lines no longer offer it as evidence of either.",
+    "  WHAT THAT DOES NOT SETTLE: a readable repository is NOT a discharged §6 offer, and this",
+    "     notice does not claim it is. §6 attaches to DISTRIBUTION of the binary — the source has",
+    "     to reach whoever holds the binary, from the same place the binary came from. brigadier",
+    "     still publishes no release artifacts, so that place still does not exist. What changed",
+    "     on 2026-08-20 is only that this half of §6a can now be fetched at all; whether that",
+    "     discharges anything is a legal reading, and ruling 72 gates on counsel, not on us.",
     "  NOT PROVEN: nobody has yet demonstrated that this path reproduces this binary. §6",
     "  requires the shipped form of the \"work that uses the Library\" to include the data and",
     "  utility programs needed for reproducing the executable from it; the recipe is here, a",
