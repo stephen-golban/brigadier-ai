@@ -125,7 +125,31 @@
  * NOT made here: it was scoped on 2026-08-20 at roughly 41 call sites inside the
  * instrument that grades the release, and starting it at the end of a round is
  * how the instrument becomes the defect for the fourth time (amendment §20).
- * It is written down as the open item it is.
+ *
+ * **RULED 2026-08-20, the owner having delegated that round's rulings.** The
+ * union is the real fix and it is NOT taken now, deliberately: it is a refactor
+ * of the verdict type of the instrument that grades the release, at ~41 call
+ * sites, and it needs a round that begins with it and verifies it alone. That is
+ * this file's own recommendation and the reason is amendment §20's three
+ * recorded occasions on which the instrument became the defect. **A ruling to
+ * defer is still a ruling and it carries a cost: until the union lands, a note
+ * written in a blocked branch is invisible to `failures`, and nothing here makes
+ * that impossible.**
+ *
+ * **What IS taken now is the part that stops the audit above from expiring.**
+ * The audit is a point-in-time answer — it was true of 21 call sites on
+ * 2026-08-20 and says nothing about the 22nd. So `note` REFUSES, at runtime and
+ * at every call site, a row whose name carries this file's own blocking
+ * vocabulary: `FAIL —`, `NOT-RUN —` and `ERROR —` are verdicts, and a verdict
+ * written through a channel that has none is the exact confusion the union
+ * would make unrepresentable. It is a narrowing and not the fix:
+ *
+ *   - it catches the case where the AUTHOR knew they were describing a blocked
+ *     condition and reached for `note` anyway, which is how all three of item
+ *     12's near-misses would have read;
+ *   - it does NOT catch a note whose prose describes a blocking condition
+ *     without using the vocabulary, and it cannot, because that is a judgement
+ *     about meaning. Only the union closes that, and the union is scheduled.
  */
 
 export interface Check {
@@ -140,6 +164,33 @@ export interface Check {
    * computes a verdict reads it.
    */
   note?: true;
+}
+
+/**
+ * This file's own blocking vocabulary, as prefixes. See the header for the
+ * convention and for why three spellings of one verdict is a defect on its own.
+ */
+export const BLOCKING_PREFIXES = ["FAIL —", "NOT-RUN —", "ERROR —"] as const;
+
+/**
+ * A note may not carry a verdict, and this is what says so at the call site.
+ *
+ * THROWS rather than returning false. A `Checks` object is built while an item
+ * runs and read to produce that item's outcome, so a soft failure here would
+ * become a row nobody reads inside a verdict nobody checks — which is the shape
+ * being guarded against, one level up. A throw makes the item `error`, and
+ * ruling 52 makes `error` block.
+ */
+export function refuseVerdictInANote(name: string, detail: string): void {
+  const prefix = BLOCKING_PREFIXES.find((p) => name.trimStart().startsWith(p));
+  if (prefix === undefined) return;
+  throw new Error(
+    `a note may not carry a verdict: ${JSON.stringify(name)} opens with ${JSON.stringify(prefix)}, ` +
+      "which this file's vocabulary reserves for a row that BLOCKS. `note` writes `ok: true` into a " +
+      "field it has no verdict for, so this row would have rendered as a fact and gated nothing. " +
+      "Use `expect(name, false, detail)` — a check that did not run is not a check that passed " +
+      `(ruling 48). Detail was: ${detail.slice(0, 160)}`,
+  );
 }
 
 /** The four-column leader `render` prints. Exported so tests assert on the bytes, not on a flag. */
@@ -170,6 +221,7 @@ export class Checks {
    * flag is what `render` reads.
    */
   note(name: string, detail: string): void {
+    refuseVerdictInANote(name, detail);
     this.rows.push({ name: `${name} (note)`, ok: true, detail, note: true });
   }
 

@@ -14,21 +14,32 @@ is not available to anyone."*
 
 | # | subject | state |
 | --- | --- | --- |
-| 1 | detection cache: does `run` trust it | open |
-| 2 | does `brigadier detect` get a ruling | open |
+| 1 | detection cache: does `run` trust it | **RULED — left as it is, and closed** |
+| 2 | does `brigadier detect` get a ruling | **RULED — ruling 73, in** |
 | 3 | the 63 MiB size clause | **RULED — struck, and replaced by a budget on brigadier's own contribution** |
 | 4 | ruling 15's directory identity on ext4 | **RULED — a clone token, old entries refused** |
-| 5 | `Check` as a discriminated union | open |
-| 6 | eleven Windows tests that render `(pass)` | open |
+| 5 | `Check` as a discriminated union | **RULED — deferred to its own round; the audit's expiry closed now** |
+| 6 | eleven Windows tests that render `(pass)` | **RULED — made blocking failures, named** |
 | 7 | an `execute` that asked no permission | open — recorded, not concluded |
 | 8 | the verifier's `Authentication required` | open — still unexplained |
 | 9 | Windows: the bar harness grades blind | **experiment pushed; see below** |
 | 10 | `bar/fakes.test.ts` on the POSIX legs | **DIAGNOSED — both open rows, and one attribution withdrawn** |
-| 11 | `bar/lib/orphan.test.ts` flakiness | open — a third distinct assertion recorded |
+| 11 | `bar/lib/orphan.test.ts` flakiness | **DIAGNOSED — a real leak defect, fixed and measured** |
 
 ---
 
-## 1. Does `run` trust the detection cache? — `DETECTION-CACHE.md`'s one open `[owner]`
+## 1. ~~Does `run` trust the detection cache?~~ RULED 2026-08-20 — the split STANDS
+
+**RULED: leave it.** Recorded in `DETECTION-CACHE.md` under *The one open judgement*, which is the file
+the decision governs, with the accepted cost written out: every `run` pays the 3.28–4.29 s sweep for
+as long as this stands, and ruling 71's own accepted-cost sentence still reads as though only a first
+run does — a mismatch this ruling does not remove.
+
+**The reason is the absence of one.** Carried across two rounds with no new evidence in either
+direction, which is the answer to "is there a measured reason yet". The directions are not symmetric:
+widening is one line, narrowing back after a stale admission means re-introducing a wait users have
+stopped paying, in response to an intermittent failure. Carrying it a third time would have been a
+decision by default rather than a decision. What would re-open it is named there.
 
 Carried forward unchanged; this round found no new evidence either way, which is itself the answer to
 "is there a measured reason yet". There is not.
@@ -46,7 +57,19 @@ do not. The shipped split makes **every** `run` pay it and serves only `plan` / 
 
 ---
 
-## 2. Does `brigadier detect` get a ruling?
+## 2. ~~Does `brigadier detect` get a ruling?~~ RULED 2026-08-20 — ruling 73
+
+**RULED IN.** `brigadier detect` is a first-class subcommand and ruling 71's named repair. The ruling
+is recorded in the record's own form — **ruling 73 on issue #1**, closed under delegated authority on
+2026-08-20 — and cited by `BAR.md`'s coverage table and `bar/items/01-detection-is-honest.ts`.
+
+Three accepted costs, stated there rather than summarised here: a fourth verb on a surface ruling 71
+kept small; two repair paths instead of one, where the failure mode is one of them silently ceasing to
+repair (both are driven by `test/cli-run.test.ts` today); and `detect` reporting the world at the
+instant it ran, which narrows the stale-admission window the independent verifier found and does not
+close it. What it does NOT decide is #1 below — whether `run` trusts the cache — which stays open.
+
+The reasoning as it stood before the ruling follows.
 
 **It is a shipped command that the ruling record does not contain.** VERIFIED 2026-08-20 by reading
 issue #1's body and all six comments end to end: the string `brigadier detect` appears **nowhere**,
@@ -149,7 +172,23 @@ Not done here because it changes what a safety guard proves and it has a compati
 
 ---
 
-## 5. `Check` as a discriminated union — the standing hazard behind `Checks.note()`
+## 5. ~~`Check` as a discriminated union~~ RULED 2026-08-20 — deferred, with the expiry closed
+
+**RULED: the union is NOT taken now, and that is a decision with a cost rather than a postponement.**
+It is a refactor of the verdict type of the instrument that grades the release, at ~41 call sites, and
+it needs a round that begins with it and verifies it alone — this file's own recommendation, and
+amendment §20 records three occasions on which the instrument became the defect. Starting it at the
+end of a long round is how that happens a fourth time. **Until it lands, a note written in a blocked
+branch is invisible to `failures`, and nothing makes that impossible.**
+
+**What IS taken now is the half that stops the audit expiring.** The 21-call-site audit was true on
+2026-08-20 and says nothing about the 22nd. `Checks.note` now REFUSES at runtime a row whose name
+carries this repository's own blocking vocabulary — `FAIL —`, `NOT-RUN —`, `ERROR —` — because a
+verdict written through a channel that has none is the confusion the union would make
+unrepresentable. It catches the author who knew they were describing a blocked condition and reached
+for `note` anyway; it does NOT catch a note whose prose describes one without the vocabulary, and it
+cannot, because that is a judgement about meaning. `bar/lib/checks.test.ts` drives both the guard and
+**that limit**, so nobody reads the narrowing as the fix.
 
 The audit the debt list asked for is **done and clean**: all 21 `.note(` call sites were read and none
 describes a blocking condition (recorded in `bar/lib/checks.ts`). But `note` still writes `ok: true`
@@ -167,7 +206,27 @@ defect a fourth time (amendment §20 records three).
 
 ---
 
-## 6. Eleven tests that render as `(pass)` on Windows without running
+## 6. ~~Eleven tests that render as `(pass)` on Windows without running~~ RULED 2026-08-20
+
+**RULED: the second option, taken now.** All eleven are converted to blocking failures that name what
+did not run and why, through `notRunHere` in `bar/lib/platform.ts`, which carries the ruling and its
+accepted cost. `bar/lib/platform.test.ts` proves the helper fails, scans every `*.test.ts` in the tree
+for the shape it replaced, and carries a negative control showing the scan can match — eleven of these
+accumulated invisibly, and a prose ruling would not have stopped a twelfth.
+
+**The sequencing call this file said was the owner's is made: redder now.** `windows-latest` goes from
+~81 failures to ~92. Nothing is more broken than it was; what changes is that the count is true. A CI
+that is green because a check was weakened is worse than one that is red honestly, and a count that is
+low because eleven checks vanished is the same defect wearing a number.
+
+**Not taken: the first option.** No Windows implementation is written here. Each message names the
+mechanism that would have to be built — a `.cmd` refusal shim; a job object or parent-handle wait for
+orphan detection; a `cmd /c start` escape fixture for the four `setsid` tests; a `cmd /c` argv shaper
+for the marker filter — and until one exists, that test's property is UNPROVEN on Windows, which is
+what the failure now says. The cheapest to close is the marker-filter one: `bar/lib/process-table.ts`
+already has a real Windows reader, so it is a fixture away rather than a mechanism away.
+
+The reasoning as it stood before the ruling follows.
 
 Not in any failure count, which is the point. Eleven tests carry `if (process.platform === "win32")
 return;` **in the test body**, so they report `(pass)` in fractions of a millisecond. `bar/lib/orphan.test.ts`
@@ -303,7 +362,50 @@ difference on Linux is **not established**, and one sample per platform is not e
 
 ---
 
-## 11. `bar/lib/orphan.test.ts` is flaky on CI, at two different lines
+## 11. ~~`bar/lib/orphan.test.ts` is flaky on CI, at two different lines~~ DIAGNOSED 2026-08-20
+
+**It was not a flake. It was a second leak defect in the guard, of the same class as the zombie one —
+the predicate was right and its PRECONDITION was not.**
+
+`exitWhenOrphaned` opened with `if (parent <= 1) return;`, on the reasoning that a parent of 1 at
+start-up means there is nothing to notice the loss of. Not one of these fixtures is started by init: a
+ppid of 1 there means the process it exists to serve died between the spawn and that line — so the
+guard armed NOTHING and the fixture ran forever. The test made that window reachable by waiting only
+for the fixture's pid to EXIST, which is true the instant a shell backgrounds a command and long
+before `bun` has loaded a module.
+
+MEASURED against `bun 1.3.14` under `oven/bun:1.3.14` on 2026-08-20 with `probes/orphan-race.ts`,
+killing the parent shell at a range of delays after the fixture's pid appeared:
+
+| kill at | outcome |
+| --- | --- |
+| 0 ms | **SURVIVED the full 20 s, stderr EMPTY** |
+| 30 ms | exited after 999 ms |
+| 80 ms | exited after 931 ms |
+| 150 ms | exited after 884 ms |
+| 400 ms | exited after 651 ms |
+| 2000 ms | exited after 51 ms |
+
+**The signature matches, and the signature is what identified it.** All three CI failures consumed the
+FULL bound — 20,073 ms and 20,080 ms — rather than a spread of times under it, which is what a merely
+slow machine produces. Saturation means the guard never fired; it does not mean the guard fired late.
+
+**One hypothesis refuted along the way, recorded as the negative result it is:** `process.ppid` was
+suspected of not re-reading `getppid()` on Linux, since the claim in `bar/lib/orphan.ts`'s header was
+measured on darwin. MEASURED 2026-08-20 under `oven/bun:1.3.14` with `probes/ppid-reread.ts`: it does
+re-read, going 9 -> 1 within one poll of the parent being killed.
+
+**The fix, and it does not widen a bound.** The already-orphaned branch now exits with a message
+naming that branch (POSIX only — Windows has no reparenting and `process.ppid` means something else
+there). The guard writes one line when it is armed, and the test WAITS FOR THAT LINE rather than for a
+pid to exist — ruling 62 (d), bound the work and not the clock. The racy window is not lost: it is a
+second test that kills the parent immediately and requires the vendor to exit anyway, which is the arm
+that would have caught this.
+
+Re-measured after the fix: kill-at-0 ms exits in ~52 ms; `bar/lib/orphan.test.ts` 8/8 on Linux under
+Docker and passing on darwin. **Neither the 20 s nor the 10 s bound was touched.**
+
+The state as it stood before the diagnosis follows.
 
 Reported because ruling 48 is explicit that *"a flaky blocking item gets disabled"*, and the way that
 starts is a test failing intermittently while nobody writes it down.

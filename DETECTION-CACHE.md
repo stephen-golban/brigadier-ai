@@ -4,7 +4,8 @@ Written 2026-08-20, with the ruling text in front of it. Ruling 71 settles that 
 it does not say where it lives, what invalidates it, or how a stale one is repaired. This is that
 record: the choices, the reasons, and what each one costs.
 
-Marked `[owner]` where a real judgement remains open. There is exactly one.
+Marked `[owner]` where a real judgement remained open. There was exactly one, and it was **RULED on
+2026-08-20** — see *The one open judgement*, below. Nothing in this file is open now.
 
 ## What ruling 71 actually says
 
@@ -207,22 +208,42 @@ discover that a fast path exists.
   sweep per upgrade, which is correct. For a developer running `bun run build` in a loop it is one
   sweep per build, which is the price of the invalidation being mechanical instead of a convention.
 
-## The one open judgement
+## The one open judgement — RULED 2026-08-20: the split STANDS
 
 **`[owner]` — ruling 71's accepted cost says *"a first run pays a full detection sweep"*, in a way
 that reads as though later runs do not.** Under the split in §4 every `run` pays it, and only the
 question-asking commands are served from state. That is a narrower reading of ruling 71 than its own
-sentence implies, and it is taken deliberately on ruling 63's authority rather than by oversight.
+sentence implies, and it was taken deliberately on ruling 63's authority rather than by oversight.
 
-It is recorded here rather than absorbed, because the two directions are not symmetric:
+**The ruling: leave it. `run` re-probes; `plan`, `--dry-run` and `--estimate` are served from state.**
+Closed under delegated authority on 2026-08-20, the owner having delegated that round's rulings.
 
-- Widening it — letting `run` trust the cache too — is a one-line change to `trustCache` in
-  `src/cli.ts`, and everything needed to make it honest already exists.
-- Narrowing it back, after a stale cache has admitted a run that fails at its first prompt, is the
-  same defect the independent verifier found on 2026-08-20 and it would be found the same way.
+**The reason, and it is the absence of one.** This question has now been carried across two rounds
+with no new evidence in either direction, and *that is itself the answer to whether a measured reason
+exists*. It does not. What is on the table is a 3.28–4.29 s saving per run, MEASURED cold on the
+owner's machine with six vendors, weighed against an admission that a stale cache lets through — which
+is not a hypothetical: it is the defect the independent verifier found on 2026-08-20, a run admitted
+against a stale answer and failing at its first prompt. **The two directions are not symmetric.**
+Widening is one line in `trustCache` in `src/cli.ts` and everything needed to make it honest already
+exists; narrowing back afterwards means re-introducing a wait that users will by then have stopped
+paying, in response to a failure that is intermittent by nature. A change that is cheap to make and
+expensive to unmake is one to take on evidence, and there is none.
 
-Nothing is blocked by leaving it as it is. Re-open it when there is a measured reason to weigh
-against a stale admission.
+**The accepted cost, stated rather than left implied:**
+
+- **Every `run` pays the sweep — 3.28–4.29 s cold on a six-vendor machine — for as long as this
+  stands.** That is a real, repeated, user-visible wait, and it is not recovered by anything. A
+  machine with more vendors pays more, because the sweep is bounded by the slowest agent.
+- **Ruling 71's own accepted-cost sentence still reads as though only a first run pays.** It is not
+  reworded here — a locked ruling's text is the owner's — but this file is the place the discrepancy
+  is recorded, and any reader who takes that sentence as a promise about later runs is reading it
+  wrongly. That mismatch survives the ruling.
+- **Nothing is blocked either way**, which is precisely why this could be carried twice, and why
+  carrying it a third time would have been a decision by default rather than a decision.
+
+**What would re-open it:** a measurement of what the repeated sweep actually costs an operator across
+a working session, against a measurement of how often a stale entry admits a run that then fails.
+Either number would be new evidence. Neither exists today.
 
 ## Where the code is
 

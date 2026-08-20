@@ -42,6 +42,7 @@ import { isolatedPath, plantBrigadierShim } from "./lib/fixtures.ts";
 import { writeScript } from "./lib/fs.ts";
 import { readLedger } from "./lib/ledger.ts";
 import type { Directive } from "./lib/plan.ts";
+import { notRunHere } from "./lib/platform.ts";
 
 const VENDOR = fileURLToPath(new URL("./fakes/vendor.ts", import.meta.url));
 const LIB_URL = new URL("./lib/", import.meta.url).href;
@@ -485,7 +486,15 @@ describe("the delegate directive really calls `brigadier`, and an empty ledger i
   }
 
   test("the shim records the attempt, the marker, and the refusal", async () => {
-    if (process.platform === "win32") return; // the shim's POSIX form is what item 9 plants
+    if (process.platform === "win32") {
+      notRunHere(
+        "ruling 57's refusal shim, driven end to end through a real ACP turn",
+        "`bar/lib/fixtures.ts` plants the shim as a `#!/bin/sh` script and a POSIX shebang is inert " +
+          "on Windows, so what is missing here is the FIXTURE and not the product. The Windows form " +
+          "is a `.cmd` wrapper — `bar/lib/fs.ts`'s `writeScript` already writes one for the vendor " +
+          "shims — and nobody has written the refusal shim's.",
+      );
+    }
     const b = bed("delegate-reachable");
     const ledger = join(scratch, "delegate-reachable.log");
     const binDir = shimmedBin("delegate-reachable", ledger);
@@ -521,7 +530,14 @@ describe("the delegate directive really calls `brigadier`, and an empty ledger i
   }, 90_000);
 
   test("NEGATIVE CONTROL: with no shim on PATH the ledger stays empty and the fixture SAYS so", async () => {
-    if (process.platform === "win32") return;
+    if (process.platform === "win32") {
+      notRunHere(
+        "the NEGATIVE CONTROL for the refusal shim: with no shim on PATH the ledger stays empty",
+        "it plants the same `#!/bin/sh` shim as its positive twin above, so it is inert here for the " +
+          "same reason. A control that cannot run is not a control, and the arm it controls is " +
+          "therefore unproven on this platform too.",
+      );
+    }
     const b = bed("delegate-unreachable");
     const ledger = join(scratch, "delegate-unreachable.log");
     shimmedBin("delegate-unreachable", ledger); // planted, and deliberately NOT on PATH

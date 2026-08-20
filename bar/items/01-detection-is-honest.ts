@@ -239,7 +239,7 @@ export function plantableAgent(rows: readonly ProfileRow[]): ProfileRow | undefi
 const item: BarItem = {
   id: 1,
   title: "Detection is honest",
-  rulings: [6, 41, 46, 2, 69],
+  rulings: [6, 41, 46, 2, 69, 73],
   requiresLive: false,
 
   async run(ctx: BarContext): Promise<BarResult> {

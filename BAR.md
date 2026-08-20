@@ -81,8 +81,11 @@ assertion blocking, capabilities a warning. Note what cannot be used for this: *
 measured returned `protocolVersion: 1`**, so the protocol version discriminates nothing and the
 agent's own version is the only signal.
 
-*Rulings 6, 41, 46, 2, 69.* Exists because v1 inferred installation from a marker file and reported
-`opencode` present on a machine where it was not on `PATH`.
+*Rulings 6, 41, 46, 2, 69, 73.* Exists because v1 inferred installation from a marker file and reported
+`opencode` present on a machine where it was not on `PATH`. Ruling 73 (2026-08-20) is what this item
+is allowed to cite for the COMMAND it drives: `brigadier detect` was shipped and graded while the
+record contained no decision naming it, which is the shape ruling 48 calls a one-line way to make this
+document lie.
 
 ### 2. The lane holds, including where the payload is empty
 
@@ -674,6 +677,13 @@ user-visible promise, so it grows through phase 2. Rulings 49 onward were added 
 | 70 no token-reduction claim; spend and levers reported | item 13 (the lever line, and a run including opencode says `unpriceable`) |
 | 71 no `init`; first run prints the four unlearnable things | items 1, 9, 6 |
 | 72 the source relink route, and the Library's own source offered | item 10 |
+| 73 `detect` is a supported command, and ruling 71's named repair | items 1, 9 (item 1 drives the command; item 9 asserts the cache is read back) |
+
+**Ruling 73 was added on 2026-08-20 and is the first ruling this document's own coverage table
+caused.** `brigadier detect` was shipped, graded by item 1 and load-bearing for ruling 71's cache
+repair, and the record contained no decision naming it — so the table had nothing to cite for a
+surface it grades. It was ruled in rather than removed; the ruling, its reasons and its three accepted
+costs are on issue #1.
 
 **The gap ruling 48 declared is CLOSED.** Rulings 21, 23, 29, 30, 31 and 40 were parked as
 *deferred — #24 open* and ruling 35 as *deferred — #31 open*; rulings 66 and 67 settled both tickets

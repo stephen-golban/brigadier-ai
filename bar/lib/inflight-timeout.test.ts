@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { STREAM_DRAIN_GRACE_MS, STREAM_TRUNCATED_MARKER } from "./proc.ts";
 import { runSampled } from "./inflight.ts";
+import { notRunHere } from "./platform.ts";
 
 let scratch: string | undefined;
 const stragglers: number[] = [];
@@ -43,7 +44,14 @@ afterAll(() => {
 });
 
 test("a backgrounded child of a sampled run does not outlive its timeout", async () => {
-  if (process.platform === "win32") return; // no `&` job control to model this with
+  if (process.platform === "win32") {
+    notRunHere(
+      "a backgrounded child of a SAMPLED run not outliving its timeout",
+      "the fixture backgrounds with `&` inside `/bin/sh`, and `cmd.exe` has no `&` job control to " +
+        "model that with — `start /b` is the nearest thing and it detaches differently. The property " +
+        "is real on Windows and the fixture for it is not written.",
+    );
+  }
   scratch ??= realpathSync(mkdtempSync(join(tmpdir(), "brigadier-inflight-proc-")));
   const runRoot = join(scratch, "runs");
   const pidFile = join(scratch, "child.pid");
@@ -67,7 +75,15 @@ test("a backgrounded child of a sampled run does not outlive its timeout", async
 }, 20_000);
 
 test("an ESCAPED descendant holding the pipe cannot hang a sampled run", async () => {
-  if (process.platform === "win32") return; // no setsid to model the escape with
+  if (process.platform === "win32") {
+    notRunHere(
+      "an ESCAPED descendant holding the pipe not hanging a sampled run",
+      "the escape is `setsid`/`nohup`; the Windows mechanism is `cmd /c start`, which #43 measured " +
+        "Bun's job object letting through with BREAKAWAY_OK and SILENT_BREAKAWAY_OK. That is the " +
+        "one escape route this project has MEASURED on Windows and never driven, so this is the " +
+        "test whose absence costs most here.",
+    );
+  }
   scratch ??= realpathSync(mkdtempSync(join(tmpdir(), "brigadier-inflight-proc-")));
   const runRoot = join(scratch, "runs-held");
   const pidFile = join(scratch, "holder.pid");
@@ -142,7 +158,15 @@ test("an ESCAPED descendant holding the pipe cannot hang a sampled run", async (
  * working one from the passing side.
  */
 test("the marker filter still counts a marked process, and only a marked one", async () => {
-  if (process.platform === "win32") return; // `sh -c` argv shaping is POSIX here
+  if (process.platform === "win32") {
+    notRunHere(
+      "the marker filter counting a marked process and ONLY a marked one",
+      "the fixture shapes argv through `sh -c`, and reproducing it with `cmd /c` would measure " +
+        "cmd's quoting rather than the filter. `bar/lib/process-table.ts` has a real Windows reader " +
+        "(`readWindowsTable`), so this one is a fixture away from running rather than a mechanism " +
+        "away — which makes it the cheapest of the eleven to close.",
+    );
+  }
   scratch ??= realpathSync(mkdtempSync(join(tmpdir(), "brigadier-inflight-proc-")));
   // The marker rides as `$0`, so it is in the argv `ps` prints without changing
   // what the shell runs. `--brigadier-run` is written out rather than imported

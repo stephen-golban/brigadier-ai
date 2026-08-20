@@ -50,7 +50,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { Checks, excerpt } from "./checks.ts";
+import { BLOCKING_PREFIXES, Checks, excerpt, leader, type Check } from "./checks.ts";
 
 describe("Checks.expect", () => {
   test("a passing assertion records its bytes and stays out of failures", () => {
@@ -326,5 +326,71 @@ describe("the merge idiom is gone, and stays gone", () => {
 
     expect(offenders).toEqual([]);
     expect(readdirSync(itemsDir).filter((f) => f.endsWith(".ts")).length).toBeGreaterThan(10);
+  });
+});
+
+describe("a note may not carry a verdict (ruled 2026-08-20)", () => {
+  // THE NARROWING, not the fix. The union that would make a note's
+  // absence-of-verdict UNREPRESENTABLE is scoped at ~41 call sites inside the
+  // instrument that grades the release and is deliberately deferred to a round
+  // that begins with it; `bar/lib/checks.ts`'s header carries that ruling and
+  // its cost. What is enforced here is the half that stops the 2026-08-20 audit
+  // of 21 call sites from expiring the next time somebody writes the 22nd.
+  for (const prefix of BLOCKING_PREFIXES) {
+    test(`\`${prefix}\` is refused, because it is a verdict`, () => {
+      const checks = new Checks();
+      expect(() => checks.note(`${prefix} the instrument could not read the artifact`, "detail")).toThrow(
+        /a note may not carry a verdict/,
+      );
+      // And nothing was recorded: a refused row must not be half-written.
+      expect(checks.rows).toHaveLength(0);
+    });
+  }
+
+  test("leading whitespace does not smuggle one past", () => {
+    const checks = new Checks();
+    expect(() => checks.note("   ERROR — the fleet was unreadable", "detail")).toThrow(/may not carry a verdict/);
+  });
+
+  test("the refusal names the remedy and quotes what it saw", () => {
+    const checks = new Checks();
+    try {
+      checks.note("FAIL — the host never ran the hook", "claude was absent on this leg");
+      throw new Error("unreachable");
+    } catch (error) {
+      const message = (error as Error).message;
+      expect(message).toContain("expect(name, false, detail)");
+      expect(message).toContain("ruling 48");
+      expect(message).toContain("claude was absent on this leg");
+    }
+  });
+
+  test("NEGATIVE CONTROL: an ordinary note is unaffected, and still gates nothing", () => {
+    // Without this the guard could refuse everything and look identical from the
+    // failing side. All 21 audited call sites read like this one.
+    const checks = new Checks();
+    checks.note("whose defects these are", "the harness planted them; the verifier plants its own");
+    expect(checks.rows).toHaveLength(1);
+    expect(checks.passed).toBe(true);
+    expect(leader(checks.rows[0] as Check)).toBe("note");
+  });
+
+  test("NEGATIVE CONTROL: the same words in the DETAIL are not a verdict", () => {
+    // The prefix is a claim about the row's NAME. A detail quoting a failure it
+    // is reporting on — which several real notes do — must not be refused.
+    const checks = new Checks();
+    checks.note("what the fleet could not settle", "the live half reported NOT-RUN — no credential");
+    expect(checks.rows).toHaveLength(1);
+  });
+
+  test("THE LIMIT, asserted so nobody reads this as the fix", () => {
+    // A note whose PROSE describes a blocking condition without using the
+    // vocabulary is still accepted, and still invisible to `failures`. That is
+    // the hazard the discriminated union closes and this guard does not, and it
+    // is driven rather than left in a comment.
+    const checks = new Checks();
+    checks.note("the host never ran the hook", "so nothing here proves the host loads it");
+    expect(checks.failures).toEqual([]);
+    expect(checks.passed).toBe(true);
   });
 });

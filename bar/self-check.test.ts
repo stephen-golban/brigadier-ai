@@ -14,7 +14,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,7 +27,7 @@ import {
   typescriptFiles,
   violations,
 } from "./lib/imports.ts";
-import { disagreements, readSpec } from "./lib/spec.ts";
+import { disagreements, parseCoverage, readSpec, specPath } from "./lib/spec.ts";
 
 const BAR = fileURLToPath(new URL(".", import.meta.url));
 
@@ -103,15 +103,26 @@ describe("the register agrees with BAR.md, which is the only authority", () => {
   });
 
   test("no item cites a ruling BAR.md's coverage table has never heard of", () => {
-    // The table stops at 72. `scripts/claims.ts` enforces this over the whole
-    // tree; asserting it here means the failure names the item rather than the
-    // file.
+    // READ FROM THE TABLE, not from a number typed here. This bound used to be
+    // the literal 72, which made the test's own name false: it was checking
+    // against a constant that had to be edited by hand every time a ruling
+    // landed, and a hand-edited copy of a fact is the staleness `bun run claims`
+    // exists to catch. Ruling 73 landed on 2026-08-20 and this went red for a
+    // correct citation, which is how it was found.
+    //
+    // `scripts/claims.ts` enforces the same relation over the whole tree;
+    // asserting it here means the failure names the ITEM rather than the file.
+    const covered = new Set(parseCoverage(readFileSync(specPath(), "utf8")));
+    expect(covered.size).toBeGreaterThan(0);
     for (const item of ITEMS) {
       for (const ruling of item.rulings) {
-        expect(ruling).toBeGreaterThan(0);
-        expect(ruling).toBeLessThanOrEqual(72);
+        expect(ruling, `item ${item.id} cites ruling ${ruling}`).toBeGreaterThan(0);
+        expect(covered.has(ruling), `item ${item.id} cites ruling ${ruling}, which BAR.md's coverage table does not list`).toBe(true);
       }
     }
+    // NEGATIVE CONTROL: the set really can answer no, so the loop above is not
+    // passing because `has` is true for everything.
+    expect(covered.has(Math.max(...covered) + 1)).toBe(false);
   });
 
   test("requiresLive is set deliberately, not defaulted everywhere", () => {

@@ -21,6 +21,7 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileS
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { STREAM_DRAIN_GRACE_MS, STREAM_TRUNCATED_MARKER, TIMEOUT_SIGNAL, exec, killTree } from "./proc.ts";
+import { notRunHere } from "./platform.ts";
 
 let scratch: string;
 const stragglers: number[] = [];
@@ -87,7 +88,15 @@ function grandchildTree(name: string): { argv: string[]; pidFile: string } {
 
 describe("a timed-out invocation's descendants are reclaimed too", () => {
   test("a backgrounded child of the killed process does not outlive it", async () => {
-    if (process.platform === "win32") return; // no `&` job control to model this with
+    if (process.platform === "win32") {
+      notRunHere(
+        "a backgrounded child of a timed-out invocation being reclaimed with it",
+        "the fixture backgrounds with `&` inside `/bin/sh` and `cmd.exe` has no `&` job control to " +
+          "model that with. `killTree` DOES have a Windows arm — `taskkill /T /F /PID`, which walks " +
+          "the ppid tree rather than a process group — and it is UNMEASURED: nothing on any machine " +
+          "has ever driven it, which is precisely what this early return was hiding.",
+      );
+    }
     const pidFile = join(scratch, "child.pid");
 
     // Stands in for the product spawning an ACP vendor: a descendant left
@@ -117,7 +126,15 @@ describe("a timed-out invocation's descendants are reclaimed too", () => {
   }, 20_000);
 
   test("a GRANDCHILD is reclaimed too — the fixture spawns, so one level is not enough", async () => {
-    if (process.platform === "win32") return;
+    if (process.platform === "win32") {
+      notRunHere(
+        "a GRANDCHILD of a timed-out invocation being reclaimed — one level is not enough",
+        "same fixture, same missing `&`. This is the arm that matters most on Windows, because " +
+          "`taskkill /T` reclaims by walking the ppid tree and a Windows orphan does NOT reparent — " +
+          "so whether `/T` reaches a grandchild whose middle process has already exited is exactly " +
+          "the thing nobody has measured.",
+      );
+    }
     const { argv, pidFile } = grandchildTree("grandchild");
 
     const result = await exec(argv, { timeoutMs: 500 });
@@ -134,7 +151,14 @@ describe("a timed-out invocation's descendants are reclaimed too", () => {
   }, 20_000);
 
   test("NEGATIVE CONTROL: killing only the pid leaves that same grandchild running", async () => {
-    if (process.platform === "win32") return;
+    if (process.platform === "win32") {
+      notRunHere(
+        "the NEGATIVE CONTROL: killing only the pid LEAVES the grandchild running",
+        "it uses the same `&` fixture as the arm it controls. Without it, the two tests above could " +
+          "pass on a machine where the grandchild was never spawned at all, so its absence costs " +
+          "more than one test.",
+      );
+    }
     const { argv, pidFile } = grandchildTree("single-pid");
 
     // Spawned exactly as `exec` spawns — same argv, same `detached: true`, so
@@ -232,7 +256,15 @@ async function reapHolder(pid: number): Promise<boolean> {
 
 describe("a stream nobody will ever close cannot hang the harness", () => {
   test("the timeout returns even while an ESCAPED descendant holds the pipe open", async () => {
-    if (process.platform === "win32") return; // no setsid to model the escape with
+    if (process.platform === "win32") {
+      notRunHere(
+        "the timeout returning even while an ESCAPED descendant holds the pipe open",
+        "the escape is `setsid`/`nohup`; on Windows it is `cmd /c start`, which #43 measured Bun's " +
+          "job object letting through with BREAKAWAY_OK and SILENT_BREAKAWAY_OK. The hang this " +
+          "guards against — a stream that never ends because something outside the group holds the " +
+          "write end — is not a POSIX property, and it is unproven here.",
+      );
+    }
     const { argv, pidFile, source } = pipeHolder("held-timeout");
     writeHolder(source, pidFile, true);
 
@@ -271,7 +303,15 @@ describe("a stream nobody will ever close cannot hang the harness", () => {
   }, 30_000);
 
   test("a run that SUCCEEDS is bounded by the grace, not by its remaining timeout", async () => {
-    if (process.platform === "win32") return;
+    if (process.platform === "win32") {
+      notRunHere(
+        "a SUCCESSFUL run being bounded by the drain grace rather than by its remaining timeout",
+        "same `cmd /c start` gap as the arm above. This is the half that costs wall clock rather " +
+          "than correctness — an unbounded version sits for the full timeout on a run that already " +
+          "finished — and on the leg where `bar/fakes.test.ts` burned 966 seconds it is the one " +
+          "nobody could rule out.",
+      );
+    }
     const { argv, pidFile, source } = pipeHolder("held-exit");
     writeHolder(source, pidFile, false);
 
