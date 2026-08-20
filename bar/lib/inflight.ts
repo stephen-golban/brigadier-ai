@@ -479,12 +479,62 @@ export async function runSampled(
   };
 }
 
-/** Is a process with this pid still alive? Decisive, and not a timing guess. */
+/**
+ * Is a process with this pid still alive? Decisive, and not a timing guess.
+ *
+ * A ZOMBIE IS NOT ALIVE, AND `kill(pid, 0)` CANNOT TELL YOU THAT. A process that
+ * has exited but whose parent has not reaped it keeps its pid in the table and
+ * answers signal 0 exactly like a running one. Until 2026-08-20 this function
+ * answered `true` for such a process, forever.
+ *
+ * MEASURED against `bun 1.3.14` on 2026-08-20, `bar/lib/orphan.test.ts` driven
+ * on Linux under Docker with the real `bar/fakes/vendor.ts`:
+ *
+ *   pid 1 does NOT reap (bare container)    the vendor writes "parent … is gone",
+ *                                           calls process.exit(0), and this
+ *                                           function still reports it alive for
+ *                                           the full 20 s bound — test FAILS
+ *   pid 1 DOES reap (`docker run --init`)   same vendor, same guard, test PASSES
+ *                                           in 1,040 ms
+ *
+ * The fixture's orphan guard was never the defect; the predicate watching it
+ * was. So the process table is consulted whenever signal 0 says the pid exists,
+ * and a state of `Z` is reported as gone.
+ *
+ * On Linux that reading is a file read rather than a spawn, because this is
+ * polled — `/proc/<pid>/stat` puts the state in the field after the last `)`,
+ * which is parsed from the right precisely because a command name may itself
+ * contain a parenthesis.
+ *
+ * On Windows there are no zombies and no `ps`, so signal 0 remains the whole
+ * answer there.
+ */
 export function isAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
-    return true;
   } catch {
     return false;
   }
+  if (process.platform === "win32") return true;
+
+  if (process.platform === "linux") {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const close = stat.lastIndexOf(")");
+      const state = stat.slice(close + 1).trim().charAt(0);
+      // An unreadable or unparseable stat line is NOT evidence of death: fall
+      // through to signal 0's answer rather than inventing one.
+      return state === "" ? true : state !== "Z";
+    } catch {
+      return false;
+    }
+  }
+
+  const ps = Bun.spawnSync(["ps", "-o", "state=", "-p", String(pid)]);
+  const state = ps.stdout.toString().trim();
+  // `ps` produced no row: the pid is not in the table, whatever signal 0 said a
+  // moment ago. `ps` failed to run at all: keep signal 0's answer.
+  if (ps.exitCode !== 0 && state === "") return false;
+  if (state === "") return true;
+  return !state.startsWith("Z");
 }

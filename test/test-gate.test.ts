@@ -66,6 +66,56 @@ function drive(source: string): Run {
   }
 }
 
+/**
+ * The same child, against a reader that DOES NOT DRAIN while it runs.
+ *
+ * WHY THERE ARE TWO DRIVERS, and it is not a convenience. `drive` above uses
+ * `Bun.spawnSync`, which consumes the pipe as the child fills it. Whether the
+ * old shape loses anything through a promptly-drained pipe is then a race
+ * between the writer and the reader — and the two platforms answer differently.
+ *
+ * MEASURED against `bun 1.3.14` on 2026-08-20, 20 trials per platform, the same
+ * 5,242,898-byte payload, `darwin 25.5.0 arm64` and `oven/bun:1.3.14` under
+ * Docker (`Linux`):
+ *
+ *   reader drains concurrently (`spawnSync`)   linux 0/20 truncated
+ *                                              macos 20/20 truncated
+ *   reader drains only AFTER exit (this fn)    linux 20/20 truncated
+ *                                              macos 20/20 truncated
+ *
+ * So the negative control below was asserting *"my reader lost the race"*, which
+ * is a fact about the harness, and on Linux the reader wins — which is why this
+ * test failed on ubuntu-latest on every run of `gates.yml` while passing here.
+ * The premise it exists to guard never moved; the way it was driven could not
+ * see it.
+ *
+ * An undrained pipe is also the honest model of the thing that was measured on
+ * the first CI run: the Actions log collector is downstream of the step, and a
+ * gate that dies without flushing loses whatever the collector had not taken.
+ *
+ * THE NEW SHAPE IS DELIBERATELY NOT DRIVEN THROUGH THIS FUNCTION. `emit` blocks
+ * in a `writeSync` loop until every byte is delivered, so against a reader that
+ * never reads it would block forever — correctly. That is the fix working, but
+ * asserting it here would be a test that hangs rather than one that fails, which
+ * ruling 62 (d) rejects. The new shape keeps the drained driver, where it
+ * already delivers all 5,242,898 bytes on all three platforms.
+ */
+async function driveUndrained(source: string): Promise<Run> {
+  const dir = mkdtempSync(join(tmpdir(), "brigadier-gate-undrained-"));
+  try {
+    const script = join(dir, "child.ts");
+    writeFileSync(script, source);
+    const proc = Bun.spawn(["bun", script], { stdout: "pipe", stderr: "ignore" });
+    // Nothing reads until the child is gone. A `process.exit` mid-write has
+    // therefore already discarded whatever was still queued.
+    const exitCode = await proc.exited;
+    const out = await new Response(proc.stdout).text();
+    return { bytes: Buffer.byteLength(out, "utf8"), tailPresent: out.endsWith(TAIL), exitCode };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 describe("emit() writes every byte before it returns", () => {
   test("a 5 MiB payload lands whole in a file descriptor it owns", () => {
     const dir = mkdtempSync(join(tmpdir(), "brigadier-gate-fd-"));
@@ -86,12 +136,14 @@ describe("emit() writes every byte before it returns", () => {
 });
 
 describe("a failing gate does not lose its tail down a pipe", () => {
-  test("NEGATIVE CONTROL: the old shape truncates a 5,242,898-byte payload", () => {
-    const run = drive(OLD_SHAPE);
+  test("NEGATIVE CONTROL: the old shape truncates a 5,242,898-byte payload", async () => {
+    const run = await driveUndrained(OLD_SHAPE);
     expect(run.exitCode).toBe(1);
     // The claim under test is that SOMETHING is lost, not how much: the amount
     // is a pipe-buffer detail and asserting a byte count here would be a
-    // measurement of this machine rather than of the defect.
+    // measurement of this machine rather than of the defect. MEASURED 2026-08-20
+    // the distinct counts ranged 219,264–1,023,232 on Linux and 692,161–902,321
+    // on macOS across 20 trials each, which is exactly why no number is asserted.
     expect(run.bytes).toBeLessThan(SIZE);
     expect(run.tailPresent).toBe(false);
   });

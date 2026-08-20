@@ -24,21 +24,18 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileS
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+// The harness's own predicate, not a third copy of it. This test HAD a private
+// `kill(pid, 0)` copy and that copy is what failed it: MEASURED 2026-08-20, the
+// orphaned vendor really did exit and really did print its reason, and a
+// `kill(pid, 0)` cannot tell an exited-but-unreaped process from a running one.
+// The reasoning is at `isAlive` in `bar/lib/inflight.ts`.
+import { isAlive } from "./inflight.ts";
 
 const VENDOR = fileURLToPath(new URL("../fakes/vendor.ts", import.meta.url));
 
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), "brigadier-orphan-")));
 const groups: number[] = [];
 const stragglers: number[] = [];
-
-function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 afterAll(() => {
   for (const pid of groups) {

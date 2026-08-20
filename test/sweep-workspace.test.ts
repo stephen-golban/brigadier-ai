@@ -273,10 +273,31 @@ describe("the one occupant that is a person, not a leaked worker", () => {
     // job inside it comes back `pgid == pid` with `ttys000`, while the same
     // loop launched through `sh -c '… &'` comes back `??` and in its spawner's
     // process group.
+    //
+    // `script` IS TWO DIFFERENT PROGRAMS AND THEY DISAGREE ABOUT ARGUMENT ORDER.
+    // The BSD one macOS ships takes the command as trailing operands after the
+    // typescript file; util-linux's takes it as `-c` and the file last.
+    //
+    // MEASURED against `script from util-linux 2.39.3` on `ubuntu:24.04` on
+    // 2026-08-20, both forms, in both directions:
+    //   `script -q /dev/null /bin/sh -c CMD`  → exit 1, "script: unexpected
+    //       number of arguments". Nothing runs at all.
+    //   `script -q -c CMD /dev/null`          → exit 0, CMD ran, and `tty`
+    //       inside it reported `/dev/pts/0` — a real controlling terminal.
+    //
+    // The first form is what this test used until 2026-08-20, which is why it
+    // failed on ubuntu-latest on every run of `gates.yml`: the session never
+    // started, the heartbeat never grew, and the assertion below read `0`. The
+    // product was never involved. Note this is NOT a widened tolerance — the
+    // `grewWithin` assertion is unchanged, and it is exactly what makes a wrong
+    // arm here fail loudly rather than pass on an empty scan.
     const pty = Bun.which("script");
     expect(pty).not.toBeNull();
+    const loop = `cd "${clone}" && while :; do printf . >> "${heartbeat}"; sleep 0.2; done`;
     const session = Bun.spawn(
-      [pty as string, "-q", "/dev/null", "/bin/sh", "-c", `cd "${clone}" && while :; do printf . >> "${heartbeat}"; sleep 0.2; done`],
+      process.platform === "linux"
+        ? [pty as string, "-q", "-c", loop, "/dev/null"]
+        : [pty as string, "-q", "/dev/null", "/bin/sh", "-c", loop],
       { stdout: "ignore", stderr: "ignore", stdin: "ignore" },
     );
     spawned.push(session.pid);

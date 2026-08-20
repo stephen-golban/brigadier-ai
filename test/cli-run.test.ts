@@ -30,12 +30,51 @@ const CLI = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
 const ROOT = mkdtempSync(join(homedir(), ".brigadier-cli-test-"));
 afterAll(() => rmSync(ROOT, { recursive: true, force: true }));
 
+/**
+ * THE FLEET THIS FILE RUNS AGAINST — one planted ACP agent, and nothing else.
+ *
+ * THE DEFECT THIS REPLACES, MEASURED. Until 2026-08-20 `brigadier()` below
+ * inherited `process.env.PATH`, so every `--dry-run` in this file was admitted
+ * by whatever vendors the operator happened to be logged into. That is not a
+ * property of the product; it is a property of the machine, and it is why this
+ * file was green here and red on all three CI platforms from `gates.yml`'s
+ * first execution onward.
+ *
+ * MEASURED 2026-08-20 on darwin 25.5.0 / bun 1.3.14, on the owner's machine:
+ *   - with the operator's own PATH          31 pass, 0 fail  (15.04 s)
+ *   - with PATH=/usr/bin:/bin:/usr/sbin:/sbin  21 pass, 10 fail (2.41 s)
+ * and the ten are the same ten macos-latest failed in run 32387095326, with the
+ * identical stderr: *"refused — no agent on this machine completed a session"*.
+ * The product exited 4 correctly every time. The instrument was the defect.
+ *
+ * A fresh HOME does not isolate this, which is the part that made it invisible:
+ * MEASURED the same day, `brigadier detect` under a scratch HOME on this machine
+ * still reported `claude` and `opencode` usable, because their credentials do not
+ * live under HOME. A runner has no credentials anywhere, so it got 0/6.
+ *
+ * SO THE FLEET IS PLANTED. The same shape the `--workers` and ruling 71 blocks
+ * below already use, hoisted to the whole file: one stub at a path only this
+ * file knows, reached through an isolated `PATH`. It asks LESS of no assertion —
+ * every test still drives the real binary through the real admission path — and
+ * it asks MORE of the fixture, because the admitting agent is now a known
+ * quantity rather than whichever of six vendors answered first.
+ *
+ * `PROFILES.qwen.measuredVersion` rather than a literal, deliberately: the plan
+ * in `world()` carries `kind: "write"` items, and ruling 69 grades a lane
+ * assertion drift `blocking` for write work. A stub reporting any other version
+ * would be refused for a reason that has nothing to do with what is under test.
+ */
+const FLEET = join(ROOT, "fleet-bin");
+plantAgent(FLEET, "qwen", { name: "qwen", version: PROFILES.qwen.measuredVersion });
+
 function brigadier(args: string[], extra: Record<string, string> = {}) {
   const proc = Bun.spawnSync([process.execPath, CLI, ...args], {
     env: {
       HOME: ROOT,
       USER: process.env["USER"] ?? "test",
-      PATH: process.env["PATH"] ?? "",
+      // NOT `process.env.PATH`. See FLEET above: inheriting it made this file
+      // assert on the operator's vendor logins.
+      PATH: FLEET,
       NO_COLOR: "1",
       ...extra,
     },
@@ -48,18 +87,21 @@ function brigadier(args: string[], extra: Record<string, string> = {}) {
 /**
  * One detection sweep for this whole file, planted into every world's run root.
  *
- * WHY IT EXISTS. Admission runs a detection sweep, and detection SPAWNS: on a
- * developer's machine that is six real vendors, and MEASURED 2026-08-20 on
- * darwin 25.5.0 it cost 3.3–4.3 s. Every `--dry-run` below used to pay it, which
- * is what pushed one test past Bun's 5,000 ms default and bought it a 30,000 ms
- * bound. Ruling 71's cache removes the cost from a WARM run root; it does not
- * warm one, and `--dry-run` deliberately never writes a cache (ruling 53: it
- * creates nothing in the run root). So the file warms them itself, once, and
- * copies the result — a detection cache is a fact about the machine, and the
- * machine does not change between worlds.
+ * WHY IT EXISTS. Admission runs a detection sweep, and detection SPAWNS. Ruling
+ * 71's cache removes the cost from a WARM run root; it does not warm one, and
+ * `--dry-run` deliberately never writes a cache (ruling 53: it creates nothing
+ * in the run root). So the file warms them itself, once, and copies the result.
+ *
+ * THE SWEEP IS OVER `FLEET`, NOT OVER THE MACHINE, and that changed on
+ * 2026-08-20 with the rest of this file. It used to run against
+ * `process.env.PATH`: on a developer's machine that is six real vendors and
+ * MEASURED 2026-08-20 on darwin 25.5.0 it cost 3.3–4.3 s, which is what pushed
+ * one test past Bun's 5,000 ms default and bought it a 30,000 ms bound. Against
+ * one planted stub it costs a fraction of that, and — the reason that matters —
+ * it produces the SAME cache on a runner as on this machine.
  *
  * WHAT IT IS NOT. It is not a fixture standing in for detection: the bytes are
- * whatever `brigadier detect` really measured on this machine a moment ago,
+ * whatever `brigadier detect` really measured against `FLEET` a moment ago,
  * written by the product's own writer. Nothing here constructs a result.
  *
  * A failure to produce one is not fatal and is not hidden — the worlds are then
@@ -70,7 +112,7 @@ const WARM_CACHE: Uint8Array | null = (() => {
   const dir = join(ROOT, "warm-cache");
   mkdirSync(dir, { recursive: true });
   Bun.spawnSync([process.execPath, CLI, "detect", "--run-root", dir, "--timeout", "10000"], {
-    env: { HOME: ROOT, USER: process.env["USER"] ?? "test", PATH: process.env["PATH"] ?? "", NO_COLOR: "1" },
+    env: { HOME: ROOT, USER: process.env["USER"] ?? "test", PATH: FLEET, NO_COLOR: "1" },
     stdout: "ignore",
     stderr: "ignore",
   });
