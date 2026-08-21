@@ -654,19 +654,19 @@ user-visible promise, so it grows through phase 2. Rulings 49 onward were added 
 | 16 identifiers up front, contents just-in-time | item 4 |
 | 17 ambient files suppressed | item 9 |
 | 18 three config layers | item 8 |
-| 19 bounded work queue, work kinds | item 4 |
-| 20 the orchestrator has no context window | architectural exclusion — no user-visible promise |
+| 19 bounded work queue, work kinds | item 4 — **amended by ruling 78**: the kinds are `write`, `read-only`, `plan` and `research` |
+| 20 the orchestrator has no context window | **item 15 — this row was WRONG and is the reason ruling 82 exists.** It read *architectural exclusion — no user-visible promise* from 2026-08-17 to 2026-08-21, two paragraphs below this document's own warning that such a line is how the bar lies. Ruling 20 decides whether brigadier can plan, which is the most user-visible promise in the product. **Ruling 74** overturns its consequence and item 15 proves the result |
 | 21 token strategy ranked by impact | item 13 |
 | 22 repo map adopted | item 4 |
-| 23 cost model: predict, enforce, learn | item 13 |
+| 23 cost model: predict, enforce, learn | item 13 — **partially overturned by ruling 81**: outcomes may feed competence (falsifiable), cost still may not (#44's 15× variance). The seam is enforced by `bun run claims` check 4, which ruling 81 ADDS to rather than relaxes |
 | 24 retry is a ladder | item 5 |
-| 25 host-first is the product | items 9, 10 |
-| 26 one plugin directory, both formats | item 10 |
+| 25 host-first is the product | items 9, 10, 15 — **direction overturned by ruling 75**: brigadier drives and the session is its face. Ruling 25's measured constraint (stdout lands in a model's context) stands, and `/dev/tty` was measured unreachable from a CLI tool call on 2026-08-21 |
+| 26 one plugin directory, both formats | items 10, 3 — **overturned in part by ruling 77**: there IS a `PATH` install. *Uninstall is deleting the directory* holds unless `setup --modify-path` was passed, and item 3 grades the default |
 | 27 hooks only in an owned directory | item 3 |
 | 28 `PreCompact` recovers ruling 8's cost | item 3 |
 | 29 the routing unit is a triple | item 13 (recorded per item in the run report) |
 | 30 effort ceiling `high` | item 13 — **partly unprovable**: #45 measured neither vendor's effort confirmable over the protocol |
-| 31 router derives effort | item 13 |
+| 31 router derives effort | item 13 — **amended by ruling 79** for the two new kinds; a `plan` item has no model-supplied `difficulty` at all |
 | 32 cross-vendor preferred, not required | items 5, 6 |
 | 33 the scratch base commit | item 4 |
 | 34 git hooks neutered, `.git/**` excluded | item 2 |
@@ -677,13 +677,13 @@ user-visible promise, so it grows through phase 2. Rulings 49 onward were added 
 | 39 repo map ~2K, per run | item 4 |
 | 40 effort graded on Codex, binary on Claude | item 13 (both shapes recorded; see ruling 30's row) |
 | 41 detection is two steps | items 1, 14 (item 14 proves the vendor reaches the first step at all, under the worker's own argv and config root) |
-| 42 `~/.agents/skills/`, no `bin/` off Claude Code | item 10 |
+| 42 `~/.agents/skills/`, no `bin/` off Claude Code | items 10, 3 — the measurement stands; **ruling 77** supplies the shim it says the ecosystem does not |
 | 43 the lane is an approval channel | item 2 |
 | 44 `CLAUDE_CODE_EXECUTABLE` is load-bearing | items 2, 10 |
 | 45 ruling 9 downgraded to unproven | nothing to prove — see ruling 9 |
 | 46 identity | items 1, 10, 14 |
 | 47 Apache-2.0, attribution, licence gate | item 10 |
-| 48 the success bar | this document — no separate item |
+| 48 the success bar | this document — no separate item. **Amended by ruling 82**: the bar was defined against the rulings and nothing asked whether the rulings matched the owner. Item 15 is that organ, and ruling 48's *ten items* is now fifteen |
 | 49 `read-only` defined by what is read back | items 4 (read-only half), 2 (the flat `deny` lane) |
 | 50 base state, and the operator's tree untouched | item 4 (both halves, including the ref cleanup) |
 | 51 integration: fetch not push, no working tree | item 4 (the ref diff, the visible branch, partial reported as partial) |
@@ -693,7 +693,7 @@ user-visible promise, so it grows through phase 2. Rulings 49 onward were added 
 | 55 the ladder's second rung, and a short ladder said up front | item 6 (the rung is named; a missing rung never reads as exhausted) |
 | 56 brigadier runs no git inside a clone an agent touched | item 2 (planted hook and config payloads, asserted on the escaped bytes) |
 | 57 the binary refuses inside a worker | items 9, 14 (item 9 asserts the effect and carries the ruling's unmeasured assumption; item 14 proves the config-root redirect the ruling's second layer depends on does not itself stop the vendor starting) |
-| 58 the host report is capped; the cap can never hide a failure | item 11 |
+| 58 the host report is capped; the cap can never hide a failure | item 11 — the core property is UNTOUCHED. **Ruling 80** overturns the `Audience` enum's conflation of who reads it with who pays for it, and adds a fourth state |
 | 59 a refused delegation reaches the operator | item 9 (a repo `AGENTS.md` that says "delegate to brigadier", and the run-level line) |
 | 60 the hook floor, and a names-based self-check | item 10 (hooks register, and a poisoned `hooks.json` is *reported* rather than silent) |
 | 61 run directories outside every temp root | items 4, 2 (a sibling clone is unreachable where the vendor enforces one, and named where it does not) |
@@ -706,9 +706,27 @@ user-visible promise, so it grows through phase 2. Rulings 49 onward were added 
 | 68 competence cited by identity, unranked is not excluded | items 5, 10 (`brigadier competence` prints class and citation) |
 | 69 drift graded by blast radius; a failed lane assertion blocks | items 1, 2, 14 (a drifted version is reported; an unasserted lane blocks a `write`; and `run` admits only what detection proved, which is where a blocking drift is enforced) |
 | 70 no token-reduction claim; spend and levers reported | item 13 (the lever line, and a run including opencode says `unpriceable`) |
-| 71 no `init`; first run prints the four unlearnable things | items 1, 9, 6 |
+| 71 no `init`; first run prints the four unlearnable things | items 1, 9, 6, 15 — **overturned in part by ruling 76**: `brigadier setup` exists and is capped. Ruling 71's argument (an interactive propose-flow has nobody to talk to) stands; its promise that there is nothing to run first does not |
 | 72 the source relink route, and the Library's own source offered | item 10 |
 | 73 `detect` is a supported command, and ruling 71's named repair | items 1, 9 (item 1 drives the command; item 9 asserts the cache is read back) |
+| 74 brigadier makes the plan; the binary has no context window | **item 15 — NOT YET BUILT** (Track A step 10). Until it exists this row cites an item that cannot fail, and that is named here rather than left to be discovered |
+| 75 the session wears brigadier; the human is the caller | **item 15 — NOT YET BUILT.** The mechanism is measured: a `UserPromptSubmit` hook's stdout reached the model and an identity instruction was obeyed, against a no-hook control answering `NONE` (`claude 2.1.238`, 2026-08-21) |
+| 76 `brigadier setup` exists, is non-interactive, and is capped | **item 15 — NOT YET BUILT** (assertion 1: setup runs clean on a fresh `HOME` and `detect` agrees with it) |
+| 77 setup installs a launcher shim on `PATH` | item 3 grades the default (no foreign file touched without `--modify-path`); **item 15 — NOT YET BUILT** for the shim itself |
+| 78 `plan` and `research` are work kinds | item 4 (the queue and its kinds); **item 15 — NOT YET BUILT** for the goal entry point. Web reach is a launch-profile column, not a fourth requirement term — ruling 53's vocabulary is unwidened |
+| 79 effort for `plan` and `research` | item 13, with ruling 30's standing caveat: what brigadier SET is assertable, what was RECEIVED is not (#45) |
+| 80 a fourth audience: a human in a session a model also reads | item 11 — the cap and its one-way property are unchanged; the fourth state and D24's one-line form are what this ruling adds |
+| 81 outcomes may feed competence; cost still may not | item 13, and `bun run claims` check 4 — the router↛cost seam stays, and the outcome store must be physically distinct from it |
+| 82 one bar item that tests the product against the owner | **item 15 itself — NOT YET BUILT.** Ruled under delegated authority; the owner may strike it |
+
+**Rulings 74–82 were added on 2026-08-21 and are the first ones this table ever got WRONG.** Ruling
+20's row read *architectural exclusion — no user-visible promise* for five days, on the ruling that
+decides whether brigadier can plan. No item was written against it and nothing looked at it again,
+so six rounds verified a specification faithfully and had no organ for noticing it was the wrong one.
+Ruling 82 adds that organ as **item 15**. **Five rows above cite an item that does not exist yet**,
+and they say so in the row rather than in a footnote — a coverage table whose second column points at
+nothing is the exact failure this table's own preamble warns about, and naming it is the only honest
+state it can be in until Track A step 10 lands.
 
 **Ruling 73 was added on 2026-08-20 and is the first ruling this document's own coverage table
 caused.** `brigadier detect` was shipped, graded by item 1 and load-bearing for ruling 71's cache
