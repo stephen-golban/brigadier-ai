@@ -122,6 +122,27 @@ function modelIds(session: SessionNew | null): string[] {
     .filter((id): id is string => typeof id === "string" && id.length > 0);
 }
 
+/**
+ * Does this failure say the ACCOUNT is refused, rather than the work?
+ *
+ * MEASURED twice, by two independent verifiers on two bridges: 2026-08-20 on
+ * `@zed-industries/claude-code-acp` 0.69.0 and 2026-08-21 on 0.70.0, both
+ * `session/prompt` answering `-32000 Authentication required` seconds after
+ * `session/new` had succeeded. `session/new` does not prove a credential works;
+ * for this vendor only a prompt does, and a prompt is the metered call.
+ *
+ * NARROW ON PURPOSE. It matches an authentication refusal and nothing else. A
+ * classifier that also swallowed timeouts, rate limits or model errors would
+ * stop runs for reasons this measurement does not cover, and every one of those
+ * is a different remedy for the operator. Where it does not match, the previous
+ * behaviour is unchanged: the item fails on its own and the run carries on.
+ *
+ * `OWNER-QUESTIONS.md` #14.
+ */
+export function isCredentialRefusal(message: string): boolean {
+  return /\bauthentication required\b|\bunauthorized\b|\bnot (?:logged in|authenticated)\b/i.test(message);
+}
+
 export class Worker {
   #connection: Connection;
   #sessionId: string;
@@ -155,6 +176,7 @@ export class Worker {
     this.#connection = connection;
     this.#sessionId = sessionId;
   }
+
 
   /**
    * Spawn, handshake, open a session, and assert the lane.

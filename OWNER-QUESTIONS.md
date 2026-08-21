@@ -27,7 +27,7 @@ is not available to anyone."*
 | 11 | `bar/lib/orphan.test.ts` flakiness | **DIAGNOSED — a real leak defect, fixed and measured** |
 | 12 | **NEW** — a `brigadier run` is 35-160x slower on windows-latest | open, undiagnosed |
 | 13 | a dozen planted-payload controls are inert on Windows | **ANSWERED — all three candidates refuted; the cause is the command path's backslashes, which the experiment had normalised away in its own setup** |
-| 14 | **NEW** — detection says usable, the first prompt fails authentication | open — reproduced by a second verifier on a second bridge; closes #8 into it |
+| 14 | detection says usable, the first prompt fails authentication | **PARTLY RULED** — the per-item cost is fixed and its cost recorded; the detection gap is open and needs a per-vendor measurement first |
 | 15 | the report said the plan had no write items when all five were | **FIXED** — reproduced in a test that fails without the fix; the sentence now comes from the plan |
 | 16 | reviewer findings discarded from the host report; item 5 failed at 2 of 5 | **PARTLY FIXED** — the finding text is carried now; the 2-of-5 rate is open and still blocks the tag |
 | 17 | **NEW** — actual spend exceeded the predicted upper bound by 1.03% | open — reported honestly, no ceiling configured, one data point |
@@ -627,6 +627,48 @@ dozen tests in one edit rather than guessing three times.
 ---
 
 ## 14. NEW, 2026-08-21 — detection reports an agent usable and its first prompt fails authentication
+
+**PARTLY RULED 2026-08-21. The cost is ruled; the detection gap is NOT, and stays open.**
+
+Two halves, and only one of them could be settled without spending a metered turn on every detection.
+
+**Ruled, and built: a refused credential is learned once per run rather than once per item.**
+`isCredentialRefusal` in `src/agent/worker.ts` matches an authentication refusal and nothing else, and
+the dispatch loop stops at the next batch boundary — the same place and for the same reason as ruling
+66's soft ceiling. The run says it once, names the vendor, and says the plan is not implicated.
+Undispatched items are `unrun`, never `failed`, because `failed` sends an operator to look for a defect
+in work that never started.
+
+*Why this is a ruling and not a tidy-up.* It changes when a run stops. **The accepted cost: a TRANSIENT
+authentication error now stops a run that might have recovered on the next item.** The alternative is
+spending every remaining item to relearn the same answer, and finding 87 is exactly that shape — a cost
+discovered after it is spent. Ruling 53 chose in this direction once already: an unmeasured requirement
+is not permission to proceed.
+
+*The limit, stated rather than discovered.* This stops the next BATCH, not work already in flight. A run
+wide enough to dispatch every item at once still shows several items failing this way, exactly as the
+soft ceiling behaves. The verifier's five-item run may well have been one such batch, in which case this
+change would have improved its REPORT and saved it nothing.
+
+*The classifier is narrow on purpose.* Authentication only. One that also swallowed timeouts, rate limits
+or model errors would stop runs for reasons nothing here has measured, and each of those is a different
+remedy. The negative control drives a second `-32000` on the first prompt reading *model is overloaded*
+and asserts the run does NOT stop — without it, *stop whenever an item errors* passes every other
+assertion while being a worse product.
+
+MEASURED darwin 25.5.0 / bun 1.3.14 2026-08-21, load1 5.78 to 5.90: `bun run gates` exit 0, 1,766 pass,
+0 fail, 0 skipped, 0 todo. Both positive tests fail without the change; the negative control passes
+either way, which is what makes it one.
+
+**STILL OPEN, and it is the harder half: `session/new` does not prove usable, and nothing here changes
+that.** Detection still admits an agent whose first prompt will be refused. Closing it needs a cheaper
+credential probe per vendor, and **nobody has measured which vendors expose one** — a prompt costs a
+metered turn at every detection, which is what ruling 71's cache exists to avoid, and would make
+`detect` a spender. That measurement comes before the ruling, and it is not made here.
+
+The entry as it stood follows.
+
+### The original entry — 14. NEW, 2026-08-21 — detection reports an agent usable and its first prompt fails authentication
 
 This is #8, reproduced, and it is no longer a one-off on a bridge that has since moved. The second
 independent verifier drove it on `@zed-industries/claude-code-acp` 0.70.0. The first hit it on 0.69.0.

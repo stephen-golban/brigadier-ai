@@ -86,7 +86,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentId, LaunchProfile } from "../agent/profiles.ts";
-import { Worker } from "../agent/worker.ts";
+import { Worker, isCredentialRefusal } from "../agent/worker.ts";
 import {
   buildBaseState,
   discardClone,
@@ -552,6 +552,15 @@ interface ItemRun {
   cancelledByCeiling: boolean;
   /** Ruling 38's one hole: a verify command spawned WITHOUT the command-line marker. */
   unmarkedPids: number[];
+  /**
+   * The agent whose CREDENTIAL was refused, or `null`.
+   *
+   * Separate from the check's `error` for the same reason `cancelledByCeiling`
+   * is: the check says this worker did not finish, and this says the reason is
+   * the operator's account rather than anything in the item. `OWNER-QUESTIONS.md`
+   * #14.
+   */
+  credentialRefusal: string | null;
 }
 
 /** What the review phase learned about one item. */
@@ -654,6 +663,7 @@ async function runItem(
     review: null,
     cancelledByCeiling: false,
     unmarkedPids: [],
+    credentialRefusal: null,
   };
 
   // Ruling 52's write-ahead: the slot exists, holding a BLOCKING value, before
@@ -791,6 +801,11 @@ async function runItem(
       // to fix a defect that is not in its code.
       outcome = "error";
       detail = error instanceof Error ? error.message : String(error);
+      // A refused ACCOUNT is a fact about the machine, not about this item, and
+      // the next item will meet it too. Recorded here, where the vendor's own
+      // words are still in hand; acted on at the batch boundary, which is the
+      // only place this run chooses to spend something new.
+      if (isCredentialRefusal(detail)) result.credentialRefusal = profile.id;
     } finally {
       // Read AFTER the turn: the graded lever is answered on the wire, so
       // reading it at spawn time would record `sent` for a setting the agent
@@ -1229,6 +1244,13 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
   //      survivors nameable as exact pids.
   const live = new Set<LiveWorker>();
   const cancelDeadlineMs = options.cancelDeadlineMs ?? CANCEL_DEADLINE_MS;
+  /**
+   * The agent whose credential was refused, once, for the whole run.
+   *
+   * Run-scoped rather than wave-scoped: a dead credential does not come back
+   * between waves, and a per-wave reset would relearn it once per wave.
+   */
+  let credentialRefusedBy: string | null = null;
   let interruptedBy: NodeJS.Signals | null = null;
   let draining: Promise<void> | null = null;
 
@@ -1365,6 +1387,24 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
       // acts the moment the bytes cross it, inside `Spend.add`, because
       // cancelling work already running is the whole difference between the two.
       if (spend.stopDispatching) break;
+      // A REFUSED ACCOUNT, proven once, at the same boundary and for the same
+      // reason as the soft ceiling above: the next item would meet it too.
+      //
+      // MEASURED 2026-08-21 by the second independent verifier, run
+      // `mt2x09vpa2fd`: five items, all five routed to Claude, all five dead at
+      // `session/prompt` with `-32000 Authentication required`, reported as five
+      // independent item failures rather than as one fact about the machine.
+      // That is finding 87's shape — a cost discovered after it is spent —
+      // pointing at admission rather than at routing.
+      //
+      // THE ACCEPTED COST, stated rather than discovered: a TRANSIENT
+      // authentication error now stops a run that might have recovered on the
+      // next item. The alternative is spending every remaining item to relearn
+      // the same answer, and ruling 53 already chose between those two in this
+      // direction — an unmeasured requirement is not permission to proceed. The
+      // remaining items are `unrun`, never `failed`, so nothing here sends
+      // anyone to look for a defect in work that never started.
+      if (credentialRefusedBy !== null) break;
       const batch = eligible.run.slice(cursor, cursor + concurrency);
       const finished = await Promise.all(
         batch.map((number) => {
@@ -1383,6 +1423,7 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
       // ceiling fired" is still knowable, because after the batch resolves
       // every item looks alike.
       if (spend.hardHit) for (const run of finished) run.cancelledByCeiling = true;
+      credentialRefusedBy ??= finished.find((run) => run.credentialRefusal !== null)?.credentialRefusal ?? null;
       attempted.push(...finished);
     }
     runs.push(...attempted);
@@ -1625,6 +1666,18 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
       `${unmarked.length} verify command(s) ran without ruling 38's command-line marker (pid ` +
         `${unmarked.join(", ")}), because \`<command> --brigadier-run=…\` is not \`<command>\`. The sweep ` +
         "cannot match them; each was killed on its own timeout by the process that started it.",
+    );
+  }
+
+  if (credentialRefusedBy !== null) {
+    notes.push(
+      `${credentialRefusedBy} refused the credential, not the work: its first \`session/prompt\` answered ` +
+        "with an authentication failure after `session/new` had already succeeded, so detection's second " +
+        "step proved less than the word `usable` claims. No further BATCH was dispatched — the next item " +
+        "would have met the same answer — and those items are `unrun` rather than `failed`. Items already " +
+        "IN FLIGHT were not stopped, exactly as the soft ceiling does not stop them, so a wide run can " +
+        "still show several items failing this way. The remedy is to authenticate " +
+        `${credentialRefusedBy} and run again; nothing in the plan is implicated.`,
     );
   }
 

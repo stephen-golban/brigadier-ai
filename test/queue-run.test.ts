@@ -69,6 +69,18 @@ for await (const chunk of Bun.stdin.stream()) {
       send({ jsonrpc: "2.0", id: msg.id, result: null });
     } else if (msg.method === "session/prompt") {
       const brief = String(msg.params?.prompt?.[0]?.text ?? "");
+      // The two failure shapes #14 needs told apart. Both are -32000 errors on
+      // the FIRST prompt, after session/new has already succeeded, which is the
+      // measured shape; only the message differs, and the message is the whole
+      // discriminator.
+      if (/authfail/.test(brief)) {
+        send({ jsonrpc: "2.0", id: msg.id, error: { code: -32000, message: "Authentication required" } });
+        continue;
+      }
+      if (/otherfail/.test(brief)) {
+        send({ jsonrpc: "2.0", id: msg.id, error: { code: -32000, message: "model is overloaded, try again" } });
+        continue;
+      }
       const one = (re) => re.exec(brief)?.[1];
       const id = one(/^id: (\\S+)$/m) ?? "unknown";
       const say = one(/say=(\\S+)/);
@@ -152,6 +164,70 @@ function writePlan(dir: string, items: unknown[], name = "plan.json"): string {
   writeFileSync(path, JSON.stringify({ version: 1, items }, null, 2));
   return path;
 }
+
+// -------------------------------------------- a refused credential, once
+
+/**
+ * A dead credential is a fact about the MACHINE, and the run used to relearn it
+ * once per item.
+ *
+ * MEASURED 2026-08-21 by the second independent verifier, run `mt2x09vpa2fd`:
+ * five items, all five routed to Claude, all five dead at `session/prompt` with
+ * `-32000 Authentication required` after `session/new` had already succeeded.
+ * The run reported five independent item failures. Nothing said the plan was
+ * fine and the account was not.
+ *
+ * `dispatchWidth` is 1 without a fan-out, so item two is a real second batch and
+ * the boundary check is genuinely reached rather than being incidentally true.
+ * `OWNER-QUESTIONS.md` #14.
+ */
+describe("a refused CREDENTIAL stops dispatch and is reported once, not once per item", () => {
+  const world = makeWorld("authfail");
+  const planPath = writePlan(world.dir, [
+    { id: "first", kind: "write", paths: ["first.txt"], prompt: "authfail out=first.txt" },
+    { id: "second", kind: "write", paths: ["second.txt"], prompt: "authfail out=second.txt" },
+  ]);
+  const result = brigadier(world, [
+    "run", "--plan", planPath, "--repo", world.repo, "--run-root", world.runs, "--workers", "1",
+    "--audience", "terminal",
+  ]);
+  const runId = readdirSync(join(world.runs, "r"))[0] ?? "";
+  const record = JSON.parse(readFileSync(join(world.runs, "r", runId, "record.json"), "utf8")) as {
+    items: Array<{ id: string; status: string }>;
+  };
+
+  test("the run says the credential was refused, and names the remedy", () => {
+    expect(result.stdout).toContain("refused the credential, not the work");
+    expect(result.stdout).toContain("nothing in the plan is implicated");
+  });
+
+  test("the second item was never dispatched, and is `unrun` rather than `failed`", () => {
+    // `failed` would send an operator to look for a defect in work that never
+    // started. This is the same distinction ruling 66 draws for `cancelled`.
+    expect(record.items.find((item) => item.id === "second")?.status).toBe("unrun");
+    expect(existsSync(join(world.repo, "second.txt"))).toBe(false);
+  });
+
+  test("NEGATIVE CONTROL: a failure that is NOT about the credential does not stop the run", () => {
+    // Without this, "stop the run whenever an item errors" passes every
+    // assertion above while being a different and much worse product.
+    const other = makeWorld("otherfail");
+    const otherPlan = writePlan(other.dir, [
+      { id: "first", kind: "write", paths: ["first.txt"], prompt: "otherfail out=first.txt" },
+      { id: "second", kind: "write", paths: ["second.txt"], prompt: "otherfail out=second.txt" },
+    ]);
+    const out = brigadier(other, [
+      "run", "--plan", otherPlan, "--repo", other.repo, "--run-root", other.runs, "--workers", "1",
+      "--audience", "terminal",
+    ]);
+    const otherId = readdirSync(join(other.runs, "r"))[0] ?? "";
+    const otherRecord = JSON.parse(readFileSync(join(other.runs, "r", otherId, "record.json"), "utf8")) as {
+      items: Array<{ id: string; status: string }>;
+    };
+    expect(out.stdout).not.toContain("refused the credential");
+    expect(otherRecord.items.find((item) => item.id === "second")?.status).not.toBe("unrun");
+  }, 120_000);
+});
 
 // ---------------------------------------------------------------- the run
 
