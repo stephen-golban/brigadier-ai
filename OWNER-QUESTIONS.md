@@ -1,4 +1,4 @@
-# Owner's questions — collected 2026-08-20 by the CI round, ruled 2026-08-20 by the next one
+# Owner's questions — collected 2026-08-20 by the CI round, ruled 2026-08-20, extended 2026-08-21 by the second verifier
 
 Written by the CI round (branch `gauntlet/ci`). Everything here was found while answering *why has CI
 never passed on any platform*. Each entry states the question, the options, and what each option costs.
@@ -21,12 +21,16 @@ is not available to anyone."*
 | 5 | `Check` as a discriminated union | **RULED — deferred to its own round; the audit's expiry closed now** |
 | 6 | eleven Windows tests that render `(pass)` | **RULED — made blocking failures, named** |
 | 7 | an `execute` that asked no permission | open — recorded, not concluded |
-| 8 | the verifier's `Authentication required` | open — still unexplained |
+| 8 | the verifier's `Authentication required` | **CLOSED INTO #14** — reproduced 2026-08-21 on a second bridge by a second verifier |
 | 9 | Windows: the bar harness grades blind | **SEPARATED BY EXPERIMENT — neither candidate alone; the conjunction. Fixed.** |
 | 10 | `bar/fakes.test.ts` on the POSIX legs | **DIAGNOSED — both open rows, and one attribution withdrawn** |
 | 11 | `bar/lib/orphan.test.ts` flakiness | **DIAGNOSED — a real leak defect, fixed and measured** |
 | 12 | **NEW** — a `brigadier run` is 35-160x slower on windows-latest | open, undiagnosed |
-| 13 | **NEW** — a dozen planted-payload controls are inert on Windows | **experiment pushed**, three candidates, unseparated |
+| 13 | a dozen planted-payload controls are inert on Windows | **ANSWERED — all three candidates refuted; the cause is the command path's backslashes, which the experiment had normalised away in its own setup** |
+| 14 | **NEW** — detection says usable, the first prompt fails authentication | open — reproduced by a second verifier on a second bridge; closes #8 into it |
+| 15 | **NEW** — the report said the plan had no write items when all five were | open — confirmed in the source, `src/queue/execute.ts:1990`, one condition |
+| 16 | **NEW** — reviewer findings discarded from the host report; item 5 failed at 2 of 5 | open — the rate blocks the tag; the discarded finding text is a separate defect |
+| 17 | **NEW** — actual spend exceeded the predicted upper bound by 1.03% | open — reported honestly, no ceiling configured, one data point |
 
 ---
 
@@ -270,7 +274,13 @@ this round's standing instruction was that an honest *"still unexplained"* beats
 
 ---
 
-## 8. Still unexplained: the first verifier's `session/prompt: -32000 Authentication required`
+## 8. ~~Still unexplained: the first verifier's `session/prompt: -32000 Authentication required`~~ CLOSED INTO #14 on 2026-08-21
+
+**Reproduced.** The second verifier hit the same signature on bridge 0.70.0, so the paragraph below
+about 0.69.0 no longer stands as a reason to doubt the reading. What was unexplained is now
+measured twice on two bridges, and the open question moved with it: it is no longer *why did this
+happen once* but *what should admission do about an agent that opens a session and refuses the first
+prompt*. That question is #14. The entry as it stood follows.
 
 **No second cause is offered, because none was measured.** The obvious candidate was tested again this
 round and refused again: under a scratch `HOME` on this machine the Claude bridge reports `usable` —
@@ -506,7 +516,76 @@ platform, and nothing in `BAR.md` measures it.
 
 ---
 
-## 13. NEW, 2026-08-20 — a dozen planted-payload NEGATIVE CONTROLS are inert on Windows
+## 13. ~~NEW, 2026-08-20 — a dozen planted-payload NEGATIVE CONTROLS are inert on Windows~~ ANSWERED 2026-08-21, and the experiment had contaminated its own control
+
+All three named candidates are refuted. MEASURED on `windows-latest` by
+`test/git-payload-shape.test.ts`, run 32415677392, job 96576151123, against `65990a9`:
+
+| shape | result |
+| --- | --- |
+| sh + `touch` + native path | **FIRED** |
+| sh + redirect + native path | **FIRED** |
+| sh + redirect + forward-slash path | **FIRED** |
+| `cmd` batch file | **FIRED** |
+
+Four of four. The `#!/bin/sh` shebang runs there, `touch` is present in Git for Windows' userland, and
+a backslash inside the payload's own double-quoted string does no harm. Three theories are dead and
+none needs trying again. A negative result is a good result, and this one cost one CI leg instead of
+three guesses.
+
+**What the experiment did not vary is the answer.** All four shapes are planted through one line,
+`test/git-payload-shape.test.ts:127`, which writes `fsmonitor = ${forward(command)}`. That converts
+the command's own path from `C:\Users\…` to `C:/Users/…` before git ever sees it. The fixtures under
+investigation do not. `test/isolation-live.test.ts:115` writes `fsmonitor = ${payloadScript(canary)}`
+natively. So the experiment held the causal variable constant, at its working value, in all four
+cells. It refuted its three candidates honestly and could not have found the cause, because its own
+setup code had already fixed it.
+
+This is candidate 3, the path, surviving in the one place the experiment did not look. It was named,
+tested at the wrong site, and recorded as refuted. Both halves of that are true and both are kept.
+
+**The discriminator is the slash direction of the command path.** Three planting routes agree,
+MEASURED in the same job:
+
+| fixture | how `core.fsmonitor` is set | command path | result |
+| --- | --- | --- | --- |
+| `git-payload-shape.test.ts` | config file written by hand | forward-slash | FIRED ×4 |
+| `isolation-live.test.ts` E1, E2 | config file written by hand | native | inert |
+| `isolation-live.test.ts` E5 | `GIT_CONFIG_VALUE_0` environment variable | native | inert |
+| `isolation-recycle.test.ts` | `git config core.fsmonitor <path>` | native | inert |
+
+Three different routes, all native, all inert. One route, forward-slash, fires. The route is not the
+variable. The slash is. The environment-variable row carries its own weight: it involves no config
+file, so git's config-file backslash-escape parser cannot be the explanation.
+
+**The mechanism is in plain text elsewhere in the same log.** `test/integrate-parity.test.ts` failed on
+that leg with git's own error, unabridged:
+
+```
+payload-config-filter-smudge.sh: line 1: C:UsersRUNNER~1AppDataLocalTempbrigadier-parity-eXF0Rjpayload-config-filter-smudge.sh: command not found
+```
+
+Git for Windows runs these commands through its bundled `sh`, which eats backslashes as escapes.
+`C:\Users\…` arrives as `C:Users…`, which names nothing, so nothing runs. Git then ignores a failed
+`fsmonitor` in silence, which is why a dozen controls read as inert rather than as errors. The payload
+never ran and nothing said so.
+
+**The predicted fix, written down before it is measured, so CI can refute it.** Convert the command
+path to forward slashes at five sites: `payloadScript` in `test/isolation-live.test.ts`, one helper
+serving E1, E2 and both E5 arms, and four in `test/isolation-recycle.test.ts` (`plantFsmonitor`, the
+planted `.git/config` at :281, and the two global-config plants at :367 and :379). Never the canary
+path inside the script, which shapes 1 and 2 prove is fine native. Prediction: those controls fire on
+`windows-latest`, and every guard beside them stops being vacuous. If a Windows leg shows them still
+inert, this diagnosis is wrong and the entry reopens. That is the refutation condition, stated in
+advance.
+
+**The lesson outlives this entry.** An experiment must vary its variable in its setup, not only across
+its cells. This one was written in the shape of #9's 2×2, which worked, but #9 varied the whole call
+path and this varied only the payload. A matrix that normalises its inputs before the cells begin is
+measuring its own normalisation. Same class as the harness scoring itself in `BAR.md` item 5, and as
+the first verifier's observation about instruments.
+
+**The state as it stood before the experiment follows.**
 
 Roughly a dozen controls across `test/isolation-live.test.ts` and `test/isolation-recycle.test.ts`
 plant a payload into a clone's `.git` and assert that it **fires** — E1, E2, E4, E5/E6, *"recycling a
@@ -534,6 +613,156 @@ real repository, RECORDS which fired, and asserts only the property the controls
 least one shape fires on this platform. On POSIX it is a control on the control (6/6 on darwin and
 under `oven/bun:1.3.14`). On Windows the matrix is the finding, and it should let the next round fix a
 dozen tests in one edit rather than guessing three times.
+
+---
+
+## 14. NEW, 2026-08-21 — detection reports an agent usable and its first prompt fails authentication
+
+This is #8, reproduced, and it is no longer a one-off on a bridge that has since moved. The second
+independent verifier drove it on `@zed-industries/claude-code-acp` 0.70.0. The first hit it on 0.69.0.
+Two verifiers, two bridges, one signature: `session/prompt: -32000 Authentication required`. Twice
+recorded is not an edge case.
+
+MEASURED 2026-08-21 on darwin 25.5.0, from `VERIFIER-REPORT-2.md`, run `mt2x09vpa2fd`:
+
+- `brigadier detect --json` reported Claude 0.70.0 usable, session opened in 1,332 ms.
+- The run re-ran admission, routed all five items to Claude, and promised a two-rung ladder.
+- All five workers failed at `session/prompt` with `-32000 Authentication required`, seconds later.
+- The run exited 1, integrated 0 of 5, retained all five clones, ran no reviews, took no second rung.
+
+**Where the boundary is.** The authentication failure is environmental and is not brigadier's defect.
+Admitting the agent on the strength of it is. Ruling 41 defines detection as two steps, a handshake
+proving present and a session proving usable, and this run is the measurement that says `session/new`
+does not prove usable. The vendor opens a session for an unauthenticated account and then refuses the
+first unit of work. Ruling 41's second step tests a weaker property than the word *usable* claims, on
+the vendor `BAR.md` item 1 grades most closely.
+
+**What is not claimed:** that a third step is the answer. A prompt that proves usability costs a real
+turn on the operator's account at every detection, which is what ruling 71's cache exists to avoid,
+and it would make `detect` itself a spender. The options are at least a cheaper vendor-specific
+credential probe, treating the first `Authentication required` of a run as an admission failure rather
+than an item failure so it fails once and loudly, or accepting the gap and saying so in `BAR.md` under
+*When an item cannot be met*. Nobody has measured which vendors distinguish these two states at all,
+and that measurement comes before the ruling.
+
+**Why it is worse than five failed items.** The ladder never engaged. Five items each burned an
+attempt against the same broken credential, and the run reported five independent item failures rather
+than one machine-level fact. That is finding 87's shape, a cost discovered after it is spent, pointing
+at admission rather than at routing.
+
+**#8 closes into this entry.** It was open as *still unexplained*. It is now reproduced with a record
+on disk, and the open question is the ruling above rather than the diagnosis.
+
+---
+
+## 15. NEW, 2026-08-21 — the run report told the operator the plan had no write items, and all five were write items
+
+A false sentence in the run report. The second verifier found it, and it is one condition. MEASURED
+2026-08-21: run `mt2x09vpa2fd` carried five plan entries, every one `kind: write`, and the host report
+asserted *"no item in this plan is a `write` item"*.
+
+The site is `src/queue/execute.ts:1990`:
+
+```ts
+const reviewReason = routedCrossVendorBroken
+  ? …
+  : reviewedAny
+    ? reviewer.sameVendorReason
+    : (reviewer.sameVendorReason ?? nothingReviewable);
+```
+
+`nothingReviewable` is that sentence, and the code reaches it whenever no reviewer process spawned.
+`reviewedAny` is false in two situations the report cannot then tell apart:
+
+1. the plan genuinely has no `write` item, so ruling 49 left no diff to review; and
+2. every `write` item failed before producing a diff, so nothing ever reached a reviewer.
+
+The verifier's run was the second and the report printed the first. The report infers the plan's shape
+from the reviewer's fate instead of reading the plan.
+
+**The correct value is already in scope, ten lines up.** `execute.ts:1733` computes
+`writeItems = plan.items.filter((item) => item.kind === "write").length`, and the integration-branch
+block at :1746 gates on `writeItems === 0` and gets it right, printing *"no item in this plan declares
+`kind: write`"* only when that is true. Two sentences about one fact, in one function, derived from
+two different things, and one of them lies.
+
+**Why this is bar-grade and not a wording bug.** `BAR.md` item 11's second half is that a run where
+items fail is reported without hiding the failure, and this hides what kind of failure it was. An
+operator reading that sentence concludes the plan was read-only and no review was owed. It is also the
+shape this repository keeps naming, a check that reports success when the thing it checks did not
+happen, with the reviewer's absence rendered as the plan's shape.
+
+**The fix and its test are one edit each.** Gate `nothingReviewable` on `writeItems === 0`, and give
+`writeItems > 0 && !reviewedAny` its own sentence saying write items existed and none reached a
+reviewer, with the count. The test is a plan of `write` items whose workers all fail before a diff,
+asserting the report does not contain the read-only sentence. It has to be a negative control, because
+the current code passes any test that only checks the read-only case.
+
+---
+
+## 16. NEW, 2026-08-21 — the reviewer's findings are discarded from the host report, and item 5 is failed at 2 of 5
+
+The rate first, because it is the blocking half. The second verifier planted five defects with no
+marker tokens, drove a real fleet, and scored the recorded transcript by hand: 2 of 5 caught, against
+item 5's threshold of 3 and v1's baseline of 0 of 3. `BAR.md` item 5 assigns exactly this judgement to
+the verifier and requires the number published whether or not it clears. It does not clear. The bar is
+not met and there is no tag.
+
+Two measurements sit beside that number. Neither changes it, and both belong on the record, because
+item 5 is where the diff-framing assumption is meant to be falsified in public.
+
+**It was measured same-vendor.** Copilot returned `Authentication required` mid-session, so OpenCode
+1.18.18 drove both builder and reviewer. Item 5's first clause is that the reviewer's vendor differs
+from the builder's, so the published rate came from a condition the item does not specify. Anthropic's
+documented same-vendor self-preference is why item 5 separates those clauses at all. The verifier
+reported this as an environmental limitation rather than as a passed cross-vendor check, which is
+right.
+
+**Only three of the five plants reached a reviewer.** The builder repaired two of them, the
+empty-string cursor and the cross-tenant cache key, before review. The verifier declined to score a
+builder repair as a reviewer catch, which is also right. A fourth was never reviewed at all, because
+the builder made no commit. So the reviewer was handed three defective diffs and named two of them
+precisely.
+
+That is an instrument finding, not an appeal. A prose-only plant can be repaired by the builder, and a
+plant that never reaches the reviewer measures the builder instead. Item 5's threshold is written
+against five plants. The drive that produced this number put three in front of a reviewer. Whoever
+runs the next one should decide in advance whether a repaired plant counts as a miss, a re-plant, or
+an exclusion, and decide it before seeing the score, because deciding afterwards is how a threshold
+gets tuned to fit its measurement. The verdict stands as reported: 2 of 5, below 3, no tag.
+
+**The separate defect is the product's.** Brigadier printed `catch rate 0 of 5` while the transcript
+unambiguously named two planted faults, because it counts identifiers appearing as literal contiguous
+text in the diff and the reviewer wrote prose. `BAR.md` item 5 predicted this exactly, *a reviewer that
+correctly describes a planted defect in prose the diff does not carry scores zero*, and that is why
+the automated item publishes no rate. The 0 is documented behaviour.
+
+What is not documented, and is new: the host report also drops the reviewer's finding text. Both items
+were blocked, correctly, on `rejected` verdicts naming `src/retry.ts missing between-attempts abort
+check` and `src/median.ts [...values].sort()`. The operator was told the reviewer named zero defects,
+with nothing to carry into a retry. A blocking verdict whose reason is discarded makes the ladder
+blind, because rung two re-runs with no more information than rung one had. That is item 11's rule
+that a failure never collapses, applied to the reason rather than to the item, and nothing in `BAR.md`
+currently asserts it.
+
+---
+
+## 17. NEW, 2026-08-21 — actual spend exceeded the predicted upper bound, and this repository's own guard would reject it
+
+MEASURED 2026-08-21, run `mt2x3vpp247d`: estimate 71,835 to 359,175 tokens, actual lower bound
+362,877. Over the upper bound by 3,702 tokens, 1.03%.
+
+Reported honestly, and not a ceiling failure. No ceiling was configured, so nothing was enforced and
+nothing was concealed. The run printed actual against predicted exactly as item 13 requires, and the
+actual is a lower bound because the run included opencode, which ruling 70 makes `unpriceable`.
+
+It is still a calibration miss, and this repository already treats it as one. Item 13's own negative
+guard rejects a run that spends above its predicted upper bound, so the product's test suite holds the
+estimator to a standard the estimator missed on its first independent drive. One overshoot of 1.03% is
+a data point, not a trend, particularly with #44's measured 15× between two identical Codex runs
+already in the record. What nobody knows yet is whether the range is systematically narrow or whether
+this run was ordinary variance, and one drive cannot tell those apart. It is recorded so the next
+drive has something to compare against instead of noticing it again from scratch.
 
 ---
 
