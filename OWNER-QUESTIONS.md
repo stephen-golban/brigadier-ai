@@ -28,7 +28,7 @@ is not available to anyone."*
 | 12 | **NEW** — a `brigadier run` is 35-160x slower on windows-latest | open, undiagnosed |
 | 13 | a dozen planted-payload controls are inert on Windows | **ANSWERED — all three candidates refuted; the cause is the command path's backslashes, which the experiment had normalised away in its own setup** |
 | 14 | **NEW** — detection says usable, the first prompt fails authentication | open — reproduced by a second verifier on a second bridge; closes #8 into it |
-| 15 | **NEW** — the report said the plan had no write items when all five were | open — confirmed in the source, `src/queue/execute.ts:1990`, one condition |
+| 15 | the report said the plan had no write items when all five were | **FIXED** — reproduced in a test that fails without the fix; the sentence now comes from the plan |
 | 16 | **NEW** — reviewer findings discarded from the host report; item 5 failed at 2 of 5 | open — the rate blocks the tag; the discarded finding text is a separate defect |
 | 17 | **NEW** — actual spend exceeded the predicted upper bound by 1.03% | open — reported honestly, no ceiling configured, one data point |
 
@@ -665,7 +665,35 @@ on disk, and the open question is the ruling above rather than the diagnosis.
 
 ---
 
-## 15. NEW, 2026-08-21 — the run report told the operator the plan had no write items, and all five were write items
+## 15. ~~NEW, 2026-08-21 — the run report told the operator the plan had no write items, and all five were write items~~ FIXED 2026-08-21
+
+**Reproduced in a test before it was fixed, and the test fails without the fix.** `test/review-run.test.ts`
+plants two `write` items whose builder produces no diff, which reaches the same state by a cheaper road
+than five dead workers. MEASURED on darwin 25.5.0 / bun 1.3.14 2026-08-21 against the unfixed source, the
+run-level reason read, in full:
+
+> no item in this plan is a `write` item, so ruling 49 left no diff for a reviewer to be handed and
+> ruling 32's cross-vendor rule had nothing to apply to. Nothing was reviewed and nothing here claims
+> otherwise.
+
+That is the verifier's sentence, word for word, on a plan of two write items. Both new tests fail against
+`039d0ee` and pass after the change, which is the negative control `AGENTS.md` requires: a guard that
+cannot fail looks identical to a working one. The read-only world's existing assertion is the control in
+the other direction, so the fix cannot be *print the new sentence unconditionally*.
+
+`src/queue/execute.ts` now derives the sentence from `writeItems`, which was already counted ten lines
+above for the deliverable, instead of from whether a reviewer spawned. Where write items existed and none
+was reviewed, that fact also outranks a `sameVendorReason`, which describes how a review WOULD have been
+routed and, printed alone, describes a review that never happened.
+
+MEASURED after the change: `bun run gates` exit 0, 1,759 pass, 0 fail, 0 skipped, 0 todo, load1 5.36 to
+7.40. The +2 is the negative control.
+
+**What this does NOT fix.** The verifier's run reached this state because five workers died at their
+first prompt, and that cause is #14 and is untouched. This entry was only ever about the report telling
+the truth about the plan.
+
+The entry as it stood follows.
 
 A false sentence in the run report. The second verifier found it, and it is one condition. MEASURED
 2026-08-21: run `mt2x09vpa2fd` carried five plan entries, every one `kind: write`, and the host report

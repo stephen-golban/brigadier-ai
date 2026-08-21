@@ -1986,10 +1986,32 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
     ...new Set(runs.map((run) => run.review?.spawnedReviewer ?? null).filter((id): id is string => id !== null)),
   ];
   const reviewedAny = spawnedReviewers.length > 0;
+  // TWO facts, and this used to derive both from one. No reviewer spawns in two
+  // unrelated situations: the plan carried no `write` item at all, so ruling 49
+  // left nothing to review; or `write` items were planned and NONE produced a
+  // diff to hand over. `reviewedAny` cannot tell those apart. `writeItems` can,
+  // and it is already counted above for the deliverable.
+  //
+  // MEASURED 2026-08-21 by the second independent verifier, run `mt2x09vpa2fd`:
+  // five items, every one `kind: write`, all five workers dead at their first
+  // `session/prompt`, and the report told the operator *"no item in this plan is
+  // a `write` item"*. The plan's shape was being read off the reviewer's fate.
+  // The operator's conclusion from that sentence is that the plan was read-only
+  // and no review was owed, which is ruling 58's cap hiding a failure's KIND.
+  // `OWNER-QUESTIONS.md` #15.
   const nothingReviewable =
     "no item in this plan is a `write` item, so ruling 49 left no diff for a reviewer to be handed " +
     "and ruling 32's cross-vendor rule had nothing to apply to. Nothing was reviewed and nothing " +
     "here claims otherwise.";
+  const nothingReachedAReviewer =
+    `${writeItems} \`write\` item(s) were planned and none reached a reviewer, because none produced ` +
+    "a diff to hand over. This is NOT a read-only plan, and ruling 32's cross-vendor rule was never " +
+    "tested here.";
+  // Where write items existed and none was reviewed, that fact outranks a
+  // same-vendor reason: `sameVendorReason` explains how a review WOULD have been
+  // routed, and printing it alone describes a review that never happened.
+  const noReviewerReason =
+    writeItems === 0 ? (reviewer.sameVendorReason ?? nothingReviewable) : nothingReachedAReviewer;
   // A cross-vendor promise the SPAWNS did not keep is stated rather than left
   // to print as "no reason was recorded". The router decides from `PATH`; what
   // actually started is the only thing that settles ruling 32, and when the two
@@ -2004,7 +2026,7 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
       "property is a comparison between what ran, so this review is recorded as the weaker one it was."
     : reviewedAny
       ? reviewer.sameVendorReason
-      : (reviewer.sameVendorReason ?? nothingReviewable);
+      : noReviewerReason;
 
   const runRecord: RunRecord = {
     runId,

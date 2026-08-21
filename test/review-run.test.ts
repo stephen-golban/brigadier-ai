@@ -558,6 +558,60 @@ describe("ruling 49: a read-only item is `unconfigured`, which is an ABSENT chec
   });
 });
 
+// ------------------------- write items that never reached a reviewer at all
+
+/**
+ * NEGATIVE CONTROL for the read-only world above, and it is the half that was
+ * wrong. `reviewedAny` is false in TWO unrelated situations — a plan with no
+ * `write` item, and a plan of `write` items where none produced a diff — and
+ * the report used to print the read-only sentence for both.
+ *
+ * MEASURED 2026-08-21 by the second independent verifier, run `mt2x09vpa2fd`:
+ * five `kind: write` items, every worker dead at its first `session/prompt`,
+ * and the report said *"no item in this plan is a `write` item"*. The operator's
+ * conclusion from that sentence is that no review was owed.
+ *
+ * The world here reaches the same state by the cheaper road: the builder is
+ * given no `out=`, so it commits nothing and there is no diff to review. TWO
+ * vendors are planted deliberately, so `sameVendorReason` is undefined and the
+ * sentence under test is the only thing that can be printed.
+ */
+describe("write items were planned and none reached a reviewer, which is NOT a read-only plan", () => {
+  const world = makeWorld("no-diff", [{ id: "qwen" }, { id: "copilot" }]);
+  const planPath = join(world.dir, "nodiff.json");
+  writeFileSync(
+    planPath,
+    JSON.stringify({
+      version: 1,
+      items: [
+        { id: "one", kind: "write", paths: ["one.txt"], prompt: "id: one\nthink about one.txt and write nothing" },
+        { id: "two", kind: "write", paths: ["two.txt"], prompt: "id: two\nthink about two.txt and write nothing" },
+      ],
+    }),
+  );
+  brigadier(world, [
+    "run", "--plan", planPath, "--repo", world.repo, "--run-root", world.runs, "--review", "--audience", "terminal",
+  ]);
+  const { record } = runOf(world);
+
+  test("the run-level reason says write items were planned, and counts them", () => {
+    const reason = record.review?.sameVendorReason ?? "";
+    expect(reason).toContain("2 `write` item(s) were planned");
+    expect(reason).toContain("none reached a reviewer");
+  });
+
+  test("and it never tells the operator this was a read-only plan", () => {
+    // The exact string the read-only world asserts, which is the one this world
+    // used to print. Asserting on the bytes rather than on a flag: v1's finding
+    // 41 is that a flag assertion survives a refactor that removes the property.
+    const reason = record.review?.sameVendorReason ?? "";
+    expect(reason).not.toContain("no item in this plan is a `write` item");
+    expect(reason).toContain("NOT a read-only plan");
+    expect(record.review?.reviewerAgent).toBeUndefined();
+    expect(existsSync(world.sawDiff)).toBe(false);
+  });
+});
+
 // -------------------------------------------------- review is off by default
 
 describe("NEGATIVE CONTROL: without --review nothing above happens at all", () => {
