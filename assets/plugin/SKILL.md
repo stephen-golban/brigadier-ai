@@ -70,11 +70,19 @@ reached when the agent reading this decides the description above matches the ta
 the whole mechanism outside Claude Code, and it is not a guarantee. If you want brigadier
 run at a specific moment, invoke it explicitly.
 
-**The binary is not put on your `PATH` by installing this.** Nothing here writes to a
-directory another product owns, and outside Claude Code there is no plugin-provided `PATH`
-entry to write to. Put the `brigadier` binary wherever you keep binaries, yourself.
+**Installing this skill does not put the binary on your `PATH`, and it cannot.** Nothing
+here writes to a directory another product owns, and outside Claude Code there is no
+plugin-provided `PATH` entry to write to (ruling 42, measured on Codex and Cursor).
+
+**`brigadier setup` is the command that does put it there** (ruling 77). It writes a
+launcher into brigadier's own root and prints the one line you add to your shell profile —
+it does not write that line for you unless you pass `--modify-path`, because which startup
+file is a guess and a guess that writes to a file your shell never sources reports success
+and changes nothing.
 
 ## Removing it
 
-Delete the directory. Nothing was registered anywhere else, so there is nothing else to
-undo — `brigadier uninstall` does exactly that and prints what it removed.
+`brigadier uninstall` removes the two directories above, the launcher, and — only if
+`--modify-path` ever wrote one — the block between `# brigadier` and `# brigadier end` in
+your shell profile, and nothing else in that file. It prints each of those three separately,
+because they are three different promises.

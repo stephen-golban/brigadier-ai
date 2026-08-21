@@ -28,7 +28,7 @@
  * up that happens to look like one.
  */
 
-import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { detectAll, type Detection } from "./agent/detect.ts";
@@ -44,11 +44,15 @@ import {
 import { applyOverride, noBlockingReason, overrideWarning, parseOverrides, type BridgeOverride } from "./agent/drift.ts";
 import { REFUSAL, isInsideWorker } from "./agent/marker.ts";
 import { ALL_AGENT_IDS, PROFILES, type AgentId } from "./agent/profiles.ts";
-import { buildIdentity, renderVersion } from "./build/identity.ts";
+import { buildIdentity, embeddedStamp, renderVersion } from "./build/identity.ts";
+import { ConfigUnusable, bridgesPath, configPath, loadConfig, resolve as prefer } from "./config/config.ts";
 import { LICENSES } from "./generated/licenses.ts";
 import { resolveVerify } from "./gate/index.ts";
 import { intendedRealPath, realTempDirs } from "./isolation/index.ts";
-import { PLUGIN_USAGE, installCommand, pluginCommand, uninstallCommand } from "./plugin/index.ts";
+import { PLUGIN_USAGE, contextFrom, installCommand, pluginCommand, uninstallCommand } from "./plugin/index.ts";
+import { install } from "./plugin/install.ts";
+import { configDocument, describeSetup, describeSetupRemoval, planSetup, type DetectedAgent, type SetupRemoval } from "./setup/setup.ts";
+import { shimDirectory, shimPath, shimText, profileFor, shellFrom, withBlock, withoutBlock } from "./setup/shim.ts";
 import {
   admit,
   agentsOnPath,
@@ -73,6 +77,19 @@ import { renderCompetence, tableProblems, unlistedModels } from "./router/table.
 import { Sink, type Grant } from "./secrets/sink.ts";
 
 const USAGE = `brigadier — an ACP hub
+
+  brigadier setup [--dry-run] [--modify-path] [--home <path>] [--run-root <path>]
+      Detect the fleet, write ~/.config/brigadier/config.json, write the plugin
+      asset, install the launcher shim, and print what it found. Ruling 76: it
+      never asks and it never runs work.
+      --modify-path adds the shim's directory to your shell profile, between
+                    \`# brigadier\` and \`# brigadier end\`. WITHOUT it brigadier
+                    writes nothing outside its own root and prints the line for
+                    you to add — which startup file is a guess, and a guess that
+                    writes to a file your shell never sources reports success and
+                    does nothing (ruling 77).
+      Not required. \`run\` and \`plan\` still detect lazily on a machine that has
+      never run this (ruling 71); what setup buys is possession.
 
   brigadier run --plan <path> [--repo <path>] [--run-root <path>]
       Run a plan: one isolated clone per item, one marked worker each, merged
@@ -193,8 +210,13 @@ const SYMBOL: Record<string, string> = { usable: "✓", unusable: "!", absent: "
  * one believes it is in force.
  */
 function overridesPath(): string {
-  const configHome = process.env["XDG_CONFIG_HOME"];
-  return join(configHome && configHome.length > 0 ? configHome : join(homedir(), ".config"), "brigadier", "bridges.json");
+  // Resolved by `src/config/config.ts`, which owns the config-home rule for
+  // BOTH files brigadier reads there. Two copies of this resolver is two places
+  // for `XDG_CONFIG_HOME` to be handled differently, and an empty-but-set value
+  // resolving relative to the working directory would put a file brigadier
+  // trusts inside whatever repository it was invoked in — which ruling 37 is
+  // precisely about.
+  return bridgesPath();
 }
 
 function loadOverrides(): BridgeOverride[] {
@@ -313,6 +335,172 @@ async function sweep(
     probed: probes.length,
     commit,
   };
+}
+
+/**
+ * `brigadier setup` — ruling 76's non-interactive door.
+ *
+ * The order is deliberate and it is the order of what can still refuse:
+ * detect, plan, then write. Nothing is created until every input is known, so a
+ * machine where detection finds nothing gets a printed remedy rather than a
+ * half-installed product — ruling 53's *find out before you spend*, which this
+ * repository has now applied at four different layers.
+ *
+ * It never asks and it never runs work. That cap is ruling 76 itself.
+ */
+/**
+ * `brigadier uninstall` — the plugin asset, and everything `setup` added.
+ *
+ * Ruling 26's *"uninstall is deleting the directory"* survived only while
+ * nothing was installed. Ruling 77 changed that, so this removes what setup
+ * writes and — crucially — **reports the shell-profile block separately**,
+ * because it is the one byte brigadier ever writes outside its own root and a
+ * summary that quietly covers it is how a promise becomes a lie.
+ */
+function uninstallEverything(): number {
+  const code = uninstallCommand(argv.slice(1));
+  if (code !== 0) return code;
+
+  const { home, env } = contextFrom(argv.slice(1));
+  const runRoot = absolute(value("run-root") ?? defaultRunRoot());
+  const shim = shimPath(runRoot);
+  const shimExisted = existsSync(shim);
+  if (shimExisted) rmSync(shim, { force: true });
+
+  const profile = profileFor(shellFrom(env), home);
+  let block: SetupRemoval["block"] = "absent";
+  if (profile !== undefined && existsSync(profile)) {
+    const result = withoutBlock(readFileSync(profile, "utf8"));
+    if (result === "unpaired") {
+      // Refused rather than guessed: a start marker with no end marker means
+      // somebody edited inside the block, and deleting to end-of-file on that
+      // assumption is the one failure ruling 51 keeps structurally impossible.
+      block = "unpaired";
+    } else if (result !== undefined) {
+      sink.write(profile, result);
+      block = "removed";
+    }
+  }
+
+  const removal: SetupRemoval = {
+    shimPath: shim,
+    shimExisted,
+    ...(profile === undefined ? {} : { profile }),
+    block,
+  };
+  sink.outLine("");
+  for (const line of describeSetupRemoval(removal)) sink.outLine(line);
+  // An unpaired marker is a thing the operator must finish by hand, and a
+  // zero exit would say it was done.
+  return block === "unpaired" ? 1 : 0;
+}
+
+async function setupCommand(): Promise<number> {
+  // Ruling 57's refusal, pointed the second way. `install` already refuses
+  // inside a worker because a worker writing brigadier's skill into the
+  // operator's home changes their machine without being asked; `setup` writes
+  // strictly more than `install` does, so it refuses for strictly more reason.
+  if (isInsideWorker()) {
+    sink.errLine("brigadier refused to set up: this session IS a brigadier worker.\n");
+    sink.errLine("  Setup changes the operator's machine. Do the work you were given, and say in your");
+    sink.errLine("  result that setup should be run if it should.");
+    return 3;
+  }
+
+  const dryRun = flag("dry-run");
+  const modifyPath = flag("modify-path");
+  const { home, env } = contextFrom(argv.slice(1));
+  const runRoot = absolute(value("run-root") ?? defaultRunRoot());
+
+  const { detections, commit } = await sweep(ALL_AGENT_IDS as AgentId[], {
+    runRoot,
+    timeoutMs: Number(value("timeout") ?? 60_000),
+    // Setup is the machine's first honest look at itself. A stored answer here
+    // would be a setup that reports a fleet it did not check — and ruling 73
+    // made "always probes, never answers from the cache" the property that
+    // makes a command a repair.
+    trustCache: false,
+    writeBack: !dryRun,
+  });
+  if (!dryRun) commit();
+
+  const detected: DetectedAgent[] = detections
+    .map((d) => ({ id: d.id, usable: d.availability === "usable" }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+
+  const configFile = configPath(env);
+  const plan = planSetup({
+    configPath: configFile,
+    configExists: existsSync(configFile),
+    root: runRoot,
+    binary: process.execPath,
+    // A compiled artifact carries a build stamp; an interpreter does not. That
+    // is the only honest way to ask "is `process.execPath` brigadier", and
+    // without it `bun run src/cli.ts setup` writes a shim pointing at bun.
+    binaryIsArtifact: embeddedStamp().stamp !== null,
+    home,
+    env,
+    detected,
+  });
+
+  let modifiedProfile: string | undefined;
+  if (!dryRun) {
+    // Through the sink, not `writeFileSync`. Ruling 65 puts redaction at
+    // exactly one place, and `Sink.write` additionally refuses to write through
+    // a symlink or a hard link at the destination — which these paths need,
+    // because they sit beside directories an agent can reach.
+    if (plan.writeConfig) sink.write(configFile, configDocument(plan.config));
+    const asset = install(env, home);
+    if (asset.refusal !== undefined) {
+      sink.errLine(asset.refusal);
+      return 1;
+    }
+    if (plan.binaryIsArtifact) {
+      const shim = shimPath(runRoot);
+      sink.write(shim, shimText(process.execPath));
+      // 0o755, and only where a mode means anything. A shim nobody can execute
+      // is the same failure as a shim nobody can find, one step later.
+      if (process.platform !== "win32") chmodSync(shim, 0o755);
+    }
+
+    if (modifyPath && !plan.alreadyOnPath && plan.binaryIsArtifact) {
+      // Ruling 77: the flag IS the authorisation. This is the only byte
+      // brigadier ever writes outside its own root, and it goes between markers
+      // so `uninstall` can remove exactly it.
+      const profile = profileFor(shellFrom(env), home);
+      if (profile === undefined) {
+        sink.errLine(
+          "--modify-path was passed but $SHELL names no shell brigadier knows how to edit for. " +
+            "The line is printed below; nothing was written.",
+        );
+      } else {
+        const existing = existsSync(profile) ? readFileSync(profile, "utf8") : "";
+        const updated = withBlock(existing, shimDirectory(runRoot), shellFrom(env));
+        try {
+          if (updated !== undefined) sink.write(profile, updated);
+          modifiedProfile = profile;
+        } catch (error) {
+          // `Sink.write` refuses to write through a symlink, and a symlinked
+          // `.zshrc` is ordinary — it is what every dotfiles repository does.
+          // Following the link would write into a git repository the operator
+          // did not name, so the refusal is right and the remedy is to say so.
+          sink.errLine(
+            `--modify-path could not write ${profile} — ${error instanceof Error ? error.message : String(error)}`,
+          );
+          sink.errLine(
+            "  If that path is a symlink into a dotfiles repository, brigadier will not write through it.",
+          );
+          sink.errLine("  Add the line below by hand. Nothing was changed.");
+        }
+      }
+    }
+  }
+
+  for (const line of describeSetup(plan, detected, modifiedProfile, dryRun)) sink.outLine(line);
+  // Ruling 71: nothing detected exits non-zero. A setup that reports success on
+  // a machine with no drivable vendor has told the operator the product is
+  // ready when it cannot run anything.
+  return detected.some((agent) => agent.usable) ? 0 : 1;
 }
 
 async function detect(): Promise<number> {
@@ -619,8 +807,26 @@ async function run(): Promise<number> {
     return 2;
   }
 
+  // Ruling 18's per-machine layer, read BEFORE any flag is interpreted, because
+  // the file can set the same things the flags can and the precedence has to be
+  // applied in one place. Refused here — with the other input checks, before a
+  // plan is read, before a clone and before a directory exists to hold one.
+  let settings;
+  try {
+    settings = loadConfig(configPath(), { exists: existsSync, read: (path) => readFileSync(path, "utf8") });
+  } catch (error) {
+    if (!(error instanceof ConfigUnusable)) throw error;
+    sink.errLine(`refused — ${error.message}`);
+    sink.errLine("  Nothing was spawned and nothing was cloned. Fix the file or delete it.");
+    return 2;
+  }
+  // An unknown key is a typo the operator cannot see in their own file, and a
+  // setting they believe is in force. Ruling 60 measured both silent
+  // directions shipping in real manifests; this is the loud one.
+  for (const warning of settings.warnings) sink.errLine(warning);
+
   const repo = absolute(value("repo") ?? process.cwd());
-  const runRoot = absolute(value("run-root") ?? defaultRunRoot());
+  const runRoot = absolute(prefer(value("run-root"), settings.config.runRoot, defaultRunRoot()));
   const audience = audienceFrom(value("audience"));
   const ceiling = difficultyFrom(value("max-difficulty"));
   if (ceiling === null) {
@@ -649,8 +855,11 @@ async function run(): Promise<number> {
   // belongs where the flag still has its name and the text they typed. Exit 2 is
   // this file's usage code — the same one a missing `--plan`, an unusable
   // `--max-difficulty` and an unknown command get.
+  // A flag beats the file beats the default (ruling 18). The file's own value
+  // was already validated by the same rule when it was parsed, so only the flag
+  // can still be the string a person typed.
   const workers = value("workers");
-  const workerBudget = workers === undefined ? undefined : Number(workers);
+  const workerBudget = workers === undefined ? settings.config.workers : Number(workers);
   if (workerBudget !== undefined && (!Number.isInteger(workerBudget) || workerBudget < 1)) {
     sink.errLine(
       `--workers must be a whole number of at least 1, and it was \`${workers}\`. ` +
@@ -1082,6 +1291,8 @@ const exitCode = await (async () => {
         // stderr, never stdout: on stdout the sink is the frame stream.
         warn: (text) => sink.errLine(text),
       });
+    case "setup":
+      return await setupCommand();
     case "detect":
       return detect();
     case "agents":
@@ -1108,7 +1319,7 @@ const exitCode = await (async () => {
     case "install":
       return installCommand(argv.slice(1));
     case "uninstall":
-      return uninstallCommand(argv.slice(1));
+      return uninstallEverything();
     case "plugin":
       return pluginCommand(argv.slice(1));
     case undefined:

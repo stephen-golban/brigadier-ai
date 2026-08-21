@@ -156,8 +156,17 @@ describe("SKILL.md says the things that cannot be learned anywhere else", () => 
   });
 
   test("the PATH story is stated, because no host provides one", () => {
+    // Ruling 77 changed what that story IS. Until 2026-08-21 this asserted
+    // "Put the `brigadier` binary wherever you keep binaries" — correct while
+    // ruling 26 said there was no PATH install. `brigadier setup` now installs
+    // a launcher, so the skill has to name the command instead of telling a
+    // reader to do it themselves.
     expect(SKILL_TEXT).toContain("PATH");
-    expect(SKILL_TEXT).toContain("Put the `brigadier` binary wherever you keep binaries");
+    expect(SKILL_TEXT).toContain("brigadier setup");
+    // And the default is still that brigadier does not edit your shell profile.
+    // If this text ever stops saying so, ruling 77's default has been reversed
+    // in the asset a model reads without being reversed in a ruling.
+    expect(SKILL_TEXT).toContain("--modify-path");
   });
 
   test("the worker refusal is stated, because a worker may be reading it", () => {

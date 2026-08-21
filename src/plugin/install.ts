@@ -265,9 +265,10 @@ export function describeInstall(result: InstallResult, planned: readonly Planned
     lines.push("");
   }
   lines.push(
-    "No `bin/` was written anywhere, and none can be: ruling 42 checked Codex, Cursor and three GUI",
-    "  clients for a `bin/`-on-PATH equivalent and found none. Put the `brigadier` binary on your PATH",
-    "  yourself — installing this skill does not and cannot do it for you.",
+    "No `bin/` was written anywhere INSIDE the asset, and none can be: ruling 42 checked Codex, Cursor",
+    "  and three GUI clients for a `bin/`-on-PATH equivalent and found none. `brigadier install` does",
+    "  not put the binary on your PATH. `brigadier setup` does, with a launcher in brigadier's own",
+    "  root rather than a `bin/` in a directory a vendor owns (ruling 77).",
     "Nothing outside the two directories above was touched. No shared settings file, no AGENTS.md merge,",
     "  no ~/.codex/config.toml, no marketplace entry (ruling 8).",
     "To remove it: delete those directories, or run `brigadier uninstall`. Nothing was registered",
@@ -290,8 +291,17 @@ export function describeUninstall(removed: readonly RemovedRoot[]): string[] {
     lines.push("");
   }
   lines.push(
-    "Nothing else was undone because nothing else was ever done: no registry entry, no PATH edit, no",
-    "  line in a file another product owns (rulings 26 and 8).",
+    "That is the whole of the plugin asset. No registry entry and no line in a file ANOTHER PRODUCT",
+    "  owns was undone, because none was ever written — ruling 8 holds and has held throughout.",
+    "  What `brigadier setup` may additionally have written is reported below, separately, because a",
+    "  shell profile is the OPERATOR's file rather than a product's and the two are not the same",
+    "  promise (ruling 77).",
   );
+  // Ruling 77 made ruling 26's "nothing was installed" conditional, so this
+  // renderer stopped being allowed to assert it. `brigadier setup` can write a
+  // shim and — only with --modify-path — a delimited block in a shell profile,
+  // and what happened to those is reported by `describeSetupRemoval`, which
+  // knows. A summary that outlives the feature it describes is how v1's output
+  // came to be truthful in detail and false in summary.
   return lines;
 }
