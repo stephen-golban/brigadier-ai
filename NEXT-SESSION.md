@@ -1,3 +1,9 @@
+> **SUPERSEDED 2026-08-21 by [`BUILD-SESSION.md`](./BUILD-SESSION.md).** This file points the
+> gauntlet at `BAR.md`, and the bar is not what changed — the product is. The owner-intent session of
+> 2026-08-21 found that ruling 20 made brigadier unable to plan and that `BAR.md` filed it as having
+> no user-visible promise. Read [`PRODUCT.md`](./PRODUCT.md) first. Kept, not deleted, because what
+> the previous round believed can be read against what was decided.
+
 # NEXT SESSION
 
 Start a fresh session and say:
