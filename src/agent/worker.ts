@@ -85,6 +85,15 @@ export interface WorkerOptions {
   kind?: WorkKind;
   /** Point the agent's config root here to suppress ambient instructions (decision 17). */
   configRoot?: string;
+  /**
+   * Extra environment for the spawn — ruling 83's argv lever, where a vendor
+   * uses one instead of the config root.
+   *
+   * Only reached when this call spawns its own channel. A caller that passes a
+   * `channel` has already spawned, and `spawnMarkedAgent` builds the same
+   * environment there.
+   */
+  extraEnv?: Record<string, string>;
   /** Assert the restrictive mode where the vendor offers one. Default true. */
   restrictive?: boolean;
   /** Every frame, for the run transcript. */
@@ -194,6 +203,7 @@ export class Worker {
           ...(options.configRoot !== undefined ? { configRoot: options.configRoot } : {}),
           kind: options.kind ?? "write",
           restrictive: options.restrictive !== false,
+          ...(options.extraEnv !== undefined ? { extra: options.extraEnv } : {}),
         }),
       });
 

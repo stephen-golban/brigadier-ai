@@ -87,6 +87,7 @@ import { existsSync, mkdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentId, LaunchProfile } from "../agent/profiles.ts";
 import { Worker, isCredentialRefusal } from "../agent/worker.ts";
+import { ambientDecision } from "../agent/ambient.ts";
 import {
   buildBaseState,
   discardClone,
@@ -230,6 +231,15 @@ export interface ExecuteOptions {
    * sets the bill — so the only channel for this is the command line.
    */
   xhigh?: readonly string[];
+  /**
+   * Decision 17's setting, as the operator set it, reaching the workers.
+   *
+   * **Defaults to TRUE.** Until ruling 83 this option did not exist and
+   * `execute` redirected every vendor's config root unconditionally, so decision
+   * 17's *"owner-facing override"* was honoured by the planner and ignored by
+   * the thing that actually spends money. That was a defect, not a policy.
+   */
+  suppressAmbient?: boolean;
   softCeiling?: number;
   hardCeiling?: number;
   /**
@@ -724,7 +734,11 @@ async function runItem(
         item: item.number,
         cwd: clone.dir,
         kind: item.kind,
-        configRoot: join(clone.stateDir, "agent-config"),
+        // Ruling 83: the directory a lever may use, and the operator's setting.
+        // Which lever this vendor actually gets is `planAmbient`'s decision, so
+        // the queue and the planner cannot disagree about it.
+        ownedDir: join(clone.stateDir, "agent-config"),
+        suppressAmbient: options.suppressAmbient !== false,
         tmpDir: join(clone.stateDir, "tmp"),
         secrets,
         effort: requested,
@@ -1071,7 +1085,8 @@ async function reviewItem(
         // back, which is exactly what `read-only` means — and on Codex it is the
         // mode that blocks writes at the OS level (#41).
         kind: "read-only",
-        configRoot: join(dir, "agent-config"),
+        ownedDir: join(dir, "agent-config"),
+        suppressAmbient: options.suppressAmbient !== false,
         tmpDir: join(dir, "tmp"),
         secrets,
         effort,
@@ -2105,7 +2120,7 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
     // on one of those vendors was claiming a suppression it had not performed,
     // which is the same shape as a check reporting success for something that
     // did not happen — the defect this codebase exists to remove, one field over.
-    ambientSuppressed: ambientSuppression(options.admission.agents),
+    ambientSuppressed: ambientSuppression(options.admission.agents, options.suppressAmbient !== false),
     // Ruling 32's standing rule as a FIELD rather than a sentence. `crossVendor`
     // is true only when a reviewer of a different vendor actually ran; writing
     // `true` because two vendors happened to resolve on `PATH` would be a record
@@ -2231,34 +2246,32 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
 /**
  * Decision 17's suppression, said per vendor because that is how it works.
  *
- * `buildEnvironment` sets `profile.configRootEnv` to the item's own state
- * directory, and a profile that declares no such variable gets no redirect at
- * all — there is no universal lever, only a per-vendor one. So the record names
- * both halves: the vendors it was applied to, and the vendors it could not be
- * applied to and why.
+ * There is no universal lever, only per-vendor ones, and since ruling 83 there
+ * are two of them: the config-root redirect that five profiles use, and the
+ * argv shim Claude uses because the redirect was measured to take its credential
+ * with it. Each vendor's own sentence comes from `ambientDecision`, which is the
+ * same function `planAmbient` uses at spawn time — one decision tree, so the
+ * report cannot describe a run that did not happen.
  *
- * The second half is the one that matters. A run that suppressed nothing while
- * recording that it had is indistinguishable, to every reader and every bar
- * item, from a run that suppressed everything.
+ * The uncomfortable half is the one that matters. A run that suppressed nothing
+ * while recording that it had is indistinguishable, to every reader and every
+ * bar item, from a run that suppressed everything.
  */
-export function ambientSuppression(agents: readonly { id: string; profile: { configRootEnv?: string } }[]): string[] {
-  const lines: string[] = [];
-  const redirected = agents.filter((agent) => agent.profile.configRootEnv !== undefined);
-  const bare = agents.filter((agent) => agent.profile.configRootEnv === undefined);
-  if (redirected.length > 0) {
-    lines.push(
-      `the config root is redirected into brigadier's own state directory for ` +
-        `${redirected.map((agent) => `${agent.id} (${agent.profile.configRootEnv})`).join(", ")} (decision 17)`,
-    );
-  }
-  if (bare.length > 0) {
-    lines.push(
-      `NO config-root redirect exists for ${bare.map((agent) => agent.id).join(", ")}: their launch profile ` +
-        "declares no variable for it, so decision 17's lever could not be pulled and a user-global " +
-        "instruction file under $HOME is still readable by them. Stated rather than assumed away — a " +
-        "suppression that did not happen must not be recorded as one.",
-    );
-  }
+export function ambientSuppression(
+  agents: readonly { id: string; profile: LaunchProfile }[],
+  suppress = true,
+): string[] {
+  const lines = agents.map(
+    (agent) =>
+      ambientDecision(agent.profile, {
+        suppress,
+        platform: process.platform,
+        // The report is written after the run, so the binary either resolved or
+        // the spawn would have failed. A report that assumed the opposite would
+        // print a fallback that did not happen.
+        hasTarget: true,
+      }).note,
+  );
   // The worker marker is universal and is the one that does hold everywhere.
   lines.push("brigadier's own plugin is inert inside every worker: the worker marker is set on all of them (ruling 57)");
   return lines;

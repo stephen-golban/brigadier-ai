@@ -10,6 +10,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { UNLEARNABLE } from "../src/setup/unlearnable.ts";
 import {
   BLOCK_END,
   BLOCK_START,
@@ -257,6 +258,23 @@ describe("what setup prints, which is where the unlearnable things live", () => 
     const out = describeSetup(plan, agents(["claude"]), undefined, false).join("\n");
     expect(out).toContain("SUPPRESSED");
     expect(out).toContain("does NOT cover external services");
+  });
+
+  test("BOTH printers emit the same paragraph, byte for byte", () => {
+    // Ruling 76 accepted a second printer for these facts and named the failure
+    // mode in the same sentence: one silently stops while the other keeps the
+    // tests green. They cannot diverge while there is one constant, and this is
+    // the check that the constant is what both of them print.
+    const out = describeSetup(plan, agents(["claude"]), undefined, false).join("\n");
+    for (const line of UNLEARNABLE.slice(1)) expect(out).toContain(line);
+    // And the negative control: a line that is NOT in the constant is not there.
+    expect(out).not.toContain("A worker will not obey them, so anything load-bearing belongs in the plan.");
+  });
+
+  test("the suppression sentence is per vendor, not a blanket (ruling 83)", () => {
+    const out = describeSetup(plan, agents(["claude"]), undefined, false).join("\n");
+    expect(out).toContain("The lever is per vendor");
+    expect(out).toContain("NAMED in the run report rather than counted as suppressed");
   });
 
   test("ruling 32: a single-vendor machine is TOLD that review runs same-vendor", () => {

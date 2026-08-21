@@ -40,6 +40,7 @@
  */
 
 import { PLUGIN_NAME } from "../plugin/asset.ts";
+import { UNLEARNABLE } from "./unlearnable.ts";
 import { DEFAULT_CONFIG, type MachineConfig } from "../config/config.ts";
 import { rank, UNRANKED } from "../router/competence.ts";
 import { KNOWN, ROLES, TABLE, toRow, type Role } from "../router/table.ts";
@@ -275,10 +276,10 @@ export function describeSetup(
   lines.push("");
   lines.push(...pathAdvice(plan, modifiedProfile));
   lines.push("");
-  lines.push("Ambient instruction files (a user-global AGENTS.md and the like) are SUPPRESSED in workers by");
-  lines.push("  default — decision 17. A worker will not obey them, so anything load-bearing belongs in the plan.");
-  lines.push("Isolation covers the filesystem and the process tree. It does NOT cover external services: a");
-  lines.push("  worker that reaches the network can still act on the world, and no clone contains that.");
+  // ONE copy, shared with `brigadier detect`'s first run. Ruling 76's accepted
+  // cost #2 is that two printers of this can silently diverge; they cannot
+  // diverge if there is one paragraph.
+  lines.push(...UNLEARNABLE.slice(1));
   lines.push("");
   if (dryRun) {
     // Ruling 52's rule about summaries, applied to our own: the detection sweep

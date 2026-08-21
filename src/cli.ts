@@ -44,8 +44,10 @@ import {
 import { applyOverride, noBlockingReason, overrideWarning, parseOverrides, type BridgeOverride } from "./agent/drift.ts";
 import { REFUSAL, isInsideWorker } from "./agent/marker.ts";
 import { ALL_AGENT_IDS, PROFILES, type AgentId } from "./agent/profiles.ts";
+import { ambientDecision } from "./agent/ambient.ts";
+import { UNLEARNABLE } from "./setup/unlearnable.ts";
 import { buildIdentity, embeddedStamp, renderVersion } from "./build/identity.ts";
-import { ConfigUnusable, bridgesPath, configPath, loadConfig, resolve as prefer } from "./config/config.ts";
+import { ConfigUnusable, bridgesPath, configPath, loadConfig, resolve as prefer, type MachineConfig } from "./config/config.ts";
 import { LICENSES } from "./generated/licenses.ts";
 import { resolveVerify } from "./gate/index.ts";
 import { intendedRealPath, realTempDirs } from "./isolation/index.ts";
@@ -734,13 +736,7 @@ function driftLines(result: Detection): string[] {
  * that covers the filesystem and the process tree but NOT external services is
  * exactly the boundary a reader will otherwise assume the other way.
  */
-const FIRST_RUN = [
-  "",
-  "Ambient instruction files (a user-global AGENTS.md and the like) are SUPPRESSED in workers by",
-  "  default — decision 17. A worker will not obey them, so anything load-bearing belongs in the plan.",
-  "Isolation covers the filesystem and the process tree. It does NOT cover external services: a",
-  "  worker that reaches the network can still act on the world, and no clone contains that.",
-];
+const FIRST_RUN = UNLEARNABLE;
 
 function agents(): number {
   for (const id of ALL_AGENT_IDS) {
@@ -954,6 +950,7 @@ async function commission(
   repo: string,
   runRoot: string,
   runId: string,
+  settings: MachineConfig,
 ): Promise<string | number> {
   const detection = await sweep(ALL_AGENT_IDS as AgentId[], {
     runRoot,
@@ -967,20 +964,7 @@ async function commission(
     .map((d) => d.id)
     .sort();
 
-  // One load, two answers: who plans (ruling 71's written proposal) and whether
-  // ambient instructions are suppressed (decision 17's override). A second load
-  // would be a second chance for the two to disagree.
-  let configured: readonly string[] | undefined;
-  let suppressAmbient = true;
-  try {
-    const loaded = loadConfig(configPath(), { exists: existsSync, read: (p) => readFileSync(p, "utf8") });
-    configured = loaded.config.roles.builder;
-    suppressAmbient = loaded.config.ambientSuppression;
-  } catch {
-    configured = undefined;
-  }
-
-  const planner = choosePlanner(usable, configured);
+  const planner = choosePlanner(usable, settings.roles.builder);
   if (planner === undefined) {
     sink.errLine("brigadier: no vendor is drivable, so there is nobody to plan with.");
     sink.errLine("  `brigadier detect` prints each vendor's own remedy — those words are theirs, not ours.");
@@ -1023,7 +1007,7 @@ async function commission(
       // directory name can tell a planning clone from the run it planned.
       planRunId: `${runId}p`,
       timeoutMs: Number(value("timeout") ?? 300_000),
-      suppressAmbient,
+      suppressAmbient: settings.ambientSuppression,
     });
     sink.write(planFile, `${commissioned.planJson}\n`);
     // D4, and it is the whole product surface of a plan: a PATH, never the plan.
@@ -1035,17 +1019,23 @@ async function commission(
       // answer, so sending anyone to look at the plan would be sending them to
       // the wrong place.
       sink.errLine(`brigadier: ${error.message}`);
-      if (error.suppressAmbient) {
+      // WHAT WAS ACTUALLY DONE TO THAT VENDOR, from the same decision tree the
+      // spawn used. Ruling 83 made the lever per vendor, so a fixed sentence
+      // here would name a redirect that did not happen on the one vendor where
+      // the redirect is no longer used.
+      const lever = ambientDecision(PROFILES[error.agent], {
+        suppress: error.suppressAmbient,
+        platform: process.platform,
+        hasTarget: Bun.which("claude") !== null || process.env["CLAUDE_CODE_EXECUTABLE"] !== undefined,
+      });
+      sink.errLine(`  ambient lever: ${lever.note}`);
+      if (lever.lever === "config-root") {
         sink.errLine(
-          "  brigadier redirected that vendor's config root to suppress your global instruction files",
+          "  Redirecting a config root is MEASURED to remove the credential on some vendors — Codex and",
         );
         sink.errLine(
-          "  (decision 17), and on some vendors that is also where the credential lives — MEASURED on",
+          "  Qwen at session/new, and the Claude bridge at session/prompt, which is the metered call.",
         );
-        sink.errLine(
-          "  Codex and Qwen at session/new, and on the Claude bridge at session/prompt, which is the",
-        );
-        sink.errLine("  metered call.");
         sink.errLine(
           '  Remedy: set `"ambientSuppression": false` in ~/.config/brigadier/config.json. Your global',
         );
@@ -1053,9 +1043,12 @@ async function commission(
           "  instruction files will then be visible to workers, and every run says so out loud.",
         );
         sink.errLine(
-          "  brigadier will NOT copy your credential into a run directory to avoid this: that is a",
+          "  brigadier will NOT copy your credential into a run directory to avoid this (ruling 83): on",
         );
-        sink.errLine("  decision about a credential boundary and it is the owner's, not this command's.");
+        sink.errLine(
+          "  the vendor that matters most here the credential is not a file at all, so there is nothing",
+        );
+        sink.errLine("  to copy, and the only route would be a write outside every directory brigadier owns.");
       } else {
         sink.errLine(`  \`brigadier detect\` reports ${error.agent}'s own remedy text, which is theirs and not ours.`);
       }
@@ -1181,7 +1174,10 @@ async function run(): Promise<number> {
   // the overturn is cheap — one entry point, one validator, one refusal path.
   const runId = newRunId();
   if (goal !== undefined) {
-    const commissioned = await commission(goal, repo, runRoot, runId);
+    // The SAME config object `run` already refused on, rather than a second
+    // load. Ruling 83's defect was one setting read in two places and acted on
+    // in one; two loads is how that happens again.
+    const commissioned = await commission(goal, repo, runRoot, runId, settings.config);
     if (typeof commissioned === "number") return commissioned;
     planPath = commissioned;
   }
@@ -1402,6 +1398,8 @@ async function run(): Promise<number> {
     prologueTokens,
     verify,
     review: flag("review"),
+    // Decision 17 reaching the workers rather than the planner alone (ruling 83).
+    suppressAmbient: settings.config.ambientSuppression,
     ...(value("planted") === undefined ? {} : { planted: Number(value("planted")) }),
     secretEnv: values("secret-env"),
     // Ruling 30's declared edge case, and ruling 31's reason it is here rather

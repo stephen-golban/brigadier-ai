@@ -151,12 +151,14 @@ export async function commissionPlan(spec: CommissionSpec): Promise<Commission> 
     // policy is a flat `deny`. A planner that needed a permission granted would
     // be a planner doing work, which is the one thing it must not do.
     kind: "read-only",
-    // Decision 17, and the reason it is conditional rather than always on: see
-    // `suppressAmbient`. Pointing this at the clone is what suppresses ambient
-    // instruction files, and on some vendors it is also what removes the
-    // credential. The operator's setting decides which cost they pay; brigadier
-    // does not pick one silently and does not copy a credential to avoid it.
-    ...(spec.suppressAmbient ? { configRoot: owned.dir } : {}),
+    // Decision 17, and since ruling 83 the LEVER is per vendor rather than one
+    // mechanism: on Claude the config root is left alone and the vendor's own
+    // argv is rewritten instead, because redirecting the root was MEASURED to
+    // fail `session/prompt` — the metered call — and no seeding repairs it.
+    // `planAmbient` decides; this passes the directory and the operator's
+    // setting, and brigadier still does not copy a credential to avoid any of it.
+    ownedDir: owned.dir,
+    suppressAmbient: spec.suppressAmbient,
     tmpDir: owned.dir,
     // Ruling 31: derived, never read from anything a model wrote. A plan item
     // has no model-supplied `difficulty` at all — there is no plan yet — so this

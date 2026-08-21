@@ -75,6 +75,11 @@ export const ALLOWED: readonly Allowance[] = [
       "writes the WORKER's file inside the worker's own clone, at the worker's request over ACP. Redacting it would be brigadier rewriting a worker's artifact, which ruling 65 does not promise and BAR item 12 explicitly places outside the boundary",
   },
   {
+    file: /^src\/agent\/ambient\.ts$/,
+    why:
+      "writes ruling 83's launcher shim, whose bytes are a compile-time constant plus ONE interpolated value: the path of the vendor binary, resolved from PATH or from the operator's own CLAUDE_CODE_EXECUTABLE. No plan text, no worker output and no run text reaches it. Redaction would also be the wrong operation rather than a missing one — the file is executed, so replacing bytes inside it produces a shim that execs a path that does not exist, which is worker.ts's case one file over. Bounded instead: mode 0700, inside brigadier's own run root, and swept with the run",
+  },
+  {
     file: /^src\/repomap\/selfcheck\.ts$/,
     why:
       "a standalone diagnostic entry point. It is not part of a run, there is no inventory in scope, and it prints a repository map of a directory the operator named on the command line",

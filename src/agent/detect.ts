@@ -20,6 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Lane } from "../lane/lane.ts";
 import { lanePolicyFor } from "../work/kind.ts";
+import { planAmbient } from "./ambient.ts";
 import { applyOverride, driftFor, sessionContradictions, type BridgeOverride, type Drift } from "./drift.ts";
 import { PROFILES, ALL_AGENT_IDS, type AgentId, type LaunchProfile } from "./profiles.ts";
 import { Worker } from "./worker.ts";
@@ -102,11 +103,24 @@ export async function detectOne(
   // nothing else.
   const workerShaped = options.workerShaped ?? true;
   const configRoot = join(scratch, "agent-config");
+  // RULING 83, and it is the same finding V1 one lever further on. A worker's
+  // environment is no longer "the config root, redirected" on every vendor: on
+  // Claude it is the vendor's own argv, rewritten through a shim, with the
+  // config root deliberately left alone. A probe that kept redirecting would
+  // once again be measuring an environment no worker runs in — which is the
+  // exact defect this function was corrected for on 2026-08-20.
+  const ambient = planAmbient(profile, {
+    suppress: workerShaped,
+    ownedDir: configRoot,
+    shimPath: join(scratch, "claude-exec-shim.sh"),
+    platform: process.platform,
+    resolveTarget: () => process.env["CLAUDE_CODE_EXECUTABLE"] ?? Bun.which("claude"),
+  });
   // It must EXIST before the spawn. MEASURED 2026-08-20: codex-acp 1.6.2 exits
   // immediately when `CODEX_HOME` names a directory that is not there, and
   // stays up when it is. Creating it here is what makes the probe's environment
   // the worker's environment rather than a near-miss of it.
-  if (workerShaped) mkdirSync(configRoot, { recursive: true });
+  if (ambient.configRoot !== undefined) mkdirSync(ambient.configRoot, { recursive: true });
 
   try {
     if (!resolved) {
@@ -128,7 +142,8 @@ export async function detectOne(
         cwd: scratch,
         kind: "read-only",
         lane: new Lane(scratch, lanePolicyFor("read-only")),
-        ...(workerShaped ? { configRoot } : {}),
+        ...(ambient.configRoot !== undefined ? { configRoot: ambient.configRoot } : {}),
+        ...(Object.keys(ambient.env).length > 0 ? { extraEnv: ambient.env } : {}),
       }),
       options.timeoutMs ?? 60_000,
       `${profile.id} did not answer within the detection timeout`,

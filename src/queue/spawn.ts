@@ -36,6 +36,7 @@
 import type { LineChannel } from "../acp/channel.ts";
 import { RUN_MARKER_FLAG, WORKER_MARKER, workerMarkerValue } from "../agent/marker.ts";
 import { buildEnvironment, markedArgv, type LaunchProfile } from "../agent/profiles.ts";
+import { ambientShimPath, planAmbient, type AmbientPlan } from "../agent/ambient.ts";
 import { runMarkerArg } from "../run/marker.ts";
 import type { WorkKind } from "../work/kind.ts";
 import { RUN_ROOT_ENV } from "./refusal.ts";
@@ -83,27 +84,27 @@ export interface MarkedSpawnOptions {
   cwd: string;
   kind: WorkKind;
   /**
-   * Decision 17's suppression lever: point the agent's config root here.
+   * A directory brigadier owns, for whichever ambient lever this vendor uses.
    *
-   * **OPTIONAL, because decision 17 is *"suppressed by default, with an
-   * owner-facing override"* and an override that cannot be expressed is not an
-   * override.** Omitting it leaves the vendor's own root alone — the same shape
-   * `detect.ts` already uses for its non-worker-shaped probe.
-   *
-   * The cost of omitting it is decision 17's stated one: *"someone with a global
-   * rule they care about will be surprised when a worker ignores it"*, inverted
-   * — a worker that reads their global rules when the operator expected
-   * suppression. `ambientSuppression()` reports what actually happened per
-   * vendor rather than claiming the blanket, so the run record does not lie
-   * either way.
-   *
-   * The reason an operator would turn it off is measured and unpleasant:
-   * redirecting the config root removes the CREDENTIAL on some vendors —
-   * Codex and Qwen at `session/new`, and the Claude bridge at `session/prompt`,
-   * which is the metered call. Seeding a credential into a run-scoped directory
-   * is the owner's open decision and is not taken anywhere in this tree.
+   * It was `configRoot` until ruling 83, and the rename is the ruling: pointing
+   * the vendor's config root here is ONE lever of two, and on Claude it is the
+   * wrong one — MEASURED 2026-08-21 taking the credential with it at
+   * `session/prompt`, which is the metered call. `planAmbient` decides which
+   * lever this profile gets; this is the directory it may use.
    */
-  configRoot?: string;
+  ownedDir?: string;
+  /**
+   * Decision 17's setting, as the operator set it.
+   *
+   * **Defaults to TRUE**, because decision 17 is *"suppressed by default, with
+   * an owner-facing override"* — and a caller that forgets must get the default,
+   * not the override. `false` pulls no lever at all on any vendor.
+   *
+   * What actually happened is reported per vendor rather than as a blanket
+   * claim: a run that suppressed nothing while recording that it had is, to
+   * every reader and every bar item, a run that suppressed everything.
+   */
+  suppressAmbient?: boolean;
   /** Ruling 64: inside the item's own directory, never the shared temp root. */
   tmpDir: string;
   /** Ruling 65: granted at spawn, through the environment and nowhere else. */
@@ -178,8 +179,24 @@ export function spawnMarkedAgent(options: MarkedSpawnOptions): MarkedSpawn {
     effortEnv[lever.variable] = options.effort === "low" ? lever.off : lever.on;
   }
 
+  // Ruling 83: which lever this vendor gets, decided in one place so the queue
+  // and the planner cannot disagree about what a worker was spawned under.
+  const ambient: AmbientPlan =
+    options.ownedDir === undefined
+      ? { env: {}, note: `${options.profile.id}: no owned directory was supplied, so no ambient lever was pulled` }
+      : planAmbient(options.profile, {
+          suppress: options.suppressAmbient !== false,
+          ownedDir: options.ownedDir,
+          shimPath: ambientShimPath(options.runRoot, options.runId),
+          platform: process.platform,
+          // Ruling 44 makes `CLAUDE_CODE_EXECUTABLE` the operator's own way of
+          // naming a real binary, so the shim wraps THEIRS where they set one
+          // rather than replacing it.
+          resolveTarget: () => process.env["CLAUDE_CODE_EXECUTABLE"] ?? Bun.which("claude"),
+        });
+
   const env = buildEnvironment(options.profile, {
-    ...(options.configRoot !== undefined ? { configRoot: options.configRoot } : {}),
+    ...(ambient.configRoot !== undefined ? { configRoot: ambient.configRoot } : {}),
     kind: options.kind,
     tmpDir: options.tmpDir,
     restrictive: true,
@@ -193,6 +210,12 @@ export function spawnMarkedAgent(options: MarkedSpawnOptions): MarkedSpawn {
       // also a run whose report can never say a delegation was attempted.
       [RUN_ROOT_ENV]: options.runRoot,
       ...effortEnv,
+      // Ruling 83's argv lever, where this vendor has one. AFTER
+      // `passthroughEnv`, deliberately: an operator's own
+      // `CLAUDE_CODE_EXECUTABLE` is forwarded to workers, and brigadier's shim
+      // has to win over it or suppression would be off for exactly the operators
+      // who configure the most.
+      ...ambient.env,
       ...(options.secrets ?? {}),
     },
   });

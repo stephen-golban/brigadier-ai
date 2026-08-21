@@ -718,6 +718,7 @@ user-visible promise, so it grows through phase 2. Rulings 49 onward were added 
 | 80 a fourth audience: a human in a session a model also reads | item 11 — the cap and its one-way property are unchanged; the fourth state and D24's one-line form are what this ruling adds |
 | 81 outcomes may feed competence; cost still may not | item 13, and `bun run claims` check 4 — the router↛cost seam stays, and the outcome store must be physically distinct from it |
 | 82 one bar item that tests the product against the owner | **item 15 itself — NOT YET BUILT.** Ruled under delegated authority; the owner may strike it |
+| 83 no credential is copied; the ambient lever is per vendor | item 3 (no foreign file touched — the shim is written inside brigadier's own run root and nowhere else) and item 14 (the real-fleet leg spawns a vendor, which is where a wrong lever surfaces as an authentication failure). **The silent direction has no item**: an argv rewrite that stops working fails by succeeding, so `test/ambient.test.ts` executes the generated shim against the argv MEASURED coming out of the bridge, and that is a `bun test` guard rather than a bar item. Ruled under delegated authority |
 
 **Rulings 74–82 were added on 2026-08-21 and are the first ones this table ever got WRONG.** Ruling
 20's row read *architectural exclusion — no user-visible promise* for five days, on the ruling that

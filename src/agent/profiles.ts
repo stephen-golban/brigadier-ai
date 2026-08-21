@@ -105,6 +105,23 @@ export type MarkerPlacement =
    */
   | { kind: "flag-value"; flag: string };
 
+/**
+ * Ruling 83. How a vendor's user-global instruction files are kept away from a
+ * worker, where the config-root redirect is measured to be the wrong lever.
+ *
+ * One member today, and it is a union rather than a boolean for the same reason
+ * `MarkerPlacement` is: the next vendor that needs this will not need it in the
+ * same shape, and a boolean cannot say which.
+ */
+export type AmbientLever = {
+  /** Rewrite the vendor's own argv through a launcher brigadier generates. */
+  kind: "argv-shim";
+  /** The environment variable the vendor reads to find its real binary. */
+  variable: string;
+  /** What that binary is called, for the message when it cannot be found. */
+  binary: string;
+};
+
 export interface LaunchProfile {
   id: AgentId;
   /** Display name, as the agent reports itself at `initialize`. */
@@ -120,8 +137,19 @@ export interface LaunchProfile {
   measuredVersion: string;
   /** Environment variables to forward from the operator's environment, if set. */
   passthroughEnv: string[];
-  /** Where this agent keeps its config root — decision 17's suppression lever. */
+  /** Where this agent keeps its config root — decision 17's original lever. */
   configRootEnv?: string;
+  /**
+   * How decision 17's ambient suppression is actually reached on this vendor.
+   *
+   * **ABSENT MEANS the config-root redirect**, which is what every vendor had
+   * before ruling 83 and what five of six still have. It is declared only where
+   * the redirect is measured to cost the vendor its credential and a cheaper
+   * lever was measured to exist — today that is Claude alone. `src/agent/
+   * ambient.ts` carries the measurement table and the reasoning; this field is
+   * the row.
+   */
+  ambientLever?: AmbientLever;
   laneAssertion: LaneAssertion;
   /**
    * Ruling 53's brigadier-defined half of the requirement vocabulary.
@@ -228,18 +256,32 @@ export const PROFILES: Record<AgentId, LaunchProfile> = {
     // succeeds; copying `~/.claude.json` into the redirected root did NOT
     // restore login).
     //
-    // That is the CLI. It is NOT this profile: MEASURED the same day against
-    // `@agentclientprotocol/claude-agent-acp` 0.70.0 through `detectOne` under a
-    // worker-shaped config root, this profile reported `usable` — handshake AND
-    // session — so the bridge keeps its authentication across the redirect.
+    // That is the CLI. The 2026-08-20 note here said it was NOT this profile,
+    // because `detectOne` under a worker-shaped config root reported `usable`.
     //
-    // Recorded because the inference ran the other way first. "The redirect logs
-    // every worker out" was generalised from the CLI and from Codex, and the
-    // measurement refused it. It is therefore NOT established that the redirect
-    // caused the verifier's 2026-08-20 Claude failure
-    // (`session/prompt: -32000 Authentication required`); that failure is still
-    // unexplained, and saying so is cheaper than a second wrong cause.
+    // CORRECTED 2026-08-21, and the correction is the whole of ruling 83:
+    // **`usable` was measured at `session/new`, and `session/new` is not the
+    // metered call.** Driving the same bridge one step further, with a
+    // no-redirect control that answered and a redirect that did not:
+    //
+    //   no redirect                      session/prompt -> OK
+    //   CLAUDE_CONFIG_DIR=<empty dir>    session/new    -> OK
+    //                                    session/prompt -> -32000 Authentication required
+    //
+    // So the redirect DOES log this profile out, one call later than anybody
+    // looked, and the verifier's 2026-08-20 `session/prompt` failure has its
+    // cause. Seeding does not repair it: `.claude.json` byte-copied and the
+    // Keychain item written out as `.credentials.json` both still failed. The
+    // credential is not in this root, so this root is the wrong lever — see
+    // `ambientLever` below and `src/agent/ambient.ts` for the table.
     configRootEnv: "CLAUDE_CONFIG_DIR",
+    // Ruling 83. Suppression by the vendor's own argv instead of by its config
+    // root, because MEASURED 2026-08-21 through the real bridge with a firing
+    // control, `--setting-sources=project,local` removes the operator's
+    // user-global `CLAUDE.md` from a worker's context while the metered call
+    // keeps working. `CLAUDE_CODE_EXECUTABLE` is already this profile's
+    // passthrough and already load-bearing under ruling 44.
+    ambientLever: { kind: "argv-shim", variable: "CLAUDE_CODE_EXECUTABLE", binary: "claude" },
     // #3, #50: sends an `execute` permission request, so it runs commands.
     // networkAccess unmeasured — not false, and it does not satisfy.
     capabilities: { commandExecution: true },

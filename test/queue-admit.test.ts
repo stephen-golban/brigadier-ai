@@ -269,8 +269,30 @@ describe("ruling 66 and 70: a range, its provenance, and no savings claim", () =
 describe("decision 17: the suppression claim names the vendors it is true of", () => {
   test("a vendor WITH a config-root variable is named with the variable", () => {
     const lines = ambientSuppression([agent("qwen")]).join("\n");
-    expect(lines).toContain("qwen (QWEN_HOME)");
-    expect(lines).not.toContain("NO config-root redirect");
+    expect(lines).toContain("QWEN_HOME");
+    expect(lines).toContain("redirected into brigadier's own state directory");
+    expect(lines).not.toContain("NO ambient lever");
+  });
+
+  test("RULING 83: claude is named with the lever it ACTUALLY gets, not the redirect", () => {
+    // This guard pinned `claude (CLAUDE_CONFIG_DIR)` until 2026-08-21, and it
+    // was right until the measurement that says redirecting that root fails
+    // `session/prompt` — the metered call — and that no seeding repairs it. A
+    // report that still named the redirect would be naming a lever this vendor
+    // is no longer given, which is the same defect one lever along.
+    const lines = ambientSuppression([agent("claude")]).join("\n");
+    expect(lines).toContain("--setting-sources=project,local");
+    expect(lines).toContain("config root is NOT redirected");
+    // The negative control: the OLD claim is gone rather than merely joined.
+    expect(lines).not.toContain("claude (CLAUDE_CONFIG_DIR)");
+  });
+
+  test("the operator's override is reported as an override, on every vendor", () => {
+    const lines = ambientSuppression([agent("claude"), agent("qwen")], false).join("\n");
+    expect(lines).toContain("ambientSuppression: false");
+    // Nothing may claim a lever was pulled when none was.
+    expect(lines).not.toContain("--setting-sources=project,local");
+    expect(lines).not.toContain("redirected into brigadier's own state directory");
   });
 
   test("a vendor WITHOUT one is named as NOT suppressed, rather than covered by a blanket claim", () => {
@@ -288,16 +310,17 @@ describe("decision 17: the suppression claim names the vendors it is true of", (
     // NOT-suppressed branch becomes unreachable: say so rather than deleting it.
     const bare = PROFILES["gemini"].configRootEnv;
     expect(bare).toBeUndefined();
+    expect(PROFILES["gemini"].ambientLever).toBeUndefined();
     const lines = ambientSuppression([agent("gemini")]).join("\n");
-    expect(lines).toContain("NO config-root redirect exists for gemini");
-    expect(lines).toContain("still readable by them");
-    expect(lines).not.toContain("gemini (");
+    expect(lines).toContain("gemini: NO ambient lever exists");
+    expect(lines).toContain("still readable by it");
+    expect(lines).not.toContain("gemini: the config root is redirected");
   });
 
   test("a mixed fleet says both halves, and the worker marker is claimed for all of them", () => {
     const lines = ambientSuppression([agent("qwen"), agent("gemini")]).join("\n");
-    expect(lines).toContain("qwen (QWEN_HOME)");
-    expect(lines).toContain("NO config-root redirect exists for gemini");
+    expect(lines).toContain("QWEN_HOME");
+    expect(lines).toContain("gemini: NO ambient lever exists");
     // Ruling 57's marker is the one lever that really is universal, so it is the
     // one sentence allowed to say so.
     expect(lines).toContain("inert inside every worker");
