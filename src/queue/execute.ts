@@ -149,6 +149,7 @@ import {
   REVIEWER_RERUNS,
   catchRateLine,
   caughtIn,
+  unverifiedFindings,
   chooseReviewer,
   composeReviewBrief,
   notReviewable,
@@ -1135,7 +1136,9 @@ async function reviewItem(
               ? ""
               : ` ${choice.sameVendorReason ?? ""}`)
           : `${profile.id} rejected this diff and named ${caught.length} defect(s) present in it: ` +
-            `${caught.join(", ") || "none that appear in the diff it was handed"}. Ruling 52: the remedy ` +
+            `${caught.join(", ") || "none that appear in the diff it was handed"}. ` +
+            unverifiedFindings(caught, verdict.found) +
+            "Ruling 52: the remedy " +
             "is the BUILDER's, which is what `fail` means and why it is not `error`.",
         { reviewerAttempts: attempts, caught },
       );

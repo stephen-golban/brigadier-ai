@@ -227,6 +227,47 @@ export function caughtIn(diff: string, reported: readonly string[]): string[] {
   return [...new Set(reported.filter((entry) => diff.includes(entry)))];
 }
 
+/** At most this many unverified findings are repeated, and at most this many characters each. */
+const UNVERIFIED_SHOWN = 3;
+const UNVERIFIED_CHARS = 120;
+
+/**
+ * What the reviewer said that the diff does not carry: kept OUT of the count and
+ * kept IN the record.
+ *
+ * `caughtIn` above is deliberately strict, and it stays that way — a reviewer
+ * naming a defect the diff does not contain has not read the diff, and counting
+ * its claim would make the published rate a measurement of confidence. But
+ * DISCARDING the claim is a different decision from NOT COUNTING it, and this
+ * project had been making both with one line.
+ *
+ * MEASURED 2026-08-21 by the second independent verifier: two items were blocked
+ * on `rejected` verdicts naming `src/retry.ts missing between-attempts abort
+ * check` and `src/median.ts [...values].sort()`, both precise and both correct.
+ * The operator was told the reviewer named ZERO defects. A blocking verdict whose
+ * reason is dropped leaves ruling 24's second rung no better informed than its
+ * first, which is the retry spending money to repeat the attempt it just made.
+ *
+ * Bounded rather than unbounded, because ruling 58 caps the host report and a
+ * reviewer's prose is the least predictable thing in it. The count is exact; the
+ * quotation is truncated and says so. `OWNER-QUESTIONS.md` #16.
+ */
+export function unverifiedFindings(caught: readonly string[], reported: readonly string[]): string {
+  const counted = new Set(caught);
+  const rest = [...new Set(reported.filter((entry) => !counted.has(entry)))];
+  if (rest.length === 0) return "";
+  const shown = rest
+    .slice(0, UNVERIFIED_SHOWN)
+    .map((entry) => (entry.length > UNVERIFIED_CHARS ? `${entry.slice(0, UNVERIFIED_CHARS)}…` : entry))
+    .map((entry) => `"${entry}"`);
+  const more = rest.length > shown.length ? ` (+${rest.length - shown.length} more)` : "";
+  return (
+    `It also reported ${rest.length} finding(s) the diff does not carry verbatim, NOT counted above and ` +
+    `repeated here because a blocking verdict whose reason is discarded leaves the second rung no better ` +
+    `informed than the first: ${shown.join("; ")}${more}. `
+  );
+}
+
 export interface ReviewerChoice {
   /** `null` when nothing on this machine can review. */
   agent: ResolvedAgent | null;

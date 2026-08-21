@@ -29,7 +29,7 @@ is not available to anyone."*
 | 13 | a dozen planted-payload controls are inert on Windows | **ANSWERED — all three candidates refuted; the cause is the command path's backslashes, which the experiment had normalised away in its own setup** |
 | 14 | **NEW** — detection says usable, the first prompt fails authentication | open — reproduced by a second verifier on a second bridge; closes #8 into it |
 | 15 | the report said the plan had no write items when all five were | **FIXED** — reproduced in a test that fails without the fix; the sentence now comes from the plan |
-| 16 | **NEW** — reviewer findings discarded from the host report; item 5 failed at 2 of 5 | open — the rate blocks the tag; the discarded finding text is a separate defect |
+| 16 | reviewer findings discarded from the host report; item 5 failed at 2 of 5 | **PARTLY FIXED** — the finding text is carried now; the 2-of-5 rate is open and still blocks the tag |
 | 17 | **NEW** — actual spend exceeded the predicted upper bound by 1.03% | open — reported honestly, no ceiling configured, one data point |
 
 ---
@@ -774,6 +774,28 @@ unambiguously named two planted faults, because it counts identifiers appearing 
 text in the diff and the reviewer wrote prose. `BAR.md` item 5 predicted this exactly, *a reviewer that
 correctly describes a planted defect in prose the diff does not carry scores zero*, and that is why
 the automated item publishes no rate. The 0 is documented behaviour.
+
+**PARTLY FIXED 2026-08-21 — the discarded finding text. The RATE is untouched and still blocks.**
+
+`src/queue/review.ts` gains `unverifiedFindings`, and a rejected item's check now repeats what the
+reviewer said that the diff does not carry, labelled `NOT counted above`. `caughtIn` is unchanged and
+deliberately still strict: not counting a claim the diff cannot carry is the right decision, and
+`BAR.md` item 5 explains why. Discarding it was a different decision, and one line was making both.
+
+Bounded rather than unbounded, because ruling 58 caps the host report and a reviewer's prose is the
+least predictable thing in it: three findings, 120 characters each, `(+N more)` after that. The count
+is exact even where the quotation is truncated.
+
+MEASURED darwin 25.5.0 / bun 1.3.14 2026-08-21, load1 3.17 to 4.51: `bun run gates` exit 0, 1,763 pass,
+0 fail, 0 skipped, 0 todo. Four negative controls, all of which fail without the change: the integration
+assertion in `test/review-run.test.ts` (the ghost defect appears in the detail and the rate stays 2 of
+3), and three unit tests covering the empty case, the bound, and that nothing is appended when the diff
+carried everything.
+
+**A second place to LOOK, never a second way to SCORE.** `review.caught` and `caughtDefects` are
+untouched, so nothing here moves the published rate, and the 2-of-5 verdict stands exactly as reported.
+
+The entry as it stood follows.
 
 What is not documented, and is new: the host report also drops the reviewer's finding text. Both items
 were blocked, correctly, on `rejected` verdicts naming `src/retry.ts missing between-attempts abort

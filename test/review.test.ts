@@ -21,6 +21,7 @@ import {
   SELF_REVIEW_BIAS,
   catchRateLine,
   caughtIn,
+  unverifiedFindings,
   chooseReviewer,
   composeReviewBrief,
   notReviewable,
@@ -123,6 +124,30 @@ describe("FOUND, not KNOWN: a claim is kept only where the diff carries it", () 
 
   test("duplicates collapse: the rate counts defects, not mentions", () => {
     expect(caughtIn("+DEFECT-AAA\n", ["DEFECT-AAA", "DEFECT-AAA"])).toEqual(["DEFECT-AAA"]);
+  });
+
+  test("what the diff does not carry is repeated, uncounted, so a blocked item keeps its reason", () => {
+    const line = unverifiedFindings(["DEFECT-AAA"], ["DEFECT-AAA", "src/retry.ts missing abort check"]);
+    expect(line).toContain("1 finding(s)");
+    expect(line).toContain("src/retry.ts missing abort check");
+    expect(line).toContain("NOT counted above");
+  });
+
+  test("NEGATIVE CONTROL: nothing is added when the diff carried everything", () => {
+    // Without this, the fix would print a dangling sentence on every rejection,
+    // including the ones that need no explaining.
+    expect(unverifiedFindings(["DEFECT-AAA"], ["DEFECT-AAA"])).toBe("");
+    expect(unverifiedFindings([], [])).toBe("");
+  });
+
+  test("it is BOUNDED, because ruling 58 caps the report and prose is the least predictable thing in it", () => {
+    const many = ["a".repeat(200), "b", "c", "d", "e"];
+    const line = unverifiedFindings([], many);
+    // The COUNT is exact even though the quotation is not.
+    expect(line).toContain("5 finding(s)");
+    expect(line).toContain("(+2 more)");
+    expect(line).toContain("…");
+    expect(line).not.toContain("a".repeat(130));
   });
 });
 

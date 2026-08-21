@@ -207,7 +207,7 @@ interface RecordShape {
     reviewVerdict?: string;
     reviewerAttempts?: number;
     caughtDefects?: string[];
-    checks: Array<{ name: string; outcome: string; blocking: boolean; qualifier?: string }>;
+    checks: Array<{ name: string; outcome: string; blocking: boolean; qualifier?: string; detail?: string }>;
   }>;
 }
 
@@ -495,6 +495,20 @@ describe("the catch rate is published as IDENTITIES, and a claim the diff cannot
     // The reviewer really did claim it, so this is the product discarding a
     // claim rather than a fixture never making one.
     expect(readFileSync(world.sawDiff, "utf8")).not.toContain(ghost);
+  });
+
+  test("and the ghost is REPEATED as an uncounted finding, because a blocked item needs its reason", () => {
+    // MEASURED 2026-08-21 by the second independent verifier: two items were
+    // blocked on `rejected` verdicts naming real faults precisely, and the
+    // operator was told the reviewer named ZERO defects. NOT COUNTING a claim
+    // the diff cannot carry is deliberate and unchanged. DISCARDING it was a
+    // different decision, and one line was making both.
+    const detail = record.items[0]?.checks.find((c) => c.name === "review")?.detail ?? "";
+    expect(detail).toContain(ghost);
+    expect(detail).toContain("NOT counted above");
+    // A second place to LOOK, never a second way to SCORE: the rate is untouched.
+    expect(record.review?.caught).toBe(2);
+    expect(record.review?.caughtDefects).not.toContain(ghost);
   });
 
   test("a rejected verdict is `fail` — the builder's to fix — and it does not merge", () => {
