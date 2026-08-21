@@ -18,7 +18,7 @@ import {
 } from "../src/plugin/possess.ts";
 import { POSSESSABLE, binaryNameFor, isAgentName, planLaunch, vendorArgs } from "../src/setup/launch.ts";
 import { FLOOR_HOOK_EVENTS, REGISTERED_HOOK_EVENTS, eventsAboveFloor } from "../src/plugin/hooks.ts";
-import { ALL_AGENT_IDS, PROFILES } from "../src/agent/profiles.ts";
+import { ALL_AGENT_IDS, PROFILES, reachesWeb, researchRefusal } from "../src/agent/profiles.ts";
 
 describe("what a possessed session is told", () => {
   test("a normal session gets the line", () => {
@@ -219,5 +219,36 @@ describe("brigadier's own flags must not reach the vendor's argv", () => {
 
   test("a trailing --home does not eat the vendor's next argument", () => {
     expect(vendorArgs(["--home", "--model", "opus"])).toEqual(["--model", "opus"]);
+  });
+});
+
+describe("ruling 78's web-reach column", () => {
+  test("measured-true agents are eligible for research", () => {
+    // MEASURED 2026-08-21: each returned the exact dist.shasum of bun's current
+    // npm release, matching an independent curl, against a control that answered
+    // UNKNOWN when asked for the same value from memory.
+    for (const id of ["claude", "copilot", "opencode"] as const) {
+      expect(reachesWeb(id)).toBe(true);
+      expect(researchRefusal(id)).toBeUndefined();
+    }
+  });
+
+  test("UNMEASURED is a third state, and its refusal reads differently from a NO", () => {
+    // The distinction is the ruling: an unmeasured agent needs somebody to run a
+    // probe, a measured-false one needs a different vendor. Collapsing them into
+    // "no" makes the refusal name the wrong remedy.
+    for (const id of ["codex", "qwen", "gemini"] as const) {
+      expect(reachesWeb(id)).toBeUndefined();
+      expect(researchRefusal(id)).toContain("UNMEASURED");
+      expect(researchRefusal(id)).not.toContain("unable to reach");
+    }
+  });
+
+  test("the column is NOT a ruling 53 capability, and the vocabulary stays at three", () => {
+    // On Codex, web reach is an argv flag (`--search`), and a boolean requirement
+    // cannot pass a flag. That is why this is a launch-profile fact.
+    const terms = Object.keys(PROFILES.codex.capabilities);
+    expect(terms).not.toContain("webAccess");
+    expect(terms).not.toContain("reachesWeb");
   });
 });

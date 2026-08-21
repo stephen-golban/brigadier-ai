@@ -140,6 +140,31 @@ export interface LaunchProfile {
   modelsAtSessionNew: boolean;
   /** Does the agent emit `usage_update` over ACP? (#46 — three of six do.) */
   emitsUsage: boolean;
+  /**
+   * Can this agent reach the public web with its own tool? Ruling 78's column.
+   *
+   * **A launch-profile fact, NOT a ruling 53 capability**, and the distinction is
+   * the ruling. Ruling 53's vocabulary is three permanent terms and it fenced
+   * against a fourth deliberately; web reach could not be one anyway, because on
+   * Codex it is not a property the agent has or lacks — it is an argv flag
+   * brigadier passes (`--search`), and a boolean requirement cannot pass a flag.
+   * So it sits here beside `emitsUsage` and `modelsAtSessionNew`: measured facts
+   * about a vendor, each carrying what measured it.
+   *
+   * **Absent means UNMEASURED, which does not satisfy.** Ruling 53's rule,
+   * unchanged: a `research` item refuses on an agent whose reach is unmeasured,
+   * and the refusal says *unmeasured on this agent* rather than *unsupported*,
+   * because those need different remedies.
+   *
+   * **What this measures is an UPPER BOUND on what a worker gets.** It was taken
+   * against each vendor's own CLI, not through the ACP session a worker actually
+   * receives. If the CLI cannot reach the web the worker certainly cannot; the
+   * converse does not follow, and ruling 53 is explicit that conflating the agent
+   * process with the worker's shell *"is exactly the research-in-measurement's-
+   * clothes error"*. The ACP-channel measurement is separate and has not been
+   * taken.
+   */
+  reachesWeb?: boolean;
   /** Anything a caller would otherwise have to learn the hard way. */
   caveats: string[];
 }
@@ -218,6 +243,13 @@ export const PROFILES: Record<AgentId, LaunchProfile> = {
     // #3, #50: sends an `execute` permission request, so it runs commands.
     // networkAccess unmeasured — not false, and it does not satisfy.
     capabilities: { commandExecution: true },
+    // MEASURED 2026-08-21 against `claude 2.1.238`: it returned the exact
+    // `dist.shasum` of bun's current npm release, matching an independent
+    // `curl`, and separately fetched a loopback URL with the request observed in
+    // that server's OWN access log — evidence independent of what the model
+    // said. Control fires: asked for the same value from memory with no tool it
+    // answered UNKNOWN, so a match proves retrieval rather than recall.
+    reachesWeb: true,
     // The bridge opens sessions in `bypassPermissions`, which routes every write
     // around the client. The lane means nothing until this is set back (#3).
     // No read-only session mode was measured on this bridge, so there is no
@@ -287,6 +319,18 @@ export const PROFILES: Record<AgentId, LaunchProfile> = {
     // `agent`, which blocks ALL network at the OS level — so these two differ
     // in the same session, which is exactly findings 70 and 71's asymmetry.
     capabilities: { commandExecution: true, networkAccess: false },
+    // reachesWeb UNMEASURED: this agent is not authenticated on the machine the
+    // 2026-08-21 sweep ran on, so its web reach could not be driven at all. That
+    // is a fact about the measurement and not about the vendor, and under ruling
+    // 53 unmeasured does not satisfy — a `research` item refuses here and says
+    // *unmeasured on this agent* rather than *unsupported*.
+    // Codex additionally needs an ARGV FLAG for live results: MEASURED that
+    // `codex --search` exists — "Enable live web search. When enabled, the native
+    // Responses `web_search` tool is available" — with a firing control (`--web-search`
+    // and an invented flag are both rejected rc=2). Its built-in default is a CACHED
+    // mode returning pre-indexed snippets, which is exactly what D22's dated-finding
+    // rule exists to defeat. This is the concrete reason web reach is a launch-profile
+    // fact and not a ruling 53 capability: a boolean requirement cannot pass a flag.
     laneAssertion: {
       kind: "env",
       name: "INITIAL_AGENT_MODE",
@@ -332,6 +376,18 @@ export const PROFILES: Record<AgentId, LaunchProfile> = {
     configRootEnv: "COPILOT_HOME",
     // #50: `execute` requests carry a meaningful title. Network unmeasured.
     capabilities: { commandExecution: true },
+    // MEASURED 2026-08-21 against `copilot 1.0.80`: it returned the exact
+    // `dist.shasum` of bun's current npm release, matching an independent
+    // `curl`. Same control as claude's row, and it fires.
+    //
+    // **It refuses LOOPBACK, and finding that out is why this column is not a
+    // localhost probe.** `web_fetch` answered
+    // `WebFetchBlockedUrlError: web_fetch URL "http://127.0.0.1:…" resolves to
+    // blocked` — ordinary SSRF protection. A probe that only served a token on
+    // 127.0.0.1 would have recorded `false` here for a vendor that reaches the
+    // public web perfectly well, which is a wrong table row produced by a sound-
+    // looking measurement.
+    reachesWeb: true,
     laneAssertion: { kind: "none" },
     modelsAtSessionNew: false,
     emitsUsage: true,
@@ -359,6 +415,11 @@ export const PROFILES: Record<AgentId, LaunchProfile> = {
     // Ruling 53: unmeasured is not permission. Qwen never issues a permission
     // request at all (#50), so nothing here has been observed either way.
     capabilities: {},
+    // reachesWeb UNMEASURED: this agent is not authenticated on the machine the
+    // 2026-08-21 sweep ran on, so its web reach could not be driven at all. That
+    // is a fact about the measurement and not about the vendor, and under ruling
+    // 53 unmeasured does not satisfy — a `research` item refuses here and says
+    // *unmeasured on this agent* rather than *unsupported*.
     laneAssertion: { kind: "none" },
     modelsAtSessionNew: false,
     emitsUsage: true,
@@ -389,6 +450,11 @@ export const PROFILES: Record<AgentId, LaunchProfile> = {
     // PROCESS reaches a network gateway; that says nothing about the worker's
     // shell, and conflating the two would be research in measurement's clothes.
     capabilities: { commandExecution: true },
+    // MEASURED 2026-08-21 against `OpenCode 1.18.18`: it returned the exact
+    // `dist.shasum` of bun's current npm release, matching an independent
+    // `curl`, and fetched a loopback URL with the request observed in that
+    // server's own access log. Same control as claude's row, and it fires.
+    reachesWeb: true,
     laneAssertion: { kind: "none" },
     modelsAtSessionNew: false,
     emitsUsage: true,
@@ -415,6 +481,11 @@ export const PROFILES: Record<AgentId, LaunchProfile> = {
     passthroughEnv: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
     // Unmeasured on both terms. #42 could not even establish its config root.
     capabilities: {},
+    // reachesWeb UNMEASURED: this agent is not authenticated on the machine the
+    // 2026-08-21 sweep ran on, so its web reach could not be driven at all. That
+    // is a fact about the measurement and not about the vendor, and under ruling
+    // 53 unmeasured does not satisfy — a `research` item refuses here and says
+    // *unmeasured on this agent* rather than *unsupported*.
     laneAssertion: { kind: "none" },
     modelsAtSessionNew: false,
     emitsUsage: false,
@@ -533,4 +604,41 @@ export function buildEnvironment(
   env["NO_COLOR"] = "1";
 
   return { ...env, ...(options.extra ?? {}) };
+}
+
+/**
+ * May a `research` item route to this agent? Ruling 78, and ruling 53's rule
+ * about unmeasured things applied to a column rather than to a capability.
+ *
+ * **Absent is not false.** The three states are *measured true*, *measured
+ * false*, and *never driven*, and only the first is eligible. Collapsing the
+ * last two into "no" would make a refusal say the wrong thing: an unmeasured
+ * agent needs somebody to run a probe, and a measured-false one needs a
+ * different vendor. Ruling 53 makes that distinction explicit — the refusal says
+ * *unmeasured on this agent* rather than *unsupported* — because those need
+ * different remedies.
+ */
+export function reachesWeb(agent: AgentId): boolean | undefined {
+  return PROFILES[agent].reachesWeb;
+}
+
+/**
+ * Why a `research` item cannot go to this agent, or nothing when it can.
+ *
+ * D22's dated-finding rule is what makes this refuse rather than degrade: a
+ * research finding must say when it was measured, and an agent that cannot reach
+ * today's web can only produce a finding dated from its training. That is the
+ * exact staleness the work kind exists to defeat — models reaching for 2024 and
+ * 2025 when it is 2026 — so routing there and hoping is worse than refusing.
+ */
+export function researchRefusal(agent: AgentId): string | undefined {
+  const reach = PROFILES[agent].reachesWeb;
+  if (reach === true) return undefined;
+  if (reach === false) {
+    return `${agent} was measured unable to reach the web, so it cannot produce a dated finding (D22).`;
+  }
+  return (
+    `${agent}'s web reach is UNMEASURED, and unmeasured is not permission (ruling 53). ` +
+    "Nobody has driven it — that is a gap in what we know, not a fact about the vendor."
+  );
 }
