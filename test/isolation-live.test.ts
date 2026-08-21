@@ -101,10 +101,30 @@ afterAll(() => {
   rmSync(runRootHome, { recursive: true, force: true });
 });
 
+/**
+ * `C:\a\b` -> `C:/a/b`, and a no-op on POSIX, where paths carry no backslashes.
+ *
+ * ONLY the COMMAND git is pointed at, never the canary path inside the script.
+ * Git for Windows runs a `core.fsmonitor` through its own bundled `sh`, which
+ * eats backslashes as escapes, so a native `C:\Users\...` arrives as
+ * `C:Users...`, names nothing, and git ignores the failure IN SILENCE — which is
+ * why every control below read as inert rather than as an error.
+ *
+ * MEASURED on `windows-latest` 2026-08-20, run 32415677392, job 96576151123, by
+ * `test/git-payload-shape.test.ts`: all four payload shapes FIRED, including
+ * `sh` + `touch` + a native canary path, because that file forwards the command
+ * path in its own setup line. The canary path inside the script needs no such
+ * treatment and does not get it. `OWNER-QUESTIONS.md` #13 records the whole
+ * separation, and what it refutes.
+ */
+const forwardSlashes = (path: string): string => path.replace(/\\/g, "/");
+
 function payloadScript(canary: string): string {
   const path = join(scratch, `payload-${canary}.sh`);
   writeFileSync(path, `#!/bin/sh\ntouch "${join(canaryDir, canary)}"\nexit 0\n`, { mode: 0o755 });
-  return path;
+  // The FILE is written at its native path; what is RETURNED is the spelling git
+  // is handed, and those are not the same string on Windows.
+  return forwardSlashes(path);
 }
 
 const escaped = (canary: string): boolean => existsSync(join(canaryDir, canary));

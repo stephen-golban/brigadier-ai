@@ -132,6 +132,25 @@ function payload(name: string): string {
 
 const escaped = (name: string): boolean => existsSync(join(canaryDir, name));
 
+/**
+ * `C:\a\b` -> `C:/a/b`, and a no-op on POSIX, where paths carry no backslashes.
+ *
+ * ONLY the COMMAND git is pointed at, never the canary path inside the script.
+ * Git for Windows runs a `core.fsmonitor` through its own bundled `sh`, which
+ * eats backslashes as escapes, so a native `C:\Users\...` arrives as
+ * `C:Users...`, names nothing, and git ignores the failure IN SILENCE.
+ *
+ * MEASURED on `windows-latest` 2026-08-20, run 32415677392, job 96576151123, by
+ * `test/git-payload-shape.test.ts`: all four payload shapes FIRED there, because
+ * that file forwards the command path in its own setup line and every other
+ * fixture here did not. `OWNER-QUESTIONS.md` #13 records the separation.
+ *
+ * The HOOK plants above are untouched, deliberately: git executes a hook FILE by
+ * path itself rather than handing a string to a shell, so nothing measured here
+ * applies to them and a change would be a guess.
+ */
+const forwardSlashes = (path: string): string => path.replace(/\\/g, "/");
+
 function plantHookIn(hooksDir: string, hook: string, canary: string): void {
   mkdirSync(hooksDir, { recursive: true });
   writeFileSync(join(hooksDir, hook), payload(canary), { mode: 0o755 });
@@ -143,7 +162,7 @@ const plantHook = (dir: string, hook: string, canary: string): void =>
 async function plantFsmonitor(dir: string, canary: string): Promise<void> {
   const script = join(scratch, `fsmonitor-${canary}.sh`);
   writeFileSync(script, payload(canary), { mode: 0o755 });
-  await git(dir, "config", "core.fsmonitor", script);
+  await git(dir, "config", "core.fsmonitor", forwardSlashes(script));
 }
 
 let runCounter = 0;
@@ -278,7 +297,7 @@ describe("recycling a pooled directory a previous agent could write to", () => {
     writeFileSync(script, payload("goodconfig-fsmonitor"), { mode: 0o755 });
     writeFileSync(
       clone.knownGoodConfigPath,
-      `[core]\n\trepositoryformatversion = 0\n\tfsmonitor = ${script}\n`,
+      `[core]\n\trepositoryformatversion = 0\n\tfsmonitor = ${forwardSlashes(script)}\n`,
     );
 
     const recycled = await recycleClone(clone, { base, reclaimed: sweptClean(clone) });
@@ -364,7 +383,7 @@ describe("git's other two config levels", () => {
     const script = join(scratch, "global-fsmonitor.sh");
     writeFileSync(script, payload("global-control"), { mode: 0o755 });
     const hostileGlobal = join(scratch, "hostile-gitconfig");
-    writeFileSync(hostileGlobal, `[core]\n\tfsmonitor = ${script}\n`);
+    writeFileSync(hostileGlobal, `[core]\n\tfsmonitor = ${forwardSlashes(script)}\n`);
 
     await rawGit({
       cwd: clone.dir,
@@ -379,7 +398,7 @@ describe("git's other two config levels", () => {
     const script = join(scratch, "global-fsmonitor-2.sh");
     writeFileSync(script, payload("global-safe"), { mode: 0o755 });
     const hostileGlobal = join(scratch, "hostile-gitconfig-2");
-    writeFileSync(hostileGlobal, `[core]\n\tfsmonitor = ${script}\n`);
+    writeFileSync(hostileGlobal, `[core]\n\tfsmonitor = ${forwardSlashes(script)}\n`);
 
     const previous = process.env["GIT_CONFIG_GLOBAL"];
     process.env["GIT_CONFIG_GLOBAL"] = hostileGlobal;

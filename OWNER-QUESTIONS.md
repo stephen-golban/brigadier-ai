@@ -579,6 +579,16 @@ path inside the script, which shapes 1 and 2 prove is fine native. Prediction: t
 inert, this diagnosis is wrong and the entry reopens. That is the refutation condition, stated in
 advance.
 
+**APPLIED 2026-08-21, at all five sites.** MEASURED on darwin 25.5.0 / bun 1.3.14 at load1 3.17 to
+3.50: `bun run gates` exit 0, 1,757 pass, 0 fail, 0 skipped, 0 todo, unchanged from before the edit,
+which is what a no-op on POSIX should look like. Whether it does anything on Windows is what the next
+leg says, and nothing here claims it in advance.
+
+**The hook-file plants are untouched, deliberately.** `plantHookIn` writes a script into
+`.git/hooks/`, and git executes a hook file by path itself rather than handing a string to a shell, so
+none of the evidence above applies to it. Changing it would be a guess, and the same leg that grades
+this edit says whether those controls are inert too.
+
 **The lesson outlives this entry.** An experiment must vary its variable in its setup, not only across
 its cells. This one was written in the shape of #9's 2×2, which worked, but #9 varied the whole call
 path and this varied only the payload. A matrix that normalises its inputs before the cells begin is
