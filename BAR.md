@@ -196,6 +196,37 @@ The threshold, the diff framing and v1's 0-of-3 baseline are unchanged. What cha
 measures**, and the answer is the one this document already gave: a verifier that did not make the
 assumption. An automated number here would have been the harness grading itself.
 
+**MEASURED 2026-08-21 — the rate exists, and it is 2 of 5. This item FAILS and there is no tag.** The
+second independent verifier planted five defects with no marker tokens, drove the real fleet with
+prose-only prompts, and scored the recorded transcript by hand. `VERIFIER-REPORT-2.md` carries the
+whole table verbatim. Beside v1's baseline of 0 of 3, and below this item's threshold of 3.
+
+Two conditions sit beside that number. **Neither is an appeal, and the verdict stands as reported:**
+
+- **It was measured SAME-VENDOR.** Copilot returned `Authentication required` mid-session, so OpenCode
+  1.18.18 drove builder and reviewer both. This item's first clause is that the reviewer's vendor
+  differs from the builder's, so the rate came from a condition this document does not specify, and the
+  cross-vendor half is *unrun* rather than passed. The verifier reported it that way itself.
+- **Only three of the five plants reached a reviewer.** The builder repaired two of them before review
+  and a fourth produced no commit, so the reviewer was handed three defective diffs and named two of
+  them precisely. The verifier declined to score a builder repair as a reviewer catch, which is right.
+
+**The instrument finding, which is worth more than the number.** A prose-only plant can be repaired by
+the builder, and a plant that never reaches the reviewer measures the builder instead. This item's
+threshold is written against five plants; the drive that produced this rate put three in front of a
+reviewer. **Whoever runs the next drive decides in advance** whether a repaired plant is a miss, a
+re-plant, or an exclusion — deciding afterwards is how a threshold gets tuned to fit its measurement,
+which is the failure this whole mechanism exists to prevent.
+
+**What the product did with the same run, recorded because it is the automated half's own prediction
+coming true.** Brigadier printed `catch rate 0 of 5` while the transcript unambiguously named two
+faults, exactly as the paragraph above says it must — the identifiers were prose the diff does not
+carry. The 0 is documented behaviour and is not a defect. What WAS a defect is that the host report
+also discarded the reviewer's finding TEXT, so two correctly blocked items reached the operator with
+nothing to carry into a retry. Fixed 2026-08-21: a rejected item now repeats what the diff does not
+carry, labelled uncounted and bounded by ruling 58's cap. `OWNER-QUESTIONS.md` #16. **The rate did not
+move and this item still fails.**
+
 **And a reviewer that produces no verdict is `error`, which blocks** — driven by killing the reviewer
 mid-turn and asserting the item does not integrate. v1 merged its most delicate change on
 `review: not run (REVIEWER_FAILED)`.
@@ -812,3 +843,53 @@ RAM** — recorded precisely, because "the macOS leg fails on RAM" would have be
 **The promises unproven:** that fan-out isolates, on macOS CI specifically (item 4); and that the hard
 ceiling cancels work already running, wherever the fixture's spend lands under its pinned ceiling
 (item 13, on any platform where that happens).
+
+### RECORDED 2026-08-21 — the second independent verifier ran, and its verdict is BAR NOT MET
+
+`VERIFIER-REPORT-2.md`, verbatim and negatives included, from a fresh clone of `gauntlet/verify-3` at
+`65990a9084fdb625a548a590e64b55bd94d1c430` on macOS 26.5.2 / Darwin 25.5.0 arm64. **A failed or
+skipped item means no tag, and three items failed.** The rulings below are recorded here by this
+file's own procedure — which item, why, and what promise is therefore unproven.
+
+Two things it confirmed first, because they bound what the failures mean. `bun run gates` in a fresh
+clone: **1,757 pass, 0 fail, 0 skipped, 0 todo**. `bar/run.ts` against the compiled binary:
+**14/14 PASS, 0 SKIPPED**. Both at load1 4.25 to 5.00, which the verifier recorded as contended rather
+than presenting as quiet readings. So the checked-in instrument is green against this artifact, and
+every failure below was found by driving the real thing past where the instrument reaches.
+
+**(d) Item 5's catch rate is 2 of 5, and its cross-vendor half is UNRUN.** Recorded in full in item 5
+above, where a reader looks. **The promises unproven:** that a cross-vendor reviewer catches at least
+three of five planted defects, which is measured and missed; and that review is cross-vendor at all on
+a real fleet, which did not run — Copilot returned `Authentication required` mid-session and OpenCode
+drove both roles. The second is an environmental limitation and the verifier reported it as one, which
+is the right call and is also why it is `unrun` rather than passed.
+
+**(e) Item 1 graded `detect` honest, and the run then routed five items to an agent that could not
+work.** MEASURED: `brigadier detect --json` reported Claude 0.70.0 **usable** with a session open in
+1,332 ms; all five workers failed at their first `session/prompt` with `-32000 Authentication
+required`; the run integrated 0 of 5. The authentication failure is environmental. **Admitting the
+agent on the strength of `session/new` is the artifact's behaviour**, and it is the same signature the
+FIRST verifier hit on bridge 0.69.0 — twice recorded, on two bridges, so it is not an edge case.
+
+**The promise therefore unproven:** that an agent this bar reports as `usable` can perform a unit of
+work. Ruling 41's second step proves a session opens, and for this vendor a session opens for an
+unauthenticated account. Item 1 is not weakened by this and its own assertions all held; what is
+unproven is the word *usable* meaning what a reader takes it to mean. **Closing it needs a cheaper
+per-vendor credential probe, and nobody has measured which vendors expose one** — a prompt costs a
+metered turn at every detection, which is what ruling 71's cache exists to avoid. `OWNER-QUESTIONS.md`
+#14 keeps that half open; the per-item cost of relearning it was ruled and fixed on 2026-08-21.
+
+**(f) The run report stated the plan had no `write` item when all five were `write` items.** Found by
+the verifier, reproduced in a test before it was fixed, and fixed the same day
+(`OWNER-QUESTIONS.md` #15). Recorded here because it is item 11's second half — a run where items fail
+is reported without hiding the failure — and what was hidden was the failure's **kind**. An operator
+reading that sentence concludes the plan was read-only and no review was owed. **No promise is left
+unproven by it now**, and it is on this list because a defect item 11 should have caught was found by
+someone driving the product instead.
+
+**What the verifier did NOT find, said plainly.** It planted its own defects, drove the live items on a
+credentialed machine, attacked three seams the fixture pass does not settle, and ran the required
+process listing at the end — **no surviving brigadier, marked fixture or vendor process**. It accepted
+the harness's own negative controls as green where it observed them fire. It retained the interrupted
+clones rather than deleting them, because retained work is evidence, which is ruling 63 being obeyed by
+someone who did not write it.

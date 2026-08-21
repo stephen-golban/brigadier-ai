@@ -31,6 +31,7 @@ is not available to anyone."*
 | 15 | the report said the plan had no write items when all five were | **FIXED** — reproduced in a test that fails without the fix; the sentence now comes from the plan |
 | 16 | reviewer findings discarded from the host report; item 5 failed at 2 of 5 | **PARTLY FIXED** — the finding text is carried now; the 2-of-5 rate is open and still blocks the tag |
 | 17 | **NEW** — actual spend exceeded the predicted upper bound by 1.03% | open — reported honestly, no ceiling configured, one data point |
+| 18 | **NEW** — two writes a millisecond apart share an mtime on Windows | open — the detection cache fingerprints `size:mtime`; left failing loudly, granularity unmeasured |
 
 ---
 
@@ -614,6 +615,24 @@ path inside the script, which shapes 1 and 2 prove is fine native. Prediction: t
 inert, this diagnosis is wrong and the entry reopens. That is the refutation condition, stated in
 advance.
 
+**CONFIRMED ON WINDOWS 2026-08-21. The prediction held.** MEASURED on `windows-latest` by run
+32484887714, job 96779075920, against `039d0ee`, diffed test-name by test-name against run 32415677392
+at `65990a9`:
+
+| | at `65990a9` | at `039d0ee` |
+| --- | --- | --- |
+| pass | 1,684 | **1,692** |
+| fail | 72 | **64** |
+| skip | 2 | 2 |
+
+**Nine tests flipped from fail to pass, and they are exactly the planted-payload family** — E1, E2,
+E4's two arms, E5/E6's two arms, `core.fsmonitor` in the global config, and the two recycling controls.
+Every one of them is a NEGATIVE CONTROL that had been inert, so the guards beside them were passing
+vacuously on that platform and are now doing work. Nothing else in the family remains inert.
+
+One test moved the other way and it is **not** caused by this change: see #18, which is a filesystem
+fact this repository had not measured.
+
 **APPLIED 2026-08-21, at all five sites.** MEASURED on darwin 25.5.0 / bun 1.3.14 at load1 3.17 to
 3.50: `bun run gates` exit 0, 1,757 pass, 0 fail, 0 skipped, 0 todo, unchanged from before the edit,
 which is what a no-op on POSIX should look like. Whether it does anything on Windows is what the next
@@ -900,6 +919,40 @@ a data point, not a trend, particularly with #44's measured 15× between two ide
 already in the record. What nobody knows yet is whether the range is systematically narrow or whether
 this run was ordinary variance, and one drive cannot tell those apart. It is recorded so the next
 drive has something to compare against instead of noticing it again from scratch.
+
+---
+
+## 18. NEW, 2026-08-21 — two writes a millisecond apart share an mtime on Windows, and the cache fingerprint is `size:mtime`
+
+Found by diffing the Windows failure set across runs rather than by looking for it. One test moved from
+pass to fail between `65990a9` and `039d0ee`, and **nothing in that commit touches it** — the commit
+changes planted-payload paths in two isolation fixtures and nothing else.
+
+MEASURED on `windows-latest`, run 32484887714, `test/build-identity.test.ts:238`: the test writes a file,
+reads its mtime, writes the SAME file again, and asserts the mtime changed. It did not.
+`1787317474712857800n` both times. The value carries nanosecond digits, so the resolution is there and
+the UPDATE granularity is what is coarse.
+
+**Why this is not just a flaky test.** `src/agent/detect-cache.ts:267` fingerprints an executable as
+`` `${stat.size}:${stat.mtimeMs}` ``, and that fingerprint is how ruling 71's cache notices a vendor that
+upgraded in place. On a filesystem whose mtime update granularity is coarser than the write, **a binary
+rewritten in place at the same size inside that window produces an identical fingerprint**, and the cache
+does not notice the upgrade. That is precisely the staleness the cache exists to catch, and it is the
+same SHAPE as ruling 15's inode being defeated on ext4: a fixture asserting a fact about the FILESYSTEM
+that is false on one of the three supported platforms.
+
+**What is NOT claimed, because it is not measured.** How coarse. The reading proves only *two writes
+about a millisecond apart, at unchanged size, are indistinguishable*. A real vendor upgrade takes far
+longer than that and almost always changes size, so the practical exposure is small. It is not zero, and
+nobody has measured where the boundary is. The measurement is one experiment in the shape of
+`test/git-payload-shape.test.ts`: write at increasing intervals, record the smallest gap that changes
+the mtime, per platform.
+
+**Left FAILING rather than fixed, deliberately.** Sleeping past the granularity would turn it green while
+hiding the platform fact, which is the wrong direction and is what `BAR.md` means by a check that did not
+run not being a check that passed. Ruling 15's ext4 entry was handled exactly this way — left red, with
+its own comment calling it *a limit worth failing loudly on*, until a mechanism existed that was exact
+everywhere. **Nobody should reword this probe until it passes.**
 
 ---
 
