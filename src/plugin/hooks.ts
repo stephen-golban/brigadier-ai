@@ -56,13 +56,35 @@ export const FLOOR_HOOK_EVENTS: readonly string[] = [
 /**
  * What brigadier's plugin actually registers.
  *
- * ONE event, and that is the minimum possible blast radius for a total-discard
- * failure. It is decision 28's recovery of decision 8's accepted cost — the
- * PreCompact handoff nudge — and ruling 57 removed the other candidate reason
- * to add hooks, since the plugin-inert mechanism is the binary's refusal and
- * not a hook.
+ * TWO events since 2026-08-21, and going from one to two is the largest change
+ * this file has had, because the blast radius of a mistake here is the whole
+ * file: ONE unrecognised event discards EVERY hook in it, silently.
+ *
+ * `PreCompact` is decision 28's recovery of decision 8's accepted cost — the
+ * handoff nudge.
+ *
+ * `UserPromptSubmit` is ruling 75's possession. It sat in `FLOOR_HOOK_EVENTS`
+ * unused for five days: pre-approved by this file's own build gate, measured
+ * against `claude 2.1.233`, and never registered. MEASURED against `claude
+ * 2.1.238` on 2026-08-21, its stdout reaches the model and the model acts on it
+ * — an identity instruction delivered this way produced `brigadier: planning`
+ * from a session that was never told brigadier's name, against a no-hook control
+ * that knew nothing of it.
+ *
+ * **What registering it costs, and it is a real cost.** Adding an event is a
+ * breaking change for every older `claude`, by the measurement above this. The
+ * bound is known rather than feared: `UserPromptSubmit` is in the floor, so the
+ * effective minimum becomes the floor's measured version — and on anything older
+ * BOTH hooks are discarded, including the `PreCompact` nudge that works there
+ * today. `missingHooks` asserts NAMES and is what turns that from silent into
+ * reported.
+ *
+ * Ruling 57 still removed the other candidate reason to add hooks: the
+ * plugin-inert mechanism is the binary's refusal, not a hook. This event is not
+ * that; it is the opposite direction, and `possess.ts` makes it emit nothing at
+ * all inside a worker for exactly ruling 36's reason.
  */
-export const REGISTERED_HOOK_EVENTS: readonly string[] = ["PreCompact"];
+export const REGISTERED_HOOK_EVENTS: readonly string[] = ["PreCompact", "UserPromptSubmit"];
 
 /** `bun run build` fails on a non-empty result. Ruling 60's build gate. */
 export function eventsAboveFloor(events: readonly string[] = REGISTERED_HOOK_EVENTS): string[] {

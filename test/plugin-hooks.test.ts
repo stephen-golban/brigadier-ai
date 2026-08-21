@@ -18,22 +18,31 @@ import {
   unrecognisedEvents,
 } from "../src/plugin/hooks.ts";
 
-// Real output shape, copied from `claude plugin details` on 2.1.233.
-const healthy = `probeplug 0.0.1
-  probe
-  Source: probeplug@skills-dir
+// Real output, CAPTURED from `claude plugin details brigadier` against
+// `claude 2.1.238` on macOS 26.5.2 on 2026-08-21, with brigadier's own asset
+// installed. The previous fixture was the same command's output at 2.1.233 with
+// one hook registered; it was replaced when ruling 75 registered a second,
+// rather than hand-edited — the point of a captured fixture is that no human
+// decided what it says.
+//
+// It also settles the question registering a second event raises: `Hooks (2)`
+// with both names means the file was NOT discarded on this version, which is
+// ruling 60's silent failure mode observed not happening.
+const healthy = `brigadier 0.0.0
+  An ACP hub: one client drives whichever coding agents are installed, isolates each unit of work, and composes them.
+  Source: brigadier@skills-dir
 
 Component inventory
-  Skills (1)  demo
+  Skills (1)  brigadier
   Agents (0)
-  Hooks (1)  PreCompact  (harness-only — no model context cost)
+  Hooks (2)  PreCompact, UserPromptSubmit  (harness-only — no model context cost)
   MCP servers (0)
   LSP servers (0)
 `;
 
 // What one unrecognised event produces. This is the failure, and it is silent.
 const discarded = healthy.replace(
-  "  Hooks (1)  PreCompact  (harness-only — no model context cost)\n",
+  "  Hooks (2)  PreCompact, UserPromptSubmit  (harness-only — no model context cost)\n",
   "  Hooks (0)\n",
 );
 
@@ -49,12 +58,13 @@ describe("the build gate", () => {
     ]);
   });
 
-  test("one event, which is the minimum possible blast radius", () => {
-    // Because the discard is TOTAL, every extra event is another way to lose
-    // all of them on an older host.
-    expect(REGISTERED_HOOK_EVENTS).toHaveLength(1);
-    expect(REGISTERED_HOOK_EVENTS[0]).toBe("PreCompact");
-    expect(FLOOR_HOOK_EVENTS).toContain("PreCompact");
+  test("two events, and every one of them is another way to lose all of them", () => {
+    // Because the discard is TOTAL, the count is a liability rather than a
+    // feature. This asserts the exact set rather than a maximum, so ADDING a
+    // third is a deliberate edit here — which is the only protection a
+    // total-discard failure mode can have.
+    expect([...REGISTERED_HOOK_EVENTS]).toEqual(["PreCompact", "UserPromptSubmit"]);
+    for (const event of REGISTERED_HOOK_EVENTS) expect(FLOOR_HOOK_EVENTS).toContain(event);
   });
 });
 
@@ -64,8 +74,11 @@ describe("the self-check asserts names, not a count", () => {
     expect(hookWarning(missingHooks(healthy))).toBe("");
   });
 
-  test("the silent total discard is detected", () => {
-    expect(missingHooks(discarded)).toEqual(["PreCompact"]);
+  test("the silent total discard is detected, and reports EVERY lost event", () => {
+    // The cost of the second event, made visible: a discard now loses possession
+    // AND decision 28's handoff nudge, and the check has to name both or an
+    // operator fixes one and believes they are done.
+    expect(missingHooks(discarded)).toEqual(["PreCompact", "UserPromptSubmit"]);
     expect(hookWarning(missingHooks(discarded))).toContain("not registered");
   });
 
@@ -73,8 +86,8 @@ describe("the self-check asserts names, not a count", () => {
     // This is the case a count-based check would pass. `.lsp.json` was measured
     // reporting `LSP servers (1)` for `{"notARealKey": 1}`, so a non-zero count
     // is not evidence that the right thing loaded.
-    const wrong = healthy.replace("Hooks (1)  PreCompact", "Hooks (1)  SomethingElse");
-    expect(missingHooks(wrong)).toEqual(["PreCompact"]);
+    const wrong = healthy.replace("Hooks (2)  PreCompact, UserPromptSubmit", "Hooks (2)  SomethingElse, AnotherThing");
+    expect(missingHooks(wrong)).toEqual(["PreCompact", "UserPromptSubmit"]);
   });
 
   test("multiple expected events are reported individually", () => {
@@ -86,7 +99,7 @@ describe("the self-check asserts names, not a count", () => {
   test("output with no Hooks line at all is a failure, not a pass", () => {
     // A reformat of `claude plugin details` lands here. Ruling 52: it blocks
     // rather than passes, so it fails safe and noisily.
-    expect(missingHooks("some completely different output")).toEqual(["PreCompact"]);
+    expect(missingHooks("some completely different output")).toEqual(["PreCompact", "UserPromptSubmit"]);
   });
 });
 

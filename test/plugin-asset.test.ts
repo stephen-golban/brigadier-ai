@@ -113,11 +113,25 @@ describe("ruling 42: the shapes differ, because the hosts were measured to diffe
   });
 });
 
-describe("ruling 60: the shipped hooks.json carries exactly one event", () => {
-  test("one event, and it is PreCompact", () => {
+describe("ruling 60: the shipped hooks.json carries exactly what is registered", () => {
+  test("the asset and the constant agree, event for event", () => {
+    // The asset is the bytes a user receives and the constant is what the build
+    // gate checks. If they ever disagree, the gate is checking something nobody
+    // installed — and the disagreement would be silent, because a hooks.json
+    // with an unregistered event still parses.
     const events = Object.keys(JSON.parse(HOOKS_TEXT).hooks);
-    expect(events).toEqual(["PreCompact"]);
-    expect(events).toEqual([...REGISTERED_HOOK_EVENTS]);
+    expect(events).toEqual(["PreCompact", "UserPromptSubmit"]);
+    expect(events.sort()).toEqual([...REGISTERED_HOOK_EVENTS].sort());
+  });
+
+  test("possession's hook cannot wedge a prompt when brigadier is absent", () => {
+    // The worst thing this repository could ship into a directory it owns is a
+    // UserPromptSubmit hook that fails hard: every prompt in the vendor's
+    // product would break. `|| true` is why a machine without brigadier on PATH
+    // loses possession instead.
+    const command = JSON.parse(HOOKS_TEXT).hooks.UserPromptSubmit[0].hooks[0].command;
+    expect(command).toContain("|| true");
+    expect(command).toContain("brigadier hook user-prompt-submit");
   });
 
   test("the shape is the MEASURED one — a `hooks` wrapper of event arrays", () => {

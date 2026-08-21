@@ -51,6 +51,8 @@ import { resolveVerify } from "./gate/index.ts";
 import { intendedRealPath, realTempDirs } from "./isolation/index.ts";
 import { PLUGIN_USAGE, contextFrom, installCommand, pluginCommand, uninstallCommand } from "./plugin/index.ts";
 import { install } from "./plugin/install.ts";
+import { POSSESSION_DOCTRINE, possessionContext } from "./plugin/possess.ts";
+import { binaryNameFor, doctrinePath, isAgentName, planLaunch, vendorArgs } from "./setup/launch.ts";
 import { configDocument, describeSetup, describeSetupRemoval, planSetup, type DetectedAgent, type SetupRemoval } from "./setup/setup.ts";
 import { shimDirectory, shimPath, shimText, profileFor, shellFrom, withBlock, withoutBlock } from "./setup/shim.ts";
 import {
@@ -90,6 +92,13 @@ const USAGE = `brigadier — an ACP hub
                     does nothing (ruling 77).
       Not required. \`run\` and \`plan\` still detect lazily on a machine that has
       never run this (ruling 71); what setup buys is possession.
+
+  brigadier claude [args...]
+      Start claude with brigadier on: its plugin loaded for that session only and
+      the doctrine appended to — never replacing — the vendor's own system
+      prompt (ruling 77). Any other vendor name launches that vendor untouched
+      and says so, because possession is measured on Claude Code and nowhere
+      else. Your arguments are passed through and win over brigadier's.
 
   brigadier run --plan <path> [--repo <path>] [--run-root <path>]
       Run a plan: one isolated clone per item, one marked worker each, merged
@@ -338,6 +347,118 @@ async function sweep(
 }
 
 /**
+ * `brigadier claude [args…]` — launch a vendor with brigadier on.
+ *
+ * Ruling 75 and ruling 77. This is the half of possession that needs no install
+ * into a directory another product owns: `--plugin-dir` loads brigadier's plugin
+ * for that session only, and `--append-system-prompt-file` carries the doctrine
+ * once rather than on every prompt.
+ *
+ * It **execs** rather than spawning a child and waiting. A vendor CLI is an
+ * interactive program that owns the terminal, and putting brigadier in the
+ * middle of that would mean proxying a pty — which is exactly the screen-scraping
+ * the map lists under *Rejected tooling*, arrived at from the other direction.
+ * Replacing the process leaves the vendor talking to the terminal directly, and
+ * leaves nothing of ours in ruling 38's process tree.
+ */
+async function launchCommand(agent: AgentId): Promise<number> {
+  const runRoot = absolute(value("run-root") ?? defaultRunRoot());
+  const { home, env } = contextFrom(argv.slice(1));
+
+  const binaryName = binaryNameFor(agent);
+  const binary = Bun.which(binaryName);
+  if (binary === null) {
+    sink.errLine(`brigadier: ${binaryName} is not on PATH, so there is nothing to launch.`);
+    sink.errLine("  `brigadier detect` reports which vendors are present and what each one's own remedy is.");
+    return 4;
+  }
+
+  let enabled = true;
+  try {
+    enabled = loadConfig(configPath(env), { exists: existsSync, read: (path) => readFileSync(path, "utf8") })
+      .config.possession.enabled;
+  } catch (error) {
+    // Unlike the hook, this path CAN refuse: a person typed this command and is
+    // waiting, so a broken config is worth stopping for rather than silently
+    // launching an unpossessed session they asked to be possessed.
+    if (!(error instanceof ConfigUnusable)) throw error;
+    sink.errLine(`refused — ${error.message}`);
+    return 2;
+  }
+
+  const doctrine = doctrinePath(runRoot);
+  // `setup` writes this. Re-writing it here means `brigadier claude` works on a
+  // machine where setup has never run, which is ruling 71's lazy-first-contact
+  // property applied to possession rather than to detection.
+  if (!existsSync(doctrine)) sink.write(doctrine, `${POSSESSION_DOCTRINE}\n`);
+
+  const plan = planLaunch({
+    agent,
+    userArgs: vendorArgs(argv.slice(1)),
+    binary,
+    pluginDirectory: join(home, ".claude", "skills", "brigadier"),
+    doctrine,
+    enabled,
+  });
+  if (plan.notice !== undefined) sink.errLine(plan.notice);
+  sink.end();
+
+  // Replace this process. Bun has no `execve`, so the closest honest thing is to
+  // run the child attached to our own stdio and exit with its status — the
+  // terminal is the child's for the whole of its life either way.
+  const child = Bun.spawn([plan.command, ...plan.args], { stdio: ["inherit", "inherit", "inherit"] });
+  return await child.exited;
+}
+
+/**
+ * `brigadier hook <event>` — what a registered hook actually runs.
+ *
+ * Ruling 75. This is the possession channel on Claude Code, and everything about
+ * it is shaped by one fact: **it runs on every prompt, forever.** Whatever it
+ * prints is paid for again on every turn of a conversation that may last hours,
+ * so it prints one byte-stable line or nothing at all.
+ *
+ * It CANNOT fail loudly and must never block a prompt. The registered command is
+ * `brigadier hook user-prompt-submit 2>/dev/null || true`, so a machine where
+ * `brigadier` is not on `PATH` — which is the default until `setup --modify-path`
+ * or a hand-added line, ruling 77 — degrades to no possession rather than to a
+ * session that cannot accept input. A hook that can wedge every prompt in a
+ * vendor's product is the single worst thing this repository could ship into a
+ * directory it owns, and ruling 8's whole point is that we are a guest here.
+ */
+function hookCommand(): number {
+  const event = argv[1];
+  if (event !== "user-prompt-submit") {
+    sink.errLine(`unknown hook event: ${event ?? "(none)"}\n`);
+    sink.errLine("  brigadier hook user-prompt-submit");
+    return 2;
+  }
+
+  // Ruling 36 and ruling 57. A worker gets NOTHING — not a shorter line, not an
+  // explanation. v1's finding 114 is a worker that ran the orchestrator instead
+  // of working, and it reproduced unprovoked in #14; a possession hook is that
+  // route with a louder voice.
+  const insideWorker = isInsideWorker();
+
+  // The toggle. A malformed config must not wedge a prompt either, so this is
+  // the one place in the product where an unusable config falls back instead of
+  // refusing — and the fallback is SILENCE, which is the safe direction.
+  let enabled = true;
+  try {
+    enabled = loadConfig(configPath(), { exists: existsSync, read: (path) => readFileSync(path, "utf8") })
+      .config.possession.enabled;
+  } catch {
+    enabled = false;
+  }
+
+  const context = possessionContext({ insideWorker, enabled });
+  // Nothing at all, not an empty line: Claude Code adds stdout as context and a
+  // blank line is still a byte in a window somebody is paying for.
+  if (context.length > 0) sink.outLine(context);
+  return 0;
+}
+
+/**
  * `brigadier setup` — ruling 76's non-interactive door.
  *
  * The order is deliberate and it is the order of what can still refuse:
@@ -458,6 +579,10 @@ async function setupCommand(): Promise<number> {
     if (plan.binaryIsArtifact) {
       const shim = shimPath(runRoot);
       sink.write(shim, shimText(process.execPath));
+      // The long form the shim appends to a session's system prompt, once per
+      // session. It lives under ruling 61's root beside the shim rather than in
+      // a temp directory, for ruling 61's own measured reason.
+      sink.write(doctrinePath(runRoot), `${POSSESSION_DOCTRINE}\n`);
       // 0o755, and only where a mode means anything. A shim nobody can execute
       // is the same failure as a shim nobody can find, one step later.
       if (process.platform !== "win32") chmodSync(shim, 0o755);
@@ -1262,6 +1387,12 @@ const exitCode = await (async () => {
     return 3;
   }
 
+  // A vendor's name is a launch, not a subcommand: `brigadier claude` starts
+  // claude with brigadier on (ruling 77). Checked before the switch so a future
+  // subcommand can never silently shadow a vendor name — and if one ever needs
+  // to, that collision is a decision rather than an accident.
+  if (isAgentName(command) && command !== undefined) return await launchCommand(command);
+
   switch (command) {
     case "run":
       return run();
@@ -1291,6 +1422,8 @@ const exitCode = await (async () => {
         // stderr, never stdout: on stdout the sink is the frame stream.
         warn: (text) => sink.errLine(text),
       });
+    case "hook":
+      return hookCommand();
     case "setup":
       return await setupCommand();
     case "detect":

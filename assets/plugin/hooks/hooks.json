@@ -9,6 +9,16 @@
           }
         ]
       }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "brigadier hook user-prompt-submit 2>/dev/null || true"
+          }
+        ]
+      }
     ]
   }
 }

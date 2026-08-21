@@ -161,7 +161,7 @@ export function uninstallCommand(argv: readonly string[]): number {
  */
 export function hooksSurface(): string[] {
   return [
-    `brigadier registers ${REGISTERED_HOOK_EVENTS.length} hook event, by name:`,
+    `brigadier registers ${REGISTERED_HOOK_EVENTS.length} hook event${REGISTERED_HOOK_EVENTS.length === 1 ? "" : "s"}, by name:`,
     "",
     ...REGISTERED_HOOK_EVENTS.map((event) => `  ${event}`),
     "",
@@ -172,9 +172,15 @@ export function hooksSurface(): string[] {
     `  vocabulary ${KNOWN_HOOK_EVENTS.length} events accepted by \`claude ${KNOWN_EVENTS_CLAUDE_VERSION}\`, measured one at a time:`,
     `             ${KNOWN_HOOK_EVENTS.join(", ")}.`,
     "",
-    "  Why one event and not three: MEASURED that ONE unrecognised event discards EVERY hook in the",
-    "  file — `Hooks (3)` becomes `Hooks (0)`, with no warning, no error and no non-zero exit. The",
-    "  blast radius is the whole file, so adding an event is a breaking change for every older claude.",
+    "  Why so few: MEASURED that ONE unrecognised event discards EVERY hook in the file — `Hooks (3)`",
+    "  becomes `Hooks (0)`, with no warning, no error and no non-zero exit. The blast radius is the",
+    "  whole file, so adding an event is a breaking change for every older claude, and an event may",
+    "  only be registered once it sits in the measured floor above.",
+    "",
+    "  UserPromptSubmit is possession (ruling 75). It runs `brigadier hook user-prompt-submit`, which",
+    "  prints ONE byte-stable line — and prints NOTHING inside a worker (ruling 36) or with possession",
+    "  turned off. Its registered command ends in `|| true`, so a machine where `brigadier` is not on",
+    "  PATH loses possession rather than losing the ability to submit a prompt.",
     "",
     "  The file brigadier writes:",
     ...HOOKS_TEXT.trimEnd()

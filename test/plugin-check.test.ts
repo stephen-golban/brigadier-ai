@@ -112,7 +112,10 @@ describe("NEGATIVE CONTROL: malformed JSON", () => {
 });
 
 describe("NEGATIVE CONTROL: ruling 58's run-level line for a missing PreCompact", () => {
-  const healthyOwn = inspectHooks(OURS, wrapped({ PreCompact: H }), true);
+  // A healthy file now carries BOTH registered events — decision 28's handoff
+  // nudge and ruling 75's possession. A fixture with only one is a file missing
+  // a hook, which is what these tests exist to detect.
+  const healthyOwn = inspectHooks(OURS, wrapped({ PreCompact: H, UserPromptSubmit: H }), true);
 
   test("a complete installation produces no missing-hook line", () => {
     const report = judgeHooks({ findings: [healthyOwn], detailsOutput: undefined, installed: true });
@@ -144,7 +147,10 @@ describe("NEGATIVE CONTROL: ruling 58's run-level line for a missing PreCompact"
   });
 
   test("and the healthy host view says so by name rather than by count", () => {
-    const good = "Component inventory\n  Hooks (1)  PreCompact  (harness-only — no model context cost)\n";
+    // Two names now. CAPTURED from `claude plugin details brigadier` against
+    // `claude 2.1.238` on 2026-08-21 — a real installation, not a hand-written
+    // shape.
+    const good = "Component inventory\n  Hooks (2)  PreCompact, UserPromptSubmit  (harness-only — no model context cost)\n";
     const report = judgeHooks({ findings: [healthyOwn], detailsOutput: good, installed: true });
     expect(report.ok).toBe(true);
     expect(report.runLevel.join("\n")).toContain("asserted by NAME");
