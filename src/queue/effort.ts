@@ -60,6 +60,16 @@ export type EffortRequest = (typeof EFFORT_ORDER)[number];
 export const CEILING: EffortRequest = "high";
 
 /**
+ * Ruling 79's row for the kinds brigadier commissions itself — `plan` and
+ * `research`.
+ *
+ * One constant, named here beside the derivation rather than beside either
+ * caller, because two callers with their own default is two defaults the day one
+ * of them moves.
+ */
+export const COMMISSIONED_EFFORT: EffortRequest = "medium";
+
+/**
  * Ruling 31's derivation, and the two facts it is derived from.
  *
  * The difficulty half is the obvious one. The KIND half is not, and it is the
@@ -74,6 +84,30 @@ export function deriveEffort(
   difficulty: Difficulty | null,
   ceiling: EffortRequest = CEILING,
 ): EffortRequest {
+  // RULING 79's two new rows, and the reason they are flat rather than derived.
+  //
+  // A `plan` or `research` item has NO model-supplied `difficulty` at all: under
+  // ruling 75 the input is a person's sentence, and there is no plan yet for
+  // anyone to have annotated. Ruling 67 named decision 31's structural problem
+  // as *"the gate is in its own fence"* — a model cannot set effort but can set
+  // the difficulty that determines it — and these are the two items where that
+  // fence closes by itself. There is nothing to derive from, so there is nothing
+  // to inflate.
+  //
+  // `medium` because the map's own measurement puts it there: *low wins PR-scale
+  // code review, medium wins Expert-SWE refactor, high wins competition
+  // mathematics*, with Claude Opus 5 measured peaking at `medium`. Ruling 40
+  // bounds how much it matters — on Claude the lever is a switch, 4,000 thinking
+  // tokens giving 2,744 median output against 32,000's 2,836 — so this is a real
+  // choice on Codex and close to decoration on the most-used vendor.
+  //
+  // NOT stepped down the way `read-only` is, and the difference is ruling 79's
+  // own reason for that step rather than an exemption from it: `read-only` steps
+  // down because nothing downstream can check that a costlier attempt was worth
+  // paying for. Both of these are checked. A plan is parsed, validated, and
+  // executed; a finding is carried into a later brief and refused if it carries
+  // no date. Ruling 78's `product` field is the same distinction one file over.
+  if (kind === "plan" || kind === "research") return atMost(COMMISSIONED_EFFORT, ceiling);
   const base: Record<Difficulty, EffortRequest> = { easy: "low", medium: "medium", hard: "high" };
   // An item that declares nothing gets the middle, which is the same default
   // `plan.ts` clamps difficulty to. One default, stated in two places, would be

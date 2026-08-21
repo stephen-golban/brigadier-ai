@@ -53,7 +53,15 @@ import { resolveVerify } from "./gate/index.ts";
 import { intendedRealPath, realTempDirs } from "./isolation/index.ts";
 import { PLUGIN_USAGE, contextFrom, installCommand, pluginCommand, uninstallCommand } from "./plugin/index.ts";
 import { install } from "./plugin/install.ts";
-import { PlannerRefused, choosePlanner, commissionPlan } from "./plan/commission.ts";
+import {
+  FindingUnusable,
+  PlannerRefused,
+  choosePlanner,
+  chooseResearcher,
+  commissionPlan,
+  commissionResearch,
+} from "./plan/commission.ts";
+import { findingForPlanner, looksLikeItNeedsResearch, todayStamp } from "./plan/research.ts";
 import { PlannerUnusable, looksTrivial } from "./plan/planner.ts";
 import { buildBaseState } from "./isolation/base.ts";
 import { buildRepoMap } from "./repomap/map.ts";
@@ -107,11 +115,16 @@ const USAGE = `brigadier — an ACP hub
       and says so, because possession is measured on Claude Code and nowhere
       else. Your arguments are passed through and win over brigadier's.
 
-  brigadier run --goal "<sentence>" [--repo <path>] [--run-root <path>]
+  brigadier run --goal "<sentence>" [--research | --no-research] [--repo <path>]
       Say what you want in English. brigadier commissions the plan from a
       workhorse, writes it to the run record, and prints ONE LINE naming the
       path -- never the plan itself, because your repository stays byte-identical
       and a session's window is not free (rulings 74 and 58).
+      --research    take a dated finding from the web first and give it to the
+                    planner (ruling 78). Routes only to a vendor whose web reach
+                    was MEASURED; elsewhere it says "unmeasured on this agent",
+                    which needs a probe rather than a different machine.
+      --no-research never research, whatever the goal looks like.
 
   brigadier run --plan <path> [--repo <path>] [--run-root <path>]
       Run a plan: one isolated clone per item, one marked worker each, merged
@@ -945,6 +958,29 @@ async function version(): Promise<number> {
  * exit-and-resume channel of ruling 75, which is Track A step 6, so today it
  * prints and proceeds.
  */
+/**
+ * D3, as far as it can be honoured before ruling 75's exit-and-resume exists.
+ *
+ * *"Planning and research are not forced. Work that needs neither gets neither.
+ * Brigadier decides — and asks the user anyway before spending on either."* The
+ * asking is Track A step 6; until it lands, the decision is printed and taken,
+ * and the operator's two flags override it in both directions.
+ *
+ * **The heuristic only ever suggests, and is named as a heuristic everywhere it
+ * appears.** Whether a sentence turns on a fact the fleet has wrong is a
+ * judgement about a world nobody has looked at yet, and there is no measurement
+ * behind it.
+ */
+function wantsResearch(goal: string): boolean {
+  // The operator's own words win over a regular expression, in both directions.
+  if (flag("no-research")) return false;
+  if (flag("research")) return true;
+  if (looksTrivial(goal) || !looksLikeItNeedsResearch(goal)) return false;
+  // D24's line form. It says what is about to be spent and how to not spend it.
+  sink.outLine("brigadier: this goal turns on something current — researching first (`--no-research` skips it)");
+  return true;
+}
+
 async function commission(
   goal: string,
   repo: string,
@@ -984,6 +1020,8 @@ async function commission(
   // Ruling 50: the scratch index must be OUTSIDE the operator's repository, or
   // `git add -A` sweeps it into the base commit as an untracked file.
   const base = await buildBaseState({ repo, runId: `${runId}p`, scratchDir: planDir });
+  const repoName = repo.split("/").pop() ?? repo;
+  const findingFile = join(planDir, "finding.md");
   let repoMap = "";
   try {
     repoMap = (await buildRepoMap(repo)).text;
@@ -994,13 +1032,74 @@ async function commission(
     repoMap = "";
   }
 
+  // RULING 84: research is a phase BEFORE the planner, and its finding goes into
+  // the planner's brief. Never an item inside the plan — ruling 78 describes a
+  // finding "carried into a later item's brief" and `PLANNER_RULES` rule 6
+  // denies that channel, because `dependsOn` is a wave boundary and not a
+  // channel. `PRODUCT.md` section 1 orders it research, then plan; this is that
+  // order, and it needs no channel at all.
+  let finding: Awaited<ReturnType<typeof commissionResearch>> | undefined;
+  if (wantsResearch(goal)) {
+    const chosen = chooseResearcher(usable, settings.roles.builder);
+    if ("refusals" in chosen) {
+      // RULING 53's *find out before you spend*, and ruling 78's two remedies
+      // kept apart. Not fatal: a goal is still plannable without a finding, and
+      // refusing the whole run because one optional phase has no vendor would
+      // spend the operator's time to protect nothing.
+      sink.outLine("brigadier: research skipped — no vendor on this machine may research");
+      for (const line of chosen.refusals) sink.errLine(`  ${line}`);
+    } else {
+      const today = todayStamp(new Date());
+      sink.outLine(`brigadier: research → ${chosen.agent}`);
+      try {
+        finding = await commissionResearch(
+          {
+            agent: chosen.agent,
+            goal,
+            repoMap,
+            repoName,
+            base,
+            runRoot,
+            // Its own id again, and a different suffix from the planner's: two
+            // commissioned turns in one goal are two clones, and ruling 38's
+            // sweep reads a directory name to tell them apart.
+            planRunId: `${runId}s`,
+            timeoutMs: Number(value("timeout") ?? 300_000),
+            suppressAmbient: settings.ambientSuppression,
+          },
+          { question: goal, today },
+        );
+        sink.write(findingFile, `${finding.text}\n`);
+        sink.outLine(`brigadier: finding ready → ${findingFile}`);
+      } catch (error) {
+        if (error instanceof FindingUnusable) {
+          // D22, and it is a REFUSAL rather than a degradation: an undated
+          // finding is the exact failure this kind exists to catch, so it does
+          // not quietly become the planner's context.
+          sink.errLine(`brigadier: ${error.message}`);
+          sink.errLine(`  it said: ${error.received.slice(0, 400).replace(/\n/g, " ")}`);
+          sink.outLine("brigadier: planning without a finding");
+        } else if (error instanceof PlannerRefused) {
+          sink.errLine(`brigadier: ${error.message}`);
+          sink.outLine("brigadier: planning without a finding");
+        } else {
+          throw error;
+        }
+      }
+    }
+  }
+
   const planFile = join(planDir, "plan.json");
   try {
     const commissioned = await commissionPlan({
       agent: planner,
-      goal,
+      // The finding goes in with the GOAL, not with the map: it is what the
+      // operator asked about, dated, and it is more current than the planner's
+      // training. Ruling 21's cache lever survives — the stable rules are still
+      // the prefix, and this is part of the varying tail.
+      goal: finding === undefined ? goal : `${goal}\n\n${findingForPlanner(finding)}`,
       repoMap,
-      repoName: repo.split("/").pop() ?? repo,
+      repoName,
       base,
       runRoot,
       // Its own id — see `commission.ts`. `p` suffixed so a sweep reading a

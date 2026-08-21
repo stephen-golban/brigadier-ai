@@ -21,7 +21,7 @@
  *   confirmed as a real `process.env` read.
  */
 
-import type { WorkKind } from "../work/kind.ts";
+import { lanePolicyFor, type WorkKind } from "../work/kind.ts";
 import type { Capabilities } from "../work/requires.ts";
 import { WORKER_MARKER } from "./marker.ts";
 
@@ -54,7 +54,13 @@ export type LaneAssertion =
 /** The mode to assert for this kind, or undefined when the vendor offers none. */
 export function laneModeFor(assertion: LaneAssertion, kind: WorkKind): string | undefined {
   if (assertion.kind === "none") return undefined;
-  return kind === "read-only" ? assertion.readOnly : assertion.write;
+  // Read from the CONTRACT rather than from a list of kind names. Ruling 78
+  // added two kinds that are `read-only` in shape, and a `kind === "read-only"`
+  // comparison would have given both of them the vendor's WRITE mode by
+  // falling through — on Codex that is `agent`, which permits writing inside
+  // the clone. The kinds that deny are exactly the kinds whose lane policy is
+  // `deny`, and that is one fact in one place.
+  return lanePolicyFor(kind) === "deny" ? assertion.readOnly : assertion.write;
 }
 
 /**

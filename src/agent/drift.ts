@@ -19,6 +19,7 @@
  */
 
 import type { LaunchProfile } from "./profiles.ts";
+import type { WorkKind } from "../work/kind.ts";
 
 export type DriftSeverity =
   /**
@@ -95,7 +96,11 @@ export function driftFor(profile: LaunchProfile, observedVersion: string): Drift
  * that needs no vendor cooperation, which is exactly why that ruling defined the
  * kind the way it did.
  */
-export function laneFailureBlocks(profile: LaunchProfile, kind: "write" | "read-only"): boolean {
+export function laneFailureBlocks(profile: LaunchProfile, kind: WorkKind): boolean {
+  // `write` and nothing else, and since ruling 78 that is three kinds it is
+  // false for rather than one. A `plan` or `research` worker's directory is
+  // never diffed, merged or read back, so a failed vendor-mode assertion there
+  // costs nothing the flat `deny` lane was not already covering.
   return kind === "write" && profile.laneAssertion.kind !== "none";
 }
 

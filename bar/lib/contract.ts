@@ -122,7 +122,13 @@ export interface RecordItem {
    */
   number?: number;
   status: ItemStatus;
-  kind?: "write" | "read-only";
+  /**
+   * Ruling 78 added `plan` and `research`. Transcribed here rather than
+   * narrowed: a bar item reading a record whose `kind` this type does not admit
+   * measures the wrong thing quietly, which is the exact failure `bun run
+   * claims` check 3 exists to catch — and it caught this one.
+   */
+  kind?: "write" | "read-only" | "plan" | "research";
   /**
    * Ruling 29: the routing unit is a triple, recorded per item — and this half
    * of it is the vendor whose PROCESS SPAWNED.

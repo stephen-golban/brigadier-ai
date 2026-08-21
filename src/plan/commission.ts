@@ -31,14 +31,15 @@
 
 import { Lane } from "../lane/lane.ts";
 import { Worker } from "../agent/worker.ts";
-import { PROFILES, type AgentId } from "../agent/profiles.ts";
+import { PROFILES, researchRefusal, type AgentId } from "../agent/profiles.ts";
 import { spawnMarkedAgent } from "../queue/spawn.ts";
 import { lanePolicyFor } from "../work/kind.ts";
 import { discardClone, prepareClone, releaseToAgent } from "../isolation/clone.ts";
 import type { BaseState } from "../isolation/base.ts";
-import type { EffortRequest } from "../queue/effort.ts";
+import { deriveEffort, type EffortRequest } from "../queue/effort.ts";
 import { isCredentialRefusal } from "../agent/worker.ts";
 import { PlannerUnusable, extractPlanJson, plannerBrief } from "./planner.ts";
+import { FindingUnusable, requireDatedFinding, researchBrief, type Finding } from "./research.ts";
 
 /**
  * The planner was never allowed to answer.
@@ -53,8 +54,10 @@ export class PlannerRefused extends Error {
     readonly agent: AgentId,
     readonly detail: string,
     readonly suppressAmbient: boolean,
+    /** Which commissioned turn this was. Ruling 78 made it two. */
+    readonly role: "planner" | "researcher" = "planner",
   ) {
-    super(`the planner (${agent}) was refused by the vendor: ${detail}`);
+    super(`the ${role} (${agent}) was refused by the vendor: ${detail}`);
     this.name = "PlannerRefused";
   }
 }
@@ -77,7 +80,7 @@ export class PlannerRefused extends Error {
  * switch, 4,000 thinking tokens giving 2,744 median output against 32,000's
  * 2,836 — so this is a real choice on Codex and close to decoration elsewhere.
  */
-export const PLANNER_EFFORT: EffortRequest = "medium";
+export const PLANNER_EFFORT: EffortRequest = deriveEffort("plan", null);
 
 export interface CommissionSpec {
   readonly agent: AgentId;
@@ -132,6 +135,47 @@ export interface Commission {
  * elsewhere and survives.
  */
 export async function commissionPlan(spec: CommissionSpec): Promise<Commission> {
+  const turn = await commissionTurn(spec, "plan", plannerBrief({ goal: spec.goal, repoMap: spec.repoMap, repoName: spec.repoName }));
+  // Refuses loudly rather than salvaging — see `extractPlanJson`. The raw text
+  // travels with the error so an operator can read what the model actually said
+  // rather than being told only that it was not JSON.
+  return { planJson: extractPlanJson(turn.text, spec.agent), raw: turn.text, agent: spec.agent, bytes: turn.bytes };
+}
+
+/**
+ * Ruling 78's other kind, driven through the same machinery, one function down.
+ *
+ * The whole of what differs from a plan is the brief and what is done with the
+ * text — which is exactly what `KIND_CONTRACT.research.product` says, and it is
+ * why this is eight lines rather than a second module: same clone, same marker,
+ * same lane, same `deny`, same ambient lever, same discard.
+ *
+ * **`researchRefusal` runs BEFORE this is called, never inside it.** Ruling 53's
+ * *find out before you spend*, and the trap the `--goal` entry point already paid
+ * for once: a check that fires after a vendor has spawned is a check that costs
+ * money to fail.
+ */
+export async function commissionResearch(
+  spec: CommissionSpec,
+  request: { question: string; today: string },
+): Promise<Finding & { agent: AgentId; bytes: number; raw: string }> {
+  const turn = await commissionTurn(
+    spec,
+    "research",
+    researchBrief({ question: request.question, today: request.today, repoName: spec.repoName }),
+  );
+  // D22. Refuses rather than repairing: a date brigadier stamped on somebody
+  // else's claim is brigadier's date, and the record would show a dated finding
+  // that nobody dated.
+  const finding = requireDatedFinding(turn.text, request.today, spec.agent);
+  return { ...finding, agent: spec.agent, bytes: turn.bytes, raw: turn.text };
+}
+
+async function commissionTurn(
+  spec: CommissionSpec,
+  kind: "plan" | "research",
+  brief: string,
+): Promise<{ text: string; bytes: number }> {
   const profile = PROFILES[spec.agent];
   const clone = await prepareClone({
     base: spec.base,
@@ -146,11 +190,12 @@ export async function commissionPlan(spec: CommissionSpec): Promise<Commission> 
     item: 1,
     runRoot: spec.runRoot,
     cwd: owned.dir,
-    // Ruling 49's contract, unchanged and not weakened for a planner: its
-    // directory is never diffed, never merged and never read back, and its lane
-    // policy is a flat `deny`. A planner that needed a permission granted would
-    // be a planner doing work, which is the one thing it must not do.
-    kind: "read-only",
+    // Ruling 78's kind, which is `read-only` in shape and not weakened for
+    // being a planner's: its directory is never diffed, never merged and never
+    // read back, and its lane policy is a flat `deny`. A planner that needed a
+    // permission granted would be a planner doing work, which is the one thing
+    // it must not do.
+    kind,
     // Decision 17, and since ruling 83 the LEVER is per vendor rather than one
     // mechanism: on Claude the config root is left alone and the vendor's own
     // argv is rewritten instead, because redirecting the root was MEASURED to
@@ -160,10 +205,11 @@ export async function commissionPlan(spec: CommissionSpec): Promise<Commission> 
     ownedDir: owned.dir,
     suppressAmbient: spec.suppressAmbient,
     tmpDir: owned.dir,
-    // Ruling 31: derived, never read from anything a model wrote. A plan item
-    // has no model-supplied `difficulty` at all — there is no plan yet — so this
-    // is the one effort decision in the product with no self-serving input.
-    effort: PLANNER_EFFORT,
+    // Ruling 31 and ruling 79's row: derived, never read from anything a model
+    // wrote. Neither of these kinds has a model-supplied `difficulty` at all —
+    // there is no plan yet — so these are the two effort decisions in the
+    // product with no self-serving input.
+    effort: deriveEffort(kind, null),
     ...(spec.onFrame ? { onFrame: spec.onFrame } : {}),
   });
 
@@ -171,26 +217,22 @@ export async function commissionPlan(spec: CommissionSpec): Promise<Commission> 
   try {
     worker = await Worker.start(profile, {
       cwd: owned.dir,
-      lane: new Lane(owned.dir, lanePolicyFor("read-only")),
-      kind: "read-only",
+      lane: new Lane(owned.dir, lanePolicyFor(kind)),
+      kind,
       channel: marked.channel,
       ...(spec.onFrame ? { onFrame: spec.onFrame } : {}),
     });
-    const turn = await worker.prompt(
-      plannerBrief({ goal: spec.goal, repoMap: spec.repoMap, repoName: spec.repoName }),
-    );
-    // Refuses loudly rather than salvaging — see `extractPlanJson`. The raw text
-    // travels with the error so an operator can read what the model actually
-    // said rather than being told only that it was not JSON.
-    const planJson = extractPlanJson(turn.text, spec.agent);
-    return { planJson, raw: turn.text, agent: spec.agent, bytes: turn.bytes };
+    const turn = await worker.prompt(brief);
+    return { text: turn.text, bytes: turn.bytes };
   } catch (error) {
     // A credential refusal is not a planner that wrote a bad plan, and telling
     // an operator "the planner did not return a usable plan" when the truth is
     // "it was never allowed to answer" sends them to fix the wrong thing.
     // Ruling 52's four outcomes, one layer up: this is `error`, not `fail`.
     const message = error instanceof Error ? error.message : String(error);
-    if (isCredentialRefusal(message)) throw new PlannerRefused(spec.agent, message, spec.suppressAmbient);
+    if (isCredentialRefusal(message)) {
+      throw new PlannerRefused(spec.agent, message, spec.suppressAmbient, kind === "plan" ? "planner" : "researcher");
+    }
     throw error;
   } finally {
     await worker?.close().catch(() => {});
@@ -219,4 +261,26 @@ export function choosePlanner(
   return usable[0];
 }
 
-export { PlannerUnusable };
+/**
+ * Who may research, and — when nobody may — what each vendor's own reason was.
+ *
+ * Ruling 78's column filtered ONCE, before anything spawns. The refusals travel
+ * back rather than being collapsed to "no researcher available", because ruling
+ * 53 draws a line the operator has to act on: *unmeasured on this agent* needs
+ * somebody to run a probe, and *measured unable* needs a different vendor. A
+ * single sentence covering both sends half of them to the wrong remedy.
+ */
+export function chooseResearcher(
+  usable: readonly AgentId[],
+  configured: readonly string[] | undefined,
+): { agent: AgentId } | { refusals: readonly string[] } {
+  const eligible = usable.filter((id) => researchRefusal(id) === undefined);
+  for (const id of configured ?? []) {
+    if ((eligible as readonly string[]).includes(id)) return { agent: id as AgentId };
+  }
+  const first = eligible[0];
+  if (first !== undefined) return { agent: first };
+  return { refusals: usable.map((id) => researchRefusal(id)).filter((line): line is string => line !== undefined) };
+}
+
+export { PlannerUnusable, FindingUnusable };

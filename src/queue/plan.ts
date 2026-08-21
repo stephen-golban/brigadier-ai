@@ -39,7 +39,7 @@
  */
 
 import { ALL_REQUIREMENTS, satisfies, type Capabilities, type Requirement } from "../work/requires.ts";
-import { ALL_WORK_KINDS, type WorkKind } from "../work/kind.ts";
+import { ALL_WORK_KINDS, PLANNABLE_KINDS, type WorkKind } from "../work/kind.ts";
 import { CyclicPlan, UnusablePlan, planWaves, type WaveItem } from "../integrate/waves.ts";
 import { resolveVerify, type VerifyResolution } from "../gate/verify.ts";
 
@@ -267,7 +267,21 @@ export function validatePlan(spec: PlanSpec, input: ValidationInput): ValidatedP
     const kind = entry.kind === undefined ? "write" : entry.kind;
     if (typeof kind !== "string" || !(ALL_WORK_KINDS as readonly string[]).includes(kind)) {
       shape.push(
-        `item ${id} has kind ${JSON.stringify(entry.kind)}; the kinds are ${ALL_WORK_KINDS.join(" and ")} (ruling 49).`,
+        `item ${id} has kind ${JSON.stringify(entry.kind)}; the kinds are ${ALL_WORK_KINDS.join(", ")} (rulings 49 and 78).`,
+      );
+      return;
+    }
+    // RULING 84, refused by name rather than silently mishandled. `plan` and
+    // `research` are kinds brigadier COMMISSIONS from a person's sentence before
+    // a plan exists; a plan declaring one is asking for something no channel
+    // delivers. A `research` item's finding would have to reach a later item's
+    // brief, and rule 6 of the planner's own brief denies exactly that —
+    // `dependsOn` is a wave boundary, not a channel.
+    if (!(PLANNABLE_KINDS as readonly string[]).includes(kind)) {
+      shape.push(
+        `item ${id} has kind \`${kind}\`, which a plan may not declare (ruling 84). A plan may declare ` +
+          `${PLANNABLE_KINDS.join(" and ")}. brigadier commissions \`plan\` and \`research\` itself, before ` +
+          "there is a plan: `brigadier run --goal \"<sentence>\"` is the entry point that does it.",
       );
       return;
     }

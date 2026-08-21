@@ -29,9 +29,24 @@
 
 import type { Policy } from "../lane/lane.ts";
 
-export type WorkKind = "write" | "read-only";
+export type WorkKind = "write" | "read-only" | "plan" | "research";
 
-export const ALL_WORK_KINDS: WorkKind[] = ["write", "read-only"];
+export const ALL_WORK_KINDS: WorkKind[] = ["write", "read-only", "plan", "research"];
+
+/**
+ * The kinds a PLAN may declare. Ruling 84.
+ *
+ * `plan` and `research` are commissioned by brigadier from a person's sentence,
+ * before there is a plan for anyone to have written them into. A plan declaring
+ * a `plan` item is a planner asking for another planner; a plan declaring a
+ * `research` item is asking for something ruling 78 describes — *"a finding
+ * carried into a later item's brief"* — through a channel `PLANNER_RULES` rule 6
+ * explicitly denies, because `dependsOn` is a wave boundary and not a channel.
+ *
+ * So they are refused by name rather than silently mishandled, and the refusal
+ * says which entry point does commission them.
+ */
+export const PLANNABLE_KINDS: WorkKind[] = ["write", "read-only"];
 
 /**
  * Everything ruling 49 settled about a kind, in one place, so that a caller
@@ -78,6 +93,38 @@ export interface KindContract {
    * discovering inside a worker instead of before one.
    */
   readonly legality: "disjoint-paths" | "resolvable-distinct-refs";
+  /**
+   * What brigadier does with what comes BACK, which is the whole of what
+   * separates the four kinds since ruling 78.
+   *
+   * Ruling 49 defines a kind by what brigadier does with the DIRECTORY, and by
+   * that definition `read-only`, `plan` and `research` are one kind: pooled,
+   * never diffed, never merged, never read back. They are three kinds because
+   * the text differs — one is reported and dropped, one is parsed into a plan
+   * brigadier then validates and executes, and one is a finding carried into a
+   * later brief. A contract that recorded only the directory would say these
+   * three were interchangeable, and routing would then be free to treat them so.
+   */
+  readonly product:
+    | /** The diff, merged onto the integration ref. The text is a report. */ "diff"
+    | /** The text, reported to the operator and never read back. */ "text"
+    | /** The text, parsed as a plan and validated exactly like a handed-in one. */ "plan-json"
+    | /** The text, carried into a later brief, refused if it carries no date. */ "dated-finding";
+  /**
+   * Must the agent be able to reach today's web with its own tool?
+   *
+   * Ruling 78: NOT a ruling 53 requirement term — on Codex web reach is an argv
+   * flag and a boolean cannot pass a flag — so it is a launch-profile column
+   * (`LaunchProfile.reachesWeb`) that the router filters on, and this is the
+   * field that says which kinds make it filter. Ruling 53's rule governs it
+   * unchanged: **unmeasured is not permission**, and the refusal says
+   * *unmeasured on this agent* rather than *unsupported*.
+   */
+  readonly requiresWebReach: boolean;
+  /**
+   * May a plan declare an item of this kind? Ruling 84 — see `PLANNABLE_KINDS`.
+   */
+  readonly plannable: boolean;
 }
 
 export const KIND_CONTRACT: Record<WorkKind, KindContract> = {
@@ -90,6 +137,9 @@ export const KIND_CONTRACT: Record<WorkKind, KindContract> = {
     crossVendorReview: true,
     mergesBack: true,
     legality: "disjoint-paths",
+    product: "diff",
+    requiresWebReach: false,
+    plannable: true,
   },
   "read-only": {
     isolation: "pooled",
@@ -101,6 +151,56 @@ export const KIND_CONTRACT: Record<WorkKind, KindContract> = {
     crossVendorReview: false,
     mergesBack: false,
     legality: "resolvable-distinct-refs",
+    product: "text",
+    requiresWebReach: false,
+    plannable: true,
+  },
+  /**
+   * Ruling 78. `read-only` in shape, and that is exactly why the overturn of
+   * ruling 20's consequence was cheap: no new isolation model, no new lane
+   * policy, no new spawn path. What differs is `product`.
+   *
+   * The lane policy is `deny` and is NOT relaxed for a planner. A planner that
+   * needed a permission granted would be a planner doing work, which is the one
+   * thing it must not do — and #41 measured that on the single vendor where
+   * read-only enforcement is real, answering "allow" is the act that destroys
+   * it.
+   */
+  plan: {
+    isolation: "pooled",
+    baseState: "named-ref",
+    recycle: ["git fetch", "git checkout <ref>", "git clean -fdx"],
+    mayInstallDependencies: false,
+    lanePolicy: "deny",
+    crossVendorReview: false,
+    mergesBack: false,
+    // One planner, one question, one ref. Ruling 14's legality filter changes
+    // subject rather than vanishing — see `legality` above.
+    legality: "resolvable-distinct-refs",
+    product: "plan-json",
+    requiresWebReach: false,
+    plannable: false,
+  },
+  /**
+   * Ruling 78 and decision D22. The one kind with a requirement on the AGENT
+   * rather than only on the directory, and the one whose output is checked for
+   * a property rather than parsed.
+   */
+  research: {
+    isolation: "pooled",
+    baseState: "named-ref",
+    recycle: ["git fetch", "git checkout <ref>", "git clean -fdx"],
+    mayInstallDependencies: false,
+    lanePolicy: "deny",
+    crossVendorReview: false,
+    mergesBack: false,
+    legality: "resolvable-distinct-refs",
+    product: "dated-finding",
+    // The kind exists to defeat a model answering from 2024 when it is 2026. An
+    // agent that cannot reach today's web can only produce a finding dated from
+    // its training, so routing there and hoping is worse than refusing.
+    requiresWebReach: true,
+    plannable: false,
   },
 };
 
