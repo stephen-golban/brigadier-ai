@@ -188,29 +188,44 @@ describe("and it still fits the binary budget", () => {
     const withoutMap = join(workspace, "cli-only");
     compile(join(REPO, "src", "cli.ts"), withoutMap);
 
-    // The repo map is not wired into `src/cli.ts` by this slice — that file has
-    // another owner — so the cost of adding it is measured on an entry point
-    // that pulls in both. The number this produces is what the shipped binary
-    // will grow by when it is wired in.
-    const entry = join(workspace, "cli-plus-map.ts");
+    // THIS MEASUREMENT CHANGED SHAPE ON 2026-08-21, and the reason is recorded
+    // rather than silently absorbed.
+    //
+    // Until today `src/cli.ts` did not import the repo map, and this block said
+    // so: it compiled a synthetic entry pulling in BOTH and called the
+    // difference *"what the shipped binary will grow by when it is wired in"*.
+    // That was a prediction with a stated expiry, and ruling 74's `--goal` path
+    // wired the map into `src/cli.ts` — the planner is handed ruling 39's map in
+    // its brief. So `cli-only` now already contains the grammars, the synthetic
+    // entry adds nothing, and the old difference collapsed from >500 KB to
+    // 16,512 bytes.
+    //
+    // **The test was measuring the right thing and its subject moved.** So the
+    // discriminator inverts: the map's own cost is now measured against the
+    // EMPTY floor rather than against a cli that lacks it, which is the same
+    // quantity by a route that does not depend on cli.ts's imports — and cannot
+    // expire the same way, because nothing will ever make an empty program
+    // contain tree-sitter grammars.
+    const mapEntry = join(workspace, "map-only.ts");
     writeFileSync(
-      entry,
+      mapEntry,
       [
         `import { buildRepoMap } from "${REPO_SPECIFIER}/src/repomap/index.ts";`,
-        // Referenced behind a condition that is never true, so the bundler
-        // cannot drop it and the binary never actually builds a map here.
+        // Behind a condition that is never true, so the bundler cannot drop it
+        // and the binary never actually builds a map here.
         'if (process.env["BRIGADIER_NEVER"] === "1") console.log(await buildRepoMap("."));',
-        `await import("${REPO_SPECIFIER}/src/cli.ts");`,
         "",
       ].join("\n"),
     );
-    const withMap = join(workspace, "cli-plus-map");
-    compile(entry, withMap);
+    const mapOnly = join(workspace, "map-only");
+    compile(mapEntry, mapOnly);
 
     const floor = statSync(emptyBinary).size;
-    const before = statSync(withoutMap).size;
-    const after = statSync(withMap).size;
-    const cost = after - before;
+    const after = statSync(withoutMap).size;
+    // The map's own cost, measured where nothing about cli.ts can change it.
+    const cost = statSync(mapOnly).size - floor;
+    // The SHIPPED artifact's contribution, which is now the real one rather than
+    // a synthetic entry standing in for it.
     const contribution = after - floor;
 
     // Demonstrated negative: the two binaries really are different. A cost of
@@ -224,7 +239,7 @@ describe("and it still fits the binary budget", () => {
     // the shape a check acquires when nobody checks that its subtrahend is a
     // different thing from its minuend.
     const why =
-      `empty-program floor ${floor}; cli-only ${before}; cli+map ${after}; ` +
+      `empty-program floor ${floor}; map-only ${statSync(mapOnly).size}; shipped cli ${after}; ` +
       `brigadier's contribution ${contribution} bytes against a budget of ${BRIGADIER_SIZE_BUDGET_BYTES}. ` +
       `The floor is ${((floor / after) * 100).toFixed(2)}% of the artifact and belongs to bun ${Bun.version} on ` +
       `${process.platform}/${process.arch}; this budget deliberately makes no claim about it`;

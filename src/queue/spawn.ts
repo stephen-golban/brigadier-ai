@@ -82,8 +82,28 @@ export interface MarkedSpawnOptions {
   /** The clone. The agent's working directory and its lane root. */
   cwd: string;
   kind: WorkKind;
-  /** Decision 17's suppression lever: point the agent's config root here. */
-  configRoot: string;
+  /**
+   * Decision 17's suppression lever: point the agent's config root here.
+   *
+   * **OPTIONAL, because decision 17 is *"suppressed by default, with an
+   * owner-facing override"* and an override that cannot be expressed is not an
+   * override.** Omitting it leaves the vendor's own root alone — the same shape
+   * `detect.ts` already uses for its non-worker-shaped probe.
+   *
+   * The cost of omitting it is decision 17's stated one: *"someone with a global
+   * rule they care about will be surprised when a worker ignores it"*, inverted
+   * — a worker that reads their global rules when the operator expected
+   * suppression. `ambientSuppression()` reports what actually happened per
+   * vendor rather than claiming the blanket, so the run record does not lie
+   * either way.
+   *
+   * The reason an operator would turn it off is measured and unpleasant:
+   * redirecting the config root removes the CREDENTIAL on some vendors —
+   * Codex and Qwen at `session/new`, and the Claude bridge at `session/prompt`,
+   * which is the metered call. Seeding a credential into a run-scoped directory
+   * is the owner's open decision and is not taken anywhere in this tree.
+   */
+  configRoot?: string;
   /** Ruling 64: inside the item's own directory, never the shared temp root. */
   tmpDir: string;
   /** Ruling 65: granted at spawn, through the environment and nowhere else. */
@@ -159,7 +179,7 @@ export function spawnMarkedAgent(options: MarkedSpawnOptions): MarkedSpawn {
   }
 
   const env = buildEnvironment(options.profile, {
-    configRoot: options.configRoot,
+    ...(options.configRoot !== undefined ? { configRoot: options.configRoot } : {}),
     kind: options.kind,
     tmpDir: options.tmpDir,
     restrictive: true,

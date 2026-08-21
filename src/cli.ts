@@ -51,6 +51,11 @@ import { resolveVerify } from "./gate/index.ts";
 import { intendedRealPath, realTempDirs } from "./isolation/index.ts";
 import { PLUGIN_USAGE, contextFrom, installCommand, pluginCommand, uninstallCommand } from "./plugin/index.ts";
 import { install } from "./plugin/install.ts";
+import { PlannerRefused, choosePlanner, commissionPlan } from "./plan/commission.ts";
+import { PlannerUnusable, looksTrivial } from "./plan/planner.ts";
+import { buildBaseState } from "./isolation/base.ts";
+import { buildRepoMap } from "./repomap/map.ts";
+import { newRunId } from "./queue/execute.ts";
 import { POSSESSION_DOCTRINE, possessionContext } from "./plugin/possess.ts";
 import { binaryNameFor, doctrinePath, isAgentName, planLaunch, vendorArgs } from "./setup/launch.ts";
 import { configDocument, describeSetup, describeSetupRemoval, planSetup, type DetectedAgent, type SetupRemoval } from "./setup/setup.ts";
@@ -99,6 +104,12 @@ const USAGE = `brigadier — an ACP hub
       prompt (ruling 77). Any other vendor name launches that vendor untouched
       and says so, because possession is measured on Claude Code and nowhere
       else. Your arguments are passed through and win over brigadier's.
+
+  brigadier run --goal "<sentence>" [--repo <path>] [--run-root <path>]
+      Say what you want in English. brigadier commissions the plan from a
+      workhorse, writes it to the run record, and prints ONE LINE naming the
+      path -- never the plan itself, because your repository stays byte-identical
+      and a session's window is not free (rulings 74 and 58).
 
   brigadier run --plan <path> [--repo <path>] [--run-root <path>]
       Run a plan: one isolated clone per item, one marked worker each, merged
@@ -924,10 +935,163 @@ async function version(): Promise<number> {
  * makes the second a RANGE because #44 measured two identical runs 15× apart.
  * Both stop before anything is spent.
  */
+/**
+ * Turn a goal into a plan file, or an exit code explaining why not.
+ *
+ * Ruling 74's D2 — *"brigadier drives a planner"* — and D4: **the plan is always
+ * a file and the session gets one line naming it, never the plan inline.** Bar
+ * item 4 already asserts the operator's repository is byte-identical after a
+ * run, so a plan written into their tree would fail an existing item.
+ *
+ * D3 is honoured by NOT forcing this: `--plan` still exists, and a goal that
+ * `looksTrivial` says so rather than silently paying for a planning turn. That
+ * heuristic only ever advises — D3's *"asks the user anyway"* needs the
+ * exit-and-resume channel of ruling 75, which is Track A step 6, so today it
+ * prints and proceeds.
+ */
+async function commission(
+  goal: string,
+  repo: string,
+  runRoot: string,
+  runId: string,
+): Promise<string | number> {
+  const detection = await sweep(ALL_AGENT_IDS as AgentId[], {
+    runRoot,
+    timeoutMs: Number(value("timeout") ?? 60_000),
+    trustCache: true,
+    writeBack: true,
+  });
+  detection.commit();
+  const usable = detection.detections
+    .filter((d) => d.availability === "usable")
+    .map((d) => d.id)
+    .sort();
+
+  // One load, two answers: who plans (ruling 71's written proposal) and whether
+  // ambient instructions are suppressed (decision 17's override). A second load
+  // would be a second chance for the two to disagree.
+  let configured: readonly string[] | undefined;
+  let suppressAmbient = true;
+  try {
+    const loaded = loadConfig(configPath(), { exists: existsSync, read: (p) => readFileSync(p, "utf8") });
+    configured = loaded.config.roles.builder;
+    suppressAmbient = loaded.config.ambientSuppression;
+  } catch {
+    configured = undefined;
+  }
+
+  const planner = choosePlanner(usable, configured);
+  if (planner === undefined) {
+    sink.errLine("brigadier: no vendor is drivable, so there is nobody to plan with.");
+    sink.errLine("  `brigadier detect` prints each vendor's own remedy — those words are theirs, not ours.");
+    return 4;
+  }
+
+  // D24's line form: one line, naming a fact. Not a spinner and not a paragraph.
+  sink.outLine(`brigadier: planning → ${planner}`);
+  if (looksTrivial(goal)) {
+    // D3. Printed rather than acted on: whether this goal needs a plan is the
+    // operator's call, and brigadier cannot ask them until step 6 exists.
+    sink.outLine("brigadier: this goal looks like one edit — `--plan` skips the planning turn next time");
+  }
+
+  const planDir = join(runRoot, "r", runId);
+  mkdirSync(planDir, { recursive: true });
+  // Ruling 50: the scratch index must be OUTSIDE the operator's repository, or
+  // `git add -A` sweeps it into the base commit as an untracked file.
+  const base = await buildBaseState({ repo, runId: `${runId}p`, scratchDir: planDir });
+  let repoMap = "";
+  try {
+    repoMap = (await buildRepoMap(repo)).text;
+  } catch {
+    // Ruling 39 calls the map "a cheap lottery ticket with a large payout": a
+    // miss costs only its own ~1,003 tokens. A planner without one is a planner
+    // with its own tools, so this is degraded rather than fatal.
+    repoMap = "";
+  }
+
+  const planFile = join(planDir, "plan.json");
+  try {
+    const commissioned = await commissionPlan({
+      agent: planner,
+      goal,
+      repoMap,
+      repoName: repo.split("/").pop() ?? repo,
+      base,
+      runRoot,
+      // Its own id — see `commission.ts`. `p` suffixed so a sweep reading a
+      // directory name can tell a planning clone from the run it planned.
+      planRunId: `${runId}p`,
+      timeoutMs: Number(value("timeout") ?? 300_000),
+      suppressAmbient,
+    });
+    sink.write(planFile, `${commissioned.planJson}\n`);
+    // D4, and it is the whole product surface of a plan: a PATH, never the plan.
+    sink.outLine(`brigadier: plan ready → ${planFile}`);
+    return planFile;
+  } catch (error) {
+    if (error instanceof PlannerRefused) {
+      // Ruling 52's `error`, not `fail`: the planner was never allowed to
+      // answer, so sending anyone to look at the plan would be sending them to
+      // the wrong place.
+      sink.errLine(`brigadier: ${error.message}`);
+      if (error.suppressAmbient) {
+        sink.errLine(
+          "  brigadier redirected that vendor's config root to suppress your global instruction files",
+        );
+        sink.errLine(
+          "  (decision 17), and on some vendors that is also where the credential lives — MEASURED on",
+        );
+        sink.errLine(
+          "  Codex and Qwen at session/new, and on the Claude bridge at session/prompt, which is the",
+        );
+        sink.errLine("  metered call.");
+        sink.errLine(
+          '  Remedy: set `"ambientSuppression": false` in ~/.config/brigadier/config.json. Your global',
+        );
+        sink.errLine(
+          "  instruction files will then be visible to workers, and every run says so out loud.",
+        );
+        sink.errLine(
+          "  brigadier will NOT copy your credential into a run directory to avoid this: that is a",
+        );
+        sink.errLine("  decision about a credential boundary and it is the owner's, not this command's.");
+      } else {
+        sink.errLine(`  \`brigadier detect\` reports ${error.agent}'s own remedy text, which is theirs and not ours.`);
+      }
+      return 4;
+    }
+    if (error instanceof PlannerUnusable) {
+      sink.errLine(`brigadier: ${error.message}`);
+      // The raw text, because "it did not return JSON" without showing what it
+      // DID return leaves an operator with nothing to act on. Bounded, because
+      // ruling 58 caps what reaches a host session.
+      sink.errLine(`  it said: ${error.received.slice(0, 400).replace(/\n/g, " ")}`);
+      return 5;
+    }
+    throw error;
+  }
+}
+
 async function run(): Promise<number> {
-  const planPath = value("plan");
-  if (planPath === undefined) {
-    sink.errLine("brigadier run --plan <path> [--repo <path>] [--run-root <path>]\n");
+  const goal = value("goal");
+  let planPath = value("plan");
+
+  // Ruling 74's entry point. `--plan` is NOT deprecated by it: an operator who
+  // already knows the plan should not pay for a planning turn to be told it, and
+  // ruling 74 keeps that path as the show-me-first one.
+  if (goal !== undefined && planPath !== undefined) {
+    sink.errLine("--goal and --plan are two ways to say the same thing, and they disagree.");
+    sink.errLine("  --goal <sentence>  brigadier commissions the plan (ruling 74).");
+    sink.errLine("  --plan <path>      you wrote it. Nothing is commissioned.");
+    return 2;
+  }
+  if (goal !== undefined && goal.trim().length === 0) {
+    sink.errLine("--goal needs a sentence. An empty goal is not a goal.");
+    return 2;
+  }
+  if (goal === undefined && planPath === undefined) {
+    sink.errLine("brigadier run --goal \"<sentence>\" | --plan <path> [--repo <path>] [--run-root <path>]\n");
     sink.errLine(USAGE);
     return 2;
   }
@@ -993,14 +1157,6 @@ async function run(): Promise<number> {
     return 2;
   }
 
-  let spec;
-  try {
-    spec = parsePlan(readFileSync(planPath, "utf8"), planPath);
-  } catch (error) {
-    sink.errLine(error instanceof PlanUnreadable ? error.message : `could not read ${planPath}: ${String(error)}`);
-    return 2;
-  }
-
   // Ruling 61, before anything is created rather than at the first clone. #41
   // measured the Codex bridge building its sandbox with `/tmp` and `$TMPDIR`
   // writable BY DESIGN, and a worker there writing into another clone's tracked
@@ -1017,6 +1173,26 @@ async function run(): Promise<number> {
         `  Remedy: pass --run-root somewhere outside it, or omit it and get ${defaultRunRoot()}.`,
     );
     return 4;
+  }
+
+  // Ruling 74: the goal becomes a plan file BEFORE anything else happens, and
+  // from that line on this function cannot tell the difference between a plan
+  // brigadier commissioned and one the operator wrote. That is the whole reason
+  // the overturn is cheap — one entry point, one validator, one refusal path.
+  const runId = newRunId();
+  if (goal !== undefined) {
+    const commissioned = await commission(goal, repo, runRoot, runId);
+    if (typeof commissioned === "number") return commissioned;
+    planPath = commissioned;
+  }
+  if (planPath === undefined) return 2;
+
+  let spec;
+  try {
+    spec = parsePlan(readFileSync(planPath, "utf8"), planPath);
+  } catch (error) {
+    sink.errLine(error instanceof PlanUnreadable ? error.message : `could not read ${planPath}: ${String(error)}`);
+    return 2;
   }
 
   // Ruling 69: the same override the table describes is the one that resolves.
@@ -1215,6 +1391,10 @@ async function run(): Promise<number> {
     repo,
     runRoot: realpathSync(runRoot),
     planPath,
+    // Shared deliberately: D4 puts the plan file inside the run record, so the
+    // id has to exist before the planner runs rather than being minted by the
+    // run it plans.
+    runId,
     admission,
     audience,
     // Ruling 58: what the admission block above already charged to this stdout,
