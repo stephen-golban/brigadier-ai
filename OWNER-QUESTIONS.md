@@ -25,7 +25,7 @@ is not available to anyone."*
 | 9 | Windows: the bar harness grades blind | **SEPARATED BY EXPERIMENT — neither candidate alone; the conjunction. Fixed.** |
 | 10 | `bar/fakes.test.ts` on the POSIX legs | **DIAGNOSED — both open rows, and one attribution withdrawn** |
 | 11 | `bar/lib/orphan.test.ts` flakiness | **DIAGNOSED — a real leak defect, fixed and measured** |
-| 12 | **NEW** — a `brigadier run` is 35-160x slower on windows-latest | open, undiagnosed |
+| 12 | a `brigadier run` is 35-160x slower on windows-latest | open — **experiment pushed**, three candidates timed separately so the fourth is the remainder |
 | 13 | a dozen planted-payload controls are inert on Windows | **ANSWERED — all three candidates refuted; the cause is the command path's backslashes, which the experiment had normalised away in its own setup** |
 | 14 | detection says usable, the first prompt fails authentication | **PARTLY RULED** — the per-item cost is fixed and its cost recorded; the detection gap is open and needs a per-vendor measurement first |
 | 15 | the report said the plan had no write items when all five were | **FIXED** — reproduced in a test that fails without the fix; the sentence now comes from the plan |
@@ -480,6 +480,41 @@ to tell a flake from a slow machine, and saying so is the point.**
 ---
 
 ## 12. NEW, 2026-08-20 — a whole `brigadier run` is 35–160× slower on `windows-latest`
+
+**EXPERIMENT PUSHED 2026-08-21, and it is written against #13's lesson rather than only against this
+question.** `test/spawn-cost.test.ts` times three of the four named candidates separately, so the fourth
+— the product's own worker path — is what is left over rather than what is guessed at.
+
+Four cells: spawn a target directly, spawn **the same target** through a planted launcher shim (a `.cmd`
+reached via `cmd.exe` on Windows, a `#!/bin/sh` script on POSIX), `git init` plus one commit, and
+`git clone --local`. Five samples each, medians reported, and **the only blocking assertion is that every
+cell produced a reading** — a cell that did not run is not a cell that was fast.
+
+**What #13 cost, applied here.** That experiment refuted all three of its candidates honestly and could
+not have found the cause, because one line in its setup normalised the causal variable to its working
+value in every cell. So this file states its three defences in its own header: the shim cells run the
+same target program as the direct cells and differ only by the shim; every sample gets a fresh directory
+in every cell, so nothing is warm where something else is cold; and no path is rewritten, normalised or
+forward-slashed anywhere.
+
+MEASURED on darwin 25.5.0 / bun 1.3.14 2026-08-21 at load1 3.11, where it is a control on the control:
+
+| cell | median |
+| --- | --- |
+| spawn direct | 7.0 ms |
+| spawn through shim | 12.3 ms |
+| `git init` + commit | 31.4 ms |
+| `git clone --local` | 23.7 ms |
+
+The whole file runs in 849 ms here, which is what makes it affordable on every push on three platforms.
+**No cause is claimed and no threshold is applied.** Whether a cell is slow is a fact about the platform,
+and asserting a number would be this file claiming to know the answer it was written to find. The Windows
+matrix is the finding, and it is not in yet.
+
+The entry as it stood follows.
+
+### The original entry
+
 
 **Found while answering why ten NEGATIVE CONTROLS and no positive arms were failing on that leg, which
 turned out to be two facts stacked.**
