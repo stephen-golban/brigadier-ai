@@ -192,7 +192,25 @@ export interface MachineConfig {
   readonly plan: PlanRetention;
   /** Ruling 81. Printed beside the ranking it protects, never applied silently. */
   readonly explorationFloor: number;
+  /**
+   * When brigadier stops to ask before spending a metered turn. Ruling 85.
+   *
+   * `unrequested` — the default — asks before a turn the operator did not ask
+   * for (a research phase, or a planning turn on a goal brigadier judges needs
+   * no plan) and not before the one they did, because typing a goal IS the
+   * request for a plan.
+   *
+   * `always` is D3 read literally: nothing metered happens on a first
+   * invocation, ever. It exists because the narrowing above is a JUDGEMENT about
+   * which questions stay worth reading, and an operator who wants to be asked
+   * every time should not have to argue with it.
+   */
+  readonly askBeforeSpending: AskPolicy;
 }
+
+export type AskPolicy = "unrequested" | "always";
+
+export const ASK_POLICIES: readonly AskPolicy[] = ["unrequested", "always"];
 
 export const DEFAULT_CONFIG: MachineConfig = {
   possession: { enabled: true },
@@ -201,6 +219,7 @@ export const DEFAULT_CONFIG: MachineConfig = {
   verify: {},
   plan: { keep: false },
   explorationFloor: DEFAULT_EXPLORATION_FLOOR,
+  askBeforeSpending: "unrequested",
 };
 
 /**
@@ -240,6 +259,7 @@ const KNOWN_KEYS = [
   "verify",
   "plan",
   "explorationFloor",
+  "askBeforeSpending",
 ] as const;
 
 /**
@@ -451,6 +471,15 @@ export function parseConfig(text: string, path: string): LoadedConfig {
     explorationFloor = raw;
   }
 
+
+  let askBeforeSpending = DEFAULT_CONFIG.askBeforeSpending;
+  if ("askBeforeSpending" in document) {
+    const raw = document["askBeforeSpending"];
+    if (typeof raw !== "string" || !(ASK_POLICIES as readonly string[]).includes(raw)) {
+      throw wrongType(path, "askBeforeSpending", ASK_POLICIES.join(" or "), raw);
+    }
+    askBeforeSpending = raw as AskPolicy;
+  }
   // Built key by key rather than with `runRoot,` in the literal, because
   // `exactOptionalPropertyTypes` is on and it is right to be: an ABSENT
   // `runRoot` means *the operator has not chosen* and a present `undefined`
@@ -464,6 +493,7 @@ export function parseConfig(text: string, path: string): LoadedConfig {
     verify,
     plan,
     explorationFloor,
+    askBeforeSpending,
     ...(runRoot === undefined ? {} : { runRoot }),
     ...(workers === undefined ? {} : { workers }),
   };

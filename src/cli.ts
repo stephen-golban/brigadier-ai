@@ -30,7 +30,7 @@
 
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { detectAll, type Detection } from "./agent/detect.ts";
 import {
   artifactFingerprint,
@@ -62,6 +62,15 @@ import {
   commissionResearch,
 } from "./plan/commission.ts";
 import { findingForPlanner, looksLikeItNeedsResearch, todayStamp } from "./plan/research.ts";
+import {
+  PendingUnusable,
+  encodePending,
+  pendingPath,
+  readPending,
+  type PendingRun,
+  type QuestionKind,
+} from "./run/pending.ts";
+import { BACKSTOP_DAYS, divergence } from "./run/divergence.ts";
 import { PlannerUnusable, looksTrivial } from "./plan/planner.ts";
 import { buildBaseState } from "./isolation/base.ts";
 import { buildRepoMap } from "./repomap/map.ts";
@@ -87,6 +96,7 @@ import {
   type Difficulty,
 } from "./queue/index.ts";
 import { defaultRunRoot, isTempRooted } from "./repo/layout.ts";
+import { git, nulRecords } from "./isolation/internal-git.ts";
 import { estimateTokens, type Audience } from "./report/index.ts";
 import { SERVE_USAGE, serveCommand } from "./serve/index.ts";
 import { abandon, initialState, onSignal, type InterruptState } from "./run/interrupt.ts";
@@ -157,6 +167,16 @@ const USAGE = `brigadier — an ACP hub
                     all (ruling 31): it is derived from (kind, difficulty), and
                     this is the only channel that moves the ceiling. Repeatable.
       --workers <n> the per-run concurrency budget (ruling 54's third filter).
+
+  brigadier resume <run-id> --answer yes|no
+      Answer the question a run stopped on. brigadier exits when it needs a
+      decision -- it has no terminal to ask on (ruling 75 measured /dev/tty
+      unreachable from inside a CLI tool call) -- so the question travels to you
+      through your session and the answer comes back as this command.
+      A pending run expires by DIVERGENCE rather than by a clock (D15): a commit
+      over a path the plan claims, an edit to one, a routed vendor gone or
+      drifted. Backstop ${BACKSTOP_DAYS} days, which is a judgement and is
+      printed beside every expiry it causes.
 
   brigadier plan --plan <path> [...]
       Everything run decides before it spends anything. The same as
@@ -971,14 +991,151 @@ async function version(): Promise<number> {
  * judgement about a world nobody has looked at yet, and there is no measurement
  * behind it.
  */
-function wantsResearch(goal: string): boolean {
-  // The operator's own words win over a regular expression, in both directions.
+function researching(goal: string, answered?: { kind: QuestionKind; answer: boolean }): boolean {
+  // The operator's own words win over both the heuristic and the question.
   if (flag("no-research")) return false;
   if (flag("research")) return true;
-  if (looksTrivial(goal) || !looksLikeItNeedsResearch(goal)) return false;
-  // D24's line form. It says what is about to be spent and how to not spend it.
-  sink.outLine("brigadier: this goal turns on something current — researching first (`--no-research` skips it)");
-  return true;
+  // Consent, and nothing else, buys a metered turn the operator did not ask for.
+  return answered?.kind === "research-consent" ? answered.answer : false;
+}
+
+/** Would brigadier PROPOSE a research turn for this goal? A heuristic, named as one. */
+function researchProposed(goal: string): boolean {
+  if (flag("research") || flag("no-research")) return false;
+  return looksLikeItNeedsResearch(goal) && !looksTrivial(goal);
+}
+
+/**
+ * The one question this invocation should stop on, or nothing.
+ *
+ * Ordered as the spending is ordered: research happens before planning, so its
+ * question is asked first. Under the default policy a goal usually raises at
+ * most one — a goal that turns on something current is rarely one the heuristic
+ * also calls trivial.
+ */
+function questionFor(
+  goal: string,
+  settings: MachineConfig,
+  answered?: { kind: QuestionKind; answer: boolean },
+): { kind: QuestionKind; text: string } | undefined {
+  if (answered?.kind !== "research-consent" && researchProposed(goal)) {
+    return {
+      kind: "research-consent",
+      text:
+        "this goal turns on something current — may I research it first? one metered turn, and the finding " +
+        "has to carry today's date",
+    };
+  }
+  if (answered?.kind === "plan-consent") return undefined;
+  if (askPolicy(settings) === "always") {
+    return { kind: "plan-consent", text: "may I spend a planning turn on this goal?" };
+  }
+  if (looksTrivial(goal)) {
+    return { kind: "plan-consent", text: "this goal looks like one edit — plan it anyway?" };
+  }
+  return undefined;
+}
+
+/**
+ * RULING 85: when brigadier stops to ask, and when it does not.
+ *
+ * D3 says brigadier *"asks the user anyway before spending on either"* research
+ * or planning. Read literally, no first invocation of `run --goal` ever spends,
+ * and every goal costs one exit and one resume — which ruling 74's accepted cost
+ * #4 already priced. This narrows it, and the reason is this repository's own.
+ *
+ * **Ruling 59 made the refused-delegation line silent at zero** *"because a line
+ * that printed on every run would be wallpaper and an operator would stop
+ * reading it at exactly the moment it started being true."* A consent question
+ * that fires on every goal is that line. Its answer is yes essentially always,
+ * the host model relaying it learns to answer yes without reading, and then the
+ * question that guards a turn the operator did NOT ask for — a research phase —
+ * is answered the same way. **A question asked every time protects nothing.**
+ *
+ * So: brigadier asks before the spend the operator did not ask for, and not
+ * before the one they did. Typing a goal IS the request for a plan. What is
+ * unrequested is a research phase, and a planning turn on a goal brigadier
+ * itself judges needs no plan.
+ *
+ * **The narrowing is a judgement, so it is a SETTING and not a rule.**
+ * `askBeforeSpending: "always"` in the operator's config restores D3 read
+ * literally, and an operator who wants to be asked every time does not have to
+ * argue with a heuristic to get it.
+ */
+function askPolicy(settings: MachineConfig): "unrequested" | "always" {
+  return settings.askBeforeSpending;
+}
+
+/**
+ * Stop, write down enough to continue, and exit.
+ *
+ * D13's mechanism and D14's cleanup. **There is no waiting**: ruling 75 measured
+ * `/dev/tty` unreachable from inside a CLI tool call (`ENXIO`, against a pty
+ * control that delivered), so there is no channel on which brigadier could wait
+ * for an answer, and it does not pretend to have one.
+ *
+ * The drain is ruling 63's, passed in rather than reimplemented. At the only
+ * point brigadier asks today nothing has spawned yet, so it is a no-op that
+ * still reports — and that is exactly why it is called rather than skipped: the
+ * day a question arises mid-run, the seam is already the one that kills every
+ * process, deletes every empty clone and keeps every clone holding work.
+ */
+async function askAndExit(
+  pending: PendingRun,
+  drain: () => Promise<readonly string[]>,
+): Promise<number> {
+  const kept = await drain();
+  mkdirSync(dirname(pendingPath(runRootOf(), pending.runId)), { recursive: true });
+  sink.write(pendingPath(runRootOf(), pending.runId), encodePending(pending));
+  // D24's line form: one line, naming a fact. The question, then how to answer.
+  sink.outLine(`brigadier: ${pending.question}`);
+  sink.outLine(`brigadier: answer → brigadier resume ${pending.runId} --answer yes|no`);
+  for (const line of kept) sink.outLine(`brigadier: ${line}`);
+  return EXIT_ASKED;
+}
+
+/** A run that stopped to ask is not a failure and not a success. */
+const EXIT_ASKED = 6;
+
+/**
+ * The operator's `HEAD`, and the paths their working tree is dirty at.
+ *
+ * D15's comparison, computed by the PRODUCT rather than borrowed from the bar.
+ * Bar item 4 captures the same five facts before every run and D15 cites that —
+ * but `bar/lib/git.ts` is the harness, `src/` may not import from it, and a
+ * check the product needs at runtime has to live in the product. Said here
+ * because "the comparison is already computed for another purpose" is true of
+ * the FACTS and not of the code.
+ *
+ * Path-scoped, so this returns paths rather than a hash: a whole-tree hash
+ * answers "did anything change", and D15 needs "did anything this plan claims
+ * change".
+ */
+async function headOf(repo: string): Promise<string> {
+  try {
+    return await git({ cwd: repo, args: ["rev-parse", "HEAD"] });
+  } catch {
+    // A repository with no commits yet. Recorded as empty rather than as a
+    // failure: there is a base, it is simply not a commit, and `divergence`
+    // compares strings.
+    return "";
+  }
+}
+
+async function dirtyPathsOf(repo: string): Promise<string[]> {
+  try {
+    const output = await git({ cwd: repo, args: ["status", "--porcelain", "-uall", "-z"] });
+    // `-z` because a path with a space in it is a path, and `--porcelain`'s
+    // line form quotes and escapes exactly the paths a plan is most likely to
+    // have claimed verbatim.
+    return nulRecords(output).map((record) => record.slice(3));
+  } catch {
+    return [];
+  }
+}
+
+function runRootOf(): string {
+  return absolute(value("run-root") ?? defaultRunRoot());
 }
 
 async function commission(
@@ -987,6 +1144,8 @@ async function commission(
   runRoot: string,
   runId: string,
   settings: MachineConfig,
+  /** What a `brigadier resume` brought back, when this invocation is one. */
+  answered?: { kind: QuestionKind; answer: boolean },
 ): Promise<string | number> {
   const detection = await sweep(ALL_AGENT_IDS as AgentId[], {
     runRoot,
@@ -1007,13 +1166,47 @@ async function commission(
     return 4;
   }
 
+  // D3 AND RULING 85: the question, before anything metered.
+  //
+  // `answered` is what a resume brought back; on a first invocation it is
+  // undefined and this is where brigadier stops. Ruling 53's *find out before
+  // you spend* applies to a question exactly as it applies to a refusal: it
+  // fires here, before the base commit, before the repo map, before a clone.
+  const question = questionFor(goal, settings, answered);
+  if (question !== undefined) {
+    return await askAndExit(
+      {
+        version: 1,
+        runId,
+        askedAt: Date.now(),
+        kind: question.kind,
+        question: question.text,
+        goal,
+        repo,
+        head: await headOf(repo),
+        dirty: await dirtyPathsOf(repo),
+        // EMPTY, and it means something: nothing has been computed against this
+        // repository yet, so a commit while the question is open does not make
+        // the answer wrong. See `src/run/divergence.ts`.
+        paths: [],
+        agents: detection.detections
+          .filter((d) => d.availability === "usable")
+          .map((d) => ({ id: d.id, version: d.version ?? "" })),
+      },
+      // Nothing has spawned at this point, so the drain has nothing to drain —
+      // and it is called anyway, because the day a question arises mid-run this
+      // is the seam that has to already be the interrupt path (D14).
+      async () => [],
+    );
+  }
+  if (answered?.kind === "plan-consent" && answered.answer === false) {
+    sink.outLine("brigadier: not planning — you said no");
+    sink.outLine("brigadier: `--plan <path>` runs a plan you wrote yourself, with no planning turn");
+    return 0;
+  }
+
   // D24's line form: one line, naming a fact. Not a spinner and not a paragraph.
   sink.outLine(`brigadier: planning → ${planner}`);
-  if (looksTrivial(goal)) {
-    // D3. Printed rather than acted on: whether this goal needs a plan is the
-    // operator's call, and brigadier cannot ask them until step 6 exists.
-    sink.outLine("brigadier: this goal looks like one edit — `--plan` skips the planning turn next time");
-  }
 
   const planDir = join(runRoot, "r", runId);
   mkdirSync(planDir, { recursive: true });
@@ -1039,7 +1232,7 @@ async function commission(
   // channel. `PRODUCT.md` section 1 orders it research, then plan; this is that
   // order, and it needs no channel at all.
   let finding: Awaited<ReturnType<typeof commissionResearch>> | undefined;
-  if (wantsResearch(goal)) {
+  if (researching(goal, answered)) {
     const chosen = chooseResearcher(usable, settings.roles.builder);
     if ("refusals" in chosen) {
       // RULING 53's *find out before you spend*, and ruling 78's two remedies
@@ -1165,9 +1358,114 @@ async function commission(
   }
 }
 
-async function run(): Promise<number> {
-  const goal = value("goal");
-  let planPath = value("plan");
+/**
+ * `brigadier resume <run-id> --answer yes|no`.
+ *
+ * D13's other half. The process that asked is gone — it exited, because ruling
+ * 75 measured that there is no channel on which it could have waited — so this
+ * is a NEW process that picks up where that one stopped, and ruling 63 already
+ * requires the report to say a resumed run is not one run.
+ *
+ * **D15 is checked BEFORE anything spends**, which is ruling 53's ordering
+ * applied to a question rather than to a plan: an expired run must cost nothing
+ * to discover.
+ */
+async function resumeCommand(): Promise<number> {
+  const runId = argv[1];
+  if (runId === undefined || runId.startsWith("--")) {
+    sink.errLine("brigadier resume <run-id> --answer yes|no");
+    return 2;
+  }
+  const answerText = value("answer");
+  if (answerText === undefined) {
+    sink.errLine("brigadier resume needs --answer yes|no. A resume with no answer is a question asked twice.");
+    return 2;
+  }
+  const answer = ["yes", "y", "true"].includes(answerText.toLowerCase());
+  if (!answer && !["no", "n", "false"].includes(answerText.toLowerCase())) {
+    sink.errLine(`--answer takes yes or no; ${JSON.stringify(answerText)} is neither.`);
+    return 2;
+  }
+
+  const runRoot = runRootOf();
+  const path = pendingPath(runRoot, runId);
+  if (!existsSync(path)) {
+    // Checked before the read, because "it is not valid JSON — ENOENT" sends an
+    // operator to fix a file that is not there. Two states, two remedies.
+    sink.errLine(`brigadier: there is no question waiting on ${runId} (looked in ${path})`);
+    sink.errLine("  A run that stopped to ask leaves one; a run that finished, or was never asked, does not.");
+    return 2;
+  }
+  let pending;
+  try {
+    pending = readPending(path);
+  } catch (error) {
+    if (error instanceof PendingUnusable) {
+      sink.errLine(`brigadier: ${error.message}`);
+      return 2;
+    }
+    sink.errLine(`brigadier: there is no question waiting on ${runId} (looked in ${path})`);
+    return 2;
+  }
+
+  // D15, before anything is spent. The fleet half comes from the cache where it
+  // can (ruling 71) — this is a comparison, not a probe, and re-driving six
+  // vendors to answer a yes/no would cost more than the turn being authorised.
+  const detection = await sweep(ALL_AGENT_IDS as AgentId[], {
+    runRoot,
+    timeoutMs: Number(value("timeout") ?? 60_000),
+    trustCache: true,
+    writeBack: true,
+  });
+  detection.commit();
+  const head = await headOf(pending.repo);
+  const verdict = divergence(
+    pending,
+    {
+      head,
+      dirty: await dirtyPathsOf(pending.repo),
+      changedSinceHead:
+        head === pending.head ? [] : await changedSince(pending.repo, pending.head),
+    },
+    {
+      usable: detection.detections
+        .filter((d) => d.availability === "usable")
+        .map((d) => ({ id: d.id, version: d.version ?? "" })),
+    },
+    Date.now(),
+  );
+  if (!verdict.resumable) {
+    for (const line of verdict.reasons) sink.errLine(line);
+    // The pending file is KEPT. It is the record of what was asked, it costs
+    // bytes rather than a directory, and an operator who wants to know what
+    // they were asked three days ago should not have to reconstruct it.
+    sink.errLine(`brigadier: the question is still in ${path}. Start again with \`run --goal\` when you are ready.`);
+    return 4;
+  }
+
+  // Answered. The file goes, because a question that has been answered and is
+  // still on disk is a question that can be answered twice with two different
+  // answers, and only one of them would be the one the run used.
+  rmSync(path, { force: true });
+  return await run({ pending, answer });
+}
+
+/** Paths changed between two commits, or `undefined` when git cannot say. */
+async function changedSince(repo: string, from: string): Promise<string[] | undefined> {
+  try {
+    const output = await git({ cwd: repo, args: ["diff", "--name-only", "-z", `${from}..HEAD`] });
+    return nulRecords(output);
+  } catch {
+    // A rebased-away or pruned commit. `undefined` is not "nothing changed" —
+    // `divergence` treats it as divergence, which is the direction that costs
+    // an operator a re-ask rather than a run against a base that is gone.
+    return undefined;
+  }
+}
+
+async function run(resumed?: { pending: PendingRun; answer: boolean }): Promise<number> {
+  const goal = resumed?.pending.goal ?? value("goal");
+  let planPath = resumed === undefined ? value("plan") : undefined;
 
   // Ruling 74's entry point. `--plan` is NOT deprecated by it: an operator who
   // already knows the plan should not pay for a planning turn to be told it, and
@@ -1206,7 +1504,12 @@ async function run(): Promise<number> {
   // directions shipping in real manifests; this is the loud one.
   for (const warning of settings.warnings) sink.errLine(warning);
 
-  const repo = absolute(value("repo") ?? process.cwd());
+  // The repository the QUESTION was asked about, not whatever directory the
+  // answering process happens to be in. The answer travels through a session
+  // and comes back as a new invocation from an unknown cwd — that is the whole
+  // shape of D13 — so a resume that read `process.cwd()` would plan against a
+  // different repository than the one it asked about, and nothing would say so.
+  const repo = resumed === undefined ? absolute(value("repo") ?? process.cwd()) : resumed.pending.repo;
   const runRoot = absolute(prefer(value("run-root"), settings.config.runRoot, defaultRunRoot()));
   const audience = audienceFrom(value("audience"));
   const ceiling = difficultyFrom(value("max-difficulty"));
@@ -1271,12 +1574,21 @@ async function run(): Promise<number> {
   // from that line on this function cannot tell the difference between a plan
   // brigadier commissioned and one the operator wrote. That is the whole reason
   // the overturn is cheap — one entry point, one validator, one refusal path.
-  const runId = newRunId();
+  // The SAME run id the question was asked under, so the plan lands in the
+  // directory the pending file named and a resumed run is traceable to it.
+  const runId = resumed?.pending.runId ?? newRunId();
   if (goal !== undefined) {
     // The SAME config object `run` already refused on, rather than a second
     // load. Ruling 83's defect was one setting read in two places and acted on
     // in one; two loads is how that happens again.
-    const commissioned = await commission(goal, repo, runRoot, runId, settings.config);
+    const commissioned = await commission(
+      goal,
+      repo,
+      runRoot,
+      runId,
+      settings.config,
+      resumed === undefined ? undefined : { kind: resumed.pending.kind, answer: resumed.answer },
+    );
     if (typeof commissioned === "number") return commissioned;
     planPath = commissioned;
   }
@@ -1673,6 +1985,11 @@ const exitCode = await (async () => {
   switch (command) {
     case "run":
       return run();
+    // D13. A question travels by exit-and-resume because ruling 75 measured
+    // that nothing else can: a CLI's tool children have no controlling terminal
+    // (`/dev/tty` -> ENXIO, against a pty control that delivered).
+    case "resume":
+      return resumeCommand();
     // Ruling 53's whole point, as its own verb: everything `run` decides before
     // it spends anything, and nothing it decides afterwards.
     case "plan":

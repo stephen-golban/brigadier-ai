@@ -231,3 +231,27 @@ describe("a nested key is still a key", () => {
     expect(parseConfig(`{"possession": {"enabled": false}}`, PATH).warnings).toEqual([]);
   });
 });
+
+describe("ruling 85: when brigadier stops to ask", () => {
+  const load = (document: Record<string, unknown>) =>
+    loadConfig("/c.json", { exists: () => true, read: () => JSON.stringify(document) });
+
+  test("the default is the narrowed one, and it is a value rather than a silence", () => {
+    expect(DEFAULT_CONFIG.askBeforeSpending).toBe("unrequested");
+    expect(load({}).config.askBeforeSpending).toBe("unrequested");
+  });
+
+  test("`always` restores D3 read literally", () => {
+    expect(load({ askBeforeSpending: "always" }).config.askBeforeSpending).toBe("always");
+  });
+
+  test("a value outside the two is REFUSED, naming both", () => {
+    expect(() => load({ askBeforeSpending: "sometimes" })).toThrow(/unrequested or always/);
+    // And a boolean is not a policy, however tempting.
+    expect(() => load({ askBeforeSpending: true })).toThrow(ConfigUnusable);
+  });
+
+  test("it is a KNOWN key, so setting it is not warned about as a typo", () => {
+    expect(load({ askBeforeSpending: "always" }).warnings).toEqual([]);
+  });
+});

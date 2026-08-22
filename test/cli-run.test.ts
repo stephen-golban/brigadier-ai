@@ -567,3 +567,136 @@ describe("ruling 71: detection is cached as state, and deleting it is a repair",
     expect(spawns()).toBe(before + 1);
   });
 });
+
+/**
+ * Ruling 85 and D13, at the process boundary — which is where the whole
+ * mechanism has to work, because the process that asks and the process that
+ * answers are two processes.
+ *
+ * Nothing here spends a metered turn: every case stops at or before the
+ * question, which is the property under test. Ruling 53's *find out before you
+ * spend* applied to asking rather than to refusing.
+ */
+describe("a run that stops to ask, and the resume that picks it up", () => {
+  const { repo, runs } = world("asking");
+
+  function pendingFiles(): string[] {
+    const dir = join(runs, "r");
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir).filter((id) => existsSync(join(dir, id, "pending.json")));
+  }
+
+  /** The run id from a stop, taken from the line the operator is told to type. */
+  function ask(goal: string, args: string[] = []): { code: number | null; stdout: string; runId: string } {
+    const result = brigadier(["run", "--goal", goal, "--repo", repo, "--run-root", runs, ...args]);
+    const line = result.stdout.split("\n").find((l) => l.includes("--answer yes|no")) ?? "";
+    const words = line.trim().split(/\s+/);
+    return { code: result.code, stdout: result.stdout, runId: words[words.indexOf("resume") + 1] ?? "" };
+  }
+
+  test("a goal brigadier judges needs no plan STOPS, and writes what a resume needs", () => {
+    const before = pendingFiles().length;
+    const asked = ask("fix the typo in the readme");
+    // Not a failure and not a success: a question is waiting.
+    expect(asked.code).toBe(6);
+    expect(asked.stdout).toContain("looks like one edit — plan it anyway?");
+    expect(asked.stdout).toContain("--answer yes|no");
+    expect(asked.runId).not.toBe("");
+
+    expect(pendingFiles().length).toBe(before + 1);
+    const pending = JSON.parse(readFileSync(join(runs, "r", asked.runId, "pending.json"), "utf8"));
+    expect(pending.goal).toBe("fix the typo in the readme");
+    expect(pending.kind).toBe("plan-consent");
+    // D15's comparison is captured AT THE ASK, or there is nothing to compare to.
+    expect(typeof pending.head).toBe("string");
+    expect(Array.isArray(pending.dirty)).toBe(true);
+    // EMPTY, and it means "nothing has been computed against this repository yet".
+    expect(pending.paths).toEqual([]);
+  });
+
+  test("`--answer no` spends nothing and names the path that skips the turn", () => {
+    const asked = ask("fix the typo in the changelog");
+    expect(asked.code).toBe(6);
+    const result = brigadier(["resume", asked.runId, "--answer", "no", "--run-root", runs]);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("not planning — you said no");
+    expect(result.stdout).toContain("--plan <path>");
+    // Answered, so the file is gone: a question still on disk can be answered
+    // twice with two different answers, and only one of them would be the one
+    // the run used.
+    expect(existsSync(join(runs, "r", asked.runId, "pending.json"))).toBe(false);
+  });
+
+  test("THE RESUMING PROCESS NEED NOT BE TOLD THE REPOSITORY AGAIN", () => {
+    // The answer travels through a session and comes back from an unknown
+    // working directory — that is the shape of D13. A resume that read
+    // `process.cwd()` would plan against a different repository than the one it
+    // asked about, and nothing would say so. `--repo` is deliberately absent
+    // from the resume above and here.
+    const asked = ask("fix the typo in the licence header");
+    const pending = JSON.parse(readFileSync(join(runs, "r", asked.runId, "pending.json"), "utf8"));
+    expect(pending.repo).toBe(repo);
+    const result = brigadier(["resume", asked.runId, "--answer", "no", "--run-root", runs]);
+    expect(result.code).toBe(0);
+  });
+
+  test("a resume with no answer is refused as a usage error, not as a `no`", () => {
+    const asked = ask("fix the typo in the contributing guide");
+    const result = brigadier(["resume", asked.runId, "--run-root", runs]);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("a question asked twice");
+    // And the question is still there to be answered properly.
+    expect(existsSync(join(runs, "r", asked.runId, "pending.json"))).toBe(true);
+  });
+
+  test("a resume of a run nobody asked about says where it looked", () => {
+    const result = brigadier(["resume", "no-such-run", "--answer", "yes", "--run-root", runs]);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("there is no question waiting");
+    expect(result.stderr).toContain(join(runs, "r", "no-such-run", "pending.json"));
+  });
+
+  test("NEGATIVE CONTROL: an ordinary goal does NOT stop — the question is not wallpaper", () => {
+    // Ruling 85's whole argument. If every goal asked, the answer would be yes
+    // every time and the model relaying it would learn to say yes without
+    // reading — including for the research turn, which is the one that guards a
+    // spend the operator did not ask for.
+    const before = pendingFiles().length;
+    const result = brigadier([
+      "run",
+      "--goal",
+      "add a settings page with three tabs and a save button",
+      "--repo",
+      repo,
+      "--run-root",
+      runs,
+      "--dry-run",
+    ]);
+    expect(result.code).not.toBe(6);
+    expect(result.stdout).not.toContain("plan it anyway?");
+    expect(pendingFiles().length).toBe(before);
+  });
+
+  test("`askBeforeSpending: always` restores D3 read literally", () => {
+    // The narrowing is a judgement, so it is a setting. An operator who wants to
+    // be asked every time does not have to argue with a heuristic to get it.
+    writeFileSync(join(ROOT, ".config-always.json"), JSON.stringify({ askBeforeSpending: "always" }));
+    mkdirSync(join(ROOT, ".config", "brigadier"), { recursive: true });
+    writeFileSync(
+      join(ROOT, ".config", "brigadier", "config.json"),
+      JSON.stringify({ askBeforeSpending: "always" }),
+    );
+    const result = brigadier([
+      "run",
+      "--goal",
+      "add a settings page with three tabs and a save button",
+      "--repo",
+      repo,
+      "--run-root",
+      runs,
+    ]);
+    expect(result.code).toBe(6);
+    expect(result.stdout).toContain("may I spend a planning turn");
+    rmSync(join(ROOT, ".config", "brigadier", "config.json"), { force: true });
+  });
+});
