@@ -625,6 +625,54 @@ string the bridge calls `JSON.parse` on. **What this item cannot prove:** it dri
 work, so it says a vendor STARTS and says nothing about whether it can complete a turn; and it is
 credentialed-machine-only, so CI cannot run it and ruling 48 already accepts that for live items.
 
+### 15. The product matches what the owner asked for
+
+**The organ the process did not have.** Ruling 82, from D23. Every other item asks *does the code
+match the rulings*; this one asks *do the rulings match the owner*. It grades `PRODUCT.md` section 1 —
+the owner's own description of what brigadier is — and it exists because ruling 20 was locked on day
+one, filed in the table below as *architectural exclusion — no user-visible promise*, and decided for
+five days whether the product could think while nothing looked at it again.
+
+**It grades NO PROSE.** Section 1 makes six mechanically checkable claims and this is six assertions:
+
+1. **`brigadier setup` runs clean on a fresh `HOME`**, and `brigadier detect` agrees with what setup
+   printed. A setup that reports a fleet a later detect contradicts has told the operator something
+   untrue on the one command they run first.
+2. **A session engages brigadier without brigadier being named** — the `UserPromptSubmit` hook is
+   registered in the plugin asset the artifact ships, and `brigadier claude` launches with it.
+3. **`run --goal "<sentence>"` produces a run with no hand-authored plan**, and the plan file exists
+   where D4 puts it: inside the run record, never in the operator's tree.
+4. **The session output carries a PATH and not the plan.** The plan's own bytes must not appear on
+   stdout — one line naming a file is the entire product surface of a plan (D4).
+5. **The operator's repository is byte-identical afterwards** — item 4's assertion, REUSED rather than
+   restated, because a second copy of an assertion is a second thing to drift.
+6. **A question round-trips through exit-and-resume**: a run that stops holds no live process, writes
+   what a resume needs, and `brigadier resume --answer` continues it (D13, D14).
+
+**Remove the goal entry point or let a plan render inline, and this goes red and the tag is blocked.**
+That is the whole point of it: the divergence this item exists for was possible because nothing failed
+when it happened.
+
+**DRIVEN against the compiled binary on 2026-08-22, with a demonstrated negative.** All nine
+credential-free assertions and all three live assertions PASS. The control: with `cli.ts` changed to
+print the plan's own bytes after the path line — D4's exact failure — the item goes **FAIL** on
+assertion 4 and PASS on everything else, so it discriminates the defect rather than the run.
+
+**Two environments, one item, and that is a property rather than a compromise.** Assertion 1 runs
+under a fresh `HOME`, because its subject IS a machine that has never run brigadier. Assertions 3 and
+4 run under the operator's own, because their subject is a metered turn: MEASURED 2026-08-22 against
+`claude 2.1.238`, a scratch `HOME` answers `Not logged in · Please run /login` and exits 1 against a
+real-`HOME` control that answered and exited 0, so a planning turn there would fail for a reason that
+has nothing to do with the product.
+
+*Rulings 82, 74, 75, 76, 77, 78, 85.* **The owner may strike this item, and this line is the record
+that it was his to strike** — D23 was called by the coordinator, who had it delegated, and the owner
+twice recorded having no view. **What this item cannot prove:** six mechanical assertions cannot catch
+a divergence in the unmechanical half of section 1. It grades no prose — that is what keeps it stable
+— and it is therefore blind to exactly the class of failure that let ruling 20 through, which was a
+*judgement* about a promise rather than a broken assertion. **This item narrows the gap; it does not
+close it**, and nothing in its output may be written so a reader concludes otherwise.
+
 ## Coverage — every ruling, and what proves it
 
 The second column is where a promise gets quietly buried. Writing *no user-visible promise* next to a

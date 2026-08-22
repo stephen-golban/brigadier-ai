@@ -2,10 +2,12 @@
 /**
  * The register of items, and the reason it is a list rather than a directory scan.
  *
- * `BAR.md` defines FOURTEEN items — ruling 48 described ten, phase 2 added
- * item 11 (ruling 58), item 12 (ruling 65) and item 13 (ruling 66), and item 14
+ * `BAR.md` defines FIFTEEN items — ruling 48 described ten, phase 2 added
+ * item 11 (ruling 58), item 12 (ruling 65) and item 13 (ruling 66), item 14
  * was added on 2026-08-20 after an independent verifier read 13 PASS on an
- * artifact whose every direct agent profile was unstartable. All fourteen
+ * artifact whose every direct agent profile was unstartable, and item 15 on
+ * 2026-08-22 under ruling 82 — the only one that asks whether the RULINGS match
+ * the owner rather than whether the code matches the rulings. All fifteen
  * are registered from the start, including the ones whose product feature does
  * not exist yet, because a missing item is invisible and the document's whole
  * point is that completeness is checkable.
@@ -44,6 +46,7 @@ import item11 from "./11-report-fits-the-window.ts";
 import item12 from "./12-secret-not-persisted.ts";
 import item13 from "./13-cost-model.ts";
 import item14 from "./14-real-fleet-starts.ts";
+import item15 from "./15-matches-the-owner.ts";
 
 export const ITEMS: readonly BarItem[] = [
   item01,
@@ -60,5 +63,6 @@ export const ITEMS: readonly BarItem[] = [
   item12,
   item13,
   item14,
+  item15,
 ];
 

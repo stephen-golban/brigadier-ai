@@ -93,13 +93,17 @@ describe("the register agrees with BAR.md, which is the only authority", () => {
     expect(disagreements(readSpec(), ITEMS).map((d) => d.detail)).toEqual([]);
   });
 
-  test("the document really defines fourteen items", () => {
-    // Fourteen since 2026-08-20. Item 14 was added after an independent verifier
-    // read 13 PASS on an artifact whose every direct agent profile was
-    // unstartable — the fixtures tested the fixture protocol and nothing tested
-    // the vendors' real argv and config-root contracts.
-    expect(readSpec()).toHaveLength(14);
-    expect(ITEMS.map((i) => i.id).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+  test("the document really defines fifteen items", () => {
+    // Fourteen since 2026-08-20, fifteen since 2026-08-22. Item 14 was added
+    // after an independent verifier read 13 PASS on an artifact whose every
+    // direct agent profile was unstartable — the fixtures tested the fixture
+    // protocol and nothing tested the vendors' real argv and config-root
+    // contracts. Item 15 is ruling 82's, and it is the only one that asks
+    // whether the RULINGS match the owner rather than whether the code matches
+    // the rulings: ruling 20 decided for five days whether the product could
+    // think, filed as "no user-visible promise", with nothing looking at it.
+    expect(readSpec()).toHaveLength(15);
+    expect(ITEMS.map((i) => i.id).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
   });
 
   test("no item cites a ruling BAR.md's coverage table has never heard of", () => {
