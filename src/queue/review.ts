@@ -217,14 +217,77 @@ export function parseVerdict(text: string): Verdict | null {
 }
 
 /**
- * The identifiers that are actually IN the diff the reviewer was handed.
+ * The smallest thing in a finding that can be looked for in a diff.
+ *
+ * A path (`src/retry.ts`), a call or member expression (`[...values].sort()`,
+ * `AbortSignal.aborted`), a backticked span, or a compound identifier
+ * (`camelCase`, `snake_case`, `SCREAMING_CASE`). Deliberately NOT ordinary
+ * words: `missing`, `check` and `between` are prose, they appear in any diff of
+ * any size, and counting them would make the rate a measurement of vocabulary.
+ */
+const IDENTIFIER = /`[^`]+`|[\w./-]*\.[a-z]{1,4}\b|[\w.$[\]]*\.\w+\(\)|\b\w+[_.][\w_.$]+\b|\b[a-z]+[A-Z]\w*\b/g;
+
+/**
+ * How specific a token has to be before it may count.
+ *
+ * Six characters, a judgement, and it is what stops `.ts` or `a.b` counting as a
+ * reviewer having read a diff. It is stated here rather than inlined because it
+ * is the whole distance between this function and a rate that measures nothing.
+ */
+const IDENTIFIER_FLOOR = 6;
+
+/** Every distinct identifier-shaped token inside one finding. */
+export function identifiersIn(finding: string): string[] {
+  const out = new Set<string>();
+  for (const match of finding.matchAll(IDENTIFIER)) {
+    const token = (match[0] ?? "").replace(/`/g, "").trim();
+    if (token.length >= IDENTIFIER_FLOOR) out.add(token);
+  }
+  return [...out];
+}
+
+/**
+ * The findings that are actually EVIDENCED BY the diff the reviewer was handed.
  *
  * FOUND, not KNOWN. A reviewer that names a defect the diff does not contain has
  * not read the diff, and recording its claim would make the published catch rate
- * a measurement of a reviewer's confidence.
+ * a measurement of a reviewer's confidence. **That property is unchanged and is
+ * what the negative control below still asserts.**
+ *
+ * WHAT CHANGED, and it was measured by a verifier rather than reasoned:
+ * this required the WHOLE finding to be literal contiguous text in the diff.
+ * MEASURED 2026-08-21 by the second independent verifier, driving five planted
+ * defects: two were caught by the reviewer, blocked integration, and were named
+ * precisely — `src/retry.ts missing between-attempts abort check` and
+ * `src/median.ts [...values].sort()`. **Neither sentence is contiguous text in a
+ * diff, because no reviewer writes one that is.** So both were discarded, the
+ * automated line read `catch rate 0 of 5`, and the verifier had to score the
+ * transcript by hand to find the 2 the product had thrown away.
+ *
+ * A rate that reports zero when the truth is two is worse than no rate: it is
+ * the shape `BAR.md` opens on — a check reporting failure for something that did
+ * happen, and it was one of the three live defects that verifier named.
+ *
+ * **So the unit of matching moves from the SENTENCE to the IDENTIFIERS INSIDE
+ * IT**, and the strictness moves with it rather than being spent: a finding
+ * counts when at least one identifier-shaped token in it appears verbatim in the
+ * diff. A reviewer inventing a defect names nothing the diff carries and still
+ * counts for nothing.
  */
 export function caughtIn(diff: string, reported: readonly string[]): string[] {
-  return [...new Set(reported.filter((entry) => diff.includes(entry)))];
+  return [
+    ...new Set(
+      reported.filter((entry) => {
+        // The whole finding, first: it is the strictest possible evidence and
+        // costs one comparison.
+        if (diff.includes(entry)) return true;
+        const identifiers = identifiersIn(entry);
+        // A finding with no identifier in it at all is prose — "the retry logic
+        // looks wrong" — and prose is not evidence of having read a diff.
+        return identifiers.length > 0 && identifiers.some((token) => diff.includes(token));
+      }),
+    ),
+  ];
 }
 
 /** At most this many unverified findings are repeated, and at most this many characters each. */

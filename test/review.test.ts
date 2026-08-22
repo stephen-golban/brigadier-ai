@@ -21,6 +21,7 @@ import {
   SELF_REVIEW_BIAS,
   catchRateLine,
   caughtIn,
+  identifiersIn,
   unverifiedFindings,
   chooseReviewer,
   composeReviewBrief,
@@ -106,6 +107,57 @@ describe("a reviewer that produces no verdict", () => {
   test("a brace inside a string does not truncate it either", () => {
     const text = 'VERDICT {"verdict": "rejected", "found": ["a { b"]}';
     expect(parseVerdict(text)?.found).toEqual(["a { b"]);
+  });
+});
+
+describe("THE VERIFIER'S OWN TWO FINDINGS, which this product scored as zero", () => {
+  /**
+   * MEASURED 2026-08-21 by the second independent verifier. Both findings are
+   * verbatim from `VERIFIER-REPORT-2.md`; both blocked integration on a
+   * `rejected` verdict; both are correct. The product reported `catch rate 0 of
+   * 5` because neither sentence is literal contiguous text in a diff — and no
+   * reviewer writes one that is. The verifier scored the transcript by hand and
+   * found the 2 the product had thrown away.
+   */
+  const FINDINGS = [
+    "src/retry.ts missing between-attempts abort check",
+    "src/median.ts [...values].sort()",
+  ];
+  const DIFF = [
+    "diff --git a/src/retry.ts b/src/retry.ts",
+    "+  if (signal.aborted) throw new Error(\"aborted\");",
+    "diff --git a/src/median.ts b/src/median.ts",
+    "+  const sorted = [...values].sort();",
+  ].join("\n");
+
+  test("both are now counted, so the published rate is 2 rather than 0", () => {
+    expect(caughtIn(DIFF, FINDINGS)).toEqual(FINDINGS);
+  });
+
+  test("the identifiers are what match, not the sentence", () => {
+    expect(identifiersIn(FINDINGS[0] as string)).toEqual(["src/retry.ts"]);
+    expect(identifiersIn(FINDINGS[1] as string)).toContain("[...values].sort()");
+  });
+
+  test("NEGATIVE CONTROL: an invented finding still counts for nothing", () => {
+    // The property the old matcher had, and the whole reason it was strict. A
+    // reviewer that names a defect the diff does not contain has not read the
+    // diff, and widening the UNIT of matching must not widen the STANDARD.
+    expect(caughtIn(DIFF, ["src/nowhere.ts uses a bad mutex"])).toEqual([]);
+    expect(caughtIn(DIFF, ["src/retry.tsx missing check"])).toEqual([]);
+  });
+
+  test("NEGATIVE CONTROL: prose with no identifier in it counts for nothing", () => {
+    // "the concurrency looks wrong" is a feeling, not a reading.
+    expect(caughtIn(DIFF, ["this code is badly written"])).toEqual([]);
+    expect(caughtIn(DIFF, ["the retry logic looks wrong to me"])).toEqual([]);
+  });
+
+  test("NEGATIVE CONTROL: a token too short to be specific counts for nothing", () => {
+    // Without the floor, `.ts` appears in every diff of every TypeScript
+    // repository and every finding would score.
+    expect(identifiersIn("a.ts b.ts")).toEqual([]);
+    expect(caughtIn(DIFF, ["a.ts is wrong"])).toEqual([]);
   });
 });
 
