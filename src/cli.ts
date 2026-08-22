@@ -46,6 +46,7 @@ import { REFUSAL, isInsideWorker } from "./agent/marker.ts";
 import { ALL_AGENT_IDS, PROFILES, type AgentId } from "./agent/profiles.ts";
 import { ambientDecision } from "./agent/ambient.ts";
 import { UNLEARNABLE } from "./setup/unlearnable.ts";
+import { quote, say } from "./report/say.ts";
 import { buildIdentity, embeddedStamp, renderVersion } from "./build/identity.ts";
 import { ConfigUnusable, bridgesPath, configPath, loadConfig, resolve as prefer, type MachineConfig } from "./config/config.ts";
 import { LICENSES } from "./generated/licenses.ts";
@@ -159,8 +160,13 @@ const USAGE = `brigadier — an ACP hub
       --secret-env <NAME>   grant this variable to workers, and redact its value
                     from every persisted artifact, in every encoding (ruling 65).
                     Repeatable.
-      --audience terminal|acp-client|host-session   default host-session, where
-                    the report is hard-capped because a model pays for it forever.
+      --audience terminal|acp-client|host-session|watched-session
+                    default host-session, where the report is hard-capped because
+                    a model pays for it forever. watched-session is ruling 80's
+                    fourth state -- you, watching a session a model is also
+                    sitting in. It is capped the same way: a human watching does
+                    not make the model's window cheaper, and every byte there is
+                    paid for twice.
       --max-difficulty easy|medium|hard   the ceiling items are clamped DOWN to.
       --xhigh <item-id>     raise ONE item's effort ceiling from high to xhigh.
                     Ruling 30's declared edge case. A plan may not set effort at
@@ -414,7 +420,7 @@ async function launchCommand(agent: AgentId): Promise<number> {
   const binaryName = binaryNameFor(agent);
   const binary = Bun.which(binaryName);
   if (binary === null) {
-    sink.errLine(`brigadier: ${binaryName} is not on PATH, so there is nothing to launch.`);
+    sink.errLine(say(`${binaryName} is not on PATH, so there is nothing to launch.`));
     sink.errLine("  `brigadier detect` reports which vendors are present and what each one's own remedy is.");
     return 4;
   }
@@ -1088,9 +1094,9 @@ async function askAndExit(
   mkdirSync(dirname(pendingPath(runRootOf(), pending.runId)), { recursive: true });
   sink.write(pendingPath(runRootOf(), pending.runId), encodePending(pending));
   // D24's line form: one line, naming a fact. The question, then how to answer.
-  sink.outLine(`brigadier: ${pending.question}`);
-  sink.outLine(`brigadier: answer → brigadier resume ${pending.runId} --answer yes|no`);
-  for (const line of kept) sink.outLine(`brigadier: ${line}`);
+  sink.outLine(say(pending.question));
+  sink.outLine(say(`answer → brigadier resume ${pending.runId} --answer yes|no`));
+  for (const line of kept) sink.outLine(say(line));
   return EXIT_ASKED;
 }
 
@@ -1161,7 +1167,7 @@ async function commission(
 
   const planner = choosePlanner(usable, settings.roles.builder);
   if (planner === undefined) {
-    sink.errLine("brigadier: no vendor is drivable, so there is nobody to plan with.");
+    sink.errLine(say("no vendor is drivable, so there is nobody to plan with."));
     sink.errLine("  `brigadier detect` prints each vendor's own remedy — those words are theirs, not ours.");
     return 4;
   }
@@ -1200,13 +1206,13 @@ async function commission(
     );
   }
   if (answered?.kind === "plan-consent" && answered.answer === false) {
-    sink.outLine("brigadier: not planning — you said no");
-    sink.outLine("brigadier: `--plan <path>` runs a plan you wrote yourself, with no planning turn");
+    sink.outLine(say("not planning — you said no"));
+    sink.outLine(say("`--plan <path>` runs a plan you wrote yourself, with no planning turn"));
     return 0;
   }
 
   // D24's line form: one line, naming a fact. Not a spinner and not a paragraph.
-  sink.outLine(`brigadier: planning → ${planner}`);
+  sink.outLine(say(`planning → ${planner}`));
 
   const planDir = join(runRoot, "r", runId);
   mkdirSync(planDir, { recursive: true });
@@ -1239,11 +1245,11 @@ async function commission(
       // kept apart. Not fatal: a goal is still plannable without a finding, and
       // refusing the whole run because one optional phase has no vendor would
       // spend the operator's time to protect nothing.
-      sink.outLine("brigadier: research skipped — no vendor on this machine may research");
+      sink.outLine(say("research skipped — no vendor on this machine may research"));
       for (const line of chosen.refusals) sink.errLine(`  ${line}`);
     } else {
       const today = todayStamp(new Date());
-      sink.outLine(`brigadier: research → ${chosen.agent}`);
+      sink.outLine(say(`research → ${chosen.agent}`));
       try {
         finding = await commissionResearch(
           {
@@ -1263,18 +1269,18 @@ async function commission(
           { question: goal, today },
         );
         sink.write(findingFile, `${finding.text}\n`);
-        sink.outLine(`brigadier: finding ready → ${findingFile}`);
+        sink.outLine(say(`finding ready → ${findingFile}`));
       } catch (error) {
         if (error instanceof FindingUnusable) {
           // D22, and it is a REFUSAL rather than a degradation: an undated
           // finding is the exact failure this kind exists to catch, so it does
           // not quietly become the planner's context.
-          sink.errLine(`brigadier: ${error.message}`);
-          sink.errLine(`  it said: ${error.received.slice(0, 400).replace(/\n/g, " ")}`);
-          sink.outLine("brigadier: planning without a finding");
+          sink.errLine(say(quote(error.message)));
+          sink.errLine(`  it said: ${quote(error.received, 400)}`);
+          sink.outLine(say("planning without a finding"));
         } else if (error instanceof PlannerRefused) {
-          sink.errLine(`brigadier: ${error.message}`);
-          sink.outLine("brigadier: planning without a finding");
+          sink.errLine(say(quote(error.message)));
+          sink.outLine(say("planning without a finding"));
         } else {
           throw error;
         }
@@ -1303,14 +1309,14 @@ async function commission(
     });
     sink.write(planFile, `${commissioned.planJson}\n`);
     // D4, and it is the whole product surface of a plan: a PATH, never the plan.
-    sink.outLine(`brigadier: plan ready → ${planFile}`);
+    sink.outLine(say(`plan ready → ${planFile}`));
     return planFile;
   } catch (error) {
     if (error instanceof PlannerRefused) {
       // Ruling 52's `error`, not `fail`: the planner was never allowed to
       // answer, so sending anyone to look at the plan would be sending them to
       // the wrong place.
-      sink.errLine(`brigadier: ${error.message}`);
+      sink.errLine(say(quote(error.message)));
       // WHAT WAS ACTUALLY DONE TO THAT VENDOR, from the same decision tree the
       // spawn used. Ruling 83 made the lever per vendor, so a fixed sentence
       // here would name a redirect that did not happen on the one vendor where
@@ -1347,11 +1353,11 @@ async function commission(
       return 4;
     }
     if (error instanceof PlannerUnusable) {
-      sink.errLine(`brigadier: ${error.message}`);
+      sink.errLine(say(quote(error.message)));
       // The raw text, because "it did not return JSON" without showing what it
       // DID return leaves an operator with nothing to act on. Bounded, because
       // ruling 58 caps what reaches a host session.
-      sink.errLine(`  it said: ${error.received.slice(0, 400).replace(/\n/g, " ")}`);
+      sink.errLine(`  it said: ${quote(error.received, 400)}`);
       return 5;
     }
     throw error;
@@ -1392,7 +1398,7 @@ async function resumeCommand(): Promise<number> {
   if (!existsSync(path)) {
     // Checked before the read, because "it is not valid JSON — ENOENT" sends an
     // operator to fix a file that is not there. Two states, two remedies.
-    sink.errLine(`brigadier: there is no question waiting on ${runId} (looked in ${path})`);
+    sink.errLine(say(`there is no question waiting on ${runId} (looked in ${path})`));
     sink.errLine("  A run that stopped to ask leaves one; a run that finished, or was never asked, does not.");
     return 2;
   }
@@ -1401,10 +1407,10 @@ async function resumeCommand(): Promise<number> {
     pending = readPending(path);
   } catch (error) {
     if (error instanceof PendingUnusable) {
-      sink.errLine(`brigadier: ${error.message}`);
+      sink.errLine(say(quote(error.message)));
       return 2;
     }
-    sink.errLine(`brigadier: there is no question waiting on ${runId} (looked in ${path})`);
+    sink.errLine(say(`there is no question waiting on ${runId} (looked in ${path})`));
     return 2;
   }
 
@@ -1439,7 +1445,7 @@ async function resumeCommand(): Promise<number> {
     // The pending file is KEPT. It is the record of what was asked, it costs
     // bytes rather than a directory, and an operator who wants to know what
     // they were asked three days ago should not have to reconstruct it.
-    sink.errLine(`brigadier: the question is still in ${path}. Start again with \`run --goal\` when you are ready.`);
+    sink.errLine(say(`the question is still in ${path}. Start again with \`run --goal\` when you are ready.`));
     return 4;
   }
 
@@ -1839,7 +1845,7 @@ function absolute(path: string): string {
 
 /** Decision 25's default: a model is reading this, and it pays for every byte. */
 function audienceFrom(name: string | undefined): Audience {
-  if (name === "terminal" || name === "acp-client") return name;
+  if (name === "terminal" || name === "acp-client" || name === "watched-session") return name;
   return "host-session";
 }
 

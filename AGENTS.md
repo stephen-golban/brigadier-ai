@@ -126,6 +126,38 @@ The rules below each came from a confidently wrong number that reached a shipped
 - Do not trust a package coordinate copied from documentation; check the registry.
 - A negative result is a good result. Report it plainly and do not reword a probe until it passes.
 
+## What brigadier says to a person
+
+D24, carried by ruling 80. **Scope is output TO THE USER only** — this section
+governs what the binary prints for a person to read, and nothing else. Worker
+briefs, this file, `BAR.md` and `PRODUCT.md` are all out of scope, and brigadier
+goes on talking to its workhorses in whatever prose gets the work done.
+
+**Every user-facing message is one line**, and that is enforced structurally
+rather than by a lint: `src/report/say.ts` is the only constructor for one, and
+it REFUSES a multi-line message rather than flattening it. A word list detects
+slop after somebody writes it; a line form leaves nowhere to put it.
+
+The standard the line form cannot enforce, which is why it is written here and
+enforced by review:
+
+- **Say the fact, not the effort.** `plan ready → <path>`, not *"I've gone ahead
+  and prepared a plan for you"*.
+- **Name the thing that happened, with its subject.** `item 3 → codex` beats
+  *"dispatching work to an agent"*.
+- **A number or a path beats an adjective.** If a line has neither, ask what it
+  is for.
+- **No apology, no preamble, no offer to continue.** A run that failed says what
+  failed and what to do about it.
+- **The remedy belongs on the line that reports the problem**, not in a
+  paragraph after it.
+- **Somebody else's prose is quoted, never rewritten.** A worker's finding text
+  is theirs; `quote()` flattens and bounds it, and brigadier has no model with
+  which to improve it and does not pretend otherwise.
+
+There is deliberately **no lint for tone**. D24 declines one, and a tone lint is
+the kind of check that passes on bad writing and fails on good writing.
+
 ## A deliberate omission
 
 This file says nothing about delegating work to brigadier, and that is on purpose.

@@ -37,7 +37,25 @@ export type Audience =
    */
   | "acp-client"
   /** A model reads it, and pays for it forever. Hard cap. */
-  | "host-session";
+  | "host-session"
+  /**
+   * RULING 80's fourth state: a human watching a session a model is also
+   * sitting in.
+   *
+   * The enum had three members and conflated two independent things — **who
+   * reads it** and **who pays for it**. Ruling 58 argued there was no in-flight
+   * display in host-first because progress would be *"paying tokens for an
+   * animation nobody watches"*. Under decision 1 the owner IS the nobody: he is
+   * sitting in the session the model is in, and the streaming renderer exists,
+   * works, and was unreachable from the only configuration he uses.
+   *
+   * **What is NOT overturned is the fact.** There is still no free channel —
+   * ruling 75 measured `/dev/tty` unreachable from inside a CLI tool call — so
+   * this state is capped exactly as `host-session` is. Every byte here is paid
+   * for twice: once by the model's window and once by the operator's attention.
+   * That is why D24's line form is the shape and not a preference.
+   */
+  | "watched-session";
 
 /**
  * The hard ceiling on a run report into a host session, in tokens.
@@ -53,9 +71,15 @@ export type Audience =
  */
 export const HOST_REPORT_TOKEN_CEILING = 2_000;
 
-/** Ruling 58 truncates to fit. This is a ceiling, not a target. */
+/**
+ * Ruling 58 truncates to fit. This is a ceiling, not a target.
+ *
+ * `watched-session` is capped WITH `host-session` and not beside it: a human
+ * watching does not make the model's window cheaper, and ruling 80 overturned
+ * the enum's conflation rather than the arithmetic behind the cap.
+ */
 export function isCapped(audience: Audience): boolean {
-  return audience === "host-session";
+  return audience === "host-session" || audience === "watched-session";
 }
 
 /**
@@ -114,6 +138,27 @@ export { estimateTokens } from "../repomap/tokens.ts";
  */
 export function hasInFlightDisplay(audience: Audience): boolean {
   return audience !== "host-session";
+}
+
+/**
+ * What in-flight output may look like, which is not the same question as
+ * whether there is any.
+ *
+ * Ruling 80 adopts a CHUNKED design for v0.1 and names it as unmeasured in the
+ * ruling that adopts it, so that when it fails the record says it was a bet:
+ * each exit and each resume returns a short block. `notifications/progress` is
+ * consumed by Claude Code — it resets the per-call idle timer — but whether it
+ * is DISPLAYED is not stated in the official reference and a third-party
+ * incident report claims it is not. **Drive it before designing against it.
+ * `/dev/tty` is what happens when you don't.**
+ *
+ * So a watched session gets D24's lines as they happen, on a channel that
+ * already exists and is already paid for, and nothing here invents a transport.
+ */
+export function inFlightShape(audience: Audience): "stream" | "chunked" | "none" {
+  if (audience === "terminal" || audience === "acp-client") return "stream";
+  if (audience === "watched-session") return "chunked";
+  return "none";
 }
 
 /**
