@@ -139,6 +139,10 @@ import {
 import { blocks, type CheckOutcome, type CheckResult } from "../work/check.ts";
 import { dispatchWidth } from "../work/fanout.ts";
 import { lanePolicyFor } from "../work/kind.ts";
+import { assign } from "../router/assign.ts";
+import { scoreOf } from "../router/table.ts";
+import type { Tally } from "../router/outcomes.ts";
+import { DEFAULT_EXPLORATION_FLOOR } from "../config/config.ts";
 import { ladderTaken, renderLadder, rungsOffered } from "../work/ladder.ts";
 import type { VerifyResolution } from "../gate/verify.ts";
 import { runVerify, unconfiguredVerify } from "../gate/run.ts";
@@ -240,6 +244,13 @@ export interface ExecuteOptions {
    * the thing that actually spends money. That was a defect, not a policy.
    */
   suppressAmbient?: boolean;
+  /**
+   * Ruling 81's learned column, keyed by `tallyKey`. Absent on a new machine,
+   * and absent is not zero — `adjustment` returns nothing below its floor.
+   */
+  outcomes?: ReadonlyMap<string, Tally>;
+  /** Ruling 81's exploration floor, from the operator's config. */
+  explorationFloor?: number;
   softCeiling?: number;
   hardCeiling?: number;
   /**
@@ -1331,6 +1342,29 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
   });
 
   const plan = options.admission.plan;
+  // RULING 87. This read `options.admission.agents[0]` and gave EVERY item of
+  // every run to the first agent on the list — so a five-item fan-out on a
+  // three-vendor machine ran five claude workers and nothing said so. That is
+  // the monoculture D20 records the objection to, arriving through the other
+  // door. `assign` spreads across distinct vendors first (D6), takes the best of
+  // what is left (D20), and gives ruling 81's exploration floor its stride.
+  const assignments = new Map(
+    assign({
+      items: plan.items.map((item) => ({ number: item.number, kind: item.kind })),
+      candidates: options.admission.agents.map((admitted) => ({
+        id: admitted.id,
+        score: scoreOf(admitted.id),
+      })),
+      outcomes: options.outcomes ?? new Map(),
+      explorationFloor: options.explorationFloor ?? DEFAULT_EXPLORATION_FLOOR,
+    }).map((assignment) => [assignment.item, assignment]),
+  );
+  const byId = new Map(options.admission.agents.map((admitted) => [admitted.id, admitted]));
+  const agentFor = (number: number): { id: AgentId; profile: LaunchProfile } | null => {
+    const assigned = assignments.get(number)?.agent;
+    const admitted = assigned === undefined ? undefined : byId.get(assigned as AgentId);
+    return admitted === undefined ? null : { id: admitted.id, profile: admitted.profile };
+  };
   const chosen = options.admission.agents[0] ?? null;
   const agent = chosen === null ? null : { id: chosen.id, profile: chosen.profile };
   // Ruling 32, decided ONCE from `PATH` rather than per item: whether this
@@ -1430,7 +1464,7 @@ export async function executeRun(options: ExecuteOptions): Promise<ExecuteResult
           // its prerequisite's output rather than the state before it.
           const cloneFrom: BaseState =
             waveNumber === 1 ? base : { ...base, ref: integrationBranch(runId), sha: waveBase };
-          return runItem(item, cloneFrom, options, sink, record, agent, secrets, transcript, live, spend);
+          return runItem(item, cloneFrom, options, sink, record, agentFor(number), secrets, transcript, live, spend);
         }),
       );
       // Ruling 66: an item that was in flight when the HARD ceiling fired was

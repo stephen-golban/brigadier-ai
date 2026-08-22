@@ -1817,6 +1817,9 @@ async function run(resumed?: { pending: PendingRun; answer: boolean }): Promise<
     review: flag("review"),
     // Decision 17 reaching the workers rather than the planner alone (ruling 83).
     suppressAmbient: settings.config.ambientSuppression,
+    // Ruling 81's floor, from the operator's config, printed beside the ranking
+    // it protects rather than applied silently.
+    explorationFloor: settings.config.explorationFloor,
     ...(value("planted") === undefined ? {} : { planted: Number(value("planted")) }),
     secretEnv: values("secret-env"),
     // Ruling 30's declared edge case, and ruling 31's reason it is here rather

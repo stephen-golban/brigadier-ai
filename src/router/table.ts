@@ -202,6 +202,17 @@ export function toRow(entry: TableEntry): CompetenceRow {
   };
 }
 
+/**
+ * This agent's builder score, or `undefined` for ruling 68's UNRANKED.
+ *
+ * The one reader the router needs. It takes the BUILDER row because that is what
+ * an item is assigned for; a reviewer is chosen by `chooseReviewer`, which is
+ * ruling 32's cross-vendor question and a different one.
+ */
+export function scoreOf(agent: string, role: Role = "builder", table: readonly TableEntry[] = TABLE): number | undefined {
+  return table.find((entry) => entry.agent === agent && entry.role === role)?.score;
+}
+
 export function rows(table: readonly TableEntry[] = TABLE): CompetenceRow[] {
   return table.map(toRow);
 }
