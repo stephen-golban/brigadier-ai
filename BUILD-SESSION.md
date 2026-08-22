@@ -43,9 +43,18 @@ CLI session he starts. `PRODUCT.md` is the full account and 24 owner decisions.
 - **Rulings 74–82** are `issuecomment-5373310146`; **83–84** are `issuecomment-5374870012`; **85–88**
   are `issuecomment-5377224146`. `BAR.md`'s coverage table carries a row for every one.
 - Local `main` is far behind and left alone deliberately.
-- CI at the last completed run `32488134420`: **63 distinct Windows failures, 4 macOS failures.**
-  Every `gates` run in the repository's history has failed. **Nothing in build session 2 addressed
-  that**, and item 15 adds a fifteenth way to be not-met.
+- **CI RAN AGAINST TRACK A** — run `32554088169`, `gauntlet/next` at `10d54da`, 56 minutes, red.
+  Read as a differential against `32490301126`, which is the newest completed run before it (**not**
+  `32488134420`, which the earlier handoff cited and which is two runs older):
+
+  | platform | before | after |
+  | --- | --- | --- |
+  | ubuntu-latest | 0 | **0 — green, and has been** |
+  | macos-latest | 1 | 1 — unchanged |
+  | windows-latest | 64 | **75 — 11 new, all Track A's** |
+
+  **Track A broke nothing on Linux or macOS.** The 11 new Windows failures are named in *Track B — the
+  11 Track A added* below, and every one is platform-shaped rather than logic-shaped.
 - `gauntlet/build`, `ci`, `verify-2`, `verify-3` are all ancestors of `gauntlet/next`. **`verify-2`
   points at the same sha as `build` and marks nothing of its own.**
 
@@ -88,16 +97,68 @@ b9ef45c  step 7 D24's line form, and ruling 80's fourth audience
 owner-intent session; 83 and 85–88 were delegated on 2026-08-22 (*"please take this decision
 yourself"*), and 84 is the owner's own call between two readings of ruling 78.
 
+## The retry ladder is offered and never taken — START HERE
+
+**FOUND 2026-08-22, and it is the largest open defect in the product.** Ruling 24's second rung is
+printed at admission (`ladder 2 rungs — attempt 1, then a fresh clone with a different vendor`) and
+**no item is ever retried**: `runItem` has exactly one call site, `attempts: 1` is a literal in the
+record, and `ladderTaken(ladder, 1)` always renders one attempt taken.
+
+The ladder's vocabulary, rung chooser and four-outcome renderer all exist and are thoroughly tested —
+**and every one of those eleven tests hands the renderer a hand-made `attempts: 2`**, because nothing
+in the product can produce one. A well-tested renderer for a state the code cannot reach.
+
+**`src/work/rung2.ts` is the half that was missing and is BUILT: `chooseRung2` and `retryContext`,
+with tests.** What is left is the dispatch, in `src/queue/execute.ts`:
+
+1. After `runItem` returns a failed run, if the ladder offers a second rung and this item has taken
+   one attempt, call `chooseRung2(first, candidates, cold)` and dispatch a **fresh clone from the same
+   base** — never the first attempt's directory, which ruling 63 retains.
+2. Append `retryContext(first)` to the brief (`composeBrief` takes only the item today, which is why
+   a retry currently gets a byte-identical brief).
+3. Record `attempts: 2` truthfully, and let `ladderTaken` render it — the renderer needs no change.
+4. Charge it to the ITEM's ladder, never to `reviewerAttempts` (ruling 52).
+
+**Why it matters beyond the promise:** it explains the second verifier's first planted defect —
+*"the builder made no commit… no reviewer ran"* — which with a working ladder gets a second vendor,
+and it is the difference between item 5 scoring 2-of-5 and having a chance at 3.
+
 ## What is left, and where to start
 
 **Nothing in Track A. The backlog is what `BAR.md` gates on, and none of it is new:**
 
-1. **Track B — Windows.** 63 distinct failures at run `32488134420`, on the owner's own Windows
-   machine. Unblocked since step 5 and now fully unblocked: the files it touches have stopped moving.
-   Two things to check on arriving: **what is actually checked out** (a clone predating `gauntlet/next`
-   debugs a different artifact, and a `core.autocrlf=true` clone was MEASURED failing the licence check
-   while byte-identical to HEAD), and that **`build` now runs before `test-gate`**, so a broken build
-   there yields no test signal at all.
+1. **Track B — Windows.** **75 distinct failures at run `32554088169`**, on the owner's own Windows
+   machine. Two things to check on arriving: **what is actually checked out** (a clone predating
+   `gauntlet/next` debugs a different artifact, and a `core.autocrlf=true` clone was MEASURED failing
+   the licence check while byte-identical to HEAD), and that **`build` now runs before `test-gate`**,
+   so a broken build there yields no test signal at all.
+
+   ### Track B — the 11 Track A added, and what each one is about
+
+   Grouped by cause rather than listed, because #13 already found one root cause — backslashes in a
+   command path — that explained a dozen inert controls at once. **None of these is a logic defect;
+   every one is a place where Track A wrote a POSIX assumption into a test or a path.**
+
+   - **The config home (3).** `where the file lives > XDG_CONFIG_HOME wins…`, `…an EMPTY
+     XDG_CONFIG_HOME falls back…`, `…both files brigadier reads resolve through the same config home`.
+     Windows has no `XDG_CONFIG_HOME`; it has `APPDATA`. `src/config/config.ts`'s `configPath()` is
+     where this is decided.
+   - **`PATH` as a string (2).** `is it on PATH — entry by entry…` and `the shim, and what it execs >
+     one stable PATH entry…`. The separator is `;` on Windows, and `~/.brigadier/bin` is not where a
+     Windows shim goes.
+   - **The shell profile (2).** `which shell, and the line it needs > an unknown shell gets NO profile
+     guessed…` and `ruling 76's cap > PATH advice says nothing to do…`. There is no `.zshrc` to guess
+     at, and ruling 77's *loud absence beats a silent wrong write* is MORE true there, not less.
+   - **The ambient shim (1).** `the generated shim does what the rewrite does — executed, not read`.
+     It is a `#!/bin/sh` script. Ruling 83 already made win32 fall back to the config-root redirect
+     for this exact reason; **the TEST does not know that**, and the fix is the test, not the lever.
+   - **A darwin assumption in one of my own tests (1).** `RULING 83: claude is named with the lever it
+     ACTUALLY gets`. `ambientSuppression()` reads `process.platform`, so Windows correctly reports the
+     config-root fallback and the assertion does not admit that answer. **The product is right and the
+     test is wrong**, which is the most important row here to not fix backwards.
+   - **Path separators in two path assertions (2).** `the pending file refuses… > it lives beside the
+     plan it belongs to` compares against `/root/r/r1/pending.json`; `askBeforeSpending: always`
+     builds a config path with `join` and then writes it where Windows does not look.
 2. **macOS CI** — 4 failures in the same run, one a 62-second fixture.
 3. **Item 5's catch rate** — 2 of 5 against a required 3 of 5, and the cross-vendor review has not been
    run. This is the one both verifiers named.
