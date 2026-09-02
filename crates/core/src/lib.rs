@@ -12,4 +12,5 @@ pub mod claude;
 pub mod driver;
 pub mod event;
 pub mod session;
+pub mod wall;
 pub mod worktree;
