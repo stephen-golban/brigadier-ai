@@ -1,0 +1,342 @@
+# brigadier — the vision
+
+Settled with the owner on 2026-09-02. This file replaces `brigadier-guide.md`, which described an
+installable CLI that no longer exists and was deleted the same day. It is recoverable from git
+history at `2327bb9` if the reasoning behind a decision is ever needed; nothing in it is current.
+
+Rules of this document: one line per fact, a path or a number instead of an adjective, every claim
+tagged **[measured]** (run on this machine, command shown or cited), **[source]** (read in code or a
+vendor's source, `file:line`), **[documented]** (vendor docs, URL + fetch date) or **[asserted]**
+(reasoning, not verified). What was not checked is said outright.
+
+---
+
+## 1. What brigadier is
+
+**A lead that never accumulates.**
+
+The Rust harness owns everything durable — the goal, the plan, what is done, what is left, the
+diffs, the thread on screen. Model windows are rented for the moments that need judgement and
+thrown away afterwards. The thread is permanent. No context ever is.
+
+That one sentence is the product. Everything below is a consequence of it.
+
+## 2. The problem it is for
+
+A long agent session does not announce that it has gone bad. It gets slower, vaguer and more
+expensive, and every individual turn still looks reasonable. The window filled up: the session read
+forty files to answer one question, pasted a test run into the conversation, and now every
+subsequent turn re-sends all of it.
+
+Two facts make this worse than it sounds:
+
+- Recall accuracy falls as tokens rise — the session **degrades before it hits any limit**
+  (`docs/research/long-sessions.md`). The failure is silent by construction.
+- A 20-step agent loop can consume over 10x the tokens a per-step estimate suggests, because
+  conversation history accumulates quadratically
+  (**[documented]** kunalganglani.com/blog/ai-agent-cost-per-task-2026, fetched 2026-09-02).
+
+The industry answer, including Anthropic's own published reference design for long-running coding
+agents, is **fresh sessions, files as connective tissue, a git commit per phase — not one long
+session** (`docs/research/long-sessions.md`, citing anthropic.com/engineering/effective-harnesses-for-long-running-agents).
+
+brigadier does not ask a model to be disciplined about this. It removes the accumulating window.
+
+## 3. The shape
+
+```
+                    ┌──────────────────────────────────────────┐
+   durable          │  Rust harness: goal · plan · progress ·  │
+   (forever)        │  thread · diffs · worktrees · store      │
+                    └───────────────┬──────────────────────────┘
+                                    │ rents a window, throws it away
+                    ┌───────────────┴──────────────────────────┐
+   disposable       │  lead call · grill call · research ·     │
+   (seconds)        │  work order · review · judge             │
+                    └──────────────────────────────────────────┘
+```
+
+Each rented window is a fresh CLI child with a small, curated context the harness assembles. Cost
+per step is flat at step 400 as at step 4. Nothing rots, because nothing fills.
+
+**The measured price of this shape: 1,981 ms from spawn to `system/init`**
+(`docs/research/claude-direct-spike.md`, **[measured]**). A ten-step phase pays ~20 s of pure
+startup. Mitigations exist — a warm pool, or letting one child serve several turns, since
+`system/init` fires per *turn* and a process can serve more than one — and **none is built or
+measured**.
+
+**A consequence worth naming: brigadier always knows what step it is on, because it chose the
+step.** The one-line status the user sees is therefore a fact the harness already holds, not a
+model being asked to be brief. It costs zero tokens and cannot hallucinate.
+
+## 4. The flow
+
+**1 — Add a project.** Local directories only. No remote, no cloud, no accounts. At startup
+brigadier probes which agent CLIs are installed and authenticated; the `initialize` response carries
+`models` (6) and `account {email, organization, subscriptionType, apiProvider}`
+(**[measured]**, `docs/research/claude-direct-spike.md`), so brigadier knows the available models and
+the billing regime without asking.
+
+**2 — Pick the lead CLI.** One modal, once. It is a preference, not a binding — see §6 on failover.
+
+**3 — State an intent.** *"Project X is a job portal SaaS, let's build it."* No settings, no model
+picker, no toggles.
+
+**4 — Recon, free.** The harness reads the file tree, manifests, test command, framework and recent
+git log itself. No model window is spent on it. This becomes a ~1,500-token brief handed to every
+later child (§7).
+
+**5 — Grill and research, concurrently.** brigadier lists what it does not know and sorts each
+unknown into one of two bins:
+
+| bin | goes to | example |
+|---|---|---|
+| only the user can answer | one question at a time, as a real choice | auth model; who posts jobs; payments now or later |
+| the internet can answer | research subagents with `WebSearch`/`WebFetch`, findings to a file | what does this framework do about auth; is this library maintained |
+
+Both resolve before the plan is final, and they run at the same time so the wall-clock cost is
+whichever is slower. **"Just go" is always one click away, and skipping is recorded** — when a phase
+later fails on a question that was waved off, the thread can say which one.
+
+This scales with actual ignorance. A typo fix produces no unknowns and starts immediately. A vague
+goal earns the delay, and the delay is the cheapest thing in the product: a question answered here
+is a phase not built wrong.
+
+**6 — The plan lands as a checklist.** Phases, each with a definition of done and **a real verify
+command**. The owner approves once, as an envelope covering the whole run.
+
+**7 — The loop.** Per phase:
+
+1. A **lead call** — fresh, small: goal + plan + progress + last outcome — emits an *action*, not prose.
+2. Usually: dispatch. One git worktree per work order, one fresh child in each, disjoint file
+   ownership so no two workers write the same file.
+3. Workers return **reports**, not transcripts.
+4. Adversarial review where it is earned (§5).
+5. **The gate is a real exit code.** The verify command runs; its output goes to a worker's window,
+   never into the thread.
+6. Green → merge, commit, clean up. Progress updated. Next phase.
+
+**8 — Nothing is left behind**, within one honest limit stated in §8.
+
+## 5. Fusion — what the second CLI is for
+
+Fusion is OpenRouter's pattern: fan one prompt to a panel of models in parallel, then a judge reads
+every response and fuses consensus, contradictions and unique insight into one answer
+(**[documented]** openrouter.ai/fusion, fetched 2026-09-02).
+
+**Fusion works on answers. It does not work on actions.** OpenRouter fuses text; coding CLIs edit
+repositories. Fan one task to two of them and you get two diffs, and no judge can fuse two sets of
+file writes — it must pick one and discard the other, paid for.
+
+So the rule is:
+
+> **Fusion for judgement. Single owner for actions. Except where an objective gate can pick the
+> winner — and then fusion on actions too.**
+
+The exception is not a loophole, it is the best moment in the product. At a **red gate** there is
+already a judge that is not a model: the exit code. Two CLIs attempt the fix in two worktrees, both
+run the verify command, and the one that goes green wins. No synthesis, no taste, no judge call.
+
+**The red-gate ladder**, in order:
+
+1. **Fresh worker, same order, told what failed.** One child, ~2 s. Fixes the common case where a
+   worker's window got polluted early and it spent the rest of the order defending a misreading.
+2. **Fusion.** Both CLIs, two worktrees, the gate picks the winner.
+3. **Stop and ask the owner**, with a real diagnosis.
+
+Where fusion is worth real money on judgement: plan review, diff review, "did we miss anything".
+A differently-trained model has different blind spots, which is strictly better than Claude
+reviewing Claude.
+
+## 6. Economics — usage windows, never dollars
+
+**The owner runs brigadier on his own authenticated CLIs. Dollars never appear in the product.**
+Not as a primary number, not as an imputed one. A subscription user is never billed per token, so a
+dollar figure would be a lie in the user's favour, which is still a lie.
+
+The currency is the rolling usage window, and the CLI streams it unasked (**[measured]**, spike
+fixtures `s8`/`s9`/`s10`):
+
+```json
+{"type":"rate_limit_event","rate_limit_info":{
+  "status":"allowed","rateLimitType":"five_hour",
+  "overageStatus":"rejected","overageDisabledReason":"org_level_disabled",
+  "unifiedWindows":{"five_hour":{"utilization":0.15,"resetsAt":1788315600},
+                    "seven_day":{"utilization":0.03,"resetsAt":1788346800}}}}
+```
+
+Utilization for both windows, exact reset epochs, free on the event stream, no extra call. It ticked
+0.15 → 0.16 across the spike's runs, so it is live.
+
+> Correction to an existing brief: `docs/research/long-sessions.md` says rate limits are "per model
+> class" and that parallel sessions on different models draw from separate buckets. The measured
+> frame says `unifiedWindows` with only `five_hour` and `seven_day`. That line is **stale** and
+> should be fixed when the file is next touched.
+
+**The reserve.** brigadier never takes utilization above a line the owner sets, defaulting near 80%,
+narrowing concurrency as it approaches and parking below it rather than at empty. The reason is
+specific: if brigadier drinks the whole window, **the owner's own Claude Code stops working.** The
+reserve is headroom for the human, not a cost control.
+
+**Parallelism is token-neutral.** Four workers at once and four in sequence burn the same total for
+the same work; parallelism changes the rate, not the amount. The one genuine waste is four workers
+each reading the same five files — a partitioning failure, not a concurrency cost, and the fix is
+disjoint file ownership per order.
+
+**Fan-out is the expensive shape, not the cheap one.** One child spawning N subagents pays for N
+worker windows *plus* a coordinating window that re-sends the brief and every returned report on
+each turn. N children spawned by the harness pay for N windows and coordinate in Rust for zero
+tokens. Beyond cost, fan-out also loses per-worker model routing (Claude Code picks the subagents'
+models, not brigadier) and loses worktree isolation (every subagent shares one cwd, so parallel
+edits collide). **[asserted]** — the head-to-head token comparison has **not been measured**, and
+should be, cheaply, on Haiku, before anything is built on it.
+
+**Model routing is the throttle.** Role-based: judgement (lead, grill, review, judge) gets the
+strong model; work orders get mid-tier; lookups and mechanical edits get the cheapest. As the window
+fills, **non-judgement work downshifts and thinking does not** — judgement calls are a small share
+of tokens and carry most of the quality. One visible per-session tier is the knob the owner sees.
+`codex` takes `-m, --model` per invocation (**[measured]**, `codex --help`), so this works on both.
+
+## 7. What is handed to a worker
+
+**No codebase index.** Measured across 46.1M tool-result tokens in 290 local transcripts: search
+results are a **median 127 tokens and 8.2% of tool tokens; `Read` is 73%**
+(`docs/research/codebase-index.md`). An index attacks the small number, and nothing lets a worker
+skip reading the file it edits. A crude whole-repo symbol map rebuilds in **145 ms**, so persistence
+buys nothing; Cursor turned semantic indexing off, Cody removed embeddings, Zed deleted its
+`semantic_index` crate, and Codex and t3code precompute nothing.
+
+Instead: a **~1,500-token brief assembled from git in under 100 ms** — file tree, manifests, test
+command, framework, recent log — handed to every child.
+
+**Landmine, regardless:** mtime-keyed caching **misses on 100% of files in a fresh worktree** — same
+content, different mtime. Every worker runs in a worktree, so any mtime-keyed cache would be wrong
+every time. Git blob OIDs are 99.45% identical across branches; content-address, never mtime.
+
+## 8. Autonomy, safety and litter
+
+**Workers are pre-authorized inside their own worktree.** Reads, builds, tests and writes below the
+worktree root proceed with no human. Anything reaching outside it — network, package installs with
+side effects, `git push`, destructive commands, writes above the worktree root — queues in the
+approvals dock.
+
+**A queued approval parks one work order, never the run.** brigadier continues every other order and
+phase that does not depend on it. One prompt at 3am costs one work order by morning, not the night.
+This matters because the approvals dock as built is proven live and completely useless while the
+owner is asleep; without this rule the overnight run does not fail, it *hangs*.
+
+**Re-planning.** brigadier may rewrite, add or drop phases inside the goal the owner approved,
+recording what changed and why. A change that would move the **definition of done** escalates to
+fusion, and on disagreement to the owner. The failure mode being guarded against is named in our own
+research: *agents declaring done prematurely and marking features complete without end-to-end
+tests.*
+
+**Cleanup — reversibility beats prediction.** "Is this merged" has **no sound automatic test**:
+`git cherry` reports work unmerged after a squash-merge and after a conflict-resolved rebase, and
+reports it *merged* when it was applied upstream then reverted (**[measured]**,
+`docs/research/worktree-cleanup.md`). The only sound signal is `rev-list --count base..branch == 0`.
+
+So the rule is **auto-remove only when there is nothing to lose**, and before any removal, commit
+uncommitted work to a ref so the deletion is reversible (Conductor's approach). Anything unmerged
+survives and is listed in the UI for one-click cleanup. Deleting a session removes its rows, its
+feed log and its worktree — and because **every phase commits to git, deleting a session destroys
+nothing that matters.** The work is in the repository; only the narration goes.
+
+**The honest exception to "no litter".** On this machine right now: 66 MB of our own raw NDJSON
+across 23 sessions, and **3.0 GB of provider transcript directories** (**[measured]**). The
+transcripts are the only thing `--resume` reads, so they cannot be auto-deleted. The promise is
+"brigadier cleans up after itself", not "nothing accumulates". A retention policy for both classes
+is **unwritten**.
+
+**Security, unfixed:** `git worktree add` executes the repository's own `.gitattributes` filter
+drivers — arbitrary shell, from the repo, at worktree-creation time, which an agent could have
+planted earlier. Claude Code neutralizes this; brigadier does not (**[measured]**,
+`docs/research/worktree-cleanup.md`). In an app whose entire job is running agents inside
+repositories this is the highest-priority safety item open.
+
+## 9. What the user sees
+
+**The sidebar shows every project, with its sessions nested.** A collapsed project still carries a
+dot when something is running inside it, so work in a project you are not looking at is never
+invisible. Finished projects collapse to one line with a count. The window gauge is pinned at the
+bottom of the sidebar, under everything.
+
+```
++ New session          |   > Plan  6 phases . 3 done
+                       |
+v job-portal       *   |   Phase 3 . API routes
+   * schema + auth     |
+   o landing page      |   3 workers dispatched
+v brigadier-ai         |   Review: 2 blockers
+   * the wall          |   Phase 2 green . 41 tests
+> old-crm          3   |
+> dotfiles             |
+-----------------------|   +----------------------+
+ ######....  5h   62%  |   | Ask or steer...      |
+ #.........  7d   11%  |   +----------------------+
+```
+
+**Thread-primary, one column.** The plan sits pinned above the thread as a live card, collapsible to
+one line, expandable to the full checklist, updating in place as phases complete. Nothing the owner
+steers with ever scrolls away.
+
+**One line per event, harness-derived.** `Grilling — 4 questions.` `3 workers: schema, API routes,
+job list.` `Review: 2 blockers, fixing.` `Phase 2 green — 41 tests pass. Committed.` Model prose
+lives entirely behind a verbose toggle.
+
+**The gauge is the window**, not a token count and not a dollar figure: two bars and two countdowns,
+with the owner's reserve line drawn on them.
+
+**First launch** with no projects is a single centred prompt to add one. No dashboard, no tour.
+
+**Optimistic transitions, and the one that is not.** Starting a session, sending a turn and deleting
+a session all paint before Rust confirms them. Starting a session is the important one: it hides the
+measured 1,981 ms spawn, which is otherwise the most visible dead time in the app, and a failed spawn
+turns the row that just appeared into an error in place. Deleting is optimistic with a few seconds of
+undo, which is what makes pruning feel free.
+
+**Approvals are never optimistic.** The dock resolves only when Rust confirms the decision reached
+the model. Every other transition is a convenience; this one is the safety boundary, and a panel that
+shows "denied" for a deny that did not land — or "allowed" for something that never ran — breaks the
+one screen the owner has to be able to trust.
+
+**No forking in v1.** Mid-run plan editing covers redirection; fusion-at-a-gate covers try-both; and
+forking multiplies exactly the session clutter the owner prunes compulsively.
+
+## 10. Scope
+
+**Claude Code only for v1.** Codex is deferred and the provider layer stays a trait so a second is
+additive. `gemini`, `opencode`, `qwen` and `copilot` are installed on this machine and are
+deliberately ignored. Cursor and local models come after those.
+
+**Consequence, stated plainly:** deferring Codex defers cross-vendor failover. With one vendor, an
+empty window means park and wait for reset, so v1's "longest runs" claim rests on **surviving window
+resets**, not on extra capacity. When a second vendor lands it buys throughput that is physically
+unavailable from one — a different account is a different bucket — and only then does failover
+become real.
+
+## 11. What is not promised
+
+- Not "one-shot an entire project in one session". That was never achievable and is not claimed.
+  Continuity across many short sessions is the product.
+- Not a security boundary. Isolation is a git worktree; the blast radius of a bad worker is work
+  brigadier can throw away, which is a containment property, not a sandbox.
+- Not remote or hosted. Local projects, local CLIs, the user's own subscriptions.
+- Not multi-vendor at v1.
+
+## 12. Open and unmeasured
+
+Everything here that has not been checked, in one place:
+
+1. Head-to-head token cost of N direct children vs one child fanning out to N subagents. Not
+   measured. Settleable cheaply on Haiku.
+2. Whether a child's tool set can be constrained at `initialize`, which would make the wall a
+   *capability* rather than a *refusal*. Unresearched. The proven fallback is `PreToolUse` denial
+   with `matcher: ""`.
+3. Whether `codex app-server` exposes anything equivalent to `rate_limit_event`. Not checked, and
+   cross-vendor failover depends on it.
+4. Spawn-cost mitigation: warm pool vs. multi-turn children. Neither built nor measured.
+5. Retention policy for raw NDJSON and provider transcripts. Unwritten.
+6. The `.gitattributes` filter-driver hole. Known, unfixed.
+7. Whether the ~1,500-token brief actually reduces turns. The settling experiment — same work order
+   with and without it — was **not run**.
