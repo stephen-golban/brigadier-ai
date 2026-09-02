@@ -276,11 +276,19 @@ transcripts are the only thing `--resume` reads, so they cannot be auto-deleted.
 "brigadier cleans up after itself", not "nothing accumulates". A retention policy for both classes
 is **unwritten**.
 
-**Security, unfixed:** `git worktree add` executes the repository's own `.gitattributes` filter
-drivers — arbitrary shell, from the repo, at worktree-creation time, which an agent could have
-planted earlier. Claude Code neutralizes this; brigadier does not (**[measured]**,
-`docs/research/worktree-cleanup.md`). In an app whose entire job is running agents inside
-repositories this is the highest-priority safety item open.
+**Security — measured, and fixed at `5d71793`.** `git worktree add` executes the repository's own
+git filter drivers. The escalation is what made it serious: a worktree's `.git` is a *file*, so
+there is no per-worktree config, and `git config --local` run from inside a session's worktree
+writes the **main** repository's `.git/config`. An agent in one session could plant a driver with an
+ordinary-looking git command and have the *next* session's worktree creation execute it as shell,
+outside every approval prompt — cross-session arbitrary code execution, in an app whose entire job
+is running agents inside repositories. Filter `smudge`/`clean`/`process` are now blanked and
+`core.fsmonitor` disabled around every worktree call. **[measured]** on git 2.50.1;
+`docs/research/gitattributes.md`.
+
+The general rule this leaves behind: **a session's worktree is not a configuration boundary.**
+Anything git reads from repository config is reachable by any agent that has ever had write access
+to the project, from any session.
 
 ## 9. What the user sees
 

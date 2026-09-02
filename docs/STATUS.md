@@ -105,10 +105,15 @@ Found 2026-09-02 by research agents; four were independently confirmed against t
 5. **Safety decisions read `sessions.branch`, not `git worktree list --porcelain`.** An agent that
    detaches HEAD or checks out its own branch silently voids branch protection; a user's
    `git branch -m` leaves the stored name dangling.
-6. **SECURITY — `git worktree add` executes the repository's own `.gitattributes` filter drivers.**
-   Arbitrary shell, from the repo, at worktree-creation time, on a repo an agent may have written to
-   earlier. Claude Code neutralizes this; we have zero mentions of `gitattributes` anywhere.
-   **Confirmed. This is the highest-priority open item in the repo.**
+6. ~~**SECURITY — `git worktree add` executes the repository's own filter drivers.**~~ **FIXED at
+   `5d71793`.** It reproduced on git 2.50.1, and the escalation found while fixing it is worse than
+   first described: a worktree's `.git` is a *file*, so there is no per-worktree config, and
+   `git config --local` run from inside a session's worktree writes the **main** repository's
+   `.git/config`. An agent in one session plants a driver with an ordinary git command; the next
+   session's worktree creation runs it as shell, outside every approval prompt — cross-session
+   arbitrary code execution. `core.fsmonitor` set to a command runs too. Mitigated by blanking
+   `smudge`/`clean`/`process` and setting `required=false` per filter, plus `core.fsmonitor=false`,
+   via `GIT_CONFIG_COUNT`/`_KEY_n`/`_VALUE_n` around `add`, `remove` and `dirty_count`.
 7. **`prepare` accepts two inputs it should refuse:** a project root that is itself a linked worktree
    (removing the outer one silently destroys the inner session's work while `dirty_count` reports 0),
    and repos with submodules.
