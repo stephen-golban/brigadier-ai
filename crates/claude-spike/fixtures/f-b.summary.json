@@ -1,0 +1,536 @@
+{
+  "arm_wall_ms": 42049,
+  "runs": [
+    {
+      "assistant_texts": [
+        "Agents launched. Waiting for completion notifications.",
+        "done",
+        "done",
+        "Bravo agent done. Waiting for alpha and charlie.",
+        "done",
+        "Alpha agent done. Waiting for charlie.",
+        "done"
+      ],
+      "fixture": "f-b-fanout",
+      "frames": 110,
+      "n_results": 4,
+      "rate_limits": [
+        {
+          "_at_ms": 984,
+          "_wall_unix_ms": 1788359506179,
+          "rate_limit_info": {
+            "isUsingOverage": false,
+            "overageDisabledReason": "org_level_disabled",
+            "overageStatus": "rejected",
+            "rateLimitType": "five_hour",
+            "resetsAt": 1788364800,
+            "status": "allowed",
+            "unifiedWindows": {
+              "five_hour": {
+                "resetsAt": 1788364800,
+                "utilization": 0.8
+              },
+              "seven_day": {
+                "resetsAt": 1788951600,
+                "utilization": 0.16
+              }
+            }
+          },
+          "session_id": "2fc68fc7-3351-4700-b347-eac07640199e",
+          "type": "rate_limit_event",
+          "uuid": "5723a3a8-2a96-4f04-87e0-dbcbb601d6c8"
+        }
+      ],
+      "results": [
+        {
+          "_at_ms": 7042,
+          "api_error_status": null,
+          "duration_api_ms": 10759,
+          "duration_ms": 7038,
+          "fast_mode_disabled_reason": "sdk_opt_in_required",
+          "fast_mode_state": "off",
+          "is_error": false,
+          "modelUsage": {
+            "claude-haiku-4-5": {
+              "cacheCreationInputTokens": 21099,
+              "cacheReadInputTokens": 43590,
+              "canonicalModel": "claude-haiku-4-5",
+              "contextWindow": 200000,
+              "costBasis": "list",
+              "costUSD": 0.04037775,
+              "inputTokens": 30,
+              "maxOutputTokens": 32000,
+              "outputTokens": 807,
+              "provider": "firstParty",
+              "thinkingTokens": 368,
+              "webSearchRequests": 0
+            },
+            "claude-haiku-4-5-20251001": {
+              "cacheCreationInputTokens": 0,
+              "cacheReadInputTokens": 0,
+              "canonicalModel": "claude-haiku-4-5",
+              "contextWindow": 200000,
+              "costBasis": "list",
+              "costUSD": 0.001129,
+              "inputTokens": 1039,
+              "maxOutputTokens": 32000,
+              "outputTokens": 18,
+              "provider": "firstParty",
+              "thinkingTokens": 0,
+              "webSearchRequests": 0
+            }
+          },
+          "num_turns": 4,
+          "permission_denials": [],
+          "queued_turn_count": 0,
+          "result": "Agents launched. Waiting for completion notifications.",
+          "session_id": "2fc68fc7-3351-4700-b347-eac07640199e",
+          "stop_reason": "end_turn",
+          "subagent_stats": {
+            "by_type": {
+              "general-purpose": 3
+            },
+            "completed": 0,
+            "failed": 0,
+            "killed": {
+              "parent": 0,
+              "system": 0,
+              "user": 0
+            },
+            "max_depth": 1,
+            "refused": {
+              "budget": 0,
+              "concurrency_limit": 0,
+              "depth_limit": 0
+            },
+            "requested": {
+              "background": 0,
+              "foreground": 0,
+              "unset": 3
+            },
+            "spawned": 3,
+            "spawned_by_subagents": 0,
+            "started_in_background": 3
+          },
+          "subtype": "success",
+          "terminal_reason": "completed",
+          "time_to_request_ms": 14,
+          "total_cost_usd": 0.04150675,
+          "ttft_ms": 3037,
+          "ttft_stream_ms": 706,
+          "type": "result",
+          "usage": {
+            "cache_creation": {
+              "ephemeral_1h_input_tokens": 7440,
+              "ephemeral_5m_input_tokens": 0
+            },
+            "cache_creation_input_tokens": 7440,
+            "cache_read_input_tokens": 43590,
+            "inference_geo": "not_available",
+            "input_tokens": 20,
+            "iterations": [
+              {
+                "cache_creation": {
+                  "ephemeral_1h_input_tokens": 1616,
+                  "ephemeral_5m_input_tokens": 0
+                },
+                "cache_creation_input_tokens": 1616,
+                "cache_read_input_tokens": 24707,
+                "input_tokens": 10,
+                "output_tokens": 108,
+                "type": "message"
+              }
+            ],
+            "output_tokens": 618,
+            "output_tokens_details": {
+              "thinking_tokens": 295
+            },
+            "server_tool_use": {
+              "web_fetch_requests": 0,
+              "web_search_requests": 0
+            },
+            "service_tier": "standard",
+            "speed": "standard"
+          },
+          "uuid": "16573a8d-4660-4ca7-a012-edfa75538bfd"
+        },
+        {
+          "_at_ms": 13304,
+          "api_error_status": null,
+          "duration_api_ms": 33573,
+          "duration_ms": 1313,
+          "fast_mode_disabled_reason": "sdk_opt_in_required",
+          "fast_mode_state": "off",
+          "is_error": false,
+          "modelUsage": {
+            "claude-haiku-4-5": {
+              "cacheCreationInputTokens": 35883,
+              "cacheReadInputTokens": 157119,
+              "canonicalModel": "claude-haiku-4-5",
+              "contextWindow": 200000,
+              "costBasis": "list",
+              "costUSD": 0.07927390000000002,
+              "inputTokens": 100,
+              "maxOutputTokens": 32000,
+              "outputTokens": 2526,
+              "provider": "firstParty",
+              "thinkingTokens": 1043,
+              "webSearchRequests": 0
+            },
+            "claude-haiku-4-5-20251001": {
+              "cacheCreationInputTokens": 0,
+              "cacheReadInputTokens": 0,
+              "canonicalModel": "claude-haiku-4-5",
+              "contextWindow": 200000,
+              "costBasis": "list",
+              "costUSD": 0.001129,
+              "inputTokens": 1039,
+              "maxOutputTokens": 32000,
+              "outputTokens": 18,
+              "provider": "firstParty",
+              "thinkingTokens": 0,
+              "webSearchRequests": 0
+            }
+          },
+          "num_turns": 1,
+          "origin": {
+            "kind": "task-notification"
+          },
+          "permission_denials": [],
+          "queued_turn_count": 0,
+          "result": "Bravo agent done. Waiting for alpha and charlie.",
+          "session_id": "2fc68fc7-3351-4700-b347-eac07640199e",
+          "stop_reason": "end_turn",
+          "subagent_stats": {
+            "by_type": {
+              "general-purpose": 3
+            },
+            "completed": 2,
+            "failed": 0,
+            "killed": {
+              "parent": 0,
+              "system": 0,
+              "user": 0
+            },
+            "max_depth": 1,
+            "refused": {
+              "budget": 0,
+              "concurrency_limit": 0,
+              "depth_limit": 0
+            },
+            "requested": {
+              "background": 0,
+              "foreground": 0,
+              "unset": 3
+            },
+            "spawned": 3,
+            "spawned_by_subagents": 0,
+            "started_in_background": 3
+          },
+          "subtype": "success",
+          "terminal_reason": "completed",
+          "time_to_request_ms": 4,
+          "total_cost_usd": 0.08040290000000001,
+          "ttft_ms": 1161,
+          "ttft_stream_ms": 817,
+          "type": "result",
+          "usage": {
+            "cache_creation": {
+              "ephemeral_1h_input_tokens": 531,
+              "ephemeral_5m_input_tokens": 0
+            },
+            "cache_creation_input_tokens": 531,
+            "cache_read_input_tokens": 26323,
+            "inference_geo": "not_available",
+            "input_tokens": 10,
+            "iterations": [
+              {
+                "cache_creation": {
+                  "ephemeral_1h_input_tokens": 531,
+                  "ephemeral_5m_input_tokens": 0
+                },
+                "cache_creation_input_tokens": 531,
+                "cache_read_input_tokens": 26323,
+                "input_tokens": 10,
+                "output_tokens": 51,
+                "type": "message"
+              }
+            ],
+            "output_tokens": 51,
+            "output_tokens_details": {
+              "thinking_tokens": 33
+            },
+            "server_tool_use": {
+              "web_fetch_requests": 0,
+              "web_search_requests": 0
+            },
+            "service_tier": "standard",
+            "speed": "standard"
+          },
+          "uuid": "33fb244f-24fc-43b7-bda9-972c52cee55b"
+        },
+        {
+          "_at_ms": 14412,
+          "api_error_status": null,
+          "duration_api_ms": 36366,
+          "duration_ms": 1108,
+          "fast_mode_disabled_reason": "sdk_opt_in_required",
+          "fast_mode_state": "off",
+          "is_error": false,
+          "modelUsage": {
+            "claude-haiku-4-5": {
+              "cacheCreationInputTokens": 36947,
+              "cacheReadInputTokens": 198568,
+              "canonicalModel": "claude-haiku-4-5",
+              "contextWindow": 200000,
+              "costBasis": "list",
+              "costUSD": 0.08568805000000002,
+              "inputTokens": 118,
+              "maxOutputTokens": 32000,
+              "outputTokens": 2639,
+              "provider": "firstParty",
+              "thinkingTokens": 1135,
+              "webSearchRequests": 0
+            },
+            "claude-haiku-4-5-20251001": {
+              "cacheCreationInputTokens": 0,
+              "cacheReadInputTokens": 0,
+              "canonicalModel": "claude-haiku-4-5",
+              "contextWindow": 200000,
+              "costBasis": "list",
+              "costUSD": 0.001129,
+              "inputTokens": 1039,
+              "maxOutputTokens": 32000,
+              "outputTokens": 18,
+              "provider": "firstParty",
+              "thinkingTokens": 0,
+              "webSearchRequests": 0
+            }
+          },
+          "num_turns": 1,
+          "origin": {
+            "kind": "task-notification"
+          },
+          "permission_denials": [],
+          "queued_turn_count": 0,
+          "result": "Alpha agent done. Waiting for charlie.",
+          "session_id": "2fc68fc7-3351-4700-b347-eac07640199e",
+          "stop_reason": "end_turn",
+          "subagent_stats": {
+            "by_type": {
+              "general-purpose": 3
+            },
+            "completed": 3,
+            "failed": 0,
+            "killed": {
+              "parent": 0,
+              "system": 0,
+              "user": 0
+            },
+            "max_depth": 1,
+            "refused": {
+              "budget": 0,
+              "concurrency_limit": 0,
+              "depth_limit": 0
+            },
+            "requested": {
+              "background": 0,
+              "foreground": 0,
+              "unset": 3
+            },
+            "spawned": 3,
+            "spawned_by_subagents": 0,
+            "started_in_background": 3
+          },
+          "subtype": "success",
+          "terminal_reason": "completed",
+          "time_to_request_ms": 3,
+          "total_cost_usd": 0.08681705,
+          "ttft_ms": 1078,
+          "ttft_stream_ms": 775,
+          "type": "result",
+          "usage": {
+            "cache_creation": {
+              "ephemeral_1h_input_tokens": 475,
+              "ephemeral_5m_input_tokens": 0
+            },
+            "cache_creation_input_tokens": 475,
+            "cache_read_input_tokens": 26854,
+            "inference_geo": "not_available",
+            "input_tokens": 10,
+            "iterations": [
+              {
+                "cache_creation": {
+                  "ephemeral_1h_input_tokens": 475,
+                  "ephemeral_5m_input_tokens": 0
+                },
+                "cache_creation_input_tokens": 475,
+                "cache_read_input_tokens": 26854,
+                "input_tokens": 10,
+                "output_tokens": 45,
+                "type": "message"
+              }
+            ],
+            "output_tokens": 45,
+            "output_tokens_details": {
+              "thinking_tokens": 31
+            },
+            "server_tool_use": {
+              "web_fetch_requests": 0,
+              "web_search_requests": 0
+            },
+            "service_tier": "standard",
+            "speed": "standard"
+          },
+          "uuid": "9fad72bd-1793-4b28-a048-022c81e6d49e"
+        },
+        {
+          "_at_ms": 16080,
+          "api_error_status": null,
+          "duration_api_ms": 38030,
+          "duration_ms": 1667,
+          "fast_mode_disabled_reason": "sdk_opt_in_required",
+          "fast_mode_state": "off",
+          "is_error": false,
+          "modelUsage": {
+            "claude-haiku-4-5": {
+              "cacheCreationInputTokens": 37415,
+              "cacheReadInputTokens": 225897,
+              "canonicalModel": "claude-haiku-4-5",
+              "contextWindow": 200000,
+              "costBasis": "list",
+              "costUSD": 0.08978695000000002,
+              "inputTokens": 128,
+              "maxOutputTokens": 32000,
+              "outputTokens": 2723,
+              "provider": "firstParty",
+              "thinkingTokens": 1213,
+              "webSearchRequests": 0
+            },
+            "claude-haiku-4-5-20251001": {
+              "cacheCreationInputTokens": 0,
+              "cacheReadInputTokens": 0,
+              "canonicalModel": "claude-haiku-4-5",
+              "contextWindow": 200000,
+              "costBasis": "list",
+              "costUSD": 0.001129,
+              "inputTokens": 1039,
+              "maxOutputTokens": 32000,
+              "outputTokens": 18,
+              "provider": "firstParty",
+              "thinkingTokens": 0,
+              "webSearchRequests": 0
+            }
+          },
+          "num_turns": 1,
+          "origin": {
+            "kind": "task-notification"
+          },
+          "permission_denials": [],
+          "queued_turn_count": 0,
+          "result": "done",
+          "session_id": "2fc68fc7-3351-4700-b347-eac07640199e",
+          "stop_reason": "end_turn",
+          "subagent_stats": {
+            "by_type": {
+              "general-purpose": 3
+            },
+            "completed": 3,
+            "failed": 0,
+            "killed": {
+              "parent": 0,
+              "system": 0,
+              "user": 0
+            },
+            "max_depth": 1,
+            "refused": {
+              "budget": 0,
+              "concurrency_limit": 0,
+              "depth_limit": 0
+            },
+            "requested": {
+              "background": 0,
+              "foreground": 0,
+              "unset": 3
+            },
+            "spawned": 3,
+            "spawned_by_subagents": 0,
+            "started_in_background": 3
+          },
+          "subtype": "success",
+          "terminal_reason": "completed",
+          "time_to_request_ms": 3,
+          "total_cost_usd": 0.09091595,
+          "ttft_ms": 1623,
+          "ttft_stream_ms": 756,
+          "type": "result",
+          "usage": {
+            "cache_creation": {
+              "ephemeral_1h_input_tokens": 468,
+              "ephemeral_5m_input_tokens": 0
+            },
+            "cache_creation_input_tokens": 468,
+            "cache_read_input_tokens": 27329,
+            "inference_geo": "not_available",
+            "input_tokens": 10,
+            "iterations": [
+              {
+                "cache_creation": {
+                  "ephemeral_1h_input_tokens": 468,
+                  "ephemeral_5m_input_tokens": 0
+                },
+                "cache_creation_input_tokens": 468,
+                "cache_read_input_tokens": 27329,
+                "input_tokens": 10,
+                "output_tokens": 84,
+                "type": "message"
+              }
+            ],
+            "output_tokens": 84,
+            "output_tokens_details": {
+              "thinking_tokens": 78
+            },
+            "server_tool_use": {
+              "web_fetch_requests": 0,
+              "web_search_requests": 0
+            },
+            "service_tier": "standard",
+            "speed": "standard"
+          },
+          "uuid": "3096e8d4-138a-48d5-b79c-3033ff2f1046"
+        }
+      ],
+      "session_id": "2fc68fc7-3351-4700-b347-eac07640199e",
+      "spawn_to_init_ms": 655,
+      "sub_transcripts": [
+        "/Users/stephen/.claude/projects/-private-tmp-claude-501--Users-stephen-Development-brigadier-ai-bb8ef6ce-8035-4d28-a8f9-a6de17fca675-scratchpad-fanout-cwd/2fc68fc7-3351-4700-b347-eac07640199e/subagents/agent-ad0430f0cce872993.jsonl",
+        "/Users/stephen/.claude/projects/-private-tmp-claude-501--Users-stephen-Development-brigadier-ai-bb8ef6ce-8035-4d28-a8f9-a6de17fca675-scratchpad-fanout-cwd/2fc68fc7-3351-4700-b347-eac07640199e/subagents/agent-abc29909d2f74f049.jsonl",
+        "/Users/stephen/.claude/projects/-private-tmp-claude-501--Users-stephen-Development-brigadier-ai-bb8ef6ce-8035-4d28-a8f9-a6de17fca675-scratchpad-fanout-cwd/2fc68fc7-3351-4700-b347-eac07640199e/subagents/agent-aafc7c230bfeb2125.jsonl"
+      ],
+      "subagent_starts": [
+        "abc29909d2f74f049",
+        "ad0430f0cce872993",
+        "aafc7c230bfeb2125"
+      ],
+      "subagent_stops": [
+        "ad0430f0cce872993",
+        "abc29909d2f74f049",
+        "aafc7c230bfeb2125"
+      ],
+      "tools": [
+        "Agent@-",
+        "Agent@-",
+        "Agent@-",
+        "Read@abc29909d2f74f049",
+        "Read@ad0430f0cce872993",
+        "Read@aafc7c230bfeb2125",
+        "Write@ad0430f0cce872993",
+        "Write@abc29909d2f74f049",
+        "Write@aafc7c230bfeb2125"
+      ],
+      "transcript_path": "/Users/stephen/.claude/projects/-private-tmp-claude-501--Users-stephen-Development-brigadier-ai-bb8ef6ce-8035-4d28-a8f9-a6de17fca675-scratchpad-fanout-cwd/2fc68fc7-3351-4700-b347-eac07640199e.jsonl",
+      "wall_ms": 41081
+    }
+  ],
+  "tag": "b"
+}
