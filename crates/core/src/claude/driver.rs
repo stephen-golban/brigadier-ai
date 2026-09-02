@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use crate::claude::adapter::{connect, AdapterConfig};
 use crate::claude::binary::{probe_binary, MIN_VERSION};
-use crate::claude::hook::{allow_all, SharedHookPolicy};
+use crate::claude::hook::{ask_gated_tools, SharedHookPolicy};
 use crate::claude::process::{account_label, spawn, SpawnSpec};
 use crate::driver::{
     BoxFuture, DriverError, DriverInfo, DriverKind, ProviderDriver, ResumeSession, StartSession,
@@ -67,6 +67,11 @@ impl ClaudeDriverConfig {
 }
 
 /// One Claude Code instance: a resolved binary, a version, an account, and a hook policy.
+///
+/// The hook policy defaults to [`AskGatedTools`](crate::claude::AskGatedTools), because nothing
+/// else makes the CLI ask: with no `ask` decision the built-in read-only Bash set runs `ls` with
+/// no prompt in every mode and the approvals panel stays empty.
+// see docs/research/approvals.md §0 and §7 gap 1.
 #[derive(Clone)]
 pub struct ClaudeDriver {
     config: ClaudeDriverConfig,
@@ -96,7 +101,7 @@ impl ClaudeDriver {
     pub async fn probe(config: ClaudeDriverConfig) -> Result<ClaudeDriver, DriverError> {
         let (binary, version) =
             probe_binary(config.binary.as_deref(), &config.min_version).await?;
-        Ok(ClaudeDriver { config, binary, version, hook_policy: allow_all() })
+        Ok(ClaudeDriver { config, binary, version, hook_policy: ask_gated_tools() })
     }
 
     /// Builds a driver from an already-known binary and version, without spawning anything.
@@ -112,12 +117,13 @@ impl ClaudeDriver {
             config,
             binary: binary.into(),
             version: version.into(),
-            hook_policy: allow_all(),
+            hook_policy: ask_gated_tools(),
         }
     }
 
     /// Replaces the `PreToolUse` policy. The default is
-    /// [`AllowAll`](crate::claude::AllowAll).
+    /// [`AskGatedTools`](crate::claude::AskGatedTools); [`AllowAll`](crate::claude::AllowAll) is
+    /// the opt-out that answers `{}` and gates nothing.
     pub fn with_hook_policy(mut self, policy: SharedHookPolicy) -> Self {
         self.hook_policy = policy;
         self
@@ -253,6 +259,27 @@ mod tests {
         assert_eq!(a.describe().binary_path, Some(PathBuf::from("/opt/a/claude")));
         assert_eq!(a.describe().version.as_deref(), Some("2.1.257 (Claude Code)"));
         assert_eq!(a.describe().display_name, "Claude Code (work)");
+    }
+
+    /// The default policy is the gate, not the pass-through: a driver built either way answers
+    /// `ask` for `Bash`. Without this the approvals panel stays empty on a live run.
+    // see docs/research/approvals.md §0.
+    #[test]
+    fn the_default_hook_policy_asks_for_the_gated_tools() {
+        let driver = ClaudeDriver::with_version(
+            ClaudeDriverConfig::new("claude-code:default"),
+            "/opt/claude",
+            "2.1.258 (Claude Code)",
+        );
+        let out = driver.hook_policy.pre_tool_use(Some("Bash"), &serde_json::Value::Null);
+        let json = serde_json::to_value(&out).expect("ser");
+        assert_eq!(json["hookSpecificOutput"]["permissionDecision"], "ask");
+        let read = driver.hook_policy.pre_tool_use(Some("Read"), &serde_json::Value::Null);
+        assert_eq!(serde_json::to_string(&read).expect("ser"), "{}");
+
+        let opted_out = driver.with_hook_policy(crate::claude::hook::allow_all());
+        let out = opted_out.hook_policy.pre_tool_use(Some("Bash"), &serde_json::Value::Null);
+        assert_eq!(serde_json::to_string(&out).expect("ser"), "{}");
     }
 
     #[test]

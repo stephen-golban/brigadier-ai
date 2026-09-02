@@ -10,6 +10,7 @@ import { bridge, toAppError } from "./bridge";
 import type { BurnArgs, StartSessionArgs } from "./bridge";
 import * as store from "./feedStore";
 import { Approvals } from "./components/Approvals";
+import type { ApprovalRow } from "./components/Approvals";
 import { Burn } from "./components/Burn";
 import { Composer } from "./components/Composer";
 import { Feed } from "./components/Feed";
@@ -169,15 +170,43 @@ export function App() {
 
   const selectedSession = selectedSessionId === null ? null : state.sessions[selectedSessionId] ?? null;
 
-  const visibleApprovals = useMemo(
-    () =>
-      state.approvals.filter((a) => {
-        const s = state.sessions[a.sessionId];
-        // An approval whose session we have never seen still has to be answerable.
-        return s === undefined || selectedProjectId === null || s.projectId === selectedProjectId;
-      }),
-    [state.approvals, state.sessions, selectedProjectId],
-  );
+  /**
+   * Every pending approval, whatever project it belongs to — the list is deliberately **not**
+   * filtered by the selection. A webview reload resets `selectedProjectId` to `projectList[0]`
+   * (the effect above), so filtering hid a still-answerable prompt on any other project and read
+   * as data loss (`docs/research/approvals.md` §7 gap 7). The project name travels with the card
+   * instead; `state.approvals` is already sorted oldest-first by the store.
+   */
+  const approvalRows = useMemo<ApprovalRow[]>(() => {
+    const byId = new Map(projects.map((p) => [p.id, p]));
+    return state.approvals.map((a) => {
+      // session_id -> project_id via the store's session list; -> project via `list_projects`.
+      const projectId = state.sessions[a.sessionId]?.projectId ?? null;
+      return {
+        approval: a,
+        projectId,
+        projectName: projectId === null ? null : byId.get(projectId)?.name ?? projectId,
+        elsewhere:
+          projectId !== null && selectedProjectId !== null && projectId !== selectedProjectId,
+      };
+    });
+  }, [state.approvals, state.sessions, projects, selectedProjectId]);
+
+  /** Pending approvals per project, for the sidebar badge. */
+  const pendingByProject = useMemo(() => {
+    const counts: Record<ProjectId, number> = {};
+    for (const r of approvalRows) {
+      if (r.projectId === null) continue;
+      counts[r.projectId] = (counts[r.projectId] ?? 0) + 1;
+    }
+    return counts;
+  }, [approvalRows]);
+
+  /** Jump to the approval's session; its project too when the store knows it. */
+  const focusApproval = useCallback((projectId: ProjectId | null, sessionId: SessionId) => {
+    if (projectId !== null) setSelectedProjectId(projectId);
+    setSelectedSessionId(sessionId);
+  }, []);
 
   const addProject = useCallback(
     (path: string) => {
@@ -270,6 +299,7 @@ export function App() {
           order={state.order}
           selectedProjectId={selectedProjectId}
           selectedSessionId={selectedSessionId}
+          pendingApprovals={pendingByProject}
           onSelectProject={setSelectedProjectId}
           onSelectSession={setSelectedSessionId}
           onAddProject={addProject}
@@ -302,9 +332,10 @@ export function App() {
             onStart={startSession}
           />
           <Approvals
-            approvals={visibleApprovals}
+            approvals={approvalRows}
             onRespond={respond}
             onDismiss={store.dismissApproval}
+            onFocus={focusApproval}
           />
           {import.meta.env.DEV ? <Burn onBurn={runBurn} /> : null}
         </aside>

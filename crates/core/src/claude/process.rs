@@ -80,10 +80,24 @@ pub struct SpawnSpec {
 // see docs/research/claude-direct-spike.md "The two shadows over `can_use_tool`" and
 // docs/research/cli-protocol.md §1 for the flag order.
 //
-// No `--settings '{"permissions":{"ask":[...]}}'` is injected: ask rules only widen what
-// `can_use_tool` sees, and the CLI's safe-command classifier still auto-approves underneath them.
-// Every tool call is gated by the `PreToolUse` hook registered in `initialize` instead, which the
-// spike measured firing on the very `echo` the classifier had approved (scenario 6).
+// No `--settings '{"permissions":{"ask":[...]}}'` is injected. Every tool call is gated by the
+// `PreToolUse` hook registered in `initialize` instead, whose policy answers
+// `permissionDecision: "ask"` for the tools that write; the spike measured that hook firing on
+// the very `echo` the CLI had already auto-approved (scenario 6). What auto-approved that `echo`
+// is the CLI's **built-in read-only Bash command set** — a static, non-configurable list (`ls`,
+// `cat`, `echo`, `pwd`, `head`, `tail`, `grep`, `find`, `wc`, `which`, `diff`, `stat`, `du`,
+// `cd`, read-only `git`) that skips the prompt **in every mode** — and *not* a classifier. The
+// model-based classifier is a different mechanism, `--permission-mode auto` only and billable.
+// An ask rule does override the read-only set, which is why the alternative below works.
+// see docs/research/approvals.md §1(b) (documented) and §7 gap 1.
+//
+// No `--setting-sources=` either, so the user's `~/.claude/settings.json` is still loaded.
+// Harmless today — the owner's file carries no `Bash` allow rule — but a user `allow` rule for a
+// gated tool would shadow the hook's `ask` and the approvals panel would silently go quiet, with
+// no error anywhere. Deliberate for now: pinning the sources would also drop the user's own
+// hooks and MCP servers, which the harness has no mandate to disable. 2.1.248's `--restricted`
+// is the blunter form of the same lever.
+// see docs/research/approvals.md §7 gap 4 (decision recorded, not exercised).
 pub fn build_argv(spec: &SpawnSpec) -> Vec<String> {
     let mut argv = vec![
         "--output-format".to_owned(),
@@ -320,17 +334,19 @@ mod tests {
         assert!(argv.contains(&"--resume=8380cdea".to_owned()));
         let mode = argv.iter().position(|a| a == "--permission-mode").expect("mode is pinned");
         assert_eq!(argv[mode + 1], "acceptEdits");
-        // No ask rules are injected; the PreToolUse hook is the gate.
+        // No ask rules are injected; the PreToolUse hook is the gate. And the user's settings
+        // are still loaded — see the note above `build_argv`.
         assert!(!argv.iter().any(|a| a == "--settings"));
+        assert!(!argv.iter().any(|a| a.starts_with("--setting-sources")));
     }
 
     #[test]
     fn an_unmodelled_mode_reaches_the_flag_verbatim() {
         let argv = build_argv(&SpawnSpec {
-            permission_mode: PermissionMode::Other("dontAsk".into()),
+            permission_mode: PermissionMode::Other("someFutureMode".into()),
             ..spec()
         });
-        assert!(argv.windows(2).any(|w| w == ["--permission-mode", "dontAsk"]));
+        assert!(argv.windows(2).any(|w| w == ["--permission-mode", "someFutureMode"]));
     }
 
     #[test]

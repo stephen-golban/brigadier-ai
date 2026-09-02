@@ -15,6 +15,11 @@ export interface SidebarProps {
   order: SessionId[];
   selectedProjectId: ProjectId | null;
   selectedSessionId: SessionId | null;
+  /**
+   * Pending approvals per project. The approvals panel shows every project's prompts at once,
+   * so this badge is what says *where* one is waiting.
+   */
+  pendingApprovals?: Record<ProjectId, number>;
   onSelectProject: (id: ProjectId) => void;
   onSelectSession: (id: SessionId | null) => void;
   onAddProject: (path: string) => void;
@@ -33,6 +38,7 @@ export function Sidebar({
   order,
   selectedProjectId,
   selectedSessionId,
+  pendingApprovals,
   onSelectProject,
   onSelectSession,
   onAddProject,
@@ -57,6 +63,7 @@ export function Sidebar({
         {projects.map((p) => {
           const own = order.filter((id) => sessions[id]?.projectId === p.id);
           const selected = p.id === selectedProjectId;
+          const pending = pendingApprovals?.[p.id] ?? 0;
           return (
             <div key={p.id} className={selected ? "project selected" : "project"}>
               <button
@@ -68,7 +75,12 @@ export function Sidebar({
                 }}
               >
                 <span className="project-name">{p.name}</span>
-                <span className="dim">{own.length}</span>
+                <span style={{ display: "inline-flex", gap: 6 }}>
+                  {pending > 0 ? (
+                    <span className="badge">{pending} pending</span>
+                  ) : null}
+                  <span className="dim">{own.length}</span>
+                </span>
               </button>
               <div className="project-path dim">{p.root_path}</div>
               {selected ? (

@@ -91,7 +91,9 @@ Usage        { input_tokens, output_tokens, cache_read_tokens, cache_creation_to
 ApprovalView { request_id, session_id: string, opened_at_ms: number,
                kind: RequestKind | null /* null when the store replaced an oversized kind_json */,
                expired: boolean /* no longer answerable: run_id != current OR the session is no longer live */,
-               resolved: boolean }
+               resolved: boolean /* always false today: `pending_approvals` filters
+                                   `resolved_at IS NULL` (crates/supervisor/src/lib.rs:461-472);
+                                   kept for shape stability, not read by the UI */ }
 Decision     { type: "allow", updated_input: unknown|null, updated_permissions: unknown[] }
            | { type: "deny", reason: string, interrupt: boolean }
 FrameStats   { window_start_ms: number, hz: number, frames: number, dropped: number,

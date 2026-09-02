@@ -448,10 +448,21 @@ export function seedSessions(views: SessionView[]): void {
   notify();
 }
 
-/** Fold `pending_approvals` in; `expired` rows are read-only survivors of a previous run. */
+/**
+ * Fold `pending_approvals` in; `expired` rows are read-only survivors of a previous run.
+ *
+ * `ApprovalView.resolved` is **not** read: the Rust query behind `pending_approvals` filters
+ * `resolved_at IS NULL` (`crates/supervisor/src/lib.rs:461-472`,
+ * `crates/store/src/writer.rs:238-247`), so the field is structurally always `false` and the
+ * guard that used to stand here could never fire (`docs/research/approvals.md` §7 gap 6). The
+ * field stays on the wire type for shape stability.
+ *
+ * Keyed by `request_id`, so a second call — React StrictMode double-mounts the effect that
+ * fetches, and a live `request-opened` may have landed first — overwrites rather than
+ * duplicates.
+ */
 export function seedApprovals(views: ApprovalView[]): void {
   for (const v of views) {
-    if (v.resolved) continue;
     approvals.set(v.request_id, {
       requestId: v.request_id,
       sessionId: v.session_id,

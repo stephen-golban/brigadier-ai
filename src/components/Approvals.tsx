@@ -14,35 +14,73 @@
  * `ApprovalView.kind` is nullable: the store replaces an oversized kind JSON with a placeholder
  * that does not decode. Such a row cannot be shown and must not be allowed blind, so it renders
  * read-only with Deny as the only answer.
+ *
+ * The panel is **never filtered by the selected project**. A webview reload resets the selection
+ * to the first project, so filtering here hid a still-answerable prompt that belonged to another
+ * project and made a live approval look like data loss (`docs/research/approvals.md` §7 gap 7).
+ * Each card names its own project instead, an approval outside the current selection is marked,
+ * and clicking one jumps the window to it.
  */
 import { useState } from "react";
+import type { CSSProperties, MouseEvent } from "react";
 
 import type { ApprovalItem } from "../feedStore";
-import type { Decision, RequestId, SessionId } from "../wire";
+import type { Decision, ProjectId, RequestId, SessionId } from "../wire";
 
 const DEFAULT_DENY_REASON = "Denied by operator";
 
-export interface ApprovalsProps {
-  approvals: ApprovalItem[];
-  onRespond: (sessionId: SessionId, requestId: RequestId, decision: Decision) => void;
-  onDismiss: (requestId: RequestId) => void;
+/**
+ * Marker for an approval whose project is not the selected one. Inline because `src/index.css`
+ * is outside this change's owned paths; it is the only styling this file carries.
+ */
+const ELSEWHERE_STYLE: CSSProperties = {
+  borderLeft: "2px solid var(--warn)",
+  paddingLeft: 6,
+};
+
+/** Same rule as `Feed.tsx`'s own `shortId`; session ids are UUIDs (`driver.rs:149`). */
+function shortSessionId(id: SessionId): string {
+  return id.length <= 6 ? id : id.slice(-6);
 }
 
-export function Approvals({ approvals, onRespond, onDismiss }: ApprovalsProps) {
+/** One approval plus the project context `App` resolved for it. */
+export interface ApprovalRow {
+  approval: ApprovalItem;
+  /** Null when the store has never seen this approval's session. */
+  projectId: ProjectId | null;
+  /** Null when the project is unknown or not in `list_projects`; the card then shows the id. */
+  projectName: string | null;
+  /** The project is known and is not the selected one. */
+  elsewhere: boolean;
+}
+
+export interface ApprovalsProps {
+  approvals: ApprovalRow[];
+  onRespond: (sessionId: SessionId, requestId: RequestId, decision: Decision) => void;
+  onDismiss: (requestId: RequestId) => void;
+  /** Select the approval's session (and its project). Omitted, cards are not clickable. */
+  onFocus?: (projectId: ProjectId | null, sessionId: SessionId) => void;
+}
+
+export function Approvals({ approvals, onRespond, onDismiss, onFocus }: ApprovalsProps) {
+  const elsewhere = approvals.filter((r) => r.elsewhere).length;
   return (
     <section className="approvals">
       <header className="pane-head">
         <span>approvals</span>
-        <span className="dim">{approvals.length} open</span>
+        <span className="dim">
+          {approvals.length} open{elsewhere > 0 ? ` · ${elsewhere} in other projects` : ""}
+        </span>
       </header>
       <div className="approvals-body">
         {approvals.length === 0 ? <p className="empty">nothing waiting</p> : null}
-        {approvals.map((a) => (
+        {approvals.map((r) => (
           <ApprovalCard
-            key={a.requestId}
-            approval={a}
+            key={r.approval.requestId}
+            row={r}
             onRespond={onRespond}
             onDismiss={onDismiss}
+            onFocus={onFocus}
           />
         ))}
       </div>
@@ -51,12 +89,14 @@ export function Approvals({ approvals, onRespond, onDismiss }: ApprovalsProps) {
 }
 
 interface CardProps {
-  approval: ApprovalItem;
+  row: ApprovalRow;
   onRespond: (sessionId: SessionId, requestId: RequestId, decision: Decision) => void;
   onDismiss: (requestId: RequestId) => void;
+  onFocus?: (projectId: ProjectId | null, sessionId: SessionId) => void;
 }
 
-function ApprovalCard({ approval, onRespond, onDismiss }: CardProps) {
+function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
+  const approval = row.approval;
   const [applied, setApplied] = useState<Set<number>>(new Set());
   const [denying, setDenying] = useState(false);
   const [reason, setReason] = useState(DEFAULT_DENY_REASON);
@@ -93,8 +133,24 @@ function ApprovalCard({ approval, onRespond, onDismiss }: CardProps) {
     });
   };
 
+  /**
+   * Clicking the card body selects its session. The guard keeps allow / deny / dismiss, the
+   * suggestion checkboxes and the deny-reason field from also yanking the window to another
+   * project as a side effect of answering.
+   */
+  const focus = (e: MouseEvent<HTMLElement>) => {
+    if (onFocus === undefined) return;
+    const t = e.target;
+    if (t instanceof Element && t.closest("button, input, textarea, label") !== null) return;
+    onFocus(row.projectId, approval.sessionId);
+  };
+
   return (
-    <article className={readOnly ? "approval expired" : "approval"}>
+    <article
+      className={readOnly ? "approval expired" : "approval"}
+      style={row.elsewhere ? ELSEWHERE_STYLE : undefined}
+      onClick={focus}
+    >
       <div className="approval-head">
         <strong>
           {kind === null
@@ -104,8 +160,10 @@ function ApprovalCard({ approval, onRespond, onDismiss }: CardProps) {
               : "question"}
         </strong>
         <span className="dim">
-          {approval.sessionId} · {new Date(approval.openedAtMs).toLocaleTimeString()}
+          {row.projectName ?? "project unknown"} · {shortSessionId(approval.sessionId)} ·{" "}
+          {new Date(approval.openedAtMs).toLocaleTimeString()}
         </span>
+        {row.elsewhere ? <span className="badge">other project</span> : null}
         {readOnly ? (
           <span className="badge">expired: no longer answerable (app restarted or session ended)</span>
         ) : null}

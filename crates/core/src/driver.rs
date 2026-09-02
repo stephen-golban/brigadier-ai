@@ -72,23 +72,39 @@ pub struct DriverInfo {
 /// How much the provider should ask before acting.
 ///
 /// On the wire this is **always a bare string**, including [`PermissionMode::Other`]: an
-/// unmodelled mode is `"dontAsk"`, not `{"other":"dontAsk"}`, so a value round-trips through
-/// persistence and through the CLI's own vocabulary unchanged. The four modelled variants use
-/// this crate's kebab-case spelling; [`PermissionMode::as_cli_flag`] is the Claude spelling.
+/// unmodelled mode is `"someFutureMode"`, not `{"other":"someFutureMode"}`, so a value
+/// round-trips through persistence and through the CLI's own vocabulary unchanged. The modelled
+/// variants use this crate's kebab-case spelling (`"dont-ask"`);
+/// [`PermissionMode::as_cli_flag`] is the Claude spelling (`"dontAsk"`).
 ///
 /// Not injective: `Other("default")` deserializes back as [`PermissionMode::Default`]. That is
 /// the intended collapse — the same mode should not have two representations.
-// see docs/research/agent-sdk.md §7 — Claude's set is
-// `default|acceptEdits|bypassPermissions|plan|dontAsk|auto`; the rest ride in `Other`.
+///
+/// Claude Code 2.1.258 accepts **seven** values and every one of them is modelled here.
+/// `claude --help` lists six and omits `default`, because the docs make `manual` its alias; both
+/// spellings are accepted by the binary, so [`PermissionMode::Manual`] is kept distinct from
+/// [`PermissionMode::Default`] rather than collapsed — it is what the operator chose, and the CLI
+/// resolves the alias itself.
+// see docs/research/approvals.md §3 — `claude --help` and option-validation probes on 2.1.258
+// (measured) plus https://code.claude.com/docs/en/cli-reference (documented) for the alias.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum PermissionMode {
-    /// Ask per the provider's own rules.
+    /// Ask per the provider's own rules. The documented starting mode for an SDK-driven session.
     #[default]
     Default,
+    /// Documented alias for [`PermissionMode::Default`]; requires Claude Code 2.1.200 or later.
+    Manual,
     /// Auto-approve edits inside the workspace.
     AcceptEdits,
     /// Plan only; take no action.
     Plan,
+    /// Model-based command classification decides. **Billable on API accounts** — the classifier
+    /// is a separate Sonnet call, and it is the only mode that runs one; the built-in read-only
+    /// Bash list is static and applies in every mode.
+    // see docs/research/approvals.md §1(b).
+    Auto,
+    /// Act without asking, but stop short of what `bypassPermissions` waves through.
+    DontAsk,
     /// Ask for nothing. Dangerous, and it silently disables our approval UI.
     BypassPermissions,
     /// A provider-specific mode we do not model, passed through verbatim.
@@ -100,8 +116,11 @@ impl PermissionMode {
     pub fn as_wire_str(&self) -> &str {
         match self {
             Self::Default => "default",
+            Self::Manual => "manual",
             Self::AcceptEdits => "accept-edits",
             Self::Plan => "plan",
+            Self::Auto => "auto",
+            Self::DontAsk => "dont-ask",
             Self::BypassPermissions => "bypass-permissions",
             Self::Other(s) => s,
         }
@@ -109,14 +128,17 @@ impl PermissionMode {
 
     /// The value Claude Code's `--permission-mode` flag and its `set_permission_mode` control
     /// request expect.
-    // see docs/research/agent-sdk.md §7 — the CLI's set is
-    // `default|acceptEdits|bypassPermissions|plan|dontAsk|auto`, camelCase, so an unmodelled
-    // mode has to travel verbatim or the CLI rejects it.
+    // see docs/research/approvals.md §3 — the CLI's set is
+    // `default|manual|acceptEdits|plan|auto|dontAsk|bypassPermissions`, camelCase, so an
+    // unmodelled mode has to travel verbatim or commander rejects it with the choice list.
     pub fn as_cli_flag(&self) -> &str {
         match self {
             Self::Default => "default",
+            Self::Manual => "manual",
             Self::AcceptEdits => "acceptEdits",
             Self::Plan => "plan",
+            Self::Auto => "auto",
+            Self::DontAsk => "dontAsk",
             Self::BypassPermissions => "bypassPermissions",
             Self::Other(s) => s,
         }
@@ -133,8 +155,11 @@ impl From<&str> for PermissionMode {
     fn from(s: &str) -> Self {
         match s {
             "default" => Self::Default,
+            "manual" => Self::Manual,
             "accept-edits" => Self::AcceptEdits,
             "plan" => Self::Plan,
+            "auto" => Self::Auto,
+            "dont-ask" => Self::DontAsk,
             "bypass-permissions" => Self::BypassPermissions,
             other => Self::Other(other.to_owned()),
         }
@@ -311,10 +336,17 @@ mod tests {
             serde_json::to_string(&PermissionMode::AcceptEdits).expect("ser"),
             r#""accept-edits""#
         );
+        // Kebab-case here, camelCase on the flag; the two must not be confused.
+        assert_eq!(
+            serde_json::to_string(&PermissionMode::DontAsk).expect("ser"),
+            r#""dont-ask""#
+        );
+        assert_eq!(serde_json::to_string(&PermissionMode::Auto).expect("ser"), r#""auto""#);
+        assert_eq!(serde_json::to_string(&PermissionMode::Manual).expect("ser"), r#""manual""#);
         // `Other` is a bare string on the wire, not an externally tagged object.
         assert_eq!(
-            serde_json::to_string(&PermissionMode::Other("dontAsk".into())).expect("ser"),
-            r#""dontAsk""#
+            serde_json::to_string(&PermissionMode::Other("someFutureMode".into())).expect("ser"),
+            r#""someFutureMode""#
         );
     }
 
@@ -322,11 +354,16 @@ mod tests {
     fn permission_mode_round_trips_through_a_bare_string() {
         for mode in [
             PermissionMode::Default,
+            PermissionMode::Manual,
             PermissionMode::AcceptEdits,
             PermissionMode::Plan,
+            PermissionMode::Auto,
+            PermissionMode::DontAsk,
             PermissionMode::BypassPermissions,
+            // The CLI spelling of a modelled mode is *not* this crate's spelling, so it stays
+            // in `Other` and travels verbatim.
             PermissionMode::Other("dontAsk".into()),
-            PermissionMode::Other("auto".into()),
+            PermissionMode::Other("someFutureMode".into()),
         ] {
             let json = serde_json::to_string(&mode).expect("ser");
             assert!(json.starts_with('"'), "{json} must be a bare string");
@@ -342,13 +379,20 @@ mod tests {
 
     #[test]
     fn permission_mode_cli_flags_are_the_camel_case_claude_spelling() {
-        // see docs/research/agent-sdk.md §7.
+        // The seven values `claude --permission-mode` accepts on 2.1.258, all seven modelled.
+        // see docs/research/approvals.md §3 (measured against the binary's own validation).
         assert_eq!(PermissionMode::Default.as_cli_flag(), "default");
+        assert_eq!(PermissionMode::Manual.as_cli_flag(), "manual");
         assert_eq!(PermissionMode::AcceptEdits.as_cli_flag(), "acceptEdits");
         assert_eq!(PermissionMode::Plan.as_cli_flag(), "plan");
+        assert_eq!(PermissionMode::Auto.as_cli_flag(), "auto");
+        assert_eq!(PermissionMode::DontAsk.as_cli_flag(), "dontAsk");
         assert_eq!(PermissionMode::BypassPermissions.as_cli_flag(), "bypassPermissions");
-        assert_eq!(PermissionMode::Other("dontAsk".into()).as_cli_flag(), "dontAsk");
+        assert_eq!(PermissionMode::Other("someFutureMode".into()).as_cli_flag(), "someFutureMode");
         assert_eq!(PermissionMode::AcceptEdits.to_string(), "accept-edits");
+        // Kebab on our wire, camel on the flag — the one pair where they differ.
+        assert_eq!(PermissionMode::DontAsk.as_wire_str(), "dont-ask");
+        assert_eq!(PermissionMode::DontAsk.as_cli_flag(), "dontAsk");
     }
 
     #[test]

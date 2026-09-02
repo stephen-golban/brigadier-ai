@@ -69,9 +69,20 @@ let onBatch: ((b: FeedBatch) => void) | null = null;
 let ticking = false;
 let nextId = 1;
 let approvalClock = 0;
+/** The one-time session/approval seed has run. StrictMode calls `subscribeFeed` twice. */
+let seeded = false;
 
 const RUN_ID = `mock-${Math.random().toString(36).slice(2, 8)}`;
 const TAIL_CAP = 4000;
+
+/**
+ * Every synthetic approval carries these two fields at the top of its `input_excerpt`. Nothing
+ * here ever reaches a model: no `claude` process is spawned, no token is billed. The excerpt is
+ * the one place an operator reading an approval card looks, so the marker goes there rather
+ * than only in the header's "MOCK BRIDGE" note.
+ */
+const MOCK_MARKER = "__mock__";
+const MOCK_NOTE = "SYNTHETIC MOCK DATA — no claude process, no model call, no spend";
 
 function params(): URLSearchParams {
   return new URLSearchParams(typeof location === "undefined" ? "" : location.search);
@@ -281,6 +292,7 @@ function tick(): void {
         tool_name: pick(TOOLS, requestId.length + approvals.size),
         input_excerpt: JSON.stringify(
           {
+            [MOCK_MARKER]: MOCK_NOTE,
             command: "rm -rf ./target/debug/incremental",
             description: "clear the incremental cache",
             file_path: pick(PATHS, approvals.size),
@@ -338,6 +350,55 @@ function startTicking(): void {
   setInterval(tick, 16);
 }
 
+/* ------------------------------------------------------ cross-project seed */
+
+/**
+ * One pending approval on `projects[1]`, i.e. **not** the project the UI selects on mount.
+ *
+ * It exists so the reload behaviour is visible under plain `npm run dev` without Tauri: the
+ * approvals panel must show this card even though `scratch` is not the selected project. Before
+ * `App.tsx`'s `approvalRows` this card was filtered out and looked lost
+ * (`docs/research/approvals.md` §7 gap 7).
+ *
+ * It is placed in the `approvals` map only — no `request-opened` signal — so it arrives the way
+ * a reload survivor does: through `pending_approvals()` on mount. It is synthetic: no `claude`
+ * process, no model call, no spend.
+ */
+function seedCrossProjectApproval(): void {
+  const project = projects[1];
+  if (project === undefined) return;
+  // 2 rows/sec: enough to prove the session is alive, far below the ambient load generator.
+  const s = makeSession(project.id, "claude-haiku-4-5", 2, null);
+  row(s, `MOCK · ${MOCK_NOTE}`);
+  const requestId = "r-mock-cross-project";
+  approvals.set(requestId, {
+    request_id: requestId,
+    session_id: s.view.session_id,
+    opened_at_ms: Date.now() - 30_000,
+    kind: {
+      type: "tool-permission",
+      tool_name: "Bash",
+      input_excerpt: JSON.stringify(
+        {
+          [MOCK_MARKER]: MOCK_NOTE,
+          command: "echo mock-cross-project-approval",
+          description: `pending on project "${project.name}", which is not the one selected on mount`,
+        },
+        null,
+        2,
+      ),
+      suggestions: [
+        { type: "addRules", rules: [{ toolName: "Bash", ruleContent: "echo:*" }], behavior: "allow" },
+      ],
+      tool_call_id: `toolu_${requestId}`,
+    },
+    expired: false,
+    // Structurally always false: the Rust query filters `resolved_at IS NULL`
+    // (`crates/supervisor/src/lib.rs:461-472`). Kept for shape parity with the contract.
+    resolved: false,
+  });
+}
+
 /* -------------------------------------------------------------- the impl */
 
 function requireSession(sessionId: string): MockSession {
@@ -351,7 +412,10 @@ export const mockBridge: Bridge = {
 
   async subscribeFeed(cb) {
     onBatch = cb;
-    if (sessions.size === 0) {
+    // `seeded`, not `sessions.size === 0`: the cross-project approval below creates a session of
+    // its own, and React StrictMode calls this twice. Both would otherwise skew the load.
+    if (!seeded) {
+      seeded = true;
       // All ambient sessions land in the first project, so the default view carries the whole
       // `?rps=` load. `burn` puts its sessions in a project of its own that starts invisible,
       // which is what exercises the drop-to-counters path for a project that is not visible.
@@ -359,6 +423,7 @@ export const mockBridge: Bridge = {
       for (let i = 0; i < AMBIENT_SESSIONS; i++) {
         makeSession(projects[0]!.id, "claude-sonnet-4-5", per, null);
       }
+      seedCrossProjectApproval();
     }
     startTicking();
   },
