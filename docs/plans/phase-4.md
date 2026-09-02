@@ -80,6 +80,52 @@ auto-deleted.
 **W3-C — cold start.** Static shell in `index.html` plus `app.windows[].backgroundColor`; `spawn`
 instead of `block_on` in `setup`. Converts ~190 ms of white into the app's own frame.
 
+## Wave 4 — the frontend, rebuilt on Jan's stack
+
+Owner verdict, 2026-09-02, on the current UI: **"looks nothing like ChatGPT, more like a year 1999
+app."** The restyle got the palette right and the building wrong. A measured palette is colour; it
+says nothing about layout, type scale, density, radii or motion, which is most of what makes an
+interface look current. `docs/research/jan.md` is the source: *take the shell, the components and
+the state shape; do not take the thread renderer.*
+
+Sizing, measured: seven components, ~1,787 lines. `feedStore.ts`, `wire.ts`, `bridge.ts`, `fps.ts`
+and `mock.ts` (2,115 lines) are styling-agnostic and do not move. **Zero literal hex exists in any
+`.tsx`** — every colour already resolves through one of 56 tokens in `src/index.css`, so the palette
+conversion is a single-file change.
+
+**W4-A — a front-end test runner, FIRST.** There is none today (`docs/vision.md` §12). Vitest plus
+Testing Library, since Vite is already the bundler. Characterisation tests over the seven existing
+components *before* anything moves, so the migration has something to break against. Migrating an
+untested UI is how the Resume button, the approvals dock and the cleanup flow stop working silently.
+
+**W4-B — tokens.** The 56 measured custom properties become Tailwind 4 `@theme` tokens in oklch.
+Hex→oklch is lossless, but **every AA contrast pair is re-checked after conversion, not assumed** —
+`src/index.css` records the ratios that currently pass. Take Jan's `ThemeProvider.tsx` (79 lines)
+whole, including its Linux portal fix, even though we ship dark-only: Linux is the declared second
+platform and the three-state mechanism costs nothing to carry.
+
+**W4-C — the shell.** Sidebar with projects and nested sessions, run dots on collapsed rows, the
+window gauge pinned beneath. Jan's `NavCowork.tsx` per-row memoization is the pattern; its comment
+at `:51` is worth reading before writing ours.
+
+**W4-D — the surfaces Jan already has.** `CoworkAskCard` → our approvals dock (the audit calls it
+"the closest prior art in the repo to brigadier's approvals"); `CoworkTodoPanel` → the pinned plan
+card; `CoworkDiffPanel` → diff review. Read them before writing ours, port rather than paste.
+
+**W4-E — settings.** Global with per-project overrides (owner's choice). Layout from the pen.dev
+board's settings architecture — 98px left nav, 271px content pane, rows split by rules, 19x11
+toggles, destructive in red — converted to our dark tokens. **Do not copy ChatGPT's settings
+surface area**: that design has ~70 nav rows across 9 tabs; we have eight settings.
+
+**HARD CONSTRAINTS on this wave:**
+- **`src/components/Feed.tsx` does not move.** Ours is virtualized and measured at 60 Hz over 1,513
+  samples. Jan renders every message with no virtualiser and the audit calls its thread renderer
+  *disqualified for brigadier*. Taking it would be a measured regression.
+- **The measured palette survives.** It is the only design artifact sampled from the live app.
+- **Dark only.** A light scheme has to be designed, not measured, and the reference has none.
+- Jan is Apache-2.0 and copying is legally open, but **do not ship Jan's trademarks or marks**.
+- This wave touches all of `src/**`. It cannot run concurrently with any other frontend order.
+
 ## Research owed before the work that depends on it
 
 1. **Fan-out vs direct children, head to head.** Same work order, both shapes, on Haiku, comparing
