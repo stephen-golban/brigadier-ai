@@ -90,8 +90,9 @@ over** — a warm prefix saves cost but not the per-turn re-read.
 
 ## 5. Defects — what was found, and what is left
 
-Eight were found on 2026-09-02 by research agents. **Seven are fixed**; one is open. Verified
-against the code on 2026-09-02, not against a report.
+Nine are listed and **all nine are fixed**: eight found on 2026-09-02 by research agents, plus
+item 8, which was fixed during phase 4 (`53c3491`). Verified against the code on 2026-09-02, not
+against a report.
 
 Fixed:
 
@@ -120,16 +121,29 @@ Fixed:
    (`crates/core/src/worktree.rs:92,106,121`). 36 worktree tests.
 8. **`src/feedStore.ts` discarded the 500-row seed** whenever a live batch won the race. Fixed at
    `53c3491` with a two-pointer merge keyed on the envelope `seq`.
+9. **The adapter dropped every `result` after the first**, so an async `Agent` subagent's cost never
+   reached the store: `on_result` took `self.open_turn` and returned early, under-counting `s9` by
+   13.5% and `f-b-fanout` by 54.3%. Now a `system/init` with no open turn mints a continuation turn
+   (`crates/core/src/claude/adapter.rs:588`), which also keeps `busy` true across the subagent
+   phase, and a `result` with no open turn mints one too
+   (`crates/core/src/claude/adapter.rs:740-748`), so no frame is dropped even if that alternation
+   ever breaks. A minted turn is marked as such and a `SendTurn` **pre-empts** it rather than being
+   refused (`crates/core/src/claude/adapter.rs:982-1022`), so an `init` that no `result` follows
+   cannot lock the operator out; an operator's own turn still refuses a second send. Four fixture
+   tests, `crates/core/tests/claude_adapter.rs:626,667,702,760`; each fails on the code it was
+   written against.
+   Three accepted regressions, all in the comments at those lines: `busy` flickers false → true
+   between a `result` and the next `init`; one feed row is written per `result` frame, so a
+   fan-out message now writes four "turn done" lines instead of one; and across a pre-emption the
+   in-flight `result` closes the operator's turn rather than the minted one, so turn attribution
+   is approximate while the cumulative cost stays exact.
 
-**Still open — one:**
-
-- **The `Agent` tool runs subagents asynchronously and the adapter drops the second `result`.** One
-  user message produced two `result` frames; `on_result` takes `self.open_turn` and returns early on
-  the second (`crates/core/src/claude/adapter.rs:678-681`). A turn reads complete when a subagent
-  *launches*, and the second result's cost never reaches the store. `docs/vision.md` §6 routes around
-  this path by design — brigadier spawns workers as its own children — so it is not load-bearing for
-  the product, but any session where the model reaches for `Agent` itself under-reports, and silent
-  under-counting on a usage-window product is the failure mode you cannot see from outside.
+**Still open: none.** No timer was added — `on_exit` (`crates/core/src/claude/adapter.rs:1126`) is
+the only backstop for an `init` with no `result`. That this is sufficient is **[asserted]**, not
+measured: `docs/research/async-subagent-results.md` tags the same claim `[asserted]` and voids it
+if a capture ever shows an `init` with no matching `result` outside the kill path (`s7-kill`), in
+which case a timer is required. `docs/research/unprompted-init.md` states the open question, the
+three uncaptured paths that could produce one, and the live spike that would settle it.
 
 **Not a defect, checked and dismissed:** `tauri.conf.json`'s `"targets": "all"` was reported as
 falsely claiming cross-platform support. It does not. **[measured]** — on this machine that setting
@@ -148,6 +162,11 @@ every bundle format for the platform being built on. Leave it alone.
 - **`result.total_cost_usd` is cumulative across `result` frames within a run.** Summing them
   double-counts. Any cost table built by adding `result` frames is wrong; verify against
   `cacheReadInputTokens`, which is monotonic.
+- **One user message can produce N `result` frames** — N=4 measured on `f-b-fanout`, from a single
+  `type:"user"` frame — because a finished background subagent makes the CLI run a turn the harness
+  never sent; `system/init` and `result` then alternate one-for-one in 14 of the 16 captures, the
+  other two being `s7-kill` (an `init` with no `result`) and `s7-can-use-tool-write` (neither).
+  `docs/research/async-subagent-results.md`.
 - `docs/vision.md` §6 originally claimed fan-out pays N equally-sized worker windows plus a
   coordinator. **Wrong**: a subagent's window is 42% *smaller* than a harness-spawned child's.
   Corrected 2026-09-02; the conclusion survived, the mechanism did not.

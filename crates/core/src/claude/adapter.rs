@@ -178,6 +178,22 @@ struct Wires {
     events: mpsc::Sender<Envelope>,
 }
 
+/// The turn the CLI is inside, and whether the harness asked for it.
+///
+/// The distinction is load-bearing on exactly one decision: [`Command::SendTurn`] refuses while an
+/// operator's turn is in flight, and **pre-empts** a minted one. A minted turn is the adapter's own
+/// bookkeeping for a turn the CLI ran unasked, so it must never be the reason an operator cannot
+/// send.
+// see docs/research/unprompted-init.md.
+#[derive(Clone, Debug)]
+struct OpenTurn {
+    /// The id every terminal event for this turn carries.
+    id: TurnId,
+    /// True when [`Adapter::on_init`] or [`Adapter::on_result`] opened it, false when a
+    /// `SendTurn` (or [`connect`]'s `prompt`) did.
+    minted: bool,
+}
+
 /// One parked `can_use_tool`, kept so the answer can be written back.
 #[derive(Debug)]
 struct OpenPermission {
@@ -216,7 +232,7 @@ struct Adapter<W> {
     next_approval: u64,
     next_anon_message: u64,
 
-    open_turn: Option<TurnId>,
+    open_turn: Option<OpenTurn>,
     provider_session_id: Option<String>,
     session_started: bool,
     killed: bool,
@@ -297,8 +313,7 @@ where
 
     if let Some(prompt) = adapter.config.prompt.clone() {
         // The prompt path opens a turn the supervisor never asked for, so the id is minted here.
-        let turn_id = TurnId::new(uuid::Uuid::new_v4().to_string());
-        adapter.start_turn(turn_id, TurnInput::text(prompt)).await;
+        adapter.start_turn(mint_turn_id(), TurnInput::text(prompt)).await;
     }
 
     tokio::spawn(adapter.run(wires, buffered));
@@ -547,6 +562,34 @@ where
                     Some(raw),
                 );
             }
+            // A later `system/init` with no open turn is the CLI running a turn the harness never
+            // sent: a finished background subagent injects one, and its `result` comes back
+            // stamped `origin: {kind:"task-notification"}`. `init` and `result` alternate
+            // one-for-one in 14 of the 16 captures; the two exceptions carry no counter-example —
+            // `s7-kill` is an `init` with no `result`, the kill path `on_exit` already covers, and
+            // `s7-can-use-tool-write` has neither frame. So minting here keeps `open_turn` `Some`
+            // for the whole continuation segment, which is what makes `busy` true while the CLI
+            // is genuinely working. The turn is marked `minted`: a `SendTurn` pre-empts it rather
+            // than being refused, because nothing on the wire promises that every `init` is
+            // followed by a `result`.
+            //
+            // Two consequences, both accepted rather than engineered away:
+            //   - `busy` flickers false → true between a `result` and the next `init`. That is
+            //     truthful: the CLI completed one turn and started another.
+            //   - The minted `turn_id` is one the front end never sent, so the optimistic-entry
+            //     retirement in `docs/vision.md` §9 — which fires on a *matched*
+            //     `TurnStarted.turn_id` — matches nothing and cannot falsely retire an entry.
+            //     That is the correct outcome, not a gap to close.
+            //
+            // Guarded on `session_started`, so the **first** `init` of a process never mints: a
+            // resume is spawned with no prompt (`crates/supervisor/src/lib.rs:635`) and a mint
+            // there would open a phantom turn nothing closes until exit.
+            // see docs/research/async-subagent-results.md §B.
+            if self.open_turn.is_none() {
+                let turn_id = mint_turn_id();
+                self.open_turn = Some(OpenTurn { id: turn_id.clone(), minted: true });
+                self.emit(Event::TurnStarted { turn_id }, None);
+            }
             return;
         }
         self.session_started = true;
@@ -669,17 +712,39 @@ where
         }
     }
 
-    /// One `result` closes the open turn.
+    /// One `result` closes the open turn, and **no `result` frame is ever dropped**.
+    ///
+    /// One user message can produce N results — 4 measured on `f-b-fanout` — because a finished
+    /// background subagent makes the CLI run a turn the harness never sent. `total_cost_usd` and
+    /// `modelUsage` are cumulative, so dropping the later frames under-counted by 54.3% in dollars
+    /// and 80.7% in `cacheReadInputTokens` on that fixture. `on_init` normally mints the
+    /// continuation turn first; the mint below is the belt and braces for a CLI version where the
+    /// init/result alternation does not hold, and it emits `TurnStarted` before `TurnCompleted` so
+    /// the pair stays intact.
+    ///
+    /// **The accepted risk, unobserved in any capture:** the failure mode flipped direction here.
+    /// A stray `result` with no open turn used to be discarded; it is now translated, and on a
+    /// resumed session the supervisor adds the row's stored lifetime base to every `TurnCompleted`
+    /// (`crates/supervisor/src/lib.rs:656`). A replayed or duplicated frame carrying a previous
+    /// child's cumulative figure therefore **doubles** the row instead of being ignored. On a
+    /// usage-window product an over-count trips the 80% reserve early, which is the direction that
+    /// costs the owner his own Claude Code. No fixture produces such a frame; nothing guards it.
     ///
     /// `terminal_reason` is checked **before** `subtype`: an interrupted turn's result is
     /// `subtype: "error_during_execution"` with `terminal_reason: "aborted_streaming"`, so
     /// branching on the subtype first would report a real interrupt as a failure.
-    // see docs/research/claude-direct-spike.md scenario 4 (measured).
+    // see docs/research/claude-direct-spike.md scenario 4 (measured) and
+    // docs/research/async-subagent-results.md §B.
     fn on_result(&mut self, result: &ResultMessage, raw: &str) {
         let view = ResultView::of(result);
-        let Some(turn_id) = self.open_turn.take() else {
-            tracing::debug!(target: "claude.wire", subtype = view.subtype, "result with no open turn");
-            return;
+        let turn_id = match self.open_turn.take() {
+            Some(open) => open.id,
+            None => {
+                tracing::debug!(target: "claude.wire", subtype = view.subtype, "result with no open turn; minting a continuation");
+                let turn_id = mint_turn_id();
+                self.emit(Event::TurnStarted { turn_id: turn_id.clone() }, None);
+                turn_id
+            }
         };
         let event = match view.terminal_reason {
             // The two abort reasons in `TerminalReason` (`sdk.d.ts:8443`).
@@ -801,7 +866,7 @@ where
             OpenPermission { cli_request_id: cli_request_id.clone(), original_input: ask.input },
         );
         self.by_cli_id.insert(cli_request_id, request_id.clone());
-        let turn_id = self.open_turn.clone();
+        let turn_id = self.open_turn.as_ref().map(|open| open.id.clone());
         self.emit(Event::RequestOpened { request_id, kind, turn_id }, Some(raw));
     }
 
@@ -914,9 +979,47 @@ where
                     let _ = ack.send(Err(CommandError::Closed));
                     return;
                 }
-                if self.open_turn.is_some() {
-                    let _ = ack.send(Err(CommandError::Rejected("a turn is already open".into())));
-                    return;
+                match self.open_turn.take() {
+                    // An operator's turn is genuinely in flight. Refuse, exactly as before: this
+                    // adapter does not promise to interleave two user frames in one turn.
+                    Some(open) if !open.minted => {
+                        self.open_turn = Some(open);
+                        let _ =
+                            ack.send(Err(CommandError::Rejected("a turn is already open".into())));
+                        return;
+                    }
+                    // A minted turn is the adapter's own bookkeeping for a turn nobody sent, so it
+                    // must never be the reason an operator cannot send. A `system/init` that no
+                    // `result` ever closes would otherwise refuse every `SendTurn` until the child
+                    // exits, leaving a kill as the only escape. Whether the CLI emits such an
+                    // `init` is **not settled**: no capture contains one, but the premise that an
+                    // `init` follows a user frame is already disproved by the continuation mint
+                    // above. see docs/research/unprompted-init.md.
+                    //
+                    // The trade-off, taken deliberately. The CLI still has a `result` in flight
+                    // for the pre-empted turn; it lands on the operator's turn and closes it
+                    // early, and the operator's own `result` then mints a continuation of its own.
+                    // Attribution is therefore approximate across a pre-emption. Cost is not:
+                    // every figure is cumulative and every layer overwrites rather than sums
+                    // (`crates/store/src/writer.rs:477`), so the row still ends on the true total.
+                    // Never wedged and never unpaired beat exact attribution. A FIFO queue of open
+                    // turns would attribute both correctly, but it would rest on the CLI queueing
+                    // the send behind the continuation — documented, unmeasured
+                    // (docs/research/async-subagent-results.md §D4).
+                    //
+                    // `Interrupted`, not `Error`: the session survives and nothing failed. The
+                    // feed renders an `Error` abort as "error: …" (`crates/store/src/feed.rs:124`),
+                    // which this is not.
+                    Some(open) => {
+                        self.emit(
+                            Event::TurnAborted {
+                                turn_id: open.id,
+                                reason: AbortReason::Interrupted,
+                            },
+                            None,
+                        );
+                    }
+                    None => {}
                 }
                 self.start_turn(turn_id, input).await;
                 let _ = ack.send(Ok(()));
@@ -972,7 +1075,7 @@ where
                 None,
             );
         }
-        self.open_turn = Some(turn_id.clone());
+        self.open_turn = Some(OpenTurn { id: turn_id.clone(), minted: false });
         self.emit(Event::TurnStarted { turn_id }, None);
         if let Err(e) = self.write_frame(&SdkUserMessage::text(input.text)).await {
             self.emit(
@@ -1031,7 +1134,8 @@ where
                 None,
             );
         }
-        if let Some(turn_id) = self.open_turn.take() {
+        if let Some(open) = self.open_turn.take() {
+            let turn_id = open.id;
             let reason = if self.killed {
                 AbortReason::Killed
             } else {
@@ -1132,6 +1236,15 @@ where
 // -------------------------------------------------------------------------------------------
 // free helpers
 // -------------------------------------------------------------------------------------------
+
+/// A `TurnId` for a turn nobody asked this adapter for.
+///
+/// Three callers: [`connect`]'s `prompt`, and the two continuation mints — a `system/init` that
+/// arrives with no open turn, and the same case on a `result`.
+// see docs/research/async-subagent-results.md §B.
+fn mint_turn_id() -> TurnId {
+    TurnId::new(uuid::Uuid::new_v4().to_string())
+}
 
 fn known(request: ControlRequestKnown) -> ControlRequestBody {
     ControlRequestBody::Known(Box::new(request))
