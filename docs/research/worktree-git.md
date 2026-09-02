@@ -233,3 +233,102 @@ treat an already-existing directory as the collision signal.
 6. **The exclude file is a shared resource.** Appending to `$GIT_COMMON_DIR/info/exclude` from two
    concurrent session starts can interleave; do it once at project-add time, under a lock, and
    read-before-write.
+
+## Measured 2026-09-02
+
+Everything below ran on `git version 2.50.1 (Apple Git-155)` and Claude Code `2.1.258` while
+building the feature. It corrects three things this brief got wrong and settles one open question.
+
+### The open question from §6 is answered: `--resume` works from a worktree cwd
+
+**measured**, one live run of `crates/supervisor/tests/live_worktree.rs` (exit 0, 9.96 s,
+`cost_usd_cumulative = 0.003210`). A session started in
+`<project>/.brigadier/worktrees/8f9ee795`, completed a turn, was ended, and was resumed with the
+same `cwd`. The resumed child came back on the **same** provider session id
+(`4f79997c-27c5-4528-8692-18de83629af9`, reported by both children's `session-started`) and
+completed a second turn. So the different transcript directory §6 predicts does not break the
+resume — the CLI finds the conversation.
+
+**Not checked**: whether the resumed child can still *recall* turn-1 content from a worktree cwd.
+The second prompt was `Reply with only the word OK again.`, which does not test recall.
+`live_resume.rs` proves recall, but from a project root, not a worktree. The two have not been
+combined.
+
+### Corrections
+
+- §7 records `check-ref-format` exiting **1** on a rejected name. That is the
+  `git check-ref-format refs/heads/<name>` spelling. With `--branch`, which is what the code uses,
+  a rejected name exits **128**: `fatal: 'brigadier/a.lock' is not a valid branch name`
+  (**measured**). Nothing reads the code — only success — so this is a documentation fix.
+- §3 says an unborn HEAD makes `add … HEAD` fail with `fatal: invalid reference: HEAD`. The
+  up-front check this brief recommends, `git rev-parse --verify HEAD`, fails differently:
+  `fatal: Needed a single revision`, exit 128 (**measured**). Both are true; they are different
+  commands.
+- `git rev-parse --git-common-dir` returns a path **relative to the directory `-C` names**, not to
+  the repository root: `.git` from the root, `../../.git` from two levels down (**measured**). It
+  is only meaningful joined back onto that directory. A plain directory answers
+  `fatal: not a git repository (or any of the parent directories): .git`, exit 128, which is what
+  `is_repo` reads.
+
+### Decisions taken while building, where this brief was silent
+
+- **The short id is not derived from the session UUID.** It cannot be: the session UUID is minted
+  *inside* `ProviderDriver::start_session` (`crates/core/src/claude/driver.rs:164`), which is
+  handed the `cwd` — so the worktree must exist before the id does. The supervisor mints its own
+  `Uuid::new_v4()` for the worktree and takes its first eight lowercase hex characters. The
+  property §7 asks for (ref-safe, case-insensitive-filesystem-safe, eight characters) holds; the
+  correspondence to the session id does not.
+- **The branch rollback lives in `add_or_rollback`, not in `add`.** `crates/core/tests/worktree.rs`
+  pins git's leak as observed behaviour, and that file is worth keeping honest. `add` stays raw;
+  `add_or_rollback` is what callers use.
+- **Cleanup is explicit only** — nothing on `end_session` or `kill` — which is stricter than §4's
+  "default on end/kill: remove the worktree, keep the branch". Reason: resume landed first, and a
+  resumed session needs its worktree as `cwd`. §4's branch-keeping rule is kept exactly.
+- **The exclude write is guarded by a process-wide `Mutex`, not a lock file.** Two brigadier
+  processes opening the same project at the same instant can still interleave. **Not checked**;
+  judged acceptable because the read-before-write makes a duplicated line the worst case.
+- **A project nested inside someone else's repository attaches to that repository.**
+  `rev-parse --git-common-dir` walks up, so `.brigadier/` is excluded in the enclosing repo and
+  worktrees are branched off it. **Not checked** against a real nested layout.
+
+### Review round 2 — what §4's cleanup table missed
+
+Four measurements taken while answering a blind review. All on `git 2.50.1 (Apple Git-155)`.
+
+**`git worktree remove` without `--force` deletes ignored files.** §4's table records that an
+untracked or a modified tracked file makes the unforced remove refuse, and the man page's "only
+clean worktrees (no untracked files and no modification in tracked files) can be removed" reads
+like a complete guarantee. It is not: **measured**, a worktree whose only extra content was a
+`.env` and a `node_modules/` — both matched by the repository's own `.gitignore` — was removed by
+`git worktree remove <path>` with **exit 0, no warning**, and both were deleted.
+`git status --porcelain` in that worktree printed nothing, while
+`status --porcelain --ignored=matching --untracked-files=all` printed `!! .env` and
+`!! node_modules/`. So the harness counts ignored entries as dirt; a count that did not would show
+"0 files, safe to remove" over the operator's secrets.
+
+**`status.showUntrackedFiles=no` blinds `--porcelain` *and* git's own remove safety net.**
+**measured**, with that config set: a worktree holding a brand-new untracked `NOTES.md` reported
+an empty `status --porcelain`, and `git worktree remove` without `--force` exited **0** and
+deleted the file. With `-c status.showUntrackedFiles=normal` on the same remove, git refuses —
+`fatal: '…' contains modified or untracked files, use --force to delete it`, exit 128 — and the
+file survives. The flag is now passed on both the status call and the remove call. A setting in
+someone's `~/.gitconfig` is not permission to delete their work.
+
+**`git branch -d` is the right rollback verb, not `-D`.** **measured**: `-d` on a branch created at
+`HEAD` and never committed to deletes it (`Deleted branch brigadier/fresh (was 91a9aa2).`, exit 0),
+while `-d` on a branch carrying one commit refuses (`error: the branch 'brigadier/work' is not
+fully merged`, exit 1) and the branch survives. That is exactly the discrimination the rollback
+wants, and it holds even if the `BranchExists` stderr classification ever misses — which it can,
+because those matches are substrings of English text. Both rollback paths now use `-d`, and every
+git invocation runs under `LC_ALL=C` so a translated gettext build cannot defeat `classify`.
+
+**A project root below the repository root produces a whole-repo checkout.** **measured**:
+`git worktree add` run against `<repo>/apps/web` creates a checkout of the entire repository whose
+**top level is the new path**, so a session that was meant to run in `apps/web` runs at the
+repository root instead, two levels away, with nothing saying so. `git rev-parse --show-toplevel`
+distinguishes the two cases, and `prepare` now refuses with a message naming the repository root.
+
+`--` before a path argument parses fine in `worktree add`, `worktree remove` and `status`
+(**measured**, including `worktree add -b dash -- -weird HEAD`, which creates `./-weird` and still
+reads the base after it), and is now passed so a checkout directory beginning with a dash cannot be
+read as a flag.

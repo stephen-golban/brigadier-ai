@@ -22,7 +22,7 @@
 // see docs/research/approvals.md §5 (the hook lever), §8 (the prompt) and "Measured 2026-09-02"
 // (the results of this test).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -226,7 +226,43 @@ fn project_dir() -> PathBuf {
             .current_dir(&root)
             .status();
     }
+    ensure_initial_commit(&root);
     root
+}
+
+/// `Supervisor::start_session` refuses a repository with no commits (`WorktreeUnbornHead`), so a
+/// reused throwaway repo must have one. Made without depending on the user's global git config,
+/// and only when `HEAD` does not already resolve — a fresh `git init` and a repo left over from a
+/// previous run both land here.
+fn ensure_initial_commit(root: &Path) {
+    let has_head = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "--verify", "HEAD"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if has_head {
+        return;
+    }
+    let _ = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["-c", "user.name=brigadier", "-c", "user.email=brigadier@example.invalid"])
+        .arg("-c")
+        .arg("commit.gpgsign=false")
+        .args(["add", "-A"])
+        .status();
+    let _ = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["-c", "user.name=brigadier", "-c", "user.email=brigadier@example.invalid"])
+        .arg("-c")
+        .arg("commit.gpgsign=false")
+        .args(["commit", "--quiet", "-m", "init", "--allow-empty"])
+        .status();
 }
 
 /// Deny, then allow, then a `Write` prompt — one live session, one model, three turns.
@@ -368,6 +404,19 @@ async fn live_deny_then_allow_then_write() {
         .expect("deny is accepted");
     live.wait_for("turn 3 to complete", TURN_TIMEOUT, &session_id, is_turn_completed).await;
     assert!(!cwd.join("hello.txt").exists(), "a denied Write must not have created the file");
+    let session_cwd = live
+        .sup
+        .session(&session_id)
+        .await
+        .expect("session read")
+        .expect("the session row exists")
+        .cwd
+        .expect("session row carries a cwd");
+    assert!(
+        !session_cwd.join("hello.txt").exists(),
+        "a denied Write must not have created the file in the worktree {}",
+        session_cwd.display()
+    );
 
     // ---- end, and account for it -----------------------------------------------------------
     live.sup.end_session(&session_id).await.expect("end_session");

@@ -16,7 +16,8 @@ use crate::claude::binary::{probe_binary, MIN_VERSION};
 use crate::claude::hook::{ask_gated_tools, SharedHookPolicy};
 use crate::claude::process::{account_label, spawn, SpawnSpec};
 use crate::driver::{
-    BoxFuture, DriverError, DriverInfo, DriverKind, ProviderDriver, ResumeSession, StartSession,
+    BoxFuture, DriverError, DriverInfo, DriverKind, ProviderDriver, Resumed, ResumeSession,
+    StartSession,
 };
 use crate::event::{InstanceId, SessionId};
 use crate::session::SessionHandle;
@@ -145,14 +146,23 @@ impl ClaudeDriver {
     }
 
     /// Spawns a child and hands the adapter its pipes. Shared by start and resume, which differ
-    /// only by `--resume=<id>`.
+    /// by `--resume=<id>` and by whether `resumed` names a harness row to continue.
+    ///
+    /// `resumed` is `None` for a cold start: a fresh session id, envelope numbering from zero.
+    /// `Some` reuses the caller's id and seeds the numbering from `start_seq`, which is what
+    /// keeps a resumed child's feed rows from overwriting the old conversation's.
+    // see docs/research/resume.md §7 and §8 gaps 1-2.
     async fn open(
         &self,
         spec: SpawnSpec,
         prompt: Option<String>,
         event_buffer: usize,
+        resumed: Option<Resumed>,
     ) -> Result<SessionHandle, DriverError> {
-        let session_id = SessionId::new(uuid::Uuid::new_v4().to_string());
+        let (session_id, start_seq) = match resumed {
+            Some(Resumed { session_id, start_seq }) => (session_id, start_seq),
+            None => (SessionId::new(uuid::Uuid::new_v4().to_string()), 0),
+        };
         let child = spawn(&spec)?;
         let pid = child.pid;
         let adapter = AdapterConfig {
@@ -163,6 +173,7 @@ impl ClaudeDriver {
             approval_timeout: self.config.approval_timeout,
             prompt,
             event_buffer,
+            start_seq,
         };
         let mut handle = connect(
             adapter,
@@ -209,7 +220,7 @@ impl ProviderDriver for ClaudeDriver {
                 config_dir: self.config.config_dir.clone(),
                 env_overrides: req.env_overrides,
             };
-            self.open(spec, req.prompt, req.event_buffer).await
+            self.open(spec, req.prompt, req.event_buffer, None).await
         })
     }
 
@@ -231,7 +242,7 @@ impl ProviderDriver for ClaudeDriver {
                 config_dir: self.config.config_dir.clone(),
                 env_overrides: req.env_overrides,
             };
-            self.open(spec, req.prompt, req.event_buffer).await
+            self.open(spec, req.prompt, req.event_buffer, req.resumed).await
         })
     }
 }

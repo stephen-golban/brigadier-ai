@@ -28,6 +28,7 @@ import type {
   RequestId,
   SessionId,
   SessionView,
+  WorktreeCleanup,
 } from "./wire";
 
 export { AppError, toAppError } from "./wire";
@@ -64,11 +65,15 @@ export interface Bridge {
 
   listSessions(): Promise<SessionView[]>;
   startSession(args: StartSessionArgs): Promise<SessionView>;
+  /** Continue an ended session in place: same `session_id`, same feed, a new child. */
+  resumeSession(sessionId: SessionId): Promise<SessionView>;
   sendTurn(sessionId: SessionId, text: string): Promise<{ turn_id: string }>;
   respond(sessionId: SessionId, requestId: RequestId, decision: Decision): Promise<void>;
   interrupt(sessionId: SessionId): Promise<void>;
   endSession(sessionId: SessionId): Promise<void>;
   kill(sessionId: SessionId): Promise<void>;
+  /** Remove a session's git worktree. `force: false` asks; a dirty tree comes back untouched. */
+  cleanupWorktree(sessionId: SessionId, force: boolean): Promise<WorktreeCleanup>;
 
   feedTail(sessionId: SessionId, n: number): Promise<FeedRowWire[]>;
   pendingApprovals(): Promise<ApprovalView[]>;
@@ -117,12 +122,15 @@ const tauriBridge: Bridge = {
   listSessions: () => call<SessionView[]>("list_sessions"),
   startSession: ({ projectId, prompt, model, permissionMode }) =>
     call<SessionView>("start_session", { projectId, prompt, model, permissionMode }),
+  resumeSession: (sessionId) => call<SessionView>("resume_session", { sessionId }),
   sendTurn: (sessionId, text) => call<{ turn_id: string }>("send_turn", { sessionId, text }),
   respond: (sessionId, requestId, decision) =>
     call<void>("respond", { sessionId, requestId, decision }),
   interrupt: (sessionId) => call<void>("interrupt", { sessionId }),
   endSession: (sessionId) => call<void>("end_session", { sessionId }),
   kill: (sessionId) => call<void>("kill", { sessionId }),
+  cleanupWorktree: (sessionId, force) =>
+    call<WorktreeCleanup>("cleanup_worktree", { sessionId, force }),
 
   feedTail: (sessionId, n) => call<FeedRowWire[]>("feed_tail", { sessionId, n }),
   pendingApprovals: () => call<ApprovalView[]>("pending_approvals"),

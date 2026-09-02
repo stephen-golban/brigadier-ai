@@ -59,6 +59,14 @@ pub(crate) enum Op {
         exit_code: Option<i32>,
         at: SystemTime,
     },
+    /// Unsettle them again: the row is being resumed by a new child.
+    ///
+    /// A separate op rather than an [`Op::UpsertSession`] because the upsert **cannot express
+    /// this**: `ended_at` and `exit_code` are not in its statement at all, and every column that
+    /// is, is `COALESCE`d, so `None` means "leave alone" and there is no value that means
+    /// "clear". A resumed session that keeps its old `ended_at` reads as ended while it is live.
+    // see docs/research/resume.md §8 gap 5.
+    SessionResumed { session_id: SessionId, at: SystemTime },
     /// Run a closure against the connection, inside the current batch's transaction.
     ///
     /// Like [`Op::Flush`] it closes the coalescing window: a read submitted at the top of a
@@ -128,6 +136,19 @@ impl StoreHandle {
         at: SystemTime,
     ) -> Result<()> {
         self.send(Op::ApprovalResolved { request_id, decision, at })
+    }
+
+    /// Reopen a settled session's lifecycle columns for a new child: `status` back to
+    /// `starting`, `ended_at` and `exit_code` cleared.
+    ///
+    /// `at` stamps `started_at` only when the row never recorded one. A row that has a start time
+    /// keeps it **only until the resumed child announces itself**: `feed::apply`'s
+    /// `SessionStarted` branch then writes `started_at` again, and `upsert_session` COALESCEs the
+    /// *parameter* first, so that non-`None` value overwrites. The conversation's original start
+    /// time is not retained anywhere.
+    // see docs/research/resume.md §11 and docs/plans/ipc-contract.md "### resume_session".
+    pub async fn session_resumed(&self, session_id: SessionId, at: SystemTime) -> Result<()> {
+        self.send(Op::SessionResumed { session_id, at })
     }
 
     /// Settle a session's lifecycle columns.
@@ -494,6 +515,18 @@ fn apply_one(
                 SessionStatus::from_exit(&reason).as_str(),
                 schema::to_millis(at),
                 exit_code,
+            ))?;
+        }
+        Op::SessionResumed { session_id, at } => {
+            ensure_session(tx, &session_id, touched)?;
+            tx.prepare_cached(
+                "UPDATE sessions SET status = ?2, ended_at = NULL, exit_code = NULL,
+                     started_at = COALESCE(started_at, ?3) WHERE id = ?1",
+            )?
+            .execute((
+                session_id.as_str(),
+                SessionStatus::Starting.as_str(),
+                schema::to_millis(at),
             ))?;
         }
         // Handled by `apply_batch` before it delegates here; never reached, and a stray one is

@@ -6,25 +6,36 @@
  * area and one action row. The action row reads left to right as the reference's does: a status
  * chip on the left, then a gap, then the controls and one solid circular send button.
  *
- * `.dock-actions .grow` is that gap and is the slot a Resume button belongs in; nothing else in
- * the row is positioned relative to it.
+ * `.dock-actions .grow` is that gap; Resume and Clean up worktree sit to the left of it, beside
+ * the status chip, and the stop controls stay on the right.
  *
  * Interrupt is graceful and the session survives; End asks the child to exit; Kill takes the
  * process group down and leaves no provider terminal frame behind.
+ *
+ * Two rules from `docs/plans/ipc-contract.md` are load-bearing here:
+ *   - a **resumed** session sits in `starting` until the operator sends the first turn, because
+ *     the CLI announces itself once per turn — so `starting` is "ready for input", not "coming
+ *     up", and the text area stays enabled for it;
+ *   - `resume_session` does **not** restore the permission mode, so a resumed session says so.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import type { SessionRuntime } from "../feedStore";
-import type { SessionId } from "../wire";
+import type { SessionId, WorktreeCleanup } from "../wire";
 
 export interface ComposerProps {
   session: SessionRuntime | null;
   /** The project the session belongs to, for the context strip. */
   projectName: string | null;
+  /** An IPC call started by this dock is in flight; both secondary actions go inert. */
+  busy: boolean;
   onSend: (sessionId: SessionId, text: string) => void;
   onInterrupt: (sessionId: SessionId) => void;
   onEnd: (sessionId: SessionId) => void;
   onKill: (sessionId: SessionId) => void;
+  onResume: (sessionId: SessionId) => void;
+  /** Resolves to the command's answer, or to null when it failed (the caller showed the error). */
+  onCleanup: (sessionId: SessionId, force: boolean) => Promise<WorktreeCleanup | null>;
 }
 
 /** Last path segment, so a long cwd does not crowd the strip out. Full path stays in `title`. */
@@ -36,13 +47,54 @@ function basename(path: string): string {
 export function Composer({
   session,
   projectName,
+  busy,
   onSend,
   onInterrupt,
   onEnd,
   onKill,
+  onResume,
+  onCleanup,
 }: ComposerProps) {
   const [text, setText] = useState("");
+  /** A `force: false` cleanup came back refusing to discard this many files. */
+  const [dirty, setDirty] = useState<WorktreeCleanup | null>(null);
+  /** The last successful removal, so the dock can say the checkout is gone and resume is over. */
+  const [removed, setRemoved] = useState<WorktreeCleanup | null>(null);
+
+  const sessionId = session?.sessionId ?? null;
+  // Both are about one session; switching sessions must not carry either over.
+  useEffect(() => {
+    setDirty(null);
+    setRemoved(null);
+  }, [sessionId]);
+
   const live = session !== null && (session.status === "running" || session.status === "starting");
+  const settled = session !== null && (session.status === "exited" || session.status === "failed");
+
+  /** Contract §resume_session: a stored token (the front end sees `provider_session_id`) and a
+   *  settled session. A removed worktree takes the `cwd` away, so Resume goes with it. */
+  const canResume =
+    session !== null &&
+    settled &&
+    session.providerSessionId !== null &&
+    !session.worktreeRemoved &&
+    removed === null;
+
+  /** Contract §Worktrees: only a session that is not live and actually has a worktree. */
+  const canCleanup =
+    session !== null && settled && session.branch !== null && !session.worktreeRemoved && removed === null;
+
+  const runCleanup = async (force: boolean) => {
+    if (session === null) return;
+    const result = await onCleanup(session.sessionId, force);
+    if (result === null) return;
+    if (result.removed) {
+      setDirty(null);
+      setRemoved(result);
+    } else {
+      setDirty(result);
+    }
+  };
 
   const send = () => {
     if (session === null || !live || text.trim() === "") return;
@@ -105,7 +157,30 @@ export function Composer({
                 : session.status}
           </span>
 
-          {/* Secondary action slot: a Resume button goes here, beside the status chip. */}
+          {/* Secondary action slot, beside the status chip. */}
+          {canResume ? (
+            <button
+              type="button"
+              className="act"
+              disabled={busy}
+              title="continue this conversation in the same session, with a new child process"
+              onClick={() => session && onResume(session.sessionId)}
+            >
+              Resume
+            </button>
+          ) : null}
+          {canCleanup ? (
+            <button
+              type="button"
+              className="act"
+              disabled={busy}
+              title={session?.worktreePath ?? undefined}
+              onClick={() => void runCleanup(false)}
+            >
+              Clean up worktree
+            </button>
+          ) : null}
+
           <span className="grow" />
 
           <button
@@ -143,6 +218,36 @@ export function Composer({
           </button>
         </div>
       </div>
+
+      {session !== null && session.resumed && removed === null ? (
+        <p className="dock-note">
+          Resumed in default permission mode — the mode this session ran in before is not stored
+          anywhere and was not restored.
+        </p>
+      ) : null}
+
+      {dirty !== null ? (
+        <p className="dock-note warn">
+          {dirty.dirty_files} uncommitted{" "}
+          {dirty.dirty_files === 1 ? "change" : "changes"} in{" "}
+          <code>{dirty.branch}</code>; nothing was removed. Removing discards them. The branch
+          itself survives, but this session can no longer be resumed afterwards.{" "}
+          <button type="button" className="act danger" disabled={busy} onClick={() => void runCleanup(true)}>
+            Discard {dirty.dirty_files} uncommitted{" "}
+            {dirty.dirty_files === 1 ? "change" : "changes"} and remove
+          </button>{" "}
+          <button type="button" className="act" disabled={busy} onClick={() => setDirty(null)}>
+            Keep it
+          </button>
+        </p>
+      ) : null}
+
+      {removed !== null ? (
+        <p className="dock-note">
+          Worktree removed. The branch <code>{removed.branch}</code> is untouched; this session
+          can no longer be resumed.
+        </p>
+      ) : null}
 
       {session !== null ? (
         <div className="dock-usage">

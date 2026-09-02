@@ -48,6 +48,16 @@ export interface SessionRuntime {
   status: SessionStatus;
   model: string | null;
   cwd: string | null;
+  /** The provider's own conversation id; non-null is what makes a settled session resumable. */
+  providerSessionId: string | null;
+  /** Git worktree the child runs in, and its branch. Both null when the project is not a repo. */
+  worktreePath: string | null;
+  branch: string | null;
+  /** `cleanup_worktree` came back `removed: true`: the checkout is gone, so resume would fail. */
+  worktreeRemoved: boolean;
+  /** This session was continued by `resume_session` in this window; the CLI came back in
+   *  `default` permission mode whatever it was running in before (contract §resume_session). */
+  resumed: boolean;
   /** A turn is open (started, not yet completed or aborted). */
   busy: boolean;
   lastTurnId: string | null;
@@ -140,6 +150,11 @@ function blank(sessionId: SessionId, projectId: ProjectId | null): SessionRuntim
     status: "starting",
     model: null,
     cwd: null,
+    providerSessionId: null,
+    worktreePath: null,
+    branch: null,
+    worktreeRemoved: false,
+    resumed: false,
     busy: false,
     lastTurnId: null,
     lastStop: null,
@@ -189,6 +204,10 @@ function applySignal(env: Envelope, projectId: ProjectId | null): void {
         status: "running",
         model: e.model,
         cwd: e.cwd,
+        providerSessionId: e.provider_session_id,
+        // A resumed child announcing itself is live again: the previous end is history.
+        endedAtMs: null,
+        exitCode: null,
         startedAtMs: env.at,
         lastEventSeq: env.seq,
       });
@@ -430,20 +449,51 @@ export function noteProjects(ids: readonly ProjectId[]): void {
 export function seedSessions(views: SessionView[]): void {
   for (const v of views) {
     const prev = sessions.get(v.session_id) ?? blank(v.session_id, v.project_id);
+    // A view that says the session is live carries `ended_at_ms: null` / `exit_code: null` and
+    // means it — that is exactly what `resume_session` returns for a session this store still
+    // has an end time for. `??` would have kept the stale end and shown a live session as ended.
+    const live = v.status === "starting" || v.status === "running";
     sessions.set(v.session_id, {
       ...prev,
       projectId: v.project_id ?? prev.projectId,
       status: v.status,
       model: v.model ?? prev.model,
       cwd: v.cwd ?? prev.cwd,
+      providerSessionId: v.provider_session_id ?? prev.providerSessionId,
+      worktreePath: v.worktree_path ?? prev.worktreePath,
+      branch: v.branch ?? prev.branch,
       costUsd: Math.max(prev.costUsd, v.cost_usd_cumulative),
       usage: v.usage,
       startedAtMs: v.started_at_ms ?? prev.startedAtMs,
-      endedAtMs: v.ended_at_ms ?? prev.endedAtMs,
-      exitCode: v.exit_code ?? prev.exitCode,
+      endedAtMs: live ? v.ended_at_ms : v.ended_at_ms ?? prev.endedAtMs,
+      exitCode: live ? v.exit_code : v.exit_code ?? prev.exitCode,
       lastEventSeq: Math.max(prev.lastEventSeq, v.last_event_seq),
     });
   }
+  rebuildState();
+  notify();
+}
+
+/**
+ * `resume_session` succeeded on this session. Only the window that pressed Resume knows — no
+ * wire field records it — and it drives the "back in default permission mode" note.
+ */
+export function noteResumed(sessionId: SessionId): void {
+  const prev = sessions.get(sessionId);
+  if (prev === undefined || prev.resumed) return;
+  sessions.set(sessionId, { ...prev, resumed: true });
+  rebuildState();
+  notify();
+}
+
+/**
+ * `cleanup_worktree` came back `removed: true`. The checkout is gone, so the session's `cwd` no
+ * longer exists and Resume must be taken away; the branch is untouched and stays on the row.
+ */
+export function noteWorktreeRemoved(sessionId: SessionId): void {
+  const prev = sessions.get(sessionId);
+  if (prev === undefined || prev.worktreeRemoved) return;
+  sessions.set(sessionId, { ...prev, worktreeRemoved: true });
   rebuildState();
   notify();
 }

@@ -306,6 +306,16 @@ textarea:disabled {
   color: var(--text-muted-side);
 }
 
+/* The branch chip in a session row. Capped so a long branch cannot push the cost off the row;
+   the row keeps its measured 30px pitch because the chip's line-height is 17px. */
+.chip.branch {
+  max-width: 92px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
 .dot {
   flex: 0 0 8px;
   width: 8px;
@@ -473,6 +483,13 @@ textarea:disabled {
 .thread-top .where b {
   color: var(--text);
   font-weight: 500;
+}
+
+/* The branch chip in the top strip sits inline after the session id and status. */
+.thread-top .where .chip {
+  display: inline-block;
+  margin-left: 8px;
+  vertical-align: baseline;
 }
 
 .notice {
@@ -919,6 +936,32 @@ textarea:disabled {
 .status-chip.warn {
   background: rgba(239, 140, 87, 0.16);
   color: var(--accent);
+}
+
+/* One-line notes under the composer box: the resumed-in-default-mode warning, the cleanup
+   confirmation, and what a completed cleanup left behind. */
+.dock-note {
+  margin: 8px 14px 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.dock-note.warn {
+  color: var(--accent);
+}
+
+.dock-note code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-sidebar);
+}
+
+/* The buttons inside a note sit on the text baseline rather than in the action row. */
+.dock-note .act {
+  height: 24px;
+  vertical-align: middle;
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .dock-usage {

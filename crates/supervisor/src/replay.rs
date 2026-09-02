@@ -22,7 +22,8 @@ use brigadier_core::claude::adapter::{connect, AdapterConfig};
 use brigadier_core::claude::hook::allow_all;
 use brigadier_core::claude::process::{ExitInfo, KillHandle};
 use brigadier_core::driver::{
-    BoxFuture, DriverError, DriverInfo, DriverKind, ProviderDriver, ResumeSession, StartSession,
+    BoxFuture, DriverError, DriverInfo, DriverKind, ProviderDriver, Resumed, ResumeSession,
+    StartSession,
 };
 use brigadier_core::event::{Envelope, Event, ExitReason, InstanceId, SessionId};
 use brigadier_core::session::{Command, Decision, SessionBackend, SessionHandle, TurnInput};
@@ -159,14 +160,22 @@ impl ReplayDriver {
         self.emitted.load(Ordering::Relaxed)
     }
 
-    fn open(&self, event_buffer: usize) -> SessionHandle {
-        let session_id = SessionId::new(uuid::Uuid::new_v4().to_string());
+    /// Open one replayed session.
+    ///
+    /// `resumed` mirrors the real driver: `None` mints a fresh id and numbers from zero, `Some`
+    /// continues the caller's row from `start_seq`, so a supervisor resume driven by a replay
+    /// behaves like one driven by a child process.
+    // see docs/research/resume.md §7.
+    fn open(&self, event_buffer: usize, resumed: Option<Resumed>) -> SessionHandle {
+        let (session_id, start_seq) = match resumed {
+            Some(Resumed { session_id, start_seq }) => (session_id, start_seq),
+            None => (SessionId::new(uuid::Uuid::new_v4().to_string()), 0),
+        };
         let (handle, backend) =
             SessionHandle::channel(session_id.clone(), self.instance_id.clone(), event_buffer);
         tokio::spawn(run(
             backend,
-            session_id,
-            self.instance_id.clone(),
+            Stream { session_id, instance_id: self.instance_id.clone(), start_seq },
             Arc::clone(&self.script),
             self.rows_per_sec,
             self.max_cycles,
@@ -195,7 +204,7 @@ impl ProviderDriver for ReplayDriver {
     }
 
     fn start_session(&self, req: StartSession) -> BoxFuture<'_, Result<SessionHandle, DriverError>> {
-        let handle = self.open(req.event_buffer);
+        let handle = self.open(req.event_buffer, None);
         Box::pin(async move { Ok(handle) })
     }
 
@@ -203,27 +212,37 @@ impl ProviderDriver for ReplayDriver {
         &self,
         req: ResumeSession,
     ) -> BoxFuture<'_, Result<SessionHandle, DriverError>> {
-        let handle = self.open(req.event_buffer);
+        let handle = self.open(req.event_buffer, req.resumed);
         Box::pin(async move { Ok(handle) })
     }
+}
+
+/// What one replayed session stamps on every envelope it emits.
+struct Stream {
+    session_id: SessionId,
+    instance_id: InstanceId,
+    /// Envelope `seq` to continue from; `0` on a cold start, the row's `last_event_seq` on a
+    /// resume. see docs/research/resume.md §7.
+    start_seq: u64,
 }
 
 /// The per-session task: a metronome on one side, the command channel on the other.
 async fn run(
     backend: SessionBackend,
-    session_id: SessionId,
-    instance_id: InstanceId,
+    stream: Stream,
     script: Arc<Vec<Event>>,
     rows_per_sec: f64,
     max_cycles: Option<usize>,
     emitted: Arc<AtomicU64>,
 ) {
+    let Stream { session_id, instance_id, start_seq } = stream;
     let SessionBackend { mut commands, events, approvals } = backend;
     // Clamped again here, not only in `with_rate`: this is the call that panics on a bad rate.
     let period = Duration::from_secs_f64(1.0 / rows_per_sec.clamp(MIN_ROWS_PER_SEC, MAX_ROWS_PER_SEC));
     let mut ticker = tokio::time::interval(period);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut seq = 0u64;
+    // The last `seq` emitted, not the next: every emission pre-increments.
+    let mut seq = start_seq;
     let mut index = 0usize;
     let mut cycles = 0usize;
 
@@ -260,8 +279,10 @@ async fn run(
                     index = 0;
                     cycles += 1;
                 }
-                let envelope = Envelope::new(seq, instance_id.clone(), session_id.clone(), event);
+                // Pre-increment, like the real adapter's `emit`: `seq` is the last number
+                // used, so the first envelope after a resume is `start_seq + 1`.
                 seq += 1;
+                let envelope = Envelope::new(seq, instance_id.clone(), session_id.clone(), event);
                 // A bounded send: when the consumer falls behind, this is where it shows up,
                 // exactly as a real adapter's would.
                 if events.send(envelope).await.is_err() {
@@ -277,6 +298,7 @@ async fn run(
 
     approvals.cancel_all("session exited");
     if let Some((reason, exit_code)) = ending {
+        seq += 1;
         let exit = Envelope::new(
             seq,
             instance_id,
@@ -316,6 +338,7 @@ async fn replay_fixture(mut lines: VecDeque<String>) -> Result<Vec<Event>, Super
         approval_timeout: None,
         prompt: None,
         event_buffer: 4096,
+        start_seq: 0,
     };
     let connecting =
         tokio::spawn(connect(config, adapter_stdout, adapter_stdin, exit_rx, kill, allow_all()));

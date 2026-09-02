@@ -248,3 +248,92 @@ No live session was started; nothing ran beyond `claude --version`, `strings`, a
 `--continue` and the resume-from-summary dialog are documented-or-unverified, never measured here.
 `file-rotate`'s open mode (gap 6) was not read. The 2.1.223 changelog entry itself was not read —
 the cross-project lookup change is cited from the three docs pages, which agree on the boundary.
+
+## 11. Measured 2026-09-02
+
+One live run of `crates/supervisor/tests/live_resume.rs` against `claude 2.1.258 (Claude Code)` at
+`/Users/stephen/.local/bin/claude`, model `claude-haiku-4-5`, permission mode `default`, cwd
+`/tmp/brigadier-live-resume`. Exit 0, `test result: ok. 1 passed`, 7.94 s wall.
+
+| what | measured |
+|---|---|
+| harness `session_id` | `72d86074-d9dd-42ba-b28a-a97ad50d7718`, **the same row before and after** |
+| provider session id / resume token | `950a011a-55cf-412d-8af7-488341774c65`, **identical across the resume** — confirming §4's "keeps the same id" through the harness, not only from the s5 fixture |
+| `last_event_seq` at end of the first child (`old_seq`) | 8 |
+| first feed row written after the resume | seq **10** (seq 9 was the resumed child's `turn-started`, which contributes no terse line) |
+| feed rows | 7 → 13; the first 7 compared byte-identical after the resume |
+| `ended_at` / `exit_code` while live | `None` / `None`, cleared by `Op::SessionResumed` |
+| recall answer | `pelican` — the second child answered from the first child's transcript |
+| `cost_usd_cumulative` on the row at the end | **0.003187** (ceiling 0.08) |
+| final `last_event_seq` | 16 |
+| signals, in order | `turn-started, session-started(950a011a…), turn-completed(EndTurn), session-exited(Graceful, Some(0)), turn-started, session-started(950a011a…), turn-completed(EndTurn), session-exited(Graceful, Some(0))` |
+
+### What reality contradicted in this brief
+
+- **§7's "new `instance_id`" is not a thing the code has.** `InstanceId` names the *driver
+  instance* — the account — and one driver serves every session it opens
+  (`crates/core/src/claude/driver.rs`, `instance_id: self.config.instance_id.clone()`). Measured:
+  `claude-code:live-resume` before and after. There is no per-child id to change, and inventing
+  one would collide with the multi-account meaning the field already carries. §7 should read
+  "same row, same instance, new child process".
+- **`turn-started` precedes `session-started` on the signal stream**, both times (see the signal
+  list above). `system/init` fires once per turn, so a resumed child that has been asked nothing
+  **never emits `session-started` at all**. A resume therefore leaves the row in `starting` until
+  the operator's first turn, and any caller that waits for `session-started` before sending one
+  hangs. `docs/plans/ipc-contract.md` now says so; the live test sends the turn first.
+- **§8 gap 6 is settled: `RawLog::open` appends.** Read from `file-rotate` 0.8.0 source
+  (`~/.cargo/registry/src/index.crates.io-*/file-rotate-0.8.0/src/lib.rs`): `FileRotate::new` →
+  `ensure_log_directory_exists` → `open_file` (`:477-486`) uses the caller's `OpenOptions`
+  verbatim — ours is `read/create/append`, no `truncate` — and seeds the rotation byte count from
+  the existing file's length (`:459-462`). Covered by a unit test in `crates/store/src/ndjson.rs`.
+  **[measured: source read + test]**
+- **The CLI's `No conversation found with session ID` cannot reach the driver today.** §3 asks for
+  a distinct `AppError` code; the code (`session_not_found_upstream`) is reserved in the contract
+  but nothing emits it, because `crates/core/src/claude/process.rs` drains the child's stderr to
+  `tracing::warn` and hands it to no one. A bad token dies as a failed handshake:
+  `driver` / `protocol error: child stdout closed before the initialize response`. Plumbing a
+  stderr tail into `DriverError` is the fix and was not in scope. **[asserted — not provoked; no
+  bad-token resume was run, to avoid a second billed spawn]**
+
+### Two things the run exposed
+
+- **`cost_usd_cumulative` under-reported across the resume — now fixed.** `total_cost_usd` is
+  cumulative *per child process*, and `Op::SetUsage` overwrites rather than sums (deliberately,
+  per `persistence.md` §3), so the 0.003187 above is the **second** child's total only; the first
+  child's spend had been overwritten. Fixed without a schema change: `Supervisor::resume_session`
+  reads the row's `cost_usd_cumulative` and `usage` as a base (`Accrued`) and the consumer adds it
+  to every `TurnCompleted` before the store and the wire see it, so the row and `SessionView`
+  carry the true total across every child. The **raw log keeps the CLI's own numbers**. The
+  0.003187 figure above therefore under-reports the run it came from; a rerun would show the
+  first child's spend added in. Covered by
+  `crates/supervisor/src/lib.rs::cost_and_usage_accumulate_across_a_resume`.
+- **`started_at` moves to the resume.** `feed::apply`'s `SessionStarted` branch writes
+  `started_at = env.at`, and `upsert_session` COALESCEs the *parameter* first, so a non-`None`
+  value overwrites. The conversation's original start time is not retained anywhere.
+  `list_sessions` orders by it, so a resumed session sorts to the top — arguably right, but it is
+  a side effect, not a decision. Left as it is, and recorded in `docs/plans/ipc-contract.md`.
+
+### One thing the review caught that the live run could not
+
+Resuming the same session twice concurrently used to succeed twice. `is_live` was checked before
+the driver spawned the child but the live entry was only filed after it, and the gap spans a whole
+process spawn — `tokio::join!` of two `resume_session` calls returned `Ok` twice, putting two
+children on one transcript with the same `start_seq`, each overwriting the other's feed rows.
+Fixed with a reservation set taken under the same `live` guard as the liveness check, before the
+first `await`; the second caller now gets `not_resumable`. Each live entry also carries a
+`generation` now, so a previous child that is slow to die cannot remove the live entry belonging
+to the child that replaced it.
+**[measured: `crates/supervisor/src/lib.rs::two_concurrent_resumes_cannot_both_win`]**
+
+### One incidental change
+
+`ReplayDriver` now pre-increments its envelope `seq` like the real adapter, so a replayed session's
+first envelope is **1** rather than 0, and a replayed *resume* starts at `start_seq + 1`. Nothing
+asserts the old numbering; the burn's fixtures and rates are unaffected.
+
+### Not checked
+
+Cross-cwd and worktree resume (§3), `--fork-session`, the resume-from-summary dialog (§6), a
+resume whose transcript the provider has swept, and a resume of a `failed` (rather than `exited`)
+row: the predicate accepts `failed`, and a unit test covers the refusal branches, but no live
+crash-then-resume was staged. The live test was run **once**, by instruction.

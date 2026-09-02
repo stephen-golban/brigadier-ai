@@ -59,11 +59,13 @@ pub fn run() {
             commands::add_project,
             commands::list_sessions,
             commands::start_session,
+            commands::resume_session,
             commands::send_turn,
             commands::respond,
             commands::interrupt,
             commands::end_session,
             commands::kill,
+            commands::cleanup_worktree,
             commands::feed_tail,
             commands::pending_approvals,
             commands::subscribe_feed,
@@ -88,6 +90,16 @@ pub fn run() {
             match tauri::async_runtime::block_on(state::build(data_dir)) {
                 Ok(ready) => {
                     tracing::info!(?ready, "brigadier started");
+                    // `git worktree prune` per project, off the setup thread. A worktree
+                    // directory deleted by hand stays in `git worktree list` as prunable and
+                    // blocks the next `add` at the same path; prune never touches a branch
+                    // (**measured**), and every failure inside is a `warn`, so nothing here can
+                    // hold or fail startup.
+                    // see docs/research/worktree-git.md §4.
+                    let supervisor = ready.supervisor.clone();
+                    tauri::async_runtime::spawn(async move {
+                        supervisor.prune_worktrees().await;
+                    });
                     app.manage(AppState::ready(ready));
                 }
                 Err(msg) => {

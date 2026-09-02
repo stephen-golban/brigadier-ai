@@ -86,6 +86,7 @@ impl Rig {
             approval_timeout: None,
             prompt: None,
             event_buffer,
+            start_seq: 0,
         };
         let connecting =
             tokio::spawn(connect(config, adapter_stdout, adapter_stdin, exit_rx, kill, allow_all()));

@@ -90,8 +90,14 @@ pub(crate) struct SessionView {
     pub instance_id: Option<String>,
     /// The provider's own session id, once it has told us.
     pub provider_session_id: Option<String>,
-    /// Working directory of the child.
+    /// Working directory of the child. Equal to `worktree_path` whenever there is one.
     pub cwd: Option<String>,
+    /// The git worktree this session runs in, or `null` when the project is not a git repository
+    /// and the session runs in its root.
+    // see docs/research/worktree-git.md §7.
+    pub worktree_path: Option<String>,
+    /// The branch that worktree is on, `brigadier/<short id>`; `null` with no worktree.
+    pub branch: Option<String>,
     /// Model slug, when one was pinned or reported.
     pub model: Option<String>,
     /// `starting` | `running` | `exited` | `failed`.
@@ -118,6 +124,8 @@ impl From<&SessionRecord> for SessionView {
             instance_id: r.instance_id.as_ref().map(|i| i.as_str().to_owned()),
             provider_session_id: r.provider_session_id.clone(),
             cwd: r.cwd.as_deref().map(path_string),
+            worktree_path: r.worktree_path.as_deref().map(path_string),
+            branch: r.branch.clone(),
             model: r.model.clone(),
             status: r.status.as_str(),
             started_at_ms: r.started_at.map(to_millis),
