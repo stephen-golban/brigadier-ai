@@ -4,54 +4,102 @@
  * Every value tagged [measured] was read out of a screencapture of that app's own window taken
  * on 2026-09-02 and sampled pixel by pixel; see `docs/plans/ui-restyle-notes.md` for the method
  * and the screenshot. Values tagged [derived] were interpolated between measured ones, and the
- * three tagged [contrast] deliberately depart from the reference because the measured colour
+ * two tagged [contrast] deliberately depart from the reference because the measured colour
  * fails WCAG AA against its own background.
  *
  * The app is dark only. The reference stays dark under a light system appearance (captured both
  * ways; only its translucent sidebar material changed), so there is no light scheme here either.
  *
- * No framework, no utility classes, no CSS-in-JS.
+ * Tailwind 4 supplies preflight and the token layer (see the @theme block below); the rules
+ * in this file are still hand-written and read their tokens as var(), not utility classes.
  */
 
-:root {
+@import "tailwindcss";
+
+/*
+ * Tailwind's oxide scanner walks the FILESYSTEM, not the module graph, and it reads Markdown as
+ * happily as it reads .tsx. `docs/research/oklch-tokens.md` describes this token layer and names
+ * `bg-accent`, `text-accent` and friends in prose — which was enough to emit `.bg-accent`,
+ * `.bg-accent\/50`, `.border-thread-bg` and six more into the production bundle, +0.31 kB of CSS
+ * nothing renders [measured, docs/research/oklch-tokens.md §5]. Prose about the design system
+ * must not become part of it. Paths are relative to this file.
+ */
+@source not "../docs";
+
+/*
+ * The 18 colours live in `@theme static`, not plain `@theme`, and are namespaced `--color-*`.
+ * Both are load-bearing (docs/research/frontend-stack.md §2.2-§2.3, docs/research/oklch-tokens.md):
+ *
+ *   - plain `@theme` emits only the variables some utility class references, and every rule below
+ *     reads its tokens as raw `var(--color-…)`. Under plain `@theme` those variables would be
+ *     dropped and the app would render unstyled with no error. `static` emits all of them.
+ *   - `--color-*` is the namespace that makes Tailwind generate `bg-accent` / `text-accent` /
+ *     `border-accent`. A token named `--accent` inside `@theme` generates no utility at all.
+ *
+ * Values are oklch at L 4dp / C 5dp / H 2dp. That precision is not cosmetic: all 18 round-trip to
+ * the identical 8-bit hex and every annotated contrast ratio reproduces to within 0.002. Coarser
+ * rounding does not (docs/research/frontend-stack.md §2.6, and §1 of the oklch-tokens file):
+ * L 2dp / C 3dp / H 1dp breaks 11 of 18 and moves a ratio by up to 0.110, and two decimals on all
+ * three breaks 13 of 18 and moves one by up to 0.105 — enough that --color-text-muted-side's
+ * 4.455:1, which already fails AA, would read as 4.557:1 and appear to pass. Achromatic greys
+ * carry a meaningless hue at C=0 and are written `oklch(L 0 0)`. The original hex is on every
+ * line; it is the artifact that was measured.
+ */
+
+@theme static {
   /* --- surfaces ------------------------------------------------------- */
-  --thread-bg: #181818; /* [measured] main conversation area */
-  --sidebar-bg: #3a3b3b; /* [measured] sidebar; native vibrancy, so wallpaper-dependent */
-  --sidebar-hover: #434445; /* [derived] halfway to the selected pill */
-  --sidebar-active: #494a4b; /* [measured] selected row pill */
-  --sidebar-line: #4a4b4c; /* [measured] 1px rule above the account row */
-  --rail-bg: #1f1f1f; /* [measured] strip behind the composer's context tabs */
-  --surface: #212121; /* [derived] cards, between the rail and the composer */
-  --composer-bg: #2a2a2a; /* [measured] composer input box */
-  --line: #3b3b3b; /* [measured] 1px border on the thread's suggestion cards */
+  --color-thread-bg: oklch(0.2090 0 0); /* #181818 [measured] main conversation area */
+  --color-sidebar-bg: oklch(0.3513 0.00137 197.09); /* #3a3b3b [measured] sidebar; native vibrancy, so wallpaper-dependent */
+  --color-sidebar-hover: oklch(0.3861 0.00216 247.88); /* #434445 [derived] halfway to the selected pill */
+  --color-sidebar-active: oklch(0.4085 0.00213 247.88); /* #494a4b [measured] selected row pill */
+  --color-sidebar-line: oklch(0.4122 0.00212 247.88); /* #4a4b4c [measured] 1px rule above the account row */
+  --color-rail-bg: oklch(0.2393 0 0); /* #1f1f1f [measured] strip behind the composer's context tabs */
+  --color-surface: oklch(0.2478 0 0); /* #212121 [derived] cards, between the rail and the composer */
+  --color-composer-bg: oklch(0.2850 0 0); /* #2a2a2a [measured] composer input box */
+  --color-line: oklch(0.3523 0 0); /* #3b3b3b [measured] 1px border on the thread's suggestion cards */
 
   /* --- text ----------------------------------------------------------- */
-  --text: #ffffff; /* [measured] */
-  --text-sidebar: #e1e1e1; /* [measured] sidebar row label */
-  --text-muted: #848484; /* [measured] section label; 4.6:1 on --thread-bg */
-  --text-muted-side: #a3a3a3; /* [contrast] #848484 is 3.1:1 on --sidebar-bg, this is 4.6:1 */
-  --text-placeholder: #9a9a9a; /* [contrast] measured #606060 is 2.9:1 on --composer-bg */
+  /* Ratios below were re-derived from these oklch values, not copied forward; three of the
+   * original comments were wrong and are corrected here. docs/research/oklch-tokens.md §4. */
+  --color-text: oklch(1.0000 0 0); /* #ffffff [measured]; 17.76:1 on --color-thread-bg */
+  --color-text-sidebar: oklch(0.9097 0 0); /* #e1e1e1 [measured] sidebar row label; 8.59:1 on --color-sidebar-bg */
+  --color-text-muted: oklch(0.6133 0 0); /* #848484 [measured] section label; 4.75:1 on --color-thread-bg (the old comment said 4.6:1) */
+  /* [contrast] #848484 is 3.00:1 on --color-sidebar-bg, so this was lightened. It reaches 4.46:1,
+   * which is BELOW the 4.5:1 AA threshold for normal text — the old comment claimed 4.6:1 and was
+   * wrong. Left unchanged deliberately: picking a replacement is a design decision for the owner,
+   * not a token conversion. Open question in docs/research/oklch-tokens.md §4. */
+  --color-text-muted-side: oklch(0.7155 0 0); /* #a3a3a3 */
+  --color-text-placeholder: oklch(0.6862 0 0); /* #9a9a9a [contrast] measured #606060 is 2.28:1 on --color-composer-bg (the old comment said 2.9:1); this is 5.10:1 */
 
   /* --- state ---------------------------------------------------------- */
-  --accent: #ef8c57; /* [measured] the composer's "Full access" chip */
-  --ok: #5cc98c; /* [derived] no green in the reference; running / allow */
-  --bad: #ef6a63; /* [derived] no red in the reference; failed / deny */
-  --on-solid: #181818; /* [measured] glyph inside the white send button */
+  --color-accent: oklch(0.7354 0.13858 47.76); /* #ef8c57 [measured] the composer's "Full access" chip; 7.24:1 on --color-thread-bg */
+  --color-ok: oklch(0.7558 0.13470 156.47); /* #5cc98c [derived] no green in the reference; running / allow; 8.61:1 */
+  --color-bad: oklch(0.6856 0.16581 25.41); /* #ef6a63 [derived] no red in the reference; failed / deny; 5.84:1 */
+  --color-on-solid: oklch(0.2090 0 0); /* #181818 [measured] glyph inside the white send button */
 
-  /* --- geometry ------------------------------------------------------- */
-  --sidebar-w: 276px; /* [measured] 275.5 */
-  --row-h: 30px; /* [measured] sidebar row pitch and pill height */
+  /* --- radii and type -------------------------------------------------
+   * These have Tailwind namespaces of their own (--radius-*, --font-*), so they belong in
+   * @theme; the remaining geometry values do not and stay in :root below. */
   --radius-row: 8px; /* [measured] sidebar pill corner */
   --radius-md: 12px; /* [measured] thread card corner */
   --radius-lg: 20px; /* [measured] composer corner */
-  --thread-max: 736px; /* [measured] composer box width */
-  --content-max: 712px; /* [measured] context strip and card row width */
-  --feed-row-h: 18px; /* unchanged: the virtualizer's fixed row height */
 
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui,
     sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
 
+:root {
+  /* --- geometry -------------------------------------------------------
+   * No Tailwind namespace fits a sidebar width or a row pitch, and these are only ever read as
+   * var(). Tailwind rewrites nothing outside @theme, so they keep their original names. */
+  --sidebar-w: 276px; /* [measured] 275.5 */
+  --row-h: 30px; /* [measured] sidebar row pitch and pill height */
+  --thread-max: 736px; /* [measured] composer box width */
+  --content-max: 712px; /* [measured] context strip and card row width; defined but not yet referenced */
+  --feed-row-h: 18px; /* unchanged: the virtualizer's fixed row height */
+
+  /* Tailwind does not set color-scheme; this is what makes native controls and scrollbars dark. */
   color-scheme: dark;
   font-family: var(--font-sans);
   font-size: 14px; /* [measured] sidebar row label */
@@ -71,8 +119,8 @@ body,
 }
 
 body {
-  background: var(--thread-bg);
-  color: var(--text);
+  background: var(--color-thread-bg);
+  color: var(--color-text);
   overflow: hidden;
 }
 
@@ -111,20 +159,20 @@ textarea:disabled {
 }
 
 :focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--color-accent);
   outline-offset: 1px;
 }
 
 .dim {
-  color: var(--text-muted);
+  color: var(--color-text-muted);
 }
 
 .ok-text {
-  color: var(--ok);
+  color: var(--color-ok);
 }
 
 .bad-text {
-  color: var(--bad);
+  color: var(--color-bad);
 }
 
 .mono {
@@ -147,8 +195,8 @@ textarea:disabled {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  background: var(--sidebar-bg);
-  color: var(--text-sidebar);
+  background: var(--color-sidebar-bg);
+  color: var(--color-text-sidebar);
 }
 
 .sidebar-title {
@@ -165,7 +213,7 @@ textarea:disabled {
   font-size: 17px; /* [measured] ~18px cap-derived, bold */
   font-weight: 700;
   letter-spacing: -0.01em;
-  color: var(--text);
+  color: var(--color-text);
 }
 
 .sidebar-scroll {
@@ -186,12 +234,12 @@ textarea:disabled {
   padding: 0 8px;
   border-radius: var(--radius-row);
   text-align: left;
-  color: var(--text-sidebar);
+  color: var(--color-text-sidebar);
   background: transparent;
 }
 
 .side-row:hover {
-  background: var(--sidebar-hover);
+  background: var(--color-sidebar-hover);
 }
 
 /* Read-only row (the pending-approvals count); it is not a target, so it does not light up. */
@@ -200,21 +248,21 @@ textarea:disabled {
 }
 
 .side-row.selected {
-  background: var(--sidebar-active);
-  color: var(--text);
+  background: var(--color-sidebar-active);
+  color: var(--color-text);
 }
 
 .side-row .glyph {
   flex: 0 0 16px;
   width: 16px;
   text-align: center;
-  color: var(--text-muted-side);
+  color: var(--color-text-muted-side);
   font-size: 13px;
   line-height: 1;
 }
 
 .side-row.selected .glyph {
-  color: var(--text-sidebar);
+  color: var(--color-text-sidebar);
 }
 
 .side-label {
@@ -231,7 +279,7 @@ textarea:disabled {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  color: var(--text-muted-side);
+  color: var(--color-text-muted-side);
   font-size: 12px;
 }
 
@@ -239,7 +287,7 @@ textarea:disabled {
 .side-sub {
   display: block;
   font-size: 12px;
-  color: var(--text-muted-side);
+  color: var(--color-text-muted-side);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -252,7 +300,7 @@ textarea:disabled {
   padding: 0 16px;
   margin: 20px 0 2px; /* [measured] 43px from the last nav row to the label baseline */
   font-size: 12px; /* [measured] */
-  color: var(--text-muted-side);
+  color: var(--color-text-muted-side);
 }
 
 .side-section .grow {
@@ -260,7 +308,7 @@ textarea:disabled {
 }
 
 .side-section button {
-  color: var(--text-muted-side);
+  color: var(--color-text-muted-side);
   font-size: 15px;
   line-height: 1;
   width: 20px;
@@ -269,8 +317,8 @@ textarea:disabled {
 }
 
 .side-section button:hover {
-  background: var(--sidebar-hover);
-  color: var(--text);
+  background: var(--color-sidebar-hover);
+  color: var(--color-text);
 }
 
 /* A project and the sessions nested under it. [measured] 8px extra between groups. */
@@ -287,7 +335,7 @@ textarea:disabled {
   padding: 4px 8px 4px 33px;
   margin: 0;
   font-size: 12px;
-  color: var(--text-muted-side);
+  color: var(--color-text-muted-side);
 }
 
 .chip {
@@ -297,13 +345,13 @@ textarea:disabled {
   font-size: 11px;
   line-height: 17px;
   background: rgba(239, 140, 87, 0.18);
-  color: var(--accent);
+  color: var(--color-accent);
   white-space: nowrap;
 }
 
 .chip.plain {
   background: rgba(255, 255, 255, 0.08);
-  color: var(--text-muted-side);
+  color: var(--color-text-muted-side);
 }
 
 /* The branch chip in a session row. Capped so a long branch cannot push the cost off the row;
@@ -321,19 +369,19 @@ textarea:disabled {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--text-muted-side);
+  background: var(--color-text-muted-side);
 }
 
 .dot.running {
-  background: var(--ok);
+  background: var(--color-ok);
 }
 
 .dot.starting {
-  background: var(--accent);
+  background: var(--color-accent);
 }
 
 .dot.failed {
-  background: var(--bad);
+  background: var(--color-bad);
 }
 
 .dot.busy {
@@ -353,12 +401,12 @@ textarea:disabled {
   height: 28px;
   padding: 0 8px;
   background: rgba(0, 0, 0, 0.22);
-  border: 1px solid var(--sidebar-line);
+  border: 1px solid var(--color-sidebar-line);
   font-size: 13px;
 }
 
 .side-add input::placeholder {
-  color: var(--text-muted-side);
+  color: var(--color-text-muted-side);
 }
 
 .side-add button {
@@ -378,7 +426,7 @@ textarea:disabled {
   flex: 0 0 auto;
   margin: 0 8px 8px;
   font-size: 12px;
-  color: var(--text-muted-side);
+  color: var(--color-text-muted-side);
 }
 
 .side-dev summary {
@@ -393,7 +441,7 @@ textarea:disabled {
 }
 
 .side-dev summary:hover {
-  background: var(--sidebar-hover);
+  background: var(--color-sidebar-hover);
 }
 
 /* The bottom bar: the reference's account row, carrying our claude probe and run id. */
@@ -404,7 +452,7 @@ textarea:disabled {
   gap: 8px;
   min-height: 46px; /* [measured] */
   padding: 6px 12px;
-  border-top: 1px solid var(--sidebar-line); /* [measured] 1px */
+  border-top: 1px solid var(--color-sidebar-line); /* [measured] 1px */
 }
 
 .side-status .avatar {
@@ -412,8 +460,8 @@ textarea:disabled {
   width: 24px;
   height: 24px;
   border-radius: 50%;
-  background: var(--sidebar-active);
-  color: var(--text-sidebar);
+  background: var(--color-sidebar-active);
+  color: var(--color-text-sidebar);
   font-size: 10px;
   font-weight: 600;
   display: flex;
@@ -423,7 +471,7 @@ textarea:disabled {
 
 .side-status .avatar.bad {
   background: rgba(239, 106, 99, 0.25);
-  color: var(--bad);
+  color: var(--color-bad);
 }
 
 .side-status .who {
@@ -435,7 +483,7 @@ textarea:disabled {
   display: block;
   font-size: 13px;
   font-weight: 500;
-  color: var(--text);
+  color: var(--color-text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -444,7 +492,7 @@ textarea:disabled {
 .side-status .who span {
   display: block;
   font-size: 11px;
-  color: var(--text-muted-side);
+  color: var(--color-text-muted-side);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -458,7 +506,7 @@ textarea:disabled {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  background: var(--thread-bg);
+  background: var(--color-thread-bg);
 }
 
 .thread-top {
@@ -469,7 +517,7 @@ textarea:disabled {
   min-height: 40px;
   padding: 4px 16px;
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--color-text-muted);
 }
 
 .thread-top .where {
@@ -481,7 +529,7 @@ textarea:disabled {
 }
 
 .thread-top .where b {
-  color: var(--text);
+  color: var(--color-text);
   font-weight: 500;
 }
 
@@ -500,7 +548,7 @@ textarea:disabled {
   padding: 2px 10px;
   border-radius: 999px;
   background: rgba(239, 106, 99, 0.16);
-  color: var(--bad);
+  color: var(--color-bad);
   font-size: 12px;
 }
 
@@ -524,7 +572,7 @@ textarea:disabled {
   z-index: 1;
   font-size: 11px;
   font-family: var(--font-mono);
-  color: var(--text-muted);
+  color: var(--color-text-muted);
   pointer-events: none;
 }
 
@@ -568,17 +616,17 @@ textarea:disabled {
 }
 
 .col-t {
-  color: var(--text-muted);
+  color: var(--color-text-muted);
   flex: 0 0 auto;
 }
 
 .col-s {
-  color: var(--accent);
+  color: var(--color-accent);
   flex: 0 0 auto;
 }
 
 .col-q {
-  color: var(--text-muted);
+  color: var(--color-text-muted);
   flex: 0 0 52px;
   text-align: right;
 }
@@ -608,13 +656,13 @@ textarea:disabled {
   width: 44px;
   height: 44px;
   border-radius: 12px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--color-line);
   display: flex;
   align-items: center;
   justify-content: center;
   font-family: var(--font-mono);
   font-size: 15px;
-  color: var(--text-muted);
+  color: var(--color-text-muted);
 }
 
 .thread-empty h2 {
@@ -622,14 +670,14 @@ textarea:disabled {
   font-size: 24px; /* [measured] */
   font-weight: 600;
   letter-spacing: -0.01em;
-  color: var(--text);
+  color: var(--color-text);
 }
 
 .thread-empty p {
   margin: 0;
   max-width: 46ch;
   font-size: 13px;
-  color: var(--text-muted);
+  color: var(--color-text-muted);
 }
 
 .jump-pill {
@@ -639,14 +687,14 @@ textarea:disabled {
   bottom: 12px;
   padding: 4px 14px;
   border-radius: 999px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  color: var(--text);
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  color: var(--color-text);
   font-size: 12px;
 }
 
 .jump-pill:hover {
-  background: var(--composer-bg);
+  background: var(--color-composer-bg);
 }
 
 /* ----------------------------------------------------------- approvals */
@@ -676,7 +724,7 @@ textarea:disabled {
   gap: 8px;
   padding: 6px 2px;
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--color-text-muted);
 }
 
 .approvals-body {
@@ -689,8 +737,8 @@ textarea:disabled {
 }
 
 .approval {
-  background: var(--surface);
-  border: 1px solid var(--line);
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
   border-radius: var(--radius-md);
   padding: 10px 12px;
   font-size: 13px;
@@ -701,7 +749,7 @@ textarea:disabled {
 }
 
 .approval.elsewhere {
-  border-left: 2px solid var(--accent);
+  border-left: 2px solid var(--color-accent);
 }
 
 .approval-head {
@@ -723,7 +771,7 @@ textarea:disabled {
 .excerpt,
 .suggestion {
   background: rgba(0, 0, 0, 0.28);
-  border: 1px solid var(--line);
+  border: 1px solid var(--color-line);
   border-radius: 8px;
   margin: 8px 0 0;
   padding: 8px 10px;
@@ -752,7 +800,7 @@ textarea:disabled {
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--color-text-muted);
 }
 
 .approval-actions {
@@ -768,7 +816,7 @@ textarea:disabled {
   height: 30px;
   padding: 0 10px;
   background: rgba(0, 0, 0, 0.28);
-  border: 1px solid var(--line);
+  border: 1px solid var(--color-line);
   font-size: 13px;
 }
 
@@ -793,9 +841,9 @@ textarea:disabled {
   margin: 0 12px -10px;
   padding: 0 14px 10px;
   border-radius: var(--radius-md) var(--radius-md) 0 0;
-  background: var(--rail-bg);
+  background: var(--color-rail-bg);
   font-size: 13px;
-  color: var(--text-sidebar);
+  color: var(--color-text-sidebar);
 }
 
 .dock-context span {
@@ -809,12 +857,12 @@ textarea:disabled {
 }
 
 .dock-context .glyph {
-  color: var(--text-muted);
+  color: var(--color-text-muted);
 }
 
 .dock-box {
   position: relative;
-  background: var(--composer-bg);
+  background: var(--color-composer-bg);
   border-radius: var(--radius-lg);
   padding: 10px 12px;
 }
@@ -832,7 +880,7 @@ textarea:disabled {
 }
 
 .dock-box textarea::placeholder {
-  color: var(--text-placeholder);
+  color: var(--color-text-placeholder);
 }
 
 .dock-actions {
@@ -854,7 +902,7 @@ textarea:disabled {
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--color-text-muted);
 }
 
 .dock-actions select {
@@ -862,7 +910,7 @@ textarea:disabled {
   padding: 0 4px;
   border-radius: 6px;
   font-size: 12px;
-  color: var(--text-sidebar);
+  color: var(--color-text-sidebar);
   background: rgba(255, 255, 255, 0.06);
 }
 
@@ -874,17 +922,17 @@ textarea:disabled {
   padding: 0 10px;
   border-radius: 999px;
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--color-text-muted);
 }
 
 .act:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.08);
-  color: var(--text);
+  color: var(--color-text);
 }
 
 .act.danger:hover:not(:disabled) {
   background: rgba(239, 106, 99, 0.16);
-  color: var(--bad);
+  color: var(--color-bad);
 }
 
 /* The one solid control in the window, exactly as the reference has it. */
@@ -893,8 +941,8 @@ textarea:disabled {
   width: 30px;
   height: 30px;
   border-radius: 50%;
-  background: var(--text);
-  color: var(--on-solid);
+  background: var(--color-text);
+  color: var(--color-on-solid);
   font-size: 14px;
   line-height: 1;
   display: flex;
@@ -924,18 +972,18 @@ textarea:disabled {
   border-radius: 999px;
   font-size: 12px;
   background: rgba(255, 255, 255, 0.06);
-  color: var(--text-muted);
+  color: var(--color-text-muted);
   white-space: nowrap;
 }
 
 .status-chip.live {
   background: rgba(92, 201, 140, 0.16);
-  color: var(--ok);
+  color: var(--color-ok);
 }
 
 .status-chip.warn {
   background: rgba(239, 140, 87, 0.16);
-  color: var(--accent);
+  color: var(--color-accent);
 }
 
 /* One-line notes under the composer box: the resumed-in-default-mode warning, the cleanup
@@ -944,17 +992,17 @@ textarea:disabled {
   margin: 8px 14px 0;
   font-size: 12px;
   line-height: 1.5;
-  color: var(--text-muted);
+  color: var(--color-text-muted);
 }
 
 .dock-note.warn {
-  color: var(--accent);
+  color: var(--color-accent);
 }
 
 .dock-note code {
   font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--text-sidebar);
+  color: var(--color-text-sidebar);
 }
 
 /* The buttons inside a note sit on the text baseline rather than in the action row. */
@@ -968,7 +1016,7 @@ textarea:disabled {
   margin: 6px 14px 0;
   font-size: 11px;
   font-family: var(--font-mono);
-  color: var(--text-muted);
+  color: var(--color-text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -980,17 +1028,17 @@ textarea:disabled {
   flex: 0 0 auto;
   padding: 2px 10px;
   border-radius: 999px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  color: var(--text-muted);
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  color: var(--color-text-muted);
   font-family: var(--font-mono);
   font-size: 11px;
   white-space: nowrap;
 }
 
 .fps.bad {
-  border-color: var(--bad);
-  color: var(--bad);
+  border-color: var(--color-bad);
+  color: var(--color-bad);
 }
 
 .fps.off {
@@ -1010,7 +1058,7 @@ textarea:disabled {
   display: flex;
   align-items: center;
   gap: 4px;
-  color: var(--text-muted-side);
+  color: var(--color-text-muted-side);
 }
 
 .burn-form label.grow {
@@ -1022,7 +1070,7 @@ textarea:disabled {
   height: 24px;
   padding: 0 6px;
   background: rgba(0, 0, 0, 0.22);
-  border: 1px solid var(--sidebar-line);
+  border: 1px solid var(--color-sidebar-line);
   border-radius: 6px;
   font-size: 12px;
 }

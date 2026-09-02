@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 
 // `"type": "module"` makes this file ESM, where `__dirname` is a ReferenceError. Resolve the
 // alias from the module's own URL instead; `shadcn add` writes a literal `@/` directory when
@@ -12,7 +13,10 @@ const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
-  plugins: [react()],
+  // `@tailwindcss/vite` is build-time only and adds zero bytes to the JS bundle
+  // (docs/research/frontend-stack.md §2.5). It is deliberately NOT in `vitest.config.ts`: no
+  // test imports CSS, and one that did would be testing the wrong thing.
+  plugins: [react(), tailwindcss()],
 
   resolve: {
     alias: { "@": srcDir },
