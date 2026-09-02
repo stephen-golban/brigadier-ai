@@ -115,6 +115,101 @@ pub enum WorktreeError {
 // see docs/research/worktree-git.md "Measured 2026-09-02".
 const SHOW_UNTRACKED: &str = "status.showUntrackedFiles=normal";
 
+/// The config keys that turn a `.gitattributes` `filter=<name>` selection into a shell command.
+///
+/// All four, not three. `process` is a separate driver spelling and is spawned before it is
+/// spoken to; `required` decides whether a blanked driver is a fatal error, and **measured**, a
+/// repository carrying `filter.<n>.required = true` — which `git lfs install --local` writes —
+/// answers `worktree add` with exit 128 `fatal: <file>: smudge filter <n> failed` when only the
+/// three command keys are blanked.
+// see docs/research/gitattributes.md §3.
+const FILTER_KEYS: [&str; 4] = ["smudge", "clean", "process", "required"];
+
+/// Value handed to each blanked key. `required` is the odd one out: empty string is what
+/// `git config --type=bool` reads as false anyway (**documented**, `git(1)` on `-c foo.bar=`),
+/// but spelling it out keeps the intent readable in a `ps` listing.
+const FILTER_OFF: [&str; 4] = ["", "", "", "false"];
+
+/// Environment that disables every filter driver the repository's **effective** config defines,
+/// plus `core.fsmonitor`.
+///
+/// **SECURITY — this is the whole reason it exists.** `git worktree add` checks out every tracked
+/// file, and a checkout runs the smudge filter named by the repository's own `.gitattributes`.
+/// The driver's *command* lives in config rather than in tracked content, and that is no defence:
+/// **measured**, an agent running `git config --local filter.x.smudge '<command>'` from inside
+/// its own linked worktree writes into the **main** repository's `.git/config` (a linked
+/// worktree's `.git` is a file, so `--local` means the common dir), and the *next* session's
+/// `git worktree add` executes that command with exit 0. Arbitrary shell, one session to the
+/// next, outside every approval prompt.
+///
+/// **documented**, `git-config(1)`: `GIT_CONFIG_COUNT` with `GIT_CONFIG_KEY_<n>` /
+/// `GIT_CONFIG_VALUE_<n>` pairs "will override values in configuration files, but will be
+/// overridden by any explicit options passed via `git -c`" — so this never fights the `-c`
+/// arguments the callers below pass, which name unrelated keys.
+///
+/// **Why the environment and not `-c`.** `-c` splits its argument on the first `=`, and a filter
+/// subsection name may contain one: **measured**, `git config` accepts `filter.a=b.smudge`,
+/// `.gitattributes` selects it with `*.txt filter=a=b`, and `-c 'filter.a=b.smudge='` sets a key
+/// called `filter.a` while the real driver still fires. The env form carries key and value in
+/// separate variables and has no such parse.
+///
+/// **Accepted consequence**: the enumeration reads system + global + local + `include.path`
+/// config, so a globally defined `lfs` driver is blanked too and LFS content arrives in a new
+/// worktree as pointer files. `git lfs pull` inside the worktree is the cure. Claude Code accepts
+/// the same trade.
+// see docs/research/gitattributes.md §§1-3.
+async fn filter_neutralising_env(
+    git: &Path,
+    dir: &Path,
+) -> Result<Vec<(OsString, OsString)>, WorktreeError> {
+    // `--name-only -z`: a subsection name may contain a space, a quote or an `=`, and **measured**
+    // `-z` returns `filter.a=b c.smudge` as one intact NUL-terminated record.
+    let args = vec![
+        osarg("-C"),
+        dir.as_os_str().to_os_string(),
+        osarg("config"),
+        osarg("--list"),
+        osarg("--name-only"),
+        osarg("-z"),
+    ];
+    let listing = stdout(git, &args).await?;
+
+    let mut names: Vec<String> = Vec::new();
+    for key in listing.split(|b| *b == 0).filter(|k| !k.is_empty()) {
+        // Fail closed rather than lossily decode: a name mangled by `from_utf8_lossy` would not
+        // match the driver git resolves, and the override would silently miss.
+        let key = std::str::from_utf8(key).map_err(|_| {
+            WorktreeError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "a git config key is not valid UTF-8; refusing to run with filter drivers live",
+            ))
+        })?;
+        let Some(rest) = key.strip_prefix("filter.") else { continue };
+        let Some(name) = FILTER_KEYS.iter().find_map(|k| rest.strip_suffix(&format!(".{k}"))) else {
+            continue;
+        };
+        // A name may itself contain dots (`filter.a.b.smudge`), which the suffix strip handles.
+        if !name.is_empty() && !names.iter().any(|seen| seen == name) {
+            names.push(name.to_owned());
+        }
+    }
+
+    // **measured**: `core.fsmonitor` set to a command is executed by `worktree add` itself, and
+    // again by every later `git status`. It is a performance cache, so `false` costs nothing.
+    let mut pairs: Vec<(OsString, OsString)> =
+        vec![(osarg("GIT_CONFIG_KEY_0"), osarg("core.fsmonitor")), (osarg("GIT_CONFIG_VALUE_0"), osarg("false"))];
+    let mut n = 1usize;
+    for name in &names {
+        for (key, off) in FILTER_KEYS.iter().zip(FILTER_OFF) {
+            pairs.push((osarg(format!("GIT_CONFIG_KEY_{n}")), osarg(format!("filter.{name}.{key}"))));
+            pairs.push((osarg(format!("GIT_CONFIG_VALUE_{n}")), osarg(off)));
+            n += 1;
+        }
+    }
+    pairs.push((osarg("GIT_CONFIG_COUNT"), osarg(n.to_string())));
+    Ok(pairs)
+}
+
 #[cfg(windows)]
 const GIT_BIN: &str = "git.exe";
 #[cfg(not(windows))]
@@ -153,7 +248,15 @@ pub async fn git_version(git: &Path) -> Result<String, WorktreeError> {
 /// On failure nothing is cleaned up. git 2.50.1 creates the branch before it validates the path,
 /// so a [`WorktreeError::PathExists`] or [`WorktreeError::PrunableEntryBlocks`] leaves the branch
 /// behind; the caller decides whether to [`delete_branch`] it.
+///
+/// **The checkout runs with the repository's filter drivers disabled** — see
+/// `filter_neutralising_env` below. Without that, `.gitattributes` plus a `filter.<n>.smudge` in the
+/// repository's config is arbitrary shell executed by this call (**measured**, exit 0, marker
+/// file written).
+// see docs/research/gitattributes.md §1.
 pub async fn add(git: &Path, spec: &WorktreeSpec) -> Result<Worktree, WorktreeError> {
+    // Enumerated before anything is created, so a failure here creates no branch and no directory.
+    let env = filter_neutralising_env(git, &spec.repo).await?;
     let args = vec![
         osarg("-C"),
         spec.repo.as_os_str().to_os_string(),
@@ -168,7 +271,7 @@ pub async fn add(git: &Path, spec: &WorktreeSpec) -> Result<Worktree, WorktreeEr
         spec.path.as_os_str().to_os_string(),
         osarg(&spec.base),
     ];
-    match stdout(git, &args).await {
+    match stdout_with(git, &args, &env).await {
         Ok(_) => {}
         // git names the blocking entry but not why it is prunable; the listing has the reason.
         Err(WorktreeError::PrunableEntryBlocks { path, reason }) if reason.is_empty() => {
@@ -215,6 +318,10 @@ pub async fn remove(
     path: &Path,
     force: bool,
 ) -> Result<(), WorktreeError> {
+    // The unforced form runs `status` internally, and `status` runs the repository's **clean**
+    // filters to decide what counts as modified. Same shell, same attacker.
+    // see docs/research/gitattributes.md §4.
+    let env = filter_neutralising_env(git, repo).await?;
     let mut args = vec![
         // Without this, an operator with `status.showUntrackedFiles=no` in their global config
         // loses git's own refusal as well as ours. **measured**: under that setting a worktree
@@ -233,7 +340,7 @@ pub async fn remove(
     }
     args.push(osarg("--"));
     args.push(path.as_os_str().to_os_string());
-    stdout(git, &args).await.map(drop)
+    stdout_with(git, &args, &env).await.map(drop)
 }
 
 /// `git worktree prune`: forget entries whose directory is gone. Does not delete branches.
@@ -442,8 +549,16 @@ pub async fn ensure_excluded(
 /// One line per entry, so a pathname containing a newline inflates the count. That is accepted:
 /// the number is what an operator is shown before deciding to discard the work, and `-z` would
 /// undercount nothing but overcount every rename (two NUL-terminated fields per entry).
-// see docs/research/worktree-git.md §4 and "Measured 2026-09-02".
+///
+/// The repository's filter drivers are disabled for this call too, because `status` runs the
+/// **clean** filter on candidate files and that is a shell command the repository chose. It can
+/// only push the count **up** — content a clean filter would have normalised back to the index
+/// now reads as modified — and that is the safe direction: an over-count refuses a removal, an
+/// under-count deletes work.
+// see docs/research/worktree-git.md §4, "Measured 2026-09-02", and
+// docs/research/gitattributes.md §§4-5.
 pub async fn dirty_count(git: &Path, worktree: &Path) -> Result<u32, WorktreeError> {
+    let env = filter_neutralising_env(git, worktree).await?;
     let args = vec![
         osarg("-c"),
         osarg(SHOW_UNTRACKED),
@@ -454,7 +569,7 @@ pub async fn dirty_count(git: &Path, worktree: &Path) -> Result<u32, WorktreeErr
         osarg("--ignored=matching"),
         osarg("--untracked-files=all"),
     ];
-    let out = stdout(git, &args).await?;
+    let out = stdout_with(git, &args, &env).await?;
     let count = String::from_utf8_lossy(&out).lines().filter(|l| !l.trim().is_empty()).count();
     Ok(u32::try_from(count).unwrap_or(u32::MAX))
 }
@@ -506,7 +621,15 @@ fn osarg(s: impl AsRef<OsStr>) -> OsString {
 }
 
 async fn stdout(git: &Path, args: &[OsString]) -> Result<Vec<u8>, WorktreeError> {
-    let out = spawn(git, args).await?;
+    stdout_with(git, args, &[]).await
+}
+
+async fn stdout_with(
+    git: &Path,
+    args: &[OsString],
+    env: &[(OsString, OsString)],
+) -> Result<Vec<u8>, WorktreeError> {
+    let out = spawn_with(git, args, env).await?;
     if out.status.success() {
         Ok(out.stdout)
     } else {
@@ -515,7 +638,16 @@ async fn stdout(git: &Path, args: &[OsString]) -> Result<Vec<u8>, WorktreeError>
 }
 
 async fn spawn(git: &Path, args: &[OsString]) -> Result<Output, WorktreeError> {
+    spawn_with(git, args, &[]).await
+}
+
+async fn spawn_with(
+    git: &Path,
+    args: &[OsString],
+    env: &[(OsString, OsString)],
+) -> Result<Output, WorktreeError> {
     let mut cmd = Command::new(git);
+    cmd.envs(env.iter().map(|(k, v)| (k.as_os_str(), v.as_os_str())));
     cmd.args(args)
         // Never a shell, and never an interactive credential prompt that would hang the harness.
         .env("GIT_TERMINAL_PROMPT", "0")
