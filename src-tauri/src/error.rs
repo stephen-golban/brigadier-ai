@@ -36,6 +36,13 @@ impl AppError {
         Self::new("invalid_argument", message)
     }
 
+    /// Another instance of the app already holds the data directory.
+    // see docs/research/data-dir-lock.md — the second instance is refused, because
+    // `Store::open`'s sweeps are unscoped and would settle the first instance's live sessions.
+    pub(crate) fn data_dir_locked(message: impl Into<String>) -> Self {
+        Self::new("data_dir_locked", message)
+    }
+
     /// Something on the filesystem.
     pub(crate) fn io(message: impl Into<String>) -> Self {
         Self::new("io", message)
@@ -64,6 +71,17 @@ impl From<SupervisorError> for AppError {
 impl From<DriverError> for AppError {
     fn from(e: DriverError) -> Self {
         Self { code: driver_code(&e).to_owned(), message: e.to_string() }
+    }
+}
+
+impl From<brigadier_store::Error> for AppError {
+    fn from(e: brigadier_store::Error) -> Self {
+        // One store failure the UI has its own remedy for — quit the other window — and it must
+        // not read as a generic `store` error.
+        match &e {
+            brigadier_store::Error::Locked { .. } => Self::data_dir_locked(e.to_string()),
+            _ => Self::store(e.to_string()),
+        }
     }
 }
 
@@ -116,6 +134,18 @@ mod tests {
                 .code,
             "claude_not_installed"
         );
+    }
+
+    #[test]
+    fn a_held_data_directory_gets_its_own_code() {
+        let e = AppError::from(brigadier_store::Error::Locked {
+            path: std::path::PathBuf::from("/data/brigadier.lock"),
+        });
+        assert_eq!(e.code, "data_dir_locked");
+        assert!(e.message.contains("brigadier.lock"), "{}", e.message);
+
+        let e = AppError::from(brigadier_store::Error::Closed);
+        assert_eq!(e.code, "store");
     }
 
     #[test]

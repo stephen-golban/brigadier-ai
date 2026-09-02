@@ -35,6 +35,12 @@ pub use writer::StoreHandle;
 /// Database filename under the store root.
 pub const DB_FILENAME: &str = "brigadier.sqlite";
 
+/// Lock filename under the store root. One app instance per data directory.
+// see docs/research/data-dir-lock.md — `Store::open` settles every unfinished session
+// unconditionally, so a second instance on one directory would fail the first instance's live
+// sessions. The decision is to refuse the second instance rather than to scope the sweep.
+pub const LOCK_FILENAME: &str = "brigadier.lock";
+
 /// Log loudly above this size. t3code's growth was invisible until a user measured it.
 // see docs/research/persistence.md §3, last bullet.
 pub const SIZE_WARN_BYTES: u64 = 200 * 1024 * 1024;
@@ -65,6 +71,12 @@ pub enum Error {
     /// The writer thread has stopped; nothing further will be persisted.
     #[error("store is closed")]
     Closed,
+    /// Another instance of the app is already using this data directory.
+    #[error("another brigadier instance already holds {}", path.display())]
+    Locked {
+        /// The lock file that is held.
+        path: PathBuf,
+    },
 }
 
 /// This crate's result type.
@@ -89,6 +101,56 @@ impl Default for StoreConfig {
     }
 }
 
+/// An exclusive advisory lock on `<root>/brigadier.lock`, held for as long as the value lives.
+///
+/// This is what makes one data directory admit one app instance. `Store::open` takes it before it
+/// expires approvals or settles stale sessions, both of which are unscoped sweeps that would
+/// otherwise kill a *running* instance's sessions from a second instance's startup.
+///
+/// The lock is `flock(LOCK_EX)` on macOS: advisory, owned by the open file description, and
+/// released when the file closes — so a crash or a `kill -9` leaves nothing to clean up.
+// see docs/research/data-dir-lock.md — `File::try_lock` is stable since Rust 1.89 (this toolchain
+// is 1.98), so no crate is needed.
+#[derive(Debug)]
+pub struct DataDirLock {
+    file: std::fs::File,
+    path: PathBuf,
+}
+
+impl DataDirLock {
+    /// Take the lock, or say who has it.
+    ///
+    /// Returns [`Error::Locked`] when another instance — in this process or any other — holds it.
+    pub fn acquire(root: &Path) -> Result<Self> {
+        std::fs::create_dir_all(root)?;
+        let path = root.join(LOCK_FILENAME);
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)?;
+        match file.try_lock() {
+            Ok(()) => Ok(Self { file, path }),
+            Err(std::fs::TryLockError::WouldBlock) => Err(Error::Locked { path }),
+            Err(std::fs::TryLockError::Error(e)) => Err(Error::Io(e)),
+        }
+    }
+
+    /// The lock file.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for DataDirLock {
+    fn drop(&mut self) {
+        // Closing the descriptor would release it anyway; unlocking first makes the release
+        // explicit and keeps the field read, rather than relying on drop order.
+        let _ = self.file.unlock();
+    }
+}
+
 /// The open database: a writer thread, the handle to it, and this launch's `run_id`.
 #[derive(Debug)]
 pub struct Store {
@@ -96,11 +158,13 @@ pub struct Store {
     join: Option<std::thread::JoinHandle<()>>,
     run_id: String,
     path: PathBuf,
+    lock: DataDirLock,
 }
 
 impl Store {
-    /// Open (or create) `<root>/brigadier.sqlite`, migrate it, mint a fresh `run_id`, expire
-    /// every approval that was still pending, and fail every session left unfinished.
+    /// Take the data-directory lock, then open (or create) `<root>/brigadier.sqlite`, migrate it,
+    /// mint a fresh `run_id`, expire every approval that was still pending, and fail every
+    /// session left unfinished.
     ///
     /// Blocking, and meant to be called once at startup before the UI loads.
     pub fn open(root: &Path) -> Result<Self> {
@@ -108,8 +172,13 @@ impl Store {
     }
 
     /// [`Store::open`] with explicit tunables.
+    ///
+    /// Fails with [`Error::Locked`] when another instance already holds this directory.
     pub fn open_with(root: &Path, config: StoreConfig) -> Result<Self> {
         std::fs::create_dir_all(root)?;
+        // Before either unscoped sweep below: both would settle a *live* instance's rows.
+        // see docs/research/data-dir-lock.md.
+        let lock = DataDirLock::acquire(root)?;
         let path = root.join(DB_FILENAME);
         let conn = schema::open_connection(&path)?;
 
@@ -140,7 +209,7 @@ impl Store {
         }
 
         let (handle, join) = writer::spawn(conn, run_id.clone(), config)?;
-        Ok(Self { handle, join: Some(join), run_id, path })
+        Ok(Self { handle, join: Some(join), run_id, path, lock })
     }
 
     /// The clone-cheap handle every writer and reader goes through.
@@ -156,6 +225,11 @@ impl Store {
     /// The database file.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// The data-directory lock this store holds until it is dropped.
+    pub fn lock_path(&self) -> &Path {
+        self.lock.path()
     }
 
     /// Total bytes of the database and its WAL sidecars.
@@ -254,6 +328,28 @@ mod tests {
         assert_eq!(after, before, "an already-exited session is untouched");
 
         store.close().await.expect("store closes");
+    }
+
+    /// One data directory, one instance. The second `Store::open` is refused rather than allowed
+    /// to run `settle_stale_sessions` over the first instance's live rows.
+    // see docs/research/data-dir-lock.md.
+    #[tokio::test]
+    async fn a_second_store_on_the_same_data_dir_is_refused() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let first = Store::open(dir.path()).expect("first store opens");
+        assert_eq!(first.lock_path(), dir.path().join(LOCK_FILENAME));
+
+        match Store::open(dir.path()) {
+            Err(Error::Locked { path }) => {
+                assert_eq!(path, dir.path().join(LOCK_FILENAME));
+            }
+            other => panic!("a second instance must be refused, got {other:?}"),
+        }
+
+        // Dropping the first store closes the file, which is what releases the flock.
+        first.close().await.expect("store closes");
+        let again = Store::open(dir.path()).expect("the lock goes with the store that held it");
+        again.close().await.expect("store closes");
     }
 
     /// The upsert cannot clear `ended_at`/`exit_code` — they are not in its statement, and every
