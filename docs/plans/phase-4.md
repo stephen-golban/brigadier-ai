@@ -108,6 +108,11 @@ class names or structure:
 - given a wire batch, what `feedStore` holds and in what order.
 - which callback fires on which action, and that **approvals are never optimistic**.
 
+**Carry the paint instrumentation with it.** B4, B6 and B7 in `docs/vision.md` §9 are unmeasured
+guesses and stay that way until the app can time its own paints. That is frontend measurement work
+and belongs in this order, not in a later one. B2, B3, B5 and B8 are gates today; B1 becomes one
+when W3-C's static shell lands.
+
 **Start with `feedStore.ts`** — the cheapest win in the wave. It is styling-agnostic (measured: it
 does not move), so its tests survive the rewrite untouched and can be written before anyone touches
 a component. It also holds the only front-end logic with measured behaviour behind it: the rAF
