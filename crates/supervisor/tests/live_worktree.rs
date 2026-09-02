@@ -314,7 +314,15 @@ async fn live_session_runs_in_a_worktree_resumes_there_and_cleans_up() {
     eprintln!("worktree status before cleanup (ignored included): {dirty:?}");
     let cleaned = live.sup.cleanup_worktree(&session_id, false).await.expect("cleanup_worktree");
     eprintln!("cleanup: {cleaned:?}");
-    assert!(cleaned.removed, "a clean worktree must be removable without force: {cleaned:?}");
+    // `blocked` says which rung refused, and `Commits` is the one to expect if this script ever
+    // grows a prompt that makes the model commit: an unforced cleanup now refuses commits that no
+    // other ref holds, not just working-tree dirt.
+    // see docs/research/worktree-cleanup.md §2.6 rung 1.
+    assert!(
+        cleaned.removed,
+        "a clean worktree with no commits of its own must be removable without force: {cleaned:?}"
+    );
+    assert_eq!(cleaned.commits, 0, "the session committed nothing: {cleaned:?}");
     assert_eq!(cleaned.branch, branch);
     assert!(!worktree_path.exists(), "the checkout is still on disk");
     let listed = git(&root, &["branch", "--list", &branch]);
