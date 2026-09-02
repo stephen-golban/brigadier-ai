@@ -94,9 +94,29 @@ and `mock.ts` (2,115 lines) are styling-agnostic and do not move. **Zero literal
 conversion is a single-file change.
 
 **W4-A — a front-end test runner, FIRST.** There is none today (`docs/vision.md` §12). Vitest plus
-Testing Library, since Vite is already the bundler. Characterisation tests over the seven existing
-components *before* anything moves, so the migration has something to break against. Migrating an
-untested UI is how the Resume button, the approvals dock and the cleanup flow stop working silently.
+Testing Library, since Vite is already the bundler. Migrating an untested UI is how the Resume
+button, the approvals dock and the cleanup flow stop working silently.
+
+**Test behaviour that must survive the rewrite, never the markup that will not.** A test written
+against current DOM structure gets deleted along with the component it characterises and buys
+nothing. *A test that survives the migration proves the migration; a test that dies with the
+component proves only that the old component existed.* So assert on **text and roles**, never on
+class names or structure:
+
+- given a `WorktreeCleanup` shape, which sentence and which buttons appear. The six refusal reasons
+  are a table, and that table is a contract, not a layout — `docs/plans/ipc-contract.md`.
+- given a wire batch, what `feedStore` holds and in what order.
+- which callback fires on which action, and that **approvals are never optimistic**.
+
+**Start with `feedStore.ts`** — the cheapest win in the wave. It is styling-agnostic (measured: it
+does not move), so its tests survive the rewrite untouched and can be written before anyone touches
+a component. It also holds the only front-end logic with measured behaviour behind it: the rAF
+drain, the `ROW_CAP` trim, and the seed merge.
+
+Why this is urgent rather than tidy: the `seedRows` merge was proven across nine scenarios by a
+throwaway script, and the six refusal notes were proven through `react-dom/server` on synthesized
+values. Both were reported honestly. **Both scripts are gone, so both results are now unverifiable.**
+That is the base the rewrite would otherwise stand on.
 
 **W4-B — tokens.** The 56 measured custom properties become Tailwind 4 `@theme` tokens in oklch.
 Hex→oklch is lossless, but **every AA contrast pair is re-checked after conversion, not assumed** —
@@ -125,6 +145,8 @@ surface area**: that design has ~70 nav rows across 9 tabs; we have eight settin
 - **Dark only.** A light scheme has to be designed, not measured, and the reference has none.
 - Jan is Apache-2.0 and copying is legally open, but **do not ship Jan's trademarks or marks**.
 - This wave touches all of `src/**`. It cannot run concurrently with any other frontend order.
+- `tauri.conf.json` claims `"targets": "all"`, which is false under macOS-now / Linux-next /
+  Windows-later-or-never. It is a shipping-configuration change and needs the owner's word.
 
 ## Research owed before the work that depends on it
 
