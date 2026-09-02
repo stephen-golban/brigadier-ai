@@ -1260,7 +1260,7 @@ impl<'a> ResultView<'a> {
     /// number is **cumulative for the session** and read from the latest `result`, never summed
     /// across frames — which is also why `cost_usd_cumulative` passes `total_cost_usd` through
     /// untouched.
-    // see docs/research/agent-sdk.md §6 and decision 8 of docs/plans/provider-spi.md.
+    // see docs/research/agent-sdk.md §6; the double-`result` defect is docs/STATUS.md §5.
     fn usage(&self) -> Usage {
         if let Some(Value::Object(models)) = self.model_usage {
             if !models.is_empty() {

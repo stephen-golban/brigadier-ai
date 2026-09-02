@@ -1,8 +1,8 @@
 //! Locating the `claude` binary and checking its version.
 //!
-//! Decision 3 of `docs/plans/provider-spi.md`: the driver drives *the user's* install, taking an
-//! explicit path plus a minimum version and falling back to a `PATH` walk. There is no bundled
-//! binary and no download.
+//! `CLAUDE.md` §2: the `claude` binary is never bundled. The driver drives *the user's* install,
+//! taking an explicit path plus a minimum version and falling back to a `PATH` walk. There is no
+//! bundled binary and no download; when it is missing the UI says so.
 
 use std::path::{Path, PathBuf};
 

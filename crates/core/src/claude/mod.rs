@@ -5,7 +5,7 @@
 //! --permission-prompt-tool stdio`, and everything below translates between that wire and the
 //! canonical [`crate::event`] schema.
 //!
-//! Decision 1 of `docs/plans/provider-spi.md`, gated by a spike that passed 7 of 7 scenarios
+//! Settled in `CLAUDE.md` §2 and gated by a spike that passed 7 of 7 scenarios
 //! against a live account: `can_use_tool` allow and deny, `hook_callback`, `interrupt` with the
 //! session surviving, `--resume` onto the original id, and a clean kill.
 // see docs/research/claude-direct-spike.md "Bottom line" (measured) and

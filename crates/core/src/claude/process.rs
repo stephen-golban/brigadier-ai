@@ -65,7 +65,7 @@ pub struct SpawnSpec {
     /// Provider session id to reopen, for a resume.
     pub resume: Option<String>,
     /// `CLAUDE_CONFIG_DIR`, the account boundary. `HOME` is never touched.
-    // see docs/research/agent-sdk.md §9 and decision 4 of docs/plans/provider-spi.md.
+    // see docs/research/agent-sdk.md §9 and docs/research/provider-driver.md.
     pub config_dir: Option<PathBuf>,
     /// Extra environment layered on top of the inherited set, as values.
     pub env_overrides: BTreeMap<String, String>,
