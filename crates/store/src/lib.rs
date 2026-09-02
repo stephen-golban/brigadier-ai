@@ -99,8 +99,8 @@ pub struct Store {
 }
 
 impl Store {
-    /// Open (or create) `<root>/brigadier.sqlite`, migrate it, mint a fresh `run_id`, and expire
-    /// every approval that was still pending.
+    /// Open (or create) `<root>/brigadier.sqlite`, migrate it, mint a fresh `run_id`, expire
+    /// every approval that was still pending, and fail every session left unfinished.
     ///
     /// Blocking, and meant to be called once at startup before the UI loads.
     pub fn open(root: &Path) -> Result<Self> {
@@ -124,6 +124,13 @@ impl Store {
         let expired = schema::expire_pending_approvals(&conn, SystemTime::now())?;
         if expired > 0 {
             tracing::info!(expired, run_id, "expired approvals left by a previous launch");
+        }
+
+        // Same reasoning, one table over: a session still `starting` or `running` in the file is
+        // one whose consumer task died with the process, and nothing will ever settle it.
+        let stale = schema::settle_stale_sessions(&conn, SystemTime::now())?;
+        if stale > 0 {
+            tracing::info!(stale, run_id, "failed sessions left unfinished by a previous launch");
         }
 
         if let Ok(meta) = std::fs::metadata(&path) {
@@ -186,5 +193,66 @@ impl Drop for Store {
             self.handle.shutdown();
             let _ = join.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use brigadier_core::event::{ExitReason, SessionId};
+    use schema::SessionRow;
+
+    async fn upsert(store: &Store, id: &str, status: Option<SessionStatus>) {
+        let mut row = SessionRow::new(SessionId::new(id));
+        row.status = status;
+        store.handle().upsert_session(row).await.expect("upsert");
+    }
+
+    #[tokio::test]
+    async fn a_session_left_unfinished_by_a_previous_launch_is_failed_at_open() {
+        let dir = tempfile::tempdir().expect("temp dir");
+
+        let store = Store::open(dir.path()).expect("store opens");
+        upsert(&store, "running", Some(SessionStatus::Running)).await;
+        upsert(&store, "starting", None).await;
+        upsert(&store, "done", Some(SessionStatus::Running)).await;
+        store
+            .handle()
+            .session_ended(
+                SessionId::new("done"),
+                ExitReason::Graceful,
+                Some(0),
+                SystemTime::now(),
+            )
+            .await
+            .expect("session ended");
+        let before = store
+            .handle()
+            .session(SessionId::new("done"))
+            .await
+            .expect("read")
+            .expect("row");
+        assert_eq!(before.status, SessionStatus::Exited);
+        store.close().await.expect("store closes");
+
+        let store = Store::open(dir.path()).expect("store reopens");
+        let read = |id: &str| {
+            let handle = store.handle().clone();
+            let id = SessionId::new(id);
+            async move { handle.session(id).await.expect("read").expect("row") }
+        };
+
+        for id in ["running", "starting"] {
+            let row = read(id).await;
+            assert_eq!(row.status, SessionStatus::Failed, "{id} was left unfinished");
+            assert!(row.ended_at.is_some(), "{id} must be stamped with an end time");
+            assert_eq!(row.exit_code, None, "{id} never reported an exit code");
+        }
+
+        // A session that already reached a terminal status is left exactly as it was.
+        let after = read("done").await;
+        assert_eq!(after, before, "an already-exited session is untouched");
+
+        store.close().await.expect("store closes");
     }
 }

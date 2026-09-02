@@ -1,24 +1,538 @@
+/* Dense, dark, monospace. No framework, no utility classes, no CSS-in-JS. */
+
 :root {
-  color-scheme: light dark;
-  font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --bg: #0d0f12;
+  --bg-2: #14171c;
+  --bg-3: #1b1f26;
+  --line: #262b33;
+  --fg: #d7dbe0;
+  --dim: #7c848f;
+  --ok: #4fb477;
+  --warn: #d1a33a;
+  --bad: #d15b53;
+  --accent: #5aa2e0;
+  --row-h: 18px;
+
+  color-scheme: dark;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+* {
+  box-sizing: border-box;
 }
 
 html,
 body,
-#root,
-.app {
+#root {
   height: 100%;
   margin: 0;
 }
 
 body {
-  background: #ffffff;
-  color: #1a1a1a;
+  background: var(--bg);
+  color: var(--fg);
+  overflow: hidden;
 }
 
-@media (prefers-color-scheme: dark) {
-  body {
-    background: #141414;
-    color: #ededed;
-  }
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 2px 6px;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled,
+textarea:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+button.ok {
+  border-color: #2f5d43;
+  color: #b7e7cb;
+}
+
+button.danger {
+  border-color: #5d3230;
+  color: #f0b6b2;
+}
+
+textarea {
+  resize: vertical;
+  width: 100%;
+}
+
+.dim {
+  color: var(--dim);
+}
+
+.empty {
+  color: var(--dim);
+  padding: 8px;
+  margin: 0;
+}
+
+.ok-text {
+  color: var(--ok);
+}
+
+.bad-text {
+  color: var(--bad);
+}
+
+/* ------------------------------------------------------------- layout */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-2);
+  flex: 0 0 auto;
+}
+
+.brand {
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.notice {
+  border-color: #5d3230;
+  color: #f0b6b2;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.banner {
+  padding: 1px 8px;
+  border-radius: 3px;
+  border: 1px solid var(--line);
+}
+
+.banner.ok {
+  border-color: #2f5d43;
+  color: #b7e7cb;
+}
+
+.banner.bad {
+  border-color: #5d3230;
+  color: #f0b6b2;
+}
+
+.banner.idle {
+  color: var(--dim);
+}
+
+.body {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr) 360px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.pane-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 8px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--line);
+  color: var(--dim);
+  text-transform: lowercase;
+  flex: 0 0 auto;
+}
+
+/* ------------------------------------------------------------ sidebar */
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--line);
+  min-height: 0;
+}
+
+.sidebar-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.project {
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 4px;
+}
+
+.project.selected {
+  background: var(--bg-2);
+}
+
+.project-head {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 4px 8px 0;
+  text-align: left;
+}
+
+.project-name {
+  font-weight: 600;
+}
+
+.project-path {
+  padding: 0 8px 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+.sessions {
+  list-style: none;
+  margin: 0;
+  padding: 0 4px;
+}
+
+.session {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  background: none;
+  border: none;
+  border-radius: 2px;
+  padding: 1px 4px;
+  text-align: left;
+}
+
+.session.selected {
+  background: var(--bg-3);
+  color: #fff;
+}
+
+.session-id {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--dim);
+  flex: 0 0 auto;
+}
+
+.dot.running {
+  background: var(--ok);
+}
+
+.dot.starting {
+  background: var(--warn);
+}
+
+.dot.exited {
+  background: var(--dim);
+}
+
+.dot.failed {
+  background: var(--bad);
+}
+
+.dot.all {
+  background: var(--accent);
+}
+
+.dot.busy {
+  box-shadow: 0 0 0 2px rgba(79, 180, 119, 0.25);
+}
+
+.add-project {
+  display: flex;
+  gap: 4px;
+  padding: 6px;
+  border-top: 1px solid var(--line);
+  flex: 0 0 auto;
+}
+
+.add-project input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* --------------------------------------------------------------- feed */
+
+.centre {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.feed {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.feed-scroller {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+  contain: layout paint;
+}
+
+.feed-sizer {
+  position: relative;
+  width: 100%;
+}
+
+.feed-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 0 8px;
+  white-space: pre;
+  overflow: hidden;
+  contain: layout paint size;
+}
+
+/* Striping is by row index, not `nth-child`: the DOM children are recycled, so `nth-child`
+   would make the stripes crawl as the list scrolls. */
+.feed-row.alt {
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.col-t {
+  color: var(--dim);
+  flex: 0 0 auto;
+}
+
+.col-s {
+  color: var(--accent);
+  flex: 0 0 auto;
+}
+
+.col-q {
+  color: var(--dim);
+  flex: 0 0 52px;
+  text-align: right;
+}
+
+.col-l {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.jump-pill {
+  position: absolute;
+  right: 16px;
+  bottom: 12px;
+  background: var(--bg-3);
+  border-color: var(--accent);
+  color: var(--accent);
+  padding: 3px 10px;
+  border-radius: 12px;
+}
+
+/* ----------------------------------------------------------- composer */
+
+.composer {
+  border-top: 1px solid var(--line);
+  flex: 0 0 auto;
+}
+
+.composer textarea,
+.new-session textarea {
+  border-radius: 0;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+  padding: 6px 8px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  flex-wrap: wrap;
+}
+
+.row label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--dim);
+}
+
+.row label.grow {
+  flex: 1 1 auto;
+}
+
+.row label.grow input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.row input[type="number"] {
+  width: 62px;
+}
+
+.usage {
+  padding: 0 8px 6px;
+}
+
+/* ---------------------------------------------------------- right rail */
+
+/* The rail itself does not scroll: `.approvals-body` owns the only scroller in it, so the
+   burn panel stays pinned at the bottom instead of being overrun by a long approval card. */
+.right {
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--line);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.new-session,
+.burn {
+  border-bottom: 1px solid var(--line);
+  flex: 0 0 auto;
+}
+
+.approvals {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.approvals-body {
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.approval {
+  border-bottom: 1px solid var(--line);
+  padding: 6px 8px;
+}
+
+.approval.expired {
+  opacity: 0.7;
+}
+
+.approval-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.badge {
+  border: 1px solid var(--warn);
+  color: var(--warn);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+
+.excerpt,
+.suggestion {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  margin: 4px 0;
+  padding: 4px 6px;
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.suggestion {
+  margin: 2px 0 6px;
+  max-height: 90px;
+}
+
+.suggestions {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+}
+
+.suggestions label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--dim);
+}
+
+.approval-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.approval-actions .reason {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.summary {
+  padding: 0 8px 6px;
+  margin: 0;
+}
+
+/* -------------------------------------------------------------- meter */
+
+.fps {
+  margin-left: auto;
+  background: rgba(13, 15, 18, 0.9);
+  border: 1px solid var(--line);
+  color: var(--dim);
+  padding: 1px 8px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+
+.fps.bad {
+  border-color: var(--bad);
+  color: #f0b6b2;
+}
+
+.fps.off {
+  opacity: 0.4;
 }

@@ -374,6 +374,18 @@ pub(crate) fn session_from_row(row: &Row<'_>) -> rusqlite::Result<SessionRecord>
     })
 }
 
+/// Column list shared by every `projects` read.
+pub(crate) const PROJECT_COLUMNS: &str = "id, name, root_path, created_at";
+
+pub(crate) fn project_from_row(row: &Row<'_>) -> rusqlite::Result<ProjectRow> {
+    Ok(ProjectRow {
+        id: row.get("id")?,
+        name: row.get("name")?,
+        root_path: PathBuf::from(row.get::<_, String>("root_path")?),
+        created_at: from_millis(row.get("created_at")?),
+    })
+}
+
 pub(crate) fn feed_from_row(row: &Row<'_>) -> rusqlite::Result<FeedRow> {
     Ok(FeedRow {
         session_id: SessionId::new(row.get::<_, String>("session_id")?),
@@ -479,6 +491,30 @@ pub(crate) fn expire_pending_approvals(conn: &Connection, now: SystemTime) -> Re
     let n = conn.execute(
         "UPDATE approvals SET resolved_at = ?1, decision_json = ?2 WHERE resolved_at IS NULL",
         (to_millis(now), decision),
+    )?;
+    Ok(n)
+}
+
+/// Fail every session a previous launch left mid-flight, and report how many.
+///
+/// A session row only reaches a terminal status when its consumer stores a `SessionExited`, and a
+/// quit, a crash or a force-quit aborts that consumer first — so without this, a `starting` or
+/// `running` row from a dead process stays that way forever and the UI shows a session that
+/// cannot exist. Nothing that owned it survived the process, so at open it is a failure.
+///
+/// `exit_code` is deliberately left NULL: no exit was ever observed, and inventing one would be a
+/// lie the UI would render as fact.
+// see docs/research/persistence.md §6 — the same reasoning that expires a surviving approval:
+// a row that outlived the process has nobody behind it, whatever launch opened it.
+pub(crate) fn settle_stale_sessions(conn: &Connection, now: SystemTime) -> Result<usize> {
+    let n = conn.execute(
+        "UPDATE sessions SET status = ?1, ended_at = ?2 WHERE status IN (?3, ?4)",
+        (
+            SessionStatus::Failed.as_str(),
+            to_millis(now),
+            SessionStatus::Starting.as_str(),
+            SessionStatus::Running.as_str(),
+        ),
     )?;
     Ok(n)
 }

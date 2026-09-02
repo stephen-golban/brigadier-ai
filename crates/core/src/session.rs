@@ -247,6 +247,14 @@ pub struct SessionHandle {
     /// The session's parked requests. Shared with the adapter, so a supervisor can list what is
     /// pending — and re-render it after a reload — without asking the adapter's loop.
     pub approvals: ApprovalTable,
+    /// The child's process id, when this session is backed by a real process.
+    ///
+    /// `None` from [`SessionHandle::channel`], which knows nothing about processes; a driver that
+    /// spawned a child fills it in before returning the handle, and a driver that spawns nothing
+    /// (a replay) leaves it `None`. On Unix the child is its own process group leader, so this is
+    /// also the pgid a supervisor hands to an orphan sweeper.
+    // see docs/research/orphan-sweep.md — a pid file plus a startup sweep needs the pid at hand.
+    pub pid: Option<u32>,
 }
 
 /// What an adapter drives: the other end of everything in [`SessionHandle`].
@@ -280,6 +288,7 @@ impl SessionHandle {
                 events: event_rx,
                 commands: SessionCommands { tx: cmd_tx, approvals: approvals.clone() },
                 approvals: approvals.clone(),
+                pid: None,
             },
             SessionBackend { commands: cmd_rx, events: event_tx, approvals },
         )
@@ -406,6 +415,7 @@ mod tests {
             SessionHandle::channel(SessionId::new("s7"), InstanceId::new("claude-code:work"), 4);
         assert_eq!(handle.session_id, SessionId::new("s7"));
         assert_eq!(handle.instance_id, InstanceId::new("claude-code:work"));
+        assert_eq!(handle.pid, None, "a bare channel is backed by no process");
     }
 
     #[tokio::test]

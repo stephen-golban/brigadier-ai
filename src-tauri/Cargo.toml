@@ -14,8 +14,24 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[features]
+# Compiles the fixture-replay load generator into a release-profile binary; debug builds always have it.
+burn = []
+
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+
+# The whole harness. None of these know Tauri exists; this crate is the only join.
+brigadier-core = { path = "../crates/core" }
+brigadier-store = { path = "../crates/store" }
+brigadier-supervisor = { path = "../crates/supervisor" }
+brigadier-proc = { path = "../crates/proc" }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+# `env-filter` is what makes `RUST_LOG` work; without it `EnvFilter` is not compiled.
+# 0.3.23 is the current release (`cargo search tracing-subscriber`, 2026-09-02).
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

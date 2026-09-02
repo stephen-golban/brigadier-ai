@@ -1,0 +1,31 @@
+[package]
+name = "brigadier-proc"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Process-group liveness, pid files and the orphan sweep. The only crate with `unsafe`."
+
+[lib]
+name = "brigadier_proc"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+# `proc_pidinfo(PROC_PIDTBSDINFO)` for the (pid, start_tvsec, start_tvusec) identity and
+# `proc_listpids(PROC_PGRP_ONLY)` for group enumeration. No safe wrapper exists for the latter in
+# `sysinfo` (+18 packages, seconds-only start time, no group enumeration) or `libproc` (bindgen
+# build-dep), so this crate carries the `unsafe`. 0.2.189 is already in `Cargo.lock`, transitively.
+# see docs/research/orphan-sweep.md §2.
+libc = "0.2"
+
+# `killpg` without `unsafe` at the call sites. `signal` is the feature that gates it; `None` as the
+# signal is the zero-probe. see docs/research/orphan-sweep.md §1.
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31.3", default-features = false, features = ["signal"] }
+
+[dev-dependencies]
+# Scratch pid directories for the pidfile and sweep tests.
+tempfile = "3.27"

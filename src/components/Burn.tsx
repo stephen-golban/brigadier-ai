@@ -1,0 +1,105 @@
+/**
+ * Dev-only burn panel: run N synthetic sessions at a rate through the real feed path and report
+ * what the frame meter saw.
+ *
+ * `rows_per_sec` is **per session**, following the signature in
+ * `docs/research/feed-rendering.md` §4. The summary is the gate from the same file, as revised
+ * there: a run passes only when every one-second window dropped **no** vsyncs and had
+ * `p95 <= 1.1 x budget` and `worst <= 3 x budget`, `budget = 1000/hz` — an average of 60 fps is
+ * what you get when 59 frames run at 4 ms and one runs at a second. The single rule lives in
+ * `fps.windowPasses`; this panel only renders its verdict.
+ */
+import { useState } from "react";
+
+import * as fps from "../fps";
+import type { CaptureSummary } from "../fps";
+import type { BurnArgs } from "../bridge";
+
+export interface BurnProps {
+  onBurn: (args: BurnArgs) => Promise<void>;
+}
+
+export function Burn({ onBurn }: BurnProps) {
+  const [sessions, setSessions] = useState(10);
+  const [rowsPerSec, setRowsPerSec] = useState(200);
+  const [durationS, setDurationS] = useState(60);
+  const [fixture, setFixture] = useState("s1-handshake-and-turn");
+  const [busy, setBusy] = useState(false);
+  const [summary, setSummary] = useState<CaptureSummary | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const run = async () => {
+    setBusy(true);
+    setError(null);
+    setSummary(null);
+    fps.startCapture();
+    try {
+      await onBurn({ sessions, rowsPerSec, durationS, fixture });
+      // The command returns as soon as the sessions are started (matching the mock's `burn`);
+      // the meter is what times the run, so we wait out the run ourselves before reading it.
+      await new Promise((r) => setTimeout(r, durationS * 1000 + 1200));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSummary(fps.summarise(fps.stopCapture()));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="burn">
+      <header className="pane-head">
+        <span>burn (dev)</span>
+        <span className="dim">{busy ? "running…" : "idle"}</span>
+      </header>
+      <div className="row">
+        <label>
+          sessions
+          <input
+            type="number"
+            min={1}
+            value={sessions}
+            onChange={(e) => setSessions(Number(e.target.value))}
+          />
+        </label>
+        <label>
+          rows/s each
+          <input
+            type="number"
+            min={1}
+            value={rowsPerSec}
+            onChange={(e) => setRowsPerSec(Number(e.target.value))}
+          />
+        </label>
+        <label>
+          seconds
+          <input
+            type="number"
+            min={1}
+            value={durationS}
+            onChange={(e) => setDurationS(Number(e.target.value))}
+          />
+        </label>
+      </div>
+      <div className="row">
+        <label className="grow">
+          fixture
+          <input value={fixture} onChange={(e) => setFixture(e.target.value)} />
+        </label>
+        <button type="button" className="ok" disabled={busy} onClick={() => void run()}>
+          burn
+        </button>
+      </div>
+      {error !== null ? <p className="bad-text">{error}</p> : null}
+      {summary !== null ? (
+        <p className={summary.pass ? "summary ok-text" : "summary bad-text"}>
+          {summary.pass ? "PASS" : "FAIL"} · {summary.windows} windows · min {summary.min_hz} Hz
+          (budget {summary.budget_ms} ms, p95 limit {summary.p95_limit_ms} ms) · worst window p95{" "}
+          {summary.worst_p95_ms} ms · worst frame {summary.worst_ms} ms · dropped{" "}
+          {summary.total_dropped} · longest drop run {summary.longest_drop_run} · dom{" "}
+          {summary.max_dom_nodes} · hz from p50 in {summary.p50_derived_windows} window(s)
+        </p>
+      ) : null}
+    </section>
+  );
+}

@@ -148,6 +148,7 @@ impl ClaudeDriver {
     ) -> Result<SessionHandle, DriverError> {
         let session_id = SessionId::new(uuid::Uuid::new_v4().to_string());
         let child = spawn(&spec)?;
+        let pid = child.pid;
         let adapter = AdapterConfig {
             instance_id: self.config.instance_id.clone(),
             session_id,
@@ -157,7 +158,7 @@ impl ClaudeDriver {
             prompt,
             event_buffer,
         };
-        connect(
+        let mut handle = connect(
             adapter,
             child.stdout,
             child.stdin,
@@ -165,7 +166,11 @@ impl ClaudeDriver {
             child.kill,
             Arc::clone(&self.hook_policy),
         )
-        .await
+        .await?;
+        // The child is its own process group leader (`process.rs`), so this pid is also the pgid
+        // an orphan sweeper signals.
+        handle.pid = pid;
+        Ok(handle)
     }
 }
 

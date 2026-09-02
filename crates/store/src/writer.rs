@@ -23,7 +23,7 @@ use tokio::sync::oneshot;
 
 use crate::schema::{
     self, ApprovalRecord, FeedRow, ProjectRow, SessionRecord, SessionRow, SessionStatus,
-    SESSION_COLUMNS, SUMMARY_JSON_LIMIT,
+    PROJECT_COLUMNS, SESSION_COLUMNS, SUMMARY_JSON_LIMIT,
 };
 use crate::{Error, Result, StoreConfig};
 
@@ -159,6 +159,34 @@ impl StoreHandle {
             let _ = tx.send(f(conn));
         })))?;
         rx.await.map_err(|_| Error::Closed)?
+    }
+
+    /// Every project, oldest first by creation time.
+    pub async fn list_projects(&self) -> Result<Vec<ProjectRow>> {
+        self.query(|conn| {
+            let sql = format!(
+                "SELECT {PROJECT_COLUMNS} FROM projects ORDER BY created_at ASC, id ASC"
+            );
+            let mut stmt = conn.prepare_cached(&sql)?;
+            let rows = stmt.query_map([], schema::project_from_row)?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+        .await
+    }
+
+    /// One project by id.
+    pub async fn project(&self, id: &str) -> Result<Option<ProjectRow>> {
+        let id = id.to_owned();
+        self.query(move |conn| {
+            let sql = format!("SELECT {PROJECT_COLUMNS} FROM projects WHERE id = ?1");
+            let mut stmt = conn.prepare_cached(&sql)?;
+            let mut rows = stmt.query((id.as_str(),))?;
+            match rows.next()? {
+                Some(row) => Ok(Some(schema::project_from_row(row)?)),
+                None => Ok(None),
+            }
+        })
+        .await
     }
 
     /// Every session, newest first by start time.
