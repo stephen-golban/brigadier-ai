@@ -88,45 +88,54 @@ over** — a warm prefix saves cost but not the per-turn re-read.
 | raw NDJSON on this machine | 66 MB / 23 sessions | `worktree-cleanup.md` |
 | provider transcripts on this machine | **3.0 GB** | same |
 
-## 5. Known defects, unfixed
+## 5. Defects — what was found, and what is left
 
-Found 2026-09-02 by research agents; four were independently confirmed against the code.
+Eight were found on 2026-09-02 by research agents. **Seven are fixed**; one is open. Verified
+against the code on 2026-09-02, not against a report.
 
-1. **`git worktree repair` is called nowhere in `crates/`.** Zero hits. After a project folder is
-   renamed, `repair` fully recovers every worktree — but our startup `git worktree prune` runs and
-   makes recovery impossible. Not an ordering bug: repair is absent entirely. **Confirmed.**
-2. **A crash mid-`worktree add` leaves a `locked initializing` entry** that `prune`, `remove`,
-   `remove --force` and `branch -D` all refuse. Only `remove -f -f` clears it. `remove()`
-   (`crates/core/src/worktree.rs:231`) pushes at most one `--force`, so `-f -f` is unreachable and
-   `Prepared::roll_back` cannot clean up. **Confirmed.**
-3. **`removed: true` can be a lie.** In the moved-project state `git worktree remove` exits 0,
-   unregisters the entry and leaves every file on disk, with the dirty-file safety net bypassed
-   because git cannot run `status`.
-4. **Unforced remove ignores commits.** A clean worktree with five unpushed commits removes with
-   exit 0. Claude Code counts commits as work (`rev-list --count base..HEAD`) and refuses.
-5. **Safety decisions read `sessions.branch`, not `git worktree list --porcelain`.** An agent that
-   detaches HEAD or checks out its own branch silently voids branch protection; a user's
-   `git branch -m` leaves the stored name dangling.
-6. ~~**SECURITY — `git worktree add` executes the repository's own filter drivers.**~~ **FIXED at
-   `5d71793`.** It reproduced on git 2.50.1, and the escalation found while fixing it is worse than
-   first described: a worktree's `.git` is a *file*, so there is no per-worktree config, and
-   `git config --local` run from inside a session's worktree writes the **main** repository's
-   `.git/config`. An agent in one session plants a driver with an ordinary git command; the next
-   session's worktree creation runs it as shell, outside every approval prompt — cross-session
-   arbitrary code execution. `core.fsmonitor` set to a command runs too. Mitigated by blanking
-   `smudge`/`clean`/`process` and setting `required=false` per filter, plus `core.fsmonitor=false`,
-   via `GIT_CONFIG_COUNT`/`_KEY_n`/`_VALUE_n` around `add`, `remove` and `dirty_count`.
-7. **`prepare` accepts two inputs it should refuse:** a project root that is itself a linked worktree
-   (removing the outer one silently destroys the inner session's work while `dirty_count` reports 0),
-   and repos with submodules.
-8. **`src/feedStore.ts:545` — `if (existing !== undefined && existing.length > 0) return;`** discards
-   the 500-row seed whenever a live batch wins the race. **Confirmed.**
+Fixed:
 
-Plus, from the protocol spike: **the `Agent` tool runs subagents asynchronously.** One user message
-produced two `result` frames; the adapter closes the turn on the first
-(`crates/core/src/claude/adapter.rs:680`) and drops the second. A turn reads complete when a subagent
-*launches*, and the second result's cost never reaches the store. `docs/vision.md` §6 avoids this
-path by design, but it is unfixed.
+1. **`git worktree repair` was absent entirely** — after a project folder was renamed, `repair`
+   recovers every worktree, but startup `prune` ran and made recovery impossible. Now called
+   (`crates/core/src/worktree.rs:442`).
+2. **A crash mid-`worktree add` left a `locked initializing` entry only `remove -f -f` could clear**,
+   and `remove()` passed at most one `--force`. Now a `RemoveForce` rung passes 0, 1 or 2
+   (`crates/core/src/worktree.rs:392-400,487-489`).
+3. **`removed: true` could be a lie** — `git worktree remove` exits 0 and leaves every file on disk
+   in the moved-project state. Now set only after `path.exists()` says the directory is gone
+   (`crates/supervisor/src/worktree.rs:545`).
+4. **Unforced remove ignored commits** — a clean worktree with five unpushed commits removed with
+   exit 0. Now counted as `commits`, against `live_branch`, and refused.
+5. **Safety decisions read `sessions.branch`** rather than the live checkout. Now read from
+   `git worktree list --porcelain` (14 call sites), with `live_branch` on the wire.
+6. **SECURITY: `git worktree add` executed the repository's own filter drivers.** Fixed at
+   `5d71793`. The escalation found while fixing is worse than first described: a worktree's `.git`
+   is a *file*, so there is no per-worktree config, and `git config --local` from inside a session's
+   worktree writes the **main** repository's `.git/config`. An agent in one session could plant a
+   driver with an ordinary git command and have the next session's worktree creation run it as
+   shell, outside every approval prompt. `core.fsmonitor` set to a command ran the same way.
+   Mitigated by blanking `smudge`/`clean`/`process` per filter and disabling `core.fsmonitor`.
+7. **`prepare` accepted two inputs it should refuse** — a project root that is itself a linked
+   worktree, and repos with submodules. Both now typed refusals
+   (`crates/core/src/worktree.rs:92,106,121`). 36 worktree tests.
+8. **`src/feedStore.ts` discarded the 500-row seed** whenever a live batch won the race. Fixed at
+   `53c3491` with a two-pointer merge keyed on the envelope `seq`.
+
+**Still open — one:**
+
+- **The `Agent` tool runs subagents asynchronously and the adapter drops the second `result`.** One
+  user message produced two `result` frames; `on_result` takes `self.open_turn` and returns early on
+  the second (`crates/core/src/claude/adapter.rs:678-681`). A turn reads complete when a subagent
+  *launches*, and the second result's cost never reaches the store. `docs/vision.md` §6 routes around
+  this path by design — brigadier spawns workers as its own children — so it is not load-bearing for
+  the product, but any session where the model reaches for `Agent` itself under-reports, and silent
+  under-counting on a usage-window product is the failure mode you cannot see from outside.
+
+**Not a defect, checked and dismissed:** `tauri.conf.json`'s `"targets": "all"` was reported as
+falsely claiming cross-platform support. It does not. **[measured]** — on this machine that setting
+produced only `target/release/bundle/macos/brigadier.app` and
+`dmg/brigadier_0.1.0_aarch64.dmg`; no `.deb`, `.msi` or AppImage. `"all"` is host-scoped, meaning
+every bundle format for the platform being built on. Leave it alone.
 
 ## 6. Corrections to existing research
 
