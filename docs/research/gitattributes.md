@@ -88,9 +88,13 @@ hand the child four pairs per name — `smudge=""`, `clean=""`, `process=""`, `r
 
 **[measured]** `required` must be in the set. With `filter.evil.required = true` and only the three
 command keys blanked, `worktree add` exits **128** with `fatal: f.txt: smudge filter evil failed`
-after printing `Preparing worktree`. Adding `required=false` returns it to exit 0. This is not
-hypothetical: `git lfs install --local` writes `filter.lfs.required = true`, so omitting this key
-would break worktree creation on every LFS repository.
+after printing `Preparing worktree`. Adding `required=false` returns it to exit 0. The key above
+was **hand-set**.
+
+**[asserted]** that this is not hypothetical in the wild: `git lfs install --local` writes
+`filter.lfs.required = true`, so omitting this key would break worktree creation on every LFS
+repository. git-lfs is not installed on this machine (§6), so no real LFS repository was run
+through the case above; installing it and repeating §3 would settle this.
 
 **[measured]** Enumeration keys survive `-z` intact, including a name containing `=` and a space:
 `git config --name-only --list -z` returned `filter.a=b c.smudge` as one NUL-terminated record.
@@ -137,8 +141,11 @@ suppresses `$(prefix)/etc/gitattributes`.
 ## 5. What was implemented
 
 `crates/core/src/worktree.rs`: `filter_neutralising_env()` enumerates the effective filter driver
-names and returns the `GIT_CONFIG_*` pairs; `add`, `remove` and `dirty_count` run their git child
-with them. Notes that belong with the code:
+names and returns the `GIT_CONFIG_*` pairs; `add`, `repair`, `remove` and `dirty_count` run their
+git child with them. `repair` is the one this file originally missed — `5fc0581` added it after
+this was written, and it rewrites two small text files and checks nothing out, so it runs no filter
+driver and carries the env only to avoid being the one call site anybody has to reason about
+(`crates/core/src/worktree.rs:434-437`). Notes that belong with the code:
 
 - The enumeration reads the **effective** config (system + global + local + `include.path`), so a
   driver the user defines globally — `lfs` being the common one — is neutralised too. The accepted
@@ -158,7 +165,9 @@ with them. Notes that belong with the code:
 ## 6. What was not checked
 
 - git-lfs is still not installed on this machine (`command -v git-lfs` → exit 1), so the LFS
-  pointer-file consequence is reasoned from the config keys, not observed.
+  pointer-file consequence *and* §3's claim that `git lfs install --local` writes
+  `filter.lfs.required = true` are both reasoned from the config keys, not observed. The exit-128
+  case in §3 was measured on a hand-set `filter.evil.required = true`, which needs no git-lfs.
 - Windows. The `GIT_CONFIG_*` mechanism is documented and platform-independent, but nothing here ran
   outside macOS.
 - Whether `.git/hooks/post-checkout` can be reached by an agent that only has write access inside a
