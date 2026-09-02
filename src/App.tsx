@@ -36,8 +36,16 @@ import type {
   WorktreeCleanup,
 } from "./wire";
 
-/** How much history to pull when a session is selected for the first time. */
-const TAIL_ROWS = 500;
+/**
+ * How much history to pull when a session is selected for the first time.
+ *
+ * 48, not 500, because the 8192-byte `eval` cliff that governs feed batches
+ * (`docs/research/feed-rendering.md` §"Batch size") governs a command response just as much: one
+ * oversized reply detours through `fetch` and head-of-line blocks every later message. 48 rows of
+ * `{s,q,t,l}` serialize to 7,694 B against 80,241 B for 500. The tail is a first paint, not the
+ * scrollback — `store.seedRows` now merges later arrivals into it instead of replacing it.
+ */
+const TAIL_ROWS = 48;
 
 /** Coalescing window for the `list_projects` re-fetch a feed batch for an unknown project asks for. */
 const UNKNOWN_PROJECT_REFETCH_MS = 250;

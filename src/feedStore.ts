@@ -534,15 +534,65 @@ export function dismissApproval(requestId: string): void {
 }
 
 /**
- * Prefill a session's ring from `feed_tail`. Only fills an empty ring — the live feed is
- * authoritative once it has produced anything, and re-seeding would duplicate rows.
+ * Prefill a session's ring from `feed_tail`, **merging** with whatever the live feed already put
+ * there. The fetch and the subscription race on every session open: guarding on "only fill an
+ * empty ring" threw the whole backlog away whenever the first live batch won, and the operator
+ * saw only what arrived after they clicked, with nothing on screen saying so.
+ *
+ * The merge key is `q` (the envelope `seq`). It is a total order per session and it is unique:
+ * `crates/store/src/schema.rs:88-94` declares `feed` as `PRIMARY KEY (session_id, seq)`, one
+ * envelope yields at most one row (`crates/store/src/feed.rs:36,200`), and `seq` keeps climbing
+ * across a resume (`docs/plans/ipc-contract.md` §resume_session). `Feed.tsx:70` already keys React
+ * rows on `${s}#${q}` and so already assumes exactly this. Both inputs are ascending in `q` —
+ * `feed_tail` returns oldest first (ipc-contract §Commands) and the batcher delivers rows "in seq
+ * order per session" (§Feed channel), appended in arrival order by `appendRing` — so a two-pointer
+ * merge reproduces the order the live path produces rather than inventing one. Ties keep the live
+ * row: same `(session_id, seq)` is the same row, and keeping the live copy leaves the ring's
+ * existing objects untouched.
+ *
+ * Consequences worth naming: re-seeding is now idempotent, so StrictMode's double-mounted effect
+ * and the re-select after `resume_session` no longer duplicate anything; a seed that adds nothing
+ * keeps the array reference and skips `notify`, so the pane does not re-render; and the union is
+ * trimmed to the newest `ROW_CAP` from the head, exactly as `appendRing` trims.
  *
  * The project ring is deliberately **not** seeded: interleaving several sessions' tails by `t`
  * would produce an ordering the live path never produces.
  */
 export function seedRows(sessionId: SessionId, rows: FeedRowWire[]): void {
-  const existing = sessionRows.get(sessionId);
-  if (existing !== undefined && existing.length > 0) return;
-  sessionRows.set(sessionId, rows.slice(Math.max(0, rows.length - ROW_CAP)));
+  const existing = sessionRows.get(sessionId) ?? EMPTY_ROWS;
+
+  const merged: FeedRowWire[] = [];
+  let seed = 0;
+  let live = 0;
+  let inserted = 0;
+  while (seed < rows.length && live < existing.length) {
+    const a = rows[seed]!;
+    const b = existing[live]!;
+    if (a.q < b.q) {
+      merged.push(a);
+      seed++;
+      inserted++;
+    } else if (a.q > b.q) {
+      merged.push(b);
+      live++;
+    } else {
+      merged.push(b);
+      seed++;
+      live++;
+    }
+  }
+  for (; seed < rows.length; seed++) {
+    merged.push(rows[seed]!);
+    inserted++;
+  }
+  for (; live < existing.length; live++) merged.push(existing[live]!);
+
+  // Nothing the ring did not already hold: keep its identity so the pane does not re-render.
+  if (inserted === 0) return;
+
+  sessionRows.set(
+    sessionId,
+    merged.length > ROW_CAP ? merged.slice(merged.length - ROW_CAP) : merged,
+  );
   notify();
 }
