@@ -83,7 +83,7 @@ pub fn run() {
                 Err(e) => {
                     let msg = format!("no application data directory: {e}");
                     tracing::error!("{msg}");
-                    app.manage(AppState::failed(msg));
+                    app.manage(AppState::failed(crate::error::AppError::io(msg)));
                     return Ok(());
                 }
             };
@@ -102,11 +102,12 @@ pub fn run() {
                     });
                     app.manage(AppState::ready(ready));
                 }
-                Err(msg) => {
+                Err(err) => {
                     // Never `?`: an Err out of `setup` panics the process, and a read-only home
-                    // directory must produce a window that says so.
-                    tracing::error!("{msg}");
-                    app.manage(AppState::failed(msg));
+                    // directory — or a second instance on one data directory — must produce a
+                    // window that says so.
+                    tracing::error!(code = %err.code, message = %err.message, "startup failed");
+                    app.manage(AppState::failed(err));
                 }
             }
             // A terminal's `kill -TERM` (or ctrl-C on `tauri dev`) does not raise any `RunEvent`

@@ -18,7 +18,10 @@ drop semantics), `docs/research/feed-rendering.md` (row cost, batch cap, rAF ing
   `{ "code": string, "message": string }`. Codes used: `claude_not_installed`, `claude_too_old`,
   `no_such_session`, `no_such_project`, `no_such_request`, `session_not_running`,
   `session_running`, `not_resumable`, `worktree`,
-  `worktree_unborn_head`, `worktree_branch_exists`, `store`, `driver`, `io`, `invalid_argument`.
+  `worktree_unborn_head`, `worktree_branch_exists`, `store`, `data_dir_locked`, `driver`, `io`,
+  `invalid_argument`. `data_dir_locked` is a startup failure, returned by **every** command:
+  another app instance already holds this data directory (`<data_dir>/brigadier.lock`), and the
+  remedy is to quit that window rather than to retry.
 - **Reserved, not yet emitted:** `session_not_found_upstream`. Nothing on the Rust side produces
   it today; see `### resume_session` for why, and for what arrives instead.
 - Timestamps cross the wire as **milliseconds since the Unix epoch** (`number`), field suffix `_ms`.

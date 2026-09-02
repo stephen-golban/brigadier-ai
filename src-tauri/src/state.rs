@@ -68,7 +68,7 @@ impl std::fmt::Debug for Ready {
 #[derive(Debug)]
 pub(crate) struct AppState {
     ready: Option<Ready>,
-    startup_error: Option<String>,
+    startup_error: Option<AppError>,
 }
 
 impl AppState {
@@ -77,16 +77,17 @@ impl AppState {
         Self { ready: Some(ready), startup_error: None }
     }
 
-    /// Startup failed; every command will say so.
-    pub(crate) fn failed(message: impl Into<String>) -> Self {
-        Self { ready: None, startup_error: Some(message.into()) }
+    /// Startup failed; every command will say so, with the code startup produced — a data
+    /// directory another instance holds answers `data_dir_locked`, not `store`.
+    pub(crate) fn failed(error: AppError) -> Self {
+        Self { ready: None, startup_error: Some(error) }
     }
 
     /// The working state, or the startup failure as a command error.
     pub(crate) fn get(&self) -> Result<&Ready, AppError> {
         match (&self.ready, &self.startup_error) {
             (Some(ready), _) => Ok(ready),
-            (None, Some(msg)) => Err(AppError::store(msg.clone())),
+            (None, Some(err)) => Err(err.clone()),
             // Unreachable by construction; still not worth a panic in a command.
             (None, None) => Err(AppError::store("app state was never initialized")),
         }
@@ -204,12 +205,18 @@ async fn probe(supervisor: &Supervisor) -> Result<ClaudeStatus, AppError> {
 /// (`docs/research/orphan-sweep.md` "Recommended design" step 3).
 ///
 /// Must be called inside a Tokio runtime: [`Supervisor::new`] spawns the per-frame flusher.
-pub(crate) async fn build(data_dir: PathBuf) -> Result<Ready, String> {
+pub(crate) async fn build(data_dir: PathBuf) -> Result<Ready, AppError> {
     std::fs::create_dir_all(&data_dir)
-        .map_err(|e| format!("could not create {}: {e}", data_dir.display()))?;
+        .map_err(|e| AppError::io(format!("could not create {}: {e}", data_dir.display())))?;
 
-    let store = Store::open(&data_dir)
-        .map_err(|e| format!("could not open the store in {}: {e}", data_dir.display()))?;
+    // `AppError::from` keeps `Error::Locked` on its own code; the message names the directory,
+    // because the remedy is to quit the other window.
+    // see docs/research/data-dir-lock.md.
+    let store = Store::open(&data_dir).map_err(|e| {
+        let mut err = AppError::from(e);
+        err.message = format!("could not open the store in {}: {}", data_dir.display(), err.message);
+        err
+    })?;
     let run_id = store.run_id().to_owned();
 
     let tracker = open_pid_dir(&data_dir, &run_id);

@@ -61,6 +61,23 @@ pub fn is_signal(event: &Event) -> bool {
 struct Counters {
     total: u64,
     dropped: u64,
+    /// A `SessionStarted` was seen for this session.
+    started: bool,
+    /// A `SessionExited` was seen for it.
+    ended: bool,
+}
+
+impl Counters {
+    /// True once the batcher has watched this session's whole lifetime, which is the only case
+    /// where dropping its counters loses nothing: the final counter went out with the same frame
+    /// that carried the exit signal, and no further event can arrive for it.
+    ///
+    /// A session the batcher never saw *start* is deliberately not finished — a test driver, or
+    /// any producer whose start predates the batcher — because its counters are the only record
+    /// of it there is.
+    fn finished(&self) -> bool {
+        self.started && self.ended
+    }
 }
 
 #[derive(Debug, Default)]
@@ -75,6 +92,16 @@ struct ProjectAccum {
 impl ProjectAccum {
     fn pending(&self) -> bool {
         !self.rows.is_empty() || !self.signals.is_empty() || !self.touched.is_empty()
+    }
+
+    /// Drop the counters of every session whose whole lifetime is over, and say whether anything
+    /// at all is left worth keeping the project's entry for.
+    ///
+    /// Called at the end of a tick, after the frame has been drained, so anything removed here
+    /// has already crossed the sink.
+    fn prune(&mut self) -> bool {
+        self.counters.retain(|_, c| !c.finished());
+        self.pending() || !self.counters.is_empty()
     }
 }
 
@@ -142,6 +169,11 @@ impl Batcher {
         let accum = state.projects.entry(project_id.to_owned()).or_default();
         accum.touched.insert(session.clone());
         let counters = accum.counters.entry(session).or_default();
+        match &env.event {
+            Event::SessionStarted { .. } => counters.started = true,
+            Event::SessionExited { .. } => counters.ended = true,
+            _ => {}
+        }
 
         if let Some(line) = terse_line(&env.event) {
             counters.total += 1;
@@ -201,6 +233,13 @@ impl Batcher {
                 }
                 out.push(Frame { project_id: project_id.clone(), rows, signals, counters });
             }
+            // Nothing here is unbounded on purpose: one entry per project ever seen, and inside
+            // it one counter per session ever seen, would both grow for the life of the app. A
+            // project whose sessions have all ended and whose buffers are empty is forgotten in
+            // the same tick, and its map entry goes with it. Nothing about the message shape or
+            // the caps changes — this runs after the frame is drained.
+            // see docs/research/feed-rendering.md §4 for the caps this must not touch.
+            state.projects.retain(|_, accum| accum.prune());
             out
         };
 
@@ -232,6 +271,10 @@ impl Batcher {
     }
 
     /// Cumulative `(rows_total, rows_dropped)` for one session, for tests and instrumentation.
+    ///
+    /// `None` once the session has both started and exited and a tick has run: its last counter
+    /// was delivered with its exit signal, and the entry is then dropped rather than kept for the
+    /// life of the app.
     pub fn counters(&self, project_id: &str, session_id: &str) -> Option<(u64, u64)> {
         let state = lock(&self.inner.state);
         let accum = state.projects.get(project_id)?;
@@ -242,6 +285,11 @@ impl Batcher {
     /// Rows sitting in one project's buffer right now.
     pub fn buffered_rows(&self, project_id: &str) -> usize {
         lock(&self.inner.state).projects.get(project_id).map_or(0, |a| a.rows.len())
+    }
+
+    /// Projects the accumulator still holds an entry for, for tests and instrumentation.
+    pub fn tracked_projects(&self) -> Vec<String> {
+        lock(&self.inner.state).projects.keys().cloned().collect()
     }
 }
 
@@ -392,6 +440,23 @@ mod tests {
 
     fn envelope(seq: u64, event: Event) -> Envelope {
         Envelope::new(seq, InstanceId::new("i"), SessionId::new("s1"), event)
+    }
+
+    fn started() -> Event {
+        Event::SessionStarted {
+            provider_session_id: "abc".into(),
+            model: "m".into(),
+            cwd: std::path::PathBuf::from("/w"),
+            capabilities: Vec::new(),
+            resume_token: None,
+        }
+    }
+
+    fn exited() -> Event {
+        Event::SessionExited {
+            reason: brigadier_core::event::ExitReason::Graceful,
+            exit_code: Some(0),
+        }
     }
 
     fn row_event(seq: u64) -> Envelope {
@@ -553,6 +618,75 @@ mod tests {
         eprintln!("24 rows x 200-byte lines = {size} bytes");
         assert!(size < MAX_MESSAGE_BYTES, "{size} bytes");
         assert!(size > 5_000, "the measurement is of a full frame, not an empty one: {size}");
+    }
+
+    /// The maps are per-project and per-session and nothing ever removed from them, so a long
+    /// launch paid for every project and every session it had ever seen. A project whose sessions
+    /// have all ended and whose buffers are empty is forgotten at the end of the tick.
+    #[test]
+    fn a_project_whose_sessions_have_all_ended_is_forgotten_at_the_end_of_the_tick() {
+        let (batcher, sink) = sink();
+        batcher.push("p", &envelope(1, started()));
+        batcher.push("p", &row_event(2));
+        batcher.flush_once();
+        assert_eq!(batcher.tracked_projects(), vec!["p".to_owned()], "a live session is kept");
+        assert!(batcher.counters("p", "s1").is_some());
+        assert!(!sink.take().is_empty());
+
+        batcher.push("p", &envelope(3, exited()));
+        batcher.flush_once();
+
+        // The exit's own frame still carried the session's final counter...
+        let last = sink.take();
+        let counter = last
+            .iter()
+            .flat_map(|b| b.counters.iter())
+            .find(|c| c.session_id == "s1")
+            .cloned()
+            .expect("the exit frame carries the session's last counter");
+        assert_eq!(counter.rows_total, 3, "started + item + exited all made rows");
+        assert_eq!(counter.rows_dropped, 0);
+
+        // ...and only then is the entry gone, project and all.
+        assert!(batcher.tracked_projects().is_empty(), "{:?}", batcher.tracked_projects());
+        assert_eq!(batcher.counters("p", "s1"), None);
+        assert_eq!(batcher.buffered_rows("p"), 0);
+
+        // An idle tick over an empty map is still silent.
+        batcher.flush_once();
+        assert!(sink.is_empty());
+    }
+
+    /// The counterpart: one session ending does not take the project's other sessions with it.
+    #[test]
+    fn a_project_with_one_live_session_left_is_kept() {
+        let (batcher, sink) = sink();
+        for id in ["s1", "s2"] {
+            batcher.push("p", &Envelope::new(1, InstanceId::new("i"), SessionId::new(id), started()));
+        }
+        batcher.push(
+            "p",
+            &Envelope::new(2, InstanceId::new("i"), SessionId::new("s1"), exited()),
+        );
+        batcher.flush_once();
+        let _ = sink.take();
+
+        assert_eq!(batcher.tracked_projects(), vec!["p".to_owned()]);
+        assert_eq!(batcher.counters("p", "s1"), None, "the ended session's entry is dropped");
+        assert!(batcher.counters("p", "s2").is_some(), "the live one is not");
+    }
+
+    /// A session the batcher never saw start keeps its counters: they are the only record of it,
+    /// and `Batcher::counters` is how a test reads back what a whole run produced.
+    #[test]
+    fn a_session_that_never_announced_a_start_keeps_its_counters() {
+        let (batcher, sink) = sink();
+        batcher.push("p", &row_event(1));
+        batcher.push("p", &envelope(2, exited()));
+        batcher.flush_once();
+        let _ = sink.take();
+        assert_eq!(batcher.counters("p", "s1").map(|(t, _)| t), Some(2));
+        assert_eq!(batcher.tracked_projects(), vec!["p".to_owned()]);
     }
 
     #[test]
