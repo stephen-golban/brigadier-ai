@@ -1,0 +1,15 @@
+//! brigadier-core: provider SPI, session supervisor, persistence. No Tauri dependency.
+//!
+//! The SPI is four plain-value pieces: a canonical [`event`] schema every adapter emits, a
+//! [`driver`] trait instantiated N times with no singleton, a [`session`] handle a supervisor
+//! holds, and an [`approval`] park with a deadline.
+
+#![deny(unsafe_code)]
+#![warn(missing_docs)]
+
+pub mod approval;
+pub mod claude;
+pub mod driver;
+pub mod event;
+pub mod session;
+pub mod worktree;
