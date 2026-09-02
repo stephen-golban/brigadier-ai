@@ -17,6 +17,9 @@
  *     the CLI announces itself once per turn — so `starting` is "ready for input", not "coming
  *     up", and the text area stays enabled for it;
  *   - `resume_session` does **not** restore the permission mode, so a resumed session says so.
+ *
+ * `cleanup_worktree` refuses in six distinguishable ways and this dock is where the operator
+ * reads them, so each one gets its own sentence and its own buttons: see `refusalNote` below.
  */
 import { useEffect, useState } from "react";
 
@@ -56,16 +59,20 @@ export function Composer({
   onCleanup,
 }: ComposerProps) {
   const [text, setText] = useState("");
-  /** A `force: false` cleanup came back refusing to discard this many files. */
-  const [dirty, setDirty] = useState<WorktreeCleanup | null>(null);
+  /** A cleanup came back `removed: false`: nothing was touched, and `blocked` says why. */
+  const [refusal, setRefusal] = useState<WorktreeCleanup | null>(null);
   /** The last successful removal, so the dock can say the checkout is gone and resume is over. */
   const [removed, setRemoved] = useState<WorktreeCleanup | null>(null);
+  /** `branch_moved` only: the operator acknowledged that the checkout is not what we recorded, so
+   *  the force button exists. Forcing past a branch we did not expect is not a one-click action. */
+  const [armed, setArmed] = useState(false);
 
   const sessionId = session?.sessionId ?? null;
-  // Both are about one session; switching sessions must not carry either over.
+  // All three are about one session; switching sessions must not carry any of them over.
   useEffect(() => {
-    setDirty(null);
+    setRefusal(null);
     setRemoved(null);
+    setArmed(false);
   }, [sessionId]);
 
   const live = session !== null && (session.status === "running" || session.status === "starting");
@@ -88,11 +95,12 @@ export function Composer({
     if (session === null) return;
     const result = await onCleanup(session.sessionId, force);
     if (result === null) return;
+    setArmed(false);
     if (result.removed) {
-      setDirty(null);
+      setRefusal(null);
       setRemoved(result);
     } else {
-      setDirty(result);
+      setRefusal(result);
     }
   };
 
@@ -100,6 +108,176 @@ export function Composer({
     if (session === null || !live || text.trim() === "") return;
     onSend(session.sessionId, text.trim());
     setText("");
+  };
+
+  /* --------------------------------------------------------- the refusal note
+   *
+   * `cleanup_worktree` refuses six different ways and they are not interchangeable. Three are
+   * answered by the same call with `force: true` (`dirty`, `commits`, `branch_moved` — the
+   * `!force` guard at `crates/supervisor/src/worktree.rs:483-513`); the other three are refusals
+   * `force` does not reach, and offering a force button for one of them is a button that refuses
+   * again. Each reason gets its own sentence: a wrong-but-reassuring one over a blocked action is
+   * worse than the block.
+   */
+
+  const worktreePath = session?.worktreePath ?? null;
+
+  const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
+
+  const verb = (n: number, singular: string, many: string) => (n === 1 ? singular : many);
+
+  const dismissButton = (label: string) => (
+    <button type="button" className="act" disabled={busy} onClick={() => setRefusal(null)}>
+      {label}
+    </button>
+  );
+
+  const forceButton = (label: string) => (
+    <button
+      type="button"
+      className="act danger"
+      disabled={busy}
+      onClick={() => void runCleanup(true)}
+    >
+      {label}
+    </button>
+  );
+
+  /** Named wherever the remedy is the operator going and looking at the directory. */
+  const atPath =
+    worktreePath === null ? null : (
+      <>
+        {" "}
+        It is at <code>{worktreePath}</code>.
+      </>
+    );
+
+  /** A reason this build has no sentence for. Adding a `CleanupBlocked` variant without adding a
+   *  case below is a type error on this call, not a blank line in the dock. */
+  const unhandledReason = (blocked: never): string =>
+    `Cleanup was refused (${String(blocked)}) and this build has no explanation for that reason.`;
+
+  const refusalNote = (r: WorktreeCleanup) => {
+    if (r.blocked === null) {
+      // Not a shape the Rust produces today: every `removed: false` carries a reason.
+      return <>Nothing was removed, and no reason was reported.</>;
+    }
+    switch (r.blocked) {
+      case "dirty":
+        return (
+          <>
+            Removing deletes {plural(r.dirty_files, "file")} in <code>{r.branch}</code> — the count
+            includes ignored files, so <code>.env</code>, build output and{" "}
+            <code>node_modules/</code> go with them. Nothing was removed.
+            {r.commits > 0 ? (
+              <>
+                {" "}
+                The {plural(r.commits, "commit")} no other ref keeps{" "}
+                {verb(r.commits, "stays", "stay")} on the branch.
+              </>
+            ) : null}{" "}
+            The branch <code>{r.branch}</code> survives either way; this session can no longer be
+            resumed once the checkout is gone.{" "}
+            {forceButton(`Delete ${plural(r.dirty_files, "file")} and remove`)}{" "}
+            {dismissButton("Keep it")}
+          </>
+        );
+      case "commits":
+        return (
+          <>
+            Nothing uncommitted, but this worktree holds {plural(r.commits, "commit")} that no other
+            branch, tag or remote keeps. Removing the checkout leaves them reachable only from{" "}
+            <code>{r.branch}</code>, which survives — delete that branch afterwards and they are
+            gone for good. Nothing was removed.{" "}
+            {forceButton("Remove the checkout, keep the branch")} {dismissButton("Keep it")}
+          </>
+        );
+      case "branch_moved":
+        return (
+          <>
+            {r.live_branch === null ? (
+              <>
+                This worktree has a detached <code>HEAD</code>; the session recorded{" "}
+                <code>{r.branch}</code>.
+              </>
+            ) : (
+              <>
+                <code>{r.live_branch}</code> is checked out here, not the <code>{r.branch}</code>{" "}
+                this session recorded.
+              </>
+            )}{" "}
+            Something moved it — the agent switched branches, or the operator did — so what a
+            removal would take is not what this session put there. Nothing was removed. Going ahead
+            removes the checkout whatever is on it
+            {r.dirty_files > 0 ? `, discarding ${plural(r.dirty_files, "file")}` : ""}.
+            {r.commits > 0 ? (
+              r.live_branch === null ? (
+                <>
+                  {" "}
+                  {plural(r.commits, "commit")} here {verb(r.commits, "is", "are")} kept by no ref
+                  at all: remove this and nothing points at {verb(r.commits, "it", "them")} any
+                  more.
+                </>
+              ) : (
+                <>
+                  {" "}
+                  The {plural(r.commits, "commit")} here {verb(r.commits, "stays", "stay")} on{" "}
+                  <code>{r.live_branch}</code>, which survives.
+                </>
+              )
+            ) : null}
+            {atPath}{" "}
+            {armed
+              ? forceButton(
+                  r.live_branch === null
+                    ? "Remove it with a detached HEAD"
+                    : `Remove it with ${r.live_branch} checked out`,
+                )
+              : (
+                  <button
+                    type="button"
+                    className="act"
+                    disabled={busy}
+                    onClick={() => setArmed(true)}
+                  >
+                    I have looked at the worktree
+                  </button>
+                )}{" "}
+            {dismissButton("Keep it")}
+          </>
+        );
+      case "locked":
+        return (
+          <>
+            A <code>git worktree lock</code> is held on this worktree — another process's claim on
+            it. git refuses to remove a locked worktree and only <code>remove -f -f</code> clears a
+            lock, which is not brigadier's to give, so forcing from here would refuse again.
+            {atPath} Run <code>git worktree unlock</code> on it yourself once you know nothing is
+            using it. Nothing was removed. {dismissButton("Dismiss")}
+          </>
+        );
+      case "unregistered":
+        return (
+          <>
+            git does not register this directory as a worktree of the repository — a hand-deleted
+            admin directory, or a prune that ran before a repair. git can neither describe it nor
+            remove it in that state, and brigadier does not <code>rm -rf</code> a directory it
+            cannot describe, so forcing does not reach this.{atPath} Look at it and delete it
+            yourself once you are sure. Nothing was removed. {dismissButton("Dismiss")}
+          </>
+        );
+      case "left_on_disk":
+        return (
+          <>
+            git reported the worktree removed and the directory is still there — the state a
+            renamed project folder produces. The registry entry may be gone; the files are not, so
+            nothing is being called removed.{atPath} Check it and delete it yourself. There is
+            nothing here for force to do. {dismissButton("Dismiss")}
+          </>
+        );
+      default:
+        return <>{unhandledReason(r.blocked)}</>;
+    }
   };
 
   const chipClass = session === null
@@ -226,21 +404,7 @@ export function Composer({
         </p>
       ) : null}
 
-      {dirty !== null ? (
-        <p className="dock-note warn">
-          {dirty.dirty_files} uncommitted{" "}
-          {dirty.dirty_files === 1 ? "change" : "changes"} in{" "}
-          <code>{dirty.branch}</code>; nothing was removed. Removing discards them. The branch
-          itself survives, but this session can no longer be resumed afterwards.{" "}
-          <button type="button" className="act danger" disabled={busy} onClick={() => void runCleanup(true)}>
-            Discard {dirty.dirty_files} uncommitted{" "}
-            {dirty.dirty_files === 1 ? "change" : "changes"} and remove
-          </button>{" "}
-          <button type="button" className="act" disabled={busy} onClick={() => setDirty(null)}>
-            Keep it
-          </button>
-        </p>
-      ) : null}
+      {refusal !== null ? <p className="dock-note warn">{refusalNote(refusal)}</p> : null}
 
       {removed !== null ? (
         <p className="dock-note">

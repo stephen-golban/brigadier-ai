@@ -563,11 +563,14 @@ export const mockBridge: Bridge = {
     if (s.view.branch === null) {
       throw new AppError("invalid_argument", "this session has no worktree (mock)");
     }
-    if (s.worktreeRemoved) return { removed: true, dirty_files: 0, branch: s.view.branch };
-    if (!force) return { removed: false, dirty_files: 2, branch: s.view.branch };
+    // The full `WorktreeCleanup` shape: the Rust always serialises `commits`, `live_branch` and
+    // `blocked`, and the composer renders a different sentence per `blocked` reason.
+    const base = { dirty_files: 0, commits: 0, branch: s.view.branch, live_branch: s.view.branch };
+    if (s.worktreeRemoved) return { ...base, removed: true, blocked: null };
+    if (!force) return { ...base, removed: false, dirty_files: 2, blocked: "dirty" as const };
     s.worktreeRemoved = true;
     // The branch survives every cleanup path, so `view.branch` is deliberately left alone.
-    return { removed: true, dirty_files: 0, branch: s.view.branch };
+    return { ...base, removed: true, blocked: null };
   },
 
   async sendTurn(sessionId, text) {

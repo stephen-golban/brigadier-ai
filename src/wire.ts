@@ -7,6 +7,7 @@
  *                                            ExitReason, AbortReason, StopReason, CompactTrigger
  *   - `crates/core/src/session.rs`         — Decision
  *   - `crates/core/src/driver.rs`          — PermissionMode (a bare string on the wire)
+ *   - `crates/supervisor/src/worktree.rs`  — WorktreeCleanup, CleanupBlocked
  *
  * Conventions taken from the contract:
  *   - internally-tagged enums carry `type` with kebab-case values;
@@ -246,12 +247,55 @@ export interface SessionView {
   cost_usd_cumulative: number;
 }
 
-/** `cleanup_worktree`'s answer. `removed: false` with `dirty_files > 0` means nothing was
- *  touched and the same call with `force: true` is the confirmation. The branch always survives. */
+/**
+ * `CleanupBlocked` — why a cleanup refused. A unit-variant Rust enum with
+ * `#[serde(rename_all = "snake_case")]`, so it crosses the wire as a bare string
+ * (`crates/supervisor/src/worktree.rs:66`). Every variant is a refusal, never an authorization.
+ *
+ * The union is deliberately closed: an unmodelled reason must be a type error at the one place
+ * that renders these, not a blank sentence in the dock.
+ */
+export type CleanupBlocked =
+  /** Modified, untracked or ignored entries would be discarded. **`force` answers it.** */
+  | "dirty"
+  /** Commits reachable from this `HEAD` and from no other branch, tag or remote.
+   *  **`force` answers it**, and the branch still survives. */
+  | "commits"
+  /** `git worktree list` reports a different branch, or a detached `HEAD`, than the session row.
+   *  **`force` answers it**, and then removes whatever is actually checked out. */
+  | "branch_moved"
+  /** The directory is not a registered worktree of this repository. **`force` does not reach
+   *  this**: git will refuse too, and brigadier does not `rm -rf` what git cannot describe. */
+  | "unregistered"
+  /** A `git worktree lock` is held on it. **`force` does not reach this**: only `remove -f -f`
+   *  clears a lock, and a lock is another process's claim. */
+  | "locked"
+  /** `git worktree remove` exited 0 and the directory is still there. **`force` does not reach
+   *  this**: the remove already ran. */
+  | "left_on_disk";
+
+/**
+ * `cleanup_worktree`'s answer (`crates/supervisor/src/worktree.rs:106`).
+ *
+ * `removed: false` with a non-null `blocked` means **nothing was touched**; `blocked` says why,
+ * and only `dirty`, `commits` and `branch_moved` are answered by calling again
+ * with `force: true` (`crates/supervisor/src/worktree.rs:483-513` is the `!force` guard that
+ * decides it). The branch always survives — no cleanup path deletes one.
+ */
 export interface WorktreeCleanup {
+  /** Only true once the path is confirmed gone from disk; git's exit code alone is not proof. */
   removed: boolean;
+  /** `git status --porcelain --ignored=matching -uall` lines. Counts ignored files too. */
   dirty_files: number;
+  /** Commits reachable from this worktree's `HEAD` and from no other branch, tag or remote. */
+  commits: number;
+  /** The session's branch. Survives every cleanup path. */
   branch: string;
+  /** What git says is checked out there now; `null` for a detached `HEAD`. Where this disagrees
+   *  with `branch`, this is the trustworthy answer. */
+  live_branch: string | null;
+  /** Why nothing was removed, or `null`. */
+  blocked: CleanupBlocked | null;
 }
 
 export interface ApprovalView {
