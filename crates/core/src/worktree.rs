@@ -69,6 +69,65 @@ pub enum WorktreeError {
     /// `remove` without `force` on a worktree with modified or untracked files.
     #[error("{} contains modified or untracked files", .0.display())]
     Dirty(PathBuf),
+    /// `remove` refused because the worktree carries a `git worktree lock`. Carries the lock
+    /// reason, or `""` when the lock was taken without one.
+    ///
+    /// **A separate refusal from [`WorktreeError::Dirty`], and `force = true` cannot answer it.**
+    /// **measured** on git 2.50.1, both for an operator's `git worktree lock --reason <r>` and for
+    /// the `initializing` lock git holds across its own `worktree add`: `remove` **and**
+    /// `remove --force` answer `fatal: cannot remove a locked working tree, lock reason: <r>`
+    /// (`…locked working tree;` with no reason) at exit **128**. Only `remove -f -f` clears it,
+    /// which is [`RemoveForce::Unlock`].
+    // see docs/research/worktree-cleanup.md §1.1, §1.8 and "Hard rules" 4.
+    #[error("the worktree is locked{}; only `remove -f -f` overrides a lock", if .0.is_empty() { String::new() } else { format!(" ({})", .0) })]
+    Locked(String),
+    /// `remove` refused because the worktree has **initialised** submodules.
+    ///
+    /// **measured**: `fatal: working trees containing submodules cannot be moved or removed`,
+    /// exit 128, on an otherwise **clean** worktree whose only difference was a
+    /// `submodule update --init`. The refusal is categorical, not a dirtiness check, so a caller
+    /// that trusted [`dirty_count`] would report "0 changes" and then fail; `--force` takes it.
+    // see docs/research/worktree-cleanup.md §1.13.
+    #[error("the worktree contains initialised submodules, which git will not remove unforced")]
+    SubmodulesBlockRemoval,
+    /// `branch -d`/`-D` refused because the branch is checked out in some worktree — including
+    /// the operator's own main tree.
+    ///
+    /// **measured**: `error: cannot delete branch '<b>' used by worktree at '<path>'`, exit 1.
+    /// The path is the one to show: it tells the operator exactly where to go.
+    // see docs/research/worktree-cleanup.md §1.5.
+    #[error("branch '{branch}' is checked out in the worktree at {}", .path.display())]
+    BranchInUse {
+        /// The branch git refused to delete.
+        branch: String,
+        /// The worktree holding it.
+        path: PathBuf,
+    },
+    /// The directory offered as a project root is itself a **linked worktree** of another
+    /// repository.
+    ///
+    /// Creating session worktrees under it nests them inside a linked worktree, and **measured**,
+    /// removing the outer worktree deletes the inner one's files with exit 0 and no warning while
+    /// `status --porcelain --ignored=matching -uall` in the outer reports nothing — so the
+    /// dirty-file safety net reads 0 over another session's uncommitted work.
+    // see docs/research/worktree-cleanup.md §1.6.
+    #[error("{} is a linked git worktree of the repository at {}; open that repository as the project instead", .dir.display(), .main.display())]
+    LinkedWorktree {
+        /// The directory that was offered as a project root.
+        dir: PathBuf,
+        /// The main worktree of the repository it belongs to.
+        main: PathBuf,
+    },
+    /// The repository has submodules, so a session worktree of it would be checked out
+    /// incomplete.
+    ///
+    /// **measured**: after `git worktree add`, the submodule directory is **empty** and
+    /// `git status --porcelain` in the new worktree reports **nothing** — the agent's build fails
+    /// for a reason nothing in the UI explains, and [`dirty_count`] says 0. Once anything runs
+    /// `submodule update --init`, removal turns into [`WorktreeError::SubmodulesBlockRemoval`].
+    // see docs/research/worktree-cleanup.md §1.13.
+    #[error("{} has git submodules; a session worktree of it would be checked out without them", .0.display())]
+    RepositoryHasSubmodules(PathBuf),
     /// The directory is inside a repository but is not its root, so a worktree of it would
     /// check out the **whole** repository somewhere the caller did not ask for.
     ///
@@ -305,18 +364,108 @@ pub async fn list(git: &Path, repo: &Path) -> Result<Vec<Worktree>, WorktreeErro
     Ok(parse_porcelain(&stdout(git, &args).await?))
 }
 
-/// `git worktree remove [--force] <path>`. Does not delete the branch.
+/// How hard [`remove`] pushes. **Three rungs, not two**, because git has two distinct refusals.
+///
+/// **measured** on git 2.50.1: `--force` answers a dirty tree, and answers a worktree with
+/// initialised submodules; it does **not** answer a lock. A locked worktree refuses both `remove`
+/// and `remove --force` at exit 128 and yields only to `remove -f -f`.
+// see docs/research/worktree-cleanup.md §1.1, §1.8, §1.13.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RemoveForce {
+    /// No `--force`. git refuses on modified or untracked files — but **still deletes ignored
+    /// ones** (**measured**), so [`dirty_count`] is the real guard, not this.
+    No,
+    /// One `--force`: discard working-tree changes, and take a worktree holding submodules.
+    Discard,
+    /// `-f -f`: additionally override a `git worktree lock`.
+    ///
+    /// **Never automatic on a lock we did not take.** A lock is another process's or another
+    /// person's claim on the directory; Claude Code's own sweep "never releases a lock you set
+    /// yourself" (**documented**). The one caller entitled to this is a rollback of a worktree
+    /// this process just created and never handed to a child, where the lock reason is git's own
+    /// `initializing` marker.
+    // see docs/research/worktree-cleanup.md "Hard rules" 4.
+    Unlock,
+}
+
+impl RemoveForce {
+    /// How many `--force` arguments this rung passes.
+    fn forces(self) -> usize {
+        match self {
+            RemoveForce::No => 0,
+            RemoveForce::Discard => 1,
+            RemoveForce::Unlock => 2,
+        }
+    }
+}
+
+/// `git worktree repair [<path>…]`: rewrite the two absolute paths a linked worktree records.
+///
+/// **This must run before [`prune`], and the order is not a preference.** A worktree records
+/// `$GIT_COMMON_DIR/worktrees/<id>/gitdir` pointing at the checkout's `.git` file and a `.git`
+/// file pointing back; moving or renaming the project invalidates both, and because brigadier's
+/// worktrees are *nested inside* the project one `mv` breaks every one at once. **measured** on
+/// git 2.50.1, after `mv repo repo2` with an uncommitted file in the worktree:
+///
+/// - `repair <new path>` → `repair: gitdir incorrect: …`, exit 0; `git -C <wt> status --porcelain`
+///   then works and reports the uncommitted file. **Fully recovered.**
+/// - `prune` first → `Removing worktrees/<id>: gitdir file points to non-existent location`,
+///   exit 0, and `repair` afterwards answers `error: unable to locate repository; .git file does
+///   not reference a repository`, **exit 1**, with no way back.
+///
+/// **The paths are mandatory for a nested worktree.** **measured**: the no-argument form run from
+/// the moved main tree exits 0, prints nothing, and leaves `gitdir` stale — it only covers
+/// worktrees still findable at their recorded locations, which after a move is none of ours.
+/// **documented**, `git-worktree(1)` (fetched 2026-09-02): repair "adjust\[s\] the `gitdir` file in
+/// each linked worktree" and, given paths, "adjust\[s\] the `.git` file … if it is broken".
+///
+/// **Non-fatal by design.** **measured**: a path that is not a worktree answers
+/// `error: unable to locate repository`, and one that does not exist answers
+/// `error: not a valid path`, both exit 1 — and a call mixing a good path with a bad one still
+/// repairs the good one before failing. So the caller passes every candidate directory and treats
+/// a non-zero exit as information, not as a stop.
+///
+/// Repairs nothing when `paths` is empty; that is a no-op call, not the argument-less form.
+// see docs/research/worktree-cleanup.md §1.4 and "Hard rules" 7.
+pub async fn repair(git: &Path, repo: &Path, paths: &[PathBuf]) -> Result<(), WorktreeError> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    // Repair rewrites two small text files and checks nothing out, so it runs no filter driver —
+    // but the env is free and the enumeration is one `git config --list`, so it stays on rather
+    // than becoming the one call site anybody has to reason about.
+    let env = filter_neutralising_env(git, repo).await?;
+    let mut args = vec![
+        osarg("-C"),
+        repo.as_os_str().to_os_string(),
+        osarg("worktree"),
+        osarg("repair"),
+        osarg("--"),
+    ];
+    args.extend(paths.iter().map(|p| p.as_os_str().to_os_string()));
+    stdout_with(git, &args, &env).await.map(drop)
+}
+
+/// `git worktree remove [--force…] <path>`. Does not delete the branch.
 ///
 /// **`--force` is not merely a confirmation: without it git still deletes ignored files.**
 /// **measured** — a worktree whose only extra content was `.env` and `node_modules/`, both
 /// matched by `.gitignore`, was removed by the unforced command with exit 0 and no warning. Ask
 /// [`dirty_count`], which counts ignored entries, before deciding.
-// see docs/research/worktree-git.md "Measured 2026-09-02".
+///
+/// **Exit 0 is not proof the directory is gone.** **measured** twice on git 2.50.1: with the
+/// project renamed under git's feet, `worktree remove` exits 0, unregisters the entry, and leaves
+/// every file on disk; and `remove -f -f` against a worktree left half-built by a killed `add`
+/// exits **255** with `failed to delete '<path>': Directory not empty` having *already*
+/// unregistered the entry. Callers must `stat` the path afterwards rather than believing the exit
+/// code.
+// see docs/research/worktree-git.md "Measured 2026-09-02" and
+// docs/research/worktree-cleanup.md §1.4 and "Hard rules" 11.
 pub async fn remove(
     git: &Path,
     repo: &Path,
     path: &Path,
-    force: bool,
+    force: RemoveForce,
 ) -> Result<(), WorktreeError> {
     // The unforced form runs `status` internally, and `status` runs the repository's **clean**
     // filters to decide what counts as modified. Same shell, same attacker.
@@ -335,7 +484,7 @@ pub async fn remove(
         osarg("worktree"),
         osarg("remove"),
     ];
-    if force {
+    for _ in 0..force.forces() {
         args.push(osarg("--force"));
     }
     args.push(osarg("--"));
@@ -344,6 +493,16 @@ pub async fn remove(
 }
 
 /// `git worktree prune`: forget entries whose directory is gone. Does not delete branches.
+///
+/// **Run [`repair`] first, always.** A moved project makes every nested worktree read
+/// `prunable gitdir file points to non-existent location`, and pruning that state destroys the
+/// only thing [`repair`] could have used — the entry — leaving a directory full of the agent's
+/// files that git will neither describe, remove nor reuse (**measured**).
+///
+/// **measured**: prune removes admin entries only — never a branch, never a file — and it
+/// **silently skips locked entries, with no message even under `-v`**, so a worktree left
+/// `locked initializing` by a killed `add` survives every prune.
+// see docs/research/worktree-cleanup.md §1.4, §3.1 and "Hard rules" 7.
 pub async fn prune(git: &Path, repo: &Path) -> Result<(), WorktreeError> {
     let args = vec![
         osarg("-C"),
@@ -574,6 +733,103 @@ pub async fn dirty_count(git: &Path, worktree: &Path) -> Result<u32, WorktreeErr
     Ok(u32::try_from(count).unwrap_or(u32::MAX))
 }
 
+/// Commits reachable from this worktree's `HEAD` that **no other ref keeps**.
+///
+/// The sound half of "is there anything to lose here". `docs/research/worktree-cleanup.md` §2
+/// settles that "merged" has no correct automatic test — `git cherry` reports `+` for an N→1
+/// squash and for a conflict-resolved rebase, and `-` for work upstream applied and then reverted
+/// — so the question is not *"was this merged"* but *"would anything disappear"*, and
+/// `rev-list --count` answers that exactly: **0 means nothing to lose, always.**
+///
+/// `checked_out` is the branch the worktree currently has checked out, **read from
+/// `git worktree list --porcelain`, never from a stored column** — that ref is the worktree's own
+/// and would otherwise make the count trivially 0. `None` for a detached head, which needs no
+/// exclusion. §1.5 is why the live value is the only correct one: an agent that runs
+/// `checkout --detach` or `checkout -b its-own-branch` moves the work to a ref whose name is
+/// nowhere in our database.
+///
+/// **The excluded name has `refs/heads/` stripped.** **measured** on git 2.50.1 and easy to get
+/// silently wrong: `--exclude=refs/heads/<b> --branches` matches nothing and the count comes back
+/// **0** — a false "safe to delete" — while `--exclude=<b> --branches` excludes it correctly.
+/// (`--exclude` accumulates only up to the next ref-listing option, so it lands on `--branches`.)
+/// A glob in the name cannot make the pattern lie: **documented**, `git-check-ref-format(1)`
+/// forbids `*`, `?` and `[` in a refname.
+///
+/// **`--branches --tags --remotes`, deliberately not `--all`.** **measured**: an agent that runs
+/// `git stash` before it stops leaves a stash commit whose parent is `HEAD`, so `--all` — which
+/// includes `refs/stash` — reports **0** for work that exists only in a stash. The narrower set
+/// reports the true count.
+///
+/// # Errors
+/// Propagates git's failure rather than answering 0. An unborn `HEAD` exits 128 here
+/// (**measured**), and "nothing to lose" is the wrong direction to guess in.
+// see docs/research/worktree-cleanup.md §2.6 rung 1, §1.5, §1.17 and §6.1-6.2.
+pub async fn commits_only_here(
+    git: &Path,
+    worktree: &Path,
+    checked_out: Option<&str>,
+) -> Result<u32, WorktreeError> {
+    let mut args = vec![
+        osarg("-C"),
+        worktree.as_os_str().to_os_string(),
+        osarg("rev-list"),
+        osarg("--count"),
+        osarg("HEAD"),
+        osarg("--not"),
+    ];
+    if let Some(branch) = checked_out {
+        args.push(osarg(format!("--exclude={branch}")));
+    }
+    args.push(osarg("--branches"));
+    args.push(osarg("--tags"));
+    args.push(osarg("--remotes"));
+    let out = stdout(git, &args).await?;
+    Ok(String::from_utf8_lossy(&out).trim().parse().unwrap_or(0))
+}
+
+/// Does this repository have submodules?
+///
+/// `git -C <repo> submodule status`: **measured**, one line per submodule and empty output with
+/// exit 0 for a repository that has none. Asked of the *main* worktree, where an initialised
+/// submodule reads ` <sha> <path> (heads/main)` and an uninitialised one reads `-<sha> <path>`.
+///
+/// It is asked at all because **measured**, a `worktree add` of such a repository checks the
+/// submodule out as an **empty directory** and `git status --porcelain` in the new worktree
+/// reports nothing: incomplete and indistinguishable from clean.
+// see docs/research/worktree-cleanup.md §1.13.
+pub async fn has_submodules(git: &Path, repo: &Path) -> Result<bool, WorktreeError> {
+    let args = vec![
+        osarg("-C"),
+        repo.as_os_str().to_os_string(),
+        osarg("submodule"),
+        osarg("status"),
+    ];
+    let out = stdout(git, &args).await?;
+    Ok(!String::from_utf8_lossy(&out).trim().is_empty())
+}
+
+/// Is `dir` a **linked** worktree rather than a repository's main worktree?
+///
+/// **measured** on git 2.50.1, and it is the whole test: from a main worktree
+/// `rev-parse --git-common-dir` answers the relative `.git`, whose parent is the toplevel; from a
+/// linked worktree it answers the **main** repository's absolute `.git`, whose parent is a
+/// different directory entirely. `rev-parse --show-toplevel` meanwhile returns the linked
+/// worktree's *own* root, which is exactly why the existing `NotRepositoryRoot` guard waves a
+/// linked worktree through.
+///
+/// Returns the main worktree's root alongside the verdict, because that is the remedy to print.
+// see docs/research/worktree-cleanup.md §1.6.
+pub async fn main_worktree_of(git: &Path, dir: &Path) -> Result<Option<PathBuf>, WorktreeError> {
+    let toplevel = show_toplevel(git, dir).await?;
+    let common = git_common_dir(git, dir).await?;
+    let Some(main) = common.parent() else { return Ok(None) };
+    let same = |a: &Path, b: &Path| {
+        let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        canon(a) == canon(b)
+    };
+    Ok(if same(main, &toplevel) { None } else { Some(main.to_path_buf()) })
+}
+
 /// `git check-ref-format --branch <name>`, as a cheap assertion before anything is created.
 ///
 /// **measured** on git 2.50.1: a rejected name exits **128** with
@@ -695,6 +951,28 @@ fn classify(args: &[OsString], out: &Output) -> WorktreeError {
     // "fatal: '<path>' contains modified or untracked files, use --force to delete it"
     if let Some(path) = quoted_before(&stderr, " contains modified or untracked files") {
         return WorktreeError::Dirty(path);
+    }
+    // "fatal: cannot remove a locked working tree, lock reason: <reason>" — or, when the lock was
+    // taken with no reason, "…locked working tree;". Both **measured**; git names no path, so the
+    // caller supplies it. Distinct from `Dirty`: `--force` does not clear it.
+    if stderr.contains("cannot remove a locked working tree") {
+        let reason = stderr
+            .split_once("lock reason: ")
+            .map(|(_, rest)| rest.lines().next().unwrap_or("").trim().to_owned())
+            .unwrap_or_default();
+        return WorktreeError::Locked(reason);
+    }
+    // "fatal: working trees containing submodules cannot be moved or removed" — categorical, and
+    // fires on a worktree `dirty_count` reports as clean.
+    if stderr.contains("working trees containing submodules cannot be moved or removed") {
+        return WorktreeError::SubmodulesBlockRemoval;
+    }
+    // "error: cannot delete branch '<b>' used by worktree at '<path>'" — the path is the remedy.
+    if let (Some(branch), Some(path)) = (
+        quoted_after(&stderr, "cannot delete branch "),
+        quoted_after(&stderr, "used by worktree at "),
+    ) {
+        return WorktreeError::BranchInUse { branch, path: PathBuf::from(path) };
     }
     // "fatal: '<path>' is not a working tree"
     if let Some(path) = quoted_before(&stderr, " is not a working tree") {

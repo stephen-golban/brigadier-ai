@@ -7,8 +7,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use brigadier_core::worktree::{
-    add, delete_branch, dirty_count, git_version, list, prune, remove, resolve_git, Worktree,
-    WorktreeError, WorktreeSpec,
+    add, commits_only_here, delete_branch, dirty_count, git_version, has_submodules, list,
+    main_worktree_of, prune, remove, repair, resolve_git, RemoveForce, Worktree, WorktreeError,
+    WorktreeSpec,
 };
 use tempfile::TempDir;
 
@@ -183,19 +184,19 @@ async fn remove_takes_a_clean_worktree_and_rejects_a_dirty_one_without_force() {
     add(&s.git, &s.spec("clean", "clean-branch")).await.expect("add clean");
     add(&s.git, &s.spec("dirty", "dirty-branch")).await.expect("add dirty");
 
-    remove(&s.git, &s.repo(), &s.at("clean"), false).await.expect("clean remove");
+    remove(&s.git, &s.repo(), &s.at("clean"), RemoveForce::No).await.expect("clean remove");
     assert!(!s.at("clean").exists());
 
     std::fs::write(s.at("dirty").join("f.txt"), "edited\n").expect("dirty the tracked file");
     // Observed on git 2.50.1:
     // "fatal: '<path>' contains modified or untracked files, use --force to delete it".
-    match remove(&s.git, &s.repo(), &s.at("dirty"), false).await {
+    match remove(&s.git, &s.repo(), &s.at("dirty"), RemoveForce::No).await {
         Err(WorktreeError::Dirty(p)) => assert!(same_path(&p, &s.at("dirty")), "{p:?}"),
         other => panic!("expected Dirty, got {other:?}"),
     }
     assert!(s.at("dirty").exists(), "a refused remove must not delete anything");
 
-    remove(&s.git, &s.repo(), &s.at("dirty"), true).await.expect("forced remove");
+    remove(&s.git, &s.repo(), &s.at("dirty"), RemoveForce::Discard).await.expect("forced remove");
     assert!(!s.at("dirty").exists());
     assert_eq!(list(&s.git, &s.repo()).await.expect("list").len(), 1);
 }
@@ -204,7 +205,7 @@ async fn remove_takes_a_clean_worktree_and_rejects_a_dirty_one_without_force() {
 async fn remove_on_an_unregistered_path_is_not_a_worktree() {
     let s = Scratch::new();
     // Observed on git 2.50.1: "fatal: '<path>' is not a working tree".
-    match remove(&s.git, &s.repo(), &s.at("never-existed"), false).await {
+    match remove(&s.git, &s.repo(), &s.at("never-existed"), RemoveForce::No).await {
         Err(WorktreeError::NotAWorktree(p)) => assert!(p.ends_with("never-existed"), "{p:?}"),
         other => panic!("expected NotAWorktree, got {other:?}"),
     }
@@ -215,11 +216,19 @@ async fn neither_remove_nor_prune_deletes_the_branch_but_delete_branch_does() {
     let s = Scratch::new();
     add(&s.git, &s.spec("wt", "feat")).await.expect("add");
 
-    // A branch checked out in a live worktree cannot be deleted; that is git's guard, not ours.
-    let held = delete_branch(&s.git, &s.repo(), "feat", false).await;
-    assert!(matches!(held, Err(WorktreeError::Git { .. })), "{held:?}");
+    // A branch checked out in a live worktree cannot be deleted; that is git's guard, not ours,
+    // and the refusal names the worktree holding it — which is the whole remedy, so it is typed
+    // rather than left as an opaque `Git`.
+    // see docs/research/worktree-cleanup.md §1.5.
+    match delete_branch(&s.git, &s.repo(), "feat", false).await {
+        Err(WorktreeError::BranchInUse { branch, path }) => {
+            assert_eq!(branch, "feat");
+            assert!(same_path(&path, &s.at("wt")), "{path:?}");
+        }
+        other => panic!("expected BranchInUse, got {other:?}"),
+    }
 
-    remove(&s.git, &s.repo(), &s.at("wt"), false).await.expect("remove");
+    remove(&s.git, &s.repo(), &s.at("wt"), RemoveForce::No).await.expect("remove");
     prune(&s.git, &s.repo()).await.expect("prune");
     assert!(s.branches().contains(&"feat".to_owned()), "{:?}", s.branches());
 
@@ -353,4 +362,348 @@ async fn ordinary_gitattributes_keep_working() {
         0,
         "a freshly created worktree with legitimate attributes must read as clean"
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Destructive states: a moved project, a killed `add`, submodules, and the commits nobody counts.
+// Every claim below was reproduced on git 2.50.1 (Apple Git-155) before the code was written.
+// see docs/research/worktree-cleanup.md.
+// ---------------------------------------------------------------------------------------------
+
+/// A `Scratch` whose worktrees are nested inside the repository, the way brigadier's are, so one
+/// `mv` of the project breaks every one of them at once.
+fn nested_spec(s: &Scratch, id: &str) -> WorktreeSpec {
+    WorktreeSpec {
+        repo: s.repo(),
+        path: s.repo().join(".brigadier/worktrees").join(id),
+        branch: format!("brigadier/{id}"),
+        base: "HEAD".to_owned(),
+    }
+}
+
+/// The ordering bug, both halves in one test: `repair` recovers a renamed project completely, and
+/// a `prune` that runs first makes that recovery impossible forever.
+// see docs/research/worktree-cleanup.md §1.4 and "Hard rules" 7.
+#[tokio::test]
+async fn repair_recovers_a_moved_project_and_a_prune_that_runs_first_does_not() {
+    for prune_first in [false, true] {
+        let s = Scratch::new();
+        add(&s.git, &nested_spec(&s, "aaaa1111")).await.expect("add");
+        let wt = s.repo().join(".brigadier/worktrees/aaaa1111");
+        std::fs::write(wt.join("NOTES.md"), "a whole session of work\n").expect("write NOTES.md");
+
+        // The rename. Both recorded absolute paths are now stale.
+        let moved = s.at("renamed");
+        std::fs::rename(s.repo(), &moved).expect("rename the project");
+        let wt = moved.join(".brigadier/worktrees/aaaa1111");
+        let all = list(&s.git, &moved).await.expect("list");
+        assert_eq!(
+            all.iter().filter(|w| w.prunable.is_some()).count(),
+            1,
+            "the move must leave exactly one prunable entry: {all:#?}"
+        );
+
+        if prune_first {
+            prune(&s.git, &moved).await.expect("prune");
+        }
+        let repaired = repair(&s.git, &moved, std::slice::from_ref(&wt)).await;
+
+        if prune_first {
+            // The entry is gone, so there is nothing left to point at the checkout.
+            assert!(repaired.is_err(), "prune-then-repair must not silently succeed");
+            assert!(
+                dirty_count(&s.git, &wt).await.is_err(),
+                "git must not be able to describe the orphaned checkout"
+            );
+            assert!(wt.join("NOTES.md").is_file(), "and the work is stranded on disk");
+        } else {
+            repaired.expect("repair recovers a moved project");
+            let all = list(&s.git, &moved).await.expect("list");
+            assert!(
+                all.iter().all(|w| w.prunable.is_none()),
+                "repair must clear the prunable flag: {all:#?}"
+            );
+            assert_eq!(
+                dirty_count(&s.git, &wt).await.expect("status works again"),
+                1,
+                "the uncommitted work is visible again"
+            );
+        }
+    }
+}
+
+/// `repair` is called with every directory under `.brigadier/worktrees/`, some of which may not be
+/// worktrees at all, so a bad path must not cost the good ones their repair.
+// see docs/research/worktree-cleanup.md §1.4.
+#[tokio::test]
+async fn a_bad_path_in_a_repair_batch_still_repairs_the_good_ones() {
+    let s = Scratch::new();
+    add(&s.git, &nested_spec(&s, "bbbb2222")).await.expect("add");
+    let moved = s.at("renamed");
+    std::fs::rename(s.repo(), &moved).expect("rename");
+    let good = moved.join(".brigadier/worktrees/bbbb2222");
+    let bad = moved.join(".brigadier/worktrees/not-a-worktree");
+    std::fs::create_dir_all(&bad).expect("mkdir");
+
+    let out = repair(&s.git, &moved, &[good.clone(), bad]).await;
+    assert!(out.is_err(), "a path that is not a worktree makes the call fail");
+    let all = list(&s.git, &moved).await.expect("list");
+    assert!(all.iter().all(|w| w.prunable.is_none()), "the good path was repaired anyway: {all:#?}");
+}
+
+/// An empty batch is a no-op, not the argument-less form — which **measured** exits 0, prints
+/// nothing and repairs none of our nested worktrees.
+#[tokio::test]
+async fn repair_with_no_paths_does_nothing() {
+    let s = Scratch::new();
+    add(&s.git, &nested_spec(&s, "cccc3333")).await.expect("add");
+    let moved = s.at("renamed");
+    std::fs::rename(s.repo(), &moved).expect("rename");
+
+    repair(&s.git, &moved, &[]).await.expect("an empty batch cannot fail");
+    let all = list(&s.git, &moved).await.expect("list");
+    assert_eq!(all.iter().filter(|w| w.prunable.is_some()).count(), 1, "{all:#?}");
+}
+
+/// A lock is a third refusal, not a harder kind of dirt: one `--force` does not touch it.
+// see docs/research/worktree-cleanup.md §1.1 and §1.8.
+#[tokio::test]
+async fn only_a_double_force_clears_a_locked_worktree() {
+    let s = Scratch::new();
+    add(&s.git, &s.spec("wt", "feat")).await.expect("add");
+    let wt = s.at("wt");
+    let wt_str = wt.to_str().expect("utf-8 temp path");
+    // The exact marker git leaves behind when its own `worktree add` is killed mid-checkout.
+    run(&s.git, &s.repo(), &["worktree", "lock", "--reason", "initializing", wt_str]);
+
+    for rung in [RemoveForce::No, RemoveForce::Discard] {
+        match remove(&s.git, &s.repo(), &wt, rung).await {
+            Err(WorktreeError::Locked(reason)) => assert_eq!(reason, "initializing"),
+            other => panic!("{rung:?} should not clear a lock, got {other:?}"),
+        }
+    }
+    // And the branch cannot be deleted while the entry stands, so the residue is permanent.
+    assert!(
+        matches!(
+            delete_branch(&s.git, &s.repo(), "feat", true).await,
+            Err(WorktreeError::BranchInUse { .. })
+        ),
+        "a locked entry must keep its branch undeleteable"
+    );
+
+    remove(&s.git, &s.repo(), &wt, RemoveForce::Unlock).await.expect("-f -f clears it");
+    assert!(!wt.exists(), "the checkout is gone");
+    delete_branch(&s.git, &s.repo(), "feat", true).await.expect("and now the branch goes");
+}
+
+/// A lock taken with no reason at all still classifies, so the caller can tell "locked" from
+/// "some other git failure" without reading stderr.
+#[tokio::test]
+async fn a_reasonless_lock_still_classifies_as_locked() {
+    let s = Scratch::new();
+    add(&s.git, &s.spec("wt", "feat")).await.expect("add");
+    let wt = s.at("wt");
+    run(&s.git, &s.repo(), &["worktree", "lock", wt.to_str().expect("utf-8")]);
+    match remove(&s.git, &s.repo(), &wt, RemoveForce::Discard).await {
+        Err(WorktreeError::Locked(reason)) => assert!(reason.is_empty(), "{reason:?}"),
+        other => panic!("expected Locked, got {other:?}"),
+    }
+}
+
+/// The count that decides whether there is anything to lose, and the three ways of getting it
+/// wrong that were measured before it was written.
+// see docs/research/worktree-cleanup.md §2.6 rung 1, §1.5 and §1.17.
+#[tokio::test]
+async fn commits_only_here_counts_what_no_other_ref_keeps() {
+    let s = Scratch::new();
+    add(&s.git, &s.spec("wt", "feat")).await.expect("add");
+    let wt = s.at("wt");
+
+    assert_eq!(
+        commits_only_here(&s.git, &wt, Some("feat")).await.expect("count"),
+        0,
+        "a fresh worktree holds nothing of its own"
+    );
+
+    std::fs::write(wt.join("a.txt"), "a\n").expect("write");
+    run(&s.git, &wt, &["add", "a.txt"]);
+    run(&s.git, &wt, &["commit", "-qm", "one"]);
+    std::fs::write(wt.join("b.txt"), "b\n").expect("write");
+    run(&s.git, &wt, &["add", "b.txt"]);
+    run(&s.git, &wt, &["commit", "-qm", "two"]);
+    assert_eq!(commits_only_here(&s.git, &wt, Some("feat")).await.expect("count"), 2);
+
+    // The prefix trap: `--exclude=refs/heads/feat` matches nothing, so the count silently
+    // collapses to 0 — a false "safe to delete". Pinned so nobody re-adds the prefix.
+    assert_eq!(
+        commits_only_here(&s.git, &wt, Some("refs/heads/feat")).await.expect("count"),
+        0,
+        "if this is 2, `--exclude` has changed and the caller can stop stripping the prefix"
+    );
+
+    // A stash is not a copy the count may credit: `--all` would see `refs/stash`, whose parent is
+    // HEAD, and answer 0 over work that exists only in a stash.
+    std::fs::write(wt.join("c.txt"), "c\n").expect("write");
+    run(&s.git, &wt, &["add", "c.txt"]);
+    run(&s.git, &wt, &["stash", "-q"]);
+    assert_eq!(commits_only_here(&s.git, &wt, Some("feat")).await.expect("count"), 2);
+
+    // Another ref reaching the same commits is what makes them safe.
+    run(&s.git, &s.repo(), &["branch", "keep", "feat"]);
+    assert_eq!(commits_only_here(&s.git, &wt, Some("feat")).await.expect("count"), 0);
+}
+
+/// The stored branch name is not the fact. An agent that checks out its own branch moves the work
+/// to a ref nowhere in our database, and only the live name gives the right count.
+// see docs/research/worktree-cleanup.md §1.5.
+#[tokio::test]
+async fn the_live_branch_is_what_the_count_must_exclude() {
+    let s = Scratch::new();
+    add(&s.git, &s.spec("wt", "brigadier/dddd4444")).await.expect("add");
+    let wt = s.at("wt");
+    run(&s.git, &wt, &["checkout", "-q", "-b", "agents-own"]);
+    std::fs::write(wt.join("a.txt"), "a\n").expect("write");
+    run(&s.git, &wt, &["add", "a.txt"]);
+    run(&s.git, &wt, &["commit", "-qm", "the agent's work"]);
+
+    let all = list(&s.git, &s.repo()).await.expect("list");
+    let live = find(&all, "agents-own");
+    assert!(same_path(&live.path, &wt), "{live:?}");
+
+    assert_eq!(
+        commits_only_here(&s.git, &wt, Some("brigadier/dddd4444")).await.expect("count"),
+        0,
+        "excluding the stored name credits a branch that no longer holds the work"
+    );
+    assert_eq!(
+        commits_only_here(&s.git, &wt, live.branch.as_deref()).await.expect("count"),
+        1,
+        "excluding the live name is the honest answer"
+    );
+}
+
+/// A detached head has no branch to exclude, and the work is still on the old branch.
+#[tokio::test]
+async fn a_detached_head_needs_no_exclusion() {
+    let s = Scratch::new();
+    add(&s.git, &s.spec("wt", "feat")).await.expect("add");
+    let wt = s.at("wt");
+    std::fs::write(wt.join("a.txt"), "a\n").expect("write");
+    run(&s.git, &wt, &["add", "a.txt"]);
+    run(&s.git, &wt, &["commit", "-qm", "one"]);
+    run(&s.git, &wt, &["checkout", "-q", "--detach", "HEAD"]);
+
+    let all = list(&s.git, &s.repo()).await.expect("list");
+    let entry = all.iter().find(|w| !w.is_main).expect("the linked worktree");
+    assert!(entry.branch.is_none(), "a detached entry has no branch line: {entry:?}");
+    assert_eq!(
+        commits_only_here(&s.git, &wt, entry.branch.as_deref()).await.expect("count"),
+        0,
+        "`feat` still holds the commit, so nothing would be lost"
+    );
+}
+
+/// A worktree of a repository with submodules is checked out **incomplete and reads clean**, and
+/// then refuses to be removed for a reason that has nothing to do with dirt.
+// see docs/research/worktree-cleanup.md §1.13.
+#[tokio::test]
+async fn a_repository_with_submodules_makes_an_incomplete_worktree_that_reads_clean() {
+    let s = Scratch::new();
+    // A second repository to embed. `protocol.file.allow` because git refuses a file-transport
+    // submodule by default since CVE-2022-39253.
+    let inner = s.at("inner");
+    std::fs::create_dir(&inner).expect("mkdir inner");
+    run(&s.git, &inner, &["init", "-q", "-b", "main", "."]);
+    std::fs::write(inner.join("g.txt"), "g\n").expect("write");
+    run(&s.git, &inner, &["add", "g.txt"]);
+    run(&s.git, &inner, &["commit", "-qm", "inner"]);
+
+    assert!(!has_submodules(&s.git, &s.repo()).await.expect("no submodules yet"));
+    let url = inner.to_str().expect("utf-8 temp path");
+    run(
+        &s.git,
+        &s.repo(),
+        &["-c", "protocol.file.allow=always", "submodule", "add", "-q", url, "sub"],
+    );
+    run(&s.git, &s.repo(), &["commit", "-qm", "add the submodule"]);
+    assert!(has_submodules(&s.git, &s.repo()).await.expect("submodules now"));
+
+    add(&s.git, &s.spec("wt", "feat")).await.expect("add succeeds anyway");
+    let wt = s.at("wt");
+    assert!(wt.join("sub").is_dir(), "the submodule directory exists");
+    assert_eq!(
+        std::fs::read_dir(wt.join("sub")).expect("read_dir").count(),
+        0,
+        "and it is empty: the worktree is incomplete"
+    );
+    assert_eq!(
+        dirty_count(&s.git, &wt).await.expect("dirty_count"),
+        0,
+        "while reading perfectly clean — which is why `prepare` refuses these repositories"
+    );
+
+    // And once anything initialises it, removal refuses categorically, not for dirtiness.
+    run(&s.git, &wt, &["-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q"]);
+    assert_eq!(dirty_count(&s.git, &wt).await.expect("dirty_count"), 0, "still clean");
+    match remove(&s.git, &s.repo(), &wt, RemoveForce::No).await {
+        Err(WorktreeError::SubmodulesBlockRemoval) => {}
+        other => panic!("expected SubmodulesBlockRemoval, got {other:?}"),
+    }
+    remove(&s.git, &s.repo(), &wt, RemoveForce::Discard).await.expect("--force takes it");
+}
+
+/// `--show-toplevel` cannot tell a linked worktree from a main one; the common dir can.
+// see docs/research/worktree-cleanup.md §1.6.
+#[tokio::test]
+async fn main_worktree_of_tells_a_linked_worktree_from_a_main_one() {
+    let s = Scratch::new();
+    add(&s.git, &s.spec("wt", "feat")).await.expect("add");
+
+    assert_eq!(
+        main_worktree_of(&s.git, &s.repo()).await.expect("main"),
+        None,
+        "the main worktree is not linked to anything"
+    );
+    let main = main_worktree_of(&s.git, &s.at("wt"))
+        .await
+        .expect("query")
+        .expect("a linked worktree names its main tree");
+    assert!(same_path(&main, &s.repo()), "{main:?}");
+}
+
+/// **The hazard `removed: true` has to defend against, pinned as observed behaviour.** With the
+/// project renamed under git's feet, a *relative* `worktree remove` argument exits 0, unregisters
+/// the entry and leaves every file on disk. The absolute path this crate always passes refuses
+/// instead — so the safety of `remove` rests on that spelling, and this is the test that notices
+/// if it ever changes.
+// see docs/research/worktree-cleanup.md §1.4 and "Hard rules" 11.
+#[tokio::test]
+async fn a_relative_remove_argument_reports_success_over_files_it_left_behind() {
+    let s = Scratch::new();
+    add(&s.git, &nested_spec(&s, "eeee5555")).await.expect("add");
+    let wt = s.repo().join(".brigadier/worktrees/eeee5555");
+    std::fs::write(wt.join("NOTES.md"), "work\n").expect("write");
+    let moved = s.at("renamed");
+    std::fs::rename(s.repo(), &moved).expect("rename");
+    let wt = moved.join(".brigadier/worktrees/eeee5555");
+
+    // What this crate does: absolute, via `-C`. git refuses, and nothing is lost.
+    match remove(&s.git, &moved, &wt, RemoveForce::No).await {
+        Err(WorktreeError::NotAWorktree(_)) => {}
+        other => panic!("an absolute argument must refuse, got {other:?}"),
+    }
+    assert!(wt.join("NOTES.md").is_file());
+
+    // What a relative argument does instead, on the same state.
+    let out = Command::new(&s.git)
+        .arg("-C")
+        .arg(&moved)
+        .args(["worktree", "remove", "--", ".brigadier/worktrees/eeee5555"])
+        .env("LC_ALL", "C")
+        .output()
+        .expect("git runs");
+    assert!(out.status.success(), "the relative form exits 0: {out:?}");
+    assert!(wt.join("NOTES.md").is_file(), "…over a file it did not delete");
+    let all = list(&s.git, &moved).await.expect("list");
+    assert_eq!(all.len(), 1, "…and it unregistered the entry: {all:#?}");
 }

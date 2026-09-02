@@ -19,8 +19,9 @@
 use std::path::{Path, PathBuf};
 
 use brigadier_core::worktree::{
-    self, add_or_rollback, check_ref_format, dirty_count, ensure_excluded, has_commits, is_repo,
-    resolve_git, short_id, show_toplevel, WorktreeError, WorktreeSpec,
+    self, add_or_rollback, check_ref_format, commits_only_here, dirty_count, ensure_excluded,
+    has_commits, has_submodules, is_repo, main_worktree_of, resolve_git, short_id, show_toplevel,
+    RemoveForce, WorktreeError, WorktreeSpec,
 };
 use serde::Serialize;
 
@@ -48,23 +49,92 @@ pub const BRANCH_PREFIX: &str = "brigadier/";
 // see docs/research/worktree-git.md §3.
 const BASE: &str = "HEAD";
 
+/// The lock reason git writes itself while `worktree add` is checking a worktree out, and leaves
+/// behind if that add is killed. **measured** on git 2.50.1: `git worktree list --porcelain`
+/// reports `locked initializing` for a `SIGKILL`ed add, and this exact string is the only lock
+/// reason brigadier will ever override.
+// see docs/research/worktree-cleanup.md §1.1.
+const GIT_INITIALIZING_LOCK: &str = "initializing";
+
+/// Why a cleanup refused. `None` on the paths that removed something.
+///
+/// Every variant is a *refusal*, never an authorization, and the two at the bottom are refusals
+/// `force = true` cannot answer — the operator has to act outside brigadier.
+// see docs/research/worktree-cleanup.md "Hard rules".
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CleanupBlocked {
+    /// Modified, untracked or ignored entries would be discarded. `force = true` answers it.
+    Dirty,
+    /// Commits exist here and on no other ref. `force = true` answers it, and even then the
+    /// branch survives — this is the "you are about to lose sight of them" warning, not a delete.
+    Commits,
+    /// The live `git worktree list` branch is not the one the session row records: the agent
+    /// detached `HEAD`, checked out its own branch, or the operator renamed ours. `force = true`
+    /// answers it, and [`WorktreeCleanup::live_branch`] says what git actually reports.
+    // see docs/research/worktree-cleanup.md §1.5 and "Hard rules" 10.
+    BranchMoved,
+    /// The directory exists but git does not register it as a worktree of this repository —
+    /// §1.3(b), reached by a hand-deleted admin directory or by a prune that ran before a repair.
+    /// **`force` deliberately does not answer this.** The only remedy is deleting the directory,
+    /// and an `rm -rf` fallback is the exact bug Claude Code shipped and withdrew in v2.1.143 for
+    /// destroying gitignored and in-progress files.
+    // see docs/research/worktree-cleanup.md §1.3, §1.4 and "Hard rules" 1.
+    Unregistered,
+    /// Something holds a `git worktree lock` on it. **`force` deliberately does not answer this**:
+    /// only `remove -f -f` clears a lock and a lock is another process's claim.
+    // see docs/research/worktree-cleanup.md §1.8 and "Hard rules" 4.
+    Locked,
+    /// `git worktree remove` reported success and the directory is still there — the state a
+    /// moved project produces (**measured**, exit 0 with every file left on disk).
+    // see docs/research/worktree-cleanup.md §1.4 and "Hard rules" 11.
+    LeftOnDisk,
+}
+
 /// What [`crate::Supervisor::cleanup_worktree`] did, or refused to do.
 ///
-/// `removed: false` with a non-zero `dirty_files` is the "are you sure" case: nothing was
-/// touched, and the same call with `force = true` will discard that many entries.
+/// `removed: false` with a `blocked` reason is the "are you sure" case: nothing was touched. For
+/// [`CleanupBlocked::Dirty`], [`CleanupBlocked::Commits`] and [`CleanupBlocked::BranchMoved`] the
+/// same call with `force = true` proceeds; the other three are refusals `force` does not answer,
+/// and the message names what to do instead.
 ///
 /// `branch` is always the session's branch and it is **always still there**: no cleanup path
 /// deletes a branch. The worktree is a reconstructible checkout; the branch is the only copy of
 /// whatever the agent committed.
-// see docs/research/worktree-git.md §4 and "Risks" 1.
+// see docs/research/worktree-git.md §4 and "Risks" 1, docs/research/worktree-cleanup.md §6.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct WorktreeCleanup {
-    /// Whether the checkout is gone from disk and from `git worktree list`.
+    /// Whether the checkout is gone **from disk** and from `git worktree list`. Never set from
+    /// git's exit code alone: a `remove` that exits 0 and leaves every file behind is a measured
+    /// state, so this is only `true` after the path is confirmed gone.
     pub removed: bool,
-    /// Entries `git status --porcelain` reported in the worktree, one per line.
+    /// Entries `git status --porcelain --ignored=matching -uall` reported, one per line.
     pub dirty_files: u32,
+    /// Commits reachable from this worktree's `HEAD` and from no other branch, tag or remote ref.
+    /// Working-tree dirt and commits are different losses and are counted separately; a clean
+    /// worktree carrying five unpushed commits used to remove with exit 0 in silence.
+    // see docs/research/worktree-cleanup.md §2.6 rung 1.
+    pub commits: u32,
     /// The session's branch, which survives every cleanup.
     pub branch: String,
+    /// What `git worktree list --porcelain` says is checked out there right now: `None` for a
+    /// detached head, and the *only* trustworthy answer where it disagrees with `branch`.
+    pub live_branch: Option<String>,
+    /// Why nothing was removed, or `None`.
+    pub blocked: Option<CleanupBlocked>,
+}
+
+impl WorktreeCleanup {
+    /// A refusal that touched nothing.
+    fn refused(
+        blocked: CleanupBlocked,
+        dirty_files: u32,
+        commits: u32,
+        branch: String,
+        live_branch: Option<String>,
+    ) -> Self {
+        Self { removed: false, dirty_files, commits, branch, live_branch, blocked: Some(blocked) }
+    }
 }
 
 /// Compare two paths as the filesystem sees them.
@@ -101,10 +171,43 @@ impl Prepared {
     /// would mean this is not the branch we think it is — `-d` refuses with `not fully merged`
     /// and the work survives. Errors are logged, never returned: the caller is already on its way
     /// out with the real failure.
-    // see docs/research/worktree-git.md "Measured 2026-09-02".
+    /// **The one caller entitled to `remove -f -f`, and only against git's own `initializing`
+    /// lock.** A crash — ours or the machine's — partway through `git worktree add` leaves the
+    /// entry `locked initializing`, and **measured** on git 2.50.1 every ordinary verb refuses it:
+    /// `prune -v` exits 0 and prints nothing, `remove` and `remove --force` both fatal at exit 128
+    /// with `cannot remove a locked working tree`, and `branch -D` answers `cannot delete branch
+    /// … used by worktree at …` at exit 1. Only `remove -f -f` gets out, and then the branch
+    /// deletes. Without this escalation the residue is permanent and blocks the path forever.
+    ///
+    /// The escalation is gated on the lock reason being exactly `initializing`. Any other reason
+    /// is somebody's deliberate claim on the directory and is left alone with a warning — Hard
+    /// rule 4. This is a worktree this process created seconds ago and never handed to a child,
+    /// which is the only circumstance in which "the lock is ours" is knowable.
+    ///
+    /// **measured**, and worth expecting: on a large repository `remove -f -f` against that
+    /// residue can exit **255** with `failed to delete '<path>': Directory not empty` *after*
+    /// unregistering the entry, leaving a directory git no longer knows. The branch still deletes,
+    /// which is the part that matters here; the directory is reported by the launch sweep.
+    // see docs/research/worktree-git.md "Measured 2026-09-02" and
+    // docs/research/worktree-cleanup.md §1.1 and "Hard rules" 4.
     pub(crate) async fn roll_back(self) {
-        if let Err(e) = worktree::remove(&self.git, &self.repo, &self.path, true).await {
-            tracing::warn!(path = %self.path.display(), error = %e, "could not roll back the worktree");
+        match worktree::remove(&self.git, &self.repo, &self.path, RemoveForce::Discard).await {
+            Ok(()) => {}
+            Err(WorktreeError::Locked(reason)) if reason == GIT_INITIALIZING_LOCK => {
+                if let Err(e) =
+                    worktree::remove(&self.git, &self.repo, &self.path, RemoveForce::Unlock).await
+                {
+                    tracing::warn!(path = %self.path.display(), error = %e, "could not clear the half-built worktree");
+                }
+            }
+            Err(WorktreeError::Locked(reason)) => tracing::warn!(
+                path = %self.path.display(),
+                reason = %reason,
+                "the worktree is locked by something else; leaving it rather than overriding the lock"
+            ),
+            Err(e) => {
+                tracing::warn!(path = %self.path.display(), error = %e, "could not roll back the worktree")
+            }
         }
         if let Err(e) = worktree::delete_branch(&self.git, &self.repo, &self.branch, false).await {
             tracing::warn!(branch = %self.branch, error = %e, "could not roll back the branch");
@@ -149,10 +252,37 @@ pub(crate) async fn prepare(project_root: &Path) -> Result<Option<Prepared>, Sup
             toplevel,
         }));
     }
+    // A project root that is itself a *linked worktree* passes the check above — `show_toplevel`
+    // inside a linked worktree returns that worktree's own root — and is the more dangerous of
+    // the two. Sessions would nest inside it, and **measured**, `git worktree remove` on the
+    // outer worktree takes the inner one's files with it at exit 0 while
+    // `status --ignored=matching -uall` in the outer reports nothing, so `dirty_count` says 0 over
+    // another session's uncommitted work. The remedy is to open the main repository instead.
+    // see docs/research/worktree-cleanup.md §1.6.
+    if let Some(main) = main_worktree_of(&git, project_root).await? {
+        return Err(SupervisorError::from(WorktreeError::LinkedWorktree {
+            dir: project_root.to_owned(),
+            main,
+        }));
+    }
     // Up front, so an unborn HEAD is a message with a remedy in it rather than git's
     // `fatal: invalid reference: HEAD` — or, with the base omitted, a silent orphan worktree.
     if !has_commits(&git, project_root).await? {
         return Err(SupervisorError::from(WorktreeError::UnbornHead(project_root.to_owned())));
+    }
+    // Submodules. **measured**: `worktree add` succeeds, the submodule directory is **empty**,
+    // and `git status --porcelain` inside the new worktree reports nothing — an incomplete
+    // checkout that reads as clean, so the agent's build fails for a reason nothing in the UI
+    // explains. Then, once anything runs `submodule update --init`, `worktree remove` refuses
+    // categorically (`working trees containing submodules cannot be moved or removed`, exit 128)
+    // on a tree `dirty_count` calls clean. Refusing up front is the honest answer; making the
+    // worktree complete would mean brigadier running `submodule update --init` in the operator's
+    // repository, which is a decision for the operator, not for us.
+    // see docs/research/worktree-cleanup.md §1.13.
+    if has_submodules(&git, project_root).await? {
+        return Err(SupervisorError::from(WorktreeError::RepositoryHasSubmodules(
+            project_root.to_owned(),
+        )));
     }
 
     let id = short_id(&uuid::Uuid::new_v4().to_string());
@@ -200,13 +330,62 @@ pub(crate) async fn exclude_project(project_root: &Path) {
     }
 }
 
-/// `git worktree prune` for one project. Safe by construction: **measured**, prune never touches
-/// a branch. Logged and swallowed.
-// see docs/research/worktree-git.md §4.
+/// Every directory that looks like one of our session worktrees, straight off the disk.
+///
+/// `read_dir`, not the session rows, and not `git worktree list`: after a project is moved the
+/// listing reports the *old* paths and a row can be missing entirely, while the directories are
+/// the one thing that is still where it is. Order is whatever the filesystem gives; `repair` does
+/// not care.
+// see docs/research/worktree-cleanup.md §1.4 and §3.
+fn worktree_dirs_on_disk(project_root: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(project_root.join(WORKTREES_SUBDIR)) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .map(|e| e.path())
+        .collect()
+}
+
+/// `git worktree repair` then `git worktree prune`, for one project. Logged and swallowed.
+///
+/// **The order is the whole point and it was the wrong way round.** A worktree records two
+/// absolute paths and brigadier's worktrees are nested inside the project, so one `mv` of the
+/// project folder breaks every one of them at once. From there the two orders do not converge:
+///
+/// - `repair <path>` first → exit 0, both files rewritten, `git -C <wt> status` works again and
+///   the agent's uncommitted work is intact. **Fully recovered** (**measured**).
+/// - `prune` first — which is what this function used to do, on every launch — → the entry is
+///   removed, and `repair` afterwards answers `error: unable to locate repository`, exit 1, with
+///   no way back. The checkout becomes a directory git will neither describe, remove nor reuse
+///   (**measured**).
+///
+/// So the launch sweep converted a fully recoverable state into a permanently unrecoverable one
+/// every time the operator renamed a folder. Both verbs touch **no files** — repair rewrites two
+/// path strings, prune deletes admin entries only — which is why this pair is the only part of
+/// the reconciliation in §3 that is allowed to run unattended.
+///
+/// `repair`'s errors are expected and ignored: a directory under `.brigadier/worktrees/` that is
+/// not a worktree makes the whole call exit 1 **after repairing the ones that are** (**measured**).
+// see docs/research/worktree-cleanup.md §1.4, §3.2 and "Hard rules" 7.
 pub(crate) async fn prune_project(project_root: &Path) {
     let Some(git) = resolve_git() else { return };
     if !is_repo(&git, project_root).await {
         return;
+    }
+    let dirs = worktree_dirs_on_disk(project_root);
+    if !dirs.is_empty() {
+        match worktree::repair(&git, project_root, &dirs).await {
+            Ok(()) => {
+                tracing::debug!(root = %project_root.display(), count = dirs.len(), "worktrees repaired")
+            }
+            // Not a failure worth a warning on its own: repair exits 1 for any path in the batch
+            // that is not a worktree, having already fixed the ones that are.
+            Err(e) => {
+                tracing::debug!(root = %project_root.display(), error = %e, "worktree repair reported a problem")
+            }
+        }
     }
     match worktree::prune(&git, project_root).await {
         Ok(()) => tracing::debug!(root = %project_root.display(), "worktrees pruned"),
@@ -216,9 +395,32 @@ pub(crate) async fn prune_project(project_root: &Path) {
 
 /// Remove one session's checkout, keeping its branch.
 ///
-/// Refuses on a dirty tree unless `force`, and reports the count either way. A checkout that is
-/// already gone from disk is pruned out of git's registry and reported as removed.
-// see docs/research/worktree-git.md §4.
+/// **Every safety decision here reads `git worktree list --porcelain`, not the session row.** The
+/// column is a label for the UI; the porcelain is the fact, and they diverge in three measured
+/// ways: an agent that runs `checkout --detach` inside its own worktree leaves the entry
+/// `detached` with no branch line — and `git branch -d` on our recorded name then succeeds at exit
+/// 0 even though the worktree still exists; an agent that runs `checkout -b its-own` moves the
+/// session's real work onto a branch whose name is nowhere in our database, so "we always keep the
+/// branch" protects the wrong, empty ref; and the operator's own `git branch -m` leaves our stored
+/// name dangling, `branch 'brigadier/…' not found`, exit 1.
+///
+/// The ladder, cheapest refusal first, and every rung is a *refusal* rather than an
+/// authorization:
+///
+/// 1. gone from disk → prune and report removed (unchanged);
+/// 2. `repair`, then look the path up in the porcelain. **Not registered → refuse.** In that
+///    state `git worktree remove` can exit 0, unregister the entry and leave every file on disk,
+///    and `dirty_count` cannot even run because git cannot reach the admin directory — so the
+///    safety net is not merely wrong, it is absent. No `rm -rf` fallback, forced or not;
+/// 3. locked → refuse. One `--force` does not clear a lock and the second is not ours to give;
+/// 4. live branch ≠ recorded branch → refuse unless forced, reporting what git says;
+/// 5. working-tree dirt, and **commits this worktree holds that no other ref does** → refuse
+///    unless forced. The second is the one that was missing: a clean worktree with five unpushed
+///    commits removed with exit 0 in silence, and Claude Code refuses that same case without an
+///    explicit `discard_changes`;
+/// 6. remove, then **`stat` the path**. Exit 0 is not proof (**measured**).
+// see docs/research/worktree-git.md §4, docs/research/worktree-cleanup.md §1.4, §1.5, §2.6 and
+// "Hard rules" 1, 4, 10, 11.
 pub(crate) async fn cleanup(
     repo: &Path,
     path: &Path,
@@ -232,21 +434,127 @@ pub(crate) async fn cleanup(
         // `rm -rf` by hand, or a previous cleanup that raced this one: the entry survives in
         // `git worktree list` as prunable and would block a re-add at the same path.
         prune_project(repo).await;
-        return Ok(WorktreeCleanup { removed: true, dirty_files: 0, branch });
+        return Ok(WorktreeCleanup {
+            removed: true,
+            dirty_files: 0,
+            commits: 0,
+            branch,
+            live_branch: None,
+            blocked: None,
+        });
     }
+    // Free, non-destructive, and it is the difference between "the operator renamed a folder" and
+    // an unrecoverable state: repair rewrites the two stale absolute paths and touches no files.
+    let candidates = [path.to_path_buf()];
+    if let Err(e) = worktree::repair(&git, repo, &candidates).await {
+        tracing::debug!(path = %path.display(), error = %e, "worktree repair before cleanup reported a problem");
+    }
+    let entry = worktree::list(&git, repo)
+        .await?
+        .into_iter()
+        // A `prunable` entry is as good as absent: its admin link is broken, so `status` cannot
+        // run and neither can any honest safety check. **measured**, this is also the one state in
+        // which `git worktree remove` reports success over a directory it did not touch.
+        .find(|w| !w.is_main && w.prunable.is_none() && same_path(&w.path, path));
+    let Some(entry) = entry else {
+        // §1.3(b): a directory of the agent's files that git will neither describe, remove nor
+        // reuse. `force` does not reach it either — the only verb left is `rm -rf`, and that is
+        // the fallback Claude Code shipped and withdrew in v2.1.143 for destroying gitignored and
+        // in-progress files. Name the path and let the operator decide.
+        tracing::warn!(
+            path = %path.display(),
+            "git does not register this directory as a worktree; leaving it on disk"
+        );
+        return Ok(WorktreeCleanup::refused(CleanupBlocked::Unregistered, 0, 0, branch, None));
+    };
+    if let Some(reason) = entry.locked.as_deref() {
+        tracing::warn!(path = %path.display(), reason, "the worktree is locked; refusing to remove it");
+        return Ok(WorktreeCleanup::refused(
+            CleanupBlocked::Locked,
+            0,
+            0,
+            branch,
+            entry.branch.clone(),
+        ));
+    }
+    let live_branch = entry.branch.clone();
     let dirty = dirty_count(&git, path).await?;
-    if dirty > 0 && !force {
-        return Ok(WorktreeCleanup { removed: false, dirty_files: dirty, branch });
+    let commits = commits_only_here(&git, path, live_branch.as_deref()).await?;
+    if live_branch.as_deref() != Some(branch.as_str()) && !force {
+        return Ok(WorktreeCleanup::refused(
+            CleanupBlocked::BranchMoved,
+            dirty,
+            commits,
+            branch,
+            live_branch,
+        ));
     }
-    match worktree::remove(&git, repo, path, force).await {
-        Ok(()) => Ok(WorktreeCleanup { removed: true, dirty_files: dirty, branch }),
+    if !force {
+        // Dirt first: it is the loss the operator can see, and the UI already has a sentence for
+        // it. Commits are the quieter half and the reason this rung exists at all.
+        if dirty > 0 {
+            return Ok(WorktreeCleanup::refused(
+                CleanupBlocked::Dirty,
+                dirty,
+                commits,
+                branch,
+                live_branch,
+            ));
+        }
+        if commits > 0 {
+            return Ok(WorktreeCleanup::refused(
+                CleanupBlocked::Commits,
+                dirty,
+                commits,
+                branch,
+                live_branch,
+            ));
+        }
+    }
+    let rung = if force { RemoveForce::Discard } else { RemoveForce::No };
+    let removed = match worktree::remove(&git, repo, path, rung).await {
+        Ok(()) => true,
         // Something dirtied the tree between the count and the remove. Report, do not force.
         Err(WorktreeError::Dirty(_)) => {
             let dirty = dirty_count(&git, path).await.unwrap_or(dirty.max(1));
-            Ok(WorktreeCleanup { removed: false, dirty_files: dirty, branch })
+            return Ok(WorktreeCleanup::refused(
+                CleanupBlocked::Dirty,
+                dirty,
+                commits,
+                branch,
+                live_branch,
+            ));
         }
-        Err(e) => Err(SupervisorError::from(e)),
+        // Somebody locked it between the listing and the remove.
+        Err(WorktreeError::Locked(_)) => {
+            return Ok(WorktreeCleanup::refused(
+                CleanupBlocked::Locked,
+                dirty,
+                commits,
+                branch,
+                live_branch,
+            ));
+        }
+        Err(e) => return Err(SupervisorError::from(e)),
+    };
+    // **The exit code is not the answer.** `git worktree remove` exits 0, unregisters the entry
+    // and leaves every file where it was when the project has been renamed under git's feet
+    // (**measured**, twice). Reporting `removed: true` there tells the operator their work is
+    // gone while it sits on disk, and takes the Resume button away for nothing.
+    if path.exists() {
+        tracing::warn!(
+            path = %path.display(),
+            "git reported the worktree removed and the directory is still there"
+        );
+        return Ok(WorktreeCleanup::refused(
+            CleanupBlocked::LeftOnDisk,
+            dirty,
+            commits,
+            branch,
+            live_branch,
+        ));
     }
+    Ok(WorktreeCleanup { removed, dirty_files: dirty, commits, branch, live_branch, blocked: None })
 }
 
 #[cfg(test)]
@@ -538,7 +846,9 @@ mod tests {
         let branch = row.branch.clone().expect("branch");
         let path = row.worktree_path.clone().expect("path");
         rig.end_and_settle(&first).await;
-        worktree::remove(&rig.git, &rig.repo, &path, true).await.expect("remove");
+        worktree::remove(&rig.git, &rig.repo, &path, RemoveForce::Discard)
+            .await
+            .expect("remove");
 
         // Now force the next id to be that one by creating the directory-free collision: recreate
         // the branch and point `prepare` at it directly, which is what a collision looks like.
@@ -816,4 +1126,320 @@ mod tests {
 
         rig.store.close().await.expect("store closes");
     }
+
+    // ---------------------------------------------------------------------------------------
+    // The destructive states. Each of these was a defect listed in `docs/STATUS.md` §5 and each
+    // was reproduced against real git before the code was written.
+    // see docs/research/worktree-cleanup.md.
+    // ---------------------------------------------------------------------------------------
+
+    /// **The launch sweep used to make a renamed project unrecoverable.** `prune_project` now
+    /// repairs first, and repair recovers everything a move broke — including the agent's
+    /// uncommitted work.
+    // see docs/research/worktree-cleanup.md §1.4 and "Hard rules" 7.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_launch_sweep_repairs_a_renamed_project_before_it_prunes() {
+        let rig = Rig::new(true);
+        let project = rig.project().await;
+        let session = rig.start(&project).await.expect("session starts");
+        let path = rig.row(&session).await.worktree_path.expect("path");
+        rig.end_and_settle(&session).await;
+        std::fs::write(path.join("NOTES.md"), "a whole session of work\n").expect("write");
+
+        // The operator renames the project folder. Both recorded absolute paths are now stale.
+        let renamed = rig.dir.path().join("renamed");
+        std::fs::rename(&rig.repo, &renamed).expect("rename the project");
+        let moved_path = renamed.join(path.strip_prefix(&rig.repo).unwrap_or(Path::new("")));
+        let stale = worktree::list(&rig.git, &renamed).await.expect("list");
+        assert_eq!(
+            stale.iter().filter(|w| w.prunable.is_some()).count(),
+            1,
+            "the precondition: the move broke the entry: {stale:#?}"
+        );
+
+        prune_project(&renamed).await;
+
+        let all = worktree::list(&rig.git, &renamed).await.expect("list");
+        assert_eq!(all.len(), 2, "the entry survived the sweep: {all:#?}");
+        assert!(all.iter().all(|w| w.prunable.is_none()), "and it is healthy again: {all:#?}");
+        assert_eq!(
+            dirty_count(&rig.git, &moved_path).await.expect("status works again"),
+            1,
+            "the agent's uncommitted work is reachable again"
+        );
+
+        rig.store.close().await.expect("store closes");
+    }
+
+    /// A crash partway through `git worktree add` leaves `locked initializing`, which `prune`,
+    /// `remove` and `remove --force` all refuse and which keeps the branch undeleteable forever.
+    /// The rollback is the one caller allowed to escalate to `-f -f`, and only for that reason.
+    // see docs/research/worktree-cleanup.md §1.1 and "Hard rules" 4.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_rollback_clears_the_locked_initializing_residue_of_a_killed_add() {
+        let rig = Rig::new(true);
+        let path = rig.repo.join(WORKTREES_SUBDIR).join("aaaa1111");
+        let branch = format!("{BRANCH_PREFIX}aaaa1111");
+        let made = add_or_rollback(
+            &rig.git,
+            &WorktreeSpec {
+                repo: rig.repo.clone(),
+                path: path.clone(),
+                branch: branch.clone(),
+                base: BASE.to_owned(),
+            },
+        )
+        .await
+        .expect("add");
+        // Exactly the state a `SIGKILL`ed `worktree add` leaves behind (**measured**).
+        git_run(
+            &rig.git,
+            &rig.repo,
+            &["worktree", "lock", "--reason", "initializing", made.path.to_str().expect("utf-8")],
+        );
+        // The precondition: nothing gentler gets out of it.
+        assert!(matches!(
+            worktree::remove(&rig.git, &rig.repo, &made.path, RemoveForce::Discard).await,
+            Err(WorktreeError::Locked(_))
+        ));
+
+        Prepared {
+            git: rig.git.clone(),
+            repo: rig.repo.clone(),
+            path: made.path.clone(),
+            branch: branch.clone(),
+        }
+        .roll_back()
+        .await;
+
+        assert!(!made.path.exists(), "the half-built checkout is gone");
+        assert!(!rig.branches().contains(&branch), "and its branch: {:?}", rig.branches());
+        assert_eq!(worktree::list(&rig.git, &rig.repo).await.expect("list").len(), 1);
+
+        rig.store.close().await.expect("store closes");
+    }
+
+    /// A lock we did not take is somebody's claim on the directory. `force` is the operator
+    /// saying "discard my changes", not "override another process", so it does not reach this.
+    // see docs/research/worktree-cleanup.md §1.8 and "Hard rules" 4.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_lock_taken_by_something_else_refuses_cleanup_even_when_forced() {
+        let rig = Rig::new(true);
+        let project = rig.project().await;
+        let session = rig.start(&project).await.expect("session starts");
+        let path = rig.row(&session).await.worktree_path.expect("path");
+        rig.end_and_settle(&session).await;
+        git_run(
+            &rig.git,
+            &rig.repo,
+            &["worktree", "lock", "--reason", "operator is using it", path.to_str().expect("utf-8")],
+        );
+
+        for force in [false, true] {
+            let out = rig.sup.cleanup_worktree(&session, force).await.expect("answers");
+            assert!(!out.removed, "force={force}: {out:?}");
+            assert_eq!(out.blocked, Some(CleanupBlocked::Locked), "force={force}: {out:?}");
+            assert!(path.join("f.txt").is_file(), "force={force}: the checkout must survive");
+        }
+
+        rig.store.close().await.expect("store closes");
+    }
+
+    /// **`removed: true` used to be reachable over a directory full of the agent's files.** A
+    /// checkout git no longer registers is refused and named, never `rm -rf`'d — the exact
+    /// fallback Claude Code shipped and withdrew in v2.1.143 for destroying gitignored files.
+    // see docs/research/worktree-cleanup.md §1.3(b), §1.4 and "Hard rules" 1 and 11.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_checkout_git_no_longer_registers_is_refused_and_left_alone() {
+        let rig = Rig::new(true);
+        let project = rig.project().await;
+        let session = rig.start(&project).await.expect("session starts");
+        let path = rig.row(&session).await.worktree_path.expect("path");
+        rig.end_and_settle(&session).await;
+        std::fs::write(path.join("NOTES.md"), "work\n").expect("write");
+
+        // The admin directory goes, the checkout stays: §1.3(b), and also what a prune-before-
+        // repair used to produce on every launch after a rename.
+        let id = path.file_name().expect("id").to_owned();
+        std::fs::remove_dir_all(rig.repo.join(".git").join("worktrees").join(&id))
+            .expect("delete the admin dir");
+        assert!(dirty_count(&rig.git, &path).await.is_err(), "git cannot describe it any more");
+
+        for force in [false, true] {
+            let out = rig.sup.cleanup_worktree(&session, force).await.expect("answers");
+            assert!(!out.removed, "force={force}: {out:?}");
+            assert_eq!(out.blocked, Some(CleanupBlocked::Unregistered), "force={force}: {out:?}");
+            assert!(path.join("NOTES.md").is_file(), "force={force}: the work must survive");
+        }
+
+        rig.store.close().await.expect("store closes");
+    }
+
+    /// **The unforced remove used to ignore commits entirely.** A clean worktree carrying commits
+    /// no other ref holds removed with exit 0 in silence; now it is a refusal that says how many.
+    // see docs/research/worktree-cleanup.md §2.6 rung 1 and §6.2.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_clean_worktree_carrying_its_own_commits_refuses_until_forced() {
+        let rig = Rig::new(true);
+        let project = rig.project().await;
+        let session = rig.start(&project).await.expect("session starts");
+        let row = rig.row(&session).await;
+        let path = row.worktree_path.clone().expect("path");
+        let branch = row.branch.clone().expect("branch");
+        rig.end_and_settle(&session).await;
+
+        std::fs::write(path.join("a.txt"), "a\n").expect("write");
+        git_run(&rig.git, &path, &["add", "a.txt"]);
+        git_run(&rig.git, &path, &["commit", "-qm", "the agent's work"]);
+        let plain = git_run(&rig.git, &path, &["status", "--porcelain"]);
+        assert!(plain.trim().is_empty(), "the tree is clean: {plain:?}");
+
+        let refused = rig.sup.cleanup_worktree(&session, false).await.expect("counts");
+        assert!(!refused.removed, "{refused:?}");
+        assert_eq!(refused.blocked, Some(CleanupBlocked::Commits), "{refused:?}");
+        assert_eq!(refused.dirty_files, 0, "{refused:?}");
+        assert_eq!(refused.commits, 1, "{refused:?}");
+        assert!(path.exists(), "a refused cleanup must not delete anything");
+
+        let forced = rig.sup.cleanup_worktree(&session, true).await.expect("forced");
+        assert!(forced.removed && forced.blocked.is_none(), "{forced:?}");
+        assert_eq!(forced.commits, 1, "the count is still reported: {forced:?}");
+        assert!(rig.branches().contains(&branch), "the branch keeps the commit");
+
+        rig.store.close().await.expect("store closes");
+    }
+
+    /// **Safety decisions read `git worktree list --porcelain`, not `sessions.branch`.** An agent
+    /// that checks out its own branch moves the session's real work to a ref nowhere in our
+    /// database, and "we always keep the branch" would otherwise protect the wrong, empty one.
+    // see docs/research/worktree-cleanup.md §1.5 and "Hard rules" 10.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_agent_that_checks_out_its_own_branch_stops_the_cleanup_and_is_named() {
+        let rig = Rig::new(true);
+        let project = rig.project().await;
+        let session = rig.start(&project).await.expect("session starts");
+        let row = rig.row(&session).await;
+        let path = row.worktree_path.clone().expect("path");
+        let recorded = row.branch.clone().expect("branch");
+        rig.end_and_settle(&session).await;
+
+        git_run(&rig.git, &path, &["checkout", "-q", "-b", "agents-own"]);
+        std::fs::write(path.join("a.txt"), "a\n").expect("write");
+        git_run(&rig.git, &path, &["add", "a.txt"]);
+        git_run(&rig.git, &path, &["commit", "-qm", "the agent's work"]);
+
+        let refused = rig.sup.cleanup_worktree(&session, false).await.expect("answers");
+        assert!(!refused.removed, "{refused:?}");
+        assert_eq!(refused.blocked, Some(CleanupBlocked::BranchMoved), "{refused:?}");
+        assert_eq!(refused.branch, recorded, "the row's label is reported as the row's label");
+        assert_eq!(
+            refused.live_branch.as_deref(),
+            Some("agents-own"),
+            "and git's answer is reported as the fact: {refused:?}"
+        );
+        assert_eq!(refused.commits, 1, "counted against the live branch, not the stored one");
+        assert!(path.exists(), "nothing was touched");
+
+        let forced = rig.sup.cleanup_worktree(&session, true).await.expect("forced");
+        assert!(forced.removed, "{forced:?}");
+        assert!(
+            rig.branches().contains(&"agents-own".to_owned()),
+            "the branch actually holding the work survives: {:?}",
+            rig.branches()
+        );
+
+        rig.store.close().await.expect("store closes");
+    }
+
+    /// A detached head is the other half of §1.5: no branch line at all, and `git branch -d` on
+    /// our recorded name would then succeed while the worktree still exists.
+    // see docs/research/worktree-cleanup.md §1.5.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_detached_head_is_reported_as_a_branch_that_moved() {
+        let rig = Rig::new(true);
+        let project = rig.project().await;
+        let session = rig.start(&project).await.expect("session starts");
+        let path = rig.row(&session).await.worktree_path.expect("path");
+        rig.end_and_settle(&session).await;
+        git_run(&rig.git, &path, &["checkout", "-q", "--detach", "HEAD"]);
+
+        let refused = rig.sup.cleanup_worktree(&session, false).await.expect("answers");
+        assert!(!refused.removed, "{refused:?}");
+        assert_eq!(refused.blocked, Some(CleanupBlocked::BranchMoved), "{refused:?}");
+        assert_eq!(refused.live_branch, None, "{refused:?}");
+
+        rig.store.close().await.expect("store closes");
+    }
+
+    /// A project root that is itself a linked worktree passes the `NotRepositoryRoot` guard —
+    /// `--show-toplevel` inside a linked worktree returns that worktree's own root — and then
+    /// removing the outer worktree destroys the inner session's work while `dirty_count` reads 0.
+    // see docs/research/worktree-cleanup.md §1.6.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_project_that_is_itself_a_linked_worktree_refuses_the_start() {
+        let rig = Rig::new(true);
+        let outer = rig.dir.path().join("outer");
+        git_run(
+            &rig.git,
+            &rig.repo,
+            &["worktree", "add", "-q", "-b", "outer", outer.to_str().expect("utf-8"), "HEAD"],
+        );
+        let project = rig.sup.add_project(outer.clone()).await.expect("project added");
+
+        let e = rig
+            .sup
+            .start_session(&project.id, &rig.kind, StartSession::new(outer.clone()))
+            .await
+            .expect_err("a linked worktree must refuse");
+        assert_eq!(e.code(), "worktree", "{e}");
+        let message = e.to_string();
+        assert!(message.contains("linked git worktree"), "{message}");
+        assert!(!outer.join(WORKTREES_SUBDIR).exists(), "nothing was created");
+        assert!(
+            rig.branches().iter().all(|b| !b.starts_with(BRANCH_PREFIX)),
+            "a branch leaked: {:?}",
+            rig.branches()
+        );
+
+        rig.store.close().await.expect("store closes");
+    }
+
+    /// A worktree of a repository with submodules is checked out **incomplete and reads clean**,
+    /// and then refuses removal categorically. Refusing the start is the honest answer; running
+    /// `submodule update --init` in the operator's repository is not ours to decide.
+    // see docs/research/worktree-cleanup.md §1.13.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_repository_with_submodules_refuses_the_start() {
+        let rig = Rig::new(true);
+        let inner = rig.dir.path().join("inner");
+        std::fs::create_dir(&inner).expect("mkdir");
+        git_run(&rig.git, &inner, &["init", "-q", "-b", "main", "."]);
+        std::fs::write(inner.join("g.txt"), "g\n").expect("write");
+        git_run(&rig.git, &inner, &["add", "g.txt"]);
+        git_run(&rig.git, &inner, &["commit", "-qm", "inner"]);
+        // `protocol.file.allow` because git refuses a file-transport submodule by default.
+        git_run(
+            &rig.git,
+            &rig.repo,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                "-q",
+                inner.to_str().expect("utf-8"),
+                "sub",
+            ],
+        );
+        git_run(&rig.git, &rig.repo, &["commit", "-qm", "add the submodule"]);
+
+        let project = rig.project().await;
+        let e = rig.start(&project).await.expect_err("submodules must refuse");
+        assert_eq!(e.code(), "worktree", "{e}");
+        assert!(e.to_string().contains("submodules"), "{e}");
+        assert!(!rig.repo.join(WORKTREES_SUBDIR).exists(), "nothing was created");
+
+        rig.store.close().await.expect("store closes");
+    }
+
 }
