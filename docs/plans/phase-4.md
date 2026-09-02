@@ -90,8 +90,13 @@ Auto-remove only when `rev-list --count base..branch == 0`. Retention policy for
 provider transcripts — the transcripts are the only thing `--resume` reads and must never be
 auto-deleted.
 
-**W3-C — cold start.** Static shell in `index.html` plus `app.windows[].backgroundColor`; `spawn`
-instead of `block_on` in `setup`. Converts ~190 ms of white into the app's own frame.
+**W3-C — cold start. Unstarted, and now the largest measured miss in the app.** Static shell in
+`index.html` plus `app.windows[].backgroundColor`; `spawn` instead of `block_on` in `setup`.
+**[measured]** the white lasts **287–295 ms p50**, n=19, not the ~190 ms this line used to estimate,
+and B1's budget is ≤ 200 ms — a **~90 ms** gap (`docs/research/perceived-performance.md` §1.4).
+About 100 ms of it sits in the `tauri://localhost` scheme handler and brotli inflate that the
+original estimate never included (**[asserted]**, by elimination), so a static shell alone may not
+close it; measure after, do not assume.
 
 ## Wave 4 — the frontend, rebuilt on Jan's stack
 
@@ -126,12 +131,14 @@ class names or structure:
 - given a wire batch, what `feedStore` holds and in what order.
 - which callback fires on which action, and that **approvals are never optimistic**.
 
-**Carry the paint instrumentation with it. The instrument landed at `1c8b6f6`; it has produced no
-number.** `src/paint.ts` plus `report_paint` (`docs/plans/ipc-contract.md`) can time an FCP and an
-interaction, and 24 tests pin it — but the app has not been launched, `paint.ndjson` has never been
-written, and `beginInteraction` has no caller. **B4, B6 and B7 in `docs/vision.md` §9 are still
-unmeasured guesses and must still read as guesses**; building the instrument did not move a budget.
-B2, B3, B5 and B8 are gates today; B1 becomes one when W3-C's static shell lands.
+**Carry the paint instrumentation with it. The instrument landed at `1c8b6f6` and has now been
+run**, n=19 across three arms (`docs/research/perceived-performance.md` §1.4). It moved **B1, B2 and
+B3**: B1 was observed end to end for the first time and **misses its budget by ~90 ms**, B2
+replicated, and B3's 314 ms single sample was superseded by 291.3 p50 with migrations turning out to
+cost nothing measurable. **B4, B6 and B7 in `docs/vision.md` §9 are still unmeasured guesses and
+must still read as guesses** — the instrument timed paints, not interactions: `beginInteraction`
+still has no call site and is tree-shaken out of the bundle. B2, B3, B5 and B8 are gates today; B1
+becomes one when W3-C's static shell lands, and it now brings a measured starting line with it.
 
 **Started with `feedStore.ts`, done at `ad5a4a7`** — the cheapest win in the wave. It is
 styling-agnostic (measured: it does not move), so its tests survive the rewrite untouched and were

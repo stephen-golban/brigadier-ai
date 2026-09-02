@@ -50,7 +50,7 @@ its evidence says so.**
 | data-dir lock, batcher shrink | `7f03eb5` | — |
 | every `result` frame reaches the store | `ce833c5` | four fixture tests, `crates/core/tests/claude_adapter.rs:626,667,702,760`, against real captures (`s9`, `f-b-fanout`) — not a live-child proof. §5 item 9. |
 | a front-end test runner | `ad5a4a7` | 27 tests, `src/feedStore.test.ts`, `npm test` (Vitest + jsdom + Testing Library). They pin `src/feedStore.ts` only: the rAF drain's coalescing and its stop, the `ROW_CAP` 2000 head-trim on both rings, the `seedRows` two-pointer merge (order, `q` interleave, `q`-collision, reference stability, idempotence, ROW_CAP on the union, project ring untouched), cost taking the latest turn's cumulative figure and never summing, `seedSessions`' end/cost reconciliation, counter throttling at `COUNTER_FLUSH_MS`, array-reference stability, and the unknown-projects list. Not a live-child proof and not a UI proof. |
-| the app can time its own paints | `1c8b6f6` | 24 tests, `src/paint.test.ts`, and a build. `src/paint.ts` observes `first-contentful-paint` and reports it over `report_paint` (`docs/plans/ipc-contract.md`). **No FCP number exists**: `paint.ndjson` has never been written in a real window, no `main_to_fcp_ms` has appeared in a `RUST_LOG=info` stream, and `beginInteraction` has no caller anywhere. An instrument, not a measurement. |
+| the app can time its own paints | `1c8b6f6` | 24 tests, `src/paint.test.ts`, and a build. `src/paint.ts` observes `first-contentful-paint` and reports it over `report_paint` (`docs/plans/ipc-contract.md`). Since run for real: `paint.ndjson` works end to end in a real window and `main_to_fcp_ms` matched its own `tracing` line on all 19 runs (`docs/research/perceived-performance.md` §1.4). **The interaction half has still never run** — `beginInteraction` has no caller anywhere and is tree-shaken out of the bundle, so B4/B6/B7 are untouched. |
 | the measured palette as oklch `@theme` tokens | `3e5c3fd` | 18 of 18 colour tokens round-trip hex→oklch→hex bit-exact and all 8 annotated contrast pairs re-derive to within 0.0017, verified twice independently (`docs/research/oklch-tokens.md`, and `frontend-stack.md` §2.6 arrived at the same ratios first). Unit tests and a build only — **nothing has been looked at in a running window.** |
 
 **Never clicked in a real window:** the Resume button, the branch chip, the cleanup flow and the
@@ -61,7 +61,11 @@ src/main.tsx src/App.tsx` returns nothing), has **no visual effect** while we sh
 whose Tauri branch is inert for want of a `theme-changed` emitter on the Rust side. So one
 component is tested and no component that renders anything is. **Every claim about front-end
 component wiring in this file was still verified by reading.** A runner existing is not coverage;
-that is still the largest unverified surface in the repo, and phase-4 W4-C/W4-D still owe it.
+that is still the largest unverified surface in the repo, and phase-4 W4-C/W4-D still owe it. The
+app *has* now been launched (19 times, §4), which retires the "never launched" caveat on the paint
+numbers but nothing else: **`pre`, `ul` and `li` are still unexercised under Tailwind preflight**,
+because they exist only in `src/components/Approvals.tsx` and approvals read `none` for every run.
+That is the largest thing still unverified about the token layer and only a live approval closes it.
 
 ## 3. Gates at `3e5c3fd`
 
@@ -117,7 +121,12 @@ over** — a warm prefix saves cost but not the per-turn re-read.
 | spawn → `system/init` | **1,981 ms** | `claude-direct-spike.md` |
 | spawn → `initialize` response | 719 ms | same |
 | stdin closed → exit 0 | 571 ms | same |
-| exec → real project list (p50) | **292 ms** | `perceived-performance.md` |
+| exec → real project list (p50) | **292 ms**; replicated **290.5 ms**, n=7 | `perceived-performance.md` §1.2, §1.4 |
+| **exec → first contentful paint (p50, 3 arms, n=19)** | **287–295 ms** — B1's ≤ 200 ms budget missed by ~90 ms | `perceived-performance.md` §1.4 |
+| first-ever launch with migrations, exec → first IPC (p50, n=7) | **291.3 ms**, against 290.5 warm — migrations cost nothing measurable | same |
+| the owner's real 1.6 MB data dir vs a warm empty one | **+1.1 ms**, inside the spread | same |
+| exec → `main()` entry | **~4.9 ms** (p50 of 19, range 4.1–6.4) — the invisible pre-main segment | same |
+| `brigadier started` → FCP | **132–141 ms**, against a 38 ms estimate | same |
 | WKWebView construction alone | ~100 ms | same |
 | React 19 + 258 kB bundle, FCP cost over a 400-byte page | ~12 ms | same |
 | window refresh rate | 60 Hz over 1,513 one-second samples | same |
@@ -294,6 +303,9 @@ every bundle format for the platform being built on. Leave it alone.
   `perf_hooks` observer, whose `observe({type:"paint"})` **does not throw and never fires** — a test
   written against it passes vacuously. `src/paint.test.ts` stubs its own. jsdom also has no
   `window.matchMedia` at all. `src/paint.test.ts:10-18`, `src/providers/ThemeProvider.test.tsx:16`.
+- **A launch is not zero-`claude`.** Each one spawns `claude --version` **twice** — once from
+  `setup`, once from the frontend's mount-time `probeClaude` (`src-tauri/src/state.rs:180`). No
+  session, no API call, no cost. Worth knowing before auditing spend from a process list.
 - A `**[measured]**` tag inside a **Rust doc comment** is parsed as an intra-doc link and fails
   `cargo doc`. The tree's Rust convention is the bare `**measured**`
   (`crates/core/src/worktree.rs:76`); the bracketed form is markdown-only.

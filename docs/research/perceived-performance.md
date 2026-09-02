@@ -39,21 +39,24 @@ build, a measurement of a component with the rest reasoned, or a guess with noth
 
 | Budget | Target | Today | Status |
 |---|---|---|---|
-| **B1** exec → window on screen with a **painted shell** (not a blank rectangle) | **≤ 200 ms** | ~190 ms by arithmetic — ~100 ms webview construction + ~25 ms dyld/Tauri + ~30 ms blocking `setup` + ~38 ms to FCP — never observed end to end, and today those pixels are white | component-measured (§1.2) |
-| **B2** exec → shell showing the real project/session list | **≤ 350 ms** | **292 ms p50** (155 exec→setup done, +137 to the frontend's first IPC round trip) | **[measured]** (§1.2) |
-| **B3** exec → shell, first-ever launch (migrations run) | ≤ 400 ms | **314 ms** | **[measured]**, n=1 |
+| **B1** exec → window on screen with a **painted shell** (not a blank rectangle) | **≤ 200 ms** | **287–295 ms p50**, n=19 across three arms — **~90 ms over budget** and ~100 ms above the arithmetic it replaces. Today those pixels are still React's, not a shell's, so this is the floor the shell has to beat, not the shell's own number | **[measured]** end to end (§1.4) |
+| **B2** exec → shell showing the real project/session list | **≤ 350 ms** | **292 ms p50** (155 exec→setup done, +137 to the frontend's first IPC round trip); **replicated at 290.5 p50, n=7**, on a busier machine, with the Rust half at 150.2 against the recorded 155.3–166.4 | **[measured]** (§1.2, replicated §1.4) |
+| **B3** exec → shell, first-ever launch (migrations run) | ≤ 400 ms | **291.3 ms p50**, n=7 — supersedes the 314 ms single sample. **Migrations turned out not to be measurably expensive**: 291.3 first-ever against 290.5 warm | **[measured]**, n=7 (§1.4) |
 | **B4** click a session → its last screenful painted | **≤ 100 ms p95** | unmeasured | **guess**; only the Rust half is measured (§2) |
 | **B5** …of which the Rust half (queue + query + serialize) | **≤ 16 ms p95** | **≤ 8.2 ms** worst case measured (§2.2, §2.4) | **[measured]** |
 | **B6** click → the rest of the 500-row scrollback filled in | ≤ 250 ms | unmeasured | **guess** |
 | **B7** any button → visible acknowledgement | **≤ 100 ms** | unmeasured | **guess**, but grounded in the 0.1 s literature (§3.1) |
 | **B8** frame budget while any of the above happens | **16.67 ms** | 60 Hz confirmed in a real Tauri window | **[measured]** (§5.4) |
 
-Three of the eight (B4, B6, B7) are unmeasured guesses. They stay guesses until the app carries the
-paint instrumentation in §5.3; do not quote them as results.
+Three of the eight (B4, B6, B7) are unmeasured guesses. The instrumentation in §5.3 now exists and
+has been run (§1.4), but it measured **paints, not interactions**: `beginInteraction` has no call
+site anywhere, so it is tree-shaken out of the shipped bundle and nothing has timed a click. They
+stay guesses; do not quote them as results.
 
-B1 and B2 are separate on purpose. A window that is on screen with a static shell at 190 ms and
-fills in its list at 292 ms reads as instant. A window that stays blank until 292 ms does not, and
-that is what ships today (§1.3).
+B1 and B2 are separate on purpose. A window that is on screen with a static shell early and fills in
+its list at ~290 ms reads as instant. A window that stays blank until then does not, and that is
+what ships today (§1.3) — with the correction that "early" is now known to be ~287–295 ms rather
+than the ~190 ms this document once estimated (§1.4).
 
 ---
 
@@ -111,6 +114,10 @@ All of this is `tauri` 2.11.5 source, read in the vendored crate at
   signal has to come from the frontend by `invoke`. **[source]**
 
 ### 1.2 Measured breakdown
+
+> This section is component measurement plus arithmetic. **§1.4 observed the same launch end to end
+> in the real binary, and the arithmetic here was ~100 ms optimistic.** The `setup` and IPC figures
+> below replicated; the ~38 ms navigation-start → FCP estimate did not.
 
 Six launches of the release bundle, `HOME` redirected, `RUST_LOG=info`. Two `tracing` lines bracket
 the interesting part: `brigadier started` is the last statement of `setup`
@@ -207,6 +214,68 @@ still paying full parse and execute.
 6. **Known-issue watch, not a technique:** tauri **#15517** is OPEN — *"[macOS 26 Tahoe] tao 0.35.3
    panics in did_finish_launching — Tauri 2.11.2 GUI window opens blank"*. Same OS, adjacent
    version. **[source]** (verified via `gh api`)
+
+---
+
+### 1.4 Observed end to end, in the real binary — and B1 misses
+
+The paint instrumentation §5.3 asked for exists (`src/paint.ts`, `report_paint`, `1c8b6f6`) and the
+app has now been launched with it. Release binary, `RUST_LOG=info`, one launch at a time, quit
+cleanly between runs. **Every run captured both metrics simultaneously**, so they are comparable
+run-for-run: §5.2's own recipe (exec → `brigadier started`, exec → 2nd `claude resolved`) and the
+new `main_to_fcp_ms` from `paint.ndjson`. n=19. All **[measured]**.
+
+| Arm | condition | n | `main_to_fcp_ms` p50 (min–max) | exec → frontend's first IPC round trip, p50 |
+|---|---|---|---|---|
+| **A1** | fresh empty `HOME` per run — first-ever launch, migrations run (B3's condition) | 7 | **289.8** (274.8–316.4) | **291.3** |
+| **A2** | one reused scratchpad `HOME`, warm (B2's condition) | 7 | **282.0** (272.6–380.5) | **290.5** |
+| **B** | the owner's real `HOME` — 1.6 MB SQLite, ~10k feed rows, 23 sessions, 2 projects | 5 | **283.1** (277.9–293.7) | **288.4** |
+
+**These are loaded-machine numbers, not quiet-machine ones.** Load average ran 2.36 → 6.34 across
+the arms, with a VM, an Android emulator, two Expo servers, two iOS simulators and Docker helpers
+alive throughout. Arm B ran under the highest load and was the fastest. A2 runs 5 and 6 were visibly
+perturbed and were **kept, not dropped** — the 380.5 max is one of them.
+
+What it establishes:
+
+1. **A single 756 ms sample from the first-ever launch was noise.** Arm B is that exact condition
+   and its p50 is 283.1 — the 756 is 2.7× its own condition's median and 2.0× above the max of all
+   19 runs. Both halves of that launch were inflated by the same factor (Rust 2.5×, webview 2.9×),
+   which is contention's signature; a slow database or a long `worktree prune` would have inflated
+   the Rust half alone. **[asserted]** — by elimination; the neighbour set was never reproduced.
+2. **The real data directory costs approximately nothing.** Arm B 283.1 against warm scratchpad
+   282.0 — **1.1 ms**, inside the spread.
+3. **Migrations cost approximately nothing.** A1 first-ever 291.3 against A2 warm 290.5. The 400 ms
+   B3 budget was set expecting they would be expensive. They are not.
+4. **The two metrics are comparable on this build, empirically rather than by definition.** `main()`
+   starts **~4.9 ms** after exec (p50 over 19 runs, range 4.1–6.4), so the invisible pre-main segment
+   is ~5 ms, not the ~25 ms §1.2's arithmetic assumed. And FCP lands within ~3 ms of the frontend's
+   first IPC round trip in every arm (p50 −1.5 / −2.1 / −2.9 ms, range −7.0 to +8.4), because
+   `probeClaude()` on mount and the FCP report fire in the same React mount tick. **This equivalence
+   is a property of today's frontend, not a guarantee**: if `probeClaude()` ever moves off mount it
+   breaks, and W4-C / W4-D rewrite exactly that code.
+
+**B1 does not survive.** Adding the ~4.9 ms pre-main segment to `main_to_fcp_ms` gives **exec → FCP
+of 287–295 ms p50 across all three arms** — roughly **100 ms above this document's own ~190 ms
+arithmetic** and **~90 ms above the ≤ 200 ms budget**.
+
+The decomposition says where it went, and this document predicted it against itself. The estimate
+assumed **38 ms** from navigation start to FCP; measured `brigadier started` → FCP is
+**132–141 ms** **[measured]**. "Not checked" already said *"The `tauri://localhost` path was never
+measured"* — every FCP figure behind that 38 ms came from loopback HTTP in a bare `NSWindow`,
+excluding the
+custom-scheme handler and the brotli-quality-9 inflate of the bundle. **That unmeasured cost now
+looks like it is worth roughly 100 ms** — **[asserted]**, by elimination, not a measurement of the
+scheme handler itself. The 132–141 ms it has to explain is **[measured]**.
+
+Two things that stay true: today's first contentful paint is **React's, not a static shell's**, so
+B1's target is not yet the thing being measured — W3-C now has a measured starting line and a real
+gap to close rather than a flattering estimate. And **a launch is not zero-`claude`**: each one
+spawns `claude --version` twice, once from `setup` and once from the frontend's mount-time
+`probeClaude` (`src-tauri/src/state.rs:180`). No session, no API call, no cost.
+
+`paint.ndjson` works end to end in a real window — the instrument had never been run before this —
+and `main_to_fcp_ms` matched its own `tracing` line on **every one of 19 runs**. **[measured]**
 
 ---
 
@@ -865,16 +934,26 @@ Ideas in this space that look right and are not.
 
 ## Not checked
 
-- **No paint instrumentation was added to the app.** B1 is inferred from two separate measurements
-  (Tauri launch timestamps; a Swift WKWebView probe), never observed end to end in the real binary.
-  B4, B6 and B7 have nothing behind them at all.
+- **The paint instrumentation now exists and has been run** (§1.4), so B1 is no longer inferred —
+  it was observed end to end and **missed its budget by ~90 ms**. What the instrument has *not*
+  done is time an interaction: `beginInteraction` has no call site, so it is tree-shaken out of the
+  shipped bundle. **B4, B6 and B7 still have nothing behind them at all.**
+- **§1.4 is one machine, one binary, one display, and a loaded one.** No arm ran on a quiet machine.
+- **Nothing in §1.4 ran with a cold OS file cache.** `sudo purge` needs sudo and was unavailable.
+- **The 756 ms outlier's diagnosis is by elimination.** That specific neighbour set was never
+  reproduced, so "contention" is **[asserted]** from the two halves inflating by the same factor,
+  not from a controlled repeat.
+- **n=5–7 per arm supports a median, not a p95.** No budget expressed as a p95 is answered by §1.4.
 - The binary measured was built 2026-09-02 13:26 and predates nothing in `git log`, but it was not
   rebuilt for this work — no build was run, because `dist/` and `target/` are outside the one path
   this document owns.
-- **The `tauri://localhost` path was never measured.** All FCP numbers come from loopback HTTP in a
-  bare `NSWindow`, which excludes the brotli-quality-9 inflate
-  (`tauri-utils-2.9.3/src/assets.rs:168-177`) and the custom-scheme handler. Whether disabling the
-  `compression` feature is worth anything is **unmeasured**, and no published number exists.
+- **The `tauri://localhost` path was never measured directly**, and §1.4 is why that now matters:
+  all §1.2 FCP numbers come from loopback HTTP in a bare `NSWindow`, which excludes the
+  brotli-quality-9 inflate (`tauri-utils-2.9.3/src/assets.rs:168-177`) and the custom-scheme
+  handler, and the gap between that 38 ms estimate and the measured 132–141 ms is **~100 ms**.
+  Attributing that gap to the scheme handler and the inflate is **[asserted]**, by elimination —
+  neither was timed on its own. Whether disabling the `compression` feature is worth anything is
+  still **unmeasured**, and no published number exists.
 - The ~100 ms WKWebView construction figure is from a minimal Swift program, not from tao's window
   creation with a menu bar, an activation policy and Tauri's init scripts. It is a floor, not the
   app's actual cost.
