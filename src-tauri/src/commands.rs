@@ -25,7 +25,10 @@ use tauri::State;
 
 use crate::error::AppError;
 use crate::state::AppState;
-use crate::views::{AppInfo, ClaudeStatus, FrameStats, ModelInfo, ProjectView, SessionView, TurnStarted};
+use crate::views::{
+    AppInfo, ClaudeStatus, FrameStats, ModelInfo, PaintLine, PaintReport, ProjectView, SessionView,
+    TurnStarted,
+};
 
 /// The kind every session this phase starts is driven by.
 const CLAUDE_CODE: &str = "claude-code";
@@ -282,6 +285,48 @@ pub(crate) async fn record_frame_stats(
     let path = state.get()?.data_dir.join("frame-stats.ndjson");
     let mut line = serde_json::to_vec(&stats)
         .map_err(|e| AppError::invalid_argument(format!("frame stats would not serialize: {e}")))?;
+    line.push(b'\n');
+    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
+    file.write_all(&line)?;
+    Ok(())
+}
+
+/// Append one paint the page timed to `<data_dir>/paint.ndjson`, and log `main()` → FCP once.
+///
+/// **A sibling file, not `frame-stats.ndjson`.** `docs/research/perceived-performance.md` §5.3
+/// step 3 suggests reusing that file; this deviates deliberately. `frame-stats.ndjson` holds 1,513
+/// homogeneous `FrameStats` lines and is the evidence base for the 60 Hz claim in
+/// `docs/STATUS.md` §4 and §5.4 of the research file — a line of a different shape in it breaks
+/// every reader of that evidence. A second file costs nothing.
+///
+/// Append-only and never read back by the app, exactly like its sibling.
+///
+/// The `fcp` arm also emits one `tracing::info!` carrying the `main()` → FCP delta, so the launch
+/// recipe in §5.2 — which already parses the `RUST_LOG=info` stream for `brigadier started` —
+/// picks the number up with no new plumbing.
+#[tauri::command]
+pub(crate) async fn report_paint(
+    report: PaintReport,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
+    use std::io::Write;
+
+    let path = state.get()?.data_dir.join("paint.ndjson");
+    let process_start_epoch_ms = crate::process_start_epoch_ms();
+    let main_to_fcp_ms = match &report {
+        PaintReport::Fcp { epoch_ms } => {
+            let delta = epoch_ms - process_start_epoch_ms;
+            // `main()` entry → first contentful paint. Not `posix_spawn` → FCP (the pre-main
+            // segment is invisible), and FCP is a render timestamp, not a presentation one.
+            tracing::info!(main_to_fcp_ms = delta, "first contentful paint");
+            Some(delta)
+        }
+        PaintReport::Interaction { .. } => None,
+    };
+
+    let line_struct = PaintLine { process_start_epoch_ms, main_to_fcp_ms, report };
+    let mut line = serde_json::to_vec(&line_struct)
+        .map_err(|e| AppError::invalid_argument(format!("paint report would not serialize: {e}")))?;
     line.push(b'\n');
     let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
     file.write_all(&line)?;

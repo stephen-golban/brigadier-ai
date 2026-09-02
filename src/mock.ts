@@ -666,6 +666,13 @@ export const mockBridge: Bridge = {
     // The Rust side appends NDJSON; in the browser the console.debug in fps.ts is the record.
   },
 
+  async reportPaint(report) {
+    // The Rust side appends one line to `<data_dir>/paint.ndjson` and logs `main()` -> FCP.
+    // There is no Rust process here and no `main()` to measure against, so the console is the
+    // record; the instrument itself (`src/paint.ts`) is exercised either way.
+    console.debug("paint", report);
+  },
+
   // `rows_per_sec` is **per session**, following the Rust signature's own comment in
   // docs/research/feed-rendering.md §4 (`rows_per_sec: f64, // per session`). The ambient
   // `?rps=` generator above is a total across sessions; the two dials are not the same dial.
