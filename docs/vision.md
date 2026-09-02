@@ -346,23 +346,30 @@ marks an entry **unknown** rather than leaving it pending forever.
 ### How fast, in numbers
 
 "We prioritize performance" is only a claim if it has figures behind it. These are the budgets, and
-the three that are guesses say so — they are **not quotable as results** until the paint
-instrumentation exists.
+the three that are guesses say so — they are **not quotable as results**. The paint instrumentation
+now exists and has been run (`1c8b6f6`; `docs/research/perceived-performance.md` §1.4), but it timed
+**paints, not interactions**: `beginInteraction` has no call site, so it is tree-shaken out of the
+shipped bundle and no click has ever been timed. B4, B6 and B7 stay guesses until W4-C/W4-D add the
+first caller.
 
 | | budget | today |
 |---|---|---|
-| **B1** exec → **painted** shell | ≤ 200 ms | ~190 ms by arithmetic, and those pixels are white |
-| **B2** exec → real project list | ≤ 350 ms | **292 ms p50** **[measured]** |
-| **B3** first-ever launch, migrations run | ≤ 400 ms | **314 ms** **[measured]**, n=1 |
+| **B1** exec → **painted** shell | ≤ 200 ms | **287–295 ms p50** **[measured]**, n=19 — **~90 ms over budget**, and those pixels are React's, not a shell's |
+| **B2** exec → real project list | ≤ 350 ms | **292 ms p50** **[measured]**, replicated at **290.5 p50**, n=7, on a busier machine |
+| **B3** first-ever launch, migrations run | ≤ 400 ms | **291.3 ms p50** **[measured]**, n=7 — supersedes a 314 ms n=1 sample; migrations cost nothing measurable |
 | **B4** click session → last screenful painted | ≤ 100 ms p95 | **guess** |
 | **B5** …of which the Rust half | ≤ 16 ms p95 | **≤ 8.2 ms** worst case **[measured]** |
 | **B6** rest of the scrollback filled in | ≤ 250 ms | **guess** |
 | **B7** any button → visible acknowledgement | ≤ 100 ms | **guess** |
 | **B8** frame budget throughout | 16.67 ms | 60 Hz confirmed in a real window **[measured]** |
 
-B2, B3, B5 and B8 are **build gates**; B1 joins them when the static shell lands. B1 and B2 are
-separate on purpose: a window on screen with a painted shell at 190 ms that fills its list at 292 ms
-reads as instant, and one that stays blank until 292 ms does not — **blank is what ships today.**
+B2, B3, B5 and B8 are **build gates**; B1 joins them when the static shell lands, and it now joins
+them with a measured gap rather than an estimate. B1 and B2 are separate on purpose: a window on
+screen with a painted shell early that fills its list at ~290 ms reads as instant, and one that
+stays blank until then does not — **blank is what ships today**, for ~290 ms of it. The ~190 ms this
+line used to quote was arithmetic; measured, the first paint is ~100 ms later than that, and
+`perceived-performance.md` §1.4 puts the missing ~100 ms on the `tauri://localhost` scheme handler
+and brotli inflate that its own FCP figures never included — **[asserted]**, by elimination.
 
 Two closed doors, both **[source]**: a splash window is a *second* WKWebView, and WKWebView
 construction is the ~100 ms that dominates launch, so it pays the cost twice to hide it once. And
