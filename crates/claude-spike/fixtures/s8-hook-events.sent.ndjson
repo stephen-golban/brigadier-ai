@@ -1,0 +1,5 @@
+{"request":{"hooks":{"PostToolUse":[{"hookCallbackIds":["cb_post"],"matcher":""}],"PreToolUse":[{"hookCallbackIds":["cb_pre"],"matcher":""}],"Stop":[{"hookCallbackIds":["cb_stop"],"matcher":""}],"SubagentStop":[{"hookCallbackIds":["cb_substop"],"matcher":""}]},"subtype":"initialize"},"request_id":"spike_1","type":"control_request"}
+{"message":{"content":"Use the Bash tool to run: echo brigadier-wall-ok. Then reply done.","role":"user"},"parent_tool_use_id":null,"type":"user"}
+{"response":{"request_id":"88df3428-52ae-4332-a900-e43e8073ac18","response":{},"subtype":"success"},"type":"control_response"}
+{"response":{"request_id":"44cb9015-ea6a-4852-a621-576c5e23f7b6","response":{},"subtype":"success"},"type":"control_response"}
+{"response":{"request_id":"b4b977d8-de22-41e9-8f33-b3396d5fbba2","response":{},"subtype":"success"},"type":"control_response"}

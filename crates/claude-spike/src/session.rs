@@ -18,6 +18,13 @@ pub const CLAUDE_BIN: &str = "/Users/stephen/.local/bin/claude";
 pub const SPIKE_CWD: &str = "/private/tmp/claude-501/-Users-stephen-Development-brigadier-ai/c9b1b0ce-6420-4fcb-b7ae-26de66623b72/scratchpad/spike-cwd";
 pub const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures");
 
+/// The cwd the child runs in. `SPIKE_CWD` in the environment overrides the
+/// compiled-in default, so a later spike can point at its own scratch repo
+/// without touching the WO-C scenarios.
+pub fn spike_cwd() -> String {
+    std::env::var("SPIKE_CWD").unwrap_or_else(|_| SPIKE_CWD.to_string())
+}
+
 /// Environment variables this harness (Claude Code itself) injects into every
 /// child of its Bash tool. A real Brigadier desktop process would never have
 /// them, and leaving them in nests the spike's child inside our own session.
@@ -82,7 +89,7 @@ impl Session {
         let argv = build_argv(extra);
         let mut cmd = Command::new(CLAUDE_BIN);
         cmd.args(&argv)
-            .current_dir(SPIKE_CWD)
+            .current_dir(spike_cwd())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -229,6 +236,24 @@ impl Session {
             "type": "user",
             "message": { "role": "user", "content": text },
             "parent_tool_use_id": null
+        }))
+        .await
+    }
+
+    /// Answer a `control_request` with a `subtype: "success"` body.
+    pub async fn answer_ok(&mut self, cli_request_id: &str, body: Value) -> Result<()> {
+        self.send(&json!({
+            "type": "control_response",
+            "response": { "subtype": "success", "request_id": cli_request_id, "response": body }
+        }))
+        .await
+    }
+
+    /// Answer a `control_request` we do not implement.
+    pub async fn answer_err(&mut self, cli_request_id: &str, msg: &str) -> Result<()> {
+        self.send(&json!({
+            "type": "control_response",
+            "response": { "subtype": "error", "request_id": cli_request_id, "error": msg }
         }))
         .await
     }
