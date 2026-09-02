@@ -377,3 +377,8 @@ Everything here that has not been checked, in one place:
 6. The `.gitattributes` filter-driver hole. Known, unfixed.
 7. Whether the ~1,500-token brief actually reduces turns. The settling experiment — same work order
    with and without it — was **not run**.
+8. **The front end has no test runner at all.** The six worktree-cleanup refusal notes were proven
+   by rendering synthesized values through `react-dom/server`; the sentences and buttons are right,
+   the click wiring was checked by reading only. No refusal note has been seen in a real window, and
+   none came from a real repository's refusal. That gap closes the first time the owner clicks it,
+   and not before — which is true of the Resume button, the branch chip and the cleanup flow as well.

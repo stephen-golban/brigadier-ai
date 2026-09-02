@@ -182,15 +182,23 @@ resumed session needs its worktree as `cwd`, and `resume_session` reuses the sto
 
 - Refused with `session_running` while a child is live on the session; end or kill it first.
 - Refused with `invalid_argument` when the session has no worktree.
-- `force: false` is the question. A worktree with uncommitted work returns
-  `{ removed: false, dirty_files: N, branch }` with **nothing touched** — show the count and offer
-  "discard N uncommitted changes and remove", which is the same call with `force: true`.
+- `force: false` is the question, and **`blocked` says which question**. Nothing is ever touched on
+  a refusal. There are six refusal reasons and **`force: true` answers only three of them**:
+  `dirty`, `commits` and `branch_moved`. Offer the force button *only* for those.
+- `unregistered`, `locked` and `left_on_disk` return **before the force check**
+  (`crates/supervisor/src/worktree.rs:468`, `:472`, `:549`) and the operator must act outside
+  brigadier. A UI that offers "force" on these builds a button that cannot work. Say what is wrong
+  and what to do about it instead — do not offer a retry that is guaranteed to refuse again.
 - **`dirty_files` counts ignored files too** — `node_modules/`, `.env`, a venv, build output. Not
   a quirk: `git worktree remove` without `--force` deletes ignored content silently (measured), so
   a count that skipped them would present "clean, safe to remove" over the operator's secrets.
   Word the prompt as "N files will be deleted", not "N uncommitted changes".
 - The count also survives an operator whose global config sets `status.showUntrackedFiles=no`,
   which otherwise makes git report a worktree full of new work as empty (measured).
+- **`commits` is counted against `live_branch`, not the stored `branch`**, because the stored branch
+  can be stale — an agent may have detached `HEAD` or checked out its own. It counts commits no
+  other ref keeps. Working-tree dirt and unpushed commits are different losses and are reported
+  separately; present them separately.
 - **The branch always survives.** No cleanup path deletes one, and there is no command that does.
   The checkout is reconstructible; the branch is the only copy of what the agent committed, and
   `git worktree remove` on a clean tree with unmerged commits exits 0 in silence.
@@ -219,7 +227,15 @@ SessionView  { session_id, project_id: string|null, instance_id: string|null, pr
                model: string|null, status: "starting"|"running"|"exited"|"failed",
                started_at_ms: number|null, ended_at_ms: number|null, exit_code: number|null,
                last_event_seq: number, usage: Usage, cost_usd_cumulative: number }
-WorktreeCleanup { removed: boolean, dirty_files: number, branch: string }
+WorktreeCleanup { removed: boolean, dirty_files: number, commits: number, branch: string,
+               live_branch: string|null /* what `git worktree list --porcelain` reports NOW; null on a
+                                          detached HEAD. Where it disagrees with `branch`, this is the
+                                          only trustworthy answer */,
+               blocked: "dirty"|"commits"|"branch_moved"|"unregistered"|"locked"|"left_on_disk"|null
+                        /* null only when something was removed. The enum is unit-variant with
+                           #[serde(rename_all = "snake_case")] (crates/supervisor/src/worktree.rs:64-66),
+                           so these six bare strings are the wire form. force answers the first three
+                           only. */ }
 Usage        { input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens: number, context_window: number|null }
 ApprovalView { request_id, session_id: string, opened_at_ms: number,
                kind: RequestKind | null /* null when the store replaced an oversized kind_json */,
