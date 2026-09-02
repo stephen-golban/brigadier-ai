@@ -1,0 +1,2 @@
+// hand-written from sdk.d.ts SDKRateLimitEvent; replace with a real capture from crates/claude-spike when available
+{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":1790000000},"uuid":"9f0c1d2e-0000-4000-8000-0000000000d6","session_id":"9f0c1d2e-0000-4000-8000-000000000001"}

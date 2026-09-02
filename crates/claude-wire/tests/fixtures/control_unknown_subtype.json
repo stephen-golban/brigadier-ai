@@ -1,0 +1,2 @@
+// hand-written from sdk.mjs sends 14 subtypes absent from sdk.d.ts:4280; this is one of them; replace with a real capture from crates/claude-spike when available
+{"type":"control_request","request_id":"un1","request":{"subtype":"claude_authenticate","force":true,"nested":{"a":[1,2]}}}

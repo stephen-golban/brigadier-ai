@@ -1,0 +1,2 @@
+// hand-written from sdk.d.ts:4094-4101; replace with a real capture from crates/claude-spike when available
+{"type":"control_request","request_id":"mc1","request":{"subtype":"mcp_message","server_name":"pencil","message":{"jsonrpc":"2.0","id":4,"method":"tools/list","params":{}}}}

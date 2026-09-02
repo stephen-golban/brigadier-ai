@@ -1,0 +1,2 @@
+// hand-written from sdk.d.ts SDKStatusMessage; replace with a real capture from crates/claude-spike when available
+{"type":"system","subtype":"status","status":"compacting","permissionMode":"acceptEdits","compact_result":"success","uuid":"9f0c1d2e-0000-4000-8000-0000000000a5","session_id":"9f0c1d2e-0000-4000-8000-000000000001"}

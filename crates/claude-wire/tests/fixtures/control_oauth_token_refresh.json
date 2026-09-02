@@ -1,0 +1,2 @@
+// hand-written from sdk.mjs:47450-47463; replace with a real capture from crates/claude-spike when available
+{"type":"control_request","request_id":"oa1","request":{"subtype":"oauth_token_refresh"}}

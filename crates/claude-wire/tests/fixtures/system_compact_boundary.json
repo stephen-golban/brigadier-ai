@@ -1,0 +1,2 @@
+// hand-written from sdk.d.ts:3378; replace with a real capture from crates/claude-spike when available
+{"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"auto","pre_tokens":168000,"post_tokens":24000,"duration_ms":9100,"preserved_segment":{"head_uuid":"a","anchor_uuid":"b","tail_uuid":"c"}},"uuid":"9f0c1d2e-0000-4000-8000-0000000000a2","session_id":"9f0c1d2e-0000-4000-8000-000000000001"}

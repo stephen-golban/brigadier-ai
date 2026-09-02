@@ -1,0 +1,2 @@
+// hand-written from sdk.d.ts:308-326; replace with a real capture from crates/claude-spike when available
+{"type":"control_response","response":{"subtype":"success","request_id":"in1","response":{"commands":[],"agents":[],"output_style":"default","available_output_styles":["default"],"models":[],"account":{"email":"golban.stephen@gmail.com"},"hooks_applied":true},"pending_permission_requests":[{"type":"control_request","request_id":"q1w2e3r4t5y","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{},"tool_use_id":"toolu_01"}}]}}

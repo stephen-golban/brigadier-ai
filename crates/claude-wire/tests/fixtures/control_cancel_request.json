@@ -1,0 +1,2 @@
+// hand-written from sdk.d.ts:3524-3530; replace with a real capture from crates/claude-spike when available
+{"type":"control_cancel_request","request_id":"q1w2e3r4t5y"}

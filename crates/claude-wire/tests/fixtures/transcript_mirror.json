@@ -1,0 +1,2 @@
+// hand-written from sdk.mjs:47224-47227 (no sdk.d.ts type exists); replace with a real capture from crates/claude-spike when available
+{"type":"transcript_mirror","filePath":"/tmp/mirror.jsonl","entries":[{"k":1}]}

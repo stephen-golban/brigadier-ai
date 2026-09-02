@@ -1,0 +1,2 @@
+// hand-written from sdk.d.ts:4748; replace with a real capture from crates/claude-spike when available
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hel"}},"parent_tool_use_id":null,"uuid":"9f0c1d2e-0000-4000-8000-0000000000d1","session_id":"9f0c1d2e-0000-4000-8000-000000000001","ttft_ms":412}

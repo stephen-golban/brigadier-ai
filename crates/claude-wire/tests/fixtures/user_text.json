@@ -1,0 +1,2 @@
+// hand-written from sdk.d.ts:5267; replace with a real capture from crates/claude-spike when available
+{"type":"user","message":{"role":"user","content":"go"},"parent_tool_use_id":null}

@@ -1,0 +1,2 @@
+// hand-written from sdk.d.ts:3240; replace with a real capture from crates/claude-spike when available
+{"type":"active_goal","value":{"condition":"tests pass","iterations":2,"set_at":1790000000,"tokens_at_start":1000},"uuid":"9f0c1d2e-0000-4000-8000-0000000000d8","session_id":"9f0c1d2e-0000-4000-8000-000000000001"}

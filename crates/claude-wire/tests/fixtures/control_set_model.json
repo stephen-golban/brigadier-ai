@@ -1,0 +1,2 @@
+// hand-written from sdk.d.ts:4363-4374; replace with a real capture from crates/claude-spike when available
+{"type":"control_request","request_id":"sm1","request":{"subtype":"set_model","model":"claude-opus-4-6"}}
