@@ -58,7 +58,11 @@ CLAUDE_BIN="$(command -v claude)" cargo test -p brigadier-supervisor --test <nam
 
 Live costs, from the store row: `live_approvals` ~$0.046, `live_resume` ~$0.031,
 `live_worktree` ~$0.030, `live_two_sessions` ~$0.053, plus the older `live_pong`. The protocol spike
-runs cost $0.160698 against a $0.15 cap — **$0.011 over**, caused by the double-`result` defect in §5.
+runs cost **$0.111336, under their $0.15 cap** — an earlier report of $0.160698 and an $0.011 overrun
+was wrong. `result.total_cost_usd` is **cumulative**, so a run emitting two `result` frames was
+double-counted; the correction was verified against the fixture's own `cacheReadInputTokens`
+(72,567 → 115,395 across the two frames). W0-D itself cost **$0.186289 against a $0.15 cap, 24%
+over** — a warm prefix saves cost but not the per-turn re-read.
 
 `live_approvals` rewrites `crates/claude-spike/fixtures/s7-can-use-tool-write.ndjson` on every run;
 `git checkout` it afterwards unless the capture changed on purpose.
@@ -125,6 +129,12 @@ path by design, but it is unfixed.
 - `docs/research/agent-sdk.md` says `Stop`'s output is `additionalContext?` and the conversation
   continues. Measured otherwise: the bounce comes from **top-level `decision`/`reason`**, not from
   inside `hookSpecificOutput`. **Wrong.**
+- **`result.total_cost_usd` is cumulative across `result` frames within a run.** Summing them
+  double-counts. Any cost table built by adding `result` frames is wrong; verify against
+  `cacheReadInputTokens`, which is monotonic.
+- `docs/vision.md` §6 originally claimed fan-out pays N equally-sized worker windows plus a
+  coordinator. **Wrong**: a subagent's window is 42% *smaller* than a harness-spawned child's.
+  Corrected 2026-09-02; the conclusion survived, the mechanism did not.
 - `docs/research/agent-sdk.md` documents an SDK the harness does not use. Rust speaks the CLI's
   control protocol directly. Read it for wire shapes, never as an instruction to add a dependency.
 

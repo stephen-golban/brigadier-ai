@@ -178,18 +178,46 @@ narrowing concurrency as it approaches and parking below it rather than at empty
 specific: if brigadier drinks the whole window, **the owner's own Claude Code stops working.** The
 reserve is headroom for the human, not a cost control.
 
+**How the gauge can actually be sampled — a constraint, measured.** Exactly **one**
+`rate_limit_event` fires per session, at 804–984 ms, and it reports utilization *before* that
+session's own spend (`docs/research/fanout-vs-children.md`). There is no second reading later in a
+session without spawning another child, and `utilization` is reported to two decimals, so 1% is the
+finest resolution available.
+
+This is a constraint a long-lived session could not work around and **shape §3 turns into a
+non-issue**: brigadier spawns a fresh child per work order, so every dispatch yields a fresh
+reading. The reserve is therefore a **per-dispatch gate, not a live control loop** — brigadier
+checks the window when it decides to spawn, never mid-flight. At a reserve near 80% and 1%
+resolution that is ample; a design needing finer control than that could not be built on this
+signal.
+
 **Parallelism is token-neutral.** Four workers at once and four in sequence burn the same total for
 the same work; parallelism changes the rate, not the amount. The one genuine waste is four workers
 each reading the same five files — a partitioning failure, not a concurrency cost, and the fix is
 disjoint file ownership per order.
 
-**Fan-out is the expensive shape, not the cheap one.** One child spawning N subagents pays for N
-worker windows *plus* a coordinating window that re-sends the brief and every returned report on
-each turn. N children spawned by the harness pay for N windows and coordinate in Rust for zero
-tokens. Beyond cost, fan-out also loses per-worker model routing (Claude Code picks the subagents'
-models, not brigadier) and loses worktree isolation (every subagent shares one cwd, so parallel
-edits collide). **[asserted]** — the head-to-head token comparison has **not been measured**, and
-should be, cheaply, on Haiku, before anything is built on it.
+**Direct children beat fan-out — measured, and not for the reason first assumed.**
+**[measured]** N=3 on `claude-haiku-4-5` (`docs/research/fanout-vs-children.md`): harness-spawned
+children won every measure — 230,615 tokens against 267,220 (1.16x), $0.072819 against $0.090916
+(1.25x), and 9,814 ms against 17,049 ms (1.74x). The direction holds. The margin is narrower than
+"fan-out is the expensive shape" implies, and that phrasing oversold a 16% token gap.
+
+The mechanism this file first gave was **half wrong**, and the correction runs against the
+conclusion rather than for it: fan-out does *not* pay for N equally-sized worker windows plus a
+coordinator. **A subagent's window is 42% smaller than a harness-spawned child's** — roughly 15k of
+context per turn against 25k, because the host system prompt is about 10k bigger. That is a real
+point in fan-out's favour and it was stated backwards.
+
+Direct children still win, and this is the sentence that matters: **the coordinator alone was
+133,858 tokens — 50.1% of the fan-out arm's entire bill, or 1.76 direct children's worth — and
+three of its five messages existed only to be woken when a subagent finished, costing 82,190 tokens,
+more than one whole direct child.** That per-completion wake-up tax is the largest single lever on
+the result, nothing predicted it, and it is the term that scales worst as N grows. Extrapolated
+parity sits somewhere near N≈12, which is **[asserted]**, not measured.
+
+The other two objections to fan-out are unchanged and remain **[asserted]**: it loses per-worker
+model routing (Claude Code picks its subagents' models, not brigadier) and it loses worktree
+isolation (every subagent shares one cwd, so parallel edits collide). Neither was measured.
 
 **Model routing is the throttle.** Role-based: judgement (lead, grill, review, judge) gets the
 strong model; work orders get mid-tier; lookups and mechanical edits get the cheapest. As the window
@@ -328,8 +356,9 @@ become real.
 
 Everything here that has not been checked, in one place:
 
-1. Head-to-head token cost of N direct children vs one child fanning out to N subagents. Not
-   measured. Settleable cheaply on Haiku.
+1. Fan-out vs direct children beyond N=3. One run per arm, so **no variance**; arm order was not
+   reversed; N was never varied. The N≈12 parity extrapolation is asserted. Fan-out's other two
+   costs — lost model routing and worktree collision — were reasoned, never measured.
 2. Whether a child's tool set can be constrained at `initialize`, which would make the wall a
    *capability* rather than a *refusal*. Unresearched. The proven fallback is `PreToolUse` denial
    with `matcher: ""`.
