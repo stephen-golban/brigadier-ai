@@ -22,6 +22,7 @@ use brigadier_core::claude::hook::allow_all;
 use brigadier_core::claude::process::{ExitInfo, KillHandle};
 use brigadier_core::event::{
     Envelope, Event, ExitReason, InstanceId, ItemId, ItemKind, RequestKind, SessionId, StopReason,
+    TurnId, Usage,
 };
 use brigadier_core::session::{Decision, SessionCommands, TurnInput};
 use serde_json::Value;
@@ -274,6 +275,40 @@ fn is_request_opened(event: &Event) -> bool {
 
 fn is_turn_end(event: &Event) -> bool {
     matches!(event, Event::TurnCompleted { .. } | Event::TurnAborted { .. })
+}
+
+fn is_turn_started(event: &Event) -> bool {
+    matches!(event, Event::TurnStarted { .. })
+}
+
+/// Every `TurnStarted` id, in order.
+fn started_ids(rig: &Rig) -> Vec<TurnId> {
+    rig.collected
+        .iter()
+        .filter_map(|e| match e {
+            Event::TurnStarted { turn_id } => Some(turn_id.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Every `TurnCompleted`, in order, as the three fields the store writes.
+fn completed(rig: &Rig) -> Vec<(TurnId, Usage, f64)> {
+    rig.collected
+        .iter()
+        .filter_map(|e| match e {
+            Event::TurnCompleted { turn_id, usage, cost_usd_cumulative, .. } => {
+                Some((turn_id.clone(), *usage, *cost_usd_cumulative))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Costs are compared with an epsilon of 1e-12: the fixture's `total_cost_usd` is parsed to the
+/// same `f64` it was serialised from, so this is tighter than the value's own last digit.
+fn about(actual: f64, expected: f64) {
+    assert!((actual - expected).abs() < 1e-12, "{actual} != {expected}");
 }
 
 fn is_session_exited(event: &Event) -> bool {
@@ -576,6 +611,183 @@ async fn s6_hook_callback_is_answered_with_an_empty_object() {
         rig.labels_until(is_turn_end).await.last().expect("last"),
         "turn-completed(EndTurn)"
     );
+}
+
+// -----------------------------------------------------------------------------------------
+// s9 / f-b-fanout — a background subagent runs a turn the harness never sent
+// -----------------------------------------------------------------------------------------
+
+/// One user message, two `result` frames. The `Agent` tool backgrounds its subagent, the CLI
+/// closes the turn when it *launches*, and the finished subagent makes it run a second turn the
+/// harness never sent. Both results are cumulative, so the last one is the truth: dropping it
+/// under-counted this fixture by 13.5% in dollars and 37.1% in `cacheReadInputTokens`.
+// see docs/research/async-subagent-results.md §0 (measured) and docs/STATUS.md §5.
+#[tokio::test]
+async fn s9_a_background_subagent_produces_a_second_turn() {
+    let mut rig = Rig::start("s9-subagent-agent-id.ndjson", 64).await;
+    let sent = rig.commands.send_turn(TurnInput::text("go")).await.expect("turn accepted");
+
+    // Fixture lines 2..=49, ending on `result` #1 — the frame that used to end the turn for good.
+    rig.feed(48).await;
+    assert_eq!(
+        rig.labels_until(is_turn_end).await.last().expect("last"),
+        "turn-completed(EndTurn)"
+    );
+
+    // Lines 50..=56: the task notification and `system/init` #2. Nothing was written to the
+    // child's stdin in between, so the turn that init opens is one nobody asked for.
+    rig.feed(7).await;
+    assert_eq!(rig.labels_until(is_turn_started).await.last().expect("last"), "turn-started");
+
+    rig.feed_rest().await;
+    assert_eq!(
+        rig.labels_until(is_turn_end).await.last().expect("last"),
+        "turn-completed(EndTurn)"
+    );
+
+    let completed = completed(&rig);
+    assert_eq!(completed.len(), 2, "one `TurnCompleted` per `result` frame");
+    about(completed[0].2, 0.049_362_199_999_999_995);
+    about(completed[1].2, 0.057_083_999_999_999_996);
+    assert_eq!(completed[0].1.cache_read_tokens, 72_567);
+    assert_eq!(completed[1].1.cache_read_tokens, 115_395);
+
+    // The continuation turn is a minted id, not the operator's, and it is the one that completed.
+    let started = started_ids(&rig);
+    assert_eq!(started, vec![sent.clone(), completed[1].0.clone()]);
+    assert_eq!(completed[0].0, sent);
+    assert_ne!(completed[1].0, sent);
+}
+
+/// Three subagents, one user message, **four** `result` frames. This is the test a
+/// `subagent_stats.spawned > completed` implementation fails: result #3 reports `spawned 3,
+/// completed 3` and stops at $0.086_817, 4.5% short.
+// see docs/research/async-subagent-results.md §A (measured).
+#[tokio::test]
+async fn f_b_fanout_reports_the_last_of_four_results() {
+    let mut rig = Rig::start("f-b-fanout.ndjson", 64).await;
+    let sent = rig.commands.send_turn(TurnInput::text("go")).await.expect("turn accepted");
+    rig.feed_rest().await;
+
+    for _ in 0..4 {
+        assert_eq!(
+            rig.labels_until(is_turn_end).await.last().expect("last"),
+            "turn-completed(EndTurn)"
+        );
+    }
+
+    let completed = completed(&rig);
+    assert_eq!(completed.len(), 4, "one `TurnCompleted` per `result` frame");
+    let costs: Vec<f64> = completed.iter().map(|c| c.2).collect();
+    about(costs[0], 0.041_506_75);
+    about(costs[1], 0.080_402_900_000_000_01);
+    about(costs[2], 0.086_817_05);
+    about(costs[3], 0.090_915_950_000_000_01);
+    let cache: Vec<u64> = completed.iter().map(|c| c.1.cache_read_tokens).collect();
+    assert_eq!(cache, vec![43_590, 157_119, 198_568, 225_897]);
+
+    // Four turns, four starts: the operator's, then three the CLI ran on its own.
+    let started = started_ids(&rig);
+    assert_eq!(started.len(), 4);
+    assert_eq!(started[0], sent);
+    let ids: Vec<TurnId> = completed.iter().map(|c| c.0.clone()).collect();
+    assert_eq!(ids, started, "every completion closes the turn that started it");
+}
+
+/// A minted turn must never be the reason an operator cannot send. Nothing on the wire promises
+/// that every `system/init` is followed by a `result`, and an `init` that none follows would
+/// otherwise refuse every `SendTurn` until the child exits — a kill as the only escape.
+// see docs/research/unprompted-init.md.
+#[tokio::test]
+async fn a_minted_turn_is_pre_empted_by_a_send() {
+    let mut rig = Rig::start("s9-subagent-agent-id.ndjson", 64).await;
+    let first = rig.commands.send_turn(TurnInput::text("go")).await.expect("turn accepted");
+    rig.feed(48).await; // through `result` #1
+    rig.labels_until(is_turn_end).await;
+    rig.feed(7).await; // through `system/init` #2, which mints a continuation turn
+    rig.labels_until(is_turn_started).await;
+    let minted = started_ids(&rig).last().cloned().expect("a continuation turn was minted");
+    assert_ne!(minted, first, "the continuation id is not the operator's");
+
+    // Accepted, not rejected — and the minted turn is closed rather than left unpaired.
+    let second = rig.commands.send_turn(TurnInput::text("again")).await.expect("send accepted");
+    assert_eq!(
+        rig.labels_until(is_turn_started).await,
+        ["turn-aborted(Interrupted)", "turn-started"]
+    );
+    let aborted = rig
+        .collected
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            Event::TurnAborted { turn_id, .. } => Some(turn_id.clone()),
+            _ => None,
+        })
+        .expect("the minted turn was aborted");
+    assert_eq!(aborted, minted);
+    assert_eq!(started_ids(&rig).last().cloned().expect("started"), second);
+
+    // Both user frames reached the child, in order.
+    let mut texts: Vec<String> = Vec::new();
+    while texts.len() < 2 {
+        let sent = rig.next_sent().await;
+        if sent["type"] == "user" {
+            texts.push(sent["message"]["content"][0]["text"].as_str().expect("text").to_owned());
+        }
+    }
+    assert_eq!(texts, ["go", "again"]);
+
+    // The trade-off, pinned so it is a decision and not a surprise: the continuation's `result`
+    // was already in flight, so it closes the operator's turn instead of the minted one.
+    // Attribution is approximate across a pre-emption; the cumulative cost is not.
+    rig.feed_rest().await;
+    assert_eq!(
+        rig.labels_until(is_turn_end).await.last().expect("last"),
+        "turn-completed(EndTurn)"
+    );
+    let completed = completed(&rig);
+    let last = completed.last().expect("a completion");
+    assert_eq!(last.0, second);
+    about(last.2, 0.057_083_999_999_999_996);
+}
+
+/// The belt and braces. A `result` that arrives with no open turn and no `system/init` before it
+/// is still translated: a `TurnStarted`/`TurnCompleted` pair on a minted id, cost intact. The
+/// frame is synthetic — every `result` in all 16 captures is preceded by an `init` — which is
+/// exactly why this arm needs a test of its own.
+// see docs/research/async-subagent-results.md §B.
+#[tokio::test]
+async fn a_result_with_no_open_turn_is_still_reported() {
+    let mut rig = Rig::start("s1-handshake-and-turn.ndjson", 64).await;
+    let bare = serde_json::json!({
+        "type": "result",
+        "subtype": "success",
+        "is_error": false,
+        "duration_ms": 1,
+        "duration_api_ms": 1,
+        "num_turns": 1,
+        "result": "ok",
+        "session_id": "no-init",
+        "stop_reason": "end_turn",
+        "terminal_reason": "completed",
+        "total_cost_usd": 0.125,
+        "usage": {"input_tokens": 1, "output_tokens": 2, "cache_read_input_tokens": 3},
+        "modelUsage": {"claude-haiku-4-5": {
+            "inputTokens": 11, "outputTokens": 22, "cacheReadInputTokens": 33,
+            "cacheCreationInputTokens": 44, "contextWindow": 200000
+        }}
+    });
+    write_line(&mut rig.to_adapter, &bare.to_string()).await;
+
+    assert_eq!(
+        rig.labels_until(is_turn_end).await,
+        ["turn-started", "turn-completed(EndTurn)"]
+    );
+    let completed = completed(&rig);
+    assert_eq!(completed.len(), 1);
+    about(completed[0].2, 0.125);
+    assert_eq!(completed[0].1.cache_read_tokens, 33, "`modelUsage`, not the main-loop `usage`");
+    assert_eq!(started_ids(&rig), vec![completed[0].0.clone()], "one minted id, one pair");
 }
 
 // -----------------------------------------------------------------------------------------
