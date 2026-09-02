@@ -131,6 +131,51 @@ impl std::fmt::Debug for SupervisorConfig {
     }
 }
 
+/// One session's accounted token spend.
+///
+/// **Telemetry, never a gate.** Nothing in the harness refuses work on this number:
+/// `docs/vision.md` removes the accumulating session — the harness owns the goal, plan, progress
+/// and thread, and rents a model window per decision then throws it away — so there is no
+/// long-lived context for a ceiling to protect. The refusal that once read this number is a dead
+/// end (`docs/STATUS.md` §7), and nothing here should be repointed at one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContextStatus {
+    /// [`context_size`] of the session's stored usage.
+    pub used: u64,
+}
+
+/// The four counters added, saturating: `input + cache_creation + cache_read + output`.
+///
+/// `context_window` is a capacity rather than a counter and is deliberately not part of it.
+/// Nothing here reads a session transcript; the counters are already on the session row, written
+/// by `brigadier_store::feed::apply` from the provider's own terminal frame, so this is a read of
+/// one row.
+///
+/// **What comes back is lifetime token spend, not a context footprint.** Two caveats say why,
+/// both **measured against the code, not asserted**, and neither fixable inside this crate:
+///
+/// 1. **The counters are cumulative for the session, not a snapshot of the live context.**
+///    `crates/core/src/claude/adapter.rs:1258` reads `result.modelUsage`, which
+///    `docs/research/agent-sdk.md` §6 records as "cumulative across turns … read the latest
+///    `result`, never sum", and `brigadier_store::writer::Op::SetUsage` overwrites the row with
+///    it. So this sum is what the session has spent since it started — on a 1M window using 100k
+///    of it, it passes 700k after about seven turns.
+/// 2. **Subagent turns are not excluded, because nothing in the store distinguishes them.** That
+///    same `modelUsage` is chosen precisely *because* it "includes subagents, sidechains and
+///    compaction" (`adapter.rs:1259`), and no column, event or flag separates them afterwards.
+///    Excluding a subagent's spend would need a second counter fed from the main-loop-only
+///    `usage` object, which is a change to `crates/core` and is **not** implemented.
+///
+/// On a resumed session the row also carries every earlier child's totals (`Accrued`), so the
+/// number covers the whole conversation rather than the current child.
+pub fn context_size(usage: &Usage) -> u64 {
+    usage
+        .input_tokens
+        .saturating_add(usage.cache_creation_tokens)
+        .saturating_add(usage.cache_read_tokens)
+        .saturating_add(usage.output_tokens)
+}
+
 /// One live session: what it takes to command it and to account for it.
 struct LiveSession {
     project_id: String,
@@ -734,6 +779,14 @@ impl Supervisor {
     }
 
     /// Queue a user turn; the returned id is the one the session's events will carry.
+    ///
+    /// Never refused on context size: `docs/vision.md` removes the accumulating session, so there
+    /// is no long-lived window for a ceiling to protect. [`Supervisor::context_status`] reports
+    /// the number; nothing acts on it.
+    ///
+    /// # Errors
+    /// [`SupervisorError::NoSuchSession`] when nothing is live under that id, and
+    /// [`SupervisorError::SessionNotRunning`] when its adapter has gone.
     pub async fn send_turn(
         &self,
         session_id: &SessionId,
@@ -743,6 +796,22 @@ impl Supervisor {
             .send_turn(TurnInput::text(text))
             .await
             .map_err(error::from_command)
+    }
+
+    /// What this session has accounted for, as telemetry. Nothing gates on it.
+    ///
+    /// Read from the session's stored row — no transcript is parsed. See [`context_size`] for
+    /// what the number is and, more importantly, what it is **not**: it is lifetime token spend
+    /// including every subagent, never a snapshot of the live context.
+    ///
+    /// # Errors
+    /// [`SupervisorError::NoSuchSession`] when the store has no such row.
+    pub async fn context_status(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<ContextStatus, SupervisorError> {
+        let record = self.session(session_id).await?.ok_or(SupervisorError::NoSuchSession)?;
+        Ok(ContextStatus { used: context_size(&record.usage) })
     }
 
     /// Answer a parked request.
@@ -848,13 +917,24 @@ impl Supervisor {
         Ok(outcome)
     }
 
-    /// `git worktree prune` in every project, at app start.
+    /// `git worktree prune` and the `.brigadier/` exclude line, in every project, at app start.
     ///
-    /// Safe by construction — **measured**, prune never touches a branch — and never fatal: a
-    /// project that will not prune is one `tracing::warn` line. It exists because a worktree
-    /// directory deleted by hand stays in `git worktree list` as prunable and blocks the next
-    /// `add` at the same path.
-    // see docs/research/worktree-git.md §4.
+    /// Both halves are safe by construction and neither is ever fatal: a project that will not
+    /// prune, or whose `info/exclude` will not open, is one `tracing::warn` line.
+    ///
+    /// The prune exists because a worktree directory deleted by hand stays in `git worktree
+    /// list` as prunable and blocks the next `add` at the same path — and **measured**, prune
+    /// never touches a branch.
+    ///
+    /// The exclude is here because [`Supervisor::add_project`] was the *only* caller of it, and
+    /// a call that happens once per project can never repair anything: a project added before
+    /// that code existed, or one whose write failed, stayed unexcluded forever and dirtied the
+    /// operator's own repository with `?? .brigadier/` — **measured on this repository,
+    /// 2026-09-02**. `worktree::exclude_project` is idempotent (it returns without writing when
+    /// the pattern is already a line of the file, `crates/core/src/worktree.rs:413`) and
+    /// swallows every failure, so running it per launch costs one `git rev-parse` and one read
+    /// per project.
+    // see docs/research/worktree-git.md §1 and §4.
     pub async fn prune_worktrees(&self) {
         let projects = match self.list_projects().await {
             Ok(projects) => projects,
@@ -865,6 +945,7 @@ impl Supervisor {
         };
         for project in projects {
             worktree::prune_project(&project.root_path).await;
+            worktree::exclude_project(&project.root_path).await;
         }
     }
 
@@ -1503,5 +1584,73 @@ mod tests {
         );
         assert!(base.rebase(&other).is_none());
         assert!(base.rebase(&env).is_some());
+    }
+
+    /// Every token the replay's scripted turn accounts for.
+    const REPLAY_TURN_TOKENS: u64 = 10 + 20 + 30 + 40;
+
+    /// The accounting is all four counters and nothing else — `context_window` is a capacity, and
+    /// counting it would add a fixed 200,000 to every session on the first turn.
+    #[test]
+    fn the_size_is_the_four_counters_added_and_never_the_window() {
+        let usage = Usage {
+            input_tokens: 1,
+            output_tokens: 2,
+            cache_read_tokens: 4,
+            cache_creation_tokens: 8,
+            context_window: Some(200_000),
+        };
+        assert_eq!(context_size(&usage), 15);
+        assert_eq!(context_size(&Usage::default()), 0);
+        // Saturating, not wrapping: a provider that reports nonsense must not read as an empty
+        // context.
+        assert_eq!(context_size(&Usage { input_tokens: u64::MAX, ..usage }), u64::MAX);
+    }
+
+    /// `context_status` is telemetry off the stored row: it reports what the session accounted
+    /// for, it says so for an unknown session rather than inventing a zero, and — the point of
+    /// this test — no size of it ever refuses a turn.
+    // see docs/STATUS.md §7: the wall that used to sit in `send_turn` is a dead end.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn context_status_reports_the_row_and_never_gates_a_turn() {
+        let rig = Rig::new();
+        let project = rig.project().await;
+
+        let e = rig
+            .sup
+            .context_status(&SessionId::new("nope"))
+            .await
+            .expect_err("an unknown session is still unknown");
+        assert!(matches!(e, SupervisorError::NoSuchSession), "{e}");
+
+        let session = rig
+            .sup
+            .start_session(&project, &rig.kind, StartSession::new(rig._dir.path()))
+            .await
+            .expect("session starts");
+
+        // The scripted turn is the only thing that ever writes usage, and it overwrites with the
+        // same constant every cycle, so the row settles at a known total.
+        let mut used = 0;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            used = context_size(&rig.row(&session).await.usage);
+            if used > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(used, REPLAY_TURN_TOKENS, "the replay's turn must have been accounted for");
+        assert_eq!(
+            rig.sup.context_status(&session).await.expect("status"),
+            ContextStatus { used: REPLAY_TURN_TOKENS }
+        );
+
+        // However big the number gets, the turn goes through: there is no ceiling to cross.
+        rig.sup.send_turn(&session, "one more").await.expect("a turn is never refused on size");
+
+        rig.sup.end_session(&session).await.expect("end");
+        assert!(rig.until(Duration::from_secs(5), || !rig.sup.is_live(&session)).await);
+        rig.store.close().await.expect("store closes");
     }
 }
