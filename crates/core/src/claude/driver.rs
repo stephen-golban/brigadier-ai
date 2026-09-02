@@ -1,0 +1,261 @@
+//! [`ClaudeDriver`]: one materialized Claude Code instance.
+//!
+//! A plain value, N of them per process, no singleton and no global registry. Two drivers with
+//! different `CLAUDE_CONFIG_DIR`s are two accounts and must coexist in one process, so nothing
+//! here touches process-global state: no `set_var`, no `chdir`, no `HOME` override.
+// see decision 4 and 5 of docs/plans/provider-spi.md, and docs/research/agent-sdk.md §9 —
+// `CLAUDE_CONFIG_DIR` is the one variable that partitions keychain item, transcripts, settings
+// and memory.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use crate::claude::adapter::{connect, AdapterConfig};
+use crate::claude::binary::{probe_binary, MIN_VERSION};
+use crate::claude::hook::{allow_all, SharedHookPolicy};
+use crate::claude::process::{account_label, spawn, SpawnSpec};
+use crate::driver::{
+    BoxFuture, DriverError, DriverInfo, DriverKind, ProviderDriver, ResumeSession, StartSession,
+};
+use crate::event::{InstanceId, SessionId};
+use crate::session::SessionHandle;
+
+/// The slug every Claude Code instance reports from [`ProviderDriver::kind`].
+pub const CLAUDE_CODE: &str = "claude-code";
+
+/// Default deadline on a parked permission prompt.
+///
+/// Neither the CLI nor the SDK has one — "permission prompts have no park deadline" — so an
+/// unanswered prompt is a wedged turn until something fires. Ten minutes is long enough for a
+/// human to come back to the window and short enough that a forgotten session ends.
+// see docs/research/agent-sdk.md §3 and docs/research/provider-driver.md §6 #25.
+pub const DEFAULT_APPROVAL_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// How one Claude Code instance is configured. One value per account.
+#[derive(Clone, Debug)]
+pub struct ClaudeDriverConfig {
+    /// This instance's routing key. Never defaults to the driver kind.
+    pub instance_id: InstanceId,
+    /// Explicit binary path; `None` walks `PATH` for `claude`.
+    pub binary: Option<PathBuf>,
+    /// Minimum acceptable `claude --version`, as `X.Y.Z`.
+    pub min_version: String,
+    /// `CLAUDE_CONFIG_DIR` for every child. **The account boundary; `HOME` is never touched.**
+    pub config_dir: Option<PathBuf>,
+    /// What to show the operator.
+    pub display_name: String,
+    /// Model slug used when a request does not pin one.
+    pub default_model: Option<String>,
+    /// Deadline on a parked permission prompt; `None` parks forever.
+    pub approval_timeout: Option<Duration>,
+}
+
+impl ClaudeDriverConfig {
+    /// A config for `instance_id` with every default in place.
+    pub fn new(instance_id: impl Into<InstanceId>) -> Self {
+        Self {
+            instance_id: instance_id.into(),
+            binary: None,
+            min_version: MIN_VERSION.to_owned(),
+            config_dir: None,
+            display_name: "Claude Code".to_owned(),
+            default_model: None,
+            approval_timeout: Some(DEFAULT_APPROVAL_TIMEOUT),
+        }
+    }
+}
+
+/// One Claude Code instance: a resolved binary, a version, an account, and a hook policy.
+#[derive(Clone)]
+pub struct ClaudeDriver {
+    config: ClaudeDriverConfig,
+    binary: PathBuf,
+    version: String,
+    hook_policy: SharedHookPolicy,
+}
+
+impl std::fmt::Debug for ClaudeDriver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClaudeDriver")
+            .field("instance_id", &self.config.instance_id)
+            .field("binary", &self.binary)
+            .field("version", &self.version)
+            .field("config_dir", &self.config.config_dir)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ClaudeDriver {
+    /// Resolves the binary, runs `claude --version` once, and enforces `min_version`.
+    ///
+    /// # Errors
+    /// [`DriverError::BinaryNotFound`] when `claude` is neither configured nor on `PATH`,
+    /// [`DriverError::VersionTooOld`] when the install predates `min_version`, and
+    /// [`DriverError::Protocol`] when `--version` fails or prints nothing.
+    pub async fn probe(config: ClaudeDriverConfig) -> Result<ClaudeDriver, DriverError> {
+        let (binary, version) =
+            probe_binary(config.binary.as_deref(), &config.min_version).await?;
+        Ok(ClaudeDriver { config, binary, version, hook_policy: allow_all() })
+    }
+
+    /// Builds a driver from an already-known binary and version, without spawning anything.
+    ///
+    /// For a caller that probed elsewhere, and for tests that need a driver without a CLI on the
+    /// machine. It performs **no** version check — [`ClaudeDriver::probe`] is the checked path.
+    pub fn with_version(
+        config: ClaudeDriverConfig,
+        binary: impl Into<PathBuf>,
+        version: impl Into<String>,
+    ) -> ClaudeDriver {
+        ClaudeDriver {
+            config,
+            binary: binary.into(),
+            version: version.into(),
+            hook_policy: allow_all(),
+        }
+    }
+
+    /// Replaces the `PreToolUse` policy. The default is
+    /// [`AllowAll`](crate::claude::AllowAll).
+    pub fn with_hook_policy(mut self, policy: SharedHookPolicy) -> Self {
+        self.hook_policy = policy;
+        self
+    }
+
+    /// This instance's configuration.
+    pub fn config(&self) -> &ClaudeDriverConfig {
+        &self.config
+    }
+
+    /// The resolved binary.
+    pub fn binary(&self) -> &std::path::Path {
+        &self.binary
+    }
+
+    /// The `claude --version` line measured at construction.
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+
+    /// Spawns a child and hands the adapter its pipes. Shared by start and resume, which differ
+    /// only by `--resume=<id>`.
+    async fn open(
+        &self,
+        spec: SpawnSpec,
+        prompt: Option<String>,
+        event_buffer: usize,
+    ) -> Result<SessionHandle, DriverError> {
+        let session_id = SessionId::new(uuid::Uuid::new_v4().to_string());
+        let child = spawn(&spec)?;
+        let adapter = AdapterConfig {
+            instance_id: self.config.instance_id.clone(),
+            session_id,
+            cwd: spec.cwd.clone(),
+            model: spec.model.clone(),
+            approval_timeout: self.config.approval_timeout,
+            prompt,
+            event_buffer,
+        };
+        connect(
+            adapter,
+            child.stdout,
+            child.stdin,
+            child.exit,
+            child.kill,
+            Arc::clone(&self.hook_policy),
+        )
+        .await
+    }
+}
+
+impl ProviderDriver for ClaudeDriver {
+    fn kind(&self) -> DriverKind {
+        DriverKind::new(CLAUDE_CODE)
+    }
+
+    fn instance_id(&self) -> &InstanceId {
+        &self.config.instance_id
+    }
+
+    fn describe(&self) -> DriverInfo {
+        DriverInfo {
+            display_name: self.config.display_name.clone(),
+            binary_path: Some(self.binary.clone()),
+            version: Some(self.version.clone()),
+            account_label: Some(account_label(self.config.config_dir.as_deref())),
+        }
+    }
+
+    fn start_session(&self, req: StartSession) -> BoxFuture<'_, Result<SessionHandle, DriverError>> {
+        Box::pin(async move {
+            let spec = SpawnSpec {
+                binary: self.binary.clone(),
+                cwd: req.cwd,
+                model: req.model.or_else(|| self.config.default_model.clone()),
+                permission_mode: req.permission_mode,
+                resume: None,
+                config_dir: self.config.config_dir.clone(),
+                env_overrides: req.env_overrides,
+            };
+            self.open(spec, req.prompt, req.event_buffer).await
+        })
+    }
+
+    /// A plain resume continues the original session id — the CLI does not mint a new one; only
+    /// `--fork-session` does.
+    // see docs/research/claude-direct-spike.md scenario 5 (measured) and
+    // docs/research/agent-sdk.md §5.
+    fn resume_session(
+        &self,
+        req: ResumeSession,
+    ) -> BoxFuture<'_, Result<SessionHandle, DriverError>> {
+        Box::pin(async move {
+            let spec = SpawnSpec {
+                binary: self.binary.clone(),
+                cwd: req.cwd,
+                model: req.model.or_else(|| self.config.default_model.clone()),
+                permission_mode: req.permission_mode,
+                resume: Some(req.token),
+                config_dir: self.config.config_dir.clone(),
+                env_overrides: req.env_overrides,
+            };
+            self.open(spec, req.prompt, req.event_buffer).await
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn two_accounts_coexist_and_describe_differently() {
+        let mut work = ClaudeDriverConfig::new("claude-code:work");
+        work.config_dir = Some(PathBuf::from("/Users/x/.claude-work"));
+        work.display_name = "Claude Code (work)".into();
+        let personal = ClaudeDriverConfig::new("claude-code:personal");
+
+        let a = ClaudeDriver::with_version(work, "/opt/a/claude", "2.1.257 (Claude Code)");
+        let b = ClaudeDriver::with_version(personal, "/opt/b/claude", "2.1.260 (Claude Code)");
+
+        assert_eq!(a.kind(), b.kind());
+        assert_eq!(a.kind().as_str(), "claude-code");
+        assert_ne!(a.instance_id(), b.instance_id());
+        assert_ne!(a.describe(), b.describe());
+        assert_eq!(a.describe().account_label.as_deref(), Some(".claude-work"));
+        assert_eq!(b.describe().account_label.as_deref(), Some("default"));
+        assert_eq!(a.describe().binary_path, Some(PathBuf::from("/opt/a/claude")));
+        assert_eq!(a.describe().version.as_deref(), Some("2.1.257 (Claude Code)"));
+        assert_eq!(a.describe().display_name, "Claude Code (work)");
+    }
+
+    #[test]
+    fn config_defaults_pin_the_measured_version_floor_and_a_park_deadline() {
+        let config = ClaudeDriverConfig::new("claude-code:default");
+        assert_eq!(config.min_version, "2.1.257");
+        assert_eq!(config.approval_timeout, Some(DEFAULT_APPROVAL_TIMEOUT));
+        assert!(config.binary.is_none(), "None resolves via a PATH walk");
+        assert!(config.config_dir.is_none());
+    }
+}
