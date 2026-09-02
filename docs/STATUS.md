@@ -34,11 +34,13 @@ Proven against a real `claude` 2.1.258 child, not asserted:
 | resume onto the same session row | `b2c1a4c` | recall answer `pelican`; rows continued past the old `last_event_seq` |
 | one git worktree per session | `b2c1a4c` | branch `brigadier/<8 hex>`; resume from a worktree cwd works |
 | two live sessions on one project | `8351335` | interleaved feed ordered, counters correct, `shutdown_with(10s)` drained both in 581 ms |
-| UI restyle, ChatGPT-shaped shell | `41e030f` | measured palette lives in `src/index.css` with its `[measured]` tags inline |
+| UI restyle — palette only | `41e030f` | the measured palette lives in `src/index.css` with its `[measured]` tags inline. **The "ChatGPT-shaped shell" claim is withdrawn**: the owner looked at it on 2026-09-02 and said it "looks nothing like ChatGPT, more like a year 1999 app". A measured palette is colour and nothing else. Being replaced in phase-4 W4. |
 | data-dir lock, batcher shrink | `7f03eb5` | — |
 
 **Never clicked in a real window:** the Resume button, the branch chip and the cleanup flow are
-wired and exercised only by the browser mock.
+wired and exercised only by the browser mock. **There is no front-end test runner at all**, so every
+claim about front-end wiring in this file was verified by reading. That is the largest unverified
+surface in the repo and phase-4 W4-A closes it before the frontend is rebuilt.
 
 ## 3. Gates at `2327bb9`
 
