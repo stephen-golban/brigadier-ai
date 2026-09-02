@@ -468,6 +468,44 @@ mod tests {
         rig.store.close().await.expect("store closes");
     }
 
+    /// The repair, which is the half `add_project` cannot do.
+    ///
+    /// `add_project` runs once per project ever, so a project recorded before the exclude code
+    /// existed — or one whose write failed — stayed unexcluded for good and dirtied the
+    /// operator's own repository with `?? .brigadier/` (**measured on brigadier-ai itself,
+    /// 2026-09-02**). The app-start sweep is what makes it self-healing, and it must not
+    /// clobber whatever else the operator keeps in that file.
+    // see docs/research/worktree-git.md §1.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn app_start_rewrites_an_exclude_line_a_project_has_lost() {
+        const OPERATORS_OWN: &str = "# operator's own excludes\nscratch.txt\n";
+
+        let rig = Rig::new(true);
+        rig.project().await;
+        assert!(rig.exclude_text().lines().any(|l| l.trim() == EXCLUDE_PATTERN));
+
+        // As a project added before `exclude_project` existed would look.
+        let exclude = rig.repo.join(".git").join("info").join("exclude");
+        std::fs::write(&exclude, OPERATORS_OWN).expect("exclude rewritten");
+        assert!(!rig.exclude_text().lines().any(|l| l.trim() == EXCLUDE_PATTERN));
+
+        rig.sup.prune_worktrees().await;
+
+        let text = rig.exclude_text();
+        assert_eq!(
+            text.lines().filter(|l| l.trim() == EXCLUDE_PATTERN).count(),
+            1,
+            "app start did not restore exactly one exclude line: {text:?}"
+        );
+        assert!(text.contains("scratch.txt"), "the operator's own lines were lost: {text:?}");
+
+        // And it is still idempotent: a second launch changes nothing.
+        rig.sup.prune_worktrees().await;
+        assert_eq!(rig.exclude_text(), text, "a second launch rewrote the file");
+
+        rig.store.close().await.expect("store closes");
+    }
+
     /// A repository with no commits cannot be branched from, and refusing beats orphaning.
     // see docs/research/worktree-git.md §3.
     #[tokio::test(flavor = "multi_thread")]
