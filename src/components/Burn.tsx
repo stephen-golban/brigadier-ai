@@ -47,12 +47,9 @@ export function Burn({ onBurn }: BurnProps) {
   };
 
   return (
-    <section className="burn">
-      <header className="pane-head">
-        <span>burn (dev)</span>
-        <span className="dim">{busy ? "running…" : "idle"}</span>
-      </header>
-      <div className="row">
+    <details className="burn">
+      <summary>burn harness (dev) · {busy ? "running" : "idle"}</summary>
+      <div className="burn-form">
         <label>
           sessions
           <input
@@ -81,18 +78,18 @@ export function Burn({ onBurn }: BurnProps) {
           />
         </label>
       </div>
-      <div className="row">
+      <div className="burn-form">
         <label className="grow">
           fixture
           <input value={fixture} onChange={(e) => setFixture(e.target.value)} />
         </label>
-        <button type="button" className="ok" disabled={busy} onClick={() => void run()}>
+        <button type="button" disabled={busy} onClick={() => void run()}>
           burn
         </button>
       </div>
-      {error !== null ? <p className="bad-text">{error}</p> : null}
+      {error !== null ? <p className="burn-out bad-text">{error}</p> : null}
       {summary !== null ? (
-        <p className={summary.pass ? "summary ok-text" : "summary bad-text"}>
+        <p className={summary.pass ? "burn-out ok-text" : "burn-out bad-text"}>
           {summary.pass ? "PASS" : "FAIL"} · {summary.windows} windows · min {summary.min_hz} Hz
           (budget {summary.budget_ms} ms, p95 limit {summary.p95_limit_ms} ms) · worst window p95{" "}
           {summary.worst_p95_ms} ms · worst frame {summary.worst_ms} ms · dropped{" "}
@@ -100,6 +97,6 @@ export function Burn({ onBurn }: BurnProps) {
           {summary.max_dom_nodes} · hz from p50 in {summary.p50_derived_windows} window(s)
         </p>
       ) : null}
-    </section>
+    </details>
   );
 }

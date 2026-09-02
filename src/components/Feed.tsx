@@ -40,9 +40,11 @@ function shortId(id: string): string {
 export interface FeedProps {
   sessionId: SessionId | null;
   projectId: ProjectId | null;
+  /** Shown in the empty state, the way the reference names the project in its empty chat. */
+  projectName?: string | null;
 }
 
-export function Feed({ sessionId, projectId }: FeedProps) {
+export function Feed({ sessionId, projectId, projectName }: FeedProps) {
   const rows = useSyncExternalStore(store.subscribe, () =>
     sessionId !== null ? store.getSessionRows(sessionId) : store.getProjectRows(projectId),
   );
@@ -91,22 +93,13 @@ export function Feed({ sessionId, projectId }: FeedProps) {
   }, [virtualizer]);
 
   const items = virtualizer.getVirtualItems();
-  const label =
-    sessionId !== null
-      ? `session ${sessionId}`
-      : projectId !== null
-        ? `project ${projectId} · all sessions`
-        : "no selection";
 
   return (
     <section className="feed">
-      <header className="pane-head">
-        <span>feed · {label}</span>
-        <span className="dim">
-          {rows.length} row{rows.length === 1 ? "" : "s"}
-          {rows.length >= store.ROW_CAP ? ` (capped at ${store.ROW_CAP})` : ""}
-        </span>
-      </header>
+      <span className="feed-count">
+        {rows.length} row{rows.length === 1 ? "" : "s"}
+        {rows.length >= store.ROW_CAP ? ` (capped at ${store.ROW_CAP})` : ""}
+      </span>
       <div className="feed-scroller" ref={scrollerRef} onScroll={syncAtEnd}>
         <div className="feed-sizer" style={{ height: `${virtualizer.getTotalSize()}px` }}>
           {items.map((item) => {
@@ -126,11 +119,29 @@ export function Feed({ sessionId, projectId }: FeedProps) {
             );
           })}
         </div>
-        {rows.length === 0 ? <p className="empty">no rows yet</p> : null}
       </div>
+      {rows.length === 0 ? (
+        <div className="thread-empty">
+          <span className="mark" aria-hidden="true">
+            &gt;_
+          </span>
+          <h2>
+            {projectName != null && projectName !== ""
+              ? `What should we run in ${projectName}?`
+              : "Add a project to begin"}
+          </h2>
+          <p>
+            {sessionId !== null
+              ? "This session has not emitted a row yet."
+              : projectId !== null
+                ? "Every session under this project shows up here as it runs."
+                : "Use the plus beside Projects in the sidebar to add a repository path."}
+          </p>
+        </div>
+      ) : null}
       {atEnd ? null : (
         <button type="button" className="jump-pill" onClick={jump}>
-          jump to latest ↓
+          Jump to latest ↓
         </button>
       )}
     </section>
