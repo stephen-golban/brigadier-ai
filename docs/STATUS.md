@@ -10,19 +10,31 @@ number instead of an adjective, and what was not checked is said outright.
 
 ## 1. The tree right now
 
-`main` at `2327bb9`. **The working tree is dirty and nothing is staged.** Another session produced
-this and is holding it pending the owner's approval:
+`main` at `3e5c3fd` ("style: the measured palette becomes oklch tokens on Tailwind 4"), plus the
+commit carrying this file, which changes documentation only. **The working tree is otherwise
+clean.** Nothing is staged and nothing is pending the owner's approval.
 
-- modified: `crates/claude-spike/src/{main,session}.rs`, `crates/supervisor/src/{error,lib,worktree}.rs`
-- new: `crates/claude-spike/src/wall.rs`, `crates/core/src/wall/` (the Bash classifier, 1,831 lines,
-  37 tests), `crates/supervisor/src/handoff.rs` (**parked — see §5**)
-- new fixtures: `crates/claude-spike/fixtures/s8-*`, `s9-*`, `s10-*` (12 NDJSON captures)
+Everything that was uncommitted at `2327bb9` has since landed or been dropped:
 
-Anything below that says "measured" was measured at `2327bb9` unless it cites one of those fixtures.
+- `crates/core/src/wall/` (the Bash classifier) is committed at `21d2375`.
+- the fixtures `crates/claude-spike/fixtures/s8-*`, `s9-*`, `s10-*` (12 NDJSON captures) are committed.
+- `crates/supervisor/src/handoff.rs` never reached a commit and no longer exists on disk; the handoff
+  wall was dropped at `a415bb9`. `git log --oneline -1 -- crates/supervisor/src/handoff.rs` prints
+  nothing. See §7.
 
-## 2. Built and live-proven
+**Most numbers below were measured at `2327bb9` and nobody has re-measured them.** Only §3's gate
+figures are `3e5c3fd`. Anything else that says "measured" was measured at `2327bb9` unless it cites
+one of the `s8-*`/`s9-*`/`s10-*` fixtures or names a later commit.
 
-Proven against a real `claude` 2.1.258 child, not asserted:
+## 2. Built, and what proved each row
+
+The evidence column's *kind* varies, so read it before quoting a row. `f1b911f`, `b2c1a4c` and
+`8351335` are live runs against a real `claude` 2.1.258 child. `crates/proc/tests/`,
+`crates/core/tests/claude_adapter.rs`, `src/feedStore.test.ts`, `src/paint.test.ts` and
+`src/providers/ThemeProvider.test.tsx` are test suites in this tree, not live runs.
+`docs/research/persistence.md` and `feed-rendering.md` are research documents — a document, not a
+run. `7f03eb5` cites nothing at all. **No row is a live-`claude`-child proof unless
+its evidence says so.**
 
 | thing | commit | evidence |
 |---|---|---|
@@ -36,21 +48,47 @@ Proven against a real `claude` 2.1.258 child, not asserted:
 | two live sessions on one project | `8351335` | interleaved feed ordered, counters correct, `shutdown_with(10s)` drained both in 581 ms |
 | UI restyle — palette only | `41e030f` | the measured palette lives in `src/index.css` with its `[measured]` tags inline. **The "ChatGPT-shaped shell" claim is withdrawn**: the owner looked at it on 2026-09-02 and said it "looks nothing like ChatGPT, more like a year 1999 app". A measured palette is colour and nothing else. Being replaced in phase-4 W4. |
 | data-dir lock, batcher shrink | `7f03eb5` | — |
+| every `result` frame reaches the store | `ce833c5` | four fixture tests, `crates/core/tests/claude_adapter.rs:626,667,702,760`, against real captures (`s9`, `f-b-fanout`) — not a live-child proof. §5 item 9. |
+| a front-end test runner | `ad5a4a7` | 27 tests, `src/feedStore.test.ts`, `npm test` (Vitest + jsdom + Testing Library). They pin `src/feedStore.ts` only: the rAF drain's coalescing and its stop, the `ROW_CAP` 2000 head-trim on both rings, the `seedRows` two-pointer merge (order, `q` interleave, `q`-collision, reference stability, idempotence, ROW_CAP on the union, project ring untouched), cost taking the latest turn's cumulative figure and never summing, `seedSessions`' end/cost reconciliation, counter throttling at `COUNTER_FLUSH_MS`, array-reference stability, and the unknown-projects list. Not a live-child proof and not a UI proof. |
+| the app can time its own paints | `1c8b6f6` | 24 tests, `src/paint.test.ts`, and a build. `src/paint.ts` observes `first-contentful-paint` and reports it over `report_paint` (`docs/plans/ipc-contract.md`). **No FCP number exists**: `paint.ndjson` has never been written in a real window, no `main_to_fcp_ms` has appeared in a `RUST_LOG=info` stream, and `beginInteraction` has no caller anywhere. An instrument, not a measurement. |
+| the measured palette as oklch `@theme` tokens | `3e5c3fd` | 18 of 18 colour tokens round-trip hex→oklch→hex bit-exact and all 8 annotated contrast pairs re-derive to within 0.0017, verified twice independently (`docs/research/oklch-tokens.md`, and `frontend-stack.md` §2.6 arrived at the same ratios first). Unit tests and a build only — **nothing has been looked at in a running window.** |
 
-**Never clicked in a real window:** the Resume button, the branch chip and the cleanup flow are
-wired and exercised only by the browser mock. **There is no front-end test runner at all**, so every
-claim about front-end wiring in this file was verified by reading. That is the largest unverified
-surface in the repo and phase-4 W4-A closes it before the frontend is rebuilt.
+**Never clicked in a real window:** the Resume button, the branch chip, the cleanup flow and the
+approvals dock are wired and exercised only by the browser mock, and **not one of them has a test**.
+The 66 front-end tests cover `src/feedStore.ts`, `src/paint.ts`, and one React component —
+`src/providers/ThemeProvider.tsx`, which **is not mounted anywhere** (`grep -rn ThemeProvider
+src/main.tsx src/App.tsx` returns nothing), has **no visual effect** while we ship dark-only, and
+whose Tauri branch is inert for want of a `theme-changed` emitter on the Rust side. So one
+component is tested and no component that renders anything is. **Every claim about front-end
+component wiring in this file was still verified by reading.** A runner existing is not coverage;
+that is still the largest unverified surface in the repo, and phase-4 W4-C/W4-D still owe it.
 
-## 3. Gates at `2327bb9`
+## 3. Gates at `3e5c3fd`
+
+All six run by the lead under its own hand on 2026-09-02, exit codes captured directly:
 
 ```
-cargo test --workspace                                209 passed, 0 failed, 5 ignored
-cargo clippy --workspace --all-targets -- -D warnings exit 0
-cargo doc --workspace --no-deps                       0 warnings
-npx tsc --noEmit && npm run build                     ~258 kB JS
-npm run tauri build                                   target/release/bundle/macos/brigadier.app
+cargo test --workspace                                exit 0  283 passed, 0 failed, 5 ignored
+cargo clippy --workspace --all-targets -- -D warnings exit 0  0 warnings
+cargo doc --workspace --no-deps                       exit 0  0 warnings
+npm test                                              exit 0  66 passed, 3 files
+npx tsc --noEmit                                      exit 0
+npm run tauri build                                   exit 0  .app + .dmg
 ```
+
+The 66 are `feedStore.test.ts` 27 (untouched by either wave), `paint.test.ts` 24 and
+`ThemeProvider.test.tsx` 15.
+
+Bundle at `3e5c3fd`: **263.28 kB JS / 21.89 kB CSS**, from 262.69 / 12.69 at `ad5a4a7`. Two caveats
+that travel with those numbers. **The JS figure is the FCP half of `src/paint.ts` alone** —
+**[measured]**, `beginInteraction` has no importer, so Rollup drops it and everything it reaches:
+in `dist/assets/index-*.js`, `first-contentful-paint` and `report_paint` each appear once while
+`brigadier:` and `clearMeasures` appear zero times (`docs/plans/ipc-contract.md`, `### report_paint`;
+`src/paint.ts`). W4-C/W4-D pay for the rest on the order that adds the first caller. **The CSS
+growth is almost entirely Tailwind preflight**; the token layer itself is **+0.54 kB**, and Tailwind
+adds **zero** JS — an isolated build of `ad5a4a7` plus only the token order's files came out at
+262.69 kB byte-identical (`docs/research/oklch-tokens.md` §5). The earlier `~258 kB JS` line is
+superseded.
 
 The 5 ignored are the live tests. Run one at a time:
 
@@ -114,8 +152,26 @@ Fixed:
    is a *file*, so there is no per-worktree config, and `git config --local` from inside a session's
    worktree writes the **main** repository's `.git/config`. An agent in one session could plant a
    driver with an ordinary git command and have the next session's worktree creation run it as
-   shell, outside every approval prompt. `core.fsmonitor` set to a command ran the same way.
-   Mitigated by blanking `smudge`/`clean`/`process` per filter and disabling `core.fsmonitor`.
+   shell, outside every approval prompt. `core.fsmonitor` set to a command ran the same way — at
+   `worktree add` itself and again at every later `git status`. Mitigated by blanking **four** keys,
+   not three — `smudge`, `clean`, `process` and `required` — on every filter the **effective**
+   config defines, and setting `core.fsmonitor` to `false`, through `GIT_CONFIG_*` on `add`,
+   `repair`, `remove` and `dirty_count` (`crates/core/src/worktree.rs:185,220,318,437,473,720`).
+   **`required` is not belt-and-braces.** **[measured]**, on a **hand-set**
+   `filter.evil.required = true`: with only the three command keys blanked, `worktree add` exits
+   **128** with `fatal: f.txt: smudge filter evil failed`, and adding `required=false` returns it to
+   exit 0 (`docs/research/gitattributes.md` §3; `crates/core/src/worktree.rs:177-185`). Delete that
+   key as redundant and the failure names smudge filters rather than the deletion. The enumeration
+   reads system + global + local + `include.path` (**[measured]**, §3, verified against an
+   `include.path`-defined driver). **git-lfs is not installed on this machine** (`gitattributes.md`
+   §6), so two clauses beside that are **[asserted]**, reasoned from the config keys and never
+   observed here: that `git lfs install --local` is what writes `filter.lfs.required = true` in the
+   wild, and the accepted consequence that a globally defined `lfs` driver is blanked too, so LFS
+   content arrives in a new worktree as pointer files with `git lfs pull` inside it the cure.
+   Installing git-lfs and re-running §3's case would settle both. `required` is set to `"false"`
+   rather than `""` for readability in a `ps` listing, not for correctness — an empty value is read
+   as false either way (**[documented]**, `git(1)` on `-c foo.bar=`, via
+   `crates/core/src/worktree.rs:187-190`).
 7. **`prepare` accepted two inputs it should refuse** — a project root that is itself a linked
    worktree, and repos with submodules. Both now typed refusals
    (`crates/core/src/worktree.rs:92,106,121`). 36 worktree tests.
@@ -144,6 +200,16 @@ measured: `docs/research/async-subagent-results.md` tags the same claim `[assert
 if a capture ever shows an `init` with no matching `result` outside the kill path (`s7-kill`), in
 which case a timer is required. `docs/research/unprompted-init.md` states the open question, the
 three uncaptured paths that could produce one, and the live spike that would settle it.
+
+**An open decision for the owner, not a defect:** `--color-text-muted-side` is **4.456:1** on
+`--color-sidebar-bg`, against WCAG AA's 4.5:1 for normal text — it misses by 0.044. **[measured]**,
+and not a conversion artifact: the source hex `#a3a3a3` on `#3a3b3b` computes to the same number.
+The token is tagged `[contrast]`, meaning the colour was deliberately lightened *in order to pass*
+and stopped one step short, and its comment claimed 4.6:1. **The colour was left unchanged** and
+the comment corrected, because choosing a replacement is a design decision about a palette sampled
+from a reference app. `docs/research/oklch-tokens.md` §4 holds every ratio and notes that `#a5a5a5`
+and lighter clear the threshold — arithmetic, **[asserted]**, never checked against the reference
+screenshot, which is what actually decides it.
 
 **Not a defect, checked and dismissed:** `tauri.conf.json`'s `"targets": "all"` was reported as
 falsely claiming cross-platform support. It does not. **[measured]** — on this machine that setting
@@ -175,11 +241,11 @@ every bundle format for the platform being built on. Leave it alone.
 
 ## 7. Dead ends — do not rebuild these
 
-- **The handoff wall** (refuse `send_turn` past 700k) is parked and must not be committed. Two
-  independent reasons: `docs/vision.md` removes the accumulating session so it could never fire, and
-  it was counting the wrong number anyway — `modelUsage` is cumulative across turns, so summing the
-  four counters gives lifetime spend, not context footprint. It would have fired after ~7 turns on a
-  session using 100k of a 1M window. `context_status` survives as telemetry.
+- **The handoff wall** (refuse `send_turn` past 700k) was dropped at `a415bb9` and must not be
+  rebuilt. Two independent reasons: `docs/vision.md` removes the accumulating session so it could
+  never fire, and it was counting the wrong number anyway — `modelUsage` is cumulative across turns,
+  so summing the four counters gives lifetime spend, not context footprint. It would have fired
+  after ~7 turns on a session using 100k of a 1M window. `context_status` survives as telemetry.
 - **A codebase index.** See `docs/research/codebase-index.md` and `docs/vision.md` §7.
 - **The installable CLI** — `brigadier install`, CLAUDE.md `@` imports, hook entries in
   `.claude/settings.json`, `~/.brigadier/handoffs/`. Deleted with `brigadier-guide.md` on
@@ -216,5 +282,20 @@ every bundle format for the platform being built on. Leave it alone.
   `rows_total` on the wire restarts from zero.
 - `crates/proc/tests/orphans.rs` `a_kill_takes_down_the_whole_group` flaked once on 2026-09-02
   (process-group kill timing); passed on every rerun.
+- **Tailwind's oxide scanner walks the filesystem, not the module graph, and it reads Markdown.**
+  Naming a utility class **in prose** ships it: our own `docs/` emitted 1.44 kB of rules nothing
+  renders. `@source not "../docs"` in `src/index.css:27` is the guard; delete it and all eight come
+  back. `docs/research/oklch-tokens.md` §6.
+- **An edit to a tree-shaken export moves the bundle by zero bytes**, which is indistinguishable
+  from a build that did not run. `beginInteraction` in `src/paint.ts` is in that state today. Check
+  a string literal the minifier cannot rename, never an identifier.
+  `docs/plans/ipc-contract.md`, `### report_paint`.
+- **jsdom 30.0.1 has no `PerformanceObserver`**, and what stands in for it under Vitest is Node's
+  `perf_hooks` observer, whose `observe({type:"paint"})` **does not throw and never fires** — a test
+  written against it passes vacuously. `src/paint.test.ts` stubs its own. jsdom also has no
+  `window.matchMedia` at all. `src/paint.test.ts:10-18`, `src/providers/ThemeProvider.test.tsx:16`.
+- A `**[measured]**` tag inside a **Rust doc comment** is parsed as an intra-doc link and fails
+  `cargo doc`. The tree's Rust convention is the bare `**measured**`
+  (`crates/core/src/worktree.rs:76`); the bracketed form is markdown-only.
 
 

@@ -421,11 +421,26 @@ Everything here that has not been checked, in one place:
    cross-vendor failover depends on it.
 4. Spawn-cost mitigation: warm pool vs. multi-turn children. Neither built nor measured.
 5. Retention policy for raw NDJSON and provider transcripts. Unwritten.
-6. The `.gitattributes` filter-driver hole. Known, unfixed.
+6. The `.gitattributes` filter-driver hole is **fixed** at `5d71793` — §8, and
+   `docs/research/gitattributes.md`. What is still open is the mechanism beside it:
+   **`.git/hooks/post-checkout` runs at `git worktree add` [measured]** and is deliberately not
+   neutralised, because `core.hooksPath` at an empty directory would also disable a repo's own
+   load-bearing checkout hook; that is a policy call `crates/supervisor` owns and it is **unmade**.
+   Unmeasured on the fix itself: the enumerate-then-spawn TOCTOU window, the git-lfs pointer-file
+   consequence (git-lfs is not installed on this machine), Windows, and any git other than 2.50.1
+   (`gitattributes.md` §§4-6).
 7. Whether the ~1,500-token brief actually reduces turns. The settling experiment — same work order
    with and without it — was **not run**.
-8. **The front end has no test runner at all.** The six worktree-cleanup refusal notes were proven
-   by rendering synthesized values through `react-dom/server`; the sentences and buttons are right,
+8. **The front end's test runner covers `src/feedStore.ts`, `src/paint.ts` and one unmounted
+   provider.** *Closed:* a runner exists — Vitest, jsdom and Testing Library, `npm test`, 66 tests
+   in three files at `3e5c3fd` **[measured]**, pinning the rAF drain, the `ROW_CAP` trim, the
+   `seedRows` two-pointer merge, cost never summed across turns, `seedSessions`, counter throttling
+   and array-reference stability, plus the paint instrument and `ThemeProvider`'s stored-preference
+   contract. *Still open:* the only component under test, `src/providers/ThemeProvider.tsx`, is not
+   mounted, renders nothing of its own and has no visual effect while we ship dark-only, so no
+   component that draws anything has a test and nothing below this line changed. The six
+   worktree-cleanup refusal notes were proven by rendering synthesized values through
+   `react-dom/server` from a throwaway script that is now gone; the sentences and buttons are right,
    the click wiring was checked by reading only. No refusal note has been seen in a real window, and
    none came from a real repository's refusal. That gap closes the first time the owner clicks it,
    and not before — which is true of the Resume button, the branch chip and the cleanup flow as well.

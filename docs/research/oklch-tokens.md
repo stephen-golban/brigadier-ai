@@ -22,7 +22,9 @@ file changes its **representation only**.
 4. **Three comments in `src/index.css` stated wrong ratios**, not one. All three corrected; no
    colour touched.
 5. **Tailwind 4 adds zero bytes to the JS bundle**, confirmed independently here: 262.69 kB before,
-   262.69 kB after **[measured]**. CSS 12.69 kB → 21.89 kB.
+   262.69 kB after **[measured]**. CSS 12.69 kB → 21.89 kB. Both JS figures are the **isolated**
+   build — `HEAD` plus only this order's files (§5). The repo's own bundle at `3e5c3fd` is
+   **263.28 kB**, and the 0.59 kB difference is a concurrent order's `src/paint.ts`, not Tailwind.
 6. **Tailwind's scanner reads `docs/**/*.md` and turned prose into shipped CSS.** Naming
    `bg-accent` in a sentence emitted `.bg-accent` into the production bundle. Across the repo's
    docs that was **1.44 kB of CSS nothing renders**; `@source not "../docs"` in `src/index.css`
@@ -252,7 +254,7 @@ All **[measured]**, `npm run build` on this machine, 2026-09-02.
 |---|---|---|
 | baseline, before this change | 262.69 kB (gzip 82.88) | 12.69 kB (gzip 3.07) |
 | this change, isolated on top of `HEAD` | **262.69 kB** (gzip 82.88) | **21.89 kB** (gzip 5.23) |
-| the working tree as built | 263.28 kB (gzip 83.15) | 21.89 kB (gzip 5.23) |
+| the working tree as built — and the committed figure at `3e5c3fd` | 263.28 kB (gzip 83.15) | 21.89 kB (gzip 5.23) |
 
 **JS is byte-identical.** `@tailwindcss/vite` is build-time only, exactly as
 `docs/research/frontend-stack.md` §2.5 predicted.
@@ -375,6 +377,12 @@ not a new install script.
 The suite was 27 tests before this wave; the other 18 above this order's own 15 come from a
 concurrent order's `src/paint.test.ts`. Nothing regressed.
 
+**That 60 is a snapshot of this order's own run, not the settled figure.** `src/paint.test.ts`
+grew from 18 tests to 24 in a follow-up order minutes later, so the suite is **66** at `3e5c3fd`,
+the commit this work landed in — 27 `feedStore.test.ts` + 24 `paint.test.ts` + this order's 15.
+`docs/STATUS.md` §3 carries the settled number; if the two disagree, STATUS is right and this line
+is a dated measurement kept because it is what was actually executed here.
+
 ---
 
 ## 8. What was NOT checked
@@ -403,7 +411,9 @@ concurrent order's `src/paint.test.ts`. Nothing regressed.
   utilities and to leave the build green; it was not tested against a future order that puts a
   scannable source file inside `docs/`, which would then be ignored silently.
 - **The Linux desktop-portal theme path** in `src/providers/ThemeProvider.tsx` — see §9.
-- **`npm run tauri build`.** Not run; the six-gate suite is the lead's.
+- **`npm run tauri build`.** Not run here; the six-gate suite is the lead's. It has since been
+  run by the lead at `3e5c3fd` — exit 0, producing a `.app` and a `.dmg` **[measured, not by me]**.
+  That is a packaging proof, not a launch: see the first item above, which is still open.
 
 ---
 
