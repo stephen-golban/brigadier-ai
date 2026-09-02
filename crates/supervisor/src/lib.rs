@@ -931,7 +931,7 @@ impl Supervisor {
     /// that code existed, or one whose write failed, stayed unexcluded forever and dirtied the
     /// operator's own repository with `?? .brigadier/` — **measured on this repository,
     /// 2026-09-02**. `worktree::exclude_project` is idempotent (it returns without writing when
-    /// the pattern is already a line of the file, `crates/core/src/worktree.rs:413`) and
+    /// the pattern is already a line of the file, `crates/core/src/worktree.rs:679`) and
     /// swallows every failure, so running it per launch costs one `git rev-parse` and one read
     /// per project.
     // see docs/research/worktree-git.md §1 and §4.
