@@ -1,3 +1,10 @@
+> **Status (2026-09-02): the Electron recommendation below is OVERRIDDEN.** The owner rejected
+> Electron after reading this file, on performance and minimalism grounds. The decision is
+> Tauri v2 + Rust core + Node sidecar (see `CLAUDE.md`, "Settled decisions"). The measurements
+> and the substrate-independent findings still stand: the renderer is the bottleneck, not the
+> engine; coalesce to one UI update per animation frame; virtualize the feed; never render
+> markdown per token. Only the final recommendation is dead. Do not reopen it.
+
 # Performance substrate — which shell, and where the cost actually is
 
 ## Bottom line
