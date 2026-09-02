@@ -1,0 +1,6 @@
+{"request":{"hooks":{"PostToolUse":[{"hookCallbackIds":["cb_post"],"matcher":""}],"PreToolUse":[{"hookCallbackIds":["cb_pre"],"matcher":"Read"}],"Stop":[{"hookCallbackIds":["cb_stop"],"matcher":""}]},"subtype":"initialize"},"request_id":"spike_1","type":"control_request"}
+{"message":{"content":"Read the file README.md in the current directory and reply with its first word.","role":"user"},"parent_tool_use_id":null,"type":"user"}
+{"response":{"request_id":"545ce041-80e4-4332-9fc9-eb1c70c9e3ac","response":{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"brigadier wall: the host session may not read files"}},"subtype":"success"},"type":"control_response"}
+{"response":{"request_id":"08174a99-19ff-4698-afe3-0eb17f5b9b90","response":{},"subtype":"success"},"type":"control_response"}
+{"response":{"request_id":"2d3a57fc-505a-4e6c-b48f-be55ae08d251","response":{"decision":"block","reason":"brigadier wall: that reply is too long. Reply with exactly the word ok."},"subtype":"success"},"type":"control_response"}
+{"response":{"request_id":"4a284b90-0bf7-4875-8eb1-ca9f74eb4b3b","response":{},"subtype":"success"},"type":"control_response"}

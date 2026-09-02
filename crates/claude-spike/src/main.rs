@@ -1,18 +1,20 @@
 //! WO-C: headless spike that drives the Claude Code CLI over its stdio control
-//! protocol from Rust, with no Node and no SDK. Proves or disproves decision 1
-//! of docs/plans/provider-spi.md.
+//! protocol from Rust, with no Node and no SDK. It is what proved the settled
+//! decision in `CLAUDE.md` §2; the results are in
+//! `docs/research/claude-direct-spike.md`.
 //!
 //! Usage: cargo run -p claude-spike -- all
 //!        cargo run -p claude-spike -- 1 2 4        (subset, by number or name)
 
 mod session;
+mod wall;
 
 use anyhow::Result;
 use serde_json::{json, Value};
 use session::*;
 use std::time::{Duration, Instant};
 
-const SCENARIO_TIMEOUT: Duration = Duration::from_secs(120);
+const SCENARIO_TIMEOUT: Duration = Duration::from_secs(300);
 const STEP: Duration = Duration::from_secs(90);
 
 #[derive(Default)]
@@ -24,7 +26,7 @@ pub struct Report {
 }
 
 impl Report {
-    fn new(name: &str) -> Self {
+    pub fn new(name: &str) -> Self {
         Report {
             name: name.to_string(),
             pass: false,
@@ -32,7 +34,7 @@ impl Report {
             cost: 0.0,
         }
     }
-    fn note(&mut self, s: impl Into<String>) {
+    pub fn note(&mut self, s: impl Into<String>) {
         self.notes.push(s.into());
     }
     fn print(&self) {
@@ -549,7 +551,7 @@ async fn main() -> Result<()> {
     let ver = std::process::Command::new(CLAUDE_BIN).arg("--version").output()?;
     println!("claude version: {}", String::from_utf8_lossy(&ver.stdout).trim());
     println!("model         : {}", model());
-    println!("cwd           : {SPIKE_CWD}");
+    println!("cwd           : {}", spike_cwd());
     println!("argv          : {}", build_argv(&[]).join(" "));
     println!("fixtures      : {FIXTURES}");
     println!();
@@ -591,6 +593,9 @@ async fn main() -> Result<()> {
     run!("5", s5(sid.clone()));
     run!("6", s6());
     run!("7", s7());
+    run!("8", wall::s8());
+    run!("9", wall::s9());
+    run!("10", wall::s10());
 
     println!();
     println!("================ SUMMARY ================");
