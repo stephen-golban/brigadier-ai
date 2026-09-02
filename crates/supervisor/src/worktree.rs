@@ -58,8 +58,9 @@ const GIT_INITIALIZING_LOCK: &str = "initializing";
 
 /// Why a cleanup refused. `None` on the paths that removed something.
 ///
-/// Every variant is a *refusal*, never an authorization, and the two at the bottom are refusals
-/// `force = true` cannot answer — the operator has to act outside brigadier.
+/// Every variant is a *refusal*, never an authorization, and [`Unregistered`](Self::Unregistered),
+/// [`Locked`](Self::Locked) and [`LeftOnDisk`](Self::LeftOnDisk) are refusals `force = true`
+/// cannot answer — the operator has to act outside brigadier.
 // see docs/research/worktree-cleanup.md "Hard rules".
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
