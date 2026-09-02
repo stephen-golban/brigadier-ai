@@ -255,4 +255,124 @@ mod tests {
 
         store.close().await.expect("store closes");
     }
+
+    /// The upsert cannot clear `ended_at`/`exit_code` — they are not in its statement, and every
+    /// column that is, is `COALESCE`d — so a resumed row would keep reading as ended while it is
+    /// live. `session_resumed` is the op that clears them.
+    // see docs/research/resume.md §8 gap 5.
+    #[tokio::test]
+    async fn resuming_a_session_clears_the_ending_the_upsert_cannot_clear() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = Store::open(dir.path()).expect("store opens");
+        let id = SessionId::new("s");
+
+        let mut row = SessionRow::new(id.clone());
+        row.started_at = Some(SystemTime::UNIX_EPOCH + Duration::from_millis(1_000));
+        store.handle().upsert_session(row).await.expect("upsert");
+        store
+            .handle()
+            .session_ended(id.clone(), ExitReason::Graceful, Some(0), SystemTime::now())
+            .await
+            .expect("session ended");
+        store.handle().flush().await.expect("flush");
+        let ended = store.handle().session(id.clone()).await.expect("read").expect("row");
+        assert_eq!(ended.status, SessionStatus::Exited);
+        assert!(ended.ended_at.is_some());
+        assert_eq!(ended.exit_code, Some(0));
+
+        // What the supervisor's resume path does, in order: clear, then merge the new instance.
+        store.handle().session_resumed(id.clone(), SystemTime::now()).await.expect("resumed");
+        let mut row = SessionRow::new(id.clone());
+        row.status = Some(SessionStatus::Starting);
+        row.instance_id = Some(brigadier_core::event::InstanceId::new("claude-code:2"));
+        // Deliberately no `started_at`: `upsert_session` COALESCEs the *parameter* first, so a
+        // non-`None` value overwrites rather than defers, and the resume path must not.
+        store.handle().upsert_session(row).await.expect("upsert");
+        store.handle().flush().await.expect("flush");
+
+        let resumed = store.handle().session(id.clone()).await.expect("read").expect("row");
+        assert_eq!(resumed.status, SessionStatus::Starting);
+        assert_eq!(resumed.ended_at, None, "a live session must not carry an end time");
+        assert_eq!(resumed.exit_code, None, "nor a stale exit code");
+        assert_eq!(
+            resumed.started_at, ended.started_at,
+            "the start time is kept here — only until the resumed child announces itself, when \
+             `feed::apply`'s SessionStarted branch overwrites it"
+        );
+        assert_eq!(resumed.instance_id.as_ref().map(|i| i.as_str()), Some("claude-code:2"));
+
+        store.close().await.expect("store closes");
+    }
+
+    /// Pins the **store behaviour** the resume feature depends on, not the seeding itself.
+    ///
+    /// Two claims, both about this crate: rows written at seqs above `last_event_seq` append
+    /// without disturbing what is already there, and — the reason the seeding exists — a row
+    /// written at a seq that already exists is silently *updated*, because `feed`'s insert is
+    /// `ON CONFLICT(session_id, seq) DO UPDATE`. A second adapter that restarted numbering at 1
+    /// would therefore rewrite the old conversation in place and never error.
+    ///
+    /// It does **not** prove that anything seeds the adapter: reverting `AdapterConfig.start_seq`
+    /// leaves this test green. The proof of the seeding is
+    /// `crates/supervisor/src/lib.rs::a_resumed_session_reuses_its_row_and_continues_its_feed`,
+    /// which drives a real resume end to end.
+    // see docs/research/resume.md §7.
+    #[tokio::test]
+    async fn a_resumed_sessions_rows_land_after_the_old_ones_and_leave_them_untouched() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = Store::open(dir.path()).expect("store opens");
+        let id = SessionId::new("s");
+        let at = |ms: u64| SystemTime::UNIX_EPOCH + Duration::from_millis(ms);
+
+        for seq in 1..=3u64 {
+            store
+                .handle()
+                .feed(id.clone(), seq, at(seq), format!("before {seq}"))
+                .await
+                .expect("feed");
+        }
+        store.handle().flush().await.expect("flush");
+        let before = store.handle().feed_tail(id.clone(), 100).await.expect("tail");
+        let old_seq = store.handle().session(id.clone()).await.expect("read").expect("row")
+            .last_event_seq;
+        assert_eq!(old_seq, 3, "last_event_seq tracks the newest row");
+
+        // The resumed adapter is seeded from `old_seq`, so its first envelope is `old_seq + 1`.
+        for offset in 1..=2u64 {
+            let seq = old_seq + offset;
+            store
+                .handle()
+                .feed(id.clone(), seq, at(100 + seq), format!("after {seq}"))
+                .await
+                .expect("feed");
+        }
+        store.handle().flush().await.expect("flush");
+
+        let after = store.handle().feed_tail(id.clone(), 100).await.expect("tail");
+        assert_eq!(after.len(), 5, "nothing was overwritten: {after:?}");
+        assert_eq!(&after[..3], &before[..], "every pre-resume row is byte-identical");
+        assert!(
+            after[3..].iter().all(|r| r.seq > old_seq),
+            "every post-resume row lands after the old ones: {:?}",
+            &after[3..]
+        );
+        assert_eq!(
+            store.handle().session(id.clone()).await.expect("read").expect("row").last_event_seq,
+            5
+        );
+
+        // And the failure this guards against, spelled out: an adapter that restarted at 1 would
+        // have rewritten the oldest row in place rather than appending.
+        store
+            .handle()
+            .feed(id.clone(), 1, at(999), "a restart at seq 1".to_owned())
+            .await
+            .expect("feed");
+        store.handle().flush().await.expect("flush");
+        let clobbered = store.handle().feed_tail(id.clone(), 100).await.expect("tail");
+        assert_eq!(clobbered.len(), 5, "the collision silently updated instead of erroring");
+        assert_eq!(clobbered[0].line, "a restart at seq 1");
+
+        store.close().await.expect("store closes");
+    }
 }

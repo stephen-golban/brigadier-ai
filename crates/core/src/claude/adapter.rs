@@ -123,6 +123,15 @@ pub struct AdapterConfig {
     pub prompt: Option<String>,
     /// Event-channel capacity.
     pub event_buffer: usize,
+    /// Envelope `seq` this adapter continues from. `0` on a cold start, so the first envelope
+    /// is `1`; on a resume it is the row's `sessions.last_event_seq`, so the new child's rows
+    /// land *after* the old conversation's instead of overwriting them.
+    ///
+    /// Not cosmetic. `feed`'s insert is `ON CONFLICT(session_id, seq) DO UPDATE`, so a second
+    /// adapter on the same row restarting at `1` silently rewrites the oldest rows and the
+    /// ring's trim then deletes the genuinely new ones.
+    // see docs/research/resume.md §7 and §8 gap 1.
+    pub start_seq: u64,
 }
 
 /// Reads `stdout` line by line, decodes each, and forwards it.
@@ -193,6 +202,8 @@ struct Adapter<W> {
     hook_policy: SharedHookPolicy,
     config: AdapterConfig,
 
+    /// The last `seq` emitted. Starts at [`AdapterConfig::start_seq`], so the first envelope of
+    /// a resumed session follows the last one the store already holds.
     seq: u64,
     outbox: VecDeque<Envelope>,
     events_closed: bool,
@@ -252,6 +263,8 @@ where
     let SessionBackend { commands, events, approvals } = backend;
     let (resolved_tx, resolved) = mpsc::unbounded_channel();
 
+    // Read before `config` moves into the struct literal below.
+    let start_seq = config.start_seq;
     let mut adapter = Adapter {
         stdin: Some(stdin),
         approvals,
@@ -259,7 +272,9 @@ where
         kill,
         hook_policy,
         config,
-        seq: 0,
+        // Seeded, not zeroed: on a resume this is the row's `last_event_seq`.
+        // see docs/research/resume.md §7.
+        seq: start_seq,
         outbox: VecDeque::new(),
         events_closed: false,
         shutdown: false,

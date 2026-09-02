@@ -54,6 +54,17 @@ function shortId(id: string): string {
   return id.length <= 6 ? id : id.slice(-6);
 }
 
+/**
+ * Branches are `brigadier/<8 hex>` (`docs/plans/ipc-contract.md` §Worktrees). The prefix is the
+ * same on every row, so the chip carries only the part that differs; the full branch and the
+ * worktree path are in the chip's `title`.
+ */
+const BRANCH_PREFIX = "brigadier/";
+
+function shortBranch(branch: string): string {
+  return branch.startsWith(BRANCH_PREFIX) ? branch.slice(BRANCH_PREFIX.length) : branch;
+}
+
 export function Sidebar({
   projects,
   sessions,
@@ -200,8 +211,23 @@ export function Sidebar({
                           aria-hidden="true"
                         />
                         <span className="side-label">{shortId(id)}</span>
-                        {/* Trailing slot: cost now, branch chip later. */}
-                        <span className="side-meta">${s.costUsd.toFixed(4)}</span>
+                        {/* Trailing slot: the branch chip, then the cost. No branch, no chip —
+                            a project that is not a git repo runs in its own root. */}
+                        <span className="side-meta">
+                          {s.branch !== null ? (
+                            <span
+                              className="chip plain branch"
+                              title={
+                                s.worktreePath !== null
+                                  ? `${s.branch} · ${s.worktreePath}${s.worktreeRemoved ? " (removed)" : ""}`
+                                  : s.branch
+                              }
+                            >
+                              {shortBranch(s.branch)}
+                            </span>
+                          ) : null}
+                          <span>${s.costUsd.toFixed(4)}</span>
+                        </span>
                       </button>
                     );
                   })

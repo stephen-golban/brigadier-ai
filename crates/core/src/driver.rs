@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::event::InstanceId;
+use crate::event::{InstanceId, SessionId};
 use crate::session::SessionHandle;
 
 /// A boxed, `Send` future. Hand-rolled so the crate needs no `async_trait` and no `futures`.
@@ -213,12 +213,36 @@ impl StartSession {
     }
 }
 
+/// The harness-side continuation of a session that already exists in the store.
+///
+/// The two fields belong together and are useless apart, which is why they are a struct rather
+/// than two optional fields on [`ResumeSession`]: reusing the row without continuing the
+/// numbering is the silent-corruption case.
+///
+/// `feed`'s primary key is `(session_id, seq)` and its insert is `ON CONFLICT DO UPDATE`, so an
+/// adapter that restarts at `seq = 1` on an existing row does not error — it rewrites the oldest
+/// rows of the old conversation in place, and the ring's trim then deletes the genuinely new
+/// ones. Seeding [`Resumed::start_seq`] from `sessions.last_event_seq` is what prevents that.
+// see docs/research/resume.md §7 — "the seq seeding is not optional, and its failure is silent".
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Resumed {
+    /// The harness session row to continue. Reused, never minted afresh: the provider keeps one
+    /// id across a plain resume, so one harness row per provider session is the honest mapping.
+    pub session_id: SessionId,
+    /// Highest envelope `seq` the store already holds for that row. The adapter's first
+    /// envelope after the resume is `start_seq + 1`.
+    pub start_seq: u64,
+}
+
 /// Everything needed to reopen an existing provider session.
 // see docs/research/agent-sdk.md §5 — the token is the provider's session id, resumable cross-cwd.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResumeSession {
     /// Provider resume token, from `SessionStarted.resume_token`.
     pub token: String,
+    /// The harness row this resume continues. `None` mints a fresh session id and starts the
+    /// envelope numbering at zero, which is what a caller with no store behind it wants.
+    pub resumed: Option<Resumed>,
     /// Working directory for the child.
     pub cwd: PathBuf,
     /// First user turn after the resume completes.
@@ -239,6 +263,7 @@ impl ResumeSession {
         let base = StartSession::new(cwd);
         Self {
             token: token.into(),
+            resumed: None,
             cwd: base.cwd,
             prompt: base.prompt,
             model: base.model,
@@ -403,6 +428,22 @@ mod tests {
         let r = ResumeSession::new("tok", "/w");
         assert_eq!(r.token, "tok");
         assert_eq!(r.event_buffer, DEFAULT_EVENT_BUFFER);
+        // A resume with no harness row behind it: a fresh id, numbering from zero.
+        assert_eq!(r.resumed, None);
+    }
+
+    /// Pins the **shape** of the request — that the row and the seq travel together and cannot
+    /// be set apart — not that anything honours them. The end-to-end proof that a resumed adapter
+    /// actually continues the numbering is
+    /// `crates/supervisor/src/lib.rs::a_resumed_session_reuses_its_row_and_continues_its_feed`.
+    // see docs/research/resume.md §7.
+    #[test]
+    fn a_resumed_session_carries_the_row_and_the_seq_together() {
+        let mut r = ResumeSession::new("tok", "/w");
+        r.resumed = Some(Resumed { session_id: SessionId::new("s1"), start_seq: 42 });
+        let resumed = r.resumed.expect("set above");
+        assert_eq!(resumed.session_id.as_str(), "s1");
+        assert_eq!(resumed.start_seq, 42);
     }
 
     #[test]

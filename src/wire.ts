@@ -231,6 +231,11 @@ export interface SessionView {
   instance_id: InstanceId | null;
   provider_session_id: string | null;
   cwd: string | null;
+  /** The session's git worktree, or null when the project is not a git repo (contract §Worktrees).
+   *  `cwd === worktree_path` whenever a worktree exists. */
+  worktree_path: string | null;
+  /** `brigadier/<8 hex>`, or null with no worktree. Rendered instead of the path. */
+  branch: string | null;
   model: string | null;
   status: SessionStatus;
   started_at_ms: number | null;
@@ -239,6 +244,14 @@ export interface SessionView {
   last_event_seq: number;
   usage: Usage;
   cost_usd_cumulative: number;
+}
+
+/** `cleanup_worktree`'s answer. `removed: false` with `dirty_files > 0` means nothing was
+ *  touched and the same call with `force: true` is the confirmation. The branch always survives. */
+export interface WorktreeCleanup {
+  removed: boolean;
+  dirty_files: number;
+  branch: string;
 }
 
 export interface ApprovalView {

@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use brigadier_core::driver::{DriverKind, PermissionMode, StartSession};
 use brigadier_core::event::{RequestId, SessionId};
 use brigadier_core::session::Decision;
-use brigadier_supervisor::{ApprovalView, FeedBatch, FeedRowWire};
+use brigadier_supervisor::{ApprovalView, FeedBatch, FeedRowWire, WorktreeCleanup};
 use tauri::ipc::Channel;
 use tauri::State;
 
@@ -115,6 +115,30 @@ pub(crate) async fn start_session(
     session_view(state.inner(), &session_id).await
 }
 
+/// Continue an ended session: the same row, the same feed, a new child.
+///
+/// Takes only the session id. `SessionView` gains no field for this: `provider_session_id`
+/// already carries the value the stored resume token is derived from, so there is nothing new to
+/// keep in sync, and the front end's Resume predicate is
+/// `provider_session_id !== null && (status === "exited" || status === "failed")`.
+///
+/// Errors the front end branches on: `not_resumable` (no stored token, still live, or a status
+/// that is neither `exited` nor `failed` — the message says which), `no_such_session`,
+/// `claude_not_installed` / `claude_too_old`, and `driver` when the child will not come up.
+// see docs/research/resume.md §8 gaps 7 and 11, and docs/plans/ipc-contract.md "Commands".
+#[tauri::command]
+pub(crate) async fn resume_session(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<SessionView, AppError> {
+    // Same reason as `start_session`: the supervisor would answer `NoDriver` → `driver`, which
+    // tells the operator nothing about a missing install.
+    state.claude_status()?;
+    let session_id = SessionId::new(session_id);
+    let session_id = state.get()?.supervisor.resume_session(&session_id).await?;
+    session_view(state.inner(), &session_id).await
+}
+
 /// Queue a user turn on a live session.
 #[tauri::command]
 pub(crate) async fn send_turn(
@@ -168,6 +192,34 @@ pub(crate) async fn end_session(
 pub(crate) async fn kill(session_id: String, state: State<'_, AppState>) -> Result<(), AppError> {
     state.get()?.supervisor.kill(&SessionId::new(session_id)).await?;
     Ok(())
+}
+
+/// Remove an ended session's git worktree, keeping its branch.
+///
+/// Explicit, never automatic: nothing on `end_session` or `kill` touches a worktree, because a
+/// resumed session needs it as its `cwd`.
+///
+/// `force = false` asks the question. A worktree with uncommitted work comes back as
+/// `{ removed: false, dirty_files: N, branch }` with **nothing touched**; calling again with
+/// `force = true` discards those N entries and removes the checkout. The branch survives either
+/// way — no path here deletes one — and after a removal the session's `cwd` no longer exists, so
+/// resuming it will fail.
+///
+/// Errors the front end branches on: `session_running` (a child is still on the other end),
+/// `no_such_session`, `invalid_argument` (the session has no worktree at all), and `worktree`
+/// for a git failure.
+// see docs/research/worktree-git.md §4 and docs/plans/ipc-contract.md "Worktrees".
+#[tauri::command]
+pub(crate) async fn cleanup_worktree(
+    session_id: String,
+    force: bool,
+    state: State<'_, AppState>,
+) -> Result<WorktreeCleanup, AppError> {
+    Ok(state
+        .get()?
+        .supervisor
+        .cleanup_worktree(&SessionId::new(session_id), force)
+        .await?)
 }
 
 /// The newest `n` feed rows for a session, oldest first — what a fresh mount replays before it

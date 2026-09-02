@@ -33,6 +33,7 @@ import type {
   ProjectView,
   RequestId,
   SessionId,
+  WorktreeCleanup,
 } from "./wire";
 
 /** How much history to pull when a session is selected for the first time. */
@@ -61,6 +62,8 @@ export function App() {
   const [notice, setNotice] = useState<string | null>(null);
   /** The first `list_projects` has landed; before that every id looks unknown. */
   const [projectsLoaded, setProjectsLoaded] = useState(false);
+  /** A `resume_session` or `cleanup_worktree` call is in flight; both buttons go inert. */
+  const [commandBusy, setCommandBusy] = useState(false);
 
   /** Unknown project ids a re-fetch has already been fired for, and that re-fetch's timer. */
   const refetchedFor = useRef<Set<ProjectId>>(new Set());
@@ -242,6 +245,51 @@ export function App() {
     [say],
   );
 
+  /**
+   * Continue an ended session in place. The success path is `startSession`'s, deliberately: the
+   * `session_id` does not change, so seeding the returned view and selecting it re-triggers the
+   * `feed_tail` prefill above and the old history re-renders under the new child
+   * (`docs/plans/ipc-contract.md` §resume_session).
+   */
+  const resumeSession = useCallback(
+    (sessionId: SessionId) => {
+      setCommandBusy(true);
+      void bridge()
+        .resumeSession(sessionId)
+        .then((view) => {
+          store.seedSessions([view]);
+          store.noteResumed(view.session_id);
+          setSelectedSessionId(view.session_id);
+        })
+        .catch(say)
+        .finally(() => setCommandBusy(false));
+    },
+    [say],
+  );
+
+  /**
+   * Remove a session's git worktree. `force: false` is the question, not the action: a dirty
+   * tree comes back `{ removed: false, dirty_files: N }` with nothing touched, and the composer
+   * turns that into the confirmation that calls again with `force: true`. Errors are shown in
+   * the notice and reported to the composer as `null` so it leaves its own state alone.
+   */
+  const cleanupWorktree = useCallback(
+    async (sessionId: SessionId, force: boolean): Promise<WorktreeCleanup | null> => {
+      setCommandBusy(true);
+      try {
+        const result = await bridge().cleanupWorktree(sessionId, force);
+        if (result.removed) store.noteWorktreeRemoved(sessionId);
+        return result;
+      } catch (e) {
+        say(e);
+        return null;
+      } finally {
+        setCommandBusy(false);
+      }
+    },
+    [say],
+  );
+
   const respond = useCallback(
     (sessionId: SessionId, requestId: RequestId, decision: Decision) => {
       void bridge().respond(sessionId, requestId, decision).catch(say);
@@ -313,6 +361,12 @@ export function App() {
             {selectedSession !== null
               ? ` · session ${selectedSession.sessionId} · ${selectedSession.status}`
               : " · all sessions"}
+            {selectedSession?.branch != null ? (
+              <span className="chip plain" title={selectedSession.worktreePath ?? undefined}>
+                {selectedSession.branch}
+                {selectedSession.worktreeRemoved ? " · worktree removed" : ""}
+              </span>
+            ) : null}
           </span>
           {notice !== null ? (
             <button type="button" className="notice" onClick={() => setNotice(null)}>
@@ -346,6 +400,9 @@ export function App() {
           <Composer
             session={selectedSession}
             projectName={selectedProject?.name ?? null}
+            busy={commandBusy}
+            onResume={resumeSession}
+            onCleanup={cleanupWorktree}
             onSend={(id, text) => {
               void bridge().sendTurn(id, text).catch(say);
             }}

@@ -32,6 +32,8 @@ import type { Bridge, BurnArgs, StartSessionArgs } from "./bridge";
 interface MockSession {
   view: SessionView;
   seq: number;
+  /** `cleanup_worktree` with `force: true` has run: the checkout is gone, so resume must fail. */
+  worktreeRemoved: boolean;
   /** Rows per second this session should emit. */
   rps: number;
   /** Fractional row carried between frames so a slow rate still fires. */
@@ -138,15 +140,42 @@ function newSessionId(): string {
   return `s-${(nextId++).toString().padStart(4, "0")}`;
 }
 
-function makeSession(projectId: string, model: string, rps: number, until: number | null): MockSession {
+/** The contract's short id: eight lowercase hex characters, minted per session. */
+function shortHex(): string {
+  let out = "";
+  for (let i = 0; i < 8; i++) out += "0123456789abcdef"[Math.floor(Math.random() * 16)];
+  return out;
+}
+
+/**
+ * A session and, unless `withWorktree` is false, the git worktree the contract's §Worktrees
+ * section describes: branch `brigadier/<8 hex>`, checkout at
+ * `<project root>/.brigadier/worktrees/<8 hex>`, and `cwd === worktree_path`. Nothing is created
+ * on disk — these are synthetic strings, like everything else in this file.
+ *
+ * `withWorktree: false` is the non-git-repo case the contract allows: both fields null, the
+ * child runs in the project root, and the sidebar shows no branch chip.
+ */
+function makeSession(
+  projectId: string,
+  model: string,
+  rps: number,
+  until: number | null,
+  withWorktree = true,
+): MockSession {
   const id = newSessionId();
+  const root = projects.find((p) => p.id === projectId)?.root_path ?? null;
+  const hex = shortHex();
+  const worktree = withWorktree && root !== null ? `${root}/.brigadier/worktrees/${hex}` : null;
   const s: MockSession = {
     view: {
       session_id: id,
       project_id: projectId,
       instance_id: "claude-mock",
       provider_session_id: `prov-${id}`,
-      cwd: projects.find((p) => p.id === projectId)?.root_path ?? null,
+      cwd: worktree ?? root,
+      worktree_path: worktree,
+      branch: worktree === null ? null : `brigadier/${hex}`,
       model,
       status: "running",
       started_at_ms: Date.now(),
@@ -157,6 +186,7 @@ function makeSession(projectId: string, model: string, rps: number, until: numbe
       cost_usd_cumulative: 0,
     },
     seq: 0,
+    worktreeRemoved: false,
     rps,
     debt: 0,
     until,
@@ -368,7 +398,10 @@ function seedCrossProjectApproval(): void {
   const project = projects[1];
   if (project === undefined) return;
   // 2 rows/sec: enough to prove the session is alive, far below the ambient load generator.
-  const s = makeSession(project.id, "claude-haiku-4-5", 2, null);
+  // Deliberately worktree-less (`withWorktree: false`), which is the contract's non-git-repo
+  // case: it is the one mock session whose sidebar row shows no branch chip and whose composer
+  // offers no "Clean up worktree".
+  const s = makeSession(project.id, "claude-haiku-4-5", 2, null, false);
   row(s, `MOCK · ${MOCK_NOTE}`);
   const requestId = "r-mock-cross-project";
   approvals.set(requestId, {
@@ -489,9 +522,77 @@ export const mockBridge: Bridge = {
     return { ...s.view };
   },
 
+  /**
+   * Synthetic resume. It does what the contract says `resume_session` does and nothing else:
+   * same `session_id`, same feed, `status: "starting"` with `ended_at_ms` and `exit_code` back to
+   * null, and it **stays** `starting` until the first turn (`sendTurn` below is what announces
+   * the child). No process is spawned and no model is called.
+   */
+  async resumeSession(sessionId) {
+    const s = requireSession(sessionId);
+    if (s.view.provider_session_id === null) {
+      throw new AppError("not_resumable", "no stored resume token for this session (mock)");
+    }
+    if (s.view.status !== "exited" && s.view.status !== "failed") {
+      throw new AppError("not_resumable", `session is ${s.view.status}, not exited or failed (mock)`);
+    }
+    if (s.worktreeRemoved) {
+      throw new AppError(
+        "not_resumable",
+        `working directory no longer exists: ${s.view.worktree_path ?? s.view.cwd} (mock)`,
+      );
+    }
+    s.view.status = "starting";
+    s.view.ended_at_ms = null;
+    s.view.exit_code = null;
+    s.view.started_at_ms = Date.now();
+    row(s, `MOCK · resumed · ${MOCK_NOTE}`);
+    return { ...s.view };
+  },
+
+  /**
+   * Synthetic worktree cleanup. `force: false` always reports the tree dirty with two files and
+   * touches nothing — that is the branch of the contract worth exercising in the browser; the
+   * same call with `force: true` reports it removed. No `git` runs and no directory is deleted.
+   */
+  async cleanupWorktree(sessionId, force) {
+    const s = requireSession(sessionId);
+    if (s.view.status === "running" || s.view.status === "starting") {
+      throw new AppError("session_running", "end or kill the session first (mock)");
+    }
+    if (s.view.branch === null) {
+      throw new AppError("invalid_argument", "this session has no worktree (mock)");
+    }
+    if (s.worktreeRemoved) return { removed: true, dirty_files: 0, branch: s.view.branch };
+    if (!force) return { removed: false, dirty_files: 2, branch: s.view.branch };
+    s.worktreeRemoved = true;
+    // The branch survives every cleanup path, so `view.branch` is deliberately left alone.
+    return { removed: true, dirty_files: 0, branch: s.view.branch };
+  },
+
   async sendTurn(sessionId, text) {
     const s = requireSession(sessionId);
-    if (s.view.status !== "running") {
+    // A resumed session sits in `starting` until a turn is sent; the child announces itself on
+    // the first one (contract §resume_session), which is what moves it to `running` here too.
+    if (s.view.status === "starting") {
+      s.view.status = "running";
+      s.view.started_at_ms = Date.now();
+      onBatch?.({
+        project_id: s.view.project_id ?? projects[0]!.id,
+        rows: [],
+        signals: [
+          envelope(s, {
+            type: "session-started",
+            provider_session_id: s.view.provider_session_id ?? `prov-${s.view.session_id}`,
+            model: s.view.model ?? "claude-sonnet-4-5",
+            cwd: s.view.cwd ?? projects[0]!.root_path,
+            capabilities: ["mock"],
+            resume_token: `mock-resume-${s.view.session_id}`,
+          }),
+        ],
+        counters: [],
+      });
+    } else if (s.view.status !== "running") {
       throw new AppError("session_not_running", `session is ${s.view.status}`);
     }
     row(s, `user · ${text.slice(0, 120)}`);
