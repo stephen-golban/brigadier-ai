@@ -1,0 +1,15 @@
+/**
+ * Per-file test setup.
+ *
+ * `@testing-library/jest-dom/vitest` registers the DOM matchers *and* augments Vitest's
+ * `Assertion` type; because this file sits under `src/` it is inside `tsconfig.json`'s
+ * `include`, so `toBeInTheDocument()` type-checks with no `types` entry anywhere.
+ *
+ * `import.meta.env.DEV` is `true` under `vitest run` (measured), so `fps.ts` would otherwise
+ * consider its meter enabled and `console.debug` a frame report every simulated second — and
+ * `feedStore`'s drain calls `fps.sampleFrame()` on every frame. The stored "off" is read by
+ * `fps.readEnabled()` at module load, which is re-run by every `vi.resetModules()` import.
+ */
+import "@testing-library/jest-dom/vitest";
+
+localStorage.setItem("brigadier.fps", "off");
