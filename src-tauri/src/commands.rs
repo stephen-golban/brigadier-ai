@@ -269,8 +269,9 @@ pub(crate) async fn set_visible_projects(
 
 /// Append one window of the page's frame-rate meter to `<data_dir>/frame-stats.ndjson`.
 ///
-/// The file is append-only and never read back by the app; it is evidence for the 60 fps bar in
-/// `docs/plans/next-session.md` step 3, and it is small enough not to need rotation.
+/// The file is append-only and never read back by the app; it is the evidence behind the honest
+/// FPS numbers in `docs/research/feed-rendering.md` and the 60 Hz row in `docs/STATUS.md` §4, and
+/// it is small enough not to need rotation.
 #[tauri::command]
 pub(crate) async fn record_frame_stats(
     stats: FrameStats,

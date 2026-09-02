@@ -3,7 +3,7 @@
 //! A plain value, N of them per process, no singleton and no global registry. Two drivers with
 //! different `CLAUDE_CONFIG_DIR`s are two accounts and must coexist in one process, so nothing
 //! here touches process-global state: no `set_var`, no `chdir`, no `HOME` override.
-// see decision 4 and 5 of docs/plans/provider-spi.md, and docs/research/agent-sdk.md §9 —
+// see docs/research/provider-driver.md and docs/research/agent-sdk.md §9 —
 // `CLAUDE_CONFIG_DIR` is the one variable that partitions keychain item, transcripts, settings
 // and memory.
 

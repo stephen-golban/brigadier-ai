@@ -192,8 +192,8 @@ pub(crate) struct FrameStats {
 ///   or 'sonnet') or a model's full name"*; the binary's own literal set is
 ///   `"fable" "haiku" "opus" "opus[1m]" "sonnet" "sonnet[1m]"`.
 ///
-/// `supportedModels` is not wired on the driver yet, so this is a fixed list
-/// (`docs/plans/next-session.md` step 5).
+/// The `initialize` response carries the account's own model list (`docs/vision.md` §4), but it is
+/// not wired through the driver yet, so this is a fixed list.
 pub(crate) fn models() -> Vec<ModelInfo> {
     let rows: [(&str, &str, bool); 8] = [
         ("claude-haiku-4-5", "Haiku 4.5 — cheapest", true),
