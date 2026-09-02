@@ -84,6 +84,7 @@ SessionCounter{ session_id: string, rows_total: number, rows_dropped: number }
 | `feed_tail` | `session_id, n: number` | `FeedRowWire[]` oldest first |
 | `pending_approvals` | — | `ApprovalView[]` oldest first |
 | `record_frame_stats` | `stats: FrameStats` | `()` (appends one NDJSON line to `<data_dir>/frame-stats.ndjson`) |
+| `report_paint` | `report: PaintReport` | `()` (appends one NDJSON line to `<data_dir>/paint.ndjson`) |
 | `burn` | `sessions: number, rows_per_sec: number, duration_s: number, fixture: string` | `()` (dev builds only; replays fixtures through the feed channel) |
 
 ### `resume_session`
@@ -217,6 +218,83 @@ resumed session needs its worktree as `cwd`, and `resume_session` reuses the sto
 At app start the Rust side runs `git worktree prune` for every project. It never touches a branch,
 its failures are `tracing::warn` lines, and the front end sees nothing of it.
 
+### `report_paint`
+
+One timed paint from the page, appended to `<data_dir>/paint.ndjson`. It exists because **B4**,
+**B6** and **B7** in `docs/vision.md` §9 are guesses with nothing behind them, and stay guesses
+until the app can time its own paints. Adding it does not change a budget.
+
+Everything here rests on `docs/research/perceived-performance.md` §5.3, measured against a real
+`WKWebView` on this machine.
+
+- **The clock bridge.** `performance.timeOrigin` is directly comparable to Rust's
+  `SystemTime::now().duration_since(UNIX_EPOCH)`. **[documented]** W3C High Resolution Time defines
+  `timeOrigin` as the duration from the estimated monotonic time of the Unix epoch;
+  **[measured]** `1788355265312 - 1788355262250 = 3062 = performance.now()` in the real webview.
+  So both variants send **epoch milliseconds**, like every other `_ms` field on this wire.
+- **`T0` is stamped as the first statement of `main()`** (`src-tauri/src/main.rs` →
+  `brigadier_lib::mark_process_start`, a `OnceLock<f64>`). `run()` stamps it again so an entry
+  point that skips `main()` gets a later-but-honest value rather than a panic; first write wins.
+- **Three honest limits, all of which belong on any number quoted from this file.**
+  1. The delta is `main()` entry → FCP, **not `posix_spawn` → FCP**. The dyld/pre-main segment is
+     invisible from inside the process; `DYLD_PRINT_STATISTICS` is absent from dyld's string table
+     on macOS 26.5, not merely disabled (**[measured]**, §5.1), and `ps -o lstart=` is
+     second-granularity.
+  2. `timeOrigin` rests on an **estimate** of the monotonic time of the epoch, so an NTP step
+     mid-launch corrupts the subtraction. Negligible over 300 ms; not exact. **[documented]**
+  3. FCP is a **render** timestamp, not a presentation timestamp.
+     `LargestContentfulPaint.presentationTime` "always returns `null`" in WebKit 26.5
+     (**[documented]** BCD), so the photons land some frames after the reported number. It is not
+     "when the user saw it".
+- **There is no `first-paint` entry in this WebKit** — only `first-contentful-paint`.
+  **[measured]** `PerformanceObserver.supportedEntryTypes` came back as
+  `["event","first-input","largest-contentful-paint","mark","measure","navigation","paint",
+  "resource"]`: no `element`, no `longtask`, no `long-animation-frame`. **[measured]**
+- **The `paint` observer is `buffered: true`.** An FCP that already happened is still delivered, so
+  installing the instrument after `createRoot` is not a bug and the ordering in `src/main.tsx`
+  carries no meaning. The observer disconnects after the one entry, and the FCP report is sent
+  **exactly once** however many times the instrument is started — React 19 StrictMode
+  double-invokes effects, the same reason `subscribe_feed` is idempotent in Rust.
+- **`interaction` is a mark → double-`requestAnimationFrame` → measure span.** The second rAF
+  callback runs after the rendering update that drew the commit; a single rAF measures the wrong
+  edge. `label` is what names B4 / B6 / B7 at the call site and is written verbatim.
+  `performance.mark`/`measure` (Safari 11+, **[documented]** BCD) are emitted so the span shows in
+  Web Inspector's timeline; the reported duration is a `performance.now()` delta, not read back out
+  of the entry buffer. An interaction that never settles within 5 s is **dropped** — marks cleared,
+  nothing reported: a missing number is honest, a duration measured to an unrelated later paint is
+  not.
+- **The file is `paint.ndjson`, a sibling of `frame-stats.ndjson`, never the same file.**
+  §5.3 step 3 suggests reusing `frame-stats.ndjson`; this contract deviates deliberately. That file
+  holds 1,513 homogeneous `FrameStats` lines and is the evidence base for the 60 Hz claim in
+  `docs/STATUS.md` §4; a line of a different shape in it breaks every reader of that evidence.
+- **Append-only, never read back by the app.** Nothing in the UI reads `paint.ndjson`; it is
+  operator evidence, like its sibling. The written line adds `process_start_epoch_ms` and, on an
+  `fcp` line, `main_to_fcp_ms` — the delta is never the only copy, because the raw inputs must stay
+  checkable. The `fcp` arm also emits one `tracing::info!(main_to_fcp_ms = …)`, so the launch
+  recipe in §5.2 that already parses the `RUST_LOG=info` stream picks it up with no new plumbing.
+- **Every field is a `number` (`f64` in Rust), counts included**, for the reason `FrameStats`
+  gives: JavaScript has one number type, and a `u64` that receives `3.0000000001` fails the whole
+  command with an argument-deserialization error the operator cannot act on.
+- **The instrument is `src/paint.ts`.** Its FCP half is wired from `src/main.tsx`; its interaction
+  half has **no caller** as of this amendment, and the call sites land with the shell and surface
+  orders that create those components.
+- **Growth is unbounded and nothing prunes it.** One line per launch today (a single `fcp`); one
+  line per session switch and per acknowledged button press once the B4/B6/B7 call sites land, in
+  **release** builds too — unlike `burn`, this command is not dev-gated. Nothing rotates, truncates
+  or deletes `paint.ndjson`: `record_frame_stats`'s "small enough not to need rotation" was
+  inherited here without being re-tested at a per-interaction rate. The rotation decided in
+  `docs/research/persistence.md` §4 (`file-rotate`, bytes + count + gzip) covers **raw provider
+  traffic**, not harness-authored evidence files; `docs/STATUS.md` has no retention section at all
+  (it ends at §7), so `frame-stats.ndjson` and now `paint.ndjson` are two files in a class whose
+  retention policy is unwritten. Stated as a known liability, not solved.
+- **Half of this command's front end is not in the shipped bundle yet.** **[measured]** 2026-09-02:
+  `beginInteraction` has no importer, so Rollup drops it and everything it reaches. In
+  `dist/assets/index-*.js`, `first-contentful-paint` and `report_paint` each appear **once** while
+  `brigadier:` and `clearMeasures` appear **zero** times. So a bundle figure quoted today is the
+  cost of the FCP half alone: the interaction half costs **zero bytes until it has a caller**, and
+  W4-C / W4-D pay for it on the order that adds one. It also means a real change to that half moves
+  the bundle by zero bytes — indistinguishable from a build that did not run, and not one.
+
 ```
 AppInfo      { run_id: string, data_dir: string, version: string }
 ClaudeStatus { binary: string, version: string }
@@ -248,6 +326,15 @@ Decision     { type: "allow", updated_input: unknown|null, updated_permissions: 
 FrameStats   { window_start_ms: number, hz: number, frames: number, dropped: number,
                p50_ms: number, p95_ms: number, p99_ms: number, worst_ms: number,
                longest_drop_run: number, dom_nodes: number }
+PaintReport  { kind: "fcp", epoch_ms: number /* performance.timeOrigin + startTime of the
+                                            `first-contentful-paint` entry; there is no
+                                            `first-paint` entry in this WebKit */ }
+           | { kind: "interaction", label: string /* names the budget: B4 / B6 / B7 */,
+               start_epoch_ms: number, duration_ms: number /* mark -> double-rAF -> measure */ }
+               /* internally tagged on "kind" with #[serde(rename_all = "snake_case")]
+                  (src-tauri/src/views.rs), so these two bare strings are the wire form. The
+                  line written to <data_dir>/paint.ndjson is this object plus
+                  process_start_epoch_ms and main_to_fcp_ms; nothing reads it back. */
 ```
 
 ## Browser fallback
@@ -257,3 +344,8 @@ FrameStats   { window_start_ms: number, hz: number, frames: number, dropped: num
 synthetic batch generator at a configurable rows/sec, and approvals that resolve locally. The mock
 exists so the front end can be developed and its FPS meter exercised without the Rust side, and it
 must implement this same contract.
+
+`report_paint` has no Rust process to measure against in a browser, so the mock's `reportPaint`
+`console.debug`s the report and returns. The instrument itself (`src/paint.ts`) runs unchanged
+there, which is the point: the double-rAF and the epoch arithmetic are exercised in `npm run dev`
+without a Tauri window.

@@ -323,6 +323,18 @@ export interface FrameStats {
   dom_nodes: number;
 }
 
+/**
+ * One paint the page timed, for `report_paint`. Mirrors the Rust enum in
+ * `src-tauri/src/views.rs`: internally tagged on `"kind"`, snake_case, every number an `f64`.
+ *
+ * `fcp` is `performance.timeOrigin + entry.startTime` of the `first-contentful-paint` entry —
+ * there is no `first-paint` entry in this WebKit. `interaction` is one mark → double-rAF →
+ * measure span, whose `label` names the budget it belongs to.
+ */
+export type PaintReport =
+  | { kind: "fcp"; epoch_ms: number }
+  | { kind: "interaction"; label: string; start_epoch_ms: number; duration_ms: number };
+
 /* ------------------------------------------------------- permission mode */
 
 /**

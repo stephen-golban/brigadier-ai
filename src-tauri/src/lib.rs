@@ -29,12 +29,55 @@ mod state;
 mod tracker;
 mod views;
 
-use std::time::Duration;
+use std::sync::OnceLock;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use brigadier_proc::DEFAULT_GRACE;
 use tauri::{Manager, RunEvent};
 
 use crate::state::AppState;
+
+/// Epoch milliseconds at the top of `main()`, the `T0` every paint number is measured against.
+///
+/// A `OnceLock` rather than managed state because it must be written before `tauri::Builder`
+/// exists, and because [`run`] carries `#[cfg_attr(mobile, tauri::mobile_entry_point)]`, which
+/// fixes its signature — there is nowhere to thread a parameter through.
+static PROCESS_START_EPOCH_MS: OnceLock<f64> = OnceLock::new();
+
+/// Stamp the process-start clock. Called as the **first statement of `main()`**, and again at the
+/// top of [`run`] so a path that never goes through `main()` (the mobile entry point, a test
+/// harness) gets a later-but-honest value rather than a panic. First write wins.
+///
+/// The number is epoch milliseconds as `f64`, which is directly comparable to the page's
+/// `performance.timeOrigin`: **documented** W3C High Resolution Time defines `timeOrigin` as the
+/// duration from the estimated monotonic time of the Unix epoch, and
+/// `Date.now() - timeOrigin === performance.now()` held to the millisecond in a real `WKWebView`
+/// on this machine (**measured**, `docs/research/perceived-performance.md` §5.3).
+///
+/// **What this measures, honestly: `main()` entry → first contentful paint, not `posix_spawn` →
+/// FCP.** The dyld/pre-main segment is invisible from inside the process and cannot be recovered
+/// afterwards: `DYLD_PRINT_STATISTICS` no longer exists in dyld on macOS 26.5 — it is absent from
+/// the binary's string table, not merely disabled (**measured**, §5.1) — and
+/// `ps -o lstart=` is second-granularity. Any launch-profiling recipe that starts with
+/// `DYLD_PRINT_STATISTICS` is stale advice.
+pub fn mark_process_start() {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs_f64() * 1000.0)
+        .unwrap_or(0.0);
+    let _ = PROCESS_START_EPOCH_MS.set(now);
+}
+
+/// The process-start clock, in epoch milliseconds.
+///
+/// Stamps it on first read if nothing did, so this can never be a panic or a sentinel the operator
+/// has to interpret; a value stamped here is late, and the delta computed from it is a floor.
+pub(crate) fn process_start_epoch_ms() -> f64 {
+    if PROCESS_START_EPOCH_MS.get().is_none() {
+        mark_process_start();
+    }
+    *PROCESS_START_EPOCH_MS.get().unwrap_or(&0.0)
+}
 
 /// How long the exit hook gives a process group between `SIGTERM` and `SIGKILL`.
 ///
@@ -47,6 +90,9 @@ const EXIT_GRACE: Duration = DEFAULT_GRACE;
 /// Build the app, wire every command, and run the event loop. Never returns.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Idempotent; `main()` has already done this. It is here so an entry point that skips
+    // `main()` still has a clock rather than a panic.
+    mark_process_start();
     init_tracing();
 
     tauri::Builder::default()
@@ -71,6 +117,7 @@ pub fn run() {
             commands::subscribe_feed,
             commands::set_visible_projects,
             commands::record_frame_stats,
+            commands::report_paint,
             commands::burn,
         ])
         .setup(|app| {

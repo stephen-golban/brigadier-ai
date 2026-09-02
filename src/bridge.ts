@@ -22,6 +22,7 @@ import type {
   FeedRowWire,
   FrameStats,
   ModelInfo,
+  PaintReport,
   PermissionMode,
   ProjectId,
   ProjectView,
@@ -79,6 +80,8 @@ export interface Bridge {
   pendingApprovals(): Promise<ApprovalView[]>;
 
   recordFrameStats(stats: FrameStats): Promise<void>;
+  /** Append one timed paint to `<data_dir>/paint.ndjson`. Fire-and-forget at every call site. */
+  reportPaint(report: PaintReport): Promise<void>;
   burn(args: BurnArgs): Promise<void>;
 }
 
@@ -136,6 +139,7 @@ const tauriBridge: Bridge = {
   pendingApprovals: () => call<ApprovalView[]>("pending_approvals"),
 
   recordFrameStats: (stats) => call<void>("record_frame_stats", { stats }),
+  reportPaint: (report) => call<void>("report_paint", { report }),
   burn: ({ sessions, rowsPerSec, durationS, fixture }) =>
     call<void>("burn", { sessions, rowsPerSec, durationS, fixture }),
 };

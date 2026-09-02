@@ -177,6 +177,65 @@ pub(crate) struct FrameStats {
     pub dom_nodes: f64,
 }
 
+/// One paint the page timed, on its way to `<data_dir>/paint.ndjson`.
+///
+/// Internally tagged on `"kind"` in snake_case, the way `Event` is tagged on `"type"` in
+/// `crates/core/src/event.rs`.
+///
+/// Every number here is `f64` for the same reason [`FrameStats`] gives: JavaScript has one number
+/// type, and a `u64` field that receives `3.0000000001` out of a `performance.now()` derivation
+/// fails the whole command with an argument-deserialization error the operator cannot act on.
+/// That applies to anything count-shaped that is ever added here, not just to durations.
+///
+/// The instrument that produces these is `src/paint.ts`; the shapes are fixed by
+/// `docs/plans/ipc-contract.md`.
+// see docs/research/perceived-performance.md §5.3.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum PaintReport {
+    /// The page's first contentful paint, as `performance.timeOrigin + entry.startTime`.
+    ///
+    /// There is no `first-paint` entry in this WebKit — only `first-contentful-paint`
+    /// (**measured**, §5.3) — and this is a **render** timestamp, not a presentation timestamp:
+    /// `LargestContentfulPaint.presentationTime` "always returns null" here, so the photons land
+    /// some frames after this number.
+    Fcp {
+        /// Epoch milliseconds of the first contentful paint.
+        epoch_ms: f64,
+    },
+    /// One interaction → painted span: a `performance.mark`, a double `requestAnimationFrame`
+    /// after the commit that paints the result, then a `performance.measure`.
+    ///
+    /// `label` is what names a budget at the call site — B4 (session switch), B6 (scrollback
+    /// filled in), B7 (button acknowledged) in `docs/vision.md` §9. All three are still guesses;
+    /// this variant is the instrument that could turn one into a number, and nothing calls it yet.
+    Interaction {
+        /// The call site's name for the interaction.
+        label: String,
+        /// Epoch milliseconds at the mark.
+        start_epoch_ms: f64,
+        /// Milliseconds from the mark to the frame after the one that painted the result.
+        duration_ms: f64,
+    },
+}
+
+/// One line of `<data_dir>/paint.ndjson`: the page's report plus the clock it is measured against.
+///
+/// `process_start_epoch_ms` rides on every line so `main()` → FCP is recomputable from the file
+/// alone, without re-running anything. `main_to_fcp_ms` is the subtraction done for the reader; it
+/// is never the only copy of the answer, because a derived number with its inputs discarded cannot
+/// be checked.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub(crate) struct PaintLine {
+    /// Epoch milliseconds at the top of `main()` (`crate::mark_process_start`).
+    pub process_start_epoch_ms: f64,
+    /// `epoch_ms - process_start_epoch_ms` for an `fcp` line; `null` for anything else.
+    pub main_to_fcp_ms: Option<f64>,
+    /// The report exactly as the page sent it.
+    #[serde(flatten)]
+    pub report: PaintReport,
+}
+
 /// The models this build offers, cheapest first, with the CLI's own aliases after them.
 ///
 /// Sources, all checked on 2026-09-02:
@@ -231,5 +290,68 @@ mod tests {
         let json = serde_json::to_string(&models()[0]).expect("ser");
         assert!(json.contains(r#""default":true"#), "{json}");
         assert!(json.contains(r#""id":"claude-haiku-4-5""#), "{json}");
+    }
+
+    #[test]
+    fn an_fcp_report_round_trips_tagged_on_kind() {
+        let report = PaintReport::Fcp { epoch_ms: 1_788_355_265_312.0 };
+        let json = serde_json::to_string(&report).expect("ser");
+        assert_eq!(json, r#"{"kind":"fcp","epoch_ms":1788355265312.0}"#);
+        assert_eq!(serde_json::from_str::<PaintReport>(&json).expect("de"), report);
+    }
+
+    #[test]
+    fn an_interaction_report_round_trips_tagged_on_kind() {
+        let report = PaintReport::Interaction {
+            label: "session_switch".to_owned(),
+            start_epoch_ms: 1_788_355_265_312.0,
+            duration_ms: 42.5,
+        };
+        let json = serde_json::to_string(&report).expect("ser");
+        assert!(json.starts_with(r#"{"kind":"interaction","label":"session_switch""#), "{json}");
+        assert_eq!(serde_json::from_str::<PaintReport>(&json).expect("de"), report);
+    }
+
+    /// Every number field is `f64`, so a value that arrived as a `performance.now()` derivation
+    /// rather than an integer deserializes instead of failing the whole command.
+    #[test]
+    fn a_count_shaped_number_with_a_fractional_tail_still_deserializes() {
+        let json = r#"{"kind":"interaction","label":"b7","start_epoch_ms":1788355265312.0,"duration_ms":3.0000000001}"#;
+        let report = serde_json::from_str::<PaintReport>(json).expect("de");
+        match report {
+            PaintReport::Interaction { duration_ms, .. } => {
+                assert!((duration_ms - 3.0).abs() < 1e-6, "{duration_ms}");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_paint_line_carries_the_raw_inputs_beside_the_delta() {
+        let line = PaintLine {
+            process_start_epoch_ms: 1_788_355_265_000.0,
+            main_to_fcp_ms: Some(312.0),
+            report: PaintReport::Fcp { epoch_ms: 1_788_355_265_312.0 },
+        };
+        let json = serde_json::to_string(&line).expect("ser");
+        assert!(json.contains(r#""process_start_epoch_ms":1788355265000.0"#), "{json}");
+        assert!(json.contains(r#""main_to_fcp_ms":312.0"#), "{json}");
+        assert!(json.contains(r#""kind":"fcp""#), "{json}");
+        assert!(json.contains(r#""epoch_ms":1788355265312.0"#), "{json}");
+    }
+
+    #[test]
+    fn an_interaction_line_has_no_fcp_delta() {
+        let line = PaintLine {
+            process_start_epoch_ms: 1_788_355_265_000.0,
+            main_to_fcp_ms: None,
+            report: PaintReport::Interaction {
+                label: "b4".to_owned(),
+                start_epoch_ms: 1_788_355_266_000.0,
+                duration_ms: 17.0,
+            },
+        };
+        let json = serde_json::to_string(&line).expect("ser");
+        assert!(json.contains(r#""main_to_fcp_ms":null"#), "{json}");
     }
 }
