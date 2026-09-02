@@ -423,9 +423,31 @@ OKLab matrices and round-tripped back to 8-bit sRGB at four rounding levels **[m
 
 **Keep L to 4 decimals, C to 5, H to 2.** At that precision every token round-trips bit-exact and
 every annotated contrast pair reproduces to within 0.003 — enough for a 2-decimal ratio except
-where a ratio already sits within ~0.005 of a rounding boundary. Two-decimals-everywhere is not
-enough: it breaks 11 of 18 tokens and moves a contrast ratio by up to 0.11, which is exactly how a
-4.50:1 pair silently becomes 4.39:1.
+where a ratio already sits within ~0.005 of a rounding boundary. **The `2, 3, 1` row is not
+enough: it breaks 11 of 18 tokens and moves a contrast ratio by up to 0.11**, which is exactly how
+a 4.50:1 pair silently becomes 4.39:1.
+
+That sentence previously said "two-decimals-everywhere" while quoting the `2, 3, 1` row's numbers,
+which are L 2dp / C **3**dp / H **1**dp. The table was right and the prose mislabelled it; the
+mislabel was copied forward into `src/index.css` before being caught, which is why it is corrected
+here rather than only there. **True `2, 2, 2` is worse than the sentence claimed, not better**:
+**5 of 18** round-trip, 13 break, and the worst drift across the same eight annotated pairs is
+**0.1045** (`--accent` on `--thread-bg`, 7.2369 → 7.3415). The direction of the argument is
+unchanged.
+
+Those `2, 2, 2` figures are **[measured]**, but **not by the run that produced the table above** —
+they were measured on 2026-09-02 during the W4-B review, twice and independently: once by a blind
+reviewer and once by the W4-B implementer, agreeing on both counts. See
+`docs/research/oklch-tokens.md` §1. Worth knowing for the same reason: at `2, 2, 2`
+`--text-muted-side` on `--sidebar-bg` drifts **4.4551 → 4.5572**, so a pair that genuinely fails
+AA would read as passing.
+
+One more discrepancy found in the same re-derivation and **left in the table above as originally
+measured**: the `3, 4, 2` row's worst drift re-derives as **0.0185**, not `0.010` **[measured,
+W4-B review, 2026-09-02]**. It changes no decision — that row is not the one we ship, and both
+values are far above the `4, 5, 2` row's 0.003 — so the original measurement stands and this is a
+footnote rather than an edit. The `2, 3, 1` and `4, 5, 2` rows both re-derived exactly (0.1097 and
+0.0017 against the recorded 0.109 and 0.003).
 
 Sample of the conversion **[measured]**:
 
