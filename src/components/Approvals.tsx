@@ -22,21 +22,12 @@
  * and clicking one jumps the window to it.
  */
 import { useState } from "react";
-import type { CSSProperties, MouseEvent } from "react";
+import type { MouseEvent } from "react";
 
 import type { ApprovalItem } from "../feedStore";
 import type { Decision, ProjectId, RequestId, SessionId } from "../wire";
 
 const DEFAULT_DENY_REASON = "Denied by operator";
-
-/**
- * Marker for an approval whose project is not the selected one. Inline because `src/index.css`
- * is outside this change's owned paths; it is the only styling this file carries.
- */
-const ELSEWHERE_STYLE: CSSProperties = {
-  borderLeft: "2px solid var(--warn)",
-  paddingLeft: 6,
-};
 
 /** Same rule as `Feed.tsx`'s own `shortId`; session ids are UUIDs (`driver.rs:149`). */
 function shortSessionId(id: SessionId): string {
@@ -65,15 +56,14 @@ export interface ApprovalsProps {
 export function Approvals({ approvals, onRespond, onDismiss, onFocus }: ApprovalsProps) {
   const elsewhere = approvals.filter((r) => r.elsewhere).length;
   return (
-    <section className="approvals">
-      <header className="pane-head">
-        <span>approvals</span>
-        <span className="dim">
-          {approvals.length} open{elsewhere > 0 ? ` · ${elsewhere} in other projects` : ""}
+    <section className="approvals" hidden={approvals.length === 0}>
+      <div className="approvals-head">
+        <span>
+          Waiting on you · {approvals.length} open
+          {elsewhere > 0 ? ` · ${elsewhere} in other projects` : ""}
         </span>
-      </header>
+      </div>
       <div className="approvals-body">
-        {approvals.length === 0 ? <p className="empty">nothing waiting</p> : null}
         {approvals.map((r) => (
           <ApprovalCard
             key={r.approval.requestId}
@@ -147,8 +137,7 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
 
   return (
     <article
-      className={readOnly ? "approval expired" : "approval"}
-      style={row.elsewhere ? ELSEWHERE_STYLE : undefined}
+      className={`approval${readOnly ? " expired" : ""}${row.elsewhere ? " elsewhere" : ""}`}
       onClick={focus}
     >
       <div className="approval-head">
@@ -163,9 +152,9 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
           {row.projectName ?? "project unknown"} · {shortSessionId(approval.sessionId)} ·{" "}
           {new Date(approval.openedAtMs).toLocaleTimeString()}
         </span>
-        {row.elsewhere ? <span className="badge">other project</span> : null}
+        {row.elsewhere ? <span className="chip">other project</span> : null}
         {readOnly ? (
-          <span className="badge">expired: no longer answerable (app restarted or session ended)</span>
+          <span className="chip plain">expired: no longer answerable (app restarted or session ended)</span>
         ) : null}
       </div>
 
@@ -210,8 +199,8 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
 
       {readOnly ? (
         <div className="approval-actions">
-          <button type="button" onClick={() => onDismiss(approval.requestId)}>
-            dismiss
+          <button type="button" className="act" onClick={() => onDismiss(approval.requestId)}>
+            Dismiss
           </button>
         </div>
       ) : denying ? (
@@ -226,22 +215,22 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
               if (e.key === "Escape") setDenying(false);
             }}
           />
-          <button type="button" className="danger" onClick={deny}>
-            confirm deny
+          <button type="button" className="act danger" onClick={deny}>
+            Confirm deny
           </button>
-          <button type="button" onClick={() => setDenying(false)}>
-            cancel
+          <button type="button" className="act" onClick={() => setDenying(false)}>
+            Cancel
           </button>
         </div>
       ) : (
         <div className="approval-actions">
           {kind === null ? null : (
-            <button type="button" className="ok" onClick={allow}>
-              allow
+            <button type="button" className="send wide" onClick={allow}>
+              Allow
             </button>
           )}
-          <button type="button" className="danger" onClick={() => setDenying(true)}>
-            deny
+          <button type="button" className="act danger" onClick={() => setDenying(true)}>
+            Deny
           </button>
         </div>
       )}

@@ -1,5 +1,11 @@
 /**
- * The whole window: sidebar left, feed centre, approvals and composer right.
+ * The whole window: a ChatGPT-shaped two-pane shell. Sidebar on the left (projects, their
+ * sessions nested underneath, the pending-approvals count and the claude probe); a single thread
+ * column on the right holding the feed, the approval cards docked above the composer, and the
+ * composer itself centred on a fixed max width.
+ *
+ * The composer has two states, as the reference does: with a session selected it sends turns and
+ * carries interrupt / end / kill; with none selected it is the "start a session" form.
  *
  * All IPC goes through `bridge()`, which is the real `invoke` inside Tauri and the in-memory
  * mock in a browser, with no code change between the two.
@@ -15,7 +21,7 @@ import { Burn } from "./components/Burn";
 import { Composer } from "./components/Composer";
 import { Feed } from "./components/Feed";
 import { FpsOverlay } from "./components/FpsOverlay";
-import { ClaudeBanner, NewSession } from "./components/NewSession";
+import { NewSession } from "./components/NewSession";
 import { Sidebar } from "./components/Sidebar";
 import type {
   AppError,
@@ -275,40 +281,71 @@ export function App() {
     [refreshProjects],
   );
 
+  const selectedProject =
+    selectedProjectId === null ? null : projects.find((p) => p.id === selectedProjectId) ?? null;
+  const pendingTotal = approvalRows.length;
+
   return (
     <div className="app">
-      <header className="top">
-        <span className="brand">brigadier</span>
-        <ClaudeBanner status={claude} error={claudeError} />
-        <span className="dim">
-          {appInfo === null ? "" : `run ${appInfo.run_id} · v${appInfo.version}`}
-          {bridge().isMock ? " · MOCK BRIDGE (no Rust side)" : ""}
-        </span>
-        {notice !== null ? (
-          <button type="button" className="notice" onClick={() => setNotice(null)}>
-            {notice} ✕
-          </button>
-        ) : null}
-        <FpsOverlay />
-      </header>
+      <Sidebar
+        projects={projects}
+        sessions={state.sessions}
+        order={state.order}
+        selectedProjectId={selectedProjectId}
+        selectedSessionId={selectedSessionId}
+        pendingApprovals={pendingByProject}
+        pendingTotal={pendingTotal}
+        appInfo={appInfo}
+        claude={claude}
+        claudeError={claudeError}
+        isMock={bridge().isMock}
+        dev={import.meta.env.DEV ? <Burn onBurn={runBurn} /> : undefined}
+        onSelectProject={setSelectedProjectId}
+        onSelectSession={setSelectedSessionId}
+        onAddProject={addProject}
+      />
 
-      <div className="body">
-        <Sidebar
-          projects={projects}
-          sessions={state.sessions}
-          order={state.order}
-          selectedProjectId={selectedProjectId}
-          selectedSessionId={selectedSessionId}
-          pendingApprovals={pendingByProject}
-          onSelectProject={setSelectedProjectId}
-          onSelectSession={setSelectedSessionId}
-          onAddProject={addProject}
+      <main className="thread">
+        <div className="thread-top">
+          <span className="where">
+            <b>{selectedProject?.name ?? "No project"}</b>
+            {selectedProject !== null ? ` · ${selectedProject.root_path}` : ""}
+            {selectedSession !== null
+              ? ` · session ${selectedSession.sessionId} · ${selectedSession.status}`
+              : " · all sessions"}
+          </span>
+          {notice !== null ? (
+            <button type="button" className="notice" onClick={() => setNotice(null)}>
+              {notice} ✕
+            </button>
+          ) : null}
+          <FpsOverlay />
+        </div>
+
+        <Feed
+          sessionId={selectedSessionId}
+          projectId={selectedProjectId}
+          projectName={selectedProject?.name ?? null}
         />
 
-        <main className="centre">
-          <Feed sessionId={selectedSessionId} projectId={selectedProjectId} />
+        <Approvals
+          approvals={approvalRows}
+          onRespond={respond}
+          onDismiss={store.dismissApproval}
+          onFocus={focusApproval}
+        />
+
+        {selectedSession === null ? (
+          <NewSession
+            project={selectedProject}
+            models={models}
+            disabled={claudeError !== null}
+            onStart={startSession}
+          />
+        ) : (
           <Composer
             session={selectedSession}
+            projectName={selectedProject?.name ?? null}
             onSend={(id, text) => {
               void bridge().sendTurn(id, text).catch(say);
             }}
@@ -322,24 +359,8 @@ export function App() {
               void bridge().kill(id).catch(say);
             }}
           />
-        </main>
-
-        <aside className="right">
-          <NewSession
-            projectId={selectedProjectId}
-            models={models}
-            disabled={claudeError !== null}
-            onStart={startSession}
-          />
-          <Approvals
-            approvals={approvalRows}
-            onRespond={respond}
-            onDismiss={store.dismissApproval}
-            onFocus={focusApproval}
-          />
-          {import.meta.env.DEV ? <Burn onBurn={runBurn} /> : null}
-        </aside>
-      </div>
+        )}
+      </main>
     </div>
   );
 }

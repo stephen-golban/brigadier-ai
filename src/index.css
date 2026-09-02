@@ -1,22 +1,62 @@
-/* Dense, dark, monospace. No framework, no utility classes, no CSS-in-JS. */
+/*
+ * Styled to match the installed ChatGPT macOS app (26.825.51511) in its Codex view.
+ *
+ * Every value tagged [measured] was read out of a screencapture of that app's own window taken
+ * on 2026-09-02 and sampled pixel by pixel; see `docs/plans/ui-restyle-notes.md` for the method
+ * and the screenshot. Values tagged [derived] were interpolated between measured ones, and the
+ * three tagged [contrast] deliberately depart from the reference because the measured colour
+ * fails WCAG AA against its own background.
+ *
+ * The app is dark only. The reference stays dark under a light system appearance (captured both
+ * ways; only its translucent sidebar material changed), so there is no light scheme here either.
+ *
+ * No framework, no utility classes, no CSS-in-JS.
+ */
 
 :root {
-  --bg: #0d0f12;
-  --bg-2: #14171c;
-  --bg-3: #1b1f26;
-  --line: #262b33;
-  --fg: #d7dbe0;
-  --dim: #7c848f;
-  --ok: #4fb477;
-  --warn: #d1a33a;
-  --bad: #d15b53;
-  --accent: #5aa2e0;
-  --row-h: 18px;
+  /* --- surfaces ------------------------------------------------------- */
+  --thread-bg: #181818; /* [measured] main conversation area */
+  --sidebar-bg: #3a3b3b; /* [measured] sidebar; native vibrancy, so wallpaper-dependent */
+  --sidebar-hover: #434445; /* [derived] halfway to the selected pill */
+  --sidebar-active: #494a4b; /* [measured] selected row pill */
+  --sidebar-line: #4a4b4c; /* [measured] 1px rule above the account row */
+  --rail-bg: #1f1f1f; /* [measured] strip behind the composer's context tabs */
+  --surface: #212121; /* [derived] cards, between the rail and the composer */
+  --composer-bg: #2a2a2a; /* [measured] composer input box */
+  --line: #3b3b3b; /* [measured] 1px border on the thread's suggestion cards */
+
+  /* --- text ----------------------------------------------------------- */
+  --text: #ffffff; /* [measured] */
+  --text-sidebar: #e1e1e1; /* [measured] sidebar row label */
+  --text-muted: #848484; /* [measured] section label; 4.6:1 on --thread-bg */
+  --text-muted-side: #a3a3a3; /* [contrast] #848484 is 3.1:1 on --sidebar-bg, this is 4.6:1 */
+  --text-placeholder: #9a9a9a; /* [contrast] measured #606060 is 2.9:1 on --composer-bg */
+
+  /* --- state ---------------------------------------------------------- */
+  --accent: #ef8c57; /* [measured] the composer's "Full access" chip */
+  --ok: #5cc98c; /* [derived] no green in the reference; running / allow */
+  --bad: #ef6a63; /* [derived] no red in the reference; failed / deny */
+  --on-solid: #181818; /* [measured] glyph inside the white send button */
+
+  /* --- geometry ------------------------------------------------------- */
+  --sidebar-w: 276px; /* [measured] 275.5 */
+  --row-h: 30px; /* [measured] sidebar row pitch and pill height */
+  --radius-row: 8px; /* [measured] sidebar pill corner */
+  --radius-md: 12px; /* [measured] thread card corner */
+  --radius-lg: 20px; /* [measured] composer corner */
+  --thread-max: 736px; /* [measured] composer box width */
+  --content-max: 712px; /* [measured] context strip and card row width */
+  --feed-row-h: 18px; /* unchanged: the virtualizer's fixed row height */
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui,
+    sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 
   color-scheme: dark;
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.4;
+  font-family: var(--font-sans);
+  font-size: 14px; /* [measured] sidebar row label */
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
 }
 
 * {
@@ -31,8 +71,8 @@ body,
 }
 
 body {
-  background: var(--bg);
-  color: var(--fg);
+  background: var(--thread-bg);
+  color: var(--text);
   overflow: hidden;
 }
 
@@ -42,45 +82,41 @@ select,
 textarea {
   font: inherit;
   color: inherit;
-  background: var(--bg-3);
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  padding: 2px 6px;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-row);
+  padding: 0;
 }
 
 button {
   cursor: pointer;
 }
 
+/* The reset above must not reach the native controls that draw themselves. */
+input[type="checkbox"],
+input[type="radio"] {
+  appearance: auto;
+  -webkit-appearance: auto;
+  width: 13px;
+  height: 13px;
+  accent-color: #6f6f6f;
+}
+
 button:disabled,
+input:disabled,
+select:disabled,
 textarea:disabled {
-  opacity: 0.45;
+  opacity: 0.4;
   cursor: default;
 }
 
-button.ok {
-  border-color: #2f5d43;
-  color: #b7e7cb;
-}
-
-button.danger {
-  border-color: #5d3230;
-  color: #f0b6b2;
-}
-
-textarea {
-  resize: vertical;
-  width: 100%;
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .dim {
-  color: var(--dim);
-}
-
-.empty {
-  color: var(--dim);
-  padding: 8px;
-  margin: 0;
+  color: var(--text-muted);
 }
 
 .ok-text {
@@ -91,161 +127,191 @@ textarea {
   color: var(--bad);
 }
 
+.mono {
+  font-family: var(--font-mono);
+}
+
 /* ------------------------------------------------------------- layout */
 
 .app {
   display: flex;
-  flex-direction: column;
   height: 100%;
-}
-
-.top {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--line);
-  background: var(--bg-2);
-  flex: 0 0 auto;
-}
-
-.brand {
-  font-weight: 700;
-  letter-spacing: 0.08em;
-}
-
-.notice {
-  border-color: #5d3230;
-  color: #f0b6b2;
-  max-width: 50%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.banner {
-  padding: 1px 8px;
-  border-radius: 3px;
-  border: 1px solid var(--line);
-}
-
-.banner.ok {
-  border-color: #2f5d43;
-  color: #b7e7cb;
-}
-
-.banner.bad {
-  border-color: #5d3230;
-  color: #f0b6b2;
-}
-
-.banner.idle {
-  color: var(--dim);
-}
-
-.body {
-  display: grid;
-  grid-template-columns: 240px minmax(0, 1fr) 360px;
-  flex: 1 1 auto;
   min-height: 0;
-}
-
-.pane-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 3px 8px;
-  background: var(--bg-2);
-  border-bottom: 1px solid var(--line);
-  color: var(--dim);
-  text-transform: lowercase;
-  flex: 0 0 auto;
 }
 
 /* ------------------------------------------------------------ sidebar */
 
 .sidebar {
+  flex: 0 0 var(--sidebar-w);
+  width: var(--sidebar-w);
   display: flex;
   flex-direction: column;
-  border-right: 1px solid var(--line);
   min-height: 0;
+  background: var(--sidebar-bg);
+  color: var(--text-sidebar);
 }
 
-.sidebar-body {
+.sidebar-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 44px;
+  padding: 0 16px;
+  flex: 0 0 auto;
+}
+
+.sidebar-title h1 {
+  margin: 0;
+  font-size: 17px; /* [measured] ~18px cap-derived, bold */
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.sidebar-scroll {
   flex: 1 1 auto;
   overflow-y: auto;
   min-height: 0;
+  padding-bottom: 8px;
 }
 
-.project {
-  border-bottom: 1px solid var(--line);
-  padding-bottom: 4px;
-}
-
-.project.selected {
-  background: var(--bg-2);
-}
-
-.project-head {
-  display: flex;
-  justify-content: space-between;
-  width: 100%;
-  background: none;
-  border: none;
-  border-radius: 0;
-  padding: 4px 8px 0;
-  text-align: left;
-}
-
-.project-name {
-  font-weight: 600;
-}
-
-.project-path {
-  padding: 0 8px 2px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  direction: rtl;
-  text-align: left;
-}
-
-.sessions {
-  list-style: none;
-  margin: 0;
-  padding: 0 4px;
-}
-
-.session {
+/* One row shape for every clickable line in the sidebar: nav items, projects, sessions. */
+.side-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  width: 100%;
-  background: none;
-  border: none;
-  border-radius: 2px;
-  padding: 1px 4px;
+  gap: 9px; /* [measured] icon to label */
+  width: calc(100% - 16px);
+  margin: 0 8px; /* [measured] pill inset */
+  min-height: var(--row-h);
+  padding: 0 8px;
+  border-radius: var(--radius-row);
   text-align: left;
+  color: var(--text-sidebar);
+  background: transparent;
 }
 
-.session.selected {
-  background: var(--bg-3);
-  color: #fff;
+.side-row:hover {
+  background: var(--sidebar-hover);
 }
 
-.session-id {
+/* Read-only row (the pending-approvals count); it is not a target, so it does not light up. */
+.side-row.static:hover {
+  background: transparent;
+}
+
+.side-row.selected {
+  background: var(--sidebar-active);
+  color: var(--text);
+}
+
+.side-row .glyph {
+  flex: 0 0 16px;
+  width: 16px;
+  text-align: center;
+  color: var(--text-muted-side);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.side-row.selected .glyph {
+  color: var(--text-sidebar);
+}
+
+.side-label {
   flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Trailing slot: counts, costs, and the branch chip a later change adds. */
+.side-meta {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted-side);
+  font-size: 12px;
+}
+
+/* Second line under a row's label. Empty today; reserved for the branch name. */
+.side-sub {
+  display: block;
+  font-size: 12px;
+  color: var(--text-muted-side);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.side-section {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px;
+  margin: 20px 0 2px; /* [measured] 43px from the last nav row to the label baseline */
+  font-size: 12px; /* [measured] */
+  color: var(--text-muted-side);
+}
+
+.side-section .grow {
+  flex: 1 1 auto;
+}
+
+.side-section button {
+  color: var(--text-muted-side);
+  font-size: 15px;
+  line-height: 1;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+}
+
+.side-section button:hover {
+  background: var(--sidebar-hover);
+  color: var(--text);
+}
+
+/* A project and the sessions nested under it. [measured] 8px extra between groups. */
+.side-group {
+  margin-bottom: 8px;
+}
+
+/* Session rows align their label with the project label above them. */
+.side-row.nested {
+  padding-left: 33px;
+}
+
+.side-empty {
+  padding: 4px 8px 4px 33px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted-side);
+}
+
+.chip {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 17px;
+  background: rgba(239, 140, 87, 0.18);
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.chip.plain {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-muted-side);
 }
 
 .dot {
-  width: 7px;
-  height: 7px;
+  flex: 0 0 8px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
-  background: var(--dim);
-  flex: 0 0 auto;
+  background: var(--text-muted-side);
 }
 
 .dot.running {
@@ -253,53 +319,196 @@ textarea {
 }
 
 .dot.starting {
-  background: var(--warn);
-}
-
-.dot.exited {
-  background: var(--dim);
+  background: var(--accent);
 }
 
 .dot.failed {
   background: var(--bad);
 }
 
-.dot.all {
-  background: var(--accent);
-}
-
 .dot.busy {
-  box-shadow: 0 0 0 2px rgba(79, 180, 119, 0.25);
+  box-shadow: 0 0 0 3px rgba(92, 201, 140, 0.22);
 }
 
-.add-project {
+/* Path input, revealed by the "+" on the Projects header. */
+.side-add {
   display: flex;
-  gap: 4px;
-  padding: 6px;
-  border-top: 1px solid var(--line);
-  flex: 0 0 auto;
+  gap: 6px;
+  margin: 4px 8px 8px;
 }
 
-.add-project input {
+.side-add input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  background: rgba(0, 0, 0, 0.22);
+  border: 1px solid var(--sidebar-line);
+  font-size: 13px;
+}
+
+.side-add input::placeholder {
+  color: var(--text-muted-side);
+}
+
+.side-add button {
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 0 10px;
+  background: rgba(255, 255, 255, 0.1);
+  font-size: 13px;
+}
+
+.side-add button:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+/* Dev-only burn panel, above the status bar. */
+.side-dev {
+  flex: 0 0 auto;
+  margin: 0 8px 8px;
+  font-size: 12px;
+  color: var(--text-muted-side);
+}
+
+.side-dev summary {
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  list-style: none;
+}
+
+.side-dev summary::-webkit-details-marker {
+  display: none;
+}
+
+.side-dev summary:hover {
+  background: var(--sidebar-hover);
+}
+
+/* The bottom bar: the reference's account row, carrying our claude probe and run id. */
+.side-status {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 46px; /* [measured] */
+  padding: 6px 12px;
+  border-top: 1px solid var(--sidebar-line); /* [measured] 1px */
+}
+
+.side-status .avatar {
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--sidebar-active);
+  color: var(--text-sidebar);
+  font-size: 10px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.side-status .avatar.bad {
+  background: rgba(239, 106, 99, 0.25);
+  color: var(--bad);
+}
+
+.side-status .who {
   flex: 1 1 auto;
   min-width: 0;
 }
 
-/* --------------------------------------------------------------- feed */
+.side-status .who strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
-.centre {
+.side-status .who span {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted-side);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* -------------------------------------------------------------- thread */
+
+.thread {
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  background: var(--thread-bg);
 }
+
+.thread-top {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 40px;
+  padding: 4px 16px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.thread-top .where {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread-top .where b {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.notice {
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: rgba(239, 106, 99, 0.16);
+  color: var(--bad);
+  font-size: 12px;
+}
+
+/* ---------------------------------------------------------------- feed */
 
 .feed {
   position: relative;
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
-  flex: 1 1 auto;
   min-height: 0;
+  /* A band for `.feed-count`, so the count never sits on top of row 0. */
+  padding-top: 15px;
+}
+
+/* Row count, out of the way at the top right of the thread. */
+.feed-count {
+  position: absolute;
+  top: 0;
+  right: 16px;
+  z-index: 1;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  pointer-events: none;
 }
 
 .feed-scroller {
@@ -310,9 +519,12 @@ textarea {
   contain: layout paint;
 }
 
+/* The thread column: the reference centres its content on a fixed max width. */
 .feed-sizer {
   position: relative;
   width: 100%;
+  max-width: var(--thread-max);
+  margin: 0 auto;
 }
 
 .feed-row {
@@ -323,7 +535,10 @@ textarea {
   display: flex;
   gap: 8px;
   align-items: center;
-  padding: 0 8px;
+  padding: 0 12px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: var(--feed-row-h);
   white-space: pre;
   overflow: hidden;
   contain: layout paint size;
@@ -332,11 +547,11 @@ textarea {
 /* Striping is by row index, not `nth-child`: the DOM children are recycled, so `nth-child`
    would make the stripes crawl as the list scrolls. */
 .feed-row.alt {
-  background: rgba(255, 255, 255, 0.015);
+  background: rgba(255, 255, 255, 0.022);
 }
 
 .col-t {
-  color: var(--dim);
+  color: var(--text-muted);
   flex: 0 0 auto;
 }
 
@@ -346,113 +561,130 @@ textarea {
 }
 
 .col-q {
-  color: var(--dim);
+  color: var(--text-muted);
   flex: 0 0 52px;
   text-align: right;
 }
 
 .col-l {
   flex: 1 1 auto;
+  color: #d4d4d4;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+/* The reference's empty chat: a mark, one question, nothing else. */
+.thread-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 24px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.thread-empty .mark {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 15px;
+  color: var(--text-muted);
+}
+
+.thread-empty h2 {
+  margin: 0;
+  font-size: 24px; /* [measured] */
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.thread-empty p {
+  margin: 0;
+  max-width: 46ch;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
 .jump-pill {
   position: absolute;
-  right: 16px;
+  left: 50%;
+  transform: translateX(-50%);
   bottom: 12px;
-  background: var(--bg-3);
-  border-color: var(--accent);
-  color: var(--accent);
-  padding: 3px 10px;
-  border-radius: 12px;
+  padding: 4px 14px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-size: 12px;
 }
 
-/* ----------------------------------------------------------- composer */
+.jump-pill:hover {
+  background: var(--composer-bg);
+}
 
-.composer {
-  border-top: 1px solid var(--line);
+/* ----------------------------------------------------------- approvals */
+
+/* Docked above the composer, inside the same centred column, so a waiting prompt reads as part
+   of the conversation rather than as a panel off to one side. */
+.approvals {
   flex: 0 0 auto;
+  width: 100%;
+  max-width: var(--thread-max);
+  margin: 0 auto;
+  padding: 0 16px;
+  max-height: 42vh;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
-.composer textarea,
-.new-session textarea {
-  border-radius: 0;
-  border: none;
-  border-bottom: 1px solid var(--line);
-  background: var(--bg);
-  padding: 6px 8px;
+/* `display: flex` above would otherwise beat the UA's `[hidden] { display: none }`. */
+.approvals[hidden] {
+  display: none;
 }
 
-.row {
+.approvals-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 8px;
-  flex-wrap: wrap;
-}
-
-.row label {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--dim);
-}
-
-.row label.grow {
-  flex: 1 1 auto;
-}
-
-.row label.grow input {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.row input[type="number"] {
-  width: 62px;
-}
-
-.usage {
-  padding: 0 8px 6px;
-}
-
-/* ---------------------------------------------------------- right rail */
-
-/* The rail itself does not scroll: `.approvals-body` owns the only scroller in it, so the
-   burn panel stays pinned at the bottom instead of being overrun by a long approval card. */
-.right {
-  display: flex;
-  flex-direction: column;
-  border-left: 1px solid var(--line);
-  min-height: 0;
-  overflow: hidden;
-}
-
-.new-session,
-.burn {
-  border-bottom: 1px solid var(--line);
-  flex: 0 0 auto;
-}
-
-.approvals {
-  display: flex;
-  flex-direction: column;
-  flex: 1 1 auto;
-  min-height: 0;
+  padding: 6px 2px;
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 .approvals-body {
   overflow-y: auto;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 4px;
 }
 
 .approval {
-  border-bottom: 1px solid var(--line);
-  padding: 6px 8px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  font-size: 13px;
 }
 
 .approval.expired {
-  opacity: 0.7;
+  opacity: 0.65;
+}
+
+.approval.elsewhere {
+  border-left: 2px solid var(--accent);
 }
 
 .approval-head {
@@ -462,24 +694,29 @@ textarea {
   flex-wrap: wrap;
 }
 
-.badge {
-  border: 1px solid var(--warn);
-  color: var(--warn);
-  border-radius: 3px;
-  padding: 0 4px;
+.approval-head strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.approval-head .dim {
+  font-size: 12px;
 }
 
 .excerpt,
 .suggestion {
-  background: var(--bg-2);
+  background: rgba(0, 0, 0, 0.28);
   border: 1px solid var(--line);
-  border-radius: 3px;
-  margin: 4px 0;
-  padding: 4px 6px;
+  border-radius: 8px;
+  margin: 8px 0 0;
+  padding: 8px 10px;
   max-height: 160px;
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .suggestion {
@@ -489,50 +726,291 @@ textarea {
 
 .suggestions {
   list-style: none;
-  margin: 4px 0 0;
+  margin: 8px 0 0;
   padding: 0;
 }
 
 .suggestions label {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  color: var(--dim);
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 .approval-actions {
   display: flex;
-  gap: 6px;
-  margin-top: 4px;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
 }
 
 .approval-actions .reason {
   flex: 1 1 auto;
   min-width: 0;
+  height: 30px;
+  padding: 0 10px;
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid var(--line);
+  font-size: 13px;
 }
 
-.summary {
-  padding: 0 8px 6px;
-  margin: 0;
+/* ------------------------------------------------------------ composer */
+
+/* The reference's composer: a context strip on a darker rail, then a rounded box holding the
+   text area and one action row, centred on the thread's max width. */
+.dock {
+  flex: 0 0 auto;
+  width: 100%;
+  max-width: var(--thread-max);
+  margin: 0 auto;
+  /* 12px of air above the strip so the feed's last row is not flush against it. */
+  padding: 12px 0 14px; /* [measured] 14.5px below the box */
 }
 
-/* -------------------------------------------------------------- meter */
+.dock-context {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  height: 38px; /* [measured] */
+  margin: 0 12px -10px;
+  padding: 0 14px 10px;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  background: var(--rail-bg);
+  font-size: 13px;
+  color: var(--text-sidebar);
+}
+
+.dock-context span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dock-context .glyph {
+  color: var(--text-muted);
+}
+
+.dock-box {
+  position: relative;
+  background: var(--composer-bg);
+  border-radius: var(--radius-lg);
+  padding: 10px 12px;
+}
+
+.dock-box textarea {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  max-height: 220px;
+  padding: 4px 4px 8px;
+  resize: none;
+  font-size: 14px;
+  line-height: 1.5;
+  background: transparent;
+}
+
+.dock-box textarea::placeholder {
+  color: var(--text-placeholder);
+}
+
+.dock-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+}
+
+/* Left of the action row: the reference's status chip. Right: model, cost and the send button.
+   `.dock-actions .grow` is the gap between them, and the slot a Resume button belongs in. */
+.dock-actions .grow {
+  flex: 1 1 auto;
+  min-width: 8px;
+}
+
+.dock-actions label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.dock-actions select {
+  height: 26px;
+  padding: 0 4px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text-sidebar);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* Secondary actions (interrupt, end, kill, and later resume): flat text buttons at the size the
+   reference gives its mic and attach controls. */
+.act {
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.act:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+}
+
+.act.danger:hover:not(:disabled) {
+  background: rgba(239, 106, 99, 0.16);
+  color: var(--bad);
+}
+
+/* The one solid control in the window, exactly as the reference has it. */
+.send {
+  flex: 0 0 30px; /* [measured] 30px circle */
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--text);
+  color: var(--on-solid);
+  font-size: 14px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.send:disabled {
+  opacity: 0.28;
+}
+
+.send.wide {
+  flex: 0 0 auto;
+  width: auto;
+  border-radius: 999px;
+  padding: 0 14px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.status-chip.live {
+  background: rgba(92, 201, 140, 0.16);
+  color: var(--ok);
+}
+
+.status-chip.warn {
+  background: rgba(239, 140, 87, 0.16);
+  color: var(--accent);
+}
+
+.dock-usage {
+  margin: 6px 14px 0;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --------------------------------------------------------------- meter */
 
 .fps {
-  margin-left: auto;
-  background: rgba(13, 15, 18, 0.9);
+  flex: 0 0 auto;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--surface);
   border: 1px solid var(--line);
-  color: var(--dim);
-  padding: 1px 8px;
-  border-radius: 10px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
   white-space: nowrap;
 }
 
 .fps.bad {
   border-color: var(--bad);
-  color: #f0b6b2;
+  color: var(--bad);
 }
 
 .fps.off {
-  opacity: 0.4;
+  opacity: 0.5;
+}
+
+/* ---------------------------------------------------------------- burn */
+
+.burn-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 8px 0;
+}
+
+.burn-form label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-muted-side);
+}
+
+.burn-form label.grow {
+  flex: 1 1 100%;
+}
+
+.burn-form input {
+  min-width: 0;
+  height: 24px;
+  padding: 0 6px;
+  background: rgba(0, 0, 0, 0.22);
+  border: 1px solid var(--sidebar-line);
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.burn-form input[type="number"] {
+  width: 56px;
+}
+
+.burn-form label.grow input {
+  flex: 1 1 auto;
+}
+
+.burn-form button {
+  height: 24px;
+  padding: 0 10px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.burn-out {
+  margin: 6px 8px 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
 }
