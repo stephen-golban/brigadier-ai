@@ -336,6 +336,53 @@ the model. Every other transition is a convenience; this one is the safety bound
 shows "denied" for a deny that did not land — or "allowed" for something that never ran — breaks the
 one screen the owner has to be able to trust.
 
+**Every optimistic entry is retired by a specific matched echo, never by "the operation finished".**
+VS Code #332087 is the whole lesson **[source]**: an optimistic `chat/turnStarted` that was never
+retired got replayed over confirmed state on every confirmed action, so 17 streaming deltas were
+swallowed and 2,432 characters painted in one update at **19.4 seconds**. An optimistic layer built
+to make streaming feel faster hid it entirely. Ours match on `TurnStarted.turn_id`, and the fallback
+marks an entry **unknown** rather than leaving it pending forever.
+
+### How fast, in numbers
+
+"We prioritize performance" is only a claim if it has figures behind it. These are the budgets, and
+the three that are guesses say so — they are **not quotable as results** until the paint
+instrumentation exists.
+
+| | budget | today |
+|---|---|---|
+| **B1** exec → **painted** shell | ≤ 200 ms | ~190 ms by arithmetic, and those pixels are white |
+| **B2** exec → real project list | ≤ 350 ms | **292 ms p50** **[measured]** |
+| **B3** first-ever launch, migrations run | ≤ 400 ms | **314 ms** **[measured]**, n=1 |
+| **B4** click session → last screenful painted | ≤ 100 ms p95 | **guess** |
+| **B5** …of which the Rust half | ≤ 16 ms p95 | **≤ 8.2 ms** worst case **[measured]** |
+| **B6** rest of the scrollback filled in | ≤ 250 ms | **guess** |
+| **B7** any button → visible acknowledgement | ≤ 100 ms | **guess** |
+| **B8** frame budget throughout | 16.67 ms | 60 Hz confirmed in a real window **[measured]** |
+
+B2, B3, B5 and B8 are **build gates**; B1 joins them when the static shell lands. B1 and B2 are
+separate on purpose: a window on screen with a painted shell at 190 ms that fills its list at 292 ms
+reads as instant, and one that stays blank until 292 ms does not — **blank is what ships today.**
+
+Two closed doors, both **[source]**: a splash window is a *second* WKWebView, and WKWebView
+construction is the ~100 ms that dominates launch, so it pays the cost twice to hide it once. And
+creating the window `visible: false` until the frontend is ready hits tauri **#15652**, still open —
+such a window "can permanently stop receiving events; undeliverable `EvaluateScript` is silently
+discarded", and our entire UI is `eval`-delivered `Channel` traffic. Painting the shell in
+`index.html` is the only route.
+
+### What is cached between launches: window state, the last project, scroll position
+
+Nothing else. The tail query is **0.145 ms at 10,000 rows and 0.142 ms at 1,000,000**
+(`docs/research/perceived-performance.md`), so a rendered thread snapshot saves nothing measurable
+and is stale the instant a live session emits one more row — which for a live session is
+immediately. Scroll position is the only part of that idea that is not a trap.
+
+This is the same shape as the no-index finding in §7, and it is worth stating as a principle:
+**this app's data layer is fast enough that caching is a liability rather than a win.** Every cache
+is a stale-copy bug waiting for a branch switch. Where something genuinely must be cached later, it
+carries a validator — `HEAD` plus the manifest `mtime` — or it is recomputed.
+
 **No forking in v1.** Mid-run plan editing covers redirection; fusion-at-a-gate covers try-both; and
 forking multiplies exactly the session clutter the owner prunes compulsively.
 
