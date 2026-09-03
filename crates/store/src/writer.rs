@@ -21,6 +21,7 @@ use brigadier_core::session::Decision;
 use rusqlite::{named_params, Connection};
 use tokio::sync::oneshot;
 
+use crate::feed::FeedKind;
 use crate::schema::{
     self, ApprovalRecord, FeedRow, ProjectRow, SessionRecord, SessionRow, SessionStatus,
     PROJECT_COLUMNS, SESSION_COLUMNS, SUMMARY_JSON_LIMIT,
@@ -40,7 +41,7 @@ pub(crate) enum Op {
     /// Merge a partial session row; `None` fields leave the stored value alone.
     UpsertSession(Box<SessionRow>),
     /// Append one terse feed row and advance the session's event cursor.
-    Feed { session_id: SessionId, seq: u64, at: SystemTime, line: String },
+    Feed { session_id: SessionId, seq: u64, at: SystemTime, kind: FeedKind, line: String },
     /// Overwrite the session's cumulative usage and cost.
     ///
     /// Overwrite, not `SET x = x + ?`: the provider reports `usage` and `total_cost_usd`
@@ -103,10 +104,15 @@ impl StoreHandle {
 
     /// Append one terse feed row; the ring drops the oldest rows past the cap in the same
     /// transaction that inserts.
-    pub async fn feed(&self, session_id: SessionId, seq: u64, at: SystemTime, line: String)
-        -> Result<()>
-    {
-        self.send(Op::Feed { session_id, seq, at, line })
+    pub async fn feed(
+        &self,
+        session_id: SessionId,
+        seq: u64,
+        at: SystemTime,
+        kind: FeedKind,
+        line: String,
+    ) -> Result<()> {
+        self.send(Op::Feed { session_id, seq, at, kind, line })
     }
 
     /// Overwrite a session's cumulative usage and cost.
@@ -241,7 +247,7 @@ impl StoreHandle {
     pub async fn feed_tail(&self, session_id: SessionId, n: usize) -> Result<Vec<FeedRow>> {
         self.query(move |conn| {
             let mut stmt = conn.prepare_cached(
-                "SELECT session_id, seq, at, line FROM feed WHERE session_id = ?1
+                "SELECT session_id, seq, at, kind, line FROM feed WHERE session_id = ?1
                  ORDER BY seq DESC LIMIT ?2",
             )?;
             let rows = stmt.query_map((session_id.as_str(), n as i64), schema::feed_from_row)?;
@@ -453,14 +459,14 @@ fn apply_one(
             ))?;
         }
         Op::UpsertSession(row) => upsert_session(tx, *row)?,
-        Op::Feed { session_id, seq, at, line } => {
+        Op::Feed { session_id, seq, at, kind, line } => {
             ensure_session(tx, &session_id, touched)?;
             tx.prepare_cached(
-                "INSERT INTO feed(session_id, seq, at, line) VALUES (?1, ?2, ?3, ?4)
+                "INSERT INTO feed(session_id, seq, at, kind, line) VALUES (?1, ?2, ?3, ?4, ?5)
                  ON CONFLICT(session_id, seq) DO UPDATE SET at = excluded.at,
-                     line = excluded.line",
+                     kind = excluded.kind, line = excluded.line",
             )?
-            .execute((session_id.as_str(), seq, schema::to_millis(at), &line))?;
+            .execute((session_id.as_str(), seq, schema::to_millis(at), kind.as_str(), &line))?;
             // `last_event_seq` is the cursor of the newest event that produced a *feed row*;
             // events with no terse line are deliberately not written at all.
             // see docs/research/persistence.md §3 — never a write per chunk.

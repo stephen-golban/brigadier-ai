@@ -23,6 +23,110 @@ use crate::writer::StoreHandle;
 /// Bytes a feed row may occupy. One line in a list, not content.
 pub const FEED_LINE_LIMIT: usize = 200;
 
+/// What a feed row *is*, independent of how it reads.
+///
+/// The webview receives one pre-rendered string per row and must not have to parse its leading
+/// label to tell model prose from a tool call: this is the discriminator it styles and filters on.
+/// The set is closed and every value is derived from a variant that exists in
+/// `brigadier_core::event` — see [`kind`] for the mapping.
+// see docs/plans/ipc-contract.md "Feed channel" — the wire field is `k`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FeedKind {
+    /// A turn ended: [`Event::TurnStarted`], [`Event::TurnCompleted`], [`Event::TurnAborted`].
+    Turn,
+    /// A tool call or its result: [`ItemKind::ToolCall`], [`ItemKind::ToolResult`].
+    Tool,
+    /// Model prose: [`ItemKind::AssistantText`] and [`Event::ContentDelta`].
+    Text,
+    /// Model reasoning: [`ItemKind::Thinking`].
+    Think,
+    /// What the operator sent: [`ItemKind::UserText`].
+    User,
+    /// A nested agent's item: [`ItemKind::Subagent`].
+    Sub,
+    /// An approval or a question and its answer: [`Event::RequestOpened`],
+    /// [`Event::RequestResolved`].
+    Appr,
+    /// [`Event::RuntimeWarning`].
+    Warn,
+    /// [`Event::RuntimeError`], fatal or not.
+    Err,
+    /// Session lifetime and housekeeping: [`Event::SessionStarted`], [`Event::SessionExited`],
+    /// [`Event::SessionCompacted`]. Also the fallback for a row stored by a future build whose
+    /// kind this one does not know.
+    #[default]
+    Sys,
+}
+
+impl FeedKind {
+    /// The slug stored in `feed.kind` and sent as the wire's `k`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Turn => "turn",
+            Self::Tool => "tool",
+            Self::Text => "text",
+            Self::Think => "think",
+            Self::User => "user",
+            Self::Sub => "sub",
+            Self::Appr => "appr",
+            Self::Warn => "warn",
+            Self::Err => "err",
+            Self::Sys => "sys",
+        }
+    }
+
+    /// Parse a stored slug. An unknown one is [`FeedKind::Sys`] rather than an error: a row
+    /// written by a newer build must still render, and the line itself is never lost.
+    pub fn from_slug(s: &str) -> Self {
+        match s {
+            "turn" => Self::Turn,
+            "tool" => Self::Tool,
+            "text" => Self::Text,
+            "think" => Self::Think,
+            "user" => Self::User,
+            "sub" => Self::Sub,
+            "appr" => Self::Appr,
+            "warn" => Self::Warn,
+            "err" => Self::Err,
+            _ => Self::Sys,
+        }
+    }
+}
+
+/// The [`FeedKind`] this event's row carries.
+///
+/// Total on purpose, where [`terse_line`] is not: the two are called together on the events that
+/// do produce a row, and a total function cannot drift out of step with the union the way a
+/// second `Option` would.
+pub fn kind(event: &Event) -> FeedKind {
+    match event {
+        Event::SessionStarted { .. }
+        | Event::SessionExited { .. }
+        | Event::SessionCompacted { .. } => FeedKind::Sys,
+        Event::TurnStarted { .. } | Event::TurnCompleted { .. } | Event::TurnAborted { .. } => {
+            FeedKind::Turn
+        }
+        Event::ItemStarted { kind, .. }
+        | Event::ItemUpdated { kind, .. }
+        | Event::ItemCompleted { kind, .. } => item_kind(kind),
+        Event::ContentDelta { .. } => FeedKind::Text,
+        Event::RequestOpened { .. } | Event::RequestResolved { .. } => FeedKind::Appr,
+        Event::RuntimeWarning { .. } => FeedKind::Warn,
+        Event::RuntimeError { .. } => FeedKind::Err,
+    }
+}
+
+fn item_kind(kind: &ItemKind) -> FeedKind {
+    match kind {
+        ItemKind::AssistantText => FeedKind::Text,
+        ItemKind::Thinking => FeedKind::Think,
+        ItemKind::ToolCall { .. } | ItemKind::ToolResult { .. } => FeedKind::Tool,
+        ItemKind::UserText => FeedKind::User,
+        ItemKind::Subagent { .. } => FeedKind::Sub,
+    }
+}
+
 /// The one-line, bounded row this event contributes to the UI feed, or `None` when it
 /// contributes nothing.
 ///
@@ -43,8 +147,12 @@ pub fn terse_line(event: &Event) -> Option<String> {
             None => format!("session exited · {}", exit_str(reason)),
         },
         Event::TurnStarted { .. } => return None,
-        Event::TurnCompleted { stop_reason, usage, cost_usd_cumulative, .. } => format!(
-            "turn done · {} · {} in / {} out · ${cost_usd_cumulative:.4}",
+        // No dollar figure: the user runs on their own subscription and is never billed this
+        // number, so rendering it would be a lie in their favour.
+        // see docs/vision.md §6 "Economics — usage windows, never dollars". `cost_usd_cumulative`
+        // stays on the event and in `sessions.cost_usd_cumulative`; only the row drops it.
+        Event::TurnCompleted { stop_reason, usage, .. } => format!(
+            "turn done · {} · {} in / {} out",
             stop_str(stop_reason),
             usage.input_tokens,
             usage.output_tokens
@@ -197,6 +305,8 @@ pub async fn apply(env: &Envelope, handle: &StoreHandle) {
         _ => {}
     }
     if let Some(line) = terse_line(&env.event) {
-        let _ = handle.feed(env.session_id.clone(), env.seq, env.at, line).await;
+        let _ = handle
+            .feed(env.session_id.clone(), env.seq, env.at, kind(&env.event), line)
+            .await;
     }
 }

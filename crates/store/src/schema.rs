@@ -17,6 +17,7 @@ use brigadier_core::event::{
 use brigadier_core::session::Decision;
 use rusqlite::{Connection, Row};
 
+use crate::feed::FeedKind;
 use crate::{Error, Result};
 
 /// Deny reason stamped on every approval that was still pending when the app restarted.
@@ -106,6 +107,13 @@ CREATE TABLE approvals (
 CREATE INDEX approvals_open ON approvals(session_id) WHERE resolved_at IS NULL;
 
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+"#,
+    // Migration 1 (2026-09-03). The webview gets one pre-rendered string per row and had to
+    // parse its leading label to tell model prose from a tool call. `kind` is that discriminator,
+    // stored so a row replayed by `feed_tail` carries the same `k` as the live row did.
+    // A pre-existing row keeps its line and reads back as `sys`, the documented fallback.
+    r#"
+ALTER TABLE feed ADD COLUMN kind TEXT NOT NULL DEFAULT 'sys';
 "#,
 ];
 
@@ -276,6 +284,8 @@ pub struct FeedRow {
     pub seq: u64,
     /// Host wall clock at emission.
     pub at: SystemTime,
+    /// What the row is, for a consumer that must not parse [`FeedRow::line`].
+    pub kind: FeedKind,
     /// The one-line, bounded human-readable text.
     pub line: String,
 }
@@ -391,6 +401,7 @@ pub(crate) fn feed_from_row(row: &Row<'_>) -> rusqlite::Result<FeedRow> {
         session_id: SessionId::new(row.get::<_, String>("session_id")?),
         seq: row.get("seq")?,
         at: from_millis(row.get("at")?),
+        kind: FeedKind::from_slug(&row.get::<_, String>("kind")?),
         line: row.get("line")?,
     })
 }
