@@ -206,8 +206,10 @@ async fn probe(supervisor: &Supervisor) -> Result<ClaudeStatus, AppError> {
 ///
 /// Must be called inside a Tokio runtime: [`Supervisor::new`] spawns the per-frame flusher.
 pub(crate) async fn build(data_dir: PathBuf) -> Result<Ready, AppError> {
+    crate::trace::stage("state_build_start");
     std::fs::create_dir_all(&data_dir)
         .map_err(|e| AppError::io(format!("could not create {}: {e}", data_dir.display())))?;
+    crate::trace::stage("data_dir_ready");
 
     // `AppError::from` keeps `Error::Locked` on its own code; the message names the directory,
     // because the remedy is to quit the other window.
@@ -217,6 +219,9 @@ pub(crate) async fn build(data_dir: PathBuf) -> Result<Ready, AppError> {
         err.message = format!("could not open the store in {}: {}", data_dir.display(), err.message);
         err
     })?;
+    // `Store::open` is the flock, the migrations and the pragmas in one call
+    // (`docs/research/data-dir-lock.md`, `crates/store/src/schema.rs`).
+    crate::trace::stage("store_open");
     let run_id = store.run_id().to_owned();
 
     let tracker = open_pid_dir(&data_dir, &run_id);
@@ -232,9 +237,17 @@ pub(crate) async fn build(data_dir: PathBuf) -> Result<Ready, AppError> {
         config.tracker = Arc::new(TrackerAdapter::new(tracker));
     }
     let supervisor = Supervisor::new(config);
+    crate::trace::stage("supervisor_new");
 
     let claude = probe(&supervisor).await;
+    // The `claude --version` child. One of two per launch — the frontend's mount-time
+    // `probeClaude()` spawns the other (`perceived-performance.md` §1.4). No session, no API call.
+    crate::trace::stage_with(
+        "claude_probe",
+        if claude.is_ok() { "outcome=ok" } else { "outcome=failed" },
+    );
 
+    crate::trace::stage("state_build_end");
     Ok(Ready { supervisor, store, tracker, sink, claude: Mutex::new(claude), run_id, data_dir })
 }
 
@@ -251,10 +264,16 @@ fn open_pid_dir(data_dir: &Path, run_id: &str) -> Option<Arc<PidTracker>> {
                 error = %e,
                 "pid directory unavailable; orphaned children will not be swept"
             );
+            crate::trace::stage_with("pid_sweep", "outcome=dir_unavailable swept=0");
             return None;
         }
     };
+    // `swept=0` is the interesting value: it says the 400 ms `DEFAULT_GRACE` had nothing to wait
+    // on, so the stage's own elapsed time is the directory scan alone. A non-zero count with a
+    // ~400 ms stage is the grace firing.
+    let mut swept = 0usize;
     for outcome in sweep(&dir, run_id, DEFAULT_GRACE) {
+        swept += 1;
         tracing::info!(
             session_id = outcome.session_id,
             pgid = outcome.pgid,
@@ -262,6 +281,7 @@ fn open_pid_dir(data_dir: &Path, run_id: &str) -> Option<Arc<PidTracker>> {
             "startup sweep"
         );
     }
+    crate::trace::stage_with("pid_sweep", &format!("outcome=ok swept={swept}"));
     Some(Arc::new(PidTracker::new(dir, run_id)))
 }
 

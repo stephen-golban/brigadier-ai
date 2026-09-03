@@ -294,6 +294,7 @@ dependencies = [
  "brigadier-proc",
  "brigadier-store",
  "brigadier-supervisor",
+ "nix",
  "serde",
  "serde_json",
  "tauri",

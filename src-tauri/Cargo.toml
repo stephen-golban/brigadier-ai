@@ -35,3 +35,10 @@ tracing = { workspace = true }
 # `env-filter` is what makes `RUST_LOG` work; without it `EnvFilter` is not compiled.
 # 0.3.23 is the current release (`cargo search tracing-subscriber`, 2026-09-02).
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+# `setrlimit`, safely. This crate is `#![deny(unsafe_code)]`, so `libc::setrlimit` (an unsafe
+# extern fn) cannot be called here at all. `nix` 0.31.3 is already in the workspace
+# (`crates/proc/Cargo.toml:27`, `crates/core/Cargo.toml:22`) and already in `Cargo.lock`; only the
+# `resource` feature is new, and it carries no code beyond `nix::sys::resource`.
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31.3", default-features = false, features = ["resource"] }

@@ -27,6 +27,7 @@ mod error;
 mod sink;
 mod state;
 mod tracker;
+mod trace;
 mod views;
 
 use std::sync::OnceLock;
@@ -61,6 +62,9 @@ static PROCESS_START_EPOCH_MS: OnceLock<f64> = OnceLock::new();
 /// `ps -o lstart=` is second-granularity. Any launch-profiling recipe that starts with
 /// `DYLD_PRINT_STATISTICS` is stale advice.
 pub fn mark_process_start() {
+    // The monotonic twin of the stamp below, and the zero every `BRIGADIER_TRACE` line is
+    // measured from. Both are "first write wins", so a second call changes neither.
+    crate::trace::arm();
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs_f64() * 1000.0)
@@ -93,9 +97,15 @@ pub fn run() {
     // Idempotent; `main()` has already done this. It is here so an entry point that skips
     // `main()` still has a clock rather than a panic.
     mark_process_start();
+    trace::stage("main");
+    // Before `tauri::Builder` exists and long before any `claude` child: the limit a spawned
+    // process inherits is the one in force at its `fork`, so raising it after the first spawn
+    // would leave that child on the old value. see `trace::raise_file_limit`.
+    trace::raise_file_limit();
     init_tracing();
+    trace::stage("tracing_ready");
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             commands::app_info,
@@ -120,7 +130,22 @@ pub fn run() {
             commands::report_paint,
             commands::burn,
         ])
+        // `PageLoadEvent::Started` is `didCommitNavigation` and `Finished` is
+        // `didFinishNavigation` (**source**, `wry-0.55.1/src/wkwebview/navigation.rs:17-46`), both
+        // delivered on the main thread. So `page_load_started` is *after* the first
+        // `tauri://localhost/` scheme response has been received and committed, not before it —
+        // there is no hook before that. Registering `"tauri"` with
+        // `Builder::register_uri_scheme_protocol` would **replace** the built-in asset protocol
+        // rather than wrap it (`tauri-2.11.5/src/manager/webview.rs:267-277` only installs the
+        // built-in when the app has not claimed the name), and `on_web_resource_request` exists
+        // only on `WebviewBuilder`, which this app does not use — its window comes from
+        // `tauri.conf.json`. The first-request signpost therefore does not exist and is not faked.
+        .on_page_load(|_webview, payload| match payload.event() {
+            tauri::webview::PageLoadEvent::Started => trace::stage("page_load_started"),
+            tauri::webview::PageLoadEvent::Finished => trace::stage("page_load_finished"),
+        })
         .setup(|app| {
+            trace::stage("setup_entry");
             // `setup` runs on `RuntimeRunEvent::Ready`, after the window exists, on the main
             // thread — which is *not* a runtime thread, so `block_on` is legal here and is what
             // `Supervisor::new` needs (it spawns the per-frame flusher).
@@ -162,11 +187,19 @@ pub fn run() {
             // the next launch marks them failed. Route both signals into `AppHandle::exit`, which
             // does raise them.
             spawn_signal_hook(app.handle().clone());
+            trace::stage("setup_exit");
             Ok(())
         })
         .build(tauri::generate_context!())
-        .expect("error while building tauri application")
-        .run(|handle, event| match event {
+        .expect("error while building tauri application");
+    // Before `setup`, not after. `Builder::build` constructs the app and returns; the user's
+    // `setup` closure runs later, from inside `run`, on `RuntimeRunEvent::Ready` — and tauri's own
+    // `setup` creates the configured windows *first* and calls the closure second
+    // (**source**, `tauri-2.11.5/src/app.rs:1424`, `:2521-2535`). So the window exists before
+    // `setup_entry` and the ordering of these lines is `builder_built` → `setup_entry`.
+    trace::stage("builder_built");
+
+    app.run(|handle, event| match event {
             // The last window closed, or `AppHandle::exit` was called. The window is still on
             // screen: end the sessions and signal their groups, bounded.
             RunEvent::ExitRequested { .. } => {
