@@ -269,6 +269,21 @@ custom-scheme handler and the brotli-quality-9 inflate of the bundle. **That unm
 looks like it is worth roughly 100 ms** — **[asserted]**, by elimination, not a measurement of the
 scheme handler itself. The 132–141 ms it has to explain is **[measured]**.
 
+**2026-09-03, per-stage signposts bound that attribution and refute it as stated.**
+`docs/research/launch-signposts.md` decomposes the same launch stage by stage, n=12 warm, release
+build, `BRIGADIER_TRACE=1`; its table carries every number here. `state::build`, the `block_on`
+inside `setup`, is **8.1 ms** p50, so it is not the missing ~100 ms **[measured]**. Tauri's own
+window creation before our setup closure runs, `builder_built` to `setup_entry`, is **108.7 ms**
+p50, the first in-app measurement of the ~100 ms WKWebView figure **[measured]**. `setup_exit` to
+`page_load_started` is **55.6 ms** p50 and delivers only a 390-byte `index.html`, so the inflate
+cannot be there **[measured]**. `page_load_started` to `page_load_finished` is **2.9 ms**, though
+that stage is almost certainly not the `load` event **[measured]**. `page_load_finished` to FCP is
+**83.3 ms** p50, undivided, and holds the scheme fetch and the inflate of the 271.29 kB bundle
+together with React parse, mount and first render **[measured]**. So the scheme-plus-brotli
+attribution above is unsupported as stated: its cost is confined to at most that 83.3 ms segment,
+and its actual share of it is unmeasured. exec to FCP was **305.3 ms** p50 in that run, consistent
+with the 287–295 ms above under concurrent build load **[measured]**.
+
 Two things that stay true: today's first contentful paint is **React's, not a static shell's**, so
 B1's target is not yet the thing being measured — W3-C now has a measured starting line and a real
 gap to close rather than a flattering estimate. And **a launch is not zero-`claude`**: each one
@@ -1019,6 +1034,9 @@ Ideas in this space that look right and are not.
   Attributing that gap to the scheme handler and the inflate is **[asserted]**, by elimination —
   neither was timed on its own. Whether disabling the `compression` feature is worth anything is
   still **unmeasured**, and no published number exists.
+  The 2026-09-03 signposts in `docs/research/launch-signposts.md` still do not time the handler on
+  its own, but they bound it: its cost lies inside either the 55.6 ms first response or the 83.3 ms
+  subresource-plus-mount segment, and the ~100 ms attribution is ruled out **[measured]**.
 - The ~100 ms WKWebView construction figure is from a minimal Swift program, not from tao's window
   creation with a menu bar, an activation policy and Tauri's init scripts. It is a floor, not the
   app's actual cost.
