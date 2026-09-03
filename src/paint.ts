@@ -76,6 +76,10 @@ let fcpSent = false;
  * worth holding a subscription for.
  */
 export function startPaintInstrumentation(): void {
+  // First, and deliberately ahead of the guards below: those govern the FCP observer only, and
+  // the `trace:dcl` signpost must still be emitted on a second call that the FCP guard short-
+  // circuits. `reportDomContentLoaded` carries its own once-guard.
+  reportDomContentLoaded();
   if (fcpSent || fcpObserver !== null) return;
   if (typeof PerformanceObserver === "undefined") return;
   try {
@@ -112,6 +116,153 @@ function disconnectFcp(): void {
   } catch {
     // A disconnect that throws leaves an observer whose callback is already a no-op.
   }
+}
+
+/* ---------------------------------------------------------- DOMContentLoaded */
+
+/**
+ * The one `interaction` label that is a launch signpost rather than a budget span.
+ *
+ * **This is a deliberate stretch of the `interaction` variant, and it is not an interaction.**
+ * `interaction` means a `performance.mark` → double-`requestAnimationFrame` → `performance.measure`
+ * span produced by `beginInteraction`; a document lifecycle event is a single timestamp with no
+ * span at all. It rides that shape because `DOMContentLoaded` needs exactly one number and a
+ * duration of zero, so no wire change is required mid-flight: `src/wire.ts`, the Rust
+ * `PaintReport` enum and the command surface are all untouched
+ * (`docs/research/launch-signposts.md`, "The `dcl` stage").
+ *
+ * **The `trace:` prefix is a contract with `commands.rs`, not a hint.** `report_paint` strips it
+ * (`TRACE_LABEL_PREFIX`), emits the remainder as a launch stage, and **returns before the file
+ * write** — so a `trace:` label is consumed as a trace point and **never reaches
+ * `paint.ndjson` at all**. A label without the prefix takes the other branch and becomes a budget
+ * line on disk; a label with it becomes a stage and vanishes. One prefix decides which, so no
+ * label should be spelled by hand anywhere but here.
+ *
+ * That is what makes an aggregate over `paint.ndjson` safe **by construction**: the file holds
+ * only `fcp` lines and real B4/B6/B7 interaction spans, so there is no zero-length span on disk to
+ * drag an interaction percentile toward zero. The hazard was removed at the writer rather than
+ * pushed onto a reader — and it is a trace point, not a budget, so no budget is derived from it.
+ *
+ * **A second signpost is a new `trace:<stage>` label here and no Rust change at all**: the arm
+ * matches the prefix, not this label, and the stage name is the label minus the prefix.
+ *
+ * It exists to split the undivided **83.3 ms** between `page_load_finished` and FCP, which today
+ * holds the scheme fetch of the bundle, its brotli inflate, React's parse and mount, and the first
+ * render, all at once (`docs/research/launch-signposts.md`).
+ */
+const TRACE_DCL_LABEL = "trace:dcl";
+
+let dclSent = false;
+let dclListening = false;
+
+/**
+ * Report `DOMContentLoaded` once, taking whichever path this document is actually on.
+ *
+ * **`DOMContentLoaded` has no `buffered: true` equivalent** — a listener attached after it has
+ * fired never fires — so the already-fired case has to be recovered from
+ * `PerformanceNavigationTiming.domContentLoadedEventEnd`, which is present in this WebKit
+ * (**[measured]**, `docs/research/perceived-performance.md` §5.3).
+ *
+ * The discriminator is `domContentLoadedEventEnd > 0`, **not** `document.readyState`: the spec
+ * sets `readyState` to `"interactive"` *before* firing `DOMContentLoaded`, so a non-`"loading"`
+ * readyState does not prove the event has happened, while a non-zero
+ * `domContentLoadedEventEnd` does. `readyState` decides only the case the timing entry cannot:
+ * no navigation entry at all (§5.3 measured a `null` navigation entry under
+ * `loadHTMLString(_:baseURL:)`), where `"loading"` means the event is still ahead of us and
+ * anything else means it is behind us and unrecoverable.
+ *
+ * That last case reports **nothing**. Stamping `performance.now()` at instrumentation time would
+ * label "when `main.tsx` ran" as "when the DOM finished parsing" — the same wrong-number-versus-no-
+ * number choice `INTERACTION_TIMEOUT_MS` and the clock helpers already make.
+ *
+ * Safe to call twice: `dclSent` gates the report and `dclListening` gates the listener, so React
+ * 19 StrictMode's double-invoked effects cannot produce two lines or two listeners.
+ */
+function reportDomContentLoaded(): void {
+  if (dclSent || dclListening) return;
+
+  const end = navigationDclEndMs();
+  if (end !== null && end > 0) {
+    sendDcl(end);
+    return;
+  }
+
+  // Not yet fired. **This is the live path in the real app, not a fallback.** `index.html` loads
+  // the bundle as `<script type="module">`, which is deferred by default and therefore runs
+  // *before* `DOMContentLoaded`, so `domContentLoadedEventEnd` is still 0 at this point. The
+  // three-line recipe in `docs/research/launch-signposts.md` reads the navigation entry
+  // synchronously here and stops; taken literally it would emit nothing at all in production.
+  // The listener below is the half that makes the signpost arrive.
+  if (!documentIsLoading()) return;
+  try {
+    document.addEventListener(
+      "DOMContentLoaded",
+      () => {
+        // Prefer the timing entry now that it is populated; it is the event's own end timestamp
+        // rather than whenever this listener happened to be dispatched.
+        const late = navigationDclEndMs();
+        if (late !== null && late > 0) {
+          sendDcl(late);
+          return;
+        }
+        // No navigation entry, but we are inside the event: `now()` is the event's time.
+        const at = now();
+        if (at !== null) sendDcl(at);
+      },
+      { once: true },
+    );
+    dclListening = true;
+  } catch {
+    // No `document`, or a listener that would not attach. One missing signpost, nothing else.
+  }
+}
+
+/**
+ * `domContentLoadedEventEnd` in page-relative milliseconds, or `null` when there is no navigation
+ * entry to read it from.
+ */
+function navigationDclEndMs(): number | null {
+  try {
+    const [nav] = performance.getEntriesByType("navigation") as PerformanceNavigationTiming[];
+    if (nav === undefined) return null;
+    const end = nav.domContentLoadedEventEnd;
+    return Number.isFinite(end) ? end : null;
+  } catch {
+    return null;
+  }
+}
+
+function documentIsLoading(): boolean {
+  try {
+    return document.readyState === "loading";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Send the signpost, once.
+ *
+ * **The arithmetic, which the Rust side depends on.** `at` is page-relative milliseconds, so
+ * `start_epoch_ms = performance.timeOrigin + at` is a **Unix epoch millisecond** — the identical
+ * basis as the `fcp` variant's `epoch_ms`, and the only clock
+ * `crate::trace::stage_at_epoch_ms` can subtract `main()`'s `SystemTime` stamp from.
+ * `duration_ms` is **0** because `DOMContentLoaded` is an instant: there is no span here, and a
+ * zero is the honest encoding of that in a variant whose third field is a duration.
+ */
+function sendDcl(at: number): void {
+  if (dclSent) return;
+  const origin = timeOrigin();
+  // No clock, no line. A page-relative number in an `_epoch_ms` field would be subtracted against
+  // `main()` and produce a large negative launch stage.
+  if (origin === null) return;
+  dclSent = true;
+  report({
+    kind: "interaction",
+    label: TRACE_DCL_LABEL,
+    start_epoch_ms: origin + at,
+    duration_ms: 0,
+  });
 }
 
 /* ------------------------------------------------------ interaction → painted */
