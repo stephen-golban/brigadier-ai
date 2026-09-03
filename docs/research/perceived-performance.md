@@ -941,6 +941,9 @@ Ideas in this space that look right and are not.
    8.03 ms even at 10 sessions × 2000 rows/s (§2.3), and `Op::Query` already closes the coalescing
    window early (`writer.rs:331`). It buys ≤ 8 ms of tail latency for a second connection to keep
    consistent. Revisit only if `feed_cap` grows by an order of magnitude.
+   Nearly rediscovered 2026-09-03: an order to add the second connection was issued from a code
+   reading of `writer.rs:329-335` before §2.3 was re-read, and withdrawn the same day. Read §2.3
+   before proposing it again.
 6. **`feed_tail(session, 500)` as the first-paint read.** 80,241 bytes, ~10× the 8192-byte threshold,
    so it takes the `ChannelDataIpcQueue` + second-invoke path (§2.4) for data the user cannot see —
    only ~44 rows fit the viewport. It is not a *stall* (command responses carry no index and block
