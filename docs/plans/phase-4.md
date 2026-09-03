@@ -200,7 +200,9 @@ surface area**: that design has ~70 nav rows across 9 tabs; we have eight settin
    than a refusal. The proven fallback is `PreToolUse` with `matcher: ""` branching on `tool_name`,
    which the adapter already registers (`crates/core/src/claude/adapter.rs:326`).
 3. **Spawn-cost mitigation** — warm pool vs multi-turn children. `system/init` fires per *turn*, so a
-   process can serve several. Neither built nor measured.
+   process can serve several. Neither built nor measured. Disabling MCP is measured at 751.5 ms
+   saved per spawn (`docs/research/spawn-split.md`) and dominates both mitigations, which remain
+   unbuilt.
 4. **Does `codex app-server` expose anything like `rate_limit_event`?** Cross-vendor failover depends
    on it. Deferred with Codex.
 
