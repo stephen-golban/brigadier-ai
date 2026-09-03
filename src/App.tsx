@@ -1,20 +1,40 @@
 /**
- * The whole window: a ChatGPT-shaped two-pane shell. Sidebar on the left (projects, their
- * sessions nested underneath, the pending-approvals count and the claude probe); a single thread
- * column on the right holding the feed, the approval cards docked above the composer, and the
+ * The whole window: a two-pane shell. Sidebar on the left (projects, their sessions nested
+ * underneath, the pending-approvals count and the claude probe); a single thread column on the
+ * right holding a quiet header, the feed, the approval cards docked above the composer, and the
  * composer itself centred on a fixed max width.
+ *
+ * The header is deliberately quiet — 14px name, 11px mono path, one branch chip. `docs/vision.md`
+ * §9 is "thread-primary, one column", and the pinned plan card that belongs above the thread is
+ * W4-D's; a loud header here would be competing with it before it exists.
  *
  * The composer has two states, as the reference does: with a session selected it sends turns and
  * carries interrupt / end / kill; with none selected it is the "start a session" form.
  *
  * All IPC goes through `bridge()`, which is the real `invoke` inside Tauri and the in-memory
  * mock in a browser, with no code change between the two.
+ *
+ * **Nothing here is optimistic, and that is current.** `docs/vision.md` §9 wants starting a
+ * session, sending a turn and deleting one to paint before Rust confirms, and approvals never to.
+ * Every handler below still awaits. An optimistic entry has to be retired by a *specific matched
+ * echo* (`TurnStarted.turn_id`) rather than by "the operation finished" — VS Code #332087 is what
+ * happens otherwise — and that machinery is not built. Half of it would be worse than none.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 
 import { bridge, toAppError } from "./bridge";
 import type { BurnArgs, StartSessionArgs } from "./bridge";
 import * as store from "./feedStore";
+import { beginInteraction } from "./paint";
+import type { PaintedSpan } from "./paint";
 import { Approvals } from "./components/Approvals";
 import type { ApprovalRow } from "./components/Approvals";
 import { Burn } from "./components/Burn";
@@ -51,6 +71,18 @@ const TAIL_ROWS = 48;
 const UNKNOWN_PROJECT_REFETCH_MS = 250;
 
 /**
+ * The label **B4** is measured under, written verbatim into `<data_dir>/paint.ndjson`
+ * (`docs/plans/ipc-contract.md` §report_paint). Keep it stable: a renamed label silently splits
+ * one budget's samples into two files' worth of unrelated lines.
+ *
+ * This is the first `beginInteraction` call site in the repo. Before it, the interaction half of
+ * `src/paint.ts` was tree-shaken out of the production bundle entirely, so B4 in `docs/vision.md`
+ * §9 has never been anything but a guess. Adding the caller does not produce a number — that
+ * needs a real launch — and it changes no budget.
+ */
+const B4_LABEL = "b4-session-painted";
+
+/**
  * The project the dev `burn` command creates its sessions under: `<temp>/brigadier-burn/burn`
  * (`src-tauri/src/burn.rs:50`), whose name is the directory basename.
  */
@@ -73,9 +105,21 @@ export function App() {
   /** A `resume_session` or `cleanup_worktree` call is in flight; both buttons go inert. */
   const [commandBusy, setCommandBusy] = useState(false);
 
+  /**
+   * The session whose `feed_tail` prefill has landed. It exists only to force one commit at the
+   * moment the tail is in the store — the B4 span settles against that commit. App deliberately
+   * does **not** subscribe to the row rings: `getSessionRows` changes up to 60 times a second
+   * (measured over 1,513 samples), and a shell that re-rendered at that rate would be paying for
+   * the instrument with the thing the instrument measures.
+   */
+  const [tailSeeded, setTailSeeded] = useState<SessionId | null>(null);
+
   /** Unknown project ids a re-fetch has already been fired for, and that re-fetch's timer. */
   const refetchedFor = useRef<Set<ProjectId>>(new Set());
   const refetchTimer = useRef<number | null>(null);
+
+  /** The B4 span in flight, and the session it was opened for. At most one, ever. */
+  const paintSpan = useRef<{ sessionId: SessionId; span: PaintedSpan } | null>(null);
 
   const say = useCallback((e: unknown) => {
     const err = toAppError(e);
@@ -174,16 +218,107 @@ export function App() {
     [],
   );
 
-  // Prefill a newly selected session's ring from the store's own tail.
+  // Prefill a newly selected session's ring from the store's own tail. `seedRows` notifies the
+  // feed and `setTailSeeded` re-renders this component; both happen in the same microtask, so
+  // React commits them together and the layout effect below runs after the rows are on screen.
   useEffect(() => {
     if (selectedSessionId === null) return;
+    const id = selectedSessionId;
     void bridge()
-      .feedTail(selectedSessionId, TAIL_ROWS)
-      .then((rows) => store.seedRows(selectedSessionId, rows))
+      .feedTail(id, TAIL_ROWS)
+      .then((rows) => {
+        store.seedRows(id, rows);
+        setTailSeeded(id);
+      })
       .catch(() => {
-        // A missing tail is not worth a banner; the live feed still fills the pane.
+        // A missing tail is not worth a banner; the live feed still fills the pane. The span
+        // below is settled against it anyway: the pane is as painted as it is going to get.
+        setTailSeeded(id);
       });
   }, [selectedSessionId]);
+
+  /**
+   * **B4's settle edge**: the commit that paints the selected session's feed rows.
+   *
+   * A layout effect, not an effect, because it must run before the browser gets a chance to
+   * paint anything else; `painted()` then waits the two animation frames itself
+   * (`src/paint.ts` — do not reimplement the double-rAF here).
+   *
+   * Three exits, and the two that report nothing are the point:
+   *   - the selection moved on before this span settled → `cancel()`. A duration measured to
+   *     some other session's rows is a lie that would be averaged into the budget.
+   *   - the rows are there → `painted()`.
+   *   - the tail has landed and there are still no rows → `cancel()`. An empty session has no
+   *     "last screenful", and timing the empty state would flatter the p95 with paints that
+   *     drew nothing.
+   * Anything this misses is dropped by `INTERACTION_TIMEOUT_MS` five seconds later.
+   */
+  useLayoutEffect(() => {
+    const pending = paintSpan.current;
+    if (pending === null) return;
+    if (pending.sessionId !== selectedSessionId) {
+      pending.span.cancel();
+      paintSpan.current = null;
+      return;
+    }
+    if (store.getSessionRows(selectedSessionId).length > 0) {
+      pending.span.painted();
+      paintSpan.current = null;
+      return;
+    }
+    if (tailSeeded === selectedSessionId) {
+      pending.span.cancel();
+      paintSpan.current = null;
+    }
+  }, [selectedSessionId, tailSeeded]);
+
+  // Unmount: a span left in flight would settle against nothing, or against a later window's
+  // rows if this module outlives the tree. Own teardown so no dep change can trigger it.
+  useEffect(
+    () => () => {
+      paintSpan.current?.span.cancel();
+      paintSpan.current = null;
+    },
+    [],
+  );
+
+  /**
+   * Selecting a session from the sidebar — the interaction B4 names. The span starts here, in
+   * the event handler, rather than in an effect: B4 is "click a session → its last screenful
+   * painted", and an effect would start the clock after the render the click already caused.
+   *
+   * Only this path opens a span. `focusApproval`, `startSession` and `resumeSession` also move
+   * the selection, and they are different interactions with different budgets; the layout effect
+   * above cancels rather than mis-attributes when one of them lands on top of a pending span.
+   *
+   * **The project selection follows the session**, the same way `focusApproval` below already
+   * moves it. Without this the header names `selectedProject`, which is whatever project was
+   * last clicked, over a session the sidebar draws nested under a different one — observed on
+   * 2026-09-03 as a header reading "brigadier-ai" above a `burn` session. It was latent before
+   * the sidebar nested sessions under projects and the header started naming the project; the
+   * lie was always being told, nothing was drawing it.
+   *
+   * It is not only cosmetic. `selectedProjectId` drives the `set_visible_projects` effect above,
+   * and the Rust batcher drops rows for a project that is not visible — so selecting a session
+   * in an unselected project used to leave its feed silent as well as mislabelled.
+   *
+   * The project id is read out of the store rather than taken as an argument, so this callback
+   * keeps the stable identity `SessionRow`'s memoization depends on. A session the store cannot
+   * place leaves the project selection alone, exactly as `focusApproval` does.
+   */
+  const selectSession = useCallback((id: SessionId | null) => {
+    const prev = paintSpan.current;
+    if (prev !== null) {
+      prev.span.cancel();
+      paintSpan.current = null;
+    }
+    if (id !== null) {
+      paintSpan.current = { sessionId: id, span: beginInteraction(B4_LABEL) };
+      const owner = store.getState().sessions[id]?.projectId ?? null;
+      if (owner !== null) setSelectedProjectId(owner);
+    }
+    setSelectedSessionId(id);
+  }, []);
 
   const selectedSession = selectedSessionId === null ? null : state.sessions[selectedSessionId] ?? null;
 
@@ -357,32 +492,54 @@ export function App() {
         isMock={bridge().isMock}
         dev={import.meta.env.DEV ? <Burn onBurn={runBurn} /> : undefined}
         onSelectProject={setSelectedProjectId}
-        onSelectSession={setSelectedSessionId}
+        onSelectSession={selectSession}
         onAddProject={addProject}
       />
 
       <main className="thread">
-        <div className="thread-top">
-          <span className="where">
-            <b>{selectedProject?.name ?? "No project"}</b>
-            {selectedProject !== null ? ` · ${selectedProject.root_path}` : ""}
-            {selectedSession !== null
-              ? ` · session ${selectedSession.sessionId} · ${selectedSession.status}`
-              : " · all sessions"}
-            {selectedSession?.branch != null ? (
-              <span className="chip plain" title={selectedSession.worktreePath ?? undefined}>
-                {selectedSession.branch}
-                {selectedSession.worktreeRemoved ? " · worktree removed" : ""}
-              </span>
-            ) : null}
+        <header className="thread-head">
+          <span className="head-id">
+            <span className="head-name">
+              <b>{selectedProject?.name ?? "No project"}</b>
+              {selectedSession?.branch != null ? (
+                <span className="chip plain" title={selectedSession.worktreePath ?? undefined}>
+                  {selectedSession.branch}
+                  {selectedSession.worktreeRemoved ? " · removed" : ""}
+                </span>
+              ) : null}
+            </span>
+            <span className="head-path" title={selectedProject?.root_path ?? undefined}>
+              {selectedSession !== null
+                ? `${selectedSession.status} · ${selectedSession.sessionId}`
+                : selectedProject !== null
+                  ? `${selectedProject.root_path} · all sessions`
+                  : "nothing selected"}
+            </span>
           </span>
           {notice !== null ? (
-            <button type="button" className="notice" onClick={() => setNotice(null)}>
-              {notice} ✕
+            <button
+              type="button"
+              className="notice"
+              title="dismiss"
+              onClick={() => setNotice(null)}
+            >
+              <span className="notice-text">{notice}</span>
+              {/* Inline SVG rather than a `✕` text glyph, for the same reason the sidebar's
+                  `✎ ◈ ▤` are gone: which font claims the codepoint, at what weight and on what
+                  baseline, is not ours to decide. `currentColor` always is. */}
+              <svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" focusable="false">
+                <path
+                  d="M2 2 8 8M8 2 2 8"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.4"
+                  strokeLinecap="round"
+                />
+              </svg>
             </button>
           ) : null}
           <FpsOverlay />
-        </div>
+        </header>
 
         <Feed
           sessionId={selectedSessionId}

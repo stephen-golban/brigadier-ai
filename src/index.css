@@ -79,10 +79,19 @@
   --color-ok: oklch(0.7558 0.13470 156.47); /* #5cc98c [derived] no green in the reference; running / allow; 8.61:1 */
   --color-bad: oklch(0.6856 0.16581 25.41); /* #ef6a63 [derived] no red in the reference; failed / deny; 5.84:1 */
   --color-on-solid: oklch(0.2090 0 0); /* #181818 [measured] glyph inside the white send button */
+  /* Two values that escaped the token layer until 2026-09-03: both were raw hex in the rules
+   * below, and `.col-l` is the feed's entire body text. Ratios re-derived, not carried forward. */
+  --color-feed-text: oklch(0.8699 0 0); /* #d4d4d4 [measured] feed row body; 11.98:1 on --color-thread-bg */
+  --color-control: oklch(0.5417 0 0); /* #6f6f6f [measured] native checkbox/radio fill; 3.21:1 on --color-surface, clears the 3:1 that WCAG 1.4.11 asks of a non-text control */
 
   /* --- radii and type -------------------------------------------------
    * These have Tailwind namespaces of their own (--radius-*, --font-*), so they belong in
    * @theme; the remaining geometry values do not and stay in :root below. */
+  /* [derived 2026-09-03] One small radius for the controls that used to pick 5px or 6px each on
+   * their own — the caret, the "+" beside Projects, the path input, the burn fields. Shape
+   * consistency is part of what the owner's "1999 app" verdict was pointing at: a window with
+   * four different corner radii on four controls of the same size reads as unplanned. */
+  --radius-xs: 6px;
   --radius-row: 8px; /* [measured] sidebar pill corner */
   --radius-md: 12px; /* [measured] thread card corner */
   --radius-lg: 20px; /* [measured] composer corner */
@@ -98,9 +107,37 @@
    * var(). Tailwind rewrites nothing outside @theme, so they keep their original names. */
   --sidebar-w: 276px; /* [measured] 275.5 */
   --row-h: 30px; /* [measured] sidebar row pitch and pill height */
+  --row-h-nested: 27px; /* [derived 2026-09-03] session rows, one step under the measured project row */
+  --head-h: 52px; /* [derived 2026-09-03] brand strip and thread header, so the two columns start on one line */
   --thread-max: 736px; /* [measured] composer box width */
   --content-max: 712px; /* [measured] context strip and card row width; defined but not yet referenced */
   --feed-row-h: 18px; /* unchanged: the virtualizer's fixed row height */
+
+  /* --- type scale -----------------------------------------------------
+   * The owner's verdict on 2026-09-02 was that the measured palette fixed the colour and nothing
+   * else: "looks nothing like ChatGPT, more like a year 1999 app". A flat list of rows all at one
+   * size and one weight is most of what that verdict is about, and a named scale is what stops it
+   * coming back. The two measured sizes are kept at their measured values and the steps between
+   * them are derived, so nothing sampled is discarded.
+   *
+   * Named `--fs-*` rather than `--text-*` deliberately: `--text-*` is a Tailwind namespace and a
+   * token there would emit `text-xs`/`text-sm`/… utilities nothing in this repo uses. Same
+   * reasoning as `@source not "../docs"` above — the design system must not leak rules into the
+   * bundle for prose about itself. */
+  --fs-xs: 11px; /* [derived] counts, run meta, the path line */
+  --fs-sm: 12px; /* [measured] section label and the trailing meta slot */
+  --fs-md: 13px; /* [derived] nested session rows: one step under the measured project row */
+  --fs-base: 14px; /* [measured] sidebar row label; also the document base */
+  --fs-lg: 17px; /* [measured] the wordmark */
+
+  /* --- motion ---------------------------------------------------------
+   * This is a desktop app whose whole premise is that it feels instant, so motion here is short,
+   * decelerating and never in front of an interaction: a row tint, a caret turning, a group
+   * arriving. Two durations and one curve, reused everywhere, so nothing invents its own timing.
+   * The `prefers-reduced-motion` block at the end of this file switches all of it off. */
+  --dur-fast: 90ms; /* hover and press feedback */
+  --dur: 140ms; /* a caret turning, a group arriving */
+  --ease: cubic-bezier(0.2, 0, 0, 1);
 
   /* Tailwind does not set color-scheme; this is what makes native controls and scrollbars dark. */
   color-scheme: dark;
@@ -150,7 +187,7 @@ input[type="radio"] {
   -webkit-appearance: auto;
   width: 13px;
   height: 13px;
-  accent-color: #6f6f6f;
+  accent-color: var(--color-control);
 }
 
 button:disabled,
@@ -182,6 +219,21 @@ textarea:disabled {
   font-family: var(--font-mono);
 }
 
+/* Text for assistive technology only. A session row's status is a coloured dot, which is not a
+   label; this is the label. Standard clip-rect recipe, not a `display: none` (which removes it
+   from the accessibility tree along with the pixels). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* ------------------------------------------------------------- layout */
 
 .app {
@@ -191,6 +243,24 @@ textarea:disabled {
 }
 
 /* ------------------------------------------------------------ sidebar */
+
+/*
+ * `docs/vision.md` §9, built rather than approximated. What changed on 2026-09-03, and why each
+ * change answers "looks nothing like ChatGPT, more like a year 1999 app":
+ *
+ *   - **Hierarchy by size, weight and family, not just by colour.** A project is a name: 14px
+ *     system, medium. A session is a ref: 12px mono, and its `brigadier/` prefix recedes to the
+ *     muted token while the eight hex digits that actually differ carry the row. Before this,
+ *     every line in the sidebar was 14px at one weight, which is what a Win32 list box is.
+ *   - **One vertical rhythm.** Every gap in this section is 4 / 8 / 12 / 16 / 24. The file used
+ *     to reach for 2, 6, 9, 10, 18 and 20 as well, per rule, which is why nothing lined up.
+ *   - **Motion.** Rows tint over 90 ms, the caret turns over 140 ms, a group of sessions arrives
+ *     with a 140 ms lift. Nothing waits on an animation; a snapping hover is the single loudest
+ *     "this is old" signal an app gives off.
+ *   - **Real glyphs.** The `✎ ◈ ▤` text characters are gone. Whether those render as an icon, a
+ *     box or a fallback serif is up to whichever font on the machine claims the codepoint, and
+ *     they never sit on the label's baseline. Inline SVG at `currentColor` always does.
+ */
 
 .sidebar {
   flex: 0 0 var(--sidebar-w);
@@ -202,20 +272,19 @@ textarea:disabled {
   color: var(--color-text-sidebar);
 }
 
-.sidebar-title {
+.sidebar-brand {
   display: flex;
   align-items: center;
-  gap: 8px;
-  height: 44px;
+  height: var(--head-h);
   padding: 0 16px;
   flex: 0 0 auto;
 }
 
-.sidebar-title h1 {
+.sidebar-brand h1 {
   margin: 0;
-  font-size: 17px; /* [measured] ~18px cap-derived, bold */
+  font-size: var(--fs-lg); /* [measured] ~18px cap-derived, bold */
   font-weight: 700;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.02em;
   color: var(--color-text);
 }
 
@@ -223,49 +292,64 @@ textarea:disabled {
   flex: 1 1 auto;
   overflow-y: auto;
   min-height: 0;
-  padding-bottom: 8px;
+  padding-bottom: 12px;
 }
 
-/* One row shape for every clickable line in the sidebar: nav items, projects, sessions. */
-.side-row {
+/* --- the two action rows above Projects ------------------------------- */
+
+/* "New session" is the one thing this column is for, so it is the one row with a surface of its
+   own. Everything else in the sidebar is flat until you touch it. */
+.side-new {
   display: flex;
   align-items: center;
-  gap: 9px; /* [measured] icon to label */
+  gap: 8px;
   width: calc(100% - 16px);
-  margin: 0 8px; /* [measured] pill inset */
-  min-height: var(--row-h);
-  padding: 0 8px;
+  margin: 0 8px;
+  min-height: 32px;
+  padding: 0 10px;
   border-radius: var(--radius-row);
-  text-align: left;
-  color: var(--color-text-sidebar);
-  background: transparent;
-}
-
-.side-row:hover {
-  background: var(--color-sidebar-hover);
-}
-
-/* Read-only row (the pending-approvals count); it is not a target, so it does not light up. */
-.side-row.static:hover {
-  background: transparent;
-}
-
-.side-row.selected {
-  background: var(--color-sidebar-active);
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
   color: var(--color-text);
+  font-size: var(--fs-base);
+  font-weight: 500;
+  text-align: left;
+  transition: background-color var(--dur-fast) var(--ease);
 }
 
-.side-row .glyph {
-  flex: 0 0 16px;
-  width: 16px;
-  text-align: center;
+.side-new:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* A press that moves. Transform only, so it is one composited frame, and the reduced-motion
+   block leaves the offset while removing the tween. */
+.side-new:active {
+  transform: translateY(0.5px);
+}
+
+/* The pending-approvals count. Read-only: it reports, it is not a target, so it does not light
+   up on hover and it does not pretend to be a button. */
+.side-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: calc(100% - 16px);
+  margin: 4px 8px 0;
+  min-height: var(--row-h);
+  padding: 0 10px;
+  border-radius: var(--radius-row);
+  font-size: var(--fs-base);
   color: var(--color-text-muted-side);
-  font-size: 13px;
-  line-height: 1;
 }
 
-.side-row.selected .glyph {
+/* Something is actually waiting on a person. The row stops being furniture. */
+.side-nav.waiting {
   color: var(--color-text-sidebar);
+}
+
+.side-new svg,
+.side-nav svg {
+  flex: 0 0 auto;
 }
 
 .side-label {
@@ -276,33 +360,18 @@ textarea:disabled {
   white-space: nowrap;
 }
 
-/* Trailing slot: counts, costs, and the branch chip a later change adds. */
-.side-meta {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--color-text-muted-side);
-  font-size: 12px;
-}
-
-/* Second line under a row's label. Empty today; reserved for the branch name. */
-.side-sub {
-  display: block;
-  font-size: 12px;
-  color: var(--color-text-muted-side);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+/* --- the Projects header --------------------------------------------- */
 
 .side-section {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 16px;
-  margin: 20px 0 2px; /* [measured] 43px from the last nav row to the label baseline */
-  font-size: 12px; /* [measured] */
+  padding: 0 12px 0 16px;
+  margin: 24px 0 4px; /* [derived] was 20/2; on the 4px rhythm, and one step more air above */
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   color: var(--color-text-muted-side);
 }
 
@@ -310,91 +379,375 @@ textarea:disabled {
   flex: 1 1 auto;
 }
 
-.side-section button {
-  color: var(--color-text-muted-side);
-  font-size: 15px;
-  line-height: 1;
+.side-section-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 20px;
   width: 20px;
   height: 20px;
-  border-radius: 5px;
+  border-radius: var(--radius-xs);
+  color: var(--color-text-muted-side);
+  transition:
+    background-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease),
+    transform var(--dur) var(--ease);
 }
 
-.side-section button:hover {
+.side-section-add:hover {
   background: var(--color-sidebar-hover);
   color: var(--color-text);
 }
 
-/* A project and the sessions nested under it. [measured] 8px extra between groups. */
-.side-group {
-  margin-bottom: 8px;
+/* The "+" becomes an "×" when the path form is open. One glyph, two states, no second icon. */
+.side-section-add[aria-expanded="true"] {
+  transform: rotate(45deg);
+  color: var(--color-text);
 }
 
-/* Session rows align their label with the project label above them. */
-.side-row.nested {
-  padding-left: 33px;
+/* --- a project and the sessions nested under it ----------------------- */
+
+.side-group {
+  margin-bottom: 4px;
+}
+
+/* The caret and the selecting button share one pill, so the row reads as a single object while
+   staying two hit targets. A button nested inside a button is invalid HTML and collapsing a
+   project must never steal the selection. */
+.side-project {
+  display: flex;
+  align-items: center;
+  margin: 0 8px;
+  border-radius: var(--radius-row);
+  transition: background-color var(--dur-fast) var(--ease);
+}
+
+.side-project:hover {
+  background: var(--color-sidebar-hover);
+}
+
+.side-project.selected {
+  background: var(--color-sidebar-active);
+}
+
+/*
+ * A collapsed project that holds the session on screen. Without this the sidebar disowns the
+ * thread in the main panel entirely: fold the group and nothing anywhere acknowledges where what
+ * you are reading lives.
+ *
+ * Deliberately **not** the run marker, and deliberately not the selected pill. "Something is
+ * running in here" and "the thing you are reading is in here" are different facts: the first is a
+ * round green dot, this is a straight accent rail on the pill's leading edge, and the selected
+ * pill is a fill. Three different shapes for three different statements. Only drawn while the
+ * group is closed — an open group shows the selected row itself, and a permanent ancestor
+ * highlight would be decoration rather than a signal.
+ *
+ * The rail is 4.58:1 on --color-sidebar-bg [derived 2026-09-03], over the 3:1 WCAG 1.4.11 asks of
+ * a meaningful non-text graphic; the accessible name on the marker span carries it for anyone who
+ * cannot see the rail at all.
+ */
+.side-project.holds {
+  box-shadow: inset 2px 0 0 var(--color-accent);
+}
+
+.side-holds {
+  flex: 0 0 2px;
+  width: 2px;
+  height: 10px;
+  border-radius: 1px;
+  background: var(--color-accent);
+}
+
+.side-caret {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 18px;
+  width: 18px;
+  height: var(--row-h);
+  border-radius: var(--radius-xs);
+  color: var(--color-text-muted-side);
+}
+
+.side-caret svg {
+  transition: transform var(--dur) var(--ease);
+}
+
+.side-caret[aria-expanded="true"] svg {
+  transform: rotate(90deg);
+}
+
+.side-project:hover .side-caret,
+.side-project.selected .side-caret {
+  color: var(--color-text-sidebar);
+}
+
+.side-project-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: var(--row-h);
+  padding: 0 10px 0 4px;
+  border-radius: 0 var(--radius-row) var(--radius-row) 0;
+  font-size: var(--fs-base);
+  font-weight: 500;
+  color: var(--color-text-sidebar);
+  text-align: left;
+}
+
+.side-project.selected .side-project-btn {
+  color: var(--color-text);
+}
+
+/* Trailing slot: the pending chip, the run marker, and the count a collapsed group carries.
+   Steps up on the hover and selected grounds for the same reason `.side-branch .prefix` does —
+   --color-text-muted-side is 3.96:1 on #434445 and 3.61:1 on #494a4b, both under AA. */
+.side-meta {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-text-muted-side);
+  font-size: var(--fs-sm);
+}
+
+.side-project:hover .side-meta,
+.side-project.selected .side-meta {
+  color: var(--color-text-sidebar); /* 7.46:1 on hover, 6.79:1 on selected [derived 2026-09-03] */
+}
+
+/* §9's "finished projects collapse to one line with a count". Tabular so a two-digit count does
+   not shove the run marker sideways. */
+.side-count {
+  min-width: 10px;
+  text-align: right;
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Sessions arrive rather than appear. 140 ms, transform and opacity only, so it is one
+   composited frame and it never delays the click that caused it. */
+.side-sessions {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding-top: 2px;
+  animation: side-group-in var(--dur) var(--ease);
+}
+
+@keyframes side-group-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+
+/*
+ * A session is a git ref, and it is drawn as one: mono, 12px, one step quieter than the project
+ * name above it. Its content starts at 26px from the sidebar edge (8 margin + 18 padding), which
+ * is exactly where the project label starts, so the nesting is a real alignment rather than an
+ * arbitrary indent.
+ */
+.side-session {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: calc(100% - 16px);
+  margin: 0 8px;
+  min-height: var(--row-h-nested);
+  padding: 0 10px 0 18px;
+  border-radius: var(--radius-row);
+  font-size: var(--fs-md);
+  color: var(--color-text-muted-side);
+  text-align: left;
+  transition:
+    background-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+
+.side-session:hover {
+  background: var(--color-sidebar-hover);
+  color: var(--color-text-sidebar);
+}
+
+.side-session.selected {
+  background: var(--color-sidebar-active);
+  color: var(--color-text);
+}
+
+.side-branch {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  letter-spacing: -0.01em;
+}
+
+/*
+ * Every branch in the window starts `brigadier/`. The shared half recedes; the eight hex digits
+ * that differ are the ones that read. A weight difference, never an opacity one.
+ *
+ * **A contrast ratio is a property of a pair, not of a colour**, and a sidebar row has three
+ * grounds, not one. Every pair below was re-derived on 2026-09-03 against the ground it actually
+ * paints on, after the first cut of this rule asserted a ratio it did not produce:
+ *
+ *                        rest #3a3b3b   hover #434445   selected #494a4b
+ *   .prefix              4.56 (a5a5a5)  7.46 (e1e1e1)   6.79 (e1e1e1)
+ *   .ref                 8.59 (e1e1e1)  9.76 (ffffff)   8.88 (ffffff)
+ *
+ * Two things that cut of the rule got wrong. `.ref` was `color: inherit`, so at rest it resolved
+ * to the row's own --color-text-muted-side and the two halves were the *same colour* — the
+ * hierarchy this comment described did not exist until the row was hovered. And
+ * --color-text-muted-side is 3.96:1 on the hover ground and 3.61:1 on the selected one, so the
+ * prefix failed AA in exactly the two states a user puts a row into on purpose. Both halves now
+ * step up together and the tier between them is preserved in all three states.
+ */
+.side-branch .prefix {
+  color: var(--color-text-muted-side);
+}
+
+.side-branch .ref {
+  color: var(--color-text-sidebar);
+}
+
+.side-session:hover .side-branch .prefix,
+.side-session.selected .side-branch .prefix {
+  color: var(--color-text-sidebar);
+}
+
+.side-session.selected .side-branch .ref,
+.side-session:hover .side-branch .ref {
+  color: var(--color-text);
+}
+
+/*
+ * Only a failed session says its status in words.
+ *
+ * It says it in a red *wash* with light text, not in red text, and that is the whole point.
+ * --color-bad is #ef6a63, measured and correct at 5.84:1 on --color-thread-bg — and **3.70:1 on
+ * --color-sidebar-bg**, which is what the first cut of this rule shipped at 11px. Lifting the red
+ * until it clears AA on all three sidebar grounds needs L 0.79 or so, by which point it is a pale
+ * salmon that no longer reads as an alarm; #ff8078 (L 0.7428) is already only 3.64:1 on a
+ * selected row. So the alarm colour moved to the fill, where the requirement is legibility of the
+ * text on top of it rather than of the colour itself:
+ *
+ *   #e1e1e1 on rgba(bad, .30) over  rest 5.88 · hover 5.33 · selected 4.97   [derived 2026-09-03]
+ *
+ * --color-bad itself is unchanged; other rules depend on it against the thread ground where it
+ * is correct.
+ */
+.side-flag {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: var(--fs-xs);
+  line-height: 16px;
+  background: rgba(239, 106, 99, 0.3);
+  color: var(--color-text-sidebar);
 }
 
 .side-empty {
-  padding: 4px 8px 4px 33px;
+  padding: 4px 10px 4px 26px;
   margin: 0;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--color-text-muted-side);
+}
+
+.side-empty.first {
+  padding: 4px 16px;
 }
 
 .chip {
   flex: 0 0 auto;
   padding: 0 6px;
   border-radius: 999px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   line-height: 17px;
   background: rgba(239, 140, 87, 0.18);
   color: var(--color-accent);
   white-space: nowrap;
 }
 
+/*
+ * The same pair problem as `.side-flag`, and it predates W4-C: accent text on its own 18% accent
+ * wash is 5.31:1 over --color-thread-bg, where the chip was designed, and **3.43:1 over
+ * --color-sidebar-bg, 3.07:1 hovered and 2.84:1 on a selected row** [derived 2026-09-03]. The
+ * thread-side chip is left exactly as measured; only the sidebar's copy trades its accent text
+ * for the wash-carries-the-meaning treatment `.side-flag` uses.
+ *
+ *   #e1e1e1 on rgba(accent, .28) over  rest 5.47 · hover 4.98 · selected 4.69
+ */
+.sidebar .chip {
+  background: rgba(239, 140, 87, 0.28);
+  color: var(--color-text-sidebar);
+}
+
 .chip.plain {
   background: rgba(255, 255, 255, 0.08);
   color: var(--color-text-muted-side);
-}
-
-/* The branch chip in a session row. Capped so a long branch cannot push the cost off the row;
-   the row keeps its measured 30px pitch because the chip's line-height is 17px. */
-.chip.branch {
-  max-width: 92px;
-  overflow: hidden;
-  text-overflow: ellipsis;
   font-family: var(--font-mono);
-  font-size: 10px;
+  letter-spacing: -0.01em;
 }
 
+/*
+ * The status marker, and §9's `*` versus `o` read literally: a filled dot is live, a hollow ring
+ * is idle. 6px rather than 8px — at this row height 8px was a bullet, and the sketch's marker is
+ * punctuation.
+ */
 .dot {
-  flex: 0 0 8px;
-  width: 8px;
-  height: 8px;
+  flex: 0 0 6px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: var(--color-text-muted-side);
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--color-text-muted-side);
 }
 
 .dot.running {
   background: var(--color-ok);
+  box-shadow: none;
 }
 
 .dot.starting {
   background: var(--color-accent);
+  box-shadow: none;
 }
 
 .dot.failed {
   background: var(--color-bad);
+  box-shadow: none;
 }
 
+/*
+ * A turn is open. This is the one perpetual animation in the window and it is here because §9
+ * calls it load-bearing: work in a project you are not looking at must never be invisible, and a
+ * static ring says "running" while a pulse says "running *now*". One 6px dot animating a box
+ * shadow is a composited repaint of ~40px²; the reduced-motion block below drops it to the
+ * static ring it replaced.
+ */
 .dot.busy {
-  box-shadow: 0 0 0 3px rgba(92, 201, 140, 0.22);
+  animation: dot-pulse 1.8s var(--ease) infinite;
+}
+
+@keyframes dot-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(92, 201, 140, 0.5);
+  }
+  70% {
+    box-shadow: 0 0 0 4px rgba(92, 201, 140, 0);
+  }
 }
 
 /* Path input, revealed by the "+" on the Projects header. */
 .side-add {
   display: flex;
-  gap: 6px;
+  gap: 8px;
   margin: 4px 8px 8px;
 }
 
@@ -403,21 +756,26 @@ textarea:disabled {
   min-width: 0;
   height: 28px;
   padding: 0 8px;
+  border-radius: var(--radius-xs);
   background: rgba(0, 0, 0, 0.22);
   border: 1px solid var(--color-sidebar-line);
-  font-size: 13px;
+  font-size: var(--fs-md);
+  font-family: var(--font-mono);
 }
 
 .side-add input::placeholder {
   color: var(--color-text-muted-side);
+  font-family: var(--font-sans);
 }
 
 .side-add button {
   flex: 0 0 auto;
   height: 28px;
-  padding: 0 10px;
+  padding: 0 12px;
+  border-radius: var(--radius-xs);
   background: rgba(255, 255, 255, 0.1);
-  font-size: 13px;
+  font-size: var(--fs-md);
+  transition: background-color var(--dur-fast) var(--ease);
 }
 
 .side-add button:hover {
@@ -428,14 +786,14 @@ textarea:disabled {
 .side-dev {
   flex: 0 0 auto;
   margin: 0 8px 8px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--color-text-muted-side);
 }
 
 .side-dev summary {
   cursor: pointer;
   padding: 4px 8px;
-  border-radius: 6px;
+  border-radius: var(--radius-xs);
   list-style: none;
 }
 
@@ -454,7 +812,7 @@ textarea:disabled {
   align-items: center;
   gap: 8px;
   min-height: 46px; /* [measured] */
-  padding: 6px 12px;
+  padding: 8px 12px;
   border-top: 1px solid var(--color-sidebar-line); /* [measured] 1px */
 }
 
@@ -484,7 +842,7 @@ textarea:disabled {
 
 .side-status .who strong {
   display: block;
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 500;
   color: var(--color-text);
   overflow: hidden;
@@ -494,12 +852,13 @@ textarea:disabled {
 
 .side-status .who span {
   display: block;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--color-text-muted-side);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
 
 /* -------------------------------------------------------------- thread */
 
@@ -512,47 +871,94 @@ textarea:disabled {
   background: var(--color-thread-bg);
 }
 
-.thread-top {
+/*
+ * The header replaces a single ellipsized status line that read
+ * `name · /very/long/path · session <uuid> · running`, where the piece you actually wanted was
+ * whichever piece the ellipsis had eaten. Two lines with an actual hierarchy — the name at 14/600
+ * and everything else at 11px mono muted — say the same thing in the same height and can be read
+ * at a glance.
+ *
+ * Quiet on purpose. `docs/vision.md` §9 is "thread-primary, one column", and the pinned plan card
+ * that belongs above the thread is W4-D's; a header competing with it now would have to be
+ * shrunk again later.
+ */
+.thread-head {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 12px;
-  min-height: 40px;
-  padding: 4px 16px;
-  font-size: 12px;
+  min-height: var(--head-h);
+  padding: 8px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
   color: var(--color-text-muted);
 }
 
-.thread-top .where {
+.thread-head .head-id {
   flex: 1 1 auto;
+  min-width: 0;
+}
+
+.thread-head .head-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: var(--fs-base);
+  line-height: 1.3;
+}
+
+.thread-head .head-name b {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.thread-head .head-path {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  letter-spacing: -0.01em;
+  color: var(--color-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notice {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 50%;
+  min-width: 0;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: rgba(239, 106, 99, 0.16);
+  color: var(--color-bad);
+  font-size: var(--fs-sm);
+  transition: background-color var(--dur-fast) var(--ease);
+}
+
+/* The hover feedback is a ring, not a darker wash. W4-C's first cut deepened the fill to 0.26,
+   which took --color-bad from 4.70:1 to **3.94:1** against its own hovered background — a hover
+   state that fails AA is still a state the text is read in. The ring costs nothing. */
+.notice:hover {
+  box-shadow: inset 0 0 0 1px rgba(239, 106, 99, 0.45);
+}
+
+.notice .notice-text {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.thread-top .where b {
-  color: var(--color-text);
-  font-weight: 500;
-}
-
-/* The branch chip in the top strip sits inline after the session id and status. */
-.thread-top .where .chip {
-  display: inline-block;
-  margin-left: 8px;
-  vertical-align: baseline;
-}
-
-.notice {
-  max-width: 60%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  padding: 2px 10px;
-  border-radius: 999px;
-  background: rgba(239, 106, 99, 0.16);
-  color: var(--color-bad);
-  font-size: 12px;
+.notice svg {
+  flex: 0 0 auto;
+  opacity: 0.75;
 }
 
 /* ---------------------------------------------------------------- feed */
@@ -636,7 +1042,7 @@ textarea:disabled {
 
 .col-l {
   flex: 1 1 auto;
-  color: #d4d4d4;
+  color: var(--color-feed-text);
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -658,7 +1064,7 @@ textarea:disabled {
 .thread-empty .mark {
   width: 44px;
   height: 44px;
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   border: 1px solid var(--color-line);
   display: flex;
   align-items: center;
@@ -698,6 +1104,10 @@ textarea:disabled {
 
 .jump-pill:hover {
   background: var(--color-composer-bg);
+}
+
+.jump-pill:active {
+  transform: translateX(-50%) translateY(0.5px);
 }
 
 /* ----------------------------------------------------------- approvals */
@@ -775,7 +1185,7 @@ textarea:disabled {
 .suggestion {
   background: rgba(0, 0, 0, 0.28);
   border: 1px solid var(--color-line);
-  border-radius: 8px;
+  border-radius: var(--radius-row);
   margin: 8px 0 0;
   padding: 8px 10px;
   max-height: 160px;
@@ -911,7 +1321,7 @@ textarea:disabled {
 .dock-actions select {
   height: 26px;
   padding: 0 4px;
-  border-radius: 6px;
+  border-radius: var(--radius-xs);
   font-size: 12px;
   color: var(--color-text-sidebar);
   background: rgba(255, 255, 255, 0.06);
@@ -924,8 +1334,15 @@ textarea:disabled {
   height: 28px;
   padding: 0 10px;
   border-radius: 999px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--color-text-muted);
+  transition:
+    background-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+
+.act:active:not(:disabled) {
+  transform: translateY(0.5px);
 }
 
 .act:hover:not(:disabled) {
@@ -955,6 +1372,14 @@ textarea:disabled {
 
 .send:disabled {
   opacity: 0.28;
+}
+
+.send:not(:disabled) {
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.send:active:not(:disabled) {
+  transform: scale(0.94);
 }
 
 .send.wide {
@@ -1074,7 +1499,7 @@ textarea:disabled {
   padding: 0 6px;
   background: rgba(0, 0, 0, 0.22);
   border: 1px solid var(--color-sidebar-line);
-  border-radius: 6px;
+  border-radius: var(--radius-xs);
   font-size: 12px;
 }
 
@@ -1090,7 +1515,7 @@ textarea:disabled {
   height: 24px;
   padding: 0 10px;
   background: rgba(255, 255, 255, 0.1);
-  border-radius: 6px;
+  border-radius: var(--radius-xs);
   font-size: 12px;
 }
 
@@ -1100,6 +1525,19 @@ textarea:disabled {
   font-size: 11px;
   line-height: 1.5;
   word-break: break-word;
+}
+
+/*
+ * The window's minimum is 800x500 (`src-tauri/tauri.conf.json`). At 800 the measured 276px
+ * sidebar is 34% of the frame and the feed's mono rows ellipsize hard. Nothing breaks; it is
+ * simply badly proportioned at the small end, so the column steps down below 960px and keeps its
+ * measured width everywhere the measurement was taken. Session content still starts at 26px and
+ * a full `brigadier/<8 hex>` at 12px mono still fits the row. [derived 2026-09-03]
+ */
+@media (max-width: 960px) {
+  :root {
+    --sidebar-w: 220px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
