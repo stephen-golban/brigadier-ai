@@ -45,6 +45,18 @@ pub fn model() -> String {
     std::env::var("SPIKE_MODEL").unwrap_or_else(|_| "claude-haiku-4-5".to_string())
 }
 
+/// Extra argv appended to every child, whitespace-separated, from
+/// `SPIKE_EXTRA_ARGV`. Unset (the default) appends nothing, so no existing
+/// scenario changes shape. It exists so an A/B arm can be selected from outside
+/// the binary, e.g. `SPIKE_EXTRA_ARGV=--strict-mcp-config`.
+pub fn extra_argv_from_env() -> Vec<String> {
+    std::env::var("SPIKE_EXTRA_ARGV")
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect()
+}
+
 /// The exact argv the SDK builds, in the SDK's own order (cli-protocol.md §1).
 pub fn build_argv(extra: &[String]) -> Vec<String> {
     let mut v: Vec<String> = vec![
@@ -59,17 +71,24 @@ pub fn build_argv(extra: &[String]) -> Vec<String> {
         "stdio".into(),
     ];
     v.extend_from_slice(extra);
+    v.extend(extra_argv_from_env());
     v
 }
 
 pub struct Session {
     child: Child,
     stdin: Option<ChildStdin>,
-    rx: mpsc::UnboundedReceiver<String>,
-    pending: VecDeque<Value>,
+    rx: mpsc::UnboundedReceiver<(String, Instant)>,
+    pending: VecDeque<(Value, Instant)>,
     sent_log: std::fs::File,
     req_n: u64,
     pub spawned_at: Instant,
+    /// When the frame most recently returned by `recv` came off the pipe, not
+    /// when the caller drained it. `initialize` buffers whatever arrives before
+    /// its own `control_response`, so draining is not arrival: timing
+    /// `system/init` off `Instant::now()` after a buffered read overstates it by
+    /// the whole handshake. Read this instead.
+    pub last_arrival: Instant,
     pub pid: Option<u32>,
     #[allow(dead_code)]
     pub argv: Vec<String>,
@@ -82,6 +101,11 @@ impl Session {
         let out_path = format!("{FIXTURES}/{scenario}.ndjson");
         let err_path = format!("{FIXTURES}/{scenario}.stderr.txt");
         let sent_path = format!("{FIXTURES}/{scenario}.sent.ndjson");
+        // A scenario name may carry a subdirectory (`spawn-split/on-1`) so a
+        // multi-run sweep does not scatter 36 files across `fixtures/`.
+        if let Some(dir) = std::path::Path::new(&out_path).parent() {
+            std::fs::create_dir_all(dir)?;
+        }
         let mut out_f = std::fs::File::create(&out_path)?;
         let mut err_f = std::fs::File::create(&err_path)?;
         let sent_log = std::fs::File::create(&sent_path)?;
@@ -111,13 +135,14 @@ impl Session {
         let stderr = child.stderr.take().unwrap();
         let stdin = child.stdin.take().unwrap();
 
-        let (tx, rx) = mpsc::unbounded_channel::<String>();
+        let (tx, rx) = mpsc::unbounded_channel::<(String, Instant)>();
         tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = lines.next_line().await {
+                let at = Instant::now();
                 let _ = writeln!(out_f, "{line}");
                 let _ = out_f.flush();
-                if tx.send(line).is_err() {
+                if tx.send((line, at)).is_err() {
                     break;
                 }
             }
@@ -138,6 +163,7 @@ impl Session {
             sent_log,
             req_n: 0,
             spawned_at,
+            last_arrival: spawned_at,
             pid,
             argv,
             eof: false,
@@ -166,12 +192,14 @@ impl Session {
     /// Push a value back so the next `recv` returns it again.
     #[allow(dead_code)]
     pub fn unrecv(&mut self, v: Value) {
-        self.pending.push_front(v);
+        let at = self.last_arrival;
+        self.pending.push_front((v, at));
     }
 
     /// Next JSON object from stdout. `Ok(None)` means EOF or timeout expired.
     pub async fn recv(&mut self, dur: Duration) -> Result<Option<Value>> {
-        if let Some(v) = self.pending.pop_front() {
+        if let Some((v, at)) = self.pending.pop_front() {
+            self.last_arrival = at;
             return Ok(Some(v));
         }
         let deadline = Instant::now() + dur;
@@ -186,8 +214,11 @@ impl Session {
                     self.eof = true;
                     return Ok(None);
                 }
-                Ok(Some(line)) => match serde_json::from_str::<Value>(&line) {
-                    Ok(v) => return Ok(Some(v)),
+                Ok(Some((line, at))) => match serde_json::from_str::<Value>(&line) {
+                    Ok(v) => {
+                        self.last_arrival = at;
+                        return Ok(Some(v));
+                    }
                     Err(_) => {
                         eprintln!("    [non-JSON stdout line skipped] {}", truncate(&line, 160));
                         continue;
@@ -219,15 +250,17 @@ impl Session {
                 }
                 bail!("timed out or EOF waiting for initialize control_response");
             };
+            let at = self.last_arrival;
             if v["type"] == "control_response"
                 && v["response"]["request_id"].as_str() == Some(rid.as_str())
             {
                 for b in buf {
                     self.pending.push_back(b);
                 }
+                self.last_arrival = at;
                 return Ok(v);
             }
-            buf.push(v);
+            buf.push((v, at));
         }
     }
 
