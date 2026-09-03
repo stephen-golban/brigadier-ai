@@ -13,6 +13,7 @@
  */
 import { useState } from "react";
 
+import { PathIcon, ProjectIcon } from "./icons";
 import { OFFERED_PERMISSION_MODES } from "../wire";
 import type { ModelInfo, PermissionMode, ProjectId, ProjectView } from "../wire";
 
@@ -52,15 +53,15 @@ export function NewSession({ project, models, disabled, onStart }: NewSessionPro
     <section className="dock">
       <div className="dock-context">
         <span title={project?.root_path}>
-          <span className="glyph" aria-hidden="true">
-            ▤
+          <span className="glyph">
+            <ProjectIcon />
           </span>
           {project?.name ?? "no project"}
         </span>
         {project !== null ? (
           <span title={project.root_path}>
-            <span className="glyph" aria-hidden="true">
-              ▸
+            <span className="glyph">
+              <PathIcon />
             </span>
             {project.root_path}
           </span>

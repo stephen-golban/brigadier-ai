@@ -23,6 +23,7 @@
  */
 import { useEffect, useState } from "react";
 
+import { ModelIcon, PathIcon, ProjectIcon, SendIcon } from "./icons";
 import type { SessionRuntime } from "../feedStore";
 import type { SessionId, WorktreeCleanup } from "../wire";
 
@@ -292,23 +293,23 @@ export function Composer({
     <section className="dock">
       <div className="dock-context">
         <span title={projectName ?? undefined}>
-          <span className="glyph" aria-hidden="true">
-            ▤
+          <span className="glyph">
+            <ProjectIcon />
           </span>
           {projectName ?? "no project"}
         </span>
         {session?.cwd != null ? (
           <span title={session.cwd}>
-            <span className="glyph" aria-hidden="true">
-              ▸
+            <span className="glyph">
+              <PathIcon />
             </span>
             {basename(session.cwd)}
           </span>
         ) : null}
         {session?.model != null ? (
           <span title={session.model}>
-            <span className="glyph" aria-hidden="true">
-              ◇
+            <span className="glyph">
+              <ModelIcon />
             </span>
             {session.model}
           </span>
@@ -392,7 +393,7 @@ export function Composer({
             disabled={!live || text.trim() === ""}
             onClick={send}
           >
-            ↑
+            <SendIcon />
           </button>
         </div>
       </div>
@@ -413,10 +414,19 @@ export function Composer({
         </p>
       ) : null}
 
+      {/*
+        No dollar figure. `docs/vision.md` §6 and `CLAUDE.md` §2 both settle this: brigadier runs
+        on the user's own subscription, so a per-turn cost in dollars is a number they are never
+        billed — a lie in their own favour, and precise to four decimal places about it.
+        `session.costUsd` still arrives on the wire and is still stored; it is simply not a thing
+        this window tells anyone. What replaces it is the usage-window gauge, which is W2-C's and
+        has no data until `rate_limit_event` reaches the front end, so the token counts stay for
+        now as the only measure of what a turn spent.
+      */}
       {session !== null ? (
         <div className="dock-usage">
-          ${session.costUsd.toFixed(4)} · {session.usage.input_tokens} in /{" "}
-          {session.usage.output_tokens} out · cache {session.usage.cache_read_tokens} read /{" "}
+          {session.usage.input_tokens} in / {session.usage.output_tokens} out · cache{" "}
+          {session.usage.cache_read_tokens} read /{" "}
           {session.usage.cache_creation_tokens} write · rows {session.rowsTotal}
           {session.rowsDropped > 0 ? ` (${session.rowsDropped} dropped)` : ""}
           {session.lastMessage !== null ? ` · ${session.lastMessage}` : ""}

@@ -15,17 +15,87 @@
  * in this file are still hand-written and read their tokens as var(), not utility classes.
  */
 
-@import "tailwindcss";
+/*
+ * The scanner is a **whitelist**. It replaced a blacklist that had failed twice, silently.
+ *
+ * Tailwind's oxide scanner walks the FILESYSTEM, not the module graph, and with no `source(…)` it
+ * scans the whole repository: `{ base, pattern: "**\/*" }` in
+ * `node_modules/@tailwindcss/vite/dist/index.mjs`. Every `.rs`, `.md`, `.toml`, fixture, capture
+ * and lockfile in the tree. It reads Markdown as happily as it reads `.tsx`, and it does not
+ * parse: any bare word shaped like a utility becomes one.
+ *
+ * **Two leaks, from two directories nobody thought to enumerate.**
+ *
+ *   1. `docs/research/oklch-tokens.md` describes this token layer and names `bg-accent`,
+ *      `text-accent` and friends in prose — enough to emit `.bg-accent`, `.bg-accent\/50`,
+ *      `.border-thread-bg` and six more, +0.31 kB of CSS nothing renders [measured,
+ *      docs/research/oklch-tokens.md §5]. That leak produced the blacklist.
+ *   2. `crates/proc/src/pidfile.rs:19` says, in a doc comment, "a different kernel — a
+ *      container, a VM, a restored backup". That emitted six `.container` rules — one base plus five
+ *      `@media` breakpoints, 0.28 kB — and it is **committed, weeks old, and shipped into
+ *      production undetected** since `d95d6e3` [measured 2026-09-03, W4-D1b].
+ *
+ * The blacklist was chosen over a whitelist deliberately, and the stated reason was: *"I chose
+ * excluding one bad directory over `source("../src")` because whitelisting fails silent for
+ * future orders."* **That reason was exactly backwards.** The blacklist is what failed silently,
+ * because enumerating what to exclude is unbounded — every directory in the repo, plus every
+ * directory anyone adds later. What to include is bounded.
+ *
+ * **And `source("../src")`, the whitelist that reason argued against, would not have been enough
+ * either.** Measured before this landed: scoping the root to `../src` still emitted all six of
+ * those rules, from two files inside `src/` — this comment, which names the leaked class in order
+ * to document it, and `src/components/Feed.test.tsx`, which calls Testing Library's
+ * `view.container`. The trap is not which directory. It is that **prose and test code are not
+ * markup**, and the only files in this repo that carry a class name are non-test `.tsx` and
+ * `index.html`. That is what the directives below say.
+ *
+ * **A standing hazard, named because it is not mechanically prevented:** this comment says
+ * "container" four times. No root below matches a `.css` file, so the scanner does not read it
+ * today — but widen the roots to `.css` or `.md` and this paragraph re-emits the very rules it
+ * documents. The `scanner policy` test fails on any root change, so that is a decision someone
+ * has to make in the open rather than a thing that happens to them; the orphan gate would not
+ * catch it, because a leak costs bytes, not correctness.
+ *
+ * The stated worry was not dismissed, it was made untrue. `src/index.css.test.ts` is the standing
+ * gate. It asserts that **every class in the markup has a hand-written rule in this file**, which
+ * is the whole invariant, because this app uses no Tailwind utility class anywhere — narrowing
+ * the scanner dropped 2.51 kB of generated rules and did not change a pixel. Anyone who starts
+ * depending on a generated utility fails that test with a message telling them why. Its
+ * `SCANNED_ROOTS` mirrors the directives below and it fails if the two drift, so a root cannot be
+ * added or removed here without the test being updated to match. What it does not cover is listed
+ * in its own header rather than implied here.
+ *
+ * A typo in a glob below is **not** itself detected — unlike `source("…")`, whose path must
+ * resolve to a directory or the build throws (`@tailwindcss/vite/dist/index.mjs`), a glob that
+ * matches nothing is legal. Its only consequence is that a utility would stop being generated,
+ * and that is precisely what the gate catches, one step downstream.
+ *
+ * Verified against the installed Tailwind 4.3.3, not recalled — the rule
+ * `docs/research/frontend-stack.md` §2 followed for `@source not`. In
+ * `node_modules/tailwindcss/dist/lib.mjs`: `source(none)` disables automatic detection, any other
+ * value becomes `{ base, pattern }`, and paths must be quoted or it throws. In
+ * `node_modules/@tailwindcss/vite/dist/index.mjs` that value **replaces** the `"**\/*"` root
+ * rather than adding to it, and explicit `@source` directives are concatenated on top.
+ *
+ * Paths are relative to this file.
+ */
+@import "tailwindcss" source(none);
+@source "../src/**/*.tsx";
+@source not "../src/**/*.test.tsx";
 
 /*
- * Tailwind's oxide scanner walks the FILESYSTEM, not the module graph, and it reads Markdown as
- * happily as it reads .tsx. `docs/research/oklch-tokens.md` describes this token layer and names
- * `bg-accent`, `text-accent` and friends in prose — which was enough to emit `.bg-accent`,
- * `.bg-accent\/50`, `.border-thread-bg` and six more into the production bundle, +0.31 kB of CSS
- * nothing renders [measured, docs/research/oklch-tokens.md §5]. Prose about the design system
- * must not become part of it. Paths are relative to this file.
+ * The one file carrying markup that lives outside `src/`. It has no class on it today, but
+ * `docs/vision.md` §9 has already settled that it will: painting the shell in `index.html` is the
+ * only route to the B1 budget, because a splash window is a second WKWebView and pays the ~100 ms
+ * construction cost twice to hide it once, and tauri #15652 makes a `visible: false` window
+ * unsafe. Declared now, before the order that needs it lands, so that order does not spend an
+ * afternoon debugging an unstyled shell.
+ *
+ * `@source not "../docs"` is **gone, not moved**. `docs/` is outside every root declared above,
+ * so the negation matched nothing; keeping it would have implied a protection the whitelist
+ * already provides and pointed the next reader at the strategy that failed.
  */
-@source not "../docs";
+@source "../index.html";
 
 /*
  * The 18 colours live in `@theme static`, not plain `@theme`, and are namespaced `--color-*`.
@@ -80,9 +150,24 @@
   --color-bad: oklch(0.6856 0.16581 25.41); /* #ef6a63 [derived] no red in the reference; failed / deny; 5.84:1 */
   --color-on-solid: oklch(0.2090 0 0); /* #181818 [measured] glyph inside the white send button */
   /* Two values that escaped the token layer until 2026-09-03: both were raw hex in the rules
-   * below, and `.col-l` is the feed's entire body text. Ratios re-derived, not carried forward. */
-  --color-feed-text: oklch(0.8699 0 0); /* #d4d4d4 [measured] feed row body; 11.98:1 on --color-thread-bg */
-  --color-control: oklch(0.5417 0 0); /* #6f6f6f [measured] native checkbox/radio fill; 3.21:1 on --color-surface, clears the 3:1 that WCAG 1.4.11 asks of a non-text control */
+   * below, and the first of them is the feed's entire body text (`.feed-line` since W4-D1
+   * renamed the row's columns away; it was `.col-l`). Ratios re-derived, not carried forward. */
+  --color-feed-text: oklch(0.8699 0 0); /* #d4d4d4 [measured] feed row body; 11.98:1 on --color-thread-bg, 10.53:1 on the hovered row's #242424 */
+  --color-control: oklch(0.5417 0 0); /* #6f6f6f [measured] native checkbox/radio fill, and since W4-D1 the jump pill's border; 3.21:1 on --color-surface and 3.53:1 on --color-thread-bg, both over the 3:1 WCAG 1.4.11 asks of a non-text control */
+  /* Two tokens added by W4-D1 for the feed's margin, 2026-09-03. Both ratios are derived below
+   * against the ground each one actually paints on, in both of the row's states.
+   *
+   * The mark is the design panel's "literal grey token, not opacity" finding taken literally:
+   * white at 55% over --color-thread-bg composites to #979797, and that is written here as a
+   * colour rather than left as an `opacity` on a muted token, because opacity would also thin the
+   * glyph. It clears AA on the plain thread ground and on the hovered row's ground, which is the
+   * pairing the narrow-window layout puts it on (see the `max-width: 1200px` block below). */
+  --color-feed-mark: oklch(0.6764 0 0); /* #979797 [derived 2026-09-03] feed margin clock and session ref; 6.079:1 on --color-thread-bg, 5.344:1 on the hovered row's #242424, 5.643:1 on --color-rail-bg */
+  /* The minute rule. **Decorative and redundant**, and it does not claim WCAG 1.4.11's 3:1: the
+   * boundary it draws is also printed as text in the margin beside it, so nothing is conveyed by
+   * the line alone. Stated rather than implied, because a rule whose comment certifies one ground
+   * and stays silent about the other is exactly how a 3.699:1 line shipped earlier in this wave. */
+  --color-feed-rule: oklch(0.4091 0 0); /* #4a4a4a [derived 2026-09-03] feed minute rule; 2.004:1 on --color-thread-bg and 1.761:1 on the hovered row's #242424, both deliberate */
 
   /* --- radii and type -------------------------------------------------
    * These have Tailwind namespaces of their own (--radius-*, --font-*), so they belong in
@@ -110,8 +195,12 @@
   --row-h-nested: 27px; /* [derived 2026-09-03] session rows, one step under the measured project row */
   --head-h: 52px; /* [derived 2026-09-03] brand strip and thread header, so the two columns start on one line */
   --thread-max: 736px; /* [measured] composer box width */
-  --content-max: 712px; /* [measured] context strip and card row width; defined but not yet referenced */
-  --feed-row-h: 18px; /* unchanged: the virtualizer's fixed row height */
+  --content-max: 712px; /* [measured] context strip and card row width; the feed's reading measure */
+  /* The virtualizer's fixed row height, and the row's line-height. **Kept in step with `ROW_H` in
+   * `src/components/Feed.tsx`** — they must be the same integer or the line stops being centred
+   * in its box, and a fractional value drifts against the sizer at devicePixelRatio 2. 18 → 28
+   * [derived 2026-09-03]; the reasoning is on `ROW_H`. */
+  --feed-row-h: 28px;
 
   /* --- type scale -----------------------------------------------------
    * The owner's verdict on 2026-09-02 was that the measured palette fixed the colour and nothing
@@ -122,8 +211,8 @@
    *
    * Named `--fs-*` rather than `--text-*` deliberately: `--text-*` is a Tailwind namespace and a
    * token there would emit `text-xs`/`text-sm`/… utilities nothing in this repo uses. Same
-   * reasoning as `@source not "../docs"` above — the design system must not leak rules into the
-   * bundle for prose about itself. */
+   * reasoning as the `source(none)` whitelist above — the design system must not leak rules into
+   * the bundle for prose about itself, and prose is most of what the scanner used to read. */
   --fs-xs: 11px; /* [derived] counts, run meta, the path line */
   --fs-sm: 12px; /* [measured] section label and the trailing meta slot */
   --fs-md: 13px; /* [derived] nested session rows: one step under the measured project row */
@@ -976,25 +1065,40 @@ textarea:disabled {
 
 /* ---------------------------------------------------------------- feed */
 
+/*
+ * W4-D1, 2026-09-03. The rows this section used to draw were a fixed-pitch log table: a
+ * `HH:MM:SS` column, a right-aligned envelope-`seq` column, `field · field · field` records in
+ * 12px mono at an 18px pitch, on alternating #181818 / #1d1d1d stripes. The rationale for each
+ * change is on `src/components/Feed.tsx`; the geometry is here.
+ *
+ * The shape in one line: **one reading column at `--content-max`, and the metadata in the margin
+ * beside it.** A table's keys go in columns on the left, before the content; a document's go in
+ * the margin, where they cannot be read first. Nothing here parses the row's text, so nothing
+ * here has to change when W4-D2 adds the `k` kind field.
+ */
+
 .feed {
   position: relative;
   flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   min-height: 0;
-  /* A band for `.feed-count`, so the count never sits on top of row 0. */
-  padding-top: 15px;
+  /* A band for `.feed-count`, so the count never sits on top of row 0. 20 rather than 15: on the
+     4 / 8 / 12 rhythm the rest of the file keeps. */
+  padding-top: 20px;
 }
 
-/* Row count, out of the way at the top right of the thread. */
+/* Row count, aligned with the right edge of the reading column rather than with the pane, so it
+   reads as belonging to the column and not as a corner badge. Falls back to a 16px inset once the
+   column is wider than the pane leaves room for. */
 .feed-count {
   position: absolute;
   top: 0;
-  right: 16px;
+  right: max(16px, calc((100% - var(--content-max)) / 2));
   z-index: 1;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-family: var(--font-mono);
-  color: var(--color-text-muted);
+  color: var(--color-text-muted); /* #848484, 4.748:1 on --color-thread-bg; never on a hovered row */
   pointer-events: none;
 }
 
@@ -1006,58 +1110,102 @@ textarea:disabled {
   contain: layout paint;
 }
 
-/* The thread column: the reference centres its content on a fixed max width. */
+/*
+ * The reading column. `--content-max` is the thread's inner measure — the width the composer's
+ * context strip and the reference's card row were both measured at — and until now it was defined
+ * and referenced nowhere while the feed ran full-bleed. 712px of column inside a ~1004px pane
+ * leaves ~146px of margin on each side, which is where `.feed-mark` lives and is most of what
+ * gives the pane a silhouette instead of a uniform grain.
+ */
 .feed-sizer {
   position: relative;
   width: 100%;
-  max-width: var(--thread-max);
+  max-width: var(--content-max);
   margin: 0 auto;
 }
 
+/*
+ * `overflow` and `paint` containment deliberately are NOT on the row: `.feed-mark` is positioned
+ * outside the row's box, in the margin, and either one would clip it away. `contain: layout size`
+ * keeps the rest — and the row is `position: absolute`, so it is already a containing block for
+ * the mark without `contain: layout` having to make it one.
+ */
 .feed-row {
   position: absolute;
   top: 0;
   left: 0;
   width: 100%;
   display: flex;
-  gap: 8px;
   align-items: center;
-  padding: 0 12px;
-  font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-md);
   line-height: var(--feed-row-h);
-  white-space: pre;
-  overflow: hidden;
-  contain: layout paint size;
+  contain: layout size;
+  transition: background-color var(--dur-fast) var(--ease);
 }
 
-/* Striping is by row index, not `nth-child`: the DOM children are recycled, so `nth-child`
-   would make the stripes crawl as the list scrolls. */
-.feed-row.alt {
-  background: rgba(255, 255, 255, 0.022);
+/*
+ * The stripes are gone. What they were for — tracking one row across a wide table — is done by
+ * the measure at rest and by this on demand, for the row under the pointer only. 5% white over
+ * --color-thread-bg composites to #242424: 1.137:1 against the unhovered row, so it reads as a
+ * band without becoming a second surface, and every text colour in the row is re-derived against
+ * it (--color-feed-text 10.53:1, --color-text 15.61:1, --color-feed-mark 5.344:1).
+ *
+ * 90ms, which is under the 100ms the panel asked of hover feedback. No row ever animates in.
+ */
+.feed-row:hover {
+  background: rgba(255, 255, 255, 0.05);
 }
 
-.col-t {
-  color: var(--color-text-muted);
-  flex: 0 0 auto;
+.feed-row:hover .feed-line {
+  color: var(--color-text);
 }
 
-.col-s {
-  color: var(--color-accent);
-  flex: 0 0 auto;
+/*
+ * The minute rule, drawn as an inset shadow rather than a `border-top`: with `box-sizing:
+ * border-box` a border would take a pixel out of the content box on boundary rows only, and shift
+ * their baseline out of step with every other row.
+ *
+ * It marks the clock minute and nothing else. A session change does not draw one — see the
+ * comment at the `lead` computation in `Feed.tsx`: in a project view with several live sessions
+ * every row is a session boundary, and a rule on every row is the grid this work removed.
+ */
+.feed-row.lead {
+  box-shadow: inset 0 1px 0 var(--color-feed-rule);
 }
 
-.col-q {
-  color: var(--color-text-muted);
-  flex: 0 0 52px;
-  text-align: right;
-}
-
-.col-l {
+/* The line. The only thing inside the measure, and the only thing at full reading weight. */
+.feed-line {
   flex: 1 1 auto;
-  color: var(--color-feed-text);
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-feed-text);
+  transition: color var(--dur-fast) var(--ease);
+}
+
+/*
+ * The margin mark: the clock minute, and in a project view the session ref. Right-aligned in the
+ * left margin, hard against the column, and present only on rows where one of the two changed —
+ * so most rows have no mark at all and the margin reads as a rhythm rather than a column.
+ *
+ * Mono, because a clock and a ref are data; the line beside it is a sentence. Same split the
+ * sidebar makes between a project's name and a session's ref.
+ */
+.feed-mark {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: 14px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--color-feed-mark);
+  white-space: nowrap;
+  pointer-events: none;
 }
 
 /* The reference's empty chat: a mark, one question, nothing else. */
@@ -1074,16 +1222,12 @@ textarea:disabled {
   pointer-events: none;
 }
 
+/* The 44px bordered square is gone with the `>_` that sat in it. Its border was `--color-line` on
+   --color-thread-bg, **1.585:1** — a frame nobody could see, drawn around a glyph, and one fewer
+   near-invisible rule on the page is worth more than the box was. The glyph carries itself at
+   --color-text-muted, 4.748:1 on --color-thread-bg. */
 .thread-empty .mark {
-  width: 44px;
-  height: 44px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--color-line);
   display: flex;
-  align-items: center;
-  justify-content: center;
-  font-family: var(--font-mono);
-  font-size: 15px;
   color: var(--color-text-muted);
 }
 
@@ -1102,21 +1246,37 @@ textarea:disabled {
   color: var(--color-text-muted);
 }
 
+/*
+ * The jump affordance. Its border was `--color-line` on `--color-thread-bg` at **1.585:1**, and
+ * its fill is 1.103:1 against the same ground — so the only thing that made it a control was its
+ * label, and WCAG 1.4.11 asks 3:1 of the visual information that identifies a control. It borrows
+ * `--color-control`, the token that already exists for exactly this: 3.534:1 against the feed
+ * behind it and 3.205:1 against its own fill.
+ *
+ * The hover used to lighten the fill to `--color-composer-bg`, which would have taken that border
+ * to **2.856:1** — a state that fails is still a state the control is used in, the same trap
+ * `.notice:hover` was pulled out of earlier in this wave. So hover moves the border instead:
+ * `--color-text-muted-side` is 6.537:1 on the unchanged fill.
+ */
 .jump-pill {
   position: absolute;
   left: 50%;
   transform: translateX(-50%);
   bottom: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   padding: 4px 14px;
   border-radius: 999px;
   background: var(--color-surface);
-  border: 1px solid var(--color-line);
+  border: 1px solid var(--color-control);
   color: var(--color-text);
-  font-size: 12px;
+  font-size: var(--fs-sm);
+  transition: border-color var(--dur-fast) var(--ease);
 }
 
 .jump-pill:hover {
-  background: var(--color-composer-bg);
+  border-color: var(--color-text-muted-side);
 }
 
 .jump-pill:active {
@@ -1282,7 +1442,13 @@ textarea:disabled {
   white-space: nowrap;
 }
 
+/* An inline SVG, not a text glyph, since 2026-09-03 — `src/components/icons.tsx` says why.
+   `display: flex` is what puts it on the label's optical centre; a text glyph never was.
+   --color-text-muted is 4.407:1 on --color-rail-bg, over the 3:1 WCAG 1.4.11 asks of a
+   meaningful non-text graphic, and each one sits beside its own label anyway. */
 .dock-context .glyph {
+  display: flex;
+  flex: 0 0 auto;
   color: var(--color-text-muted);
 }
 
@@ -1541,8 +1707,37 @@ textarea:disabled {
 }
 
 /*
+ * The feed's margin runs out before the window does.
+ *
+ * The mark hangs at `right: 100%`, outside the 712px column, and the scroller clips at its own
+ * padding box (`overflow-x: hidden`). The budget, derived: `HH:MM` plus a six-character session
+ * ref at 11px mono is ~78px of ink, plus the 14px gap, so the column needs ~92px of margin on the
+ * left to hold it. Pane = window - `--sidebar-w`, and the margin is half of what is left over:
+ *
+ *   window 1120, sidebar 276 -> pane 844 -> margin (844 - 712) / 2 = 66px   too tight
+ *   window 1200, sidebar 276 -> pane 924 -> margin 106px                    fits
+ *
+ * So below 1200px the mark comes back inside the row and sits at the end of it, right-aligned
+ * after the line, where it is still not read before the content. It then paints on the row's own
+ * ground, which is why `--color-feed-mark` is certified against the hovered #242424 as well as
+ * against `--color-thread-bg`: 5.344:1, over AA either way.
+ *
+ * A mark that is sometimes present makes the *right* edge of the column ragged, which the line
+ * lengths already are. It would have made the *left* edge ragged, which is why it goes after the
+ * line and not before it.
+ */
+@media (max-width: 1200px) {
+  .feed-mark {
+    position: static;
+    margin-right: 0;
+    margin-left: 16px;
+  }
+}
+
+/*
  * The window's minimum is 800x500 (`src-tauri/tauri.conf.json`). At 800 the measured 276px
- * sidebar is 34% of the frame and the feed's mono rows ellipsize hard. Nothing breaks; it is
+ * sidebar is 34% of the frame and the feed's rows ellipsize hard — the reading column is
+ * `--content-max` at 712px and there are only ~580px of pane to give it. Nothing breaks; it is
  * simply badly proportioned at the small end, so the column steps down below 960px and keeps its
  * measured width everywhere the measurement was taken. Session content still starts at 26px.
  *
