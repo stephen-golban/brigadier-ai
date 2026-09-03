@@ -388,10 +388,16 @@ pub(crate) async fn report_paint(
 /// what the `interaction` variant already expresses, so it needs no new wire shape and neither
 /// `src/wire.ts` nor `views.rs` changes.
 ///
-/// **The emitter is the frontend session's, and no build in this tree sends this label yet.** The
-/// arm above is therefore inert today; it is here first so the page side lands as a one-file
-/// change. `docs/research/launch-signposts.md` records what the page must send and the defect in
-/// the first recipe written for it.
+/// **The emitter is `src/paint.ts` and belongs to the frontend session**, not to this crate. Two
+/// labels come through it: `trace:dcl`, whose timestamp is the browser's own
+/// `domContentLoadedEventStart` or `domContentLoadedEventEnd`, and `trace:dcl-approx`, whose
+/// timestamp is the `DOMContentLoaded` handler's turn in the task queue and is used only where
+/// there is no navigation entry to read. Nothing here has to know which: the prefix is stripped
+/// and the remainder becomes the stage name, so the stderr line says `stage=dcl` or
+/// `stage=dcl-approx` and the reader can tell the two clocks apart.
+///
+/// `docs/research/launch-signposts.md` records what the page must send, the HTML Standard §13.2.7
+/// step order it follows from, and the defects in the earlier recipes written for it.
 const TRACE_LABEL_PREFIX: &str = "trace:";
 
 /// The 10-agent burn: `sessions` replay drivers fed from a captured fixture, through the real
