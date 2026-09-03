@@ -150,91 +150,140 @@ function disconnectFcp(): void {
  * holds the scheme fetch of the bundle, its brotli inflate, React's parse and mount, and the first
  * render, all at once (`docs/research/launch-signposts.md`).
  */
-const TRACE_DCL_LABEL = "trace:dcl";
-
-let dclSent = false;
-let dclListening = false;
 
 /**
- * Report `DOMContentLoaded` once, taking whichever path this document is actually on.
+ * The label when the number is the browser's own `domContentLoadedEventStart`.
  *
- * **`DOMContentLoaded` has no `buffered: true` equivalent** — a listener attached after it has
- * fired never fires — so the already-fired case has to be recovered from
- * `PerformanceNavigationTiming.domContentLoadedEventEnd`, which is present in this WebKit
- * (**[measured]**, `docs/research/perceived-performance.md` §5.3).
+ * `report_paint` strips `trace:` and uses the remainder as the stage name, so this reads `dcl` in
+ * the trace stream.
+ */
+const TRACE_DCL_LABEL = "trace:dcl";
+
+/**
+ * The label when navigation timing was unavailable and the number came from the event instead.
  *
- * The discriminator is `domContentLoadedEventEnd > 0`, **not** `document.readyState`: the spec
- * sets `readyState` to `"interactive"` *before* firing `DOMContentLoaded`, so a non-`"loading"`
- * readyState does not prove the event has happened, while a non-zero
- * `domContentLoadedEventEnd` does. `readyState` decides only the case the timing entry cannot:
- * no navigation entry at all (§5.3 measured a `null` navigation entry under
- * `loadHTMLString(_:baseURL:)`), where `"loading"` means the event is still ahead of us and
- * anything else means it is behind us and unrecoverable.
+ * Stage `dcl-approx`. **The provenance of the number is in the output rather than in a comment**:
+ * a reader of the trace stream can see which clock produced the stage without reading this file,
+ * and no Rust change is needed because the guard matches the `trace:` prefix, not a fixed label.
+ */
+const TRACE_DCL_APPROX_LABEL = "trace:dcl-approx";
+
+let dclSent = false;
+let dclArmed = false;
+
+/**
+ * Report `DOMContentLoaded` once.
  *
- * That last case reports **nothing**. Stamping `performance.now()` at instrumentation time would
- * label "when `main.tsx` ran" as "when the DOM finished parsing" — the same wrong-number-versus-no-
- * number choice `INTERACTION_TIMEOUT_MS` and the clock helpers already make.
+ * **Two earlier versions of this shipped dead, and a third was nearly adopted.** All three came
+ * from reasoning about when `DOMContentLoaded` happens. This one comes from watching it happen.
  *
- * Safe to call twice: `dclSent` gates the report and `dclListening` gates the listener, so React
- * 19 StrictMode's double-invoked effects cannot produce two lines or two listeners.
+ * **HTML spec §13.2.7 step 6** is the whole explanation: **6.1** sets
+ * `domContentLoadedEventStart`, **6.2** fires the event, **6.3** sets `domContentLoadedEventEnd`
+ * — and document readiness becomes `"interactive"` back at **step 3**, *before* deferred scripts
+ * run at step 5. Measured in a real `WKWebView` on this machine (2026-09-04) against a copy of
+ * `dist/index.html` — deferred module in `<head>`, stylesheet beside it, served over HTTP:
+ *
+ *     {"at":"module-body",         "readyState":"interactive","dclStart":0, "dclEnd":0, "now":14}
+ *     {"at":"dcl-handler-entry",   "readyState":"interactive","dclStart":14,"dclEnd":0, "now":14,"evTimeStamp":14}
+ *     {"at":"dcl+microtask",       "readyState":"interactive","dclStart":15,"dclEnd":0}
+ *     {"at":"load-event",          "readyState":"complete",   "dclStart":14,"dclEnd":14}
+ *     late listener attached after the event: never fires — {"lateFired":false}
+ *
+ * Which kills four ideas, three of them already written down as code somewhere:
+ *
+ *   - **`domContentLoadedEventEnd` is unreadable by anything that could act on it.** 0 at module
+ *     body (step 6.3 not reached) and 0 inside the handler (6.3 runs after handlers return). It
+ *     is non-zero only from `load`.
+ *   - **`readyState === "loading"` is never true here.** Step 3 has already left it.
+ *   - **`readyState !== "complete"` is not a safe gate either.** In the window between 6.2 and
+ *     `load` the state is `"interactive"` with `End` still 0 (measured, `dcl+microtask`), so a
+ *     late start passes that gate, attaches a listener for an event that has already fired, and —
+ *     measured, `lateFired: false` — reports nothing. That is the first two failures in a third
+ *     coat.
+ *   - **A listener alone cannot cover a late start.** Only an already-fired *timestamp* can.
+ *
+ * **`domContentLoadedEventStart` is the one field that is both a valid timestamp and a valid
+ * "has it fired?" test**, because 6.1 writes it before dispatch and it stays written. So the
+ * late-start branch keys on `Start`, not on `End` — that single substitution is what closes the
+ * `"interactive"` hole, and it is the only change from the recipe in
+ * `docs/research/launch-signposts.md`.
+ *
+ * The remaining `readyState` read is provably inert and kept only as an explicit statement of the
+ * impossible case: reaching it means `"complete"` — so 6.2 and 6.3 have both run — with `Start`
+ * still unset, which step 6.1 forbids. Reporting nothing there is the honest answer for a state
+ * that should not exist, not a gap. Every path that reaches the listener is a path on which
+ * `Start` is 0, i.e. DCL has not fired, i.e. the listener is guaranteed to fire; there is no
+ * backstop below it because there is nothing left for one to catch.
  */
 function reportDomContentLoaded(): void {
-  if (dclSent || dclListening) return;
+  if (dclSent || dclArmed) return;
+  dclArmed = true;
 
-  const end = navigationDclEndMs();
-  if (end !== null && end > 0) {
-    sendDcl(end);
+  // Already fired, in any readiness state. `Start`, never `End`.
+  const already = navigationDclStartMs();
+  if (already !== null && already > 0) {
+    sendDcl(already, TRACE_DCL_LABEL);
     return;
   }
 
-  // Not yet fired. **This is the live path in the real app, not a fallback.** `index.html` loads
-  // the bundle as `<script type="module">`, which is deferred by default and therefore runs
-  // *before* `DOMContentLoaded`, so `domContentLoadedEventEnd` is still 0 at this point. The
-  // three-line recipe in `docs/research/launch-signposts.md` reads the navigation entry
-  // synchronously here and stops; taken literally it would emit nothing at all in production.
-  // The listener below is the half that makes the signpost arrive.
-  if (!documentIsLoading()) return;
+  // `"complete"` with `Start` unset contradicts step 6.1. No number exists; do not invent one.
+  if (documentIsComplete()) return;
+
   try {
     document.addEventListener(
       "DOMContentLoaded",
-      () => {
-        // Prefer the timing entry now that it is populated; it is the event's own end timestamp
-        // rather than whenever this listener happened to be dispatched.
-        const late = navigationDclEndMs();
-        if (late !== null && late > 0) {
-          sendDcl(late);
+      (event) => {
+        // Step 6.1 has run by now — measured 14 right here, against an `End` of 0.
+        const start = navigationDclStartMs();
+        if (start !== null && start > 0) {
+          sendDcl(start, TRACE_DCL_LABEL);
           return;
         }
-        // No navigation entry, but we are inside the event: `now()` is the event's time.
+        // No navigation entry at all (measured `null` under `loadHTMLString(_:baseURL:)`,
+        // `perceived-performance.md` §5.3). `event.timeStamp` is a `DOMHighResTimeStamp` on the
+        // same `timeOrigin` basis, and measured equal to `Start` — but it is the *dispatch* time,
+        // a different quantity from step 6.1's, so it is reported under the `-approx` stage.
+        const stamp = event.timeStamp;
+        if (Number.isFinite(stamp) && stamp > 0) {
+          sendDcl(stamp, TRACE_DCL_APPROX_LABEL);
+          return;
+        }
+        // Last resort: when we got around to handling it.
         const at = now();
-        if (at !== null) sendDcl(at);
+        if (at !== null) sendDcl(at, TRACE_DCL_APPROX_LABEL);
       },
       { once: true },
     );
-    dclListening = true;
   } catch {
-    // No `document`, or a listener that would not attach. One missing signpost, nothing else.
+    // No `document`, or a listener that would not attach. One missing signpost, nothing else; the
+    // FCP path and every budget span are unaffected.
   }
 }
 
 /**
- * `domContentLoadedEventEnd` in page-relative milliseconds, or `null` when there is no navigation
- * entry to read it from.
+ * `domContentLoadedEventStart` in page-relative milliseconds, or `null` when there is no
+ * navigation entry.
+ *
+ * **`Start`, never `End`.** §13.2.7 step 6.3 writes `End` after every handler returns, so no
+ * handler can read it and the whole window between dispatch and `load` has no readable `End`
+ * (**measured**: 0 at handler entry, 0 in a microtask after it, 14 at `load`). A `0` from either
+ * field means "not set yet", never "time zero".
  */
-function navigationDclEndMs(): number | null {
+function navigationDclStartMs(): number | null {
   try {
     const [nav] = performance.getEntriesByType("navigation") as PerformanceNavigationTiming[];
     if (nav === undefined) return null;
-    const end = nav.domContentLoadedEventEnd;
-    return Number.isFinite(end) ? end : null;
+    const start = nav.domContentLoadedEventStart;
+    return Number.isFinite(start) ? start : null;
   } catch {
     return null;
   }
 }
 
-function documentIsLoading(): boolean {
+/** The only `readyState` read in this module, and it can only ever refuse an impossible state. */
+function documentIsComplete(): boolean {
   try {
-    return document.readyState === "loading";
+    return document.readyState === "complete";
   } catch {
     return false;
   }
@@ -249,20 +298,19 @@ function documentIsLoading(): boolean {
  * `crate::trace::stage_at_epoch_ms` can subtract `main()`'s `SystemTime` stamp from.
  * `duration_ms` is **0** because `DOMContentLoaded` is an instant: there is no span here, and a
  * zero is the honest encoding of that in a variant whose third field is a duration.
+ *
+ * `label` carries the provenance: `trace:dcl` is step 6.1's own timestamp, `trace:dcl-approx` is
+ * the event's or ours. They measured identical in the probe and they are still different
+ * quantities, so the stream says which one a number came from.
  */
-function sendDcl(at: number): void {
+function sendDcl(at: number, label: string): void {
   if (dclSent) return;
   const origin = timeOrigin();
   // No clock, no line. A page-relative number in an `_epoch_ms` field would be subtracted against
   // `main()` and produce a large negative launch stage.
   if (origin === null) return;
   dclSent = true;
-  report({
-    kind: "interaction",
-    label: TRACE_DCL_LABEL,
-    start_epoch_ms: origin + at,
-    duration_ms: 0,
-  });
+  report({ kind: "interaction", label, start_epoch_ms: origin + at, duration_ms: 0 });
 }
 
 /* ------------------------------------------------------ interaction → painted */

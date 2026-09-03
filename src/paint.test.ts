@@ -220,126 +220,234 @@ describe("first contentful paint", () => {
 
 describe("the trace:dcl signpost", () => {
   /**
-   * jsdom has no navigation timing: `performance.getEntriesByType("navigation")` returns `[]`
-   * (**measured** here), and `document.readyState` in a Vitest jsdom document is already
-   * `"complete"`. Both halves therefore have to be arranged explicitly — which is the point, since
-   * the two paths are chosen by exactly those two values.
+   * **Every arrangement here is a measured shape, not a guessed one.** Two versions of this code
+   * shipped dead because the test stubbed a page state the app never has: the previous suite set
+   * `document.readyState` to `"loading"` and its comment called that "the live shape in the real
+   * app". It is the one value the app never holds at that moment, so the test certified the bug.
+   *
+   * The shapes below come from a real `WKWebView` on this machine (2026-09-04) driving a copy of
+   * `dist/index.html` — deferred module in `<head>`, stylesheet beside it, served over HTTP so a
+   * navigation entry exists. They are what HTML spec §13.2.7 step 6 predicts: 6.1 sets `Start`,
+   * 6.2 fires the event, 6.3 sets `End`, and readiness left `"loading"` back at step 3.
+   *
+   *     module body      readyState "interactive"  Start 0   End 0
+   *     handler entry    readyState "interactive"  Start 14  End 0
+   *     after the event  readyState "interactive"  Start 15  End 0
+   *     load             readyState "complete"     Start 14  End 14
+   *     a listener attached after the event never fires    lateFired: false
+   *
+   * `readyState` is stubbed in exactly one test — the impossible-state one — because the module
+   * reads it in exactly one place. jsdom's `readyState` and navigation timing are both fictions
+   * here; that is precisely how this shipped twice.
    */
-  function navEntry(domContentLoadedEventEnd: number): void {
+
+  /**
+   * `document.readyState` in a Vitest jsdom document is **`"complete"`** from the first line
+   * (measured) — neither the real value nor the `"loading"` the previous suite invented. So every
+   * test here pins it to the shape the probe actually recorded at module-body time,
+   * **`"interactive"`**, and the one test about the impossible state pins `"complete"` on purpose.
+   */
+  function setReadyState(value: DocumentReadyState): () => void {
+    const descriptor = Object.getOwnPropertyDescriptor(Document.prototype, "readyState");
+    Object.defineProperty(document, "readyState", { configurable: true, get: () => value });
+    return () => {
+      delete (document as unknown as Record<string, unknown>).readyState;
+      if (descriptor !== undefined) {
+        Object.defineProperty(Document.prototype, "readyState", descriptor);
+      }
+    };
+  }
+
+  let restoreReadyState: (() => void) | null = null;
+
+  /**
+   * **`vi.resetModules()` does not detach listeners.** A fresh module per test is not a fresh
+   * `document`: a listener the previous test's module registered stays on the shared jsdom
+   * document, holds its own `dclSent`, and reports through the same mocked bridge — so one
+   * `dispatchEvent` here fired two modules and produced two lines. Every listener attached during
+   * a test is recorded and removed after it, or the suite silently tests two instruments at once.
+   */
+  let attached: Array<[string, EventListener]> = [];
+
+  beforeEach(() => {
+    restoreReadyState = setReadyState("interactive");
+    attached = [];
+    const real = document.addEventListener.bind(document);
+    vi.spyOn(document, "addEventListener").mockImplementation((type, handler, options) => {
+      attached.push([type, handler as EventListener]);
+      real(type, handler, options);
+    });
+  });
+
+  afterEach(() => {
+    for (const [type, handler] of attached) document.removeEventListener(type, handler);
+    attached = [];
+    restoreReadyState?.();
+    restoreReadyState = null;
+  });
+
+  /** jsdom has no navigation timing at all: `getEntriesByType("navigation")` is `[]` (measured). */
+  function navEntry(domContentLoadedEventStart: number, domContentLoadedEventEnd = 0): void {
     vi.spyOn(performance, "getEntriesByType").mockImplementation((type: string) =>
       type === "navigation"
-        ? ([{ domContentLoadedEventEnd }] as unknown as PerformanceEntryList)
+        ? ([
+            { domContentLoadedEventStart, domContentLoadedEventEnd },
+          ] as unknown as PerformanceEntryList)
         : [],
     );
   }
 
-  function setReadyState(value: DocumentReadyState): () => void {
-    const original = Object.getOwnPropertyDescriptor(Document.prototype, "readyState");
-    Object.defineProperty(document, "readyState", { configurable: true, get: () => value });
-    return () => {
-      delete (document as unknown as Record<string, unknown>).readyState;
-      if (original !== undefined) Object.defineProperty(Document.prototype, "readyState", original);
-    };
+  function noNavEntry(): void {
+    vi.spyOn(performance, "getEntriesByType").mockImplementation(() => []);
   }
 
-  it("reports from navigation timing when DOMContentLoaded has already fired, with no listener", async () => {
+  /** jsdom's `Event.timeStamp` is not settable, so the dispatched event carries an explicit one. */
+  function dispatchDcl(timeStamp?: number): void {
+    const event = new Event("DOMContentLoaded");
+    if (timeStamp !== undefined) {
+      Object.defineProperty(event, "timeStamp", { value: timeStamp, configurable: true });
+    }
+    document.dispatchEvent(event);
+  }
+
+  function only(): { kind: string; label: string; start_epoch_ms: number; duration_ms: number } {
+    expect(reported).toHaveLength(1);
+    return reported[0] as never;
+  }
+
+  it("reports on the event, from domContentLoadedEventStart, in the real launch shape", async () => {
+    // Module body: both navigation-timing fields are 0 (step 6.1 not reached).
+    navEntry(0, 0);
+    const paint = await load();
+    paint.startPaintInstrumentation();
+    expect(reported).toHaveLength(0);
+
+    // Handler entry: step 6.1 has run, step 6.3 has not. Measured 14 and 0.
+    navEntry(14, 0);
+    dispatchDcl(14);
+
+    expect(only()).toEqual({
+      kind: "interaction",
+      label: "trace:dcl",
+      start_epoch_ms: performance.timeOrigin + 14,
+      duration_ms: 0,
+    });
+  });
+
+  it("never reads domContentLoadedEventEnd, which is 0 at every moment a handler can look", async () => {
+    // The discriminating case: `End` stays 0, `Start` carries the answer. Code that keyed on `End`
+    // — v1 at module body, v2 inside the handler — reports nothing here. That is what the real app
+    // did on launch: no `dcl` stage at any position.
+    navEntry(0, 0);
+    const paint = await load();
+    paint.startPaintInstrumentation();
+    navEntry(14, 0);
+    dispatchDcl(14);
+    expect(only().start_epoch_ms).toBe(performance.timeOrigin + 14);
+  });
+
+  it("reports synchronously when started late, without waiting for an event that cannot fire", async () => {
+    // Measured: a listener attached after DOMContentLoaded never fires. Only an already-fired
+    // timestamp rescues a late start.
     const addEventListener = vi.spyOn(document, "addEventListener");
-    navEntry(37);
+    navEntry(14, 14);
     const paint = await load();
     paint.startPaintInstrumentation();
 
-    expect(reported).toEqual([
-      {
-        kind: "interaction",
-        label: "trace:dcl",
-        start_epoch_ms: performance.timeOrigin + 37,
-        duration_ms: 0,
-      },
-    ]);
-    // "Do not attach a listener and hope": on this path there is nothing to listen for.
+    expect(only().start_epoch_ms).toBe(performance.timeOrigin + 14);
     expect(
       addEventListener.mock.calls.filter((c) => c[0] === "DOMContentLoaded"),
     ).toHaveLength(0);
   });
 
-  it("reports on the event when DOMContentLoaded has not yet fired", async () => {
-    // The live shape in the real app: `index.html` loads the bundle as a deferred
-    // `<script type="module">`, which runs before DOMContentLoaded, so the navigation entry's
-    // `domContentLoadedEventEnd` is still 0 when the instrument starts.
-    navEntry(0);
-    const restore = setReadyState("loading");
-    try {
-      const paint = await load();
-      paint.startPaintInstrumentation();
-      expect(reported).toHaveLength(0);
-
-      navEntry(41);
-      document.dispatchEvent(new Event("DOMContentLoaded"));
-    } finally {
-      restore();
-    }
-
-    expect(reported).toEqual([
-      {
-        kind: "interaction",
-        label: "trace:dcl",
-        start_epoch_ms: performance.timeOrigin + 41,
-        duration_ms: 0,
-      },
-    ]);
-  });
-
-  it("uses the event's own time when the not-yet-fired path has no navigation entry", async () => {
-    vi.spyOn(performance, "getEntriesByType").mockImplementation(() => []);
-    const restore = setReadyState("loading");
-    try {
-      const paint = await load();
-      paint.startPaintInstrumentation();
-      vi.advanceTimersByTime(25);
-      document.dispatchEvent(new Event("DOMContentLoaded"));
-    } finally {
-      restore();
-    }
-    expect(reported).toHaveLength(1);
-    const line = reported[0] as { start_epoch_ms: number; duration_ms: number };
-    expect(line.start_epoch_ms).toBe(performance.timeOrigin + 25);
-    expect(line.duration_ms).toBe(0);
-  });
-
-  it("reports nothing when the event is behind us and there is no navigation entry to recover it", async () => {
-    // readyState is not "loading", so the event has fired; with no timing entry there is no
-    // honest timestamp for it. A `performance.now()` here would say "when main.tsx ran".
-    vi.spyOn(performance, "getEntriesByType").mockImplementation(() => []);
+  it("reports when started in the interactive window, where End is still 0", async () => {
+    // readyState "interactive", Start 15, End 0 — measured. This is the hole in a late-start check
+    // keyed on `End`, or in a listener gated on `readyState !== "complete"`: both would attach a
+    // listener for an event that has already fired and report nothing at all.
+    navEntry(15, 0);
     const paint = await load();
     paint.startPaintInstrumentation();
-    expect(reported).toHaveLength(0);
+    expect(only().start_epoch_ms).toBe(performance.timeOrigin + 15);
+    expect(only().label).toBe("trace:dcl");
   });
 
-  it("reports once across two starts, and attaches only one listener", async () => {
-    navEntry(0);
-    const restore = setReadyState("loading");
+  it("attaches the listener with no gate in front of it when DCL has not fired", async () => {
     const addEventListener = vi.spyOn(document, "addEventListener");
-    try {
-      const paint = await load();
-      // React 19 StrictMode double-invokes effects.
-      paint.startPaintInstrumentation();
-      paint.startPaintInstrumentation();
-      expect(
-        addEventListener.mock.calls.filter((c) => c[0] === "DOMContentLoaded"),
-      ).toHaveLength(1);
+    navEntry(0, 0);
+    const paint = await load();
+    paint.startPaintInstrumentation();
+    expect(
+      addEventListener.mock.calls.filter((c) => c[0] === "DOMContentLoaded"),
+    ).toHaveLength(1);
+  });
 
-      navEntry(41);
-      document.dispatchEvent(new Event("DOMContentLoaded"));
-      document.dispatchEvent(new Event("DOMContentLoaded"));
-      paint.startPaintInstrumentation();
-    } finally {
-      restore();
-    }
+  it("falls back to the event's timeStamp under the dcl-approx label when there is no navigation entry", async () => {
+    // §5.3 measured a null navigation entry under `loadHTMLString(_:baseURL:)`. The number is then
+    // the event's dispatch time, a different quantity from step 6.1's, so the stage says so.
+    noNavEntry();
+    const paint = await load();
+    paint.startPaintInstrumentation();
+    dispatchDcl(21);
+
+    expect(only()).toEqual({
+      kind: "interaction",
+      label: "trace:dcl-approx",
+      start_epoch_ms: performance.timeOrigin + 21,
+      duration_ms: 0,
+    });
+  });
+
+  it("falls back to handler-entry time under dcl-approx when the event carries no usable timeStamp", async () => {
+    // The branch nobody will exercise by accident. `Start` unavailable and `timeStamp` unusable:
+    // the number is when we got around to handling it, and the stage never claims otherwise.
+    noNavEntry();
+    const paint = await load();
+    paint.startPaintInstrumentation();
+    vi.advanceTimersByTime(30);
+    dispatchDcl(Number.NaN);
+
+    expect(only()).toEqual({
+      kind: "interaction",
+      label: "trace:dcl-approx",
+      start_epoch_ms: performance.timeOrigin + 30,
+      duration_ms: 0,
+    });
+  });
+
+  it("reports nothing in the impossible state: complete with Start unset", async () => {
+    // Reaching this means steps 6.2 and 6.3 have both run while 6.1 left `Start` at 0, which the
+    // spec forbids and the probe never produced. No number exists; none is invented.
+    navEntry(0, 0);
+    restoreReadyState?.();
+    restoreReadyState = setReadyState("complete");
+
+    const paint = await load();
+    const addEventListener = vi.spyOn(document, "addEventListener");
+    paint.startPaintInstrumentation();
+    expect(reported).toHaveLength(0);
+    expect(
+      addEventListener.mock.calls.filter((c) => c[0] === "DOMContentLoaded"),
+    ).toHaveLength(0);
+  });
+
+  it("reports once across two starts, and attaches one listener", async () => {
+    const onDocument = vi.spyOn(document, "addEventListener");
+    navEntry(0, 0);
+    const paint = await load();
+    // React 19 StrictMode double-invokes effects.
+    paint.startPaintInstrumentation();
+    paint.startPaintInstrumentation();
+    expect(onDocument.mock.calls.filter((c) => c[0] === "DOMContentLoaded")).toHaveLength(1);
+
+    navEntry(14, 0);
+    dispatchDcl(14);
+    dispatchDcl(14);
+    paint.startPaintInstrumentation();
     expect(reported).toHaveLength(1);
   });
 
-  it("reports once when the already-fired path is entered twice", async () => {
-    navEntry(37);
+  it("reports once when the late-start path is entered twice", async () => {
+    navEntry(14, 14);
     const paint = await load();
     paint.startPaintInstrumentation();
     paint.startPaintInstrumentation();
@@ -350,16 +458,15 @@ describe("the trace:dcl signpost", () => {
     // The signpost runs ahead of the FCP guards on purpose; an environment with no
     // `PerformanceObserver` must not cost the launch trace.
     vi.stubGlobal("PerformanceObserver", undefined);
-    navEntry(37);
+    navEntry(14, 14);
     const paint = await load();
     paint.startPaintInstrumentation();
-    expect(reported).toHaveLength(1);
-    expect((reported[0] as { label: string }).label).toBe("trace:dcl");
+    expect(only().label).toBe("trace:dcl");
   });
 
   it("does not throw out of the instrument when the bridge rejects", async () => {
     reportPaint = () => Promise.reject(new Error("command not found"));
-    navEntry(37);
+    navEntry(14, 14);
     const paint = await load();
     expect(() => paint.startPaintInstrumentation()).not.toThrow();
     await vi.advanceTimersByTimeAsync(0);
@@ -369,13 +476,13 @@ describe("the trace:dcl signpost", () => {
     reportPaint = () => {
       throw new Error("bridge is gone");
     };
-    navEntry(37);
+    navEntry(14, 14);
     const paint = await load();
     expect(() => paint.startPaintInstrumentation()).not.toThrow();
   });
 
   it("does not disturb the FCP report", async () => {
-    navEntry(37);
+    navEntry(14, 14);
     const paint = await load();
     paint.startPaintInstrumentation();
     observers[0].emit([{ name: "first-contentful-paint", startTime: 20 }]);
