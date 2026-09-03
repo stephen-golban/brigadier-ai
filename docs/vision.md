@@ -388,9 +388,10 @@ line used to quote was arithmetic; measured, the first paint is ~100 ms later th
 `perceived-performance.md` §1.4 puts the missing ~100 ms on the `tauri://localhost` scheme handler
 and brotli inflate that its own FCP figures never included — **[asserted]**, by elimination.
 The 2026-09-03 per-stage signposts bound that attribution rather than confirm it: the
-scheme-plus-inflate share is at most the 83.3 ms `page_load_finished` to FCP segment, which also
-holds React parse and mount, and the largest single segment is Tauri's own window and WKWebView
-creation at 108.7 ms **[measured]**, `docs/research/launch-signposts.md`.
+scheme-plus-inflate share is at most the 49.6 ms `page_load_finished` to `dcl` segment, measured
+2026-09-04 (`docs/research/launch-signposts.md`), which also holds the HTML and JS parse, and the
+largest single segment is Tauri's own window and WKWebView creation at 108.7 ms **[measured]**,
+`docs/research/launch-signposts.md`.
 
 Two closed doors, both **[source]**: a splash window is a *second* WKWebView, and WKWebView
 construction is the ~100 ms that dominates launch, so it pays the cost twice to hide it once. And
