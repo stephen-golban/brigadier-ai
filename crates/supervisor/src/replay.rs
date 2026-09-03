@@ -15,8 +15,8 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use brigadier_core::claude::adapter::{connect, AdapterConfig};
 use brigadier_core::claude::hook::allow_all;
@@ -25,7 +25,9 @@ use brigadier_core::driver::{
     BoxFuture, DriverError, DriverInfo, DriverKind, ProviderDriver, Resumed, ResumeSession,
     StartSession,
 };
-use brigadier_core::event::{Envelope, Event, ExitReason, InstanceId, SessionId};
+use brigadier_core::event::{
+    Envelope, Event, ExitReason, InstanceId, RequestId, RequestKind, SessionId,
+};
 use brigadier_core::session::{Command, Decision, SessionBackend, SessionHandle, TurnInput};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
@@ -56,6 +58,48 @@ const LOAD_TIMEOUT: Duration = Duration::from_secs(10);
 /// Silence on the event stream that means the adapter has finished with the fixture.
 const QUIET_PERIOD: Duration = Duration::from_millis(500);
 
+/// One `can_use_tool`-shaped permission request a replayed session raises, once.
+///
+/// The point is the *path*, not the payload: the request is parked in the session's real
+/// [`brigadier_core::approval::ApprovalTable`] and announced with a real
+/// [`Event::RequestOpened`], which is everything the Claude adapter's `open_permission` does
+/// downstream of the CLI frame it decodes (`crates/core/src/claude/adapter.rs` `open_permission`).
+/// So it reaches the store, the batcher and the sink by exactly the route a real prompt takes,
+/// and [`Supervisor::respond`](crate::Supervisor::respond) answers it for real.
+///
+/// Build `kind` from a capture rather than by hand — the script
+/// [`ReplayDriver::from_fixture`] makes of `s2-can-use-tool-allow.ndjson` contains the real
+/// adapter's translation of a real frame, and that is the one to hand over here.
+#[derive(Clone, Debug)]
+pub struct ApprovalPlan {
+    /// Delay from session start before the request is raised.
+    pub after: Duration,
+    /// What is being asked.
+    pub kind: RequestKind,
+    /// Park deadline, mirroring `AdapterConfig::approval_timeout`. `None` parks forever.
+    pub timeout: Option<Duration>,
+}
+
+/// One session's copy of the plan, with the slot the raised request is published in.
+struct Prompt {
+    plan: ApprovalPlan,
+    raised: Arc<OnceLock<RaisedApproval>>,
+}
+
+/// The request an [`ApprovalPlan`] actually raised, and the instant it was raised.
+///
+/// `at` is taken immediately before the park is opened, so it is the producer-side `t0` a
+/// latency measurement needs; inferring it from the wall clock or from `opened_at` (a
+/// `SystemTime`, coarser and not monotonic) would fold the measurement's own error into the
+/// number. Instrumentation only.
+#[derive(Clone, Debug)]
+pub struct RaisedApproval {
+    /// Our id for the parked request.
+    pub request_id: RequestId,
+    /// When the driver raised it.
+    pub at: Instant,
+}
+
 /// A driver that emits a fixed script of events on a timer, with no process behind it.
 #[derive(Clone, Debug)]
 pub struct ReplayDriver {
@@ -67,6 +111,10 @@ pub struct ReplayDriver {
     /// Shared by every clone and every session this driver opens, so a load test can say what the
     /// producer actually produced instead of inferring it from the clock.
     emitted: Arc<AtomicU64>,
+    /// The one permission request this driver's sessions raise, if any.
+    approval: Option<ApprovalPlan>,
+    /// Filled by whichever session raises the plan first; a plan is raised once per driver.
+    raised: Arc<OnceLock<RaisedApproval>>,
 }
 
 impl ReplayDriver {
@@ -79,6 +127,8 @@ impl ReplayDriver {
             rows_per_sec: DEFAULT_ROWS_PER_SEC,
             max_cycles: None,
             emitted: Arc::new(AtomicU64::new(0)),
+            approval: None,
+            raised: Arc::new(OnceLock::new()),
         }
     }
 
@@ -141,6 +191,20 @@ impl ReplayDriver {
         self
     }
 
+    /// Raise one permission request, once, on the first session that reaches the deadline.
+    ///
+    /// A driver with a plan should back exactly one session; register it under its own
+    /// [`DriverKind`] if the run also needs plain replayed sessions.
+    pub fn with_approval(mut self, plan: ApprovalPlan) -> Self {
+        self.approval = Some(plan);
+        self
+    }
+
+    /// The request [`ReplayDriver::with_approval`] raised, once it has been raised.
+    pub fn raised_approval(&self) -> Option<RaisedApproval> {
+        self.raised.get().cloned()
+    }
+
     /// The script being replayed.
     pub fn script(&self) -> &[Event] {
         &self.script
@@ -180,6 +244,7 @@ impl ReplayDriver {
             self.rows_per_sec,
             self.max_cycles,
             Arc::clone(&self.emitted),
+            self.approval.clone().map(|plan| Prompt { plan, raised: Arc::clone(&self.raised) }),
         ));
         handle
     }
@@ -234,6 +299,7 @@ async fn run(
     rows_per_sec: f64,
     max_cycles: Option<usize>,
     emitted: Arc<AtomicU64>,
+    prompt: Option<Prompt>,
 ) {
     let Stream { session_id, instance_id, start_seq } = stream;
     let SessionBackend { mut commands, events, approvals } = backend;
@@ -245,6 +311,14 @@ async fn run(
     let mut seq = start_seq;
     let mut index = 0usize;
     let mut cycles = 0usize;
+    // The plan is taken by the branch that raises it, which disables the branch for good: one
+    // request per driver, not one per tick.
+    let mut prompt = prompt;
+    let raise_at = prompt.as_ref().map(|p| tokio::time::Instant::now() + p.plan.after);
+    // The answer comes back on a channel rather than on the park's own `oneshot`, because a
+    // `select!` branch may not hand its handler a mutable borrow the branch future still holds.
+    // One slot: there is at most one request in flight.
+    let (decided_tx, mut decided) = mpsc::channel::<(RequestId, Decision)>(1);
 
     let ending = loop {
         tokio::select! {
@@ -268,6 +342,50 @@ async fn run(
                     // Every supervisor handle is gone; nobody is listening.
                     None => break None,
                 }
+            }
+            // Raise the one planned permission request. This is `open_permission`'s work minus
+            // the CLI correlation it has no frame for: park in the real table, then announce it.
+            _ = sleep_until(raise_at), if prompt.is_some() => {
+                let Prompt { plan: ApprovalPlan { kind, timeout, .. }, raised } =
+                    prompt.take().expect("the branch condition proved it is Some");
+                let at = Instant::now();
+                let request_id = RequestId::new(format!("{}:approval:1", session_id.as_str()));
+                let waiter = approvals.open(request_id.clone(), kind.clone(), timeout);
+                let answered = decided_tx.clone();
+                let parked_id = request_id.clone();
+                // One forwarder per park, as the adapter does.
+                tokio::spawn(async move {
+                    if let Ok(decision) = waiter.await {
+                        let _ = answered.send((parked_id, decision)).await;
+                    }
+                });
+                let _ = raised.set(RaisedApproval { request_id: request_id.clone(), at });
+                seq += 1;
+                let envelope = Envelope::new(
+                    seq,
+                    instance_id.clone(),
+                    session_id.clone(),
+                    Event::RequestOpened { request_id, kind, turn_id: None },
+                );
+                if events.send(envelope).await.is_err() {
+                    break None;
+                }
+                emitted.fetch_add(1, Ordering::Relaxed);
+            }
+            // The answer, whether it came from `Supervisor::respond`, the park's deadline, or
+            // teardown. The adapter emits `RequestResolved` here too.
+            Some((request_id, decision)) = decided.recv() => {
+                seq += 1;
+                let envelope = Envelope::new(
+                    seq,
+                    instance_id.clone(),
+                    session_id.clone(),
+                    Event::RequestResolved { request_id, decision },
+                );
+                if events.send(envelope).await.is_err() {
+                    break None;
+                }
+                emitted.fetch_add(1, Ordering::Relaxed);
             }
             _ = ticker.tick() => {
                 if script.is_empty() {
@@ -408,6 +526,17 @@ async fn replay_fixture(mut lines: VecDeque<String>) -> Result<Vec<Event>, Super
     }
     auto_allow.abort();
     Ok(script)
+}
+
+/// Wait until `deadline`, or forever when there is none.
+///
+/// `select!` needs a future in every branch even when the branch is disabled; a bare `if` guard
+/// still has to be handed something to poll.
+async fn sleep_until(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(at) => tokio::time::sleep_until(at).await,
+        None => std::future::pending().await,
+    }
 }
 
 fn invalid(message: impl Into<String>) -> SupervisorError {
