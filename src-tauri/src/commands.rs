@@ -304,12 +304,9 @@ pub(crate) async fn record_frame_stats(
 /// The `fcp` arm also emits one `tracing::info!` carrying the `main()` → FCP delta, so the launch
 /// recipe in §5.2 — which already parses the `RUST_LOG=info` stream for `brigadier started` —
 /// picks the number up with no new plumbing.
-/// The one `interaction` label that is a launch signpost rather than a budget span.
 ///
-/// Namespaced with `trace:` so it can never collide with a B4/B6/B7 label, which are the names of
-/// budgets in `docs/vision.md` §9 and are written verbatim by their call sites.
-const TRACE_DCL_LABEL: &str = "trace:dcl";
-
+/// **A `trace:`-prefixed `interaction` is a launch signpost, not a paint, and never reaches the
+/// file** — see [`TRACE_LABEL_PREFIX`].
 #[tauri::command]
 pub(crate) async fn report_paint(
     report: PaintReport,
@@ -319,6 +316,26 @@ pub(crate) async fn report_paint(
 
     let path = state.get()?.data_dir.join("paint.ndjson");
     let process_start_epoch_ms = crate::process_start_epoch_ms();
+
+    // A launch signpost leaves through stderr and **returns before the file write**, so no
+    // `duration_ms: 0` line ever lands in `paint.ndjson`.
+    //
+    // The alternative — write it and ask every reader to filter — is the weaker guard. A zero-
+    // length span is indistinguishable from a real one to anything that takes a percentile of
+    // `duration_ms`, and today `paint.ndjson` has **no reader at all** to teach: nothing in
+    // `src-tauri/`, no `scripts/` directory, and no shell or Python recipe in `docs/` reads it
+    // (`docs/plans/ipc-contract.md:320` states the append-only intent). A future reader written
+    // against this file therefore cannot get it wrong, because the hazard is not in the file.
+    //
+    // Matching on the prefix, not on one label, so a second signpost needs no change here. The
+    // stage name is the label with the prefix stripped: `trace:dcl` becomes `dcl`.
+    if let PaintReport::Interaction { label, start_epoch_ms, .. } = &report {
+        if let Some(stage) = label.strip_prefix(TRACE_LABEL_PREFIX) {
+            crate::trace::stage_at_epoch_ms(stage, *start_epoch_ms);
+            return Ok(());
+        }
+    }
+
     let main_to_fcp_ms = match &report {
         PaintReport::Fcp { epoch_ms } => {
             let delta = epoch_ms - process_start_epoch_ms;
@@ -330,21 +347,7 @@ pub(crate) async fn report_paint(
             crate::trace::stage_at_epoch_ms("fcp", *epoch_ms);
             Some(delta)
         }
-        // The `DOMContentLoaded` signpost, carried on the `interaction` variant rather than a new
-        // wire shape: the page has one timestamp and no duration, which is exactly what a span of
-        // zero length is, and `src/wire.ts` and `views.rs` therefore need no change.
-        //
-        // **Inert until the frontend half lands.** Nothing sends this label today — the emitter is
-        // three lines in `src/paint.ts`, spelled out in `docs/research/launch-signposts.md`, and
-        // `src/` belongs to another session. It is here first so that landing the emitter is a
-        // one-file change with no Rust rebuild of the contract behind it.
-        //
-        // Only reached when `BRIGADIER_TRACE` is on; `stage_at_epoch_ms` is a cached `bool` load
-        // otherwise. The line still goes to `paint.ndjson` either way, as every report does.
-        PaintReport::Interaction { label, start_epoch_ms, .. } if label == TRACE_DCL_LABEL => {
-            crate::trace::stage_at_epoch_ms("dcl", *start_epoch_ms);
-            None
-        }
+        // Every `trace:` label already returned above, so this arm is only ever a budget span.
         PaintReport::Interaction { .. } => None,
     };
 
@@ -356,6 +359,19 @@ pub(crate) async fn report_paint(
     file.write_all(&line)?;
     Ok(())
 }
+
+/// The namespace that marks an `interaction` label as a launch signpost rather than a budget span.
+///
+/// Held apart from B4, B6 and B7, which are names of budgets in `docs/vision.md` §9 and are written
+/// verbatim by their call sites. A signpost carries one timestamp and `duration_ms: 0`, which is
+/// what the `interaction` variant already expresses, so it needs no new wire shape and neither
+/// `src/wire.ts` nor `views.rs` changes.
+///
+/// **The emitter is the frontend session's, and no build in this tree sends this label yet.** The
+/// arm above is therefore inert today; it is here first so the page side lands as a one-file
+/// change. `docs/research/launch-signposts.md` records what the page must send and the defect in
+/// the first recipe written for it.
+const TRACE_LABEL_PREFIX: &str = "trace:";
 
 /// The 10-agent burn: `sessions` replay drivers fed from a captured fixture, through the real
 /// batcher and the real channel, for `duration_s` seconds.
