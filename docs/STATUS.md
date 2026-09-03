@@ -125,9 +125,10 @@ over** — a warm prefix saves cost but not the per-turn re-read.
 
 | number | value | source |
 |---|---|---|
-| spawn → `system/init`, warm (n=5, 2026-09-02) | **569–656 ms**, median **645 ms**; measured from `spawned_at` to the first `system/init` (`crates/claude-spike/src/bin/fanout.rs:120,157`) | `crates/claude-spike/fixtures/f-warm.summary.json:151`, `f-a.summary.json:151,309,467`, `f-b.summary.json:504` |
-| spawn → `system/init`, cold (n=1) | **1,981 ms**, a cold outlier at ~3× the warm median, not the typical cost | `claude-direct-spike.md:107` |
-| spawn → `initialize` response | 719 ms, from that same cold run; the five fan-out summaries carry no equivalent handshake figure | `claude-direct-spike.md:106` |
+| spawn → `system/init`, MCP-off (n=5, 2026-09-02) | **569–656 ms**, median **645 ms**; measured from `spawned_at` to the first `system/init` with `--strict-mcp-config` set (`crates/claude-spike/src/bin/fanout.rs:97,120,157`) | `crates/claude-spike/fixtures/f-warm.summary.json:151`, `f-a.summary.json:151,309,467`, `f-b.summary.json:504` |
+| spawn → `system/init`, MCP-on (n=1) | **1,981 ms**, both of the user's MCP servers (`higgsfield`, `pencil`) connecting | `claude-direct-spike.md:107` |
+| spawn → `system/init`, MCP on/off medians (n=6 pairs, 2026-09-03) | **1,395.0 ms on, 643.5 ms off, delta +751.5 ms** | `docs/research/spawn-split.md:105`, `crates/claude-spike/fixtures/spawn-split/` |
+| spawn → `initialize` response | 719 ms, from that same MCP-on run; MCP-independent per `spawn-split.md:104,113` (median delta 38.5 ms, inside the noise); the five fan-out summaries carry no equivalent handshake figure | `claude-direct-spike.md:106` |
 | stdin closed → exit 0 | 571 ms | same |
 | exec → real project list (p50) | **292 ms**; replicated **290.5 ms**, n=7 | `perceived-performance.md` §1.2, §1.4 |
 | **exec → first contentful paint (p50, 3 arms, n=19)** | **287–295 ms** — B1's ≤ 200 ms budget missed by ~90 ms | `perceived-performance.md` §1.4 |

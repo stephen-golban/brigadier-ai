@@ -128,7 +128,7 @@ generic stack recommendation and is included only for completeness.
 | opus | Use `PerformanceObserver` longtask | `feed-rendering.md:302-310`: longtask and long-animation-frame unsupported in WebKit | Confidently wrong instrument for this webview |
 | opus | SQLite figures are warm-RAM only | Fresh-connection cold-cache run measured at 0.283 ms (`perceived-performance.md:326`) | Half right: the OS page cache was not dropped |
 | opus, gpt | The fan-out "wake-up tax" is an inference on top of three runs | The coordinator's 50.1% share and 27,397 tokens per completion were counted from transcripts (`fanout-vs-children.md:61`, `:244-245`) | Wrong on mechanism, right that n=3 wall clock is thin |
-| opus | The spawn number is an unbroken aggregate | The 719 / 1,981 split exists; the 1,262 ms after the first user frame is unbroken | Half right, and see §4(a): the 1,981 ms itself is a cold outlier against five later runs |
+| opus | The spawn number is an unbroken aggregate | The 719 / 1,981 split exists; the 1,262 ms after the first user frame is unbroken | Half right, and see §4(a): the five later runs were MCP-off and the 1,981 ms run was MCP-on (`spawn-split.md:105`) |
 | opus | packed-refs lock flakes at three or four sessions | Eight parallel worktree adds measured with no contention (`worktree-git.md:153`). Concurrent commits unmeasured | Stands as a hypothesis, not as stated |
 | gemini | Tertiary text at 40% white | 3.80:1 on the thread, 3.21:1 on the sidebar (§4(h)); commit `c54f039` just lifted muted-side to 4.56:1 | Contradicts the measured contrast work |
 | grok | Timestamps at 55% white | 6.08:1 on the thread, 4.66:1 on the sidebar (§4(h)) | Passes AA. The objection is compositing, not contrast |
@@ -199,8 +199,12 @@ not count. **What the later fixtures show instead:** the fan-out spike's summari
 and 655 (`f-b.summary.json:504`), measured from `spawned_at` to the first `system/init`
 (`crates/claude-spike/src/bin/fanout.rs:120-160`), and `f-warm`'s user frame → `result` at 1,259 ms
 with `duration_ms` 1,254 (`f-warm.summary.json:40-44`). Five runs on 2026-09-02 put spawn →
-`system/init` at 569–656 ms, a third of the 1,981 ms in `STATUS.md:128-130`, and show no pre-turn gap.
-The s1 figure is a single cold run. **[measured]**
+`system/init` at 569–656 ms, MCP-off because `fanout.rs:97` passes `--strict-mcp-config`, against the
+1,981 ms MCP-on figure in `STATUS.md:128-130` (both of the user's MCP servers connecting). Six
+alternating pairs in `spawn-split.md` price that arm difference at 751.5 ms median (`on` 1,395.0 ms,
+`off` 643.5 ms), which accounts for most of the gap; cold start explains the rest, since
+`spawn-split.md`'s own `on-1` run was 2,447 ms against an `on` median of 1,395 ms. **[measured,
+spawn-split.md:105,197-202]**
 
 (b) **Single writer.** Yes. One `rusqlite::Connection` on one dedicated thread named
 `brigadier-store`, `std::sync::mpsc`, one transaction per 250 ms window
@@ -280,6 +284,9 @@ Cross-check against the shipped tokens: `--color-text-muted` #848484 on the thre
 from a code reading and withdrawn the same day after §2.3 was re-read; the panel's SQLite-contention
 consensus was already answered by a measurement the brief did not surface.
 
+2026-09-03, later: the "cold outlier" label was itself wrong; the five fast runs were MCP-off and
+the slow one MCP-on (`spawn-split.md`).
+
 ## 5. Actions and the next measurements
 
 Ranked.
@@ -305,7 +312,7 @@ Ranked.
 |---|---|
 | `state::build` on the main thread over 50 ms | Move it off `setup` behind a ready event; the brotli hypothesis is dead. Under 20 ms: inline HTML, JS and CSS into one scheme response, opus's round-trip hypothesis |
 | Warm spawn → `system/init` confirmed near 600 ms | The spawn question drops below the launch question; neither pool nor reuse is worth an invariant argument. Near 2 s: proceed to the second-turn measurement |
-| Second turn in one process at least 1 s cheaper than a fresh spawn | Reuse is worth filing an upstream reset primitive. Near equal: the pool caps at the handshake slice and is not worth its memory |
+| Second turn in one process at least 1 s cheaper than a fresh spawn | Reuse is worth filing an upstream reset primitive. Near equal: the spawn question is now answered by `--strict-mcp-config` (751 ms per spawn, `spawn-split.md:105`), the remaining floor is 643.5 ms (624.5 ms of it before the CLI answers anything, `spawn-split.md:104,207-210`), and the pool is not worth its memory |
 | Three real tasks, harness versus long-lived control, at 1.3× the steps or worse | Stop all performance work and work on the state brief |
 | Cache-read share of per-step input under half | Prefix-stable brief construction becomes a design item now |
 | Ten sessions, one flooder, one approval: approval visible under 100 ms, no backlog | Failure implicates the approval path and the non-feed store updates, since the feed is measured |
