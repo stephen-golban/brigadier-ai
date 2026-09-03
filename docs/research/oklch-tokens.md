@@ -16,9 +16,11 @@ file changes its **representation only**.
    hex for 18 of 18 at L 4dp / C 5dp / H 2dp **[measured]**. No colour moved.
 2. **All 8 annotated contrast pairs re-derive to within 0.0017** of the ratio recorded in
    `docs/research/frontend-stack.md` §2.6 **[measured]**, well inside the 0.003 tolerance.
-3. **`--text-muted-side` on `--color-sidebar-bg` is 4.456:1, which fails WCAG AA for normal text.**
-   The comment in `src/index.css` claimed 4.6:1. The arithmetic wins. **The colour was not
-   changed** — see §4, this is an open question for the owner.
+3. **`--text-muted-side` failed WCAG AA at 4.456:1** on `--color-sidebar-bg`, on a token already
+   tagged `[contrast]` for having been lightened once to pass. The comment claimed 4.6:1. W4-B did
+   not change the colour; the owner did, on 2026-09-03, to `#a5a5a5` — **4.563:1, passing**.
+   Closed in §4, where the failure is kept on the record because finding it is the argument for
+   this whole exercise.
 4. **Three comments in `src/index.css` stated wrong ratios**, not one. All three corrected; no
    colour touched.
 5. **Tailwind 4 adds zero bytes to the JS bundle**, confirmed independently here: 262.69 kB before,
@@ -97,10 +99,13 @@ Two things worth carrying forward:
 
 - **`2, 2, 2` is worse than the prose claimed, not better** — 13 tokens break rather than 11. The
   argument for 4/5/2 survives the correction intact.
-- **At `2, 2, 2` the drift runs the dangerous way.** `--text-muted-side` on `--sidebar-bg` moves
-  **4.4551 → 4.5572**, so the one pair in this palette that genuinely fails AA would read as
-  passing. §2.6 illustrates the risk as "a 4.50:1 pair silently becomes 4.39:1"; the same rounding
-  also does the reverse, which is the worse direction.
+- **At `2, 2, 2` the drift runs the dangerous way.** When this was measured, `--text-muted-side`
+  was `#a3a3a3` and genuinely failed AA at 4.4551:1 — and 2/2/2 rendered it as **4.5572:1**,
+  reading as a pass. §2.6 illustrates the risk as "a 4.50:1 pair silently becomes 4.39:1"; the
+  same rounding also does the reverse, which is the worse direction. The token has since been
+  bumped to `#a5a5a5` and passes (§4), which sharpens the point rather than retiring it:
+  **`#a3a3a3` and `#a5a5a5` both collapse to L 0.72 at two decimals and both read as 4.5572:1**
+  **[measured]**, so that rounding cannot distinguish the failing value from the fix for it.
 - **`3, 4, 2`'s worst drift re-derives as 0.0185, not §2.6's recorded 0.010.** Left as-is in
   §2.6's table with a footnote rather than edited: it changes no decision, since that row is not
   the one shipped. I did **not** determine which run is right.
@@ -126,7 +131,7 @@ All **[measured]**. `round-trip` is the hex recovered from the oklch value writt
 | `--color-text` | `#ffffff` | `oklch(1.0000 0 0)` | `#ffffff` | yes |
 | `--color-text-sidebar` | `#e1e1e1` | `oklch(0.9097 0 0)` | `#e1e1e1` | yes |
 | `--color-text-muted` | `#848484` | `oklch(0.6133 0 0)` | `#848484` | yes |
-| `--color-text-muted-side` | `#a3a3a3` | `oklch(0.7155 0 0)` | `#a3a3a3` | yes |
+| `--color-text-muted-side` † | `#a5a5a5` | `oklch(0.7219 0 0)` | `#a5a5a5` | yes |
 | `--color-text-placeholder` | `#9a9a9a` | `oklch(0.6862 0 0)` | `#9a9a9a` | yes |
 | `--color-accent` | `#ef8c57` | `oklch(0.7354 0.13858 47.76)` | `#ef8c57` | yes |
 | `--color-ok` | `#5cc98c` | `oklch(0.7558 0.13470 156.47)` | `#5cc98c` | yes |
@@ -136,6 +141,12 @@ All **[measured]**. `round-trip` is the hex recovered from the oklch value writt
 **18 of 18 bit-exact.** The six values pre-computed in the W4-B work order
 (`--thread-bg`, `--sidebar-bg`, `--text-muted`, `--accent`, `--ok`, `--bad`) reproduced
 character-for-character, which is what licenses trusting the other twelve.
+
+**† This table is 17 original values plus one owner-directed change — do not read all 18 as
+sampled from the live app.** `--color-text-muted-side` was `#a3a3a3` when W4-B converted it and is
+`#a5a5a5` as of 2026-09-03 (§4). Its conversion was re-derived from scratch after the bump, on the
+same script and at the same rounding, and round-trips bit-exact like the rest **[measured]**. The
+other 17 are the measured palette unchanged.
 
 Three greys share a hue by construction: `--color-sidebar-hover`, `--color-sidebar-active` and
 `--color-sidebar-line` all land on `247.88°` because they are near-neutral, and at `C ≈ 0.0021` the
@@ -198,7 +209,7 @@ source hex, which is the only version of the check that can catch a rounding err
 | foreground | background | recorded | from hex | re-derived from oklch | delta | AA (≥ 4.5) |
 |---|---|---|---|---|---|---|
 | `--color-text-muted` | `--color-thread-bg` | 4.748 | 4.748 | 4.747 | 0.0010 | pass |
-| `--color-text-muted-side` | `--color-sidebar-bg` | 4.455 | 4.455 | **4.456** | 0.0014 | **FAIL** |
+| `--color-text-muted-side` ‡ | `--color-sidebar-bg` | 4.455 | 4.455 | **4.456** | 0.0014 | **FAIL** |
 | `--color-text-placeholder` | `--color-composer-bg` | 5.101 | 5.101 | 5.101 | 0.0003 | pass |
 | `--color-text` | `--color-thread-bg` | 17.756 | 17.756 | 17.758 | 0.0017 | pass |
 | `--color-text-sidebar` | `--color-sidebar-bg` | 8.594 | 8.594 | 8.594 | 0.0003 | pass |
@@ -210,33 +221,68 @@ All **[measured]**. Worst delta **0.0017**, against a 0.003 tolerance. `from hex
 `recorded` to three decimals on all eight, which confirms the script agrees with whatever produced
 §2.6 independently.
 
-### Open question for the owner: `--text-muted-side` does not meet AA
+**‡ That row is the pre-bump snapshot and is kept deliberately.** It is the measurement that
+caught the AA failure, and this table's job is to show that the conversion reproduced the recorded
+ratios — including the one that turned out to be wrong. The token shipping today is `#a5a5a5` at
+**4.563:1, passing**; the row above describes `#a3a3a3`. Every other row is current.
 
-`#a3a3a3` on `#3a3b3b` is **4.456:1**. WCAG AA for normal text is **4.5:1**. It misses, by 0.044.
+### CLOSED: `--text-muted-side` failed AA and the owner bumped it
 
-This is not a rounding artifact and not a conversion error — the source hex computes to the same
-number. The comment beside the token claimed *"`#848484` is 3.1:1 on `--sidebar-bg`, this is
-4.6:1"*, and it was tagged `[contrast]`, meaning the colour had been **deliberately lightened in
-order to pass**. It does not pass. The lightening was done, and stopped one step short.
+**The finding.** `#a3a3a3` on `#3a3b3b` is **4.4551:1** from hex, **4.4564:1** from the oklch it
+converted to **[measured]**. WCAG AA for normal text is 4.5:1. It missed by **0.044**.
 
-**The colour was deliberately left unchanged.** Choosing a replacement is a design decision about
-a palette sampled from a reference app, and it belongs to the owner, not to a token conversion.
-The comment in `src/index.css` was corrected to the true ratio so the file stops asserting
-something false.
+**Why this is the most useful paragraph in the file.** That token was tagged `[contrast]` — the
+tag means *this value deliberately departs from the measured reference because the measured colour
+fails AA*. Somebody had already noticed the problem and already lightened the colour once,
+specifically to fix it. They lightened it from `#848484` (3.005:1) to `#a3a3a3` and stopped one
+step short, and the comment beside it recorded the outcome as *"this is 4.6:1"*. **The comment
+asserted a pass; the arithmetic was a fail; and nobody caught it for as long as the comment was
+trusted instead of recomputed.** It surfaced only because W4-B re-derived all eight annotated
+pairs from scratch rather than carrying the recorded ratios forward. Two of the other three ratios
+in that same comment block were also wrong (see below). A `[contrast]` tag is a claim that
+something was checked, and this one was the least reliable line in the file precisely because it
+looked like it had already been handled.
 
-For whoever picks this up: `#a5a5a5` and lighter clear 4.5:1 on `#3a3b3b`. That is arithmetic, not
-a recommendation — **[asserted]**, and it was not checked against the reference screenshot, which
-is the thing that actually decides it.
+**The decision.** Not W4-B's to make: choosing a replacement colour is a design call on a palette
+sampled from a reference app. It was put to the owner and left unchanged, with the CSS comment
+corrected so the file stopped asserting something false. **The owner bumped it to `#a5a5a5` on
+2026-09-03**, on the grounds that this is sidebar secondary text and one step lighter is visually
+indistinguishable.
+
+**The new value, re-derived independently rather than taken on anyone's word** — the suggestion
+`#a5a5a5` originated in W4-B's own report as unverified arithmetic, so it was run back through the
+same script that produced §2's table **[measured]**, 2026-09-03:
+
+| | hex | oklch @ 4/5/2 | round-trip | vs `#3a3b3b` from hex | from oklch | AA |
+|---|---|---|---|---|---|---|
+| was | `#a3a3a3` | `oklch(0.7155 0 0)` | `#a3a3a3` exact | 4.455 | 4.456 | **fail** |
+| **now** | `#a5a5a5` | `oklch(0.7219 0 0)` | `#a5a5a5` exact | **4.562** | **4.563** | **pass** |
+
+Achromatic, so `C = 0` and the hue is meaningless, as expected. The gain is **+0.107** of contrast
+ratio for a lightness step of **L 0.7155 → 0.7219**, +0.0065 — 0.65% of the L range, which is what
+makes the owner's "visually indistinguishable" claim plausible. The rejected `#848484` re-derives
+to **3.005:1** on the same run, matching what the CSS comment already said.
+
+**What was not checked:** whether `#a5a5a5` still looks right against the reference screenshot.
+That is the thing that actually decides a palette value, and it was not done — the owner's
+judgement stands in for it. AA is arithmetic; "indistinguishable" is not.
+
+**A note for anyone re-running the rounding sweep in §1:** at two decimals `#a3a3a3` and `#a5a5a5`
+both collapse to L 0.72 and read as 4.5572:1 **[measured]** — coarse rounding cannot tell the
+failing token from its fix. That is now the sharpest available illustration of why §1 ships 4/5/2,
+and it replaces the older one in `src/index.css`'s header, which cited this token's since-corrected
+failing ratio.
 
 ### Three comments were wrong, not one
 
 All the following were verified against both the hex and the oklch values **[measured]**. In every
-case **the comment was corrected and the colour left alone**:
+case **W4-B corrected the comment and left the colour alone**; one of the four colours was
+subsequently changed by the owner, which is the second row and is covered in full above:
 
 | token | comment claimed | actually |
 |---|---|---|
 | `--text-muted` | 4.6:1 on `--thread-bg` | **4.75:1** |
-| `--text-muted-side` | 4.6:1 on `--sidebar-bg` | **4.46:1** (fails AA) |
+| `--text-muted-side` | 4.6:1 on `--sidebar-bg` | **4.46:1** (failed AA; owner bumped it to `#a5a5a5`, now 4.563:1) |
 | `--text-muted-side` | rejected `#848484` is 3.1:1 on `--sidebar-bg` | **3.00:1** |
 | `--text-placeholder` | rejected `#606060` is 2.9:1 on `--composer-bg` | **2.28:1** |
 
