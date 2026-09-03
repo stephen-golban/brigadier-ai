@@ -304,6 +304,12 @@ pub(crate) async fn record_frame_stats(
 /// The `fcp` arm also emits one `tracing::info!` carrying the `main()` → FCP delta, so the launch
 /// recipe in §5.2 — which already parses the `RUST_LOG=info` stream for `brigadier started` —
 /// picks the number up with no new plumbing.
+/// The one `interaction` label that is a launch signpost rather than a budget span.
+///
+/// Namespaced with `trace:` so it can never collide with a B4/B6/B7 label, which are the names of
+/// budgets in `docs/vision.md` §9 and are written verbatim by their call sites.
+const TRACE_DCL_LABEL: &str = "trace:dcl";
+
 #[tauri::command]
 pub(crate) async fn report_paint(
     report: PaintReport,
@@ -319,7 +325,25 @@ pub(crate) async fn report_paint(
             // `main()` entry → first contentful paint. Not `posix_spawn` → FCP (the pre-main
             // segment is invisible), and FCP is a render timestamp, not a presentation one.
             tracing::info!(main_to_fcp_ms = delta, "first contentful paint");
+            // The last signpost of the launch, on the same zero as every `BRIGADIER_TRACE` line.
+            // It arrives on the page's clock, not the monotonic one — see `crate::trace`.
+            crate::trace::stage_at_epoch_ms("fcp", *epoch_ms);
             Some(delta)
+        }
+        // The `DOMContentLoaded` signpost, carried on the `interaction` variant rather than a new
+        // wire shape: the page has one timestamp and no duration, which is exactly what a span of
+        // zero length is, and `src/wire.ts` and `views.rs` therefore need no change.
+        //
+        // **Inert until the frontend half lands.** Nothing sends this label today — the emitter is
+        // three lines in `src/paint.ts`, spelled out in `docs/research/launch-signposts.md`, and
+        // `src/` belongs to another session. It is here first so that landing the emitter is a
+        // one-file change with no Rust rebuild of the contract behind it.
+        //
+        // Only reached when `BRIGADIER_TRACE` is on; `stage_at_epoch_ms` is a cached `bool` load
+        // otherwise. The line still goes to `paint.ndjson` either way, as every report does.
+        PaintReport::Interaction { label, start_epoch_ms, .. } if label == TRACE_DCL_LABEL => {
+            crate::trace::stage_at_epoch_ms("dcl", *start_epoch_ms);
+            None
         }
         PaintReport::Interaction { .. } => None,
     };
