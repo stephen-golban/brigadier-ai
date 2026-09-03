@@ -387,6 +387,17 @@ PaintReport  { kind: "fcp", epoch_ms: number /* performance.timeOrigin + startTi
                   process_start_epoch_ms and main_to_fcp_ms; nothing reads it back. */
 ```
 
+**Added 2026-09-03.** Under the `interaction` shape above:
+- An `interaction` whose `label` starts with `trace:` is a launch signpost, not a budget span.
+- `report_paint` strips the prefix and emits it as a trace stage through `BRIGADIER_TRACE=1`, and
+  returns before the file write, so it never lands in `paint.ndjson`
+  (`src-tauri/src/commands.rs:320-337`).
+- The only label today is `trace:dcl`, sent with `duration_ms: 0` and
+  `start_epoch_ms = performance.timeOrigin + domContentLoadedEventEnd`, on the same epoch basis as
+  the `fcp` report (`src-tauri/src/commands.rs:330-331, 363-374`).
+- A second signpost needs only a new `trace:` label on the page side.
+- See `docs/research/launch-signposts.md`.
+
 ## Browser fallback
 
 `src/bridge.ts` detects Tauri via `isTauri()` from `@tauri-apps/api/core`. Outside Tauri (plain
