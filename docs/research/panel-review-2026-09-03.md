@@ -23,7 +23,7 @@ Every line below was re-read at the cited location on 2026-09-03.
 | Figure | Value | Where |
 |---|---|---|
 | spawn → `initialize` `control_response` | 719 ms | `docs/research/claude-direct-spike.md:106` **[measured]** |
-| spawn → `system/init` | 1,981 ms | `claude-direct-spike.md:107`, `docs/STATUS.md:121` **[measured]** |
+| spawn → `system/init` | 1,981 ms | `claude-direct-spike.md:107`, `docs/STATUS.md:128-130` **[measured]** |
 | `system/init` → `result`, first user frame → `result` | 1,239 ms, 2,501 ms | `claude-direct-spike.md:108-109` **[measured]** |
 | exec → first contentful paint, p50, n=19, three arms | 287–295 ms against a ≤ 200 ms budget | `docs/research/perceived-performance.md:42`, `STATUS.md:125` **[measured]** |
 | `brigadier started` → FCP | 132–141 ms against a 38 ms estimate | `perceived-performance.md:262-269` **[measured]**; the ~100 ms attributed to the scheme handler and brotli inflate is **[asserted]** by elimination, `:267-269` |
@@ -199,7 +199,7 @@ not count. **What the later fixtures show instead:** the fan-out spike's summari
 and 655 (`f-b.summary.json:504`), measured from `spawned_at` to the first `system/init`
 (`crates/claude-spike/src/bin/fanout.rs:120-160`), and `f-warm`'s user frame → `result` at 1,259 ms
 with `duration_ms` 1,254 (`f-warm.summary.json:40-44`). Five runs on 2026-09-02 put spawn →
-`system/init` at 569–656 ms, a third of the 1,981 ms in `STATUS.md:121`, and show no pre-turn gap.
+`system/init` at 569–656 ms, a third of the 1,981 ms in `STATUS.md:128-130`, and show no pre-turn gap.
 The s1 figure is a single cold run. **[measured]**
 
 (b) **Single writer.** Yes. One `rusqlite::Connection` on one dedicated thread named
@@ -211,6 +211,19 @@ Pragmas actually set: `busy_timeout = 5000`, `foreign_keys = ON`, then `journal_
 connection:** a query is an `Op::Query` closure run on the writer thread inside the same transaction,
 and its arrival closes the batch window early (`writer.rs:329-335`, `:407-411`). A UI tail query
 therefore waits for the pending batch to commit. **[source]**
+
+**[measured]** The wait tops out at 8.03 ms, the writer's own worst case at 10 sessions burning
+2000 rows/s each (`docs/research/perceived-performance.md:354`, table at `:371`). A second
+read-only connection to take reads off the writer thread is a documented dead end, not an open
+action: it would buy at most that 8.03 ms and was shelved, "revisit only if `feed_cap` grows by an
+order of magnitude" (`perceived-performance.md:939-943`).
+
+**[source]** Read-your-writes is load-bearing on three callers outside the store:
+`crates/supervisor/src/lib.rs:465` (`add_project` dedupe via `list_projects`, guarded by
+`crates/supervisor/tests/supervisor.rs:528-531`), `crates/supervisor/src/lib.rs:601`
+(`resume_session` reading the status `session_ended` wrote), and `crates/store/src/lib.rs:305`
+(a `session()` read with no preceding flush). A second connection would have to pay for that
+ordering.
 
 (c) **`state::build` in setup.** `src-tauri/src/lib.rs:137`
 `tauri::async_runtime::block_on(state::build(data_dir))`, inside `.setup`, which the comment at
@@ -263,6 +276,10 @@ Cross-check against the shipped tokens: `--color-text-muted` #848484 on the thre
 `--color-text-muted-side` #a5a5a5 on the sidebar 4.562:1, matching `src/index.css:68,74`.
 **[measured]**
 
+**Corrections.** 2026-09-03: the lead's order to move reads onto a second connection was issued
+from a code reading and withdrawn the same day after §2.3 was re-read; the panel's SQLite-contention
+consensus was already answered by a measurement the brief did not surface.
+
 ## 5. Actions and the next measurements
 
 Ranked.
@@ -291,7 +308,7 @@ Ranked.
 | Second turn in one process at least 1 s cheaper than a fresh spawn | Reuse is worth filing an upstream reset primitive. Near equal: the pool caps at the handshake slice and is not worth its memory |
 | Three real tasks, harness versus long-lived control, at 1.3× the steps or worse | Stop all performance work and work on the state brief |
 | Cache-read share of per-step input under half | Prefix-stable brief construction becomes a design item now |
-| Ten sessions, one flooder, one approval: approval visible under 100 ms, no backlog | Failure implicates the store path or the shared writer-and-reader thread, since the feed is measured |
+| Ten sessions, one flooder, one approval: approval visible under 100 ms, no backlog | Failure implicates the approval path and the non-feed store updates, since the feed is measured |
 | Five-hour window utilization slope at ten sessions | If it drains in under an hour, the concurrency ceiling is the window and the hardware questions are moot |
 
 ## 6. Not checked
