@@ -113,6 +113,7 @@ pub fn run() {
             commands::list_models,
             commands::list_projects,
             commands::add_project,
+            commands::set_project_mcp,
             commands::list_sessions,
             commands::start_session,
             commands::resume_session,

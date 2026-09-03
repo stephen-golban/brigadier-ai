@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use brigadier_core::approval::PendingApproval;
-use brigadier_core::driver::DriverKind;
+use brigadier_core::driver::{DriverKind, McpPolicy};
 use brigadier_core::event::{
     bounded, ExitReason, InstanceId, RequestId, RequestKind, SessionId, Usage,
     INPUT_EXCERPT_LIMIT,
@@ -123,6 +123,18 @@ CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     r#"
 ALTER TABLE feed ADD COLUMN kind TEXT NOT NULL DEFAULT 'unknown';
 "#,
+    // Migration 2 (2026-09-03). Whether a project's children inherit the user's MCP servers.
+    // Slug set, closed: `off` | `inherit` (`brigadier_core::driver::McpPolicy`).
+    //
+    // **This rung switches every existing project to `off`**, the owner's two live projects
+    // included, by owner decision on 2026-09-03: MCP startup is 751.5 ms of every 1,395 ms spawn
+    // and the harness rents a child per decision, so the default is the restrictive one and a
+    // project opts back in per project (`set_project_mcp`). A project reading `off` may
+    // therefore be this migration's doing rather than anyone's choice; nothing records which.
+    // see docs/research/spawn-split.md §2 and §6 (measured), docs/vision.md §3.
+    r#"
+ALTER TABLE projects ADD COLUMN mcp TEXT NOT NULL DEFAULT 'off';
+"#,
 ];
 
 /// Where a session is in its life.
@@ -180,6 +192,9 @@ pub struct ProjectRow {
     pub root_path: PathBuf,
     /// First time we saw it.
     pub created_at: SystemTime,
+    /// Whether this project's children inherit the user's MCP servers. `Off` unless the project
+    /// opted in; every project that predates migration 2 reads `Off` for that reason alone.
+    pub mcp: McpPolicy,
 }
 
 /// A partial update to the one row a session owns. Every field is optional and `None` means
@@ -393,7 +408,7 @@ pub(crate) fn session_from_row(row: &Row<'_>) -> rusqlite::Result<SessionRecord>
 }
 
 /// Column list shared by every `projects` read.
-pub(crate) const PROJECT_COLUMNS: &str = "id, name, root_path, created_at";
+pub(crate) const PROJECT_COLUMNS: &str = "id, name, root_path, created_at, mcp";
 
 pub(crate) fn project_from_row(row: &Row<'_>) -> rusqlite::Result<ProjectRow> {
     Ok(ProjectRow {
@@ -401,6 +416,9 @@ pub(crate) fn project_from_row(row: &Row<'_>) -> rusqlite::Result<ProjectRow> {
         name: row.get("name")?,
         root_path: PathBuf::from(row.get::<_, String>("root_path")?),
         created_at: from_millis(row.get("created_at")?),
+        // Lossy on purpose: a slug this build does not know reads back as `Off`, the restrictive
+        // reading, never as `Inherit`. see `McpPolicy::from_slug_lossy`.
+        mcp: McpPolicy::from_slug_lossy(&row.get::<_, String>("mcp")?),
     })
 }
 
@@ -575,5 +593,52 @@ mod tests {
         let row = stmt.query_row([], feed_from_row).expect("read");
         assert_eq!(row.kind, FeedKind::Unknown, "an unrecorded kind is not `sys`");
         assert_eq!(row.line, "an old row", "the line itself is never lost");
+    }
+
+    /// Migration 2 proven on a file that stopped at `user_version` 2: a project written before
+    /// the `mcp` column existed reads back as [`McpPolicy::Off`] afterwards, which is the owner's
+    /// 2026-09-03 decision applied to every pre-existing project, and the ladder ends at 3.
+    #[test]
+    fn migration_2_switches_a_pre_existing_project_to_off() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("t.sqlite");
+        {
+            // A database as the previous build left it: rungs 0 and 1 only.
+            let conn = Connection::open(&path).expect("open");
+            for (n, sql) in MIGRATIONS.iter().enumerate().take(2) {
+                conn.execute_batch(sql).expect("old rung");
+                conn.pragma_update(None, "user_version", n as i64 + 1).expect("bump");
+            }
+            conn.execute(
+                "INSERT INTO projects(id, name, root_path, created_at) VALUES ('p1', 'old', '/r', 0)",
+                [],
+            )
+            .expect("a project with no mcp column at all");
+        }
+        let conn = open_connection(&path).expect("reopen runs the ladder");
+        let version: i64 =
+            conn.pragma_query_value(None, "user_version", |r| r.get(0)).expect("version");
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        assert_eq!(version, 3, "migration 2 is the third rung");
+        let sql = format!("SELECT {PROJECT_COLUMNS} FROM projects WHERE id = 'p1'");
+        let row = conn.query_row(&sql, [], project_from_row).expect("read");
+        assert_eq!(row.mcp, McpPolicy::Off, "an existing project is switched off, not opted in");
+        assert_eq!(row.name, "old", "nothing else about the row moves");
+    }
+
+    /// The column is a closed slug set; a value outside it is read as `off`, never `inherit`.
+    #[test]
+    fn an_unknown_mcp_slug_reads_back_off() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = open_connection(&dir.path().join("t.sqlite")).expect("open");
+        conn.execute(
+            "INSERT INTO projects(id, name, root_path, created_at, mcp)
+             VALUES ('p1', 'x', '/r', 0, 'everything')",
+            [],
+        )
+        .expect("insert");
+        let sql = format!("SELECT {PROJECT_COLUMNS} FROM projects WHERE id = 'p1'");
+        let row = conn.query_row(&sql, [], project_from_row).expect("read");
+        assert_eq!(row.mcp, McpPolicy::Off);
     }
 }

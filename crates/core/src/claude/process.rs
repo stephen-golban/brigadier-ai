@@ -20,7 +20,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::driver::{DriverError, PermissionMode};
+use crate::driver::{DriverError, McpPolicy, PermissionMode};
 
 /// Grace period between `SIGTERM` and `SIGKILL` on a process group.
 // see docs/research/agent-sdk.md §10 — the SDK's own close path waits 2000 ms after EOF before
@@ -67,6 +67,9 @@ pub struct SpawnSpec {
     /// `CLAUDE_CONFIG_DIR`, the account boundary. `HOME` is never touched.
     // see docs/research/agent-sdk.md §9 and docs/research/provider-driver.md.
     pub config_dir: Option<PathBuf>,
+    /// Whether this child inherits the user's MCP servers. [`McpPolicy::Off`] is the default and
+    /// is the only variant that emits a flag.
+    pub mcp: McpPolicy,
     /// Extra environment layered on top of the inherited set, as values.
     pub env_overrides: BTreeMap<String, String>,
 }
@@ -90,6 +93,16 @@ pub struct SpawnSpec {
 // model-based classifier is a different mechanism, `--permission-mode auto` only and billable.
 // An ask rule does override the read-only set, which is why the alternative below works.
 // see docs/research/approvals.md §1(b) (documented) and §7 gap 1.
+//
+// `--strict-mcp-config` is passed under [`McpPolicy::Off`], which is the default, and no
+// `--mcp-config` ever is — so the allowed set is empty and no MCP server loads. Measured: the
+// `system/init` frame reports `mcp_servers: []` on all six `off` runs and both of the owner's
+// servers connected on all six `on` runs, and the flag is worth 751.5 ms of the 1,395 ms median
+// spawn to `system/init`. `claude --help` on 2.1.259, this machine: "--strict-mcp-config  Only
+// use MCP servers from --mcp-config, ignoring all other MCP configurations".
+// [`McpPolicy::Inherit`] passes neither flag and the CLI loads the user's configuration as it
+// does for an interactive session. Owner decision 2026-09-03: off by default, per-project opt-in.
+// see docs/research/spawn-split.md §1, §2 and §6, and docs/vision.md §3.
 //
 // No `--setting-sources=` either, so the user's `~/.claude/settings.json` is still loaded.
 // Harmless today — the owner's file carries no `Bash` allow rule — but a user `allow` rule for a
@@ -116,6 +129,11 @@ pub fn build_argv(spec: &SpawnSpec) -> Vec<String> {
         // One argument with `=`, the 0.3.257 shape, not the two-argument 0.3.159 shape.
         // see docs/research/claude-direct-spike.md "Exact argv".
         argv.push(format!("--resume={token}"));
+    }
+    // Before `--permission-mode`, which is where the SDK emits it too.
+    // see docs/research/cli-protocol.md §1 for the conditional-flag order.
+    if spec.mcp == McpPolicy::Off {
+        argv.push("--strict-mcp-config".to_owned());
     }
     argv.push("--permission-mode".to_owned());
     argv.push(spec.permission_mode.as_cli_flag().to_owned());
@@ -297,13 +315,43 @@ mod tests {
             permission_mode: PermissionMode::Default,
             resume: None,
             config_dir: None,
+            mcp: McpPolicy::Off,
             env_overrides: BTreeMap::new(),
         }
     }
 
+    /// The default shape, pinned whole. `--strict-mcp-config` is in it because
+    /// [`McpPolicy::Off`] is the default, and no `--mcp-config` follows it — which is what makes
+    /// the allowed set empty (`docs/research/spawn-split.md` §1, measured `mcp_servers: []`).
     #[test]
     fn argv_matches_the_spike_and_never_passes_print() {
         let argv = build_argv(&spec());
+        assert_eq!(
+            argv,
+            [
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                "--input-format",
+                "stream-json",
+                "--permission-prompt-tool",
+                "stdio",
+                "--strict-mcp-config",
+                "--permission-mode",
+                "default",
+            ]
+        );
+        assert!(!argv.iter().any(|a| a == "--print" || a == "-p"));
+        // The flag is exclusive-control only when nothing widens the allowed set again.
+        assert!(!argv.iter().any(|a| a == "--mcp-config"));
+    }
+
+    /// The opt-in shape, pinned whole: neither flag, so the CLI loads the user's own MCP
+    /// configuration exactly as it does interactively. The only difference from the default
+    /// shape is the one flag.
+    #[test]
+    fn argv_under_inherit_passes_neither_mcp_flag() {
+        let argv = build_argv(&SpawnSpec { mcp: McpPolicy::Inherit, ..spec() });
         assert_eq!(
             argv,
             [
@@ -318,7 +366,18 @@ mod tests {
                 "default",
             ]
         );
-        assert!(!argv.iter().any(|a| a == "--print" || a == "-p"));
+        assert!(!argv.iter().any(|a| a == "--strict-mcp-config" || a == "--mcp-config"));
+    }
+
+    /// A resumed child is gated the same way a fresh one is: the flag lands after `--resume=`
+    /// and before `--permission-mode`, the SDK's own order.
+    #[test]
+    fn a_resumed_child_is_gated_by_the_same_policy() {
+        let argv = build_argv(&SpawnSpec { resume: Some("8380cdea".into()), ..spec() });
+        let strict = argv.iter().position(|a| a == "--strict-mcp-config").expect("off is default");
+        let resume = argv.iter().position(|a| a == "--resume=8380cdea").expect("resume is passed");
+        let mode = argv.iter().position(|a| a == "--permission-mode").expect("mode is pinned");
+        assert!(resume < strict && strict < mode, "{argv:?}");
     }
 
     #[test]

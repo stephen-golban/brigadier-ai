@@ -16,6 +16,7 @@ use std::sync::mpsc;
 use std::time::{Instant, SystemTime};
 
 use brigadier_core::approval::PendingApproval;
+use brigadier_core::driver::McpPolicy;
 use brigadier_core::event::{bounded, ExitReason, RequestId, SessionId, Usage};
 use brigadier_core::session::Decision;
 use rusqlite::{named_params, Connection};
@@ -38,6 +39,9 @@ const RECLAIM_PAGES_PER_BATCH: usize = 2048;
 pub(crate) enum Op {
     /// Insert or replace a project.
     UpsertProject(ProjectRow),
+    /// Set one project's MCP policy. A missing project is a no-op here; the supervisor checks
+    /// existence first and answers `no_such_project` itself.
+    SetProjectMcp { id: String, mcp: McpPolicy },
     /// Merge a partial session row; `None` fields leave the stored value alone.
     UpsertSession(Box<SessionRow>),
     /// Append one terse feed row and advance the session's event cursor.
@@ -95,6 +99,12 @@ impl StoreHandle {
     /// Insert or replace a project.
     pub async fn upsert_project(&self, project: ProjectRow) -> Result<()> {
         self.send(Op::UpsertProject(project))
+    }
+
+    /// Set whether a project's children inherit the user's MCP servers.
+    // see docs/research/spawn-split.md §6 and the migration 2 comment in `schema.rs`.
+    pub async fn set_project_mcp(&self, id: String, mcp: McpPolicy) -> Result<()> {
+        self.send(Op::SetProjectMcp { id, mcp })
     }
 
     /// Merge a partial session row. `None` fields leave the stored value alone.
@@ -446,17 +456,25 @@ fn apply_one(
 ) -> Result<()> {
     match op {
         Op::UpsertProject(p) => {
+            // `mcp` is written on insert and on conflict alike: the row carries the policy, so
+            // an upsert that omitted it would silently reset an opted-in project to `off`.
             tx.prepare_cached(
-                "INSERT INTO projects(id, name, root_path, created_at) VALUES (?1, ?2, ?3, ?4)
+                "INSERT INTO projects(id, name, root_path, created_at, mcp)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
                  ON CONFLICT(id) DO UPDATE SET name = excluded.name,
-                     root_path = excluded.root_path",
+                     root_path = excluded.root_path, mcp = excluded.mcp",
             )?
             .execute((
                 &p.id,
                 &p.name,
                 p.root_path.to_string_lossy().as_ref(),
                 schema::to_millis(p.created_at),
+                p.mcp.as_slug(),
             ))?;
+        }
+        Op::SetProjectMcp { id, mcp } => {
+            tx.prepare_cached("UPDATE projects SET mcp = ?1 WHERE id = ?2")?
+                .execute((mcp.as_slug(), &id))?;
         }
         Op::UpsertSession(row) => upsert_session(tx, *row)?,
         Op::Feed { session_id, seq, at, kind, line } => {

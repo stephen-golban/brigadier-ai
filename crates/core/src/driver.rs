@@ -178,6 +178,81 @@ impl<'de> Deserialize<'de> for PermissionMode {
     }
 }
 
+/// Whether a harness-spawned child inherits the user's MCP servers.
+///
+/// **Off by default; a project opts in.** Owner decision 2026-09-03, on measured grounds: MCP
+/// server startup is 751.5 ms of the 1,395 ms median spawn to `system/init` with the owner's two
+/// servers connected, against 643.5 ms with `--strict-mcp-config`, and the whole of that wait
+/// lands after the `initialize` reply, where the CLI's own turn clock does not count it. The
+/// counter-cost of switching it off is $0.00016 and 1,824 prompt tokens per turn. CLI 2.1.259.
+// see docs/research/spawn-split.md §1, §2 and §6 (measured).
+///
+/// Two variants and no third. A file-path variant — `--strict-mcp-config --mcp-config <file>`,
+/// naming only the servers a project declares — is the obvious follow-up and is deliberately not
+/// built here: `spawn-split.md` §8 records that only the empty case was ever run, so the loading
+/// arm of that flag pair is unproven on this machine.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum McpPolicy {
+    /// No MCP server loads. The child is spawned with `--strict-mcp-config` and **no**
+    /// `--mcp-config`, so the allowed set is empty; `system/init` then reports `mcp_servers: []`,
+    /// measured on all six `off` runs in `docs/research/spawn-split.md` §1.
+    #[default]
+    Off,
+    /// Neither flag is passed, so the CLI loads the user's and the project's own MCP
+    /// configuration exactly as it does for an interactive session.
+    Inherit,
+}
+
+impl McpPolicy {
+    /// The slug stored in `projects.mcp` and carried on the wire. The set is closed: `off` and
+    /// `inherit`, nothing else.
+    pub fn as_slug(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Inherit => "inherit",
+        }
+    }
+
+    /// Parse a slug. `None` for anything outside the closed set, so a caller can refuse it.
+    pub fn from_slug(s: &str) -> Option<Self> {
+        match s {
+            "off" => Some(Self::Off),
+            "inherit" => Some(Self::Inherit),
+            _ => None,
+        }
+    }
+
+    /// Parse a slug, falling back to [`McpPolicy::Off`].
+    ///
+    /// The lossy read is for *stored* values only. An unrecognised slug means a row written by a
+    /// build that knows a policy this one does not, and the safe reading of an unknown policy is
+    /// the restrictive one: no server loads, rather than the user's whole set silently loading.
+    pub fn from_slug_lossy(s: &str) -> Self {
+        Self::from_slug(s).unwrap_or_default()
+    }
+}
+
+impl std::fmt::Display for McpPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_slug())
+    }
+}
+
+impl Serialize for McpPolicy {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_slug())
+    }
+}
+
+impl<'de> Deserialize<'de> for McpPolicy {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Self::from_slug(&s).ok_or_else(|| {
+            serde::de::Error::custom(format!("unknown mcp policy {s:?}; expected off or inherit"))
+        })
+    }
+}
+
 /// Everything needed to open a new session.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StartSession {
@@ -192,6 +267,8 @@ pub struct StartSession {
     /// Env vars layered onto the inherited environment, as values, never via `set_var`.
     // see docs/research/provider-driver.md §6 #6 — zero process-global env mutation.
     pub env_overrides: BTreeMap<String, String>,
+    /// Whether this child inherits the user's MCP servers. Defaults to [`McpPolicy::Off`].
+    pub mcp: McpPolicy,
     /// Capacity of the bounded event channel; see [`SessionHandle`].
     pub event_buffer: usize,
 }
@@ -208,6 +285,7 @@ impl StartSession {
             model: None,
             permission_mode: PermissionMode::Default,
             env_overrides: BTreeMap::new(),
+            mcp: McpPolicy::default(),
             event_buffer: DEFAULT_EVENT_BUFFER,
         }
     }
@@ -253,6 +331,9 @@ pub struct ResumeSession {
     pub permission_mode: PermissionMode,
     /// Env vars layered onto the inherited environment.
     pub env_overrides: BTreeMap<String, String>,
+    /// Whether this child inherits the user's MCP servers. A resume carries the same policy a
+    /// start does; nothing about reopening a conversation changes what the child may reach.
+    pub mcp: McpPolicy,
     /// Capacity of the bounded event channel.
     pub event_buffer: usize,
 }
@@ -269,6 +350,7 @@ impl ResumeSession {
             model: base.model,
             permission_mode: base.permission_mode,
             env_overrides: base.env_overrides,
+            mcp: base.mcp,
             event_buffer: base.event_buffer,
         }
     }
@@ -418,6 +500,42 @@ mod tests {
         // Kebab on our wire, camel on the flag — the one pair where they differ.
         assert_eq!(PermissionMode::DontAsk.as_wire_str(), "dont-ask");
         assert_eq!(PermissionMode::DontAsk.as_cli_flag(), "dontAsk");
+    }
+
+    /// The default is the decision, and it is the restrictive one. A start request nobody has
+    /// configured spawns a child with no MCP server at all.
+    // see docs/research/spawn-split.md §6 and docs/vision.md §3 (owner decision 2026-09-03).
+    #[test]
+    fn the_mcp_default_is_off_on_both_request_shapes() {
+        assert_eq!(McpPolicy::default(), McpPolicy::Off);
+        assert_eq!(StartSession::new("/w").mcp, McpPolicy::Off);
+        assert_eq!(ResumeSession::new("tok", "/w").mcp, McpPolicy::Off);
+    }
+
+    /// The slug set is closed and pinned: two values, nothing else. A stored slug from a build
+    /// that knows a third policy reads back as `off`, never as `inherit`.
+    #[test]
+    fn the_mcp_slug_set_is_off_and_inherit_and_an_unknown_one_reads_back_off() {
+        assert_eq!(McpPolicy::Off.as_slug(), "off");
+        assert_eq!(McpPolicy::Inherit.as_slug(), "inherit");
+        assert_eq!(McpPolicy::from_slug("off"), Some(McpPolicy::Off));
+        assert_eq!(McpPolicy::from_slug("inherit"), Some(McpPolicy::Inherit));
+        assert_eq!(McpPolicy::from_slug("everything"), None);
+        assert_eq!(McpPolicy::from_slug_lossy("everything"), McpPolicy::Off);
+        assert_eq!(McpPolicy::Inherit.to_string(), "inherit");
+    }
+
+    /// A bare string on the wire, like `PermissionMode`, and strict on the way in: an unmodelled
+    /// policy is a protocol error rather than a silent downgrade.
+    #[test]
+    fn an_mcp_policy_is_a_bare_string_on_the_wire() {
+        assert_eq!(serde_json::to_string(&McpPolicy::Off).expect("ser"), r#""off""#);
+        assert_eq!(
+            serde_json::from_str::<McpPolicy>(r#""inherit""#).expect("de"),
+            McpPolicy::Inherit
+        );
+        let err = serde_json::from_str::<McpPolicy>(r#""everything""#).expect_err("closed set");
+        assert!(err.to_string().contains("off or inherit"), "{err}");
     }
 
     #[test]

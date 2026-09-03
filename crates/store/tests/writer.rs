@@ -184,6 +184,7 @@ async fn deleting_a_project_cascades_to_its_sessions_and_their_children() {
             name: "brigadier".into(),
             root_path: "/repo".into(),
             created_at: SystemTime::now(),
+            mcp: brigadier_core::driver::McpPolicy::Off,
         })
         .await
         .expect("project");
@@ -264,4 +265,39 @@ async fn a_flush_after_shutdown_fails_instead_of_hanging() {
     let outcome = tokio::time::timeout(Duration::from_secs(2), orphan.flush()).await;
     assert!(outcome.is_ok(), "flush after shutdown hung for {:?}", started.elapsed());
     assert!(outcome.expect("not timed out").is_err(), "flush after shutdown must report Closed");
+}
+
+/// The policy round-trips through the writer: `off` on insert, `inherit` after
+/// `set_project_mcp`, and an upsert of the same row carries the policy it was given rather than
+/// resetting it.
+#[tokio::test]
+async fn a_project_mcp_policy_round_trips_and_an_upsert_does_not_reset_it() {
+    use brigadier_core::driver::McpPolicy;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = open_store(dir.path(), 500);
+    let row = brigadier_store::ProjectRow {
+        id: "p1".into(),
+        name: "brigadier".into(),
+        root_path: "/repo".into(),
+        created_at: SystemTime::now(),
+        mcp: McpPolicy::Off,
+    };
+    store.handle().upsert_project(row.clone()).await.expect("project");
+    store.handle().flush().await.expect("flush");
+    let got = store.handle().project("p1").await.expect("read").expect("row");
+    assert_eq!(got.mcp, McpPolicy::Off);
+
+    store.handle().set_project_mcp("p1".into(), McpPolicy::Inherit).await.expect("set");
+    store.handle().flush().await.expect("flush");
+    let got = store.handle().project("p1").await.expect("read").expect("row");
+    assert_eq!(got.mcp, McpPolicy::Inherit);
+
+    // Re-adding the project (the supervisor's `add_project` returns the existing row before it
+    // ever gets here, but the writer must still be safe) writes the policy the row carries.
+    store.handle().upsert_project(got.clone()).await.expect("re-upsert");
+    store.handle().flush().await.expect("flush");
+    let again = store.handle().project("p1").await.expect("read").expect("row");
+    assert_eq!(again.mcp, McpPolicy::Inherit, "an upsert carries the row's policy");
+    assert_eq!(store.handle().list_projects().await.expect("list")[0].mcp, McpPolicy::Inherit);
+    store.close().await.expect("close");
 }

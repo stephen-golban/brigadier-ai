@@ -122,6 +122,7 @@ before every send is unchanged and remains the binding check.
 | `list_models` | — | `ModelInfo[]` `{ id, label, default: boolean }` (fixed list, from research) |
 | `list_projects` | — | `ProjectView[]` |
 | `add_project` | `path: string` | `ProjectView` (path must be an existing directory; `invalid_argument` otherwise) |
+| `set_project_mcp` | `project_id, mcp: "off" \| "inherit"` | `ProjectView` as it now stands; errors `no_such_project` / `invalid_argument` (any other slug) |
 | `list_sessions` | — | `SessionView[]` newest first |
 | `start_session` | `project_id, prompt: string, model: string \| null, permission_mode: string` | `SessionView` |
 | `resume_session` | `session_id` | `SessionView`; error `not_resumable` / `no_such_session` |
@@ -190,6 +191,45 @@ Error codes:
   the initialize response`. The code is listed here so both sides can branch on it once the
   stderr tail is plumbed through; until then a `driver` error on `resume_session` should be read
   as "the child would not come up", and the likeliest cause is a swept conversation.
+
+### `set_project_mcp`
+
+**Added 2026-09-03.** Owner decision the same day: harness-spawned `claude` children do **not**
+get the user's MCP servers by default; a project opts in. Basis: MCP server startup is 751.5 ms of
+every 1,395 ms median spawn to `system/init` with the user's two servers, 643.5 ms with
+`--strict-mcp-config`, CLI 2.1.259 (`docs/research/spawn-split.md` §2 and §6, measured).
+
+- Request: `set_project_mcp(project_id: string, mcp: string)`. The slug set is **closed**:
+  `"off"` or `"inherit"`. Anything else is `invalid_argument`; this is not a pass-through like
+  `permission_mode`, because the harness owns this vocabulary, not the CLI. An unknown
+  `project_id` is `no_such_project`.
+- Response: the `ProjectView` as it now stands, with `mcp` set. Replace the project in the
+  sidebar's list with it, the way `add_project`'s return is handled.
+- View field: `ProjectView.mcp: "off" | "inherit"`, present on every `list_projects` and
+  `add_project` result as well. A new project is `"off"`.
+- What each value does to the child's argv (`crates/core/src/claude/process.rs`, pinned by its
+  argv tests): `"off"` adds `--strict-mcp-config` and never `--mcp-config`, so the allowed set is
+  empty and no server loads; `"inherit"` passes neither flag, and the CLI loads the user's and the
+  project's own MCP configuration exactly as an interactive session would.
+- **`"off"` may be the migration's doing rather than a choice.** Store migration 2 (`user_version`
+  2 to 3, `crates/store/src/schema.rs`) added the column with `DEFAULT 'off'`, which switched
+  every project that existed on 2026-09-03 to `"off"`, the owner's two live projects included.
+  Nothing records which projects were switched and which chose. Render `"off"` as the state, not
+  as a decision the operator made.
+- Takes effect on the project's **next** spawn, start or resume alike. A child already running
+  keeps whatever it was spawned with: the policy is argv, read once. A resume reads the project
+  row as it stands at resume time, not the policy the session was first started under.
+- **Ground truth is the child's own `system/init` frame.** It carries `mcp_servers`, which is
+  `[]` under `"off"` and lists each configured server with its `status` under `"inherit"`
+  (`docs/research/spawn-split.md` §1: `[]` on all six off runs, both servers `connected` on all
+  six on runs). The view field says what the harness asked for; that frame says what the child
+  got. Nothing surfaces the frame's list to the UI yet.
+- Follow-up, not built: a file-path variant that passes `--strict-mcp-config --mcp-config <file>`
+  naming only the servers a project declares. Deliberately left out: `spawn-split.md` §8 records
+  that only the empty case was ever run, so the loading arm of that flag pair is unproven on this
+  machine. Adding it is a third slug plus a path column, and this contract will need a new entry.
+- The UI toggle is not built. The command exists and is registered
+  (`src-tauri/src/commands.rs`, `src-tauri/src/lib.rs`); nothing in `src/` calls it yet.
 
 ### Worktrees
 
@@ -349,7 +389,9 @@ Everything here rests on `docs/research/perceived-performance.md` §5.3, measure
 AppInfo      { run_id: string, data_dir: string, version: string }
 ClaudeStatus { binary: string, version: string }
 ModelInfo    { id: string, label: string, default: boolean }
-ProjectView  { id: string, name: string, root_path: string, created_at_ms: number }
+ProjectView  { id: string, name: string, root_path: string, created_at_ms: number,
+               mcp: "off"|"inherit" /* added 2026-09-03; "off" may be migration 2's doing,
+                                       see "### set_project_mcp" */ }
 SessionView  { session_id, project_id: string|null, instance_id: string|null, provider_session_id: string|null,
                cwd: string|null, worktree_path: string|null, branch: string|null,
                model: string|null, status: "starting"|"running"|"exited"|"failed",

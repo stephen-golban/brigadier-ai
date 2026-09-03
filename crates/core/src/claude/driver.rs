@@ -218,6 +218,7 @@ impl ProviderDriver for ClaudeDriver {
                 permission_mode: req.permission_mode,
                 resume: None,
                 config_dir: self.config.config_dir.clone(),
+                mcp: req.mcp,
                 env_overrides: req.env_overrides,
             };
             self.open(spec, req.prompt, req.event_buffer, None).await
@@ -240,6 +241,9 @@ impl ProviderDriver for ClaudeDriver {
                 permission_mode: req.permission_mode,
                 resume: Some(req.token),
                 config_dir: self.config.config_dir.clone(),
+                // A resume is gated exactly like a start; nothing about reopening a conversation
+                // widens what the child may reach. see docs/research/spawn-split.md §6.
+                mcp: req.mcp,
                 env_overrides: req.env_overrides,
             };
             self.open(spec, req.prompt, req.event_buffer, req.resumed).await
