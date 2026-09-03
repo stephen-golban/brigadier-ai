@@ -7,7 +7,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use brigadier_core::event::{Envelope, RequestId, SessionId};
-use brigadier_store::{ApprovalRecord, FeedRow};
+use brigadier_store::{ApprovalRecord, FeedKind, FeedRow};
 use serde::{Deserialize, Serialize};
 
 /// Milliseconds since the Unix epoch, the only timestamp shape on the wire.
@@ -36,18 +36,27 @@ pub struct FeedRowWire {
     pub t: i64,
     /// The bounded one-line summary from `brigadier_store::feed::terse_line`.
     pub l: String,
+    /// What the row is, from `brigadier_store::feed::kind`. Added 2026-09-03, additive: the
+    /// webview switches and filters on this instead of parsing `l`'s leading label.
+    pub k: FeedKind,
 }
 
 impl FeedRowWire {
     /// Build a row from the parts an [`Envelope`] carries.
-    pub fn new(session_id: &SessionId, seq: u64, at: SystemTime, line: String) -> Self {
-        Self { s: session_id.as_str().to_owned(), q: seq, t: to_millis(at), l: line }
+    pub fn new(
+        session_id: &SessionId,
+        seq: u64,
+        at: SystemTime,
+        kind: FeedKind,
+        line: String,
+    ) -> Self {
+        Self { s: session_id.as_str().to_owned(), q: seq, t: to_millis(at), l: line, k: kind }
     }
 }
 
 impl From<&FeedRow> for FeedRowWire {
     fn from(row: &FeedRow) -> Self {
-        Self::new(&row.session_id, row.seq, row.at, row.line.clone())
+        Self::new(&row.session_id, row.seq, row.at, row.kind, row.line.clone())
     }
 }
 

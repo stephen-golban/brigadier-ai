@@ -27,6 +27,7 @@ mod writer;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+pub use feed::FeedKind;
 pub use schema::{
     ApprovalRecord, FeedRow, ProjectRow, SessionRecord, SessionRow, SessionStatus, EXPIRED_REASON,
 };
@@ -423,7 +424,7 @@ mod tests {
         for seq in 1..=3u64 {
             store
                 .handle()
-                .feed(id.clone(), seq, at(seq), format!("before {seq}"))
+                .feed(id.clone(), seq, at(seq), FeedKind::Sys, format!("before {seq}"))
                 .await
                 .expect("feed");
         }
@@ -438,7 +439,7 @@ mod tests {
             let seq = old_seq + offset;
             store
                 .handle()
-                .feed(id.clone(), seq, at(100 + seq), format!("after {seq}"))
+                .feed(id.clone(), seq, at(100 + seq), FeedKind::Sys, format!("after {seq}"))
                 .await
                 .expect("feed");
         }
@@ -461,7 +462,7 @@ mod tests {
         // have rewritten the oldest row in place rather than appending.
         store
             .handle()
-            .feed(id.clone(), 1, at(999), "a restart at seq 1".to_owned())
+            .feed(id.clone(), 1, at(999), FeedKind::Sys, "a restart at seq 1".to_owned())
             .await
             .expect("feed");
         store.handle().flush().await.expect("flush");

@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use brigadier_core::event::{Envelope, Event};
-use brigadier_store::feed::terse_line;
+use brigadier_store::feed::{kind, terse_line};
 
 use crate::lock;
 use crate::sink::FeedSink;
@@ -178,7 +178,8 @@ impl Batcher {
         if let Some(line) = terse_line(&env.event) {
             counters.total += 1;
             if visible {
-                let row = FeedRowWire::new(&env.session_id, env.seq, env.at, line);
+                let row =
+                    FeedRowWire::new(&env.session_id, env.seq, env.at, kind(&env.event), line);
                 if accum.rows.len() >= PROJECT_ROW_CAP {
                     accum.rows.pop_front();
                     counters.dropped += 1;
@@ -598,6 +599,10 @@ mod tests {
 
     /// The arithmetic `docs/research/feed-rendering.md` §4 predicts, measured here rather than
     /// assumed: 24 rows of worst-case 200-byte lines in one message, with headroom.
+    ///
+    /// `k` (added 2026-09-03) costs `,"k":"think"` — 12 bytes at the longest slug — so 24 rows
+    /// cost 288 bytes more than they did. The measurement below is the check that matters; the
+    /// row count is not re-derived from the table.
     #[test]
     fn a_full_frame_of_worst_case_rows_measures_what_the_research_predicted() {
         let rows: Vec<FeedRowWire> = (0..MAX_ROWS_PER_MESSAGE)
@@ -606,6 +611,8 @@ mod tests {
                 q: i as u64,
                 t: 1_756_800_000_000,
                 l: "x".repeat(200),
+                // The longest slug in the closed set, so the frame is measured at its worst.
+                k: brigadier_store::FeedKind::Think,
             })
             .collect();
         let batch = FeedBatch {
