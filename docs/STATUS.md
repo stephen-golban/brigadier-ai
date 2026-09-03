@@ -210,15 +210,28 @@ if a capture ever shows an `init` with no matching `result` outside the kill pat
 which case a timer is required. `docs/research/unprompted-init.md` states the open question, the
 three uncaptured paths that could produce one, and the live spike that would settle it.
 
-**An open decision for the owner, not a defect:** `--color-text-muted-side` is **4.456:1** on
-`--color-sidebar-bg`, against WCAG AA's 4.5:1 for normal text — it misses by 0.044. **[measured]**,
-and not a conversion artifact: the source hex `#a3a3a3` on `#3a3b3b` computes to the same number.
-The token is tagged `[contrast]`, meaning the colour was deliberately lightened *in order to pass*
-and stopped one step short, and its comment claimed 4.6:1. **The colour was left unchanged** and
-the comment corrected, because choosing a replacement is a design decision about a palette sampled
-from a reference app. `docs/research/oklch-tokens.md` §4 holds every ratio and notes that `#a5a5a5`
-and lighter clear the threshold — arithmetic, **[asserted]**, never checked against the reference
-screenshot, which is what actually decides it.
+**Resolved by the owner, 2026-09-03 — `--color-text-muted-side` now passes AA.** It was
+`#a3a3a3` / `oklch(0.7155 0 0)`, **4.456:1** on `--color-sidebar-bg` (`#3a3b3b`), missing WCAG AA's
+4.5:1 for normal text by 0.044. The owner chose `#a5a5a5` / `oklch(0.7219 0 0)`, which is
+**4.563:1** — **[measured]**, re-derived from the oklch value the app actually ships, by the same
+script that produced the 18-token table and at the same L 4dp / C 5dp / H 2dp. (The source hex
+gives 4.562; the shipped value is the one quoted.) Both hexes round-trip exact. The token keeps its
+`[contrast]` tag: it is still a deliberate departure from the measured reference palette, now one
+that passes.
+
+**Why this stays in the log after the number is fixed.** The token carried `[contrast]` because
+somebody had *already* found this exact problem and *already* lightened it once — `#848484` →
+`#a3a3a3` — then stopped 0.044 short and recorded "4.6:1" in a comment. The comment asserted a pass;
+the arithmetic was a fail; and it survived exactly as long as the comment was trusted instead of
+recomputed. **Two of the other three ratios in that same comment block were also wrong.** The rule
+is re-derive, never trust an annotation: `docs/research/oklch-tokens.md` §4 has the full account and
+every ratio, including `#848484`'s rejected value re-deriving to **3.005:1**, which matches what was
+recorded.
+
+**Not verified: `#a5a5a5` has not been looked at.** The arithmetic is checked; "visually
+indistinguishable from `#a3a3a3`" is the owner's judgement, not a comparison against the reference
+screenshot. And the pixel on screen will be the **Display P3 conversion** of `#a5a5a5`, not
+`#a5a5a5` — the sidebar is the vibrancy-dependent surface and the least predictable one to eyeball.
 
 **Not a defect, checked and dismissed:** `tauri.conf.json`'s `"targets": "all"` was reported as
 falsely claiming cross-platform support. It does not. **[measured]** — on this machine that setting

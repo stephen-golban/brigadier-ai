@@ -5,7 +5,8 @@
  * on 2026-09-02 and sampled pixel by pixel; see `docs/plans/ui-restyle-notes.md` for the method
  * and the screenshot. Values tagged [derived] were interpolated between measured ones, and the
  * two tagged [contrast] deliberately depart from the reference because the measured colour
- * fails WCAG AA against its own background.
+ * fails WCAG AA against its own background. One value carries [owner <date>]: it was set by an
+ * owner decision rather than sampled or derived, and the date is when that call was made.
  *
  * The app is dark only. The reference stays dark under a light system appearance (captured both
  * ways; only its translucent sidebar material changed), so there is no light scheme here either.
@@ -40,8 +41,9 @@
  * the identical 8-bit hex and every annotated contrast ratio reproduces to within 0.002. Coarser
  * rounding does not (docs/research/frontend-stack.md §2.6, and §1 of the oklch-tokens file):
  * L 2dp / C 3dp / H 1dp breaks 11 of 18 and moves a ratio by up to 0.110, and two decimals on all
- * three breaks 13 of 18 and moves one by up to 0.105 — enough that --color-text-muted-side's
- * 4.455:1, which already fails AA, would read as 4.557:1 and appear to pass. Achromatic greys
+ * three breaks 13 of 18 and moves one by up to 0.105. What that costs, concretely: at two decimals
+ * --color-text-muted-side's #a5a5a5 and the #a3a3a3 it replaced both round to L 0.72 and read as
+ * 4.557:1, so the rounding cannot tell a token that fails AA from the fix for it. Achromatic greys
  * carry a meaningless hue at C=0 and are written `oklch(L 0 0)`. The original hex is on every
  * line; it is the artifact that was measured.
  */
@@ -64,11 +66,12 @@
   --color-text: oklch(1.0000 0 0); /* #ffffff [measured]; 17.76:1 on --color-thread-bg */
   --color-text-sidebar: oklch(0.9097 0 0); /* #e1e1e1 [measured] sidebar row label; 8.59:1 on --color-sidebar-bg */
   --color-text-muted: oklch(0.6133 0 0); /* #848484 [measured] section label; 4.75:1 on --color-thread-bg (the old comment said 4.6:1) */
-  /* [contrast] #848484 is 3.00:1 on --color-sidebar-bg, so this was lightened. It reaches 4.46:1,
-   * which is BELOW the 4.5:1 AA threshold for normal text — the old comment claimed 4.6:1 and was
-   * wrong. Left unchanged deliberately: picking a replacement is a design decision for the owner,
-   * not a token conversion. Open question in docs/research/oklch-tokens.md §4. */
-  --color-text-muted-side: oklch(0.7155 0 0); /* #a3a3a3 */
+  /* [contrast] The measured #848484 is 3.005:1 on --color-sidebar-bg, so this row was lightened.
+   * The first lightening stopped short: #a3a3a3 is 4.456:1, under the 4.5:1 AA threshold for
+   * normal text, and its comment claimed 4.6:1. Owner bumped it to #a5a5a5 on 2026-09-03, which
+   * clears at 4.563:1 — the one token in this file whose value is a decision rather than a
+   * measurement or a derivation. docs/research/oklch-tokens.md §4. */
+  --color-text-muted-side: oklch(0.7219 0 0); /* #a5a5a5 [owner 2026-09-03] sidebar secondary text; 4.563:1 on --color-sidebar-bg, passes AA */
   --color-text-placeholder: oklch(0.6862 0 0); /* #9a9a9a [contrast] measured #606060 is 2.28:1 on --color-composer-bg (the old comment said 2.9:1); this is 5.10:1 */
 
   /* --- state ---------------------------------------------------------- */
