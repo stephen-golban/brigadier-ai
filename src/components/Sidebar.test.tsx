@@ -195,6 +195,28 @@ describe("a collapsed project that holds the open session", () => {
     expect(holds).not.toBe(running);
   });
 
+  /**
+   * W4-C2 drew this one fact twice: this element, plus an accent rail painted onto the row by a
+   * CSS `box-shadow` 230px to its left. **A DOM test can only pin the half that is a DOM
+   * element** — the rail existed nowhere in the tree and was found by a pixel scan of a real
+   * screenshot. This pins the half that is pinnable; the CSS half is held by there being no rule
+   * left that targets the row.
+   */
+  it("draws the fact with exactly one element", async () => {
+    const user = userEvent.setup();
+    mount({
+      projects: [project("p-live", "job-portal")],
+      selectedProjectId: "p-live",
+      selectedSessionId: "live",
+      sessions: { live: session("live", "p-live", "running") },
+      order: ["live"],
+    });
+
+    await user.click(screen.getByRole("button", { name: /collapse job-portal/i }));
+
+    expect(screen.getAllByRole("img", { name: "holds the open session" })).toHaveLength(1);
+  });
+
   it("carries the marker for a project whose held session is not running", async () => {
     const user = userEvent.setup();
     mount({

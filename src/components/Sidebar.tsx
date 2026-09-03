@@ -17,7 +17,8 @@
  *     load-bearing for *running* work; the thread you are actually reading deserves the same, and
  *     a sidebar that disowns what fills the main panel is disorienting. "Something is running in
  *     here" and "the thing you are reading is in here" are different facts, so they get different
- *     shapes: a round green dot and a straight accent rail.
+ *     shapes: a round green dot and a straight accent bar, side by side in the same trailing slot
+ *     as the count. One element draws each fact, once.
  *   - **Default openness is derived, never forced.** Open when the project is selected or has a
  *     live session; closed otherwise. An explicit caret click overrides that for the rest of the
  *     window's life. Nothing ever collapses under the user's hands.
@@ -355,19 +356,19 @@ export function Sidebar({
           // sidebar says so. Distinct from the run marker on purpose: "something is running in
           // here" and "the thing you are reading is in here" are different facts and must not
           // collapse into one indicator.
+          // Exactly one element draws this, and it is the `.side-holds` bar in the trailing meta
+          // slot below. W4-C2 shipped that bar *and* an accent rail on the row, which is one fact
+          // drawn twice, 230px apart; the rail is gone (`src/index.css`, `.side-holds`).
           const holds =
             !open && selectedSessionId !== null && own.includes(selectedSessionId);
-          const rowClass = [
-            "side-project",
-            selected && selectedSessionId === null ? "selected" : null,
-            holds ? "holds" : null,
-          ]
-            .filter((c) => c !== null)
-            .join(" ");
 
           return (
             <div key={p.id} className="side-group">
-              <div className={rowClass}>
+              <div
+                className={
+                  selected && selectedSessionId === null ? "side-project selected" : "side-project"
+                }
+              >
                 <button
                   type="button"
                   className="side-caret"
