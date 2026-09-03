@@ -111,9 +111,17 @@ CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     // Migration 1 (2026-09-03). The webview gets one pre-rendered string per row and had to
     // parse its leading label to tell model prose from a tool call. `kind` is that discriminator,
     // stored so a row replayed by `feed_tail` carries the same `k` as the live row did.
-    // A pre-existing row keeps its line and reads back as `sys`, the documented fallback.
+    //
+    // A pre-existing row keeps its line and reads back as `unknown`, which is a class of its own:
+    // its kind was never recorded. It is deliberately not `sys` — `sys` means the three session
+    // lifetime events, and defaulting to it would have told a UI filter that every row written
+    // before today was session housekeeping.
+    //
+    // Edited in place on 2026-09-03, hours after it was written (959bd0c), rather than superseded
+    // by a migration 2: it had run only on test tempdirs and scratch databases, never on the
+    // owner's data dir. Any later change to this statement needs a new rung on the ladder.
     r#"
-ALTER TABLE feed ADD COLUMN kind TEXT NOT NULL DEFAULT 'sys';
+ALTER TABLE feed ADD COLUMN kind TEXT NOT NULL DEFAULT 'unknown';
 "#,
 ];
 
@@ -543,4 +551,29 @@ pub(crate) fn approval_params(
         to_millis(approval.opened_at),
         kind_json(&approval.kind),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The migration's column default, proven rather than asserted: a row written by the
+    /// pre-migration statement — no `kind` column at all — must read back as
+    /// [`FeedKind::Unknown`], never as `sys`, which is a class of its own.
+    #[test]
+    fn a_row_that_predates_the_kind_column_reads_back_as_unknown() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = open_connection(&dir.path().join("t.sqlite")).expect("open");
+        conn.execute("INSERT INTO sessions(id) VALUES ('s1')", []).expect("session");
+        conn.execute(
+            "INSERT INTO feed(session_id, seq, at, line) VALUES ('s1', 1, 0, 'an old row')",
+            [],
+        )
+        .expect("feed");
+        let mut stmt =
+            conn.prepare("SELECT session_id, seq, at, kind, line FROM feed").expect("prepare");
+        let row = stmt.query_row([], feed_from_row).expect("read");
+        assert_eq!(row.kind, FeedKind::Unknown, "an unrecorded kind is not `sys`");
+        assert_eq!(row.line, "an old row", "the line itself is never lost");
+    }
 }

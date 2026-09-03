@@ -50,6 +50,7 @@ FeedBatch {
 FeedRowWire   { s: string /*session_id*/, q: number /*seq*/, t: number /*at_ms*/, l: string /*line*/,
                 k: FeedKind /*what the row is*/ }
 FeedKind      = "turn" | "tool" | "text" | "think" | "user" | "sub" | "appr" | "warn" | "err" | "sys"
+              | "unknown"
 SessionCounter{ session_id: string, rows_total: number, rows_dropped: number }
 ```
 
@@ -70,7 +71,7 @@ SessionCounter{ session_id: string, rows_total: number, rows_dropped: number }
 **Added 2026-09-03. Additive: `s`, `q`, `t` and `l` keep their names and their meaning.** A row is
 one pre-rendered string, and without `k` the webview had to parse `l`'s leading label to tell model
 prose from a tool call. `k` is that discriminator, and the set is closed — a value outside it is a
-protocol error, and a slug a future build adds reads back as `"sys"` rather than failing the row.
+protocol error, and a slug a future build adds reads back as `"unknown"` rather than failing the row.
 
 | `k` | derived from |
 |---|---|
@@ -83,7 +84,14 @@ protocol error, and a slug a future build adds reads back as `"sys"` rather than
 | `appr` | `Event::RequestOpened`, `Event::RequestResolved` |
 | `warn` | `Event::RuntimeWarning` |
 | `err` | `Event::RuntimeError` (fatal or not) |
-| `sys` | `Event::SessionStarted`, `Event::SessionExited`, `Event::SessionCompacted`; and the fallback for an unknown stored slug |
+| `sys` | `Event::SessionStarted`, `Event::SessionExited`, `Event::SessionCompacted` — those three and nothing else |
+| `unknown` | No event. A row whose kind was never recorded: it predates `feed.kind` (migration 1, 2026-09-03), or its stored slug came from a build that knows a class this one does not |
+
+**`unknown` is not a class, it is the absence of one.** A UI toggle that filters or styles by `k`
+must **leave `unknown` rows alone** — show them under every filter, or under none, but never file
+them under a real class. Folding them into `sys` was the first cut of this field and was wrong:
+the owner has 10,037 rows written before migration 1, and every one of them would have claimed to
+be session housekeeping. `feed::kind` never returns `unknown`; only the store does.
 
 Rust: `brigadier_store::FeedKind` and `brigadier_store::feed::kind(&Event)`
 (`crates/store/src/feed.rs`), pinned in `crates/store/tests/feed.rs::kind_is_pinned_for_every_variant`.
@@ -91,10 +99,12 @@ Rust: `brigadier_store::FeedKind` and `brigadier_store::feed::kind(&Event)`
 until it is mapped. The value is also persisted in `feed.kind` (migration 1), so a row replayed by
 `feed_tail` carries the same `k` the live row did.
 
-**Byte cost, measured 2026-09-03.** `,"k":"think"` is 12 bytes at the longest slug (11 at a
-four-character one). A full frame of 24 worst-case 200-byte rows serializes to **6,765 bytes**,
-up from 6,477 (`crates/supervisor/src/batcher.rs::a_full_frame_of_worst_case_rows_measures_what_the_research_predicted`,
-`24 x 12 = 288 B`). That is 1,235 bytes under `MAX_MESSAGE_BYTES = 8000` and 1,427 under Tauri's
+**Byte cost, measured 2026-09-03.** `,"k":"unknown"` is 14 bytes at the longest slug in the type;
+a *batched* row can never carry it (batch rows come from `feed::kind`, longest output `think` at
+12 bytes), so 14 is the conservative bound. A full frame of 24 worst-case 200-byte rows serializes
+to **6,813 bytes**, up from 6,477
+(`crates/supervisor/src/batcher.rs::a_full_frame_of_worst_case_rows_measures_what_the_research_predicted`,
+`24 x 14 = 336 B`). That is 1,187 bytes under `MAX_MESSAGE_BYTES = 8000` and 1,379 under Tauri's
 8192-byte `eval` cliff, so **the 24-row cap still holds**. The `serialized.len() < 8000` re-check
 before every send is unchanged and remains the binding check.
 

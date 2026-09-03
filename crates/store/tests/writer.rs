@@ -39,7 +39,7 @@ async fn ten_thousand_feed_ops_are_fast_and_the_ring_holds() {
         let id = SessionId::new(ids[(seq % 3) as usize]);
         store
             .handle()
-            .feed(id, seq, SystemTime::now(), FeedKind::Sys, format!("row {seq}"))
+            .feed(id, seq, SystemTime::now(), FeedKind::Unknown, format!("row {seq}"))
             .await
             .expect("feed");
     }
@@ -72,7 +72,7 @@ async fn an_op_sent_before_flush_is_visible_after_it() {
     store.handle().upsert_session(row).await.expect("upsert");
     store
         .handle()
-        .feed(id.clone(), 1, SystemTime::now(), FeedKind::Sys, "hello".into())
+        .feed(id.clone(), 1, SystemTime::now(), FeedKind::Unknown, "hello".into())
         .await
         .expect("feed");
     store.handle().flush().await.expect("flush");
@@ -127,7 +127,7 @@ async fn fifty_thousand_feed_ops_do_not_grow_the_file() {
     for seq in 0..50_000u64 {
         store
             .handle()
-            .feed(id.clone(), seq, SystemTime::now(), FeedKind::Sys, format!("{seq} {payload}"))
+            .feed(id.clone(), seq, SystemTime::now(), FeedKind::Unknown, format!("{seq} {payload}"))
             .await
             .expect("feed");
     }
@@ -191,7 +191,7 @@ async fn deleting_a_project_cascades_to_its_sessions_and_their_children() {
     let mut row = SessionRow::new(id.clone());
     row.project_id = Some("p1".into());
     store.handle().upsert_session(row).await.expect("session");
-    store.handle().feed(id.clone(), 1, SystemTime::now(), FeedKind::Sys, "x".into()).await.expect("feed");
+    store.handle().feed(id.clone(), 1, SystemTime::now(), FeedKind::Unknown, "x".into()).await.expect("feed");
     store.handle().flush().await.expect("flush");
 
     let got = store.handle().session(id).await.expect("read").expect("row");
@@ -210,7 +210,7 @@ async fn a_query_does_not_wait_out_the_batch_window() {
     for seq in 0..5u64 {
         store
             .handle()
-            .feed(id.clone(), seq, SystemTime::now(), FeedKind::Sys, format!("row {seq}"))
+            .feed(id.clone(), seq, SystemTime::now(), FeedKind::Unknown, format!("row {seq}"))
             .await
             .expect("feed");
     }
@@ -230,7 +230,7 @@ async fn a_lone_op_commits_on_its_own_window_and_the_writer_then_parks() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = open_store(dir.path(), 500);
     let id = SessionId::new("s1");
-    store.handle().feed(id.clone(), 1, SystemTime::now(), FeedKind::Sys, "lone".into()).await.expect("feed");
+    store.handle().feed(id.clone(), 1, SystemTime::now(), FeedKind::Unknown, "lone".into()).await.expect("feed");
 
     // Past the 250 ms deadline with nothing else sent: the batch commits on its own and the
     // thread goes back to a blocking receive.
@@ -253,7 +253,7 @@ async fn a_flush_after_shutdown_fails_instead_of_hanging() {
     let orphan = store.handle().clone();
     store
         .handle()
-        .feed(SessionId::new("s1"), 1, SystemTime::now(), FeedKind::Sys, "x".into())
+        .feed(SessionId::new("s1"), 1, SystemTime::now(), FeedKind::Unknown, "x".into())
         .await
         .expect("feed");
     store.close().await.expect("close");

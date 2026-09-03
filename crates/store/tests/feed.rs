@@ -341,6 +341,7 @@ fn kind_is_pinned_for_every_variant() {
         (Event::RuntimeWarning { message: "w".into() }, "warn"),
         (Event::RuntimeError { message: "e".into(), fatal: true }, "err"),
     ];
+    let cases_covered: Vec<&str> = cases.iter().map(|(_, k)| *k).collect();
     for (event, expected) in cases {
         assert_eq!(kind(&event).as_str(), expected, "for {event:?}");
         // The slug is the whole serialization; nothing else crosses the wire.
@@ -350,8 +351,21 @@ fn kind_is_pinned_for_every_variant() {
         );
         assert_eq!(FeedKind::from_slug(expected), kind(&event));
     }
-    // A slug from a newer build degrades to `sys` rather than failing the row.
-    assert_eq!(FeedKind::from_slug("something-new"), FeedKind::Sys);
+    // `kind` never produces `unknown`: every event has a class.
+    assert!(
+        !cases_covered.contains(&"unknown"),
+        "`unknown` is for rows whose kind was never recorded, not for any event",
+    );
+    // A slug this build does not know degrades to `unknown` — never to `sys`, which is a real
+    // class of its own, and never to an error that would lose the row.
+    assert_eq!(FeedKind::from_slug("something-new"), FeedKind::Unknown);
+    assert_eq!(FeedKind::from_slug(""), FeedKind::Unknown);
+    assert_eq!(FeedKind::from_slug("sys"), FeedKind::Sys);
+    assert_eq!(FeedKind::Unknown.as_str(), "unknown");
+    assert_eq!(FeedKind::from_slug("unknown"), FeedKind::Unknown);
+    // The default is `unknown`, so a row built without one claims no class rather than claiming
+    // to be session housekeeping. This is what migration 1's column default rests on.
+    assert_eq!(FeedKind::default(), FeedKind::Unknown);
 }
 
 #[test]
