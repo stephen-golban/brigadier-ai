@@ -45,10 +45,10 @@ Two hypotheses, no number between them. This file is the number.
   (**[source]** `tauri-2.11.5/src/webview/mod.rs:487`), and this app's window comes from
   `tauri.conf.json`, not from a builder. `page_load_started` is the first stage after that
   response, not before it.
-- **No `DOMContentLoaded` stage has been observed.** Its Rust half is in the tree
-  (`src-tauri/src/commands.rs:332-337`) and the emitter, `src/paint.ts`, belongs to the frontend
-  session, but no launch has yet printed the stage. No number below includes it. Details, and the
-  three defects in this file's earlier recipes, at the bottom.
+- **The `DOMContentLoaded` stage exists and has fired**, but it landed after the n=12 run below:
+  the guard is `src-tauri/src/commands.rs:332-337` and the emitter is `src/paint.ts`, the frontend
+  session's. **No number in the n=12 table includes it**; its own numbers are the 2026-09-04 section,
+  and the three defects it took to get there are at the bottom.
 
 ## Method
 
@@ -137,7 +137,10 @@ that also had a Rust compile running. **[measured]**
    cannot be the `load` event, so the subresource fetch and the inflate have not happened yet when
    it fires. **[asserted]**, from that arithmetic, not from a WebKit source read. The net effect on
    the original claim: it loses its 100 ms ceiling and gains an 83.3 ms one that it shares with
-   React, and splitting that segment is the measurement that decides it.
+   React, and splitting that segment is the measurement that decides it. **That split has since
+   been measured** and is in the 2026-09-04 section below: 49.6 ms fetch plus parse against
+   28.5 ms mount plus render, so the scheme handler and the inflate share a **49.6 ms** ceiling,
+   not 83.3.
 5. **The largest single segment is before any of our code runs in the window's lifetime.**
    `builder_built` to `setup_entry` is 108.7 ms p50, 36% of the launch. That interval is tauri's
    own `setup` creating the configured window, `WebviewWindowBuilder::from_config(...).build()`,
@@ -151,6 +154,65 @@ that also had a Rust compile running. **[measured]**
    applied. **[measured]**
 8. **`claude --version` is 7.3 ms p50, 11.1 ms worst**, and is 90% of `state::build`. Against a
    native arm64 `claude` only; the npm-shim case is still unmeasured. **[measured]**
+
+## 2026-09-04: the 83.3 ms is split, and the `dcl` stage fired
+
+Run by the **frontend session**, 2026-09-04, five launches with `BRIGADIER_TRACE=1`, one cold and
+four warm, after the `dcl` emitter landed in `src/paint.ts`. All figures below are theirs and all
+are **[measured]**.
+
+**`stage=dcl` printed on all five launches and `dcl-approx` on none**, so
+`domContentLoadedEventStart` was populated everywhere the instrument read it and the fourth recipe
+below is the one that works. One warm launch verbatim, milliseconds since `main()`:
+
+| stage | ms |
+|---|---|
+| `setup_exit` | 156.018 |
+| `page_load_started` | 200.818 |
+| `page_load_finished` | 203.778 |
+| `dcl` | 254.046 |
+| `fcp` | 282.046 |
+
+Warm medians, n=4, of the segment that was undivided until now:
+
+| half | p50 | samples |
+|---|---|---|
+| `page_load_finished` to `dcl`, subresource fetch plus parse | **49.6** | 50.1 / 48.8 / 49.0 / 50.3 |
+| `dcl` to `fcp`, React mount plus first render | **28.5** | 60.0 / 23.0 / 29.0 / 28.0 |
+| total | 78.1 | against 83.3 undivided on 2026-09-03 |
+
+**Fetch plus parse is the larger half, roughly 64/36.** So inlining the assets into one scheme
+response, or trimming the bundle (now 273.98 kB), targets the larger half and is worth **up to
+about 50 ms**, not 83 and not 28.
+
+Two cautions on those two halves, and they are not equal. The fetch half is tight: four samples
+inside 1.5 ms. **The mount half is weak.** n=4, one sample is an outlier at 60.0 against a 23 to 29
+cluster, and its values are integers because both endpoints are page-relative timestamps clamped to
+1 ms. It needs more samples before anyone plans against 28.5.
+
+**The cold run corrects a figure this file quoted.** Its page half split 27.6 / 46.0 for 73.6 ms
+total, in the same order as the table above, which is **not inflated at all** against the warm 78.1.
+The cold run inverts the warm ratio between the two halves, and it is one sample. The whole cold
+penalty sat somewhere else: `builder_built` to `setup_entry` was **420 ms** cold against about 104
+warm. **A cold launch is slow in Tauri's window creation, not in the page.**
+
+**The 2026-09-03 numbers replicated**, on a tree that had since taken the feed redesign and bundle
+growth: `builder_built` to `setup_entry` 104.2 against 108.7, `state::build` 9.3 against 8.1,
+`setup_exit` to `page_load_started` 45.0 against 55.6, `main` to `fcp` 283.9, exec to FCP about
+288.8 with 4.9 ms pre-main. That is inside the 287 to 295 ms band §1.4 recorded, so **neither the
+feed redesign nor the bundle growth regressed the launch.**
+
+**`paint.ndjson` gained no `trace:` line across the five launches, and that check is no longer
+vacuous**: the five `stage=dcl` lines prove the reports reached `report_paint`, so the file staying
+clean is the writer-side exclusion working rather than nothing having been sent.
+
+**One caveat, and it is not small: every number in this run was taken with the display locked**
+(`CGSSessionScreenIsLocked=1`). FCP is a render timestamp and not a presentation one, so a locked
+display need not move it, but landing inside the warm band is weak evidence rather than proof that
+it did not. The 800x500 layout check and feed scroll FPS were not measured in this run either.
+
+**Incidental, for whoever writes the next launch order:** `npm run tauri build` needs
+`PATH="$HOME/.cargo/bin:$PATH"` when it is run from a non-interactive shell.
 
 ## File descriptors
 
@@ -182,26 +244,28 @@ third one it did not list is.**
   15.9 ms worst, against a 90 ms budget miss, and it costs a ready-event protocol plus a window of
   commands that must answer "not yet". Revisit only if `claude --version` gets slow, which is the
   one part of it that could: an npm-shim `claude` is unmeasured and would land here.
-- Inlining HTML, JS and CSS into one scheme response: **not decidable on these numbers.** Whatever
-  it would save comes out of the 83.3 ms `page_load_finished` to `fcp` segment, which this
-  instrument does not divide between scheme delivery, inflate and React. It cannot come out of the
-  55.6 ms first response, which already serves one 390-byte document. Split the 83.3 ms first;
-  building against an undivided number is exactly how the 100 ms attribution happened.
+- Inlining HTML, JS and CSS into one scheme response, or trimming the bundle: **decidable now, and
+  worth up to about 50 ms.** The 2026-09-04 section splits the segment this bullet said could not be
+  divided: subresource fetch plus parse is 49.6 ms p50 and React mount plus render is 28.5 ms, so
+  the work targets the larger half. It still cannot come out of the 55.6 ms first response, which
+  already serves one 390-byte document. Do not quote 83, and do not quote 28.
 - The two segments that carry the launch are `builder_built` to `setup_entry` at 108.7 ms (window
   and WKWebView construction, before our code) and `page_load_finished` to `fcp` at 83.3 ms
   (subresource fetch plus React mount, not separated by this instrument). Together they are 64% of
-  the launch. **The next measurement is the split of that 83.3 ms**, which needs the
-  `DOMContentLoaded` stage below, whose Rust half has landed and whose page half has not; until it
-  exists, "shrink the bundle" and "speed up the handler" are the same unresolved 83 ms.
+  the launch. **The split of that 83.3 ms was the next measurement and it has been taken**: 49.6 ms
+  fetch plus parse, 28.5 ms mount plus render (2026-09-04, below). "Shrink the bundle" and "speed up
+  the handler" now name the same 49.6 ms half, and are no longer the same question as "make React
+  mount faster".
 - The 108.7 ms is a second, independent confirmation of trap 2 in `perceived-performance.md`: a
   splash window is a second WKWebView, and this is the measured price of the first one.
   **[measured]**
 
-## The `dcl` stage: Rust half landed, page half outstanding
+## The `dcl` stage: both halves landed, and what it took
 
-The receiving end is in the tree and inert. `src-tauri/src/commands.rs:374` names the `trace:`
-namespace and `src-tauri/src/commands.rs:332-337` is the guard that turns a label in it into
-a signpost. Nothing in this tree sends such a label, so the arm is never taken. **[source]**
+Both ends are in the tree and the stage has fired (2026-09-04, five launches for five, above).
+`src-tauri/src/commands.rs:374` names the `trace:` namespace and
+`src-tauri/src/commands.rs:332-337` is the guard that turns a label in it into a signpost; the
+emitter is `src/paint.ts` and belongs to the frontend session. **[source]**
 
 No wire change was needed on either side: `DOMContentLoaded` is one timestamp with no duration,
 which is what the existing `interaction` variant already carries, so `src/wire.ts` and
@@ -229,8 +293,11 @@ return. **Version three fixed both of those and was still holed, at one instant:
 `DOMContentLoaded` has dispatched and before step 6.3 runs.** In that window `readyState` is
 `interactive` and `domContentLoadedEventEnd` is still 0, so its branch 1 skipped on the zero and its
 branch 2 attached a listener for an event that had already fired. Nothing reported, again. In
-production the stage has never fired: the frontend session's cold n=1 run still reports
-`page_load_finished` to FCP as 142.2 ms, undivided. **[measured]**
+production the stage did not fire until the fourth version below: the run that found this hole
+reported `page_load_finished` to FCP as 142.2 ms, undivided, on a cold n=1 launch. **That cold
+figure is superseded** by the 2026-09-04 section above, which split its own cold launch into 27.6
+plus 46.0 for 73.6 ms and put the cold penalty in `builder_built` to `setup_entry` at 420 ms
+instead. **[measured]**
 
 The spec says exactly why, in HTML Standard §13.2.7 "The end", the steps run once the user agent
 stops parsing. **[documented]**, fetched 2026-09-04:
@@ -324,25 +391,30 @@ every future reader has to be told.
 
 ## Not checked
 
-- **No `dcl` stage has ever been observed in brigadier itself.** The recipe is proven in a
-  `WKWebView` harness running the byte-identical `src/paint.ts`, not through `report_paint` and the
-  trace stream, and the two probes are small localhost pages whose millisecond figures describe
-  those pages and not this app. `dcl` is unproven until a launch prints it, and the 83.3 ms
-  `page_load_finished` to `fcp` segment stays undivided until then.
+- **The `dcl` stage has now fired in brigadier**, five launches out of five, so the recipe is no
+  longer the open question. What is open is the run it fired in: **every number in it was taken with
+  the display locked** (`CGSSessionScreenIsLocked=1`), and landing inside the warm band is weak
+  evidence rather than proof that the lock did not move FCP.
+- **The mount half rests on n=4 with an outlier.** 28.5 ms p50 from 60.0 / 23.0 / 29.0 / 28.0, both
+  endpoints clamped to 1 ms because they are page-relative timestamps. The 49.6 ms fetch half is
+  tight, four samples inside 1.5 ms; the mount half is not, and should not be planned against.
+- **The 800x500 layout check and feed scroll FPS were not measured** in the 2026-09-04 run.
 - **Cold start was not measured.** `sudo purge` is unavailable to this session, so every number is
   warm. The 12 runs also share one warm scratchpad `HOME`; first-ever launch (arm A1) and the
   owner's real data directory (arm B) were not re-run.
 - **n=12 supports a median and a worst, not a p95.** No number here answers a p95 budget.
-- **The 83.3 ms from `page_load_finished` to `fcp` is not decomposed.** Subresource fetch through
-  the scheme handler, brotli inflate of the 271.29 kB bundle, React parse, mount and first render
-  are all inside it, in one undivided number.
+- **The 83.3 ms from `page_load_finished` to `fcp` is now split at `dcl` but not below it.**
+  Subresource fetch through the scheme handler, the brotli inflate and the HTML and JS parse share
+  the 49.6 ms first half, and nothing separates those three from each other; React mount and first
+  render are the 28.5 ms second half.
 - **`page_load_finished`'s exact WebKit meaning was not established** beyond wry calling it from
   `didFinishNavigation`. At 2.9 ms after commit, for a document whose only script is a deferred
   271 kB ES module, it is almost certainly not the `load` event. Do not read it as one.
 - **The scheme handler was still never timed on its own.** This file confines its cost to the
-  83.3 ms `page_load_finished` to `fcp` segment and rules it out of the 55.6 ms first response, so
-  the 100 ms attribution loses its ceiling. It does not replace it with a measurement of the
-  handler, and it does not separate the handler from the inflate or from React inside that 83.3 ms.
+  49.6 ms `page_load_finished` to `dcl` half and rules it out of both the 55.6 ms first response and
+  the 28.5 ms mount half, so the 100 ms attribution now has a 49.6 ms ceiling. It still does not
+  replace it with a measurement of the handler, and it does not separate the handler from the
+  inflate or from the parse inside that 49.6 ms.
 - **The 108.7 ms window and WKWebView segment is not decomposed either.** tao window creation,
   WKWebView construction, Tauri's init scripts and the activation policy are one number.
 - **Load average was 4.68 to 4.89 with a concurrent Rust compile.** No arm ran on a quiet machine,

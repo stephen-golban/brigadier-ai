@@ -284,6 +284,28 @@ attribution above is unsupported as stated: its cost is confined to at most that
 and its actual share of it is unmeasured. exec to FCP was **305.3 ms** p50 in that run, consistent
 with the 287–295 ms above under concurrent build load **[measured]**.
 
+**2026-09-04, the frontend session split the last undivided segment.** Five launches with
+`BRIGADIER_TRACE=1`, one cold and four warm, after the `dcl` signpost (`DOMContentLoaded`, reported
+through `report_paint`) landed in `src/paint.ts`; `stage=dcl` printed on all five. Warm medians,
+n=4: `page_load_finished` → `dcl`, the subresource fetch plus parse, is **49.6 ms**, and `dcl` →
+FCP, React mount plus first render, is **28.5 ms**, for 78.1 ms against the 83.3 ms this section
+called undivided **[measured]**. **Fetch plus parse is the larger half, roughly 64/36**, so the
+scheme-plus-inflate share above has a **49.6 ms** ceiling rather than an 83.3 ms one, and inlining
+the assets or trimming the bundle (now 273.98 kB) is worth up to about 50 ms, not 83. The
+2026-09-03 figures replicated on a tree that had since taken the feed redesign and the bundle
+growth: `builder_built` → `setup_entry` 104.2 against 108.7, `state::build` 9.3 against 8.1,
+`setup_exit` → `page_load_started` 45.0 against 55.6, `main` → FCP 283.9, exec → FCP about 288.8
+with 4.9 ms pre-main, inside the 287–295 ms band **[measured]**. That run's cold launch also
+corrects the shape of a cold penalty: its page half was 27.6 + 46.0 = 73.6 ms, not inflated, while
+`builder_built` → `setup_entry` was **420 ms** cold against about 104 warm — **a cold launch is slow
+in Tauri's window creation, not in the page** **[measured]**. Three caveats carried verbatim: the
+mount half is **n=4 with an outlier** (60.0 / 23.0 / 29.0 / 28.0) and both endpoints are
+page-relative timestamps clamped to 1 ms, so 28.5 is not a number to plan against; the fetch half is
+tight by comparison, four samples inside 1.5 ms; and **every figure in the run was taken with the
+display locked** (`CGSSessionScreenIsLocked=1`), which FCP being a render rather than a presentation
+timestamp does not fully excuse — landing inside the warm band is weak evidence, not proof, that the
+lock did not move it. Full table and method in `docs/research/launch-signposts.md`.
+
 Two things that stay true: today's first contentful paint is **React's, not a static shell's**, so
 B1's target is not yet the thing being measured — W3-C now has a measured starting line and a real
 gap to close rather than a flattering estimate. And **a launch is not zero-`claude`**: each one
