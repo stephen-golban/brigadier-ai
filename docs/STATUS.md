@@ -30,8 +30,8 @@ one of the `s8-*`/`s9-*`/`s10-*` fixtures or names a later commit.
 
 The evidence column's *kind* varies, so read it before quoting a row. `f1b911f`, `b2c1a4c` and
 `8351335` are live runs against a real `claude` 2.1.258 child. `crates/proc/tests/`,
-`crates/core/tests/claude_adapter.rs`, `src/feedStore.test.ts`, `src/paint.test.ts` and
-`src/providers/ThemeProvider.test.tsx` are test suites in this tree, not live runs.
+`crates/core/tests/claude_adapter.rs` and the five front-end suites under `src/` are test suites in
+this tree, not live runs.
 `docs/research/persistence.md` and `feed-rendering.md` are research documents — a document, not a
 run. `7f03eb5` cites nothing at all. **No row is a live-`claude`-child proof unless
 its evidence says so.**
@@ -52,47 +52,54 @@ its evidence says so.**
 | a front-end test runner | `ad5a4a7` | 27 tests, `src/feedStore.test.ts`, `npm test` (Vitest + jsdom + Testing Library). They pin `src/feedStore.ts` only: the rAF drain's coalescing and its stop, the `ROW_CAP` 2000 head-trim on both rings, the `seedRows` two-pointer merge (order, `q` interleave, `q`-collision, reference stability, idempotence, ROW_CAP on the union, project ring untouched), cost taking the latest turn's cumulative figure and never summing, `seedSessions`' end/cost reconciliation, counter throttling at `COUNTER_FLUSH_MS`, array-reference stability, and the unknown-projects list. Not a live-child proof and not a UI proof. |
 | the app can time its own paints | `1c8b6f6` | 24 tests, `src/paint.test.ts`, and a build. `src/paint.ts` observes `first-contentful-paint` and reports it over `report_paint` (`docs/plans/ipc-contract.md`). Since run for real: `paint.ndjson` works end to end in a real window and `main_to_fcp_ms` matched its own `tracing` line on all 19 runs (`docs/research/perceived-performance.md` §1.4). **The interaction half has still never run** — `beginInteraction` has no caller anywhere and is tree-shaken out of the bundle, so B4/B6/B7 are untouched. |
 | the measured palette as oklch `@theme` tokens | `3e5c3fd` | 18 of 18 colour tokens round-trip hex→oklch→hex bit-exact and all 8 annotated contrast pairs re-derive to within 0.0017, verified twice independently (`docs/research/oklch-tokens.md`, and `frontend-stack.md` §2.6 arrived at the same ratios first). Unit tests and a build only — **nothing has been looked at in a running window.** |
+| the shell, and the first interaction timed | `a0901e5` | 28 new tests (`src/App.test.tsx` 10, `src/components/Sidebar.test.tsx` 18) plus a real window: the sidebar, project collapse and session selection were **driven by hand**, and 14 selections were timed through `beginInteraction` into `paint.ndjson` (**B4**, §4). `ThemeProvider` is now mounted (`src/main.tsx:22`). Seven AA failures were found and fixed in the process — see the landmine below. |
 
-**Never clicked in a real window:** the Resume button, the branch chip, the cleanup flow and the
-approvals dock are wired and exercised only by the browser mock, and **not one of them has a test**.
-The 66 front-end tests cover `src/feedStore.ts`, `src/paint.ts`, and one React component —
-`src/providers/ThemeProvider.tsx`, which **is not mounted anywhere** (`grep -rn ThemeProvider
-src/main.tsx src/App.tsx` returns nothing), has **no visual effect** while we ship dark-only, and
-whose Tauri branch is inert for want of a `theme-changed` emitter on the Rust side. So one
-component is tested and no component that renders anything is. **Every claim about front-end
-component wiring in this file was still verified by reading.** A runner existing is not coverage;
-that is still the largest unverified surface in the repo, and phase-4 W4-C/W4-D still owe it. The
-app *has* now been launched (19 times, §4), which retires the "never launched" caveat on the paint
-numbers but nothing else: **`pre`, `ul` and `li` are still unexercised under Tailwind preflight**,
-because they exist only in `src/components/Approvals.tsx` and approvals read `none` for every run.
-That is the largest thing still unverified about the token layer and only a live approval closes it.
+**Still never clicked in a real window:** the **Resume button** and the **branch chip**. The cleanup
+flow and the approvals dock have not been driven either, and none of the four has a test. What
+*has* now been driven by hand, at `a0901e5`: the sidebar, project collapse, and session selection —
+so that part of the paragraph is retired.
 
-## 3. Gates at `3e5c3fd`
+**Three things have never been observed at all**, each covered by tests and each unseen:
 
-All six run by the lead under its own hand on 2026-09-02, exit codes captured directly:
+- the **pulsing busy dot** — nothing has been running while anyone was looking;
+- the **collapsed-project run marker** — every session in the owner's store is `failed` or `exited`,
+  so no project has ever had a live child under it;
+- the **empty-session `cancel()` branch** — the smallest real session in the store is 6 rows.
+
+**`pre`, `ul` and `li` are still unexercised under Tailwind preflight.** They exist only in
+`src/components/Approvals.tsx`, and the store holds exactly one approval row which is already
+resolved, so `pending_approvals` returns empty and the dock never opens. That is still the largest
+thing unverified about the token layer, and only a live approval closes it.
+
+## 3. Gates at `a0901e5`
+
+All six run by the lead under its own hand, exit codes captured directly:
 
 ```
 cargo test --workspace                                exit 0  283 passed, 0 failed, 5 ignored
 cargo clippy --workspace --all-targets -- -D warnings exit 0  0 warnings
 cargo doc --workspace --no-deps                       exit 0  0 warnings
-npm test                                              exit 0  66 passed, 3 files
+npm test                                              exit 0  94 passed, 5 files
 npx tsc --noEmit                                      exit 0
 npm run tauri build                                   exit 0  .app + .dmg
 ```
 
-The 66 are `feedStore.test.ts` 27 (untouched by either wave), `paint.test.ts` 24 and
-`ThemeProvider.test.tsx` 15.
+The 94 are `feedStore.test.ts` 27, `paint.test.ts` 24, `components/Sidebar.test.tsx` 18,
+`providers/ThemeProvider.test.tsx` 15 and `App.test.tsx` 10.
 
-Bundle at `3e5c3fd`: **263.28 kB JS / 21.89 kB CSS**, from 262.69 / 12.69 at `ad5a4a7`. Two caveats
-that travel with those numbers. **The JS figure is the FCP half of `src/paint.ts` alone** —
-**[measured]**, `beginInteraction` has no importer, so Rollup drops it and everything it reaches:
-in `dist/assets/index-*.js`, `first-contentful-paint` and `report_paint` each appear once while
-`brigadier:` and `clearMeasures` appear zero times (`docs/plans/ipc-contract.md`, `### report_paint`;
-`src/paint.ts`). W4-C/W4-D pay for the rest on the order that adds the first caller. **The CSS
-growth is almost entirely Tailwind preflight**; the token layer itself is **+0.54 kB**, and Tailwind
-adds **zero** JS — an isolated build of `ad5a4a7` plus only the token order's files came out at
-262.69 kB byte-identical (`docs/research/oklch-tokens.md` §5). The earlier `~258 kB JS` line is
+Bundle at `a0901e5`: **272.71 kB JS + a 1.38 kB lazy chunk / 26.91 kB CSS**, from 263.28 / 21.89 at
+`3e5c3fd` and 262.69 / 12.69 at `ad5a4a7`. The JS figure now includes the interaction half of
+`src/paint.ts`, which `a0901e5` gave its first importer; before that it was tree-shaken out and the
+263.28 kB figure was the FCP half alone (`docs/plans/ipc-contract.md`, `### report_paint`). The CSS
+growth from 12.69 is almost entirely Tailwind preflight — the token layer itself was **+0.54 kB**,
+and Tailwind adds **zero** JS (`docs/research/oklch-tokens.md` §5). The earlier `~258 kB JS` line is
 superseded.
+
+**One warm FCP sample at `a0901e5` came back at 375.9 ms**, against the 287–295 ms p50 (n=19)
+recorded at the smaller bundle. One sample against a distribution, and the same run's cold launch
+(801.9 ms) matches an earlier cold outlier (755.9 ms), so the regression is **neither attributable
+to the bundle growth nor ruled out**. Re-running the n=19 three-arm treatment
+(`docs/research/perceived-performance.md` §1.4) is what would settle it. B1's figure is unchanged.
 
 The 5 ignored are the live tests. Run one at a time:
 
@@ -127,6 +134,8 @@ over** — a warm prefix saves cost but not the per-turn re-read.
 | the owner's real 1.6 MB data dir vs a warm empty one | **+1.1 ms**, inside the spread | same |
 | exec → `main()` entry | **~4.9 ms** (p50 of 19, range 4.1–6.4) — the invisible pre-main segment | same |
 | `brigadier started` → FCP | **132–141 ms**, against a 38 ms estimate | same |
+| **click session → last screenful painted (B4)** | **p50 32.5 ms**, range 22–144, n=14; 13 of 14 under the 100 ms budget. **No p95 — n=14 cannot support one.** Capped rather than fast: `TAIL_ROWS = 48` means a 500-row session measured 25 ms | `perceived-performance.md` §2.7 |
+| `beginInteraction`'s own floor | **~33 ms** at 60 Hz (its double-`requestAnimationFrame`); 8 of the 14 B4 samples sit within one frame of it | same |
 | WKWebView construction alone | ~100 ms | same |
 | React 19 + 258 kB bundle, FCP cost over a 400-byte page | ~12 ms | same |
 | window refresh rate | 60 Hz over 1,513 one-second samples | same |
@@ -316,6 +325,13 @@ every bundle format for the platform being built on. Leave it alone.
   `perf_hooks` observer, whose `observe({type:"paint"})` **does not throw and never fires** — a test
   written against it passes vacuously. `src/paint.test.ts` stubs its own. jsdom also has no
   `window.matchMedia` at all. `src/paint.test.ts:10-18`, `src/providers/ThemeProvider.test.tsx:16`.
+- **A contrast ratio is a property of a *pair*, not of a colour.** `--color-bad`'s comment certifies
+  5.84:1 — its ratio on `--color-thread-bg`. A new rule used that same token at 11 px on
+  `--color-sidebar-bg` and shipped **3.699:1**. Sweeping all 48 pairs against the ground each rule
+  actually paints on found **six more failures, five of them in new hover and selected states** —
+  grounds that did not exist when any token was measured. So: a token comment certifies **one**
+  pairing and says nothing about any other, and **every interactive state is a new ground that needs
+  its own derivation**. Non-text graphics are checked against WCAG 1.4.11's 3:1, not 4.5:1.
 - **A launch is not zero-`claude`.** Each one spawns `claude --version` **twice** — once from
   `setup`, once from the frontend's mount-time `probeClaude` (`src-tauri/src/state.rs:180`). No
   session, no API call, no cost. Worth knowing before auditing spend from a process list.

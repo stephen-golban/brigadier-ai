@@ -131,14 +131,16 @@ class names or structure:
 - given a wire batch, what `feedStore` holds and in what order.
 - which callback fires on which action, and that **approvals are never optimistic**.
 
-**Carry the paint instrumentation with it. The instrument landed at `1c8b6f6` and has now been
-run**, n=19 across three arms (`docs/research/perceived-performance.md` §1.4). It moved **B1, B2 and
-B3**: B1 was observed end to end for the first time and **misses its budget by ~90 ms**, B2
-replicated, and B3's 314 ms single sample was superseded by 291.3 p50 with migrations turning out to
-cost nothing measurable. **B4, B6 and B7 in `docs/vision.md` §9 are still unmeasured guesses and
-must still read as guesses** — the instrument timed paints, not interactions: `beginInteraction`
-still has no call site and is tree-shaken out of the bundle. B2, B3, B5 and B8 are gates today; B1
-becomes one when W3-C's static shell lands, and it now brings a measured starting line with it.
+**Carry the paint instrumentation with it. The instrument landed at `1c8b6f6` and has been run for
+both halves.** Paints first, n=19 across three arms (`docs/research/perceived-performance.md`
+§1.4): **B1** was observed end to end and **misses its budget by ~90 ms**, **B2** replicated, and
+**B3**'s 314 ms single sample was superseded by 291.3 p50, migrations turning out to cost nothing
+measurable. Then interactions, at `a0901e5`: **B4** is a number — p50 32.5 ms, range 22–144, n=14
+(§2.7) — with the finding that it is **capped rather than fast**, because `TAIL_ROWS = 48` leaves it
+no slow case; the cost it was written to catch lives in B6. **B6 and B7 are still guesses and must
+still read as guesses**, now for the sharper reason that the instrument is built and proven and
+those two paths simply have no call site — W4-D owes them. B2, B3, B5 and B8 are gates today; B1
+becomes one when W3-C's static shell lands, and it brings a measured starting line with it.
 
 **Started with `feedStore.ts`, done at `ad5a4a7`** — the cheapest win in the wave. It is
 styling-agnostic (measured: it does not move), so its tests survive the rewrite untouched and were
@@ -160,10 +162,12 @@ unchanged and now an owner decision (`docs/STATUS.md` §5, `docs/research/oklch-
 Jan's `ThemeProvider.tsx` was taken whole, including its Linux portal fix, and is tested (15 tests)
 but **not yet mounted** — W4-C mounts it.
 
-**W4-C — the shell. Unstarted.** It also mounts `ThemeProvider` and adds the first
-`beginInteraction` caller. Sidebar with projects and nested sessions, run dots on collapsed rows,
-the window gauge pinned beneath. Jan's `NavCowork.tsx` per-row memoization is the pattern; its comment
-at `:51` is worth reading before writing ours.
+**W4-C — the shell. Landed at `a0901e5`.** Sidebar with projects and nested sessions, run dots on
+collapsed rows, hand-built on the tokens. It mounted `ThemeProvider` (`src/main.tsx:22`) and added
+the repo's first `beginInteraction` caller, which is what turned **B4** into a number. It also
+turned up **seven AA failures** on grounds no token had ever been measured against
+(`docs/STATUS.md`, landmine list). **The window gauge pinned beneath is not built and is not this
+order's** — it is W2-C's, and it is not buildable until `rate_limit_event` reaches the front end.
 
 **W4-D — the surfaces Jan already has. Unstarted.** `CoworkAskCard` → our approvals dock (the
 audit calls it "the closest prior art in the repo to brigadier's approvals"); `CoworkTodoPanel` →

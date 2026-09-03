@@ -42,16 +42,17 @@ build, a measurement of a component with the rest reasoned, or a guess with noth
 | **B1** exec → window on screen with a **painted shell** (not a blank rectangle) | **≤ 200 ms** | **287–295 ms p50**, n=19 across three arms — **~90 ms over budget** and ~100 ms above the arithmetic it replaces. Today those pixels are still React's, not a shell's, so this is the floor the shell has to beat, not the shell's own number | **[measured]** end to end (§1.4) |
 | **B2** exec → shell showing the real project/session list | **≤ 350 ms** | **292 ms p50** (155 exec→setup done, +137 to the frontend's first IPC round trip); **replicated at 290.5 p50, n=7**, on a busier machine, with the Rust half at 150.2 against the recorded 155.3–166.4 | **[measured]** (§1.2, replicated §1.4) |
 | **B3** exec → shell, first-ever launch (migrations run) | ≤ 400 ms | **291.3 ms p50**, n=7 — supersedes the 314 ms single sample. **Migrations turned out not to be measurably expensive**: 291.3 first-ever against 290.5 warm | **[measured]**, n=7 (§1.4) |
-| **B4** click a session → its last screenful painted | **≤ 100 ms p95** | unmeasured | **guess**; only the Rust half is measured (§2) |
+| **B4** click a session → its last screenful painted | **≤ 100 ms p95** | **p50 32.5 ms, range 22–144, n=14** — 13 of 14 under 100 ms; the one over is the first selection of the run, which also mounts the thread surface. **No p95: n=14 cannot support one.** And the budget barely bites — the path is constant-work by construction (§2.7) | **[measured]** (§2.7) |
 | **B5** …of which the Rust half (queue + query + serialize) | **≤ 16 ms p95** | **≤ 8.2 ms** worst case measured (§2.2, §2.4) | **[measured]** |
-| **B6** click → the rest of the 500-row scrollback filled in | ≤ 250 ms | unmeasured | **guess** |
-| **B7** any button → visible acknowledgement | **≤ 100 ms** | unmeasured | **guess**, but grounded in the 0.1 s literature (§3.1) |
+| **B6** click → the rest of the 500-row scrollback filled in | ≤ 250 ms | unmeasured | **guess** — and now the one that matters, because §2.7 shows the cost B4 was written to catch lives here. No call site exists |
+| **B7** any button → visible acknowledgement | **≤ 100 ms** | unmeasured | **guess**, grounded in the 0.1 s literature (§3.1). The instrument now exists and is proven (§2.7); this has no call site |
 | **B8** frame budget while any of the above happens | **16.67 ms** | 60 Hz confirmed in a real Tauri window | **[measured]** (§5.4) |
 
-Three of the eight (B4, B6, B7) are unmeasured guesses. The instrumentation in §5.3 now exists and
-has been run (§1.4), but it measured **paints, not interactions**: `beginInteraction` has no call
-site anywhere, so it is tree-shaken out of the shipped bundle and nothing has timed a click. They
-stay guesses; do not quote them as results.
+**Two of the eight (B6, B7) are unmeasured guesses**, down from three. The instrumentation in §5.3
+exists, has been run for paints (§1.4) and now for an interaction: B4 got the first
+`beginInteraction` call site at `a0901e5` and is a number (§2.7). B6 and B7 are guesses for a
+sharper reason than before — **not "no instrument", but "no call site"**. The instrument is built
+and demonstrated; nothing calls it from those two paths. Do not quote them as results.
 
 B1 and B2 are separate on purpose. A window that is on screen with a static shell early and fills in
 its list at ~290 ms reads as instant. A window that stays blank until then does not, and that is
@@ -277,6 +278,14 @@ spawns `claude --version` twice, once from `setup` and once from the frontend's 
 `paint.ndjson` works end to end in a real window — the instrument had never been run before this —
 and `main_to_fcp_ms` matched its own `tracing` line on **every one of 19 runs**. **[measured]**
 
+**Open question, one sample, do not act on it.** The `a0901e5` run recorded a warm FCP of
+**375.9 ms** against the 287–295 ms p50 above. The bundle grew over the same interval, from
+263.28 kB to **272.71 kB JS plus a 1.38 kB lazy chunk / 26.91 kB CSS**. That is one sample against a
+distribution, and the same run's cold launch (**801.9 ms**) matches the earlier run's cold outlier
+(755.9 ms), so the regression is **neither attributable to the bundle growth nor ruled out**. What
+would settle it is the n=19 three-arm treatment above, re-run. **B1's row is unchanged on the
+strength of one sample**, deliberately.
+
 ---
 
 ## 2. Opening a session with a long history
@@ -441,6 +450,51 @@ mattering because WebKit 26.5 has no `overflow-anchor`. Two additions specific t
   makes that one mount rather than one reconciliation of 500 rows against 500 different rows, and it
   resets `scrollOffset` to the bottom, which is where a freshly opened thread should be anyway.
   **[asserted]**
+
+---
+
+### 2.7 Observed: B4 is a number, and its budget barely means anything
+
+The shell landed at `a0901e5` with the first `beginInteraction` call site in the repo
+(`src/App.tsx`, label `b4-session-painted`). Measured in a real window against the owner's real data
+directory, 14 selections across sessions holding 6 to 500 stored rows, every line written to
+`paint.ndjson`. All **[measured]**.
+
+```
+22 23 25 25 25 26 32 33 36 36 37 39 57 144
+n = 14 · min 22 ms · p50 32.5 ms · max 144 ms · 13 of 14 under 100 ms
+```
+
+**No p95 appears here and none should be computed.** The budget is written as ≤ 100 ms p95 and
+**n=14 cannot support a p95** — at that size the statistic is an order statistic of two or three
+samples and moves by tens of milliseconds on one run. The median and the range are what 14 samples
+answer. The single sample over budget, 144 ms, is the **first selection of the run**, which also
+pays for mounting the thread surface; every later selection landed 22–57 ms.
+
+**The finding is not the number. B4 is close to constant-work by construction, so the budget is
+nearly meaningless as written.** `TAIL_ROWS = 48` (`src/App.tsx:68`) caps what a selection paints,
+so there is no large-scrollback regime for B4 to be slow in:
+
+- a session with **500 stored rows measured 25 ms** — faster than the median;
+- the floor is the double-`requestAnimationFrame` inside `beginInteraction` itself, **~33 ms at
+  60 Hz**, and **8 of the 14 samples sit within one frame of it**. A good part of what B4 measures
+  is the instrument's own two frames, not the app's work.
+
+This is trap 6 and §2.4 showing up in the budget table: the 48-row cap was chosen because
+`feed_tail(session, 500)` is 80,241 bytes against an 8192-byte threshold for data the user cannot
+see, and the same decision is why B4 has no slow case to find. **The cost B4 was written to catch
+lives in B6** — "the rest of the 500-row scrollback filled in, ≤ 250 ms" — which still has no
+call site and is still a guess.
+
+So do not read "B4: 32.5 ms against a 100 ms budget" as *the session-switch path is fast*. Read it
+as **the session-switch path is capped, and this is what the cap costs.** Whether the uncapped part
+is fast is B6's question and is unanswered.
+
+**The instrument's honesty guarantee was demonstrated end to end**, not reasoned. Re-selecting an
+already-selected row starts a span whose layout effect can never run, because React skips the
+re-render. After 7 seconds, **zero lines were added** to `paint.ndjson` — the span was dropped
+rather than reported against an unrelated later paint. That is `INTERACTION_TIMEOUT_MS`
+(`src/paint.ts:132`) doing exactly what its comment claims, observed. **[measured]**
 
 ---
 
@@ -944,6 +998,14 @@ Ideas in this space that look right and are not.
   reproduced, so "contention" is **[asserted]** from the two halves inflating by the same factor,
   not from a controlled repeat.
 - **n=5–7 per arm supports a median, not a p95.** No budget expressed as a p95 is answered by §1.4.
+- **n=14 supports a median, not a p95, and B4's budget is written as a p95.** §2.7 reports a median
+  and a range for that reason; the p95 that budget asks for has not been measured and no number in
+  this file should be quoted as one.
+- **The `a0901e5` FCP regression is one sample.** 375.9 ms warm against a 287–295 ms p50, with a
+  cold launch that matches an earlier cold outlier. Not attributed, not ruled out (§1.4).
+- **B4's 14 selections were one session set on one machine.** No cold file cache, no second
+  operator's data directory, and the first-selection cost (144 ms) was observed once, not
+  characterised.
 - The binary measured was built 2026-09-02 13:26 and predates nothing in `git log`, but it was not
   rebuilt for this work — no build was run, because `dist/` and `target/` are outside the one path
   this document owns.

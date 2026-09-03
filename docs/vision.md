@@ -346,22 +346,30 @@ marks an entry **unknown** rather than leaving it pending forever.
 ### How fast, in numbers
 
 "We prioritize performance" is only a claim if it has figures behind it. These are the budgets, and
-the three that are guesses say so — they are **not quotable as results**. The paint instrumentation
-now exists and has been run (`1c8b6f6`; `docs/research/perceived-performance.md` §1.4), but it timed
-**paints, not interactions**: `beginInteraction` has no call site, so it is tree-shaken out of the
-shipped bundle and no click has ever been timed. B4, B6 and B7 stay guesses until W4-C/W4-D add the
-first caller.
+the two that are guesses say so — they are **not quotable as results**. The paint instrumentation
+exists, has been run for paints (`1c8b6f6`; `docs/research/perceived-performance.md` §1.4) and now
+for one interaction: **B4 got the first `beginInteraction` call site at `a0901e5` and is a number**
+(§2.7). B6 and B7 stay guesses for a sharper reason than before — not "no instrument" but **no call
+site**. The instrument is built and demonstrated; nothing calls it from those two paths, so W4-D
+still owes them.
 
 | | budget | today |
 |---|---|---|
 | **B1** exec → **painted** shell | ≤ 200 ms | **287–295 ms p50** **[measured]**, n=19 — **~90 ms over budget**, and those pixels are React's, not a shell's |
 | **B2** exec → real project list | ≤ 350 ms | **292 ms p50** **[measured]**, replicated at **290.5 p50**, n=7, on a busier machine |
 | **B3** first-ever launch, migrations run | ≤ 400 ms | **291.3 ms p50** **[measured]**, n=7 — supersedes a 314 ms n=1 sample; migrations cost nothing measurable |
-| **B4** click session → last screenful painted | ≤ 100 ms p95 | **guess** |
+| **B4** click session → last screenful painted | ≤ 100 ms p95 | **p50 32.5 ms, range 22–144, n=14** **[measured]** — 13 of 14 under 100 ms. **No p95**: n=14 cannot support one. Capped, not fast — see below |
 | **B5** …of which the Rust half | ≤ 16 ms p95 | **≤ 8.2 ms** worst case **[measured]** |
 | **B6** rest of the scrollback filled in | ≤ 250 ms | **guess** |
 | **B7** any button → visible acknowledgement | ≤ 100 ms | **guess** |
 | **B8** frame budget throughout | 16.67 ms | 60 Hz confirmed in a real window **[measured]** |
+
+**B4 is close to constant-work by construction, so its budget barely bites.** `TAIL_ROWS = 48` caps
+what a selection paints, so there is no large-scrollback regime to be slow in: a session with 500
+stored rows measured **25 ms**, faster than the median, and 8 of the 14 samples sit within one frame
+of the ~33 ms floor that `beginInteraction`'s own double-`requestAnimationFrame` costs at 60 Hz. So
+the row does not say the session-switch path is fast; it says **the path is capped, and this is what
+the cap costs**. The cost B4 was written to catch lives in **B6**, which still has no call site.
 
 B2, B3, B5 and B8 are **build gates**; B1 joins them when the static shell lands, and it now joins
 them with a measured gap rather than an estimate. B1 and B2 are separate on purpose: a window on
