@@ -8,7 +8,10 @@ async fn open_migrates_and_sets_the_pragmas_that_cannot_be_retrofitted() {
     let store = Store::open(dir.path()).expect("open");
     let h = store.handle();
 
-    // 2 == migration 0 (the tables) plus migration 1 (`feed.kind`, added 2026-09-03).
+    // 2 == migration 0 (the tables) plus migration 1 (`feed.kind`, added 2026-09-03). Still 2
+    // after migration 1's column default was corrected from `'sys'` to `'unknown'` the same day:
+    // it was edited in place, not superseded, because it had never run on the owner's data dir.
+    // The default itself is proved in `schema::tests`, not here.
     assert_eq!(h.pragma_i64("user_version").await.expect("user_version"), 2);
     // 2 == INCREMENTAL. Set as the first statement of migration 0, before any CREATE TABLE,
     // because sqlite.org says it "is not possible to enable or disable auto-vacuum after a

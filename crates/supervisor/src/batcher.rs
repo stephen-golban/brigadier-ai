@@ -600,9 +600,11 @@ mod tests {
     /// The arithmetic `docs/research/feed-rendering.md` §4 predicts, measured here rather than
     /// assumed: 24 rows of worst-case 200-byte lines in one message, with headroom.
     ///
-    /// `k` (added 2026-09-03) costs `,"k":"think"` — 12 bytes at the longest slug — so 24 rows
-    /// cost 288 bytes more than they did. The measurement below is the check that matters; the
-    /// row count is not re-derived from the table.
+    /// `k` (added 2026-09-03) costs `,"k":"unknown"` — 14 bytes at the longest slug in the type —
+    /// so 24 rows cost 336 bytes more than they did. `unknown` is measured here as the
+    /// conservative bound even though a *batched* row can never carry it: batch rows come from
+    /// `feed::kind`, whose longest output is `think` at 12 bytes. The measurement below is the
+    /// check that matters; the row count is not re-derived from the table.
     #[test]
     fn a_full_frame_of_worst_case_rows_measures_what_the_research_predicted() {
         let rows: Vec<FeedRowWire> = (0..MAX_ROWS_PER_MESSAGE)
@@ -612,7 +614,7 @@ mod tests {
                 t: 1_756_800_000_000,
                 l: "x".repeat(200),
                 // The longest slug in the closed set, so the frame is measured at its worst.
-                k: brigadier_store::FeedKind::Think,
+                k: brigadier_store::FeedKind::Unknown,
             })
             .collect();
         let batch = FeedBatch {

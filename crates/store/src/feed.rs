@@ -27,8 +27,9 @@ pub const FEED_LINE_LIMIT: usize = 200;
 ///
 /// The webview receives one pre-rendered string per row and must not have to parse its leading
 /// label to tell model prose from a tool call: this is the discriminator it styles and filters on.
-/// The set is closed and every value is derived from a variant that exists in
-/// `brigadier_core::event` — see [`kind`] for the mapping.
+/// The set is closed. Every value except [`FeedKind::Unknown`] is derived from a variant that
+/// exists in `brigadier_core::event` — see [`kind`] for the mapping; `Unknown` is the one value
+/// [`kind`] never returns, reserved for a row whose kind was never recorded.
 // see docs/plans/ipc-contract.md "Feed channel" — the wire field is `k`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -53,10 +54,17 @@ pub enum FeedKind {
     /// [`Event::RuntimeError`], fatal or not.
     Err,
     /// Session lifetime and housekeeping: [`Event::SessionStarted`], [`Event::SessionExited`],
-    /// [`Event::SessionCompacted`]. Also the fallback for a row stored by a future build whose
-    /// kind this one does not know.
-    #[default]
+    /// [`Event::SessionCompacted`]. Nothing else: this is a real class, not a bucket.
     Sys,
+    /// The row's kind was never recorded — it predates `feed.kind`, or its slug was written by a
+    /// build that knows a class this one does not.
+    ///
+    /// Deliberately *not* [`FeedKind::Sys`]. A row of unknown kind and a session-lifetime row are
+    /// different facts, and collapsing them would have a UI filter classify 10,037 of the owner's
+    /// existing rows as session housekeeping. A consumer should leave `unknown` rows alone rather
+    /// than assign them a class.
+    #[default]
+    Unknown,
 }
 
 impl FeedKind {
@@ -73,11 +81,12 @@ impl FeedKind {
             Self::Warn => "warn",
             Self::Err => "err",
             Self::Sys => "sys",
+            Self::Unknown => "unknown",
         }
     }
 
-    /// Parse a stored slug. An unknown one is [`FeedKind::Sys`] rather than an error: a row
-    /// written by a newer build must still render, and the line itself is never lost.
+    /// Parse a stored slug. One this build does not know is [`FeedKind::Unknown`] rather than an
+    /// error: a row written by a newer build must still render, and the line itself is never lost.
     pub fn from_slug(s: &str) -> Self {
         match s {
             "turn" => Self::Turn,
@@ -89,7 +98,8 @@ impl FeedKind {
             "appr" => Self::Appr,
             "warn" => Self::Warn,
             "err" => Self::Err,
-            _ => Self::Sys,
+            "sys" => Self::Sys,
+            _ => Self::Unknown,
         }
     }
 }
@@ -98,7 +108,7 @@ impl FeedKind {
 ///
 /// Total on purpose, where [`terse_line`] is not: the two are called together on the events that
 /// do produce a row, and a total function cannot drift out of step with the union the way a
-/// second `Option` would.
+/// second `Option` would. Never returns [`FeedKind::Unknown`] — every event has a class.
 pub fn kind(event: &Event) -> FeedKind {
     match event {
         Event::SessionStarted { .. }

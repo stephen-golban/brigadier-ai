@@ -424,7 +424,7 @@ mod tests {
         for seq in 1..=3u64 {
             store
                 .handle()
-                .feed(id.clone(), seq, at(seq), FeedKind::Sys, format!("before {seq}"))
+                .feed(id.clone(), seq, at(seq), FeedKind::Unknown, format!("before {seq}"))
                 .await
                 .expect("feed");
         }
@@ -439,7 +439,7 @@ mod tests {
             let seq = old_seq + offset;
             store
                 .handle()
-                .feed(id.clone(), seq, at(100 + seq), FeedKind::Sys, format!("after {seq}"))
+                .feed(id.clone(), seq, at(100 + seq), FeedKind::Unknown, format!("after {seq}"))
                 .await
                 .expect("feed");
         }
@@ -462,7 +462,7 @@ mod tests {
         // have rewritten the oldest row in place rather than appending.
         store
             .handle()
-            .feed(id.clone(), 1, at(999), FeedKind::Sys, "a restart at seq 1".to_owned())
+            .feed(id.clone(), 1, at(999), FeedKind::Unknown, "a restart at seq 1".to_owned())
             .await
             .expect("feed");
         store.handle().flush().await.expect("flush");
