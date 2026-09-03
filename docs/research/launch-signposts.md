@@ -32,7 +32,7 @@ Two hypotheses, no number between them. This file is the number.
   **[measured]**
 - Rust stages use a monotonic `Instant`; the one page stage (`fcp`) arrives as epoch milliseconds
   through the existing `report_paint` command and is converted against the same `main()` stamp.
-  **[source]** `src-tauri/src/commands.rs:324`, `src-tauri/src/trace.rs:93-98`. That crosses
+  **[source]** `src-tauri/src/commands.rs:347`, `src-tauri/src/trace.rs:93-98`. That crosses
   from the monotonic clock to the wall clock, which is stated rather than hidden; over a 300 ms
   launch the difference is not measurable.
 - `page_load_started` is wry's `didCommitNavigation` and `page_load_finished` is
@@ -46,8 +46,8 @@ Two hypotheses, no number between them. This file is the number.
   `tauri.conf.json`, not from a builder. `page_load_started` is the first stage after that
   response, not before it.
 - **There is no `DOMContentLoaded` stage yet.** Its Rust half is in the tree and inert
-  (`src-tauri/src/commands.rs:344-347`); the emitter is three lines in `src/paint.ts`, which
-  belongs to another session. No number below includes it. Details at the bottom of this file.
+  (`src-tauri/src/commands.rs:332-337`); the emitter belongs to the frontend session. No number
+  below includes it. Details, and the defect in this file's first recipe for it, at the bottom.
 
 ## Method
 
@@ -198,33 +198,62 @@ third one it did not list is.**
 
 ## The `dcl` stage: Rust half landed, page half outstanding
 
-The receiving end is in the tree and inert. `src-tauri/src/commands.rs:311` names the label and
-`:344-347` is the guarded arm that turns it into a `dcl` signpost. Nothing sends that label today,
-so the arm is never taken. **[source]**
+The receiving end is in the tree and inert. `src-tauri/src/commands.rs:374` names the `trace:`
+namespace and `src-tauri/src/commands.rs:332-337` is the guard that turns a label in it into
+a signpost. Nothing in this tree sends such a label, so the arm is never taken. **[source]**
 
 No wire change was needed on either side: `DOMContentLoaded` is one timestamp with no duration,
 which is what the existing `interaction` variant already carries, so `src/wire.ts` and
-`src-tauri/src/views.rs` are untouched. The label is namespaced `trace:` so it cannot collide with
-a B4, B6 or B7 budget name.
+`src-tauri/src/views.rs` are untouched. The wire shape is exactly:
 
-The outstanding half is three lines in `src/paint.ts`, which belongs to another session. Inside
-`startPaintInstrumentation`, after the observer is installed:
+    {"kind":"interaction","label":"trace:dcl",
+     "start_epoch_ms": <timeOrigin + domContentLoadedEventEnd>, "duration_ms": 0}
 
-    const nav = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
-    if (nav && nav.domContentLoadedEventEnd > 0) {
-      report({
-        kind: "interaction",
-        label: "trace:dcl",
-        start_epoch_ms: performance.timeOrigin + nav.domContentLoadedEventEnd,
-        duration_ms: 0,
-      });
-    }
+**A `trace:`-prefixed report never reaches `paint.ndjson`.** The arm returns before the file write,
+so a `duration_ms: 0` signpost cannot be folded into an interaction percentile by anything that
+later reads that file. Matching is on the prefix, not on the one label, and the stage name is the
+label with the prefix stripped. **[source]** `src-tauri/src/commands.rs:332-337`.
+
+### The emitter, and the defect in the first version of this recipe
+
+**The recipe first written here could never have fired, and the reason is a finding in this same
+file.** It read `performance.getEntriesByType("navigation")[0].domContentLoadedEventEnd`
+synchronously at the top of `startPaintInstrumentation` and reported only when that was above zero;
+the bundle is a deferred ES module (`dist/index.html`, `<script type="module">`), so the module body
+runs **before** `DOMContentLoaded`, the field reads 0, and nothing was ever sent. The sentence that
+excused the missing listener, that "the observer already runs after DCL", conflated the observer's
+callback with its installation, and the synchronous read sits at the installation. **[source]**
+
+What the frontend session actually ships, and what any reimplementation must do:
+
+1. If `domContentLoadedEventEnd > 0`, report `timeOrigin + domContentLoadedEventEnd`.
+2. Else if `document.readyState === "loading"`, add a `{ once: true }` `DOMContentLoaded` listener
+   that re-reads the navigation timing entry and **prefers that value over the dispatch time**, so
+   the number is the browser's own, not the listener's turn in the queue.
+3. Else report nothing.
+
+Step 3 is not a fallback, it is a refusal, and it carries two facts. `readyState` becomes
+`"interactive"` **before** `DOMContentLoaded` dispatches, so a non-`"loading"` state does not prove
+the event has fired and cannot license a report. **[documented]** And under
+`loadHTMLString(_:baseURL:)` there is no navigation entry at all (**[measured]**,
+`perceived-performance.md` §5.3), so a fallback here would stamp `main.tsx`'s own run time and call
+it `DOMContentLoaded`, which is the "a missing number is honest, a wrong number is not" rule in
+`src/paint.ts` inverted.
 
 `PerformanceNavigationTiming` is present in this WKWebView (**[measured]**,
-`perceived-performance.md` §5.3), and the observer already runs after DCL in practice because FCP
-follows it, so no extra listener is needed. Cost when tracing is off: one extra `invoke` per
-launch, on a path that is already past `page_load_finished`. Whether that extra invoke perturbs the
-FCP number is **[asserted]** to be negligible and **not measured**.
+`perceived-performance.md` §5.3). Cost when tracing is off: one extra `invoke` per launch, on a
+path already past `page_load_finished`. Whether that extra invoke perturbs the FCP number is
+**[asserted]** to be negligible and **not measured**.
+
+## Readers of `paint.ndjson`
+
+**There are none, and that was checked rather than assumed.** Nothing in `src-tauri/` reads the
+file (the only two `OpenOptions` calls in the crate are the two appends); there is no `scripts/`
+directory; no shell or Python recipe in `docs/` reads it, including §5.2's launch recipe, which
+parses the `RUST_LOG` stream and never the file; and the 14 B4 samples in §2.7 were collected by
+hand. `docs/plans/ipc-contract.md:320` states the append-only intent. **[measured]** So the
+`trace:` exclusion is enforced at the writer, where it cannot be forgotten, instead of being a rule
+every future reader has to be told.
 
 ## Not checked
 
