@@ -218,6 +218,174 @@ describe("first contentful paint", () => {
   });
 });
 
+describe("the trace:dcl signpost", () => {
+  /**
+   * jsdom has no navigation timing: `performance.getEntriesByType("navigation")` returns `[]`
+   * (**measured** here), and `document.readyState` in a Vitest jsdom document is already
+   * `"complete"`. Both halves therefore have to be arranged explicitly — which is the point, since
+   * the two paths are chosen by exactly those two values.
+   */
+  function navEntry(domContentLoadedEventEnd: number): void {
+    vi.spyOn(performance, "getEntriesByType").mockImplementation((type: string) =>
+      type === "navigation"
+        ? ([{ domContentLoadedEventEnd }] as unknown as PerformanceEntryList)
+        : [],
+    );
+  }
+
+  function setReadyState(value: DocumentReadyState): () => void {
+    const original = Object.getOwnPropertyDescriptor(Document.prototype, "readyState");
+    Object.defineProperty(document, "readyState", { configurable: true, get: () => value });
+    return () => {
+      delete (document as unknown as Record<string, unknown>).readyState;
+      if (original !== undefined) Object.defineProperty(Document.prototype, "readyState", original);
+    };
+  }
+
+  it("reports from navigation timing when DOMContentLoaded has already fired, with no listener", async () => {
+    const addEventListener = vi.spyOn(document, "addEventListener");
+    navEntry(37);
+    const paint = await load();
+    paint.startPaintInstrumentation();
+
+    expect(reported).toEqual([
+      {
+        kind: "interaction",
+        label: "trace:dcl",
+        start_epoch_ms: performance.timeOrigin + 37,
+        duration_ms: 0,
+      },
+    ]);
+    // "Do not attach a listener and hope": on this path there is nothing to listen for.
+    expect(
+      addEventListener.mock.calls.filter((c) => c[0] === "DOMContentLoaded"),
+    ).toHaveLength(0);
+  });
+
+  it("reports on the event when DOMContentLoaded has not yet fired", async () => {
+    // The live shape in the real app: `index.html` loads the bundle as a deferred
+    // `<script type="module">`, which runs before DOMContentLoaded, so the navigation entry's
+    // `domContentLoadedEventEnd` is still 0 when the instrument starts.
+    navEntry(0);
+    const restore = setReadyState("loading");
+    try {
+      const paint = await load();
+      paint.startPaintInstrumentation();
+      expect(reported).toHaveLength(0);
+
+      navEntry(41);
+      document.dispatchEvent(new Event("DOMContentLoaded"));
+    } finally {
+      restore();
+    }
+
+    expect(reported).toEqual([
+      {
+        kind: "interaction",
+        label: "trace:dcl",
+        start_epoch_ms: performance.timeOrigin + 41,
+        duration_ms: 0,
+      },
+    ]);
+  });
+
+  it("uses the event's own time when the not-yet-fired path has no navigation entry", async () => {
+    vi.spyOn(performance, "getEntriesByType").mockImplementation(() => []);
+    const restore = setReadyState("loading");
+    try {
+      const paint = await load();
+      paint.startPaintInstrumentation();
+      vi.advanceTimersByTime(25);
+      document.dispatchEvent(new Event("DOMContentLoaded"));
+    } finally {
+      restore();
+    }
+    expect(reported).toHaveLength(1);
+    const line = reported[0] as { start_epoch_ms: number; duration_ms: number };
+    expect(line.start_epoch_ms).toBe(performance.timeOrigin + 25);
+    expect(line.duration_ms).toBe(0);
+  });
+
+  it("reports nothing when the event is behind us and there is no navigation entry to recover it", async () => {
+    // readyState is not "loading", so the event has fired; with no timing entry there is no
+    // honest timestamp for it. A `performance.now()` here would say "when main.tsx ran".
+    vi.spyOn(performance, "getEntriesByType").mockImplementation(() => []);
+    const paint = await load();
+    paint.startPaintInstrumentation();
+    expect(reported).toHaveLength(0);
+  });
+
+  it("reports once across two starts, and attaches only one listener", async () => {
+    navEntry(0);
+    const restore = setReadyState("loading");
+    const addEventListener = vi.spyOn(document, "addEventListener");
+    try {
+      const paint = await load();
+      // React 19 StrictMode double-invokes effects.
+      paint.startPaintInstrumentation();
+      paint.startPaintInstrumentation();
+      expect(
+        addEventListener.mock.calls.filter((c) => c[0] === "DOMContentLoaded"),
+      ).toHaveLength(1);
+
+      navEntry(41);
+      document.dispatchEvent(new Event("DOMContentLoaded"));
+      document.dispatchEvent(new Event("DOMContentLoaded"));
+      paint.startPaintInstrumentation();
+    } finally {
+      restore();
+    }
+    expect(reported).toHaveLength(1);
+  });
+
+  it("reports once when the already-fired path is entered twice", async () => {
+    navEntry(37);
+    const paint = await load();
+    paint.startPaintInstrumentation();
+    paint.startPaintInstrumentation();
+    expect(reported).toHaveLength(1);
+  });
+
+  it("still emits when the FCP observer is missing entirely", async () => {
+    // The signpost runs ahead of the FCP guards on purpose; an environment with no
+    // `PerformanceObserver` must not cost the launch trace.
+    vi.stubGlobal("PerformanceObserver", undefined);
+    navEntry(37);
+    const paint = await load();
+    paint.startPaintInstrumentation();
+    expect(reported).toHaveLength(1);
+    expect((reported[0] as { label: string }).label).toBe("trace:dcl");
+  });
+
+  it("does not throw out of the instrument when the bridge rejects", async () => {
+    reportPaint = () => Promise.reject(new Error("command not found"));
+    navEntry(37);
+    const paint = await load();
+    expect(() => paint.startPaintInstrumentation()).not.toThrow();
+    await vi.advanceTimersByTimeAsync(0);
+  });
+
+  it("does not throw out of the instrument when the bridge throws synchronously", async () => {
+    reportPaint = () => {
+      throw new Error("bridge is gone");
+    };
+    navEntry(37);
+    const paint = await load();
+    expect(() => paint.startPaintInstrumentation()).not.toThrow();
+  });
+
+  it("does not disturb the FCP report", async () => {
+    navEntry(37);
+    const paint = await load();
+    paint.startPaintInstrumentation();
+    observers[0].emit([{ name: "first-contentful-paint", startTime: 20 }]);
+
+    expect(reported).toHaveLength(2);
+    expect((reported[0] as { label: string }).label).toBe("trace:dcl");
+    expect(reported[1]).toEqual({ kind: "fcp", epoch_ms: performance.timeOrigin + 20 });
+  });
+});
+
 describe("interaction → painted", () => {
   it("reports nothing until painted() is called", async () => {
     const paint = await load();
