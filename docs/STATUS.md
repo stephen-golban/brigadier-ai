@@ -125,8 +125,9 @@ over** — a warm prefix saves cost but not the per-turn re-read.
 
 | number | value | source |
 |---|---|---|
-| spawn → `system/init` | **1,981 ms** | `claude-direct-spike.md` |
-| spawn → `initialize` response | 719 ms | same |
+| spawn → `system/init`, warm (n=5, 2026-09-02) | **569–656 ms**, median **645 ms**; measured from `spawned_at` to the first `system/init` (`crates/claude-spike/src/bin/fanout.rs:120,157`) | `crates/claude-spike/fixtures/f-warm.summary.json:151`, `f-a.summary.json:151,309,467`, `f-b.summary.json:504` |
+| spawn → `system/init`, cold (n=1) | **1,981 ms**, a cold outlier at ~3× the warm median, not the typical cost | `claude-direct-spike.md:107` |
+| spawn → `initialize` response | 719 ms, from that same cold run; the five fan-out summaries carry no equivalent handshake figure | `claude-direct-spike.md:106` |
 | stdin closed → exit 0 | 571 ms | same |
 | exec → real project list (p50) | **292 ms**; replicated **290.5 ms**, n=7 | `perceived-performance.md` §1.2, §1.4 |
 | **exec → first contentful paint (p50, 3 arms, n=19)** | **287–295 ms** — B1's ≤ 200 ms budget missed by ~90 ms | `perceived-performance.md` §1.4 |
