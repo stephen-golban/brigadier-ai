@@ -7,6 +7,7 @@
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use brigadier_core::driver::McpPolicy;
 use brigadier_core::event::Usage;
 use brigadier_store::{ProjectRow, SessionRecord};
 use serde::{Deserialize, Serialize};
@@ -66,6 +67,10 @@ pub(crate) struct ProjectView {
     pub root_path: String,
     /// When it was first recorded.
     pub created_at_ms: i64,
+    /// Whether this project's children inherit the user's MCP servers: `"off"` or `"inherit"`,
+    /// a bare string on the wire. `"off"` may be migration 2's doing rather than a choice.
+    // see docs/plans/ipc-contract.md "### set_project_mcp".
+    pub mcp: McpPolicy,
 }
 
 impl From<&ProjectRow> for ProjectView {
@@ -75,6 +80,7 @@ impl From<&ProjectRow> for ProjectView {
             name: row.name.clone(),
             root_path: path_string(&row.root_path),
             created_at_ms: to_millis(row.created_at),
+            mcp: row.mcp,
         }
     }
 }
@@ -283,6 +289,26 @@ mod tests {
         let defaults: Vec<&ModelInfo> = models.iter().filter(|m| m.is_default).collect();
         assert_eq!(defaults.len(), 1, "exactly one default");
         assert_eq!(defaults[0].id, "claude-haiku-4-5");
+    }
+
+    /// `mcp` crosses the wire as a bare slug, `"off"` or `"inherit"`, next to the four fields
+    /// the contract already pins. see docs/plans/ipc-contract.md "### set_project_mcp".
+    #[test]
+    fn a_project_view_carries_its_mcp_policy_as_a_bare_string() {
+        let row = ProjectRow {
+            id: "p1".to_owned(),
+            name: "brigadier".to_owned(),
+            root_path: "/repo".into(),
+            created_at: UNIX_EPOCH + std::time::Duration::from_millis(1_700_000_000_000),
+            mcp: McpPolicy::Inherit,
+        };
+        let json = serde_json::to_string(&ProjectView::from(&row)).expect("ser");
+        assert_eq!(
+            json,
+            r#"{"id":"p1","name":"brigadier","root_path":"/repo","created_at_ms":1700000000000,"mcp":"inherit"}"#
+        );
+        let off = ProjectView::from(&ProjectRow { mcp: McpPolicy::Off, ..row });
+        assert!(serde_json::to_string(&off).expect("ser").ends_with(r#""mcp":"off"}"#));
     }
 
     #[test]

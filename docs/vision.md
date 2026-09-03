@@ -66,9 +66,10 @@ lands entirely after the `initialize` reply, which is MCP-independent at 663.0 a
 (`docs/research/spawn-split.md`, **[measured]**). A ten-step phase pays about 14 s of pure startup
 with MCP and about 6.5 s without. The fan-out harness already passes `--strict-mcp-config`
 (`crates/claude-spike/src/bin/fanout.rs:97`), so every fan-out figure in this repo is an MCP-off
-number. Whether harness-spawned children should get the user's MCP servers at all is an open owner
-decision: a rented window that never calls those tools pays 751.5 ms for nothing, against a work
-order that needs a database or browser server and fails invisibly without it. Mitigations exist —
+number. Owner decision, 2026-09-03: harness-spawned children do **not** get the user's MCP servers by
+default, and a project opts in per project (`docs/research/spawn-split.md` §6; the harness passes
+`--strict-mcp-config` and no `--mcp-config` unless the project's policy is `inherit`).
+Mitigations exist —
 a warm pool, or letting one child serve several turns, since `system/init` fires per *turn* and a
 process can serve more than one — and **none is built or measured**.
 

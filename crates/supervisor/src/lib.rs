@@ -37,7 +37,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use brigadier_core::approval::ApprovalTable;
 use brigadier_core::driver::{
-    DriverKind, PermissionMode, ProviderDriver, Resumed, ResumeSession, StartSession,
+    DriverKind, McpPolicy, PermissionMode, ProviderDriver, Resumed, ResumeSession, StartSession,
 };
 use brigadier_core::event::{
     Envelope, Event, ExitReason, InstanceId, RequestId, SessionId, TurnId, Usage,
@@ -475,9 +475,35 @@ impl Supervisor {
             name,
             root_path,
             created_at: SystemTime::now(),
+            // Off until the project opts in: no child of it loads an MCP server.
+            // see docs/research/spawn-split.md §6 and docs/vision.md §3 (owner decision 2026-09-03).
+            mcp: McpPolicy::Off,
         };
         self.inner.store.upsert_project(row.clone()).await?;
         Ok(row)
+    }
+
+    /// Set whether a project's children inherit the user's MCP servers, and return the row as it
+    /// now stands.
+    ///
+    /// Takes effect on the **next** spawn for the project, start or resume alike; a child that is
+    /// already running keeps whatever it was spawned with, because the flag is argv and the CLI
+    /// reads it once. Nothing records whether a project's current `Off` was chosen or is
+    /// migration 2's doing (`crates/store/src/schema.rs`).
+    ///
+    /// # Errors
+    /// [`SupervisorError::NoSuchProject`] when no project has that id.
+    // see docs/research/spawn-split.md §6.
+    pub async fn set_project_mcp(
+        &self,
+        project_id: &str,
+        mcp: McpPolicy,
+    ) -> Result<ProjectRow, SupervisorError> {
+        let mut project =
+            self.project(project_id).await?.ok_or(SupervisorError::NoSuchProject)?;
+        self.inner.store.set_project_mcp(project.id.clone(), mcp).await?;
+        project.mcp = mcp;
+        Ok(project)
     }
 
     /// Every project, oldest first.
@@ -523,6 +549,10 @@ impl Supervisor {
         let driver =
             self.driver(kind).ok_or_else(|| SupervisorError::NoDriver(kind.clone()))?;
 
+        // The project decides, not the caller: the row is the one place the policy lives, so a
+        // request that arrived with `Inherit` for an `Off` project is overridden here.
+        // see docs/research/spawn-split.md §6.
+        req.mcp = project.mcp;
         let prepared = worktree::prepare(&project.root_path).await?;
         if let Some(prepared) = &prepared {
             req.cwd = prepared.path.clone();
@@ -577,6 +607,11 @@ impl Supervisor {
     /// The permission mode is **not** restored from the old session: the CLI does not restore it
     /// on a non-interactive resume either, and the harness has nowhere to read it from — no
     /// column stores it. The child comes back in [`PermissionMode::Default`].
+    ///
+    /// The MCP policy is read from the **project row as it stands now**, exactly as a start reads
+    /// it: a project switched off since the session last ran resumes without its servers, and one
+    /// switched on resumes with them. Nothing about reopening a conversation widens or narrows
+    /// what a child may reach; the project does.
     ///
     /// # Errors
     /// [`SupervisorError::NoSuchSession`] when the store has no such row,
@@ -635,6 +670,7 @@ impl Supervisor {
         let mut req = ResumeSession::new(token, cwd.clone());
         req.model = record.model.clone();
         req.permission_mode = PermissionMode::Default;
+        req.mcp = project.mcp;
         req.resumed = Some(Resumed { session_id: session_id.clone(), start_seq });
         let handle = driver.resume_session(req).await?;
 
@@ -1356,6 +1392,111 @@ mod tests {
             }
             f()
         }
+    }
+
+    /// A driver that records the MCP policy of every request it is handed, then delegates to a
+    /// replay. The only way to see what the supervisor actually asks the driver for.
+    #[derive(Debug)]
+    struct RecordingDriver {
+        inner: ReplayDriver,
+        seen: Arc<Mutex<Vec<McpPolicy>>>,
+    }
+
+    impl ProviderDriver for RecordingDriver {
+        fn kind(&self) -> DriverKind {
+            self.inner.kind()
+        }
+        fn instance_id(&self) -> &InstanceId {
+            self.inner.instance_id()
+        }
+        fn describe(&self) -> brigadier_core::driver::DriverInfo {
+            self.inner.describe()
+        }
+        fn start_session(
+            &self,
+            req: StartSession,
+        ) -> brigadier_core::driver::BoxFuture<
+            '_,
+            Result<SessionHandle, brigadier_core::driver::DriverError>,
+        > {
+            lock(&self.seen).push(req.mcp);
+            self.inner.start_session(req)
+        }
+        fn resume_session(
+            &self,
+            req: ResumeSession,
+        ) -> brigadier_core::driver::BoxFuture<
+            '_,
+            Result<SessionHandle, brigadier_core::driver::DriverError>,
+        > {
+            lock(&self.seen).push(req.mcp);
+            self.inner.resume_session(req)
+        }
+    }
+
+    /// The project's stored policy is what reaches the driver, on a start and on a resume, and
+    /// the caller's own request field does not get a vote. A new project is `Off`; after
+    /// `set_project_mcp` it is `Inherit` on the next spawn of either shape.
+    // see docs/research/spawn-split.md §6 (owner decision 2026-09-03).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_project_mcp_policy_reaches_the_driver_on_start_and_on_resume() {
+        let rig = Rig::new();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let inner = ReplayDriver::new(vec![Event::item_completed(
+            ItemId::new("i"),
+            ItemKind::AssistantText,
+            "hello",
+            None,
+        )])
+        .with_rate(200.0)
+        .with_kind(DriverKind::new("recording"))
+        .with_instance_id("recording");
+        let kind = inner.kind();
+        rig.sup.register_driver(Arc::new(RecordingDriver { inner, seen: Arc::clone(&seen) }));
+
+        let project = rig.project().await;
+        let row = rig.sup.project(&project).await.expect("read").expect("row");
+        assert_eq!(row.mcp, McpPolicy::Off, "a new project is off");
+
+        // A caller asking for `Inherit` on an `Off` project is overridden by the row.
+        let mut req = StartSession::new(rig._dir.path());
+        req.mcp = McpPolicy::Inherit;
+        let session = rig.sup.start_session(&project, &kind, req).await.expect("starts");
+        assert_eq!(lock(&seen).as_slice(), [McpPolicy::Off]);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        rig.sup.end_session(&session).await.expect("end");
+        assert!(rig.until(Duration::from_secs(5), || !rig.sup.is_live(&session)).await);
+
+        assert!(
+            matches!(
+                rig.sup.set_project_mcp("nope", McpPolicy::Inherit).await,
+                Err(SupervisorError::NoSuchProject)
+            ),
+            "an unknown project is refused, not created"
+        );
+        let updated = rig.sup.set_project_mcp(&project, McpPolicy::Inherit).await.expect("set");
+        assert_eq!(updated.mcp, McpPolicy::Inherit);
+        rig.store.handle().flush().await.expect("flush");
+        let stored = rig.sup.project(&project).await.expect("read").expect("row");
+        assert_eq!(stored.mcp, McpPolicy::Inherit, "the policy is persisted, not just returned");
+        assert_eq!(stored.root_path, row.root_path, "nothing else about the row moved");
+
+        rig.store_token(&session).await;
+        rig.sup.resume_session(&session).await.expect("resume");
+        assert_eq!(lock(&seen).as_slice(), [McpPolicy::Off, McpPolicy::Inherit]);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        rig.sup.end_session(&session).await.expect("end again");
+        assert!(rig.until(Duration::from_secs(5), || !rig.sup.is_live(&session)).await);
+
+        let fresh = rig
+            .sup
+            .start_session(&project, &kind, StartSession::new(rig._dir.path()))
+            .await
+            .expect("starts again");
+        assert_eq!(lock(&seen).as_slice(), [McpPolicy::Off, McpPolicy::Inherit, McpPolicy::Inherit]);
+        rig.sup.end_session(&fresh).await.expect("end");
+        assert!(rig.until(Duration::from_secs(5), || !rig.sup.is_live(&fresh)).await);
+        rig.store.close().await.expect("store closes");
     }
 
     /// Every refusal names the condition that failed, and every one carries the `not_resumable`

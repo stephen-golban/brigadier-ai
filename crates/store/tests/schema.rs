@@ -8,11 +8,11 @@ async fn open_migrates_and_sets_the_pragmas_that_cannot_be_retrofitted() {
     let store = Store::open(dir.path()).expect("open");
     let h = store.handle();
 
-    // 2 == migration 0 (the tables) plus migration 1 (`feed.kind`, added 2026-09-03). Still 2
-    // after migration 1's column default was corrected from `'sys'` to `'unknown'` the same day:
-    // it was edited in place, not superseded, because it had never run on the owner's data dir.
-    // The default itself is proved in `schema::tests`, not here.
-    assert_eq!(h.pragma_i64("user_version").await.expect("user_version"), 2);
+    // 3 == migration 0 (the tables), migration 1 (`feed.kind`, added 2026-09-03; edited in place
+    // the same day when its default was corrected from `'sys'` to `'unknown'`, because it had
+    // never run on the owner's data dir), and migration 2 (`projects.mcp`, 2026-09-03, which
+    // switches every existing project to `off`). Both defaults are proved in `schema::tests`.
+    assert_eq!(h.pragma_i64("user_version").await.expect("user_version"), 3);
     // 2 == INCREMENTAL. Set as the first statement of migration 0, before any CREATE TABLE,
     // because sqlite.org says it "is not possible to enable or disable auto-vacuum after a
     // table has been created" and the VACUUM escape hatch does not exist in WAL mode.
@@ -32,11 +32,11 @@ async fn reopening_is_idempotent_and_mints_a_new_run_id() {
     let dir = tempfile::tempdir().expect("tempdir");
     let first = Store::open(dir.path()).expect("open");
     let run_a = first.run_id().to_owned();
-    assert_eq!(first.handle().pragma_i64("user_version").await.expect("v"), 2);
+    assert_eq!(first.handle().pragma_i64("user_version").await.expect("v"), 3);
     first.close().await.expect("close");
 
     let second = Store::open_with(dir.path(), StoreConfig::default()).expect("reopen");
-    assert_eq!(second.handle().pragma_i64("user_version").await.expect("v"), 2);
+    assert_eq!(second.handle().pragma_i64("user_version").await.expect("v"), 3);
     assert_eq!(second.handle().pragma_i64("auto_vacuum").await.expect("av"), 2);
     assert_ne!(second.run_id(), run_a, "every launch gets its own run_id");
     second.close().await.expect("close");

@@ -16,7 +16,7 @@
 
 use std::path::PathBuf;
 
-use brigadier_core::driver::{DriverKind, PermissionMode, StartSession};
+use brigadier_core::driver::{DriverKind, McpPolicy, PermissionMode, StartSession};
 use brigadier_core::event::{RequestId, SessionId};
 use brigadier_core::session::Decision;
 use brigadier_supervisor::{ApprovalView, FeedBatch, FeedRowWire, WorktreeCleanup};
@@ -78,6 +78,27 @@ pub(crate) async fn add_project(
     state: State<'_, AppState>,
 ) -> Result<ProjectView, AppError> {
     let row = state.get()?.supervisor.add_project(PathBuf::from(path)).await?;
+    Ok(ProjectView::from(&row))
+}
+
+/// Set whether a project's children inherit the user's MCP servers: `"off"` or `"inherit"`.
+///
+/// The slug set is closed, so anything else is `invalid_argument` rather than a pass-through;
+/// unlike `permission_mode`, the CLI does not own this vocabulary, the harness does. Takes effect
+/// on the project's next start or resume; a running child keeps what it was spawned with. A
+/// project reading `off` may be migration 2's doing rather than a choice
+/// (`crates/store/src/schema.rs`).
+// see docs/research/spawn-split.md §6 and docs/plans/ipc-contract.md "### set_project_mcp".
+#[tauri::command]
+pub(crate) async fn set_project_mcp(
+    project_id: String,
+    mcp: String,
+    state: State<'_, AppState>,
+) -> Result<ProjectView, AppError> {
+    let policy = McpPolicy::from_slug(&mcp).ok_or_else(|| {
+        AppError::new("invalid_argument", format!("unknown mcp policy {mcp:?}; expected off or inherit"))
+    })?;
+    let row = state.get()?.supervisor.set_project_mcp(&project_id, policy).await?;
     Ok(ProjectView::from(&row))
 }
 
