@@ -59,11 +59,18 @@ brigadier does not ask a model to be disciplined about this. It removes the accu
 Each rented window is a fresh CLI child with a small, curated context the harness assembles. Cost
 per step is flat at step 400 as at step 4. Nothing rots, because nothing fills.
 
-**The measured price of this shape: 1,981 ms from spawn to `system/init`**
-(`docs/research/claude-direct-spike.md`, **[measured]**). A ten-step phase pays ~20 s of pure
-startup. Mitigations exist — a warm pool, or letting one child serve several turns, since
-`system/init` fires per *turn* and a process can serve more than one — and **none is built or
-measured**.
+**The measured price of this shape: 1,395 ms median from spawn to `system/init` with the user's two
+MCP servers connected, 643.5 ms with `--strict-mcp-config`** (`docs/research/spawn-split.md`, six
+alternating pairs on CLI 2.1.259, **[measured]**). The 751.5 ms delta is MCP server startup, and it
+lands entirely after the `initialize` reply, which is MCP-independent at 663.0 against 624.5 ms
+(`docs/research/spawn-split.md`, **[measured]**). A ten-step phase pays about 14 s of pure startup
+with MCP and about 6.5 s without. The fan-out harness already passes `--strict-mcp-config`
+(`crates/claude-spike/src/bin/fanout.rs:97`), so every fan-out figure in this repo is an MCP-off
+number. Whether harness-spawned children should get the user's MCP servers at all is an open owner
+decision: a rented window that never calls those tools pays 751.5 ms for nothing, against a work
+order that needs a database or browser server and fails invisibly without it. Mitigations exist —
+a warm pool, or letting one child serve several turns, since `system/init` fires per *turn* and a
+process can serve more than one — and **none is built or measured**.
 
 **A consequence worth naming: brigadier always knows what step it is on, because it chose the
 step.** The one-line status the user sees is therefore a fact the harness already holds, not a
@@ -327,9 +334,10 @@ with the owner's reserve line drawn on them.
 
 **Optimistic transitions, and the one that is not.** Starting a session, sending a turn and deleting
 a session all paint before Rust confirms them. Starting a session is the important one: it hides the
-measured 1,981 ms spawn, which is otherwise the most visible dead time in the app, and a failed spawn
-turns the row that just appeared into an error in place. Deleting is optimistic with a few seconds of
-undo, which is what makes pruning feel free.
+measured spawn, 1,395 ms with the user's MCP servers or 643.5 ms without
+(`docs/research/spawn-split.md`), which is otherwise the most visible dead time in the app, and a
+failed spawn turns the row that just appeared into an error in place. Deleting is optimistic with a
+few seconds of undo, which is what makes pruning feel free.
 
 **Approvals are never optimistic.** The dock resolves only when Rust confirms the decision reached
 the model. Every other transition is a convenience; this one is the safety boundary, and a panel that
