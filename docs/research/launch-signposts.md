@@ -47,7 +47,7 @@ Two hypotheses, no number between them. This file is the number.
   response, not before it.
 - **There is no `DOMContentLoaded` stage yet.** Its Rust half is in the tree and inert
   (`src-tauri/src/commands.rs:332-337`); the emitter belongs to the frontend session. No number
-  below includes it. Details, and the defect in this file's first recipe for it, at the bottom.
+  below includes it. Details, and the two defects in this file's earlier recipes, at the bottom.
 
 ## Method
 
@@ -214,36 +214,82 @@ so a `duration_ms: 0` signpost cannot be folded into an interaction percentile b
 later reads that file. Matching is on the prefix, not on the one label, and the stage name is the
 label with the prefix stripped. **[source]** `src-tauri/src/commands.rs:332-337`.
 
-### The emitter, and the defect in the first version of this recipe
+### The emitter, and the two defects in this file's earlier recipes
 
-**The recipe first written here could never have fired, and the reason is a finding in this same
-file.** It read `performance.getEntriesByType("navigation")[0].domContentLoadedEventEnd`
-synchronously at the top of `startPaintInstrumentation` and reported only when that was above zero;
-the bundle is a deferred ES module (`dist/index.html`, `<script type="module">`), so the module body
-runs **before** `DOMContentLoaded`, the field reads 0, and nothing was ever sent. The sentence that
-excused the missing listener, that "the observer already runs after DCL", conflated the observer's
-callback with its installation, and the synchronous read sits at the installation. **[source]**
+**This is the second correction of the same recipe, and the first fix did not remove the defect
+because it was written from the same reading rather than from the spec.** Version one read
+`performance.getEntriesByType("navigation")[0].domContentLoadedEventEnd` synchronously at the top of
+`startPaintInstrumentation` and reported only when it was above zero; the bundle is a deferred ES
+module (`dist/index.html`, `<script type="module">`), the module body runs before
+`DOMContentLoaded`, the field reads 0, and nothing was ever sent. Version two added a listener but
+gated it on `document.readyState === "loading"`, a gate that a deferred module script can never
+pass, and then asked the handler to re-read `domContentLoadedEventEnd`, which is written **after**
+the handlers return. Both shipped, and in production the stage never fired: the frontend session's
+cold n=1 run still reports `page_load_finished` to FCP as 142.2 ms, undivided. **[measured]**
 
-What the frontend session actually ships, and what any reimplementation must do:
+The spec says exactly why, in HTML Standard §13.2.7 "The end", the steps run once the user agent
+stops parsing. **[documented]**, fetched 2026-09-04:
 
-1. If `domContentLoadedEventEnd > 0`, report `timeOrigin + domContentLoadedEventEnd`.
-2. Else if `document.readyState === "loading"`, add a `{ once: true }` `DOMContentLoaded` listener
-   that re-reads the navigation timing entry and **prefers that value over the dispatch time**, so
-   the number is the browser's own, not the listener's turn in the queue.
+- Step 3, "Update the current document readiness to `"interactive"`", runs **before** step 5,
+  which is the loop that executes the list of scripts that will execute when the document has
+  finished parsing. A deferred module body therefore always observes `"interactive"`, never
+  `"loading"`.
+- Step 6 queues one task whose substeps are, in order: 6.1 "Set the Document's load timing info's
+  DOM content loaded event start time to the current high resolution time", 6.2 "Fire an event
+  named `DOMContentLoaded` at the Document object", 6.3 "Set the Document's load timing info's DOM
+  content loaded event end time to the current high resolution time". So `domContentLoadedEventStart`
+  is already written when a handler runs and `domContentLoadedEventEnd` is not.
+- `"complete"` is set only at step 9.1, in a later queued task after step 8 has spun the event loop
+  until nothing delays the load event. `readyState !== "complete"` is therefore the gate that
+  distinguishes "DCL has not happened yet" from "the page is fully loaded".
+
+Navigation Timing Level 2 §3.3 matches: the `domContentLoadedEventStart` getter returns the
+document load timing's DOM content loaded event start time, "measured **before** the user agent
+dispatches the `DOMContentLoaded` event", and `domContentLoadedEventEnd` returns the end time,
+"measured **after** the user agent completes handling of the `DOMContentLoaded` event".
+**[documented]**, fetched 2026-09-04.
+
+Confirmed in a real `WKWebView`, served over HTTP from `127.0.0.1` so a navigation entry exists,
+against a page whose only script is `<script type="module">`, three snapshots in one load
+(`scratchpad/dclprobe/`, adapted from the frontend session's harness by adding
+`domContentLoadedEventStart`). All **[measured]**, 2026-09-04:
+
+| snapshot | `readyState` | `domContentLoadedEventStart` | `domContentLoadedEventEnd` |
+|---|---|---|---|
+| module body | `interactive` | 0 | 0 |
+| `DOMContentLoaded` handler | `interactive` | **13.0** | 0 |
+| `load` handler | `complete` | 13.0 | 13.0 |
+
+Row two is the whole answer: inside the handler the start time is populated and the end time is
+still 0. The magnitudes are meaningless here (a 172-byte page off localhost), the ordering is the
+result.
+
+What an implementation must do:
+
+1. If `domContentLoadedEventEnd > 0`, report `timeOrigin + domContentLoadedEventEnd` under label
+   `trace:dcl`. This is the late-installation case: the module already ran after DCL completed.
+2. Else if `document.readyState !== "complete"`, add a `{ once: true }` `DOMContentLoaded` listener.
+   Inside it, if `domContentLoadedEventStart > 0` report `timeOrigin + domContentLoadedEventStart`
+   under `trace:dcl`; otherwise report `timeOrigin + performance.now()` read at handler entry, under
+   label **`trace:dcl-approx`**. Do not re-read `domContentLoadedEventEnd` there: step 6.3 has not
+   run yet, and version two's failure was exactly that read.
 3. Else report nothing.
 
-Step 3 is not a fallback, it is a refusal, and it carries two facts. `readyState` becomes
-`"interactive"` **before** `DOMContentLoaded` dispatches, so a non-`"loading"` state does not prove
-the event has fired and cannot license a report. **[documented]** And under
-`loadHTMLString(_:baseURL:)` there is no navigation entry at all (**[measured]**,
-`perceived-performance.md` §5.3), so a fallback here would stamp `main.tsx`'s own run time and call
-it `DOMContentLoaded`, which is the "a missing number is honest, a wrong number is not" rule in
-`src/paint.ts` inverted.
+**The two labels are the honesty field, and they cost nothing to add.** `report_paint` strips the
+`trace:` prefix and uses the remainder as the stage name (`src-tauri/src/commands.rs:332-337`), so
+the stderr line reads `stage=dcl` or `stage=dcl-approx` and says which clock produced it without a
+wire change. `dcl-approx` is the handler's turn in the task queue, not the browser's own milestone;
+it exists only for the case with no navigation entry, which is `loadHTMLString(_:baseURL:)`
+(**[measured]**, `perceived-performance.md` §5.3) and is not how this app loads its page.
+
+Step 3 is a refusal, not a fallback: at `"complete"` the load event has already fired, so any number
+invented there would be later than the milestone it claims to be, and "a missing number is honest, a
+wrong number is not" (`src/paint.ts`) applies.
 
 `PerformanceNavigationTiming` is present in this WKWebView (**[measured]**,
-`perceived-performance.md` §5.3). Cost when tracing is off: one extra `invoke` per launch, on a
-path already past `page_load_finished`. Whether that extra invoke perturbs the FCP number is
-**[asserted]** to be negligible and **not measured**.
+`perceived-performance.md` §5.3, and again in the probe above). Cost when tracing is off: one extra
+`invoke` per launch, on a path already past `page_load_finished`. Whether that extra invoke perturbs
+the FCP number is **[asserted]** to be negligible and **not measured**.
 
 ## Readers of `paint.ndjson`
 
@@ -257,6 +303,10 @@ every future reader has to be told.
 
 ## Not checked
 
+- **The `dcl` probe is a 172-byte localhost page, not this app.** It settles the ordering of
+  `readyState`, `domContentLoadedEventStart` and `domContentLoadedEventEnd` in a real `WKWebView`
+  and nothing else; its 13.0 ms figures describe that page, not brigadier. The recipe has not been
+  run inside brigadier, so the `dcl` stage still has no number.
 - **Cold start was not measured.** `sudo purge` is unavailable to this session, so every number is
   warm. The 12 runs also share one warm scratchpad `HOME`; first-ever launch (arm A1) and the
   owner's real data directory (arm B) were not re-run.
