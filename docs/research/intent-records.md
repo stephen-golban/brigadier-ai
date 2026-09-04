@@ -170,12 +170,19 @@ overwrite a settled row.
 
 ### 2.3 Lifecycle — the exact points
 
+**Amended 2026-09-04: this is four steps, not five.** As designed it was `intent_open` followed by a
+separate `store.flush()` — step (C) — and the barrier was therefore something a caller could forget.
+`StoreHandle::intent_open` now **awaits the commit itself** (`crates/store/src/writer.rs`
+**[source]**), so (B) and (C) are one call and the ladder below is what shipped. Two consequences
+worth stating: the caller can no longer omit the barrier, and `intent_open` can now report
+[`Error::IntentOpenTimeout`], which says *the commit did not arrive in time* — never *the row was
+not written* — so the answer to one is to stop and reconcile, never to retry the effect.
+
 ```
  (A) mint id, capture baseline        <- BEFORE the effect; the baseline stops being knowable after
- (B) store.intent_open(row).await
- (C) store.flush().await              <- THE BARRIER. §3 is about why this line exists.
- (D) perform the effect
- (E) store.intent_close(...).await    <- no flush, deliberately
+ (B) store.intent_open(row).await     <- THE BARRIER, and it is inside this call. §3 is why.
+ (C) perform the effect
+ (D) store.intent_close(...).await    <- no flush, deliberately
 ```
 
 Why this ordering and no other, crash by crash:
@@ -183,11 +190,11 @@ Why this ordering and no other, crash by crash:
 | dies between | row reads | truth | reconciliation says | correct? |
 |---|---|---|---|---|
 | A and B | (no row) | nothing happened | nothing to reconcile | yes |
-| B and C | (no row) | nothing happened | nothing to reconcile | yes — the flush is what makes B..C the *only* silent window, and it contains no effect |
-| C and D | `open` | nothing happened | postcondition → `not_done` | yes |
-| inside D | `open` | **unknowable** | postcondition → `done` or `unknown` | yes; this is the case `unknown` exists for |
-| D and E | `open` | it happened | postcondition → `done` | yes |
-| after E | settled | it happened | not read | yes |
+| inside B, before its commit | (no row) | nothing happened | nothing to reconcile | yes — the commit inside `intent_open` is what makes this the *only* silent window, and it contains no effect |
+| B and C | `open` | nothing happened | postcondition → `not_done` | yes |
+| inside C | `open` | **unknowable** | postcondition → `done` or `unknown` | yes; this is the case `unknown` exists for |
+| C and D | `open` | it happened | postcondition → `done` | yes |
+| after D | settled | it happened | not read | yes |
 
 The reverse ordering (effect, then record) has a row that reads *nothing* while the effect stands —
 indistinguishable from "never dispatched", which is precisely the state that makes a fresh context
@@ -278,7 +285,7 @@ already covered without an fsync.
 ### 4.1 Where it runs, and when
 
 Not in `Store::open`. That function is blocking, holds the launch path, and is SQL-only by design —
-`expire_pending_approvals` (`schema.rs:526`) and `settle_stale_sessions` (`schema.rs:546`) are two
+`expire_pending_approvals` (`schema.rs:671`) and `settle_stale_sessions` (`schema.rs:546`) are two
 statements. Reconciliation needs `git` subprocesses. It goes where `prune_worktrees` goes: spawned
 off the setup thread (`src-tauri/src/lib.rs:172-176` **[source]**), so it never lands on B2/B3's
 ~291 ms launch budget (`docs/STATUS.md` §4).
@@ -324,20 +331,42 @@ subprocesses.
 |---|---|---|---|---|---|---|---|
 | `worktree_add` | the worktree path | branch name + `HEAD` sha of the project | `git worktree list --porcelain` contains the path with no `prunable`, **and** `git rev-parse --verify refs/heads/<branch>` exits 0 | both hold | neither holds | branch exists, checkout does not (the 2.50.1 leak, row 2 of §1) | 2 subprocesses, ~10 ms |
 | `worktree_remove` | the worktree path | the branch, the pre-remove `dirty_count` | `!path.exists()` **and** the path is absent from `worktree list` | both hold | path still there and still registered | path gone from git, files still on disk — the `left_on_disk` state (`crates/supervisor/src/worktree.rs:545`) | 1 `stat` + 1 subprocess |
-| `work_order` | the worktree path | `git rev-parse <BR>` at dispatch, and `dirty_count` at dispatch | `git rev-list --count <baseline_sha>..<BR>` **and** `dirty_count(WT)` | — **never `done`**; see below | both unchanged from baseline: no commits, dirt equal | anything moved | 2 subprocesses, ~15 ms |
-| `phase_commit` | the branch | `git rev-parse <BR>` before, plus the intended message | `git log -1 --format=%H%x00%P%x00%s <BR>` | top commit's parent == baseline **and** subject == intended message | `rev-list --count baseline..<BR>` == 0 | count ≥ 1 but the top commit does not match (someone else committed, or it was amended) | 2 subprocesses |
+| `work_order` | the worktree path | `git rev-parse <BR>` at dispatch, and `dirty_count` at dispatch | `git rev-list --count <baseline_sha>..<BR>` **and** `dirty_count(WT)`, as narration only | — **never `done`**; see below | — **never `not_done` either**, as of the owner decision below | **always**: the only state this kind may settle | 2 subprocesses, ~15 ms |
+| `phase_commit` | the base branch | `git rev-parse <BR>` before; the intended message rides in `detail_json` | `git rev-parse <BR>^1` **(the FIRST parent)** and `git log -1 --format=%s <BR>` | first parent == baseline **and** subject == intended message; **or** the fast-forward case, where no merge commit exists at all and `merge-base --is-ancestor <branch> <BR>` exits 0 | `rev-list --count baseline..<BR>` == 0 | count ≥ 1 but the top commit does not match (someone else committed, or it was amended) | 2 subprocesses |
 | `merge_to_base` | `<base>..<branch>` | the base ref and its sha | `git merge-base --is-ancestor <branch> <base>` | exit 0 | — **never**; see below | exit 1 | 1 subprocess |
 | `tool_permission` | the `request_id` | tool name, `tool_call_id`, and the path when one parses out of `input_excerpt` | **none exists** | only from a stored ack | never | **always**, absent an ack | free |
 | `spawn` | the worktree path | the project id | `crates/proc/`'s own sweep already answers "is a child of ours still alive" (`crates/proc/src/sweep.rs`) | pid record matched a live group | no pid record and no group | pid record present, process gone | free (shares the sweep) |
 
 Three entries above are deliberate; the middle one rests on a measurement, the other two on reasoning:
 
-- **`work_order` can never read `done`.** "The worker committed something" is not "the worker
-  finished the order". A dirty tree or a new commit means *some* of the order ran; repeating it is
-  exactly the failure the panel described, and declaring it finished is
-  `docs/vision.md` §8's named failure mode — *agents declaring done prematurely*. So the honest
-  values are `not_done` (provably nothing moved → safe to re-dispatch) and `unknown` (something
-  moved → a human or a fresh lead call reads the diff). **[asserted]**
+- **`work_order` can never read `done` — and, since 2026-09-04, can never read `not_done` either.**
+  "The worker committed something" is not "the worker finished the order". A dirty tree or a new
+  commit means *some* of the order ran; repeating it is exactly the failure the panel described, and
+  declaring it finished is `docs/vision.md` §8's named failure mode — *agents declaring done
+  prematurely*.
+
+  This paragraph originally offered `not_done` as the honest value for *provably nothing moved →
+  safe to re-dispatch*. **The owner removed it** (§10.1, and it is enforced at the write:
+  `crates/store/src/intents.rs` `settleable` gives `WorkOrder => &[Unknown]`, and `hold_to_settleable`
+  downgrades anything else). The reason is that `rev-list --count` plus a dirty count is not a
+  sufficient test for *nothing happened*: a worker that ran `npm install`, wrote above the worktree
+  root, or made and reverted its own changes leaves both at baseline and would read `not_done`,
+  authorizing a re-dispatch of an order that already had effects. *"The accepted cost is a
+  re-dispatch we could otherwise have made safely."* **[source]**
+
+  **The consequence for the loop, which is the honest limit on unattended crash recovery:** there is
+  no `not_done` branch to take, so `crates/supervisor/src/loop_/` contains **no re-dispatch path at
+  all**, and a launch that died with work orders in flight leaves every one of those phases blocked
+  until the owner settles each intent by hand
+  (`crates/supervisor/src/loop_/state.rs`, `BlockReason::OrdersInFlight`).
+
+  One thing a reconciler must not get wrong, because it is a consequence nothing else in this file
+  states: **the live path closes a `work_order` row too, and that close is also downgraded to
+  `unknown`.** What distinguishes it is `outcome`: a row the loop closed itself while the process
+  was alive carries `IntentOutcome::Acked`, while one a postcondition settled after a restart
+  carries `Reconciled`. A reconciler that treats every `unknown` row as *this phase must block*
+  without reading `outcome` will block every phase that ever dispatched an order, including phases
+  that went green. **[asserted]**
 - **`merge_to_base` can never read `not_done`,** because "not merged" has no sound test.
   `docs/research/worktree-cleanup.md` §2.1–§2.4 **[measured]** on git 2.50.1: `git branch --merged`
   misses every squash and rebase merge; `git cherry` reports three `+` ("not merged") for three
@@ -350,7 +379,7 @@ Three entries above are deliberate; the middle one rests on a measurement, the o
 - **`tool_permission` has no postcondition and is always `unknown`.** The `control_response` frame
   went down a pipe to a process that no longer exists. The intent row's value is not retry
   avoidance — the child is dead and `expire_pending_approvals` has already denied the row
-  (`schema.rs:526`) — it is **narration**: after a crash the harness can say *"you allowed
+  (`schema.rs:671`) — it is **narration**: after a crash the harness can say *"you allowed
   `Bash(git push …)` and we do not know whether it ran"*, which is a sentence nothing in the app can
   produce today. For `git push` specifically a postcondition exists (`git ls-remote`), it costs a
   network round trip and it is **not** in v1.
@@ -581,3 +610,167 @@ row — but that is a claim about the wall's coverage, and the wall's set member
 that has never been exercised against a real work order (`crates/core/src/wall/tables.rs`, W3-A
 unstarted). If that mitigation is wrong, `work_order` should lose `not_done` entirely and become a
 kind that only ever reads `unknown`. **[asserted]**
+
+---
+
+## 10. Amendment — what was built, 2026-09-04
+
+The body above (§0–§9) is the design as written on 2026-09-04 against `main` at `1b18909`, with
+**nothing built**. This section records what the implementing order actually landed and the two
+places the owner overruled the design. It amends; it does not rewrite. Same tagging rules as §0.
+
+### 10.1 `work_order` loses `not_done` entirely — owner decision, 2026-09-04
+
+**[source]** Owner decision, carried in the implementing work order. §9's "single weakest claim"
+paragraph anticipated exactly this and named the remedy: *"If that mitigation is wrong, `work_order`
+should lose `not_done` entirely and become a kind that only ever reads `unknown`."* It is now the
+decision, not the contingency.
+
+- **§4.3's `work_order` row is superseded.** Its `not_done` column ("both unchanged from baseline:
+  no commits, dirt equal") no longer applies. The kind's settled set is `{unknown}` — `done` was
+  already forbidden by that same row.
+- **§9's weakest-claim paragraph is superseded** by this decision rather than by evidence: the
+  composite postcondition was never measured and now never needs to be.
+- **The reasoning, restated [asserted]:** `rev-list --count baseline..BR` plus `dirty_count` is not
+  a sufficient test for "nothing happened". A worker that ran `npm install`, wrote above the
+  worktree root, pushed a branch, or made and then reverted its own changes leaves both numbers at
+  baseline and reads `not_done`, which authorizes re-dispatching an order that already had effects.
+- **The accepted cost, stated plainly [asserted]:** a re-dispatch that could otherwise have been
+  made safely. A `work_order` that genuinely did nothing now settles `unknown` and blocks its phase
+  until a human or a fresh lead call reads the diff, rather than being re-dispatched automatically.
+- **[source]** Encoded as data, not prose: `KnownIntentKind::settleable`
+  (`crates/store/src/intents.rs`) returns `&[Unknown]` for `WorkOrder`, and
+  `a_work_order_can_only_ever_settle_unknown` in the same file pins it. It is data the reconciler
+  reads; the store does **not** refuse an `intent_close` that ignores it.
+
+### 10.2 `respond` gets a pre-record — owner decision, 2026-09-04
+
+**[source]** `crates/core/src/claude/adapter.rs:960` writes the decision to the child's stdin and
+only emits `Event::RequestResolved` at `:968`. So the one path `docs/plans/ipc-contract.md` calls
+the safety boundary is the one effect in §1's table with no pre-record at all.
+
+- A `tool_permission` intent is therefore opened **before** the `control_response` frame is
+  written, and flushed, exactly like every other kind. §1 row 12's "**no.** Nothing on disk records
+  that the frame was written" is superseded: something on disk now does.
+- **§4.3's `tool_permission` row still stands unchanged.** A pre-record does not create a
+  postcondition — the frame went down a pipe to a process that no longer exists — so the kind still
+  settles `done` only from a stored ack and `unknown` otherwise. The value is narration, per §5.
+- **The wiring is a later order and is not in this change.** `crates/core/` was not the
+  implementing order's path. What landed is only the store side: the `tool_permission` kind and the
+  `intent_open`/`intent_close` pair that wiring will call. **[source]** grepped 2026-09-04: nothing
+  in `crates/core/` or `crates/supervisor/` calls `intent_open` yet.
+- **A pre-record is a durability fix and not licence to show a decision before it is real.**
+  `docs/vision.md` §9: *"Approvals are never optimistic. The dock resolves only when Rust confirms
+  the decision reached the model."* The intent row records that we were **about to** answer; it is
+  not evidence that the answer landed, and no UI may read it as one.
+
+### 10.2b `phase_commit`'s postcondition is wrong for a merge commit — correction to §4.3
+
+§4.3 gives `phase_commit`'s postcondition as `git log -1 --format=%H%x00%P%x00%s <BR>`, settling
+`done` when "top commit's parent == baseline **and** subject == intended message". **That rule is
+broken and must not be implemented as written.**
+
+- **[measured]** by the lead in a throwaway repository on git **2.50.1 (Apple Git-155)** — the same
+  version every other git measurement in this repo was taken on. `%P` lists **all** parents,
+  space-separated, so a `--no-ff` merge commit gives:
+
+  ```
+  %P       -> 9114da80815f2ce60bb016771b5518b8984212a2 b4d63c6f1b381ade27da692764257aea6be769b0
+  baseline =  9114da80815f2ce60bb016771b5518b8984212a2
+  "%P == baseline"                 -> FAILS
+  "first field of %P == baseline"  -> PASSES
+  ```
+
+- **[source]** `docs/vision.md` §4 step 7.6 has the loop **merge, then commit** per phase, so a
+  phase commit is routinely a merge commit, not a single-parent one.
+- **[asserted]** Consequence as written: the postcondition reads `unknown` on every phase the loop
+  ever successfully commits, and per §5 an `unknown` `phase_commit` *blocks its phase*. The design
+  would halt the loop on its own successful work, on the happy path, every phase.
+- **The fix:** compare the **first parent** — `%P` cut at the first space, or `git rev-parse <BR>^1`
+  — not the whole `%P` field. The rest of §4.3's `phase_commit` row (subject match for `done`,
+  `rev-list --count baseline..<BR> == 0` for `not_done`, and `unknown` for everything else) is
+  unchanged.
+- **Not implemented here.** The reconciler is a later order; this is recorded so that whoever
+  builds it inherits the fixed rule rather than the broken one. **Not checked:** whether an
+  amended-then-merged commit, or an octopus merge, defeats the first-parent comparison too.
+
+### 10.3 Which rung it landed on, and what `user_version` is now
+
+- **[source]** §2.1's heading says "Migration 3 (`user_version` 3 → 4)" and that is still literally
+  true: `intents` is rung **index 3** and takes a file from `user_version` 3 to 4.
+- A second rung landed in the same change — migration **4**, the plan and progress tables
+  (`plans`, `phases`, `plan_revisions`, `unknowns`, `work_orders`), which is `docs/plans/phase-4.md`
+  W1-A and has no design document of its own; its spec is `docs/vision.md` §4 steps 5–7, §8 and §9.
+- **`crates/store/src/schema.rs::MIGRATIONS` now has five entries and `user_version` is 5.**
+  **[measured]** `crates/store/tests/schema.rs` asserts 5 at open and at reopen;
+  `schema::tests::migrations_3_and_4_land_on_a_file_stopped_at_user_version_3` drives a file
+  stopped at 3 up to 5 and asserts every new table and index exists and that no pre-existing row
+  moved.
+- **[source]** §2.1's note that the file "sits at `user_version` 3 (`schema.rs:622`,
+  `assert_eq!(version, 3, ...)`)" is stale by construction: that assertion now reads 5, and the
+  line number moved.
+- Consequence worth naming **[asserted]**: `docs/STATUS.md` records the owner's own data directory
+  at `PRAGMA user_version` **3** as of 2026-09-04. The next app launch on that directory runs both
+  new rungs. Both are `CREATE TABLE`/`CREATE INDEX` only — no `ALTER`, no backfill, no existing row
+  read or written — so unlike migrations 1 and 2 there is nothing for them to change. **Not
+  checked:** they have not been run against that file, read-only or otherwise.
+
+### 10.4 The IPC commands of §5 are deferred to the reconciler order
+
+§5 point 2 specifies `unsettled_intents` and `settle_intent` and instructs the implementer to add
+that section to `docs/plans/ipc-contract.md` "in the same change". **That did not happen, on
+purpose.**
+
+- **Nothing produces an `unknown` intent until the reconciler exists**, and the reconciler is a
+  later order: it lives in `crates/supervisor/`, needs `git` subprocesses, and is §4 of this
+  document. Both commands would therefore ship dead — `unsettled_intents` returning an empty list
+  forever and `settle_intent` reachable only by hand.
+- `src-tauri/` and `docs/plans/ipc-contract.md` were also outside the implementing order's owned
+  paths, so adding them would have been a second worker's file.
+- **The store side is a thin wrapper away** and is built: **[source]**
+  `StoreHandle::unsettled_intents` returns every `open`-or-`unknown` row oldest first, served by
+  the `intents_unsettled` partial index, and `StoreHandle::intent_close` takes the
+  `outcome = 'operator'` that `settle_intent` needs. What the reconciler's order still owes:
+  the two commands, the `IntentView` shape, the `no_such_intent` `AppError` code, and the
+  `ipc-contract.md` section.
+
+### 10.5 What was built, in one list
+
+**[source]**, all in `crates/store/`:
+
+- Rung 3: `intents`, both indices (`intents_unsettled`, `intents_session`), `IntentRow` (write
+  shape), `IntentRecord` (read shape), `IntentKind` (pass-through), `KnownIntentKind`,
+  `IntentState`, `IntentOutcome`, `Op::IntentOpen`, `Op::IntentClose`,
+  `StoreHandle::{intent_open, intent_close, unsettled_intents, session_intents}`, the
+  `INTENT_DETAIL_LIMIT` bound with §2.1's placeholder treatment, and the §6 sweep at
+  `Store::open`.
+- Rung 4: `plans`, `phases`, `plan_revisions`, `unknowns`, `work_orders`, three indices, their row
+  types, ten ops and six readers.
+
+### 10.6 What was not checked
+
+- **The reconciler does not exist**, so §4's algorithm, every postcondition in §4.3, and §8.1 items
+  4–8 are unbuilt and untested. Nothing has ever settled an intent from a real crash.
+- **No live `claude` child was run.** §8.2's two money tests are still unwritten and unrun.
+- **The barrier test proves an application crash, not a power cut.** The child calls
+  `std::process::exit`, which skips Rust destructors — so no `Op::Shutdown` is sent and no commit
+  happens on the way out — but it is not `libc::_exit`, and it does not test `synchronous=NORMAL`
+  under power loss. §3's second row of the durability table is still **[documented]** only.
+- **No fsync latency was measured**, so §3's `synchronous=FULL` cost is still unpriced.
+- **The row size (~200 B) and the cadence in §6 are still assumptions.** Nothing has run long
+  enough to observe either, so the ~226 rows/hour and ~1.1 MB/day figures are unchanged and
+  unverified.
+- **Neither new rung has run against the owner's real database.**
+- The `UNIQUE(plan_id, ordinal)` constraint on `phases` is checked per statement, not per
+  transaction, so swapping two phases' ordinals in one batch fails the second statement — logged
+  and skipped by `apply_batch`, not raised. A reorder has to move one phase to a spare ordinal
+  first. **[measured]** by `plan::tests::two_phases_cannot_share_an_ordinal_in_one_plan`, which
+  pins the constraint; the swap hazard itself is **[asserted]** and untested.
+- **Two `expire_pending_approvals` citations in the body were corrected in place** from
+  `schema.rs:526` to `schema.rs:671` (§4.1 and §4.3), an authorized exception to "append only".
+  **[measured]** `grep -n 'fn expire_pending_approvals' crates/store/src/schema.rs` → 671. The
+  `settle_stale_sessions` citation beside the first of them (`schema.rs:546`) is **also stale** —
+  it is at `schema.rs:691` — and was left alone because only the `expire_pending_approvals`
+  occurrences were authorized. Fix it in the next order that touches this file.
+- **Line numbers in this document rot on every edit to `schema.rs`,** and this change moved most
+  of them: the file grew by two migration rungs and a test. Nothing re-derives them.

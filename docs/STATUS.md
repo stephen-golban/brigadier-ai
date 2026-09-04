@@ -3,10 +3,17 @@
 Last updated 2026-09-04. **This is the file to read first.** It says what is built, what is proven,
 what is broken, and what will bite you. The product it is building toward is `docs/vision.md`.
 
-**§1 and §3 are the freshest sections in this file**: both were rewritten on 2026-09-04 against a
-six-gate run at `c884767`. §§2, 4, 5, 6, 7 and the landmine list were revised earlier the same day
-against the research files behind them. **Every section is dated by its own text** — read the commit
-a claim names before quoting it.
+**§§1, 2 and 3 are the freshest sections in this file**: all three were rewritten on 2026-09-04
+against a six-gate run at `e0f1375`, after that day's unattended run landed four commits on `main`.
+§§4, 5, 6 and 7 were revised earlier the same day against the research files behind them and were
+**not** re-derived here, and **§5's "Still open: none" has since gone false** —
+`docs/plans/report-2026-09-04.md` §4 and §5 name three defects found today that §5 does not carry,
+one of them verified and deliberately not fixed. The landmine list gained one line in this revision
+and is otherwise as it was. **Every section is dated by its own text** — read the commit a claim
+names before quoting it.
+
+`docs/plans/report-2026-09-04.md` is the lead's own account of that run and is the longer record;
+this file does not restate it.
 
 No invented progress. A feature "works" only after it has been run. One line per fact, a path or a
 number instead of an adjective, and what was not checked is said outright.
@@ -15,79 +22,107 @@ number instead of an adjective, and what was not checked is said outright.
 
 ## 1. The tree right now
 
-`main` at `c884767` ("docs: the layout fixes confirmed in WKWebView, and one claim that could not
-be"), plus the commit carrying this file, which changes documentation only. On that parent tree
-`git status --porcelain` printed nothing — **the working tree is otherwise clean**, nothing staged
-and nothing pending the owner's approval. **[measured]** 2026-09-04.
+`main` at `e0f1375` ("phase 4.4: the run reaches the window, and Add project opens a real folder
+picker"). **[measured]** 2026-09-04. `git status --porcelain` printed **8 lines and every one of them
+under `docs/`** immediately before this revision — `docs/plans/ipc-contract.md` and
+`docs/research/intent-records.md` modified; `docs/plans/autonomous-run-2026-09-04.md`,
+`docs/plans/report-2026-09-04.md`, `docs/plans/w1b-loop-order.md`,
+`docs/research/gate-environment.md`, `docs/research/orchestration-loop.md` and
+`docs/research/tauri-dialog.md` untracked — and this file's own edit makes nine. **No code is
+uncommitted**, nothing is staged, and nothing waits on the owner's approval. **[measured]**
 
-**This section named `3e5c3fd` until this revision, and that was 36 commits stale, not seven** —
-`git rev-list --count 3e5c3fd..HEAD` is **36** **[measured]**, two days behind. **16** of those
-commits carry the date 2026-09-04 **[measured]**.
+**Two committed commit messages cite files that are not committed.** `31e551f` cites
+`docs/research/gate-environment.md` and `docs/research/orchestration-loop.md`; both are untracked
+above. **[measured]** Remedy: commit `docs/` alongside this revision, or the citations dangle for
+anyone who clones the repository.
 
-The **seven** commits after `1b18909` (`fix:`, clippy dead-code in `claude-spike` `session.rs`,
-included per binary via `#[path]`) are the last session's output. Oldest first:
+The **four** commits after `a889525` are one unattended run's output — seven work orders, six
+workers, gated once on the final combined tree rather than per commit (`report-2026-09-04.md` §6.2,
+which says so and says why). Oldest first:
 
-- `dc52f07` `docs:` — `docs/research/intent-records.md`, 583 lines: migration 3's `intents` table,
-  an intent-kind → postcondition table, a three-outcome reconciler that never retries an `unknown`.
-  **Design only, no code. Unimplemented.** It records that `respond` writes the decision to the
-  child's stdin at `crates/core/src/claude/adapter.rs:960` and only emits `RequestResolved` at
-  `:968`, so the one path `docs/plans/ipc-contract.md` calls the safety boundary is the one effect
-  with no pre-record. **[source]**
-- `10c123f` `docs:` — `docs/research/thinking-control.md`, 425 lines: the CLI starts every session
-  at thinking `{type:"adaptive"}` and degrades that to `{type:"enabled", budget_tokens: N}` for a
-  model with no adaptive mode, so a `claude-haiku-4-5` child thinks although `build_argv` asks for
-  nothing. Read out of the 2.1.260 binary; **no live request was made** (`claude --version` and
-  `--help` only). **[source]**
-- `2657c71` `docs:` — `docs/research/visual-checks-2026-09-04.md`, 418 lines: the 800x500 minimum
-  holds but three CSS rules break it, and the 60 Hz feed number re-measured on the 28 px row.
-  **[source]**
-- `47632b2` `docs:` — §§2, 4, 5, 6, 7 and the landmine list of this file revised; §1 and §3 left
-  stale on purpose. This revision is the debt that line took on. **[source]**
-- `e780fbd` `feat:` — harness children get thinking off by default, through the environment.
-  `ThinkingPolicy` (`Off` \| `Inherit`, `Off` the default) on `SpawnSpec`, `StartSession` and
-  `ResumeSession`; `Off` contributes `MAX_THINKING_TOKENS=0`, `Inherit` sets nothing at all.
-  `build_command` split out of `spawn`; the four env steps are ordered and **the order is the
-  contract**. 5 tests, **296 → 301** **[source]**. `build_argv` is unchanged, asserted byte for
-  byte by a test. **Not measured: that the CLI turns thinking off in response** — the child's
-  environment is pinned by tests, the CLI's handling is read from the 2.1.260 binary and the vendor
-  docs, and only a live run settles it. **`crates/claude-spike` builds its own `Command` and does
-  not pick this up — every spike binary still spawns a thinking-on child.**
-- `f807e0e` `feat:` — W4-D2, the verbose toggle, plus four layout defects fixed. `FeedRowWire`
-  carries `k`, the eleven-value union mirroring `brigadier_store::FeedKind`; terse is the default
-  and hides exactly `k === "text"`; `visibleRows` filters on `k !== "text"` and nothing else, so
-  `unknown` survives by construction. 6 tests, **131 → 137** **[source]**. Bundle **273.98 → 274.87
-  kB JS, 25.17 → 27.11 kB CSS** **[source]**, out of that commit's own message and **not
-  re-measured at the intermediate commit**.
-- `c884767` `docs:` — `docs/research/visual-checks-2026-09-04.md` §8, 226 lines: the real-WKWebView
-  confirmation of `f807e0e`'s fixes, on an unlocked screen with no spend (`pgrep -x claude`
-  byte-identical before and after, no session started). **[source]**
+- `e4f35fb` phase 4.1 — **the store**. Ten defects a blind review found in the uncommitted W1-A
+  plan/progress/intents work, plus two a second adversarial pass found. The four that could have
+  cost real work: `upsert_work_order` assigned `state = excluded.state` unconditionally, so a stale
+  upsert turned a *finished* order back into a dispatched one and the same work ran twice;
+  `phases.base_sha` used `COALESCE(excluded, stored)`, so a later non-null value overwrote the base
+  the column exists to pin; `bounded()` on JSON columns appended an ellipsis and produced
+  unparseable JSON, `owned_paths_json` — the thing that stops two workers writing one file —
+  included; `expire_pending_approvals` wrote an unconditional **denial** for every approval a dead
+  process left parked. Migration rung 5 adds `phases.base_sha`; **`user_version` goes to 6.**
+  10 files, 4,616 insertions. **[source]**
+- `bdc5207` phase 4.2 — **the seams the loop needs from core**. `SessionCommands::final_assistant_text(turn_id)`,
+  a slot that outlives the adapter, because none of the three existing channels can carry a fenced
+  JSON block: `summarize()` takes the first non-empty line and yields the single character `{`, the
+  feed stores one pre-rendered line and no body, and `Envelope.raw` is provider JSON the supervisor
+  must not parse. `on_decision` stops emitting `RequestResolved` after a failed `write_frame`.
+  `WorkerWall` wired as an **allowlist** — a blocklist was written first and a second-vendor review
+  found two holes in it. 9 files, 1,314 insertions. **[source]**
+- `31e551f` phase 4.3 — **the loop**. Until this commit the only production caller of
+  `Supervisor::start_session` was a Tauri command behind a button; nothing in the app started work
+  by itself. `verify.rs` (the gate runner), `action.rs` (the strict action schema), `loop_/` (the
+  machine). **Proven live once on a throwaway repository** — see §2's row and §3. 16 files, 7,965
+  insertions. **[source]**
+- `e0f1375` phase 4.4 — **the run reaches the window**. A native directory picker behind
+  `Add project`; `tauri-plugin-opener` given the job it was registered for; the run surface and the
+  pinned plan card; `start_run`, `current_run`, `stop_run`, `unsettled_intents`, `settle_intent`,
+  and the reconciler. 24 files, 4,656 insertions. **Not clicked in a real window** — the commit
+  message says so itself. **[source]**
 
-The "everything uncommitted at `2327bb9`" paragraph was re-checked rather than assumed and all
-three of its bullets are still literally true **[measured]** 2026-09-04 — the Bash classifier
-committed at `21d2375`, and 12 `s8-*`/`s9-*`/`s10-*` NDJSON fixtures on disk under
-`crates/claude-spike/fixtures/` with `git ls-files` counting the same 12 — but it describes a tree
-36 commits gone and is no longer load-bearing. The one fact §7 still rests on:
-**`crates/supervisor/src/handoff.rs` does not exist on disk and
-`git log --oneline -1 -- crates/supervisor/src/handoff.rs` prints nothing**; the handoff wall was
-dropped at `a415bb9`. See §7.
+**What is still load-bearing from the seven commits after `1b18909`**, which this section listed in
+full until this revision and no longer does:
 
-**The "measured at `2327bb9`" fallback is now the exception, not the rule.** §3's gate figures are
-`c884767`, this run. §4 carries rows measured on 2026-09-03 and 2026-09-04 that name their own
-commits — `spawn-split.md`, `perceived-performance.md`, `flood-baseline.md` at `c78a089`,
-`visual-checks-2026-09-04.md` at `1b18909`. What the fallback still covers is only the rows that
-name no later commit and no date: the four undated ones at the foot of §4's table — search-results
-median, whole-repo symbol map rebuild, raw NDJSON, provider transcripts.
+- `dc52f07`'s `docs/research/intent-records.md` was **design only, unimplemented**. That changed:
+  `e4f35fb` implements the `intents` table and the settlement policy, and `bdc5207` closes the gap
+  the document named — `respond` writing the decision to stdin and emitting `RequestResolved`
+  whether or not the write landed. The document is **modified and uncommitted** in the tree above,
+  and `report-2026-09-04.md` §5.1 and §5.2 record two of its claims that have gone false.
+- `10c123f`'s `docs/research/thinking-control.md` stands unchanged: the CLI starts every session at
+  thinking `{type:"adaptive"}`, so a `claude-haiku-4-5` child thinks although `build_argv` asks for
+  nothing. Read out of the 2.1.260 binary; **no live request was made.** **[source]**
+- `e780fbd`'s `ThinkingPolicy` (`Off` \| `Inherit`, `Off` the default) is now used by the loop:
+  `crates/supervisor/src/loop_/dispatch.rs:341` maps Haiku and Sonnet tiers to `Off` and Opus to
+  `Inherit`, and the planner and the ladder's judgement calls opt back in
+  (`loop_/plan.rs:123`, `loop_/ladder.rs:85`). **[source]** Still **not measured: that the CLI turns
+  thinking off in response** — the child's environment is pinned by tests and only a live run
+  settles it. **`crates/claude-spike` still builds its own `Command` and does not pick this up.**
+- `f807e0e`'s bundle figures (**274.87 kB JS / 27.11 kB CSS**) are the baseline §3's new numbers are
+  measured against. `c884767`'s WKWebView confirmation of that commit's layout fixes is quoted in
+  §5 and is unaffected by today's work — **and the CSS it confirmed has since grown 449 lines**
+  (`e0f1375`, `src/index.css`), none of it looked at.
+- **`crates/supervisor/src/handoff.rs` still does not exist on disk** and
+  `git log --oneline -1 -- crates/supervisor/src/handoff.rs` still prints nothing; the handoff wall
+  was dropped at `a415bb9`. See §7. **[measured]** 2026-09-04.
+
+The "everything uncommitted at `2327bb9`" paragraph is **retired**: nothing in this file rests on it
+any longer. Its three bullets were last re-checked and found literally true on 2026-09-04 (the Bash
+classifier committed at `21d2375`; 12 `s8-*`/`s9-*`/`s10-*` NDJSON fixtures under
+`crates/claude-spike/fixtures/`, `git ls-files` counting the same 12). **The "36 commits gone"
+figure that paragraph carried was wrong** — 36 was the `3e5c3fd` distance, not `2327bb9`'s.
+`git rev-list --count 2327bb9..HEAD` is **63** and `3e5c3fd..HEAD` is **41**. **[measured]**
+2026-09-04.
+
+**"Measured at `2327bb9`" now covers four rows and nothing else.** §3's gate figures are `e0f1375`.
+§4 carries rows measured on 2026-09-03 and 2026-09-04 that name their own commits —
+`spawn-split.md`, `perceived-performance.md`, `flood-baseline.md` at `c78a089`,
+`visual-checks-2026-09-04.md` at `1b18909`. The fallback still covers only the four undated rows at
+the foot of §4's table: search-results median, whole-repo symbol map rebuild, raw NDJSON, provider
+transcripts. **None of §4 was re-measured today**, and the bundle has grown 14.8 kB since the launch
+numbers in it were taken.
 
 ## 2. Built, and what proved each row
 
 The evidence column's *kind* varies, so read it before quoting a row. `f1b911f`, `b2c1a4c` and
-`8351335` are live runs against a real `claude` 2.1.258 child. `crates/proc/tests/`,
-`crates/core/tests/claude_adapter.rs` and the **seven** front-end suites under `src/` — `App`,
-`components/Feed`, `components/Sidebar`, `feedStore`, `index.css`, `paint`, `providers/ThemeProvider`,
-counted 2026-09-04, up from five — are test suites in this tree, not live runs.
-`docs/research/persistence.md` and `feed-rendering.md` are research documents — a document, not a
-run. `7f03eb5` cites nothing at all. **No row is a live-`claude`-child proof unless
-its evidence says so.**
+`8351335` are live runs against a real `claude` 2.1.258 child; **`31e551f` is the fourth and the
+only one where brigadier started the work itself**. `crates/proc/tests/`,
+`crates/core/tests/claude_adapter.rs` and the **ten** front-end suites under `src/` — `App`,
+`components/Feed`, `components/RunCard`, `components/Sidebar`, `feedStore`, `index.css`, `mock`,
+`paint`, `providers/ThemeProvider`, `run`, counted 2026-09-04, up from seven — are test suites in
+this tree, not live runs. `docs/research/persistence.md` and `feed-rendering.md` are research
+documents — a document, not a run. `7f03eb5` cites nothing at all. **No row is a live-`claude`-child
+proof unless its evidence says so, and exactly four rows say so.**
+
+**Nothing added on 2026-09-04 has been seen in a window.** Every row below dated today is tests plus,
+in one case, a Rust integration test that drove a live loop with nobody looking at the UI.
 
 | thing | commit | evidence |
 |---|---|---|
@@ -105,86 +140,144 @@ its evidence says so.**
 | a front-end test runner | `ad5a4a7` | 27 tests, `src/feedStore.test.ts`, `npm test` (Vitest + jsdom + Testing Library). They pin `src/feedStore.ts` only: the rAF drain's coalescing and its stop, the `ROW_CAP` 2000 head-trim on both rings, the `seedRows` two-pointer merge (order, `q` interleave, `q`-collision, reference stability, idempotence, ROW_CAP on the union, project ring untouched), cost taking the latest turn's cumulative figure and never summing, `seedSessions`' end/cost reconciliation, counter throttling at `COUNTER_FLUSH_MS`, array-reference stability, and the unknown-projects list. Not a live-child proof and not a UI proof. |
 | the app can time its own paints | `1c8b6f6` | **38** tests, `src/paint.test.ts`, and a build — **24 → 38** since that commit, re-derived 2026-09-04 from `npx vitest run --reporter=json` **[measured]** (§3). `src/paint.ts` observes `first-contentful-paint` and reports it over `report_paint` (`docs/plans/ipc-contract.md`). Since run for real: `paint.ndjson` works end to end in a real window and `main_to_fcp_ms` matched its own `tracing` line on all 19 runs (`docs/research/perceived-performance.md` §1.4). **The interaction half has since run**, and this line is corrected: `a0901e5` gave `beginInteraction` its first and only call site (`src/App.tsx:351`), so it is no longer tree-shaken, and **B4 is a measured number** (§4). **B6 and B7 still have no call site at all** — grepped 2026-09-04, that one site is the only non-test caller in `src/`. |
 | the measured palette as oklch `@theme` tokens | `3e5c3fd` | 18 of 18 colour tokens round-trip hex→oklch→hex bit-exact and all 8 annotated contrast pairs re-derive to within 0.0017, verified twice independently (`docs/research/oklch-tokens.md`, and `frontend-stack.md` §2.6 arrived at the same ratios first). Unit tests and a build only — **nothing has been looked at in a running window.** |
-| MCP off by default, per-project opt-in | `9ca7ee2` | `McpPolicy` (`off` \| `inherit`) in `crates/core/src/driver.rs`; `--strict-mcp-config` pinned in the argv tests of `crates/core/src/claude/process.rs`; store migration 2 (`user_version` 2 to 3, `projects.mcp TEXT NOT NULL DEFAULT 'off'`), which **switched every existing project to `off` on 2026-09-03**, the owner's two live projects included, and each can opt back in per project; supervisor passes the project row's policy on start and on resume (`crates/supervisor/src/lib.rs`, recording-driver test); command `set_project_mcp(project_id, mcp)` and `ProjectView.mcp` (`docs/plans/ipc-contract.md`). Tests only, no live child: the `mcp_servers: []` proof is `spawn-split.md` §1. **Both migrations have now run on the owner's own data directory, not only on tempdir replicas** — **[measured]** 2026-09-04, read-only against `~/Library/Application Support/ai.brigadier.app/brigadier.sqlite`: `PRAGMA user_version` is **3**, both live projects read `mcp='off'`, and all **10,037** pre-migration feed rows read `kind='unknown'` with none reading `'sys'`, so migration 1's corrected default (`959bd0c`, fixed at `1d23df9`) landed on real data and no row has been written since. The replica tests remain the only *proof* of behaviour (`crates/store/src/schema.rs::migration_2_switches_a_pre_existing_project_to_off`, `crates/store/tests/schema.rs`); nothing records which projects were switched and which chose, so render `off` as a state, not a decision. **The UI toggle is not built**; nothing in `src/` calls `set_project_mcp` — grepped 2026-09-04. |
+| MCP off by default, per-project opt-in | `9ca7ee2` | `McpPolicy` (`off` \| `inherit`) in `crates/core/src/driver.rs`; `--strict-mcp-config` pinned in the argv tests of `crates/core/src/claude/process.rs`; store migration 2 (`user_version` 2 to 3, `projects.mcp TEXT NOT NULL DEFAULT 'off'`), which **switched every existing project to `off` on 2026-09-03**, the owner's two live projects included, and each can opt back in per project; supervisor passes the project row's policy on start and on resume (`crates/supervisor/src/lib.rs`, recording-driver test); command `set_project_mcp(project_id, mcp)` and `ProjectView.mcp` (`docs/plans/ipc-contract.md`). Tests only, no live child: the `mcp_servers: []` proof is `spawn-split.md` §1. **Both migrations have now run on the owner's own data directory, not only on tempdir replicas** — **[measured]** 2026-09-04, read-only against `~/Library/Application Support/ai.brigadier.app/brigadier.sqlite`: `PRAGMA user_version` is **3**, both live projects read `mcp='off'`, and all **10,037** pre-migration feed rows read `kind='unknown'` with none reading `'sys'`, so migration 1's corrected default (`959bd0c`, fixed at `1d23df9`) landed on real data and no row has been written since. **The tree's ladder is now 6, not 3** — `MIGRATIONS` gained rungs 3, 4 and 5 (`intents`, `unknowns`, `phases.base_sha`) and the owner's file is still **3 on disk**, re-confirmed read-only 2026-09-04: 2 projects, 44 sessions, 1 approval, resolved *with* a decision. **[measured]** The first launch after `e0f1375` migrates it 3 → 6 and an older binary then refuses it; see the landmine list. The replica tests remain the only *proof* of behaviour (`crates/store/src/schema.rs::migration_2_switches_a_pre_existing_project_to_off`, `crates/store/tests/schema.rs`); nothing records which projects were switched and which chose, so render `off` as a state, not a decision. **The UI toggle is not built**; nothing in `src/` calls `set_project_mcp` — grepped 2026-09-04. |
 | the shell, and the first interaction timed | `a0901e5` | 28 new tests (`src/App.test.tsx` 10, `src/components/Sidebar.test.tsx` 18) plus a real window: the sidebar, project collapse and session selection were **driven by hand**, and 14 selections were timed through `beginInteraction` into `paint.ndjson` (**B4**, §4). `ThemeProvider` is now mounted (`src/main.tsx:22`). Seven AA failures were found and fixed in the process — see the landmine below. |
 | the feed reads as a thread, not a log table | `864a2fe` | the timestamp column, the raw `seq` column and the zebra stripes are gone; 13 px sans at `ROW_H` 28, a rule at clock-minute boundaries only, zero accent at rest, and a 1.4.11 failure on the jump pill's border (1.585:1) fixed on the way. `src/components/Feed.test.tsx` and `src/index.css.test.ts` are new suites; the second gates that every class in markup has a hand-written rule. **Nothing here has been seen rendered**, and the blur test that decides whether it answers the owner's "year 1999 app" verdict has not been run. Those test counts and CSS figures have since been re-run — the six gates at `c884767` on 2026-09-04 give `src/components/Feed.test.tsx` **20** and `src/index.css.test.ts` **8**, inside 137 across 7 files, and CSS **27.11 kB** **[measured]**; §3 carries the run. |
 | the launch decomposed stage by stage, and the page half split | `6db9f6e`; the `dcl` stage at `8293342` and `62e6717`; the numbers at `8b286f5` | `BRIGADIER_TRACE=1` signposts in `src-tauri/src/trace.rs`, 12 warm launches on 2026-09-03 plus 5 more (1 cold, 4 warm) on 2026-09-04 after the `dcl` stage landed. Measured, not inferred: `state::build` inside `setup` is **8.1 ms** p50, not the missing ~100 ms; Tauri's own window creation before our setup closure, `builder_built` to `setup_entry`, is **108.7 ms** p50 warm and **420 ms** cold, so a cold launch is slow there and not in the page; `page_load_finished` to FCP, 83.3 ms undivided, splits into **49.6 ms** fetch plus parse and **28.5 ms** React mount plus render, so the scheme-plus-brotli attribution has a 49.6 ms ceiling and not a 100 ms one. `RLIMIT_NOFILE` is now raised at startup (launchd hands a GUI launch **256**). `docs/research/launch-signposts.md`. **Caveats that matter, and every one of them qualifies a number above it:** (a) **every 2026-09-04 figure was taken with the display locked** (`CGSSessionScreenIsLocked=1`), and that run's exec → FCP of **288.8 ms** landing inside the established 287–295 ms band is **weak evidence that the lock did not move FCP, not proof**; (b) the **28.5 ms mount half is n=4 with a 60.0 ms outlier** against a 23–29 cluster, and both its endpoints are page-relative timestamps clamped to 1 ms — **do not plan against 28.5**; the **49.6 ms fetch-and-parse half is the tight one** (four samples inside 1.5 ms) and the 64/36 verdict rests on it; (c) the `RLIMIT_NOFILE` raise was verified **under a simulated `ulimit -n 256` from a shell, never from an actual Finder launch** — `launchctl limit maxfiles` of 256 is the evidence that the Finder case needs the raise, and the Finder case itself has never been run with stderr captured; (d) no run used a cold OS file cache (`sudo purge` needs sudo); (e) nothing here is a p95 — n=12 warm and n=4 for the split. |
+| **the loop — brigadier spawns a child on its own initiative** | `31e551f` | **The only row in this file behind which there is a live end-to-end run brigadier began by itself.** One plain-English goal in, two `--no-ff` phase commits out, no human in the loop, `claude-haiku-4-5`, on a **throwaway repository the test creates in a tempdir** — not this repo and not the owner's projects. **[measured]** 2026-09-04: the planner produced **2 phases**, each with `sh verify.sh` as its verify command; phase 0 "Create greet.sh" gate exit **0** commit `db80cecf`, phase 1 "Create NOTES.md" gate exit **0** commit `7a279774`, **1 attempt each**; one work order per phase, each in its own worktree on its own branch (`brigadier/6c0dc883`, `brigadier/7a0e1847`); the scratch repo's `main` reads `Phase 2: Create NOTES.md` / `brigadier: brigadier/7a0e1847 into Phase 2` / `Add NOTES.md describing greet.sh` / `Phase 1: Create greet.sh` / `brigadier: brigadier/6c0dc883 into Phase 1` / `Add greet.sh shell script` / `init`; `sh verify.sh` in the project root afterwards exits **0**. **Cost $0.192433**, read from the **store rows** (`cost_usd_cumulative`, one per session) across **5 sessions and 6 ticks** — never by summing `result` frames, which are cumulative. 106.04 s, test exit 0. `pgrep -x claude` **byte-identical before and after** — no child left behind. **What it does not prove, and this is the larger half:** the run was driven **tick by tick from a Rust integration test** (`crates/supervisor/tests/live_loop.rs`), **not through the UI** — nothing in it was clicked. It is **n = 1**: two phases, a trivial goal, one shell script as the gate; it says nothing about a real project, a red gate in the wild, a worker that parks on an approval, or a restart mid-flight. **The rung-1 fixer has never fixed anything live** — the red-gate ladder is tests only. **Four of the five sessions ended `failed` with signal 143**, which is the loop killing its disposable children and is expected, but the session rows read `failed` for children that did their job and will look wrong in the sidebar. Tests beside it: `crates/supervisor/tests/loop_spine.rs` **20**, plus **45** inline across `crates/supervisor/src/loop_/` (`state` 9, `barrier` 6, `git` 6, `green` 6, `ladder` 6, `dispatch` 5, `plan` 5, `call` 2, `mod` **0**) — counted by grepping `#[test]`/`#[tokio::test]`, **[source]**, not a per-suite run. |
+| the gate runner — a real exit code, not a model's opinion | `31e551f` | `crates/supervisor/src/verify.rs`, **15** inline tests **[source]**. `sh -c` with **null stdin** so an interactive prompt EOFs rather than wedging the run; stdout and stderr interleaved into one file and never through a pipe; `ExitStatus` read from the child; `code() == None` is red, never green; **127 gets its own slug**, because a plan naming a command this machine lacks is a plan defect and must not read as "the code is broken"; `pipefail` probed rather than assumed, since a blanket prefix turns a green gate red under a dash `sh`; timeout kills the process group. The PATH is resolved deliberately rather than inherited — measured, not defensive: a Finder-launched app gets `/usr/bin:/bin:/usr/sbin:/sbin`, in which **`cargo` and `npm` are both missing** (`docs/research/gate-environment.md`, **untracked**). Green in the live run above; **never run against a red gate live.** |
+| the action/report schema and the ownership validator | `31e551f` | `crates/supervisor/src/action.rs`, **32** inline tests **[source]**. Read **strictly** — the opposite of the store's lossy slug convention, because an unrecognised stored value must degrade safely while an unrecognised action must never execute; unknown fields are an error. Ownership is disjoint **by path component, never by string prefix**, so `src/a` and `src/ab` do not collide; an overlapping partition is refused and never repaired, naming which two orders collide on which path. `review` and `replan` validate but do not execute and **block the phase by name** rather than being silently ignored. Tests only. |
+| `WorkerWall` — the tool wall an unattended worker runs behind | `bdc5207` | `crates/core/src/claude/hook.rs` (**14** inline tests), `crates/core/src/wall/bash.rs` (**24**), `crates/core/src/wall/tables.rs` **[source]**. It is an **allowlist** and the direction is the point: the wall fails open, so a blocklist's bug is a silent missing refusal while an allowlist's bug is a parked order. A blocklist shipped first and a second vendor found two holes — `cargo test` classifies `Unknown`, not `Mutate`, so it would have parked every worker on its first build; and `git push` is not in `GIT_REMOTE_MUTATE_SUBCOMMANDS`, so the escape check missed the escape it was named for. Both confirmed live before the rewrite. Two guards catch what the classifier cannot: `git` carrying `-C`/`--git-dir`/`--work-tree`, and any rooted path — **including the value after an `=`** — that does not resolve inside the worktree; `GIT_WORK_TREE=/tmp/victim git reset --hard` and `cargo test --target-dir=/tmp/out` both returned `allow` before that. **It is not a sandbox and its rustdoc says so**: the guard reads a command's arguments, not its redirection targets, so `cat </etc/passwd` reads outside the worktree without asking, pinned by a test so the next reader finds it rather than discovers it. The isolation is a git worktree — a containment property (`docs/vision.md` §11). |
+| a turn's full final assistant text | `bdc5207` | `SessionCommands::final_assistant_text(turn_id)` (`crates/core/src/session.rs`), bounded, keeping the **tail** because the fenced JSON block is at the end. None of the three existing channels can carry one: `ItemCompleted.summary` runs through `summarize()`, which takes the first non-empty line, so a JSON block arrives as the single character `{`; the feed stores one pre-rendered line and no body; `Envelope.raw` is provider JSON `crates/supervisor` must not parse. **Deliberately not a `Command` variant** — the adapter's run loop exits on child shutdown, so a command-channel read would answer "session is closed" for exactly the one-turn disposable child whose answer the loop reads *after* it exits. The slot outlives the adapter. Tests in `crates/core/tests/claude_adapter.rs` (**26** `#[test]`/`#[tokio::test]` markers there now, up from **20** at `a889525` **[source]**); it also carried the live run above. **Open, verified, not fixed:** `crates/core/src/claude/adapter.rs:1284-1286` (`close_turn_text`) files a turn's accumulated text under whichever turn is *closing*, so across a pre-emption a continuation's text can be returned as another turn's final answer **silently** — the `NotHeld` guard does not fire because the id matches. Not reachable by this loop (a pre-emption needs a second `SendTurn`, and every child the loop spawns is one turn and disposable), so the safety rests on a rule and not on the code. `docs/plans/w1b-loop-order.md` §7.8 has the cheap fix. |
+| approvals stop reporting a decision that never landed | `bdc5207` (core), `e4f35fb` (store) | Two lies, both fixed. `on_decision` warned on a failed `write_frame` and then emitted `RequestResolved` **unconditionally**, so the dock showed as landed a decision the child never heard; it now emits a `RuntimeWarning` naming the request and no resolution, and the request expires undelivered, which is the truth. `expire_pending_approvals` wrote an unconditional **denial** for every approval a dead process left parked, so after a crash the dock could say "denied" about a tool that ran; it now writes `decision_json = NULL`, and a resolved row with no decision is a third state, `ApprovalOutcome::Expired` — *neither allowed nor denied* (`crates/store/src/schema.rs`, the column's own comment: "Never written as a deny"). **No UI ever displayed the false denial**: `crates/supervisor/src/wire.rs:138` is `resolved: record.resolved_at.is_some()` and nothing else, and the front end has no field for a stored decision **[source]** — it was in the stored row waiting for its first reader, which the plan card would have been. `docs/vision.md` §9 is the authority. The owner's one real approval was checked and is resolved **with** a decision, so nothing retroactive needed correcting **[measured]**. **The dock itself still has never been driven.** |
+| the plan, phase, work-order and intent tables | `e4f35fb` | `crates/store/src/plan.rs` (**8** inline) and `intents.rs` (**12**), `crates/store/tests/plan.rs` (**11**) and `tests/intents.rs` (**16**) **[source]**. Migration rung 5 adds `phases.base_sha`; `user_version` → **6**. `unsettled_intents` means "every intent a human still has to decide about" and excludes `acked` and `operator`; without that it listed every order the loop ever dispatched, because a work order is held to `unknown` on **every** close including a live one — the plan card would have offered the owner a list of everything that worked and a reconciler would have blocked every phase that ever ran. `Op::IntentSettledByOperator` exists because the card's *mark done / mark not done* wrote through `intent_close`, whose `state = 'open'` guard rejects exactly the `unknown` rows the button exists for: it did nothing and returned success. Three tests that were decorative are now real and each was measured failing against the code it names; **two more could not be made non-decorative and say so rather than pretend**. **Known and not decided:** `sweep_settled` deletes only `done`/`not_done`, so **every `work_order` row is unsweepable by construction** — `report-2026-09-04.md` §5.1 puts that at ~48 rows/hour, ~**84 MB/year** of continuous running against a 200 MB warning threshold, and it falsifies the premise `intent-records.md` §6 rests on. Tests only, plus the live run's own rows. |
+| a native directory picker behind `Add project` | `e0f1375` | `tauri-plugin-dialog`; the capability grants `dialog:allow-open` and **not** `dialog:default`, because `open` is the only import from that plugin anywhere in `src/` (`src-tauri/capabilities/default.json`, `src/bridge.ts:14`). The typed absolute-path field is kept as the fallback for the mock bridge and the tests. **It inverts the usual warning**: a *misspelled* permission identifier fails `cargo check` with exit 101 from `tauri-build`, measured; only an *omitted* one is the silent runtime failure. `docs/research/tauri-dialog.md`, **untracked**. Covered by `src/components/Sidebar.test.tsx` and `src/mock.test.ts`. **Never clicked.** |
+| reveal a project root or a session worktree in Finder | `e0f1375` | `revealItemInDir` from `tauri-plugin-opener` (`src/bridge.ts:186`), which was registered at startup and had **never been called from `src/`** — a dead dependency until this commit. A session whose `worktree_path` is null gets **no control at all** rather than a disabled one: a disabled button says "there is a folder here, you just cannot have it", which would be a lie (`src/components/Sidebar.tsx:254,281,562`). Tests only. **Never clicked.** |
+| the run surface and the pinned plan card | `e0f1375` | `src/components/RunCard.tsx` (255 lines), `src/components/Composer.tsx`, `src/App.tsx`; `src/components/RunCard.test.tsx` **18**, `src/run.test.tsx` **8**, `src/mock.test.ts` **17** **[source]**. A goal in plain English starts a run from the composer and the card is pinned above the thread so it never scrolls away — `docs/vision.md` §9 requires that nothing the owner steers with ever does. Four rules the card encodes, each a decision and not styling: a phase with no verify command is marked as unable to go green through a gate, never given a placeholder; the gate's exit code is drawn and its output never is; a work order at `unknown` is drawn as **blocked-needing-a-decision** and never as in progress, because the bare word reads like "still finding out" and means the opposite; and **no dollar figure appears anywhere**, pinned by a test that greps the serialised shapes. The front end was built against the written contract before the Rust existed and resolved seven ambiguities on its own; those answers are now in `docs/plans/ipc-contract.md` — **which is uncommitted** — and Rust matches them rather than the reverse. **Never rendered in a window**, and `src/index.css` grew **449 lines** for it, none of them looked at. |
+| the five run commands and the reconciler | `e0f1375` | `start_run`, `current_run`, `stop_run`, `unsettled_intents`, `settle_intent` (`src-tauri/src/commands.rs:293,347,370,389,410`); `src-tauri/src/reconcile.rs` (453 lines), `src-tauri/src/views.rs` (423). The reconciler runs `git worktree repair` **per project first** — a folder renamed between a crash and a restart otherwise makes every path-based postcondition answer wrongly — then publishes the conservative outcome: a phase carrying real unsettled work is blocked, a project whose repair failed is refused. It reads `IntentOutcome` rather than trusting the store's filter, because an `unknown` row is emitted for every order the loop has ever dispatched and `Acked` is not evidence of anything. **The per-kind postcondition evaluator is deferred and the rustdoc says so** — the reconciler settles nothing; blocking a phase that could have run costs a click, re-dispatching an order that already had effects is the failure the intent table exists to prevent. `plans.status` has no transition beyond approval, so `stop_run` records `abandoned` for the current launch only and after a restart the plan reads `approved` again; `done` is derived from *every phase green* rather than stored, so `RunView.status` is partly a computed field (`report-2026-09-04.md` §5.3). Tests only; **the path from a click to a running loop has never been exercised end to end.** |
 
-**Still never clicked in a real window:** the **Resume button** and the **branch chip**. The cleanup
-flow and the approvals dock have not been driven either, and none of the four has a test. What
-*has* now been driven by hand, at `a0901e5`: the sidebar, project collapse, and session selection —
-so that part of the paragraph is retired.
+**Still never clicked in a real window, and the list grew today rather than shrinking.** The
+**Resume button**, the **branch chip**, the **cleanup flow** and the **approvals dock** were already
+in that state and still are. `e0f1375` added six more: the **folder picker**, the two
+**reveal-in-Finder** controls, the **plan card**, the composer's **Start** and the run's **Stop**,
+and the **settle buttons**. Every one of the new six has a test; none has been driven by a human.
+What *has* been driven by hand, at `a0901e5`: the sidebar, project collapse, and session selection.
+**One session at the keyboard closes the largest single gap in this file.**
 
-**Three things have never been observed at all**, each covered by tests and each unseen:
+**Three things had never been observed at all. Re-checked 2026-09-04 against the code, and all three
+still hold:**
 
-- the **pulsing busy dot** — nothing has been running while anyone was looking;
-- the **collapsed-project run marker** — every session in the owner's store is `failed` or `exited`,
-  so no project has ever had a live child under it;
-- the **empty-session `cancel()` branch** — the smallest real session in the store is 6 rows.
+- the **pulsing busy dot** (`src/components/Sidebar.tsx:268`) — nothing has been running while
+  anyone was looking. **Today's live run did not change this**: it ran from a Rust test with no
+  window open;
+- the **collapsed-project run marker** (`src/components/Sidebar.tsx:540`, `className="dot running"`)
+  — every session in the owner's store is `failed` or `exited`, so no project has ever had a live
+  child under it. Still 44 sessions and none of them running **[measured]**, and the live run wrote
+  into a tempdir data directory, not the owner's;
+- the **empty-session `cancel()` branch** (`src/App.tsx:321`) — the smallest real session in the
+  store is 6 rows.
 
-**`pre`, `ul` and `li` are still unexercised under Tailwind preflight.** They exist only in
-`src/components/Approvals.tsx`, and the store holds exactly one approval row which is already
-resolved, so `pending_approvals` returns empty and the dock never opens. Both halves re-checked
-2026-09-04 **[measured]**: five `<pre>`/`<ul>`/`<li>` occurrences in `src/`, all in that one file,
-and `SELECT count(*) FROM approvals` is 1 with `resolved_at` set. That is still the largest
-thing unverified about the token layer, and only a live approval closes it.
+**`pre`, `ul` and `li` are still unexercised under Tailwind preflight, and the paragraph that said
+they live in one file is now wrong.** Re-grepped 2026-09-04 **[measured]**: **10** non-test
+`<pre>`/`<ul>`/`<li>` occurrences in `src/`, across **two** files — five in
+`src/components/Approvals.tsx` (all three tags) and five in `src/components/RunCard.tsx` (`ul` and
+`li` only, at `:126,148,174,218,220`). Neither has rendered. The dock never opens because the store
+holds exactly one approval row and it is already resolved, so `pending_approvals` returns empty; the
+plan card has simply never been in a window. **`<pre>` is still confined to `Approvals.tsx`, so the
+one tag whose preflight reset is most likely to bite is still gated behind a live approval.** This
+remains the largest thing unverified about the token layer.
 
-## 3. Gates at `c884767`
+## 3. Gates at `e0f1375`
 
-All six run by the lead under its own hand on 2026-09-04 against a clean tree, exit codes captured
-on the command itself and not through a pipe. Every line **[measured]**:
+All six run by the lead under its own hand on 2026-09-04 against the final combined tree, exit codes
+captured on the command itself and not through a pipe. Every line **[measured]**:
 
 ```
-cargo test --workspace                                exit 0  301 passed, 0 failed, 6 ignored
-cargo clippy --workspace --all-targets -- -D warnings exit 0  0 warnings
-cargo doc --workspace --no-deps                       exit 0  0 warnings
-npm test                                              exit 0  137 passed, 7 files
+cargo test --workspace                                exit 0  515 passed, 0 failed, 7 ignored
+cargo clippy --workspace --all-targets -- -D warnings exit 0
+cargo doc --workspace --no-deps                       exit 0
+npm test                                              exit 0  191 passed, 10 files
 npx tsc --noEmit                                      exit 0
 npm run tauri build                                   exit 0  .app + .dmg
 ```
 
-The 301 is the sum of 31 `test result:` lines across the workspace. The 137, re-derived today from
-`npx vitest run --reporter=json` rather than carried forward: `paint.test.ts` **38**,
-`feedStore.test.ts` **27**, `components/Feed.test.tsx` **20**, `components/Sidebar.test.tsx` **19**,
-`providers/ThemeProvider.test.tsx` **15**, `App.test.tsx` **10**, `index.css.test.ts` **8** — 137
-across 7 files. The old line naming `paint.test.ts` 24 and `Sidebar` 18 is superseded:
-`paint.test.ts` grew **24 → 38**, `Sidebar` **18 → 19**, and `components/Feed.test.tsx` and
-`index.css.test.ts` are the two suites that did not exist at `a0901e5`.
+**301 → 515 Rust and 137 → 191 front-end across the four commits.** The 191 reconciles exactly
+against the source: `paint.test.ts` 38, `components/Sidebar.test.tsx` 27, `feedStore.test.ts` 27,
+`components/Feed.test.tsx` 20, `components/RunCard.test.tsx` 18, `mock.test.ts` 17,
+`providers/ThemeProvider.test.tsx` 15, `App.test.tsx` 13, `run.test.tsx` 8, `index.css.test.ts` 8 —
+**191 across 10 files**, counted by grepping `it(`/`test(` **[source]**, which is a source count and
+not a per-suite run. Three suites are new (`RunCard`, `mock`, `run`), `App` grew 10 → 13 and
+`Sidebar` 19 → 27, and the other five are unchanged. **The per-suite Rust breakdown was not
+re-derived** — the previous "sum of 31 `test result:` lines" figure has no successor here.
 
-**What this gate run does not prove.** It is a build and a test run: no live `claude` child was
-spawned, and **none of the six gates exercises the UI in a window.**
+**One number in `docs/plans/report-2026-09-04.md` does not reconcile with this file and is not
+being overwritten.** That report's §1 says the run started from "340 Rust tests … at `a889525`";
+§3 of this file measured **301** on the tree at `c884767`, and `a889525` is a documentation-only
+commit, so the committed tree cannot have moved between them. Grepping `#[test]`/`#[tokio::test]`
+across `crates/` gives **291** at `a889525` and **482** at HEAD **[source]** — the same shape as
+301 → 515, not as 340 → 515. The likeliest reading is that 340 counted the **uncommitted W1-A store
+work** that was in the working tree when the run began, and that is **[asserted]**, not checked.
+**301 → 515 is what this section uses.**
 
-Bundle at `c884767`, read off the `vite build` line of the gate run: **274.87 kB JS + a 1.38 kB
-lazy chunk / 27.11 kB CSS**, gzip **86.90 / 0.67 / 6.12** **[measured]**. From **272.71 / 26.91 at
-`a0901e5`** — **+2.16 kB JS and +0.20 kB CSS over 31 commits** — and 263.28 / 21.89 at `3e5c3fd`,
-262.69 / 12.69 at `ad5a4a7` before that. The JS figure includes the interaction half of
-`src/paint.ts`, which `a0901e5` gave its first importer; before that it was tree-shaken out and the
-263.28 kB figure was the FCP half alone (`docs/plans/ipc-contract.md`, `### report_paint`). The CSS
-growth from 12.69 is almost entirely Tailwind preflight — the token layer itself was **+0.54 kB**,
-and Tailwind adds **zero** JS (`docs/research/oklch-tokens.md` §5). The earlier `~258 kB JS` line is
-superseded.
+**What this gate run does not prove, and for the first time one clause of it is covered elsewhere.**
+It is a build and a test run. It spawned **no live `claude` child** — but the live loop run recorded
+in §2 did, so "nothing here has ever run against a real child" is no longer the whole story for the
+supervisor. **The UI half is untouched: none of the six gates exercises the UI in a window, and
+nothing in `src/` has been clicked.** The live run went through `crates/supervisor/tests/live_loop.rs`,
+not the app.
+
+Bundle at `e0f1375`, read off the `vite build` line of the gate run: **289.67 kB JS + a 1.38 kB lazy
+chunk / 32.09 kB CSS**, gzip **91.42 / 6.77** **[measured]**; re-confirmed independently against
+`dist/assets/` on disk — `index-JzQyfJrI.js` 289,670 B, `index-B9FBaaNd.css` 32,086 B,
+`event-D2Ly66tR.js` 1,382 B **[measured]**. From **274.87 / 27.11 at `c884767`**: **+14.80 kB JS and
++4.98 kB CSS over four commits**. That is a **real-code change and not noise** — `e0f1375` added
+`src/components/RunCard.tsx`, `src/wire.ts`, `src/mock.ts` and 449 lines of `src/index.css`, and its
+own commit message quotes the same two figures. The lazy chunk is unchanged at 1.38 kB; **the gzip
+figure for it was not quoted in this run** and the 0.67 kB reading is carried from `c884767`.
+Earlier points on the curve: 272.71 / 26.91 at `a0901e5`, 263.28 / 21.89 at `3e5c3fd`, 262.69 /
+12.69 at `ad5a4a7`. The CSS growth from 12.69 was, until today, almost entirely Tailwind preflight —
+the token layer itself was **+0.54 kB** and Tailwind adds **zero** JS
+(`docs/research/oklch-tokens.md` §5); **the +4.98 kB added today is hand-written rules for the run
+surface, not preflight.** The earlier `~258 kB JS` line is superseded.
 
 **One warm FCP sample at `a0901e5` came back at 375.9 ms**, against the 287–295 ms p50 (n=19)
 recorded at the smaller bundle. One sample against a distribution, and the same run's cold launch
 (801.9 ms) matches an earlier cold outlier (755.9 ms), so the regression is **neither attributable
-to the bundle growth nor ruled out** — and the bundle has since grown a further 2.16 kB JS while
-the n=19 three-arm treatment still has not been re-run, so that one sample stands exactly where it
-did. Re-running that treatment (`docs/research/perceived-performance.md` §1.4) is what would settle
-it. B1's figure is unchanged.
+to the bundle growth nor ruled out** — and the bundle has since grown a further **16.96 kB JS**
+(2.16 to `c884767`, then 14.80 to `e0f1375`) while the n=19 three-arm treatment still has not been
+re-run, so that one sample stands exactly where it did and the confound is larger than it was.
+Re-running that treatment (`docs/research/perceived-performance.md` §1.4) is what would settle it.
+B1's figure is unchanged.
 
-**The 6 ignored are not six live tests, and the difference is money.** From
-`grep -rn '#\[ignore' crates`, 2026-09-04 **[measured]**:
+**The 7 ignored are three different kinds of thing: five that spend and have not been run, one that
+costs nothing, and one that spends and *has* been run.** From `grep -rn '#\[ignore' crates`,
+re-derived 2026-09-04 **[measured]**. The old line said 6 and its bare `:270`/`:189`/`:239` line
+references read as if four live tests shared one file; they do not, and the paths below are the real
+ones:
 
-- **Five spend on a live account:** `live_pong` (`crates/core/tests/claude_adapter.rs:1080`),
-  `live_resume` (`crates/supervisor/tests/live_resume.rs:255`), `live_approvals` (`:270`),
-  `live_worktree` (`:189`), `live_two_sessions` (`:239`).
-- **The sixth costs nothing.** `eight_ordinary_one_flood_one_approval_across_three_projects`
+- **Five spend on a live account and have not been run here:** `live_pong`
+  (`crates/core/tests/claude_adapter.rs:1091` — the old `:1080` is stale),
+  `live_resume` (`crates/supervisor/tests/live_resume.rs:255`), `live_approvals`
+  (`crates/supervisor/tests/live_approvals.rs:270`), `live_worktree`
+  (`crates/supervisor/tests/live_worktree.rs:189`), `live_two_sessions`
+  (`crates/supervisor/tests/live_two_sessions.rs:239`).
+- **One costs nothing.** `eight_ordinary_one_flood_one_approval_across_three_projects`
   (`crates/supervisor/tests/flood_baseline.rs:137`), added at `96a66a2`, **spawns no `claude`
   process** — every session is a `ReplayDriver` over a captured NDJSON fixture. It is `#[ignore]`d
   because it is a ~30 s instrument, not a gate.
+- **The seventh is new, it spends, and unlike the other five it has been run.**
+  `live_run_reaches_green_and_the_exit_code_is_what_settled_it`
+  (`crates/supervisor/tests/live_loop.rs:261`, added at `31e551f`) spawns **real `claude` children**
+  and drove the live loop recorded in §2. It cost **$0.192433** over 5 sessions and 6 ticks on
+  `claude-haiku-4-5` and took **106.04 s**, exit 0 **[measured]** 2026-09-04. It asserts its
+  project root is a throwaway tree (`live_loop.rs:267-271` refuses a root carrying `Cargo.toml` or
+  `src-tauri`) and it creates that tree in a tempdir, so it cannot be pointed at a real checkout by
+  accident. **It is the most expensive `#[ignore]`d test in the workspace** — more than three times
+  `live_two_sessions`.
 
-Say which you mean: a reader who believes all six cost money will avoid the one that does not, and
-a reader who believes none do will spend.
+Say which you mean: a reader who believes all seven cost money will avoid the one that does not, a
+reader who believes none do will spend, and a reader who assumes none has been run will not know
+that one number in this file came from an account.
 
 Run one at a time. The old single command named `-p brigadier-supervisor` only and was incomplete —
 `live_pong` lives in `brigadier-core`:
@@ -194,7 +287,12 @@ CLAUDE_BIN="$(command -v claude)" cargo test -p brigadier-supervisor --test <nam
 CLAUDE_BIN="$(command -v claude)" cargo test -p brigadier-core --test claude_adapter -- --ignored --nocapture
 ```
 
-Live costs, from the store row: `live_approvals` ~$0.046, `live_resume` ~$0.031,
+`live_loop` reads **no environment variable but `CLAUDE_BIN`** (`crates/supervisor/tests/live_loop.rs:262`,
+the only `env::var` in the file) **[source]**, so the first command covers it with
+`--test live_loop`. It builds its own project in a tempdir; nothing has to be pointed at it.
+
+Live costs, from the store row: `live_loop` **$0.192433** (2026-09-04, 5 sessions, 6 ticks,
+`claude-haiku-4-5`) **[measured]**, `live_approvals` ~$0.046, `live_resume` ~$0.031,
 `live_worktree` ~$0.030, `live_two_sessions` ~$0.053, plus the older `live_pong`. The protocol spike
 runs cost **$0.111336, under their $0.15 cap** — an earlier report of $0.160698 and an $0.011 overrun
 was wrong. `result.total_cost_usd` is **cumulative**, so a run emitting two `result` frames was
@@ -515,6 +613,16 @@ every bundle format for the platform being built on. Leave it alone.
   `-c status.showUntrackedFiles=normal`. A failed `worktree add` leaks its branch on 2.50.1.
 - `git rev-parse --git-common-dir` is relative to the `-C` directory. `check-ref-format --branch`
   exits 128 on a bad name. A throwaway repo for a live test needs an initial commit.
+- **The first launch after `e0f1375` migrates the owner's database `user_version` 3 → 6, and that is
+  one-way.** `MIGRATIONS` gained rungs 3, 4 and 5 (`intents`, `unknowns`, `phases.base_sha`); the
+  file at `~/Library/Application Support/ai.brigadier.app/brigadier.sqlite` is still **3 on disk**
+  as of 2026-09-04 (read-only check, `mode=ro`, which does not run migrations: 2 projects, 44
+  sessions, 1 approval, genuinely answered) **[measured]**. Once it is 6, **an older brigadier binary
+  refuses to open it** — `migrate` returns `Error::Newer { found, known }` rather than opening a file
+  it half understands (`crates/store/src/schema.rs:714`, pinned by
+  `a_file_from_a_newer_build_is_refused_rather_than_opened` at `:1151`) **[source]** — and launching
+  the old build does not undo the migration. Remedy: copy the file before the first launch if you
+  want a way back.
 - The store's `cost_usd_cumulative` written before `b2c1a4c` under-reports resumed sessions.
 - The batcher prunes a session's counters once it saw it start and exit; a resumed session's
   `rows_total` on the wire restarts from zero.
