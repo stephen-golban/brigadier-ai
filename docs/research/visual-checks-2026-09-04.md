@@ -416,3 +416,229 @@ None of these were made. Each is one line of CSS except the last.
 - **`cargo clippy` and `cargo doc` ran incrementally** (0.50 s and 0.21 s) off the artefacts
   `cargo test` had just built. Exit 0 with `-D warnings` is the gate and it passed, but neither was
   a from-scratch compile.
+
+---
+
+## 2026-09-04, later: confirmed (or not) in WKWebView
+
+§2's three CSS defects were fixed and measured in **headless Chromium against the mock**. This
+section re-measures them in the **real release WKWebView window against the real Rust feed**, and
+adds a fourth check the fix wave introduced (the verbose toggle). Nothing was fixed here; two new
+observations are reported, not repaired.
+
+### 8.0 Lock state, build identity, and spend
+
+| when | probe | result |
+|---|---|---|
+| 13:02:42, before anything | explicit | `locked = None`, `onConsole = True` **[measured]** |
+| 13:15:43, after everything | explicit | `locked = None`, `onConsole = True` **[measured]** |
+| 13:03–13:15, between | implicit | every `System Events` AX call against `brigadier` returned real geometry; cross-app AX is blocked on a locked screen **[measured]** + **[asserted]** |
+
+No measurement was taken with the screen locked. **[measured]**
+
+**No rebuild.** The existing release bundle already matched the tree, so it was used as-is:
+
+| artefact | mtime |
+|---|---|
+| `target/release/bundle/macos/brigadier.app/…/brigadier` | 2026-09-04 **13:01:21** |
+| `dist/assets/index-tV-irQDV.css`, `index-DNofJyHN.js` | 2026-09-04 **13:01:03** |
+| newest file under `src/` (`src/index.css`) | 2026-09-04 **12:58:46** |
+
+**[measured]** The bundle post-dates every source file. The four rules are in the shipped CSS
+verbatim (`grep` on `dist/assets/index-tV-irQDV.css`): **[measured]**
+
+```css
+.feed-sizer{width:100%;max-width:min(var(--content-max),calc(100% - 32px));margin:0 auto;position:relative}
+.fps{text-overflow:ellipsis;…min-width:0;max-width:55%;…white-space:nowrap;…flex:0 auto;…overflow:hidden}
+.feed{flex-direction:column;flex:auto;min-height:132px;padding-top:20px;display:flex;position:relative}
+.approvals{width:100%;max-width:var(--thread-max);flex-direction:column;flex:0 auto;min-height:0;max-height:42vh;…}
+```
+
+(`flex:0 auto` is the minifier's spelling of `flex: 0 1 auto`; `flex:auto` of `1 1 auto`.)
+`VITE_BURN` was unset for this build, so the burn panel is absent
+(`grep -c "burn harness" dist/assets/index-DNofJyHN.js` = **0**) — not needed here. **[measured]**
+
+**Spend: none.** `pgrep -x claude` before `22589 30298`, after `22589 30298`, byte-identical.
+**[measured]** No session was started, no turn was sent, `cargo test -- --ignored` was never run.
+The store is byte-equal in content on both sides of the run — `feed` **20,037** rows, `sessions`
+**43**, `approvals` **1** before and after. **[measured]**
+
+### 8.1 Method — AX geometry, not pixels
+
+The earlier run measured by pixel analysis of screenshots. This one reads geometry straight out of
+the accessibility tree (`System Events` → `position`/`size` of each element, in screen points),
+which is exact rather than inferred, and cross-checks two of the numbers against pixels.
+
+The window was pinned at screen `(100, 100)` throughout, so **viewport x = screen x − 100**. The
+WKWebView's AX scroll area reports `position (100, 132)`, `size 800 x 468` at an 800x500 window —
+which **confirms §2.2 independently**: the title bar is 32 pt and the CSS viewport is
+**800 x 468**, not 800 x 500. **[measured]**
+
+Session used for every measurement below: `e5b117f8-3f73-4825-9530-48c712a80e24` (sidebar
+`73fb34e3`), a real 24-row session of the `brigadier-ai` project. **[measured]**
+
+Screenshots (dpr 2) under
+`/private/tmp/claude-501/-Users-stephen-Development-brigadier-ai/3b5a9ba6-b409-416a-b79a-b3e74e2d2676/scratchpad/`:
+`v1-launch.png`, `v2-session-73fb34e3.png`, `v3-verbose-on-unknownsession.png`,
+`v4-burn-verbose-on.png`, `v5-burn-verbose-off.png`, `v6-unknown-terse.png`, `v7-unknown-terse.png`,
+`v8-1280x800.png`, `v9-final-800x500.png`.
+
+### 8.2 Claim 1 — `.feed-sizer` gutters: **CONFIRMED**, and at four widths
+
+`.feed-sizer` box, `.feed-band` right edge, in viewport px: **[measured]**
+
+| window | viewport | sidebar | pane | `.feed-sizer` | left gutter | right gutter | `.feed-band` right |
+|---|---|---|---|---|---|---|---|
+| 800x500 | 800x468 | 220 | 220 → 800 | **236 → 784** (548) | **16** | **16** | **784** |
+| 932x600 | 932x568 | 220 | 220 → 932 | **236 → 916** (680) | **16** | **16** | **916** |
+| 1000x700 | 1000x668 | 276 | 276 → 1000 | **292 → 984** (692) | **16** | **16** | **984** |
+| 1280x800 | 1280x768 | 276 | 276 → 1280 | **422 → 1134** (712) | 146 | 146 | **1134** |
+
+Claimed `0 / 0` → `16 / 16`: **confirmed exactly**, and the band's right edge equals the sizer's
+right edge at **all four** widths, including 1280 where the `min()` term stops binding and
+`--content-max` takes over. §2.4's "the ellipsis of a truncated row lands at pt 798.5 of an 800 pt
+window" is gone: the row box now ends at **784.0**, and pixel analysis of `v2-session-73fb34e3.png`
+puts the row separator rule at pt **236.0 → 784.0** and the count's last glyph ink at pt **783.0**.
+**[measured]**
+
+The real window and Chromium **agree to the pixel** here. **[measured]**
+
+### 8.3 Claim 2 — `.fps` and `.head-id`: **CONFIRMED** (with one caveat on the overflow half)
+
+At viewport 800 the `.thread-head` content box is `236 → 784` = **548 px**, `gap: 12px`.
+**[measured]**
+
+| element | claimed | measured (AX) | measured (pixels) |
+|---|---|---|---|
+| `.head-id` | 0 → **~234** | **234** (548 − 12 − 302) | line-1 ink 237.0 → 453.5 |
+| `.fps` | shrinkable | **303** wide, right edge **785** | border box pt **482.5 → 784.0** = **301.5** |
+| `55%` cap | — | 55% × 548 = **301.4** — the cap is binding, to 0.1 px | — |
+| meter ellipsis | yes | AX name is the full 101-char string, drawn clipped | visible in `v9-final-800x500.png` |
+
+`.head-id` recovering to **234** against a claim of **~234** is the strongest single result in this
+section: this is the one defect §2.6 had reproduced in a real release window, and the real window
+now gives the number the Chromium fix predicted. **[measured]**
+
+**The overflow half is confirmed by element geometry, not by `scrollWidth`.** No element's box
+exceeds the viewport at any of the four widths — the widest, `.fps`, ends at viewport **785 / 800**
+and at **1264 / 1280**. **[measured]** But `documentElement.scrollWidth` cannot be read: this is a
+release build with no `devtools` feature (`src-tauri/Cargo.toml`), so there is no inspector, and
+`body { overflow: hidden }` (`src/index.css:250-254`) means **the absence of a horizontal scrollbar
+is not evidence about overflow** — `AXHorizontalScrollBar` is `missing value` at every width, and
+would be with or without the fix. So "**199 px → 0**" is confirmed as "no box overflows the
+viewport", and the `scrollWidth` figure itself stays a Chromium number. **[measured]** +
+**[asserted]**
+
+**The meter did not need to be turned on.** It was already on at launch — `src/fps.ts` `readEnabled`
+persists to `localStorage`, and the earlier run left it enabled. The pill was therefore never
+clicked; the meter was live in every screenshot from `v1-launch.png` onward. **[measured]**
+
+### 8.4 Claim 3 — `.feed { min-height: 132px }` + `.approvals { flex: 0 1 auto }`: **COULD NOT TEST**
+
+Exactly as the order predicted. The store holds **one** approval row,
+`e5b117f8-…:approval:1`, and it is **resolved** (`resolved_at` is not null), so `pending_approvals`
+returns empty and the dock never opens. **[measured]** The sidebar renders `Approvals` as static
+text with no count, and no `.approvals` element exists in the AX tree at any point in this run.
+**[measured]**
+
+Opening it would need either a live session (which costs the owner money and was forbidden) or a
+write to the owner's database (forbidden). **Neither was done. The 59.5 px → 132 px claim is
+unconfirmed in WKWebView and remains a Chromium-plus-mock result.** **[measured]** = nothing.
+
+What *can* be said: both rules are present in the shipped CSS (§8.0), and with no approval open at
+800x500 the feed shows **8 rows** and is nowhere near its 132 px floor, so the new `min-height`
+changes nothing in the state that was reachable. **[measured]**
+
+### 8.5 Claim 4 — the verbose toggle and the 10,037 `unknown` rows: **CONFIRMED**
+
+The store's kind histogram, over all 20,037 rows: **[measured]**
+
+| kind | rows |
+|---|---|
+| `unknown` | **10,037** |
+| `think` | 3,326 |
+| `text` | 3,326 |
+| `sys` | 1,683 |
+| `turn` | 1,665 |
+| everything else (`tool`, `user`, `sub`, `appr`, `warn`, `err`) | **0** |
+
+**An `unknown` row survives both settings.** The `brigadier-ai` project's three sessions hold 37
+rows and **all 37 are `kind='unknown'`**. Selecting `73fb34e3` (24 of them) and reading the count
+out of the AX tree: **[measured]**
+
+| setting | `aria-pressed` | count reads |
+|---|---|---|
+| terse (default) | `verbose=0` | **`24 rows`** |
+| verbose | `verbose=1` | **`24 rows`** |
+
+Not one of the 24 is hidden under either setting. That is the serious defect the order was hunting
+and it is **not present**.
+
+**And the toggle is not a no-op.** Burn session `02632d21-…` (sidebar `8b0374`), whose stored rows
+are 33% `text`: **[measured]**
+
+| setting | count reads | hidden |
+|---|---|---|
+| verbose | **`48 rows`** | 0 |
+| terse | **`33 of 48 rows`** | **15** model-prose rows |
+
+15/48 = 31%, against 166/500 = 33% `text` in that session's stored rows — the filter removes
+`text` and nothing else. The count reports both numbers whenever they differ, so a feed with holes
+in it says so. `v5-burn-verbose-off.png` shows the terse view holding only `sys`, `think` and
+`turn` lines. **[measured]**
+
+### 8.6 The `err` and `appr` treatments are exercised by **no row at all**
+
+The order asked whether any real row reaches `.feed-line.bad` / `.feed-line.ask`, given that
+`src/mock.ts` pushes a `request-opened` signal with no feed row. The answer is worse than "not in
+the mock":
+
+- **The owner's store contains 0 rows of kind `err` and 0 of kind `appr`**, out of 20,037.
+  **[measured]** Every row that *reads* like one — this session's `approval asked · Bash` and
+  `approval allowed`, visible in `v8-1280x800.png` — is stored as `unknown`, because it predates
+  migration 1, and renders as ordinary grey body text with no weight. **[measured]**
+- `src/mock.ts`'s own header now says the same thing about itself: `turn`, `warn`, `err`,
+  `unknown` and `appr` "have no source here". **[source]**
+
+So both per-kind treatments have been verified only by forcing a class, in either engine. Neither
+has ever been drawn from a stored row. **[measured]**
+
+### 8.7 Two observations — reported, not fixed
+
+1. **`max-width: 55%` truncates the frame meter at the default window size, where it used to fit
+   whole.** `src/index.css:1787-1792`. At 1280x800 the header content box is 972 px and the meter's
+   `nowrap` string is ~757 px — it would have fitted with 203 px left for `.head-id`. The cap gives
+   it **535 px** (55% × 972) and it renders as
+   `60 Hz · p50 17 · p95 18 · p99 18 · worst 18 ms · 0 dropped (run 0) · dom 1…`, losing `dom` and
+   `rows … in … batches`. **[measured]** (`v8-1280x800.png`.) The CSS comment argues for exactly
+   this trade — "the meter is diagnostic and the title is content" — so it is a deliberate cost,
+   not a bug; it is recorded because §2.6's fix was justified by an 800 px failure and the price is
+   paid at **every** width, including the 1280x800 default. A `min()` against the meter's own
+   content, or the "render only `hz` + `dropped` below 1200 px" alternative §6.2 already named,
+   would pay it only where it is needed.
+2. **The window vanished from the AX window list during a rapid resize loop and `open -a` would not
+   bring it back.** After four `set size` calls in ~10 s, `count of windows` returned **0** while
+   the process (pid 96835, started 13:03:56) stayed alive and `AXHidden` was `false`;
+   `AXWindows` still held one entry. Recovered by clicking `Window ▸ brigadier`. **[measured]**
+   **Not reproduced, and not attributable to this diff** — it is an AppleScript-driven resize
+   sequence no user performs, and nothing in the CSS or TS diff touches window management. Noted
+   only so the next run that sees it knows it has been seen. All measurements above were retaken
+   after the recovery.
+
+### 8.8 What was NOT checked in this section
+
+- **Claim 3, at all.** §8.4. No approval was opened, in any engine, in a real window.
+- **`documentElement.scrollWidth` in WKWebView.** §8.3. No devtools in a release build; the overflow
+  result is element-geometry-only.
+- **The pre-fix baseline was not re-measured.** The "before" numbers (0 px `.head-id`, 0/0 gutters,
+  ink at pt 798.5) are quoted from §2.4 and §2.6, not re-derived; the tree was not reverted.
+- **`.feed-line.bad` and `.feed-line.ask` were not seen rendered.** §8.6. No row of either kind
+  exists to draw.
+- **The frame meter's numbers were not re-measured.** `p50 17 / p95 18` appear in the screenshots
+  because the meter was already on; no burn was run, no window was captured, §3 is untouched.
+- **One display, one scale, dark mode only.** dpr 2, built-in panel, default text size. No light
+  mode, no `prefers-reduced-motion`, no keyboard-only or VoiceOver pass.
+- **Widths sampled at four points** (800, 932, 1000, 1280) and heights at four (500, 600, 700, 800).
+  Nothing between, and nothing above 1280.
+- **No gate was re-run.** `cargo test`, `clippy`, `tsc`, `npm test` were not executed in this
+  section; §1's exit codes are from the earlier run on this same tree.
