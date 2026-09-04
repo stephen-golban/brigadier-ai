@@ -21,6 +21,28 @@ burn = []
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
+# The native directory picker behind "Add project". 2.7.3 is the current release
+# (crates.io, 2026-09-04); the JS half is `@tauri-apps/plugin-dialog` at the same version.
+#
+# Registering the plugin here is not enough. `src-tauri/capabilities/default.json` must also carry
+# `dialog:allow-open` — that exact identifier, and it is the only one this app needs: `open` is the
+# sole import from the plugin anywhere in `src/` (`src/bridge.ts:13`), so `dialog:default` is
+# deliberately NOT used. It would additionally grant `save` and `message`, which nothing calls.
+#
+# The two failure modes are not the same, and the difference is measured, not assumed
+# (2026-09-04):
+#
+#   - A **misspelled** identifier is caught at build time. `tauri-build` resolves every string in
+#     `capabilities/*.json` against the plugins in the dependency graph from inside `build.rs`;
+#     `dialog:allow-nonsense` fails `cargo check -p brigadier` with **exit 101** and prints the
+#     complete set of valid identifiers.
+#   - An **omitted** identifier is not caught by anything. The resolver has no way to know what the
+#     webview's JavaScript will call, so a capability that simply never mentions
+#     `dialog:allow-open` builds clean and rejects the first `open()` at runtime. No test in this
+#     repo reaches it; only a click does.
+#
+# Full working in `docs/research/tauri-dialog.md` §1.
+tauri-plugin-dialog = "2"
 
 # The whole harness. None of these know Tauri exists; this crate is the only join.
 brigadier-core = { path = "../crates/core" }
@@ -42,3 +64,8 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # `resource` feature is new, and it carries no code beyond `nix::sys::resource`.
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31.3", default-features = false, features = ["resource"] }
+
+[dev-dependencies]
+# The reconciler's unit tests build a throwaway `.brigadier/worktrees/` tree on disk; the same
+# version every other crate in this workspace already pins.
+tempfile = "3.27"

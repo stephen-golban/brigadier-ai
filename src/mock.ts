@@ -22,9 +22,14 @@ import type {
   FeedBatch,
   FeedKind,
   FeedRowWire,
+  IntentSettlement,
+  IntentView,
+  PhaseView,
   ProjectView,
   RequestKind,
+  RunView,
   SessionView,
+  WorkOrderView,
 } from "./wire";
 import type { Bridge, BurnArgs, StartSessionArgs } from "./bridge";
 
@@ -398,6 +403,8 @@ function tick(): void {
     }
   }
 
+  sweepRuns(byProject);
+
   for (const [projectId, p] of byProject) {
     if (p.rows.length === 0 && p.signals.length === 0 && p.counters.size === 0) continue;
     const counters = [...p.counters].map(([session_id, c]) => ({
@@ -480,6 +487,316 @@ function seedCrossProjectApproval(): void {
   });
 }
 
+/* ------------------------------------------------------------------ runs */
+
+/**
+ * The synthetic run: `docs/plans/ipc-contract.md` §"The run", moving.
+ *
+ * **Everything below is a pure function of wall-clock elapsed time.** `start_run` records the
+ * moment it was called and nothing else; `current_run` recomputes the whole `RunView` from
+ * `Date.now() - createdAt` on every call. There is no timer, no state machine and nothing to keep
+ * in step — which is also what makes it testable: a test moves `Date.now()` and reads the phase.
+ *
+ * A static object would have proven nothing, so the timeline deliberately walks the whole surface
+ * the card has to draw, and every one of the contract's four rules is exercised by it:
+ *
+ *   - two phases go `pending → running → green` on a passing gate;
+ *   - phase 3's gate **fails** (`last_exit_code: 1`) while it is still running, is retried, and
+ *     then **blocks** — the red-then-blocked path;
+ *   - phase 4 has **`verify_command: null`** and therefore never moves at all: nothing can take it
+ *     green through a gate, and the card has to say so rather than draw a fifth ordinary row;
+ *   - phase 5 ends with a work order at **`state: "unknown"`**, which blocks it permanently, and
+ *     that is what puts two rows on `unsettled_intents`.
+ *
+ * **What this is not.** The mock advances every phase on a clock. What a real blocked phase does
+ * to the phases after it is the loop's policy, it lives on the Rust side, and this file does not
+ * guess at it — phase 5 running after phase 3 blocked is an artifact of the clock, not a claim.
+ *
+ * No `claude` process is spawned, no model is called and nothing is billed, exactly as for every
+ * other fixture in this file.
+ */
+interface MockRun {
+  planId: string;
+  projectId: string;
+  goal: string;
+  createdAt: number;
+  /** `stop_run` was called: dispatch stopped, so the clock the plan is derived from stops too. */
+  stoppedAt: number | null;
+  /** Intent ids the owner has already answered with `settle_intent`. */
+  settled: Set<string>;
+  /** The `runtime-warning` for the unknown work order has been emitted once. */
+  warned: boolean;
+}
+
+/** One run per project, keyed by project id. `current_run` is "the newest plan for the project". */
+const runs = new Map<string, MockRun>();
+
+/** Milestones on the run's own clock, in ms since `start_run`. */
+const T_APPROVE = 1_200;
+const T_P1_GREEN = 2_400;
+const T_P2_GREEN = 3_600;
+/** The first failing gate: phase 3 is running and its exit code is already non-zero. */
+const T_P3_RED = 4_200;
+const T_P3_BLOCK = 4_800;
+const T_P5_START = 4_800;
+/** Something moved in phase 5's worktree that the reconciler cannot account for. */
+const T_UNKNOWN = 5_600;
+
+function elapsedOf(run: MockRun): number {
+  return (run.stoppedAt ?? Date.now()) - run.createdAt;
+}
+
+function order(
+  id: string,
+  title: string,
+  ownedPaths: string[],
+  state: WorkOrderView["state"],
+  report: string | null,
+): WorkOrderView {
+  const hex = id.slice(-4);
+  return {
+    order_id: id,
+    title,
+    owned_paths: ownedPaths,
+    state,
+    session_id: state === "pending" ? null : `s-run-${hex}`,
+    branch: state === "pending" ? null : `brigadier/run${hex}`,
+    worktree_path: state === "pending" ? null : `/mock/worktrees/run${hex}`,
+    report,
+  };
+}
+
+/**
+ * The five phases at `e` ms into the run.
+ *
+ * `last_evidence` is a bounded sentence on every arm and **never a log tail**: the verify
+ * command's output goes to a file and to a worker's window, never onto this wire
+ * (`docs/vision.md` §4 step 7.5).
+ */
+function phasesAt(e: number): PhaseView[] {
+  const started = e >= T_APPROVE;
+  return [
+    {
+      phase_id: "ph-1",
+      ordinal: 1,
+      title: "Pin the intent tables in the store schema",
+      definition_of_done: "`intents` and `intent_closes` exist, and the round-trip test passes.",
+      verify_command: "cargo test -p brigadier-store",
+      state: !started ? "pending" : e < T_P1_GREEN ? "running" : "green",
+      attempts: !started ? 0 : 1,
+      base_sha: started ? "0d4e11b" : null,
+      commit_sha: e >= T_P1_GREEN ? "a1c9f04" : null,
+      last_exit_code: e >= T_P1_GREEN ? 0 : null,
+      last_evidence: e >= T_P1_GREEN ? "41 passed, 0 failed" : null,
+      orders: [
+        order(
+          "or-1a",
+          "Write the schema and its migration",
+          ["crates/store/src/schema.rs", "crates/store/src/intents.rs"],
+          !started ? "pending" : e < T_P1_GREEN ? "dispatched" : "reported",
+          e >= T_P1_GREEN ? "Two tables added; the migration is idempotent." : null,
+        ),
+      ],
+    },
+    {
+      phase_id: "ph-2",
+      ordinal: 2,
+      title: "Reconcile a worktree the harness lost track of",
+      definition_of_done: "Every still-open intent is settled at startup.",
+      verify_command: "cargo clippy --all-targets -- -D warnings",
+      state: e < T_P1_GREEN ? "pending" : e < T_P2_GREEN ? "running" : "green",
+      attempts: e < T_P1_GREEN ? 0 : 1,
+      base_sha: e >= T_P1_GREEN ? "a1c9f04" : null,
+      commit_sha: e >= T_P2_GREEN ? "77b0e2d" : null,
+      last_exit_code: e >= T_P2_GREEN ? 0 : null,
+      last_evidence: e >= T_P2_GREEN ? "no warnings" : null,
+      orders: [
+        order(
+          "or-2a",
+          "Run the postconditions in opened_at order",
+          ["crates/supervisor/src/reconcile.rs"],
+          e < T_P1_GREEN ? "pending" : e < T_P2_GREEN ? "dispatched" : "reported",
+          e >= T_P2_GREEN ? "Seven rows settled, one left unknown." : null,
+        ),
+      ],
+    },
+    {
+      // The red one. It fails its gate while still running, is retried, and then blocks.
+      phase_id: "ph-3",
+      ordinal: 3,
+      title: "Gate the run surface",
+      definition_of_done: "`npm test` is green and the count does not go down.",
+      verify_command: "npm test",
+      state: e < T_P2_GREEN ? "pending" : e < T_P3_BLOCK ? "running" : "blocked",
+      attempts: e < T_P2_GREEN ? 0 : e < T_P3_BLOCK ? 1 : 2,
+      base_sha: e >= T_P2_GREEN ? "77b0e2d" : null,
+      commit_sha: null,
+      last_exit_code: e >= T_P3_RED ? 1 : null,
+      last_evidence: e >= T_P3_RED ? "2 failed, 146 passed" : null,
+      orders: [
+        order(
+          "or-3a",
+          "Make the plan card render its own failure",
+          ["src/components/RunCard.tsx"],
+          e < T_P2_GREEN ? "pending" : e < T_P3_BLOCK ? "dispatched" : "failed",
+          e >= T_P3_BLOCK ? "The gate stayed red after a second attempt." : null,
+        ),
+      ],
+    },
+    {
+      /*
+       * **No gate.** `verify_command` is null, so nothing can take this phase green through one,
+       * and it stays `pending` for the life of the run. The card must say that rather than draw a
+       * row that looks like the four around it, and it must never invent a command to fill the
+       * hole (contract §"The run").
+       */
+      phase_id: "ph-4",
+      ordinal: 4,
+      title: "Write the operator notes for the loop",
+      definition_of_done: "A human can read what the loop did without opening a terminal.",
+      verify_command: null,
+      state: "pending",
+      attempts: 0,
+      base_sha: null,
+      commit_sha: null,
+      last_exit_code: null,
+      last_evidence: null,
+      orders: [],
+    },
+    {
+      // Ends with a work order the reconciler cannot account for, which blocks the phase.
+      phase_id: "ph-5",
+      ordinal: 5,
+      title: "Collect the parallel worktrees",
+      definition_of_done: "Every dispatched order is accounted for and its checkout is gone.",
+      verify_command: "cargo test --workspace",
+      state: e < T_P5_START ? "pending" : e < T_UNKNOWN ? "running" : "blocked",
+      attempts: e < T_P5_START ? 0 : 1,
+      base_sha: e >= T_P5_START ? "77b0e2d" : null,
+      commit_sha: null,
+      last_exit_code: null,
+      last_evidence: e >= T_UNKNOWN ? "one worktree moved and cannot be accounted for" : null,
+      orders: [
+        order(
+          "or-5a",
+          "Sweep the finished checkouts",
+          ["crates/supervisor/src/worktree.rs"],
+          e < T_P5_START ? "pending" : e < T_UNKNOWN ? "dispatched" : "reported",
+          e >= T_UNKNOWN ? "Four checkouts removed, one left alone." : null,
+        ),
+        order(
+          "or-5b",
+          "Land the phase branches on their base",
+          ["crates/supervisor/src/merge.rs"],
+          e < T_P5_START ? "pending" : e < T_UNKNOWN ? "dispatched" : "unknown",
+          null,
+        ),
+      ],
+    },
+  ];
+}
+
+function runView(run: MockRun): RunView {
+  const e = elapsedOf(run);
+  const approved = e >= T_APPROVE;
+  return {
+    plan_id: run.planId,
+    project_id: run.projectId,
+    goal: run.goal,
+    status: !approved ? "draft" : run.stoppedAt !== null ? "abandoned" : "approved",
+    revision: approved ? 2 : 1,
+    created_at_ms: run.createdAt,
+    approved_at_ms: approved ? run.createdAt + T_APPROVE : null,
+    phases: phasesAt(e),
+    unknowns: [
+      {
+        unknown_id: "un-1",
+        bin: "owner",
+        question: "Land each phase on main, or open one pull request per phase?",
+        state: approved ? "skipped" : "open",
+        skipped_for_just_go: approved,
+      },
+      {
+        unknown_id: "un-2",
+        bin: "research",
+        question: "Does `git worktree remove` clear a lock this git version holds?",
+        state: approved ? "answered" : "open",
+        skipped_for_just_go: false,
+      },
+    ],
+  };
+}
+
+/**
+ * The intents `unsettled_intents` reports, minus the ones the owner has answered.
+ *
+ * Two rows, and the second is not decoration: **`kind` is a pass-through slug, not a closed set**
+ * (contract §"The run"), so one of them carries a slug this build does not know — `db_migrate`,
+ * the same example `crates/store/src/intents.rs` uses in its own pinning test. A card that
+ * hid it, or crashed on it, would be exactly the older-webview break the pass-through exists to
+ * prevent.
+ */
+function intentsFor(run: MockRun): IntentView[] {
+  if (elapsedOf(run) < T_UNKNOWN) return [];
+  const opened = run.createdAt + T_UNKNOWN;
+  const all: IntentView[] = [
+    {
+      intent_id: "in-work-order",
+      kind: "work_order",
+      state: "unknown",
+      session_id: "s-run-5b",
+      project_id: run.projectId,
+      opened_at_ms: opened,
+      subject: "/mock/worktrees/run5b",
+      evidence: "1 commit and 3 dirty files above the dispatch baseline",
+    },
+    {
+      intent_id: "in-db-migrate",
+      kind: "db_migrate",
+      state: "unknown",
+      session_id: null,
+      project_id: run.projectId,
+      opened_at_ms: opened + 40,
+      subject: "crates/store/migrations/0002_intents.sql",
+      evidence: "kind db_migrate is not one this build knows",
+    },
+  ];
+  return all.filter((i) => !run.settled.has(i.intent_id)).sort((a, b) => a.opened_at_ms - b.opened_at_ms);
+}
+
+/**
+ * The one signal the run needs, and it needs no channel of its own: the reconciler emits a
+ * `runtime-warning` for an intent it could not settle, and the plan card refetches `current_run`
+ * on it (contract §"The run" → Signals). Emitted once per run, on the first tick after the
+ * unknown work order appears.
+ *
+ * It goes out on a running session of the run's own project, because an `Envelope` names a
+ * session and `envelope()` is what keeps `seq` climbing from that session's own counter — the
+ * landmine the contract restates: a synthesized row numbered from zero rewrites the session's
+ * oldest rows in place.
+ */
+function sweepRuns(byProject: Map<string, Pending>): void {
+  for (const run of runs.values()) {
+    if (run.warned || run.stoppedAt !== null || elapsedOf(run) < T_UNKNOWN) continue;
+    const host = [...sessions.values()].find(
+      (s) => s.view.status === "running" && s.view.project_id === run.projectId,
+    );
+    if (host === undefined) continue;
+    run.warned = true;
+    let p = byProject.get(run.projectId);
+    if (p === undefined) {
+      p = { rows: [], signals: [], counters: new Map() };
+      byProject.set(run.projectId, p);
+    }
+    p.signals.push(
+      envelope(host, {
+        type: "runtime-warning",
+        message: "a work order's worktree moved and cannot be accounted for (mock)",
+      }),
+    );
+  }
+}
+
 /* -------------------------------------------------------------- the impl */
 
 function requireSession(sessionId: string): MockSession {
@@ -554,6 +871,19 @@ export const mockBridge: Bridge = {
     visible.add(p.id);
     return { ...p };
   },
+
+  /**
+   * A browser has no native directory picker, and faking one would be inventing progress. `null`
+   * is the same answer a cancelled real picker gives, so every caller already handles it — and
+   * the UI does not offer the button at all while `isMock` is true, so this is unreachable from
+   * the app itself.
+   */
+  async pickDirectory() {
+    return null;
+  },
+
+  /** Nothing to reveal outside a desktop window. */
+  async revealPath() {},
 
   async listSessions() {
     return [...sessions.values()]
@@ -708,6 +1038,67 @@ export const mockBridge: Bridge = {
 
   async pendingApprovals() {
     return [...approvals.values()].sort((a, b) => a.opened_at_ms - b.opened_at_ms);
+  },
+
+  /* ---------------------------------------------------------------- the run */
+
+  async startRun(projectId, goal) {
+    if (!projects.some((p) => p.id === projectId)) {
+      throw new AppError("no_such_project", `no such project: ${projectId}`);
+    }
+    if (goal.trim() === "") throw new AppError("invalid_argument", "the goal is empty");
+    const existing = runs.get(projectId);
+    // Live means "not stopped", which matches `runIsLive` in the front end: this run's status is
+    // `draft` and then `approved`, and it never reaches `done` — phase 3 blocks and phase 4 has
+    // no gate to go green through, so the only way out of it is the owner pressing Stop.
+    if (existing !== undefined && existing.stoppedAt === null) {
+      throw new AppError("run_already_live", `a run is already live on ${projectId} (mock)`);
+    }
+    const run: MockRun = {
+      planId: `pl-${nextId++}`,
+      projectId,
+      goal: goal.trim(),
+      createdAt: Date.now(),
+      stoppedAt: null,
+      settled: new Set(),
+      warned: false,
+    };
+    runs.set(projectId, run);
+    startTicking();
+    return runView(run);
+  },
+
+  async currentRun(projectId) {
+    const run = runs.get(projectId);
+    return run === undefined ? null : runView(run);
+  },
+
+  /**
+   * Stops dispatching, and **kills nothing** — the contract's own rule, and the reason the cheap
+   * implementation of "stop" is the one that poisons the plan. Here that is literal: the plan is
+   * derived from elapsed time, so freezing the clock is exactly "no further orders go out", and
+   * every phase keeps the state it had.
+   */
+  async stopRun(planId) {
+    const run = [...runs.values()].find((r) => r.planId === planId);
+    if (run === undefined) throw new AppError("no_such_plan", `no such plan: ${planId}`);
+    if (run.stoppedAt === null) run.stoppedAt = Date.now();
+    return;
+  },
+
+  async unsettledIntents() {
+    return [...runs.values()]
+      .flatMap((r) => intentsFor(r))
+      .sort((a, b) => a.opened_at_ms - b.opened_at_ms);
+  },
+
+  async settleIntent(intentId, state: IntentSettlement) {
+    if (state !== "done" && state !== "not_done") {
+      throw new AppError("invalid_argument", `not a settlement: ${String(state)}`);
+    }
+    const run = [...runs.values()].find((r) => intentsFor(r).some((i) => i.intent_id === intentId));
+    if (run === undefined) throw new AppError("no_such_intent", `no such intent: ${intentId}`);
+    run.settled.add(intentId);
   },
 
   async recordFrameStats() {

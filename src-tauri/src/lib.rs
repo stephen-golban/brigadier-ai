@@ -24,6 +24,7 @@
 mod burn;
 mod commands;
 mod error;
+mod reconcile;
 mod sink;
 mod state;
 mod tracker;
@@ -107,6 +108,9 @@ pub fn run() {
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // The native folder picker behind "Add project", and nothing else: no message, ask or
+        // save dialog is called anywhere in `src/`. `docs/research/tauri-dialog.md`.
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             commands::app_info,
             commands::probe_claude,
@@ -125,6 +129,11 @@ pub fn run() {
             commands::cleanup_worktree,
             commands::feed_tail,
             commands::pending_approvals,
+            commands::start_run,
+            commands::current_run,
+            commands::stop_run,
+            commands::unsettled_intents,
+            commands::settle_intent,
             commands::subscribe_feed,
             commands::set_visible_projects,
             commands::record_frame_stats,
@@ -169,9 +178,25 @@ pub fn run() {
                     // (**measured**), and every failure inside is a `warn`, so nothing here can
                     // hold or fail startup.
                     // see docs/research/worktree-git.md §4.
+                    //
+                    // Reconciliation goes in the same task, **after** the prune and never beside
+                    // it. Both call `git worktree repair`, and the two verbs do not commute: a
+                    // `prune` that lands before a `repair` removes the entry, after which repair
+                    // answers `error: unable to locate repository` with no way back
+                    // (**measured**, `crates/supervisor/src/worktree.rs::prune_project`). Run
+                    // concurrently, that race would turn a renamed project folder into a
+                    // `repair_failed` that refuses every run in it. One task, in order, costs
+                    // nothing — both passes are two `git` calls per project — and the barrier is
+                    // published either way, because a sender dropped without publishing is what
+                    // the loop reads as `reconcile_failed`.
+                    // see docs/research/intent-records.md §4.1 and §4.2 step 1.
                     let supervisor = ready.supervisor.clone();
+                    let store = ready.store().clone();
+                    let sender = ready.take_reconcile_sender();
                     tauri::async_runtime::spawn(async move {
                         supervisor.prune_worktrees().await;
+                        let Some(sender) = sender else { return };
+                        reconcile::run(&supervisor, &store, sender).await;
                     });
                     app.manage(AppState::ready(ready));
                 }

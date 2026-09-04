@@ -52,6 +52,17 @@ const h = vi.hoisted(() => ({
   lastVisible(): string[] | undefined {
     return this.visible[this.visible.length - 1];
   },
+  /**
+   * `Bridge.isMock`, as a mutable flag rather than a constant, because it is what the shell gates
+   * the native picker and the Finder reveals on: both plugins exist only in a Tauri window. The
+   * default stays `true`, so every test written before this one sees exactly the app it saw then.
+   */
+  isMock: true,
+  /** What `pickDirectory` answers. `null` is a **cancelled** picker, not a failure. */
+  picked: null as string | null,
+  /** Every path `add_project` was called with, in order. Empty is how "nothing was added" is
+   *  asserted, and it is the whole point of the cancel test. */
+  added: [] as string[],
 }));
 
 vi.mock("./paint", () => ({
@@ -74,7 +85,9 @@ vi.mock("./paint", () => ({
 vi.mock("./bridge", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./bridge")>();
   const fake = {
-    isMock: true,
+    get isMock() {
+      return h.isMock;
+    },
     async subscribeFeed() {},
     async setVisibleProjects(ids: string[]) {
       h.visible.push(ids);
@@ -91,9 +104,16 @@ vi.mock("./bridge", async (importOriginal) => {
     async listProjects() {
       return h.projects;
     },
-    async addProject() {
-      throw new Error("not used");
+    async addProject(path: string) {
+      h.added.push(path);
+      const p = project(`p-${h.added.length}`, path.split("/").filter(Boolean).pop() ?? path);
+      h.projects = [...h.projects, p];
+      return p;
     },
+    async pickDirectory() {
+      return h.picked;
+    },
+    async revealPath() {},
     async listSessions() {
       return h.sessions;
     },
@@ -122,6 +142,20 @@ vi.mock("./bridge", async (importOriginal) => {
     async pendingApprovals() {
       return [];
     },
+    // The run surface. These tests are about the B4 span and the project selection, so the five
+    // commands answer "there has never been a run here": `src/run.test.tsx` is what exercises
+    // them. They are present rather than absent because the shell calls two of them on mount.
+    async startRun() {
+      throw new Error("not used");
+    },
+    async currentRun() {
+      return null;
+    },
+    async stopRun() {},
+    async unsettledIntents() {
+      return [];
+    },
+    async settleIntent() {},
     async reportPaint() {},
     async recordFrameStats() {},
     async burn() {},
@@ -178,6 +212,9 @@ beforeEach(() => {
   h.hold = false;
   h.parked = [];
   h.spans = [];
+  h.isMock = true;
+  h.picked = null;
+  h.added = [];
 });
 
 afterEach(() => {
@@ -356,5 +393,64 @@ describe("the shell's handlers", () => {
     await user.click(await screen.findByRole("button", { name: /brigadier\/aaaa1111/ }));
 
     expect(screen.getAllByRole("button", { name: /brigadier\// })).toHaveLength(1);
+  });
+});
+
+/*
+ * The project-open flow, at the one seam the sidebar cannot see: **whether `add_project` was
+ * called at all.**
+ *
+ * `src/components/Sidebar.test.tsx` pins that clicking "Add project" invokes the picker rather
+ * than revealing a text field. It cannot pin the cancel, because from inside the sidebar a
+ * cancelled picker and a successful one look identical — both resolve `null`. The difference is
+ * one command that did or did not go to Rust, and this file is the one that owns the bridge.
+ *
+ * `h.isMock = false` is not decoration: the picker and the Finder reveals are drawn only outside
+ * the mock bridge, because `tauri-plugin-dialog` and `tauri-plugin-opener` exist only in a Tauri
+ * window (`docs/research/tauri-dialog.md`).
+ *
+ * **Nothing here opens a macOS dialog.** `pickDirectory` is a fake that answers `h.picked`. What
+ * is proven is the shell's handling of the two answers the real plugin gives; that the real
+ * plugin gives them is read out of its own types, not observed.
+ */
+describe("opening a project", () => {
+  it("adds the folder the picker returned", async () => {
+    const user = userEvent.setup();
+    h.isMock = false;
+    h.picked = "/repos/brigadier-ai";
+    await mountApp();
+
+    await user.click(screen.getByRole("button", { name: "add a project" }));
+
+    expect(h.added).toEqual(["/repos/brigadier-ai"]);
+    // And it landed in the list under the name the Rust side gave it.
+    expect(await screen.findAllByText("brigadier-ai")).not.toHaveLength(0);
+  });
+
+  it("adds nothing when the picker is cancelled", async () => {
+    const user = userEvent.setup();
+    h.isMock = false;
+    // `open({ directory: true, multiple: false })` resolves `null` on cancel, and the plugin's own
+    // doc comment says so: "user cancelled the selection". It is not an error, and it must not
+    // reach `add_project`.
+    h.picked = null;
+    await mountApp();
+
+    await user.click(screen.getByRole("button", { name: "add a project" }));
+
+    expect(h.added).toEqual([]);
+    // No banner, no inline message: a cancel is silent.
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("draws no picker and no Finder reveals in a browser", async () => {
+    // The mock bridge, which is what `npm run dev` selects: neither plugin is present, so the
+    // "+" falls back to the typed field and no reveal control is drawn at all.
+    h.sessions = [view("aaaa1111", "p-live")];
+    await mountApp();
+
+    expect(screen.queryByRole("button", { name: "add a project" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "add a project by path" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /in Finder/ })).not.toBeInTheDocument();
   });
 });

@@ -9,13 +9,15 @@
 //! either everything opened, or a single startup message that every command returns as
 //! `AppError { code: "store", .. }`.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use brigadier_core::claude::{ClaudeDriver, ClaudeDriverConfig};
 use brigadier_proc::{sweep, PidDir, PidTracker, DEFAULT_GRACE};
-use brigadier_store::Store;
+use brigadier_store::{Store, StoreHandle};
+use brigadier_supervisor::loop_::barrier::{self, Barrier, ReconcileSender};
 use brigadier_supervisor::{Supervisor, SupervisorConfig};
 
 use crate::error::AppError;
@@ -52,6 +54,25 @@ pub(crate) struct Ready {
     pub run_id: String,
     /// Where the database, the raw logs, the pid files and `frame-stats.ndjson` live.
     pub data_dir: PathBuf,
+    /// The reconciliation barrier every [`brigadier_supervisor::loop_::RunSpec`] is handed.
+    ///
+    /// Level-triggered, so a run started long after reconciliation finished still sees the
+    /// answer, and **nothing dispatches before it resolves**
+    /// (`docs/research/intent-records.md` §4.1).
+    pub barrier: Barrier,
+    /// The writing half, taken once by the task `crate::run` spawns.
+    ///
+    /// Held here rather than passed out of [`build`] so that dropping it without publishing —
+    /// which the loop reads as `reconcile_failed` and refuses to dispatch on — can only happen if
+    /// the reconciler itself dies, never because a caller forgot to move it.
+    reconcile_tx: Mutex<Option<ReconcileSender>>,
+    /// Plans the owner stopped **in this launch**.
+    ///
+    /// The store has no op that writes `plans.status = 'abandoned'` — its only status transition
+    /// is `plan_approved` — so this is where a stop is remembered, and it is remembered for one
+    /// launch only. See [`crate::views::run_status`], which spends the flag, and
+    /// [`crate::commands::stop_run`], which sets it.
+    stopped_runs: Mutex<HashSet<String>>,
 }
 
 impl std::fmt::Debug for Ready {
@@ -175,6 +196,37 @@ impl Ready {
     fn lock_claude(&self) -> MutexGuard<'_, Result<ClaudeStatus, AppError>> {
         self.claude.lock().unwrap_or_else(PoisonError::into_inner)
     }
+
+    /// The store's own handle, for the reads the run commands make directly.
+    ///
+    /// The supervisor exposes no accessor for it, and the run's five commands need reads it does
+    /// not wrap — plans, phases, work orders, unknowns and intents.
+    pub(crate) fn store(&self) -> &StoreHandle {
+        self.store.handle()
+    }
+
+    /// Take the reconciler's sender. `None` on every call after the first.
+    pub(crate) fn take_reconcile_sender(&self) -> Option<ReconcileSender> {
+        self.reconcile_tx.lock().unwrap_or_else(PoisonError::into_inner).take()
+    }
+
+    /// Remember that the owner stopped this plan. Idempotent.
+    pub(crate) fn mark_stopped(&self, plan_id: &str) {
+        self.stopped_runs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(plan_id.to_owned());
+    }
+
+    /// Forget a stop, because the owner started that plan again.
+    pub(crate) fn clear_stopped(&self, plan_id: &str) {
+        self.stopped_runs.lock().unwrap_or_else(PoisonError::into_inner).remove(plan_id);
+    }
+
+    /// Whether the owner stopped this plan in this launch.
+    pub(crate) fn is_stopped(&self, plan_id: &str) -> bool {
+        self.stopped_runs.lock().unwrap_or_else(PoisonError::into_inner).contains(plan_id)
+    }
 }
 
 /// Probe the `claude` binary and, on success, register the driver under `claude-code`.
@@ -247,8 +299,24 @@ pub(crate) async fn build(data_dir: PathBuf) -> Result<Ready, AppError> {
         if claude.is_ok() { "outcome=ok" } else { "outcome=failed" },
     );
 
+    // Unresolved on purpose: the run barrier is published by the reconciler task `crate::run`
+    // spawns, and a run started before that lands waits on it rather than dispatching into a
+    // repository nothing has read yet.
+    let (reconcile_tx, barrier) = barrier::barrier();
+
     crate::trace::stage("state_build_end");
-    Ok(Ready { supervisor, store, tracker, sink, claude: Mutex::new(claude), run_id, data_dir })
+    Ok(Ready {
+        supervisor,
+        store,
+        tracker,
+        sink,
+        claude: Mutex::new(claude),
+        run_id,
+        data_dir,
+        barrier,
+        reconcile_tx: Mutex::new(Some(reconcile_tx)),
+        stopped_runs: Mutex::new(HashSet::new()),
+    })
 }
 
 /// Open `<data_dir>/pids`, sweep whatever the last launch left, and build the tracker.

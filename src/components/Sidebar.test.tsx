@@ -30,7 +30,7 @@ import userEvent from "@testing-library/user-event";
 import { Sidebar } from "./Sidebar";
 import type { SidebarProps } from "./Sidebar";
 import type { SessionRuntime } from "../feedStore";
-import { ZERO_USAGE } from "../wire";
+import { AppError, ZERO_USAGE } from "../wire";
 import type { ProjectView, SessionId, SessionStatus } from "../wire";
 
 afterEach(() => {
@@ -422,5 +422,139 @@ describe("the sidebar's project list", () => {
     expect(within(nav).getByText("job-portal")).toBeInTheDocument();
     expect(within(nav).getByText("brigadier-ai")).toBeInTheDocument();
     expect(within(nav).getByText("old-crm")).toBeInTheDocument();
+  });
+});
+
+/*
+ * ------------------------------------------------------------------ the project-open flow
+ *
+ * The owner's sentence for this order: *launch the app, click **Add project**, and pick a folder
+ * in a native macOS directory picker — not paste an absolute path into a text field.*
+ *
+ * What can be pinned here and what cannot is worth stating, because the gap is the whole risk.
+ * These tests exercise the **call**: that clicking the control invokes the picker rather than
+ * revealing a text field, that a cancel is silent, that a refusal is drawn where the owner is
+ * looking, and that the typed path still works when there is no picker. They do **not** open a
+ * macOS dialog, and nothing in this suite can — `@tauri-apps/plugin-dialog` needs a Tauri window,
+ * and jsdom is not one. The picker itself is proven only by
+ * `docs/research/tauri-dialog.md`'s reading of the plugin's own types and permission files.
+ *
+ * The seam that makes that testable is `onPickProject`'s *absence*: undefined means "no picker in
+ * this runtime", which is a browser, and the "+" falls back to the field. So the same prop
+ * expresses the degradation and gates the test.
+ */
+describe("adding a project", () => {
+  it("opens the native picker rather than a text field", async () => {
+    const user = userEvent.setup();
+    const onPickProject = vi.fn(async () => null);
+    mount({ onPickProject });
+
+    await user.click(screen.getByRole("button", { name: "add a project" }));
+
+    expect(onPickProject).toHaveBeenCalledTimes(1);
+    // The point of the order: no path is typed. The fallback field stays closed on the happy path.
+    expect(screen.queryByLabelText("project path")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("says nothing and opens nothing when the picker is cancelled", async () => {
+    const user = userEvent.setup();
+    // A cancelled `open({ directory: true })` resolves `null`, which `App.pickProject` turns into
+    // `null` — the same value success returns (`docs/research/tauri-dialog.md` §2). A cancel is
+    // not an error and must not be drawn as one.
+    const onPickProject = vi.fn(async () => null);
+    const onAddProject = vi.fn();
+    mount({ onPickProject, onAddProject });
+
+    await user.click(screen.getByRole("button", { name: "add a project" }));
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("project path")).not.toBeInTheDocument();
+    // Nothing was added by the typed route either; that `add_project` was not called at all is
+    // pinned in `src/App.test.tsx`, which owns the bridge.
+    expect(onAddProject).not.toHaveBeenCalled();
+  });
+
+  it("draws a refused folder beside the control, and opens the typed field as the way out", async () => {
+    const user = userEvent.setup();
+    const onPickProject = vi.fn(async () => new AppError("invalid_argument", "not a repository root"));
+    mount({ onPickProject });
+
+    await user.click(screen.getByRole("button", { name: "add a project" }));
+
+    expect(screen.getByRole("alert")).toHaveTextContent("not a repository root");
+    // The escape hatch: a picker that fails must never leave the owner with no route in.
+    expect(screen.getByLabelText("project path")).toBeInTheDocument();
+  });
+
+  it("still adds a typed path when there is no picker", async () => {
+    const user = userEvent.setup();
+    const onAddProject = vi.fn(async () => null);
+    // No `onPickProject`: a browser, where the mock bridge is selected and no dialog plugin exists.
+    mount({ onAddProject });
+
+    await user.click(screen.getByRole("button", { name: "add a project by path" }));
+    await user.type(screen.getByLabelText("project path"), "  /repos/job-portal  ");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+
+    expect(onAddProject).toHaveBeenCalledTimes(1);
+    expect(onAddProject).toHaveBeenCalledWith("/repos/job-portal");
+    // Accepted, so the field closes behind it.
+    expect(screen.queryByLabelText("project path")).not.toBeInTheDocument();
+  });
+
+  it("keeps a refused typed path in the field instead of making it be retyped", async () => {
+    const user = userEvent.setup();
+    const onAddProject = vi.fn(async () => new AppError("invalid_argument", "not a directory"));
+    mount({ onAddProject });
+
+    await user.click(screen.getByRole("button", { name: "add a project by path" }));
+    const field = screen.getByLabelText("project path");
+    await user.type(field, "/repos/not-a-repo");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+
+    expect(screen.getByRole("alert")).toHaveTextContent("not a directory");
+    expect(field).toHaveValue("/repos/not-a-repo");
+  });
+});
+
+/*
+ * `tauri-plugin-opener` was a dead dependency until this order: registered in `lib.rs`, called by
+ * nothing. Its job here is two reveals, and the load-bearing case is the one where there is
+ * nothing to reveal.
+ */
+describe("revealing in Finder", () => {
+  it("reveals a project by its root path", async () => {
+    const user = userEvent.setup();
+    const onReveal = vi.fn();
+    mount({ projects: [project("p", "job-portal")], onReveal });
+
+    await user.click(screen.getByRole("button", { name: "reveal job-portal in Finder" }));
+
+    expect(onReveal).toHaveBeenCalledWith("/repos/job-portal");
+  });
+
+  it("offers no reveal for a session with no worktree", () => {
+    // `worktree_path` is null whenever the project is not a git repository (contract §Worktrees).
+    // The control is **absent**, not disabled: a disabled button claims a folder exists.
+    const sessions = {
+      withTree: session("withTree", "p", "running"),
+      noTree: session("noTree", "p", "running", { worktreePath: null, branch: null }),
+    };
+    mount({ projects: [project("p", "job-portal")], sessions, onReveal: vi.fn() });
+
+    expect(screen.getByRole("button", { name: /reveal .* worktree in Finder/ })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /worktree in Finder/ })).toHaveLength(1);
+  });
+
+  it("offers no reveal at all outside a Tauri window", () => {
+    // `onReveal` undefined is the browser: the opener plugin does not exist there, so neither
+    // does the control.
+    mount({
+      projects: [project("p", "job-portal")],
+      sessions: { one: session("one", "p", "running") },
+    });
+
+    expect(screen.queryByRole("button", { name: /in Finder/ })).not.toBeInTheDocument();
   });
 });

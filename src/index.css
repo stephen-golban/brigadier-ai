@@ -652,21 +652,36 @@ textarea:disabled {
  * is exactly where the project label starts, so the nesting is a real alignment rather than an
  * arbitrary indent.
  */
+/*
+ * Split in two on 2026-09-04, when the row gained a "reveal in Finder" button: a button nested
+ * inside a button is invalid HTML, exactly as `.side-project` above already records. `.side-session`
+ * is now the pill — background, radius, the row's colour — and `.side-session-btn` is the part
+ * that selects. Every measurement below moved with the half it belongs to; nothing changed value.
+ */
 .side-session {
   display: flex;
   align-items: center;
-  gap: 8px;
   width: calc(100% - 16px);
   margin: 0 8px;
+  border-radius: var(--radius-row);
+  color: var(--color-text-muted-side);
+  transition:
+    background-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+
+.side-session-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
   min-height: var(--row-h-nested);
   padding: 0 10px 0 18px;
   border-radius: var(--radius-row);
   font-size: var(--fs-md);
-  color: var(--color-text-muted-side);
+  color: inherit;
   text-align: left;
-  transition:
-    background-color var(--dur-fast) var(--ease),
-    color var(--dur-fast) var(--ease);
 }
 
 .side-session:hover {
@@ -882,6 +897,61 @@ textarea:disabled {
 
 .side-add button:hover {
   background: rgba(255, 255, 255, 0.16);
+}
+
+/*
+ * `add_project`'s own refusal — "not a directory", "not a repository root" — under the control
+ * that caused it. The global notice at the top of the thread still fires; this is the copy that
+ * is next to the field the owner is looking at.
+ *
+ * --color-bad is the token the failed-session flag and the bad avatar already use, so a red in
+ * this sidebar means one thing. `word-break` because the message quotes a path, and a path with
+ * no spaces in a 240px column otherwise pushes the whole sidebar wider.
+ */
+.side-add-error {
+  margin: 0 8px 8px;
+  padding: 0 2px;
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  color: var(--color-bad);
+  overflow-wrap: anywhere;
+}
+
+/*
+ * Reveal in Finder, on a project row and on a session row. Hidden until the row is hovered or the
+ * button itself is focused, because it is a secondary action on every row in the list and drawing
+ * 20 of them at rest would turn the sidebar into a toolbar.
+ *
+ * Opacity, not `visibility` or `display`: the button stays in the accessible tree and stays
+ * tabbable, so the action is reachable without a pointer at all. `:focus-visible` is what makes
+ * that honest — tab to it and it appears.
+ */
+.side-reveal {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  margin-right: 6px;
+  border-radius: var(--radius-xs);
+  color: var(--color-text-muted-side);
+  opacity: 0;
+  transition:
+    opacity var(--dur-fast) var(--ease),
+    background-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+
+.side-project:hover .side-reveal,
+.side-session:hover .side-reveal,
+.side-reveal:focus-visible {
+  opacity: 1;
+}
+
+.side-reveal:hover {
+  background: var(--color-sidebar-hover);
+  color: var(--color-text);
 }
 
 /* Dev-only burn panel, above the status bar. */
@@ -1536,6 +1606,375 @@ textarea:disabled {
   background: rgba(0, 0, 0, 0.28);
   border: 1px solid var(--color-line);
   font-size: 13px;
+}
+
+/* ------------------------------------------------------------- the run */
+
+/*
+ * The pinned plan card, and the strip that starts a run.
+ *
+ * `docs/vision.md` §9: the plan sits pinned above the thread, collapsible to one line, expandable
+ * to the full checklist, and **nothing the owner steers with ever scrolls away**. That last clause
+ * is geometry, not decoration, and it is what these rules exist for:
+ *
+ *   - `.run-card` is a flex child of `.thread`, a sibling of `.feed` and outside its scroller, so
+ *     the feed cannot carry it off the top of the window. `flex: 0 1 auto` with `min-height: 0`
+ *     is the same shape `.approvals` takes and for the same reason: it asks for the height it
+ *     needs and yields it back to the feed's `min-height: 132px` floor when the window is small,
+ *     rather than being a second floor of its own.
+ *   - `.run-phases` is where that yielding is absorbed. A twelve-phase plan scrolls **inside the
+ *     card**; the card itself never scrolls out of view.
+ *
+ * Deliberately plain. This is the smallest surface that makes the run usable and no more: no new
+ * token, no animation, no icon, one border and the type scale that is already here.
+ */
+
+.run-card {
+  flex: 0 1 auto;
+  width: 100%;
+  max-width: var(--thread-max);
+  margin: 0 auto;
+  padding: 8px 16px 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  font-size: var(--fs-md);
+}
+
+.run-line {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  padding: 4px 0;
+}
+
+.run-toggle {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-xs);
+  font-size: var(--fs-xs);
+  color: var(--color-text-muted);
+}
+
+.run-toggle:hover {
+  color: var(--color-text);
+}
+
+.run-goal {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.run-counts,
+.run-now {
+  flex: 0 0 auto;
+  font-size: var(--fs-xs);
+  color: var(--color-text-muted);
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The checklist. Scrolls inside the card; the card stays put. */
+.run-phases {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  overflow-y: auto;
+  min-height: 0;
+  max-height: 34vh;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.run-phase {
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+}
+
+.run-phase-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.run-ord {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--color-text-muted);
+}
+
+.run-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text);
+}
+
+/*
+ * The state word. Colour is a second channel here, never the only one — the word itself is always
+ * printed, so a card read in greyscale loses nothing.
+ *
+ * These modifier classes are applied through a template literal (`run-state ${state}`), which
+ * `src/index.css.test.ts` explicitly does not see. That is safe **only** because every rule below
+ * is hand-written: Tailwind's scanner never had to find them, and `source(none)` means it would
+ * not have generated them if it had.
+ */
+.run-state {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--color-text-muted);
+}
+
+.run-state.running,
+.run-state.dispatched {
+  color: var(--color-accent);
+}
+
+.run-state.green,
+.run-state.reported {
+  color: var(--color-ok);
+}
+
+/* `unknown` sits with `blocked` and `failed`, never with `dispatched`. The contract's rule: it
+   is not a spinner, it is a phase that stopped and needs a decision. */
+.run-state.blocked,
+.run-state.failed,
+.run-state.unknown {
+  color: var(--color-bad);
+}
+
+.run-attempts {
+  flex: 0 0 auto;
+  font-size: var(--fs-xs);
+  color: var(--color-text-muted);
+}
+
+.run-gate {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 4px;
+  min-width: 0;
+}
+
+.run-verify {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+  background: rgba(0, 0, 0, 0.28);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--color-feed-text);
+}
+
+/* A phase with no verify command. Muted would read as "not filled in yet"; it is a standing fact
+   about the phase, so it takes the accent the composer's mode chip uses. */
+.run-nogate {
+  font-size: var(--fs-xs);
+  color: var(--color-accent);
+}
+
+.run-exit {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+
+.run-sha {
+  flex: 0 0 auto;
+  font-size: var(--fs-xs);
+  color: var(--color-text-muted);
+}
+
+.run-dod,
+.run-evidence {
+  margin: 4px 0 0;
+  font-size: var(--fs-xs);
+  color: var(--color-text-muted);
+}
+
+/* One line, always. The component already collapses whitespace and clamps the string; this is the
+   second half of the same rule, so a long `last_evidence` can never become a log pane. */
+.run-evidence {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-orders {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.run-order {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  font-size: var(--fs-xs);
+}
+
+.run-order-title {
+  min-width: 0;
+  color: var(--color-feed-text);
+}
+
+.run-order-ref,
+.run-paths {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-muted);
+}
+
+.run-order-why {
+  flex: 1 1 100%;
+  color: var(--color-text-muted);
+}
+
+/* ------------------------------------------------------- unsettled intents */
+
+/*
+ * **Not the approvals dock, and it must not look like one.** That dock is the safety boundary,
+ * where "allowed" and "denied" each mean exactly one thing; an unsettled intent is the harness
+ * asking whether something it cannot observe actually happened, and neither answer authorizes
+ * anything. So: no card, no `--color-surface` panel, no accent rail. A rule, a sentence and two
+ * plain `.act` buttons.
+ */
+.run-intents {
+  flex: 0 0 auto;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--color-line);
+}
+
+.run-intents-head {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--color-text-muted);
+}
+
+.run-intent-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.run-intent {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  font-size: var(--fs-xs);
+}
+
+/* The slug, verbatim and unstyled by kind: a build that adds a kind must not break this window,
+   so nothing here can depend on which kind it is. */
+.run-intent-kind {
+  flex: 0 0 auto;
+  color: var(--color-bad);
+}
+
+.run-intent-subject {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-muted);
+}
+
+.run-intent-why {
+  min-width: 0;
+  flex: 1 1 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-muted);
+}
+
+.run-intent-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ------------------------------------------------------------- run dock */
+
+/* The strip that hands the harness a goal, on the same centred column as the composer below it. */
+.run-dock {
+  flex: 0 0 auto;
+  width: 100%;
+  max-width: var(--thread-max);
+  margin: 0 auto;
+  padding: 8px 16px 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.run-dock-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 32px;
+  padding: 0 12px;
+  background: var(--color-composer-bg);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-row);
+  font-size: var(--fs-md);
+}
+
+.run-dock-input::placeholder {
+  color: var(--color-text-placeholder);
+}
+
+.run-dock-status {
+  flex: 0 0 auto;
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  color: var(--color-ok);
+}
+
+.run-dock-goal {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-md);
+  color: var(--color-text-muted);
 }
 
 /* ------------------------------------------------------------ composer */

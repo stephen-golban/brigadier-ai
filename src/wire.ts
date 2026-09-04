@@ -341,6 +341,141 @@ export interface ApprovalView {
   resolved: boolean;
 }
 
+/* ------------------------------------------------------------------ the run
+ *
+ * `docs/plans/ipc-contract.md` §"The run", added 2026-09-04. One approved goal, one plan, and a
+ * loop that dispatches, gates and commits without a human. Every shape below is transcribed from
+ * that section field by field; none of it may be widened here without the contract changing
+ * first, because the Rust side is written against the same paragraph.
+ *
+ * Four of the contract's rules are encoded in the types themselves rather than only in prose,
+ * because each one is a decision a renderer can silently get wrong:
+ *
+ *   - `PhaseView.verify_command` is `string | null` and **the null is the information**. A phase
+ *     with no verify command cannot go green through a gate; a UI that substitutes a placeholder
+ *     command is claiming a gate that does not exist.
+ *   - `last_exit_code` is the gate's answer and `last_evidence` is bounded. **Neither is a log
+ *     tail and no log tail is on this wire**: the verify command's output goes to a file and to a
+ *     worker's window (`docs/vision.md` §4 step 7.5).
+ *   - `WorkOrderState`'s `"unknown"` is not a spinner. It means something moved in that worktree
+ *     and the harness cannot tell what, so the phase is blocked and will not be repeated
+ *     (`docs/research/intent-records.md` §5.1).
+ *   - **No dollar figure appears in any of these shapes, and none may be added.** The owner runs
+ *     on his own subscription and is never billed per token (`docs/vision.md` §6).
+ */
+
+export type PlanId = string;
+export type PhaseId = string;
+export type OrderId = string;
+export type UnknownId = string;
+export type IntentId = string;
+
+/** `RunView.status`. A closed set on the wire; the contract lists exactly these four. */
+export type RunStatus = "draft" | "approved" | "done" | "abandoned";
+
+/**
+ * A run the loop is still working on, as opposed to one it has finished with. `start_run` refuses
+ * a second one for the same project with `run_already_live`, so this is also the predicate that
+ * decides whether the composer offers Start or Stop.
+ *
+ * **`draft` counts as live and that is a choice, not a reading.** The contract does not say which
+ * statuses `run_already_live` covers. A draft plan is one whose unknowns are still being settled,
+ * and offering "start a run" over it would invite exactly the second run the error code exists to
+ * refuse — so the front end treats both open statuses the same way and lets Rust be the authority
+ * when it disagrees.
+ */
+export function runIsLive(run: RunView | null): boolean {
+  return run !== null && (run.status === "draft" || run.status === "approved");
+}
+
+export type PhaseState = "pending" | "running" | "green" | "blocked";
+
+export type WorkOrderState = "pending" | "dispatched" | "reported" | "failed" | "unknown";
+
+export type UnknownBin = "owner" | "research";
+export type UnknownState = "open" | "answered" | "skipped";
+
+export interface WorkOrderView {
+  order_id: OrderId;
+  title: string;
+  owned_paths: string[];
+  state: WorkOrderState;
+  session_id: SessionId | null;
+  branch: string | null;
+  worktree_path: string | null;
+  report: string | null;
+}
+
+export interface PhaseView {
+  phase_id: PhaseId;
+  ordinal: number;
+  title: string;
+  definition_of_done: string;
+  /** Null means **no gate**. See the header: never render a placeholder in its place. */
+  verify_command: string | null;
+  state: PhaseState;
+  attempts: number;
+  base_sha: string | null;
+  commit_sha: string | null;
+  /** The gate's answer. 0 is a pass; anything else is the failure the card reports. */
+  last_exit_code: number | null;
+  /** Bounded by the Rust side. **Not a log tail** — see the header. */
+  last_evidence: string | null;
+  orders: WorkOrderView[];
+}
+
+export interface UnknownView {
+  unknown_id: UnknownId;
+  bin: UnknownBin;
+  question: string;
+  state: UnknownState;
+  skipped_for_just_go: boolean;
+}
+
+export interface RunView {
+  plan_id: PlanId;
+  project_id: ProjectId;
+  goal: string;
+  status: RunStatus;
+  revision: number;
+  created_at_ms: number;
+  approved_at_ms: number | null;
+  phases: PhaseView[];
+  unknowns: UnknownView[];
+}
+
+/**
+ * What `settle_intent` takes. Two answers, and neither is "allow" or "deny": an unsettled intent
+ * is not a permission question, it is the harness asking whether something it cannot observe
+ * actually happened.
+ */
+export type IntentSettlement = "done" | "not_done";
+
+/**
+ * `IntentView.state` as the contract writes it: the literal `"unknown"`, because
+ * `unsettled_intents` returns only unsettled rows and an unsettled row is by definition the one
+ * the reconciler could not resolve. Anything else would not be on this list.
+ */
+export type IntentState = "unknown";
+
+/**
+ * One intent the reconciler could not settle.
+ *
+ * **`kind` is a pass-through slug, not a closed union** — the same treatment `PermissionMode`
+ * gets, and for the same reason: a build that adds a kind must not break an older webview. The
+ * renderer prints an unrecognised kind as itself.
+ */
+export interface IntentView {
+  intent_id: IntentId;
+  kind: string;
+  state: IntentState;
+  session_id: SessionId | null;
+  project_id: ProjectId | null;
+  opened_at_ms: number;
+  subject: string | null;
+  evidence: string | null;
+}
+
 export interface FrameStats {
   window_start_ms: number;
   hz: number;
