@@ -1,18 +1,23 @@
 //! brigadier-store: the supervisor's own state, on one SQLite file and one writer thread.
 //!
-//! Four things live here and nothing else does:
+//! Six things live here and nothing else does:
 //!
 //! - [`schema`] — the tables, the pragmas, and the `user_version` migration ladder.
 //! - `writer` (private) — one `rusqlite::Connection` on one dedicated thread, one transaction per
 //!   ~250 ms across every session, reached through a clone-cheap [`StoreHandle`].
 //! - [`feed`] — the bounded one-line row a canonical event contributes to the UI feed, and
 //!   [`feed::apply`], the single call an adapter's consumer makes per envelope.
+//! - [`intents`] — the row committed *before* an effect is attempted, so a crash between the
+//!   effect and its acknowledgement is recoverable by reading the world instead of repeating it.
+//! - [`plan`] — goal, phases, unknowns and work orders: the only thing in the design that
+//!   remembers anything.
 //! - [`ndjson`] — our own size-rotated NDJSON, which is where raw provider traffic goes.
 //!
 //! Raw provider traffic is never stored in the database, and neither is anything append-only
 //! and archival: per session one upserted row, a feed ring capped at
 //! [`StoreConfig::feed_cap`], usage overwritten from the provider's latest cumulative frame,
-//! and approvals kept only so a reload can re-render a prompt.
+//! approvals kept only so a reload can re-render a prompt, plan tables that are O(phases) by
+//! construction, and settled intents swept after [`intents::INTENT_RETENTION`].
 // see docs/research/persistence.md — §2 for rusqlite over sqlx, §3 for the write patterns and
 // every pragma, §4 for the NDJSON sink, §6 for approvals and the per-launch `run_id`.
 
@@ -20,7 +25,9 @@
 #![warn(missing_docs)]
 
 pub mod feed;
+pub mod intents;
 pub mod ndjson;
+pub mod plan;
 pub mod schema;
 mod writer;
 
@@ -28,8 +35,15 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 pub use feed::FeedKind;
+pub use intents::{
+    IntentKind, IntentOutcome, IntentRecord, IntentRow, IntentState, KnownIntentKind,
+};
+pub use plan::{
+    PhaseRow, PhaseState, PlanRevisionRow, PlanRow, PlanStatus, UnknownBin, UnknownRow,
+    UnknownState, WorkOrderRow, WorkOrderState,
+};
 pub use schema::{
-    ApprovalRecord, FeedRow, ProjectRow, SessionRecord, SessionRow, SessionStatus, EXPIRED_REASON,
+    ApprovalOutcome, ApprovalRecord, FeedRow, ProjectRow, SessionRecord, SessionRow, SessionStatus,
 };
 pub use writer::StoreHandle;
 
@@ -72,6 +86,24 @@ pub enum Error {
     /// The writer thread has stopped; nothing further will be persisted.
     #[error("store is closed")]
     Closed,
+    /// A field the schema documents as *required* arrived empty.
+    ///
+    /// `TEXT NOT NULL` does not mean non-empty, and the one column this guards —
+    /// `plan_revisions.reason` — exists precisely so that a revision cannot be recorded without
+    /// one. Refused rather than substituted: a manufactured reason is worse than none.
+    #[error("{field} is required and must not be empty")]
+    Required {
+        /// Which field was empty, as `table.column`.
+        field: &'static str,
+    },
+    /// [`StoreHandle::intent_open`] did not get its commit within
+    /// [`intents::INTENT_OPEN_TIMEOUT`].
+    ///
+    /// Treat it exactly like a failed open: **do not attempt the effect**. The row may or may not
+    /// be on disk, and the whole point of the barrier is that the caller acts only on a row that
+    /// certainly is.
+    #[error("intent_open did not commit within {0:?}")]
+    IntentOpenTimeout(Duration),
     /// Another instance of the app is already using this data directory.
     #[error("another brigadier instance already holds {}", path.display())]
     Locked {
@@ -203,6 +235,15 @@ impl Store {
             tracing::info!(stale, run_id, "failed sessions left unfinished by a previous launch");
         }
 
+        // The crate's first retention rule, and `intents` is the only table that needs one.
+        // Settled rows age out after a week; `unknown` rows never do, because they are the only
+        // record that something may have happened and nobody has looked yet.
+        // see docs/research/intent-records.md §6.
+        let swept = intents::sweep_settled(&conn, SystemTime::now())?;
+        if swept > 0 {
+            tracing::info!(swept, run_id, "settled intents older than the retention cutoff");
+        }
+
         if let Ok(meta) = std::fs::metadata(&path) {
             if meta.len() > SIZE_WARN_BYTES {
                 tracing::warn!(bytes = meta.len(), path = %path.display(), "store is large");
@@ -249,9 +290,14 @@ impl Store {
     ///
     /// The join briefly blocks the calling task while the last transaction commits and the WAL
     /// is folded back in; this is a shutdown path, measured in milliseconds.
+    ///
+    /// The flush happens **before** the join handle is taken, deliberately. `?` on a failed flush
+    /// returns early and drops `self`, and [`Drop`] can only send `Shutdown` and join if the
+    /// handle is still there; taking it first left a live writer thread behind on every error
+    /// path, reachable through any cloned [`StoreHandle`].
     pub async fn close(mut self) -> Result<()> {
-        let join = self.join.take();
         self.handle.flush().await?;
+        let join = self.join.take();
         self.handle.shutdown();
         if let Some(join) = join {
             let _ = join.join();
