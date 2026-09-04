@@ -20,6 +20,7 @@ import type {
   Envelope,
   Event,
   FeedBatch,
+  FeedKind,
   FeedRowWire,
   ProjectView,
   RequestKind,
@@ -136,6 +137,37 @@ function terseLine(seq: number): string {
   }
 }
 
+/**
+ * The `k` for the line `terseLine(seq)` just produced — **the same `seq % 7` switch**, so the
+ * mock's kinds and its lines can never disagree and the browser fallback exercises the same
+ * classes the Rust feed does (`docs/plans/ipc-contract.md`, "Browser fallback": the mock "must
+ * implement this same contract").
+ *
+ * Mapped against the contract's `FeedRowWire.k` table, arm by arm: 0/1/4 are `ItemKind::ToolCall`
+ * and `ItemKind::ToolResult` shapes → `tool`; 2 and 6 are `ItemKind::AssistantText` → `text`,
+ * which is exactly what the feed's verbose toggle gates; 3 is `ItemKind::Thinking` → `think`;
+ * 5 is `ItemKind::Subagent` → `sub`.
+ *
+ * A constant here would have been a lie of the cheap kind: every row would have claimed one class
+ * and the toggle would have looked like it worked while filtering nothing.
+ */
+function terseKind(seq: number): FeedKind {
+  switch (seq % 7) {
+    case 0:
+    case 1:
+    case 4:
+      return "tool";
+    case 2:
+      return "text";
+    case 3:
+      return "think";
+    case 5:
+      return "sub";
+    default:
+      return "text";
+  }
+}
+
 function newSessionId(): string {
   return `s-${(nextId++).toString().padStart(4, "0")}`;
 }
@@ -209,10 +241,23 @@ function envelope(s: MockSession, event: Event): Envelope {
   };
 }
 
-function row(s: MockSession, line: string): FeedRowWire {
+/**
+ * One stored row. `k` is a required argument with no default, so every call site has to state what
+ * its line is a record of: the contract's `k` is a discriminator, and a default would let a caller
+ * ship a class the Rust side would never have sent for that line.
+ *
+ * **What this mock still cannot produce, stated rather than left to be discovered:** `turn`,
+ * `warn`, `err` and `unknown` have no source here, and `appr` has none either — the approval path
+ * at `tick()` pushes a `request-opened` **signal** and no row, where the Rust side writes both
+ * (`crates/store/src/feed.rs`, `apply`). So `npm run dev` exercises `tool`, `text`, `think`, `sub`
+ * and `sys`, and the feed's `err` and `appr` treatments are not reachable through it. Left alone
+ * deliberately: adding rows on the approval path means threading them through the visibility drop
+ * and the per-session counters, which is a change to what this file reports, not to what it draws.
+ */
+function row(s: MockSession, line: string, k: FeedKind): FeedRowWire {
   s.seq += 1;
   s.view.last_event_seq = s.seq;
-  const r: FeedRowWire = { s: s.view.session_id, q: s.seq, t: Date.now(), l: line };
+  const r: FeedRowWire = { s: s.view.session_id, q: s.seq, t: Date.now(), l: line, k };
   const tail = feedRows.get(s.view.session_id) ?? [];
   tail.push(r);
   if (tail.length > TAIL_CAP) tail.splice(0, tail.length - TAIL_CAP);
@@ -271,9 +316,12 @@ function tick(): void {
     const c = counter(s.view.session_id);
     const show = visible.has(projectId);
     for (let i = 0; i < n; i++) {
+      // Both read the *pre-increment* seq, because `row` is what advances it. Same argument,
+      // same switch: the line and its kind cannot drift apart.
       const line = terseLine(s.seq);
+      const kind = terseKind(s.seq);
       c.total += 1;
-      if (show) p.rows.push(row(s, line));
+      if (show) p.rows.push(row(s, line, kind));
       else {
         c.dropped += 1;
         s.seq += 1;
@@ -402,7 +450,7 @@ function seedCrossProjectApproval(): void {
   // case: it is the one mock session whose sidebar row shows no branch chip and whose composer
   // offers no "Clean up worktree".
   const s = makeSession(project.id, "claude-haiku-4-5", 2, null, false);
-  row(s, `MOCK · ${MOCK_NOTE}`);
+  row(s, `MOCK · ${MOCK_NOTE}`, "sys");
   const requestId = "r-mock-cross-project";
   approvals.set(requestId, {
     request_id: requestId,
@@ -518,7 +566,7 @@ export const mockBridge: Bridge = {
       throw new AppError("no_such_project", `no such project: ${projectId}`);
     }
     const s = makeSession(projectId, model ?? "claude-sonnet-4-5", 12, null);
-    row(s, `user · ${prompt.slice(0, 120)}`);
+    row(s, `user · ${prompt.slice(0, 120)}`, "user");
     return { ...s.view };
   },
 
@@ -546,7 +594,7 @@ export const mockBridge: Bridge = {
     s.view.ended_at_ms = null;
     s.view.exit_code = null;
     s.view.started_at_ms = Date.now();
-    row(s, `MOCK · resumed · ${MOCK_NOTE}`);
+    row(s, `MOCK · resumed · ${MOCK_NOTE}`, "sys");
     return { ...s.view };
   },
 
@@ -598,7 +646,7 @@ export const mockBridge: Bridge = {
     } else if (s.view.status !== "running") {
       throw new AppError("session_not_running", `session is ${s.view.status}`);
     }
-    row(s, `user · ${text.slice(0, 120)}`);
+    row(s, `user · ${text.slice(0, 120)}`, "user");
     return { turn_id: `t-${s.turnId++}` };
   },
 

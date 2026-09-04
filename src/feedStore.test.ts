@@ -53,8 +53,10 @@ function zeroUsage(): Usage {
   };
 }
 
+/** `k` is carried through the store untouched — it is not read here, and nothing in `feedStore`
+ *  branches on it. `"sys"` rather than `"unknown"` so the fixture is a real class. */
 function row(s: SessionId, q: number, l = `line ${q}`): FeedRowWire {
-  return { s, q, t: 1_000 + q, l };
+  return { s, q, t: 1_000 + q, l, k: "sys" };
 }
 
 function rows(s: SessionId, qs: readonly number[]): FeedRowWire[] {

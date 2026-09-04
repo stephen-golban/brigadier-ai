@@ -174,12 +174,43 @@ export interface Envelope {
 
 /* -------------------------------------------------------------- the feed */
 
-/** Short-keyed terse row: `s`ession, se`q`, `t`ime (ms), `l`ine. */
+/**
+ * What a row is, independent of its text.
+ *
+ * The set is **closed** and mirrors `brigadier_store::FeedKind` (`crates/store/src/feed.rs`),
+ * pinned on the Rust side by `crates/store/tests/feed.rs::kind_is_pinned_for_every_variant` and
+ * tabulated in `docs/plans/ipc-contract.md` §"`FeedRowWire.k` — the kind discriminator". Both were
+ * read, value by value, when this union was written; neither may be changed without the other.
+ *
+ * `unknown` is **not a class, it is the absence of one** — a row written before migration 1
+ * (2026-09-03), or one whose stored slug came from a build that knows a class this one does not.
+ * `feed::kind` never produces it; only the store does. Anything that filters or styles by `k`
+ * must leave `unknown` rows alone: show them under every setting, or under none, but never file
+ * them under a real class. The owner has **10,037** pre-migration rows, and folding them into
+ * `sys` — which was the first cut of this field — would have claimed every one of them was
+ * session housekeeping.
+ */
+export type FeedKind =
+  | "turn"
+  | "tool"
+  | "text"
+  | "think"
+  | "user"
+  | "sub"
+  | "appr"
+  | "warn"
+  | "err"
+  | "sys"
+  | "unknown";
+
+/** Short-keyed terse row: `s`ession, se`q`, `t`ime (ms), `l`ine, `k`ind. */
 export interface FeedRowWire {
   s: SessionId;
   q: number;
   t: number;
   l: string;
+  /** Added 2026-09-03, additive; the Rust side has sent it since `959bd0c`. See `FeedKind`. */
+  k: FeedKind;
 }
 
 export interface SessionCounter {
