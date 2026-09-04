@@ -84,8 +84,40 @@ pub const NO_OP_KEYWORDS: &[&str] = &["case", "done", "esac", "fi", "for", "in",
 
 /// Prefix flags that swallow the following word, per prefix command. `sudo -u root cat f` must not
 /// stop at `root`.
+///
+/// The long spellings are here because their absence was a **downgrade**, not a false alarm:
+/// `sudo --user root claude -p x` took `--user` for the command word, so `claude` was never
+/// reached and a `NestedClaude` that should be refused whoever asks came back merely
+/// unclassifiable. Same word, two spellings, one table.
 pub const PREFIX_FLAGS_WITH_ARG: &[&str] = &[
-    "-u", "-g", "-U", "-C", "-n", "-c", "-s", "-k", "-I", "-i", "-L", "-P", "-d", "-E", "-a", "-o",
+    "--adjustment",
+    "--chdir",
+    "--delimiter",
+    "--directory",
+    "--group",
+    "--kill-after",
+    "--max-args",
+    "--max-procs",
+    "--prompt",
+    "--replace",
+    "--signal",
+    "--user",
+    "-C",
+    "-E",
+    "-I",
+    "-L",
+    "-P",
+    "-U",
+    "-a",
+    "-c",
+    "-d",
+    "-g",
+    "-i",
+    "-k",
+    "-n",
+    "-o",
+    "-s",
+    "-u",
 ];
 
 /// Redirection targets that are not the user's tree. `ls > /dev/null 2>&1` writes nothing.
@@ -191,6 +223,19 @@ pub const GIT_MUTATE_SUBCOMMANDS: &[&str] = &[
 /// and `git log -p` prints the file contents; this is the line between them.
 pub const GIT_LOG_PATCH_FLAGS: &[&str] =
     &["-p", "-u", "-c", "--patch", "--unified", "--cc", "--patch-with-stat", "--patch-with-raw"];
+
+/// `git` subcommands that talk to a remote, so their effect leaves the worktree.
+///
+/// `docs/vision.md` §8 pre-authorizes a worker inside its own worktree and names the network and
+/// `git push` as things that queue instead; this is that line drawn over `git`'s subcommands.
+/// `commit`, `merge` and `rebase` are deliberately absent — they are exactly the local mutations a
+/// worker is pre-authorized for.
+///
+/// `remote` is on the list whole rather than by subcommand: a *reading* `git remote -v` is
+/// [`super::BashClass::Inspect`] and never reaches a policy that consults this set, so anything
+/// here that is still `Mutate` is one of [`GIT_REMOTE_MUTATE_SUBCOMMANDS`] already.
+pub const GIT_REMOTE_SUBCOMMANDS: &[&str] =
+    &["clone", "fetch", "pull", "push", "remote", "send-email", "submodule"];
 
 /// `git remote` subcommands that change a remote; anything else only lists.
 pub const GIT_REMOTE_MUTATE_SUBCOMMANDS: &[&str] =

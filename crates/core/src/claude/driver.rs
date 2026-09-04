@@ -8,7 +8,6 @@
 // and memory.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
 use crate::claude::adapter::{connect, AdapterConfig};
@@ -16,8 +15,8 @@ use crate::claude::binary::{probe_binary, MIN_VERSION};
 use crate::claude::hook::{ask_gated_tools, SharedHookPolicy};
 use crate::claude::process::{account_label, spawn, SpawnSpec};
 use crate::driver::{
-    BoxFuture, DriverError, DriverInfo, DriverKind, ProviderDriver, Resumed, ResumeSession,
-    StartSession,
+    BoxFuture, DriverError, DriverInfo, DriverKind, HookOverride, ProviderDriver, Resumed,
+    ResumeSession, StartSession,
 };
 use crate::event::{InstanceId, SessionId};
 use crate::session::SessionHandle;
@@ -152,12 +151,18 @@ impl ClaudeDriver {
     /// `Some` reuses the caller's id and seeds the numbering from `start_seq`, which is what
     /// keeps a resumed child's feed rows from overwriting the old conversation's.
     // see docs/research/resume.md §7 and §8 gaps 1-2.
+    ///
+    /// `hooks` is the request's own `PreToolUse` policy; [`HookOverride::inherit`] falls back to
+    /// this driver's. The fallback is what keeps the operator's hand-started sessions on
+    /// [`AskGatedTools`](crate::claude::AskGatedTools) while a loop-dispatched worker runs under
+    /// a [`WorkerWall`](crate::claude::WorkerWall) bound to its own worktree.
     async fn open(
         &self,
         spec: SpawnSpec,
         prompt: Option<String>,
         event_buffer: usize,
         resumed: Option<Resumed>,
+        hooks: &HookOverride,
     ) -> Result<SessionHandle, DriverError> {
         let (session_id, start_seq) = match resumed {
             Some(Resumed { session_id, start_seq }) => (session_id, start_seq),
@@ -181,7 +186,7 @@ impl ClaudeDriver {
             child.stdin,
             child.exit,
             child.kill,
-            Arc::clone(&self.hook_policy),
+            hooks.resolve(&self.hook_policy),
         )
         .await?;
         // The child is its own process group leader (`process.rs`), so this pid is also the pgid
@@ -222,7 +227,7 @@ impl ProviderDriver for ClaudeDriver {
                 thinking: req.thinking,
                 env_overrides: req.env_overrides,
             };
-            self.open(spec, req.prompt, req.event_buffer, None).await
+            self.open(spec, req.prompt, req.event_buffer, None, &req.hook_policy).await
         })
     }
 
@@ -250,7 +255,7 @@ impl ProviderDriver for ClaudeDriver {
                 thinking: req.thinking,
                 env_overrides: req.env_overrides,
             };
-            self.open(spec, req.prompt, req.event_buffer, req.resumed).await
+            self.open(spec, req.prompt, req.event_buffer, req.resumed, &req.hook_policy).await
         })
     }
 }

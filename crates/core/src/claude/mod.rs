@@ -18,9 +18,10 @@
 //!   tool subprocesses.
 //! * [`adapter`] — the per-session task: wire → canonical, approvals, commands, teardown.
 //! * [`hook`] — the `PreToolUse` seam that sees every tool call, including the ones the CLI's
-//!   built-in read-only Bash command set would auto-approve. The shipped policy answers
+//!   built-in read-only Bash command set would auto-approve. The operator's policy answers
 //!   `permissionDecision: "ask"` for the tools that write, which is what makes a `can_use_tool`
-//!   prompt appear at all.
+//!   prompt appear at all; [`hook::WorkerWall`] is the unattended-worker policy that replaces it
+//!   per session.
 //! * [`driver`] — [`ClaudeDriver`], one value per account.
 //!
 //! # Two shadows the driver has to work around
@@ -46,7 +47,8 @@ pub use adapter::{approval_request_id, connect, AdapterConfig};
 pub use binary::{resolve_claude, CLAUDE_BIN, MIN_VERSION};
 pub use driver::{ClaudeDriver, ClaudeDriverConfig, CLAUDE_CODE, DEFAULT_APPROVAL_TIMEOUT};
 pub use hook::{
-    allow_all, ask_gated_tools, AllowAll, AskGatedTools, HookPolicy, SharedHookPolicy,
-    DEFAULT_ASK_REASON, GATED_TOOLS, PRE_TOOL_USE_CALLBACK_ID,
+    allow_all, ask_gated_tools, worker_wall, AllowAll, AskGatedTools, HookPolicy,
+    SharedHookPolicy, WorkerWall, DEFAULT_ASK_REASON, GATED_TOOLS, GIT_ELSEWHERE_FLAGS,
+    PRE_TOOL_USE_CALLBACK_ID, WALL_ALLOW_REASON, WALL_NESTED_CLAUDE_REASON, WORKTREE_PATH_TOOLS,
 };
 pub use process::{ExitInfo, KillHandle, SpawnSpec};

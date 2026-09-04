@@ -17,14 +17,16 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use brigadier_core::approval::ApprovalTable;
-use brigadier_core::claude::adapter::{approval_request_id, connect, AdapterConfig, EXIT_REASON};
+use brigadier_core::claude::adapter::{
+    approval_request_id, connect, AdapterConfig, EXIT_REASON, FINAL_TEXT_LIMIT,
+};
 use brigadier_core::claude::hook::allow_all;
 use brigadier_core::claude::process::{ExitInfo, KillHandle};
 use brigadier_core::event::{
     Envelope, Event, ExitReason, InstanceId, ItemId, ItemKind, RequestKind, SessionId, StopReason,
     TurnId, Usage,
 };
-use brigadier_core::session::{Decision, SessionCommands, TurnInput};
+use brigadier_core::session::{Decision, FinalTextError, SessionCommands, TurnInput};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
 use tokio::sync::{mpsc, oneshot};
@@ -150,6 +152,15 @@ impl Rig {
 
     async fn feed_rest(&mut self) {
         self.feed(self.lines.len()).await;
+    }
+
+    /// One line the adapter has to decode, not from the fixture.
+    ///
+    /// Used only where no capture carries the shape under test: no fixture's final assistant text
+    /// is longer than one line, so the difference between the bounded summary and the full text
+    /// cannot be shown with captured bytes alone.
+    async fn feed_raw(&mut self, line: &str) {
+        write_line(&mut self.to_adapter, line).await;
     }
 
     async fn next_outbound_id(&mut self) -> String {
@@ -1115,4 +1126,234 @@ async fn live_pong() {
     assert!(saw_started, "a SessionStarted must arrive");
     assert!(saw_completed, "a TurnCompleted must arrive");
     handle.commands.kill().await.expect("kill");
+}
+
+// -----------------------------------------------------------------------------------------
+// the full final assistant text of a turn
+// -----------------------------------------------------------------------------------------
+
+/// One `assistant` frame carrying a single text block, in the CLI's own shape.
+fn assistant_text_line(uuid: &str, text: &str) -> String {
+    serde_json::json!({
+        "type": "assistant",
+        "parent_tool_use_id": null,
+        "uuid": uuid,
+        "message": {
+            "model": "claude-haiku-4-5-20251001",
+            "id": "msg_test",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": text}],
+            "stop_reason": null,
+        },
+    })
+    .to_string()
+}
+
+/// A minimal `result`/`success`, which is what closes a turn.
+fn result_success_line() -> String {
+    serde_json::json!({
+        "type": "result",
+        "subtype": "success",
+        "stop_reason": "end_turn",
+        "total_cost_usd": 0.01,
+    })
+    .to_string()
+}
+
+/// The full text of the last completed turn, and the summaries the feed would store.
+fn item_summaries(rig: &Rig) -> Vec<String> {
+    rig.collected
+        .iter()
+        .filter_map(|e| match e {
+            Event::ItemCompleted { kind: ItemKind::AssistantText, summary, .. } => {
+                Some(summary.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The captured path: `s3`'s 127-character denial text comes back whole, off real bytes.
+#[tokio::test]
+async fn a_captured_turns_final_text_comes_back_whole() {
+    let mut rig = Rig::start("s3-can-use-tool-deny.ndjson", 64).await;
+    rig.send_turn().await;
+    rig.feed(9).await;
+    rig.labels_until(is_request_opened).await;
+    rig.commands
+        .respond(approval_request_id(&rig.session, 1), Decision::deny("no"))
+        .await
+        .expect("denied");
+    rig.feed_rest().await;
+    rig.labels_until(is_turn_end).await;
+
+    let turn_id = started_ids(&rig).pop().expect("a turn started");
+    let text = rig.commands.final_assistant_text(turn_id).await.expect("text is held");
+
+    // The fixture's own assistant text blocks, in order, joined the way the adapter joins them.
+    let expected: Vec<String> = fixture_lines("s3-can-use-tool-deny.ndjson")
+        .iter()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|v| v["type"] == "assistant")
+        .filter_map(|v| v["message"]["content"].as_array().cloned())
+        .flatten()
+        .filter(|b| b["type"] == "text")
+        .filter_map(|b| b["text"].as_str().map(str::to_owned))
+        .collect();
+    assert_eq!(text, expected.join("\n"));
+    assert_eq!(text.len(), 127, "the capture's own denial text, byte for byte");
+}
+
+/// The whole point, both halves at once: a fenced ` ```json ` block with newlines inside it comes
+/// back **whole**, while the `ItemCompleted` the store persists is still one bounded line.
+#[tokio::test]
+async fn a_fenced_json_block_survives_while_the_summary_stays_one_bounded_line() {
+    let block = "Here is the plan for phase 2.\n\n\
+                 ```json\n\
+                 {\n  \"action\": \"dispatch\",\n  \"orders\": [\n    {\"id\": \"o1\"}\n  ]\n}\n\
+                 ```\n";
+
+    let mut rig = Rig::start("s1-handshake-and-turn.ndjson", 64).await;
+    rig.send_turn().await;
+    rig.feed_raw(&assistant_text_line("u1", block)).await;
+    rig.feed_raw(&result_success_line()).await;
+    assert_eq!(
+        rig.labels_until(is_turn_end).await,
+        [
+            "turn-started",
+            "item-started:assistant-text",
+            "item-completed:assistant-text",
+            "turn-completed(EndTurn)",
+        ]
+    );
+
+    let turn_id = started_ids(&rig).pop().expect("a turn started");
+    let text = rig.commands.final_assistant_text(turn_id).await.expect("text is held");
+
+    // Half one: the full text, verbatim, newlines and fences intact.
+    assert_eq!(text, block);
+    assert!(text.contains("```json\n{\n  \"action\": \"dispatch\""), "{text}");
+
+    // Half two: nothing about what is persisted changed. The feed's summary is still the first
+    // non-empty line and still bounded — it is 29 bytes here, and it is *not* the JSON.
+    let summaries = item_summaries(&rig);
+    assert_eq!(summaries, ["Here is the plan for phase 2."]);
+    assert!(summaries[0].len() <= 240, "the summary is bounded: {}", summaries[0].len());
+    assert!(!summaries[0].contains('{'), "the summary must not carry the action");
+}
+
+/// Overflow keeps the **tail**: the fenced block a loop reads is at the end of the message.
+#[tokio::test]
+async fn an_oversized_final_text_keeps_its_tail() {
+    let tail = "\n```json\n{\"action\": \"verify\"}\n```";
+    let mut body = "x".repeat(FINAL_TEXT_LIMIT + 4096);
+    body.push_str(tail);
+
+    let mut rig = Rig::start("s1-handshake-and-turn.ndjson", 64).await;
+    rig.send_turn().await;
+    rig.feed_raw(&assistant_text_line("u1", &body)).await;
+    rig.feed_raw(&result_success_line()).await;
+    rig.labels_until(is_turn_end).await;
+
+    let turn_id = started_ids(&rig).pop().expect("a turn started");
+    let text = rig.commands.final_assistant_text(turn_id).await.expect("text is held");
+    assert!(text.len() <= FINAL_TEXT_LIMIT, "bounded: {}", text.len());
+    assert!(text.ends_with(tail), "the tail is what survives, not the head");
+    assert!(!text.starts_with("xxxx") || text.len() == FINAL_TEXT_LIMIT);
+}
+
+/// "There is no such turn" and "the turn said nothing" are different answers.
+#[tokio::test]
+async fn an_unheld_turn_is_a_typed_error_and_never_an_empty_string() {
+    let mut rig = Rig::start("s1-handshake-and-turn.ndjson", 64).await;
+    rig.send_turn().await;
+
+    // Nothing has completed yet.
+    assert_eq!(
+        rig.commands.final_assistant_text(TurnId::new("whatever")).await,
+        Err(FinalTextError::NoCompletedTurn)
+    );
+
+    rig.feed_raw(&assistant_text_line("u1", "")).await;
+    rig.feed_raw(&result_success_line()).await;
+    rig.labels_until(is_turn_end).await;
+    let turn_id = started_ids(&rig).pop().expect("a turn started");
+
+    // A turn that genuinely said nothing answers with the empty string, not an error.
+    assert_eq!(rig.commands.final_assistant_text(turn_id.clone()).await, Ok(String::new()));
+    // And a turn this adapter does not hold is an error, not that same empty string.
+    assert_eq!(
+        rig.commands.final_assistant_text(TurnId::new("some-other-turn")).await,
+        Err(FinalTextError::NotHeld { held: turn_id })
+    );
+}
+
+// -----------------------------------------------------------------------------------------
+// approvals never resolve optimistically
+// -----------------------------------------------------------------------------------------
+
+/// `docs/vision.md` §9: the dock resolves only when Rust confirms the decision reached the model.
+/// With the child's stdin closed the write fails, so the request must stay unresolved and the
+/// harness must say so.
+#[tokio::test]
+async fn a_decision_that_cannot_reach_the_child_warns_and_never_resolves() {
+    let mut rig = Rig::start("s2-can-use-tool-allow.ndjson", 64).await;
+    rig.send_turn().await;
+    rig.feed(9).await;
+    rig.labels_until(is_request_opened).await;
+
+    // Close the child's stdin. Every later `write_frame` is a broken pipe.
+    rig.commands.end_session().await.expect("stdin closed");
+    rig.commands
+        .respond(approval_request_id(&rig.session, 1), Decision::allow())
+        .await
+        .expect("the table accepts the answer");
+
+    let event = rig.next_event().await;
+    let Event::RuntimeWarning { message } = &event else {
+        panic!("expected a runtime warning, got {}", label(&event));
+    };
+    assert!(
+        message.contains(approval_request_id(&rig.session, 1).as_str()),
+        "the warning names the request: {message}"
+    );
+    assert!(message.contains("did not reach the model"), "{message}");
+    assert!(message.contains("expire"), "{message}");
+
+    // Drain to the end of the session and prove no resolution was ever emitted for it.
+    rig.exit_tx.take().expect("exit channel").send(ExitInfo { code: Some(0) }).ok();
+    let labels = rig.labels_until(is_session_exited).await;
+    assert!(
+        !labels.iter().any(|l| l.starts_with("request-resolved")),
+        "an undelivered decision must never resolve: {labels:?}"
+    );
+}
+
+/// The other half of the same rule: a write that *does* land still resolves, unchanged.
+///
+/// This one passes against the unfixed code too — it is the guard that the fix did not break the
+/// path that worked, not a proof of the fix.
+#[tokio::test]
+async fn a_decision_that_reaches_the_child_still_resolves() {
+    let mut rig = Rig::start("s2-can-use-tool-allow.ndjson", 64).await;
+    rig.send_turn().await;
+    rig.feed(9).await;
+    rig.labels_until(is_request_opened).await;
+
+    rig.commands
+        .respond(approval_request_id(&rig.session, 1), Decision::allow())
+        .await
+        .expect("allowed");
+
+    // The allow is on the wire...
+    let turn = rig.next_sent().await;
+    assert_eq!(turn["type"], "user");
+    let allow = rig.next_sent().await;
+    assert_eq!(allow["response"]["response"]["behavior"], "allow");
+    // ...and only then is the request resolved.
+    assert_eq!(rig.next_event().await, Event::RequestResolved {
+        request_id: approval_request_id(&rig.session, 1),
+        decision: Decision::allow(),
+    });
 }
