@@ -11,6 +11,9 @@ path = "src/lib.rs"
 
 [dependencies]
 brigadier-core = { path = "../core" }
+# Process-group kill for the gate's timeout: `cargo test` spawns children, and killing the pid
+# leaves them running. see crates/supervisor/src/verify.rs and docs/research/orphan-sweep.md.
+brigadier-proc = { path = "../proc" }
 brigadier-store = { path = "../store" }
 serde = { workspace = true }
 serde_json = { workspace = true }
