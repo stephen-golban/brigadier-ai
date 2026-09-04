@@ -21,11 +21,14 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod action;
 pub mod batcher;
 pub mod error;
+pub mod loop_;
 pub mod replay;
 pub mod sink;
 pub mod tracker;
+pub mod verify;
 pub mod wire;
 pub mod worktree;
 
@@ -273,6 +276,45 @@ struct Install {
     start_seq: u64,
     /// Accounting the row already holds from earlier children of this session.
     base: Accrued,
+    /// Where this session's envelopes are mirrored, for a caller that has to *read* the stream
+    /// rather than merely persist it. Filed before the consumer task starts, which is the only
+    /// race-free moment: a tap registered afterwards can miss the handshake.
+    tap: Option<tokio::sync::mpsc::UnboundedSender<Envelope>>,
+}
+
+/// Where a supervised spawn runs.
+///
+/// The distinction exists because [`Supervisor::start_session`] has exactly one behaviour —
+/// *always* cut a fresh worktree — and the orchestration loop needs two more: a child in a
+/// directory the loop already prepared (the rung-1 fixer works in the per-phase **integration**
+/// worktree, so the gate re-runs in place with nothing to re-merge), and a child in the project
+/// root that writes nothing (a lead call).
+// see docs/plans/w1b-loop-order.md §7.5.
+pub(crate) enum SpawnIn {
+    /// Cut a new `brigadier/<id>` worktree off `HEAD` and run there. Today's behaviour, and the
+    /// only one [`Supervisor::start_session`] uses.
+    FreshWorktree,
+    /// Run in a directory that already exists. Nothing is created and nothing is rolled back;
+    /// the caller owns the checkout and its lifetime.
+    Prepared {
+        /// The child's `cwd`.
+        dir: PathBuf,
+        /// The branch checked out there, recorded on the session row when there is one.
+        branch: Option<String>,
+    },
+}
+
+/// One supervised child, as the orchestration loop needs it: the id, and a mirror of its stream.
+pub(crate) struct Spawned {
+    /// The session that was installed.
+    pub(crate) session_id: SessionId,
+    /// Every envelope this session's consumer routes, in order, ending when the stream does.
+    ///
+    /// **Unbounded on purpose.** The consumer must never stall on a reader; a tap that fell
+    /// behind would apply backpressure all the way up into the adapter's stdout read, which is
+    /// the one place in the system that must keep moving. The cost is memory proportional to
+    /// whatever a caller lets accumulate, and the loop's callers drain continuously.
+    pub(crate) events: tokio::sync::mpsc::UnboundedReceiver<Envelope>,
 }
 
 /// Everything the per-session consumer needs beyond its channels.
@@ -301,6 +343,18 @@ struct Inner {
     /// Hands out [`LiveSession::generation`]; monotonic for the life of the process.
     generations: AtomicU64,
     flusher: Mutex<Option<JoinHandle<()>>>,
+    /// Per-session mirrors of the envelope stream, for callers that read rather than render.
+    /// Empty in every existing code path.
+    taps: Mutex<BTreeMap<SessionId, tokio::sync::mpsc::UnboundedSender<Envelope>>>,
+    /// `taps.len()`, readable without the lock.
+    ///
+    /// Not tidiness: `route` runs once per envelope on every session, and the flood baseline
+    /// (`crates/supervisor/tests/flood_baseline.rs`) drives ten of them at once. A `Mutex` taken
+    /// per envelope on a map that is empty in every non-loop path would be a new contention point
+    /// bought for nothing.
+    tap_count: AtomicU64,
+    /// Runs the loop has live, by plan id. See [`crate::loop_`].
+    runs: Mutex<BTreeMap<String, crate::loop_::RunHandle>>,
 }
 
 impl Inner {
@@ -388,6 +442,9 @@ impl Supervisor {
                 resuming: Mutex::new(BTreeSet::new()),
                 generations: AtomicU64::new(0),
                 flusher: Mutex::new(Some(flusher)),
+                taps: Mutex::new(BTreeMap::new()),
+                tap_count: AtomicU64::new(0),
+                runs: Mutex::new(BTreeMap::new()),
             }),
         }
     }
@@ -540,8 +597,58 @@ impl Supervisor {
         &self,
         project_id: &str,
         kind: &DriverKind,
-        mut req: StartSession,
+        req: StartSession,
     ) -> Result<SessionId, SupervisorError> {
+        self.spawn(project_id, kind, req, SpawnIn::FreshWorktree, false)
+            .await
+            .map(|s| s.session_id)
+    }
+
+    /// Start a supervised child in a directory that already exists, and mirror its stream.
+    ///
+    /// The path [`Supervisor::start_session`] cannot offer, because that one *always* cuts a
+    /// fresh worktree and overwrites `req.cwd` with it. Two callers need otherwise: the red-gate
+    /// ladder's rung-1 fixer, which works in the per-phase integration worktree so the gate
+    /// re-runs in place with nothing to re-merge, and a lead call, which runs in the project root
+    /// and writes nothing.
+    ///
+    /// Nothing is created here and nothing is rolled back: `dir` belongs to the caller, before
+    /// and after. The returned mirror is filed before the consumer task starts, so the handshake
+    /// cannot be missed.
+    ///
+    /// # Errors
+    /// [`SupervisorError::InvalidArgument`] when `dir` is not a directory, plus everything
+    /// [`Supervisor::start_session`] can return except the worktree failures.
+    // see docs/plans/w1b-loop-order.md §7.5.
+    pub(crate) async fn spawn_in(
+        &self,
+        project_id: &str,
+        kind: &DriverKind,
+        req: StartSession,
+        dir: PathBuf,
+        branch: Option<String>,
+    ) -> Result<Spawned, SupervisorError> {
+        if !dir.is_dir() {
+            return Err(SupervisorError::InvalidArgument(format!(
+                "{} is not a directory to run a child in",
+                dir.display()
+            )));
+        }
+        self.spawn(project_id, kind, req, SpawnIn::Prepared { dir, branch }, true).await
+    }
+
+    /// Everything a start does, with the working directory a parameter rather than a constant.
+    ///
+    /// [`Supervisor::start_session`]'s behaviour is `SpawnIn::FreshWorktree` with no tap, which
+    /// is byte-for-byte what it did before this function existed.
+    async fn spawn(
+        &self,
+        project_id: &str,
+        kind: &DriverKind,
+        mut req: StartSession,
+        wheref: SpawnIn,
+        tap: bool,
+    ) -> Result<Spawned, SupervisorError> {
         let project = self
             .project(project_id)
             .await?
@@ -553,9 +660,23 @@ impl Supervisor {
         // request that arrived with `Inherit` for an `Off` project is overridden here.
         // see docs/research/spawn-split.md §6.
         req.mcp = project.mcp;
-        let prepared = worktree::prepare(&project.root_path).await?;
-        if let Some(prepared) = &prepared {
-            req.cwd = prepared.path.clone();
+        let (prepared, mut branch) = match wheref {
+            SpawnIn::FreshWorktree => {
+                let prepared = worktree::prepare(&project.root_path).await?;
+                if let Some(prepared) = &prepared {
+                    req.cwd = prepared.path.clone();
+                }
+                let branch = prepared.as_ref().map(|p| p.branch.clone());
+                (prepared, branch)
+            }
+            SpawnIn::Prepared { dir, branch } => {
+                req.cwd = dir;
+                (None, branch)
+            }
+        };
+        let worktree_path = prepared.as_ref().map(|p| p.path.clone());
+        if prepared.is_some() {
+            branch = prepared.as_ref().map(|p| p.branch.clone());
         }
         let cwd = req.cwd.clone();
         let model = req.model.clone();
@@ -578,18 +699,26 @@ impl Supervisor {
         // `cwd` and `worktree_path` are the same string when there is a worktree, and that is
         // deliberate: `resume_session` reads `cwd`, so the resumed child lands in the same
         // checkout without needing to know worktrees exist.
-        row.worktree_path = prepared.as_ref().map(|p| p.path.clone());
-        row.branch = prepared.as_ref().map(|p| p.branch.clone());
+        row.worktree_path = worktree_path;
+        row.branch = branch;
         row.model = model;
         row.status = Some(SessionStatus::Starting);
         row.started_at = Some(SystemTime::now());
         self.inner.store.upsert_session(row).await?;
 
-        self.install(
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let session_id = self.install(
             &driver,
             handle,
-            Install { project_id: project.id, cwd, start_seq: 0, base: Accrued::default() },
-        )
+            Install {
+                project_id: project.id,
+                cwd,
+                start_seq: 0,
+                base: Accrued::default(),
+                tap: tap.then_some(tx),
+            },
+        )?;
+        Ok(Spawned { session_id, events: rx })
     }
 
     /// Continue an ended session: the same harness row, a new child, the same feed.
@@ -699,7 +828,11 @@ impl Supervisor {
         );
         // `_guard` is still held: it is released when this function returns, which is after
         // `install` has filed the real live entry.
-        self.install(&driver, handle, Install { project_id: project.id, cwd, start_seq, base })
+        self.install(
+            &driver,
+            handle,
+            Install { project_id: project.id, cwd, start_seq, base, tap: None },
+        )
     }
 
     /// Everything a started and a resumed session do identically: file the live entry, open the
@@ -716,7 +849,7 @@ impl Supervisor {
         handle: SessionHandle,
         what: Install,
     ) -> Result<SessionId, SupervisorError> {
-        let Install { project_id, cwd, start_seq, base } = what;
+        let Install { project_id, cwd, start_seq, base, tap } = what;
         let SessionHandle { session_id, instance_id, events, commands, approvals, pid } = handle;
         let generation = self.inner.generations.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
 
@@ -764,6 +897,13 @@ impl Supervisor {
         if let Some(pid) = pid {
             let binary = driver.describe().binary_path.unwrap_or_default();
             self.inner.tracker.track(&session_id, pid, &binary, &cwd);
+        }
+
+        // Before the consumer task, never after: a tap filed afterwards races the handshake, and
+        // the handshake is where a one-turn child's `TurnStarted` lives.
+        if let Some(tap) = tap {
+            lock(&self.inner.taps).insert(session_id.clone(), tap);
+            self.inner.tap_count.fetch_add(1, Ordering::Relaxed);
         }
 
         let task = tokio::spawn(consume(
@@ -1256,6 +1396,11 @@ async fn consume(
         log.flush();
     }
     inner.tracker.untrack(&session_id);
+    // Dropping the sender closes the mirror, which is how a reader learns the stream ended even
+    // when it stopped reading before the terminal envelope.
+    if lock(&inner.taps).remove(&session_id).is_some() {
+        inner.tap_count.fetch_sub(1, Ordering::Relaxed);
+    }
     // Only our own entry. A resumed session can briefly have two consumers — a previous child
     // winding down while the new one is already filed — and an unconditional remove would let
     // the dying one un-live the session the operator is using.
@@ -1294,6 +1439,15 @@ async fn route(
     }
 
     inner.batcher.push(project_id, accounted);
+
+    // The fourth sink, and the only one that is usually absent. The atomic read is what keeps
+    // this free for the ninety-nine sessions that have no tap.
+    if inner.tap_count.load(Ordering::Relaxed) > 0 {
+        let tap = lock(&inner.taps).get(&accounted.session_id).cloned();
+        if let Some(tap) = tap {
+            let _ = tap.send(accounted.clone());
+        }
+    }
 }
 
 #[cfg(test)]

@@ -161,6 +161,19 @@ pub(crate) struct Prepared {
     pub(crate) path: PathBuf,
     /// The branch that checkout is on.
     pub(crate) branch: String,
+    /// The commit this branch was cut from, resolved **before** the `worktree add` and passed to
+    /// it, so it is the branch point rather than a guess read back afterwards.
+    ///
+    /// Two things need it and neither can get it later. The `work_order` intent's baseline is
+    /// *"`git rev-parse <BR>` at dispatch"* (`docs/research/intent-records.md` §4.3), which is a
+    /// value that stops being available the moment the worker commits; and every order in a phase
+    /// has to branch from the **same** commit, because a merge against two different bases is not
+    /// a merge of the same work.
+    // see docs/research/orchestration-loop.md §3.3 and docs/plans/w1b-loop-order.md §1 D7.
+    //
+    // Read by `crate::loop_::dispatch`, which is what makes a phase's orders all branch from one
+    // commit rather than from whatever `HEAD` was at each `add`.
+    pub(crate) base_sha: String,
 }
 
 impl Prepared {
@@ -230,6 +243,32 @@ impl Prepared {
 /// operator's own checkout is the failure mode this whole feature exists to prevent.
 // see docs/research/worktree-git.md §3, §5 and §7.
 pub(crate) async fn prepare(project_root: &Path) -> Result<Option<Prepared>, SupervisorError> {
+    prepare_from(project_root, None).await
+}
+
+/// [`prepare`] with the branch point named.
+///
+/// `None` is today's behaviour, [`BASE`]: branch from whatever `HEAD` is at this instant, which
+/// is what the operator means by *"branch off what I am looking at"*.
+///
+/// `Some(base)` is what the loop uses, and it exists because **`HEAD` moves once the loop starts
+/// committing per phase.** Nothing moves the project's `HEAD` while sessions run today; the loop
+/// is precisely the thing that will. Two orders dispatched either side of a phase commit would
+/// branch from different commits and the phase's merge would then be against two different bases.
+/// So the base is resolved **once per phase** and passed in.
+///
+/// Either way the base is resolved to a commit sha before `worktree add` is called and that sha
+/// is what git is given, so [`Prepared::base_sha`] is the commit the branch actually starts at
+/// and not a second reading of a moving reference.
+///
+/// # Errors
+/// As [`prepare`], plus [`SupervisorError::Worktree`] when `base` names nothing this repository
+/// can resolve to a commit.
+// see docs/research/orchestration-loop.md §3.3.
+pub(crate) async fn prepare_from(
+    project_root: &Path,
+    base: Option<&str>,
+) -> Result<Option<Prepared>, SupervisorError> {
     let Some(git) = resolve_git() else {
         tracing::warn!("no git on PATH; the session will run in the project root");
         return Ok(None);
@@ -293,17 +332,75 @@ pub(crate) async fn prepare(project_root: &Path) -> Result<Option<Prepared>, Sup
     // that some future id scheme made ref-illegal. see docs/research/worktree-git.md §7.
     check_ref_format(&git, &branch).await?;
 
+    // Before the `add`, never read back after it: the baseline the `work_order` intent needs is
+    // the value at dispatch, and a reference read afterwards is a different question.
+    let base_sha = resolve_commit(&git, project_root, base.unwrap_or(BASE)).await?;
+
     let spec = WorktreeSpec {
         repo: project_root.to_owned(),
         path: path.clone(),
         branch: branch.clone(),
-        base: BASE.to_owned(),
+        base: base_sha.clone(),
     };
     let made = add_or_rollback(&git, &spec).await?;
-    tracing::info!(path = %made.path.display(), branch = %branch, "worktree created");
+    tracing::info!(
+        path = %made.path.display(),
+        branch = %branch,
+        base_sha = %base_sha,
+        "worktree created"
+    );
     // git's own idea of the path: canonicalised, which on macOS means `/private/var/…` where the
     // caller said `/var/…`. The child's cwd and the stored row should agree with git.
-    Ok(Some(Prepared { git, repo: project_root.to_owned(), path: made.path, branch }))
+    Ok(Some(Prepared { git, repo: project_root.to_owned(), path: made.path, branch, base_sha }))
+}
+
+/// `git rev-parse --verify <rev>^{commit}`: one commit sha, or the reason there is none.
+///
+/// `^{commit}` rather than the bare revision so that an annotated tag or a tree resolves to the
+/// commit it names, and so that anything that is not a commit at all is refused here rather than
+/// by `worktree add` with a message about worktrees.
+///
+/// `brigadier_core::worktree` owns every other git call in this tree and exposes no `rev-parse`,
+/// so this one is spawned here — with the same environment that module pins on every call
+/// (`crates/core/src/worktree.rs`): `LC_ALL=C` and `LANGUAGE=` so stderr stays parseable under
+/// any locale, `GIT_TERMINAL_PROMPT=0` so no credential prompt can wedge the harness, and a null
+/// stdin. It belongs in the core module the next time that file is opened.
+async fn resolve_commit(
+    git: &Path,
+    repo: &Path,
+    rev: &str,
+) -> Result<String, SupervisorError> {
+    let arg = format!("{rev}^{{commit}}");
+    let out = tokio::process::Command::new(git)
+        .arg("-C")
+        .arg(repo)
+        .args(["rev-parse", "--verify"])
+        .arg(&arg)
+        .env("LC_ALL", "C")
+        .env("LANGUAGE", "")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| SupervisorError::from(WorktreeError::Io(e)))?;
+    if !out.status.success() {
+        return Err(SupervisorError::from(WorktreeError::Git {
+            args: vec!["rev-parse".to_owned(), "--verify".to_owned(), arg],
+            code: out.status.code(),
+            stderr: String::from_utf8_lossy(&out.stderr).trim().to_owned(),
+        }));
+    }
+    let sha = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    if sha.is_empty() {
+        return Err(SupervisorError::from(WorktreeError::Git {
+            args: vec!["rev-parse".to_owned(), "--verify".to_owned(), arg],
+            code: out.status.code(),
+            stderr: "rev-parse printed nothing".to_owned(),
+        }));
+    }
+    Ok(sha)
 }
 
 /// Write `.brigadier/` into the project's `$GIT_COMMON_DIR/info/exclude`, once.
@@ -1209,6 +1306,7 @@ mod tests {
             repo: rig.repo.clone(),
             path: made.path.clone(),
             branch: branch.clone(),
+            base_sha: git_run(&rig.git, &rig.repo, &["rev-parse", "HEAD"]).trim().to_owned(),
         }
         .roll_back()
         .await;
@@ -1440,6 +1538,84 @@ mod tests {
         assert!(e.to_string().contains("submodules"), "{e}");
         assert!(!rig.repo.join(WORKTREES_SUBDIR).exists(), "nothing was created");
 
+        rig.store.close().await.expect("store closes");
+    }
+
+    /// The hazard `docs/research/orchestration-loop.md` §3.3 names, in one test: `HEAD` moves,
+    /// and two orders dispatched either side of a phase commit must still branch from the same
+    /// commit.
+    ///
+    /// It asserts both halves deliberately. The `None` half is the behaviour being *replaced* —
+    /// two prepares straddling a commit branch from **different** shas — and it is here so that
+    /// the `Some` half cannot pass by accident on a repository whose `HEAD` never moved.
+    // see docs/research/orchestration-loop.md §3.3 and docs/plans/w1b-loop-order.md §1 D7.
+    #[tokio::test]
+    async fn an_explicit_base_pins_the_branch_point_while_head_moves() {
+        let rig = Rig::new(true);
+        let first = git_run(&rig.git, &rig.repo, &["rev-parse", "HEAD"]).trim().to_owned();
+
+        // Today's behaviour, before the commit.
+        let before = prepare(&rig.repo).await.expect("prepared").expect("a worktree");
+        assert_eq!(before.base_sha, first, "`None` still means HEAD");
+
+        // The loop's own phase commit. `add` names the file rather than `-A`, so the worktree
+        // created above is not staged.
+        std::fs::write(rig.repo.join("g.txt"), "g\n").expect("write");
+        git_run(&rig.git, &rig.repo, &["add", "g.txt"]);
+        git_run(&rig.git, &rig.repo, &["commit", "-qm", "phase 1"]);
+        let second = git_run(&rig.git, &rig.repo, &["rev-parse", "HEAD"]).trim().to_owned();
+        assert_ne!(first, second, "HEAD must actually have moved");
+
+        // The behaviour being replaced: same call, different branch point.
+        let after = prepare(&rig.repo).await.expect("prepared").expect("a worktree");
+        assert_eq!(after.base_sha, second);
+        assert_ne!(
+            before.base_sha, after.base_sha,
+            "this is the hazard: `HEAD` either side of a phase commit is two different bases"
+        );
+
+        // The fix: the same explicit base either side of the commit.
+        let pinned_a =
+            prepare_from(&rig.repo, Some(&first)).await.expect("prepared").expect("a worktree");
+        git_run(&rig.git, &rig.repo, &["commit", "-qm", "phase 2", "--allow-empty"]);
+        let pinned_b =
+            prepare_from(&rig.repo, Some(&first)).await.expect("prepared").expect("a worktree");
+        assert_eq!(pinned_a.base_sha, first);
+        assert_eq!(pinned_b.base_sha, first);
+        assert_eq!(pinned_a.base_sha, pinned_b.base_sha);
+
+        // And the sha is the branch point git actually used, not a value carried alongside one.
+        for prepared in [&pinned_a, &pinned_b] {
+            let tip = git_run(&rig.git, &rig.repo, &["rev-parse", &prepared.branch])
+                .trim()
+                .to_owned();
+            assert_eq!(tip, first, "branch {} did not start at the base it was given", prepared.branch);
+        }
+
+        rig.store.close().await.expect("store closes");
+    }
+
+    /// A base that resolves to no commit refuses the start rather than branching from something
+    /// else, and nothing is left on disk.
+    #[tokio::test]
+    async fn a_base_that_names_no_commit_is_refused() {
+        let rig = Rig::new(true);
+        let e = prepare_from(&rig.repo, Some("no-such-ref-xyz"))
+            .await
+            .expect_err("an unresolvable base must refuse");
+        assert_eq!(e.code(), "worktree", "{e}");
+        assert!(!rig.repo.join(WORKTREES_SUBDIR).exists(), "nothing was created");
+        rig.store.close().await.expect("store closes");
+    }
+
+    /// `Prepared::base_sha` is a full 40-character object name, which is what the intent
+    /// baseline and the `rev-list --count base..branch` merge check both need.
+    #[tokio::test]
+    async fn the_base_sha_is_a_full_object_name() {
+        let rig = Rig::new(true);
+        let prepared = prepare(&rig.repo).await.expect("prepared").expect("a worktree");
+        assert_eq!(prepared.base_sha.len(), 40, "{}", prepared.base_sha);
+        assert!(prepared.base_sha.chars().all(|c| c.is_ascii_hexdigit()), "{}", prepared.base_sha);
         rig.store.close().await.expect("store closes");
     }
 
