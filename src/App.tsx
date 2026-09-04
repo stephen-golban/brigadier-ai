@@ -89,6 +89,35 @@ const B4_LABEL = "b4-session-painted";
 const BURN_PROJECT_NAME = "burn";
 const BURN_ROOT_MARKER = "brigadier-burn";
 
+/**
+ * Whether the burn panel is in this bundle.
+ *
+ * **Why this is not just `import.meta.env.DEV`, which is what it was until 2026-09-04.** The Rust
+ * side compiles `burn` under `#[cfg(any(debug_assertions, feature = "burn"))]`, so
+ * `npm run tauri build -- --features burn` produced a release binary carrying the command and a
+ * release bundle with no UI that could call it: `grep -c "burn harness" dist/assets/index-*.js`
+ * was **0** while `strings target/release/brigadier` hit `burn started`
+ * (`docs/research/visual-checks-2026-09-04.md` §3.2). The consequence is the whole reason this
+ * changed: **every burn number this project has is a debug-build number** — debug Rust, the vite
+ * dev server, an unminified React development build — and reaching a release burn meant editing
+ * this file, which the order that measured it was forbidden to do.
+ *
+ * `VITE_BURN=1` is the gate, and it costs nothing when it is off. `import.meta.env.VITE_*` is a
+ * **build-time literal substitution**, not a runtime lookup, so an unset variable folds this
+ * whole expression to `false` and Rollup drops `Burn` and everything it reaches exactly as `DEV`
+ * did. Nothing crosses the IPC boundary for it: `docs/plans/ipc-contract.md` binds both sides and
+ * this adds no command, no view field and no event.
+ *
+ *     VITE_BURN=1 npm run tauri build -- --features burn
+ *
+ * Both halves are needed and they are independent — the flag compiles the Rust command, the
+ * variable ships the button. `--features burn` alone still builds a bundle that cannot call it.
+ *
+ * **[not measured]** No release burn has been run. This makes one reachable; it does not make one
+ * a number.
+ */
+const BURN_UI = import.meta.env.DEV || import.meta.env.VITE_BURN === "1";
+
 export function App() {
   const state = useSyncExternalStore(store.subscribe, store.getState);
 
@@ -108,9 +137,15 @@ export function App() {
   /**
    * The session whose `feed_tail` prefill has landed. It exists only to force one commit at the
    * moment the tail is in the store — the B4 span settles against that commit. App deliberately
-   * does **not** subscribe to the row rings: `getSessionRows` changes up to 60 times a second
-   * (measured over 1,513 samples), and a shell that re-rendered at that rate would be paying for
-   * the instrument with the thing the instrument measures.
+   * does **not** subscribe to the row rings: `getSessionRows` changes up to 60 times a second,
+   * and a shell that re-rendered at that rate would be paying for the instrument with the thing
+   * the instrument measures.
+   *
+   * The rate is measured; the citation this line used to carry is not. "1,513 one-second samples"
+   * is **superseded** — `864a2fe` changed the feed's `ROW_H` 18 → 28 on 2026-09-04 and every
+   * window in `frame-stats.ndjson` predates it. The standing number is 62 of 62 one-second
+   * windows at `hz 60`, `p50 17.0 ms`, under a 10-session burn on the current markup, 2026-09-04
+   * (`docs/research/visual-checks-2026-09-04.md` §3.4), on a debug build.
    */
   const [tailSeeded, setTailSeeded] = useState<SessionId | null>(null);
 
@@ -490,7 +525,7 @@ export function App() {
         claude={claude}
         claudeError={claudeError}
         isMock={bridge().isMock}
-        dev={import.meta.env.DEV ? <Burn onBurn={runBurn} /> : undefined}
+        dev={BURN_UI ? <Burn onBurn={runBurn} /> : undefined}
         onSelectProject={setSelectedProjectId}
         onSelectSession={selectSession}
         onAddProject={addProject}

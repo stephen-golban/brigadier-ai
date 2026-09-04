@@ -1073,33 +1073,106 @@ textarea:disabled {
  *
  * The shape in one line: **one reading column at `--content-max`, and the metadata in the margin
  * beside it.** A table's keys go in columns on the left, before the content; a document's go in
- * the margin, where they cannot be read first. Nothing here parses the row's text, so nothing
- * here has to change when W4-D2 adds the `k` kind field.
+ * the margin, where they cannot be read first. Nothing here parses the row's text.
+ *
+ * **W4-D2, 2026-09-04, landed the `k` kind field and the geometry did not move.** It cost exactly
+ * two rules — `.feed-line.bad` and `.feed-line.ask`, both further down — plus `.feed-band` and
+ * `.feed-verbose` for the toggle that hides model prose. The column, the pitch and the margin are
+ * unchanged, and the still-true half of the sentence above is why: a rule that reads `k` needs
+ * nothing from the string.
  */
 
+/*
+ * `min-height` added by W4-D2, 2026-09-04. Without it this pane was the only flex child of
+ * `.thread` that could yield, so it absorbed the whole squeeze when an approval opened: at the
+ * window's minimum (viewport 800x468) it measured **59.5px = 1.39 rows** of a 28px pitch, with
+ * the top visible row cut through the middle of its glyphs
+ * (`docs/research/visual-checks-2026-09-04.md` §2.5). 52 head + 196.5 approvals + 160 dock =
+ * 408.5 of 468.
+ *
+ * **132, not the 112 that file proposed**, and the difference is the band: `box-sizing:
+ * border-box` is set on `*` above, so 112 would have been 92px of scroller — 3.28 rows — once the
+ * 20px band came out of it. 132 - 20 = 112 = exactly four whole rows in the scroller, which is
+ * what "~112 px (4 rows)" was asking for. `.approvals` becomes shrinkable in the same change, so
+ * this floor is what it yields against.
+ */
 .feed {
   position: relative;
   flex: 1 1 auto;
   display: flex;
   flex-direction: column;
-  min-height: 0;
-  /* A band for `.feed-count`, so the count never sits on top of row 0. 20 rather than 15: on the
+  min-height: 132px;
+  /* A band for `.feed-band`, so the count never sits on top of row 0. 20 rather than 15: on the
      4 / 8 / 12 rhythm the rest of the file keeps. */
   padding-top: 20px;
 }
 
-/* Row count, aligned with the right edge of the reading column rather than with the pane, so it
-   reads as belonging to the column and not as a corner badge. Falls back to a 16px inset once the
-   column is wider than the pane leaves room for. */
-.feed-count {
+/* The band above row 0: the verbose toggle, then the row count. Aligned with the right edge of
+   the reading column rather than with the pane, so it reads as belonging to the column and not as
+   a corner badge. Falls back to a 16px inset once the column is wider than the pane leaves room
+   for — which is the same inset `.feed-sizer` takes below, so the two stay flush at every width.
+
+   `pointer-events` is off on the band and back on for the button alone: the count is a report and
+   was never a target, and the band spans dead space the rows underneath should still get. */
+.feed-band {
   position: absolute;
   top: 0;
   right: max(16px, calc((100% - var(--content-max)) / 2));
   z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.feed-count {
   font-size: var(--fs-xs);
   font-family: var(--font-mono);
   color: var(--color-text-muted); /* #848484, 4.748:1 on --color-thread-bg; never on a hovered row */
-  pointer-events: none;
+}
+
+/*
+ * The verbose toggle. `docs/vision.md` §9: "Model prose lives entirely behind a verbose toggle."
+ *
+ * Bordered rather than bare, for the reason `.jump-pill` records: a control identified only by its
+ * label is not identified. It borrows the same token, `--color-control` — **3.534:1 on
+ * --color-thread-bg**, over WCAG 1.4.11's 3:1 for a non-text control — rather than
+ * `--color-line`, which is 1.585:1 on that ground and is a frame nobody can see.
+ *
+ * Three states, three grounds, all derived here rather than inherited from another rule's comment:
+ *
+ *   - **off** — `--color-text-muted` #848484 on `--color-thread-bg` #181818: **4.748:1**, AA.
+ *     Border `--color-control` #6f6f6f on the same: **3.534:1**, over 1.4.11's 3:1.
+ *   - **hover** — `--color-text-muted-side` #a5a5a5 on `--color-thread-bg`: **7.210:1**, AA.
+ *     (That token's own comment certifies it against `--color-sidebar-bg` at 4.563:1 and nothing
+ *     else. A ratio is a property of a pair; this is the pair.)
+ *   - **on** (`aria-pressed="true"`) — `--color-accent` #ef8c57 on `--color-thread-bg`:
+ *     **7.240:1**, AA. Border the same token: **7.240:1**, over 3:1.
+ *
+ * State is on `aria-pressed`, not on a second class: the attribute is what a screen reader reads,
+ * and styling off it makes the two impossible to disagree.
+ */
+.feed-verbose {
+  pointer-events: auto;
+  padding: 0 8px;
+  border: 1px solid var(--color-control);
+  border-radius: 999px;
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  line-height: 16px;
+  color: var(--color-text-muted);
+  transition:
+    color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+
+.feed-verbose:hover {
+  color: var(--color-text-muted-side);
+}
+
+.feed-verbose[aria-pressed="true"] {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
 }
 
 .feed-scroller {
@@ -1116,11 +1189,26 @@ textarea:disabled {
  * and referenced nowhere while the feed ran full-bleed. 712px of column inside a ~1004px pane
  * leaves ~146px of margin on each side, which is where `.feed-mark` lives and is most of what
  * gives the pane a silhouette instead of a uniform grain.
+ *
+ * **The `min()` is a fix, 2026-09-04.** With a bare `max-width: var(--content-max)` this was the
+ * one element in the pane that touched both edges: on any window narrower than **932px** — the
+ * enforced 800px minimum included — the pane is under 712px, the margins vanish, and the rows ran
+ * flush from the sidebar divider to the window's right edge while `.thread-head` stayed inset
+ * 16px. Measured at viewport 800: `.feed-sizer` 220 → 800, left gutter **0**, right gutter **0**,
+ * and on the real release window the ellipsis of a truncated row landed at pt 798.5 of an 800pt
+ * window (`docs/research/visual-checks-2026-09-04.md` §2.4).
+ *
+ * **`min()` on `max-width`, not `padding-inline`,** which was the other proposal there. Padding
+ * would inset the row's *content* while leaving the sizer's box at the pane edge, so
+ * `.feed-count`'s `max(16px, …)` — which tracks the box — would then float 16px inside the ink it
+ * labels. Shrinking the box keeps the count, the band and the rows on one edge at every width.
+ * Above 1200px the term never binds and nothing moves; below it, `.feed-mark` is already inline
+ * (see the `max-width: 1200px` block), so nothing is positioned in the margin this reclaims.
  */
 .feed-sizer {
   position: relative;
   width: 100%;
-  max-width: var(--content-max);
+  max-width: min(var(--content-max), calc(100% - 32px));
   margin: 0 auto;
 }
 
@@ -1182,6 +1270,42 @@ textarea:disabled {
   white-space: nowrap;
   color: var(--color-feed-text);
   transition: color var(--dur-fast) var(--ease);
+}
+
+/*
+ * The two per-kind treatments W4-D1 asked for and could not have. Both are driven by
+ * `FeedRowWire.k` and neither reads a character of the line. There is no third: a kind that wants
+ * a colour of its own has to earn it, and ten differently-tinted greys are the log table this
+ * wave removed, in colour.
+ *
+ * **A failure is not the same grey as a successful tool call.** `--color-bad` #ef6a63 —
+ * **5.846:1** on `--color-thread-bg` #181818 and **5.110:1** on the hovered row's #242424, both
+ * AA. The second pair is the one that needed deriving: `.feed-row:hover .feed-line` lifts every
+ * line to `--color-text`, which would have turned a failure white the moment a pointer crossed
+ * it, so hover is overridden here at equal specificity and the row stays red in both states.
+ */
+.feed-line.bad {
+  color: var(--color-bad);
+}
+
+.feed-row:hover .feed-line.bad {
+  color: var(--color-bad);
+}
+
+/*
+ * **An approval is the one row that means a person is blocked.** It carries weight the way the
+ * sidebar's ask row does — `.side-nav.waiting` lifts that row out of `--color-text-muted-side`
+ * into full reading colour and changes nothing else — with 600 on top, because a sidebar row is
+ * one of ten and sits still while a feed row is one of thousands and scrolls past.
+ *
+ * `--color-text` #ffffff: **17.76:1** on `--color-thread-bg` and **15.61:1** on the hovered row's
+ * #242424. Both pairs are already carried by the token's own comment and by `.feed-row:hover`;
+ * re-derived rather than assumed, and unchanged. The weight adds no colour obligation, and the
+ * row height is fixed by `--feed-row-h`, so nothing reflows.
+ */
+.feed-line.ask {
+  color: var(--color-text);
+  font-weight: 600;
 }
 
 /*
@@ -1286,9 +1410,17 @@ textarea:disabled {
 /* ----------------------------------------------------------- approvals */
 
 /* Docked above the composer, inside the same centred column, so a waiting prompt reads as part
-   of the conversation rather than as a panel off to one side. */
+   of the conversation rather than as a panel off to one side.
+
+   `flex: 0 1 auto` since 2026-09-04, paired with `.feed { min-height: 132px }` above. It was
+   `0 0 auto`, so it could not yield, and at viewport 800x468 its 42vh (196.5px) plus a fixed
+   160px `.dock` plus the 52px head took 408.5 of 468 and left the feed 1.39 rows
+   (`docs/research/visual-checks-2026-09-04.md` §2.5). It still asks for 42vh and still gets it
+   whenever the window can pay; `max-height` is a ceiling, and this is what makes it stop being a
+   floor as well. `.approvals-body` is already `overflow-y: auto; min-height: 0`, so what it
+   yields it scrolls rather than clips. */
 .approvals {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
   width: 100%;
   max-width: var(--thread-max);
   margin: 0 auto;
@@ -1631,8 +1763,55 @@ textarea:disabled {
 
 /* --------------------------------------------------------------- meter */
 
+/*
+ * **`flex: 0 1 auto` and `min-width: 0` since 2026-09-04, and this one shipped.** Reproduced in
+ * the real release window at 800x500: clicking the pill left the header showing only the meter
+ * capsule, clipped at the window's right edge, with the project title and its path **gone from
+ * the header entirely** (`docs/research/visual-checks-2026-09-04.md` §2.6). At viewport 800 the
+ * arithmetic was `.head-id` width **0**, `.fps` width **757.3**, and
+ * `documentElement.scrollWidth - clientWidth = 205` — the page scrolled sideways.
+ *
+ * **The fix belongs on `.fps`, not on `.head-id`.** `.head-id` was already `flex: 1 1 auto;
+ * min-width: 0` with both of its children `overflow: hidden; text-overflow: ellipsis` — it was
+ * fully shrinkable, and being the only shrinkable item is exactly why it was the one starved to
+ * zero. Nothing added to it can help while the item beside it refuses to give up a pixel. So the
+ * meter becomes shrinkable too and the two divide the overflow in proportion to their content.
+ *
+ * That much is unconditional, because that much is what stops the title reaching width 0 and the
+ * page scrolling sideways. `overflow` and `text-overflow` are on the button itself, which is the
+ * block container the nowrap line overflows.
+ *
+ * **`max-width: 55%` is a refinement, not the fix, and it now lives in the
+ * `@media (max-width: 1200px)` block below.** All the cap does is move pixels from the meter to
+ * the title, one for one. At viewport 800 it moves 67.3: the title goes 167.3 → 234.6 and the
+ * meter 368.7 → 301.4. The meter is diagnostic and the title is content, so at the narrow end the
+ * content keeps the larger half — but 167.3px was never the defect; 0px was, and `flex: 0 1 auto;
+ * min-width: 0` above is what fixed that.
+ *
+ * **It is scoped because the same trade is a loss at the wide end.** At the default 1280 the cap
+ * moved 120.0: the meter went 654.6 → 534.6, which cost it `dom 215 · rows 694 in 223 batches`,
+ * and the title went 305.4 → 425.4, which it did not need. Unconditional, a constraint bought for
+ * the 800px case was being paid at every width.
+ *
+ * **1200px is the boundary and 960px is not.** Uncapped the title is 204.0px at viewport 961 and
+ * 233.3px at 1050, both under the 234.6px the cap guarantees at 800, so a 960px breakpoint would
+ * leave the title *narrower* just above it than at the app's own 800px minimum. Uncapped it is
+ * 279.6px at 1201 and 305.4px at 1280, clear of 234.6px, so above 1200 the cap has nothing left
+ * to buy.
+ *
+ * Numbers vary by a few px with the meter's own digit counts (`dom 193` vs `dom 215`); the
+ * comparisons are same-load. [measured 2026-09-04, Chromium 152 headless over `npm run dev` —
+ * **not WKWebView**, where the release-window confirmation was taken.]
+ *
+ * Not fixed here: the meter's full string needs 750.6px of button and gets 654.6px at 1280 even
+ * uncapped, so `in 223 batches` is still ellipsized below ~1440. Shortening the string is
+ * `FpsOverlay.tsx`'s problem, not this rule's.
+ */
 .fps {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   padding: 2px 10px;
   border-radius: 999px;
   background: var(--color-surface);
@@ -1731,6 +1910,16 @@ textarea:disabled {
     position: static;
     margin-right: 0;
     margin-left: 16px;
+  }
+
+  /*
+   * The meter's share cap, scoped here and reasoned about in full at `.fps` above. Below 1200 the
+   * header cannot pay for both, and the title is the one that yields under proportional shrink —
+   * 204.0px at viewport 961, 167.3px at 800 — so the cap floors it at 234.6px at 800 and 389.4px
+   * at 1200. Above 1200 the title already holds 279.6px unaided and the cap only eats meter text.
+   */
+  .fps {
+    max-width: 55%;
   }
 }
 

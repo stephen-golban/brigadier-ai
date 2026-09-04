@@ -2,18 +2,29 @@
  * Behavioural tests for `src/components/Feed.tsx`.
  *
  * Same rule as `Sidebar.test.tsx` and for the same reason: **assert on text and roles, never on
- * class names or structure.** W4-D2 adds a `k` kind field to the wire and will restyle the row
- * around it; W4-E moves things again. A test bound to this markup dies with it and proves only
- * that this markup once existed. `docs/plans/phase-4.md` states the rule.
+ * class names or structure.** W4-D2 restyled the row around the `k` kind field; W4-E moves things
+ * again. A test bound to this markup dies with it and proves only that this markup once existed.
+ * `docs/plans/phase-4.md` states the rule. Which is why nothing below asserts that an `err` row is
+ * red or that an `appr` row is bold — those are CSS, they are certified by ratio in
+ * `src/index.css`, and a test of them would be a test of a class name.
  *
  * What is pinned here, and why each one is load-bearing rather than decorative:
  *
  *   - **A row still shows its line.** The whole point of the pane. It survived a redesign that
  *     removed two of the four things a row used to draw.
  *   - **The virtualizer still windows.** This is the one measured-good property of this component
- *     (~110 DOM nodes at 60 Hz over 1,513 samples) and the hard constraint on the redesign. jsdom
- *     reports every element as 0x0, so the scroll container is given a size by hand; without it
- *     the pane would window down to nothing and the assertion would pass for the wrong reason.
+ *     and the hard constraint on the redesign. jsdom reports every element as 0x0, so the scroll
+ *     container is given a size by hand; without it the pane would window down to nothing and the
+ *     assertion would pass for the wrong reason.
+ *
+ *     The parenthetical this line used to carry — *"~110 DOM nodes at 60 Hz over 1,513 samples"*
+ *     — was wrong in two of its three parts and is corrected here rather than deleted
+ *     (`docs/research/visual-checks-2026-09-04.md` §3.1, §3.6, §3.7). **60 Hz holds** and is now
+ *     measured on the 28px row: 62 of 62 one-second windows at `hz 60`, `p50 17.0 ms`, under a
+ *     10-session burn, 2026-09-04, on a debug build. **The 1,513-sample citation is superseded**
+ *     — `864a2fe` changed `ROW_H` 18 → 28 and every window in `frame-stats.ndjson` predates it.
+ *     **`dom_nodes` was never a feed metric**: it counts the whole document; the feed row is
+ *     **2 DOM nodes**.
  *   - **The clock is printed where it changes and nowhere else.** The old row printed `HH:MM:SS`
  *     on every line, which is what made seven rows inside one second read as a table. This is the
  *     behaviour that replaced it, and it is derived from `t` alone — no character of `l` is read.
@@ -22,6 +33,16 @@
  *   - **The empty state says what it says**, for all three of its cases.
  *   - **The jump affordance appears only when detached from the tail**, since it is the only way
  *     back and offering it while already at the bottom is noise.
+ *   - **The verbose toggle hides model prose and nothing else**, and — the one that matters most —
+ *     **an `unknown` row survives every setting.** 10,037 of the owner's rows carry `unknown`
+ *     because they predate migration 1; a filter that treated it as a class would hide all of
+ *     them. `docs/plans/ipc-contract.md` says it in the contract, `src/wire.ts` says it in the
+ *     type, and `an unknown row is never filtered by anything` below is what fails if it stops
+ *     being true.
+ *   - **The eleven-kind union is exhaustive.** `EVERY_KIND` is a `Record<FeedKind, true>`, so a
+ *     value added to or removed from the type fails `npx tsc --noEmit`, and its keys are asserted
+ *     against the eleven slugs `crates/store/tests/feed.rs::kind_is_pinned_for_every_variant`
+ *     pins on the Rust side.
  *
  * Mechanics match `src/feedStore.test.ts`: `globals: false`, so every helper is imported from
  * "vitest"; `@testing-library/react`'s auto-cleanup only registers itself when a global
@@ -32,7 +53,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import type { FeedRowWire, ProjectId, SessionId } from "../wire";
+import type { FeedKind, FeedRowWire, ProjectId, SessionId } from "../wire";
 
 afterEach(() => {
   cleanup();
@@ -78,8 +99,47 @@ const P1 = "project-one" as ProjectId;
 /** 2026-09-03 12:34:00 local, so the printed minute is stable whatever the runner's zone. */
 const T0 = new Date(2026, 8, 3, 12, 34, 0).getTime();
 
-function row(s: SessionId, q: number, t: number, l: string): FeedRowWire {
-  return { s, q, t, l };
+/**
+ * `k` defaults to `"sys"`, a real class, and deliberately **not** to `"unknown"`.
+ *
+ * `unknown` is the value no filter may ever remove, so defaulting to it would make every test in
+ * this file pass against a filter that had stopped working — the same shape of false green
+ * `giveTheScrollerAViewport` exists to prevent. The `unknown` behaviour is asserted on rows that
+ * say `unknown` on purpose.
+ */
+function row(s: SessionId, q: number, t: number, l: string, k: FeedKind = "sys"): FeedRowWire {
+  return { s, q, t, l, k };
+}
+
+/**
+ * Every value of `FeedKind`, as a type-checked exhaustive map.
+ *
+ * `Record<FeedKind, true>` is the gate: a slug added to the union without being added here, or
+ * one removed from the union while it stays here, is a `tsc --noEmit` error rather than a test
+ * that quietly stops covering a case. The runtime keys are then pinned against the slugs
+ * themselves, which is what ties this file to the Rust side —
+ * `crates/store/tests/feed.rs::kind_is_pinned_for_every_variant` asserts the same eleven strings,
+ * and `docs/plans/ipc-contract.md` §"the kind discriminator" tabulates what each is derived from.
+ */
+const EVERY_KIND: Record<FeedKind, true> = {
+  turn: true,
+  tool: true,
+  text: true,
+  think: true,
+  user: true,
+  sub: true,
+  appr: true,
+  warn: true,
+  err: true,
+  sys: true,
+  unknown: true,
+};
+
+const ALL_KINDS = Object.keys(EVERY_KIND) as FeedKind[];
+
+/** One row per kind, all inside the same minute so the margin prints one clock and no more. */
+function oneOfEachKind(): FeedRowWire[] {
+  return ALL_KINDS.map((k, i) => row(S1, i + 1, T0 + i * 1_000, `a ${k} row`, k));
 }
 
 /** Mounts `Feed` against a freshly reset `feedStore` seeded with `rows`. */
@@ -285,5 +345,107 @@ describe("the jump affordance", () => {
     await userEvent.click(pill);
     // Clicking it re-attaches to the tail, so the only way back stops being offered.
     expect(screen.queryByRole("button", { name: /jump to latest/i })).not.toBeInTheDocument();
+  });
+});
+
+/* ------------------------------------------------------------------ kinds */
+
+describe("the kind union", () => {
+  /**
+   * The compile-time half of this is `EVERY_KIND`'s type. This is the runtime half: the eleven
+   * slugs themselves, written out, so a rename on either side of the wire fails here instead of
+   * silently reclassifying rows. The same eleven appear in
+   * `crates/store/tests/feed.rs::kind_is_pinned_for_every_variant` and in
+   * `docs/plans/ipc-contract.md` §"the kind discriminator"; all three were read against each other
+   * when this landed.
+   */
+  it("is exactly the eleven values the Rust side pins and the contract tabulates", () => {
+    expect([...ALL_KINDS].sort()).toEqual(
+      ["appr", "err", "sub", "sys", "text", "think", "tool", "turn", "unknown", "user", "warn"],
+    );
+    expect(ALL_KINDS).toHaveLength(11);
+  });
+});
+
+describe("the verbose toggle", () => {
+  beforeEach(() => {
+    giveTheScrollerAViewport();
+  });
+
+  it("hides model prose by default, and nothing else", async () => {
+    await mount(oneOfEachKind(), { sessionId: S1, projectId: P1 });
+
+    expect(screen.queryByText("a text row")).not.toBeInTheDocument();
+    for (const k of ALL_KINDS) {
+      if (k === "text") continue;
+      expect(screen.getByText(`a ${k} row`)).toBeInTheDocument();
+    }
+  });
+
+  it("shows the prose once it is turned on, and hides it again when it is turned off", async () => {
+    await mount(oneOfEachKind(), { sessionId: S1, projectId: P1 });
+
+    const toggle = screen.getByRole("button", { name: "verbose", pressed: false });
+    await userEvent.click(toggle);
+
+    expect(screen.getByText("a text row")).toBeInTheDocument();
+    for (const k of ALL_KINDS) {
+      expect(screen.getByText(`a ${k} row`)).toBeInTheDocument();
+    }
+
+    await userEvent.click(screen.getByRole("button", { name: "verbose", pressed: true }));
+    expect(screen.queryByText("a text row")).not.toBeInTheDocument();
+  });
+
+  /**
+   * **The one that guards 10,037 of the owner's rows.** `unknown` is the absence of a class, not
+   * a class, so no setting of this toggle — and no filter anyone adds later — may remove it. If
+   * this fails, every row written before store migration 1 has just been hidden.
+   */
+  it("never filters an unknown row, under either setting", async () => {
+    const rows = [
+      row(S1, 1, T0, "predates migration 1", "unknown"),
+      row(S1, 2, T0 + 1_000, "some model prose", "text"),
+    ];
+    await mount(rows, { sessionId: S1, projectId: P1 });
+
+    expect(screen.getByText("predates migration 1")).toBeInTheDocument();
+    expect(screen.queryByText("some model prose")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "verbose" }));
+    expect(screen.getByText("predates migration 1")).toBeInTheDocument();
+    expect(screen.getByText("some model prose")).toBeInTheDocument();
+  });
+
+  /**
+   * A pane that silently showed 10 of 11 rows would be the worst outcome of this feature: the
+   * operator would be reading a feed with holes in it and have no way to know. So the count
+   * reports both numbers whenever they differ, and only one when they do not.
+   */
+  it("says how many rows it is holding back, and stops saying it when it holds none", async () => {
+    await mount(oneOfEachKind(), { sessionId: S1, projectId: P1 });
+    expect(screen.getByText(/10 of 11 rows/)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "verbose" }));
+    expect(screen.getByText(/^11 rows$/)).toBeInTheDocument();
+  });
+
+  /**
+   * "This session has not emitted a row yet" is a claim about the feed. A session that has spoken
+   * only in prose must not be described that way — that would be the filter lying about the wire.
+   */
+  it("does not claim a session is silent when the filter is what emptied the pane", async () => {
+    await mount([row(S1, 1, T0, "only prose here", "text")], { sessionId: S1, projectId: P1 });
+
+    expect(screen.queryByText("This session has not emitted a row yet.")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Every row so far is model prose" }),
+    ).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "verbose" }));
+    expect(screen.getByText("only prose here")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Every row so far is model prose" }),
+    ).not.toBeInTheDocument();
   });
 });

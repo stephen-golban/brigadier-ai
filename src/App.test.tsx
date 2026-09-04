@@ -153,8 +153,11 @@ function view(sessionId: string, projectId: string, status: SessionStatus = "run
   };
 }
 
+/** `k: "sys"` because these rows stand in for the prefill, and nothing here is about kinds; a
+ *  real class rather than `"unknown"`, so the fixture is not silently the special case that no
+ *  filter may touch. `src/components/Feed.test.tsx` is where `k` is actually exercised. */
 function row(sessionId: string, q: number): FeedRowWire {
-  return { s: sessionId, q, t: 1_700_000_000_000 + q, l: `line ${q}` };
+  return { s: sessionId, q, t: 1_700_000_000_000 + q, l: `line ${q}`, k: "sys" };
 }
 
 /** Mount the app and wait for the mount effect's `Promise.all` to have landed. */

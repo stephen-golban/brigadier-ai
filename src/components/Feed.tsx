@@ -18,9 +18,24 @@
  * ---------------------------------------------------------------------------------------------
  * W4-D1, 2026-09-03. **The virtualizer is the constraint; the log table was not.** Every earlier
  * order in this wave said "Feed.tsx does not move", and the measurement behind that sentence is
- * only about windowing: ours renders ~110 DOM nodes at 60 Hz over 1,513 samples and the
- * implementation we rejected renders every message. Keeping the virtualizer and a fixed integer
- * row height is non-negotiable. Keeping a zebra-striped fixed-pitch grid was never part of it.
+ * only about windowing: ours renders a screenful and the implementation we rejected renders every
+ * message. Keeping the virtualizer and a fixed integer row height is non-negotiable. Keeping a
+ * zebra-striped fixed-pitch grid was never part of it.
+ *
+ * **The number that sentence used to quote is superseded, corrected 2026-09-04**
+ * (`docs/research/visual-checks-2026-09-04.md` §3.1, §3.6, §3.7). It read "~110 DOM nodes at
+ * 60 Hz over 1,513 samples", and two of its three parts were wrong:
+ *   - **60 Hz holds**, and it is now measured on *this* markup: 62 of 62 one-second windows at
+ *     `hz 60`, `p50 17.0 ms`, under a 10-session / 200-rows-per-second burn while scrolling,
+ *     2026-09-04 (§3.4). On a **debug** build, which is strictly worse than what ships.
+ *   - **"1,513 one-second samples" is superseded as a citation.** `864a2fe` changed `ROW_H`
+ *     18 → 28 at 2026-09-04 01:39, and the last window in `frame-stats.ndjson` before that run
+ *     is 2026-09-03 14:24 — so every sample behind that number predates the markup it described.
+ *   - **"~110 DOM nodes" was never a feed metric.** `dom_nodes` is
+ *     `document.getElementsByTagName("*").length` (`src/fps.ts:182`) — the whole document,
+ *     sidebar included; it reads 123 at idle in a release window and 505 under that burn. The
+ *     **feed row is 2 DOM nodes** (`div.feed-row` + `span.feed-line`), 3 when it carries a mark,
+ *     and 23 rendered rows cost 47 nodes under `.feed-sizer` (§3.6, Chromium + mock).
  *
  * What made the old row read as diagnostic, and what replaced it:
  *
@@ -43,22 +58,38 @@
  *     column is aligned to anything. 13px system sans; the margin marks stay mono, because a
  *     clock and a session ref are data.
  *
- * **What this order could not do, and why the shape below is not the final one.** Telling a
- * model's answer apart from a tool call, or a failure from a summary, means parsing `l`'s leading
- * label. Rust is adding a `k` kind field to the wire for exactly that, and per-kind hierarchy is
- * W4-D2's. So there is deliberately no verbose toggle, no prose-versus-tool weighting and no
- * per-kind colour here. The two places the design wanted a kind and did without it:
- *   - a failure row should not be the same grey as a successful tool call, and `--color-bad`
- *     exists for it;
- *   - `approval asked` is the one row in the feed that means a person is blocked, and it should
- *     carry weight the way the sidebar's ask row does.
- * Both are one `r.k` away and neither is guessable from the string.
+ * ---------------------------------------------------------------------------------------------
+ * W4-D2, 2026-09-04. **The kind arrived, and the three things W4-D1 could not do are done.**
+ * `FeedRowWire.k` (`src/wire.ts`, `docs/plans/ipc-contract.md` §"the kind discriminator") is the
+ * discriminator that removes every reason to parse `l`. Nothing below reads a character of the
+ * line, and nothing below moves the virtualizer or `ROW_H`: **filtering changes what is in the
+ * `rows` array, never how a row is drawn.**
+ *
+ *   1. **The verbose toggle**, which `docs/vision.md` §9 has specified since it was written:
+ *      *"One line per event, harness-derived. … Model prose lives entirely behind a verbose
+ *      toggle."* Model prose is exactly `k === "text"` (`ItemKind::AssistantText` and
+ *      `Event::ContentDelta`). Terse is the default and hides it; verbose shows everything.
+ *      `think` is deliberately **not** hidden: its `terse_line` is a harness-derived summary
+ *      (`thinking · 340 tokens`), not the model's reasoning text, so it is already one line per
+ *      event and hiding it would remove information rather than prose.
+ *   2. **A failure row is not the same grey as a successful tool call.** `k === "err"` takes
+ *      `--color-bad`.
+ *   3. **`k === "appr"` is the one row that means a person is blocked**, and it carries weight
+ *      the way the sidebar's ask row does — `.side-nav.waiting` lifts that row out of
+ *      `--color-text-muted-side` into full reading colour, and this does the same thing to the
+ *      line, plus 600 weight. See `src/index.css`.
+ *
+ * **`unknown` is the one kind that is not a claim about the row**, and the filter leaves it alone
+ * under every setting. It is the absence of a class, not a class: 10,037 of the owner's rows
+ * predate migration 1 and carry it, and a filter that treated it as one would hide all of them.
+ * `crates/store/tests/feed.rs::kind_is_pinned_for_every_variant` pins that `feed::kind` never
+ * produces it.
  */
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
 import * as store from "../feedStore";
-import type { ProjectId, SessionId } from "../wire";
+import type { FeedRowWire, ProjectId, SessionId } from "../wire";
 
 /**
  * Integer CSS px. A fractional row height drifts against the sizer at devicePixelRatio 2.
@@ -76,6 +107,33 @@ export const ROW_H = 28;
 
 /** Slack before the tail detaches, in px — feed-rendering.md §1. */
 const SCROLL_END_THRESHOLD = 24;
+
+/**
+ * The one kind the terse feed hides: model prose.
+ *
+ * `docs/plans/ipc-contract.md` derives `text` from `ItemKind::AssistantText` and
+ * `Event::ContentDelta` and from nothing else, so this single value is the whole of
+ * `docs/vision.md` §9's "model prose lives entirely behind a verbose toggle".
+ */
+const PROSE: FeedRowWire["k"] = "text";
+
+/**
+ * The visible rows under a verbose setting, and the **only** place `k` decides whether a row
+ * exists.
+ *
+ * Two invariants, in one function so neither can be lost in a branch:
+ *
+ *   - **`unknown` survives every setting.** It is not a class (`src/wire.ts` `FeedKind`), and the
+ *     predicate below can only ever remove `text`, so a row that claims no class is never removed
+ *     by anything. 10,037 of the owner's rows are in that state.
+ *   - **Verbose allocates nothing.** It returns the store's own array by identity, so the common
+ *     "show me everything" path adds no copy per frame to a store that changes up to 60 times a
+ *     second. Terse costs one `filter` over at most `ROW_CAP` (2,000) rows per store change,
+ *     memoised on `[rows, verbose]` so it runs once per commit rather than once per render.
+ */
+function visibleRows(rows: readonly FeedRowWire[], verbose: boolean): readonly FeedRowWire[] {
+  return verbose ? rows : rows.filter((r) => r.k !== PROSE);
+}
 
 /** `HH:MM`. Seconds are diagnostic detail; the full clock is in the row's `title`. */
 function hhmm(ms: number): string {
@@ -148,9 +206,20 @@ export interface FeedProps {
 }
 
 export function Feed({ sessionId, projectId, projectName }: FeedProps) {
-  const rows = useSyncExternalStore(store.subscribe, () =>
+  const all = useSyncExternalStore(store.subscribe, () =>
     sessionId !== null ? store.getSessionRows(sessionId) : store.getProjectRows(projectId),
   );
+
+  /**
+   * Terse is the default, which is `docs/vision.md` §9's default: one harness-derived line per
+   * event. Component state, not `localStorage`: unlike the frame meter this is a reading
+   * preference rather than an instrument setting, and `Feed` is not unmounted when the selected
+   * session changes, so it survives everything except a reload. Not persisted across launches —
+   * stated rather than implied.
+   */
+  const [verbose, setVerbose] = useState(false);
+  const rows = useMemo(() => visibleRows(all, verbose), [all, verbose]);
+  const hidden = all.length - rows.length;
 
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const [atEnd, setAtEnd] = useState(true);
@@ -199,10 +268,32 @@ export function Feed({ sessionId, projectId, projectName }: FeedProps) {
 
   return (
     <section className="feed">
-      <span className="feed-count">
-        {rows.length} row{rows.length === 1 ? "" : "s"}
-        {rows.length >= store.ROW_CAP ? ` (capped at ${store.ROW_CAP})` : ""}
-      </span>
+      {/*
+        The band above row 0: the toggle, then the count. One absolutely-positioned flex row so
+        the two stay on one line and keep the alignment `.feed-count` already had — hard against
+        the right edge of the reading column, not of the pane.
+
+        The count reports both numbers whenever the two differ. A pane that silently showed 12 of
+        30 rows would be the worst outcome of this whole feature: the operator would be reading a
+        feed with holes in it and have no way to know.
+      */}
+      <div className="feed-band">
+        <button
+          type="button"
+          className="feed-verbose"
+          aria-pressed={verbose}
+          title={verbose ? "hide model prose" : "show model prose"}
+          onClick={() => setVerbose((v) => !v)}
+        >
+          verbose
+        </button>
+        <span className="feed-count">
+          {hidden > 0
+            ? `${rows.length} of ${all.length} rows`
+            : `${rows.length} row${rows.length === 1 ? "" : "s"}`}
+          {all.length >= store.ROW_CAP ? ` (capped at ${store.ROW_CAP})` : ""}
+        </span>
+      </div>
       <div className="feed-scroller" ref={scrollerRef} onScroll={syncAtEnd}>
         <div className="feed-sizer" style={{ height: `${virtualizer.getTotalSize()}px` }}>
           {items.map((item) => {
@@ -219,6 +310,14 @@ export function Feed({ sessionId, projectId, projectName }: FeedProps) {
             // row would be a boundary, and a rule on every row is the grid this order removed.
             // A minute boundary can appear at most once a minute however the rows interleave.
             const lead = newMinute && item.index > 0;
+            // The two per-kind treatments, resolved to booleans **here** rather than inline in
+            // the `className` below. `src/index.css.test.ts` reads every string literal out of a
+            // `className` expression, so an inline `r.k === "err" ? …` reports `.err` and `.appr`
+            // as classes with no rule and fails that gate — which it did, and it was right to:
+            // it cannot tell a comparison operand from a class name, and neither can a reader
+            // skimming the attribute.
+            const failed = r.k === "err";
+            const blocked = r.k === "appr";
             return (
               <div
                 key={item.key}
@@ -226,7 +325,15 @@ export function Feed({ sessionId, projectId, projectName }: FeedProps) {
                 style={{ height: `${ROW_H}px`, transform: `translateY(${item.start}px)` }}
                 title={`${clock(r.t)}  ${r.l}`}
               >
-                <span className="feed-line">{r.l}</span>
+                {/*
+                  Plain string literals, never a template with `${…}` in it: `index.css.test.ts`
+                  blanks template interpolations, so a computed class name is invisible to the gate
+                  that proves every class has a hand-written rule, and would ship unstyled with no
+                  error. Same reason `lead` is a ternary on the row above.
+                */}
+                <span className={failed ? "feed-line bad" : blocked ? "feed-line ask" : "feed-line"}>
+                  {r.l}
+                </span>
                 {newMinute || newSession ? (
                   <span className="feed-mark">
                     {newMinute ? <span className="mark-t">{hhmm(r.t)}</span> : null}
@@ -238,7 +345,13 @@ export function Feed({ sessionId, projectId, projectName }: FeedProps) {
           })}
         </div>
       </div>
-      {rows.length === 0 ? (
+      {/*
+        Keyed on `all`, not on `rows`: "this session has not emitted a row yet" must stay a fact
+        about the feed rather than about the filter. A session that has emitted only model prose
+        gets the second state below, which says what is hidden and how to see it — never the
+        first, which would be a lie the toggle told.
+      */}
+      {all.length === 0 ? (
         <div className="thread-empty">
           <span className="mark" aria-hidden="true">
             <LinesMark />
@@ -255,6 +368,14 @@ export function Feed({ sessionId, projectId, projectName }: FeedProps) {
                 ? "Every session under this project shows up here as it runs."
                 : "Use the plus beside Projects in the sidebar to add a repository path."}
           </p>
+        </div>
+      ) : rows.length === 0 ? (
+        <div className="thread-empty">
+          <span className="mark" aria-hidden="true">
+            <LinesMark />
+          </span>
+          <h2>Every row so far is model prose</h2>
+          <p>Turn verbose on to read it.</p>
         </div>
       ) : null}
       {atEnd ? null : (
