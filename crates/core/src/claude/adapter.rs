@@ -66,7 +66,9 @@ use crate::event::{
     bounded, AbortReason, CompactTrigger, Envelope, Event, ExitReason, InstanceId, ItemId,
     ItemKind, RequestId, RequestKind, SessionId, StopReason, TurnId, Usage, SUMMARY_LIMIT,
 };
-use crate::session::{Command, CommandError, Decision, SessionBackend, SessionHandle, TurnInput};
+use crate::session::{
+    Command, CommandError, Decision, FinalText, SessionBackend, SessionHandle, TurnInput,
+};
 
 /// How many decoded lines the reader task may run ahead of the select loop.
 pub const INBOUND_BUFFER: usize = 64;
@@ -87,6 +89,19 @@ pub const EXIT_REASON: &str = "session exited";
 
 /// Deny reason for a request the CLI withdrew with `control_cancel_request`.
 pub const CANCELLED_REASON: &str = "cancelled by provider";
+
+/// How much of a turn's final assistant text
+/// [`SessionCommands::final_assistant_text`](crate::session::SessionCommands::final_assistant_text)
+/// keeps, in bytes.
+///
+/// **An assumption, not a measurement.** Nothing has counted the size of a real lead-call answer;
+/// 64 KiB is chosen to be far larger than the action blocks of
+/// `docs/research/orchestration-loop.md` §2.3 and far smaller than a transcript. What is measured
+/// is only that it is 8× the 8 KiB `INPUT_EXCERPT_LIMIT` the approval path already carries.
+///
+/// On overflow the **tail** is kept, not the head: the fenced block a loop reads is at the end of
+/// a final message, so a head-first cut would throw away the one part that matters.
+pub const FINAL_TEXT_LIMIT: usize = 64 * 1024;
 
 /// The `RequestId` the adapter mints for the `n`-th (1-based) permission prompt of a session.
 ///
@@ -241,6 +256,15 @@ struct Adapter<W> {
     by_cli_id: HashMap<String, RequestId>,
     withdrawn: HashSet<RequestId>,
     pending_acks: HashMap<String, oneshot::Sender<Result<(), CommandError>>>,
+
+    /// The open turn's assistant **text** so far, main loop only, bounded to
+    /// [`FINAL_TEXT_LIMIT`] by keeping the tail.
+    turn_text: String,
+    /// The most recently completed turn's text, and nothing older. Shared with
+    /// [`SessionCommands`](crate::session::SessionCommands), which is where a caller reads it —
+    /// and it outlives this loop, so a one-turn disposable child's answer is still readable after
+    /// the child is gone.
+    final_text: FinalText,
 }
 
 /// Drives one Claude Code session over an already-open pair of pipes.
@@ -277,6 +301,9 @@ where
         config.event_buffer,
     );
     let SessionBackend { commands, events, approvals } = backend;
+    // The slot the handle reads from. Taken from the handle rather than passed through the
+    // backend, so `SessionBackend`'s shape — which a replay driver destructures — is untouched.
+    let final_text = handle.commands.final_text_slot();
     let (resolved_tx, resolved) = mpsc::unbounded_channel();
 
     // Read before `config` moves into the struct literal below.
@@ -306,6 +333,8 @@ where
         by_cli_id: HashMap::new(),
         withdrawn: HashSet::new(),
         pending_acks: HashMap::new(),
+        turn_text: String::new(),
+        final_text,
     };
 
     let mut wires = Wires { inbound: inbound_rx, commands, resolved, exit, events };
@@ -627,6 +656,7 @@ where
         let uuid = assistant.uuid.clone();
         match assistant.message.content {
             MessageContent::Text(text) => {
+                self.append_turn_text(&text, parent.is_some());
                 let item_id = self.block_item_id(uuid.as_deref(), 0);
                 self.emit_item(item_id, ItemKind::AssistantText, &text, parent, raw);
             }
@@ -655,6 +685,7 @@ where
         };
         match known {
             ContentBlockKnown::Text { text, .. } => {
+                self.append_turn_text(&text, parent.is_some());
                 let item_id = self.block_item_id(uuid, index);
                 self.emit_item(item_id, ItemKind::AssistantText, &text, parent, raw);
             }
@@ -746,6 +777,10 @@ where
                 turn_id
             }
         };
+        // A `result` is the turn's terminal frame either way, so whatever text the model produced
+        // is final now — including on an abort, where the partial text is still the best answer
+        // there will ever be.
+        self.close_turn_text(&turn_id);
         let event = match view.terminal_reason {
             // The two abort reasons in `TerminalReason` (`sdk.d.ts:8443`).
             Some("aborted_streaming" | "aborted_tools") => {
@@ -928,6 +963,18 @@ where
     // decisions
     // -------------------------------------------------------------------------------------
 
+    /// Apply a decision to a parked request, and resolve it **only if the answer reached the
+    /// model**.
+    ///
+    /// `docs/vision.md` §9: *"Approvals are never optimistic. The dock resolves only when Rust
+    /// confirms the decision reached the model … a panel that shows 'denied' for a deny that did
+    /// not land — or 'allowed' for something that never ran — breaks the one screen the owner has
+    /// to be able to trust."* So an encode failure or a failed `write_frame` emits
+    /// [`Event::RuntimeWarning`] and **no** [`Event::RequestResolved`]: the request stays open and
+    /// expires undelivered, which is the truth.
+    ///
+    /// The one case that resolves without a write is a request the CLI already withdrew with
+    /// `control_cancel_request` — there is nothing left to answer, so nothing failed.
     async fn on_decision(&mut self, request_id: RequestId, decision: Decision) {
         let Some(open) = self.open_permissions.remove(&request_id) else {
             return;
@@ -955,13 +1002,25 @@ where
                     decision_classification: None,
                 },
             };
-            match ControlResponse::success(open.cli_request_id, &result) {
-                Ok(response) => {
-                    if let Err(e) = self.write_frame(&response).await {
-                        tracing::warn!("could not answer can_use_tool: {e}");
-                    }
-                }
-                Err(e) => tracing::warn!("could not encode the permission result: {e}"),
+            let undelivered = match ControlResponse::success(open.cli_request_id, &result) {
+                Ok(response) => self.write_frame(&response).await.err().map(|e| e.to_string()),
+                Err(e) => Some(e.to_string()),
+            };
+            if let Some(why) = undelivered {
+                tracing::warn!("could not answer can_use_tool {request_id}: {why}");
+                // Not resolved: the model never got this. Putting it back would re-arm a park
+                // whose waiter is already gone, so the row is simply dropped here and the
+                // request expires undelivered.
+                self.emit(
+                    Event::RuntimeWarning {
+                        message: format!(
+                            "the decision for request {request_id} did not reach the model \
+                             ({why}); the request will expire undelivered"
+                        ),
+                    },
+                    None,
+                );
+                return;
             }
         }
 
@@ -1075,6 +1134,9 @@ where
                 None,
             );
         }
+        // A new turn starts on an empty buffer. This is also what discards a pre-empted minted
+        // turn's text: that turn never produced a `result` here, so nothing kept it.
+        self.turn_text.clear();
         self.open_turn = Some(OpenTurn { id: turn_id.clone(), minted: false });
         self.emit(Event::TurnStarted { turn_id }, None);
         if let Err(e) = self.write_frame(&SdkUserMessage::text(input.text)).await {
@@ -1201,6 +1263,29 @@ where
         self.emit(Event::item_completed(item_id, kind, &summary, parent), Some(raw));
     }
 
+    /// Accumulate one assistant text block into the open turn's buffer.
+    ///
+    /// Thinking and tool calls are not text and never arrive here; a block from a **subagent**
+    /// (`parent_tool_use_id` set) is dropped, because the caller wants what the child itself said
+    /// last, and a background subagent's prose interleaved after it would sit at exactly the tail
+    /// this buffer is built to preserve.
+    fn append_turn_text(&mut self, text: &str, from_subagent: bool) {
+        if from_subagent {
+            return;
+        }
+        if !self.turn_text.is_empty() {
+            self.turn_text.push('\n');
+        }
+        self.turn_text.push_str(text);
+        keep_tail(&mut self.turn_text, FINAL_TEXT_LIMIT);
+    }
+
+    /// Move the open turn's buffer into the shared slot, replacing whatever was there.
+    fn close_turn_text(&mut self, turn_id: &TurnId) {
+        let text = std::mem::take(&mut self.turn_text);
+        self.final_text.set(turn_id.clone(), text);
+    }
+
     fn emit(&mut self, event: Event, raw: Option<&str>) {
         if self.events_closed {
             return;
@@ -1272,6 +1357,22 @@ fn result_text(content: &Value) -> String {
             .join(" "),
         other => other.to_string(),
     }
+}
+
+/// Trim `s` to at most `max_bytes` **from the front**, on a UTF-8 boundary.
+///
+/// The opposite end from [`bounded`], and on purpose: this is the buffer a loop reads a fenced
+/// block out of, and that block is at the end. No ellipsis is added — the result is fed to a
+/// parser, not to a reader, and a marker would be one more thing it has to strip.
+fn keep_tail(s: &mut String, max_bytes: usize) {
+    if s.len() <= max_bytes {
+        return;
+    }
+    let mut cut = s.len() - max_bytes;
+    while cut < s.len() && !s.is_char_boundary(cut) {
+        cut += 1;
+    }
+    s.drain(..cut);
 }
 
 /// One terse line, bounded. A summary is a label, never content.

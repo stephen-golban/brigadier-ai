@@ -307,6 +307,74 @@ impl ThinkingPolicy {
     }
 }
 
+/// A per-session `PreToolUse` policy, overriding the driver's own for one child.
+///
+/// The driver holds **one** policy for every session it opens
+/// (`crate::claude::ClaudeDriver::with_hook_policy`), and a supervisor registers one driver per
+/// kind. That is enough while every session is the operator's own; it is not enough once the
+/// orchestration loop dispatches workers, because each worker's policy is bound to *its own*
+/// worktree root and two workers run at once. So the request carries the policy and the driver
+/// falls back to its own.
+///
+/// `None` — [`HookOverride::default`] — means "use the driver's", which is what every existing
+/// caller gets and why adding this changed no behaviour.
+///
+/// A newtype rather than a bare `Option<SharedHookPolicy>` because [`StartSession`] and
+/// [`ResumeSession`] derive `Debug`, `PartialEq` and `Eq`, and a trait object has none of the
+/// three. Equality here is **identity**: two overrides are equal when they are the same `Arc`,
+/// which is what "did this request carry the policy I put on it" means and the only question a
+/// caller can honestly ask of a boxed closure.
+///
+/// The layering is a compromise worth naming: [`HookPolicy`](crate::claude::hook::HookPolicy) is
+/// a Claude concept and this is the provider-agnostic SPI. A second provider with its own gate
+/// shape would want this generalised rather than widened.
+#[derive(Clone, Default)]
+pub struct HookOverride(Option<crate::claude::hook::SharedHookPolicy>);
+
+impl HookOverride {
+    /// Override the driver's policy for this session.
+    pub fn new(policy: crate::claude::hook::SharedHookPolicy) -> Self {
+        Self(Some(policy))
+    }
+
+    /// No override: the driver's own policy is used.
+    pub fn inherit() -> Self {
+        Self(None)
+    }
+
+    /// The override, when there is one.
+    pub fn policy(&self) -> Option<&crate::claude::hook::SharedHookPolicy> {
+        self.0.as_ref()
+    }
+
+    /// This override, or `fallback` when there is none.
+    pub fn resolve(
+        &self,
+        fallback: &crate::claude::hook::SharedHookPolicy,
+    ) -> crate::claude::hook::SharedHookPolicy {
+        Arc::clone(self.0.as_ref().unwrap_or(fallback))
+    }
+}
+
+impl std::fmt::Debug for HookOverride {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The policy itself is a closure-shaped trait object with nothing printable on it.
+        f.write_str(if self.0.is_some() { "HookOverride(set)" } else { "HookOverride(inherit)" })
+    }
+}
+
+impl PartialEq for HookOverride {
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (None, None) => true,
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+}
+
+impl Eq for HookOverride {}
+
 /// Everything needed to open a new session.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StartSession {
@@ -328,6 +396,9 @@ pub struct StartSession {
     pub thinking: ThinkingPolicy,
     /// Capacity of the bounded event channel; see [`SessionHandle`].
     pub event_buffer: usize,
+    /// A `PreToolUse` policy for this session alone. [`HookOverride::inherit`] by default, which
+    /// is the driver's own.
+    pub hook_policy: HookOverride,
 }
 
 /// Default event-channel capacity when a caller has no opinion.
@@ -345,6 +416,7 @@ impl StartSession {
             mcp: McpPolicy::default(),
             thinking: ThinkingPolicy::default(),
             event_buffer: DEFAULT_EVENT_BUFFER,
+            hook_policy: HookOverride::inherit(),
         }
     }
 }
@@ -396,6 +468,9 @@ pub struct ResumeSession {
     pub thinking: ThinkingPolicy,
     /// Capacity of the bounded event channel.
     pub event_buffer: usize,
+    /// A `PreToolUse` policy for this session alone. A resume carries the same seam a start does;
+    /// reopening a conversation does not change what the child may reach.
+    pub hook_policy: HookOverride,
 }
 
 impl ResumeSession {
@@ -413,6 +488,7 @@ impl ResumeSession {
             mcp: base.mcp,
             thinking: base.thinking,
             event_buffer: base.event_buffer,
+            hook_policy: base.hook_policy,
         }
     }
 }
@@ -643,5 +719,51 @@ mod tests {
     fn driver_error_messages_name_the_remedy() {
         let e = DriverError::VersionTooOld { found: "2.1.1".into(), required: "2.1.257".into() };
         assert_eq!(e.to_string(), "provider version 2.1.1 is older than the required 2.1.257");
+    }
+
+    /// A request with no override resolves to the driver's own policy, which is what keeps every
+    /// caller that predates this field behaviourally identical.
+    #[test]
+    fn no_override_resolves_to_the_drivers_own_policy() {
+        let driver = crate::claude::hook::ask_gated_tools();
+        let request = StartSession::new("/w");
+        assert_eq!(request.hook_policy, HookOverride::inherit());
+        assert!(Arc::ptr_eq(&request.hook_policy.resolve(&driver), &driver));
+        assert!(request.hook_policy.policy().is_none());
+    }
+
+    /// Two sessions with two different walls get their own, and neither touches the driver's.
+    ///
+    /// This is the seam only. Proving it end to end would mean spawning two `claude` children,
+    /// which costs money and is not run here.
+    #[test]
+    fn two_sessions_carry_two_different_policies_without_interfering() {
+        let driver = crate::claude::hook::ask_gated_tools();
+        let one = crate::claude::hook::worker_wall("/tmp");
+        let two = crate::claude::hook::worker_wall("/");
+
+        let mut a = StartSession::new("/w1");
+        a.hook_policy = HookOverride::new(Arc::clone(&one));
+        let mut b = StartSession::new("/w2");
+        b.hook_policy = HookOverride::new(Arc::clone(&two));
+
+        assert!(Arc::ptr_eq(&a.hook_policy.resolve(&driver), &one));
+        assert!(Arc::ptr_eq(&b.hook_policy.resolve(&driver), &two));
+        assert_ne!(a.hook_policy, b.hook_policy, "two overrides are two identities");
+        assert_eq!(a.hook_policy, HookOverride::new(one), "and the same Arc is the same override");
+        // The driver's own policy is untouched by either.
+        assert!(Arc::ptr_eq(&HookOverride::inherit().resolve(&driver), &driver));
+    }
+
+    /// A resume carries the same seam a start does.
+    #[test]
+    fn a_resume_carries_the_override_too() {
+        let wall = crate::claude::hook::worker_wall("/tmp");
+        let mut request = ResumeSession::new("tok", "/w");
+        assert_eq!(request.hook_policy, HookOverride::inherit());
+        request.hook_policy = HookOverride::new(Arc::clone(&wall));
+        assert!(Arc::ptr_eq(request.hook_policy.policy().expect("set"), &wall));
+        assert_eq!(format!("{:?}", request.hook_policy), "HookOverride(set)");
+        assert_eq!(format!("{:?}", HookOverride::inherit()), "HookOverride(inherit)");
     }
 }

@@ -1,6 +1,7 @@
 //! [`SessionHandle`]: the thing a supervisor holds for one live session.
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
@@ -92,6 +93,75 @@ pub enum RespondError {
     Expired,
 }
 
+/// Why a turn's full final assistant text could not be produced.
+///
+/// Deliberately distinct from "the text was empty": an orchestration loop that reads its next
+/// instruction out of a child's final message must be able to tell *the child said nothing* from
+/// *this adapter never held that turn*. Returning `""` for both is how a loop silently does
+/// nothing forever.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum FinalTextError {
+    /// No turn has been closed by a terminal frame on this session yet.
+    #[error("no turn has completed on this session")]
+    NoCompletedTurn,
+    /// A turn completed, but not that one — only the most recent is kept.
+    #[error("the last completed turn is {held}, not the one asked for")]
+    NotHeld {
+        /// The turn that is held.
+        held: TurnId,
+    },
+}
+
+/// The most recently completed turn's full final assistant text, shared between the adapter that
+/// fills it and the [`SessionCommands`] that reads it.
+///
+/// **Not on the command channel, and that is the point.** The adapter's loop ends when the child
+/// exits, so a command-shaped read would answer "session is closed" for exactly the case this
+/// exists to serve: a one-turn disposable child whose answer is read *after* it is gone
+/// (`docs/research/orchestration-loop.md` §2.2). A shared cell survives the loop, the same reason
+/// [`ApprovalTable`] is shared rather than commanded.
+///
+/// One slot, deliberately: the loop's children are one turn each, so a second completed turn
+/// replaces the first rather than accumulating.
+#[derive(Clone, Debug, Default)]
+pub struct FinalText(Arc<Mutex<Option<(TurnId, String)>>>);
+
+impl FinalText {
+    /// An empty slot.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a completed turn's text, replacing whatever was there.
+    pub fn set(&self, turn_id: TurnId, text: String) {
+        *self.lock() = Some((turn_id, text));
+    }
+
+    /// The text of `turn_id`, or why it cannot be had.
+    ///
+    /// # Errors
+    /// [`FinalTextError::NoCompletedTurn`] when nothing has been recorded, and
+    /// [`FinalTextError::NotHeld`] when a different turn's text is held.
+    pub fn get(&self, turn_id: &TurnId) -> Result<String, FinalTextError> {
+        match &*self.lock() {
+            Some((held, text)) if held == turn_id => Ok(text.clone()),
+            Some((held, _)) => Err(FinalTextError::NotHeld { held: held.clone() }),
+            None => Err(FinalTextError::NoCompletedTurn),
+        }
+    }
+
+    /// The turn whose text is held, if any.
+    pub fn held(&self) -> Option<TurnId> {
+        self.lock().as_ref().map(|(id, _)| id.clone())
+    }
+
+    /// A poisoned lock is recovered rather than propagated: this holds one string, nothing about
+    /// it can be left half-written, and a panic elsewhere must not take the seam down with it.
+    fn lock(&self) -> MutexGuard<'_, Option<(TurnId, String)>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
 /// One instruction from the supervisor to the adapter driving a session.
 #[derive(Debug)]
 pub enum Command {
@@ -152,9 +222,16 @@ pub enum Command {
 pub struct SessionCommands {
     tx: mpsc::Sender<Command>,
     approvals: ApprovalTable,
+    final_text: FinalText,
 }
 
 impl SessionCommands {
+    /// The shared slot an adapter fills. Internal: the public read is
+    /// [`SessionCommands::final_assistant_text`].
+    pub(crate) fn final_text_slot(&self) -> FinalText {
+        self.final_text.clone()
+    }
+
     async fn dispatch(
         &self,
         cmd: Command,
@@ -222,6 +299,36 @@ impl SessionCommands {
         let (ack, rx) = oneshot::channel();
         self.dispatch(Command::SetPermissionMode { mode, ack }, rx).await
     }
+
+    /// The **full** final assistant text of a completed turn, concatenated and bounded — not the
+    /// 240-byte summary the feed stores.
+    ///
+    /// This is the seam an orchestration loop reads its next instruction through: the loop's
+    /// children answer with a fenced `json` block (three backticks, then `json`) inside their last
+    /// message, and every other channel loses it. `Event::ItemCompleted.summary` is one bounded
+    /// *line*, so a JSON block arrives on the event stream as the single character `{`; the
+    /// store's `feed` table holds that same pre-rendered line and no body; and `Envelope.raw` is
+    /// the provider's own wire JSON, which a provider-agnostic supervisor must not parse. So the
+    /// text is assembled where the frame is already decoded and handed back through this
+    /// provider-agnostic call.
+    /// See `docs/research/orchestration-loop.md` §2.2.
+    ///
+    /// **Nothing about this is persisted and nothing crosses the IPC boundary.** The feed still
+    /// stores the bounded summary; this is an in-process read of the adapter's own buffer.
+    ///
+    /// Only the **most recently completed** turn is retained, deliberately: the loop's children
+    /// are one turn and disposable, so a second turn's text is a second child's problem. Asking
+    /// for any other turn reports [`FinalTextError::NotHeld`] rather than an empty string.
+    ///
+    /// A session that has already ended still answers: the text lives in a [`FinalText`] slot
+    /// that outlives the adapter's loop, which is the case this exists for.
+    ///
+    /// # Errors
+    /// [`FinalTextError::NoCompletedTurn`] when no turn has yet been closed by a terminal frame,
+    /// and [`FinalTextError::NotHeld`] when the turn asked for is not the one that is kept.
+    pub async fn final_assistant_text(&self, turn_id: TurnId) -> Result<String, FinalTextError> {
+        self.final_text.get(&turn_id)
+    }
 }
 
 /// What a supervisor holds for one live session: an event stream in, a command handle out.
@@ -286,7 +393,11 @@ impl SessionHandle {
                 session_id,
                 instance_id,
                 events: event_rx,
-                commands: SessionCommands { tx: cmd_tx, approvals: approvals.clone() },
+                commands: SessionCommands {
+                    tx: cmd_tx,
+                    approvals: approvals.clone(),
+                    final_text: FinalText::new(),
+                },
                 approvals: approvals.clone(),
                 pid: None,
             },

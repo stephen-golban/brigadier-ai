@@ -87,6 +87,58 @@ pub struct Segment {
     pub note: &'static str,
 }
 
+impl Segment {
+    /// The command this segment actually runs, as a basename, and the words after it.
+    ///
+    /// Assignment prefixes (`FOO=1 cargo test`) and the wrappers of
+    /// [`tables::PREFIX_COMMANDS`] (`sudo`, `env`, `timeout 30`, `xargs`, …) are peeled, so
+    /// `env FOO=1 timeout 30 npm install` answers `("npm", ["install"])`. `None` when the segment
+    /// runs nothing — a bare assignment, a lone wrapper, a comment.
+    ///
+    /// This is a **fact about the line**, not a decision: it says which command word a policy
+    /// should look at, never whether it may run. It resolves nothing on disk, so `./cat` and
+    /// `/bin/cat` both answer `"cat"` whatever those paths really are, and an unexpanded `$CMD`
+    /// is returned verbatim rather than guessed at.
+    pub fn command(&self) -> Option<(&str, &[String])> {
+        let mut i = 0usize;
+        while self.words.get(i).is_some_and(|w| is_assignment(w)) {
+            i += 1;
+        }
+        loop {
+            let word = self.words.get(i)?;
+            let name = basename(word);
+            if !tables::PREFIX_COMMANDS.contains(&name) {
+                return Some((name, &self.words[(i + 1).min(self.words.len())..]));
+            }
+            i += 1;
+            match name {
+                "command" => {
+                    if self.words.get(i).map(String::as_str) == Some("-p") {
+                        i += 1;
+                    }
+                }
+                "env" => {
+                    while self
+                        .words
+                        .get(i)
+                        .is_some_and(|w| is_assignment(w) || w.starts_with('-'))
+                    {
+                        i += 1;
+                    }
+                }
+                "sudo" | "doas" | "nice" | "ionice" | "stdbuf" | "xargs" | "timeout" => {
+                    i = skip_flag_words(&self.words, i);
+                    if name == "timeout" {
+                        // The duration is a bare word, not a flag.
+                        i += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 /// Every segment of one command line.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Classification {
@@ -504,6 +556,22 @@ fn has_short_flag(args: &[&str], flag: char) -> bool {
     })
 }
 
+/// [`skip_flags`], over already-unquoted words. Used by [`Segment::command`], which works from a
+/// classified segment rather than from the token stream.
+fn skip_flag_words(words: &[String], mut idx: usize) -> usize {
+    while let Some(word) = words.get(idx) {
+        if !word.starts_with('-') || word.len() < 2 {
+            break;
+        }
+        idx += if tables::PREFIX_FLAGS_WITH_ARG.contains(&word.as_str()) {
+            2
+        } else {
+            1
+        };
+    }
+    idx
+}
+
 /// Skip a wrapper's own flags, honouring the ones that swallow the next word.
 fn skip_flags(words: &[&Word], mut idx: usize) -> usize {
     while let Some(word) = words.get(idx) {
@@ -526,6 +594,41 @@ mod tests {
     /// The verdict for a whole line — what a hook policy actually asks for.
     fn class(line: &str) -> BashClass {
         classify(line).strictest()
+    }
+
+    /// The effective command word and its arguments, for a one-segment line.
+    fn command_of(line: &str) -> Option<(String, Vec<String>)> {
+        let c = classify(line);
+        let segment = c.segments().first()?;
+        segment.command().map(|(n, a)| (n.to_owned(), a.to_vec()))
+    }
+
+    /// A policy that has to know *which* command ran needs the wrappers peeled off first.
+    #[test]
+    fn a_segments_command_is_found_past_assignments_and_wrappers() {
+        assert_eq!(
+            command_of("cargo test --workspace"),
+            Some(("cargo".into(), vec!["test".into(), "--workspace".into()]))
+        );
+        assert_eq!(
+            command_of("RUST_LOG=debug cargo test"),
+            Some(("cargo".into(), vec!["test".into()]))
+        );
+        assert_eq!(
+            command_of("env FOO=1 timeout 30 npm install left-pad"),
+            Some(("npm".into(), vec!["install".into(), "left-pad".into()]))
+        );
+        assert_eq!(
+            command_of("sudo -u root git push origin main"),
+            Some(("git".into(), vec!["push".into(), "origin".into(), "main".into()]))
+        );
+        // A basename, so an absolute or relative path to the same binary answers the same.
+        assert_eq!(command_of("/usr/bin/git status").map(|(n, _)| n), Some("git".into()));
+        // Nothing to run.
+        assert_eq!(command_of("FOO=1"), None);
+        assert_eq!(command_of(""), None);
+        // Not expanded, not guessed at.
+        assert_eq!(command_of("$CMD go").map(|(n, _)| n), Some("$CMD".into()));
     }
 
     fn assert_all(lines: &[&str], want: BashClass) {
