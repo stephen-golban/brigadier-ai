@@ -1,7 +1,10 @@
 # STATUS — where the brigadier harness actually stands
 
-Last updated 2026-09-02. **This is the file to read first.** It says what is built, what is proven,
+Last updated 2026-09-04. **This is the file to read first.** It says what is built, what is proven,
 what is broken, and what will bite you. The product it is building toward is `docs/vision.md`.
+
+§§2, 4, 5, 6, 7 and the landmine list were revised on 2026-09-04 against the research files behind
+them. **§1 and §3 are dated by their own text** — read the commit each names before quoting it.
 
 No invented progress. A feature "works" only after it has been run. One line per fact, a path or a
 number instead of an adjective, and what was not checked is said outright.
@@ -30,8 +33,9 @@ one of the `s8-*`/`s9-*`/`s10-*` fixtures or names a later commit.
 
 The evidence column's *kind* varies, so read it before quoting a row. `f1b911f`, `b2c1a4c` and
 `8351335` are live runs against a real `claude` 2.1.258 child. `crates/proc/tests/`,
-`crates/core/tests/claude_adapter.rs` and the five front-end suites under `src/` are test suites in
-this tree, not live runs.
+`crates/core/tests/claude_adapter.rs` and the **seven** front-end suites under `src/` — `App`,
+`components/Feed`, `components/Sidebar`, `feedStore`, `index.css`, `paint`, `providers/ThemeProvider`,
+counted 2026-09-04, up from five — are test suites in this tree, not live runs.
 `docs/research/persistence.md` and `feed-rendering.md` are research documents — a document, not a
 run. `7f03eb5` cites nothing at all. **No row is a live-`claude`-child proof unless
 its evidence says so.**
@@ -50,11 +54,12 @@ its evidence says so.**
 | data-dir lock, batcher shrink | `7f03eb5` | — |
 | every `result` frame reaches the store | `ce833c5` | four fixture tests, `crates/core/tests/claude_adapter.rs:626,667,702,760`, against real captures (`s9`, `f-b-fanout`) — not a live-child proof. §5 item 9. |
 | a front-end test runner | `ad5a4a7` | 27 tests, `src/feedStore.test.ts`, `npm test` (Vitest + jsdom + Testing Library). They pin `src/feedStore.ts` only: the rAF drain's coalescing and its stop, the `ROW_CAP` 2000 head-trim on both rings, the `seedRows` two-pointer merge (order, `q` interleave, `q`-collision, reference stability, idempotence, ROW_CAP on the union, project ring untouched), cost taking the latest turn's cumulative figure and never summing, `seedSessions`' end/cost reconciliation, counter throttling at `COUNTER_FLUSH_MS`, array-reference stability, and the unknown-projects list. Not a live-child proof and not a UI proof. |
-| the app can time its own paints | `1c8b6f6` | 24 tests, `src/paint.test.ts`, and a build. `src/paint.ts` observes `first-contentful-paint` and reports it over `report_paint` (`docs/plans/ipc-contract.md`). Since run for real: `paint.ndjson` works end to end in a real window and `main_to_fcp_ms` matched its own `tracing` line on all 19 runs (`docs/research/perceived-performance.md` §1.4). **The interaction half has still never run** — `beginInteraction` has no caller anywhere and is tree-shaken out of the bundle, so B4/B6/B7 are untouched. |
+| the app can time its own paints | `1c8b6f6` | 24 tests, `src/paint.test.ts`, and a build. `src/paint.ts` observes `first-contentful-paint` and reports it over `report_paint` (`docs/plans/ipc-contract.md`). Since run for real: `paint.ndjson` works end to end in a real window and `main_to_fcp_ms` matched its own `tracing` line on all 19 runs (`docs/research/perceived-performance.md` §1.4). **The interaction half has since run**, and this line is corrected: `a0901e5` gave `beginInteraction` its first and only call site (`src/App.tsx:316`), so it is no longer tree-shaken, and **B4 is a measured number** (§4). **B6 and B7 still have no call site at all** — grepped 2026-09-04, that one site is the only non-test caller in `src/`. |
 | the measured palette as oklch `@theme` tokens | `3e5c3fd` | 18 of 18 colour tokens round-trip hex→oklch→hex bit-exact and all 8 annotated contrast pairs re-derive to within 0.0017, verified twice independently (`docs/research/oklch-tokens.md`, and `frontend-stack.md` §2.6 arrived at the same ratios first). Unit tests and a build only — **nothing has been looked at in a running window.** |
-| MCP off by default, per-project opt-in | uncommitted, 2026-09-03 | `McpPolicy` (`off` \| `inherit`) in `crates/core/src/driver.rs`; `--strict-mcp-config` pinned in the argv tests of `crates/core/src/claude/process.rs`; store migration 2 (`user_version` 2 to 3, `projects.mcp TEXT NOT NULL DEFAULT 'off'`), which **switched every existing project to `off` on 2026-09-03**, the owner's two live projects included, and each can opt back in per project; supervisor passes the project row's policy on start and on resume (`crates/supervisor/src/lib.rs`, recording-driver test); command `set_project_mcp(project_id, mcp)` and `ProjectView.mcp` (`docs/plans/ipc-contract.md`). Tests only, no live child: the `mcp_servers: []` proof is `spawn-split.md` §1. **The UI toggle is not built**; nothing in `src/` calls the command. |
+| MCP off by default, per-project opt-in | `9ca7ee2` | `McpPolicy` (`off` \| `inherit`) in `crates/core/src/driver.rs`; `--strict-mcp-config` pinned in the argv tests of `crates/core/src/claude/process.rs`; store migration 2 (`user_version` 2 to 3, `projects.mcp TEXT NOT NULL DEFAULT 'off'`), which **switched every existing project to `off` on 2026-09-03**, the owner's two live projects included, and each can opt back in per project; supervisor passes the project row's policy on start and on resume (`crates/supervisor/src/lib.rs`, recording-driver test); command `set_project_mcp(project_id, mcp)` and `ProjectView.mcp` (`docs/plans/ipc-contract.md`). Tests only, no live child: the `mcp_servers: []` proof is `spawn-split.md` §1. **Both migrations have now run on the owner's own data directory, not only on tempdir replicas** — **[measured]** 2026-09-04, read-only against `~/Library/Application Support/ai.brigadier.app/brigadier.sqlite`: `PRAGMA user_version` is **3**, both live projects read `mcp='off'`, and all **10,037** pre-migration feed rows read `kind='unknown'` with none reading `'sys'`, so migration 1's corrected default (`959bd0c`, fixed at `1d23df9`) landed on real data and no row has been written since. The replica tests remain the only *proof* of behaviour (`crates/store/src/schema.rs::migration_2_switches_a_pre_existing_project_to_off`, `crates/store/tests/schema.rs`); nothing records which projects were switched and which chose, so render `off` as a state, not a decision. **The UI toggle is not built**; nothing in `src/` calls `set_project_mcp` — grepped 2026-09-04. |
 | the shell, and the first interaction timed | `a0901e5` | 28 new tests (`src/App.test.tsx` 10, `src/components/Sidebar.test.tsx` 18) plus a real window: the sidebar, project collapse and session selection were **driven by hand**, and 14 selections were timed through `beginInteraction` into `paint.ndjson` (**B4**, §4). `ThemeProvider` is now mounted (`src/main.tsx:22`). Seven AA failures were found and fixed in the process — see the landmine below. |
-| the launch decomposed stage by stage, and the page half split | uncommitted, 2026-09-04 | `BRIGADIER_TRACE=1` signposts in `src-tauri/src/trace.rs`, 12 warm launches on 2026-09-03 plus 5 more (1 cold, 4 warm) on 2026-09-04 after the `dcl` stage landed. Measured, not inferred: `state::build` inside `setup` is **8.1 ms** p50, not the missing ~100 ms; Tauri's own window creation before our setup closure, `builder_built` to `setup_entry`, is **108.7 ms** p50 warm and **420 ms** cold, so a cold launch is slow there and not in the page; `page_load_finished` to FCP, 83.3 ms undivided, splits into **49.6 ms** fetch plus parse and **28.5 ms** React mount plus render, so the scheme-plus-brotli attribution has a 49.6 ms ceiling and not a 100 ms one. `RLIMIT_NOFILE` is now raised at startup (launchd hands a GUI launch **256**). `docs/research/launch-signposts.md`. **Caveats that matter:** the 2026-09-04 run was taken with the display locked (`CGSSessionScreenIsLocked=1`), the mount half is n=4 with an outlier, no run used a cold OS file cache (`sudo purge` needs sudo), and nothing here is a p95. |
+| the feed reads as a thread, not a log table | `864a2fe` | the timestamp column, the raw `seq` column and the zebra stripes are gone; 13 px sans at `ROW_H` 28, a rule at clock-minute boundaries only, zero accent at rest, and a 1.4.11 failure on the jump pill's border (1.585:1) fixed on the way. `src/components/Feed.test.tsx` and `src/index.css.test.ts` are new suites; the second gates that every class in markup has a hand-written rule. **Nothing here has been seen rendered**, and the blur test that decides whether it answers the owner's "year 1999 app" verdict has not been run. Test counts and CSS figures in that commit's own message were not re-run for this line. |
+| the launch decomposed stage by stage, and the page half split | `6db9f6e`; the `dcl` stage at `8293342` and `62e6717`; the numbers at `8b286f5` | `BRIGADIER_TRACE=1` signposts in `src-tauri/src/trace.rs`, 12 warm launches on 2026-09-03 plus 5 more (1 cold, 4 warm) on 2026-09-04 after the `dcl` stage landed. Measured, not inferred: `state::build` inside `setup` is **8.1 ms** p50, not the missing ~100 ms; Tauri's own window creation before our setup closure, `builder_built` to `setup_entry`, is **108.7 ms** p50 warm and **420 ms** cold, so a cold launch is slow there and not in the page; `page_load_finished` to FCP, 83.3 ms undivided, splits into **49.6 ms** fetch plus parse and **28.5 ms** React mount plus render, so the scheme-plus-brotli attribution has a 49.6 ms ceiling and not a 100 ms one. `RLIMIT_NOFILE` is now raised at startup (launchd hands a GUI launch **256**). `docs/research/launch-signposts.md`. **Caveats that matter, and every one of them qualifies a number above it:** (a) **every 2026-09-04 figure was taken with the display locked** (`CGSSessionScreenIsLocked=1`), and that run's exec → FCP of **288.8 ms** landing inside the established 287–295 ms band is **weak evidence that the lock did not move FCP, not proof**; (b) the **28.5 ms mount half is n=4 with a 60.0 ms outlier** against a 23–29 cluster, and both its endpoints are page-relative timestamps clamped to 1 ms — **do not plan against 28.5**; the **49.6 ms fetch-and-parse half is the tight one** (four samples inside 1.5 ms) and the 64/36 verdict rests on it; (c) the `RLIMIT_NOFILE` raise was verified **under a simulated `ulimit -n 256` from a shell, never from an actual Finder launch** — `launchctl limit maxfiles` of 256 is the evidence that the Finder case needs the raise, and the Finder case itself has never been run with stderr captured; (d) no run used a cold OS file cache (`sudo purge` needs sudo); (e) nothing here is a p95 — n=12 warm and n=4 for the split. |
 
 **Still never clicked in a real window:** the **Resume button** and the **branch chip**. The cleanup
 flow and the approvals dock have not been driven either, and none of the four has a test. What
@@ -70,7 +75,9 @@ so that part of the paragraph is retired.
 
 **`pre`, `ul` and `li` are still unexercised under Tailwind preflight.** They exist only in
 `src/components/Approvals.tsx`, and the store holds exactly one approval row which is already
-resolved, so `pending_approvals` returns empty and the dock never opens. That is still the largest
+resolved, so `pending_approvals` returns empty and the dock never opens. Both halves re-checked
+2026-09-04 **[measured]**: five `<pre>`/`<ul>`/`<li>` occurrences in `src/`, all in that one file,
+and `SELECT count(*) FROM approvals` is 1 with `resolved_at` set. That is still the largest
 thing unverified about the token layer, and only a live approval closes it.
 
 ## 3. Gates at `a0901e5`
@@ -142,11 +149,45 @@ over** — a warm prefix saves cost but not the per-turn re-read.
 | `beginInteraction`'s own floor | **~33 ms** at 60 Hz (its double-`requestAnimationFrame`); 8 of the 14 B4 samples sit within one frame of it | same |
 | WKWebView construction alone | ~100 ms | same |
 | React 19 + 258 kB bundle, FCP cost over a 400-byte page | ~12 ms | same |
-| window refresh rate | 60 Hz over 1,513 one-second samples | same |
+| window refresh rate | **60 Hz in 62 of 62 one-second windows**, `p50_ms` **17.0** in every one, on the 28 px row at `1b18909`. **[measured]** The "1,513 samples" citation is **superseded**; caveats and corrections beneath this table | `visual-checks-2026-09-04.md` §3 |
+| approval park → sink, 10 synthetic sessions with one flooder (n=5, `c78a089`) | **3.2 / 4.2 / 10.6 / 14.2 / 14.9 ms** against a 100 ms gate. **Measured to the Rust sink and no further** — the `eval` hop, the rAF drain, the React commit and the paint are not in it | `flood-baseline.md` §0, §2 |
+| store read round trip during a 1,500 rows/s flood (n=5, `c78a089`) | p50 **2.30–2.89 ms**, p95 up to **8.66**, worst **9.82**; a sixth run, discarded for an unrelated model defect, reached **43.22**. **Debug build, five other agents' builds running.** It exceeds §2.3's 8.03 ms worst case, and only a release build on an idle machine reproducing it reopens trap 5 | same |
+| the same flood test re-run at `1d23df9` | during-flood read worst **8.58 ms**, gate 3 `lost=0`, `max_message_bytes` **7,997** | **no research file records this run** — `flood-baseline.md` documents only the five `c78a089` runs above, so this row is its only record and carries no method beside it |
 | search results, median | 127 tokens (8.2% of tool tokens; `Read` is 73%) | `codebase-index.md` |
 | whole-repo symbol map rebuild | 145 ms | same |
 | raw NDJSON on this machine | 66 MB / 23 sessions | `worktree-cleanup.md` |
 | provider transcripts on this machine | **3.0 GB** | same |
+
+**What qualifies the refresh-rate row, and it does not fit in a cell.** Measured at `1b18909`,
+recorded at `2657c71`, under a 10-session × 200 rows/s × 60 s burn with the feed scrolled
+throughout: 62 of 62 one-second windows report `hz 60`, `p50_ms` **17.0** in every one, and
+`hz_source = p50` in none of them. **[measured]**
+
+**Dropped vsyncs: 4 across the 62 windows**, all inside one window (that window: `dropped = 4`,
+`worst 83 ms`), longest drop run **1**; `fps.windowPasses` failed **1 of 62**, so the run does
+**not** pass its own gate. A control run with the same scroll and **no ingest** passed **65 of 66**
+at worst 28 ms — **the drops come from the ingest, not from the scroll**, which is the useful half
+of the result. **[measured]**
+
+**`dom_nodes` median 505** under that load, and **the old median of 110 was never a feed metric**:
+`dom_nodes` is `document.getElementsByTagName("*").length` (`src/fps.ts:182`), the whole document,
+sidebar included. Idle on the current markup it is **123** (release build, 800x500) and **139**
+(debug build, 1280x800); the feed row itself is now **2 DOM nodes** and 23 rendered rows cost
+**47 nodes** under `.feed-sizer`, so the virtualizer is holding. **[measured]**
+
+**The "1,513 one-second samples" citation is superseded, not merely dated**: `864a2fe` changed
+`ROW_H` **18 → 28** at 2026-09-04 01:39 and the sample file's last pre-existing window is
+2026-09-03 14:24, so **every sample behind that number predates the markup it described**.
+**[measured]**
+
+**Two caveats travel with the new number or it is worth no more than the old one.** It is **n = 1**
+— one verified 62-window run, no distribution across repeats. And it is a **debug build**:
+`src/App.tsx:493` gates the Burn panel on `import.meta.env.DEV`, so a release `vite build` strips
+the only UI that can call the command `--features burn` compiles, which means **every burn number
+this project has is a debug-build number**. **[measured]** A debug Rust binary, a vite dev server
+and a React development build are each strictly slower than what ships, so the near-pass is an
+**upper bound on badness, not a release result**; the shipped binary's scroll FPS under load is
+unmeasured. **[asserted]**
 
 ## 5. Defects — what was found, and what is left
 
@@ -222,6 +263,58 @@ measured: `docs/research/async-subagent-results.md` tags the same claim `[assert
 if a capture ever shows an `init` with no matching `result` outside the kill path (`s7-kill`), in
 which case a timer is required. `docs/research/unprompted-init.md` states the open question, the
 three uncaptured paths that could produce one, and the live spike that would settle it.
+
+**Still none of the nine — but the nine are no longer the whole defect record.** Found and fixed
+since 2026-09-02, each by an instrument reading could not replace: three that only a rendered pixel
+could find (`ccc8955` — an inset `box-shadow` rail whose *subtractive* paint tinted 496 device
+pixels per row edge, a branch chip needing 141 px in a 119 px slot, and a comment certifying a fit
+it never checked); `feed.kind`'s migration default corrected from `'sys'` to `'unknown'` before it
+reached real data (`1d23df9`); and the `dcl` signpost's first three recipes, each of which shipped
+and never fired (`0ddfe7b`, `62e6717`; `docs/research/launch-signposts.md` names all three). What
+`ccc8955` left unobserved is in its own message: the surviving status bar's pixels have never been
+scanned and the narrow layout after the prefix yields has never been rendered.
+
+**Four more, found 2026-09-04 at the enforced 800x500 minimum** (`docs/research/visual-checks-2026-09-04.md`
+§2, §3.2). **A worker is fixing all four in `src/` as this line is written — read them as found and
+being fixed, not as fixed.** Three are one CSS rule each; the fourth is a build gate.
+
+1. **`src/index.css:1120-1125`, `.feed-sizer` has no horizontal padding**, so feed rows run flush to
+   the window's right edge on every window narrower than **932 px** while `.thread-head` stays inset
+   16 px — real-window ink from **pt 220.5 to pt 798.5 of 800**. **[measured]** Remedy:
+   `box-sizing: border-box; padding-inline: 16px` (or `max-width: min(var(--content-max), 100% - 32px)`),
+   which also fixes `.feed-count`'s `max(16px, …)` inset at `src/index.css:1097` floating 16 px in
+   from an edge the rows it labels are touching.
+2. **`src/index.css:1634`, `.fps` at `flex: 0 0 auto` (`:1635`) with `white-space: nowrap` (`:1643`)
+   starves `.head-id` to width 0** and overflows the page by **205 px** at viewport width 800 —
+   **reproduced in a real release window**: turning the meter on makes the thread title and its path
+   vanish from the header. **[measured]** Remedy: `flex: 0 1 auto; min-width: 0; overflow: hidden;
+   text-overflow: ellipsis`, or render only `hz` + `dropped` below the 1200 px breakpoint. Reached by
+   clicking the pill, not met on launch — the meter is off by default in a release build.
+3. **`src/index.css:1296`, `.approvals { max-height: 42vh }` over the fixed 160 px `.dock`
+   (`src/index.css:1413`) leaves the feed 59.5 px — 1.39 rows** at viewport height 468, the top
+   visible row cut through its glyphs; `.approvals` is `flex: 0 0 auto` so it cannot yield and `.feed`
+   has no `min-height`, so the feed absorbs the whole squeeze. **[measured]** (Chromium + mock; not
+   reproduced against a real pending approval in the Tauri window.) Remedy: give `.feed` a
+   `min-height` of ~112 px and make `.approvals` `flex: 0 1 auto`, or cap it at
+   `min(42vh, calc(100vh - 324px))`.
+4. **`src/App.tsx:493` gates the Burn panel on `import.meta.env.DEV`**, so a release `vite build`
+   strips it — `grep -c "burn harness" dist/assets/index-*.js` is **0** while
+   `strings target/release/brigadier` hits `burn started`, i.e. `--features burn` compiles a command
+   the shipped UI has no way to call, and **every burn number this project has is a debug-build
+   number**. **[measured]** Remedy: give the panel the same kind of gate the meter has (a
+   `localStorage` flag, or a build-time `define`) so a release-profile burn can be measured without
+   editing source.
+
+**The minimum itself works, and that is the larger half of the result.** Both breakpoints fire, the
+sidebar is exactly **220 pt** in the real window, `--content-max` is intact at **712 px**, the
+composer's `textarea` and its Start button are reachable, and there is **no scroll in either axis**
+with the meter off. **[measured]** Usable, not correct.
+
+**An 800x500 window is a 800 x 468 CSS viewport.** The macOS title bar measures **32.0 pt** — real
+window, `#181818` to y 31.5 pt and the sidebar ground from y 32.0 pt, cross-checked because the brand
+strip then occupies viewport y 0–52, exactly `--head-h: 52px` (`src/index.css:196`). **[measured]**
+Window size and viewport size are not the same number and must not be quoted interchangeably: the CSS
+breakpoints see 468 px of height, not 500.
 
 **Resolved by the owner, 2026-09-03 — `--color-text-muted-side` now passes AA.** It was
 `#a3a3a3` / `oklch(0.7155 0 0)`, **4.456:1** on `--color-sidebar-bg` (`#3a3b3b`), missing WCAG AA's
@@ -319,12 +412,19 @@ every bundle format for the platform being built on. Leave it alone.
   (process-group kill timing); passed on every rerun.
 - **Tailwind's oxide scanner walks the filesystem, not the module graph, and it reads Markdown.**
   Naming a utility class **in prose** ships it: our own `docs/` emitted 1.44 kB of rules nothing
-  renders. `@source not "../docs"` in `src/index.css:27` is the guard; delete it and all eight come
-  back. `docs/research/oklch-tokens.md` §6.
+  renders. `docs/research/oklch-tokens.md` §6. **The remedy has changed and the old one is gone, not
+  moved**: the `@source not "../docs"` blacklist failed silently twice (`docs/` prose, then
+  `crates/proc/src/pidfile.rs` shipping `.container` for weeks), and a `source("../src")` whitelist
+  still left six `.container` rules alive, re-emitted from a comment and from Testing Library's own
+  `view.container`. What ships is `@import "tailwindcss" source(none)` plus explicit `@source`
+  directives with test files excluded (`src/index.css:82-84,98`, `864a2fe`), gated by
+  `src/index.css.test.ts`. The trap was never which directory: **prose and test code are not
+  markup.**
 - **An edit to a tree-shaken export moves the bundle by zero bytes**, which is indistinguishable
-  from a build that did not run. `beginInteraction` in `src/paint.ts` is in that state today. Check
-  a string literal the minifier cannot rename, never an identifier.
-  `docs/plans/ipc-contract.md`, `### report_paint`.
+  from a build that did not run. `beginInteraction` in `src/paint.ts` was in that state until
+  `a0901e5` gave it its one importer (`src/App.tsx:316`); nothing in `src/` is known to be in it
+  today, which is not the same as nothing being in it. Check a string literal the minifier cannot
+  rename, never an identifier. `docs/plans/ipc-contract.md`, `### report_paint`.
 - **jsdom 30.0.1 has no `PerformanceObserver`**, and what stands in for it under Vitest is Node's
   `perf_hooks` observer, whose `observe({type:"paint"})` **does not throw and never fires** — a test
   written against it passes vacuously. `src/paint.test.ts` stubs its own. jsdom also has no
@@ -342,5 +442,25 @@ every bundle format for the platform being built on. Leave it alone.
 - A `**[measured]**` tag inside a **Rust doc comment** is parsed as an intra-doc link and fails
   `cargo doc`. The tree's Rust convention is the bare `**measured**`
   (`crates/core/src/worktree.rs:76`); the bracketed form is markdown-only.
+- **`pgrep -fl claude` is not evidence that no child ran.** It matches the operator's own Claude
+  Code sessions, Pen's `mcp-server-*` processes and any shell whose command line merely contains
+  the string. Use `pgrep -x claude` and set-diff before against after: **the set not changing is
+  the proof, not the set being empty** (`flood-baseline.md` §6, `launch-signposts.md`).
+- **A measured dead end can be re-proposed from a code reading and reach a dispatched order.** On
+  2026-09-03 an order to move store reads onto a second SQLite connection was issued from a reading
+  of `writer.rs:329-335` and withdrawn the same day (`4fc02e1`); the measurement that killed it was
+  already written — `docs/research/perceived-performance.md` §2.3 and trap 5, **8.03 ms** worst-case
+  read hold at 10 sessions × 2000 rows/s, revisit only if `feed_cap` grows by an order of magnitude.
+  Read that file's trap list before ordering any store change.
+- **The dev burn writes synthetic sessions into whatever data directory the app is pointed at,
+  including the owner's real one.** The 2026-09-04 burn runs went into
+  `~/Library/Application Support/ai.brigadier.app/brigadier.sqlite`, which now holds a **`burn`
+  project with 40 synthetic sessions** beside **3 real ones** under `brigadier-ai`, and
+  `frame-stats.ndjson` grew from 1,686 to **2,080** lines. **[measured]** (read-only `sqlite3` and
+  `wc -l`, 2026-09-04). **Nothing was billed** — `pgrep -x claude` was byte-identical before and
+  after (`docs/research/visual-checks-2026-09-04.md` §0). Remedy: point the burn at a scratch data
+  directory, or expect to prune afterwards. **The rows are not deleted and deleting them is the
+  owner's call, not made.** Any citation of a window count in `frame-stats.ndjson` must now say which
+  slice it means.
 
 
