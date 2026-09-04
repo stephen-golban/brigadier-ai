@@ -452,3 +452,148 @@ must implement this same contract.
 `console.debug`s the report and returns. The instrument itself (`src/paint.ts`) runs unchanged
 there, which is the point: the double-rAF and the epoch arithmetic are exercised in `npm run dev`
 without a Tauri window.
+
+---
+
+## The run — added 2026-09-04, by the lead, during the unattended run
+
+Everything above this line describes a harness that only ever spawns a child when the owner presses
+a button (`src-tauri/src/commands.rs:138` is the sole production caller of
+`Supervisor::start_session`). This section is the surface for the thing that changes that: **a run**
+— one approved goal, one plan, and a loop that dispatches, gates and commits without a human.
+
+The design is `docs/research/orchestration-loop.md`; the decisions taken on top of it are
+`docs/plans/w1b-loop-order.md` §1. This section is binding on both the Rust and the TypeScript side
+and is the only place these command names and argument keys are spelled.
+
+### Commands
+
+| command | args | returns |
+|---|---|---|
+| `start_run` | `project_id, goal: string` | `RunView`; errors `no_such_project` / `invalid_argument` (empty goal) / `run_already_live` |
+| `current_run` | `project_id` | `RunView \| null` — the newest plan for the project, live or finished |
+| `stop_run` | `plan_id` | `()`; errors `no_such_plan`. Stops dispatching. **Never kills a worker mid-order** — see below |
+| `unsettled_intents` | — | `IntentView[]` oldest first |
+| `settle_intent` | `intent_id, state: "done" \| "not_done"` | `()`; errors `no_such_intent` / `invalid_argument` |
+
+### Shapes
+
+```
+RunView { plan_id, project_id, goal, status: "draft"|"approved"|"done"|"abandoned",
+          revision: number, created_at_ms, approved_at_ms: number|null,
+          phases: PhaseView[], unknowns: UnknownView[] }
+
+PhaseView { phase_id, ordinal: number, title, definition_of_done,
+            verify_command: string|null, state: "pending"|"running"|"green"|"blocked",
+            attempts: number, base_sha: string|null, commit_sha: string|null,
+            last_exit_code: number|null, last_evidence: string|null,
+            orders: WorkOrderView[] }
+
+WorkOrderView { order_id, title, owned_paths: string[],
+                state: "pending"|"dispatched"|"reported"|"failed"|"unknown",
+                session_id: string|null, branch: string|null,
+                worktree_path: string|null, report: string|null }
+
+UnknownView { unknown_id, bin: "owner"|"research", question,
+              state: "open"|"answered"|"skipped", skipped_for_just_go: boolean }
+
+IntentView { intent_id, kind: string, state: "unknown",
+             session_id: string|null, project_id: string|null,
+             opened_at_ms: number, subject: string|null, evidence: string|null }
+```
+
+### Rules these shapes encode, each of which is a decision and not a formatting choice
+
+- **`verify_command` is nullable and the UI must render the null.** A phase with no verify command
+  **cannot go green through a gate**, and the owner has to be able to see that rather than be shown
+  a phase that looks like every other one. The harness never fabricates a command to fill the hole.
+- **`last_exit_code` is the gate, and `last_evidence` is bounded.** The verify command's output goes
+  to a file and to a worker's window, **never into the thread** (`docs/vision.md` §4 step 7.5).
+  Nothing on this wire carries it. A UI that renders a log tail here is wrong.
+- **`state: "unknown"` on a work order is not a spinner.** It means something moved in that worktree
+  and the harness cannot tell what, so the phase is **blocked and will not be repeated**
+  (`docs/research/intent-records.md` §5.1). It must not be drawn as in-progress.
+- **`IntentView.kind` is a pass-through slug, not a closed set on the wire** — the same treatment
+  `permission_mode` gets and the opposite of `mcp` — because a build that adds a kind must not
+  break an older webview.
+- **No dollar figure appears in any shape above, and none may be added.** `docs/vision.md` §6: the
+  owner runs on his own subscription and is never billed per token, so a dollar figure would be a
+  lie in his favour, which is still a lie. The currency is the usage window.
+- **`stop_run` stops dispatching; it does not kill.** A worker killed mid-order leaves a worktree
+  whose `work_order` intent reconciles to `unknown`, which blocks its phase permanently
+  (`intent-records.md` §5.1) — so the cheap-looking implementation of "stop" is the one that
+  poisons the plan. In-flight orders are allowed to finish and are collected.
+
+### Signals
+
+The run needs no new channel. Every state change the plan card draws is already reachable:
+`runtime-warning` is in the signal list above and is what the reconciler emits for an `unknown`
+intent, and the plan card refetches `current_run` on it. **One landmine, restated because it is the
+one that corrupts data silently:** a synthesized feed row's `seq` must be
+`sessions.last_event_seq + 1`, never 0 or 1 — `feed`'s insert is
+`ON CONFLICT(session_id, seq) DO UPDATE`, so a writer that numbers from zero **rewrites the
+session's oldest rows in place**.
+
+### Approvals, and the one shape that changed
+
+An approval whose decision **did not reach the model** is no longer reported as resolved. The
+adapter emits a `runtime-warning` naming the request instead of a `request-resolved`, and the row
+expires with **`decision_json` NULL**, which reads as *expired, outcome unknown* — neither allowed
+nor denied. `ApprovalView` must therefore admit a resolved row with **no decision**, and the dock
+must draw that third state rather than defaulting it to a deny.
+
+This is `docs/vision.md` §9's rule, and it is the only place in this contract where a lie would be
+worse than a gap: *"a panel that shows 'denied' for a deny that did not land — or 'allowed' for
+something that never ran — breaks the one screen the owner has to be able to trust."*
+
+### Ambiguities the front end resolved first, now binding on Rust
+
+The run surface was built against this contract before the Rust commands existed. Where the
+contract did not say, the front end chose — and an ambiguity resolved silently on one side is a
+mismatch, so each choice is written here and the Rust side matches it rather than the reverse.
+
+1. **`run_already_live` covers `draft` *and* `approved`.** Both are live. The composer offers
+   **Stop** over a `draft` rather than a **Start** that can only error.
+2. **`stop_run` leaves the plan `abandoned`.** `abandoned` and `done` are both not-live. A
+   `stop_run` that left the plan `approved` would bring the Start control back for a run that is
+   over.
+3. **`settle_intent`'s second argument key is `state`**, per this file's own column, and its values
+   are `"done"` and `"not_done"`.
+4. **`last_evidence` is drawn, clamped to one line and 120 characters.** The rule it serves is that
+   the gate's *output* never reaches the thread; the clamp means a future writer that put a log
+   tail in that column still cannot turn the plan card into a log pane. It is a bounded field by
+   contract and the card treats it as one.
+5. **There is no phase-transition signal, so the card polls `current_run` once a second while a run
+   is live.** This contract names exactly one edge, `runtime-warning`, and it does not fire when a
+   phase goes green — while `docs/vision.md` §9 requires the card be "updating in place as phases
+   complete". The poll is the gap being covered, and it is what a real phase-transition signal
+   would replace.
+6. **`RunView.unknowns` is typed and fetched but not rendered, and that is a gap.** None of the five
+   commands can answer or skip an `UnknownView`, so there is nothing the surface could do with one
+   beyond print it. A `draft` run holding an open `owner`-bin unknown therefore has **no way out
+   through this surface**. It does not bite this run, because the grill is deferred and every
+   unknown the planner produces is written already-skipped — but it is the first thing that breaks
+   when the grill lands.
+7. **`unsettled_intents` is not filtered by project**, matching the command's own signature: an
+   intent left by a run in another repository stays on screen.
+
+### Three error codes this section adds
+
+`run_already_live`, `no_such_plan` and `no_such_intent` join the closed set in **Conventions** at
+the top of this file. They are listed here rather than there only because the run arrived later;
+they are ordinary members of that set.
+
+### Two gaps between this contract and what the store can express
+
+Both were found while wiring the commands, and both are recorded because a reader will otherwise
+mistake them for bugs in the wiring.
+
+- **`plans.status` has no transition beyond approval.** The only op that moves it is
+  `plan_approved` (draft → approved). So `stop_run` records `abandoned` **for this launch only** —
+  after a restart the plan reads `approved` again and one more Stop re-marks it — and `done` is
+  **derived** from *every phase green* rather than stored. `RunView.status` is therefore partly a
+  computed field, not a column, and the remedy is a store op rather than a change here.
+- **`IntentView.state` is typed `"unknown"` in `src/wire.ts`, but `unsettled_intents` also returns
+  `open` rows.** Rust sends `"unknown"` for both, following the shipped TypeScript. An `open` row
+  is one nothing has closed at all, which for the owner's purposes reads the same way — but the
+  wire is lossy here and that is deliberate rather than accidental.
