@@ -39,8 +39,17 @@
  * Icons are inline SVG. No icon library: W4-C permits no new dependency, and three geometric
  * primitives are not worth 40 kB.
  *
- * "Add project" takes a path string. A native folder picker needs `tauri-plugin-dialog`, which
- * is not a dependency this phase, so it is out of scope and deliberately not faked.
+ * **"Add project" opens a native directory picker** (`tauri-plugin-dialog`, added 2026-09-04;
+ * `docs/research/tauri-dialog.md`). The typed-path field it replaces is still here and still
+ * works, but it is now the *fallback*, reached in exactly two situations: a browser, where there
+ * is no Tauri window and therefore no picker (`onPickProject` is undefined and the button toggles
+ * the field instead), and a picker that errored, where the field is opened automatically so the
+ * owner is never left with no way to add a project at all.
+ *
+ * `add_project` in Rust is the only validator — non-directory and non-repository-root are its
+ * refusals — so nothing here checks the path. What this file does do is **draw the refusal beside
+ * the control that caused it**: a path typed into a field and rejected by a banner at the other
+ * end of the window is a puzzle, not a message.
  *
  * **The window gauge from §9 is deliberately absent.** `rate_limit_event` decodes in
  * `crates/claude-wire/src/message.rs` but nothing carries `unifiedWindows` to the webview — it
@@ -83,7 +92,24 @@ export interface SidebarProps {
   dev?: ReactNode;
   onSelectProject: (id: ProjectId) => void;
   onSelectSession: (id: SessionId | null) => void;
-  onAddProject: (path: string) => void;
+  /**
+   * Add a project by typed path — the fallback. Resolves to the `AppError` `add_project` refused
+   * with, or `null` on success, so the refusal can be drawn beside the field. `void` is accepted
+   * so a caller that reports errors some other way is still a valid one.
+   */
+  onAddProject: (path: string) => void | Promise<AppError | null>;
+  /**
+   * Open the native directory picker and add whatever comes back — the primary path.
+   * **Undefined means there is no picker in this runtime** (a browser), and the "+" falls back to
+   * revealing the typed-path field. Resolves `null` both on success and on a *cancelled* picker;
+   * a cancel is not an error (`docs/research/tauri-dialog.md` §2).
+   */
+  onPickProject?: () => Promise<AppError | null>;
+  /**
+   * Reveal a path in Finder. Undefined outside a Tauri window, and the reveal controls are then
+   * not drawn at all rather than drawn dead.
+   */
+  onReveal?: (path: string) => void;
 }
 
 /** `starting` and `running` are both "something is happening in here". */
@@ -162,12 +188,39 @@ function AskIcon() {
   );
 }
 
+/** Reveal in Finder: an arrow leaving an open corner. House style — square viewBox, `fill="none"`,
+ *  `currentColor`, `aria-hidden` because the button beside it carries the accessible name. */
+function RevealIcon() {
+  return (
+    <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true" focusable="false">
+      <path
+        d="M6.6 2.2h3.2v3.2M9.8 2.2 5.9 6.1"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M8.2 7.4v1.9a.9.9 0 0 1-.9.9H2.9a.9.9 0 0 1-.9-.9V4.7a.9.9 0 0 1 .9-.9h1.9"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 /* ------------------------------------------------------------- session row */
 
 interface SessionRowProps {
   session: SessionRuntime;
   selected: boolean;
   onSelect: (id: SessionId) => void;
+  /** Undefined outside a Tauri window; see `SidebarProps.onReveal`. */
+  onReveal?: (path: string) => void;
 }
 
 /**
@@ -175,7 +228,12 @@ interface SessionRowProps {
  * that session actually changed — so a project with ten live sessions re-renders one row per
  * tick, not ten.
  */
-const SessionRow = memo(function SessionRow({ session, selected, onSelect }: SessionRowProps) {
+const SessionRow = memo(function SessionRow({
+  session,
+  selected,
+  onSelect,
+  onReveal,
+}: SessionRowProps) {
   const branch = session.branch;
   const prefix = branch !== null && branch.startsWith(BRANCH_PREFIX) ? BRANCH_PREFIX : null;
   const name =
@@ -192,25 +250,43 @@ const SessionRow = memo(function SessionRow({ session, selected, onSelect }: Ses
     .filter((s): s is string => s !== undefined)
     .join(" · ");
 
+  // Null whenever the project is not a git repository (contract §Worktrees). There is then
+  // nothing to reveal, so the control is **absent** rather than present-and-inert: a disabled
+  // button still says "there is a folder here, you just cannot have it", which would be a lie.
+  const worktree = session.worktreePath;
+
   return (
-    <button
-      type="button"
-      className={selected ? "side-session selected" : "side-session"}
-      title={detail}
-      aria-current={selected ? "true" : undefined}
-      onClick={() => onSelect(session.sessionId)}
-    >
-      <span
-        className={`dot ${session.status}${session.busy ? " busy" : ""}`}
-        aria-hidden="true"
-      />
-      <span className="side-branch">
-        {prefix !== null ? <span className="prefix">{prefix}</span> : null}
-        <span className="ref">{name}</span>
-      </span>
-      <span className="sr-only">{statusWord(session.status, session.busy)}</span>
-      {session.status === "failed" ? <span className="side-flag" aria-hidden="true">failed</span> : null}
-    </button>
+    <div className={selected ? "side-session selected" : "side-session"}>
+      <button
+        type="button"
+        className="side-session-btn"
+        title={detail}
+        aria-current={selected ? "true" : undefined}
+        onClick={() => onSelect(session.sessionId)}
+      >
+        <span
+          className={`dot ${session.status}${session.busy ? " busy" : ""}`}
+          aria-hidden="true"
+        />
+        <span className="side-branch">
+          {prefix !== null ? <span className="prefix">{prefix}</span> : null}
+          <span className="ref">{name}</span>
+        </span>
+        <span className="sr-only">{statusWord(session.status, session.busy)}</span>
+        {session.status === "failed" ? <span className="side-flag" aria-hidden="true">failed</span> : null}
+      </button>
+      {onReveal !== undefined && worktree !== null ? (
+        <button
+          type="button"
+          className="side-reveal"
+          title={`reveal ${worktree} in Finder`}
+          aria-label={`reveal ${name} worktree in Finder`}
+          onClick={() => onReveal(worktree)}
+        >
+          <RevealIcon />
+        </button>
+      ) : null}
+    </div>
   );
 });
 
@@ -232,9 +308,15 @@ export function Sidebar({
   onSelectProject,
   onSelectSession,
   onAddProject,
+  onPickProject,
+  onReveal,
 }: SidebarProps) {
   const [path, setPath] = useState("");
   const [adding, setAdding] = useState(false);
+  /** `add_project`'s own refusal, drawn under the control that produced it. */
+  const [addError, setAddError] = useState<string | null>(null);
+  /** A picker is open. The button goes inert so a second click cannot stack two dialogs. */
+  const [picking, setPicking] = useState(false);
   /** Explicit caret clicks only. An id absent here uses the derived default below. */
   const [openOverride, setOpenOverride] = useState<Record<ProjectId, boolean>>({});
 
@@ -251,12 +333,64 @@ export function Sidebar({
     return map;
   }, [order, sessions]);
 
-  const submit = () => {
+  /**
+   * The typed-path fallback. On a refusal the field keeps both the text and the focus and the
+   * message appears under it — retyping an absolute path because a banner ate it is the exact
+   * friction this order exists to remove.
+   */
+  const submit = async () => {
     const trimmed = path.trim();
     if (trimmed === "") return;
-    onAddProject(trimmed);
+    const err = await onAddProject(trimmed);
+    if (err != null) {
+      setAddError(`${err.code}: ${err.message}`);
+      return;
+    }
+    setAddError(null);
     setPath("");
     setAdding(false);
+  };
+
+  /**
+   * The native picker. Three outcomes, and they are deliberately not collapsed:
+   *
+   *   - a path was chosen and accepted — nothing to draw, the project is in the list;
+   *   - **the picker was cancelled** — `onPickProject` resolves `null`, identical to success from
+   *     here, and nothing is added, said or opened. A cancel is not an error;
+   *   - it failed, or `add_project` refused the folder — the message appears *and* the typed
+   *     field opens, so a permission the capability is missing does not leave the owner with no
+   *     route to adding a project.
+   */
+  const pick = async () => {
+    if (onPickProject === undefined) return;
+    setPicking(true);
+    let err: AppError | null;
+    try {
+      err = await onPickProject();
+    } finally {
+      setPicking(false);
+    }
+    if (err !== null) {
+      setAddError(`${err.code}: ${err.message}`);
+      setAdding(true);
+      return;
+    }
+    setAddError(null);
+  };
+
+  /** One button, three jobs, in this order: close an open field; open the picker when there is
+   *  one; otherwise reveal the field. */
+  const addClick = () => {
+    if (adding) {
+      setAdding(false);
+      setAddError(null);
+      return;
+    }
+    if (onPickProject !== undefined) {
+      void pick();
+      return;
+    }
+    setAdding(true);
   };
 
   // Stable across renders so `SessionRow`'s memo is not defeated by a fresh closure per commit.
@@ -310,10 +444,11 @@ export function Sidebar({
           <button
             type="button"
             className="side-section-add"
-            title="add a project by path"
-            aria-label="add a project by path"
+            title={onPickProject !== undefined ? "add a project" : "add a project by path"}
+            aria-label={onPickProject !== undefined ? "add a project" : "add a project by path"}
             aria-expanded={adding}
-            onClick={() => setAdding((v) => !v)}
+            disabled={picking}
+            onClick={addClick}
           >
             <PlusIcon />
           </button>
@@ -324,7 +459,7 @@ export function Sidebar({
             className="side-add"
             onSubmit={(e) => {
               e.preventDefault();
-              submit();
+              void submit();
             }}
           >
             <input
@@ -336,6 +471,14 @@ export function Sidebar({
             />
             <button type="submit">Add</button>
           </form>
+        ) : null}
+
+        {/* `role="alert"` because this appears in response to an action and says why it failed;
+            it is the only thing in the sidebar that must be heard rather than found. */}
+        {addError !== null ? (
+          <p className="side-add-error" role="alert">
+            {addError}
+          </p>
         ) : null}
 
         {projects.map((p) => {
@@ -413,6 +556,17 @@ export function Sidebar({
                     ) : null}
                   </span>
                 </button>
+                {onReveal !== undefined ? (
+                  <button
+                    type="button"
+                    className="side-reveal"
+                    title={`reveal ${p.root_path} in Finder`}
+                    aria-label={`reveal ${p.name} in Finder`}
+                    onClick={() => onReveal(p.root_path)}
+                  >
+                    <RevealIcon />
+                  </button>
+                ) : null}
               </div>
 
               {open ? (
@@ -426,6 +580,7 @@ export function Sidebar({
                         session={s}
                         selected={id === selectedSessionId}
                         onSelect={selectSession}
+                        onReveal={onReveal}
                       />
                     );
                   })}

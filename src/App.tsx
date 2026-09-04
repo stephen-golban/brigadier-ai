@@ -38,20 +38,26 @@ import type { PaintedSpan } from "./paint";
 import { Approvals } from "./components/Approvals";
 import type { ApprovalRow } from "./components/Approvals";
 import { Burn } from "./components/Burn";
-import { Composer } from "./components/Composer";
+import { Composer, RunControl } from "./components/Composer";
 import { Feed } from "./components/Feed";
 import { FpsOverlay } from "./components/FpsOverlay";
 import { NewSession } from "./components/NewSession";
+import { RunCard } from "./components/RunCard";
 import { Sidebar } from "./components/Sidebar";
+import { runIsLive } from "./wire";
 import type {
   AppError,
   AppInfo,
   ClaudeStatus,
   Decision,
+  IntentSettlement,
+  IntentView,
   ModelInfo,
+  PlanId,
   ProjectId,
   ProjectView,
   RequestId,
+  RunView,
   SessionId,
   WorktreeCleanup,
 } from "./wire";
@@ -81,6 +87,23 @@ const UNKNOWN_PROJECT_REFETCH_MS = 250;
  * needs a real launch — and it changes no budget.
  */
 const B4_LABEL = "b4-session-painted";
+
+/**
+ * How often the plan card re-reads `current_run` while a run is live.
+ *
+ * **Polling, and it is a decision rather than an oversight.** `docs/plans/ipc-contract.md`
+ * §"The run" → Signals says the run needs no channel of its own and names exactly one edge the
+ * card must react to: a `runtime-warning`, which is what the reconciler emits for an intent it
+ * could not settle. That edge is wired below and is the one the contract binds. It is not,
+ * however, emitted when a phase merely goes green — there is no per-phase signal on the wire at
+ * all — and "updating in place as phases complete" (`docs/vision.md` §9) is the whole point of
+ * the card, so something has to ask. One command per second while a run is live is that
+ * something, and it stops the moment the run does.
+ *
+ * If the Rust side later grows a signal for a phase transition, this interval is what it
+ * replaces.
+ */
+const RUN_POLL_MS = 1000;
 
 /**
  * The project the dev `burn` command creates its sessions under: `<temp>/brigadier-burn/burn`
@@ -133,6 +156,18 @@ export function App() {
   const [projectsLoaded, setProjectsLoaded] = useState(false);
   /** A `resume_session` or `cleanup_worktree` call is in flight; both buttons go inert. */
   const [commandBusy, setCommandBusy] = useState(false);
+
+  /**
+   * The run: the newest plan for the selected project, and every intent the reconciler could not
+   * settle. `unsettled_intents` is deliberately **not** scoped to a project — the command is not
+   * either — so an intent left behind by a run on another repository is still on screen. An
+   * unsettled intent is a thing the harness cannot account for; hiding one behind a selection is
+   * exactly how it stays unaccounted for.
+   */
+  const [run, setRun] = useState<RunView | null>(null);
+  const [intents, setIntents] = useState<IntentView[]>([]);
+  /** The project the newest `current_run` fetch was for; a stale answer is dropped. */
+  const runRequest = useRef<ProjectId | null>(null);
 
   /**
    * The session whose `feed_tail` prefill has landed. It exists only to force one commit at the
@@ -395,17 +430,57 @@ export function App() {
     setSelectedSessionId(sessionId);
   }, []);
 
+  /**
+   * Add a project by absolute path. `add_project` in Rust is the only validator — it refuses a
+   * path that is not a directory and one that is not a repository root — so nothing here
+   * second-guesses the path before sending it.
+   *
+   * It returns the error rather than only swallowing it into the notice, following
+   * `cleanupWorktree` below: the sidebar draws it beside the control that produced it, which is
+   * where "that folder is not a repository root" is actually readable. The notice still fires, so
+   * the failure is not quieter than any other.
+   */
   const addProject = useCallback(
+    async (path: string): Promise<AppError | null> => {
+      try {
+        const p = await bridge().addProject(path);
+        setProjects((prev) => [...prev, p]);
+        store.noteProjects([p.id]);
+        setSelectedProjectId(p.id);
+        setSelectedSessionId(null);
+        return null;
+      } catch (e) {
+        say(e);
+        return toAppError(e);
+      }
+    },
+    [say],
+  );
+
+  /**
+   * "Add project" in a real window: the native macOS directory picker, then `add_project` on
+   * whatever came back.
+   *
+   * **A cancelled picker resolves `null` and is not an error** (`docs/research/tauri-dialog.md`
+   * §2). Nothing is added, nothing is said, and the sidebar's typed-path fallback is left closed.
+   */
+  const pickProject = useCallback(async (): Promise<AppError | null> => {
+    let picked: string | null;
+    try {
+      picked = await bridge().pickDirectory();
+    } catch (e) {
+      say(e);
+      return toAppError(e);
+    }
+    if (picked === null) return null;
+    return addProject(picked);
+  }, [addProject, say]);
+
+  /** Reveal a project root or a session worktree in Finder. Fire-and-forget; a failure is a
+   *  notice, never a thrown promise. */
+  const reveal = useCallback(
     (path: string) => {
-      void bridge()
-        .addProject(path)
-        .then((p) => {
-          setProjects((prev) => [...prev, p]);
-          store.noteProjects([p.id]);
-          setSelectedProjectId(p.id);
-          setSelectedSessionId(null);
-        })
-        .catch(say);
+      void bridge().revealPath(path).catch(say);
     },
     [say],
   );
@@ -475,6 +550,108 @@ export function App() {
     [say],
   );
 
+  /* ------------------------------------------------------------------ the run */
+
+  /**
+   * Re-read the plan and the unsettled intents for one project.
+   *
+   * **Failures are swallowed rather than shown**, and that is the one place on this surface where
+   * a gap is preferred to a message: this runs once a second while a run is live, so a `store` or
+   * `io` error would strobe the notice bar and drown every other failure in it. What it costs is
+   * stated rather than hidden — a `current_run` that starts failing shows as a card that stops
+   * updating, not as an error. Every *operator-initiated* call below still reports.
+   */
+  const refreshRun = useCallback(async (projectId: ProjectId | null): Promise<void> => {
+    runRequest.current = projectId;
+    if (projectId === null) {
+      setRun(null);
+      setIntents([]);
+      return;
+    }
+    const b = bridge();
+    const [view, list] = await Promise.all([
+      b.currentRun(projectId).catch(() => null),
+      b.unsettledIntents().catch(() => [] as IntentView[]),
+    ]);
+    // The selection moved while this was in flight: another fetch is already on its way, and
+    // painting this answer would put one project's plan under another project's name.
+    if (runRequest.current !== projectId) return;
+    setRun(view);
+    setIntents(list);
+  }, []);
+
+  /**
+   * Two triggers, and both are the contract's.
+   *
+   * The project selection is the obvious one. `state.runtimeWarnings` is the other: the
+   * reconciler emits a `runtime-warning` for an intent it could not settle, and
+   * `docs/plans/ipc-contract.md` §"The run" → Signals says the card refetches `current_run` on it.
+   * That is why the run needs no channel of its own.
+   */
+  useEffect(() => {
+    void refreshRun(selectedProjectId);
+  }, [selectedProjectId, state.runtimeWarnings, refreshRun]);
+
+  // While a run is live, ask. See `RUN_POLL_MS` for why this is a poll and not a subscription.
+  const runLive = runIsLive(run);
+  useEffect(() => {
+    if (selectedProjectId === null || !runLive) return;
+    const id = window.setInterval(() => {
+      void refreshRun(selectedProjectId);
+    }, RUN_POLL_MS);
+    return () => clearInterval(id);
+  }, [selectedProjectId, runLive, refreshRun]);
+
+  /** Hand the harness a goal in plain English. The answer is the plan, painted immediately. */
+  const startRun = useCallback(
+    (goal: string) => {
+      if (selectedProjectId === null) return;
+      const projectId = selectedProjectId;
+      setCommandBusy(true);
+      void bridge()
+        .startRun(projectId, goal)
+        .then((view) => {
+          if (runRequest.current === projectId) setRun(view);
+        })
+        .catch(say)
+        .finally(() => setCommandBusy(false));
+    },
+    [selectedProjectId, say],
+  );
+
+  /**
+   * Stop dispatching. **Nothing is killed** (`docs/plans/ipc-contract.md` §"The run"): a worker
+   * killed mid-order leaves a worktree whose `work_order` intent reconciles to `unknown`, which
+   * blocks its phase permanently. In-flight orders finish and are collected.
+   */
+  const stopRun = useCallback(
+    (planId: PlanId) => {
+      setCommandBusy(true);
+      void bridge()
+        .stopRun(planId)
+        .then(() => refreshRun(selectedProjectId))
+        .catch(say)
+        .finally(() => setCommandBusy(false));
+    },
+    [refreshRun, selectedProjectId, say],
+  );
+
+  /**
+   * The owner's answer to something the harness could not observe. **Not an approval**: neither
+   * value allows or denies anything, and `settle_intent` takes only these two.
+   */
+  const settleIntent = useCallback(
+    (intentId: string, settlement: IntentSettlement) => {
+      setCommandBusy(true);
+      void bridge()
+        .settleIntent(intentId, settlement)
+        .then(() => refreshRun(selectedProjectId))
+        .catch(say)
+        .finally(() => setCommandBusy(false));
+    },
+    [refreshRun, selectedProjectId, say],
+  );
+
   /**
    * `burn` starts its sessions under a project the Rust side creates itself
    * (`<temp>/brigadier-burn/burn`), whose id this window has never seen. Without the re-fetch and
@@ -529,6 +706,12 @@ export function App() {
         onSelectProject={setSelectedProjectId}
         onSelectSession={selectSession}
         onAddProject={addProject}
+        // Both plugins exist only in a real Tauri window. In a browser (`npm run dev`) the mock
+        // bridge is selected, the picker button is not drawn at all, and the typed-path field is
+        // the whole of "Add project" — the degradation the order asks for, done by not offering
+        // a control rather than by offering one that fails.
+        onPickProject={bridge().isMock ? undefined : pickProject}
+        onReveal={bridge().isMock ? undefined : reveal}
       />
 
       <main className="thread">
@@ -576,6 +759,14 @@ export function App() {
           <FpsOverlay />
         </header>
 
+        {/*
+          Pinned, and the placement is the requirement rather than a preference: the card is a
+          sibling of `<Feed>` inside the thread column, **above it and outside its scroller**, so
+          nothing the owner steers with can scroll away (`docs/vision.md` §9). Moving it inside
+          the feed would make it a row.
+        */}
+        <RunCard run={run} intents={intents} onSettle={settleIntent} />
+
         <Feed
           sessionId={selectedSessionId}
           projectId={selectedProjectId}
@@ -587,6 +778,20 @@ export function App() {
           onRespond={respond}
           onDismiss={store.dismissApproval}
           onFocus={focusApproval}
+        />
+
+        {/*
+          Handing the harness a goal sits on the dock, where the owner already types, and above
+          both composers — the one that starts a session and the one that sends a turn. It is not
+          about either: a run is per project, and it outlives every session it dispatches.
+        */}
+        <RunControl
+          projectName={selectedProject?.name ?? null}
+          canStart={selectedProject !== null && claudeError === null}
+          run={run}
+          busy={commandBusy}
+          onStart={startRun}
+          onStop={stopRun}
         />
 
         {selectedSession === null ? (

@@ -96,6 +96,17 @@ export interface StoreState {
    * stable until the set actually changes, so an effect keyed on it does not refire every frame.
    */
   unknownProjects: readonly ProjectId[];
+  /**
+   * How many `runtime-warning` signals this window has seen, ever.
+   *
+   * A counter rather than a message, because it is used as an **edge**, not as content: the
+   * reconciler emits a `runtime-warning` for an intent it could not settle, and the plan card
+   * refetches `current_run` when it fires (`docs/plans/ipc-contract.md` §"The run" → Signals).
+   * The run needs no channel of its own, and this is why.
+   *
+   * The text of each warning is already on the session it belongs to, as `lastMessage`.
+   */
+  runtimeWarnings: number;
 }
 
 let buffer: FeedBatch[] = [];
@@ -110,12 +121,16 @@ const knownProjects = new Set<ProjectId>();
 const unknownProjects = new Set<ProjectId>();
 let unknownList: readonly ProjectId[] = EMPTY_PROJECT_IDS;
 
+/** See `StoreState.runtimeWarnings`. Monotonic for the life of the window. */
+let runtimeWarnings = 0;
+
 let state: StoreState = {
   version: 0,
   sessions: {},
   order: [],
   approvals: [],
   unknownProjects: unknownList,
+  runtimeWarnings: 0,
 };
 let stateDirty = false;
 let countersDirty = false;
@@ -260,6 +275,8 @@ function applySignal(env: Envelope, projectId: ProjectId | null): void {
       });
       break;
     case "runtime-warning":
+      // The edge the plan card refetches `current_run` on; see `StoreState.runtimeWarnings`.
+      runtimeWarnings += 1;
       patch(id, projectId, { lastMessage: `warning: ${e.message}`, lastEventSeq: env.seq });
       break;
     case "runtime-error": {
@@ -339,6 +356,7 @@ function rebuildState(): void {
     order,
     approvals: [...approvals.values()].sort((a, b) => a.openedAtMs - b.openedAtMs),
     unknownProjects: unknownList,
+    runtimeWarnings,
   };
 }
 

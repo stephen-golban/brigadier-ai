@@ -24,8 +24,99 @@
 import { useEffect, useState } from "react";
 
 import { ModelIcon, PathIcon, ProjectIcon, SendIcon } from "./icons";
+import { runIsLive } from "../wire";
 import type { SessionRuntime } from "../feedStore";
-import type { SessionId, WorktreeCleanup } from "../wire";
+import type { PlanId, RunView, SessionId, WorktreeCleanup } from "../wire";
+
+/* ------------------------------------------------------------------ the run
+ *
+ * Handing the harness a goal and walking away is the whole product (`docs/vision.md` §9), so the
+ * control for it sits **where the owner already types** — on the dock, above the composer — and
+ * not behind a modal or a menu.
+ *
+ * It has exactly two states, and the second is the contract's:
+ *
+ *   - no live run: one field for the goal in plain English, and Start.
+ *   - a live run: no field at all, and Stop. `start_run` refuses a second run on the same project
+ *     with `run_already_live`, so offering the field again would be offering a button whose only
+ *     outcome is an error.
+ *
+ * **Stop stops dispatching; it does not kill** (`docs/plans/ipc-contract.md` §"The run"). A worker
+ * killed mid-order leaves a worktree whose `work_order` intent reconciles to `unknown`, which
+ * blocks its phase permanently — so the label says what actually happens rather than promising a
+ * halt the harness deliberately will not perform.
+ */
+export interface RunControlProps {
+  /** Named in the placeholder, so the field says which repository it is about to point at. */
+  projectName: string | null;
+  /** False when there is no project selected, or the `claude` probe failed. */
+  canStart: boolean;
+  /** The newest plan for the selected project, live or finished, or null. */
+  run: RunView | null;
+  /** An IPC call started here is in flight. */
+  busy: boolean;
+  onStart: (goal: string) => void;
+  onStop: (planId: PlanId) => void;
+}
+
+export function RunControl({ projectName, canStart, run, busy, onStart, onStop }: RunControlProps) {
+  const [goal, setGoal] = useState("");
+  const live = runIsLive(run);
+
+  const submit = () => {
+    if (!canStart || busy || goal.trim() === "") return;
+    onStart(goal.trim());
+    setGoal("");
+  };
+
+  if (live && run !== null) {
+    return (
+      <section className="run-dock" aria-label="the live run">
+        <span className="run-dock-status">Run live</span>
+        <span className="run-dock-goal" title={run.goal}>
+          {run.goal}
+        </span>
+        <button
+          type="button"
+          className="act danger"
+          disabled={busy}
+          title="stop dispatching new orders; in-flight orders finish and are collected"
+          onClick={() => onStop(run.plan_id)}
+        >
+          Stop run
+        </button>
+      </section>
+    );
+  }
+
+  return (
+    <section className="run-dock" aria-label="start a run">
+      <input
+        className="run-dock-input"
+        value={goal}
+        aria-label="the goal, in plain English"
+        placeholder={
+          projectName === null
+            ? "Select a project to hand it a goal"
+            : `Hand ${projectName} a goal in plain English, and walk away`
+        }
+        disabled={!canStart || busy}
+        onChange={(e) => setGoal(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") submit();
+        }}
+      />
+      <button
+        type="button"
+        className="send wide"
+        disabled={!canStart || busy || goal.trim() === ""}
+        onClick={submit}
+      >
+        Start run
+      </button>
+    </section>
+  );
+}
 
 export interface ComposerProps {
   session: SessionRuntime | null;

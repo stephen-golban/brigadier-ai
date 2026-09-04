@@ -10,6 +10,8 @@
  * complete, exercisable front end.
  */
 import { Channel, invoke as tauriInvoke, isTauri } from "@tauri-apps/api/core";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 
 import { mockBridge } from "./mock";
 import { toAppError } from "./wire";
@@ -21,12 +23,17 @@ import type {
   FeedBatch,
   FeedRowWire,
   FrameStats,
+  IntentId,
+  IntentSettlement,
+  IntentView,
   ModelInfo,
   PaintReport,
   PermissionMode,
+  PlanId,
   ProjectId,
   ProjectView,
   RequestId,
+  RunView,
   SessionId,
   SessionView,
   WorktreeCleanup,
@@ -63,6 +70,23 @@ export interface Bridge {
 
   listProjects(): Promise<ProjectView[]>;
   addProject(path: string): Promise<ProjectView>;
+  /**
+   * The native directory picker behind "Add project". Resolves to the chosen absolute path, or
+   * to **`null` when the user cancelled** — `@tauri-apps/plugin-dialog`'s `open()` types
+   * `{ directory: true, multiple: false }` as `string | null` and documents `null` as
+   * "user cancelled the selection" (`docs/research/tauri-dialog.md` §2). A cancel is not an
+   * error and must never be reported as one.
+   *
+   * The mock answers `null` unconditionally: a browser has no native picker, and
+   * `Bridge.isMock` is what the UI gates the button on, so this is never reached there.
+   */
+  pickDirectory(): Promise<string | null>;
+  /**
+   * Reveal a path in the OS file manager (Finder). `tauri-plugin-opener`'s `revealItemInDir`,
+   * which `opener:default` already permits (`docs/research/tauri-dialog.md` §3). No-op in the
+   * mock.
+   */
+  revealPath(path: string): Promise<void>;
 
   listSessions(): Promise<SessionView[]>;
   startSession(args: StartSessionArgs): Promise<SessionView>;
@@ -78,6 +102,29 @@ export interface Bridge {
 
   feedTail(sessionId: SessionId, n: number): Promise<FeedRowWire[]>;
   pendingApprovals(): Promise<ApprovalView[]>;
+
+  /* ------------------------------------------------------------------ the run
+   *
+   * `docs/plans/ipc-contract.md` §"The run". Five commands and nothing else: one approved goal,
+   * one plan, and a loop that dispatches, gates and commits without a human.
+   */
+
+  /** One goal in plain English becomes a plan. Errors: `no_such_project`, `invalid_argument`
+   *  (an empty goal), `run_already_live`. */
+  startRun(projectId: ProjectId, goal: string): Promise<RunView>;
+  /** The newest plan for this project, live or finished, or `null` when there has never been one. */
+  currentRun(projectId: ProjectId): Promise<RunView | null>;
+  /**
+   * Stop dispatching. **This never kills a worker mid-order** (contract §"The run"): a worker
+   * killed part-way leaves a worktree whose `work_order` intent reconciles to `unknown`, which
+   * blocks its phase permanently. In-flight orders finish and are collected. Errors:
+   * `no_such_plan`.
+   */
+  stopRun(planId: PlanId): Promise<void>;
+  /** Every intent the reconciler could not settle, oldest first. Not scoped to a project. */
+  unsettledIntents(): Promise<IntentView[]>;
+  /** The owner's answer to one of them. Errors: `no_such_intent`, `invalid_argument`. */
+  settleIntent(intentId: IntentId, state: IntentSettlement): Promise<void>;
 
   recordFrameStats(stats: FrameStats): Promise<void>;
   /** Append one timed paint to `<data_dir>/paint.ndjson`. Fire-and-forget at every call site. */
@@ -122,6 +169,28 @@ const tauriBridge: Bridge = {
   listProjects: () => call<ProjectView[]>("list_projects"),
   addProject: (path) => call<ProjectView>("add_project", { path }),
 
+  // Not `invoke`, so not `call`: these two are plugin commands with their own JS wrappers, and
+  // their rejections are plain `Error`s rather than the `{ code, message }` an `AppError` decodes
+  // from. `toAppError` handles both shapes, so the call sites stay uniform.
+  async pickDirectory() {
+    try {
+      return await openDialog({
+        directory: true,
+        multiple: false,
+        title: "Choose a repository",
+      });
+    } catch (e) {
+      throw toAppError(e);
+    }
+  },
+  async revealPath(path) {
+    try {
+      await revealItemInDir(path);
+    } catch (e) {
+      throw toAppError(e);
+    }
+  },
+
   listSessions: () => call<SessionView[]>("list_sessions"),
   startSession: ({ projectId, prompt, model, permissionMode }) =>
     call<SessionView>("start_session", { projectId, prompt, model, permissionMode }),
@@ -137,6 +206,12 @@ const tauriBridge: Bridge = {
 
   feedTail: (sessionId, n) => call<FeedRowWire[]>("feed_tail", { sessionId, n }),
   pendingApprovals: () => call<ApprovalView[]>("pending_approvals"),
+
+  startRun: (projectId, goal) => call<RunView>("start_run", { projectId, goal }),
+  currentRun: (projectId) => call<RunView | null>("current_run", { projectId }),
+  stopRun: (planId) => call<void>("stop_run", { planId }),
+  unsettledIntents: () => call<IntentView[]>("unsettled_intents"),
+  settleIntent: (intentId, state) => call<void>("settle_intent", { intentId, state }),
 
   recordFrameStats: (stats) => call<void>("record_frame_stats", { stats }),
   reportPaint: (report) => call<void>("report_paint", { report }),
