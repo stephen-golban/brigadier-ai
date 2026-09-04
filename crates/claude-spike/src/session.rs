@@ -274,6 +274,8 @@ impl Session {
     }
 
     /// Answer a `control_request` with a `subtype: "success"` body.
+    /// `session.rs` is included per binary via `#[path]`; not every binary uses every helper.
+    #[allow(dead_code)]
     pub async fn answer_ok(&mut self, cli_request_id: &str, body: Value) -> Result<()> {
         self.send(&json!({
             "type": "control_response",
@@ -320,6 +322,8 @@ pub fn truncate(s: &str, n: usize) -> String {
 }
 
 /// Flatten `message.content` into plain text for eyeballing assistant replies.
+/// `session.rs` is included per binary via `#[path]`; not every binary uses every helper.
+#[allow(dead_code)]
 pub fn text_of(msg: &Value) -> String {
     let c = &msg["message"]["content"];
     if let Some(s) = c.as_str() {
