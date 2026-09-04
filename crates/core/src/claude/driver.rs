@@ -219,6 +219,7 @@ impl ProviderDriver for ClaudeDriver {
                 resume: None,
                 config_dir: self.config.config_dir.clone(),
                 mcp: req.mcp,
+                thinking: req.thinking,
                 env_overrides: req.env_overrides,
             };
             self.open(spec, req.prompt, req.event_buffer, None).await
@@ -244,6 +245,9 @@ impl ProviderDriver for ClaudeDriver {
                 // A resume is gated exactly like a start; nothing about reopening a conversation
                 // widens what the child may reach. see docs/research/spawn-split.md §6.
                 mcp: req.mcp,
+                // Thinking too: a resumed child is no more entitled to deliberate than a fresh
+                // one, and the CLI reads the variable at startup either way.
+                thinking: req.thinking,
                 env_overrides: req.env_overrides,
             };
             self.open(spec, req.prompt, req.event_buffer, req.resumed).await

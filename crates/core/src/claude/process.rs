@@ -20,7 +20,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::driver::{DriverError, McpPolicy, PermissionMode};
+use crate::driver::{DriverError, McpPolicy, PermissionMode, ThinkingPolicy};
 
 /// Grace period between `SIGTERM` and `SIGKILL` on a process group.
 // see docs/research/agent-sdk.md §10 — the SDK's own close path waits 2000 ms after EOF before
@@ -70,6 +70,11 @@ pub struct SpawnSpec {
     /// Whether this child inherits the user's MCP servers. [`McpPolicy::Off`] is the default and
     /// is the only variant that emits a flag.
     pub mcp: McpPolicy,
+    /// Whether this child does extended thinking. [`ThinkingPolicy::Off`] is the default and is
+    /// the only variant that sets anything — `MAX_THINKING_TOKENS=0`, an environment entry and
+    /// never a flag, applied before `env_overrides` so a caller can still override it by name.
+    // see docs/research/thinking-control.md §8 and [`ThinkingPolicy`] for why off is the default.
+    pub thinking: ThinkingPolicy,
     /// Extra environment layered on top of the inherited set, as values.
     pub env_overrides: BTreeMap<String, String>,
 }
@@ -186,13 +191,23 @@ impl KillHandle {
     }
 }
 
-/// Spawns `claude` per `spec`, draining stderr to `tracing::warn` and supervising the child.
+/// The command a spawn runs, built and not started.
 ///
-/// # Errors
-/// [`DriverError::Spawn`] when the process cannot start, [`DriverError::Protocol`] when tokio
-/// does not hand back all three pipes (it always does with `Stdio::piped`, but this crate does
-/// not `unwrap`).
-pub fn spawn(spec: &SpawnSpec) -> Result<Spawned, DriverError> {
+/// Split out of [`spawn`] so the child's *environment* can be pinned by a test the way
+/// [`build_argv`] pins its command line — `Command::get_envs` reports exactly the modifications
+/// made here, and nothing about the parent environment those modifications sit on.
+///
+/// The four environment steps are ordered, and the order is the contract:
+///
+/// 1. `CLAUDE_CODE_ENTRYPOINT`, as the SDK sets it.
+/// 2. `STRIPPED_VARS` removed, so a brigadier launched from inside a Claude Code session does
+///    not nest its child in that session.
+/// 3. `CLAUDE_CONFIG_DIR` and [`SpawnSpec::thinking`] — harness policy, which must land *after*
+///    the strip list to be able to override an inherited value of the same name.
+/// 4. [`SpawnSpec::env_overrides`] last, so the caller wins over all of it. Reversing 3 and 4
+///    would silently drop a caller's own `MAX_THINKING_TOKENS`; reversing 2 and 3 would let the
+///    strip list delete a variable the policy had just set.
+fn build_command(spec: &SpawnSpec) -> Command {
     let mut cmd = Command::new(&spec.binary);
     cmd.args(build_argv(spec))
         .current_dir(&spec.cwd)
@@ -210,6 +225,13 @@ pub fn spawn(spec: &SpawnSpec) -> Result<Spawned, DriverError> {
     if let Some(dir) = &spec.config_dir {
         cmd.env("CLAUDE_CONFIG_DIR", dir);
     }
+    // Thinking is an environment lever, never a flag: `MAX_THINKING_TOKENS=0` reaches
+    // `thinking: {type: "disabled"}` at session start, ahead of the CLI's own `adaptive` default,
+    // and `build_argv` is untouched by this. `--effort` is not used and would be discarded on
+    // `claude-haiku-4-5` anyway. see docs/research/thinking-control.md §4b and §8.
+    if let Some((key, value)) = spec.thinking.env_entry() {
+        cmd.env(key, value);
+    }
     for (key, value) in &spec.env_overrides {
         cmd.env(key, value);
     }
@@ -218,6 +240,18 @@ pub fn spawn(spec: &SpawnSpec) -> Result<Spawned, DriverError> {
     // see docs/research/tauri-runtime.md §5. Stable since Rust 1.64; safe wrapper, no `unsafe`.
     #[cfg(unix)]
     cmd.process_group(0);
+
+    cmd
+}
+
+/// Spawns `claude` per `spec`, draining stderr to `tracing::warn` and supervising the child.
+///
+/// # Errors
+/// [`DriverError::Spawn`] when the process cannot start, [`DriverError::Protocol`] when tokio
+/// does not hand back all three pipes (it always does with `Stdio::piped`, but this crate does
+/// not `unwrap`).
+pub fn spawn(spec: &SpawnSpec) -> Result<Spawned, DriverError> {
+    let mut cmd = build_command(spec);
 
     let mut child = cmd.spawn().map_err(|source| DriverError::Spawn {
         binary: spec.binary.display().to_string(),
@@ -316,8 +350,109 @@ mod tests {
             resume: None,
             config_dir: None,
             mcp: McpPolicy::Off,
+            thinking: ThinkingPolicy::default(),
             env_overrides: BTreeMap::new(),
         }
+    }
+
+    /// Every environment modification [`build_command`] makes, as the child would see them:
+    /// `Some` is a value the harness sets, `None` a removal, and a key that is absent from the map
+    /// was never touched — which is the only honest reading of "the variable is not set", since
+    /// `Command::get_envs` reports the modifications and not the inherited environment they sit on.
+    fn env_of(spec: &SpawnSpec) -> BTreeMap<String, Option<String>> {
+        let cmd = build_command(spec);
+        cmd.as_std()
+            .get_envs()
+            .map(|(k, v)| {
+                (k.to_string_lossy().into_owned(), v.map(|v| v.to_string_lossy().into_owned()))
+            })
+            .collect()
+    }
+
+    /// The default child is spawned with thinking off, through the environment.
+    ///
+    /// Not a preference: the CLI starts every session at `{type: "adaptive"}` and degrades that to
+    /// `{type: "enabled", budget_tokens: N}` on `claude-haiku-4-5`, which has no adaptive mode, so
+    /// without this the harness pays for deliberation on every mechanical turn. Off is that
+    /// model's own API default.
+    // see docs/research/thinking-control.md §1, §3 and §8.
+    #[test]
+    fn the_default_child_is_spawned_with_thinking_off() {
+        assert_eq!(ThinkingPolicy::default(), ThinkingPolicy::Off, "off is the default policy");
+        let env = env_of(&spec());
+        assert_eq!(
+            env.get(ThinkingPolicy::ENV_VAR),
+            Some(&Some("0".to_owned())),
+            "MAX_THINKING_TOKENS=0 is what the CLI maps to thinking: {{type: \"disabled\"}}"
+        );
+        assert_eq!(env.get(ENTRYPOINT.0), Some(&Some(ENTRYPOINT.1.to_owned())));
+    }
+
+    /// The opt-in sets **nothing**, so the CLI's own default and the user's own settings decide.
+    ///
+    /// Absent, not empty: the CLI tests the variable for truthiness before parsing it, so
+    /// `MAX_THINKING_TOKENS=` is a third state this policy does not express and must not emit.
+    #[test]
+    fn an_opted_in_child_sets_no_thinking_variable_at_all() {
+        let env = env_of(&SpawnSpec { thinking: ThinkingPolicy::Inherit, ..spec() });
+        assert!(
+            !env.contains_key(ThinkingPolicy::ENV_VAR),
+            "inherit touches the variable in no way: {env:?}"
+        );
+        assert_eq!(ThinkingPolicy::Inherit.env_entry(), None);
+        // And it is not the strip list either — an inherited value must survive.
+        assert!(!STRIPPED_VARS.contains(&ThinkingPolicy::ENV_VAR));
+    }
+
+    /// `env_overrides` is applied after the strip list and after the policy, so the caller wins
+    /// over both. Were that order ever reversed, a stripped key would come back empty-handed and
+    /// a caller's own thinking budget would be silently overwritten with `0`.
+    #[test]
+    fn env_overrides_win_over_the_strip_list_and_over_the_policy() {
+        let overrides = BTreeMap::from([
+            ("DEBUG".to_owned(), "brigadier".to_owned()),
+            (ThinkingPolicy::ENV_VAR.to_owned(), "4096".to_owned()),
+        ]);
+        let env = env_of(&SpawnSpec { env_overrides: overrides, ..spec() });
+        assert_eq!(
+            env.get("DEBUG"),
+            Some(&Some("brigadier".to_owned())),
+            "an override of a stripped key survives, so overrides land last"
+        );
+        assert_eq!(
+            env.get(ThinkingPolicy::ENV_VAR),
+            Some(&Some("4096".to_owned())),
+            "an explicit budget beats the default policy"
+        );
+        // A stripped key nobody overrode is still a removal, not a value.
+        assert_eq!(env.get("CLAUDECODE"), Some(&None), "{env:?}");
+    }
+
+    /// The thinking lever is the environment and only the environment: both policies produce the
+    /// same argv, byte for byte, as the shape pinned above. This is the assertion that fails if
+    /// anyone moves it to a flag — including `--effort`, which the CLI silently discards on
+    /// `claude-haiku-4-5` (`docs/research/thinking-control.md` §4a).
+    #[test]
+    fn the_thinking_policy_never_reaches_the_argv() {
+        let off = build_argv(&spec());
+        let inherit = build_argv(&SpawnSpec { thinking: ThinkingPolicy::Inherit, ..spec() });
+        assert_eq!(off, inherit);
+        assert_eq!(
+            off,
+            [
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                "--input-format",
+                "stream-json",
+                "--permission-prompt-tool",
+                "stdio",
+                "--strict-mcp-config",
+                "--permission-mode",
+                "default",
+            ]
+        );
+        assert!(!off.iter().any(|a| a == "--effort" || a.contains(ThinkingPolicy::ENV_VAR)));
     }
 
     /// The default shape, pinned whole. `--strict-mcp-config` is in it because

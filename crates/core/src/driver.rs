@@ -253,6 +253,60 @@ impl<'de> Deserialize<'de> for McpPolicy {
     }
 }
 
+/// Whether a harness-spawned child does extended thinking.
+///
+/// **Off by default.** Owner decision 2026-09-04. `build_argv` asks for no thinking, and the model
+/// string carries none, yet a `claude-haiku-4-5` child thinks on every turn: the CLI starts every
+/// session at `thinking: {type: "adaptive"}` and rewrites that at request-build time to
+/// `{type: "enabled", budget_tokens: N}` for any model with no adaptive mode. Haiku 4.5 is one, so
+/// the session default degrades into *manual thinking with a large budget* rather than into off.
+/// That model's own API default is thinking **off**, so the harness has been paying for an opt-in
+/// it never made, on every mechanical child, per turn.
+// see docs/research/thinking-control.md §3 (the CLI's default, read out of the 2.1.260 binary),
+// §1 (the per-model API table, documented) and §8 (the recommendation and its asymmetry).
+///
+/// Two variants and no third. There is deliberately no effort variant: `--effort` parses on 2.1.260
+/// but the binary hard-codes `claude-haiku-4-5` as effort-incapable and then sends no effort
+/// parameter at all, with no warning on that path (`thinking-control.md` §4a). A lane routed to
+/// Opus 5 instead wants the opposite answer — thinking on, `--effort low` — because disabling
+/// thinking there buys a failure mode nothing in `adapter.rs` can detect (§7). The rule is
+/// per-model, so a third variant belongs to whoever adds that model and its routing together.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ThinkingPolicy {
+    /// Thinking off. The child is spawned with `MAX_THINKING_TOKENS=0`, which the CLI maps to
+    /// `thinking: {type: "disabled"}` at session start, ahead of its own `adaptive` default.
+    #[default]
+    Off,
+    /// The harness sets nothing, so the CLI's own default decides — and so does anything the user
+    /// already has: `alwaysThinkingEnabled` in their settings, or a `MAX_THINKING_TOKENS` in the
+    /// inherited environment, both of which `Off` overrides and this variant does not.
+    Inherit,
+}
+
+impl ThinkingPolicy {
+    /// The variable this policy speaks through, and the only lever used.
+    ///
+    /// Documented at <https://code.claude.com/docs/en/model-config>: "Set `MAX_THINKING_TOKENS=0`,
+    /// which turns thinking off on the Anthropic API except on Fable 5.1 and Fable 5."
+    /// `CLAUDE_CODE_DISABLE_THINKING` reaches a similar place in the 2.1.260 binary and is
+    /// documented nowhere; `alwaysThinkingEnabled` is a settings key and would persist in the
+    /// user's own file. Neither is used.
+    // see docs/research/thinking-control.md §4b.
+    pub const ENV_VAR: &'static str = "MAX_THINKING_TOKENS";
+
+    /// The environment entry this policy contributes, or `None` when it contributes nothing.
+    ///
+    /// [`ThinkingPolicy::Inherit`] sets no variable at all rather than an empty one. The CLI tests
+    /// the variable for truthiness before parsing it, so an empty value is not a spelling of any
+    /// documented behaviour and is not relied on here.
+    pub fn env_entry(self) -> Option<(&'static str, &'static str)> {
+        match self {
+            Self::Off => Some((Self::ENV_VAR, "0")),
+            Self::Inherit => None,
+        }
+    }
+}
+
 /// Everything needed to open a new session.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StartSession {
@@ -269,6 +323,9 @@ pub struct StartSession {
     pub env_overrides: BTreeMap<String, String>,
     /// Whether this child inherits the user's MCP servers. Defaults to [`McpPolicy::Off`].
     pub mcp: McpPolicy,
+    /// Whether this child does extended thinking. Defaults to [`ThinkingPolicy::Off`]; the
+    /// judgement lane is what opts back in, per spawn.
+    pub thinking: ThinkingPolicy,
     /// Capacity of the bounded event channel; see [`SessionHandle`].
     pub event_buffer: usize,
 }
@@ -286,6 +343,7 @@ impl StartSession {
             permission_mode: PermissionMode::Default,
             env_overrides: BTreeMap::new(),
             mcp: McpPolicy::default(),
+            thinking: ThinkingPolicy::default(),
             event_buffer: DEFAULT_EVENT_BUFFER,
         }
     }
@@ -334,6 +392,8 @@ pub struct ResumeSession {
     /// Whether this child inherits the user's MCP servers. A resume carries the same policy a
     /// start does; nothing about reopening a conversation changes what the child may reach.
     pub mcp: McpPolicy,
+    /// Whether this child does extended thinking. A resume carries the same policy a start does.
+    pub thinking: ThinkingPolicy,
     /// Capacity of the bounded event channel.
     pub event_buffer: usize,
 }
@@ -351,6 +411,7 @@ impl ResumeSession {
             permission_mode: base.permission_mode,
             env_overrides: base.env_overrides,
             mcp: base.mcp,
+            thinking: base.thinking,
             event_buffer: base.event_buffer,
         }
     }
@@ -510,6 +571,20 @@ mod tests {
         assert_eq!(McpPolicy::default(), McpPolicy::Off);
         assert_eq!(StartSession::new("/w").mcp, McpPolicy::Off);
         assert_eq!(ResumeSession::new("tok", "/w").mcp, McpPolicy::Off);
+    }
+
+    /// Thinking off on both request shapes, and a resume carries whatever a start would.
+    ///
+    /// The default is the decision: the CLI turns thinking on by itself on a model whose own API
+    /// default is off, so a request nobody has configured has to say `MAX_THINKING_TOKENS=0`.
+    // see docs/research/thinking-control.md §3 and §8 (owner decision 2026-09-04).
+    #[test]
+    fn the_thinking_default_is_off_on_both_request_shapes() {
+        assert_eq!(ThinkingPolicy::default(), ThinkingPolicy::Off);
+        assert_eq!(StartSession::new("/w").thinking, ThinkingPolicy::Off);
+        assert_eq!(ResumeSession::new("tok", "/w").thinking, ThinkingPolicy::Off);
+        assert_eq!(ThinkingPolicy::Off.env_entry(), Some(("MAX_THINKING_TOKENS", "0")));
+        assert_eq!(ThinkingPolicy::Inherit.env_entry(), None);
     }
 
     /// The slug set is closed and pinned: two values, nothing else. A stored slug from a build
