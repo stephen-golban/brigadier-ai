@@ -180,9 +180,18 @@ rules, 19x11 toggles, destructive in red — converted to our dark tokens. **Do 
 surface area**: that design has ~70 nav rows across 9 tabs; we have eight settings.
 
 **HARD CONSTRAINTS on this wave:**
-- **`src/components/Feed.tsx` does not move.** Ours is virtualized and measured at 60 Hz over 1,513
-  samples. Jan renders every message with no virtualiser and the audit calls its thread renderer
-  *disqualified for brigadier*. Taking it would be a measured regression.
+- **`src/components/Feed.tsx` does not move** — its virtualizer and its fixed integer row height
+  stay. Jan renders every message with no virtualiser and the audit calls its thread renderer
+  *disqualified for brigadier*. Taking it would be a measured regression. **The citation behind this
+  constraint changed on 2026-09-04; the constraint did not, and this is not licence to loosen it.**
+  "60 Hz over 1,513 samples" is superseded — those samples predate `864a2fe`, which changed `ROW_H`
+  18 → 28. The replacement is stronger, not weaker: **60 Hz in 62 of 62 one-second windows,
+  `p50_ms` 17.0**, measured on the current markup under a 10-session × 200 rows/s burn while
+  scrolling, with the row itself down to **2 DOM nodes** and 23 rendered rows costing 47
+  (`docs/research/visual-checks-2026-09-04.md` §3, at `1b18909`). **[measured]** Caveats that travel
+  with it: **n = 1**, it is a **debug build**, and 1 of the 62 windows failed the gate on 4 dropped
+  vsyncs — a control run with scroll and no ingest passed 65 of 66, so the drops are the ingest, not
+  the virtualizer.
 - **The measured palette survives.** It is the only design artifact sampled from the live app.
 - **Dark only.** A light scheme has to be designed, not measured, and the reference has none.
 - Jan is Apache-2.0 and copying is legally open, but **do not ship Jan's trademarks or marks**.
