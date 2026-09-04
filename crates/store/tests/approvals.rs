@@ -5,7 +5,7 @@ use std::time::SystemTime;
 use brigadier_core::approval::PendingApproval;
 use brigadier_core::event::{RequestId, RequestKind, SessionId, INPUT_EXCERPT_LIMIT};
 use brigadier_core::session::Decision;
-use brigadier_store::{Store, EXPIRED_REASON};
+use brigadier_store::{ApprovalOutcome, Store};
 
 fn permission(tool: &str, input: &str) -> RequestKind {
     RequestKind::ToolPermission {
@@ -55,12 +55,19 @@ async fn a_pending_approval_survives_a_restart_only_as_expired() {
     let row = &all[0];
     assert!(row.resolved_at.is_some(), "expired at startup");
     assert_eq!(row.run_id, run_a, "the row still names the launch that lost it");
-    let decision: Decision =
-        serde_json::from_str(row.decision_json.as_deref().expect("decision")).expect("decode");
-    match decision {
-        Decision::Deny { reason, .. } => assert_eq!(reason, EXPIRED_REASON),
-        other => panic!("expected a denial, got {other:?}"),
-    }
+
+    // The point of the row: nothing answered it, so nothing was denied. The decision never
+    // reached the child and the tool it was gating may well have run, so an expired row records
+    // *no* decision — `docs/vision.md` §9, "a panel that shows 'denied' for a deny that did not
+    // land ... breaks the one screen the owner has to be able to trust". Until this was fixed the
+    // store wrote `Decision::deny("expired: app restarted")` into the row — a denial nobody made,
+    // waiting for the first reader of `decision_json` to render it as one.
+    assert_eq!(row.outcome(), ApprovalOutcome::Expired);
+    assert_eq!(
+        row.decision_json, None,
+        "an expired approval carries no decision, and least of all a deny: {row:?}"
+    );
+    assert_ne!(row.outcome(), ApprovalOutcome::Answered, "and it does not read as answered");
     second.close().await.expect("close");
 }
 
@@ -93,6 +100,7 @@ async fn an_answered_approval_is_not_touched_by_the_next_launch() {
     let decision: Decision =
         serde_json::from_str(all[0].decision_json.as_deref().expect("decision")).expect("decode");
     assert!(matches!(decision, Decision::Allow { .. }), "the real answer was kept");
+    assert_eq!(all[0].outcome(), ApprovalOutcome::Answered, "a real answer is not an expiry");
     second.close().await.expect("close");
 }
 
