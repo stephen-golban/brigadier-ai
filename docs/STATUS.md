@@ -3,8 +3,10 @@
 Last updated 2026-09-04. **This is the file to read first.** It says what is built, what is proven,
 what is broken, and what will bite you. The product it is building toward is `docs/vision.md`.
 
-§§2, 4, 5, 6, 7 and the landmine list were revised on 2026-09-04 against the research files behind
-them. **§1 and §3 are dated by their own text** — read the commit each names before quoting it.
+**§1 and §3 are the freshest sections in this file**: both were rewritten on 2026-09-04 against a
+six-gate run at `c884767`. §§2, 4, 5, 6, 7 and the landmine list were revised earlier the same day
+against the research files behind them. **Every section is dated by its own text** — read the commit
+a claim names before quoting it.
 
 No invented progress. A feature "works" only after it has been run. One line per fact, a path or a
 number instead of an adjective, and what was not checked is said outright.
@@ -13,21 +15,68 @@ number instead of an adjective, and what was not checked is said outright.
 
 ## 1. The tree right now
 
-`main` at `3e5c3fd` ("style: the measured palette becomes oklch tokens on Tailwind 4"), plus the
-commit carrying this file, which changes documentation only. **The working tree is otherwise
-clean.** Nothing is staged and nothing is pending the owner's approval.
+`main` at `c884767` ("docs: the layout fixes confirmed in WKWebView, and one claim that could not
+be"), plus the commit carrying this file, which changes documentation only. On that parent tree
+`git status --porcelain` printed nothing — **the working tree is otherwise clean**, nothing staged
+and nothing pending the owner's approval. **[measured]** 2026-09-04.
 
-Everything that was uncommitted at `2327bb9` has since landed or been dropped:
+**This section named `3e5c3fd` until this revision, and that was 36 commits stale, not seven** —
+`git rev-list --count 3e5c3fd..HEAD` is **36** **[measured]**, two days behind. **16** of those
+commits carry the date 2026-09-04 **[measured]**.
 
-- `crates/core/src/wall/` (the Bash classifier) is committed at `21d2375`.
-- the fixtures `crates/claude-spike/fixtures/s8-*`, `s9-*`, `s10-*` (12 NDJSON captures) are committed.
-- `crates/supervisor/src/handoff.rs` never reached a commit and no longer exists on disk; the handoff
-  wall was dropped at `a415bb9`. `git log --oneline -1 -- crates/supervisor/src/handoff.rs` prints
-  nothing. See §7.
+The **seven** commits after `1b18909` (`fix:`, clippy dead-code in `claude-spike` `session.rs`,
+included per binary via `#[path]`) are the last session's output. Oldest first:
 
-**Most numbers below were measured at `2327bb9` and nobody has re-measured them.** Only §3's gate
-figures are `3e5c3fd`. Anything else that says "measured" was measured at `2327bb9` unless it cites
-one of the `s8-*`/`s9-*`/`s10-*` fixtures or names a later commit.
+- `dc52f07` `docs:` — `docs/research/intent-records.md`, 583 lines: migration 3's `intents` table,
+  an intent-kind → postcondition table, a three-outcome reconciler that never retries an `unknown`.
+  **Design only, no code. Unimplemented.** It records that `respond` writes the decision to the
+  child's stdin at `crates/core/src/claude/adapter.rs:960` and only emits `RequestResolved` at
+  `:968`, so the one path `docs/plans/ipc-contract.md` calls the safety boundary is the one effect
+  with no pre-record. **[source]**
+- `10c123f` `docs:` — `docs/research/thinking-control.md`, 425 lines: the CLI starts every session
+  at thinking `{type:"adaptive"}` and degrades that to `{type:"enabled", budget_tokens: N}` for a
+  model with no adaptive mode, so a `claude-haiku-4-5` child thinks although `build_argv` asks for
+  nothing. Read out of the 2.1.260 binary; **no live request was made** (`claude --version` and
+  `--help` only). **[source]**
+- `2657c71` `docs:` — `docs/research/visual-checks-2026-09-04.md`, 418 lines: the 800x500 minimum
+  holds but three CSS rules break it, and the 60 Hz feed number re-measured on the 28 px row.
+  **[source]**
+- `47632b2` `docs:` — §§2, 4, 5, 6, 7 and the landmine list of this file revised; §1 and §3 left
+  stale on purpose. This revision is the debt that line took on. **[source]**
+- `e780fbd` `feat:` — harness children get thinking off by default, through the environment.
+  `ThinkingPolicy` (`Off` \| `Inherit`, `Off` the default) on `SpawnSpec`, `StartSession` and
+  `ResumeSession`; `Off` contributes `MAX_THINKING_TOKENS=0`, `Inherit` sets nothing at all.
+  `build_command` split out of `spawn`; the four env steps are ordered and **the order is the
+  contract**. 5 tests, **296 → 301** **[source]**. `build_argv` is unchanged, asserted byte for
+  byte by a test. **Not measured: that the CLI turns thinking off in response** — the child's
+  environment is pinned by tests, the CLI's handling is read from the 2.1.260 binary and the vendor
+  docs, and only a live run settles it. **`crates/claude-spike` builds its own `Command` and does
+  not pick this up — every spike binary still spawns a thinking-on child.**
+- `f807e0e` `feat:` — W4-D2, the verbose toggle, plus four layout defects fixed. `FeedRowWire`
+  carries `k`, the eleven-value union mirroring `brigadier_store::FeedKind`; terse is the default
+  and hides exactly `k === "text"`; `visibleRows` filters on `k !== "text"` and nothing else, so
+  `unknown` survives by construction. 6 tests, **131 → 137** **[source]**. Bundle **273.98 → 274.87
+  kB JS, 25.17 → 27.11 kB CSS** **[source]**, out of that commit's own message and **not
+  re-measured at the intermediate commit**.
+- `c884767` `docs:` — `docs/research/visual-checks-2026-09-04.md` §8, 226 lines: the real-WKWebView
+  confirmation of `f807e0e`'s fixes, on an unlocked screen with no spend (`pgrep -x claude`
+  byte-identical before and after, no session started). **[source]**
+
+The "everything uncommitted at `2327bb9`" paragraph was re-checked rather than assumed and all
+three of its bullets are still literally true **[measured]** 2026-09-04 — the Bash classifier
+committed at `21d2375`, and 12 `s8-*`/`s9-*`/`s10-*` NDJSON fixtures on disk under
+`crates/claude-spike/fixtures/` with `git ls-files` counting the same 12 — but it describes a tree
+36 commits gone and is no longer load-bearing. The one fact §7 still rests on:
+**`crates/supervisor/src/handoff.rs` does not exist on disk and
+`git log --oneline -1 -- crates/supervisor/src/handoff.rs` prints nothing**; the handoff wall was
+dropped at `a415bb9`. See §7.
+
+**The "measured at `2327bb9`" fallback is now the exception, not the rule.** §3's gate figures are
+`c884767`, this run. §4 carries rows measured on 2026-09-03 and 2026-09-04 that name their own
+commits — `spawn-split.md`, `perceived-performance.md`, `flood-baseline.md` at `c78a089`,
+`visual-checks-2026-09-04.md` at `1b18909`. What the fallback still covers is only the rows that
+name no later commit and no date: the four undated ones at the foot of §4's table — search-results
+median, whole-repo symbol map rebuild, raw NDJSON, provider transcripts.
 
 ## 2. Built, and what proved each row
 
@@ -54,11 +103,11 @@ its evidence says so.**
 | data-dir lock, batcher shrink | `7f03eb5` | — |
 | every `result` frame reaches the store | `ce833c5` | four fixture tests, `crates/core/tests/claude_adapter.rs:626,667,702,760`, against real captures (`s9`, `f-b-fanout`) — not a live-child proof. §5 item 9. |
 | a front-end test runner | `ad5a4a7` | 27 tests, `src/feedStore.test.ts`, `npm test` (Vitest + jsdom + Testing Library). They pin `src/feedStore.ts` only: the rAF drain's coalescing and its stop, the `ROW_CAP` 2000 head-trim on both rings, the `seedRows` two-pointer merge (order, `q` interleave, `q`-collision, reference stability, idempotence, ROW_CAP on the union, project ring untouched), cost taking the latest turn's cumulative figure and never summing, `seedSessions`' end/cost reconciliation, counter throttling at `COUNTER_FLUSH_MS`, array-reference stability, and the unknown-projects list. Not a live-child proof and not a UI proof. |
-| the app can time its own paints | `1c8b6f6` | 24 tests, `src/paint.test.ts`, and a build. `src/paint.ts` observes `first-contentful-paint` and reports it over `report_paint` (`docs/plans/ipc-contract.md`). Since run for real: `paint.ndjson` works end to end in a real window and `main_to_fcp_ms` matched its own `tracing` line on all 19 runs (`docs/research/perceived-performance.md` §1.4). **The interaction half has since run**, and this line is corrected: `a0901e5` gave `beginInteraction` its first and only call site (`src/App.tsx:316`), so it is no longer tree-shaken, and **B4 is a measured number** (§4). **B6 and B7 still have no call site at all** — grepped 2026-09-04, that one site is the only non-test caller in `src/`. |
+| the app can time its own paints | `1c8b6f6` | **38** tests, `src/paint.test.ts`, and a build — **24 → 38** since that commit, re-derived 2026-09-04 from `npx vitest run --reporter=json` **[measured]** (§3). `src/paint.ts` observes `first-contentful-paint` and reports it over `report_paint` (`docs/plans/ipc-contract.md`). Since run for real: `paint.ndjson` works end to end in a real window and `main_to_fcp_ms` matched its own `tracing` line on all 19 runs (`docs/research/perceived-performance.md` §1.4). **The interaction half has since run**, and this line is corrected: `a0901e5` gave `beginInteraction` its first and only call site (`src/App.tsx:351`), so it is no longer tree-shaken, and **B4 is a measured number** (§4). **B6 and B7 still have no call site at all** — grepped 2026-09-04, that one site is the only non-test caller in `src/`. |
 | the measured palette as oklch `@theme` tokens | `3e5c3fd` | 18 of 18 colour tokens round-trip hex→oklch→hex bit-exact and all 8 annotated contrast pairs re-derive to within 0.0017, verified twice independently (`docs/research/oklch-tokens.md`, and `frontend-stack.md` §2.6 arrived at the same ratios first). Unit tests and a build only — **nothing has been looked at in a running window.** |
 | MCP off by default, per-project opt-in | `9ca7ee2` | `McpPolicy` (`off` \| `inherit`) in `crates/core/src/driver.rs`; `--strict-mcp-config` pinned in the argv tests of `crates/core/src/claude/process.rs`; store migration 2 (`user_version` 2 to 3, `projects.mcp TEXT NOT NULL DEFAULT 'off'`), which **switched every existing project to `off` on 2026-09-03**, the owner's two live projects included, and each can opt back in per project; supervisor passes the project row's policy on start and on resume (`crates/supervisor/src/lib.rs`, recording-driver test); command `set_project_mcp(project_id, mcp)` and `ProjectView.mcp` (`docs/plans/ipc-contract.md`). Tests only, no live child: the `mcp_servers: []` proof is `spawn-split.md` §1. **Both migrations have now run on the owner's own data directory, not only on tempdir replicas** — **[measured]** 2026-09-04, read-only against `~/Library/Application Support/ai.brigadier.app/brigadier.sqlite`: `PRAGMA user_version` is **3**, both live projects read `mcp='off'`, and all **10,037** pre-migration feed rows read `kind='unknown'` with none reading `'sys'`, so migration 1's corrected default (`959bd0c`, fixed at `1d23df9`) landed on real data and no row has been written since. The replica tests remain the only *proof* of behaviour (`crates/store/src/schema.rs::migration_2_switches_a_pre_existing_project_to_off`, `crates/store/tests/schema.rs`); nothing records which projects were switched and which chose, so render `off` as a state, not a decision. **The UI toggle is not built**; nothing in `src/` calls `set_project_mcp` — grepped 2026-09-04. |
 | the shell, and the first interaction timed | `a0901e5` | 28 new tests (`src/App.test.tsx` 10, `src/components/Sidebar.test.tsx` 18) plus a real window: the sidebar, project collapse and session selection were **driven by hand**, and 14 selections were timed through `beginInteraction` into `paint.ndjson` (**B4**, §4). `ThemeProvider` is now mounted (`src/main.tsx:22`). Seven AA failures were found and fixed in the process — see the landmine below. |
-| the feed reads as a thread, not a log table | `864a2fe` | the timestamp column, the raw `seq` column and the zebra stripes are gone; 13 px sans at `ROW_H` 28, a rule at clock-minute boundaries only, zero accent at rest, and a 1.4.11 failure on the jump pill's border (1.585:1) fixed on the way. `src/components/Feed.test.tsx` and `src/index.css.test.ts` are new suites; the second gates that every class in markup has a hand-written rule. **Nothing here has been seen rendered**, and the blur test that decides whether it answers the owner's "year 1999 app" verdict has not been run. Test counts and CSS figures in that commit's own message were not re-run for this line. |
+| the feed reads as a thread, not a log table | `864a2fe` | the timestamp column, the raw `seq` column and the zebra stripes are gone; 13 px sans at `ROW_H` 28, a rule at clock-minute boundaries only, zero accent at rest, and a 1.4.11 failure on the jump pill's border (1.585:1) fixed on the way. `src/components/Feed.test.tsx` and `src/index.css.test.ts` are new suites; the second gates that every class in markup has a hand-written rule. **Nothing here has been seen rendered**, and the blur test that decides whether it answers the owner's "year 1999 app" verdict has not been run. Those test counts and CSS figures have since been re-run — the six gates at `c884767` on 2026-09-04 give `src/components/Feed.test.tsx` **20** and `src/index.css.test.ts` **8**, inside 137 across 7 files, and CSS **27.11 kB** **[measured]**; §3 carries the run. |
 | the launch decomposed stage by stage, and the page half split | `6db9f6e`; the `dcl` stage at `8293342` and `62e6717`; the numbers at `8b286f5` | `BRIGADIER_TRACE=1` signposts in `src-tauri/src/trace.rs`, 12 warm launches on 2026-09-03 plus 5 more (1 cold, 4 warm) on 2026-09-04 after the `dcl` stage landed. Measured, not inferred: `state::build` inside `setup` is **8.1 ms** p50, not the missing ~100 ms; Tauri's own window creation before our setup closure, `builder_built` to `setup_entry`, is **108.7 ms** p50 warm and **420 ms** cold, so a cold launch is slow there and not in the page; `page_load_finished` to FCP, 83.3 ms undivided, splits into **49.6 ms** fetch plus parse and **28.5 ms** React mount plus render, so the scheme-plus-brotli attribution has a 49.6 ms ceiling and not a 100 ms one. `RLIMIT_NOFILE` is now raised at startup (launchd hands a GUI launch **256**). `docs/research/launch-signposts.md`. **Caveats that matter, and every one of them qualifies a number above it:** (a) **every 2026-09-04 figure was taken with the display locked** (`CGSSessionScreenIsLocked=1`), and that run's exec → FCP of **288.8 ms** landing inside the established 287–295 ms band is **weak evidence that the lock did not move FCP, not proof**; (b) the **28.5 ms mount half is n=4 with a 60.0 ms outlier** against a 23–29 cluster, and both its endpoints are page-relative timestamps clamped to 1 ms — **do not plan against 28.5**; the **49.6 ms fetch-and-parse half is the tight one** (four samples inside 1.5 ms) and the 64/36 verdict rests on it; (c) the `RLIMIT_NOFILE` raise was verified **under a simulated `ulimit -n 256` from a shell, never from an actual Finder launch** — `launchctl limit maxfiles` of 256 is the evidence that the Finder case needs the raise, and the Finder case itself has never been run with stderr captured; (d) no run used a cold OS file cache (`sudo purge` needs sudo); (e) nothing here is a p95 — n=12 warm and n=4 for the split. |
 
 **Still never clicked in a real window:** the **Resume button** and the **branch chip**. The cleanup
@@ -80,24 +129,35 @@ resolved, so `pending_approvals` returns empty and the dock never opens. Both ha
 and `SELECT count(*) FROM approvals` is 1 with `resolved_at` set. That is still the largest
 thing unverified about the token layer, and only a live approval closes it.
 
-## 3. Gates at `a0901e5`
+## 3. Gates at `c884767`
 
-All six run by the lead under its own hand, exit codes captured directly:
+All six run by the lead under its own hand on 2026-09-04 against a clean tree, exit codes captured
+on the command itself and not through a pipe. Every line **[measured]**:
 
 ```
-cargo test --workspace                                exit 0  283 passed, 0 failed, 5 ignored
+cargo test --workspace                                exit 0  301 passed, 0 failed, 6 ignored
 cargo clippy --workspace --all-targets -- -D warnings exit 0  0 warnings
 cargo doc --workspace --no-deps                       exit 0  0 warnings
-npm test                                              exit 0  94 passed, 5 files
+npm test                                              exit 0  137 passed, 7 files
 npx tsc --noEmit                                      exit 0
 npm run tauri build                                   exit 0  .app + .dmg
 ```
 
-The 94 are `feedStore.test.ts` 27, `paint.test.ts` 24, `components/Sidebar.test.tsx` 18,
-`providers/ThemeProvider.test.tsx` 15 and `App.test.tsx` 10.
+The 301 is the sum of 31 `test result:` lines across the workspace. The 137, re-derived today from
+`npx vitest run --reporter=json` rather than carried forward: `paint.test.ts` **38**,
+`feedStore.test.ts` **27**, `components/Feed.test.tsx` **20**, `components/Sidebar.test.tsx` **19**,
+`providers/ThemeProvider.test.tsx` **15**, `App.test.tsx` **10**, `index.css.test.ts` **8** — 137
+across 7 files. The old line naming `paint.test.ts` 24 and `Sidebar` 18 is superseded:
+`paint.test.ts` grew **24 → 38**, `Sidebar` **18 → 19**, and `components/Feed.test.tsx` and
+`index.css.test.ts` are the two suites that did not exist at `a0901e5`.
 
-Bundle at `a0901e5`: **272.71 kB JS + a 1.38 kB lazy chunk / 26.91 kB CSS**, from 263.28 / 21.89 at
-`3e5c3fd` and 262.69 / 12.69 at `ad5a4a7`. The JS figure now includes the interaction half of
+**What this gate run does not prove.** It is a build and a test run: no live `claude` child was
+spawned, and **none of the six gates exercises the UI in a window.**
+
+Bundle at `c884767`, read off the `vite build` line of the gate run: **274.87 kB JS + a 1.38 kB
+lazy chunk / 27.11 kB CSS**, gzip **86.90 / 0.67 / 6.12** **[measured]**. From **272.71 / 26.91 at
+`a0901e5`** — **+2.16 kB JS and +0.20 kB CSS over 31 commits** — and 263.28 / 21.89 at `3e5c3fd`,
+262.69 / 12.69 at `ad5a4a7` before that. The JS figure includes the interaction half of
 `src/paint.ts`, which `a0901e5` gave its first importer; before that it was tree-shaken out and the
 263.28 kB figure was the FCP half alone (`docs/plans/ipc-contract.md`, `### report_paint`). The CSS
 growth from 12.69 is almost entirely Tailwind preflight — the token layer itself was **+0.54 kB**,
@@ -107,13 +167,31 @@ superseded.
 **One warm FCP sample at `a0901e5` came back at 375.9 ms**, against the 287–295 ms p50 (n=19)
 recorded at the smaller bundle. One sample against a distribution, and the same run's cold launch
 (801.9 ms) matches an earlier cold outlier (755.9 ms), so the regression is **neither attributable
-to the bundle growth nor ruled out**. Re-running the n=19 three-arm treatment
-(`docs/research/perceived-performance.md` §1.4) is what would settle it. B1's figure is unchanged.
+to the bundle growth nor ruled out** — and the bundle has since grown a further 2.16 kB JS while
+the n=19 three-arm treatment still has not been re-run, so that one sample stands exactly where it
+did. Re-running that treatment (`docs/research/perceived-performance.md` §1.4) is what would settle
+it. B1's figure is unchanged.
 
-The 5 ignored are the live tests. Run one at a time:
+**The 6 ignored are not six live tests, and the difference is money.** From
+`grep -rn '#\[ignore' crates`, 2026-09-04 **[measured]**:
+
+- **Five spend on a live account:** `live_pong` (`crates/core/tests/claude_adapter.rs:1080`),
+  `live_resume` (`crates/supervisor/tests/live_resume.rs:255`), `live_approvals` (`:270`),
+  `live_worktree` (`:189`), `live_two_sessions` (`:239`).
+- **The sixth costs nothing.** `eight_ordinary_one_flood_one_approval_across_three_projects`
+  (`crates/supervisor/tests/flood_baseline.rs:137`), added at `96a66a2`, **spawns no `claude`
+  process** — every session is a `ReplayDriver` over a captured NDJSON fixture. It is `#[ignore]`d
+  because it is a ~30 s instrument, not a gate.
+
+Say which you mean: a reader who believes all six cost money will avoid the one that does not, and
+a reader who believes none do will spend.
+
+Run one at a time. The old single command named `-p brigadier-supervisor` only and was incomplete —
+`live_pong` lives in `brigadier-core`:
 
 ```
 CLAUDE_BIN="$(command -v claude)" cargo test -p brigadier-supervisor --test <name> -- --ignored --nocapture
+CLAUDE_BIN="$(command -v claude)" cargo test -p brigadier-core --test claude_adapter -- --ignored --nocapture
 ```
 
 Live costs, from the store row: `live_approvals` ~$0.046, `live_resume` ~$0.031,
@@ -182,9 +260,13 @@ sidebar included. Idle on the current markup it is **123** (release build, 800x5
 
 **Two caveats travel with the new number or it is worth no more than the old one.** It is **n = 1**
 — one verified 62-window run, no distribution across repeats. And it is a **debug build**:
-`src/App.tsx:493` gates the Burn panel on `import.meta.env.DEV`, so a release `vite build` strips
-the only UI that can call the command `--features burn` compiles, which means **every burn number
-this project has is a debug-build number**. **[measured]** A debug Rust binary, a vite dev server
+`src/App.tsx:119` gates the Burn panel on `BURN_UI`
+(`const BURN_UI = import.meta.env.DEV || import.meta.env.VITE_BURN === "1";`), and
+`import.meta.env.VITE_*` is a build-time literal substitution, so with that variable unset the
+expression folds to `false` and a release `vite build` strips the only UI that can call the command
+`--features burn` compiles, which means **every burn number this project has is a debug-build
+number**. **[measured]** `VITE_BURN=1` now makes a release burn reachable and **no release burn has
+been run**, so the debug-build caveat on this number stands. A debug Rust binary, a vite dev server
 and a React development build are each strictly slower than what ships, so the near-pass is an
 **upper bound on badness, not a release result**; the shipped binary's scroll FPS under load is
 unmeasured. **[asserted]**
@@ -275,35 +357,63 @@ and never fired (`0ddfe7b`, `62e6717`; `docs/research/launch-signposts.md` names
 scanned and the narrow layout after the prefix yields has never been rendered.
 
 **Four more, found 2026-09-04 at the enforced 800x500 minimum** (`docs/research/visual-checks-2026-09-04.md`
-§2, §3.2). **A worker is fixing all four in `src/` as this line is written — read them as found and
-being fixed, not as fixed.** Three are one CSS rule each; the fourth is a build gate.
+§2, §3.2). **All four landed at `f807e0e`, and three of the four were confirmed in a real WKWebView
+window at `c884767`** **[source]**. The diagnoses below are the record as found and stand unchanged;
+each item's fix and its confirmation status follow it. Three are one CSS rule each; the fourth is a
+build gate.
 
 1. **`src/index.css:1120-1125`, `.feed-sizer` has no horizontal padding**, so feed rows run flush to
    the window's right edge on every window narrower than **932 px** while `.thread-head` stays inset
    16 px — real-window ink from **pt 220.5 to pt 798.5 of 800**. **[measured]** Remedy:
    `box-sizing: border-box; padding-inline: 16px` (or `max-width: min(var(--content-max), 100% - 32px)`),
    which also fixes `.feed-count`'s `max(16px, …)` inset at `src/index.css:1097` floating 16 px in
-   from an edge the rows it labels are touching.
+   from an edge the rows it labels are touching. **Fixed at `f807e0e`** with
+   `max-width: min(var(--content-max), calc(100% - 32px))` and **not** `padding` — padding insets the
+   content and leaves the box at the pane edge, which would float `.feed-count` inside the ink it
+   labels. **Confirmed in a real window** at `c884767`: gutters **0/0 → 16/16**, and the band flush
+   with the sizer at **800, 932, 1000 and 1280**. **[source]**
 2. **`src/index.css:1634`, `.fps` at `flex: 0 0 auto` (`:1635`) with `white-space: nowrap` (`:1643`)
    starves `.head-id` to width 0** and overflows the page by **205 px** at viewport width 800 —
    **reproduced in a real release window**: turning the meter on makes the thread title and its path
    vanish from the header. **[measured]** Remedy: `flex: 0 1 auto; min-width: 0; overflow: hidden;
    text-overflow: ellipsis`, or render only `hz` + `dropped` below the 1200 px breakpoint. Reached by
-   clicking the pill, not met on launch — the meter is off by default in a release build.
+   clicking the pill, not met on launch — the meter is off by default in a release build. **Fixed at
+   `f807e0e`** with `flex: 0 1 auto; min-width: 0; overflow: hidden`. **Confirmed in a real window**
+   at `c884767`: `.head-id` **0 px → 234.6 px**, `.fps` **301.4 px** against a predicted 301.4. The
+   `max-width: 55%` refinement sits inside `@media (max-width: 1200px)` and not everywhere, because
+   it costs 120 px of meter text at the default 1280 and buys nothing there. **[source]** **One
+   methodological correction against this item itself, and it matters: the 205 px overflow figure
+   cannot be confirmed in WKWebView either way** — `body { overflow: hidden }`
+   (`src/index.css:250-254`) means no scrollbar appears with or without the fix, so its absence
+   proves nothing.
 3. **`src/index.css:1296`, `.approvals { max-height: 42vh }` over the fixed 160 px `.dock`
    (`src/index.css:1413`) leaves the feed 59.5 px — 1.39 rows** at viewport height 468, the top
    visible row cut through its glyphs; `.approvals` is `flex: 0 0 auto` so it cannot yield and `.feed`
    has no `min-height`, so the feed absorbs the whole squeeze. **[measured]** (Chromium + mock; not
    reproduced against a real pending approval in the Tauri window.) Remedy: give `.feed` a
    `min-height` of ~112 px and make `.approvals` `flex: 0 1 auto`, or cap it at
-   `min(42vh, calc(100vh - 324px))`.
+   `min(42vh, calc(100vh - 324px))`. **Fixed at `f807e0e`**: `.feed` gained `min-height: 132px` and
+   `.approvals` became shrinkable. **132, not the 112 proposed on the line above** — `box-sizing` is
+   `border-box` and `.feed` carries a 20 px band, so 112 would have been 3.28 rows. **[source]**
+   **Still unconfirmed in a real window**: the store's one approval is resolved, `pending_approvals`
+   is empty, and forcing it means writing to the owner's database, which was refused. The number
+   stays a **Chromium-plus-mock** result and must be labelled as one.
 4. **`src/App.tsx:493` gates the Burn panel on `import.meta.env.DEV`**, so a release `vite build`
    strips it — `grep -c "burn harness" dist/assets/index-*.js` is **0** while
    `strings target/release/brigadier` hits `burn started`, i.e. `--features burn` compiles a command
    the shipped UI has no way to call, and **every burn number this project has is a debug-build
    number**. **[measured]** Remedy: give the panel the same kind of gate the meter has (a
    `localStorage` flag, or a build-time `define`) so a release-profile burn can be measured without
-   editing source.
+   editing source. **The remedy shipped at `f807e0e`, and this item's citation is stale in both path
+   and expression** — **[measured]** 2026-09-04 against the source, the gate is no longer
+   `src/App.tsx:493` on `import.meta.env.DEV` but **`src/App.tsx:119`**,
+   `const BURN_UI = import.meta.env.DEV || import.meta.env.VITE_BURN === "1";`.
+   `import.meta.env.VITE_*` is a build-time literal substitution, so an unset variable folds the
+   expression to `false` and Rollup drops the panel exactly as `DEV` did. **The consequence this
+   item draws is unchanged: every burn number this project has is still a debug-build number**,
+   because `VITE_BURN=1 npm run tauri build -- --features burn` makes a release burn *reachable* and
+   **nobody has run one**. Both halves are needed and independent — the Cargo feature compiles the
+   Rust command, the variable ships the button.
 
 **The minimum itself works, and that is the larger half of the result.** Both breakpoints fire, the
 sidebar is exactly **220 pt** in the real window, `--content-max` is intact at **712 px**, the
@@ -422,7 +532,7 @@ every bundle format for the platform being built on. Leave it alone.
   markup.**
 - **An edit to a tree-shaken export moves the bundle by zero bytes**, which is indistinguishable
   from a build that did not run. `beginInteraction` in `src/paint.ts` was in that state until
-  `a0901e5` gave it its one importer (`src/App.tsx:316`); nothing in `src/` is known to be in it
+  `a0901e5` gave it its one importer (`src/App.tsx:351`); nothing in `src/` is known to be in it
   today, which is not the same as nothing being in it. Check a string literal the minifier cannot
   rename, never an identifier. `docs/plans/ipc-contract.md`, `### report_paint`.
 - **jsdom 30.0.1 has no `PerformanceObserver`**, and what stands in for it under Vitest is Node's
