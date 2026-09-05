@@ -54,6 +54,7 @@ pub mod git;
 pub mod green;
 pub mod ladder;
 pub mod plan;
+pub mod routing;
 pub mod state;
 
 use std::path::PathBuf;
@@ -68,6 +69,7 @@ use brigadier_store::ProjectRow;
 use crate::action::{Action, ActionError};
 use crate::loop_::barrier::{Barrier, BarrierWait, ReconcileOutcome};
 use crate::loop_::call::{SharedCall, SupervisedCall};
+use crate::loop_::routing::Ceiling;
 use crate::loop_::state::{BlockReason, PhaseStage, RunState};
 use crate::verify::GateEnv;
 use crate::{lock, Supervisor, SupervisorError};
@@ -330,19 +332,23 @@ pub struct RunSpec {
     pub driver: DriverKind,
     /// The model the owner picked for this run, or `None` for role-based routing.
     ///
-    /// **`Some` is honoured literally, by every child the run starts** — planner, lead, worker
-    /// and fixer alike. The alternative reading was to treat the owner's pick as the *work-order*
-    /// tier and keep judgement on a strong model, per `docs/vision.md` §6 (*"Role-based:
-    /// judgement (lead, grill, review, judge) gets the strong model; work orders get mid-tier"*).
-    /// That reading is rejected here, deliberately, for one reason: the control sits in the run
-    /// dock beside Start and is labelled with a model name, not with a role. A picker that
-    /// governs only some of the children is the same class of lie as a permission picker that
-    /// cannot stop the prompts, and removing that class of lie is what this whole change is.
+    /// **`Some` is a ceiling, not a default.** Nothing the run starts — planner, lead, worker,
+    /// fixer, reviewer — exceeds it, and a planner asking for a stronger tier is clamped rather
+    /// than refused. With no pick, judgement takes the provider default (the owner's own strong
+    /// model) and a work order takes its own tier **capped at mid-tier**, per `docs/vision.md` §6
+    /// (*"judgement (lead, grill, review, judge) gets the strong model; work orders get
+    /// mid-tier"*). Owner decision, 2026-09-05.
     ///
-    /// §6's routing is not discarded — it is what `None` means. With no pick, a judgement call
-    /// takes the provider default (the owner's own strong model) and a work order takes
-    /// [`ModelTier`](crate::action::ModelTier) as the lead assigned it, which until now reached
-    /// nothing at all.
+    /// This field says only what the owner picked; every question of *what a given child is
+    /// started on* is answered by [`Ceiling`], including what an
+    /// id this build does not recognise does. Read that module before changing anything here.
+    ///
+    /// **Correction, 2026-09-05.** Up to `bf036d6` this doc said `Some` was *"honoured literally,
+    /// by every child"*, and explicitly rejected the ceiling reading on the grounds that a picker
+    /// governing only some children would be a lie. That is superseded: the pick governs every
+    /// child either way — what changed is that it now also *bounds* the planner, which literal
+    /// honouring did not. A picker that cannot stop the run spending above it was the larger lie,
+    /// and it cost 3× on one measured run (`crates/supervisor/src/loop_/routing.rs`).
     pub model: Option<String>,
     /// The permission mode the owner picked. Reaches the `--permission-mode` flag **and** the
     /// `PreToolUse` policy of every child; see
@@ -397,7 +403,7 @@ impl RunSpec {
         self
     }
 
-    /// Run every child on `model`. `None` leaves role-based routing in charge; see
+    /// Cap every child at `model`. `None` leaves role-based routing in charge; see
     /// [`RunSpec::model`].
     #[must_use]
     pub fn with_model(mut self, model: Option<String>) -> Self {
@@ -468,8 +474,9 @@ pub struct Run {
     project: ProjectRow,
     plan_id: String,
     goal: String,
-    /// The owner's model pick, or `None` for role-based routing. See [`RunSpec::model`].
-    model: Option<String>,
+    /// The owner's model pick, read as a ceiling. The only thing that decides what any child of
+    /// this run is started on. See [`RunSpec::model`] and [`Ceiling`].
+    ceiling: Ceiling,
     /// The owner's permission mode. Reaches every child's flag and every child's hook policy.
     permission_mode: brigadier_core::driver::PermissionMode,
     call: SharedCall,
@@ -921,7 +928,7 @@ impl Supervisor {
             project,
             plan_id,
             goal: spec.goal.trim().to_owned(),
-            model: spec.model,
+            ceiling: Ceiling::new(spec.model),
             permission_mode: spec.permission_mode,
             call,
             limits: spec.limits,

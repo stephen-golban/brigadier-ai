@@ -41,6 +41,7 @@ use brigadier_store::{IntentOutcome, IntentRow, IntentState, KnownIntentKind};
 
 use crate::action::{ModelTier, Order, ReportStatus};
 use crate::loop_::call::{CallCwd, CallRequest};
+use crate::loop_::routing::Ceiling;
 use crate::loop_::{git, LoopError, Run};
 use crate::worktree::prepare_from;
 
@@ -99,7 +100,7 @@ pub(super) async fn run(
             base_sha: base_sha.to_owned(),
             turn_deadline: run.limits.worker_turn_deadline,
             quiet_deadline: run.limits.worker_quiet_deadline,
-            model: run.model.clone(),
+            ceiling: run.ceiling.clone(),
             permission_mode: run.permission_mode.clone(),
         };
         let permits = Arc::clone(&permits);
@@ -144,8 +145,9 @@ struct OrderCtx {
     base_sha: String,
     turn_deadline: std::time::Duration,
     quiet_deadline: std::time::Duration,
-    /// The run's model pick, or `None` to let the order's own tier decide.
-    model: Option<String>,
+    /// The run's model ceiling. Decides what this order's child is started on, and whether the
+    /// tier the lead assigned survived it (`crates/supervisor/src/loop_/routing.rs`).
+    ceiling: Ceiling,
     /// The run's permission mode, which for a worker reaches the flag but **not** the hook: a
     /// worker is always behind `WorkerWall`, whatever the mode
     /// (`docs/research/permission-modes.md` §5).
@@ -204,6 +206,12 @@ async fn one(ctx: OrderCtx, order: Order) -> Result<(Collected, Vec<String>), Lo
     row.dispatched_at = Some(SystemTime::now());
     store.upsert_work_order(row).await?;
 
+    // **The ceiling, and it is the whole of the model decision.** The lead's tier is an input to
+    // it and never reaches the CLI on its own: a run started with no pick used to let the planner
+    // put a work order on `--model opus`, which billed 3× for identical work across two live runs
+    // one day apart (`crates/supervisor/src/loop_/routing.rs`). `opus`, `sonnet` and `haiku` are
+    // the CLI's own aliases (`docs/research/permission-modes.md` §2).
+    let routed = ctx.ceiling.worker(order.model_tier);
     let outcome = ctx
         .call
         .call(CallRequest {
@@ -213,14 +221,10 @@ async fn one(ctx: OrderCtx, order: Order) -> Result<(Collected, Vec<String>), Lo
             prompt: worker_prompt(&ctx, &order),
             turn_deadline: ctx.turn_deadline,
             quiet_deadline: ctx.quiet_deadline,
-            thinking: tier_thinking(order.model_tier),
-            // The owner's pick wins; with none, `docs/vision.md` §6's role-based routing does the
-            // choosing and the lead's tier finally reaches something. `opus`, `sonnet` and
-            // `haiku` are the CLI's own aliases (`docs/research/permission-modes.md` §2).
-            model: ctx
-                .model
-                .clone()
-                .or_else(|| Some(order.model_tier.as_slug().to_owned())),
+            // The **effective** tier, not the one the lead asked for: an order clamped down to
+            // Haiku must not keep an Opus order's deliberation budget.
+            thinking: tier_thinking(routed.tier),
+            model: routed.model.clone(),
             permission_mode: ctx.permission_mode.clone(),
         })
         .await?;
@@ -248,11 +252,20 @@ async fn one(ctx: OrderCtx, order: Order) -> Result<(Collected, Vec<String>), Lo
         WorkOrderState::Failed
     };
     // Bounded, and it is the worker's own words: the store's column is for a report, never a
-    // transcript.
-    let report = summarise(&outcome.text, &commits, &changed);
+    // transcript. A clamp goes in front of them, because the owner reading a plan card has to be
+    // able to see that the run was capped — a ceiling that binds silently is the same defect as a
+    // ceiling that does not bind.
+    let report = summarise(routed.clamp.as_deref(), &outcome.text, &commits, &changed);
     store
         .work_order_finished(row_id, state, Some(report.clone()), SystemTime::now())
         .await?;
+
+    // And on the session's own feed, so the clamp reads in the thread beside the child it applied
+    // to. Best-effort: `warn` needs a session, and a spawn that failed has none.
+    if let (Some(clamp), Some(session_id)) = (routed.clamp.as_deref(), outcome.session_id.as_ref())
+    {
+        ctx.sup.warn(&ctx.project_id, session_id, clamp.to_owned()).await;
+    }
 
     // The close. `work_order` can settle only `unknown`; `Acked` is what distinguishes this from
     // a postcondition that read the world after a restart.
@@ -338,21 +351,35 @@ fn worker_prompt(ctx: &OrderCtx, order: &Order) -> String {
 }
 
 /// Bounded narration of what one order produced, for the `work_orders.report` column.
-fn summarise(text: &str, commits: &[git::Commit], changed: &[String]) -> String {
+///
+/// `clamp` leads, when there is one: it is the harness's own fact about what the order was
+/// *started on*, and it must not be pushed off the end by a long worker summary.
+fn summarise(
+    clamp: Option<&str>,
+    text: &str,
+    commits: &[git::Commit],
+    changed: &[String],
+) -> String {
     let claimed = crate::action::parse_report(text)
         .map(|r| r.summary)
         .unwrap_or_else(|_| "(no parseable report)".to_owned());
-    let mut out = format!(
+    let mut out = String::new();
+    if let Some(clamp) = clamp {
+        out.push_str(clamp);
+        out.push_str(". ");
+    }
+    out.push_str(&format!(
         "{} commit(s), {} path(s) changed. Worker said: {claimed}",
         commits.len(),
         changed.len()
-    );
+    ));
     out.truncate(crate::action::MAX_SUMMARY_CHARS * 2);
     out
 }
 
 /// Whether a tier reasons. The only two levers the harness has over a worker's window are the
-/// model slug and the thinking policy; the model slug is the provider's default in this build.
+/// model slug and the thinking policy, and both are read off the **effective** tier — what the
+/// ceiling left of what the lead asked for — never off the lead's request.
 fn tier_thinking(tier: ModelTier) -> ThinkingPolicy {
     match tier {
         ModelTier::Opus => ThinkingPolicy::Inherit,
@@ -396,14 +423,14 @@ mod tests {
             "x".repeat(300)
         );
         let commits = vec![git::Commit { sha: "abc".into(), subject: "s".into() }];
-        let out = summarise(&text, &commits, &["src/a.rs".to_owned()]);
+        let out = summarise(None, &text, &commits, &["src/a.rs".to_owned()]);
         assert!(out.starts_with("1 commit(s), 1 path(s) changed."));
         assert!(out.len() <= crate::action::MAX_SUMMARY_CHARS * 2);
     }
 
     #[test]
     fn an_unparseable_report_is_recorded_as_one_rather_than_invented() {
-        let out = summarise("I finished the work!", &[], &[]);
+        let out = summarise(None, "I finished the work!", &[], &[]);
         assert!(out.contains("(no parseable report)"));
     }
 }

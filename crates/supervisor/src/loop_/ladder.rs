@@ -84,8 +84,9 @@ pub(super) async fn rung_one(
             quiet_deadline: run.limits.worker_quiet_deadline,
             thinking: ThinkingPolicy::Inherit,
             // A fixer is diagnosis, not transcription: with no pick it takes the provider default
-            // rather than a tier, which is `docs/vision.md` §6's judgement lane.
-            model: run.model.clone(),
+            // rather than a tier, which is `docs/vision.md` §6's judgement lane. With a pick, the
+            // pick — a ceiling bounds the fixer like everything else (`loop_/routing.rs`).
+            model: run.ceiling.judgement(),
             permission_mode: run.permission_mode.clone(),
         })
         .await?;

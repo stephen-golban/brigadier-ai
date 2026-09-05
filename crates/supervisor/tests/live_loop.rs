@@ -39,9 +39,20 @@
 //!   on its `PATH` (`docs/research/gate-environment.md`), so a gate written against one is a
 //!   gate that passes in a terminal and fails in the shipped app. `sh verify.sh`, committed into
 //!   the repository, needs nothing but a shell.
-//! - **Every model call is `claude-haiku-4-5`.** Pinned on the driver rather than per call,
-//!   because the loop passes `model: None` everywhere and takes the provider default
-//!   (`crates/supervisor/src/loop_/call.rs`). No other model may be billed by this test.
+//! - **Every model call is `claude-haiku-4-5`, by construction and then asserted.** The pin is
+//!   [`RunSpec::model`], which since 2026-09-05 is a **ceiling** over every child of the run
+//!   (`crates/supervisor/src/loop_/routing.rs`): `claude-haiku-4-5` is the weakest tier, so
+//!   planner, lead, worker and fixer alike are clamped to it and no tier a planner invents can
+//!   route around it. `ClaudeDriverConfig::default_model` is still set, as braces rather than as
+//!   the belt: if some path ever passes `model: None` the money is still Haiku, and the
+//!   per-session assertion below fails loudly instead of quietly billing something else.
+//!
+//!   **This bullet used to be the whole guarantee, and it stopped being true without anything
+//!   failing.** It said the pin was on the driver *"because the loop passes `model: None`
+//!   everywhere"*; on 2026-09-04 the loop began passing a work order's planner-assigned tier, the
+//!   driver default was bypassed for workers, and this test billed Opus-1m — 3× for identical
+//!   work, one day apart. A cost ceiling that is only a sentence is what failed, so it is now
+//!   read back out of the store, per session, and asserted.
 //!
 //! The cost printed at the end is read from the **store rows**, one per session, and never by
 //! summing `result` frames: `total_cost_usd` is reported cumulatively on every terminal frame, so
@@ -107,9 +118,30 @@ const DENY_REASON: &str = "denied by brigadier live_loop test";
 /// Wall clock for the whole run. Nothing here may hang a CI-less machine indefinitely.
 const RUN_DEADLINE: Duration = Duration::from_secs(30 * 60);
 
-/// Ceiling on the whole run, summed over every session row. Haiku, a handful of one-turn
-/// children; **asserted**, not measured — no run of this loop has ever been billed.
-const COST_CEILING_USD: f64 = 2.00;
+/// Ceiling on the whole run, summed over every session row.
+///
+/// **Asserted from two observations, not measured** — two runs is not a distribution:
+///
+/// ```text
+/// 2026-09-04   RUN COST $0.192433   5 sessions, all Haiku
+/// 2026-09-05   RUN COST $0.585646   5 sessions, two with context_window 1_000_000
+/// ```
+///
+/// $0.50 sits above the all-Haiku run with 2.6× of headroom for a longer plan or a retried phase,
+/// and **below** the run that escaped to Opus. The previous figure was $2.00, which is why a 3×
+/// regression on identical work sailed through green. If a legitimate run ever exceeds this,
+/// raise it *with the number that did it* written down here, rather than to whatever is
+/// comfortable.
+const COST_CEILING_USD: f64 = 0.50;
+
+/// Largest `context_window` any session of this run may report.
+///
+/// A second, independent read on which model was billed, and the one that actually caught the
+/// 2026-09-05 escape: the two Opus-1m sessions reported `context_window: 1_000_000` in their
+/// store rows while every Haiku session reported far less. **Asserted**, from that one run —
+/// Haiku 4.5's own window has not been measured here, so this is a tripwire for a 1M-context
+/// model and not a claim about Haiku's exact number.
+const MAX_CONTEXT_WINDOW: u64 = 200_000;
 
 const POLL: Duration = Duration::from_millis(100);
 
@@ -273,7 +305,9 @@ async fn live_run_reaches_green_and_the_exit_code_is_what_settled_it() {
 
     let mut config = ClaudeDriverConfig::new("claude-code:live-loop");
     config.binary = Some(PathBuf::from(binary));
-    // Pinned here and nowhere else: every call the loop makes passes `model: None`.
+    // The braces, not the belt. The belt is `spec.model` below, which pins the model **per call**;
+    // this catches a path that somehow still passes `None`, so such a path costs Haiku money
+    // rather than Opus money while the assertion at the end says it happened.
     config.default_model = Some(MODEL.to_owned());
     let driver = ClaudeDriver::probe(config).await.expect("claude probes");
     eprintln!("claude {} at {}", driver.version(), driver.binary().display());
@@ -286,6 +320,10 @@ async fn live_run_reaches_green_and_the_exit_code_is_what_settled_it() {
     // barrier is still handed over rather than skipped, because the loop awaits it above
     // everything and a run with no barrier is a run that cannot start.
     let mut spec = RunSpec::new(project.id.clone(), GOAL, DriverKind::new(CLAUDE_CODE), resolved(ReconcileOutcome::clean()));
+    // **The spend ceiling, made true by construction rather than by a comment.** A pick is a
+    // ceiling over every child (`crates/supervisor/src/loop_/routing.rs`), and this is the weakest
+    // tier, so nothing the planner decides can start a child on anything else.
+    spec.model = Some(MODEL.to_owned());
     spec.limits = Limits {
         // Two at a time. Not a cost control — parallelism is token-neutral — a bound on how many
         // live children this machine runs at once.
@@ -405,9 +443,10 @@ async fn live_run_reaches_green_and_the_exit_code_is_what_settled_it() {
     for row in &sessions {
         total += row.cost_usd_cumulative;
         eprintln!(
-            "  session {} [{}] cost_usd_cumulative={:.6} usage={:?}",
+            "  session {} [{}] model={:?} cost_usd_cumulative={:.6} usage={:?}",
             row.session_id.as_str(),
             row.status.as_str(),
+            row.model,
             row.cost_usd_cumulative,
             row.usage
         );
@@ -415,5 +454,31 @@ async fn live_run_reaches_green_and_the_exit_code_is_what_settled_it() {
     eprintln!("RUN COST: ${total:.6} over {} session(s), {ticks} tick(s)", sessions.len());
     eprintln!("signals: {}", live.seen.lock().expect("seen").join(", "));
     assert!(total > 0.0, "no session reported a cost; were these really live children?");
+
+    // **The model invariant, asserted rather than promised in prose.** One row per session, read
+    // back out of the store: this is what the harness put on `--model` for that child, so a call
+    // that took the driver default (or any other model) shows up as a mismatch here instead of
+    // as a surprise on the bill.
+    for row in &sessions {
+        assert_eq!(
+            row.model.as_deref(),
+            Some(MODEL),
+            "session {} was started on {:?}, and {MODEL} is the only model this test may bill",
+            row.session_id.as_str(),
+            row.model
+        );
+    }
+    // The independent read. `context_window` comes from the provider's own `modelUsage`, not from
+    // anything this harness asked for, and a 1M window is the fingerprint the 2026-09-05 escape
+    // left behind.
+    for row in &sessions {
+        if let Some(window) = row.usage.context_window {
+            assert!(
+                window <= MAX_CONTEXT_WINDOW,
+                "session {} reports a {window}-token context window; {MODEL} does not have one,                  so a larger model was billed",
+                row.session_id.as_str()
+            );
+        }
+    }
     assert!(total < COST_CEILING_USD, "run cost ${total:.6}, over the ${COST_CEILING_USD} cap");
 }

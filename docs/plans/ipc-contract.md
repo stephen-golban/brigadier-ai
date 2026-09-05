@@ -631,11 +631,23 @@ Both were added 2026-09-05, after the owner's first live session showed the run 
 `claude-opus-5[1m]` while his picker said Haiku — `model: None` was passed to every call and his
 choice reached nothing.
 
-- **`model` is nullable, and null is a real choice, not an empty field.** A chosen model applies to
-  **every** child of the run — planner, lead, worker and fixer alike — because the control sits
-  beside Start and is labelled with a model name, not a role. Null means `docs/vision.md` §6's
-  role-based routing instead: judgement takes the provider default, a work order takes its own
-  tier. The UI must offer null reachably and label it; it must never send `""` or a sentinel.
+- **`model` is nullable, and null is a real choice, not an empty field.** A chosen model is a
+  **ceiling** over every child of the run — planner, lead, worker and fixer alike — because the
+  control sits beside Start and is labelled with a model name, not a role. Null means
+  `docs/vision.md` §6's role-based routing instead: judgement takes the provider default, a work
+  order takes its own tier **capped at mid-tier**. The UI must offer null reachably and label it;
+  it must never send `""` or a sentinel.
+
+  **Corrected 2026-09-05.** This bullet said a chosen model *"applies to every child"* and that
+  null let a work order take *"its own tier"* flat. Both were the behaviour up to `bf036d6` and
+  both are now wrong in the same direction: nothing bounded the planner's tier above, so a run
+  started with **no** pick could put a work order on `--model opus` by itself, and two live runs of
+  the same goal one day apart cost $0.192433 and $0.585646 — **3× for identical work**
+  (**measured**, `crates/supervisor/tests/live_loop.rs`). A pick is now a ceiling: an order the
+  planner tiered *below* it keeps its own cheaper tier, an order tiered *above* it is clamped, and
+  the clamp is recorded on the work order's row. A model id this build does not recognise binds at
+  the weakest tier rather than widening the ceiling, and the run still starts. The whole rule, and
+  why refusing to start was rejected, is in `crates/supervisor/src/loop_/routing.rs`.
 - **`permission_mode` is the wire (kebab) spelling** and the full set the CLI accepts on 2.1.261 is
   offered, `bypass-permissions` included. It selects a **hook policy**, not only a CLI flag —
   brigadier's `PreToolUse` hook runs *before* the mode is consulted, so a mode that did not also
