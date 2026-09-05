@@ -291,7 +291,8 @@ async fn live_run_reaches_green_and_the_exit_code_is_what_settled_it() {
         // live children this machine runs at once.
         concurrency: 2,
         barrier_timeout: Duration::from_secs(5),
-        lead_deadline: Duration::from_secs(3 * 60),
+        lead_deadline: Duration::from_secs(10 * 60),
+        lead_quiet_deadline: Duration::from_secs(3 * 60),
         worker_turn_deadline: Duration::from_secs(10 * 60),
         worker_quiet_deadline: Duration::from_secs(3 * 60),
         gate_timeout: Duration::from_secs(2 * 60),

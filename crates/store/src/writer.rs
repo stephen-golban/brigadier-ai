@@ -22,6 +22,7 @@ use brigadier_core::session::Decision;
 use rusqlite::{named_params, Connection, OptionalExtension};
 use tokio::sync::oneshot;
 
+use crate::delete::{self, DeleteOutcome, DeletedIds};
 use crate::feed::FeedKind;
 use crate::intents::{
     self, IntentKind, IntentOutcome, IntentRecord, IntentRow, IntentState, INTENT_COLUMNS,
@@ -73,6 +74,14 @@ fn unsettled_intents_sql() -> String {
 /// 282 KB to 218 MB in 25 hours.
 fn plan_path(p: Option<&std::path::PathBuf>) -> Option<String> {
     p.map(|p| plan_text(&p.to_string_lossy()))
+}
+
+/// Which delete an [`Op::Delete`] is.
+pub(crate) enum DeleteTarget {
+    /// One session, by id.
+    Session(String),
+    /// One project, by id, and everything the cascade map hangs off it.
+    Project(String),
 }
 
 /// One unit of work for the writer thread. Crate-private: the public surface is [`StoreHandle`].
@@ -234,6 +243,14 @@ pub(crate) enum Op {
         report: Option<String>,
         at: SystemTime,
     },
+    /// Delete a session, or a project and everything under it, and answer **after the commit**.
+    ///
+    /// Not an [`Op::Query`], for two reasons. `Query` hands its answer back *before* the
+    /// transaction commits, which is right for a read and wrong for the one call whose caller is
+    /// about to delete files on the strength of it. And a delete that fails its own
+    /// post-condition has to roll back **only itself**, not the batch it was coalesced into, so
+    /// it runs inside a savepoint.
+    Delete { what: DeleteTarget, reply: oneshot::Sender<Result<Option<DeleteOutcome>>> },
     /// Run a closure against the connection, inside the current batch's transaction.
     ///
     /// Like [`Op::Flush`] it closes the coalescing window: a read submitted at the top of a
@@ -533,6 +550,47 @@ impl StoreHandle {
         let (tx, rx) = oneshot::channel();
         self.send(Op::Flush(tx))?;
         rx.await.map_err(|_| Error::Closed)
+    }
+
+    /// Delete one session's rows: the row itself, its feed, its approvals and its intents.
+    ///
+    /// **Durable on return.** `Ok(Some(..))` means the delete ran, every dependant went with it,
+    /// and the transaction carrying all of that committed. `Ok(None)` means there was no such
+    /// session, which is not an error: the caller wanted the row gone and it is.
+    ///
+    /// Work orders that named this session are **kept**, with `session_id` set to null, and
+    /// counted as [`crate::delete::Deleted::work_orders_orphaned`]. That is `schema.rs`'s deliberate exception —
+    /// the plan outlives the session that ran it — and not a leak.
+    ///
+    /// Nothing outside the database is touched. The raw NDJSON log, the pid file and the git
+    /// worktree are the supervisor's half.
+    ///
+    /// # Errors
+    /// [`Error::DeleteIncomplete`] when a dependant survived, in which case **nothing was
+    /// deleted**: the delete runs inside its own savepoint and that error rolls it back.
+    /// [`Error::Closed`] when the writer thread has stopped.
+    // see crate::delete for the cascade map and the before/after check.
+    pub async fn delete_session(&self, session_id: SessionId) -> Result<Option<DeleteOutcome>> {
+        self.delete(DeleteTarget::Session(session_id.as_str().to_owned())).await
+    }
+
+    /// Delete one project, every session under it, and its whole plan tree.
+    ///
+    /// Durable on return and `Ok(None)` for a project that is not there, exactly as
+    /// [`StoreHandle::delete_session`]. The returned [`DeletedIds`] carries the session and phase
+    /// ids that went, because the files keyed on them — raw logs, pid files, gate logs — cannot
+    /// be found once the rows are gone.
+    ///
+    /// # Errors
+    /// As [`StoreHandle::delete_session`].
+    pub async fn delete_project(&self, project_id: String) -> Result<Option<DeleteOutcome>> {
+        self.delete(DeleteTarget::Project(project_id)).await
+    }
+
+    async fn delete(&self, what: DeleteTarget) -> Result<Option<DeleteOutcome>> {
+        let (tx, rx) = oneshot::channel();
+        self.send(Op::Delete { what, reply: tx })?;
+        rx.await.map_err(|_| Error::Closed)?
     }
 
     /// Run `f` on the writer thread, inside the transaction that carries the ops queued before it.
@@ -859,7 +917,13 @@ fn run(
         // not held for a window it did not ask for.
         while !matches!(
             batch.last(),
-            Some(Op::Query(_) | Op::IntentOpen(..) | Op::Flush(_) | Op::Shutdown)
+            Some(
+                Op::Query(_)
+                    | Op::IntentOpen(..)
+                    | Op::Delete { .. }
+                    | Op::Flush(_)
+                    | Op::Shutdown
+            )
         ) {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
@@ -918,20 +982,25 @@ fn reclaim(conn: &Connection, budget: Option<usize>) {
 /// a feed row for a session that was deleted, say — must not discard every other session's
 /// writes from the same 250 ms window. [`Op::IntentOpen`] is skipped the same way and **also
 /// answered**: its caller is holding the reply, and is about to cause a real effect on the
-/// strength of it.
+/// strength of it. [`Op::Delete`] is answered the same way, and additionally runs inside a
+/// savepoint so that "skipped" means *nothing of it landed* rather than "half of it landed".
 fn apply_batch(
     conn: &mut Connection,
     batch: Vec<Op>,
     run_id: &str,
     config: &StoreConfig,
 ) -> Result<usize> {
-    let tx = conn.transaction()?;
+    let mut tx = conn.transaction()?;
     let mut touched: BTreeSet<String> = BTreeSet::new();
     let mut flushes: Vec<oneshot::Sender<()>> = Vec::new();
     // Answered after `tx.commit()`, so an `Ok` reply means the row is on disk and not merely
     // inserted. A commit that fails takes the whole `Vec` down with it unsent, and the caller
     // reads the dropped sender as `Error::Closed` — an error either way, never `Ok`.
     let mut opens: Vec<(Result<()>, oneshot::Sender<Result<()>>)> = Vec::new();
+    // Answered after the commit, for the same reason `opens` is: the caller is about to remove
+    // worktrees and log files on the strength of the answer.
+    type DeleteReply = (Result<Option<DeleteOutcome>>, oneshot::Sender<Result<Option<DeleteOutcome>>>);
+    let mut deletes: Vec<DeleteReply> = Vec::new();
     let mut queries = 0usize;
 
     for op in batch {
@@ -955,6 +1024,14 @@ fn apply_batch(
                 opens.push((result, reply));
                 Ok(())
             }
+            Op::Delete { what, reply } => {
+                let result = run_delete(&mut tx, &what);
+                if let Err(e) = &result {
+                    tracing::warn!(error = %e, "delete failed and was rolled back");
+                }
+                deletes.push((result, reply));
+                Ok(())
+            }
             other => apply_one(&tx, other, run_id, &mut touched),
         };
         if let Err(e) = outcome {
@@ -974,10 +1051,43 @@ fn apply_batch(
     for (result, reply) in opens {
         let _ = reply.send(result);
     }
+    for (result, reply) in deletes {
+        // A project delete can free tens of thousands of feed pages; feeding its row count into
+        // the same counter is what makes `run` reclaim them instead of leaving the file at its
+        // high-water mark.
+        if let Ok(Some(outcome)) = &result {
+            deleted += outcome.rows.feed as usize;
+        }
+        let _ = reply.send(result);
+    }
     for reply in flushes {
         let _ = reply.send(());
     }
     Ok(deleted)
+}
+
+/// Run one delete inside its own savepoint, so a failed post-condition rolls back the delete and
+/// nothing else in the batch.
+///
+/// The `?`s are the mechanism: dropping a [`rusqlite::Savepoint`] without committing rolls it
+/// back, so every error path here — a missing foreign key, a surviving dependant — leaves the
+/// database as it was and the caller is told so.
+fn run_delete(
+    tx: &mut rusqlite::Transaction<'_>,
+    what: &DeleteTarget,
+) -> Result<Option<DeleteOutcome>> {
+    let sp = tx.savepoint()?;
+    let outcome = match what {
+        DeleteTarget::Session(id) => delete::session(&sp, id)?.map(|rows| DeleteOutcome {
+            rows,
+            ids: DeletedIds { sessions: vec![id.clone()], ..DeletedIds::default() },
+        }),
+        DeleteTarget::Project(id) => {
+            delete::project(&sp, id)?.map(|(rows, ids)| DeleteOutcome { rows, ids })
+        }
+    };
+    sp.commit()?;
+    Ok(outcome)
 }
 
 fn apply_one(
@@ -1356,7 +1466,7 @@ fn apply_one(
         }
         // Handled by `apply_batch` before it delegates here; never reached, and a stray one is
         // logged rather than panicking a thread that owns the only connection.
-        Op::IntentOpen(..) | Op::Query(_) | Op::Flush(_) | Op::Shutdown => {
+        Op::IntentOpen(..) | Op::Delete { .. } | Op::Query(_) | Op::Flush(_) | Op::Shutdown => {
             tracing::error!("an op apply_batch owns reached apply_one");
         }
     }

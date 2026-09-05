@@ -127,6 +127,8 @@ pub fn run() {
             commands::end_session,
             commands::kill,
             commands::cleanup_worktree,
+            commands::delete_session,
+            commands::delete_project,
             commands::feed_tail,
             commands::pending_approvals,
             commands::start_run,

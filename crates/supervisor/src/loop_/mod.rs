@@ -87,9 +87,41 @@ pub const DEFAULT_CONCURRENCY: usize = 4;
 /// (`orchestration-loop.md` §9.2).
 pub const DEFAULT_BARRIER_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Wall clock for one lead or planner call. **Asserted**: nothing in this repo has measured a
-/// lead-call turn, because no lead call has ever run.
-pub const DEFAULT_LEAD_DEADLINE: Duration = Duration::from_secs(120);
+/// Wall clock for one lead or planner call.
+///
+/// **Still an assumption, but no longer a blind one.** The previous value was 120 s, asserted
+/// while `orchestration-loop.md` §2.5 admitted *"nothing in this repo has measured a lead-call
+/// turn, because no lead call has ever run."* One has now: on 2026-09-04 the owner's first real
+/// run spawned a planner that explored his repository with roughly twenty `Bash` calls and was
+/// **still working productively when the 120 s clock killed it** — `exit 143`, at about four
+/// minutes of wall time including the approvals it was parked on. **[measured, n = 1]**
+///
+/// 600 s is that observation with room over it: about 2.5x the longest stretch anyone has seen a
+/// judgement call stay useful for, and still an order of magnitude under
+/// [`DEFAULT_WORKER_TURN_DEADLINE`], which is what a call that builds and tests gets. It is not a
+/// measurement of where a lead call stops being productive; nobody has measured that.
+///
+/// Time parked on an approval does not count against it — `SupervisedCall::watch` suspends both
+/// clocks while a request is open (`docs/vision.md` §15 item 14) — so this is 600 s of the child
+/// actually working.
+///
+/// Override without a rebuild: `BRIGADIER_LEAD_DEADLINE_SECS`. See [`Limits::from_env`].
+pub const DEFAULT_LEAD_DEADLINE: Duration = Duration::from_secs(600);
+
+/// No envelope of **any** kind from a lead or planner call within this and it is killed.
+/// **Asserted.**
+///
+/// This is where the old 120 s went, and it is the clock that number always fitted. Until now a
+/// lead call was given `quiet_deadline == turn_deadline`, which makes the quiet clock unreachable:
+/// it can never expire before the turn clock it equals, so a wedged child was only ever caught at
+/// the end of the whole turn. Two minutes of a judgement call saying *nothing at all* is the
+/// wedged case; two minutes of it working is not.
+///
+/// Half [`DEFAULT_WORKER_QUIET_DEADLINE`], because a judgement call runs no builds — the long
+/// silences a worker is allowed are a `cargo build`, and this lane has none.
+///
+/// Override without a rebuild: `BRIGADIER_LEAD_QUIET_DEADLINE_SECS`.
+pub const DEFAULT_LEAD_QUIET_DEADLINE: Duration = Duration::from_secs(300);
 
 /// No `TurnCompleted` from a worker within this and it is interrupted, then killed. **Asserted.**
 pub const DEFAULT_WORKER_TURN_DEADLINE: Duration = Duration::from_secs(45 * 60);
@@ -108,8 +140,11 @@ pub struct Limits {
     pub concurrency: usize,
     /// How long to wait on the reconciliation barrier.
     pub barrier_timeout: Duration,
-    /// Wall clock for a planner or lead call.
+    /// Wall clock for a planner or lead call. Time parked on an approval does not count.
     pub lead_deadline: Duration,
+    /// Silence from a planner or lead call that means it is wedged. **Must be shorter than
+    /// [`Limits::lead_deadline`]** or it can never fire.
+    pub lead_quiet_deadline: Duration,
     /// Wall clock for one worker's turn.
     pub worker_turn_deadline: Duration,
     /// Silence from a worker that means it is wedged.
@@ -124,9 +159,78 @@ impl Default for Limits {
             concurrency: DEFAULT_CONCURRENCY,
             barrier_timeout: DEFAULT_BARRIER_TIMEOUT,
             lead_deadline: DEFAULT_LEAD_DEADLINE,
+            lead_quiet_deadline: DEFAULT_LEAD_QUIET_DEADLINE,
             worker_turn_deadline: DEFAULT_WORKER_TURN_DEADLINE,
             worker_quiet_deadline: DEFAULT_WORKER_QUIET_DEADLINE,
             gate_timeout: DEFAULT_GATE_TIMEOUT,
+        }
+    }
+}
+
+impl Limits {
+    /// [`Limits::default`] with every bound the environment names overlaid, in **seconds**.
+    ///
+    /// Every default here is an assumption and one of them has already killed a run that was
+    /// working. A number that is a guess should be changeable by the person watching it fail,
+    /// without a rebuild; that is all this is.
+    ///
+    /// | variable | field |
+    /// |---|---|
+    /// | `BRIGADIER_CONCURRENCY` | [`Limits::concurrency`] — a count, not seconds |
+    /// | `BRIGADIER_BARRIER_TIMEOUT_SECS` | [`Limits::barrier_timeout`] |
+    /// | `BRIGADIER_LEAD_DEADLINE_SECS` | [`Limits::lead_deadline`] |
+    /// | `BRIGADIER_LEAD_QUIET_DEADLINE_SECS` | [`Limits::lead_quiet_deadline`] |
+    /// | `BRIGADIER_WORKER_TURN_DEADLINE_SECS` | [`Limits::worker_turn_deadline`] |
+    /// | `BRIGADIER_WORKER_QUIET_DEADLINE_SECS` | [`Limits::worker_quiet_deadline`] |
+    /// | `BRIGADIER_GATE_TIMEOUT_SECS` | [`Limits::gate_timeout`] |
+    ///
+    /// A variable that is unset, unparseable or zero is **ignored** and the default stands: a
+    /// typo must not silently give a run a zero deadline, which would kill every child on its
+    /// first tick. A rejected value is logged so it is not silently ignored either.
+    #[must_use]
+    pub fn from_env() -> Self {
+        let mut limits = Self::default();
+        if let Some(n) = env_positive("BRIGADIER_CONCURRENCY") {
+            limits.concurrency = usize::try_from(n).unwrap_or(limits.concurrency);
+        }
+        if let Some(d) = env_secs("BRIGADIER_BARRIER_TIMEOUT_SECS") {
+            limits.barrier_timeout = d;
+        }
+        if let Some(d) = env_secs("BRIGADIER_LEAD_DEADLINE_SECS") {
+            limits.lead_deadline = d;
+        }
+        if let Some(d) = env_secs("BRIGADIER_LEAD_QUIET_DEADLINE_SECS") {
+            limits.lead_quiet_deadline = d;
+        }
+        if let Some(d) = env_secs("BRIGADIER_WORKER_TURN_DEADLINE_SECS") {
+            limits.worker_turn_deadline = d;
+        }
+        if let Some(d) = env_secs("BRIGADIER_WORKER_QUIET_DEADLINE_SECS") {
+            limits.worker_quiet_deadline = d;
+        }
+        if let Some(d) = env_secs("BRIGADIER_GATE_TIMEOUT_SECS") {
+            limits.gate_timeout = d;
+        }
+        limits
+    }
+}
+
+/// A duration in whole seconds from the environment, or `None`.
+fn env_secs(key: &str) -> Option<Duration> {
+    env_positive(key).map(Duration::from_secs)
+}
+
+/// A strictly positive `u64` from the environment, or `None` — unset, unparseable or zero.
+fn env_positive(key: &str) -> Option<u64> {
+    let raw = std::env::var(key).ok()?;
+    match raw.trim().parse::<u64>() {
+        Ok(0) | Err(_) => {
+            tracing::warn!(key, value = %raw, "ignoring an unusable limit override");
+            None
+        }
+        Ok(n) => {
+            tracing::info!(key, value = n, "limit overridden from the environment");
+            Some(n)
         }
     }
 }
@@ -224,6 +328,26 @@ pub struct RunSpec {
     pub goal: String,
     /// The driver every child is started on.
     pub driver: DriverKind,
+    /// The model the owner picked for this run, or `None` for role-based routing.
+    ///
+    /// **`Some` is honoured literally, by every child the run starts** — planner, lead, worker
+    /// and fixer alike. The alternative reading was to treat the owner's pick as the *work-order*
+    /// tier and keep judgement on a strong model, per `docs/vision.md` §6 (*"Role-based:
+    /// judgement (lead, grill, review, judge) gets the strong model; work orders get mid-tier"*).
+    /// That reading is rejected here, deliberately, for one reason: the control sits in the run
+    /// dock beside Start and is labelled with a model name, not with a role. A picker that
+    /// governs only some of the children is the same class of lie as a permission picker that
+    /// cannot stop the prompts, and removing that class of lie is what this whole change is.
+    ///
+    /// §6's routing is not discarded — it is what `None` means. With no pick, a judgement call
+    /// takes the provider default (the owner's own strong model) and a work order takes
+    /// [`ModelTier`](crate::action::ModelTier) as the lead assigned it, which until now reached
+    /// nothing at all.
+    pub model: Option<String>,
+    /// The permission mode the owner picked. Reaches the `--permission-mode` flag **and** the
+    /// `PreToolUse` policy of every child; see
+    /// [`policy_for`](brigadier_core::claude::hook::policy_for).
+    pub permission_mode: brigadier_core::driver::PermissionMode,
     /// The reconciliation barrier. Awaited at the top of the first tick, before the plan is read
     /// and before the first `worktree::prepare`.
     pub barrier: Barrier,
@@ -256,6 +380,8 @@ impl RunSpec {
             project_id: project_id.into(),
             goal: goal.into(),
             driver,
+            model: None,
+            permission_mode: brigadier_core::driver::PermissionMode::Default,
             barrier,
             limits: Limits::default(),
             call: None,
@@ -268,6 +394,24 @@ impl RunSpec {
     #[must_use]
     pub fn resuming(mut self, plan_id: impl Into<String>) -> Self {
         self.plan_id = Some(plan_id.into());
+        self
+    }
+
+    /// Run every child on `model`. `None` leaves role-based routing in charge; see
+    /// [`RunSpec::model`].
+    #[must_use]
+    pub fn with_model(mut self, model: Option<String>) -> Self {
+        self.model = model;
+        self
+    }
+
+    /// Run every child under `mode`, at the flag **and** at the hook.
+    #[must_use]
+    pub fn with_permission_mode(
+        mut self,
+        mode: brigadier_core::driver::PermissionMode,
+    ) -> Self {
+        self.permission_mode = mode;
         self
     }
 }
@@ -324,6 +468,10 @@ pub struct Run {
     project: ProjectRow,
     plan_id: String,
     goal: String,
+    /// The owner's model pick, or `None` for role-based routing. See [`RunSpec::model`].
+    model: Option<String>,
+    /// The owner's permission mode. Reaches every child's flag and every child's hook policy.
+    permission_mode: brigadier_core::driver::PermissionMode,
     call: SharedCall,
     limits: Limits,
     barrier: Barrier,
@@ -773,6 +921,8 @@ impl Supervisor {
             project,
             plan_id,
             goal: spec.goal.trim().to_owned(),
+            model: spec.model,
+            permission_mode: spec.permission_mode,
             call,
             limits: spec.limits,
             barrier: spec.barrier,

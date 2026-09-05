@@ -73,7 +73,7 @@ impl RawLog {
         // `FileRotate::new` panics rather than erring if it cannot create the parent directory,
         // so create it here where the failure is still a `Result`.
         std::fs::create_dir_all(&raw_dir)?;
-        let path = raw_dir.join(format!("{}.ndjson", safe_stem(session_id.as_str())));
+        let path = log_path(dir, session_id);
         let mut open_options = OpenOptions::new();
         open_options.read(true).create(true).append(true);
         let rotate = FileRotate::new(
@@ -115,6 +115,40 @@ impl Drop for RawLog {
             tracing::warn!(error = %e, path = %self.path.display(), "raw log flush on drop failed");
         }
     }
+}
+
+/// Where one session's live NDJSON file goes, without opening it.
+///
+/// The one place the path is spelled, so a caller that has to delete the file cannot spell it
+/// differently from the caller that writes it.
+#[must_use]
+pub fn log_path(dir: &Path, session_id: &SessionId) -> PathBuf {
+    dir.join("raw").join(format!("{}.ndjson", safe_stem(session_id.as_str())))
+}
+
+/// Every file this session's log occupies: the live one and its rotations.
+///
+/// Rotations are `<path>.1` and `<path>.2.gz` and so on ([`AppendCount`] plus
+/// [`Compression::OnRotate`]), so the rule is *the live name exactly, or the live name followed
+/// by a `.`* — a prefix test alone would sweep up `<id>2.ndjson`. Returns an empty `Vec` when the
+/// directory is not readable; a log that is not there is not a failure to delete it.
+#[must_use]
+pub fn log_files(dir: &Path, session_id: &SessionId) -> Vec<PathBuf> {
+    let live = log_path(dir, session_id);
+    let (Some(parent), Some(name)) = (live.parent(), live.file_name()) else {
+        return Vec::new();
+    };
+    let name = name.to_string_lossy().into_owned();
+    let rotated = format!("{name}.");
+    let Ok(entries) = std::fs::read_dir(parent) else { return Vec::new() };
+    entries
+        .filter_map(std::result::Result::ok)
+        .filter(|e| {
+            let found = e.file_name().to_string_lossy().into_owned();
+            found == name || found.starts_with(&rotated)
+        })
+        .map(|e| e.path())
+        .collect()
 }
 
 /// Session ids are opaque strings, so anything that is not obviously filename-safe becomes `-`.

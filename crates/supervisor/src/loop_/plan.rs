@@ -117,11 +117,18 @@ where
                 cwd: CallCwd::ProjectRoot,
                 prompt,
                 turn_deadline: run.limits.lead_deadline,
-                quiet_deadline: run.limits.lead_deadline,
+                // Its own clock, and shorter than the turn's. Giving the two the same value made
+                // the quiet clock unreachable — it can never expire before the deadline it
+                // equals — so a child that was alive and wedged was only ever caught at the end
+                // of the whole turn.
+                quiet_deadline: run.limits.lead_quiet_deadline,
                 // The judgement lane is what opts back into thinking, per spawn
                 // (`crates/core/src/driver.rs`).
                 thinking: ThinkingPolicy::Inherit,
-                model: None,
+                // `None` is the provider default, which is `docs/vision.md` §6's *judgement gets
+                // the strong model*. An explicit pick overrides it, here as everywhere.
+                model: run.model.clone(),
+                permission_mode: run.permission_mode.clone(),
             })
             .await?;
         if !outcome.end.answered() {

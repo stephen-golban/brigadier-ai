@@ -1,8 +1,10 @@
 //! brigadier-store: the supervisor's own state, on one SQLite file and one writer thread.
 //!
-//! Six things live here and nothing else does:
+//! Seven things live here and nothing else does:
 //!
 //! - [`schema`] — the tables, the pragmas, and the `user_version` migration ladder.
+//! - [`delete`] — removing a session, or a project and everything under it, with the cascade
+//!   map written down and checked rather than assumed.
 //! - `writer` (private) — one `rusqlite::Connection` on one dedicated thread, one transaction per
 //!   ~250 ms across every session, reached through a clone-cheap [`StoreHandle`].
 //! - [`feed`] — the bounded one-line row a canonical event contributes to the UI feed, and
@@ -24,6 +26,7 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod delete;
 pub mod feed;
 pub mod intents;
 pub mod ndjson;
@@ -34,6 +37,7 @@ mod writer;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+pub use delete::{Deleted, DeletedIds};
 pub use feed::FeedKind;
 pub use intents::{
     IntentKind, IntentOutcome, IntentRecord, IntentRow, IntentState, KnownIntentKind,
@@ -109,6 +113,19 @@ pub enum Error {
     Locked {
         /// The lock file that is held.
         path: PathBuf,
+    },
+    /// A delete ran and something that should have gone with it was still there afterwards.
+    ///
+    /// Raised inside the deleting transaction, so the whole delete rolls back: a half-deleted
+    /// project reported as deleted is worse than a project that is still there. It means a
+    /// foreign key named in [`delete`]'s cascade map is missing, or `PRAGMA foreign_keys` was
+    /// off on the connection.
+    #[error("{what} was not fully deleted; {left} survived")]
+    DeleteIncomplete {
+        /// What was being deleted, as `session <id>` or `project <id>`.
+        what: String,
+        /// The tables that still had rows, as `table=count` text.
+        left: String,
     },
 }
 

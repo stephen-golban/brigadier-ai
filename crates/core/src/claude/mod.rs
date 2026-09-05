@@ -47,8 +47,10 @@ pub use adapter::{approval_request_id, connect, AdapterConfig};
 pub use binary::{resolve_claude, CLAUDE_BIN, MIN_VERSION};
 pub use driver::{ClaudeDriver, ClaudeDriverConfig, CLAUDE_CODE, DEFAULT_APPROVAL_TIMEOUT};
 pub use hook::{
-    allow_all, ask_gated_tools, worker_wall, AllowAll, AskGatedTools, HookPolicy,
-    SharedHookPolicy, WorkerWall, DEFAULT_ASK_REASON, GATED_TOOLS, GIT_ELSEWHERE_FLAGS,
-    PRE_TOOL_USE_CALLBACK_ID, WALL_ALLOW_REASON, WALL_NESTED_CLAUDE_REASON, WORKTREE_PATH_TOOLS,
+    allow_all, ask_gated_tools, policy_for, worker_wall, AcceptEditsInside, AllowAll,
+    AskGatedTools, HookPolicy, HookScope, ReadOnlyWall, SharedHookPolicy, WorkerWall,
+    ACCEPT_EDITS_ALLOW_REASON, ACCEPT_EDITS_BASH_REASON, DEFAULT_ASK_REASON, GATED_TOOLS,
+    GIT_ELSEWHERE_FLAGS, PRE_TOOL_USE_CALLBACK_ID, READ_ONLY_ASK_REASON, WALL_ALLOW_REASON,
+    WALL_NESTED_CLAUDE_REASON, WORKTREE_PATH_TOOLS,
 };
 pub use process::{ExitInfo, KillHandle, SpawnSpec};

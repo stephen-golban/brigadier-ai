@@ -80,13 +80,21 @@ pub struct DriverInfo {
 /// Not injective: `Other("default")` deserializes back as [`PermissionMode::Default`]. That is
 /// the intended collapse — the same mode should not have two representations.
 ///
-/// Claude Code 2.1.258 accepts **seven** values and every one of them is modelled here.
-/// `claude --help` lists six and omits `default`, because the docs make `manual` its alias; both
-/// spellings are accepted by the binary, so [`PermissionMode::Manual`] is kept distinct from
+/// Claude Code accepts **seven** values and every one of them is modelled here. `claude --help`
+/// lists six and omits `default`, because the docs make `manual` its alias; both spellings are
+/// accepted by the binary, so [`PermissionMode::Manual`] is kept distinct from
 /// [`PermissionMode::Default`] rather than collapsed — it is what the operator chose, and the CLI
-/// resolves the alias itself.
-// see docs/research/approvals.md §3 — `claude --help` and option-validation probes on 2.1.258
-// (measured) plus https://code.claude.com/docs/en/cli-reference (documented) for the alias.
+/// resolves the alias itself. Re-measured value-by-value on **2.1.261** and unchanged from the
+/// 2.1.258 reading; an eighth value is refused by commander at argument parsing, so an
+/// [`PermissionMode::Other`] reaching the flag is a hard start failure rather than a pass-through.
+// see docs/research/approvals.md §3 (2.1.258) and docs/research/permission-modes.md §2 (2.1.261),
+// both `claude --help` plus option-validation probes (measured), with
+// https://code.claude.com/docs/en/cli-reference (documented) for the alias.
+///
+/// **The mode alone cannot stop a prompt.** brigadier's `PreToolUse` hook runs *before* the CLI
+/// consults this, so a mode has to select a hook policy too:
+/// [`policy_for`](crate::claude::hook::policy_for) is where that happens, and it is the only
+/// reason picking a mode changes anything a human can see.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum PermissionMode {
     /// Ask per the provider's own rules. The documented starting mode for an SDK-driven session.

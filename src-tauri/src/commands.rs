@@ -19,7 +19,9 @@ use std::path::PathBuf;
 use brigadier_core::driver::{DriverKind, McpPolicy, PermissionMode, StartSession};
 use brigadier_core::event::{RequestId, SessionId};
 use brigadier_core::session::Decision;
-use brigadier_supervisor::{ApprovalView, FeedBatch, FeedRowWire, WorktreeCleanup};
+use brigadier_supervisor::{
+    ApprovalView, FeedBatch, FeedRowWire, ProjectDeletion, SessionDeletion, WorktreeCleanup,
+};
 use tauri::ipc::Channel;
 use tauri::State;
 
@@ -251,6 +253,58 @@ pub(crate) async fn cleanup_worktree(
         .await?)
 }
 
+/// Delete one session from the machine: its rows, its feed, its raw log, its pid record and its
+/// worktree. The branch survives.
+///
+/// **This is the only command that removes a session, and it is not `cleanup_worktree` with
+/// extra steps.** `cleanup_worktree` removes a checkout and leaves the session in the sidebar;
+/// this removes the session.
+///
+/// `force = false` asks the question and the answer is in the return value, not in an error: a
+/// session whose worktree holds uncommitted files or unmerged commits comes back as
+/// `{ removed: false, worktree: { blocked, dirty_files, commits, branch, … } }` with **nothing
+/// touched**, and `worktree.blocked` is the same closed set `cleanup_worktree` already returns —
+/// so the same three reasons (`dirty`, `commits`, `branch_moved`) are the only ones a force
+/// button may be offered for. `force = true` proceeds and still keeps the branch: `branch` on the
+/// reply is where the work is, and after the row is gone it is the only name that says so.
+///
+/// Errors the front end branches on: `session_running` (end or kill it first), `no_such_session`,
+/// `invalid_argument`, `worktree` for a git failure, and `store` — a `store` error here means
+/// **nothing was deleted**, because the database half runs in a savepoint that rolls back whole.
+// see docs/vision.md §8 and docs/plans/ipc-contract.md "### delete_session".
+#[tauri::command]
+pub(crate) async fn delete_session(
+    session_id: String,
+    force: bool,
+    state: State<'_, AppState>,
+) -> Result<SessionDeletion, AppError> {
+    Ok(state.get()?.supervisor.delete_session(&SessionId::new(session_id), force).await?)
+}
+
+/// Delete one project and every session under it, with their logs and worktrees, and its whole
+/// plan tree.
+///
+/// Refused with `session_running` — naming the sessions — while **any** session of the project is
+/// live, before anything is touched. After that the worktrees go one at a time and the first
+/// refusal stops the pass: `removed: false`, no rows deleted, and `worktrees[]` says what
+/// happened to each session up to that point. A checkout removed before the refusal stays
+/// removed; its branch survives, so nothing is lost, and the array is what tells the operator so
+/// rather than a success that would be false.
+///
+/// Work orders keep their row with a null `session_id` — the plan outlives the session that ran
+/// it — and `rows.work_orders_orphaned` counts them.
+///
+/// Errors the front end branches on: `no_such_project`, `session_running`, `worktree`, `store`.
+// see docs/vision.md §8 and docs/plans/ipc-contract.md "### delete_project".
+#[tauri::command]
+pub(crate) async fn delete_project(
+    project_id: String,
+    force: bool,
+    state: State<'_, AppState>,
+) -> Result<ProjectDeletion, AppError> {
+    Ok(state.get()?.supervisor.delete_project(&project_id, force).await?)
+}
+
 /// The newest `n` feed rows for a session, oldest first — what a fresh mount replays before it
 /// switches to live batches.
 #[tauri::command]
@@ -289,10 +343,25 @@ pub(crate) async fn pending_approvals(
 /// is no binary to spawn children with.
 ///
 /// **A restart continues the plan rather than writing a second one** — see [`resumable`].
+///
+/// `model` and `permission_mode` are the owner's picks and both are **optional**, so a caller that
+/// sends neither gets exactly the previous behaviour. They were absent until now, which meant the
+/// dock's own pickers reached nothing: every child took the CLI's default model, and every child
+/// ran under `AskGatedTools` whatever mode was showing — the planner that prompted the owner for
+/// twenty consecutive `Bash` calls.
+///
+/// * `model` — `None` leaves `docs/vision.md` §6's role-based routing in charge; `Some` is
+///   honoured by **every** child of the run. See [`RunSpec::model`].
+/// * `permission_mode` — a bare string in the CLI's own vocabulary; an unmodelled value passes
+///   through verbatim rather than being rejected here. It reaches the `--permission-mode` flag
+///   **and** the `PreToolUse` policy, and in the project root it never removes the write gate
+///   (`docs/research/permission-modes.md` §4).
 #[tauri::command]
 pub(crate) async fn start_run(
     project_id: String,
     goal: String,
+    model: Option<String>,
+    permission_mode: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<RunView, AppError> {
     // Same reason `start_session` does it: without this the supervisor answers `NoDriver` →
@@ -325,7 +394,17 @@ pub(crate) async fn start_run(
         goal.clone(),
         DriverKind::new(CLAUDE_CODE),
         ready.barrier.clone(),
+    )
+    .with_model(model.filter(|m| !m.trim().is_empty()))
+    .with_permission_mode(
+        permission_mode
+            .as_deref()
+            .map_or(PermissionMode::Default, PermissionMode::from),
     );
+    // Every bound a run works inside is an assumption, and one of them has already killed a
+    // planner that was working. `from_env` lets the person watching it fail change it without a
+    // rebuild; with nothing set it is `Limits::default()`.
+    spec.limits = brigadier_supervisor::loop_::Limits::from_env();
     if let Some(plan_id) = resumable(ready, &project_id, &goal).await? {
         tracing::info!(plan_id, project_id, "continuing an unfinished plan rather than writing a new one");
         spec = spec.resuming(plan_id);

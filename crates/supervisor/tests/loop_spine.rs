@@ -19,13 +19,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use brigadier_core::driver::DriverKind;
+use brigadier_core::driver::{DriverKind, PermissionMode};
 use brigadier_core::event::{Event, ItemId, ItemKind, RequestKind};
 use brigadier_store::plan::{PhaseState, WorkOrderState};
 use brigadier_store::Store;
 use brigadier_supervisor::loop_::barrier::{barrier, resolved, Barrier, ReconcileOutcome};
 use brigadier_supervisor::loop_::call::{
-    CallCwd, CallEnd, CallOutcome, CallRequest, ModelCall, SupervisedCall,
+    CallCwd, CallEnd, CallOutcome, CallRequest, ModelCall, ScriptedCall, SupervisedCall,
 };
 use brigadier_supervisor::loop_::{Limits, LoopError, Run, RunSpec, Tick};
 use brigadier_supervisor::replay::{ApprovalPlan, REPLAY};
@@ -116,6 +116,8 @@ impl Rig {
             .prepare_run(RunSpec {
                 project_id: self.project_id.clone(),
                 goal: "ship the thing".to_owned(),
+                model: None,
+                permission_mode: Default::default(),
                 driver: DriverKind::new(REPLAY),
                 barrier,
                 limits,
@@ -137,6 +139,8 @@ impl Rig {
             .prepare_run(RunSpec {
                 project_id: self.project_id.clone(),
                 goal: "ship the thing".to_owned(),
+                model: None,
+                permission_mode: Default::default(),
                 driver: DriverKind::new(REPLAY),
                 barrier,
                 limits: Limits::default(),
@@ -845,6 +849,8 @@ async fn stopping_a_run_dispatches_nothing_further() {
         .start_run(RunSpec {
             project_id: rig.project_id.clone(),
             goal: "ship it".to_owned(),
+            model: None,
+            permission_mode: Default::default(),
             driver: DriverKind::new(REPLAY),
             barrier: {
                 let (_tx, never) = barrier();
@@ -913,6 +919,7 @@ async fn a_parked_order_does_not_have_its_deadlines_fire() {
         quiet_deadline: Duration::from_secs(30),
         thinking: brigadier_core::driver::ThinkingPolicy::Off,
         model: None,
+        permission_mode: Default::default(),
     };
     let task = tokio::spawn(async move { call.call(req).await });
 
@@ -935,4 +942,253 @@ async fn a_parked_order_does_not_have_its_deadlines_fire() {
         .expect("join")
         .expect("call");
     assert!(outcome.parked, "the call knows it parked");
+}
+
+/// The lead lane, on the same machinery. The lead call's clocks are **not** a second
+/// implementation — `SupervisedCall::watch` is shared with the dispatch path, and this pins that
+/// they are, because a lead call whose deadlines counted human thinking time would kill the
+/// planner the owner is in the middle of unblocking.
+///
+/// Both clocks are set to the same short value on purpose: that is what `plan.rs` did before the
+/// quiet deadline got a field of its own, and it is the shape that would have failed hardest.
+#[tokio::test]
+async fn a_parked_lead_call_does_not_have_its_deadlines_fire() {
+    let Some(rig) = Rig::new().await else { return };
+    let script: Vec<Event> = (0..40)
+        .map(|i| {
+            Event::item_completed(
+                ItemId::new(format!("i{i}")),
+                ItemKind::ToolCall { name: "Bash".into() },
+                "ls",
+                None,
+            )
+        })
+        .collect();
+    let driver = Arc::new(
+        ReplayDriver::new(script)
+            .with_rate(40.0)
+            .with_approval(ApprovalPlan {
+                after: Duration::from_millis(40),
+                kind: RequestKind::tool_permission("Bash", "{\"command\":\"ls -1\"}", vec![], None),
+                timeout: None,
+            }),
+    );
+    rig.sup.register_driver(driver.clone());
+
+    let call = SupervisedCall::new(rig.sup.clone(), DriverKind::new(REPLAY), rig.root.clone());
+    let req = CallRequest {
+        project_id: rig.project_id.clone(),
+        label: "lead",
+        cwd: CallCwd::ProjectRoot,
+        prompt: "decide".to_owned(),
+        turn_deadline: Duration::from_millis(250),
+        quiet_deadline: Duration::from_millis(250),
+        thinking: brigadier_core::driver::ThinkingPolicy::Off,
+        model: None,
+        permission_mode: PermissionMode::Default,
+    };
+    let task = tokio::spawn(async move { call.call(req).await });
+
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert!(
+        !task.is_finished(),
+        "the harness killed the lead call the owner was in the middle of unblocking"
+    );
+
+    let raised = driver.raised_approval().expect("the request was really parked");
+    let session = rig.sup.live_sessions()[0].clone();
+    rig.sup
+        .respond(&session, raised.request_id, brigadier_core::session::Decision::allow())
+        .await
+        .expect("answered");
+
+    let outcome = tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("the lead call finishes once the park is answered")
+        .expect("join")
+        .expect("call");
+    assert!(outcome.parked, "the lead call knows it parked");
+}
+
+// ---------------------------------------------------------------------------------------------
+// the owner's own picks
+// ---------------------------------------------------------------------------------------------
+
+/// Prepare a run over `script` with the owner's picks, and take the two ticks that spawn the
+/// planner, the lead and the phase's workers.
+async fn run_picks(
+    rig: &Rig,
+    model: Option<String>,
+    mode: PermissionMode,
+) -> Vec<CallRequest> {
+    let script = Arc::new(
+        ScriptedCall::new()
+            .answering("planner", plan_of(&[("a", "true"), ("b", "true")]))
+            .answering("lead", dispatch_of(&[("o1", "src")])),
+    );
+    let mut spec = RunSpec::new(
+        rig.project_id.clone(),
+        "ship it",
+        DriverKind::new(REPLAY),
+        resolved(ReconcileOutcome::clean()),
+    )
+    .with_model(model)
+    .with_permission_mode(mode);
+    spec.call = Some(Arc::clone(&script) as Arc<dyn ModelCall>);
+    spec.gate = Some(rig.gate().await);
+    let mut run = rig.sup.prepare_run(spec).await.expect("a run is prepared");
+    run.tick().await;
+    run.tick().await;
+    script.calls()
+}
+
+/// **The owner's pick reaches every child, and the mode reaches them with it.**
+///
+/// Before this, `start_run` took `project_id` and `goal` alone and every call passed
+/// `model: None`: the dock's picker said Haiku 4.5 while the session header read
+/// `claude-opus-5[1m]`.
+#[tokio::test]
+async fn the_owners_model_and_mode_reach_every_child_of_the_run() {
+    let Some(rig) = Rig::new().await else { return };
+    let calls =
+        run_picks(&rig, Some("haiku".to_owned()), PermissionMode::BypassPermissions).await;
+
+    assert!(calls.iter().any(|c| c.label == "planner"), "the planner ran");
+    assert!(calls.iter().any(|c| c.label == "lead"), "the lead ran");
+    for call in &calls {
+        assert_eq!(
+            call.model.as_deref(),
+            Some("haiku"),
+            "the {} call ignored the owner's model",
+            call.label
+        );
+        assert_eq!(
+            call.permission_mode,
+            PermissionMode::BypassPermissions,
+            "the {} call ignored the owner's permission mode",
+            call.label
+        );
+    }
+}
+
+/// **No pick means `docs/vision.md` §6's role-based routing, not "no routing".** A judgement call
+/// takes the provider default; a work order takes the tier the lead assigned it, which until now
+/// reached nothing at all.
+#[tokio::test]
+async fn with_no_pick_a_work_order_takes_its_tier_and_judgement_takes_the_default() {
+    let Some(rig) = Rig::new().await else { return };
+    let calls = run_picks(&rig, None, PermissionMode::Default).await;
+
+    for judgement in calls.iter().filter(|c| c.label == "planner" || c.label == "lead") {
+        assert_eq!(judgement.model, None, "{} must take the provider default", judgement.label);
+    }
+    // `dispatch_of` asks for `model_tier: "sonnet"`.
+    let worker = calls.iter().find(|c| c.label == "worker").expect("an order was dispatched");
+    assert_eq!(worker.model.as_deref(), Some("sonnet"));
+}
+
+/// The two clocks a judgement call runs under are **different numbers**. They were the same, which
+/// made the quiet clock unreachable: it can never expire before a deadline it equals.
+#[tokio::test]
+async fn a_judgement_call_gets_a_quiet_deadline_shorter_than_its_turn_deadline() {
+    let Some(rig) = Rig::new().await else { return };
+    let limits = Limits::default();
+    assert!(
+        limits.lead_quiet_deadline < limits.lead_deadline,
+        "a quiet deadline that is not shorter than the turn deadline can never fire"
+    );
+    assert!(
+        limits.lead_deadline >= Duration::from_secs(300),
+        "120s killed a planner that was still working at four minutes"
+    );
+
+    let calls = run_picks(&rig, None, PermissionMode::Default).await;
+    let planner = calls.iter().find(|c| c.label == "planner").expect("the planner ran");
+    assert_eq!(planner.turn_deadline, limits.lead_deadline);
+    assert_eq!(planner.quiet_deadline, limits.lead_quiet_deadline);
+}
+
+/// `Limits::from_env` is the escape hatch for a number that is a guess: the person watching a run
+/// die on it can change it without a rebuild. A bad value is ignored rather than obeyed — a zero
+/// deadline would kill every child on its first tick.
+#[test]
+fn a_limit_override_is_read_from_the_environment_and_a_bad_one_is_ignored() {
+    // Serialized by construction: this is the only test in the file that touches the process
+    // environment, and it restores what it found.
+    let restore = |key: &str, old: Option<std::ffi::OsString>| match old {
+        Some(v) => std::env::set_var(key, v),
+        None => std::env::remove_var(key),
+    };
+    let key = "BRIGADIER_LEAD_DEADLINE_SECS";
+    let quiet = "BRIGADIER_LEAD_QUIET_DEADLINE_SECS";
+    let (was, was_quiet) = (std::env::var_os(key), std::env::var_os(quiet));
+
+    std::env::set_var(key, "1800");
+    assert_eq!(Limits::from_env().lead_deadline, Duration::from_secs(1800));
+
+    std::env::set_var(key, "0");
+    assert_eq!(Limits::from_env().lead_deadline, Limits::default().lead_deadline);
+    std::env::set_var(key, "not a number");
+    assert_eq!(Limits::from_env().lead_deadline, Limits::default().lead_deadline);
+
+    std::env::remove_var(key);
+    std::env::set_var(quiet, "42");
+    assert_eq!(Limits::from_env().lead_quiet_deadline, Duration::from_secs(42));
+    assert_eq!(Limits::from_env().lead_deadline, Limits::default().lead_deadline);
+
+    restore(key, was);
+    restore(quiet, was_quiet);
+}
+
+/// **A killed call says so on the thread.** Before this a deadline kill was silent: the child was
+/// killed, the window thrown away, and the plan card still read "no phases yet" with nothing
+/// anywhere saying why. The warning is a `FeedKind::Warn` row on the dead session's own feed,
+/// numbered past its last event so it cannot overwrite one.
+#[tokio::test]
+async fn a_call_killed_on_its_deadline_leaves_a_warning_on_the_feed() {
+    let Some(rig) = Rig::new().await else { return };
+    // A script that never completes a turn: the deadline is the only way this call ends.
+    let script: Vec<Event> = (0..200)
+        .map(|i| {
+            Event::item_completed(
+                ItemId::new(format!("i{i}")),
+                ItemKind::ToolCall { name: "Bash".into() },
+                "ls",
+                None,
+            )
+        })
+        .collect();
+    rig.sup.register_driver(Arc::new(ReplayDriver::new(script).with_rate(60.0)));
+
+    let call = SupervisedCall::new(rig.sup.clone(), DriverKind::new(REPLAY), rig.root.clone());
+    let outcome = call
+        .call(CallRequest {
+            project_id: rig.project_id.clone(),
+            label: "planner",
+            cwd: CallCwd::ProjectRoot,
+            prompt: "plan it".to_owned(),
+            turn_deadline: Duration::from_millis(200),
+            quiet_deadline: Duration::from_secs(30),
+            thinking: brigadier_core::driver::ThinkingPolicy::Off,
+            model: None,
+            permission_mode: PermissionMode::Default,
+        })
+        .await
+        .expect("call");
+    assert_eq!(outcome.end, CallEnd::TurnDeadline);
+
+    let session = outcome.session_id.clone().expect("a session ran");
+    let rows = rig.sup.feed_tail(&session, 200).await.expect("feed");
+    let warning = rows
+        .iter()
+        .find(|r| r.l.contains("the planner call ended"))
+        .expect("the thread says the planner was killed");
+    assert_eq!(warning.k, brigadier_store::feed::FeedKind::Warn);
+    assert!(warning.l.contains("turn_deadline"), "{}", warning.l);
+    // Past every real row, so nothing was overwritten: `feed`'s insert is ON CONFLICT DO UPDATE.
+    assert!(
+        rows.iter().all(|r| r.q <= warning.q),
+        "the warning must be numbered past the session's last event"
+    );
+    assert!(rows.len() > 1, "the session's own rows survived alongside it");
 }
