@@ -71,8 +71,12 @@ const WELL_KNOWN_BIN_DIRS: &[&str] = &[
 ];
 
 /// Absolute toolchain directories appended on the same terms as [`WELL_KNOWN_BIN_DIRS`].
-const WELL_KNOWN_ABS_BIN_DIRS: &[&str] =
-    &["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/local/sbin"];
+const WELL_KNOWN_ABS_BIN_DIRS: &[&str] = &[
+    "/opt/homebrew/bin",
+    "/opt/homebrew/sbin",
+    "/usr/local/bin",
+    "/usr/local/sbin",
+];
 
 /// Where the `PATH` a gate runs with came from, so a 127 can be explained rather than guessed at.
 ///
@@ -199,7 +203,12 @@ impl GateEnv {
     ) -> Self {
         let shell = shell.into();
         let pipefail = probe_pipefail(&shell, &path).await;
-        Self { shell, path, path_source, pipefail }
+        Self {
+            shell,
+            path,
+            path_source,
+            pipefail,
+        }
     }
 }
 
@@ -276,6 +285,21 @@ impl GateResult {
 /// signal and a timeout — comes back as an `Ok(GateResult)` with a reason slug, because those are
 /// results, not failures of the harness.
 pub async fn run(env: &GateEnv, req: &GateRequest) -> std::io::Result<GateResult> {
+    let env = env.clone();
+    let req = req.clone();
+    let (cancel, receiver) = tokio::sync::oneshot::channel::<()>();
+    let task = tokio::spawn(async move { run_owned(&env, &req, receiver).await });
+    let result = task.await.map_err(std::io::Error::other)?;
+    drop(cancel);
+    result
+}
+async fn run_owned(
+    env: &GateEnv,
+    req: &GateRequest,
+    mut cancel: tokio::sync::oneshot::Receiver<()>,
+) -> std::io::Result<GateResult> {
+    let _lease = brigadier_core::checkpoint::WorkspaceLease::acquire(&req.cwd)
+        .map_err(std::io::Error::other)?;
     if let Some(parent) = req.log_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -316,7 +340,9 @@ pub async fn run(env: &GateEnv, req: &GateRequest) -> std::io::Result<GateResult
         .env_remove("MAX_THINKING_TOKENS");
     // The single most important line in the file: an interactive prompt must EOF, not wedge the
     // run (`docs/research/orchestration-loop.md` §6.2).
-    cmd.stdin(Stdio::null()).stdout(Stdio::from(log)).stderr(Stdio::from(log_err));
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(log_err));
     // Own process group, so the timeout can reach the children `cargo test` spawns rather than
     // orphaning them behind a dead `sh`.
     #[cfg(unix)]
@@ -326,7 +352,14 @@ pub async fn run(env: &GateEnv, req: &GateRequest) -> std::io::Result<GateResult
     let mut child = cmd.spawn()?;
     let pid = child.id();
 
-    let status = match tokio::time::timeout(req.timeout, child.wait()).await {
+    let waited = tokio::select! {
+        waited=tokio::time::timeout(req.timeout,child.wait())=>waited,
+        _=&mut cancel=>{
+            kill_group(&mut child,pid).await;let _=child.wait().await;
+            return Err(std::io::Error::new(std::io::ErrorKind::Interrupted,"Verification cancelled"));
+        }
+    };
+    let status = match waited {
         Ok(status) => status?,
         Err(_) => {
             kill_group(&mut child, pid).await;
@@ -389,9 +422,10 @@ fn signal_of(_status: &std::process::ExitStatus) -> Option<i32> {
 async fn kill_group(child: &mut tokio::process::Child, pid: Option<u32>) {
     #[cfg(unix)]
     if let Some(pgid) = pid {
-        let outcome =
-            tokio::task::spawn_blocking(move || brigadier_proc::sweep::kill_group_sync(pgid, KILL_GRACE))
-                .await;
+        let outcome = tokio::task::spawn_blocking(move || {
+            brigadier_proc::sweep::kill_group_sync(pgid, KILL_GRACE)
+        })
+        .await;
         match outcome {
             Ok(o) if !o.still_alive => return,
             Ok(o) => tracing::warn!(
@@ -460,7 +494,9 @@ enum LoginShellPath {
 }
 
 async fn login_shell_path() -> LoginShellPath {
-    let Some(shell) = std::env::var_os("SHELL") else { return LoginShellPath::Unavailable };
+    let Some(shell) = std::env::var_os("SHELL") else {
+        return LoginShellPath::Unavailable;
+    };
     let mut cmd = Command::new(&shell);
     // `-i` is what costs — an interactive shell with no tty runs the owner's whole interactive
     // startup, 5–13 s here — and it is also the only thing that reads `.zshrc`. `stdin` is null
@@ -524,7 +560,9 @@ mod tests {
 
     impl Rig {
         fn new() -> Self {
-            Self { dir: tempfile::tempdir().expect("tempdir") }
+            Self {
+                dir: tempfile::tempdir().expect("tempdir"),
+            }
         }
 
         fn at(&self, name: &str) -> PathBuf {
@@ -580,7 +618,9 @@ mod tests {
     #[tokio::test]
     async fn a_pipeline_without_pipefail_reports_its_last_command() {
         let rig = Rig::new();
-        let out = run(&sh_env_no_pipefail().await, &rig.req("false | true")).await.expect("ran");
+        let out = run(&sh_env_no_pipefail().await, &rig.req("false | true"))
+            .await
+            .expect("ran");
         assert_eq!(out.exit_code, Some(0), "the measured tail trap");
         assert!(out.is_green());
         assert!(!out.pipefail);
@@ -606,7 +646,9 @@ mod tests {
     #[tokio::test]
     async fn a_signalled_command_has_no_code_and_is_red() {
         let rig = Rig::new();
-        let out = run(&sh_env().await, &rig.req("kill -9 $$")).await.expect("ran");
+        let out = run(&sh_env().await, &rig.req("kill -9 $$"))
+            .await
+            .expect("ran");
         assert_eq!(out.exit_code, None, "a signalled process has no exit code");
         assert_eq!(out.reason, GateReason::Signalled);
         assert!(!out.is_green());
@@ -620,7 +662,9 @@ mod tests {
     #[tokio::test]
     async fn command_not_found_is_one_hundred_and_twenty_seven_with_its_own_slug() {
         let rig = Rig::new();
-        let out = run(&sh_env().await, &rig.req("nosuchprogram_xyz")).await.expect("ran");
+        let out = run(&sh_env().await, &rig.req("nosuchprogram_xyz"))
+            .await
+            .expect("ran");
         assert_eq!(out.exit_code, Some(127));
         assert_eq!(out.reason, GateReason::CommandNotFound);
         assert_eq!(out.reason.slug(), "command_not_found");
@@ -657,7 +701,43 @@ mod tests {
         assert!(!out.pipefail);
         let log = rig.log();
         assert_eq!(log, "ok");
-        assert!(!log.contains("Illegal option"), "the prefix must never have been applied");
+        assert!(
+            !log.contains("Illegal option"),
+            "the prefix must never have been applied"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_kills_the_writer_before_releasing_its_workspace() {
+        let rig = Rig::new();
+        let req = rig.req("(sleep 0.2; touch escaped) & printf ready > ready; sleep 30");
+        let env = sh_env().await;
+        let task = tokio::spawn(async move { run(&env, &req).await });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !rig.at("ready").exists() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(brigadier_core::checkpoint::WorkspaceLease::acquire(rig.dir.path()).is_err());
+        task.abort();
+        let _ = task.await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Ok(lease) =
+                    brigadier_core::checkpoint::WorkspaceLease::acquire(rig.dir.path())
+                {
+                    drop(lease);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!rig.at("escaped").exists());
     }
 
     // ---- the timeout ----
@@ -672,7 +752,10 @@ mod tests {
         assert_eq!(out.reason, GateReason::TimedOut);
         assert_eq!(out.exit_code, None);
         assert!(!out.is_green());
-        assert!(out.duration < Duration::from_secs(10), "the kill must not wait for the sleep");
+        assert!(
+            out.duration < Duration::from_secs(10),
+            "the kill must not wait for the sleep"
+        );
     }
 
     /// The kill reaches the **group**: a grandchild that would outlive the shell is dead too.
@@ -712,13 +795,19 @@ mod tests {
         // The marker is concatenated by `awk` so that the literal never appears in the command
         // string itself — the command *is* carried on the result, verbatim, and only the output
         // must not be.
-        let script = "awk 'BEGIN{ line=\"\"; for (i = 0; i < 10; i++) line = line \"GATE\" \"NOISE-\"; \
+        let script =
+            "awk 'BEGIN{ line=\"\"; for (i = 0; i < 10; i++) line = line \"GATE\" \"NOISE-\"; \
                       for (j = 0; j < 105000; j++) print line }'; exit 3";
         let out = run(&sh_env().await, &rig.req(script)).await.expect("ran");
         assert_eq!(out.exit_code, Some(3));
 
-        let bytes = std::fs::metadata(rig.at("gate.log")).expect("log exists").len();
-        assert!(bytes >= 10 * 1024 * 1024, "expected >= 10 MiB in the log, got {bytes}");
+        let bytes = std::fs::metadata(rig.at("gate.log"))
+            .expect("log exists")
+            .len();
+        assert!(
+            bytes >= 10 * 1024 * 1024,
+            "expected >= 10 MiB in the log, got {bytes}"
+        );
 
         let head = {
             use std::io::Read;
@@ -727,7 +816,10 @@ mod tests {
             let n = f.read(&mut buf).expect("read log");
             String::from_utf8_lossy(&buf[..n]).into_owned()
         };
-        assert!(head.contains("GATENOISE"), "the marker should be in the log: {head}");
+        assert!(
+            head.contains("GATENOISE"),
+            "the marker should be in the log: {head}"
+        );
 
         let serialised = serde_json::to_string(&out).expect("serialises");
         assert!(
@@ -748,9 +840,12 @@ mod tests {
     #[tokio::test]
     async fn stdout_and_stderr_interleave_into_one_file() {
         let rig = Rig::new();
-        let out = run(&sh_env().await, &rig.req("printf one; printf two >&2; printf three"))
-            .await
-            .expect("ran");
+        let out = run(
+            &sh_env().await,
+            &rig.req("printf one; printf two >&2; printf three"),
+        )
+        .await
+        .expect("ran");
         assert!(out.is_green());
         assert_eq!(rig.log(), "onetwothree");
     }
@@ -762,7 +857,11 @@ mod tests {
         let mut req = rig.req("read line; echo \"got:[$line]\"");
         req.timeout = Duration::from_secs(5);
         let out = run(&sh_env().await, &req).await.expect("ran");
-        assert_ne!(out.reason, GateReason::TimedOut, "an unread stdin must not hang the gate");
+        assert_ne!(
+            out.reason,
+            GateReason::TimedOut,
+            "an unread stdin must not hang the gate"
+        );
         assert_eq!(rig.log(), "got:[]\n");
     }
 
@@ -789,7 +888,10 @@ mod tests {
         assert!(log.contains("MTT=unset"), "this is not a model call: {log}");
         // The gate runs in the integration worktree, never the project root. Asserted with a
         // file rather than with `pwd`, whose builtin trusts an inherited `$PWD`.
-        assert!(rig.at("cwd-marker").exists(), "the gate did not run in the worktree it was given");
+        assert!(
+            rig.at("cwd-marker").exists(),
+            "the gate did not run in the worktree it was given"
+        );
     }
 
     /// The well-known toolchain directories are appended when they exist and never duplicated,
@@ -823,8 +925,21 @@ mod tests {
             GateReason::TimedOut,
         ];
         let slugs: Vec<&str> = all.iter().map(|r| r.slug()).collect();
-        assert_eq!(slugs, ["passed", "failed", "command_not_found", "signalled", "timed_out"]);
-        assert_eq!(all.iter().filter(|r| r.is_green()).count(), 1, "only exit 0 is green");
+        assert_eq!(
+            slugs,
+            [
+                "passed",
+                "failed",
+                "command_not_found",
+                "signalled",
+                "timed_out"
+            ]
+        );
+        assert_eq!(
+            all.iter().filter(|r| r.is_green()).count(),
+            1,
+            "only exit 0 is green"
+        );
     }
 
     /// The one signal `docs/research/worktree-cleanup.md` §§2.1–2.4 measured as sound is
@@ -852,7 +967,9 @@ mod tests {
     }
 
     fn walk(dir: &Path, f: &mut impl FnMut(&Path)) {
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {

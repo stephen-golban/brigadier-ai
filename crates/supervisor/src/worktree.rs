@@ -134,7 +134,14 @@ impl WorktreeCleanup {
         branch: String,
         live_branch: Option<String>,
     ) -> Self {
-        Self { removed: false, dirty_files, commits, branch, live_branch, blocked: Some(blocked) }
+        Self {
+            removed: false,
+            dirty_files,
+            commits,
+            branch,
+            live_branch,
+            blocked: Some(blocked),
+        }
     }
 }
 
@@ -308,7 +315,9 @@ pub(crate) async fn prepare_from(
     // Up front, so an unborn HEAD is a message with a remedy in it rather than git's
     // `fatal: invalid reference: HEAD` — or, with the base omitted, a silent orphan worktree.
     if !has_commits(&git, project_root).await? {
-        return Err(SupervisorError::from(WorktreeError::UnbornHead(project_root.to_owned())));
+        return Err(SupervisorError::from(WorktreeError::UnbornHead(
+            project_root.to_owned(),
+        )));
     }
     // Submodules. **measured**: `worktree add` succeeds, the submodule directory is **empty**,
     // and `git status --porcelain` inside the new worktree reports nothing — an incomplete
@@ -320,9 +329,9 @@ pub(crate) async fn prepare_from(
     // repository, which is a decision for the operator, not for us.
     // see docs/research/worktree-cleanup.md §1.13.
     if has_submodules(&git, project_root).await? {
-        return Err(SupervisorError::from(WorktreeError::RepositoryHasSubmodules(
-            project_root.to_owned(),
-        )));
+        return Err(SupervisorError::from(
+            WorktreeError::RepositoryHasSubmodules(project_root.to_owned()),
+        ));
     }
 
     let id = short_id(&uuid::Uuid::new_v4().to_string());
@@ -351,7 +360,13 @@ pub(crate) async fn prepare_from(
     );
     // git's own idea of the path: canonicalised, which on macOS means `/private/var/…` where the
     // caller said `/var/…`. The child's cwd and the stored row should agree with git.
-    Ok(Some(Prepared { git, repo: project_root.to_owned(), path: made.path, branch, base_sha }))
+    Ok(Some(Prepared {
+        git,
+        repo: project_root.to_owned(),
+        path: made.path,
+        branch,
+        base_sha,
+    }))
 }
 
 /// `git rev-parse --verify <rev>^{commit}`: one commit sha, or the reason there is none.
@@ -365,7 +380,7 @@ pub(crate) async fn prepare_from(
 /// (`crates/core/src/worktree.rs`): `LC_ALL=C` and `LANGUAGE=` so stderr stays parseable under
 /// any locale, `GIT_TERMINAL_PROMPT=0` so no credential prompt can wedge the harness, and a null
 /// stdin. It belongs in the core module the next time that file is opened.
-async fn resolve_commit(
+pub(crate) async fn resolve_commit(
     git: &Path,
     repo: &Path,
     rev: &str,
@@ -419,7 +434,9 @@ pub(crate) async fn exclude_project(project_root: &Path) {
         Ok(true) => {
             tracing::info!(root = %project_root.display(), "wrote {EXCLUDE_PATTERN} to info/exclude")
         }
-        Ok(false) => tracing::debug!(root = %project_root.display(), "info/exclude already excludes {EXCLUDE_PATTERN}"),
+        Ok(false) => {
+            tracing::debug!(root = %project_root.display(), "info/exclude already excludes {EXCLUDE_PATTERN}")
+        }
         Err(e) => tracing::warn!(
             root = %project_root.display(),
             error = %e,
@@ -487,7 +504,9 @@ pub(crate) async fn prune_project(project_root: &Path) {
     }
     match worktree::prune(&git, project_root).await {
         Ok(()) => tracing::debug!(root = %project_root.display(), "worktrees pruned"),
-        Err(e) => tracing::warn!(root = %project_root.display(), error = %e, "worktree prune failed"),
+        Err(e) => {
+            tracing::warn!(root = %project_root.display(), error = %e, "worktree prune failed")
+        }
     }
 }
 
@@ -563,7 +582,13 @@ pub(crate) async fn cleanup(
             path = %path.display(),
             "git does not register this directory as a worktree; leaving it on disk"
         );
-        return Ok(WorktreeCleanup::refused(CleanupBlocked::Unregistered, 0, 0, branch, None));
+        return Ok(WorktreeCleanup::refused(
+            CleanupBlocked::Unregistered,
+            0,
+            0,
+            branch,
+            None,
+        ));
     };
     if let Some(reason) = entry.locked.as_deref() {
         tracing::warn!(path = %path.display(), reason, "the worktree is locked; refusing to remove it");
@@ -609,7 +634,11 @@ pub(crate) async fn cleanup(
             ));
         }
     }
-    let rung = if force { RemoveForce::Discard } else { RemoveForce::No };
+    let rung = if force {
+        RemoveForce::Discard
+    } else {
+        RemoveForce::No
+    };
     let removed = match worktree::remove(&git, repo, path, rung).await {
         Ok(()) => true,
         // Something dirtied the tree between the count and the remove. Report, do not force.
@@ -652,7 +681,14 @@ pub(crate) async fn cleanup(
             live_branch,
         ));
     }
-    Ok(WorktreeCleanup { removed, dirty_files: dirty, commits, branch, live_branch, blocked: None })
+    Ok(WorktreeCleanup {
+        removed,
+        dirty_files: dirty,
+        commits,
+        branch,
+        live_branch,
+        blocked: None,
+    })
 }
 
 #[cfg(test)]
@@ -661,12 +697,11 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use brigadier_core::driver::{
-        BoxFuture, DriverError, DriverInfo, DriverKind, ProviderDriver, ResumeSession,
-        StartSession,
+        BoxFuture, DriverError, DriverInfo, DriverKind, ProviderDriver, ResumeSession, StartSession,
     };
     use brigadier_core::event::InstanceId;
-    use brigadier_core::session::SessionHandle;
     use brigadier_core::event::{Event, ItemId, ItemKind, SessionId};
+    use brigadier_core::session::SessionHandle;
     use brigadier_store::{SessionRow, Store};
     use tempfile::TempDir;
 
@@ -714,11 +749,22 @@ mod tests {
             let driver = ReplayDriver::new(script).with_rate(200.0);
             let kind = driver.kind();
             sup.register_driver(Arc::new(driver));
-            Rig { dir, repo, git, store, sup, kind }
+            Rig {
+                dir,
+                repo,
+                git,
+                store,
+                sup,
+                kind,
+            }
         }
 
         async fn project(&self) -> String {
-            self.sup.add_project(self.repo.clone()).await.expect("project added").id
+            self.sup
+                .add_project(self.repo.clone())
+                .await
+                .expect("project added")
+                .id
         }
 
         async fn start(&self, project: &str) -> Result<SessionId, SupervisorError> {
@@ -733,10 +779,14 @@ mod tests {
         }
 
         fn branches(&self) -> Vec<String> {
-            git_run(&self.git, &self.repo, &["branch", "--format=%(refname:short)"])
-                .lines()
-                .map(str::to_owned)
-                .collect()
+            git_run(
+                &self.git,
+                &self.repo,
+                &["branch", "--format=%(refname:short)"],
+            )
+            .lines()
+            .map(str::to_owned)
+            .collect()
         }
 
         fn exclude_text(&self) -> String {
@@ -790,13 +840,21 @@ mod tests {
             &self,
             _req: StartSession,
         ) -> BoxFuture<'_, Result<SessionHandle, DriverError>> {
-            Box::pin(async { Err(DriverError::Protocol("the child would not come up".to_owned())) })
+            Box::pin(async {
+                Err(DriverError::Protocol(
+                    "the child would not come up".to_owned(),
+                ))
+            })
         }
         fn resume_session(
             &self,
             _req: ResumeSession,
         ) -> BoxFuture<'_, Result<SessionHandle, DriverError>> {
-            Box::pin(async { Err(DriverError::Protocol("the child would not come up".to_owned())) })
+            Box::pin(async {
+                Err(DriverError::Protocol(
+                    "the child would not come up".to_owned(),
+                ))
+            })
         }
     }
 
@@ -804,7 +862,12 @@ mod tests {
         let out = std::process::Command::new(git)
             .arg("-C")
             .arg(cwd)
-            .args(["-c", "user.email=test@example.invalid", "-c", "user.name=test"])
+            .args([
+                "-c",
+                "user.email=test@example.invalid",
+                "-c",
+                "user.name=test",
+            ])
             .args(["-c", "commit.gpgsign=false"])
             .args(args)
             .env("GIT_TERMINAL_PROMPT", "0")
@@ -828,19 +891,36 @@ mod tests {
         let session = rig.start(&project).await.expect("session starts");
 
         let row = rig.row(&session).await;
-        let path = row.worktree_path.clone().expect("the row records a worktree");
+        let path = row
+            .worktree_path
+            .clone()
+            .expect("the row records a worktree");
         let branch = row.branch.clone().expect("the row records a branch");
 
-        assert_eq!(row.cwd.as_deref(), Some(path.as_path()), "the child runs in the worktree");
-        let id = branch.strip_prefix(BRANCH_PREFIX).expect("branch is namespaced").to_owned();
+        assert_eq!(
+            row.cwd.as_deref(),
+            Some(path.as_path()),
+            "the child runs in the worktree"
+        );
+        let id = branch
+            .strip_prefix(BRANCH_PREFIX)
+            .expect("branch is namespaced")
+            .to_owned();
         assert_eq!(id.len(), 8, "short id is eight characters: {id}");
-        assert!(id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()), "{id}");
+        assert!(
+            id.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "{id}"
+        );
         assert!(
             same_path(&path, &rig.repo.join(WORKTREES_SUBDIR).join(&id)),
             "{} is not <root>/{WORKTREES_SUBDIR}/{id}",
             path.display()
         );
-        assert!(path.join("f.txt").is_file(), "the worktree is checked out at HEAD");
+        assert!(
+            path.join("f.txt").is_file(),
+            "the worktree is checked out at HEAD"
+        );
         assert!(rig.branches().contains(&branch), "{:?}", rig.branches());
 
         rig.end_and_settle(&session).await;
@@ -855,7 +935,10 @@ mod tests {
         let rig = Rig::new(true);
         let first = rig.project().await;
         let text = rig.exclude_text();
-        assert!(text.lines().any(|l| l.trim() == EXCLUDE_PATTERN), "{text:?}");
+        assert!(
+            text.lines().any(|l| l.trim() == EXCLUDE_PATTERN),
+            "{text:?}"
+        );
 
         let again = rig.project().await;
         assert_eq!(again, first, "the same tree keeps its project id");
@@ -888,12 +971,18 @@ mod tests {
 
         let rig = Rig::new(true);
         rig.project().await;
-        assert!(rig.exclude_text().lines().any(|l| l.trim() == EXCLUDE_PATTERN));
+        assert!(rig
+            .exclude_text()
+            .lines()
+            .any(|l| l.trim() == EXCLUDE_PATTERN));
 
         // As a project added before `exclude_project` existed would look.
         let exclude = rig.repo.join(".git").join("info").join("exclude");
         std::fs::write(&exclude, OPERATORS_OWN).expect("exclude rewritten");
-        assert!(!rig.exclude_text().lines().any(|l| l.trim() == EXCLUDE_PATTERN));
+        assert!(!rig
+            .exclude_text()
+            .lines()
+            .any(|l| l.trim() == EXCLUDE_PATTERN));
 
         rig.sup.prune_worktrees().await;
 
@@ -903,7 +992,10 @@ mod tests {
             1,
             "app start did not restore exactly one exclude line: {text:?}"
         );
-        assert!(text.contains("scratch.txt"), "the operator's own lines were lost: {text:?}");
+        assert!(
+            text.contains("scratch.txt"),
+            "the operator's own lines were lost: {text:?}"
+        );
 
         // And it is still idempotent: a second launch changes nothing.
         rig.sup.prune_worktrees().await;
@@ -919,10 +1011,16 @@ mod tests {
         let rig = Rig::new(false);
         let project = rig.project().await;
 
-        let e = rig.start(&project).await.expect_err("an unborn HEAD must refuse");
+        let e = rig
+            .start(&project)
+            .await
+            .expect_err("an unborn HEAD must refuse");
         assert_eq!(e.code(), "worktree_unborn_head", "{e}");
         assert!(e.to_string().contains("commit"), "{e}");
-        assert!(!rig.repo.join(WORKTREES_SUBDIR).exists(), "nothing was created");
+        assert!(
+            !rig.repo.join(WORKTREES_SUBDIR).exists(),
+            "nothing was created"
+        );
         assert!(rig.branches().is_empty(), "{:?}", rig.branches());
 
         rig.store.close().await.expect("store closes");
@@ -956,24 +1054,33 @@ mod tests {
             branch: branch.clone(),
             base: BASE.to_owned(),
         };
-        let e = add_or_rollback(&rig.git, &spec).await.expect_err("the branch is taken");
+        let e = add_or_rollback(&rig.git, &spec)
+            .await
+            .expect_err("the branch is taken");
         let e = SupervisorError::from(e);
         assert_eq!(e.code(), "worktree_branch_exists", "{e}");
         assert!(!spec.path.exists(), "a refused add must leave no directory");
-        assert!(rig.branches().contains(&branch), "the operator's branch survives");
+        assert!(
+            rig.branches().contains(&branch),
+            "the operator's branch survives"
+        );
 
         // And the rollback rule: a failure that is *not* BranchExists must not leak a branch.
-        std::fs::create_dir_all(rig.repo.join(WORKTREES_SUBDIR).join("occupied"))
-            .expect("mkdir");
-        std::fs::write(rig.repo.join(WORKTREES_SUBDIR).join("occupied").join("x"), "x")
-            .expect("write");
+        std::fs::create_dir_all(rig.repo.join(WORKTREES_SUBDIR).join("occupied")).expect("mkdir");
+        std::fs::write(
+            rig.repo.join(WORKTREES_SUBDIR).join("occupied").join("x"),
+            "x",
+        )
+        .expect("write");
         let blocked = WorktreeSpec {
             repo: rig.repo.clone(),
             path: rig.repo.join(WORKTREES_SUBDIR).join("occupied"),
             branch: format!("{BRANCH_PREFIX}deadbeef"),
             base: BASE.to_owned(),
         };
-        let e = add_or_rollback(&rig.git, &blocked).await.expect_err("the path is occupied");
+        let e = add_or_rollback(&rig.git, &blocked)
+            .await
+            .expect_err("the path is occupied");
         assert!(matches!(e, WorktreeError::PathExists(_)), "{e:?}");
         assert!(
             !rig.branches().contains(&blocked.branch),
@@ -1008,17 +1115,29 @@ mod tests {
         std::fs::write(path.join("f.txt"), "edited\n").expect("dirty a tracked file");
         std::fs::write(path.join("new.txt"), "new\n").expect("add an untracked file");
 
-        let refused = rig.sup.cleanup_worktree(&session, false).await.expect("counts");
+        let refused = rig
+            .sup
+            .cleanup_worktree(&session, false)
+            .await
+            .expect("counts");
         assert!(!refused.removed, "{refused:?}");
         assert_eq!(refused.dirty_files, 2, "{refused:?}");
         assert_eq!(refused.branch, branch);
         assert!(path.exists(), "a refused cleanup must not delete anything");
 
-        let forced = rig.sup.cleanup_worktree(&session, true).await.expect("forced cleanup");
+        let forced = rig
+            .sup
+            .cleanup_worktree(&session, true)
+            .await
+            .expect("forced cleanup");
         assert!(forced.removed, "{forced:?}");
         assert_eq!(forced.branch, branch);
         assert!(!path.exists(), "the checkout is gone");
-        assert!(rig.branches().contains(&branch), "the branch survives: {:?}", rig.branches());
+        assert!(
+            rig.branches().contains(&branch),
+            "the branch survives: {:?}",
+            rig.branches()
+        );
 
         rig.store.close().await.expect("store closes");
     }
@@ -1039,7 +1158,11 @@ mod tests {
         // `SessionStarted` would have stored.
         let mut row = SessionRow::new(session.clone());
         row.resume_token = Some("provider-session-id".to_owned());
-        rig.store.handle().upsert_session(row).await.expect("token stored");
+        rig.store
+            .handle()
+            .upsert_session(row)
+            .await
+            .expect("token stored");
         rig.store.handle().flush().await.expect("flush");
 
         rig.sup.resume_session(&session).await.expect("resume");
@@ -1049,7 +1172,11 @@ mod tests {
             Some(path.as_path()),
             "the resumed child must run in the same worktree"
         );
-        assert_eq!(resumed.worktree_path, Some(path), "and the row must still record it");
+        assert_eq!(
+            resumed.worktree_path,
+            Some(path),
+            "and the row must still record it"
+        );
         assert_eq!(resumed.branch, started.branch);
 
         rig.end_and_settle(&session).await;
@@ -1063,7 +1190,11 @@ mod tests {
         let rig = Rig::new(true);
         let plain = rig.dir.path().join("plain");
         std::fs::create_dir(&plain).expect("mkdir");
-        let project = rig.sup.add_project(plain.clone()).await.expect("project added");
+        let project = rig
+            .sup
+            .add_project(plain.clone())
+            .await
+            .expect("project added");
 
         let session = rig
             .sup
@@ -1073,7 +1204,11 @@ mod tests {
         let row = rig.row(&session).await;
         assert_eq!(row.worktree_path, None, "no worktree");
         assert_eq!(row.branch, None, "no branch");
-        assert!(same_path(row.cwd.as_deref().expect("cwd"), &plain), "{:?}", row.cwd);
+        assert!(
+            same_path(row.cwd.as_deref().expect("cwd"), &plain),
+            "{:?}",
+            row.cwd
+        );
 
         rig.end_and_settle(&session).await;
         rig.store.close().await.expect("store closes");
@@ -1099,13 +1234,29 @@ mod tests {
         std::fs::create_dir(path.join("node_modules")).expect("mkdir node_modules");
         std::fs::write(path.join("node_modules").join("big.js"), "//\n").expect("write");
         let plain = git_run(&rig.git, &path, &["status", "--porcelain"]);
-        assert!(plain.trim().is_empty(), "the plain porcelain sees nothing: {plain:?}");
+        assert!(
+            plain.trim().is_empty(),
+            "the plain porcelain sees nothing: {plain:?}"
+        );
 
-        let refused = rig.sup.cleanup_worktree(&session, false).await.expect("counts");
-        assert!(!refused.removed, "ignored content must not be removed unasked: {refused:?}");
+        let refused = rig
+            .sup
+            .cleanup_worktree(&session, false)
+            .await
+            .expect("counts");
+        assert!(
+            !refused.removed,
+            "ignored content must not be removed unasked: {refused:?}"
+        );
         assert!(refused.dirty_files >= 1, "{refused:?}");
-        assert!(path.join(".env").is_file(), "the operator's .env was deleted");
-        assert!(path.join("node_modules").join("big.js").is_file(), "node_modules was deleted");
+        assert!(
+            path.join(".env").is_file(),
+            "the operator's .env was deleted"
+        );
+        assert!(
+            path.join("node_modules").join("big.js").is_file(),
+            "node_modules was deleted"
+        );
 
         rig.store.close().await.expect("store closes");
     }
@@ -1116,7 +1267,11 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn an_operator_config_hiding_untracked_files_cannot_hide_them_from_the_count() {
         let rig = Rig::new(true);
-        git_run(&rig.git, &rig.repo, &["config", "status.showUntrackedFiles", "no"]);
+        git_run(
+            &rig.git,
+            &rig.repo,
+            &["config", "status.showUntrackedFiles", "no"],
+        );
         let project = rig.project().await;
         let session = rig.start(&project).await.expect("session starts");
         let path = rig.row(&session).await.worktree_path.expect("path");
@@ -1124,12 +1279,22 @@ mod tests {
 
         std::fs::write(path.join("NOTES.md"), "a whole session of work\n").expect("write");
         let blinded = git_run(&rig.git, &path, &["status", "--porcelain"]);
-        assert!(blinded.trim().is_empty(), "the config really does blind git: {blinded:?}");
+        assert!(
+            blinded.trim().is_empty(),
+            "the config really does blind git: {blinded:?}"
+        );
 
-        let refused = rig.sup.cleanup_worktree(&session, false).await.expect("counts");
+        let refused = rig
+            .sup
+            .cleanup_worktree(&session, false)
+            .await
+            .expect("counts");
         assert!(!refused.removed, "{refused:?}");
         assert_eq!(refused.dirty_files, 1, "{refused:?}");
-        assert!(path.join("NOTES.md").is_file(), "the operator's work was deleted");
+        assert!(
+            path.join("NOTES.md").is_file(),
+            "the operator's work was deleted"
+        );
 
         rig.store.close().await.expect("store closes");
     }
@@ -1144,7 +1309,10 @@ mod tests {
         let project = rig.project().await;
         let session = rig.start(&project).await.expect("session starts");
         rig.end_and_settle(&session).await;
-        assert!(!rig.sup.is_live(&session), "the precondition: nothing is live");
+        assert!(
+            !rig.sup.is_live(&session),
+            "the precondition: nothing is live"
+        );
 
         rig.sup.inner.reserve_resume(&session).expect("reserved");
         let e = rig
@@ -1156,7 +1324,11 @@ mod tests {
 
         // Releasing the reservation is what `ResumeGuard::drop` does; cleanup works again after.
         crate::lock(&rig.sup.inner.resuming).remove(&session);
-        let cleaned = rig.sup.cleanup_worktree(&session, true).await.expect("cleanup");
+        let cleaned = rig
+            .sup
+            .cleanup_worktree(&session, true)
+            .await
+            .expect("cleanup");
         assert!(cleaned.removed, "{cleaned:?}");
 
         rig.store.close().await.expect("store closes");
@@ -1170,7 +1342,11 @@ mod tests {
         let rig = Rig::new(true);
         let nested = rig.repo.join("apps").join("web");
         std::fs::create_dir_all(&nested).expect("mkdir");
-        let project = rig.sup.add_project(nested.clone()).await.expect("project added");
+        let project = rig
+            .sup
+            .add_project(nested.clone())
+            .await
+            .expect("project added");
 
         let e = rig
             .sup
@@ -1181,7 +1357,10 @@ mod tests {
         let message = e.to_string();
         assert!(message.contains("not its root"), "{message}");
         assert!(message.contains("add the repository root"), "{message}");
-        assert!(!nested.join(WORKTREES_SUBDIR).exists(), "nothing was created");
+        assert!(
+            !nested.join(WORKTREES_SUBDIR).exists(),
+            "nothing was created"
+        );
         assert!(
             rig.branches().iter().all(|b| !b.starts_with(BRANCH_PREFIX)),
             "a branch leaked: {:?}",
@@ -1210,14 +1389,22 @@ mod tests {
             .expect_err("the driver refuses");
         assert_eq!(e.code(), "driver", "{e}");
 
-        assert_eq!(rig.branches(), before, "a branch leaked: {:?}", rig.branches());
+        assert_eq!(
+            rig.branches(),
+            before,
+            "a branch leaked: {:?}",
+            rig.branches()
+        );
         let worktrees = rig.repo.join(WORKTREES_SUBDIR);
         let left: Vec<PathBuf> = std::fs::read_dir(&worktrees)
             .map(|entries| entries.filter_map(|e| e.ok()).map(|e| e.path()).collect())
             .unwrap_or_default();
         assert!(left.is_empty(), "a checkout was left behind: {left:?}");
         assert_eq!(
-            worktree::list(&rig.git, &rig.repo).await.expect("list").len(),
+            worktree::list(&rig.git, &rig.repo)
+                .await
+                .expect("list")
+                .len(),
             1,
             "git still registers a worktree"
         );
@@ -1259,9 +1446,14 @@ mod tests {
 
         let all = worktree::list(&rig.git, &renamed).await.expect("list");
         assert_eq!(all.len(), 2, "the entry survived the sweep: {all:#?}");
-        assert!(all.iter().all(|w| w.prunable.is_none()), "and it is healthy again: {all:#?}");
+        assert!(
+            all.iter().all(|w| w.prunable.is_none()),
+            "and it is healthy again: {all:#?}"
+        );
         assert_eq!(
-            dirty_count(&rig.git, &moved_path).await.expect("status works again"),
+            dirty_count(&rig.git, &moved_path)
+                .await
+                .expect("status works again"),
             1,
             "the agent's uncommitted work is reachable again"
         );
@@ -1293,7 +1485,13 @@ mod tests {
         git_run(
             &rig.git,
             &rig.repo,
-            &["worktree", "lock", "--reason", "initializing", made.path.to_str().expect("utf-8")],
+            &[
+                "worktree",
+                "lock",
+                "--reason",
+                "initializing",
+                made.path.to_str().expect("utf-8"),
+            ],
         );
         // The precondition: nothing gentler gets out of it.
         assert!(matches!(
@@ -1306,14 +1504,26 @@ mod tests {
             repo: rig.repo.clone(),
             path: made.path.clone(),
             branch: branch.clone(),
-            base_sha: git_run(&rig.git, &rig.repo, &["rev-parse", "HEAD"]).trim().to_owned(),
+            base_sha: git_run(&rig.git, &rig.repo, &["rev-parse", "HEAD"])
+                .trim()
+                .to_owned(),
         }
         .roll_back()
         .await;
 
         assert!(!made.path.exists(), "the half-built checkout is gone");
-        assert!(!rig.branches().contains(&branch), "and its branch: {:?}", rig.branches());
-        assert_eq!(worktree::list(&rig.git, &rig.repo).await.expect("list").len(), 1);
+        assert!(
+            !rig.branches().contains(&branch),
+            "and its branch: {:?}",
+            rig.branches()
+        );
+        assert_eq!(
+            worktree::list(&rig.git, &rig.repo)
+                .await
+                .expect("list")
+                .len(),
+            1
+        );
 
         rig.store.close().await.expect("store closes");
     }
@@ -1331,14 +1541,31 @@ mod tests {
         git_run(
             &rig.git,
             &rig.repo,
-            &["worktree", "lock", "--reason", "operator is using it", path.to_str().expect("utf-8")],
+            &[
+                "worktree",
+                "lock",
+                "--reason",
+                "operator is using it",
+                path.to_str().expect("utf-8"),
+            ],
         );
 
         for force in [false, true] {
-            let out = rig.sup.cleanup_worktree(&session, force).await.expect("answers");
+            let out = rig
+                .sup
+                .cleanup_worktree(&session, force)
+                .await
+                .expect("answers");
             assert!(!out.removed, "force={force}: {out:?}");
-            assert_eq!(out.blocked, Some(CleanupBlocked::Locked), "force={force}: {out:?}");
-            assert!(path.join("f.txt").is_file(), "force={force}: the checkout must survive");
+            assert_eq!(
+                out.blocked,
+                Some(CleanupBlocked::Locked),
+                "force={force}: {out:?}"
+            );
+            assert!(
+                path.join("f.txt").is_file(),
+                "force={force}: the checkout must survive"
+            );
         }
 
         rig.store.close().await.expect("store closes");
@@ -1362,13 +1589,27 @@ mod tests {
         let id = path.file_name().expect("id").to_owned();
         std::fs::remove_dir_all(rig.repo.join(".git").join("worktrees").join(&id))
             .expect("delete the admin dir");
-        assert!(dirty_count(&rig.git, &path).await.is_err(), "git cannot describe it any more");
+        assert!(
+            dirty_count(&rig.git, &path).await.is_err(),
+            "git cannot describe it any more"
+        );
 
         for force in [false, true] {
-            let out = rig.sup.cleanup_worktree(&session, force).await.expect("answers");
+            let out = rig
+                .sup
+                .cleanup_worktree(&session, force)
+                .await
+                .expect("answers");
             assert!(!out.removed, "force={force}: {out:?}");
-            assert_eq!(out.blocked, Some(CleanupBlocked::Unregistered), "force={force}: {out:?}");
-            assert!(path.join("NOTES.md").is_file(), "force={force}: the work must survive");
+            assert_eq!(
+                out.blocked,
+                Some(CleanupBlocked::Unregistered),
+                "force={force}: {out:?}"
+            );
+            assert!(
+                path.join("NOTES.md").is_file(),
+                "force={force}: the work must survive"
+            );
         }
 
         rig.store.close().await.expect("store closes");
@@ -1393,17 +1634,32 @@ mod tests {
         let plain = git_run(&rig.git, &path, &["status", "--porcelain"]);
         assert!(plain.trim().is_empty(), "the tree is clean: {plain:?}");
 
-        let refused = rig.sup.cleanup_worktree(&session, false).await.expect("counts");
+        let refused = rig
+            .sup
+            .cleanup_worktree(&session, false)
+            .await
+            .expect("counts");
         assert!(!refused.removed, "{refused:?}");
-        assert_eq!(refused.blocked, Some(CleanupBlocked::Commits), "{refused:?}");
+        assert_eq!(
+            refused.blocked,
+            Some(CleanupBlocked::Commits),
+            "{refused:?}"
+        );
         assert_eq!(refused.dirty_files, 0, "{refused:?}");
         assert_eq!(refused.commits, 1, "{refused:?}");
         assert!(path.exists(), "a refused cleanup must not delete anything");
 
-        let forced = rig.sup.cleanup_worktree(&session, true).await.expect("forced");
+        let forced = rig
+            .sup
+            .cleanup_worktree(&session, true)
+            .await
+            .expect("forced");
         assert!(forced.removed && forced.blocked.is_none(), "{forced:?}");
         assert_eq!(forced.commits, 1, "the count is still reported: {forced:?}");
-        assert!(rig.branches().contains(&branch), "the branch keeps the commit");
+        assert!(
+            rig.branches().contains(&branch),
+            "the branch keeps the commit"
+        );
 
         rig.store.close().await.expect("store closes");
     }
@@ -1427,19 +1683,37 @@ mod tests {
         git_run(&rig.git, &path, &["add", "a.txt"]);
         git_run(&rig.git, &path, &["commit", "-qm", "the agent's work"]);
 
-        let refused = rig.sup.cleanup_worktree(&session, false).await.expect("answers");
+        let refused = rig
+            .sup
+            .cleanup_worktree(&session, false)
+            .await
+            .expect("answers");
         assert!(!refused.removed, "{refused:?}");
-        assert_eq!(refused.blocked, Some(CleanupBlocked::BranchMoved), "{refused:?}");
-        assert_eq!(refused.branch, recorded, "the row's label is reported as the row's label");
+        assert_eq!(
+            refused.blocked,
+            Some(CleanupBlocked::BranchMoved),
+            "{refused:?}"
+        );
+        assert_eq!(
+            refused.branch, recorded,
+            "the row's label is reported as the row's label"
+        );
         assert_eq!(
             refused.live_branch.as_deref(),
             Some("agents-own"),
             "and git's answer is reported as the fact: {refused:?}"
         );
-        assert_eq!(refused.commits, 1, "counted against the live branch, not the stored one");
+        assert_eq!(
+            refused.commits, 1,
+            "counted against the live branch, not the stored one"
+        );
         assert!(path.exists(), "nothing was touched");
 
-        let forced = rig.sup.cleanup_worktree(&session, true).await.expect("forced");
+        let forced = rig
+            .sup
+            .cleanup_worktree(&session, true)
+            .await
+            .expect("forced");
         assert!(forced.removed, "{forced:?}");
         assert!(
             rig.branches().contains(&"agents-own".to_owned()),
@@ -1462,9 +1736,17 @@ mod tests {
         rig.end_and_settle(&session).await;
         git_run(&rig.git, &path, &["checkout", "-q", "--detach", "HEAD"]);
 
-        let refused = rig.sup.cleanup_worktree(&session, false).await.expect("answers");
+        let refused = rig
+            .sup
+            .cleanup_worktree(&session, false)
+            .await
+            .expect("answers");
         assert!(!refused.removed, "{refused:?}");
-        assert_eq!(refused.blocked, Some(CleanupBlocked::BranchMoved), "{refused:?}");
+        assert_eq!(
+            refused.blocked,
+            Some(CleanupBlocked::BranchMoved),
+            "{refused:?}"
+        );
         assert_eq!(refused.live_branch, None, "{refused:?}");
 
         rig.store.close().await.expect("store closes");
@@ -1481,9 +1763,21 @@ mod tests {
         git_run(
             &rig.git,
             &rig.repo,
-            &["worktree", "add", "-q", "-b", "outer", outer.to_str().expect("utf-8"), "HEAD"],
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "outer",
+                outer.to_str().expect("utf-8"),
+                "HEAD",
+            ],
         );
-        let project = rig.sup.add_project(outer.clone()).await.expect("project added");
+        let project = rig
+            .sup
+            .add_project(outer.clone())
+            .await
+            .expect("project added");
 
         let e = rig
             .sup
@@ -1493,7 +1787,10 @@ mod tests {
         assert_eq!(e.code(), "worktree", "{e}");
         let message = e.to_string();
         assert!(message.contains("linked git worktree"), "{message}");
-        assert!(!outer.join(WORKTREES_SUBDIR).exists(), "nothing was created");
+        assert!(
+            !outer.join(WORKTREES_SUBDIR).exists(),
+            "nothing was created"
+        );
         assert!(
             rig.branches().iter().all(|b| !b.starts_with(BRANCH_PREFIX)),
             "a branch leaked: {:?}",
@@ -1533,10 +1830,16 @@ mod tests {
         git_run(&rig.git, &rig.repo, &["commit", "-qm", "add the submodule"]);
 
         let project = rig.project().await;
-        let e = rig.start(&project).await.expect_err("submodules must refuse");
+        let e = rig
+            .start(&project)
+            .await
+            .expect_err("submodules must refuse");
         assert_eq!(e.code(), "worktree", "{e}");
         assert!(e.to_string().contains("submodules"), "{e}");
-        assert!(!rig.repo.join(WORKTREES_SUBDIR).exists(), "nothing was created");
+        assert!(
+            !rig.repo.join(WORKTREES_SUBDIR).exists(),
+            "nothing was created"
+        );
 
         rig.store.close().await.expect("store closes");
     }
@@ -1552,10 +1855,15 @@ mod tests {
     #[tokio::test]
     async fn an_explicit_base_pins_the_branch_point_while_head_moves() {
         let rig = Rig::new(true);
-        let first = git_run(&rig.git, &rig.repo, &["rev-parse", "HEAD"]).trim().to_owned();
+        let first = git_run(&rig.git, &rig.repo, &["rev-parse", "HEAD"])
+            .trim()
+            .to_owned();
 
         // Today's behaviour, before the commit.
-        let before = prepare(&rig.repo).await.expect("prepared").expect("a worktree");
+        let before = prepare(&rig.repo)
+            .await
+            .expect("prepared")
+            .expect("a worktree");
         assert_eq!(before.base_sha, first, "`None` still means HEAD");
 
         // The loop's own phase commit. `add` names the file rather than `-A`, so the worktree
@@ -1563,11 +1871,16 @@ mod tests {
         std::fs::write(rig.repo.join("g.txt"), "g\n").expect("write");
         git_run(&rig.git, &rig.repo, &["add", "g.txt"]);
         git_run(&rig.git, &rig.repo, &["commit", "-qm", "phase 1"]);
-        let second = git_run(&rig.git, &rig.repo, &["rev-parse", "HEAD"]).trim().to_owned();
+        let second = git_run(&rig.git, &rig.repo, &["rev-parse", "HEAD"])
+            .trim()
+            .to_owned();
         assert_ne!(first, second, "HEAD must actually have moved");
 
         // The behaviour being replaced: same call, different branch point.
-        let after = prepare(&rig.repo).await.expect("prepared").expect("a worktree");
+        let after = prepare(&rig.repo)
+            .await
+            .expect("prepared")
+            .expect("a worktree");
         assert_eq!(after.base_sha, second);
         assert_ne!(
             before.base_sha, after.base_sha,
@@ -1575,11 +1888,19 @@ mod tests {
         );
 
         // The fix: the same explicit base either side of the commit.
-        let pinned_a =
-            prepare_from(&rig.repo, Some(&first)).await.expect("prepared").expect("a worktree");
-        git_run(&rig.git, &rig.repo, &["commit", "-qm", "phase 2", "--allow-empty"]);
-        let pinned_b =
-            prepare_from(&rig.repo, Some(&first)).await.expect("prepared").expect("a worktree");
+        let pinned_a = prepare_from(&rig.repo, Some(&first))
+            .await
+            .expect("prepared")
+            .expect("a worktree");
+        git_run(
+            &rig.git,
+            &rig.repo,
+            &["commit", "-qm", "phase 2", "--allow-empty"],
+        );
+        let pinned_b = prepare_from(&rig.repo, Some(&first))
+            .await
+            .expect("prepared")
+            .expect("a worktree");
         assert_eq!(pinned_a.base_sha, first);
         assert_eq!(pinned_b.base_sha, first);
         assert_eq!(pinned_a.base_sha, pinned_b.base_sha);
@@ -1589,7 +1910,11 @@ mod tests {
             let tip = git_run(&rig.git, &rig.repo, &["rev-parse", &prepared.branch])
                 .trim()
                 .to_owned();
-            assert_eq!(tip, first, "branch {} did not start at the base it was given", prepared.branch);
+            assert_eq!(
+                tip, first,
+                "branch {} did not start at the base it was given",
+                prepared.branch
+            );
         }
 
         rig.store.close().await.expect("store closes");
@@ -1604,7 +1929,10 @@ mod tests {
             .await
             .expect_err("an unresolvable base must refuse");
         assert_eq!(e.code(), "worktree", "{e}");
-        assert!(!rig.repo.join(WORKTREES_SUBDIR).exists(), "nothing was created");
+        assert!(
+            !rig.repo.join(WORKTREES_SUBDIR).exists(),
+            "nothing was created"
+        );
         rig.store.close().await.expect("store closes");
     }
 
@@ -1613,10 +1941,16 @@ mod tests {
     #[tokio::test]
     async fn the_base_sha_is_a_full_object_name() {
         let rig = Rig::new(true);
-        let prepared = prepare(&rig.repo).await.expect("prepared").expect("a worktree");
+        let prepared = prepare(&rig.repo)
+            .await
+            .expect("prepared")
+            .expect("a worktree");
         assert_eq!(prepared.base_sha.len(), 40, "{}", prepared.base_sha);
-        assert!(prepared.base_sha.chars().all(|c| c.is_ascii_hexdigit()), "{}", prepared.base_sha);
+        assert!(
+            prepared.base_sha.chars().all(|c| c.is_ascii_hexdigit()),
+            "{}",
+            prepared.base_sha
+        );
         rig.store.close().await.expect("store closes");
     }
-
 }

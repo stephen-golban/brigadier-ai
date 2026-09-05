@@ -27,3 +27,5 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
 );
 
 import "./workbench.css";
+
+import "./desktop.css";

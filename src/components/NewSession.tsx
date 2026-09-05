@@ -59,7 +59,7 @@ export function NewSession({
   const [prompt, setPrompt] = useDraft(`session:${project?.id ?? "none"}`);
   const [model, setModel] = useState<string>("");
   const [effort, setEffort] = useState<Effort>("auto");
-  const [isolated,setIsolated]=useState(false);
+  const [isolated,setIsolated]=useState(true);
   const [mode, setMode] = useState<PermissionMode>("default");
 
   const defaultModel = models.find((m) => m.default)?.id ?? models[0]?.id ?? "";

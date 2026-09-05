@@ -4,6 +4,8 @@ export interface Confirmation {
   title: string;
   body: ReactNode;
   confirmLabel?: string;
+  secondaryLabel?: string;
+  onSecondary?: () => void;
   onConfirm: () => void | Promise<void>;
   onCancel: () => void;
 }
@@ -11,6 +13,7 @@ export function ConfirmDialog({
   title,
   body,
   confirmLabel = "Confirm",
+  secondaryLabel, onSecondary,
   onConfirm,
   onCancel,
 }: Confirmation) {
@@ -46,6 +49,7 @@ export function ConfirmDialog({
         <button ref={cancel} className="act" disabled={busy} onClick={onCancel}>
           Cancel
         </button>
+        {secondaryLabel && <button className="act" disabled={busy} onClick={onSecondary}>{secondaryLabel}</button>}
         <button
           className="primary-action"
           disabled={busy}

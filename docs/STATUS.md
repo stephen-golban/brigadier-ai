@@ -1,6 +1,12 @@
 # STATUS — where the brigadier harness actually stands
 
-Last updated 2026-09-04. **This is the file to read first.** It says what is built, what is proven,
+Latest desktop update: **2026-09-06**. The confirmed desktop redesign, file-backed Notes,
+background session disposal, isolated workspace inheritance/apply, and checkpoint rewind
+are implemented. Read [the implementation and verification report](plans/chatgpt-redesign-implementation-2026-09-06.md)
+for current behavior, tests, build output and limits. The older sections below are dated
+historical records and do not describe the current desktop layout or schema (now version 9).
+
+Historical baseline: last updated 2026-09-04. **This is the file to read first.** It says what is built, what is proven,
 what is broken, and what will bite you. The product it is building toward is `docs/vision.md`.
 
 **§§1, 2 and 3 are the freshest sections in this file**: all three were rewritten on 2026-09-04

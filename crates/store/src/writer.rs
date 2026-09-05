@@ -86,6 +86,11 @@ pub(crate) enum DeleteTarget {
 
 /// One unit of work for the writer thread. Crate-private: the public surface is [`StoreHandle`].
 pub(crate) enum Op {
+    /// Durability barrier: callback result is acknowledged only after FULL commit.
+    Durable(
+        Box<dyn FnOnce(&Connection) -> Result<()> + Send>,
+        oneshot::Sender<Result<()>>,
+    ),
     Chat(crate::chat::ChatItem),
     /// Insert or replace a project.
     UpsertProject(ProjectRow),
@@ -319,7 +324,8 @@ impl StoreHandle {
         session_id: String,
         after: u64,
     ) -> Result<Vec<crate::chat::ChatItem>> {
-        self.query(move |conn| crate::chat::read(conn, &session_id, after)).await
+        self.query(move |conn| crate::chat::read(conn, &session_id, after))
+            .await
     }
 
     /// Recent native rewind records, including incomplete operations needing reconciliation.
@@ -365,7 +371,7 @@ impl StoreHandle {
         session_id: String,
         target_id: String,
     ) -> Result<()> {
-        self.query(move |conn| {
+        self.durable(move |conn| {
             conn.execute_batch("SAVEPOINT prepare_rewind")?;
             let result = (|| -> Result<()> {
                 let target_seq: i64 = conn.query_row("SELECT seq FROM chat_items WHERE session_id=?1 AND id=?2 AND provider_uuid IS NOT NULL", (&session_id, &target_id), |r| r.get(0))?;
@@ -390,7 +396,7 @@ impl StoreHandle {
 
     /// Finalize after an authoritative native reply. Failed requests keep the visible history.
     pub async fn finish_rewind(&self, id: String, through_seq: Option<u64>) -> Result<()> {
-        self.query(move |conn| {
+        self.durable(move |conn| {
             conn.execute_batch("SAVEPOINT finish_rewind")?;
             let result = (|| -> Result<()> {
                 if let Some(seq) = through_seq {
@@ -432,7 +438,13 @@ impl StoreHandle {
         kind: FeedKind,
         line: String,
     ) -> Result<()> {
-        self.send(Op::Feed { session_id, seq, at, kind, line })
+        self.send(Op::Feed {
+            session_id,
+            seq,
+            at,
+            kind,
+            line,
+        })
     }
 
     /// Overwrite a session's cumulative usage and cost.
@@ -442,7 +454,11 @@ impl StoreHandle {
         usage: Usage,
         cost_usd_cumulative: f64,
     ) -> Result<()> {
-        self.send(Op::SetUsage { session_id, usage, cost_usd_cumulative })
+        self.send(Op::SetUsage {
+            session_id,
+            usage,
+            cost_usd_cumulative,
+        })
     }
 
     /// Record a parked request, stamped with the current launch's `run_id`.
@@ -451,7 +467,10 @@ impl StoreHandle {
         session_id: SessionId,
         approval: PendingApproval,
     ) -> Result<()> {
-        self.send(Op::ApprovalOpened { session_id, approval: Box::new(approval) })
+        self.send(Op::ApprovalOpened {
+            session_id,
+            approval: Box::new(approval),
+        })
     }
 
     /// Record the answer that unparked a request.
@@ -461,7 +480,11 @@ impl StoreHandle {
         decision: Decision,
         at: SystemTime,
     ) -> Result<()> {
-        self.send(Op::ApprovalResolved { request_id, decision, at })
+        self.send(Op::ApprovalResolved {
+            request_id,
+            decision,
+            at,
+        })
     }
 
     /// Reopen a settled session's lifecycle columns for a new child: `status` back to
@@ -485,7 +508,12 @@ impl StoreHandle {
         exit_code: Option<i32>,
         at: SystemTime,
     ) -> Result<()> {
-        self.send(Op::SessionEnded { session_id, reason, exit_code, at })
+        self.send(Op::SessionEnded {
+            session_id,
+            reason,
+            exit_code,
+            at,
+        })
     }
 
     /// Record an effect the harness is about to cause, and return **only once the row is
@@ -545,7 +573,14 @@ impl StoreHandle {
         session_id: Option<SessionId>,
         at: SystemTime,
     ) -> Result<()> {
-        self.send(Op::IntentClose { id, state, outcome, evidence, session_id, at })
+        self.send(Op::IntentClose {
+            id,
+            state,
+            outcome,
+            evidence,
+            session_id,
+            at,
+        })
     }
 
     /// Record the owner's own answer to an intent nothing else could settle — the plan card's
@@ -572,7 +607,12 @@ impl StoreHandle {
         evidence: Option<String>,
         at: SystemTime,
     ) -> Result<()> {
-        self.send(Op::IntentSettledByOperator { id, state, evidence, at })
+        self.send(Op::IntentSettledByOperator {
+            id,
+            state,
+            evidence,
+            at,
+        })
     }
 
     /// Insert a plan, or rewrite the goal of one that exists. On conflict **only `goal` is
@@ -597,7 +637,9 @@ impl StoreHandle {
     /// only thing that knows the real one. Whitespace counts as empty.
     pub async fn plan_revised(&self, row: PlanRevisionRow) -> Result<()> {
         if row.reason.trim().is_empty() {
-            return Err(Error::Required { field: "plan_revisions.reason" });
+            return Err(Error::Required {
+                field: "plan_revisions.reason",
+            });
         }
         self.send(Op::PlanRevised(Box::new(row)))
     }
@@ -627,7 +669,14 @@ impl StoreHandle {
         commit_sha: Option<String>,
         at: SystemTime,
     ) -> Result<()> {
-        self.send(Op::PhaseSettled { id, state, exit_code, evidence, commit_sha, at })
+        self.send(Op::PhaseSettled {
+            id,
+            state,
+            exit_code,
+            evidence,
+            commit_sha,
+            at,
+        })
     }
 
     /// Insert an unknown, or rewrite its bin and question.
@@ -645,7 +694,14 @@ impl StoreHandle {
         skipped_for_just_go: bool,
         at: SystemTime,
     ) -> Result<()> {
-        self.send(Op::UnknownSettled { id, state, answer, findings_path, skipped_for_just_go, at })
+        self.send(Op::UnknownSettled {
+            id,
+            state,
+            answer,
+            findings_path,
+            skipped_for_just_go,
+            at,
+        })
     }
 
     /// Insert a work order, or merge what dispatch learned about one.
@@ -661,7 +717,12 @@ impl StoreHandle {
         report: Option<String>,
         at: SystemTime,
     ) -> Result<()> {
-        self.send(Op::WorkOrderFinished { id, state, report, at })
+        self.send(Op::WorkOrderFinished {
+            id,
+            state,
+            report,
+            at,
+        })
     }
 
     /// Commit everything sent before this call and wait for the commit.
@@ -695,7 +756,8 @@ impl StoreHandle {
     /// [`Error::Closed`] when the writer thread has stopped.
     // see crate::delete for the cascade map and the before/after check.
     pub async fn delete_session(&self, session_id: SessionId) -> Result<Option<DeleteOutcome>> {
-        self.delete(DeleteTarget::Session(session_id.as_str().to_owned())).await
+        self.delete(DeleteTarget::Session(session_id.as_str().to_owned()))
+            .await
     }
 
     /// Delete one project, every session under it, and its whole plan tree.
@@ -718,7 +780,7 @@ impl StoreHandle {
     }
 
     /// Run `f` on the writer thread, inside the transaction that carries the ops queued before it.
-    async fn query<T, F>(&self, f: F) -> Result<T>
+    pub(crate) async fn query<T, F>(&self, f: F) -> Result<T>
     where
         T: Send + 'static,
         F: FnOnce(&Connection) -> Result<T> + Send + 'static,
@@ -727,6 +789,15 @@ impl StoreHandle {
         self.send(Op::Query(Box::new(move |conn| {
             let _ = tx.send(f(conn));
         })))?;
+        rx.await.map_err(|_| Error::Closed)?
+    }
+
+    pub(crate) async fn durable<F>(&self, f: F) -> Result<()>
+    where
+        F: FnOnce(&Connection) -> Result<()> + Send + 'static,
+    {
+        let (tx, rx) = oneshot::channel();
+        self.send(Op::Durable(Box::new(f), tx))?;
         rx.await.map_err(|_| Error::Closed)?
     }
 
@@ -998,7 +1069,8 @@ impl StoreHandle {
             return Err(Error::BadPragma(name.to_owned()));
         }
         let sql = format!("PRAGMA {name}");
-        self.query(move |conn| Ok(conn.query_row(&sql, [], |row| row.get(0))?)).await
+        self.query(move |conn| Ok(conn.query_row(&sql, [], |row| row.get(0))?))
+            .await
     }
 
     pub(crate) fn shutdown(&self) {
@@ -1035,7 +1107,12 @@ fn run(mut conn: Connection, rx: mpsc::Receiver<Op>, run_id: String, config: Sto
         while !matches!(
             batch.last(),
             Some(
-                Op::Query(_) | Op::IntentOpen(..) | Op::Delete { .. } | Op::Flush(_) | Op::Shutdown
+                Op::Durable(..)
+                    | Op::Query(_)
+                    | Op::IntentOpen(..)
+                    | Op::Delete { .. }
+                    | Op::Flush(_)
+                    | Op::Shutdown
             )
         ) {
             let left = deadline.saturating_duration_since(Instant::now());
@@ -1103,6 +1180,10 @@ fn apply_batch(
     run_id: &str,
     config: &StoreConfig,
 ) -> Result<usize> {
+    let durable = batch.iter().any(|op| matches!(op, Op::Durable(..)));
+    if durable {
+        conn.execute_batch("PRAGMA synchronous=FULL; PRAGMA fullfsync=ON;")?;
+    }
     let mut tx = conn.transaction()?;
     let mut touched: BTreeSet<String> = BTreeSet::new();
     let mut flushes: Vec<oneshot::Sender<()>> = Vec::new();
@@ -1112,13 +1193,21 @@ fn apply_batch(
     let mut opens: Vec<(Result<()>, oneshot::Sender<Result<()>>)> = Vec::new();
     // Answered after the commit, for the same reason `opens` is: the caller is about to remove
     // worktrees and log files on the strength of the answer.
-    type DeleteReply =
-        (Result<Option<DeleteOutcome>>, oneshot::Sender<Result<Option<DeleteOutcome>>>);
+    type DeleteReply = (
+        Result<Option<DeleteOutcome>>,
+        oneshot::Sender<Result<Option<DeleteOutcome>>>,
+    );
     let mut deletes: Vec<DeleteReply> = Vec::new();
     let mut queries = 0usize;
 
     for op in batch {
         let outcome = match op {
+            Op::Durable(f, reply) => {
+                let sp = tx.savepoint()?;
+                let result = f(&sp).and_then(|()| sp.commit().map_err(Error::from));
+                opens.push((result, reply));
+                Ok(())
+            }
             Op::Flush(reply) => {
                 flushes.push(reply);
                 Ok(())
@@ -1161,7 +1250,15 @@ fn apply_batch(
         }
     }
     tx.commit()?;
-    tracing::trace!(queries, deleted, sessions = touched.len(), "store batch committed");
+    if durable {
+        conn.execute_batch("PRAGMA synchronous=NORMAL; PRAGMA fullfsync=OFF;")?;
+    }
+    tracing::trace!(
+        queries,
+        deleted,
+        sessions = touched.len(),
+        "store batch committed"
+    );
     for (result, reply) in opens {
         let _ = reply.send(result);
     }
@@ -1194,7 +1291,10 @@ fn run_delete(
     let outcome = match what {
         DeleteTarget::Session(id) => delete::session(&sp, id)?.map(|rows| DeleteOutcome {
             rows,
-            ids: DeletedIds { sessions: vec![id.clone()], ..DeletedIds::default() },
+            ids: DeletedIds {
+                sessions: vec![id.clone()],
+                ..DeletedIds::default()
+            },
         }),
         DeleteTarget::Project(id) => {
             delete::project(&sp, id)?.map(|(rows, ids)| DeleteOutcome { rows, ids })
@@ -1242,7 +1342,13 @@ fn apply_one(
                 .execute((mcp.as_slug(), &id))?;
         }
         Op::UpsertSession(row) => upsert_session(tx, *row)?,
-        Op::Feed { session_id, seq, at, kind, line } => {
+        Op::Feed {
+            session_id,
+            seq,
+            at,
+            kind,
+            line,
+        } => {
             ensure_session(tx, &session_id, touched)?;
             tx.prepare_cached(
                 "INSERT INTO feed(session_id, seq, at, kind, line) VALUES (?1, ?2, ?3, ?4, ?5)
@@ -1264,7 +1370,11 @@ fn apply_one(
             )?
             .execute((session_id.as_str(), seq))?;
         }
-        Op::SetUsage { session_id, usage, cost_usd_cumulative } => {
+        Op::SetUsage {
+            session_id,
+            usage,
+            cost_usd_cumulative,
+        } => {
             ensure_session(tx, &session_id, touched)?;
             tx.prepare_cached(
                 "UPDATE sessions SET input_tokens = ?2, output_tokens = ?3,
@@ -1282,7 +1392,10 @@ fn apply_one(
                 cost_usd_cumulative,
             ))?;
         }
-        Op::ApprovalOpened { session_id, approval } => {
+        Op::ApprovalOpened {
+            session_id,
+            approval,
+        } => {
             ensure_session(tx, &session_id, touched)?;
             let params = schema::approval_params(&session_id, run_id, &approval);
             tx.prepare_cached(
@@ -1292,7 +1405,11 @@ fn apply_one(
             )?
             .execute(params)?;
         }
-        Op::ApprovalResolved { request_id, decision, at } => {
+        Op::ApprovalResolved {
+            request_id,
+            decision,
+            at,
+        } => {
             let json = serde_json::to_string(&decision)?;
             tx.prepare_cached(
                 "UPDATE approvals SET resolved_at = ?2, decision_json = ?3
@@ -1300,7 +1417,12 @@ fn apply_one(
             )?
             .execute((request_id.as_str(), schema::to_millis(at), json))?;
         }
-        Op::SessionEnded { session_id, reason, exit_code, at } => {
+        Op::SessionEnded {
+            session_id,
+            reason,
+            exit_code,
+            at,
+        } => {
             ensure_session(tx, &session_id, touched)?;
             tx.prepare_cached(
                 "UPDATE sessions SET status = ?2, ended_at = ?3, exit_code = ?4 WHERE id = ?1",
@@ -1324,7 +1446,14 @@ fn apply_one(
                 schema::to_millis(at),
             ))?;
         }
-        Op::IntentClose { id, state, outcome, evidence, session_id, at } => {
+        Op::IntentClose {
+            id,
+            state,
+            outcome,
+            evidence,
+            session_id,
+            at,
+        } => {
             // The close is what names the session a `worktree_add` open could not, so the stub
             // has to exist here too or the foreign key rejects the whole update and the row
             // silently stays `open`.
@@ -1356,13 +1485,20 @@ fn apply_one(
                 session_id.as_ref().map(|s| s.as_str()),
             ))?;
         }
-        Op::IntentSettledByOperator { id, state, evidence, at } => {
+        Op::IntentSettledByOperator {
+            id,
+            state,
+            evidence,
+            at,
+        } => {
             // Read the kind under the *same* guard the UPDATE uses, so a row that is already
             // answered or absent is not judged against a kind it no longer has — the reasoning
             // `IntentClose` uses, one guard wider.
             const GUARD: &str = "state IN ('open', 'unknown')";
             let kind: Option<String> = tx
-                .prepare_cached(&format!("SELECT kind FROM intents WHERE id = ?1 AND {GUARD}"))?
+                .prepare_cached(&format!(
+                    "SELECT kind FROM intents WHERE id = ?1 AND {GUARD}"
+                ))?
                 .query_row((&id,), |row| row.get(0))
                 .optional()?;
             // Recorded before the hold, so the evidence says what the human answered even when
@@ -1485,7 +1621,14 @@ fn apply_one(
             )?
             .execute((&id, PhaseState::Running.as_slug(), schema::to_millis(at)))?;
         }
-        Op::PhaseSettled { id, state, exit_code, evidence, commit_sha, at } => {
+        Op::PhaseSettled {
+            id,
+            state,
+            exit_code,
+            evidence,
+            commit_sha,
+            at,
+        } => {
             tx.prepare_cached(
                 "UPDATE phases SET state = ?2, ended_at = ?3, last_exit_code = ?4,
                      last_evidence = ?5, commit_sha = COALESCE(?6, commit_sha)
@@ -1521,7 +1664,14 @@ fn apply_one(
                 i64::from(row.skipped_for_just_go),
             ))?;
         }
-        Op::UnknownSettled { id, state, answer, findings_path, skipped_for_just_go, at } => {
+        Op::UnknownSettled {
+            id,
+            state,
+            answer,
+            findings_path,
+            skipped_for_just_go,
+            at,
+        } => {
             tx.prepare_cached(
                 "UPDATE unknowns SET state = ?2, answer = ?3, findings_path = ?4,
                      skipped_for_just_go = ?5, settled_at = ?6
@@ -1579,7 +1729,12 @@ fn apply_one(
                 row.report.as_deref().map(plan_text),
             ))?;
         }
-        Op::WorkOrderFinished { id, state, report, at } => {
+        Op::WorkOrderFinished {
+            id,
+            state,
+            report,
+            at,
+        } => {
             tx.prepare_cached(
                 "UPDATE work_orders SET state = ?2, report = ?3, finished_at = ?4
                  WHERE id = ?1 AND finished_at IS NULL",
@@ -1593,7 +1748,12 @@ fn apply_one(
         }
         // Handled by `apply_batch` before it delegates here; never reached, and a stray one is
         // logged rather than panicking a thread that owns the only connection.
-        Op::IntentOpen(..) | Op::Delete { .. } | Op::Query(_) | Op::Flush(_) | Op::Shutdown => {
+        Op::Durable(..)
+        | Op::IntentOpen(..)
+        | Op::Delete { .. }
+        | Op::Query(_)
+        | Op::Flush(_)
+        | Op::Shutdown => {
             tracing::error!("an op apply_batch owns reached apply_one");
         }
     }
@@ -1630,8 +1790,12 @@ fn insert_intent(
         &row.project_id,
         row.session_id.as_ref().map(|s| s.as_str()),
         schema::to_millis(row.opened_at),
-        row.subject.as_deref().map(|s| bounded(s, INTENT_SUBJECT_LIMIT)),
-        row.baseline.as_deref().map(|s| bounded(s, INTENT_SUBJECT_LIMIT)),
+        row.subject
+            .as_deref()
+            .map(|s| bounded(s, INTENT_SUBJECT_LIMIT)),
+        row.baseline
+            .as_deref()
+            .map(|s| bounded(s, INTENT_SUBJECT_LIMIT)),
         intents::detail_json(&row.detail_json),
     ))?;
     Ok(())
@@ -1656,8 +1820,10 @@ fn upsert_session(tx: &rusqlite::Transaction<'_>, row: SessionRow) -> Result<()>
     // `oversized_json` and not `bounded`: `summary_json` is a JSON column, and `bounded` appends
     // `…`, which turns a document into text that no longer parses. The same defect that was in
     // `change_json` and `owned_paths_json`; one helper covers all three.
-    let summary =
-        row.summary_json.as_deref().map(|s| schema::oversized_json(s, SUMMARY_JSON_LIMIT));
+    let summary = row
+        .summary_json
+        .as_deref()
+        .map(|s| schema::oversized_json(s, SUMMARY_JSON_LIMIT));
     tx.prepare_cached(
         "INSERT INTO sessions (id, project_id, instance_id, driver_kind, provider_session_id,
              cwd, worktree_path, branch, model, status, transcript_path, resume_token,

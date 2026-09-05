@@ -52,7 +52,7 @@ export function Dock(props: DockProps) {
   const cwd = session?.cwd ?? project?.root_path ?? null;
 
   return (
-    <section className="dock" aria-label="the composer">
+    <section className={`dock ${session?"has-session":""}`} aria-label="the composer">
       <div className="dock-context">
         <span title={project?.root_path}>
           <span className="glyph">

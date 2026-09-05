@@ -1,3 +1,4 @@
+import { SessionReview } from "./SessionReview";
 import { useEffect, useRef, useState } from "react";
 import {
   FolderIcon,
@@ -40,6 +41,7 @@ export function WorkspaceTools({
   data,
   onData,
   models,
+  reviewTurn = null,
 }: {
   context: WorkspaceContext;
   root: string;
@@ -59,6 +61,7 @@ export function WorkspaceTools({
   data: WorkbenchData;
   onData: (d: WorkbenchData) => void;
   models: ModelInfo[];
+  reviewTurn?: string | null;
 }) {
   const [width, setWidth] = useState(
     () => Number(localStorage.getItem("brigadier:workspace-width")) || 350,
@@ -110,7 +113,6 @@ export function WorkspaceTools({
             ["files", "Explorer", FolderIcon],
             ["changes", "Source Control", GitBranchIcon],
             ["search", "Search", MagnifyingGlassIcon],
-            ["notes", "Notepad", NotebookIcon],
           ] as const
         ).map(([value, label, Icon]) => (
           <button
@@ -154,6 +156,23 @@ export function WorkspaceTools({
           />
         </div>
         <div hidden={mode !== "changes"}>
+          {mode === "changes" && context.sessionId && (
+            <SessionReview
+              turn={reviewTurn}
+              sessionId={context.sessionId}
+              onOpen={(path) =>
+                window.dispatchEvent(
+                  new CustomEvent("workbench-recorded-diff", {
+                    detail: {
+                      sessionId: context.sessionId,
+                      path,
+                      turn: reviewTurn,
+                    },
+                  }),
+                )
+              }
+            />
+          )}
           <SourceControl
             context={context}
             status={status}

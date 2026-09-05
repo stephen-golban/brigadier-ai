@@ -43,11 +43,13 @@ export const sessionApi = {
   rewind: (
     ticket: string,
     scope: RewindScope,
+    text?: string,
   ): Promise<{
     rewound: boolean;
     recoveryId: string;
     filesRestored: boolean;
-  }> => invoke("apply_rewind", { ticket, scope }),
+    sent?: boolean;
+  }> => invoke("apply_rewind", { ticket, scope, text }),
 };
 export interface AgentActivity {
   provider: string;
@@ -68,7 +70,9 @@ export const readActivity = (sessionId: string): Promise<AgentActivity> =>
   desktop
     ? invoke("session_activity", { sessionId })
     : Promise.reject(new Error("No live provider in demo"));
+export const recoverWorkspaceRewind = (sessionId: string, operation: string): Promise<void> => invoke("recover_workspace_rewind", {sessionId, operation});
 export interface RewindHistory {
+  workspaceOperations?: { id: string; phase: string; draft: string; error: string | null }[];
   records: { id: string; state: string; createdAt: number }[];
   recoveryRoot: string;
 }

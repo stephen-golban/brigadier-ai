@@ -22,13 +22,13 @@ use brigadier_core::session::Decision;
 use brigadier_supervisor::{
     ApprovalView, FeedBatch, FeedRowWire, ProjectDeletion, SessionDeletion, WorktreeCleanup,
 };
-use tauri::State;
 use tauri::ipc::Channel;
+use tauri::State;
 
 use brigadier_store::intents::IntentState;
 use brigadier_store::plan::{PhaseRow, PhaseState, UnknownRow, WorkOrderRow};
-use brigadier_supervisor::SupervisorError;
 use brigadier_supervisor::loop_::RunSpec;
+use brigadier_supervisor::SupervisorError;
 
 use crate::error::AppError;
 use crate::state::{AppState, Ready};
@@ -153,6 +153,7 @@ pub(crate) async fn start_session(
     isolated: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<SessionView, AppError> {
+    let _creation = crate::peers::CREATION.lock().await;
     // Fail with the code the UI has a remedy for. Without this the supervisor answers
     // `NoDriver` → `driver`, which tells the operator nothing about the missing install.
     state.claude_status()?;
@@ -188,7 +189,7 @@ pub(crate) async fn start_session(
             &project_id,
             &DriverKind::new(CLAUDE_CODE),
             req,
-            isolated.unwrap_or(false),
+            isolated.unwrap_or(true),
         )
         .await?;
     crate::peers::bind(peer_token, session_id.as_str(), Some(title))?;
@@ -613,7 +614,10 @@ async fn settle(ready: &Ready, intent_id: &str, state: &str) -> Result<(), AppEr
     // answered; neither is a question this command can answer, and `no_such_intent` is the code
     // the contract gives both.
     if !rows.iter().any(|r| r.id == intent_id) {
-        return Err(AppError::new("no_such_intent", format!("no unsettled intent {intent_id}")));
+        return Err(AppError::new(
+            "no_such_intent",
+            format!("no unsettled intent {intent_id}"),
+        ));
     }
     ready
         .store()
@@ -681,9 +685,19 @@ async fn run_view(ready: &Ready, plan_id: &str) -> Result<Option<RunView>, AppEr
         orders.push(ready.store().work_orders(&phase.id).await?);
     }
     let unknowns: Vec<UnknownRow> = ready.store().unknowns(&plan.id).await?;
-    let mut view = RunView::new(&plan, &phases, &orders, &unknowns, ready.is_stopped(&plan.id));
+    let mut view = RunView::new(
+        &plan,
+        &phases,
+        &orders,
+        &unknowns,
+        ready.is_stopped(&plan.id),
+    );
     if matches!(view.status, "draft" | "approved")
-        && !ready.supervisor.run(&plan.id).is_some_and(|run| run.active()) {
+        && !ready
+            .supervisor
+            .run(&plan.id)
+            .is_some_and(|run| run.active())
+    {
         view.status = "abandoned";
     }
     Ok(Some(view))
@@ -1103,15 +1117,13 @@ mod agent_option_tests {
             "high"
         );
         request.model = Some("claude-haiku-4-5".into());
-        assert!(
-            apply_agent_options(
-                &mut request,
-                Some(&AgentOptions {
-                    effort: Some("high".into())
-                })
-            )
-            .is_err()
-        );
+        assert!(apply_agent_options(
+            &mut request,
+            Some(&AgentOptions {
+                effort: Some("high".into())
+            })
+        )
+        .is_err());
         assert!(serde_json::from_str::<AgentOptions>(r#"{"speed":"fast"}"#).is_err());
     }
 }

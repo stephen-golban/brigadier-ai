@@ -61,7 +61,7 @@ export function PromptInput(
     const el = textarea.current;
     if (el) {
       el.style.height = "auto";
-      el.style.height = `${Math.min(240, Math.max(72, el.scrollHeight))}px`;
+      el.style.height = `${Math.min(240, Math.max(54, el.scrollHeight))}px`;
     }
   }, [value]);
   useEffect(() => {

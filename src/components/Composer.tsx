@@ -1,3 +1,4 @@
+import { SessionContext } from "./SessionContext";
 import { useMessageEdit, type MessageEditProps } from "./EditMessage";
 import { PromptInput, useDraft } from "./PromptInput";
 /**
@@ -68,7 +69,11 @@ export interface RunControlProps {
   busy: boolean;
   /** `list_models`, for the Model picker. Empty leaves only the no-pick entry, which is legal. */
   models: ModelInfo[];
-  onStart: (goal: string, model: string | null, permissionMode: PermissionMode) => void | Promise<boolean>;
+  onStart: (
+    goal: string,
+    model: string | null,
+    permissionMode: PermissionMode,
+  ) => void | Promise<boolean>;
   onStop: (planId: PlanId) => void;
 }
 
@@ -106,8 +111,15 @@ export function RunControl({
     // `null`, never `""` and never a sentinel: `start_run`'s `model` is an `Option<String>` and a
     // placeholder string would be handed straight to the CLI's `--model`, which refuses it.
     setSending(true);
-    try { if (await onStart(goal.trim(), model === "" ? null : model, mode) !== false) setGoal(""); }
-    finally { setSending(false); }
+    try {
+      if (
+        (await onStart(goal.trim(), model === "" ? null : model, mode)) !==
+        false
+      )
+        setGoal("");
+    } finally {
+      setSending(false);
+    }
   };
 
   /*
@@ -165,7 +177,9 @@ export function RunControl({
       />
       <div className="dock-actions">
         <span className="status-chip">
-          {projectName === null ? "No project selected" : "plan · dispatch · gate · commit"}
+          {projectName === null
+            ? "No project selected"
+            : "plan · dispatch · gate · commit"}
         </span>
         <span className="grow" />
         {/*
@@ -206,7 +220,10 @@ export interface ComposerProps extends MessageEditProps {
   onKill: (sessionId: SessionId) => void;
   onResume: (sessionId: SessionId) => void;
   /** Resolves to the command's answer, or to null when it failed (the caller showed the error). */
-  onCleanup: (sessionId: SessionId, force: boolean) => Promise<WorktreeCleanup | null>;
+  onCleanup: (
+    sessionId: SessionId,
+    force: boolean,
+  ) => Promise<WorktreeCleanup | null>;
 }
 
 export function Composer({
@@ -242,8 +259,12 @@ export function Composer({
     setArmed(false);
   }, [sessionId]);
 
-  const live = session !== null && (session.status === "running" || session.status === "starting");
-  const settled = session !== null && (session.status === "exited" || session.status === "failed");
+  const live =
+    session !== null &&
+    (session.status === "running" || session.status === "starting");
+  const settled =
+    session !== null &&
+    (session.status === "exited" || session.status === "failed");
 
   /** Contract §resume_session: a stored token (the front end sees `provider_session_id`) and a
    *  settled session. A removed worktree takes the `cwd` away, so Resume goes with it. */
@@ -256,7 +277,11 @@ export function Composer({
 
   /** Contract §Worktrees: only a session that is not live and actually has a worktree. */
   const canCleanup =
-    session !== null && settled && session.branch !== null && !session.worktreeRemoved && removed === null;
+    session !== null &&
+    settled &&
+    session.branch !== null &&
+    !session.worktreeRemoved &&
+    removed === null;
 
   const runCleanup = async (force: boolean) => {
     if (session === null) return;
@@ -273,14 +298,18 @@ export function Composer({
 
   const [sending, setSending] = useState(false);
   const send = async () => {
-    if (session === null || !live || busy || sending || text.trim() === "") return;
+    if (session === null || !live || busy || sending || text.trim() === "")
+      return;
     if (editing) {
       if (!session.busy) await edit.submit();
       return;
     }
     setSending(true);
-    try { if (await onSend(session.sessionId, text.trim()) !== false) setText(""); }
-    finally { setSending(false); }
+    try {
+      if ((await onSend(session.sessionId, text.trim())) !== false) setText("");
+    } finally {
+      setSending(false);
+    }
   };
 
   /* --------------------------------------------------------- the refusal note
@@ -297,10 +326,16 @@ export function Composer({
 
   const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 
-  const verb = (n: number, singular: string, many: string) => (n === 1 ? singular : many);
+  const verb = (n: number, singular: string, many: string) =>
+    n === 1 ? singular : many;
 
   const dismissButton = (label: string) => (
-    <button type="button" className="act" disabled={busy} onClick={() => setRefusal(null)}>
+    <button
+      type="button"
+      className="act"
+      disabled={busy}
+      onClick={() => setRefusal(null)}
+    >
       {label}
     </button>
   );
@@ -339,9 +374,10 @@ export function Composer({
       case "dirty":
         return (
           <>
-            Removing deletes {plural(r.dirty_files, "file")} in <code>{r.branch}</code> — the count
-            includes ignored files, so <code>.env</code>, build output and{" "}
-            <code>node_modules/</code> go with them. Nothing was removed.
+            Removing deletes {plural(r.dirty_files, "file")} in{" "}
+            <code>{r.branch}</code> — the count includes ignored files, so{" "}
+            <code>.env</code>, build output and <code>node_modules/</code> go
+            with them. Nothing was removed.
             {r.commits > 0 ? (
               <>
                 {" "}
@@ -349,8 +385,8 @@ export function Composer({
                 {verb(r.commits, "stays", "stay")} on the branch.
               </>
             ) : null}{" "}
-            The branch <code>{r.branch}</code> survives either way; this session can no longer be
-            resumed once the checkout is gone.{" "}
+            The branch <code>{r.branch}</code> survives either way; this session
+            can no longer be resumed once the checkout is gone.{" "}
             {forceButton(`Delete ${plural(r.dirty_files, "file")} and remove`)}{" "}
             {dismissButton("Keep it")}
           </>
@@ -358,11 +394,13 @@ export function Composer({
       case "commits":
         return (
           <>
-            Nothing uncommitted, but this worktree holds {plural(r.commits, "commit")} that no other
-            branch, tag or remote keeps. Removing the checkout leaves them reachable only from{" "}
-            <code>{r.branch}</code>, which survives — delete that branch afterwards and they are
-            gone for good. Nothing was removed.{" "}
-            {forceButton("Remove the checkout, keep the branch")} {dismissButton("Keep it")}
+            Nothing uncommitted, but this worktree holds{" "}
+            {plural(r.commits, "commit")} that no other branch, tag or remote
+            keeps. Removing the checkout leaves them reachable only from{" "}
+            <code>{r.branch}</code>, which survives — delete that branch
+            afterwards and they are gone for good. Nothing was removed.{" "}
+            {forceButton("Remove the checkout, keep the branch")}{" "}
+            {dismissButton("Keep it")}
           </>
         );
       case "branch_moved":
@@ -370,82 +408,93 @@ export function Composer({
           <>
             {r.live_branch === null ? (
               <>
-                This worktree has a detached <code>HEAD</code>; the session recorded{" "}
-                <code>{r.branch}</code>.
+                This worktree has a detached <code>HEAD</code>; the session
+                recorded <code>{r.branch}</code>.
               </>
             ) : (
               <>
-                <code>{r.live_branch}</code> is checked out here, not the <code>{r.branch}</code>{" "}
-                this session recorded.
+                <code>{r.live_branch}</code> is checked out here, not the{" "}
+                <code>{r.branch}</code> this session recorded.
               </>
             )}{" "}
-            Something moved it — the agent switched branches, or the operator did — so what a
-            removal would take is not what this session put there. Nothing was removed. Going ahead
-            removes the checkout whatever is on it
-            {r.dirty_files > 0 ? `, discarding ${plural(r.dirty_files, "file")}` : ""}.
+            Something moved it — the agent switched branches, or the operator
+            did — so what a removal would take is not what this session put
+            there. Nothing was removed. Going ahead removes the checkout
+            whatever is on it
+            {r.dirty_files > 0
+              ? `, discarding ${plural(r.dirty_files, "file")}`
+              : ""}
+            .
             {r.commits > 0 ? (
               r.live_branch === null ? (
                 <>
                   {" "}
-                  {plural(r.commits, "commit")} here {verb(r.commits, "is", "are")} kept by no ref
-                  at all: remove this and nothing points at {verb(r.commits, "it", "them")} any
+                  {plural(r.commits, "commit")} here{" "}
+                  {verb(r.commits, "is", "are")} kept by no ref at all: remove
+                  this and nothing points at {verb(r.commits, "it", "them")} any
                   more.
                 </>
               ) : (
                 <>
                   {" "}
-                  The {plural(r.commits, "commit")} here {verb(r.commits, "stays", "stay")} on{" "}
+                  The {plural(r.commits, "commit")} here{" "}
+                  {verb(r.commits, "stays", "stay")} on{" "}
                   <code>{r.live_branch}</code>, which survives.
                 </>
               )
             ) : null}
             {atPath}{" "}
-            {armed
-              ? forceButton(
-                  r.live_branch === null
-                    ? "Remove it with a detached HEAD"
-                    : `Remove it with ${r.live_branch} checked out`,
-                )
-              : (
-                  <button
-                    type="button"
-                    className="act"
-                    disabled={busy}
-                    onClick={() => setArmed(true)}
-                  >
-                    I have looked at the worktree
-                  </button>
-                )}{" "}
+            {armed ? (
+              forceButton(
+                r.live_branch === null
+                  ? "Remove it with a detached HEAD"
+                  : `Remove it with ${r.live_branch} checked out`,
+              )
+            ) : (
+              <button
+                type="button"
+                className="act"
+                disabled={busy}
+                onClick={() => setArmed(true)}
+              >
+                I have looked at the worktree
+              </button>
+            )}{" "}
             {dismissButton("Keep it")}
           </>
         );
       case "locked":
         return (
           <>
-            A <code>git worktree lock</code> is held on this worktree — another process's claim on
-            it. git refuses to remove a locked worktree and only <code>remove -f -f</code> clears a
-            lock, which is not brigadier's to give, so forcing from here would refuse again.
-            {atPath} Run <code>git worktree unlock</code> on it yourself once you know nothing is
-            using it. Nothing was removed. {dismissButton("Dismiss")}
+            A <code>git worktree lock</code> is held on this worktree — another
+            process's claim on it. git refuses to remove a locked worktree and
+            only <code>remove -f -f</code> clears a lock, which is not
+            brigadier's to give, so forcing from here would refuse again.
+            {atPath} Run <code>git worktree unlock</code> on it yourself once
+            you know nothing is using it. Nothing was removed.{" "}
+            {dismissButton("Dismiss")}
           </>
         );
       case "unregistered":
         return (
           <>
-            git does not register this directory as a worktree of the repository — a hand-deleted
-            admin directory, or a prune that ran before a repair. git can neither describe it nor
-            remove it in that state, and brigadier does not <code>rm -rf</code> a directory it
-            cannot describe, so forcing does not reach this.{atPath} Look at it and delete it
-            yourself once you are sure. Nothing was removed. {dismissButton("Dismiss")}
+            git does not register this directory as a worktree of the repository
+            — a hand-deleted admin directory, or a prune that ran before a
+            repair. git can neither describe it nor remove it in that state, and
+            brigadier does not <code>rm -rf</code> a directory it cannot
+            describe, so forcing does not reach this.{atPath} Look at it and
+            delete it yourself once you are sure. Nothing was removed.{" "}
+            {dismissButton("Dismiss")}
           </>
         );
       case "left_on_disk":
         return (
           <>
-            git reported the worktree removed and the directory is still there — the state a
-            renamed project folder produces. The registry entry may be gone; the files are not, so
-            nothing is being called removed.{atPath} Check it and delete it yourself. There is
-            nothing here for force to do. {dismissButton("Dismiss")}
+            git reported the worktree removed and the directory is still there —
+            the state a renamed project folder produces. The registry entry may
+            be gone; the files are not, so nothing is being called removed.
+            {atPath} Check it and delete it yourself. There is nothing here for
+            force to do. {dismissButton("Dismiss")}
           </>
         );
       default:
@@ -453,13 +502,14 @@ export function Composer({
     }
   };
 
-  const chipClass = session === null
-    ? "status-chip"
-    : session.busy
-      ? "status-chip warn"
-      : live
-        ? "status-chip live"
-        : "status-chip";
+  const chipClass =
+    session === null
+      ? "status-chip"
+      : session.busy
+        ? "status-chip warn"
+        : live
+          ? "status-chip live"
+          : "status-chip";
 
   /*
    * R2, 2026-09-05: the `.dock` frame and the context strip moved to `src/components/Dock.tsx`,
@@ -472,24 +522,35 @@ export function Composer({
       <div className="dock-box">
         {editing && (
           <div className="composer-edit-banner">
-            <span>{edit.rewound ? "Conversation rewound · ready to send" : "Editing message"}</span>
-            <button type="button" className="act" disabled={edit.busy || Boolean(edit.confirmation)} onClick={onCancelEdit}>
+            <span>
+              {edit.rewound
+                ? "Conversation rewound · ready to send"
+                : "Editing message"}
+            </span>
+            <button
+              type="button"
+              className="act"
+              disabled={edit.busy || Boolean(edit.confirmation)}
+              onClick={onCancelEdit}
+            >
               Cancel edit
             </button>
           </div>
         )}
-        {editing && edit.error && <p role="alert" className="inline-error">{edit.error}</p>}
+        {editing && edit.error && (
+          <p role="alert" className="inline-error">
+            {edit.error}
+          </p>
+        )}
         {editing && edit.confirmation}
         <PromptInput
           rows={2}
           value={text}
-          placeholder={
-            live
-              ? "Next turn. Return to send, Shift+Return for a new line."
-              : "Select a running session"
-          }
+          placeholder={live ? "Do anything" : "Select a running session"}
           focusKey={sessionId ?? undefined}
-          disabled={!live || busy || sending || (Boolean(editing) && edit.disabled)}
+          disabled={
+            !live || busy || sending || (Boolean(editing) && edit.disabled)
+          }
           onText={setText}
           onKeyDown={(e) => {
             if (isSubmitKey(e)) {
@@ -533,35 +594,55 @@ export function Composer({
 
           <span className="grow" />
 
-          <button
-            type="button"
-            className="act"
-            disabled={session === null || !live}
-            onClick={() => session && onInterrupt(session.sessionId)}
-          >
-            Interrupt
-          </button>
-          <button
-            type="button"
-            className="act"
-            disabled={session === null || !live}
-            onClick={() => session && onEnd(session.sessionId)}
-          >
-            End
-          </button>
-          <button
-            type="button"
-            className="act danger"
-            disabled={session === null || !live}
-            onClick={() => session && onKill(session.sessionId)}
-          >
-            Kill
-          </button>
+          {session && (
+            <span className="session-model">
+              {session.model ?? "Claude Code"}
+            </span>
+          )}
+          {session && (
+            <SessionContext
+              sessionId={session.sessionId}
+              revision={0}
+              busy={session.busy}
+            />
+          )}
+          <details className="composer-more">
+            <summary aria-label="Session actions">•••</summary>
+            <div>
+              <button
+                type="button"
+                disabled={!live}
+                onClick={() => session && onInterrupt(session.sessionId)}
+              >
+                Interrupt
+              </button>
+              <button
+                type="button"
+                disabled={!live}
+                onClick={() => session && onEnd(session.sessionId)}
+              >
+                End session
+              </button>
+              <button
+                type="button"
+                disabled={!live}
+                onClick={() => session && onKill(session.sessionId)}
+              >
+                Kill process
+              </button>
+            </div>
+          </details>
           <button
             type="button"
             className="send"
             aria-label={editing ? "Send edited message" : "send this turn"}
-            disabled={!live || busy || sending || text.trim() === "" || (Boolean(editing) && (edit.disabled || session?.busy))}
+            disabled={
+              !live ||
+              busy ||
+              sending ||
+              text.trim() === "" ||
+              (Boolean(editing) && (edit.disabled || session?.busy))
+            }
             onClick={send}
           >
             <SendIcon />
@@ -571,17 +652,19 @@ export function Composer({
 
       {session !== null && session.resumed && removed === null ? (
         <p className="dock-note">
-          Resumed in default permission mode — the mode this session ran in before is not stored
-          anywhere and was not restored.
+          Resumed in default permission mode — the mode this session ran in
+          before is not stored anywhere and was not restored.
         </p>
       ) : null}
 
-      {refusal !== null ? <p className="dock-note warn">{refusalNote(refusal)}</p> : null}
+      {refusal !== null ? (
+        <p className="dock-note warn">{refusalNote(refusal)}</p>
+      ) : null}
 
       {removed !== null ? (
         <p className="dock-note">
-          Worktree removed. The branch <code>{removed.branch}</code> is untouched; this session
-          can no longer be resumed.
+          Worktree removed. The branch <code>{removed.branch}</code> is
+          untouched; this session can no longer be resumed.
         </p>
       ) : null}
 
@@ -596,8 +679,8 @@ export function Composer({
       */}
       {session !== null ? (
         <div className="dock-usage">
-          {session.usage.input_tokens} in / {session.usage.output_tokens} out · cache{" "}
-          {session.usage.cache_read_tokens} read /{" "}
+          {session.usage.input_tokens} in / {session.usage.output_tokens} out ·
+          cache {session.usage.cache_read_tokens} read /{" "}
           {session.usage.cache_creation_tokens} write · rows {session.rowsTotal}
           {session.rowsDropped > 0 ? ` (${session.rowsDropped} dropped)` : ""}
           {session.lastMessage !== null ? ` · ${session.lastMessage}` : ""}

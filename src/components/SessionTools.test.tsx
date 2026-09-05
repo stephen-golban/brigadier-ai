@@ -34,7 +34,7 @@ function preview() {
     conversation: true,
     reason: null,
     files: [],
-    filesAvailable: false,
+    filesAvailable: true,
     hasFileChanges: false,
     filesReason: "No file checkpoint found for this message.",
   };
@@ -147,21 +147,22 @@ describe("session tools", () => {
     const rewind = vi.spyOn(sessionApi, "rewind").mockResolvedValue({
       rewound: true,
       recoveryId: "saved",
-      filesRestored: false,
+      filesRestored: true,
+      sent: true,
     });
-    sendTurn.mockResolvedValue({ turn_id: "next" });
     const close = vi.fn();
     render(<EditHarness onClose={close} />);
     await user.keyboard("{Enter}");
     await waitFor(() => expect(close).toHaveBeenCalledOnce());
-    expect(rewind).toHaveBeenCalledWith("ticket", "conversation");
-    expect(sendTurn).toHaveBeenCalledWith("s", "Original text");
+    expect(rewind).toHaveBeenCalledWith("ticket", "conversation-and-files", "Original text");
+    expect(sendTurn).not.toHaveBeenCalled();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
   it("confirms only at Send when the affected span contains file edits", async () => {
     const user = userEvent.setup();
     vi.spyOn(sessionApi, "preview").mockResolvedValue({
       ...preview(),
+      filesAvailable: false,
       hasFileChanges: true,
     });
     const rewind = vi.spyOn(sessionApi, "rewind").mockResolvedValue({
@@ -192,6 +193,25 @@ describe("session tools", () => {
     await waitFor(() => expect(close).toHaveBeenCalledOnce());
     expect(rewind).toHaveBeenCalledOnce();
     expect(sendTurn).toHaveBeenCalledOnce();
+  });
+  it("shows the exact current restore paths and sends once through the combined transaction", async () => {
+    const user=userEvent.setup();
+    vi.spyOn(sessionApi,"preview").mockResolvedValue({...preview(),files:["src/a.ts","asset.bin"],hasFileChanges:true});
+    const rewind=vi.spyOn(sessionApi,"rewind").mockResolvedValue({rewound:true,recoveryId:"saved",filesRestored:true,sent:true});
+    const close=vi.fn();render(<EditHarness onClose={close}/>);
+    await user.click(screen.getByRole("button",{name:"Send edited message"}));
+    const dialog=await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("Restore 2 files");expect(dialog).toHaveTextContent("src/a.ts");expect(dialog).toHaveTextContent("asset.bin");
+    expect(rewind).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button",{name:"Rewind & send"}));
+    await waitFor(()=>expect(close).toHaveBeenCalledOnce());
+    expect(rewind).toHaveBeenCalledWith("ticket","conversation-and-files","Original text");expect(sendTurn).not.toHaveBeenCalled();
+  });
+  it("requires explicit conversation-only confirmation for legacy coverage even without inferred edits", async () => {
+    const user=userEvent.setup();vi.spyOn(sessionApi,"preview").mockResolvedValue({...preview(),filesAvailable:false});
+    const rewind=vi.spyOn(sessionApi,"rewind");render(<EditHarness/>);
+    await user.click(screen.getByRole("button",{name:"Send edited message"}));
+    expect(await screen.findByRole("dialog")).toHaveTextContent("No file checkpoint found");expect(rewind).not.toHaveBeenCalled();
   });
   it("keeps the draft on refusal and never sends until native rewind succeeds", async () => {
     const user = userEvent.setup();

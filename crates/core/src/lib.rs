@@ -8,6 +8,7 @@
 #![warn(missing_docs)]
 
 pub mod approval;
+pub mod checkpoint;
 pub mod claude;
 pub mod driver;
 pub mod event;

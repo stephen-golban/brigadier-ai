@@ -35,11 +35,15 @@ use tokio::sync::{mpsc, oneshot};
 const PIPE: usize = 256 * 1024;
 
 fn fixture_lines(name: &str) -> VecDeque<String> {
-    let path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../claude-spike/fixtures").join(name);
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../claude-spike/fixtures")
+        .join(name);
     let text = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("fixture {}: {e}", path.display()));
-    text.lines().filter(|l| !l.trim().is_empty()).map(str::to_owned).collect()
+    text.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 /// One replayed session.
@@ -113,13 +117,21 @@ impl Rig {
             brigadier_core::claude::PRE_TOOL_USE_CALLBACK_ID,
             "the PreToolUse hook is registered in initialize"
         );
-        let request_id = outbound.pop_front().expect("initialize is a control_request");
+        let request_id = outbound
+            .pop_front()
+            .expect("initialize is a control_request");
 
         let handshake = lines.pop_front().expect("fixture has a handshake line");
         write_line(&mut to_adapter, &patch_response_id(&handshake, &request_id)).await;
 
-        let handle = connecting.await.expect("connect task joins").expect("handshake succeeds");
-        assert_eq!(handle.session_id, session, "the handle knows its id before the CLI does");
+        let handle = connecting
+            .await
+            .expect("connect task joins")
+            .expect("handshake succeeds");
+        assert_eq!(
+            handle.session_id, session,
+            "the handle knows its id before the CLI does"
+        );
         assert_eq!(handle.instance_id, InstanceId::new("claude-code:test"));
 
         Rig {
@@ -216,7 +228,10 @@ impl Rig {
     }
 
     async fn send_turn(&self) {
-        self.commands.send_turn(TurnInput::text("go")).await.expect("turn accepted");
+        self.commands
+            .send_turn(TurnInput::text("go"))
+            .await
+            .expect("turn accepted");
     }
 }
 
@@ -290,7 +305,10 @@ fn is_request_opened(event: &Event) -> bool {
 }
 
 fn is_turn_end(event: &Event) -> bool {
-    matches!(event, Event::TurnCompleted { .. } | Event::TurnAborted { .. })
+    matches!(
+        event,
+        Event::TurnCompleted { .. } | Event::TurnAborted { .. }
+    )
 }
 
 fn is_turn_started(event: &Event) -> bool {
@@ -313,9 +331,12 @@ fn completed(rig: &Rig) -> Vec<(TurnId, Usage, f64)> {
     rig.collected
         .iter()
         .filter_map(|e| match e {
-            Event::TurnCompleted { turn_id, usage, cost_usd_cumulative, .. } => {
-                Some((turn_id.clone(), *usage, *cost_usd_cumulative))
-            }
+            Event::TurnCompleted {
+                turn_id,
+                usage,
+                cost_usd_cumulative,
+                ..
+            } => Some((turn_id.clone(), *usage, *cost_usd_cumulative)),
             _ => None,
         })
         .collect()
@@ -337,7 +358,12 @@ fn permission(rig: &Rig) -> (&str, Option<&str>) {
         .iter()
         .find_map(|e| match e {
             Event::RequestOpened {
-                kind: RequestKind::ToolPermission { tool_name, tool_call_id, .. },
+                kind:
+                    RequestKind::ToolPermission {
+                        tool_name,
+                        tool_call_id,
+                        ..
+                    },
                 ..
             } => Some((tool_name.as_str(), tool_call_id.as_deref())),
             _ => None,
@@ -349,9 +375,11 @@ fn tool_call_item_id(rig: &Rig) -> ItemId {
     rig.collected
         .iter()
         .find_map(|e| match e {
-            Event::ItemStarted { item_id, kind: ItemKind::ToolCall { .. }, .. } => {
-                Some(item_id.clone())
-            }
+            Event::ItemStarted {
+                item_id,
+                kind: ItemKind::ToolCall { .. },
+                ..
+            } => Some(item_id.clone()),
             _ => None,
         })
         .expect("a tool call item was started")
@@ -361,9 +389,10 @@ fn tool_result_call_id(rig: &Rig) -> String {
     rig.collected
         .iter()
         .find_map(|e| match e {
-            Event::ItemCompleted { kind: ItemKind::ToolResult { tool_call_id, .. }, .. } => {
-                Some(tool_call_id.clone())
-            }
+            Event::ItemCompleted {
+                kind: ItemKind::ToolResult { tool_call_id, .. },
+                ..
+            } => Some(tool_call_id.clone()),
             _ => None,
         })
         .expect("a tool result item completed")
@@ -415,16 +444,26 @@ async fn s1_handshake_and_turn() {
         })
         .expect("session started");
     assert_eq!(started.0, "8380cdea-0e11-4fa3-b5df-9c606b7262aa");
-    assert_eq!(started.1.as_deref(), Some("8380cdea-0e11-4fa3-b5df-9c606b7262aa"));
+    assert_eq!(
+        started.1.as_deref(),
+        Some("8380cdea-0e11-4fa3-b5df-9c606b7262aa")
+    );
     assert_eq!(started.2, "claude-haiku-4-5");
-    assert!(started.3.contains(&"interrupt_receipt_v1".to_owned()), "{:?}", started.3);
+    assert!(
+        started.3.contains(&"interrupt_receipt_v1".to_owned()),
+        "{:?}",
+        started.3
+    );
 
     // The cumulative cost is passed through, never summed.
     let cost = rig
         .collected
         .iter()
         .find_map(|e| match e {
-            Event::TurnCompleted { cost_usd_cumulative, .. } => Some(*cost_usd_cumulative),
+            Event::TurnCompleted {
+                cost_usd_cumulative,
+                ..
+            } => Some(*cost_usd_cumulative),
             _ => None,
         })
         .expect("turn completed");
@@ -463,7 +502,10 @@ async fn s2_can_use_tool_allow() {
     );
 
     let request_id = approval_request_id(&rig.session, 1);
-    rig.commands.respond(request_id, Decision::allow()).await.expect("allowed");
+    rig.commands
+        .respond(request_id, Decision::allow())
+        .await
+        .expect("allowed");
 
     // The user turn was written first; the allow is the second thing on the wire.
     let turn = rig.next_sent().await;
@@ -476,7 +518,10 @@ async fn s2_can_use_tool_allow() {
     let ask: Value =
         serde_json::from_str(&fixture_lines("s2-can-use-tool-allow.ndjson")[9]).expect("json");
     assert_eq!(allow["response"]["request_id"], ask["request_id"]);
-    assert_eq!(allow["response"]["response"]["updatedInput"], ask["request"]["input"]);
+    assert_eq!(
+        allow["response"]["response"]["updatedInput"],
+        ask["request"]["input"]
+    );
 
     rig.feed_rest().await;
     assert_eq!(
@@ -496,7 +541,10 @@ async fn s2_can_use_tool_allow() {
     let (tool_name, permission_call_id) = permission(&rig);
     assert_eq!(tool_name, "Bash");
     assert_eq!(permission_call_id, Some("toolu_017EqysfWQUVfeERnAaHzgSW"));
-    assert_eq!(tool_call_item_id(&rig).as_str(), permission_call_id.expect("id"));
+    assert_eq!(
+        tool_call_item_id(&rig).as_str(),
+        permission_call_id.expect("id")
+    );
     assert_eq!(tool_result_call_id(&rig), permission_call_id.expect("id"));
 }
 
@@ -513,7 +561,10 @@ async fn s3_can_use_tool_deny() {
     assert_eq!(before.last().expect("last"), "request-opened");
 
     let request_id = approval_request_id(&rig.session, 1);
-    rig.commands.respond(request_id, Decision::deny("denied by test")).await.expect("denied");
+    rig.commands
+        .respond(request_id, Decision::deny("denied by test"))
+        .await
+        .expect("denied");
 
     let _turn = rig.next_sent().await;
     let deny = rig.next_sent().await;
@@ -522,7 +573,10 @@ async fn s3_can_use_tool_deny() {
     assert_eq!(deny["response"]["subtype"], "success");
     assert_eq!(deny["response"]["response"]["behavior"], "deny");
     assert_eq!(deny["response"]["response"]["message"], "denied by test");
-    assert!(deny["response"]["response"].get("interrupt").is_none(), "{deny}");
+    assert!(
+        deny["response"]["response"].get("interrupt").is_none(),
+        "{deny}"
+    );
 
     rig.feed_rest().await;
     assert_eq!(
@@ -556,7 +610,10 @@ async fn s4_interrupt_then_a_second_turn() {
     let commands = rig.commands.clone();
     let interrupting = tokio::spawn(async move { commands.interrupt().await });
     rig.feed(1).await;
-    interrupting.await.expect("task joins").expect("interrupt acknowledged");
+    interrupting
+        .await
+        .expect("task joins")
+        .expect("interrupt acknowledged");
 
     rig.feed(3).await; // lines 9..=11: assistant text, the synthetic user note, result #1
     assert_eq!(
@@ -593,8 +650,14 @@ async fn s4_interrupt_then_a_second_turn() {
         ]
     );
 
-    let interrupt = rig.sent_log.iter().find(|v| v["request"]["subtype"] == "interrupt");
-    assert!(interrupt.is_some(), "the adapter sent an interrupt control_request");
+    let interrupt = rig
+        .sent_log
+        .iter()
+        .find(|v| v["request"]["subtype"] == "interrupt");
+    assert!(
+        interrupt.is_some(),
+        "the adapter sent an interrupt control_request"
+    );
 }
 
 // -----------------------------------------------------------------------------------------
@@ -658,7 +721,11 @@ async fn s6_hook_callback_is_answered_with_an_empty_object() {
 #[tokio::test]
 async fn s9_a_background_subagent_produces_a_second_turn() {
     let mut rig = Rig::start("s9-subagent-agent-id.ndjson", 64).await;
-    let sent = rig.commands.send_turn(TurnInput::text("go")).await.expect("turn accepted");
+    let sent = rig
+        .commands
+        .send_turn(TurnInput::text("go"))
+        .await
+        .expect("turn accepted");
 
     // Fixture lines 2..=49, ending on `result` #1 — the frame that used to end the turn for good.
     rig.feed(48).await;
@@ -670,7 +737,13 @@ async fn s9_a_background_subagent_produces_a_second_turn() {
     // Lines 50..=56: the task notification and `system/init` #2. Nothing was written to the
     // child's stdin in between, so the turn that init opens is one nobody asked for.
     rig.feed(7).await;
-    assert_eq!(rig.labels_until(is_turn_started).await.last().expect("last"), "turn-started");
+    assert_eq!(
+        rig.labels_until(is_turn_started)
+            .await
+            .last()
+            .expect("last"),
+        "turn-started"
+    );
 
     rig.feed_rest().await;
     assert_eq!(
@@ -699,7 +772,11 @@ async fn s9_a_background_subagent_produces_a_second_turn() {
 #[tokio::test]
 async fn f_b_fanout_reports_the_last_of_four_results() {
     let mut rig = Rig::start("f-b-fanout.ndjson", 64).await;
-    let sent = rig.commands.send_turn(TurnInput::text("go")).await.expect("turn accepted");
+    let sent = rig
+        .commands
+        .send_turn(TurnInput::text("go"))
+        .await
+        .expect("turn accepted");
     rig.feed_rest().await;
 
     for _ in 0..4 {
@@ -724,7 +801,10 @@ async fn f_b_fanout_reports_the_last_of_four_results() {
     assert_eq!(started.len(), 4);
     assert_eq!(started[0], sent);
     let ids: Vec<TurnId> = completed.iter().map(|c| c.0.clone()).collect();
-    assert_eq!(ids, started, "every completion closes the turn that started it");
+    assert_eq!(
+        ids, started,
+        "every completion closes the turn that started it"
+    );
 }
 
 /// A minted turn must never be the reason an operator cannot send. Nothing on the wire promises
@@ -734,16 +814,27 @@ async fn f_b_fanout_reports_the_last_of_four_results() {
 #[tokio::test]
 async fn a_minted_turn_is_pre_empted_by_a_send() {
     let mut rig = Rig::start("s9-subagent-agent-id.ndjson", 64).await;
-    let first = rig.commands.send_turn(TurnInput::text("go")).await.expect("turn accepted");
+    let first = rig
+        .commands
+        .send_turn(TurnInput::text("go"))
+        .await
+        .expect("turn accepted");
     rig.feed(48).await; // through `result` #1
     rig.labels_until(is_turn_end).await;
     rig.feed(7).await; // through `system/init` #2, which mints a continuation turn
     rig.labels_until(is_turn_started).await;
-    let minted = started_ids(&rig).last().cloned().expect("a continuation turn was minted");
+    let minted = started_ids(&rig)
+        .last()
+        .cloned()
+        .expect("a continuation turn was minted");
     assert_ne!(minted, first, "the continuation id is not the operator's");
 
     // Accepted, not rejected — and the minted turn is closed rather than left unpaired.
-    let second = rig.commands.send_turn(TurnInput::text("again")).await.expect("send accepted");
+    let second = rig
+        .commands
+        .send_turn(TurnInput::text("again"))
+        .await
+        .expect("send accepted");
     assert_eq!(
         rig.labels_until(is_turn_started).await,
         ["turn-aborted(Interrupted)", "turn-started"]
@@ -765,7 +856,12 @@ async fn a_minted_turn_is_pre_empted_by_a_send() {
     while texts.len() < 2 {
         let sent = rig.next_sent().await;
         if sent["type"] == "user" {
-            texts.push(sent["message"]["content"][0]["text"].as_str().expect("text").to_owned());
+            texts.push(
+                sent["message"]["content"][0]["text"]
+                    .as_str()
+                    .expect("text")
+                    .to_owned(),
+            );
         }
     }
     assert_eq!(texts, ["go", "again"]);
@@ -812,12 +908,22 @@ async fn a_result_with_no_open_turn_is_still_reported() {
     });
     write_line(&mut rig.to_adapter, &bare.to_string()).await;
 
-    assert_eq!(rig.labels_until(is_turn_end).await, ["turn-started", "turn-completed(EndTurn)"]);
+    assert_eq!(
+        rig.labels_until(is_turn_end).await,
+        ["turn-started", "turn-completed(EndTurn)"]
+    );
     let completed = completed(&rig);
     assert_eq!(completed.len(), 1);
     about(completed[0].2, 0.125);
-    assert_eq!(completed[0].1.cache_read_tokens, 33, "`modelUsage`, not the main-loop `usage`");
-    assert_eq!(started_ids(&rig), vec![completed[0].0.clone()], "one minted id, one pair");
+    assert_eq!(
+        completed[0].1.cache_read_tokens, 33,
+        "`modelUsage`, not the main-loop `usage`"
+    );
+    assert_eq!(
+        started_ids(&rig),
+        vec![completed[0].0.clone()],
+        "one minted id, one pair"
+    );
 }
 
 // -----------------------------------------------------------------------------------------
@@ -841,7 +947,12 @@ async fn a_jammed_event_channel_does_not_block_a_response() {
     // The handle's own view of the park is how we know, without touching the jammed event channel.
     let request_id = approval_request_id(&rig.session, 1);
     tokio::time::timeout(Duration::from_secs(5), async {
-        while !rig.approvals.pending().iter().any(|p| p.request_id == request_id) {
+        while !rig
+            .approvals
+            .pending()
+            .iter()
+            .any(|p| p.request_id == request_id)
+        {
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
     })
@@ -885,7 +996,11 @@ async fn child_exit_cancels_every_open_request() {
     let opened = rig.labels_until(is_request_opened).await;
     assert_eq!(opened.iter().filter(|l| *l == "request-opened").count(), 1);
 
-    rig.exit_tx.take().expect("exit sender").send(ExitInfo { code: Some(1) }).expect("send exit");
+    rig.exit_tx
+        .take()
+        .expect("exit sender")
+        .send(ExitInfo { code: Some(1) })
+        .expect("send exit");
 
     let after = rig.labels_until(is_session_exited).await;
     assert_eq!(
@@ -898,7 +1013,10 @@ async fn child_exit_cancels_every_open_request() {
     );
 
     // The stream ends once the adapter drops its sender.
-    assert!(rig.events.recv().await.is_none(), "the event stream closes after the exit");
+    assert!(
+        rig.events.recv().await.is_none(),
+        "the event stream closes after the exit"
+    );
 }
 
 /// `Kill` reaches the process supervisor, and the synthesised terminal events say `Killed` —
@@ -910,10 +1028,17 @@ async fn kill_reaches_the_supervisor_and_reports_killed() {
     rig.feed(2).await; // rate_limit_event, then `system/init`
 
     rig.commands.kill().await.expect("kill accepted");
-    rig.kill_rx.recv().await.expect("the supervisor was asked to kill the process group");
+    rig.kill_rx
+        .recv()
+        .await
+        .expect("the supervisor was asked to kill the process group");
 
     // The real supervisor answers a kill by exiting; the rig stands in for it.
-    rig.exit_tx.take().expect("exit sender").send(ExitInfo { code: None }).expect("send exit");
+    rig.exit_tx
+        .take()
+        .expect("exit sender")
+        .send(ExitInfo { code: None })
+        .expect("send exit");
 
     let labels = rig.labels_until(is_session_exited).await;
     assert_eq!(
@@ -951,7 +1076,11 @@ async fn a_second_turn_while_one_is_open_is_rejected() {
 #[tokio::test]
 async fn dropping_the_command_handle_closes_the_childs_stdin() {
     let rig = Rig::start("s1-handshake-and-turn.ndjson", 64).await;
-    let Rig { commands, mut sent_rx, .. } = rig;
+    let Rig {
+        commands,
+        mut sent_rx,
+        ..
+    } = rig;
     drop(commands);
     assert!(
         tokio::time::timeout(Duration::from_secs(5), sent_rx.recv())
@@ -968,7 +1097,10 @@ async fn dropping_the_command_handle_closes_the_childs_stdin() {
 #[tokio::test]
 async fn end_session_closes_stdin_and_reports_a_graceful_exit() {
     let mut rig = Rig::start("s1-handshake-and-turn.ndjson", 64).await;
-    rig.commands.end_session().await.expect("end_session accepted");
+    rig.commands
+        .end_session()
+        .await
+        .expect("end_session accepted");
 
     // The fake child's stdin reaches EOF, with the command handle still very much alive.
     assert!(
@@ -980,18 +1112,31 @@ async fn end_session_closes_stdin_and_reports_a_graceful_exit() {
     );
 
     // A real CLI answers that EOF by exiting 0; the rig stands in for the process supervisor.
-    rig.exit_tx.take().expect("exit sender").send(ExitInfo { code: Some(0) }).expect("send exit");
+    rig.exit_tx
+        .take()
+        .expect("exit sender")
+        .send(ExitInfo { code: Some(0) })
+        .expect("send exit");
 
     assert_eq!(
         rig.labels_until(is_session_exited).await,
         [format!("session-exited({:?})", ExitReason::Graceful)]
     );
     assert!(
-        matches!(rig.collected.last(), Some(Event::SessionExited { exit_code: Some(0), .. })),
+        matches!(
+            rig.collected.last(),
+            Some(Event::SessionExited {
+                exit_code: Some(0),
+                ..
+            })
+        ),
         "{:?}",
         rig.collected.last()
     );
-    assert!(rig.events.recv().await.is_none(), "the event stream ends with the session");
+    assert!(
+        rig.events.recv().await.is_none(),
+        "the event stream ends with the session"
+    );
 }
 
 /// A child that leaves without reporting a code at all, after *we* asked for the end, still ended
@@ -999,8 +1144,15 @@ async fn end_session_closes_stdin_and_reports_a_graceful_exit() {
 #[tokio::test]
 async fn a_requested_end_with_no_exit_code_is_still_graceful() {
     let mut rig = Rig::start("s1-handshake-and-turn.ndjson", 64).await;
-    rig.commands.end_session().await.expect("end_session accepted");
-    rig.exit_tx.take().expect("exit sender").send(ExitInfo { code: None }).expect("send exit");
+    rig.commands
+        .end_session()
+        .await
+        .expect("end_session accepted");
+    rig.exit_tx
+        .take()
+        .expect("exit sender")
+        .send(ExitInfo { code: None })
+        .expect("send exit");
     assert_eq!(
         rig.labels_until(is_session_exited).await,
         [format!("session-exited({:?})", ExitReason::Graceful)]
@@ -1015,7 +1167,9 @@ async fn set_model_and_permission_mode_use_the_cli_spelling() {
 
     let commands = rig.commands.clone();
     let setting = tokio::spawn(async move {
-        commands.set_permission_mode(brigadier_core::driver::PermissionMode::AcceptEdits).await
+        commands
+            .set_permission_mode(brigadier_core::driver::PermissionMode::AcceptEdits)
+            .await
     });
     let request = rig.next_sent().await;
     assert_eq!(request["request"]["subtype"], "set_permission_mode");
@@ -1083,13 +1237,18 @@ async fn a_withdrawn_request_resolves_without_an_answer() {
     });
     write_line(&mut rig.to_adapter, &cancel.to_string()).await;
 
-    assert_eq!(label(&rig.next_event().await), "request-resolved(deny:cancelled by provider)");
+    assert_eq!(
+        label(&rig.next_event().await),
+        "request-resolved(deny:cancelled by provider)"
+    );
 
     // Only the user turn was ever written; no `control_response` answered the withdrawn ask.
     let turn = rig.next_sent().await;
     assert_eq!(turn["type"], "user");
     assert!(
-        tokio::time::timeout(Duration::from_millis(200), rig.sent_rx.recv()).await.is_err(),
+        tokio::time::timeout(Duration::from_millis(200), rig.sent_rx.recv())
+            .await
+            .is_err(),
         "nothing was written back for a withdrawn request"
     );
 }
@@ -1116,7 +1275,9 @@ async fn live_pong() {
     config.binary = Some(PathBuf::from(binary));
     config.default_model =
         Some(std::env::var("CLAUDE_MODEL").unwrap_or_else(|_| "claude-haiku-4-5".to_owned()));
-    let driver = brigadier_core::claude::ClaudeDriver::probe(config).await.expect("probe");
+    let driver = brigadier_core::claude::ClaudeDriver::probe(config)
+        .await
+        .expect("probe");
 
     let cwd = std::env::temp_dir();
     let mut request = brigadier_core::driver::StartSession::new(cwd);
@@ -1183,9 +1344,11 @@ fn item_summaries(rig: &Rig) -> Vec<String> {
     rig.collected
         .iter()
         .filter_map(|e| match e {
-            Event::ItemCompleted { kind: ItemKind::AssistantText, summary, .. } => {
-                Some(summary.clone())
-            }
+            Event::ItemCompleted {
+                kind: ItemKind::AssistantText,
+                summary,
+                ..
+            } => Some(summary.clone()),
             _ => None,
         })
         .collect()
@@ -1206,7 +1369,11 @@ async fn a_captured_turns_final_text_comes_back_whole() {
     rig.labels_until(is_turn_end).await;
 
     let turn_id = started_ids(&rig).pop().expect("a turn started");
-    let text = rig.commands.final_assistant_text(turn_id).await.expect("text is held");
+    let text = rig
+        .commands
+        .final_assistant_text(turn_id)
+        .await
+        .expect("text is held");
 
     // The fixture's own assistant text blocks, in order, joined the way the adapter joins them.
     let expected: Vec<String> = fixture_lines("s3-can-use-tool-deny.ndjson")
@@ -1219,7 +1386,11 @@ async fn a_captured_turns_final_text_comes_back_whole() {
         .filter_map(|b| b["text"].as_str().map(str::to_owned))
         .collect();
     assert_eq!(text, expected.join("\n"));
-    assert_eq!(text.len(), 127, "the capture's own denial text, byte for byte");
+    assert_eq!(
+        text.len(),
+        127,
+        "the capture's own denial text, byte for byte"
+    );
 }
 
 /// The whole point, both halves at once: a fenced ` ```json ` block with newlines inside it comes
@@ -1248,18 +1419,32 @@ async fn a_fenced_json_block_survives_while_the_summary_stays_one_bounded_line()
     );
 
     let turn_id = started_ids(&rig).pop().expect("a turn started");
-    let text = rig.commands.final_assistant_text(turn_id).await.expect("text is held");
+    let text = rig
+        .commands
+        .final_assistant_text(turn_id)
+        .await
+        .expect("text is held");
 
     // Half one: the full text, verbatim, newlines and fences intact.
     assert_eq!(text, block);
-    assert!(text.contains("```json\n{\n  \"action\": \"dispatch\""), "{text}");
+    assert!(
+        text.contains("```json\n{\n  \"action\": \"dispatch\""),
+        "{text}"
+    );
 
     // Half two: nothing about what is persisted changed. The feed's summary is still the first
     // non-empty line and still bounded — it is 29 bytes here, and it is *not* the JSON.
     let summaries = item_summaries(&rig);
     assert_eq!(summaries, ["Here is the plan for phase 2."]);
-    assert!(summaries[0].len() <= 240, "the summary is bounded: {}", summaries[0].len());
-    assert!(!summaries[0].contains('{'), "the summary must not carry the action");
+    assert!(
+        summaries[0].len() <= 240,
+        "the summary is bounded: {}",
+        summaries[0].len()
+    );
+    assert!(
+        !summaries[0].contains('{'),
+        "the summary must not carry the action"
+    );
 }
 
 /// Overflow keeps the **tail**: the fenced block a loop reads is at the end of the message.
@@ -1276,9 +1461,16 @@ async fn an_oversized_final_text_keeps_its_tail() {
     rig.labels_until(is_turn_end).await;
 
     let turn_id = started_ids(&rig).pop().expect("a turn started");
-    let text = rig.commands.final_assistant_text(turn_id).await.expect("text is held");
+    let text = rig
+        .commands
+        .final_assistant_text(turn_id)
+        .await
+        .expect("text is held");
     assert!(text.len() <= FINAL_TEXT_LIMIT, "bounded: {}", text.len());
-    assert!(text.ends_with(tail), "the tail is what survives, not the head");
+    assert!(
+        text.ends_with(tail),
+        "the tail is what survives, not the head"
+    );
     assert!(!text.starts_with("xxxx") || text.len() == FINAL_TEXT_LIMIT);
 }
 
@@ -1290,7 +1482,9 @@ async fn an_unheld_turn_is_a_typed_error_and_never_an_empty_string() {
 
     // Nothing has completed yet.
     assert_eq!(
-        rig.commands.final_assistant_text(TurnId::new("whatever")).await,
+        rig.commands
+            .final_assistant_text(TurnId::new("whatever"))
+            .await,
         Err(FinalTextError::NoCompletedTurn)
     );
 
@@ -1300,10 +1494,15 @@ async fn an_unheld_turn_is_a_typed_error_and_never_an_empty_string() {
     let turn_id = started_ids(&rig).pop().expect("a turn started");
 
     // A turn that genuinely said nothing answers with the empty string, not an error.
-    assert_eq!(rig.commands.final_assistant_text(turn_id.clone()).await, Ok(String::new()));
+    assert_eq!(
+        rig.commands.final_assistant_text(turn_id.clone()).await,
+        Ok(String::new())
+    );
     // And a turn this adapter does not hold is an error, not that same empty string.
     assert_eq!(
-        rig.commands.final_assistant_text(TurnId::new("some-other-turn")).await,
+        rig.commands
+            .final_assistant_text(TurnId::new("some-other-turn"))
+            .await,
         Err(FinalTextError::NotHeld { held: turn_id })
     );
 }
@@ -1341,7 +1540,11 @@ async fn a_decision_that_cannot_reach_the_child_warns_and_never_resolves() {
     assert!(message.contains("expire"), "{message}");
 
     // Drain to the end of the session and prove no resolution was ever emitted for it.
-    rig.exit_tx.take().expect("exit channel").send(ExitInfo { code: Some(0) }).ok();
+    rig.exit_tx
+        .take()
+        .expect("exit channel")
+        .send(ExitInfo { code: Some(0) })
+        .ok();
     let labels = rig.labels_until(is_session_exited).await;
     assert!(
         !labels.iter().any(|l| l.starts_with("request-resolved")),
@@ -1408,14 +1611,29 @@ async fn native_context_is_summary_and_rewind_holds_sends_until_persistence() {
         request["request"],
         serde_json::json!({"subtype":"rewind_conversation","target_message_uuid":"first","last_seen_user_message_uuid":"latest","interrupt_if_running":false})
     );
-    assert!(rig.commands.send_turn(TurnInput::text("race")).await.is_err());
+    assert!(rig
+        .commands
+        .send_turn(TurnInput::text("race"))
+        .await
+        .is_err());
     write_line(&mut rig.to_adapter, &serde_json::json!({"type":"control_response","response":{"subtype":"success","request_id":request["request_id"],"response":{"rewound":true,"targetMessageUuid":"first","prefillText":"draft"}}}).to_string()).await;
     let response = pending.await.unwrap().unwrap();
     assert_eq!(response["rewound"], true);
     assert!(response["brigadier_seq"].is_u64());
-    assert!(rig.commands.send_turn(TurnInput::text("before disk commit")).await.is_err());
-    rig.commands.native_control(NativeControl::FinishRewind).await.unwrap();
-    let turn = rig.commands.send_turn(TurnInput::text("edited")).await.unwrap();
+    assert!(rig
+        .commands
+        .send_turn(TurnInput::text("before disk commit"))
+        .await
+        .is_err());
+    rig.commands
+        .native_control(NativeControl::FinishRewind)
+        .await
+        .unwrap();
+    let turn = rig
+        .commands
+        .send_turn(TurnInput::text("edited"))
+        .await
+        .unwrap();
     let sent = rig.next_sent().await;
     assert_eq!(sent["uuid"], turn.as_str());
     assert_eq!(sent["message"]["content"][0]["text"], "edited");
@@ -1437,7 +1655,10 @@ async fn native_refusal_is_not_a_success_and_agent_completion_is_explicit() {
     let request = rig.next_sent().await;
     write_line(&mut rig.to_adapter,&serde_json::json!({"type":"control_response","response":{"subtype":"error","request_id":request["request_id"],"error":"Unsupported request"}}).to_string()).await;
     assert!(pending.await.unwrap().is_err());
-    rig.commands.native_control(NativeControl::FinishRewind).await.unwrap();
+    rig.commands
+        .native_control(NativeControl::FinishRewind)
+        .await
+        .unwrap();
     write_line(&mut rig.to_adapter,&serde_json::json!({"type":"system","subtype":"task_started","task_id":"child","tool_use_id":"tool","description":"Review files"}).to_string()).await;
     // Barrier through the provider pipe ensures the preceding task event was consumed.
     let commands = rig.commands.clone();
@@ -1446,7 +1667,11 @@ async fn native_refusal_is_not_a_success_and_agent_completion_is_explicit() {
     let request = rig.next_sent().await;
     write_line(&mut rig.to_adapter,&serde_json::json!({"type":"control_response","response":{"subtype":"success","request_id":request["request_id"],"response":{}}}).to_string()).await;
     barrier.await.unwrap().unwrap();
-    let activity = rig.commands.native_control(NativeControl::Activity).await.unwrap();
+    let activity = rig
+        .commands
+        .native_control(NativeControl::Activity)
+        .await
+        .unwrap();
     assert_eq!(activity["agents"][0]["status"], "Working");
     assert_eq!(activity["agents"][0]["model"], Value::Null);
 }
@@ -1455,7 +1680,10 @@ async fn native_refusal_is_not_a_success_and_agent_completion_is_explicit() {
 async fn native_rewind_refuses_an_active_turn_without_an_uncertain_outcome() {
     use brigadier_core::session::NativeControl;
     let mut rig = Rig::start("s1-handshake-and-turn.ndjson", 64).await;
-    rig.commands.send_turn(TurnInput::text("working")).await.unwrap();
+    rig.commands
+        .send_turn(TurnInput::text("working"))
+        .await
+        .unwrap();
     rig.next_sent().await;
     let response = rig
         .commands
@@ -1467,4 +1695,90 @@ async fn native_rewind_refuses_an_active_turn_without_an_uncertain_outcome() {
         .unwrap();
     assert_eq!(response["rewound"], false);
     assert!(response["error"].as_str().unwrap().contains("current turn"));
+}
+
+#[tokio::test]
+async fn checkpoint_barrier_allows_only_the_durable_reserved_message() {
+    use brigadier_core::session::NativeControl;
+    let mut rig = Rig::start("s1-handshake-and-turn.ndjson", 64).await;
+    let state = rig
+        .commands
+        .native_control(NativeControl::CheckpointBarrier)
+        .await
+        .unwrap();
+    let seq = state["seq"].as_u64().unwrap();
+    assert!(rig
+        .commands
+        .send_turn(TurnInput::text("racing"))
+        .await
+        .is_err());
+    rig.commands
+        .native_control(NativeControl::CheckpointVerify { seq })
+        .await
+        .unwrap();
+    let turn = TurnId::new("saved-message");
+    rig.commands
+        .native_control(NativeControl::CheckpointRelease {
+            seq,
+            turn_id: Some(turn.clone()),
+        })
+        .await
+        .unwrap();
+    assert!(rig
+        .commands
+        .send_turn(TurnInput::text("unreserved"))
+        .await
+        .is_err());
+    rig.commands
+        .send_reserved_turn(turn, TurnInput::text("reserved"))
+        .await
+        .unwrap();
+    let sent = rig.next_sent().await;
+    assert_eq!(sent["uuid"], "saved-message");
+    assert!(rig
+        .commands
+        .native_control(NativeControl::CheckpointBarrier)
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn invisible_background_frames_invalidate_a_checkpoint_boundary() {
+    use brigadier_core::session::NativeControl;
+    let mut rig = Rig::start("s1-handshake-and-turn.ndjson", 64).await;
+    let seq = rig
+        .commands
+        .native_control(NativeControl::CheckpointBarrier)
+        .await
+        .unwrap()["seq"]
+        .as_u64()
+        .unwrap();
+    write_line(
+        &mut rig.to_adapter,
+        &serde_json::json!({"type":"system","subtype":"task_started","task_id":"child"})
+            .to_string(),
+    )
+    .await;
+    write_line(&mut rig.to_adapter,&serde_json::json!({"type":"system","subtype":"task_notification","task_id":"child","status":"completed"}).to_string()).await;
+    let commands = rig.commands.clone();
+    let pending =
+        tokio::spawn(async move { commands.native_control(NativeControl::ContextSummary).await });
+    let request = rig.next_sent().await;
+    write_line(&mut rig.to_adapter,&serde_json::json!({"type":"control_response","response":{"subtype":"success","request_id":request["request_id"],"response":{}}}).to_string()).await;
+    pending.await.unwrap().unwrap();
+    assert!(rig
+        .commands
+        .native_control(NativeControl::CheckpointVerify { seq })
+        .await
+        .is_err());
+    assert!(rig
+        .commands
+        .native_control(NativeControl::CheckpointRelease { seq, turn_id: None })
+        .await
+        .is_err());
+    assert!(rig
+        .commands
+        .native_control(NativeControl::CheckpointBarrier)
+        .await
+        .is_ok());
 }

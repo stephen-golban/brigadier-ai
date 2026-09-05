@@ -222,8 +222,15 @@ pub(crate) async fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, AppError>
         )
     })
     .await
-    .map_err(|_| AppError::io("Git inspection timed out"))?;
-    let (stdout, stderr, status) = result?;
+    .map_err(|_| AppError::io("Git inspection timed out"));
+    let (stdout, stderr, status) = match result.and_then(|r| r) {
+        Ok(out) => out,
+        Err(e) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Err(e);
+        }
+    };
     if !status.success() && !(args.contains(&"--no-index") && status.code() == Some(1)) {
         return Err(AppError::io(
             String::from_utf8_lossy(&stderr).trim().to_owned(),

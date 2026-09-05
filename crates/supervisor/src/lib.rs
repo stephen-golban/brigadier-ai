@@ -185,6 +185,7 @@ pub fn context_size(usage: &Usage) -> u64 {
 
 /// One live session: what it takes to command it and to account for it.
 struct LiveSession {
+    _writer_lease: Option<brigadier_core::checkpoint::WorkspaceLease>,
     project_id: String,
     commands: SessionCommands,
     approvals: ApprovalTable,
@@ -228,7 +229,12 @@ impl Accrued {
         if self.is_zero() {
             return None;
         }
-        let Event::TurnCompleted { turn_id, stop_reason, usage, cost_usd_cumulative } = &env.event
+        let Event::TurnCompleted {
+            turn_id,
+            stop_reason,
+            usage,
+            cost_usd_cumulative,
+        } = &env.event
         else {
             return None;
         };
@@ -274,6 +280,7 @@ impl Drop for ResumeGuard {
 
 /// Everything one installation needs beyond the driver and the session handle.
 struct Install {
+    writer_lease: Option<brigadier_core::checkpoint::WorkspaceLease>,
     project_id: String,
     cwd: PathBuf,
     /// Envelope number the adapter was seeded with; `0` on a cold start.
@@ -297,7 +304,7 @@ struct Install {
 pub(crate) enum SpawnIn {
     /// Cut a new `brigadier/<id>` worktree off `HEAD` and run there. Today's behaviour, and the
     /// only one [`Supervisor::start_session`] uses.
-    FreshWorktree,
+    FreshWorktree { inherit: bool },
     /// Run in a directory that already exists. Nothing is created and nothing is rolled back;
     /// the caller owns the checkout and its lifetime.
     Prepared {
@@ -331,7 +338,11 @@ struct ConsumeSpec {
     base: Accrued,
 }
 
+pub mod checkpoints;
+
 struct Inner {
+    checkpoints: checkpoints::Runtime,
+    deleting: Mutex<std::collections::HashSet<SessionId>>,
     // Serialize creation/resume with deletion so no child can recreate removed rows.
     lifecycle: tokio::sync::RwLock<()>,
     store: StoreHandle,
@@ -424,7 +435,13 @@ impl std::fmt::Debug for Supervisor {
         f.debug_struct("Supervisor")
             .field("run_id", &self.inner.run_id)
             .field("live", &lock(&self.inner.live).len())
-            .field("drivers", &lock(&self.inner.drivers).keys().cloned().collect::<Vec<_>>())
+            .field(
+                "drivers",
+                &lock(&self.inner.drivers)
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -438,6 +455,8 @@ impl Supervisor {
         let flusher = batcher.spawn_flusher(config.frame_interval);
         Supervisor {
             inner: Arc::new(Inner {
+                checkpoints: checkpoints::Runtime::default(),
+                deleting: Mutex::new(Default::default()),
                 store: config.store,
                 run_id: config.run_id,
                 data_dir: config.data_dir,
@@ -525,8 +544,11 @@ impl Supervisor {
         // Before the early return, so re-adding a project repairs an exclude file that was
         // deleted or never written — and proves idempotent rather than merely being skipped.
         worktree::exclude_project(&root_path).await;
-        if let Some(existing) =
-            self.list_projects().await?.into_iter().find(|p| p.root_path == root_path)
+        if let Some(existing) = self
+            .list_projects()
+            .await?
+            .into_iter()
+            .find(|p| p.root_path == root_path)
         {
             return Ok(existing);
         }
@@ -563,8 +585,14 @@ impl Supervisor {
         project_id: &str,
         mcp: McpPolicy,
     ) -> Result<ProjectRow, SupervisorError> {
-        let mut project = self.project(project_id).await?.ok_or(SupervisorError::NoSuchProject)?;
-        self.inner.store.set_project_mcp(project.id.clone(), mcp).await?;
+        let mut project = self
+            .project(project_id)
+            .await?
+            .ok_or(SupervisorError::NoSuchProject)?;
+        self.inner
+            .store
+            .set_project_mcp(project.id.clone(), mcp)
+            .await?;
         project.mcp = mcp;
         Ok(project)
     }
@@ -605,7 +633,15 @@ impl Supervisor {
         kind: &DriverKind,
         req: StartSession,
     ) -> Result<SessionId, SupervisorError> {
-        self.spawn(project_id, kind, req, SpawnIn::FreshWorktree, false).await.map(|s| s.session_id)
+        self.spawn(
+            project_id,
+            kind,
+            req,
+            SpawnIn::FreshWorktree { inherit: false },
+            false,
+        )
+        .await
+        .map(|s| s.session_id)
     }
 
     /// Interactive project sessions share the registered checkout unless isolation is requested.
@@ -617,19 +653,54 @@ impl Supervisor {
         mut req: StartSession,
         isolated: bool,
     ) -> Result<SessionId, SupervisorError> {
+        let prompt = req.prompt.take();
         if isolated {
-            return self.start_session(project_id, kind, req).await;
+            let id = self
+                .spawn(
+                    project_id,
+                    kind,
+                    req,
+                    SpawnIn::FreshWorktree { inherit: true },
+                    false,
+                )
+                .await?
+                .session_id;
+            if let Some(prompt) = prompt {
+                if let Err(e) = self.send_turn(&id, prompt).await {
+                    let _ = self.kill(&id).await;
+                    return Err(e);
+                }
+            }
+            return Ok(id);
         }
-        let project = self.project(project_id).await?.ok_or(SupervisorError::NoSuchProject)?;
+        let project = self
+            .project(project_id)
+            .await?
+            .ok_or(SupervisorError::NoSuchProject)?;
         let dir = project.root_path;
         req.hook_policy =
             brigadier_core::driver::HookOverride::new(brigadier_core::claude::hook::policy_for(
                 &req.permission_mode,
                 &brigadier_core::claude::hook::HookScope::Interactive { root: dir.clone() },
             ));
-        self.spawn(project_id, kind, req, SpawnIn::Prepared { dir, branch: None }, false)
-            .await
-            .map(|s| s.session_id)
+        self.workspace_writable(&dir).await?;
+        let id = self
+            .spawn(
+                project_id,
+                kind,
+                req,
+                SpawnIn::Prepared { dir, branch: None },
+                false,
+            )
+            .await?
+            .session_id;
+        if let Some(prompt) = prompt {
+            if let Err(e) = self.send_turn(&id, prompt).await {
+                let _ = self.kill(&id).await;
+                return Err(e);
+            }
+        }
+        Ok(id)
     }
 
     /// Start a supervised child in a directory that already exists, and mirror its stream.
@@ -656,14 +727,20 @@ impl Supervisor {
         dir: PathBuf,
         branch: Option<String>,
     ) -> Result<Spawned, SupervisorError> {
-        let _lifecycle = self.inner.lifecycle.read().await;
         if !dir.is_dir() {
             return Err(SupervisorError::InvalidArgument(format!(
                 "{} is not a directory to run a child in",
                 dir.display()
             )));
         }
-        self.spawn(project_id, kind, req, SpawnIn::Prepared { dir, branch }, true).await
+        self.spawn(
+            project_id,
+            kind,
+            req,
+            SpawnIn::Prepared { dir, branch },
+            true,
+        )
+        .await
     }
 
     /// Everything a start does, with the working directory a parameter rather than a constant.
@@ -678,17 +755,36 @@ impl Supervisor {
         wheref: SpawnIn,
         tap: bool,
     ) -> Result<Spawned, SupervisorError> {
-        let project = self.project(project_id).await?.ok_or(SupervisorError::NoSuchProject)?;
-        let driver = self.driver(kind).ok_or_else(|| SupervisorError::NoDriver(kind.clone()))?;
+        let _lifecycle = self.inner.lifecycle.read().await;
+        let project = self
+            .project(project_id)
+            .await?
+            .ok_or(SupervisorError::NoSuchProject)?;
+        let driver = self
+            .driver(kind)
+            .ok_or_else(|| SupervisorError::NoDriver(kind.clone()))?;
 
         // The project decides, not the caller: the row is the one place the policy lives, so a
         // request that arrived with `Inherit` for an `Off` project is overridden here.
         // see docs/research/spawn-split.md §6.
         req.mcp = project.mcp;
-        let wheref_was_fresh = matches!(wheref, SpawnIn::FreshWorktree);
+        let wheref_was_fresh = matches!(wheref, SpawnIn::FreshWorktree { .. });
         let (prepared, mut branch) = match wheref {
-            SpawnIn::FreshWorktree => {
+            SpawnIn::FreshWorktree { inherit } => {
                 let prepared = worktree::prepare(&project.root_path).await?;
+                if inherit {
+                    if let Some(made) = &prepared {
+                        if let Err(error) = self
+                            .seed_worktree(project.root_path.clone(), made.path.clone())
+                            .await
+                        {
+                            if let Some(made) = prepared {
+                                made.roll_back().await;
+                            }
+                            return Err(error);
+                        }
+                    }
+                }
                 if let Some(prepared) = &prepared {
                     req.cwd = prepared.path.clone();
                 }
@@ -733,6 +829,15 @@ impl Supervisor {
             );
         }
 
+        self.workspace_writable(&cwd).await?;
+        let writer_lease = if req.prompt.is_some() {
+            Some(
+                brigadier_core::checkpoint::WorkspaceLease::acquire(&cwd)
+                    .map_err(|e| SupervisorError::InvalidArgument(e.to_string()))?,
+            )
+        } else {
+            None
+        };
         let handle = match driver.start_session(req).await {
             Ok(handle) => handle,
             Err(e) => {
@@ -764,6 +869,7 @@ impl Supervisor {
             &driver,
             handle,
             Install {
+                writer_lease,
                 project_id: project.id,
                 cwd,
                 start_seq: 0,
@@ -771,7 +877,10 @@ impl Supervisor {
                 tap: tap.then_some(tx),
             },
         )?;
-        Ok(Spawned { session_id, events: rx })
+        Ok(Spawned {
+            session_id,
+            events: rx,
+        })
     }
 
     /// Continue an ended session: the same harness row, a new child, the same feed.
@@ -807,7 +916,8 @@ impl Supervisor {
         &self,
         session_id: &SessionId,
     ) -> Result<SessionId, SupervisorError> {
-        self.resume_session_with_env(session_id, Default::default()).await
+        self.resume_session_with_env(session_id, Default::default())
+            .await
     }
 
     /// Restore the app-owned peer connection for a resumed interactive session.
@@ -821,18 +931,32 @@ impl Supervisor {
         // everything below is a sequence of awaits ending in a process spawn, and a bare
         // `is_live` check would let a second concurrent call through the whole of it.
         let _lifecycle = self.inner.lifecycle.read().await;
+        self.require_session_available(session_id)?;
         self.inner.reserve_resume(session_id)?;
-        let _guard = ResumeGuard { inner: Arc::clone(&self.inner), session_id: session_id.clone() };
+        let _guard = ResumeGuard {
+            inner: Arc::clone(&self.inner),
+            session_id: session_id.clone(),
+        };
 
-        let record = self.session(session_id).await?.ok_or(SupervisorError::NoSuchSession)?;
+        let record = self
+            .session(session_id)
+            .await?
+            .ok_or(SupervisorError::NoSuchSession)?;
         if !matches!(record.status, SessionStatus::Exited | SessionStatus::Failed) {
             return Err(SupervisorError::NotResumable(format!(
                 "session {session_id} is {}, not exited or failed",
                 record.status.as_str()
             )));
         }
-        if self.inner.store.rewind_pending(session_id.to_string()).await? {
-            return Err(SupervisorError::NotResumable("A rewind has an unconfirmed outcome; history is preserved for recovery".into()));
+        if self
+            .inner
+            .store
+            .rewind_pending(session_id.to_string())
+            .await?
+        {
+            return Err(SupervisorError::NotResumable(
+                "A rewind has an unconfirmed outcome; history is preserved for recovery".into(),
+            ));
         }
         let token = record.resume_token.clone().ok_or_else(|| {
             SupervisorError::NotResumable(format!(
@@ -845,10 +969,19 @@ impl Supervisor {
         let project_id = record.project_id.clone().ok_or_else(|| {
             SupervisorError::NotResumable(format!("session {session_id} belongs to no project"))
         })?;
-        let project = self.project(&project_id).await?.ok_or(SupervisorError::NoSuchProject)?;
-        let driver = self.driver(&kind).ok_or_else(|| SupervisorError::NoDriver(kind.clone()))?;
+        let project = self
+            .project(&project_id)
+            .await?
+            .ok_or(SupervisorError::NoSuchProject)?;
+        let driver = self
+            .driver(&kind)
+            .ok_or_else(|| SupervisorError::NoDriver(kind.clone()))?;
 
-        let cwd = record.cwd.clone().unwrap_or_else(|| project.root_path.clone());
+        let cwd = record
+            .cwd
+            .clone()
+            .unwrap_or_else(|| project.root_path.clone());
+        self.workspace_writable(&cwd).await?;
         // A pruned worktree, a deleted checkout: the spawn would fail as `driver`, which the
         // contract tells the UI to read as "the provider swept the conversation". Name the real
         // cause instead. see docs/plans/ipc-contract.md "### resume_session".
@@ -864,13 +997,19 @@ impl Supervisor {
         req.model = record.model.clone();
         req.permission_mode = PermissionMode::Default;
         req.mcp = project.mcp;
-        req.resumed = Some(Resumed { session_id: session_id.clone(), start_seq });
+        req.resumed = Some(Resumed {
+            session_id: session_id.clone(),
+            start_seq,
+        });
         let handle = driver.resume_session(req).await?;
 
         // Clear the ending *before* the merge: `upsert_session` COALESCEs every column it names
         // and does not name `ended_at`/`exit_code` at all, so nothing else can unset them.
         // see docs/research/resume.md §8 gap 5.
-        self.inner.store.session_resumed(session_id.clone(), SystemTime::now()).await?;
+        self.inner
+            .store
+            .session_resumed(session_id.clone(), SystemTime::now())
+            .await?;
         let mut row = SessionRow::new(session_id.clone());
         row.instance_id = Some(handle.instance_id.clone());
         row.driver_kind = Some(driver.kind());
@@ -882,7 +1021,10 @@ impl Supervisor {
         // The provider's `total_cost_usd` restarts at zero in every child, and the store
         // overwrites rather than sums, so the row's current totals become the base every
         // `TurnCompleted` from here on is added to. see docs/research/resume.md §11.
-        let base = Accrued { cost_usd: record.cost_usd_cumulative, usage: record.usage };
+        let base = Accrued {
+            cost_usd: record.cost_usd_cumulative,
+            usage: record.usage,
+        };
         tracing::info!(
             session_id = session_id.as_str(),
             start_seq,
@@ -895,7 +1037,14 @@ impl Supervisor {
         self.install(
             &driver,
             handle,
-            Install { project_id: project.id, cwd, start_seq, base, tap: None },
+            Install {
+                writer_lease: None,
+                project_id: project.id,
+                cwd,
+                start_seq,
+                base,
+                tap: None,
+            },
         )
     }
 
@@ -913,9 +1062,27 @@ impl Supervisor {
         handle: SessionHandle,
         what: Install,
     ) -> Result<SessionId, SupervisorError> {
-        let Install { project_id, cwd, start_seq, base, tap } = what;
-        let SessionHandle { session_id, instance_id, events, commands, approvals, pid } = handle;
-        let generation = self.inner.generations.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+        let Install {
+            writer_lease,
+            project_id,
+            cwd,
+            start_seq,
+            base,
+            tap,
+        } = what;
+        let SessionHandle {
+            session_id,
+            instance_id,
+            events,
+            commands,
+            approvals,
+            pid,
+        } = handle;
+        let generation = self
+            .inner
+            .generations
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
 
         // File the entry *before* spawning: the task removes itself when the stream ends, and a
         // script short enough to finish first would otherwise leave a corpse in the map.
@@ -937,6 +1104,7 @@ impl Supervisor {
             live.insert(
                 session_id.clone(),
                 LiveSession {
+                    _writer_lease: writer_lease,
                     project_id: project_id.clone(),
                     commands,
                     approvals,
@@ -1003,7 +1171,9 @@ impl Supervisor {
 
     /// Which project a live session belongs to.
     pub fn project_of(&self, session_id: &SessionId) -> Option<String> {
-        lock(&self.inner.live).get(session_id).map(|s| s.project_id.clone())
+        lock(&self.inner.live)
+            .get(session_id)
+            .map(|s| s.project_id.clone())
     }
 
     /// The child pid behind a live session, when it has one.
@@ -1028,8 +1198,15 @@ impl Supervisor {
     /// [`SupervisorError::NoSuchSession`] when nothing is live under that id, and
     /// [`SupervisorError::SessionNotRunning`] when its adapter has gone.
     /// Issue an explicit native provider operation. The adapter rejects unsupported providers.
-    pub async fn native_control(&self, session_id: &SessionId, request: brigadier_core::session::NativeControl) -> Result<serde_json::Value, SupervisorError> {
-        self.commands(session_id)?.native_control(request).await.map_err(error::from_command)
+    pub async fn native_control(
+        &self,
+        session_id: &SessionId,
+        request: brigadier_core::session::NativeControl,
+    ) -> Result<serde_json::Value, SupervisorError> {
+        self.commands(session_id)?
+            .native_control(request)
+            .await
+            .map_err(error::from_command)
     }
 
     /// Send a user turn, refusing while a persisted rewind remains unresolved.
@@ -1038,13 +1215,44 @@ impl Supervisor {
         session_id: &SessionId,
         text: impl Into<String>,
     ) -> Result<TurnId, SupervisorError> {
-        if self.inner.store.rewind_pending(session_id.to_string()).await? {
-            return Err(error::from_command(brigadier_core::session::CommandError::Rejected("A rewind is pending reconciliation; conversation history is preserved".into())));
+        self.require_session_available(session_id)?;
+        if self
+            .inner
+            .store
+            .rewind_pending(session_id.to_string())
+            .await?
+        {
+            return Err(error::from_command(
+                brigadier_core::session::CommandError::Rejected(
+                    "A rewind is pending reconciliation; conversation history is preserved".into(),
+                ),
+            ));
         }
-        self.commands(session_id)?
-            .send_turn(TurnInput::text(text))
-            .await
-            .map_err(error::from_command)
+        let input = TurnInput::text(text);
+        let record = self
+            .session(session_id)
+            .await?
+            .ok_or(SupervisorError::NoSuchSession)?;
+        if record
+            .driver_kind
+            .as_ref()
+            .is_some_and(|k| k.as_str() == "claude-code")
+        {
+            let sup = self.clone();
+            let id = session_id.clone();
+            tokio::spawn(async move { sup.checkpoint_send(&id, input).await })
+                .await
+                .map_err(|e| {
+                    SupervisorError::InvalidArgument(format!(
+                        "Checkpoint send task failed; outcome requires review: {e}"
+                    ))
+                })?
+        } else {
+            self.commands(session_id)?
+                .send_turn(input)
+                .await
+                .map_err(error::from_command)
+        }
     }
 
     /// What this session has accounted for, as telemetry. Nothing gates on it.
@@ -1059,8 +1267,13 @@ impl Supervisor {
         &self,
         session_id: &SessionId,
     ) -> Result<ContextStatus, SupervisorError> {
-        let record = self.session(session_id).await?.ok_or(SupervisorError::NoSuchSession)?;
-        Ok(ContextStatus { used: context_size(&record.usage) })
+        let record = self
+            .session(session_id)
+            .await?
+            .ok_or(SupervisorError::NoSuchSession)?;
+        Ok(ContextStatus {
+            used: context_size(&record.usage),
+        })
     }
 
     /// Answer a parked request.
@@ -1070,12 +1283,18 @@ impl Supervisor {
         request_id: RequestId,
         decision: Decision,
     ) -> Result<(), SupervisorError> {
-        self.commands(session_id)?.respond(request_id, decision).await.map_err(error::from_respond)
+        self.commands(session_id)?
+            .respond(request_id, decision)
+            .await
+            .map_err(error::from_respond)
     }
 
     /// End the current turn; the session survives.
     pub async fn interrupt(&self, session_id: &SessionId) -> Result<(), SupervisorError> {
-        self.commands(session_id)?.interrupt().await.map_err(error::from_command)
+        self.commands(session_id)?
+            .interrupt()
+            .await
+            .map_err(error::from_command)
     }
 
     /// End the session gracefully. The exit arrives on the event stream, not from this call.
@@ -1085,7 +1304,10 @@ impl Supervisor {
     /// cleanup is [`Supervisor::cleanup_worktree`] and nothing else calls it.
     // see docs/research/worktree-git.md §4 "Risks" 1.
     pub async fn end_session(&self, session_id: &SessionId) -> Result<(), SupervisorError> {
-        self.commands(session_id)?.end_session().await.map_err(error::from_command)
+        self.commands(session_id)?
+            .end_session()
+            .await
+            .map_err(error::from_command)
     }
 
     /// Kill the session's process group.
@@ -1093,7 +1315,10 @@ impl Supervisor {
     /// Leaves the worktree, for the same reason [`Supervisor::end_session`] does — more so: a
     /// killed session is the one most likely to be resumed.
     pub async fn kill(&self, session_id: &SessionId) -> Result<(), SupervisorError> {
-        self.commands(session_id)?.kill().await.map_err(error::from_command)
+        self.commands(session_id)?
+            .kill()
+            .await
+            .map_err(error::from_command)
     }
 
     // ---- worktrees -----------------------------------------------------------------------
@@ -1128,7 +1353,10 @@ impl Supervisor {
         session_id: &SessionId,
         force: bool,
     ) -> Result<WorktreeCleanup, SupervisorError> {
-        let record = self.session(session_id).await?.ok_or(SupervisorError::NoSuchSession)?;
+        let record = self
+            .session(session_id)
+            .await?
+            .ok_or(SupervisorError::NoSuchSession)?;
         // `is_engaged`, not `is_live`: a resume reserved but not yet spawned is about to run a
         // child in exactly the directory this call would delete.
         if self.inner.is_engaged(session_id) {
@@ -1152,6 +1380,15 @@ impl Supervisor {
                 "session {session_id} belongs to no project, so its repository is unknown"
             ))
         })?;
+        let _lease = if path.is_dir() {
+            self.workspace_writable(&path).await?;
+            Some(
+                brigadier_core::checkpoint::WorkspaceLease::acquire(&path)
+                    .map_err(|e| SupervisorError::InvalidArgument(e.to_string()))?,
+            )
+        } else {
+            None
+        };
         let outcome = worktree::cleanup(&repo, &path, branch, force).await?;
         tracing::info!(
             session_id = session_id.as_str(),
@@ -1195,6 +1432,102 @@ impl Supervisor {
         }
     }
 
+    /// Mark durable cleanup targets before the UI acknowledges their removal.
+    pub fn mark_deleting(&self, ids: &[SessionId]) {
+        lock(&self.inner.deleting).extend(ids.iter().cloned());
+    }
+    /// Deleting sessions cannot be resumed or receive new work.
+    pub fn require_session_available(&self, id: &SessionId) -> Result<(), SupervisorError> {
+        if lock(&self.inner.deleting).contains(id) {
+            return Err(SupervisorError::InvalidArgument(
+                "Session is being deleted".into(),
+            ));
+        }
+        Ok(())
+    }
+    /// Explicit destructive disposal. Caller owns the descendant traversal and durable retry queue.
+    pub async fn discard_session(&self, id: &SessionId) -> Result<(), SupervisorError> {
+        let _lifecycle = self.inner.lifecycle.write().await;
+        let _serial = self.inner.checkpoints.serial.lock().await;
+        let Some(record) = self.session(id).await? else {
+            return Ok(());
+        };
+        // A cancelled work order must not trigger a replacement worker after its history goes.
+        for run in self.runs() {
+            let mut owns = false;
+            for phase in self.inner.store.phases(run.plan_id()).await? {
+                owns |= self
+                    .inner
+                    .store
+                    .work_orders(&phase.id)
+                    .await?
+                    .iter()
+                    .any(|order| order.session_id.as_ref() == Some(id));
+            }
+            if owns {
+                run.cancel().await;
+                lock(&self.inner.runs).remove(run.plan_id());
+            }
+        }
+        self.stop_for_deletion(id).await?;
+        self.discard_checkpoints(id, record.cwd.as_deref()).await?;
+        if let (Some(path), Some(branch), Some(project)) =
+            (&record.worktree_path, &record.branch, &record.project_id)
+        {
+            let repo = self
+                .project(project)
+                .await?
+                .ok_or(SupervisorError::NoSuchProject)?
+                .root_path;
+            let expected = repo.join(worktree::WORKTREES_SUBDIR);
+            if path.parent() != Some(expected.as_path())
+                || !branch.starts_with(worktree::BRANCH_PREFIX)
+            {
+                return Err(SupervisorError::InvalidArgument(
+                    "Session worktree ownership changed; cleanup refused".into(),
+                ));
+            }
+            let others = self.list_sessions().await?;
+            let shared = others.iter().any(|s| {
+                &s.session_id != id
+                    && (s.worktree_path.as_ref() == Some(path) || s.cwd.as_ref() == Some(path))
+            });
+            if !shared {
+                let _lease = if path.is_dir() {
+                    Some(
+                        brigadier_core::checkpoint::WorkspaceLease::acquire(path)
+                            .map_err(|e| SupervisorError::InvalidArgument(e.to_string()))?,
+                    )
+                } else {
+                    None
+                };
+                let result = worktree::cleanup(&repo, path, branch.clone(), true).await?;
+                if !result.removed {
+                    return Err(SupervisorError::InvalidArgument(format!(
+                        "Worktree cleanup needs attention: {:?}",
+                        result.blocked
+                    )));
+                }
+                if !others
+                    .iter()
+                    .any(|s| &s.session_id != id && s.branch.as_ref() == Some(branch))
+                {
+                    let git = brigadier_core::worktree::resolve_git().ok_or_else(|| {
+                        SupervisorError::InvalidArgument("Git unavailable".into())
+                    })?;
+                    // Missing branch on a retry is already the intended state.
+                    if worktree::resolve_commit(&git, &repo, branch).await.is_ok() {
+                        brigadier_core::worktree::delete_branch(&git, &repo, branch, true).await?;
+                    }
+                }
+            }
+        }
+        self.inner.store.delete_session(id.clone()).await?;
+        self.inner.tracker.untrack(id);
+        removal::remove_logs(&self.inner.data_dir, id);
+        Ok(())
+    }
+
     // ---- deletion ------------------------------------------------------------------------
 
     /// Remove Brigadier history, preserving the checkout and all user files.
@@ -1205,11 +1538,17 @@ impl Supervisor {
         _force: bool,
     ) -> Result<SessionDeletion, SupervisorError> {
         let _lifecycle = self.inner.lifecycle.write().await;
-        let record = self.session(session_id).await?.ok_or(SupervisorError::NoSuchSession)?;
+        let record = self
+            .session(session_id)
+            .await?
+            .ok_or(SupervisorError::NoSuchSession)?;
         if let Some(project_id) = &record.project_id {
             self.cancel_project_runs(project_id).await?;
         }
+        let _serial = self.inner.checkpoints.serial.lock().await;
         self.stop_for_deletion(session_id).await?;
+        self.discard_checkpoints(session_id, record.cwd.as_deref())
+            .await?;
         let branch = record.branch.clone();
         let worktree = None;
         let rows = self
@@ -1245,15 +1584,28 @@ impl Supervisor {
         _force: bool,
     ) -> Result<ProjectDeletion, SupervisorError> {
         let _lifecycle = self.inner.lifecycle.write().await;
-        self.project(project_id).await?.ok_or(SupervisorError::NoSuchProject)?;
+        self.project(project_id)
+            .await?
+            .ok_or(SupervisorError::NoSuchProject)?;
         self.cancel_project_runs(project_id).await?;
-        let sessions: Vec<SessionRecord> = self.list_sessions().await?.into_iter()
-            .filter(|s| s.project_id.as_deref() == Some(project_id)).collect();
+        let sessions: Vec<SessionRecord> = self
+            .list_sessions()
+            .await?
+            .into_iter()
+            .filter(|s| s.project_id.as_deref() == Some(project_id))
+            .collect();
+        let _serial = self.inner.checkpoints.serial.lock().await;
         for session in &sessions {
             self.stop_for_deletion(&session.session_id).await?;
+            self.discard_checkpoints(&session.session_id, session.cwd.as_deref())
+                .await?;
         }
         let worktrees = Vec::new();
-        let outcome = self.inner.store.delete_project(project_id.to_owned()).await?;
+        let outcome = self
+            .inner
+            .store
+            .delete_project(project_id.to_owned())
+            .await?;
         let (rows, ids) = outcome.map(|o| (o.rows, o.ids)).unwrap_or_default();
 
         let mut logs_removed = 0;
@@ -1290,8 +1642,13 @@ impl Supervisor {
 
     async fn cancel_project_runs(&self, project_id: &str) -> Result<(), SupervisorError> {
         for run in self.runs() {
-            if self.inner.store.plan(run.plan_id()).await?
-                .is_some_and(|p| p.project_id == project_id) {
+            if self
+                .inner
+                .store
+                .plan(run.plan_id())
+                .await?
+                .is_some_and(|p| p.project_id == project_id)
+            {
                 run.cancel().await;
                 lock(&self.inner.runs).remove(run.plan_id());
             }
@@ -1300,20 +1657,27 @@ impl Supervisor {
     }
 
     async fn stop_for_deletion(&self, session_id: &SessionId) -> Result<(), SupervisorError> {
-        if !self.is_live(session_id) { return Ok(()); }
+        if !self.is_live(session_id) {
+            return Ok(());
+        }
         // Wait for the consumer to finish persisting its final events before deleting history.
         let stopped = tokio::time::timeout(Duration::from_secs(5), async {
             if let Err(error) = self.kill(session_id).await {
-                if self.is_live(session_id) { return Err(error); }
+                if self.is_live(session_id) {
+                    return Err(error);
+                }
             }
             while self.is_live(session_id) {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
             Ok(())
-        }).await;
-        stopped.unwrap_or_else(|_| Err(SupervisorError::SessionLive(
-            "The session did not stop. Try deleting it again.".to_owned()
-        )))
+        })
+        .await;
+        stopped.unwrap_or_else(|_| {
+            Err(SupervisorError::SessionLive(
+                "The session did not stop. Try deleting it again.".to_owned(),
+            ))
+        })
     }
 
     /// Requests parked right now for one live session, oldest first.
@@ -1321,7 +1685,10 @@ impl Supervisor {
         &self,
         session_id: &SessionId,
     ) -> Vec<brigadier_core::approval::PendingApproval> {
-        lock(&self.inner.live).get(session_id).map(|s| s.approvals.pending()).unwrap_or_default()
+        lock(&self.inner.live)
+            .get(session_id)
+            .map(|s| s.approvals.pending())
+            .unwrap_or_default()
     }
 
     /// Put one [`Event::RuntimeWarning`] on a session's feed after its child is gone.
@@ -1372,8 +1739,10 @@ impl Supervisor {
         };
         // The routing key of the instance that ran the session. A row with none is one whose
         // child never came up, and nothing routes on this field for a warning anyway.
-        let instance_id =
-            record.instance_id.clone().unwrap_or_else(|| InstanceId::new("brigadier"));
+        let instance_id = record
+            .instance_id
+            .clone()
+            .unwrap_or_else(|| InstanceId::new("brigadier"));
         let env = Envelope::new(
             record.last_event_seq.saturating_add(1),
             instance_id,
@@ -1418,8 +1787,10 @@ impl Supervisor {
     // see docs/research/persistence.md §6.
     pub async fn pending_approvals(&self) -> Result<Vec<ApprovalView>, SupervisorError> {
         let records = self.inner.store.pending_approvals().await?;
-        let live: BTreeSet<String> =
-            lock(&self.inner.live).keys().map(|k| k.as_str().to_owned()).collect();
+        let live: BTreeSet<String> = lock(&self.inner.live)
+            .keys()
+            .map(|k| k.as_str().to_owned())
+            .collect();
         Ok(records
             .iter()
             .map(|r| {
@@ -1494,7 +1865,10 @@ impl Supervisor {
     }
 
     fn all_commands(&self) -> Vec<SessionCommands> {
-        lock(&self.inner.live).values().map(|s| s.commands.clone()).collect()
+        lock(&self.inner.live)
+            .values()
+            .map(|s| s.commands.clone())
+            .collect()
     }
 
     /// Drop every live session and hand the tracker `grace` to finish off their process groups.
@@ -1525,7 +1899,10 @@ struct LoggedRaw {
 
 impl LoggedRaw {
     fn new(log: RawLog) -> Self {
-        Self { log, last_flush: Instant::now() }
+        Self {
+            log,
+            last_flush: Instant::now(),
+        }
     }
 
     /// Serialize one envelope into the log, then flush if it settled something or the window
@@ -1615,7 +1992,14 @@ async fn consume(
     mut events: tokio::sync::mpsc::Receiver<Envelope>,
     raw_log: Option<RawLog>,
 ) {
-    let ConsumeSpec { project_id, session_id, instance_id, start_seq, generation, base } = spec;
+    let ConsumeSpec {
+        project_id,
+        session_id,
+        instance_id,
+        start_seq,
+        generation,
+        base,
+    } = spec;
     let mut raw_log = raw_log.map(LoggedRaw::new);
     // The adapter was seeded with `start_seq`, so its first envelope is `start_seq + 1`; a
     // synthesized exit for a stream that never spoke has to land there too, not at zero, or a
@@ -1626,6 +2010,7 @@ async fn consume(
     while let Some(env) = events.recv().await {
         next_seq = env.seq.saturating_add(1);
         route(&inner, &project_id, &env, raw_log.as_mut(), &base).await;
+        checkpoints::observe(&inner, &env, generation);
         if matches!(env.event, Event::SessionExited { .. }) {
             exited = true;
             break;
@@ -1643,8 +2028,12 @@ async fn consume(
                 exit_code: None,
             },
         );
-        tracing::warn!(session_id = session_id.as_str(), "{STREAM_CLOSED}; synthesizing an exit");
+        tracing::warn!(
+            session_id = session_id.as_str(),
+            "{STREAM_CLOSED}; synthesizing an exit"
+        );
         route(&inner, &project_id, &env, raw_log.as_mut(), &base).await;
+        checkpoints::observe(&inner, &env, generation);
     }
     if let Some(mut log) = raw_log {
         log.flush();
@@ -1660,11 +2049,17 @@ async fn consume(
     // the dying one un-live the session the operator is using.
     {
         let mut live = lock(&inner.live);
-        if live.get(&session_id).is_some_and(|s| s.generation == generation) {
+        if live
+            .get(&session_id)
+            .is_some_and(|s| s.generation == generation)
+        {
             live.remove(&session_id);
         }
     }
-    tracing::debug!(session_id = session_id.as_str(), "session consumer finished");
+    tracing::debug!(
+        session_id = session_id.as_str(),
+        "session consumer finished"
+    );
 }
 
 /// Push one envelope through all three sinks, in order: store, raw log, batcher.
@@ -1755,11 +2150,20 @@ mod tests {
             let driver = ReplayDriver::new(script).with_rate(200.0);
             let kind = driver.kind();
             sup.register_driver(Arc::new(driver));
-            Rig { _dir: dir, store, sup, kind }
+            Rig {
+                _dir: dir,
+                store,
+                sup,
+                kind,
+            }
         }
 
         async fn project(&self) -> String {
-            self.sup.add_project(self._dir.path().to_owned()).await.expect("project").id
+            self.sup
+                .add_project(self._dir.path().to_owned())
+                .await
+                .expect("project")
+                .id
         }
 
         /// Run a session for `ms`, then end it and wait for the live map to lose it.
@@ -1771,7 +2175,10 @@ mod tests {
                 .expect("session starts");
             tokio::time::sleep(Duration::from_millis(ms)).await;
             self.sup.end_session(&session).await.expect("end");
-            assert!(self.until(Duration::from_secs(5), || !self.sup.is_live(&session)).await);
+            assert!(
+                self.until(Duration::from_secs(5), || !self.sup.is_live(&session))
+                    .await
+            );
             session
         }
 
@@ -1780,13 +2187,21 @@ mod tests {
         async fn store_token(&self, id: &SessionId) {
             let mut row = SessionRow::new(id.clone());
             row.resume_token = Some("provider-session-id".to_owned());
-            self.store.handle().upsert_session(row).await.expect("token stored");
+            self.store
+                .handle()
+                .upsert_session(row)
+                .await
+                .expect("token stored");
             self.store.handle().flush().await.expect("flush");
         }
 
         async fn row(&self, id: &SessionId) -> SessionRecord {
             self.store.handle().flush().await.expect("flush");
-            self.sup.session(id).await.expect("read").expect("row exists")
+            self.sup
+                .session(id)
+                .await
+                .expect("read")
+                .expect("row exists")
         }
 
         /// Poll until `f` holds, or give up after `within`.
@@ -1808,14 +2223,21 @@ mod tests {
         let project = rig.project().await;
         let id = rig
             .sup
-            .start_project_session(&project, &rig.kind, StartSession::new(rig._dir.path()), false)
+            .start_project_session(
+                &project,
+                &rig.kind,
+                StartSession::new(rig._dir.path()),
+                false,
+            )
             .await
             .unwrap();
         let row = rig.row(&id).await;
         assert!(row.worktree_path.is_none());
         assert!(row.branch.is_none());
         assert_eq!(
-            std::path::Path::new(row.cwd.as_deref().unwrap()).canonicalize().unwrap(),
+            std::path::Path::new(row.cwd.as_deref().unwrap())
+                .canonicalize()
+                .unwrap(),
             rig._dir.path().canonicalize().unwrap()
         );
         rig.sup.kill(&id).await.unwrap();
@@ -1878,7 +2300,10 @@ mod tests {
         .with_kind(DriverKind::new("recording"))
         .with_instance_id("recording");
         let kind = inner.kind();
-        rig.sup.register_driver(Arc::new(RecordingDriver { inner, seen: Arc::clone(&seen) }));
+        rig.sup.register_driver(Arc::new(RecordingDriver {
+            inner,
+            seen: Arc::clone(&seen),
+        }));
 
         let project = rig.project().await;
         let row = rig.sup.project(&project).await.expect("read").expect("row");
@@ -1887,11 +2312,18 @@ mod tests {
         // A caller asking for `Inherit` on an `Off` project is overridden by the row.
         let mut req = StartSession::new(rig._dir.path());
         req.mcp = McpPolicy::Inherit;
-        let session = rig.sup.start_session(&project, &kind, req).await.expect("starts");
+        let session = rig
+            .sup
+            .start_session(&project, &kind, req)
+            .await
+            .expect("starts");
         assert_eq!(lock(&seen).as_slice(), [McpPolicy::Off]);
         tokio::time::sleep(Duration::from_millis(50)).await;
         rig.sup.end_session(&session).await.expect("end");
-        assert!(rig.until(Duration::from_secs(5), || !rig.sup.is_live(&session)).await);
+        assert!(
+            rig.until(Duration::from_secs(5), || !rig.sup.is_live(&session))
+                .await
+        );
 
         assert!(
             matches!(
@@ -1900,19 +2332,33 @@ mod tests {
             ),
             "an unknown project is refused, not created"
         );
-        let updated = rig.sup.set_project_mcp(&project, McpPolicy::Inherit).await.expect("set");
+        let updated = rig
+            .sup
+            .set_project_mcp(&project, McpPolicy::Inherit)
+            .await
+            .expect("set");
         assert_eq!(updated.mcp, McpPolicy::Inherit);
         rig.store.handle().flush().await.expect("flush");
         let stored = rig.sup.project(&project).await.expect("read").expect("row");
-        assert_eq!(stored.mcp, McpPolicy::Inherit, "the policy is persisted, not just returned");
-        assert_eq!(stored.root_path, row.root_path, "nothing else about the row moved");
+        assert_eq!(
+            stored.mcp,
+            McpPolicy::Inherit,
+            "the policy is persisted, not just returned"
+        );
+        assert_eq!(
+            stored.root_path, row.root_path,
+            "nothing else about the row moved"
+        );
 
         rig.store_token(&session).await;
         rig.sup.resume_session(&session).await.expect("resume");
         assert_eq!(lock(&seen).as_slice(), [McpPolicy::Off, McpPolicy::Inherit]);
         tokio::time::sleep(Duration::from_millis(50)).await;
         rig.sup.end_session(&session).await.expect("end again");
-        assert!(rig.until(Duration::from_secs(5), || !rig.sup.is_live(&session)).await);
+        assert!(
+            rig.until(Duration::from_secs(5), || !rig.sup.is_live(&session))
+                .await
+        );
 
         let fresh = rig
             .sup
@@ -1924,7 +2370,10 @@ mod tests {
             [McpPolicy::Off, McpPolicy::Inherit, McpPolicy::Inherit]
         );
         rig.sup.end_session(&fresh).await.expect("end");
-        assert!(rig.until(Duration::from_secs(5), || !rig.sup.is_live(&fresh)).await);
+        assert!(
+            rig.until(Duration::from_secs(5), || !rig.sup.is_live(&fresh))
+                .await
+        );
         rig.store.close().await.expect("store closes");
     }
 
@@ -1949,15 +2398,26 @@ mod tests {
             .expect("session starts");
 
         // Live: refused before anything else is looked at.
-        let e = rig.sup.resume_session(&session).await.expect_err("a live session is refused");
+        let e = rig
+            .sup
+            .resume_session(&session)
+            .await
+            .expect_err("a live session is refused");
         assert_eq!(e.code(), "not_resumable");
         assert!(e.to_string().contains("still live"), "{e}");
 
         rig.sup.end_session(&session).await.expect("end");
-        assert!(rig.until(Duration::from_secs(5), || !rig.sup.is_live(&session)).await);
+        assert!(
+            rig.until(Duration::from_secs(5), || !rig.sup.is_live(&session))
+                .await
+        );
 
         // Ended, but the replay never reported a provider session id, so there is no token.
-        let e = rig.sup.resume_session(&session).await.expect_err("no token is refused");
+        let e = rig
+            .sup
+            .resume_session(&session)
+            .await
+            .expect_err("no token is refused");
         assert_eq!(e.code(), "not_resumable");
         assert!(e.to_string().contains("no resume token"), "{e}");
 
@@ -1979,7 +2439,10 @@ mod tests {
         // Let the replay put a few rows down before ending it.
         tokio::time::sleep(Duration::from_millis(150)).await;
         rig.sup.end_session(&session).await.expect("end");
-        assert!(rig.until(Duration::from_secs(5), || !rig.sup.is_live(&session)).await);
+        assert!(
+            rig.until(Duration::from_secs(5), || !rig.sup.is_live(&session))
+                .await
+        );
 
         let ended = rig.row(&session).await;
         let old_seq = ended.last_event_seq;
@@ -1993,11 +2456,18 @@ mod tests {
         // `SessionStarted` would have stored.
         let mut row = SessionRow::new(session.clone());
         row.resume_token = Some("provider-session-id".to_owned());
-        rig.store.handle().upsert_session(row).await.expect("token stored");
+        rig.store
+            .handle()
+            .upsert_session(row)
+            .await
+            .expect("token stored");
         rig.store.handle().flush().await.expect("flush");
 
         let resumed = rig.sup.resume_session(&session).await.expect("resume");
-        assert_eq!(resumed, session, "the harness row is reused, never re-minted");
+        assert_eq!(
+            resumed, session,
+            "the harness row is reused, never re-minted"
+        );
         let live = rig.row(&session).await;
         assert_eq!(live.ended_at, None, "a resumed session is not an ended one");
         assert_eq!(live.exit_code, None);
@@ -2005,11 +2475,18 @@ mod tests {
         // driver serves every session it opens (`ClaudeDriver::open` clones its own id into every
         // `AdapterConfig`). So a resume keeps it. `docs/research/resume.md` §7's "new
         // `instance_id`" describes an id the code does not have.
-        assert_eq!(live.instance_id, Some(first_instance), "the driver instance is unchanged");
+        assert_eq!(
+            live.instance_id,
+            Some(first_instance),
+            "the driver instance is unchanged"
+        );
 
         tokio::time::sleep(Duration::from_millis(150)).await;
         rig.sup.end_session(&session).await.expect("end again");
-        assert!(rig.until(Duration::from_secs(5), || !rig.sup.is_live(&session)).await);
+        assert!(
+            rig.until(Duration::from_secs(5), || !rig.sup.is_live(&session))
+                .await
+        );
 
         let after = rig.sup.feed_tail(&session, 1000).await.expect("tail");
         assert!(after.len() > before.len(), "the resume wrote new rows");
@@ -2037,8 +2514,10 @@ mod tests {
         let session = rig.run_and_end(&project, 100).await;
         rig.store_token(&session).await;
 
-        let (a, b) =
-            tokio::join!(rig.sup.resume_session(&session), rig.sup.resume_session(&session));
+        let (a, b) = tokio::join!(
+            rig.sup.resume_session(&session),
+            rig.sup.resume_session(&session)
+        );
         let winners = [&a, &b].iter().filter(|r| r.is_ok()).count();
         assert_eq!(winners, 1, "exactly one resume may win: a={a:?} b={b:?}");
         let loser = a.err().or(b.err()).expect("one of them failed");
@@ -2059,7 +2538,10 @@ mod tests {
         );
 
         rig.sup.end_session(&session).await.expect("end");
-        assert!(rig.until(Duration::from_secs(5), || !rig.sup.is_live(&session)).await);
+        assert!(
+            rig.until(Duration::from_secs(5), || !rig.sup.is_live(&session))
+                .await
+        );
         rig.store.close().await.expect("store closes");
     }
 
@@ -2100,7 +2582,10 @@ mod tests {
         // enough to complete a scripted turn.
         tokio::time::sleep(Duration::from_millis(150)).await;
         rig.sup.end_session(&session).await.expect("end");
-        assert!(rig.until(Duration::from_secs(5), || !rig.sup.is_live(&session)).await);
+        assert!(
+            rig.until(Duration::from_secs(5), || !rig.sup.is_live(&session))
+                .await
+        );
 
         let row = rig.row(&session).await;
         let expected = BASE_COST + REPLAY_TURN_COST;
@@ -2143,12 +2628,17 @@ mod tests {
         );
         assert!(Accrued::default().rebase(&env).is_none());
         // And a non-zero base leaves everything but a completed turn alone.
-        let base = Accrued { cost_usd: 1.0, usage: Usage::default() };
+        let base = Accrued {
+            cost_usd: 1.0,
+            usage: Usage::default(),
+        };
         let other = Envelope::new(
             2,
             InstanceId::new("i"),
             SessionId::new("s"),
-            Event::TurnStarted { turn_id: TurnId::new("t") },
+            Event::TurnStarted {
+                turn_id: TurnId::new("t"),
+            },
         );
         assert!(base.rebase(&other).is_none());
         assert!(base.rebase(&env).is_some());
@@ -2172,7 +2662,13 @@ mod tests {
         assert_eq!(context_size(&Usage::default()), 0);
         // Saturating, not wrapping: a provider that reports nonsense must not read as an empty
         // context.
-        assert_eq!(context_size(&Usage { input_tokens: u64::MAX, ..usage }), u64::MAX);
+        assert_eq!(
+            context_size(&Usage {
+                input_tokens: u64::MAX,
+                ..usage
+            }),
+            u64::MAX
+        );
     }
 
     /// `context_status` is telemetry off the stored row: it reports what the session accounted
@@ -2208,17 +2704,28 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        assert_eq!(used, REPLAY_TURN_TOKENS, "the replay's turn must have been accounted for");
+        assert_eq!(
+            used, REPLAY_TURN_TOKENS,
+            "the replay's turn must have been accounted for"
+        );
         assert_eq!(
             rig.sup.context_status(&session).await.expect("status"),
-            ContextStatus { used: REPLAY_TURN_TOKENS }
+            ContextStatus {
+                used: REPLAY_TURN_TOKENS
+            }
         );
 
         // However big the number gets, the turn goes through: there is no ceiling to cross.
-        rig.sup.send_turn(&session, "one more").await.expect("a turn is never refused on size");
+        rig.sup
+            .send_turn(&session, "one more")
+            .await
+            .expect("a turn is never refused on size");
 
         rig.sup.end_session(&session).await.expect("end");
-        assert!(rig.until(Duration::from_secs(5), || !rig.sup.is_live(&session)).await);
+        assert!(
+            rig.until(Duration::from_secs(5), || !rig.sup.is_live(&session))
+                .await
+        );
         rig.store.close().await.expect("store closes");
     }
 }

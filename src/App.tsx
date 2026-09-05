@@ -26,9 +26,10 @@ import { ThreadView } from "./components/ThreadView";
 import { useStoredState } from "./workbenchState";
 import { usePeers } from "./peerApi";
 import { ProjectWorkbench } from "./components/ProjectWorkbench";
-import { SidebarSimpleIcon } from "@phosphor-icons/react";
+import { Toasts } from "./components/Toasts";
+import { notify, useCleanup } from "./desktopApi";
+import { useAttention } from "./attention";
 
-import { FpsOverlay } from "./components/FpsOverlay";
 import { RunCard } from "./components/RunCard";
 import { Sidebar } from "./components/Sidebar";
 import type { ProjectDeleteAnswer, SessionDeleteAnswer } from "./components/Sidebar";
@@ -753,10 +754,16 @@ export function App() {
   const selectedProject =
     selectedProjectId === null ? null : projects.find((p) => p.id === selectedProjectId) ?? null;
   const pendingTotal = approvalRows.length;
+  const jobs=useCleanup();
+  const [viewedSession,setViewedSession]=useState<string|null>(null);
+  const attention=useAttention(state.sessions,viewedSession,[...approvalRows.map(r=>r.approval.sessionId),...peers.requests.filter(r=>!r.resolved).map(r=>r.to)]);
+  useEffect(()=>{const active=(e:Event)=>setViewedSession((e as CustomEvent<string|null>).detail);const toggle=()=>setSidebarOpen(v=>!v);window.addEventListener("workbench-active-session",active);window.addEventListener("brigadier-toggle-sidebar",toggle);return()=>{window.removeEventListener("workbench-active-session",active);window.removeEventListener("brigadier-toggle-sidebar",toggle);};},[]);
+  useEffect(()=>{if(notice){notify(notice,true);setNotice(null);}},[notice]);
+
 
   return (
     <div className={`app ${sidebarOpen?"":"sidebar-collapsed"}`}>
-      <Sidebar
+      <Sidebar attention={attention} jobs={jobs}
         projects={projects}
         titles={peers.titles}
         sessions={state.sessions}
@@ -786,54 +793,9 @@ export function App() {
       />
 
       <main className="thread">
-        <header className="thread-head">
-          <button className="icon-button" aria-label="Toggle sidebar" aria-pressed={sidebarOpen} onClick={()=>setSidebarOpen(!sidebarOpen)}><SidebarSimpleIcon size={20}/></button>
-          <span className="head-id">
-            <span className="head-name">
-              <b>{selectedProject?.name ?? "No project"}</b>
-              {selectedSession?.branch != null ? (
-                <span className="chip plain" title={selectedSession.worktreePath ?? undefined}>
-                  {selectedSession.branch}
-                  {selectedSession.worktreeRemoved ? " · removed" : ""}
-                </span>
-              ) : null}
-            </span>
-            <span className="head-path" title={selectedProject?.root_path ?? undefined}>
-              {selectedSession !== null
-                ? `${selectedSession.status} · ${selectedSession.sessionId}`
-                : selectedProject !== null
-                  ? `${selectedProject.root_path} · all sessions`
-                  : "nothing selected"}
-            </span>
-          </span>
-          {notice !== null ? (
-            <button
-              type="button"
-              className="notice"
-              title="dismiss"
-              onClick={() => setNotice(null)}
-            >
-              <span className="notice-text">{notice}</span>
-              {/* Inline SVG rather than a `✕` text glyph, for the same reason the sidebar's
-                  `✎ ◈ ▤` are gone: which font claims the codepoint, at what weight and on what
-                  baseline, is not ours to decide. `currentColor` always is. */}
-              <svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" focusable="false">
-                <path
-                  d="M2 2 8 8M8 2 2 8"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.4"
-                  strokeLinecap="round"
-                />
-              </svg>
-            </button>
-          ) : null}
-          <FpsOverlay />
-          <button className="icon-button workspace-toggle" aria-label="Toggle workspace panel" aria-pressed={workspaceOpen} title="Workspace (⌥⌘B)" disabled={!selectedProjectId} onClick={()=>workspaceOpen?setWorkspaceOpen(false):openWorkspace()}><SidebarSimpleIcon size={20}/></button>
-        </header>
 
-        <ProjectWorkbench peers={peers} project={selectedProject} session={selectedSession} sessions={state.sessions} selectedSessionId={selectedSessionId} onSelectSession={selectSession} workspaceOpen={workspaceOpen} setWorkspaceOpen={setWorkspaceOpen} models={models}>
-        {runLive && run?.project_id === selectedProjectId && selectedSessionId === null ? (
+        <ProjectWorkbench attention={attention} peers={peers} project={selectedProject} session={selectedSession} sessions={state.sessions} selectedSessionId={selectedSessionId} onSelectSession={selectSession} workspaceOpen={workspaceOpen} setWorkspaceOpen={setWorkspaceOpen} models={models} historyContent={<>
+{runLive && run?.project_id === selectedProjectId && selectedSessionId === null ? (
           <div className="run-dock-status" role="status">
             Automation running: {run.goal}
             <button className="act" onClick={() => stopRun(run.plan_id)}>Stop automation</button>
@@ -845,8 +807,8 @@ export function App() {
             <RunCard run={run} intents={intents} onSettle={settleIntent} />
           </details>
         ) : null}
-
-        <ThreadView
+</>}>
+        <ThreadView peers={peers} onSelectSession={selectSession}
           onEdit={setEditingMessage}
           editing={editingMessage !== null}
           revision={conversationRevision}
@@ -857,7 +819,7 @@ export function App() {
         />
 
         <Approvals
-          approvals={approvalRows}
+          approvals={approvalRows.filter(row=>row.approval.sessionId===selectedSessionId)}
           onRespond={respond}
           onDismiss={store.dismissApproval}
           onFocus={focusApproval}
@@ -890,7 +852,7 @@ export function App() {
         />
         </ProjectWorkbench>
       </main>
-
+      <Toasts/>
     </div>
   );
 }

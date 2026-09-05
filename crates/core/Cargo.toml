@@ -19,7 +19,12 @@ uuid = { workspace = true }
 # see docs/research/tauri-runtime.md §5 — killing the direct child leaves the CLI's own
 # grandchildren (tool subprocesses) alive, so the session gets its own process group.
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.31.3", default-features = false, features = ["signal"] }
+nix = { version = "0.31.3", default-features = false, features = ["signal", "fs", "user"] }
+
+rustix = { version = "1.1.4", features = ["fs"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+exacl = { version = "=0.13.0", default-features = false }
 
 [dev-dependencies]
 # `full` does not include `test-util`; the approval-park timeout tests need `tokio::time::pause`.

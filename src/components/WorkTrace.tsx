@@ -1,8 +1,16 @@
 import { useState } from "react";
-import { CaretRightIcon } from "@phosphor-icons/react";
+import {
+  TerminalIcon,
+  BookOpenIcon,
+  MagnifyingGlassIcon,
+  BrainIcon,
+  PencilSimpleIcon,
+  WrenchIcon,
+  UsersThreeIcon,
+  CaretRightIcon,
+} from "@phosphor-icons/react";
 import { Markdown, CopyButton } from "./Markdown";
 import {
-  flattenTrace,
   isAgent,
   traceLabel,
   traceFailed,
@@ -21,26 +29,35 @@ export function WorkTrace({
   toggle: (id: string) => void;
   onFile: (path: string) => void;
 }) {
-  const open = expanded.has(row.id);
-  const agents = flattenTrace(row.nodes).filter((n) => isAgent(n.item)).length;
-  const label = [
-    row.running ? "Working" : "Worked",
-    row.count ? `${row.count} ${row.count === 1 ? "action" : "actions"}` : null,
-    agents ? `${agents} ${agents === 1 ? "agent" : "agents"}` : null,
-  ]
-    .filter(Boolean)
-    .join(" · ");
+  const open =
+    expanded.has(row.id) || (row.running && !expanded.has(`closed:${row.id}`));
+  const seconds = !row.durationMs
+    ? null
+    : Math.max(0, Math.floor(row.durationMs / 1000));
+  const duration =
+    seconds === null
+      ? ""
+      : seconds >= 3600
+        ? `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m ${seconds % 60}s`
+        : seconds >= 60
+          ? `${Math.floor(seconds / 60)}m ${seconds % 60}s`
+          : `${seconds}s`;
+  const label = row.running
+    ? "Working…"
+    : duration
+      ? `Worked for ${duration}`
+      : "Worked";
   return (
     <div className="work-trace">
       <button
         className="work-summary"
         aria-expanded={open}
         aria-controls={`trace-${row.id}`}
-        onClick={() => toggle(row.id)}
+        onClick={() => toggle(row.running ? `closed:${row.id}` : row.id)}
       >
-        <CaretRightIcon className={open ? "rotated" : ""} />
         {row.running && <span className="working-dot" />}
-        <span>{label}</span>{" "}
+        <span>{label}</span>
+        <CaretRightIcon className={open ? "rotated" : ""} />{" "}
         {row.failures > 0 && (
           <span className="trace-failure">{row.failures} failed</span>
         )}
@@ -81,8 +98,7 @@ function TraceList({
       !node.children.length &&
       last[0]!.item.kind.type === "tool-call" &&
       !isAgent(last[0]!.item) &&
-      !last[0]!.children.length &&
-      traceLabel(last[0]!.item) === traceLabel(node.item)
+      !last[0]!.children.length
     )
       last.push(node);
     else groups.push([node]);
@@ -112,7 +128,7 @@ function TraceList({
             >
               <CaretRightIcon className={open ? "rotated" : ""} />
               <span>
-                {traceLabel(first.item)} · {group.length}
+                {[...new Set(group.map((n) => traceLabel(n.item)))].join(", ")}
               </span>
               {group.some(traceFailed) && (
                 <span className="trace-failure">Failed</span>
@@ -185,7 +201,21 @@ function TraceEntry({
   const open = expanded.has(item.id);
   const agent = isAgent(item);
   const failed = traceFailed(node);
-  const label = traceLabel(item);
+  const category = traceLabel(item);
+  const label = conciseAction(item);
+  const Icon = isAgent(item)
+    ? UsersThreeIcon
+    : category === "Read files"
+      ? BookOpenIcon
+      : category === "Ran commands"
+        ? TerminalIcon
+        : category === "Thinking"
+          ? BrainIcon
+          : category === "Edit files"
+            ? PencilSimpleIcon
+            : category.includes("earch")
+              ? MagnifyingGlassIcon
+              : WrenchIcon;
   if (item.kind.type === "assistant-text" && !children.length)
     return (
       <div className="trace-progress">
@@ -204,7 +234,8 @@ function TraceEntry({
         onClick={() => toggle(item.id)}
       >
         <CaretRightIcon className={open ? "rotated" : ""} />
-        <span>{label}</span>{" "}
+        <Icon size={15} />
+        <span title={label}>{label}</span>{" "}
         {failed ? <span className="trace-failure">Failed</span> : null}{" "}
         {agent && updates.length > 0 && (
           <span className="trace-outcome">{updates.length} updates</span>
@@ -250,4 +281,32 @@ function TraceEntry({
       )}
     </div>
   );
+}
+
+function conciseAction(item: TraceNode["item"]) {
+  const label = traceLabel(item);
+  if (item.kind.type !== "tool-call") return label;
+  let input: Record<string, unknown> = {};
+  try {
+    input = JSON.parse(item.body.slice(item.body.indexOf("{")));
+  } catch {
+    /* Older records remain expandable verbatim. */
+  }
+  const path = input.file_path ?? input.path ?? input.file;
+  if (label === "Read files" && typeof path === "string") return `Read ${path}`;
+  if (label === "Edit files" && typeof path === "string")
+    return `Edited ${path}`;
+  if (label === "Ran commands")
+    return `Ran ${String(
+      input.command ??
+        input.cmd ??
+        (item.body.trim().startsWith("{")
+          ? "command"
+          : item.body.trim() || "command"),
+    )
+      .split("\n")[0]!
+      .slice(0, 180)}`;
+  if (label === "Searched files")
+    return `Searched for ${String(input.pattern ?? input.query ?? "files").slice(0, 120)}${path ? ` in ${path}` : ""}`;
+  return label;
 }

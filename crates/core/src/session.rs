@@ -25,7 +25,10 @@ pub struct TurnInput {
 impl TurnInput {
     /// A text-only turn.
     pub fn text(s: impl Into<String>) -> Self {
-        Self { text: s.into(), attachment_paths: Vec::new() }
+        Self {
+            text: s.into(),
+            attachment_paths: Vec::new(),
+        }
     }
 }
 
@@ -59,12 +62,18 @@ pub enum Decision {
 impl Decision {
     /// Allow with no edits and no persisted rule change.
     pub fn allow() -> Self {
-        Self::Allow { updated_input: None, updated_permissions: Vec::new() }
+        Self::Allow {
+            updated_input: None,
+            updated_permissions: Vec::new(),
+        }
     }
 
     /// Deny with a reason, letting the model continue.
     pub fn deny(reason: impl Into<String>) -> Self {
-        Self::Deny { reason: reason.into(), interrupt: false }
+        Self::Deny {
+            reason: reason.into(),
+            interrupt: false,
+        }
     }
 }
 
@@ -186,6 +195,20 @@ pub enum NativeControl {
     },
     /// Release the send barrier only after local persistence has caught up.
     FinishRewind,
+    /// Reserve an idle provider while capturing a workspace boundary.
+    CheckpointBarrier,
+    /// Verify a held capture boundary without releasing its send barrier.
+    CheckpointVerify {
+        /// Expected event cursor.
+        seq: u64,
+    },
+    /// Check that no events arrived during capture; optionally permit one reserved send.
+    CheckpointRelease {
+        /// Last observed adapter event cursor.
+        seq: u64,
+        /// The only message permitted to consume this reservation.
+        turn_id: Option<TurnId>,
+    },
 }
 
 /// One instruction from the supervisor to the adapter driving a session.
@@ -280,7 +303,10 @@ impl SessionCommands {
         request: NativeControl,
     ) -> Result<serde_json::Value, CommandError> {
         let (ack, rx) = oneshot::channel();
-        self.tx.send(Command::Native { request, ack }).await.map_err(|_| CommandError::Closed)?;
+        self.tx
+            .send(Command::Native { request, ack })
+            .await
+            .map_err(|_| CommandError::Closed)?;
         tokio::time::timeout(std::time::Duration::from_secs(20), rx)
             .await
             .map_err(|_| {
@@ -293,8 +319,25 @@ impl SessionCommands {
     // see docs/research/provider-driver.md §6 #5 — mint our own ids, never reuse the provider's.
     pub async fn send_turn(&self, input: TurnInput) -> Result<TurnId, CommandError> {
         let turn_id = TurnId::new(uuid::Uuid::new_v4().to_string());
+        self.send_reserved_turn(turn_id, input).await
+    }
+
+    /// Dispatch a pre-journaled message identity.
+    pub async fn send_reserved_turn(
+        &self,
+        turn_id: TurnId,
+        input: TurnInput,
+    ) -> Result<TurnId, CommandError> {
         let (ack, rx) = oneshot::channel();
-        self.dispatch(Command::SendTurn { turn_id: turn_id.clone(), input, ack }, rx).await?;
+        self.dispatch(
+            Command::SendTurn {
+                turn_id: turn_id.clone(),
+                input,
+                ack,
+            },
+            rx,
+        )
+        .await?;
         Ok(turn_id)
     }
 
@@ -339,13 +382,21 @@ impl SessionCommands {
     /// Switch models mid-session.
     pub async fn set_model(&self, model: impl Into<String>) -> Result<(), CommandError> {
         let (ack, rx) = oneshot::channel();
-        self.dispatch(Command::SetModel { model: model.into(), ack }, rx).await
+        self.dispatch(
+            Command::SetModel {
+                model: model.into(),
+                ack,
+            },
+            rx,
+        )
+        .await
     }
 
     /// Switch permission mode mid-session.
     pub async fn set_permission_mode(&self, mode: PermissionMode) -> Result<(), CommandError> {
         let (ack, rx) = oneshot::channel();
-        self.dispatch(Command::SetPermissionMode { mode, ack }, rx).await
+        self.dispatch(Command::SetPermissionMode { mode, ack }, rx)
+            .await
     }
 
     /// The **full** final assistant text of a completed turn, concatenated and bounded — not the
@@ -449,7 +500,11 @@ impl SessionHandle {
                 approvals: approvals.clone(),
                 pid: None,
             },
-            SessionBackend { commands: cmd_rx, events: event_tx, approvals },
+            SessionBackend {
+                commands: cmd_rx,
+                events: event_tx,
+                approvals,
+            },
         )
     }
 }
@@ -472,7 +527,9 @@ mod tests {
             seq,
             InstanceId::new("i"),
             SessionId::new("s"),
-            Event::RuntimeWarning { message: "w".into() },
+            Event::RuntimeWarning {
+                message: "w".into(),
+            },
         )
     }
 
@@ -483,8 +540,11 @@ mod tests {
             r#"{"type":"allow","updated_input":null,"updated_permissions":[]}"#
         );
         assert_eq!(
-            serde_json::to_string(&Decision::Deny { reason: "no".into(), interrupt: true })
-                .expect("ser"),
+            serde_json::to_string(&Decision::Deny {
+                reason: "no".into(),
+                interrupt: true
+            })
+            .expect("ser"),
             r#"{"type":"deny","reason":"no","interrupt":true}"#
         );
     }
@@ -493,7 +553,10 @@ mod tests {
     async fn event_channel_honours_the_requested_capacity() {
         let (handle, backend) = paired(1);
         backend.events.try_send(envelope(0)).expect("first fits");
-        assert!(backend.events.try_send(envelope(1)).is_err(), "capacity 1 must reject the second");
+        assert!(
+            backend.events.try_send(envelope(1)).is_err(),
+            "capacity 1 must reject the second"
+        );
         drop(handle);
     }
 
@@ -505,7 +568,11 @@ mod tests {
 
         let cmd = backend.commands.recv().await.expect("command arrives");
         let seen = match cmd {
-            Command::SendTurn { turn_id, input, ack } => {
+            Command::SendTurn {
+                turn_id,
+                input,
+                ack,
+            } => {
                 assert_eq!(input.text, "hi");
                 ack.send(Ok(())).expect("ack accepted");
                 turn_id
@@ -523,21 +590,37 @@ mod tests {
         drop(backend);
         assert_eq!(handle.commands.interrupt().await, Err(CommandError::Closed));
         assert_eq!(handle.commands.kill().await, Err(CommandError::Closed));
-        assert_eq!(handle.commands.set_model("m").await, Err(CommandError::Closed));
         assert_eq!(
-            handle.commands.set_permission_mode(PermissionMode::Plan).await,
+            handle.commands.set_model("m").await,
             Err(CommandError::Closed)
         );
-        assert_eq!(handle.commands.end_session().await, Err(CommandError::Closed));
         assert_eq!(
-            handle.commands.send_turn(TurnInput::text("x")).await.unwrap_err(),
+            handle
+                .commands
+                .set_permission_mode(PermissionMode::Plan)
+                .await,
+            Err(CommandError::Closed)
+        );
+        assert_eq!(
+            handle.commands.end_session().await,
+            Err(CommandError::Closed)
+        );
+        assert_eq!(
+            handle
+                .commands
+                .send_turn(TurnInput::text("x"))
+                .await
+                .unwrap_err(),
             CommandError::Closed
         );
         // `respond` no longer rides the command channel, so a dead session says what the approval
         // table says. An id that was never parked here is `Unknown`; a real teardown cancels every
         // open park, and those report `Expired` — see `a_torn_down_park_reports_expired`.
         assert_eq!(
-            handle.commands.respond(RequestId::new("r"), Decision::allow()).await,
+            handle
+                .commands
+                .respond(RequestId::new("r"), Decision::allow())
+                .await,
             Err(RespondError::Unknown)
         );
     }
@@ -548,10 +631,21 @@ mod tests {
     async fn respond_bypasses_the_command_channel() {
         let (handle, backend) = paired(1);
         let waiter = backend.approvals.open(RequestId::new("r"), ask(), None);
-        assert_eq!(handle.approvals.pending().len(), 1, "the handle sees the same table");
+        assert_eq!(
+            handle.approvals.pending().len(),
+            1,
+            "the handle sees the same table"
+        );
 
-        handle.commands.respond(RequestId::new("r"), Decision::allow()).await.expect("answered");
-        assert_eq!(waiter.await.expect("the parked waiter woke"), Decision::allow());
+        handle
+            .commands
+            .respond(RequestId::new("r"), Decision::allow())
+            .await
+            .expect("answered");
+        assert_eq!(
+            waiter.await.expect("the parked waiter woke"),
+            Decision::allow()
+        );
         // Nothing was ever queued on the command channel.
         assert!(handle.approvals.pending().is_empty());
     }
@@ -563,7 +657,10 @@ mod tests {
         let _waiter = backend.approvals.open(RequestId::new("r"), ask(), None);
         backend.approvals.cancel_all("session exited");
         assert_eq!(
-            handle.commands.respond(RequestId::new("r"), Decision::allow()).await,
+            handle
+                .commands
+                .respond(RequestId::new("r"), Decision::allow())
+                .await,
             Err(RespondError::Expired)
         );
     }
@@ -584,7 +681,8 @@ mod tests {
         let task = tokio::spawn(async move { commands.interrupt().await });
         match backend.commands.recv().await.expect("command arrives") {
             Command::Interrupt { ack } => {
-                ack.send(Err(CommandError::Rejected("no active turn".into()))).expect("ack");
+                ack.send(Err(CommandError::Rejected("no active turn".into())))
+                    .expect("ack");
             }
             other => panic!("unexpected command: {other:?}"),
         }

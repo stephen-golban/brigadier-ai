@@ -50,9 +50,18 @@ pub(crate) async fn workspace_git_action(
 ) -> Result<String, AppError> {
     let root = root(state.inner(), &project_id, session_id.as_deref()).await?;
     let _guard = MUTATION.lock().await;
+    state.get()?.supervisor.workspace_writable(&root).await?;
     execute(&root, request).await
 }
 pub(crate) async fn execute(root: &Path, r: GitAction) -> Result<String, AppError> {
+    let root = root.to_path_buf();
+    tokio::spawn(async move { execute_owned(&root, r).await })
+        .await
+        .map_err(|e| AppError::io(e.to_string()))?
+}
+async fn execute_owned(root: &Path, r: GitAction) -> Result<String, AppError> {
+    let _lease = brigadier_core::checkpoint::WorkspaceLease::acquire(root)
+        .map_err(|e| AppError::invalid_argument(e.to_string()))?;
     if let Some(path) = &r.path {
         path_arg(path)?;
     }

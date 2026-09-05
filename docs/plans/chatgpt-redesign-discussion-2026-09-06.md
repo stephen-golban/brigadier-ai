@@ -1,8 +1,7 @@
 # Brigadier desktop redesign — interview record
 
-Status: ready for the owner's final review. The owner requested the grill-me interview and has
-not yet confirmed shared understanding or authorized implementing this redesign. The
-separately requested commit/merge of existing work is authorized.
+Status: owner confirmed shared understanding and implementation on 2026-09-06.
+Implementation and validation are recorded in [the completion report](chatgpt-redesign-implementation-2026-09-06.md).
 
 ## Reference and requested scope
 
@@ -139,9 +138,8 @@ the owner has not selected an exact threshold or shortcut.
 5. Compare rendered wide/narrow and populated/empty/error states to the screenshots; verify
    keyboard/focus behavior, frontend/Rust integration, and the macOS app build.
 
-The separate checkpoint implementation supplies potential rewind primitives but has not
-been merged. Assess its correctness and measured latency before integrating it. Do not
-hide long checkpoint delays or claim pixel equivalence without rendered comparison.
+The checkpoint implementation was integrated selectively after source comparison and
+latency measurement. See the completion report for results and verification limits.
 
 The detailed visual observations, measured palette, current-code gaps, and evidence limits
 are in [the reference audit](../research/chatgpt-reference-audit-2026-09-06.md).
@@ -155,4 +153,4 @@ That worktree's `work/` directory contains pre-existing app/database backups and
 local and uncommitted. Checkout `0d2f` contains additional checkpoint work and is outside
 this merge. The completed merge is `7d00570`: 267 frontend tests, 592 Rust tests, and the
 macOS app bundle build passed. These checks validate the existing-work merge, not the
-unimplemented redesign above.
+redesign delivered in the completion report.
