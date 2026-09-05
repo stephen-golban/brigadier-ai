@@ -1,11 +1,21 @@
 /**
- * Start a session. This is the composer the window shows when no session is selected, the way
- * the reference app shows a fresh empty chat with its composer waiting for the first prompt.
+ * Start a session: the dock's **Session** mode.
  *
- * The permission-mode menu deliberately omits `bypass-permissions`. It is a real wire value
- * (`crates/core/src/driver.rs:93`) and the harness will pass it through if something else sets
- * it, but offering it in the UI would hand the operator a switch that silently disables the
- * approval prompts this app exists to show.
+ * Until 2026-09-05 this was "the composer the window shows when no session is selected", which is
+ * how the owner ended up looking at two text fields with nothing saying which was which. It is now
+ * one of three bodies `src/components/Dock.tsx` swaps between, chosen explicitly, and it draws
+ * only the box — the frame and the context strip are the dock's.
+ *
+ * The Model and Permissions controls are `src/components/Pickers.tsx`, shared with the dock's Run
+ * mode since R4 so the two cannot offer different vocabularies for the same wire field. The
+ * permission menu now carries **every** mode the CLI accepts, `bypass-permissions` included: the
+ * mode alone never could stop a prompt (brigadier's `PreToolUse` hook runs first), so leaving it
+ * out was a gate on a value that changed nothing. `OFFERED_PERMISSION_MODES` in `src/wire.ts`
+ * carries the reasoning and `docs/research/permission-modes.md` §3–§5 the measurements.
+ *
+ * **The model menu here has no "no pick" entry**, and that is unchanged: starting one session has
+ * always pre-selected the default model, and the field shows which one. The run's picker offers
+ * the empty choice, because for a run "no pick" means the per-role routing stays in charge.
  *
  * The `claude` binary is never bundled (CLAUDE.md §2): if `probe_claude` errors with
  * `claude_not_installed` or `claude_too_old`, the sidebar's bottom row says so and start is
@@ -13,8 +23,8 @@
  */
 import { useState } from "react";
 
-import { PathIcon, ProjectIcon } from "./icons";
-import { OFFERED_PERMISSION_MODES } from "../wire";
+import { Pickers } from "./Pickers";
+import { isSubmitKey } from "../keys";
 import type { ModelInfo, PermissionMode, ProjectId, ProjectView } from "../wire";
 
 export interface NewSessionProps {
@@ -49,25 +59,14 @@ export function NewSession({ project, models, disabled, onStart }: NewSessionPro
     setPrompt("");
   };
 
+  /*
+   * R2, 2026-09-05: the `.dock` frame and the context strip moved to `src/components/Dock.tsx`,
+   * which draws them once for all three modes. What is left here is what was always specific to
+   * starting a session — the prompt, the model and the permission mode — and it is now reached by
+   * choosing "Session" on the dock rather than by having no session selected.
+   */
   return (
-    <section className="dock">
-      <div className="dock-context">
-        <span title={project?.root_path}>
-          <span className="glyph">
-            <ProjectIcon />
-          </span>
-          {project?.name ?? "no project"}
-        </span>
-        {project !== null ? (
-          <span title={project.root_path}>
-            <span className="glyph">
-              <PathIcon />
-            </span>
-            {project.root_path}
-          </span>
-        ) : null}
-      </div>
-
+    <>
       <div className="dock-box">
         <textarea
           rows={2}
@@ -75,45 +74,27 @@ export function NewSession({ project, models, disabled, onStart }: NewSessionPro
           placeholder={
             project === null
               ? "Add a project first"
-              : `What should we run in ${project.name}? Cmd+Return to start.`
+              : `What should we run in ${project.name}? Return to start, Shift+Return for a new line.`
           }
           disabled={disabled || project === null}
           onChange={(e) => setPrompt(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit();
+            if (isSubmitKey(e)) {
+              e.preventDefault();
+              submit();
+            }
           }}
         />
         <div className="dock-actions">
-          <label>
-            Model
-            <select
-              value={chosen}
-              disabled={disabled}
-              onChange={(e) => setModel(e.target.value)}
-            >
-              {models.length === 0 ? <option value="">(none)</option> : null}
-              {models.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.label}
-                  {m.default ? " (default)" : ""}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Permissions
-            <select
-              value={mode}
-              disabled={disabled}
-              onChange={(e) => setMode(e.target.value as PermissionMode)}
-            >
-              {OFFERED_PERMISSION_MODES.map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
-          </label>
+          <Pickers
+            models={models}
+            model={chosen}
+            onModel={setModel}
+            mode={mode}
+            onMode={setMode}
+            disabled={disabled}
+            noPickLabel={null}
+          />
 
           {/* Secondary action slot, matching the turn composer's. */}
           <span className="grow" />
@@ -128,6 +109,6 @@ export function NewSession({ project, models, disabled, onStart }: NewSessionPro
           </button>
         </div>
       </div>
-    </section>
+    </>
   );
 }

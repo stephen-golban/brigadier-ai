@@ -39,6 +39,10 @@
  *     them. `docs/plans/ipc-contract.md` says it in the contract, `src/wire.ts` says it in the
  *     type, and `an unknown row is never filtered by anything` below is what fails if it stops
  *     being true.
+ *   - **The fold draws one tool call as one row**, opens to three, and can never fold away a
+ *     failed tool result or an approval nobody has answered. The grouping *rules* live in
+ *     `src/feedGroups.test.ts`, where they can be argued without a virtualizer; what is pinned
+ *     here is what only a render can show.
  *   - **The eleven-kind union is exhaustive.** `EVERY_KIND` is a `Record<FeedKind, true>`, so a
  *     value added to or removed from the type fails `npx tsc --noEmit`, and its keys are asserted
  *     against the eleven slugs `crates/store/tests/feed.rs::kind_is_pinned_for_every_variant`
@@ -447,5 +451,129 @@ describe("the verbose toggle", () => {
     expect(
       screen.queryByRole("heading", { name: "Every row so far is model prose" }),
     ).not.toBeInTheDocument();
+  });
+});
+
+/* ------------------------------------------------------------------- folds */
+
+/**
+ * The fold, through the pane rather than through `buildFeed`.
+ *
+ * `src/feedGroups.test.ts` owns the grouping rules and is where a rule change should be argued.
+ * What is pinned here is the part only a render can show: that a folded group is **one mounted
+ * row**, that its chevron is a real control, and that opening it puts the members back on screen.
+ *
+ * Same rule as everything above it: text and roles, never class names.
+ */
+describe("the fold", () => {
+  beforeEach(() => {
+    giveTheScrollerAViewport();
+  });
+
+  /** The three rows one successful `Bash` call produces, in the order the driver emits them. */
+  const CALL: FeedRowWire[] = [
+    row(S1, 1, T0, "tool Bash · cargo check", "tool"),
+    row(S1, 2, T0 + 1_000, "tool Bash done · cargo check", "tool"),
+    row(S1, 3, T0 + 2_000, "tool result done · 41 lines", "tool"),
+  ];
+
+  it("draws one tool call as one row, and three once it is opened", async () => {
+    await mount([...CALL], { sessionId: S1, projectId: P1 });
+
+    expect(screen.getByText("tool Bash · cargo check")).toBeInTheDocument();
+    expect(screen.queryByText("tool Bash done · cargo check")).not.toBeInTheDocument();
+    expect(screen.queryByText("tool result done · 41 lines")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "show 2 more rows" }));
+
+    expect(screen.getByText("tool Bash · cargo check")).toBeInTheDocument();
+    expect(screen.getByText("tool Bash done · cargo check")).toBeInTheDocument();
+    expect(screen.getByText("tool result done · 41 lines")).toBeInTheDocument();
+
+    // …and it folds back, so the affordance is a toggle rather than a one-way door.
+    await userEvent.click(screen.getByRole("button", { name: "collapse this group" }));
+    expect(screen.queryByText("tool result done · 41 lines")).not.toBeInTheDocument();
+  });
+
+  /**
+   * **The one that must never be deleted to make a change pass.** `tool failed done · Exit code 1`
+   * is a red gate, and `FeedKind` files it under `tool` alongside every successful row, so a fold
+   * that could not tell them apart would collapse a failure into silence.
+   */
+  it("never folds a failed tool call away", async () => {
+    await mount(
+      [
+        row(S1, 1, T0, "tool Bash · cargo test", "tool"),
+        row(S1, 2, T0 + 1_000, "tool Bash done · cargo test", "tool"),
+        row(S1, 3, T0 + 2_000, "tool failed done · Exit code 1", "tool"),
+      ],
+      { sessionId: S1, projectId: P1 },
+    );
+
+    expect(screen.getByText("tool failed done · Exit code 1")).toBeInTheDocument();
+    expect(screen.getByText("tool Bash · cargo test")).toBeInTheDocument();
+  });
+
+  /**
+   * An approval that has not been answered is not history: a person is blocked on it, and the row
+   * is the only thing on this surface that says so.
+   */
+  it("never folds an approval nobody has answered", async () => {
+    await mount(
+      [
+        row(S1, 1, T0, "tool Bash · rm -rf build", "tool"),
+        row(S1, 2, T0 + 1_000, "approval asked · Bash", "appr"),
+      ],
+      { sessionId: S1, projectId: P1 },
+    );
+
+    expect(screen.getByText("approval asked · Bash")).toBeInTheDocument();
+  });
+
+  /** …and once it is answered it is history, and goes into the call it blocked. */
+  it("folds an answered approval into the call it blocked", async () => {
+    await mount(
+      [
+        row(S1, 1, T0, "tool Bash · rm -rf build", "tool"),
+        row(S1, 2, T0 + 1_000, "approval asked · Bash", "appr"),
+        row(S1, 3, T0 + 2_000, "approval allowed", "appr"),
+        row(S1, 4, T0 + 3_000, "tool Bash done · rm -rf build", "tool"),
+      ],
+      { sessionId: S1, projectId: P1 },
+    );
+
+    expect(screen.getByText("tool Bash · rm -rf build")).toBeInTheDocument();
+    expect(screen.queryByText("approval asked · Bash")).not.toBeInTheDocument();
+    expect(screen.queryByText("approval allowed")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "show 3 more rows" })).toBeInTheDocument();
+  });
+
+  /** Verbose is the escape hatch: everything, raw, and no fold offered at all. */
+  it("folds nothing under the verbose toggle", async () => {
+    await mount([...CALL], { sessionId: S1, projectId: P1 });
+    await userEvent.click(screen.getByRole("button", { name: "verbose" }));
+
+    expect(screen.getByText("tool Bash done · cargo check")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /show \d+ more/ })).not.toBeInTheDocument();
+  });
+
+  /**
+   * The fold removes rows from the sizer rather than adding any: the virtualizer counts display
+   * lines, so a screenful of collapsed calls mounts no more than a screenful of raw rows did.
+   */
+  it("keeps the pane windowed, with fewer rows mounted than the ring holds", async () => {
+    const rows: FeedRowWire[] = [];
+    for (let i = 0; i < 500; i += 1) {
+      rows.push(row(S1, i * 3 + 1, T0 + i * 3_000, `tool Bash · step ${i}`, "tool"));
+      rows.push(row(S1, i * 3 + 2, T0 + i * 3_000 + 1, `tool Bash done · step ${i}`, "tool"));
+      rows.push(row(S1, i * 3 + 3, T0 + i * 3_000 + 2, `tool result done · step ${i}`, "tool"));
+    }
+    await mount(rows, { sessionId: S1, projectId: P1 });
+
+    const mounted = screen.getAllByText(/^tool Bash · step \d+$/);
+    expect(mounted.length).toBeGreaterThan(0);
+    expect(mounted.length).toBeLessThan(200);
+    // Every `done` and every `result` row is folded away, so none of them is mounted at all.
+    expect(screen.queryByText(/^tool Bash done · step \d+$/)).not.toBeInTheDocument();
   });
 });

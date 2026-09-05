@@ -63,6 +63,8 @@ const h = vi.hoisted(() => ({
   /** Every path `add_project` was called with, in order. Empty is how "nothing was added" is
    *  asserted, and it is the whole point of the cancel test. */
   added: [] as string[],
+  /** Every `delete_session` / `delete_project` call, in order, with the `force` it carried. */
+  deletes: [] as Array<{ kind: "session" | "project"; id: string; force: boolean }>,
 }));
 
 vi.mock("./paint", () => ({
@@ -133,6 +135,41 @@ vi.mock("./bridge", async (importOriginal) => {
     async cleanupWorktree() {
       throw new Error("not used");
     },
+    /**
+     * A clean delete: nothing in the worktree refuses, so the rows go and the row goes with them.
+     * The refusal shapes are `src/components/Sidebar.test.tsx`'s, where the sentences live; what
+     * is under test here is the half only the shell can do — the session leaving the sidebar.
+     */
+    async deleteSession(sessionId: string, force: boolean) {
+      h.deletes.push({ kind: "session", id: sessionId, force });
+      const gone = h.sessions.find((s) => (s as SessionView).session_id === sessionId) as
+        | SessionView
+        | undefined;
+      h.sessions = h.sessions.filter((s) => (s as SessionView).session_id !== sessionId);
+      return {
+        session_id: sessionId,
+        removed: true,
+        rows: { ...NO_ROWS, sessions: 1, feed: 12 },
+        worktree: null,
+        logs_removed: 1,
+        branch: gone?.branch ?? null,
+      };
+    },
+    async deleteProject(projectId: string, force: boolean) {
+      h.deletes.push({ kind: "project", id: projectId, force });
+      const own = h.sessions.filter((s) => (s as SessionView).project_id === projectId);
+      h.sessions = h.sessions.filter((s) => (s as SessionView).project_id !== projectId);
+      h.projects = h.projects.filter((p) => p.id !== projectId);
+      return {
+        project_id: projectId,
+        removed: true,
+        rows: { ...NO_ROWS, projects: 1, sessions: own.length, feed: 40 },
+        worktrees: [],
+        logs_removed: own.length,
+        gate_logs_removed: 0,
+        brigadier_dir_removed: true,
+      };
+    },
     feedTail(sessionId: string) {
       if (h.hold) {
         return new Promise<unknown[]>((answer) => h.parked.push({ id: sessionId, answer }));
@@ -166,6 +203,21 @@ vi.mock("./bridge", async (importOriginal) => {
 function project(id: string, name: string) {
   return { id, name, root_path: `/repos/${name}`, created_at_ms: 1_700_000_000_000 };
 }
+
+/** `DeletedRows` with every count zero — what a refusal carries and what a success builds on. */
+const NO_ROWS = {
+  projects: 0,
+  sessions: 0,
+  feed: 0,
+  approvals: 0,
+  intents: 0,
+  plans: 0,
+  phases: 0,
+  plan_revisions: 0,
+  unknowns: 0,
+  work_orders: 0,
+  work_orders_orphaned: 0,
+};
 
 function view(sessionId: string, projectId: string, status: SessionStatus = "running"): SessionView {
   return {
@@ -215,6 +267,7 @@ beforeEach(() => {
   h.isMock = true;
   h.picked = null;
   h.added = [];
+  h.deletes = [];
 });
 
 afterEach(() => {
@@ -452,5 +505,73 @@ describe("opening a project", () => {
     expect(screen.queryByRole("button", { name: "add a project" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "add a project by path" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /in Finder/ })).not.toBeInTheDocument();
+  });
+});
+
+/*
+ * R4.2, 2026-09-05. The owner had 44 sessions in his sidebar, 40 of them synthetic burn rows he
+ * had no way to remove: `cleanup_worktree` takes a checkout away and leaves the row behind, and
+ * there was no second verb. These pin the half only the shell can do — the row leaving the
+ * sidebar, and the selection not being left pointing at something that is gone. The sentences a
+ * refusal draws are `src/components/Sidebar.test.tsx`'s.
+ */
+describe("deleting", () => {
+  it("takes a deleted session out of the sidebar, after a confirmation step", async () => {
+    const user = userEvent.setup();
+    h.sessions = [view("aaaa1111", "p-live", "exited"), view("bbbb2222", "p-live", "exited")];
+    await mountApp();
+
+    // Scoped to the sidebar throughout: the success notice at the top of the thread names the
+    // surviving branch, so an unscoped query for the branch would match the notice and read as a
+    // row that never went.
+    const nav = screen.getByRole("navigation", { name: /projects and sessions/i });
+    expect(await within(nav).findByRole("button", { name: /brigadier\/aaaa1111/ })).toBeInTheDocument();
+
+    // The first click asks. Nothing has reached the command yet, which is the whole point of the
+    // step: a destructive action is never one press away.
+    await user.click(within(nav).getByRole("button", { name: "delete session aaaa1111" }));
+    expect(h.deletes).toEqual([]);
+    expect(within(nav).getByText(/Delete this session from the machine\?/)).toBeInTheDocument();
+
+    await user.click(within(nav).getByRole("button", { name: "Delete session" }));
+
+    // `force: false` — the question, never the first click's answer.
+    expect(h.deletes).toEqual([{ kind: "session", id: "aaaa1111", force: false }]);
+    expect(
+      within(nav).queryByRole("button", { name: /brigadier\/aaaa1111/ }),
+    ).not.toBeInTheDocument();
+    // The one beside it is untouched.
+    expect(within(nav).getByRole("button", { name: /brigadier\/bbbb2222/ })).toBeInTheDocument();
+  });
+
+  it("names the surviving branch once the row that recorded it is gone", async () => {
+    const user = userEvent.setup();
+    h.sessions = [view("aaaa1111", "p-live", "exited")];
+    await mountApp();
+
+    await user.click(screen.getByRole("button", { name: "delete session aaaa1111" }));
+    await user.click(screen.getByRole("button", { name: "Delete session" }));
+
+    // Nothing in the harness deletes a branch, and once the row is gone the branch name is the
+    // only thing that says where the work went — so the notice carries it.
+    expect(screen.getByText(/branch brigadier\/aaaa1111 kept/)).toBeInTheDocument();
+  });
+
+  it("takes a deleted project and every session under it out of the sidebar", async () => {
+    const user = userEvent.setup();
+    h.sessions = [view("aaaa1111", "p-live", "exited")];
+    await mountApp();
+
+    const nav = screen.getByRole("navigation", { name: /projects and sessions/i });
+    await user.click(within(nav).getByRole("button", { name: "delete project job-portal" }));
+    expect(h.deletes).toEqual([]);
+
+    await user.click(within(nav).getByRole("button", { name: "Delete project" }));
+
+    expect(h.deletes).toEqual([{ kind: "project", id: "p-live", force: false }]);
+    expect(
+      within(nav).queryByRole("button", { name: /brigadier\/aaaa1111/ }),
+    ).not.toBeInTheDocument();
+    expect(within(nav).queryByText("job-portal")).not.toBeInTheDocument();
   });
 });

@@ -277,3 +277,122 @@ describe("what the wire never carries", () => {
     }
   });
 });
+
+/*
+ * `delete_session` and `delete_project` on the mock bridge — R4.2.
+ *
+ * The mock is where the **refusal** path is exercised, because it is the branch a happy-path fake
+ * never reaches and the one the front end can get silently wrong: `removed: false` resolves as a
+ * success from `invoke`, so a UI that only ever saw a clean delete would look correct in every
+ * test and be wrong in the window. The mock therefore refuses every un-forced delete of a live
+ * checkout, which makes that branch the default one `npm run dev` walks into.
+ *
+ * Nothing here touches a disk, spawns a process or spends anything.
+ */
+describe("deleting, on the mock bridge", () => {
+  /** The mock seeds one running session under `p-brigadier` on the first `subscribeFeed`. */
+  async function seeded(): Promise<{ b: Bridge; sessionId: string }> {
+    const b = await fresh();
+    await b.subscribeFeed(() => {});
+    const sessions = await b.listSessions();
+    const first = sessions[0];
+    if (first === undefined) throw new Error("the mock seeded no sessions");
+    return { b, sessionId: first.session_id };
+  }
+
+  it("refuses a live session with session_running, and force does not change that", async () => {
+    const { b, sessionId } = await seeded();
+
+    await expect(b.deleteSession(sessionId, false)).rejects.toMatchObject({
+      code: "session_running",
+    });
+    await expect(b.deleteSession(sessionId, true)).rejects.toMatchObject({
+      code: "session_running",
+    });
+    expect((await b.listSessions()).map((s) => s.session_id)).toContain(sessionId);
+  });
+
+  it("refuses an un-forced delete as a return value, with nothing touched", async () => {
+    const { b, sessionId } = await seeded();
+    await b.endSession(sessionId);
+
+    const refused = await b.deleteSession(sessionId, false);
+
+    // A refusal, not a rejection — and every count is zero, because nothing was touched at all.
+    expect(refused.removed).toBe(false);
+    expect(refused.worktree?.blocked).toBe("commits");
+    expect(refused.rows.sessions).toBe(0);
+    expect(refused.rows.feed).toBe(0);
+    expect(refused.logs_removed).toBe(0);
+    // The branch is on the refusal: once the row is gone it is the only name for the work.
+    expect(refused.branch).not.toBeNull();
+    expect((await b.listSessions()).map((s) => s.session_id)).toContain(sessionId);
+  });
+
+  it("deletes on the forced second call, and keeps the branch", async () => {
+    const { b, sessionId } = await seeded();
+    await b.endSession(sessionId);
+    const refused = await b.deleteSession(sessionId, false);
+
+    const done = await b.deleteSession(sessionId, true);
+
+    expect(done.removed).toBe(true);
+    expect(done.rows.sessions).toBe(1);
+    // Same branch on the success as on the refusal: no path deletes one.
+    expect(done.branch).toBe(refused.branch);
+    expect((await b.listSessions()).map((s) => s.session_id)).not.toContain(sessionId);
+  });
+
+  it("refuses a project whose session is live, before anything is touched", async () => {
+    const { b } = await seeded();
+
+    await expect(b.deleteProject(PROJECT, false)).rejects.toMatchObject({
+      code: "session_running",
+    });
+    expect((await b.listProjects()).map((p) => p.id)).toContain(PROJECT);
+  });
+
+  /**
+   * The worktree half is not atomic: checkouts go one session at a time before any row is
+   * touched, and the first refusal ends the pass. `worktrees[]` is what the UI shows instead of a
+   * success that would be false.
+   */
+  it("stops a project delete at the first refusing worktree and reports the attempt", async () => {
+    const { b, sessionId } = await seeded();
+    await b.endSession(sessionId);
+
+    const refused = await b.deleteProject(PROJECT, false);
+
+    expect(refused.removed).toBe(false);
+    expect(refused.rows.projects).toBe(0);
+    expect(refused.worktrees).toHaveLength(1);
+    expect(refused.worktrees[0]!.session_id).toBe(sessionId);
+    expect(refused.worktrees[0]!.cleanup.blocked).toBe("commits");
+    expect((await b.listProjects()).map((p) => p.id)).toContain(PROJECT);
+  });
+
+  it("takes the project, its sessions and its run when forced", async () => {
+    const { b, sessionId } = await seeded();
+    await b.endSession(sessionId);
+    await b.startRun(PROJECT, "a goal that will not survive the project");
+
+    const done = await b.deleteProject(PROJECT, true);
+
+    expect(done.removed).toBe(true);
+    expect(done.rows.sessions).toBe(1);
+    expect(done.rows.plans).toBe(1);
+    expect((await b.listProjects()).map((p) => p.id)).not.toContain(PROJECT);
+    expect((await b.listSessions()).map((s) => s.session_id)).not.toContain(sessionId);
+    expect(await b.currentRun(PROJECT)).toBeNull();
+  });
+
+  it("refuses an unknown id rather than answering for nothing", async () => {
+    const b = await fresh();
+    await expect(b.deleteSession("s-nope", false)).rejects.toMatchObject({
+      code: "no_such_session",
+    });
+    await expect(b.deleteProject("p-nope", false)).rejects.toMatchObject({
+      code: "no_such_project",
+    });
+  });
+});

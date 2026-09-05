@@ -84,12 +84,36 @@
  * predate migration 1 and carry it, and a filter that treated it as one would hide all of them.
  * `crates/store/tests/feed.rs::kind_is_pinned_for_every_variant` pins that `feed::kind` never
  * produces it.
+ *
+ * ---------------------------------------------------------------------------------------------
+ * R2, 2026-09-05. **The toggle was not the feature; the fold is.** The owner drove the app and
+ * counted three rows per tool call, plus an approval pair and a thinking pair — ~90 rows for one
+ * question, and the answer was not findable in them. W4-D2's toggle hid `k === "text"` and left
+ * every other row raw, which is a log with the prose taken out, not a thread.
+ *
+ * What changed here, and what deliberately did not:
+ *
+ *   - **The rows the pane draws now come from `src/feedGroups.ts`.** It folds a tool call's
+ *     completion, its result and the approval it was blocked on into the call's own line; folds a
+ *     `thinking` / `thinking done` pair into one quiet line; and leaves warnings, errors, session
+ *     lifetime and everything else exactly one line each, because those were already the signal.
+ *   - **A chevron on a folded line reveals its members in place**, as `nested` rows. That is the
+ *     research card's affordance, which is the owner's own reference for it.
+ *   - **Verbose is unchanged in meaning**: everything, raw, one line per wire row. It is the
+ *     escape hatch, not the default.
+ *   - **The virtualizer, `ROW_H` and the fixed pitch do not move.** `lines.length` is the count,
+ *     so a fold *removes* rows from the sizer rather than adding any; nothing is mounted in order
+ *     to be hidden.
+ *   - **Two rows can never be folded away**: a failed tool result, and an approval nobody has
+ *     answered yet. `src/feedGroups.ts` states both as invariants and
+ *     `src/feedGroups.test.ts` fails if either stops holding.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
+import { buildFeed } from "../feedGroups";
 import * as store from "../feedStore";
-import type { FeedRowWire, ProjectId, SessionId } from "../wire";
+import type { ProjectId, SessionId } from "../wire";
 
 /**
  * Integer CSS px. A fractional row height drifts against the sizer at devicePixelRatio 2.
@@ -107,33 +131,6 @@ export const ROW_H = 28;
 
 /** Slack before the tail detaches, in px — feed-rendering.md §1. */
 const SCROLL_END_THRESHOLD = 24;
-
-/**
- * The one kind the terse feed hides: model prose.
- *
- * `docs/plans/ipc-contract.md` derives `text` from `ItemKind::AssistantText` and
- * `Event::ContentDelta` and from nothing else, so this single value is the whole of
- * `docs/vision.md` §9's "model prose lives entirely behind a verbose toggle".
- */
-const PROSE: FeedRowWire["k"] = "text";
-
-/**
- * The visible rows under a verbose setting, and the **only** place `k` decides whether a row
- * exists.
- *
- * Two invariants, in one function so neither can be lost in a branch:
- *
- *   - **`unknown` survives every setting.** It is not a class (`src/wire.ts` `FeedKind`), and the
- *     predicate below can only ever remove `text`, so a row that claims no class is never removed
- *     by anything. 10,037 of the owner's rows are in that state.
- *   - **Verbose allocates nothing.** It returns the store's own array by identity, so the common
- *     "show me everything" path adds no copy per frame to a store that changes up to 60 times a
- *     second. Terse costs one `filter` over at most `ROW_CAP` (2,000) rows per store change,
- *     memoised on `[rows, verbose]` so it runs once per commit rather than once per render.
- */
-function visibleRows(rows: readonly FeedRowWire[], verbose: boolean): readonly FeedRowWire[] {
-  return verbose ? rows : rows.filter((r) => r.k !== PROSE);
-}
 
 /** `HH:MM`. Seconds are diagnostic detail; the full clock is in the row's `title`. */
 function hhmm(ms: number): string {
@@ -182,7 +179,9 @@ function LinesMark() {
   );
 }
 
-/** The jump affordance's direction, replacing a `↓` text glyph for the same reason. */
+/** The jump affordance's direction, and the fold chevron; replacing a `↓` text glyph for the same
+ *  reason. `.feed-fold[aria-expanded="true"]` rotates it rather than swapping the path, so an open
+ *  and a closed group draw the same ink. */
 function ChevronDownIcon() {
   return (
     <svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" focusable="false">
@@ -218,14 +217,43 @@ export function Feed({ sessionId, projectId, projectName }: FeedProps) {
    * stated rather than implied.
    */
   const [verbose, setVerbose] = useState(false);
-  const rows = useMemo(() => visibleRows(all, verbose), [all, verbose]);
-  const hidden = all.length - rows.length;
+
+  /**
+   * Fold heads the operator has opened, keyed the way every row already is (`${s}#${q}`).
+   *
+   * A set of ids rather than a flag per group, so the ring dropping rows off its head cannot
+   * corrupt it: an id whose head has scrolled out of the cap is simply never asked about again.
+   * Component state for the same reason `verbose` is — a reading preference, not an instrument
+   * setting — and it survives a session switch, which costs nothing because the ids are unique
+   * per session.
+   */
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set<string>());
+
+  const toggleFold = useCallback((key: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(key)) next.add(key);
+      return next;
+    });
+  }, []);
+
+  /**
+   * The pane's display lines. One pass over the ring per store change, memoised on the three
+   * things that can change it, so it runs once per commit rather than once per render.
+   *
+   * `lines.length` is what the virtualizer counts, so **folding removes work rather than adding
+   * it**: a screenful of collapsed groups mounts the same number of rows as a screenful of raw
+   * ones and covers more of the session. Nothing here mounts a row it does not draw.
+   */
+  const view = useMemo(() => buildFeed(all, verbose, expanded), [all, verbose, expanded]);
+  const lines = view.lines;
+  const hidden = all.length - view.shown;
 
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const [atEnd, setAtEnd] = useState(true);
 
   const virtualizer = useVirtualizer({
-    count: rows.length,
+    count: lines.length,
     getScrollElement: () => scrollerRef.current,
     estimateSize: () => ROW_H,
     overscan: 12,
@@ -237,10 +265,7 @@ export function Feed({ sessionId, projectId, projectName }: FeedProps) {
     scrollEndThreshold: SCROLL_END_THRESHOLD,
     useScrollendEvent: true,
     useFlushSync: false,
-    getItemKey: (index) => {
-      const r = rows[index];
-      return r === undefined ? index : `${r.s}#${r.q}`;
-    },
+    getItemKey: (index) => lines[index]?.key ?? index,
   });
 
   // "Detached from the tail" is read off the DOM, not off React state, so the pill does not
@@ -257,7 +282,7 @@ export function Feed({ sessionId, projectId, projectName }: FeedProps) {
 
   useEffect(() => {
     syncAtEnd();
-  }, [rows, syncAtEnd]);
+  }, [lines, syncAtEnd]);
 
   const jump = useCallback(() => {
     virtualizer.scrollToEnd();
@@ -289,39 +314,34 @@ export function Feed({ sessionId, projectId, projectName }: FeedProps) {
         </button>
         <span className="feed-count">
           {hidden > 0
-            ? `${rows.length} of ${all.length} rows`
-            : `${rows.length} row${rows.length === 1 ? "" : "s"}`}
+            ? `${view.shown} of ${all.length} rows`
+            : `${view.shown} row${view.shown === 1 ? "" : "s"}`}
           {all.length >= store.ROW_CAP ? ` (capped at ${store.ROW_CAP})` : ""}
         </span>
       </div>
       <div className="feed-scroller" ref={scrollerRef} onScroll={syncAtEnd}>
         <div className="feed-sizer" style={{ height: `${virtualizer.getTotalSize()}px` }}>
           {items.map((item) => {
-            const r = rows[item.index];
-            if (r === undefined) return null;
-            // Both structural, both O(1), and neither reads a character of `l`. `rows` is the
-            // whole array, so the row before this one is a plain index lookup even though only a
-            // window of them is mounted.
-            const prev = item.index === 0 ? undefined : rows[item.index - 1];
+            const line = lines[item.index];
+            if (line === undefined) return null;
+            const r = line.row;
+            // Both structural and both O(1). `lines` is the whole array, so the line before this
+            // one is a plain index lookup even though only a window of them is mounted.
+            const prev = item.index === 0 ? undefined : lines[item.index - 1]?.row;
             const newMinute = prev === undefined || minuteOf(prev.t) !== minuteOf(r.t);
             const newSession = sessionId === null && (prev === undefined || prev.s !== r.s);
             // The rule marks the clock minute and nothing else. Session changes deliberately do
             // NOT draw one: in a project view with three live sessions the rows interleave, every
             // row would be a boundary, and a rule on every row is the grid this order removed.
             // A minute boundary can appear at most once a minute however the rows interleave.
-            const lead = newMinute && item.index > 0;
-            // The two per-kind treatments, resolved to booleans **here** rather than inline in
-            // the `className` below. `src/index.css.test.ts` reads every string literal out of a
-            // `className` expression, so an inline `r.k === "err" ? …` reports `.err` and `.appr`
-            // as classes with no rule and fails that gate — which it did, and it was right to:
-            // it cannot tell a comparison operand from a class name, and neither can a reader
-            // skimming the attribute.
-            const failed = r.k === "err";
-            const blocked = r.k === "appr";
+            // A revealed member never draws one either: it is inside a group, not between two.
+            const lead = newMinute && item.index > 0 && !line.nested;
             return (
               <div
                 key={item.key}
-                className={lead ? "feed-row lead" : "feed-row"}
+                className={
+                  line.nested ? "feed-row nested" : lead ? "feed-row lead" : "feed-row"
+                }
                 style={{ height: `${ROW_H}px`, transform: `translateY(${item.start}px)` }}
                 title={`${clock(r.t)}  ${r.l}`}
               >
@@ -330,10 +350,40 @@ export function Feed({ sessionId, projectId, projectName }: FeedProps) {
                   blanks template interpolations, so a computed class name is invisible to the gate
                   that proves every class has a hand-written rule, and would ship unstyled with no
                   error. Same reason `lead` is a ternary on the row above.
+
+                  The tone is decided in `src/feedGroups.ts` and named here. Nothing in that module
+                  knows a class name — the gate above only reads `.tsx`, so a class computed in a
+                  `.ts` file would bypass it entirely.
                 */}
-                <span className={failed ? "feed-line bad" : blocked ? "feed-line ask" : "feed-line"}>
+                <span
+                  className={
+                    line.tone === "bad"
+                      ? "feed-line bad"
+                      : line.tone === "ask"
+                        ? "feed-line ask"
+                        : line.tone === "quiet"
+                          ? "feed-line quiet"
+                          : "feed-line"
+                  }
+                >
                   {r.l}
                 </span>
+                {line.folded > 0 ? (
+                  <button
+                    type="button"
+                    className="feed-fold"
+                    aria-expanded={line.open}
+                    aria-label={
+                      line.open
+                        ? "collapse this group"
+                        : `show ${line.folded} more row${line.folded === 1 ? "" : "s"}`
+                    }
+                    onClick={() => toggleFold(line.key)}
+                  >
+                    {line.open ? null : `+${line.folded}`}
+                    <ChevronDownIcon />
+                  </button>
+                ) : null}
                 {newMinute || newSession ? (
                   <span className="feed-mark">
                     {newMinute ? <span className="mark-t">{hhmm(r.t)}</span> : null}
@@ -369,7 +419,7 @@ export function Feed({ sessionId, projectId, projectName }: FeedProps) {
                 : "Use the plus beside Projects in the sidebar to add a repository path."}
           </p>
         </div>
-      ) : rows.length === 0 ? (
+      ) : view.shown === 0 ? (
         <div className="thread-empty">
           <span className="mark" aria-hidden="true">
             <LinesMark />

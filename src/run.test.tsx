@@ -37,8 +37,13 @@ const h = vi.hoisted(() => ({
   /** What `current_run` answers, per project id. */
   runs: {} as Record<string, unknown>,
   intents: [] as unknown[],
-  /** Every `start_run` call, in order. */
-  started: [] as Array<{ projectId: string; goal: string }>,
+  /** Every `start_run` call, in order, with the picks that ride with it. */
+  started: [] as Array<{
+    projectId: string;
+    goal: string;
+    model: string | null;
+    permissionMode: string | null;
+  }>,
   stopped: [] as string[],
   settled: [] as Array<{ intentId: string; state: string }>,
 }));
@@ -99,8 +104,13 @@ vi.mock("./bridge", async (importOriginal) => {
     async pendingApprovals() {
       return [];
     },
-    async startRun(projectId: string, goal: string) {
-      h.started.push({ projectId, goal });
+    async startRun(
+      projectId: string,
+      goal: string,
+      model: string | null = null,
+      permissionMode: string | null = null,
+    ) {
+      h.started.push({ projectId, goal, model, permissionMode });
       const view = run({ project_id: projectId, goal });
       h.runs[projectId] = view;
       return view;
@@ -215,13 +225,49 @@ describe("starting a run", () => {
       await user.click(screen.getByRole("button", { name: "Start run" }));
     });
 
+    // The picks ride with the goal since R4.1. `model: null` is the untouched picker and is a
+    // real choice: the harness's role-based routing stays in charge, so judgement takes the
+    // provider's strong default and a work order takes its per-order tier. It must be `null` and
+    // not a sentinel — `start_run`'s `model` is an `Option<String>` and a placeholder would be
+    // handed straight to the CLI's `--model`, which refuses it.
     expect(h.started).toEqual([
-      { projectId: "p-live", goal: "Make the store durable across a crash" },
+      {
+        projectId: "p-live",
+        goal: "Make the store durable across a crash",
+        model: null,
+        permissionMode: "default",
+      },
     ]);
     // …and the plan it answered with is painted without waiting for a poll.
     const card = await screen.findByRole("region", { name: "the run" });
     expect(within(card).getByText("Make the store durable across a crash")).toBeInTheDocument();
     expect(within(card).getByText("Pin the intent tables")).toBeInTheDocument();
+  });
+
+  /**
+   * R4.1, end to end through the shell. `list_models` answers `[]` in this file's fake, so the
+   * model picker has only its no-pick entry — which is the case worth pinning here anyway: what
+   * `start_run` must never receive is a sentinel standing in for "no pick".
+   */
+  it("carries the permission mode the dock is showing", async () => {
+    const user = userEvent.setup();
+    await mountApp();
+
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: /permissions/i }),
+      "bypass-permissions",
+    );
+    await user.type(
+      screen.getByRole("textbox", { name: "the goal, in plain English" }),
+      "ship it",
+    );
+    await act(async () => {
+      await user.click(screen.getByRole("button", { name: "Start run" }));
+    });
+
+    expect(h.started).toEqual([
+      { projectId: "p-live", goal: "ship it", model: null, permissionMode: "bypass-permissions" },
+    ]);
   });
 
   it("will not send an empty goal", async () => {

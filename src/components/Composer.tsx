@@ -23,10 +23,19 @@
  */
 import { useEffect, useState } from "react";
 
-import { ModelIcon, PathIcon, ProjectIcon, SendIcon } from "./icons";
+import { SendIcon } from "./icons";
+import { Pickers } from "./Pickers";
+import { isSubmitKey } from "../keys";
 import { runIsLive } from "../wire";
 import type { SessionRuntime } from "../feedStore";
-import type { PlanId, RunView, SessionId, WorktreeCleanup } from "../wire";
+import type {
+  ModelInfo,
+  PermissionMode,
+  PlanId,
+  RunView,
+  SessionId,
+  WorktreeCleanup,
+} from "../wire";
 
 /* ------------------------------------------------------------------ the run
  *
@@ -55,73 +64,136 @@ export interface RunControlProps {
   run: RunView | null;
   /** An IPC call started here is in flight. */
   busy: boolean;
-  onStart: (goal: string) => void;
+  /** `list_models`, for the Model picker. Empty leaves only the no-pick entry, which is legal. */
+  models: ModelInfo[];
+  onStart: (goal: string, model: string | null, permissionMode: PermissionMode) => void;
   onStop: (planId: PlanId) => void;
 }
 
-export function RunControl({ projectName, canStart, run, busy, onStart, onStop }: RunControlProps) {
+/**
+ * The Model picker's empty entry, and the label is the whole point of R4.1.
+ *
+ * `null` is not a missing value here. It means the harness's role-based routing stays in charge —
+ * judgement takes the provider's strong default, a work order takes its per-order tier — and it
+ * is the better default, so it is what the control starts on. An unlabelled empty option would
+ * read as a field that failed to load; this says what choosing nothing does.
+ */
+const NO_MODEL_PICK = "Per role (no pick)";
+
+const MODEL_HINT =
+  "No pick leaves the harness's role-based routing in charge. A chosen model applies to every child of the run: planner, lead, worker and fixer alike.";
+
+export function RunControl({
+  projectName,
+  canStart,
+  run,
+  busy,
+  models,
+  onStart,
+  onStop,
+}: RunControlProps) {
   const [goal, setGoal] = useState("");
+  /** `""` is "no pick" and is the initial state; see `NO_MODEL_PICK`. */
+  const [model, setModel] = useState("");
+  const [mode, setMode] = useState<PermissionMode>("default");
   const live = runIsLive(run);
 
   const submit = () => {
     if (!canStart || busy || goal.trim() === "") return;
-    onStart(goal.trim());
+    // `null`, never `""` and never a sentinel: `start_run`'s `model` is an `Option<String>` and a
+    // placeholder string would be handed straight to the CLI's `--model`, which refuses it.
+    onStart(goal.trim(), model === "" ? null : model, mode);
     setGoal("");
   };
 
+  /*
+   * R2, 2026-09-05: this renders **the dock's own box**, not a strip of its own. `src/components/
+   * Dock.tsx` owns the frame, the context strip and the chooser that selects this mode; the two
+   * text fields the owner counted are now one field whose meaning is named above it. The
+   * `aria-label` and the two button labels are unchanged, because `src/run.test.tsx` pins the
+   * seam between this control and `start_run` by name and that seam did not move.
+   */
   if (live && run !== null) {
     return (
-      <section className="run-dock" aria-label="the live run">
-        <span className="run-dock-status">Run live</span>
-        <span className="run-dock-goal" title={run.goal}>
-          {run.goal}
-        </span>
-        <button
-          type="button"
-          className="act danger"
-          disabled={busy}
-          title="stop dispatching new orders; in-flight orders finish and are collected"
-          onClick={() => onStop(run.plan_id)}
-        >
-          Stop run
-        </button>
-      </section>
+      <div className="dock-box">
+        <p className="dock-live">
+          <span className="run-dock-status">Run live</span>
+          <span className="run-dock-goal" title={run.goal}>
+            {run.goal}
+          </span>
+        </p>
+        <div className="dock-actions">
+          <span className="status-chip live">dispatching</span>
+          <span className="grow" />
+          <button
+            type="button"
+            className="act danger"
+            disabled={busy}
+            title="stop dispatching new orders; in-flight orders finish and are collected"
+            onClick={() => onStop(run.plan_id)}
+          >
+            Stop run
+          </button>
+        </div>
+      </div>
     );
   }
 
   return (
-    <section className="run-dock" aria-label="start a run">
-      <input
-        className="run-dock-input"
+    <div className="dock-box">
+      <textarea
+        rows={2}
         value={goal}
         aria-label="the goal, in plain English"
         placeholder={
           projectName === null
             ? "Select a project to hand it a goal"
-            : `Hand ${projectName} a goal in plain English, and walk away`
+            : `Hand ${projectName} a goal in plain English and walk away. Return to start, Shift+Return for a new line.`
         }
         disabled={!canStart || busy}
         onChange={(e) => setGoal(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === "Enter") submit();
+          if (isSubmitKey(e)) {
+            e.preventDefault();
+            submit();
+          }
         }}
       />
-      <button
-        type="button"
-        className="send wide"
-        disabled={!canStart || busy || goal.trim() === ""}
-        onClick={submit}
-      >
-        Start run
-      </button>
-    </section>
+      <div className="dock-actions">
+        <span className="status-chip">
+          {projectName === null ? "No project selected" : "plan · dispatch · gate · commit"}
+        </span>
+        <span className="grow" />
+        {/*
+          R4.1: these reached nothing until `start_run` grew a `model` and a `permission_mode`,
+          and they were drawn only on Session, so the run silently took the CLI's default while
+          the dock said otherwise. A chosen model applies to **every** child of the run.
+        */}
+        <Pickers
+          models={models}
+          model={model}
+          onModel={setModel}
+          mode={mode}
+          onMode={setMode}
+          disabled={!canStart || busy}
+          noPickLabel={NO_MODEL_PICK}
+          modelHint={MODEL_HINT}
+        />
+        <button
+          type="button"
+          className="send wide"
+          disabled={!canStart || busy || goal.trim() === ""}
+          onClick={submit}
+        >
+          Start run
+        </button>
+      </div>
+    </div>
   );
 }
 
 export interface ComposerProps {
   session: SessionRuntime | null;
-  /** The project the session belongs to, for the context strip. */
-  projectName: string | null;
   /** An IPC call started by this dock is in flight; both secondary actions go inert. */
   busy: boolean;
   onSend: (sessionId: SessionId, text: string) => void;
@@ -133,15 +205,8 @@ export interface ComposerProps {
   onCleanup: (sessionId: SessionId, force: boolean) => Promise<WorktreeCleanup | null>;
 }
 
-/** Last path segment, so a long cwd does not crowd the strip out. Full path stays in `title`. */
-function basename(path: string): string {
-  const parts = path.split("/").filter((p) => p !== "");
-  return parts.length === 0 ? path : parts[parts.length - 1]!;
-}
-
 export function Composer({
   session,
-  projectName,
   busy,
   onSend,
   onInterrupt,
@@ -380,42 +445,30 @@ export function Composer({
         ? "status-chip live"
         : "status-chip";
 
+  /*
+   * R2, 2026-09-05: the `.dock` frame and the context strip moved to `src/components/Dock.tsx`,
+   * which draws them once for all three modes instead of once per composer. Everything below —
+   * the box, the action row, the refusal notes and the usage line — is unchanged and still this
+   * component's.
+   */
   return (
-    <section className="dock">
-      <div className="dock-context">
-        <span title={projectName ?? undefined}>
-          <span className="glyph">
-            <ProjectIcon />
-          </span>
-          {projectName ?? "no project"}
-        </span>
-        {session?.cwd != null ? (
-          <span title={session.cwd}>
-            <span className="glyph">
-              <PathIcon />
-            </span>
-            {basename(session.cwd)}
-          </span>
-        ) : null}
-        {session?.model != null ? (
-          <span title={session.model}>
-            <span className="glyph">
-              <ModelIcon />
-            </span>
-            {session.model}
-          </span>
-        ) : null}
-      </div>
-
+    <>
       <div className="dock-box">
         <textarea
           rows={2}
           value={text}
-          placeholder={live ? "Next turn. Cmd+Return to send." : "Select a running session"}
+          placeholder={
+            live
+              ? "Next turn. Return to send, Shift+Return for a new line."
+              : "Select a running session"
+          }
           disabled={!live}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send();
+            if (isSubmitKey(e)) {
+              e.preventDefault();
+              send();
+            }
           }}
         />
         <div className="dock-actions">
@@ -523,6 +576,6 @@ export function Composer({
           {session.lastMessage !== null ? ` · ${session.lastMessage}` : ""}
         </div>
       ) : null}
-    </section>
+    </>
   );
 }

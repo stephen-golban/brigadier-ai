@@ -954,6 +954,116 @@ textarea:disabled {
   color: var(--color-text);
 }
 
+/*
+ * Delete, on a project row and on a session row. Same hover-revealed treatment as `.side-reveal`
+ * beside it and for the same reason — a secondary action on every row in a list of forty — with
+ * one difference: it goes red on hover, because it is the only control in this sidebar that
+ * destroys something. `--color-bad` is the token the failed flag and the bad avatar already use.
+ *
+ * Not hidden with `display` or `visibility`: it stays in the accessible tree and stays tabbable,
+ * and `:focus-visible` is what makes that honest.
+ */
+.side-delete {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  margin-right: 6px;
+  border-radius: var(--radius-xs);
+  color: var(--color-text-muted-side);
+  opacity: 0;
+  transition:
+    opacity var(--dur-fast) var(--ease),
+    background-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+
+.side-project:hover .side-delete,
+.side-session:hover .side-delete,
+.side-delete:focus-visible,
+.side-delete[aria-expanded="true"] {
+  opacity: 1;
+}
+
+.side-delete:hover:not(:disabled) {
+  background: rgba(239, 106, 99, 0.16);
+  color: var(--color-bad);
+}
+
+.side-delete:disabled {
+  opacity: 0.4;
+}
+
+/*
+ * What a delete is about to do, or what it refused to do, under the row it belongs to.
+ *
+ * It is prose in a 240px column and it is deliberately not abbreviated: the four things this note
+ * has to be able to say — a live session must be ended first, a dirty or unmerged worktree
+ * refused and nothing was touched, the branch survives and is named, and a project's worktree
+ * pass stopped part-way with some checkouts already gone — are each a sentence, and a sidebar
+ * that shortened them into a code would be handing the owner a puzzle at the one moment he is
+ * about to destroy something.
+ *
+ * `.bad` is the refusal colouring, matching `.side-add-error`: red is what a refusal reads as
+ * everywhere else in this window.
+ */
+.side-delete-note {
+  margin: 2px 8px 6px;
+  padding: 6px 8px;
+  border-radius: var(--radius-xs);
+  background: var(--color-sidebar-hover);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+  color: var(--color-text-sidebar);
+  overflow-wrap: anywhere;
+}
+
+.side-delete-note.bad {
+  color: var(--color-bad);
+}
+
+.side-delete-note p {
+  margin: 0 0 6px;
+}
+
+.side-delete-note code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+
+/* The buttons sit on the text rather than in an action row, as `.dock-note .act` does. */
+.side-delete-acts {
+  margin-bottom: 0;
+}
+
+.side-delete-note .act {
+  height: 22px;
+  padding: 0 8px;
+  vertical-align: middle;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--color-text-sidebar);
+}
+
+/*
+ * Every session a project delete attempted, one per line, including the one that refused.
+ *
+ * `delete_project`'s database half is all-or-nothing and its worktree half is not: checkouts go
+ * one at a time before any row is touched, and the ones removed before the refusal **stay
+ * removed**. One summary line over that array would be the false report this list exists to
+ * prevent, so the list is not collapsible and has no "and N more".
+ */
+.side-delete-list {
+  margin: 0 0 6px;
+  padding-left: 14px;
+  list-style: disc;
+}
+
+.side-delete-list li {
+  margin-bottom: 2px;
+}
+
 /* Dev-only burn panel, above the status bar. */
 .side-dev {
   flex: 0 0 auto;
@@ -1343,10 +1453,13 @@ textarea:disabled {
 }
 
 /*
- * The two per-kind treatments W4-D1 asked for and could not have. Both are driven by
- * `FeedRowWire.k` and neither reads a character of the line. There is no third: a kind that wants
- * a colour of its own has to earn it, and ten differently-tinted greys are the log table this
- * wave removed, in colour.
+ * The two per-kind treatments W4-D1 asked for and could not have. **A third joined them on
+ * 2026-09-05 (`.feed-line.quiet`, below) and one of these two widened**: `bad` now also covers a
+ * failed tool result, which is `k === "tool"` on the wire — `crates/store/src/feed.rs` maps
+ * `ItemKind::ToolResult` to `FeedKind::Tool` whichever way `is_error` reads and puts the
+ * difference in the label, so `src/feedGroups.ts` reads the label for it and says so. The rule
+ * the old sentence was defending still stands: a kind that wants a colour of its own has to earn
+ * it, and ten differently-tinted greys are the log table this wave removed, in colour.
  *
  * **A failure is not the same grey as a successful tool call.** `--color-bad` #ef6a63 —
  * **5.846:1** on `--color-thread-bg` #181818 and **5.110:1** on the hovered row's #242424, both
@@ -1376,6 +1489,82 @@ textarea:disabled {
 .feed-line.ask {
   color: var(--color-text);
   font-weight: 600;
+}
+
+/*
+ * R2, 2026-09-05. **A reasoning row is the least informative line in the pane**, and after the
+ * fold there is at most one of them per block (`src/feedGroups.ts`). It stays — hiding it would
+ * remove information rather than prose, which is the argument W4-D2 made for not putting `think`
+ * behind the verbose toggle — but it stops competing with the rows around it.
+ *
+ * `--color-text-muted` #848484: **4.75:1** on `--color-thread-bg` #181818 and **4.18:1** on the
+ * hovered row's #242424. The second pair is under AA for normal text, so hover is overridden the
+ * way `.feed-line.bad` overrides it — a quiet row lifts to the full reading colour under the
+ * pointer instead of staying at a ratio it cannot hold. That is the inverse of the failure row's
+ * treatment and it is deliberate: red carries meaning that hover must not erase, grey carries
+ * only de-emphasis, which hover is entitled to lift.
+ */
+.feed-line.quiet {
+  color: var(--color-text-muted);
+}
+
+/*
+ * The fold affordance. Present only on a line that has members under it, which after the fold is
+ * a minority of rows, so the column's right edge stays as ragged as the line lengths already make
+ * it rather than gaining a second column of controls.
+ *
+ * `+2` in mono because it is a count, and the chevron beside it because a count alone does not say
+ * it is a control. `flex: 0 0 auto`, so the line ellipsizes against it rather than pushing it off
+ * the row; the row's height is fixed by `--feed-row-h` and nothing here can reflow it.
+ *
+ * `--color-feed-mark` #979797 is the margin's own token: **6.079:1** on `--color-thread-bg` and
+ * **5.344:1** on the hovered row's #242424 (both already derived where the token is defined), and
+ * it lifts to the full reading colour on hover, which is over 3:1 either way for WCAG 1.4.11.
+ */
+.feed-fold {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  margin-left: 8px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--color-feed-mark);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: 1;
+  transition:
+    background-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+
+.feed-fold:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--color-text);
+}
+
+/* Rotated rather than swapped for a second path: an open group and a closed one draw the same
+   ink, which is what makes the state read as one control rather than two icons. */
+.feed-fold svg {
+  transition: transform var(--dur) var(--ease);
+}
+
+.feed-fold[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+
+/*
+ * A member revealed by an open fold. Indented by the width of the affordance that revealed it, so
+ * the eye can see where the group starts and stops without a bracket, a rule or a second surface.
+ *
+ * It draws no minute rule even on a minute boundary (`Feed.tsx` suppresses `lead` on these): the
+ * rule marks a boundary *between* groups, and one drawn inside an open group would read as the
+ * group having ended.
+ */
+.feed-row.nested .feed-line {
+  padding-left: 18px;
 }
 
 /*
@@ -1524,12 +1713,46 @@ textarea:disabled {
   padding-bottom: 4px;
 }
 
+/*
+ * R2, 2026-09-05. **The card is a column whose middle is the only thing that yields.**
+ *
+ * `docs/STATUS.md` §5 defect 3 predicted this and could not confirm it — the store's one approval
+ * was already resolved and `pending_approvals` came back empty, so it shipped on a Chromium-plus-
+ * mock measurement. The owner confirmed it in a real window on 2026-09-04: `Waiting on you ·
+ * 1 open` with **Allow and Deny below the fold**, needing a scroll inside the dock, and he said he
+ * mostly did not notice it. A decision the operator does not see is the same failure as one that
+ * did not land, and this is the one surface in the product that is never optimistic.
+ *
+ * `flex: 0 0 auto` on the head and on `.approval-actions`, `flex: 1 1 auto; min-height: 0` on
+ * `.approval-body`: what a squeezed card loses is excerpt, never the decision. `.approvals-body`
+ * above still scrolls between cards when several are open, so the first card's buttons are
+ * reachable without a scroll and the rest are one scroll away — which is the ordering that
+ * matters, because the store sorts oldest first.
+ */
 .approval {
+  display: flex;
+  flex-direction: column;
+  /* The floor that makes "reachable without scrolling" a guarantee rather than an aspiration.
+     Derived from the rules below, not measured: 20px of padding + 2px of border + ~20px of head +
+     28px of `.act` + 10px of its margin = 80, plus a few px of body. Under this the card stops
+     shrinking and `.approvals-body` scrolls between cards instead — which is the right failure,
+     because a card crushed below its own decision is the defect this section is fixing. */
+  min-height: 84px;
   background: var(--color-surface);
   border: 1px solid var(--color-line);
   border-radius: var(--radius-md);
   padding: 10px 12px;
   font-size: 13px;
+}
+
+/* The detail. The only part of a card that yields, and it scrolls what it yields rather than
+   clipping it. `overscroll-behavior` keeps a flick inside the excerpt from scrolling the dock
+   behind it and moving the buttons out from under the pointer. */
+.approval-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .approval.expired {
@@ -1540,7 +1763,9 @@ textarea:disabled {
   border-left: 2px solid var(--color-accent);
 }
 
+/* Fixed, so a squeezed card keeps the name of the tool it is asking about. */
 .approval-head {
+  flex: 0 0 auto;
   display: flex;
   align-items: baseline;
   gap: 8px;
@@ -1563,7 +1788,11 @@ textarea:disabled {
   border-radius: var(--radius-row);
   margin: 8px 0 0;
   padding: 8px 10px;
-  max-height: 160px;
+  /* 160 -> 120 [derived 2026-09-05]. At the window's 800x500 minimum an open approval leaves the
+     card about 110px of its own, so a 160px excerpt was on its own taller than everything the
+     card had — it is the block that pushed Allow and Deny under the fold. `.approval-body`
+     scrolls whatever this still cannot show, so nothing is lost, only deferred. */
+  max-height: 120px;
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
@@ -1591,9 +1820,14 @@ textarea:disabled {
   color: var(--color-text-muted);
 }
 
+/* Fixed, and the reason the card is a flex column at all: **the decision never scrolls away.**
+   `flex-wrap` so that at the 800px minimum, where the deny-reason field shares the row with two
+   buttons, the row grows a second line instead of pushing Confirm deny off the right edge. */
 .approval-actions {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 10px;
 }
@@ -1629,6 +1863,32 @@ textarea:disabled {
  * token, no animation, no icon, one border and the type scale that is already here.
  */
 
+/*
+ * R2, 2026-09-05. **`min-height: 0` let this card be squeezed smaller than its own collapsed
+ * line, and the line then painted on top of the feed's band.** Two screenshots from the owner's
+ * first drive show `no phases yet` sitting over the `verbose` pill and the `N rows` counter in
+ * the top right.
+ *
+ * The mechanism, and it is not the band's fault: `.feed` already reserves the band's 20px with
+ * `padding-top`, so in normal flow the two never meet. This card is `flex: 0 1 auto` with
+ * `min-height: 0`, which is the pair that lets a flex item shrink past its content — and it has
+ * no `overflow`, so what it was squeezed out of it drew anyway, over the next item.
+ *
+ * Both halves are fixed rather than one:
+ *
+ *   - **`min-height: 38px`** is the collapsed line's own height, derived from the rules below:
+ *     `.run-toggle` is 11px text at `line-height: 1.45` (15.95) + 4px padding + 2px border = 22,
+ *     `.run-line` adds 4 + 4, this card adds its 8px `padding-top`. So the one line the card is
+ *     "collapsible to" (`docs/vision.md` §9) is now a floor it cannot be pushed under.
+ *   - **`overflow: hidden`** is the guarantee, for every case the floor does not cover — a
+ *     twelve-phase checklist, a long unsettled-intent list, a future row nobody has written yet.
+ *     Content the card cannot show is clipped at its own edge instead of painting over the feed.
+ *     Nothing that matters is clipped by it: `.run-phases` and `.run-intent-list` both scroll
+ *     inside the card, which is where anything that does not fit actually goes.
+ *
+ * Not verified in a real window. jsdom has no layout, so `src/layout.test.ts` pins these
+ * declarations and nothing more; the pixels need a human.
+ */
 .run-card {
   flex: 0 1 auto;
   width: 100%;
@@ -1637,7 +1897,8 @@ textarea:disabled {
   padding: 8px 16px 0;
   display: flex;
   flex-direction: column;
-  min-height: 0;
+  min-height: 38px;
+  overflow: hidden;
   font-size: var(--fs-md);
 }
 
@@ -1868,8 +2129,15 @@ textarea:disabled {
  * anything. So: no card, no `--color-surface` panel, no accent rail. A rule, a sentence and two
  * plain `.act` buttons.
  */
+/* `0 1 auto` since 2026-09-05, paired with `overflow: hidden` on the card: it was `0 0 auto`, so
+   in a short window a long intent list was the one block that could neither shrink nor scroll and
+   had to go somewhere — over the feed. It yields now, and `.run-intent-list` scrolls what it
+   yields. */
 .run-intents {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   margin-top: 8px;
   padding-top: 8px;
   border-top: 1px solid var(--color-line);
@@ -1888,6 +2156,8 @@ textarea:disabled {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  overflow-y: auto;
+  min-height: 0;
 }
 
 .run-intent {
@@ -1932,33 +2202,16 @@ textarea:disabled {
 
 /* ------------------------------------------------------------- run dock */
 
-/* The strip that hands the harness a goal, on the same centred column as the composer below it. */
-.run-dock {
-  flex: 0 0 auto;
-  width: 100%;
-  max-width: var(--thread-max);
-  margin: 0 auto;
-  padding: 8px 16px 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.run-dock-input {
-  flex: 1 1 auto;
-  min-width: 0;
-  height: 32px;
-  padding: 0 12px;
-  background: var(--color-composer-bg);
-  border: 1px solid var(--color-line);
-  border-radius: var(--radius-row);
-  font-size: var(--fs-md);
-}
-
-.run-dock-input::placeholder {
-  color: var(--color-text-placeholder);
-}
+/*
+ * **The 40px strip that used to sit here is gone**, and with it `.run-dock` and
+ * `.run-dock-input`. R2, 2026-09-05: it was one of the two stacked text fields the owner counted,
+ * and the run now shares the composer's own box, chosen by name on the strip above it
+ * (`.dock-modes`). What survives is the pair of spans the live-run state prints, because a live
+ * run has no field and says so instead.
+ *
+ * That is ~40px handed back to `.approvals`, which is the surface that had nowhere to put its
+ * Allow and Deny buttons at the window's 800x500 minimum.
+ */
 
 .run-dock-status {
   flex: 0 0 auto;
@@ -2023,6 +2276,60 @@ textarea:disabled {
   color: var(--color-text-muted);
 }
 
+/* Pushes the mode chooser to the right end of the strip. The context spans keep `min-width: 0`
+   and ellipsize, so a long path yields to the chooser rather than pushing it off the row. */
+.dock-context .grow {
+  flex: 1 1 auto;
+  min-width: 8px;
+}
+
+/*
+ * The chooser: what pressing Return does.
+ *
+ * R2, 2026-09-05. It rides **inside** the context strip rather than on a row of its own, and that
+ * is the whole reason the merge costs no height: the strip is a measured 38px that was carrying
+ * three labels and a lot of air. Removing the run strip and adding this is a net ~40px handed
+ * back to the approvals dock.
+ *
+ * `aria-pressed`, not a radio group: three buttons that change what one control below them does
+ * is what a toggle button is, and `role="radiogroup"` would promise arrow-key roving that is not
+ * implemented. The pressed one takes the composer's own surface as a fill so the group reads as a
+ * segmented control without a border of its own.
+ */
+.dock-modes {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.22);
+}
+
+/* --color-text-muted #848484 is 4.407:1 on --color-rail-bg, which the strip's own glyph rule
+   already derives; the pressed state lifts to --color-text-sidebar #e1e1e1 on the composer fill. */
+.dock-mode {
+  flex: 0 0 auto;
+  height: 22px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: var(--fs-sm);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+  transition:
+    background-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+
+.dock-mode:hover {
+  color: var(--color-text);
+}
+
+.dock-mode[aria-pressed="true"] {
+  background: var(--color-composer-bg);
+  color: var(--color-text-sidebar);
+}
+
 .dock-box {
   position: relative;
   background: var(--color-composer-bg);
@@ -2044,6 +2351,19 @@ textarea:disabled {
 
 .dock-box textarea::placeholder {
   color: var(--color-text-placeholder);
+}
+
+/* What a live run shows where the goal field would be. `start_run` refuses a second run on the
+   same project with `run_already_live`, so there is nothing to type and no field is drawn; the
+   goal and the Stop control take the space instead, at the same height the textarea had. */
+.dock-live {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-height: 44px;
+  margin: 0;
+  padding: 12px 4px 8px;
+  min-width: 0;
 }
 
 .dock-actions {
@@ -2405,6 +2725,52 @@ textarea:disabled {
     overflow: hidden;
     clip-path: inset(50%);
     white-space: nowrap;
+  }
+}
+
+/*
+ * The vertical budget at the window's own minimum, 800x500 (`src-tauri/tauri.conf.json`).
+ *
+ * R2, 2026-09-05, and it exists for one row of pixels: **Allow and Deny.** The owner confirmed in
+ * a real window that an open approval put both buttons below the fold of the dock, and said he
+ * mostly did not notice the card at all. The rules above make the card's head and its action row
+ * fixed and its excerpt the only thing that yields — that is the structural half — but structure
+ * cannot conjure height, and at 500px the column is genuinely oversubscribed.
+ *
+ * The arithmetic, all **[derived]** from the declarations in this file, none of it measured:
+ *
+ *     500  window minimum
+ *   -  52  .thread-head          --head-h
+ *   -  38  .run-card             its new floor: the collapsed line and nothing less
+ *   - 104  .feed                 20px band + 3 x 28px rows  (this block; 132 = 4 rows otherwise)
+ *   - 160  .dock                 26 padding + 28 context strip + 106 box
+ *   -----
+ *     146  .approvals
+ *   -  29  .approvals-head       12px at 1.45 + 6px padding twice
+ *   -   4  .approvals-body       padding-bottom
+ *   -----
+ *     113  one .approval, against the 84 it needs for head + decision
+ *
+ * So the decision fits with ~33px of excerpt showing, and `.approval-body` scrolls the rest of
+ * the excerpt rather than pushing the buttons anywhere. **Not verified in a real window** — jsdom
+ * has no layout and this arithmetic is a model of the box model, not a measurement of it;
+ * `src/layout.test.ts` pins the declarations and says the same thing about what it cannot prove.
+ *
+ * **What this trades, stated rather than hidden:** the feed shows three rows instead of four at
+ * this one window size. It stays a whole number of rows — W4-D2's 132 was chosen as 20 + 4x28
+ * precisely so no row is cut through its glyphs, and 104 is 20 + 3x28 for the same reason. Above
+ * 560px nothing here applies and the feed keeps its four.
+ */
+@media (max-height: 560px) {
+  .feed {
+    min-height: 104px;
+  }
+
+  /* At this height the excerpt's own 120px ceiling is more than the whole card has. It is the
+     detail; the decision is the point. */
+  .excerpt,
+  .suggestion {
+    max-height: 72px;
   }
 }
 
