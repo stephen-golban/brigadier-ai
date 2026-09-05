@@ -99,6 +99,8 @@ pub(super) async fn run(
             base_sha: base_sha.to_owned(),
             turn_deadline: run.limits.worker_turn_deadline,
             quiet_deadline: run.limits.worker_quiet_deadline,
+            model: run.model.clone(),
+            permission_mode: run.permission_mode.clone(),
         };
         let permits = Arc::clone(&permits);
         set.spawn(async move {
@@ -142,6 +144,12 @@ struct OrderCtx {
     base_sha: String,
     turn_deadline: std::time::Duration,
     quiet_deadline: std::time::Duration,
+    /// The run's model pick, or `None` to let the order's own tier decide.
+    model: Option<String>,
+    /// The run's permission mode, which for a worker reaches the flag but **not** the hook: a
+    /// worker is always behind `WorkerWall`, whatever the mode
+    /// (`docs/research/permission-modes.md` §5).
+    permission_mode: brigadier_core::driver::PermissionMode,
 }
 
 async fn one(ctx: OrderCtx, order: Order) -> Result<(Collected, Vec<String>), LoopError> {
@@ -206,7 +214,14 @@ async fn one(ctx: OrderCtx, order: Order) -> Result<(Collected, Vec<String>), Lo
             turn_deadline: ctx.turn_deadline,
             quiet_deadline: ctx.quiet_deadline,
             thinking: tier_thinking(order.model_tier),
-            model: None,
+            // The owner's pick wins; with none, `docs/vision.md` §6's role-based routing does the
+            // choosing and the lead's tier finally reaches something. `opus`, `sonnet` and
+            // `haiku` are the CLI's own aliases (`docs/research/permission-modes.md` §2).
+            model: ctx
+                .model
+                .clone()
+                .or_else(|| Some(order.model_tier.as_slug().to_owned())),
+            permission_mode: ctx.permission_mode.clone(),
         })
         .await?;
 

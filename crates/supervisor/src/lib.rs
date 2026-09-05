@@ -25,6 +25,7 @@ pub mod action;
 pub mod batcher;
 pub mod error;
 pub mod loop_;
+pub mod removal;
 pub mod replay;
 pub mod sink;
 pub mod tracker;
@@ -52,6 +53,7 @@ use tokio::task::JoinHandle;
 
 pub use crate::batcher::{Batcher, DEFAULT_FRAME_INTERVAL, MAX_MESSAGE_BYTES, MAX_ROWS_PER_MESSAGE};
 pub use crate::error::SupervisorError;
+pub use crate::removal::{ProjectDeletion, SessionDeletion, SessionWorktree};
 pub use crate::replay::ReplayDriver;
 pub use crate::sink::{FeedSink, SinkError, VecSink};
 pub use crate::tracker::{NoopTracker, ProcessTracker};
@@ -660,6 +662,7 @@ impl Supervisor {
         // request that arrived with `Inherit` for an `Off` project is overridden here.
         // see docs/research/spawn-split.md §6.
         req.mcp = project.mcp;
+        let wheref_was_fresh = matches!(wheref, SpawnIn::FreshWorktree);
         let (prepared, mut branch) = match wheref {
             SpawnIn::FreshWorktree => {
                 let prepared = worktree::prepare(&project.root_path).await?;
@@ -680,6 +683,33 @@ impl Supervisor {
         }
         let cwd = req.cwd.clone();
         let model = req.model.clone();
+
+        // **The one place a permission mode becomes a hook policy for a caller that did not pick
+        // one.** brigadier's `PreToolUse` hook runs *before* the CLI consults `--permission-mode`
+        // (`docs/research/approvals.md` §5), so leaving an inherited request on the driver's
+        // `AskGatedTools` made every mode behave like `default` — a picker that could not stop
+        // the prompts. `PermissionMode::Default` still resolves to `AskGatedTools`, so nothing
+        // about the default path changes.
+        //
+        // `Interactive` only when a worktree was actually cut. `worktree::prepare` answers
+        // `Ok(None)` for a project that is not a repository, and the child then runs in the
+        // **owner's own checkout** — where a permissive mode must not remove the write gate
+        // (`docs/vision.md` §11: the worktree *is* the isolation). A `Prepared` spawn that
+        // arrives with no policy of its own is a caller that has not said where it is standing,
+        // and is answered with the strictest scope rather than a guess; the loop's own calls
+        // always set one explicitly (`loop_/call.rs`).
+        // see docs/research/permission-modes.md §4-§5.
+        if req.hook_policy.policy().is_none() {
+            let scope = if wheref_was_fresh && prepared.is_some() {
+                brigadier_core::claude::hook::HookScope::Interactive { root: cwd.clone() }
+            } else {
+                brigadier_core::claude::hook::HookScope::Judgement
+            };
+            req.hook_policy = brigadier_core::driver::HookOverride::new(
+                brigadier_core::claude::hook::policy_for(&req.permission_mode, &scope),
+            );
+        }
+
         let handle = match driver.start_session(req).await {
             Ok(handle) => handle,
             Err(e) => {
@@ -1125,9 +1155,299 @@ impl Supervisor {
         }
     }
 
+    // ---- deletion ------------------------------------------------------------------------
+
+    /// Remove one session from the machine: its rows, its raw log, its pid record and its
+    /// worktree. The branch survives.
+    ///
+    /// `docs/vision.md` §8, verbatim: *"deleting a session destroys nothing that matters. The
+    /// work is in the repository; only the narration goes."* That is true only because of the
+    /// two things this method does not do — it does not delete a branch, and it does not proceed
+    /// over a worktree that refused.
+    ///
+    /// ## Order, and why it is that order
+    ///
+    /// 1. refuse if a child is on the other end;
+    /// 2. [`Supervisor::cleanup_worktree`], which is **reused, never reimplemented**: it already
+    ///    encodes six measured refusals and four fixed defects, `git worktree remove` without
+    ///    `--force` deletes gitignored files at exit 0, and `removed: true` was a lie until it was
+    ///    made conditional on the path going away;
+    /// 3. only then the rows;
+    /// 4. then the pid record and the raw log.
+    ///
+    /// Worktree before rows is deliberate. If step 3 fails, the row still names the branch and a
+    /// second call finishes the job — `cleanup_worktree` is idempotent. Rows first would delete
+    /// the only record of *which branch* holds the work, and leave a checkout on disk that
+    /// nothing points at.
+    ///
+    /// ## Unmerged commits: refuse, do not snapshot
+    ///
+    /// A branch carrying commits no other ref keeps comes back as
+    /// [`crate::worktree::CleanupBlocked::Commits`] and **the delete stops there**, having
+    /// touched nothing. That is a refusal rather than a snapshot-to-a-ref because a snapshot
+    /// would duplicate a ref that already exists: no path in this crate deletes a branch, so
+    /// those commits are already safe under `brigadier/<id>` and always will be. What a delete
+    /// actually destroys is brigadier's *record of which branch that is* — so the refusal's job
+    /// is to put the branch name in front of the operator first, and
+    /// [`SessionDeletion::branch`] carries it on the refusal and on the success alike.
+    ///
+    /// `force = true` proceeds, and it is the caller's explicit ask; it still keeps the branch.
+    /// The count itself comes from `git rev-list --count`, never from `git`'s `cherry`
+    /// subcommand, which is measurably wrong in both directions.
+    ///
+    /// # Errors
+    /// [`SupervisorError::NoSuchSession`] when the store has no such row,
+    /// [`SupervisorError::SessionLive`] when a child is still running in it or a resume of it is
+    /// in flight, [`SupervisorError::InvalidArgument`] when the session records a worktree but no
+    /// project to resolve the repository from, [`SupervisorError::Worktree`] for a git failure,
+    /// and [`SupervisorError::Store`] — including `DeleteIncomplete`, which means **nothing was
+    /// deleted** — for the database half.
+    // see docs/vision.md §8, docs/research/worktree-cleanup.md §2 and "Hard rules" 2, 3 and 6.
+    pub async fn delete_session(
+        &self,
+        session_id: &SessionId,
+        force: bool,
+    ) -> Result<SessionDeletion, SupervisorError> {
+        let record = self.session(session_id).await?.ok_or(SupervisorError::NoSuchSession)?;
+        // `is_engaged`, not `is_live`: a reserved-but-unspawned resume is about to run a child in
+        // the directory this call would remove.
+        if self.inner.is_engaged(session_id) {
+            return Err(SupervisorError::SessionLive(format!(
+                "session {session_id} is still live; end it or kill it before deleting it"
+            )));
+        }
+        let branch = record.branch.clone();
+        let mut worktree = None;
+        if record.worktree_path.is_some() {
+            let cleanup = self.cleanup_worktree(session_id, force).await?;
+            if cleanup.blocked.is_some() {
+                tracing::info!(
+                    session_id = session_id.as_str(),
+                    blocked = ?cleanup.blocked,
+                    "refusing to delete a session whose worktree refused"
+                );
+                return Ok(SessionDeletion {
+                    session_id: session_id.as_str().to_owned(),
+                    removed: false,
+                    rows: brigadier_store::Deleted::default(),
+                    worktree: Some(cleanup),
+                    logs_removed: 0,
+                    branch,
+                });
+            }
+            worktree = Some(cleanup);
+        }
+        let rows = self
+            .inner
+            .store
+            .delete_session(session_id.clone())
+            .await?
+            .map(|outcome| outcome.rows)
+            .unwrap_or_default();
+        self.inner.tracker.untrack(session_id);
+        let logs_removed = removal::remove_logs(&self.inner.data_dir, session_id);
+        tracing::info!(
+            session_id = session_id.as_str(),
+            feed_rows = rows.feed,
+            logs_removed,
+            branch = branch.as_deref().unwrap_or("-"),
+            "session deleted"
+        );
+        Ok(SessionDeletion {
+            session_id: session_id.as_str().to_owned(),
+            removed: true,
+            rows,
+            worktree,
+            logs_removed,
+            branch,
+        })
+    }
+
+    /// Remove one project and everything under it: every session, their rows, logs and
+    /// worktrees, and the whole plan tree.
+    ///
+    /// One `DELETE FROM projects` does the database half, because the schema already says what
+    /// depends on what — with the one documented exception that `work_orders.session_id` is
+    /// `ON DELETE SET NULL` rather than a cascade, so a plan's record that an order was
+    /// dispatched outlives the session that ran it. That exception is honoured, not corrected;
+    /// [`brigadier_store::Deleted::work_orders_orphaned`] counts what it kept.
+    ///
+    /// ## What refuses, and what a refusal costs
+    ///
+    /// **Every** session's liveness is checked before anything at all is touched, so a project
+    /// with one live session refuses whole rather than deleting the other forty and then
+    /// stopping. After that, worktrees are removed one session at a time through
+    /// [`Supervisor::cleanup_worktree`], and the **first refusal ends the pass**: no rows are
+    /// deleted, and [`ProjectDeletion::worktrees`] lists what happened to each session up to
+    /// that point. Checkouts removed before the refusal stay removed — their branches survive,
+    /// so nothing is lost — and the report is what says so rather than an "all done" that would
+    /// be false.
+    ///
+    /// The project's `.brigadier/` directory is removed **only if it is empty**, and its line in
+    /// `$GIT_COMMON_DIR/info/exclude` is left alone: that file is the operator's.
+    ///
+    /// # Errors
+    /// [`SupervisorError::NoSuchProject`], [`SupervisorError::SessionLive`] naming the sessions
+    /// that are live, [`SupervisorError::Worktree`] for a git failure, and
+    /// [`SupervisorError::Store`] for the database half.
+    // see docs/vision.md §8 and the migration 4 comment in `crates/store/src/schema.rs`.
+    pub async fn delete_project(
+        &self,
+        project_id: &str,
+        force: bool,
+    ) -> Result<ProjectDeletion, SupervisorError> {
+        let project = self.project(project_id).await?.ok_or(SupervisorError::NoSuchProject)?;
+        let sessions: Vec<SessionRecord> = self
+            .list_sessions()
+            .await?
+            .into_iter()
+            .filter(|s| s.project_id.as_deref() == Some(project_id))
+            .collect();
+
+        // Every one of them, before anything is touched.
+        let live: Vec<&str> = sessions
+            .iter()
+            .filter(|s| self.inner.is_engaged(&s.session_id))
+            .map(|s| s.session_id.as_str())
+            .collect();
+        if !live.is_empty() {
+            return Err(SupervisorError::SessionLive(format!(
+                "project {project_id} has {} live session(s) ({}); end or kill them before deleting it",
+                live.len(),
+                live.join(", ")
+            )));
+        }
+
+        let mut worktrees = Vec::new();
+        for session in &sessions {
+            if session.worktree_path.is_none() {
+                continue;
+            }
+            let cleanup = self.cleanup_worktree(&session.session_id, force).await?;
+            let blocked = cleanup.blocked.is_some();
+            worktrees.push(SessionWorktree {
+                session_id: session.session_id.as_str().to_owned(),
+                cleanup,
+            });
+            if blocked {
+                tracing::info!(
+                    project_id,
+                    session_id = session.session_id.as_str(),
+                    "refusing to delete a project whose session worktree refused"
+                );
+                return Ok(ProjectDeletion {
+                    project_id: project_id.to_owned(),
+                    removed: false,
+                    rows: brigadier_store::Deleted::default(),
+                    worktrees,
+                    logs_removed: 0,
+                    gate_logs_removed: 0,
+                    brigadier_dir_removed: false,
+                });
+            }
+        }
+
+        let outcome = self.inner.store.delete_project(project_id.to_owned()).await?;
+        let (rows, ids) = outcome.map(|o| (o.rows, o.ids)).unwrap_or_default();
+
+        let mut logs_removed = 0;
+        for id in &ids.sessions {
+            let session_id = SessionId::new(id.clone());
+            self.inner.tracker.untrack(&session_id);
+            logs_removed += removal::remove_logs(&self.inner.data_dir, &session_id);
+        }
+        let gate_logs_removed = ids
+            .phases
+            .iter()
+            .filter(|phase_id| removal::remove_gate_logs(&self.inner.data_dir, phase_id))
+            .count() as u32;
+        let brigadier_dir_removed = removal::remove_brigadier_dir(&project.root_path);
+        tracing::info!(
+            project_id,
+            sessions = rows.sessions,
+            feed_rows = rows.feed,
+            plans = rows.plans,
+            logs_removed,
+            gate_logs_removed,
+            "project deleted"
+        );
+        Ok(ProjectDeletion {
+            project_id: project_id.to_owned(),
+            removed: true,
+            rows,
+            worktrees,
+            logs_removed,
+            gate_logs_removed,
+            brigadier_dir_removed,
+        })
+    }
+
     /// Requests parked right now for one live session, oldest first.
     pub fn pending_for(&self, session_id: &SessionId) -> Vec<brigadier_core::approval::PendingApproval> {
         lock(&self.inner.live).get(session_id).map(|s| s.approvals.pending()).unwrap_or_default()
+    }
+
+    /// Put one [`Event::RuntimeWarning`] on a session's feed after its child is gone.
+    ///
+    /// The loop needs this because a call that never answered is otherwise **silent**: the child
+    /// is killed, the window is thrown away, and the only trace is a `tracing` line nobody reads
+    /// and a plan card that still says "no phases yet". The owner's first real run ended exactly
+    /// that way.
+    ///
+    /// Routed through the same [`route`] every real envelope takes, so the store, the batcher and
+    /// the webview all see it; `FeedKind::Warn` is what `feed::kind` derives from a
+    /// `RuntimeWarning` and `runtime-warning` is already a signal the feed channel carries, so
+    /// nothing about the IPC changes.
+    ///
+    /// **The `seq` is `sessions.last_event_seq + 1`, never 0 or 1.** `feed`'s insert is
+    /// `ON CONFLICT(session_id, seq) DO UPDATE`, so a warning numbered from zero would silently
+    /// rewrite the session's oldest rows — the landmine `docs/research/intent-records.md` §"it is
+    /// surfaced, twice" names.
+    ///
+    /// Best-effort and infallible on purpose: a warning that cannot be filed must never turn into
+    /// a second failure on top of the one it was describing.
+    pub(crate) async fn warn(&self, project_id: &str, session_id: &SessionId, message: String) {
+        // The session's consumer task is what routes its envelopes, and it removes the session
+        // from `live` only after the last one. Reading `last_event_seq` while it is still running
+        // could pick a number the consumer is about to use, and `ON CONFLICT(session_id, seq) DO
+        // UPDATE` would then quietly overwrite a real feed row with this warning. Waiting for the
+        // consumer to let go is the cheap way to make the number final.
+        //
+        // Bounded: a consumer that will not finish is not worth blocking a run on, and the
+        // warning is still filed — one row further along than it might have been, which the ring
+        // tolerates and a collision does not.
+        for _ in 0..100 {
+            if !self.is_live(session_id) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let record = match self.inner.store.session(session_id.clone()).await {
+            Ok(Some(record)) => record,
+            Ok(None) => {
+                tracing::warn!(session_id = session_id.as_str(), "{message}");
+                return;
+            }
+            Err(e) => {
+                tracing::warn!(session_id = session_id.as_str(), error = %e, "{message}");
+                return;
+            }
+        };
+        // The routing key of the instance that ran the session. A row with none is one whose
+        // child never came up, and nothing routes on this field for a warning anyway.
+        let instance_id = record
+            .instance_id
+            .clone()
+            .unwrap_or_else(|| InstanceId::new("brigadier"));
+        let env = Envelope::new(
+            record.last_event_seq.saturating_add(1),
+            instance_id,
+            session_id.clone(),
+            Event::RuntimeWarning { message },
+        );
+        // No raw log and no rebase: this envelope is the harness's own, it carries no cost or
+        // token counters, and the raw log is a transcript of what the provider said.
+        route(&self.inner, project_id, &env, None, &Accrued::default()).await;
     }
 
     // ---- reads ---------------------------------------------------------------------------

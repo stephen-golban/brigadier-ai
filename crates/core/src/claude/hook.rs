@@ -397,6 +397,249 @@ fn path_candidates(word: &str) -> impl Iterator<Item = &str> {
     whole.into_iter().chain(after_eq)
 }
 
+// -----------------------------------------------------------------------------------------
+// accept-edits
+// -----------------------------------------------------------------------------------------
+
+/// What [`AcceptEditsInside`] says next to an allow.
+pub const ACCEPT_EDITS_ALLOW_REASON: &str =
+    "accept-edits pre-authorizes an edit inside this session's own directory";
+
+/// What [`AcceptEditsInside`] says when it still gates a command.
+pub const ACCEPT_EDITS_BASH_REASON: &str = "accept-edits does not pre-authorize a shell command";
+
+/// The `accept-edits` mode, made real at the hook: **edits inside the session's own directory are
+/// allowed and `Bash` still asks.**
+///
+/// It exists because the CLI's own `acceptEdits` cannot reach a tool call that brigadier's
+/// `PreToolUse` hook has already answered `"ask"` for — hooks run before the permission mode
+/// (`docs/research/approvals.md` §5). Selecting the mode and leaving [`AskGatedTools`] in place
+/// prompts for every edit anyway, which is the mode not working.
+///
+/// | tool | decision |
+/// |---|---|
+/// | [`WORKTREE_PATH_TOOLS`] whose target resolves inside `root` | allow |
+/// | [`WORKTREE_PATH_TOOLS`] whose target is outside, absent or unresolvable | `ask` |
+/// | `Bash` | `ask` — always, whatever the line says |
+/// | everything else | `{}` — no opinion |
+///
+/// **`Bash` is gated unconditionally, not classified.** `accept-edits` promises edits; a command
+/// is not an edit, and a policy that quietly widened the promise to "and whatever the classifier
+/// thinks is safe" would be a second lie of the same kind this type exists to remove. That is the
+/// one difference from [`WorkerWall`], which does classify because an unattended worker has to be
+/// able to run its own build.
+// see docs/research/permission-modes.md §5.
+#[derive(Clone, Debug)]
+pub struct AcceptEditsInside {
+    /// The canonical root, or `None` when the path handed in could not be resolved — in which
+    /// case every path check is an `ask`, which is the fail-toward-asking direction.
+    root: Option<PathBuf>,
+}
+
+impl AcceptEditsInside {
+    /// Pre-authorize edits below `root`, and nothing else.
+    pub fn new(root: impl AsRef<Path>) -> Self {
+        Self { root: root.as_ref().canonicalize().ok() }
+    }
+
+    /// The canonical root, or `None` when it could not be resolved.
+    pub fn root(&self) -> Option<&Path> {
+        self.root.as_deref()
+    }
+
+    /// Whether `target` — absolute, `~`-rooted, or relative to the root — resolves inside it.
+    /// Same resolver, and same symlink-escape behaviour, as [`WorkerWall::resolves_inside`].
+    pub fn resolves_inside(&self, target: &str) -> bool {
+        let Some(root) = self.root.as_deref() else {
+            return false;
+        };
+        resolve_against(root, target).is_some_and(|path| path.starts_with(root))
+    }
+}
+
+impl HookPolicy for AcceptEditsInside {
+    fn pre_tool_use(&self, tool_name: Option<&str>, input: &Value) -> HookJsonOutput {
+        match tool_name {
+            Some("Bash") => decision("ask", ACCEPT_EDITS_BASH_REASON),
+            Some(name) if WORKTREE_PATH_TOOLS.contains(&name) => {
+                let target = input
+                    .get("file_path")
+                    .or_else(|| input.get("notebook_path"))
+                    .and_then(Value::as_str);
+                match target {
+                    Some(target) if self.resolves_inside(target) => {
+                        decision("allow", ACCEPT_EDITS_ALLOW_REASON)
+                    }
+                    Some(_) => decision(
+                        "ask",
+                        "the target is outside this session's own directory, or unresolvable",
+                    ),
+                    None => decision("ask", "the tool named no path to check"),
+                }
+            }
+            _ => HookJsonOutput::default(),
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------------------
+// the owner's own checkout
+// -----------------------------------------------------------------------------------------
+
+/// What [`ReadOnlyWall`] says next to an `ask`.
+pub const READ_ONLY_ASK_REASON: &str =
+    "brigadier does not pre-authorize a write in the owner's own checkout";
+
+/// The policy for a child standing in the **owner's own checkout**: reads and inspection flow,
+/// and anything that could write asks — **in every permission mode**.
+///
+/// The planner, the lead and the review calls run here. `CallCwd::ProjectRoot`
+/// (`crates/supervisor/src/loop_/call.rs`) puts them in the project root rather than a worktree,
+/// because they read and decide and are told to write nothing.
+///
+/// | tool / class | decision |
+/// |---|---|
+/// | [`WORKTREE_PATH_TOOLS`] | `ask` — every target, inside the project or outside it |
+/// | `Bash`, [`BashClass::NestedClaude`] | **deny** |
+/// | `Bash`, [`BashClass::Read`] or [`BashClass::Inspect`] | `{}` — no opinion, the CLI's own flow decides |
+/// | `Bash`, [`BashClass::Mutate`] or [`BashClass::Unknown`] | `ask` |
+/// | everything else | `{}` |
+///
+/// The strictest segment of a pipeline wins. A write redirection (`echo x > f`) is already
+/// [`BashClass::Mutate`] by the classifier's own redirection rule, so it lands on the `ask` row
+/// rather than riding in on `echo`.
+///
+/// # Why the permissive modes do not reach this
+///
+/// A permission mode selected in a run dock says what a **worker** may do inside a worktree that
+/// brigadier cut and can throw away — `docs/vision.md` §8 pre-authorizes a worker *"inside their
+/// own worktree"*, and §11 is explicit that the worktree **is** the isolation and there is no
+/// sandbox behind it. A judgement call runs in the owner's repository, where there is nothing to
+/// throw away, so the write gate holds whatever the mode says. What a permissive mode does buy
+/// here is the thing the owner actually wanted: [`AskGatedTools`] prompts for every `Bash`,
+/// including `ls` and `grep`, and this does not.
+///
+/// # Two limits, inherited from the classifier
+///
+/// * The classifier **tokenises but does not evaluate** (`crate::wall`): a script the child writes
+///   and then runs is past this, and so is anything reached through an interpreter in
+///   [`tables::OPAQUE_COMMANDS`] — which is [`BashClass::Unknown`] and therefore an `ask`, so the
+///   escape costs a prompt rather than being silent.
+/// * **This is not a sandbox** (`docs/vision.md` §11). It is a gate in front of the one thing that
+///   is not recoverable here, which is a write to the owner's tree.
+// see docs/research/permission-modes.md §5.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ReadOnlyWall;
+
+impl HookPolicy for ReadOnlyWall {
+    fn pre_tool_use(&self, tool_name: Option<&str>, input: &Value) -> HookJsonOutput {
+        match tool_name {
+            Some("Bash") => {
+                let Some(command) = input.get("command").and_then(Value::as_str) else {
+                    return decision("ask", "the Bash call carried no command to classify");
+                };
+                let verdict = classify(command)
+                    .segments()
+                    .iter()
+                    .map(|segment| match segment.class {
+                        BashClass::NestedClaude => (Rank::Deny, WALL_NESTED_CLAUDE_REASON),
+                        BashClass::Read | BashClass::Inspect => (Rank::NoOpinion, ""),
+                        BashClass::Mutate | BashClass::Unknown => {
+                            (Rank::Ask, READ_ONLY_ASK_REASON)
+                        }
+                    })
+                    .max_by_key(|(rank, _)| *rank)
+                    .unwrap_or((Rank::Ask, "the line ran no command the classifier could see"));
+                match verdict {
+                    (Rank::NoOpinion, _) => HookJsonOutput::default(),
+                    (Rank::Deny, reason) => decision("deny", reason),
+                    (_, reason) => decision("ask", reason),
+                }
+            }
+            Some(name) if WORKTREE_PATH_TOOLS.contains(&name) => {
+                decision("ask", READ_ONLY_ASK_REASON)
+            }
+            _ => HookJsonOutput::default(),
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------------------
+// mode + scope -> policy
+// -----------------------------------------------------------------------------------------
+
+/// Where a child is standing, which is the second axis of [`policy_for`].
+///
+/// A [`PermissionMode`](crate::driver::PermissionMode) on its own is not enough to choose a
+/// policy, because the same mode means different things depending on what a mistake would cost:
+/// a worktree brigadier cut can be thrown away, and the owner's repository cannot.
+// see docs/research/permission-modes.md §4.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HookScope {
+    /// A session the operator started and is watching, in a fresh worktree of its own.
+    ///
+    /// The mode is taken at face value: a human is in front of the window, and the blast radius
+    /// is a checkout brigadier cut and can remove.
+    Interactive {
+        /// The session's own directory, which is what `accept-edits` allows edits inside.
+        root: PathBuf,
+    },
+    /// A loop-dispatched work order, unattended, in its own worktree.
+    ///
+    /// Always [`WorkerWall`]; **the mode does not reach it.** The wall's guards are about leaving
+    /// the worktree, and nothing selected in a control labelled *permission mode* is a request to
+    /// let an unattended child write outside the checkout brigadier cut for it. Relaxing the
+    /// other way — toward [`AskGatedTools`] — would hang an unattended run rather than loosen it.
+    Worker {
+        /// The worktree root, which is the wall's root.
+        root: PathBuf,
+    },
+    /// A judgement call — planner, lead, review — in the **owner's own checkout**.
+    ///
+    /// Never pre-authorizes a write, whatever the mode. See [`ReadOnlyWall`].
+    Judgement,
+}
+
+/// The one place a [`PermissionMode`](crate::driver::PermissionMode) becomes a policy.
+///
+/// Called wherever a session is opened, so that picking a mode in the UI changes what the hook
+/// answers and not only which `--permission-mode` flag the child gets. Without this the hook wins
+/// over the flag every time — hooks run **before** the permission mode is consulted
+/// (`docs/research/approvals.md` §5) — and a permission picker that cannot stop the prompts is a
+/// lie in the UI.
+///
+/// | mode | [`HookScope::Interactive`] | [`HookScope::Worker`] | [`HookScope::Judgement`] |
+/// |---|---|---|---|
+/// | `default`, `manual` | [`AskGatedTools`] | [`WorkerWall`] | [`AskGatedTools`] |
+/// | `accept-edits` | [`AcceptEditsInside`] | [`WorkerWall`] | [`ReadOnlyWall`] |
+/// | `plan` | [`AllowAll`] | [`WorkerWall`] | [`ReadOnlyWall`] |
+/// | `auto`, `dont-ask`, `bypass-permissions`, unmodelled | [`AllowAll`] | [`WorkerWall`] | [`ReadOnlyWall`] |
+///
+/// Read the last column before simplifying it against the first: a permissive mode relaxes
+/// **reads** in the owner's checkout and never relaxes **writes** there. `docs/vision.md` §8
+/// pre-authorizes a worker *"inside their own worktree"* and §11 says the worktree **is** the
+/// isolation; a judgement call has no worktree, so it keeps its write gate.
+///
+/// [`AllowAll`] answers `{}` — *no opinion*, not *allow*. Under `plan` the CLI still refuses to
+/// write; under `bypassPermissions` it does not. That is the mode doing its own job.
+// see docs/research/permission-modes.md §5.
+#[must_use]
+pub fn policy_for(mode: &crate::driver::PermissionMode, scope: &HookScope) -> SharedHookPolicy {
+    use crate::driver::PermissionMode as Mode;
+    match scope {
+        HookScope::Worker { root } => worker_wall(root),
+        HookScope::Interactive { root } => match mode {
+            Mode::Default | Mode::Manual => ask_gated_tools(),
+            Mode::AcceptEdits => Arc::new(AcceptEditsInside::new(root)),
+            _ => allow_all(),
+        },
+        HookScope::Judgement => match mode {
+            Mode::Default | Mode::Manual => ask_gated_tools(),
+            _ => Arc::new(ReadOnlyWall),
+        },
+    }
+}
+
 /// `-C`, `--git-dir` or `--work-tree`, in either the separate or the `--flag=value` spelling.
 fn is_git_elsewhere_flag(arg: &str) -> bool {
     GIT_ELSEWHERE_FLAGS.contains(&arg)
@@ -770,5 +1013,192 @@ mod tests {
         let out = policy.pre_tool_use(Some("Write"), &Value::Null);
         let json: Value = serde_json::to_value(&out).expect("ser");
         assert_eq!(json["hookSpecificOutput"]["permissionDecisionReason"], "writes only");
+    }
+
+    // -------------------------------------------------------------------------------------
+    // mode -> policy, and the second axis
+    // -------------------------------------------------------------------------------------
+
+    use crate::driver::PermissionMode as Mode;
+
+    fn ask_of(policy: &SharedHookPolicy, tool: &str, input: Value) -> Option<String> {
+        verdict(&policy.pre_tool_use(Some(tool), &input))
+    }
+
+    fn cmd(policy: &SharedHookPolicy, command: &str) -> Option<String> {
+        ask_of(policy, "Bash", json!({ "command": command }))
+    }
+
+    fn write(policy: &SharedHookPolicy, path: &str) -> Option<String> {
+        ask_of(policy, "Write", json!({ "file_path": path }))
+    }
+
+    /// A directory that exists, so a root canonicalizes.
+    fn root() -> tempfile::TempDir {
+        tempfile::tempdir().expect("tempdir")
+    }
+
+    /// **The table in [`policy_for`]'s own doc, asserted.** Each cell is the *behaviour* the
+    /// policy produces rather than its type name, because the type name is not what the owner
+    /// experiences.
+    #[test]
+    fn every_mode_selects_its_policy_in_the_interactive_scope() {
+        let dir = root();
+        let scope = HookScope::Interactive { root: dir.path().to_path_buf() };
+        let inside = dir.path().join("new.rs");
+        let inside = inside.to_str().expect("utf-8");
+
+        for mode in [Mode::Default, Mode::Manual] {
+            let policy = policy_for(&mode, &scope);
+            assert_eq!(cmd(&policy, "ls -1").as_deref(), Some("ask"), "{mode}");
+            assert_eq!(write(&policy, inside).as_deref(), Some("ask"), "{mode}");
+        }
+
+        // accept-edits: the edit lands, the command still asks. That is the whole promise.
+        let policy = policy_for(&Mode::AcceptEdits, &scope);
+        assert_eq!(write(&policy, inside).as_deref(), Some("allow"));
+        assert_eq!(write(&policy, "/etc/hosts").as_deref(), Some("ask"));
+        assert_eq!(cmd(&policy, "ls -1").as_deref(), Some("ask"));
+        assert_eq!(cmd(&policy, "rm -rf /").as_deref(), Some("ask"));
+
+        // plan and the permissive modes: `{}` — no opinion, and the CLI's own mode decides.
+        for mode in [
+            Mode::Plan,
+            Mode::Auto,
+            Mode::DontAsk,
+            Mode::BypassPermissions,
+            Mode::Other("someFutureMode".to_owned()),
+        ] {
+            let policy = policy_for(&mode, &scope);
+            assert_eq!(cmd(&policy, "ls -1"), None, "{mode}");
+            assert_eq!(write(&policy, inside), None, "{mode}");
+        }
+    }
+
+    /// **The mode does not reach a worker.** Its wall is about leaving the worktree, and nothing
+    /// picked in a permission-mode control is a request to let an unattended child out of it.
+    #[test]
+    fn every_mode_leaves_a_worker_behind_the_worker_wall() {
+        let dir = root();
+        let scope = HookScope::Worker { root: dir.path().to_path_buf() };
+        let inside = dir.path().join("new.rs");
+        let inside = inside.to_str().expect("utf-8");
+
+        for mode in [
+            Mode::Default,
+            Mode::AcceptEdits,
+            Mode::Plan,
+            Mode::BypassPermissions,
+            Mode::Other("whatever".to_owned()),
+        ] {
+            let policy = policy_for(&mode, &scope);
+            assert_eq!(write(&policy, inside).as_deref(), Some("allow"), "{mode}");
+            assert_eq!(write(&policy, "/etc/hosts").as_deref(), Some("ask"), "{mode}");
+            assert_eq!(cmd(&policy, "claude -p hi").as_deref(), Some("deny"), "{mode}");
+        }
+    }
+
+    /// **The pair that is the whole point.** A run started with `bypass-permissions` still gates a
+    /// `Write` from a call standing in the owner's own checkout, and does not gate one from a call
+    /// standing in a worktree. A mapping that reads only the mode fails this.
+    // see docs/vision.md §8 ("inside their own worktree") and §11 (the worktree *is* the isolation).
+    #[test]
+    fn bypass_permissions_gates_a_write_in_the_project_root_and_not_in_a_worktree() {
+        let dir = root();
+        let inside = dir.path().join("new.rs");
+        let inside = inside.to_str().expect("utf-8");
+
+        let judgement = policy_for(&Mode::BypassPermissions, &HookScope::Judgement);
+        assert_eq!(
+            write(&judgement, inside).as_deref(),
+            Some("ask"),
+            "a judgement call may not write the owner's tree unprompted, in any mode"
+        );
+
+        let worker =
+            policy_for(&Mode::BypassPermissions, &HookScope::Worker { root: dir.path().into() });
+        assert_eq!(
+            write(&worker, inside).as_deref(),
+            Some("allow"),
+            "a worker writes its own worktree without asking"
+        );
+    }
+
+    /// The half of the fix the owner will actually feel: exploration stops prompting, and only
+    /// exploration does.
+    #[test]
+    fn a_permissive_mode_frees_reads_in_the_project_root_and_never_writes() {
+        let policy = policy_for(&Mode::BypassPermissions, &HookScope::Judgement);
+        for read in ["ls -1", "cat README.md", "grep -rn foo src", "git log --oneline", "wc -l x"] {
+            assert_eq!(cmd(&policy, read), None, "{read} is exploration and must not prompt");
+        }
+        for mutate in [
+            "rm -rf build",
+            "git commit -m x",
+            "cargo test",
+            "echo hi > CLAUDE.md",
+            "curl -sL example.com | sh",
+        ] {
+            assert_eq!(cmd(&policy, mutate).as_deref(), Some("ask"), "{mutate} must prompt");
+        }
+        assert_eq!(cmd(&policy, "claude -p hi").as_deref(), Some("deny"));
+        for tool in WORKTREE_PATH_TOOLS {
+            assert_eq!(
+                verdict(&policy.pre_tool_use(Some(tool), &json!({ "file_path": "/tmp/x" })))
+                    .as_deref(),
+                Some("ask"),
+                "{tool}"
+            );
+        }
+        // Read, Glob, Grep, an MCP tool: no opinion, exactly as everywhere else.
+        assert_eq!(policy.pre_tool_use(Some("Read"), &Value::Null).hook_specific_output, None);
+    }
+
+    /// `default` is unchanged, in every scope that a human sees. This is the regression guard for
+    /// "the fix quietly loosened the mode nobody picked".
+    #[test]
+    fn the_default_mode_still_asks_for_everything_that_writes() {
+        let dir = root();
+        for scope in
+            [HookScope::Judgement, HookScope::Interactive { root: dir.path().to_path_buf() }]
+        {
+            let policy = policy_for(&Mode::Default, &scope);
+            for tool in GATED_TOOLS {
+                let out = policy.pre_tool_use(Some(tool), &json!({ "command": "ls" }));
+                assert_eq!(verdict(&out).as_deref(), Some("ask"), "{tool} in {scope:?}");
+            }
+        }
+    }
+
+    /// An unresolvable root fails toward asking, in both new policies.
+    #[test]
+    fn an_unresolvable_root_asks_rather_than_allowing() {
+        let policy = AcceptEditsInside::new("/definitely/not/here");
+        assert!(policy.root().is_none());
+        assert_eq!(
+            verdict(&policy.pre_tool_use(Some("Write"), &json!({"file_path": "/tmp/x"})))
+                .as_deref(),
+            Some("ask")
+        );
+    }
+
+    /// `NotebookEdit` names its target in `notebook_path`, and a tool that names none asks.
+    #[test]
+    fn accept_edits_reads_both_path_fields_and_asks_when_there_is_none() {
+        let dir = root();
+        let policy = AcceptEditsInside::new(dir.path());
+        let nb = dir.path().join("n.ipynb");
+        assert_eq!(
+            verdict(&policy.pre_tool_use(
+                Some("NotebookEdit"),
+                &json!({"notebook_path": nb.to_str().expect("utf-8")})
+            ))
+            .as_deref(),
+            Some("allow")
+        );
+        assert_eq!(
+            verdict(&policy.pre_tool_use(Some("Edit"), &json!({}))).as_deref(),
+            Some("ask")
+        );
     }
 }

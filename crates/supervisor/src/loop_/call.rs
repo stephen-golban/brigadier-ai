@@ -19,8 +19,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use brigadier_core::claude::hook::worker_wall;
-use brigadier_core::driver::{DriverKind, HookOverride, StartSession, ThinkingPolicy};
+use brigadier_core::claude::hook::{policy_for, HookScope};
+use brigadier_core::driver::{
+    DriverKind, HookOverride, PermissionMode, StartSession, ThinkingPolicy,
+};
 use brigadier_core::event::{Envelope, Event, SessionId, TurnId};
 use brigadier_core::session::FinalTextError;
 
@@ -30,13 +32,17 @@ use crate::Supervisor;
 /// Where a call's child runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CallCwd {
-    /// The project root, with the driver's own wall in force.
+    /// The project root — the **owner's own checkout** — under
+    /// [`brigadier_core::claude::hook::HookScope::Judgement`].
     ///
-    /// Used by the planner and lead calls, which read and decide and write nothing. The wall
-    /// matters here more than anywhere: this is the owner's own checkout, and the driver's
-    /// default `AskGatedTools` gates every tool that writes, so an unattended lead call that
-    /// reaches for `Edit` **parks** rather than editing. That is the safe direction, and it is
-    /// why this variant does not take the worker wall.
+    /// Used by the planner, lead and fixer-adjacent calls, which read and decide and are told to
+    /// write nothing. The gate matters here more than anywhere and it is **not** the permission
+    /// mode's to remove: a mode selected in the run dock says what a *worker* may do inside a
+    /// worktree brigadier cut and can throw away (`docs/vision.md` §8, §11), and there is no
+    /// worktree here. So an unattended lead call that reaches for `Edit` parks in every mode.
+    /// What a permissive mode does buy is the thing the flood was made of — `ls`, `grep`, `cat`
+    /// stop prompting.
+    // see docs/research/permission-modes.md §4.
     ProjectRoot,
     /// A directory the loop already prepared — a worker's worktree, or the per-phase integration
     /// worktree the rung-1 fixer works in. Carries the worker wall for that root.
@@ -69,6 +75,14 @@ pub struct CallRequest {
     pub thinking: ThinkingPolicy,
     /// Model slug, or the provider default.
     pub model: Option<String>,
+    /// The mode the owner chose for this run.
+    ///
+    /// It reaches two places, and the second is the one that was missing: the child's
+    /// `--permission-mode` flag, **and** the `PreToolUse` policy, via
+    /// [`brigadier_core::claude::hook::policy_for`]. Without the second the hook
+    /// answers `"ask"` before the CLI ever reads the flag, so the mode changes nothing a human
+    /// can see (`docs/research/permission-modes.md` §3).
+    pub permission_mode: PermissionMode,
 }
 
 /// How a call ended. Only [`CallEnd::Answered`] carries text.
@@ -172,10 +186,13 @@ impl ModelCall for SupervisedCall {
 
 impl SupervisedCall {
     async fn run(&self, req: CallRequest) -> Result<CallOutcome, LoopError> {
-        let (dir, branch, wall) = match &req.cwd {
-            CallCwd::ProjectRoot => (self.project_root.clone(), None, HookOverride::inherit()),
+        // Two axes, not one: the mode says how much the owner wants gated, and the scope says
+        // what a mistake would cost. A worker's worktree can be thrown away; the project root
+        // cannot. `docs/research/permission-modes.md` §4.
+        let (dir, branch, scope) = match &req.cwd {
+            CallCwd::ProjectRoot => (self.project_root.clone(), None, HookScope::Judgement),
             CallCwd::Worktree { dir, branch } => {
-                (dir.clone(), branch.clone(), HookOverride::new(worker_wall(dir)))
+                (dir.clone(), branch.clone(), HookScope::Worker { root: dir.clone() })
             }
         };
 
@@ -183,8 +200,10 @@ impl SupervisedCall {
         start.prompt = Some(req.prompt.clone());
         start.model = req.model.clone();
         start.thinking = req.thinking;
-        start.hook_policy = wall;
+        start.permission_mode = req.permission_mode.clone();
+        start.hook_policy = HookOverride::new(policy_for(&req.permission_mode, &scope));
 
+        let started = Instant::now();
         let spawned =
             self.sup.spawn_in(&req.project_id, &self.kind, start, dir, branch).await?;
         let session_id = spawned.session_id.clone();
@@ -194,6 +213,27 @@ impl SupervisedCall {
         // §15 item 13's "lead calls are one turn and disposable" is enforced here and nowhere
         // else. A kill on a session that already exited is a no-op.
         let _ = self.sup.kill(&session_id).await;
+
+        // A call that never answered used to end in **silence**. The child was killed, the window
+        // was thrown away, and the only trace was a `tracing` line nobody reads — which is why
+        // the owner's first run showed a plan card saying "no phases yet" and nothing anywhere
+        // saying the planner had been killed at 120 s. One warning row, naming what ended, how,
+        // and after how long. After the kill, so the thread reads in the order it happened.
+        if !outcome.end.answered() {
+            self.sup
+                .warn(
+                    &req.project_id,
+                    &session_id,
+                    format!(
+                        "the {} call ended {} after {}s without an answer; its window was \
+                         thrown away",
+                        req.label,
+                        outcome.end.slug(),
+                        started.elapsed().as_secs()
+                    ),
+                )
+                .await;
+        }
         Ok(outcome)
     }
 
@@ -444,6 +484,7 @@ mod tests {
             quiet_deadline: Duration::from_secs(1),
             thinking: ThinkingPolicy::Off,
             model: None,
+            permission_mode: PermissionMode::Default,
         };
         assert_eq!(script.call(req("lead")).await.expect("call").text, "one");
         assert_eq!(script.call(req("lead")).await.expect("call").text, "two");

@@ -83,7 +83,10 @@ pub(super) async fn rung_one(
             turn_deadline: run.limits.worker_turn_deadline,
             quiet_deadline: run.limits.worker_quiet_deadline,
             thinking: ThinkingPolicy::Inherit,
-            model: None,
+            // A fixer is diagnosis, not transcription: with no pick it takes the provider default
+            // rather than a tier, which is `docs/vision.md` §6's judgement lane.
+            model: run.model.clone(),
+            permission_mode: run.permission_mode.clone(),
         })
         .await?;
 
