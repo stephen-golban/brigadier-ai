@@ -132,6 +132,8 @@ before every send is unchanged and remains the binding check.
 | `end_session` | `session_id` | `()` |
 | `kill` | `session_id` | `()` |
 | `cleanup_worktree` | `session_id, force: boolean` | `WorktreeCleanup`; errors `session_running` / `no_such_session` / `invalid_argument` / `worktree` |
+| `delete_session` | `session_id, force: boolean` | `SessionDeletion`; errors `session_running` / `no_such_session` / `invalid_argument` / `worktree` / `store` |
+| `delete_project` | `project_id, force: boolean` | `ProjectDeletion`; errors `no_such_project` / `session_running` / `worktree` / `store` |
 | `feed_tail` | `session_id, n: number` | `FeedRowWire[]` oldest first |
 | `pending_approvals` | — | `ApprovalView[]` oldest first |
 | `record_frame_stats` | `stats: FrameStats` | `()` (appends one NDJSON line to `<data_dir>/frame-stats.ndjson`) |
@@ -308,6 +310,83 @@ resumed session needs its worktree as `cwd`, and `resume_session` reuses the sto
 At app start the Rust side runs `git worktree prune` for every project. It never touches a branch,
 its failures are `tracing::warn` lines, and the front end sees nothing of it.
 
+### Deleting — added 2026-09-05
+
+`cleanup_worktree` removes a checkout and leaves the session in the sidebar. **`delete_session`
+removes the session.** They are different verbs and the UI needs both: one is "I am done with this
+checkout", the other is "this should not be on my machine".
+
+```
+SessionDeletion { session_id, removed: boolean, rows: DeletedRows,
+                  worktree: WorktreeCleanup | null, logs_removed: number,
+                  branch: string | null }
+
+ProjectDeletion { project_id, removed: boolean, rows: DeletedRows,
+                  worktrees: { session_id, cleanup: WorktreeCleanup }[],
+                  logs_removed: number, gate_logs_removed: number,
+                  brigadier_dir_removed: boolean }
+
+DeletedRows { projects, sessions, feed, approvals, intents, plans, phases,
+              plan_revisions, unknowns, work_orders, work_orders_orphaned }   // all number
+```
+
+`WorktreeCleanup` is the same shape `cleanup_worktree` returns, `blocked` and all — there is no
+second vocabulary for a refusal here, and a UI that already renders one renders the other.
+
+**What `delete_session` removes:** the `sessions` row and everything the schema cascades from it
+(`feed`, `approvals`, `intents`), `<data_dir>/raw/<id>.ndjson` and its rotations,
+`<data_dir>/pids/<id>.json`, and the git worktree. Four things, one call.
+
+**What it never removes: the branch.** No path in the Rust side deletes a branch and there is no
+command that does. `branch` is on the reply for both a refusal and a success, because once the row
+is gone it is the only name that says where the work went — render it.
+
+**A live session is not deletable**, and `force: true` does not change that. The error is
+`session_running`, the message says to end it or kill it first, and it covers a resume that has
+been requested but whose child has not spawned yet. macOS will let a directory that is a running
+process's `cwd` be unlinked at exit 0 (measured), so this check is the only thing standing between
+a mis-click and an agent writing into a deleted inode.
+
+**A refusal is a return value, not an error.** A session whose worktree holds uncommitted files or
+unmerged commits comes back as `{ removed: false, rows: <all zeroes>, worktree: { blocked, … } }`
+with **nothing touched at all** — no rows, no log, no checkout. `worktree.blocked` is the closed
+set the Worktrees section already lists, and the same rule applies: **offer the force button only
+for `dirty`, `commits` and `branch_moved`.** `unregistered`, `locked` and `left_on_disk` cannot be
+forced and never will be.
+
+**Unmerged commits refuse rather than being snapshotted to a ref.** A snapshot would duplicate a
+ref that already exists — the branch is kept whatever happens — so the refusal's job is to put the
+branch name in front of the operator *before* the row that records it goes. `worktree.commits` is
+the count and it comes from `git rev-list --count`, never from `git`'s `cherry` subcommand, which
+is measurably wrong in both directions.
+
+**`delete_project` removes the project and everything under it**: every session with its rows,
+logs and worktree, and the whole plan tree — `plans`, `phases`, `plan_revisions`, `unknowns`,
+`work_orders`. It also removes `<data_dir>/gates/<phase_id>/` per phase, and
+`<project root>/.brigadier/` **only if it is empty**. The exclude line in
+`$GIT_COMMON_DIR/info/exclude` is left alone: that file is the operator's.
+
+- **Every session's liveness is checked before anything is touched.** One live session refuses the
+  whole project with `session_running`, naming the sessions — never "deleted the other forty and
+  then stopped".
+- **The database half is all-or-nothing; the worktree half is not.** Worktrees go one session at a
+  time *before* any row is deleted, and the first refusal ends the pass: `removed: false`, `rows`
+  all zeroes, and `worktrees[]` carrying one entry per session attempted, including the one that
+  said no. Checkouts removed before that point stay removed — their branches survive, so nothing
+  is lost — and the array is what the UI shows instead of a success that would be false.
+- **`store` on either command means nothing was deleted.** The database half runs in its own
+  savepoint and rolls back whole; a partial delete is not a state either command can produce.
+
+**`rows.work_orders_orphaned` is not a leak.** `work_orders.session_id` is `ON DELETE SET NULL`
+where every other relationship cascades, deliberately: the plan is the durable thing and has to
+outlive the session that ran it (`docs/vision.md` §8, and the migration 4 comment in
+`crates/store/src/schema.rs`). So deleting a session leaves its work order standing with a null
+`session_id`, and this field counts how many. A work order that shows no session is a session that
+was deleted, and the card should say so rather than drawing a hole.
+
+**No new error codes.** Both commands draw from the closed set in **Conventions**:
+`no_such_session`, `no_such_project`, `session_running`, `invalid_argument`, `worktree`, `store`.
+
 ### `report_paint`
 
 One timed paint from the page, appended to `<data_dir>/paint.ndjson`. It exists because **B4**,
@@ -470,7 +549,7 @@ and is the only place these command names and argument keys are spelled.
 
 | command | args | returns |
 |---|---|---|
-| `start_run` | `project_id, goal: string` | `RunView`; errors `no_such_project` / `invalid_argument` (empty goal) / `run_already_live` |
+| `start_run` | `project_id, goal: string, model: string \| null, permission_mode: string` | `RunView`; errors `no_such_project` / `invalid_argument` (empty goal) / `run_already_live` |
 | `current_run` | `project_id` | `RunView \| null` — the newest plan for the project, live or finished |
 | `stop_run` | `plan_id` | `()`; errors `no_such_plan`. Stops dispatching. **Never kills a worker mid-order** — see below |
 | `unsettled_intents` | — | `IntentView[]` oldest first |
@@ -545,6 +624,28 @@ must draw that third state rather than defaulting it to a deny.
 This is `docs/vision.md` §9's rule, and it is the only place in this contract where a lie would be
 worse than a gap: *"a panel that shows 'denied' for a deny that did not land — or 'allowed' for
 something that never ran — breaks the one screen the owner has to be able to trust."*
+
+### `start_run`'s model and permission mode
+
+Both were added 2026-09-05, after the owner's first live session showed the run using
+`claude-opus-5[1m]` while his picker said Haiku — `model: None` was passed to every call and his
+choice reached nothing.
+
+- **`model` is nullable, and null is a real choice, not an empty field.** A chosen model applies to
+  **every** child of the run — planner, lead, worker and fixer alike — because the control sits
+  beside Start and is labelled with a model name, not a role. Null means `docs/vision.md` §6's
+  role-based routing instead: judgement takes the provider default, a work order takes its own
+  tier. The UI must offer null reachably and label it; it must never send `""` or a sentinel.
+- **`permission_mode` is the wire (kebab) spelling** and the full set the CLI accepts on 2.1.261 is
+  offered, `bypass-permissions` included. It selects a **hook policy**, not only a CLI flag —
+  brigadier's `PreToolUse` hook runs *before* the mode is consulted, so a mode that did not also
+  choose the policy could not stop a single prompt. See `docs/research/permission-modes.md`.
+- **The mode is read against where the child runs, not only which mode was picked.** A worker in
+  its own throwaway worktree takes the mode at face value. **A judgement call runs in the owner's
+  own checkout**, where `docs/vision.md` §8's pre-authorization — explicitly *"inside their own
+  worktree"* — does not apply, so writes there keep a gate in **every** mode. A UI label for
+  `bypass-permissions` that promises no prompts would therefore be false, and the shipped labels
+  say "no gate inside a throwaway worktree; your own tree still asks".
 
 ### Ambiguities the front end resolved first, now binding on Rust
 
