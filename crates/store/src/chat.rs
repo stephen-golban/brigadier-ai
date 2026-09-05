@@ -1,7 +1,7 @@
 //! Bounded display projection, separate from the fixed-height activity feed.
 use crate::Result;
 use brigadier_core::event::{bounded, Envelope, Event, ItemKind};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 /// A completed provider item. Kind is structured, never inferred from display text.
@@ -21,20 +21,23 @@ pub struct ChatItem {
     pub body: String,
     /// Parent tool for nested agent work.
     pub parent_id: Option<String>,
+    /// Host-supplied native UUID, absent on legacy history and synthetic messages.
+    #[serde(default)]
+    pub provider_uuid: Option<String>,
 }
 
 /// Only completed items have authoritative content in the current Claude adapter.
 pub fn project(env: &Envelope) -> Option<ChatItem> {
-    let Event::ItemCompleted {
-        item_id,
-        kind,
-        summary,
-        parent_item_id,
-    } = &env.event
-    else {
+    let Event::ItemCompleted { item_id, kind, summary, parent_item_id } = &env.event else {
         return None;
     };
     Some(ChatItem {
+        provider_uuid: env
+            .raw
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+            .filter(|v| v.get("type").and_then(|t| t.as_str()) == Some("user"))
+            .and_then(|v| v.get("uuid").and_then(|u| u.as_str()).map(str::to_owned)),
         session_id: env.session_id.to_string(),
         id: item_id.to_string(),
         seq: env.seq,
@@ -46,10 +49,21 @@ pub fn project(env: &Envelope) -> Option<ChatItem> {
 }
 
 pub(crate) fn write(conn: &Connection, item: &ChatItem) -> Result<()> {
-    conn.execute("INSERT INTO chat_items(session_id,id,seq,at,kind,body,parent_id) VALUES (?1,?2,?3,?4,?5,?6,?7)
-        ON CONFLICT(session_id,id) DO UPDATE SET seq=excluded.seq,kind=excluded.kind,body=excluded.body,parent_id=excluded.parent_id
+    // Late queued projection writes from the discarded native range must never resurrect it.
+    let rewind: Option<String> = conn.query_row(
+        "SELECT id FROM chat_rewinds WHERE session_id=?1 AND state='applied' AND ?2 BETWEEN target_seq AND through_seq LIMIT 1",
+        (&item.session_id, item.seq), |r| r.get(0)).optional()?;
+    if let Some(id) = rewind {
+        conn.execute(
+            "INSERT INTO chat_archive(rewind_id,session_id,item_json) VALUES (?1,?2,?3)",
+            (id, &item.session_id, serde_json::to_string(item).expect("chat item")),
+        )?;
+        return Ok(());
+    }
+    conn.execute("INSERT INTO chat_items(session_id,id,seq,at,kind,body,parent_id,provider_uuid) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
+        ON CONFLICT(session_id,id) DO UPDATE SET seq=excluded.seq,kind=excluded.kind,body=excluded.body,parent_id=excluded.parent_id,provider_uuid=excluded.provider_uuid
         WHERE excluded.seq > chat_items.seq",
-        (&item.session_id, &item.id, item.seq as i64, item.at, serde_json::to_string(&item.kind).expect("item kind"), bounded(&item.body, 128 * 1024), &item.parent_id))?;
+        (&item.session_id, &item.id, item.seq as i64, item.at, serde_json::to_string(&item.kind).expect("item kind"), bounded(&item.body, 128 * 1024), &item.parent_id, &item.provider_uuid))?;
     conn.execute(
         "DELETE FROM chat_items WHERE session_id=?1 AND id IN
         (SELECT id FROM chat_items WHERE session_id=?1 ORDER BY seq DESC LIMIT -1 OFFSET 2000)",
@@ -59,7 +73,7 @@ pub(crate) fn write(conn: &Connection, item: &ChatItem) -> Result<()> {
 }
 
 pub(crate) fn read(conn: &Connection, session_id: &str, after: u64) -> Result<Vec<ChatItem>> {
-    let mut statement = conn.prepare_cached("SELECT id,seq,at,kind,body,parent_id FROM chat_items WHERE session_id=?1 AND seq>?2 ORDER BY seq LIMIT 20")?;
+    let mut statement = conn.prepare_cached("SELECT id,seq,at,kind,body,parent_id,provider_uuid FROM chat_items WHERE session_id=?1 AND seq>?2 ORDER BY seq LIMIT 20")?;
     let rows = statement.query_map((session_id, after as i64), |row| {
         let kind: String = row.get(3)?;
         Ok(ChatItem {
@@ -76,6 +90,7 @@ pub(crate) fn read(conn: &Connection, session_id: &str, after: u64) -> Result<Ve
             })?,
             body: row.get(4)?,
             parent_id: row.get(5)?,
+            provider_uuid: row.get(6)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -87,7 +102,8 @@ mod tests {
     #[test]
     fn replay_paging_retention_and_cascade() {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE sessions(session_id TEXT PRIMARY KEY); INSERT INTO sessions VALUES ('s'); CREATE TABLE chat_items(session_id TEXT REFERENCES sessions(session_id) ON DELETE CASCADE,id TEXT,seq INTEGER,at INTEGER,kind TEXT,body TEXT,parent_id TEXT,PRIMARY KEY(session_id,id));").unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE sessions(session_id TEXT PRIMARY KEY); INSERT INTO sessions VALUES ('s'); CREATE TABLE chat_items(session_id TEXT REFERENCES sessions(session_id) ON DELETE CASCADE,id TEXT,seq INTEGER,at INTEGER,kind TEXT,body TEXT,parent_id TEXT,provider_uuid TEXT,PRIMARY KEY(session_id,id));").unwrap();
+        conn.execute_batch("CREATE TABLE chat_rewinds(id TEXT,session_id TEXT,target_seq INTEGER,through_seq INTEGER,state TEXT); CREATE TABLE chat_archive(rewind_id TEXT,session_id TEXT,item_json TEXT);").unwrap();
         let mut item = ChatItem {
             session_id: "s".into(),
             id: "i".into(),
@@ -96,6 +112,7 @@ mod tests {
             kind: ItemKind::AssistantText,
             body: "Full body".into(),
             parent_id: None,
+            provider_uuid: None,
         };
         write(&conn, &item).unwrap();
         item.body = "stale replay".into();
@@ -115,9 +132,7 @@ mod tests {
             write(&conn, &item).unwrap();
         }
         assert_eq!(
-            conn.query_row("SELECT count(*) FROM chat_items", [], |r| r
-                .get::<_, i64>(0))
-                .unwrap(),
+            conn.query_row("SELECT count(*) FROM chat_items", [], |r| r.get::<_, i64>(0)).unwrap(),
             2000
         );
         let page = read(&conn, "s", 0).unwrap();

@@ -47,6 +47,7 @@ export interface SessionRuntime {
   projectId: ProjectId | null;
   status: SessionStatus;
   model: string | null;
+  instanceId?: string | null;
   cwd: string | null;
   /** The provider's own conversation id; non-null is what makes a settled session resumable. */
   providerSessionId: string | null;
@@ -218,6 +219,7 @@ function applySignal(env: Envelope, projectId: ProjectId | null): void {
       patch(id, projectId, {
         status: "running",
         model: e.model,
+        instanceId: env.instance_id,
         cwd: e.cwd,
         providerSessionId: e.provider_session_id,
         // A resumed child announcing itself is live again: the previous end is history.
@@ -489,6 +491,7 @@ export function seedSessions(views: SessionView[]): void {
       status: v.status,
       model: v.model ?? prev.model,
       cwd: v.cwd ?? prev.cwd,
+      instanceId: v.instance_id ?? prev.instanceId,
       providerSessionId: v.provider_session_id ?? prev.providerSessionId,
       worktreePath: v.worktree_path ?? prev.worktreePath,
       branch: v.branch ?? prev.branch,

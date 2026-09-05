@@ -119,7 +119,7 @@ function markupSources(): Array<[string, string]> {
 /** The stylesheet, as text. Non-empty is asserted below; an empty read is the vacuous-pass trap
  *  this whole file exists to avoid. */
 function cssText(): string {
-  return fs.readFileSync(CSS_PATH, "utf8") + "\n" + fs.readFileSync("src/chat.css", "utf8");
+  return fs.readFileSync(CSS_PATH, "utf8") + "\n" + fs.readFileSync("src/chat.css", "utf8") + "\n" + fs.readFileSync("src/workbench.css", "utf8");
 }
 
 /** Every string literal in a JSX expression, with `${…}` interpolations blanked out. */

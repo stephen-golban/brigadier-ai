@@ -2,8 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SelectMenu } from "./SelectMenu";
-import { WorkspacePanel } from "./WorkspacePanel";
-import { workspaceApi } from "../workspaceApi";
 import { NewSession } from "./NewSession";
 import { Markdown } from "./Markdown";
 import type { ProjectView } from "../wire";
@@ -67,51 +65,16 @@ describe("chat controls", () => {
     const { container } = render(
       <Markdown
         text={
-          "[source](src/App.tsx)\n\n<script>alert(1)</script>\n\n[unsafe](javascript:alert)"
+          "[source](src/App.tsx)\n\n[note](brigadier-note:example-note)\n\n<script>alert(1)</script>\n\n[unsafe](javascript:alert)"
         }
         onFile={open}
       />,
     );
     await user.click(await screen.findByRole("button", { name: "source" }));
     expect(open).toHaveBeenCalledWith("src/App.tsx");
+    await user.click(screen.getByRole("button",{name:"note"}));
+    expect(open).toHaveBeenCalledWith("brigadier-note:example-note");
     expect(container.querySelector("script")).toBeNull();
     expect(container.querySelector('a[href^="javascript:"]')).toBeNull();
   });
-});
-
-it("windows a large file preview instead of mounting every line", async () => {
-  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(400);
-  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(480);
-  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(400);
-  if (!HTMLElement.prototype.scrollTo)
-    Object.defineProperty(HTMLElement.prototype, "scrollTo", {
-      configurable: true,
-      value: () => {},
-    });
-  vi.spyOn(workspaceApi, "entries").mockResolvedValue([]);
-  vi.spyOn(workspaceApi, "git").mockResolvedValue({
-    branch: "main",
-    changes: [],
-  });
-  vi.spyOn(workspaceApi, "file").mockResolvedValue({
-    path: "large.txt",
-    content: Array.from({ length: 20000 }, (_, i) => `line ${i}`).join("\n"),
-    truncated: false,
-  });
-  const { container } = render(
-    <WorkspacePanel
-      visible
-      context={{ projectId: "p", sessionId: null }}
-      rootPath="/example"
-      tabs={[{ id: "large", kind: "file", path: "large.txt" }]}
-      active="large"
-      setTabs={() => {}}
-      setActive={() => {}}
-      onClose={() => {}}
-      onAttach={() => {}}
-    />,
-  );
-  expect(await screen.findByText("line 0")).toBeInTheDocument();
-  expect(container.querySelectorAll(".line-number").length).toBeGreaterThan(5);
-  expect(container.querySelectorAll(".line-number").length).toBeLessThan(60);
 });

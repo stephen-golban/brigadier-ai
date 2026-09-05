@@ -322,6 +322,90 @@ impl StoreHandle {
         self.query(move |conn| crate::chat::read(conn, &session_id, after)).await
     }
 
+    /// Recent native rewind records, including incomplete operations needing reconciliation.
+    pub async fn rewind_records(&self, session_id: String) -> Result<Vec<serde_json::Value>> {
+        self.query(move |conn| {
+            let mut stmt = conn.prepare("SELECT id,state,created_at FROM chat_rewinds WHERE session_id=?1 ORDER BY created_at DESC,rowid DESC LIMIT 20")?;
+            let rows = stmt.query_map([session_id], |r| Ok(serde_json::json!({"id":r.get::<_,String>(0)?,"state":r.get::<_,String>(1)?,"createdAt":r.get::<_,i64>(2)? * 1000})))?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        }).await
+    }
+
+    /// Page retained transcript bodies for one rewind. Reading does not alter provider state.
+    pub async fn rewind_items(
+        &self,
+        session_id: String,
+        rewind_id: String,
+        after: i64,
+    ) -> Result<Vec<serde_json::Value>> {
+        self.query(move |conn| {
+            let mut stmt = conn.prepare("SELECT rowid,item_json FROM chat_archive WHERE session_id=?1 AND rewind_id=?2 AND rowid>?3 ORDER BY rowid LIMIT 20")?;
+            let rows = stmt.query_map((session_id,rewind_id,after), |r| Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?)))?;
+            let rows=rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows.into_iter().filter_map(|(cursor,body)| serde_json::from_str::<serde_json::Value>(&body).ok().map(|item|serde_json::json!({"cursor":cursor,"item":item}))).collect())
+        }).await
+    }
+
+    /// Whether a native mutation needs reconciliation. Sending/resuming is blocked in this state.
+    pub async fn rewind_pending(&self, session_id: String) -> Result<bool> {
+        self.query(move |conn| {
+            Ok(conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM chat_rewinds WHERE session_id=?1 AND state='pending')",
+                [session_id],
+                |r| r.get(0),
+            )?)
+        })
+        .await
+    }
+
+    /// Retain the discarded conversation before invoking the native provider mutation.
+    pub async fn prepare_rewind(
+        &self,
+        id: String,
+        session_id: String,
+        target_id: String,
+    ) -> Result<()> {
+        self.query(move |conn| {
+            conn.execute_batch("SAVEPOINT prepare_rewind")?;
+            let result = (|| -> Result<()> {
+                let target_seq: i64 = conn.query_row("SELECT seq FROM chat_items WHERE session_id=?1 AND id=?2 AND provider_uuid IS NOT NULL", (&session_id, &target_id), |r| r.get(0))?;
+                conn.execute("INSERT INTO chat_rewinds(id,session_id,target_id,target_seq,state,created_at) VALUES (?1,?2,?3,?4,'pending',unixepoch())", (&id,&session_id,&target_id,target_seq))?;
+                let mut cursor = target_seq.saturating_sub(1) as u64;
+                loop {
+                    let page = crate::chat::read(conn, &session_id, cursor)?;
+                    if page.is_empty() { break; }
+                    for item in page {
+                        cursor = item.seq;
+                        conn.execute("INSERT INTO chat_archive(rewind_id,session_id,item_json) VALUES (?1,?2,?3)", (&id,&session_id,serde_json::to_string(&item).expect("chat item")))?;
+                    }
+                }
+                Ok(())
+            })();
+            if result.is_err() { conn.execute_batch("ROLLBACK TO prepare_rewind")?; }
+            conn.execute_batch("RELEASE prepare_rewind")?;
+            result
+        }).await?;
+        self.flush().await
+    }
+
+    /// Finalize after an authoritative native reply. Failed requests keep the visible history.
+    pub async fn finish_rewind(&self, id: String, through_seq: Option<u64>) -> Result<()> {
+        self.query(move |conn| {
+            conn.execute_batch("SAVEPOINT finish_rewind")?;
+            let result = (|| -> Result<()> {
+                if let Some(seq) = through_seq {
+                    conn.execute("DELETE FROM chat_items WHERE session_id=(SELECT session_id FROM chat_rewinds WHERE id=?1 AND state='pending') AND seq >= (SELECT target_seq FROM chat_rewinds WHERE id=?1) AND seq <= ?2", (&id,seq))?;
+                }
+                conn.execute("UPDATE chat_rewinds SET state=?2,through_seq=?3 WHERE id=?1 AND state='pending'", (&id,if through_seq.is_some(){"applied"}else{"refused"},through_seq))?;
+                Ok(())
+            })();
+            if result.is_err() { conn.execute_batch("ROLLBACK TO finish_rewind")?; }
+            conn.execute_batch("RELEASE finish_rewind")?;
+            result
+        }).await?;
+        self.flush().await
+    }
+
     /// Insert or replace a project.
     pub async fn upsert_project(&self, project: ProjectRow) -> Result<()> {
         self.send(Op::UpsertProject(project))
@@ -649,9 +733,8 @@ impl StoreHandle {
     /// Every project, oldest first by creation time.
     pub async fn list_projects(&self) -> Result<Vec<ProjectRow>> {
         self.query(|conn| {
-            let sql = format!(
-                "SELECT {PROJECT_COLUMNS} FROM projects ORDER BY created_at ASC, id ASC"
-            );
+            let sql =
+                format!("SELECT {PROJECT_COLUMNS} FROM projects ORDER BY created_at ASC, id ASC");
             let mut stmt = conn.prepare_cached(&sql)?;
             let rows = stmt.query_map([], schema::project_from_row)?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -677,9 +760,8 @@ impl StoreHandle {
     /// Every session, newest first by start time.
     pub async fn list_sessions(&self) -> Result<Vec<SessionRecord>> {
         self.query(|conn| {
-            let sql = format!(
-                "SELECT {SESSION_COLUMNS} FROM sessions ORDER BY started_at DESC, id ASC"
-            );
+            let sql =
+                format!("SELECT {SESSION_COLUMNS} FROM sessions ORDER BY started_at DESC, id ASC");
             let mut stmt = conn.prepare_cached(&sql)?;
             let rows = stmt.query_map([], schema::session_from_row)?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -953,11 +1035,7 @@ fn run(mut conn: Connection, rx: mpsc::Receiver<Op>, run_id: String, config: Sto
         while !matches!(
             batch.last(),
             Some(
-                Op::Query(_)
-                    | Op::IntentOpen(..)
-                    | Op::Delete { .. }
-                    | Op::Flush(_)
-                    | Op::Shutdown
+                Op::Query(_) | Op::IntentOpen(..) | Op::Delete { .. } | Op::Flush(_) | Op::Shutdown
             )
         ) {
             let left = deadline.saturating_duration_since(Instant::now());
@@ -1034,7 +1112,8 @@ fn apply_batch(
     let mut opens: Vec<(Result<()>, oneshot::Sender<Result<()>>)> = Vec::new();
     // Answered after the commit, for the same reason `opens` is: the caller is about to remove
     // worktrees and log files on the strength of the answer.
-    type DeleteReply = (Result<Option<DeleteOutcome>>, oneshot::Sender<Result<Option<DeleteOutcome>>>);
+    type DeleteReply =
+        (Result<Option<DeleteOutcome>>, oneshot::Sender<Result<Option<DeleteOutcome>>>);
     let mut deletes: Vec<DeleteReply> = Vec::new();
     let mut queries = 0usize;
 
@@ -1136,8 +1215,10 @@ fn apply_one(
             ensure_session(tx, &SessionId::new(&item.session_id), touched)?;
             crate::chat::write(tx, &item)?;
             // A crash between this projection and its feed row must not reuse this sequence.
-            tx.execute("UPDATE sessions SET last_event_seq=MAX(last_event_seq,?2) WHERE id=?1",
-                (&item.session_id, item.seq))?;
+            tx.execute(
+                "UPDATE sessions SET last_event_seq=MAX(last_event_seq,?2) WHERE id=?1",
+                (&item.session_id, item.seq),
+            )?;
         }
         Op::UpsertProject(p) => {
             // `mcp` is written on insert and on conflict alike: the row carries the policy, so
@@ -1575,7 +1656,8 @@ fn upsert_session(tx: &rusqlite::Transaction<'_>, row: SessionRow) -> Result<()>
     // `oversized_json` and not `bounded`: `summary_json` is a JSON column, and `bounded` appends
     // `…`, which turns a document into text that no longer parses. The same defect that was in
     // `change_json` and `owned_paths_json`; one helper covers all three.
-    let summary = row.summary_json.as_deref().map(|s| schema::oversized_json(s, SUMMARY_JSON_LIMIT));
+    let summary =
+        row.summary_json.as_deref().map(|s| schema::oversized_json(s, SUMMARY_JSON_LIMIT));
     tx.prepare_cached(
         "INSERT INTO sessions (id, project_id, instance_id, driver_kind, provider_session_id,
              cwd, worktree_path, branch, model, status, transcript_path, resume_token,

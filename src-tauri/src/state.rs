@@ -45,7 +45,7 @@ pub(crate) struct Ready {
     store: Store,
     /// The pid files and the process groups this launch owns. `None` when the pid directory
     /// would not open: the app still runs, it just cannot sweep orphans.
-    tracker: Option<Arc<PidTracker>>,
+    pub(crate) tracker: Option<Arc<PidTracker>>,
     /// The channel the webview subscribed with, if it has.
     pub sink: Arc<ChannelSink>,
     /// The last `claude` probe. Re-run by `probe_claude`, never cached past a call.

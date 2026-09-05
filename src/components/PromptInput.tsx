@@ -1,4 +1,5 @@
 import {
+  useContext,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -6,12 +7,14 @@ import {
   useState,
   type TextareaHTMLAttributes,
 } from "react";
+import { NoteScope } from "../noteScope";
+import { workbenchApi, type Note } from "../workbenchApi";
 import { PlusIcon, PaperclipIcon } from "@phosphor-icons/react";
 
 export function useDraft(key: string): [string, (value: string) => void] {
   const read = (k: string) => {
     try {
-      return sessionStorage.getItem(`draft:${k}`) ?? "";
+      return localStorage.getItem(`draft:${k}`) ?? "";
     } catch {
       return "";
     }
@@ -22,8 +25,8 @@ export function useDraft(key: string): [string, (value: string) => void] {
     (next: string) => {
       setEntry({ key, value: next });
       try {
-        if (next) sessionStorage.setItem(`draft:${key}`, next);
-        else sessionStorage.removeItem(`draft:${key}`);
+        if (next) localStorage.setItem(`draft:${key}`, next);
+        else localStorage.removeItem(`draft:${key}`);
       } catch {
         /* Keep an in-memory draft if storage is unavailable. */
       }
@@ -35,11 +38,21 @@ export function useDraft(key: string): [string, (value: string) => void] {
 export function PromptInput(
   props: TextareaHTMLAttributes<HTMLTextAreaElement> & {
     onText: (value: string) => void;
+    focusKey?: string;
   },
 ) {
-  const { onText, ...rest } = props;
+  const projectId = useContext(NoteScope);
+  const { onText, focusKey, ...rest } = props;
   const textarea = useRef<HTMLTextAreaElement>(null),
     file = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (focusKey) {
+      textarea.current?.focus();
+      textarea.current?.setSelectionRange(0, textarea.current.value.length);
+    }
+  }, [focusKey]);
+  const [notes, setNotes] = useState<Note[]>([]);
+  const [noteMenu, setNoteMenu] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const value = String(props.value ?? "");
   const latest = useRef({ value, onText, disabled: props.disabled });
@@ -67,8 +80,19 @@ export function PromptInput(
       );
       textarea.current?.focus();
     };
+    const mention = (e: Event) => {
+      const note = (e as CustomEvent<Note>).detail;
+      latest.current.onText(
+        `${latest.current.value}${latest.current.value ? " " : ""}@[${note.title}](brigadier-note:${note.id}) `,
+      );
+      textarea.current?.focus();
+    };
     window.addEventListener("brigadier-attach", attach);
-    return () => window.removeEventListener("brigadier-attach", attach);
+    window.addEventListener("brigadier-insert-note", mention);
+    return () => {
+      window.removeEventListener("brigadier-attach", attach);
+      window.removeEventListener("brigadier-insert-note", mention);
+    };
   }, []);
   const addFiles = async (files: FileList | null) => {
     if (!files) return;
@@ -108,7 +132,22 @@ export function PromptInput(
         <textarea
           {...rest}
           ref={textarea}
-          onChange={(e) => onText(e.target.value)}
+          onChange={(e) => {
+            onText(e.target.value);
+            if (e.target.value.endsWith("@")) {
+              setNoteMenu(true);
+              void workbenchApi
+                .load()
+                .then((d) =>
+                  setNotes(
+                    d.notes.filter(
+                      (n) => n.projectId === null || n.projectId === projectId,
+                    ),
+                  ),
+                )
+                .catch(() => {});
+            }
+          }}
         />
       </div>
       <div className="attachment-actions">
@@ -124,6 +163,47 @@ export function PromptInput(
         </button>
         <PaperclipIcon size={12} />
         <span>Drop files to add context</span>
+        <button
+          type="button"
+          className="act"
+          aria-label="Mention a note"
+          onClick={() => {
+            setNoteMenu(!noteMenu);
+            void workbenchApi
+              .load()
+              .then((d) =>
+                setNotes(
+                  d.notes.filter(
+                    (n) => n.projectId === null || n.projectId === projectId,
+                  ),
+                ),
+              )
+              .catch((e) => setError(String(e)));
+          }}
+        >
+          @ Note
+        </button>
+        {noteMenu && (
+          <div className="note-mention-menu">
+            {notes.map((note) => (
+              <button
+                type="button"
+                key={note.id}
+                onClick={() => {
+                  onText(
+                    `${value.endsWith("@") ? value.slice(0, -1) : value}${value && !value.endsWith("@") ? " " : ""}@[${note.title}](brigadier-note:${note.id}) `,
+                  );
+                  setNoteMenu(false);
+                  textarea.current?.focus();
+                }}
+              >
+                {note.title}
+                <small>{note.projectId ? "Project" : "Global"}</small>
+              </button>
+            ))}
+            {!notes.length && <span>No notes yet</span>}
+          </div>
+        )}
         <input
           ref={file}
           type="file"

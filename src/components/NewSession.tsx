@@ -46,6 +46,7 @@ export interface NewSessionProps {
     model: string | null;
     permissionMode: PermissionMode;
     options?: AgentOptions;
+    isolated?: boolean;
   }) => void | Promise<boolean>;
 }
 
@@ -58,6 +59,7 @@ export function NewSession({
   const [prompt, setPrompt] = useDraft(`session:${project?.id ?? "none"}`);
   const [model, setModel] = useState<string>("");
   const [effort, setEffort] = useState<Effort>("auto");
+  const [isolated,setIsolated]=useState(false);
   const [mode, setMode] = useState<PermissionMode>("default");
 
   const defaultModel = models.find((m) => m.default)?.id ?? models[0]?.id ?? "";
@@ -74,6 +76,7 @@ export function NewSession({
         prompt: prompt.trim(),
         model: chosen === "" ? null : chosen,
         permissionMode: mode,
+        isolated,
         ...(effort !== "auto" && effortLevels(chosen).includes(effort)
           ? { options: { effort } }
           : {}),
@@ -144,6 +147,7 @@ export function NewSession({
               }))}
             />
           ) : null}
+          <SelectMenu label="Working folder" value={isolated?'isolated':'shared'} onChange={v=>setIsolated(v==='isolated')} options={[{value:'shared',label:'Project folder',description:'Share the project checkout'},{value:'isolated',label:'Isolated worktree',description:'Create a separate branch and working folder'}]}/>
           {/* Secondary action slot, matching the turn composer's. */}
           <span className="grow" />
 
