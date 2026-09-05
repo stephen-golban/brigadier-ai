@@ -23,15 +23,23 @@
 #[cfg(any(debug_assertions, feature = "burn"))]
 mod burn;
 mod commands;
+mod conversation;
+mod commit_message;
 mod error;
+mod peer_mcp;
+mod peers;
 mod reconcile;
+mod search;
 mod sink;
+mod source_control;
 mod state;
 mod terminal;
 mod trace;
 mod tracker;
 mod views;
+mod workbench_data;
 mod workspace;
+pub use peers::cli as peer_cli;
 
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -121,6 +129,19 @@ pub fn run() {
             commands::add_project,
             commands::set_project_mcp,
             commands::list_sessions,
+            peers::peer_snapshot,
+            peers::peer_decide,
+            commit_message::generate_commit_message,
+            source_control::workspace_git_action,
+            source_control::workspace_git_details,
+            search::workspace_search,
+            search::workspace_replace,
+            search::workspace_save,
+            workbench_data::workbench_load,
+            workbench_data::note_save,
+            workbench_data::note_delete,
+            workbench_data::commit_settings_save,
+            workbench_data::peer_settings_save,
             commands::start_session,
             commands::resume_session,
             commands::send_turn,
@@ -133,10 +154,17 @@ pub fn run() {
             commands::delete_project,
             commands::feed_tail,
             commands::chat_items,
+            conversation::session_context,
+            conversation::session_activity,
+            conversation::rewind_history,
+            conversation::rewind_history_items,
+            conversation::preview_rewind,
+            conversation::apply_rewind,
             workspace::workspace_entries,
             workspace::workspace_file,
             workspace::workspace_git,
             workspace::workspace_diff,
+            terminal::terminal_info,
             terminal::terminal_open,
             terminal::terminal_read,
             terminal::terminal_write,
@@ -213,6 +241,9 @@ pub fn run() {
                         reconcile::run(&supervisor, &store, sender).await;
                     });
                     app.manage(AppState::ready(ready));
+                    if let Err(e) = peers::start(app.handle().clone()) {
+                        tracing::error!("Peer communication unavailable: {}", e.message);
+                    }
                 }
                 Err(err) => {
                     // Never `?`: an Err out of `setup` panics the process, and a read-only home
@@ -275,7 +306,7 @@ pub fn run() {
 /// (`Cargo.toml:10`).
 #[cfg(unix)]
 fn spawn_signal_hook(handle: tauri::AppHandle) {
-    use tokio::signal::unix::{signal, SignalKind};
+    use tokio::signal::unix::{SignalKind, signal};
 
     tauri::async_runtime::spawn(async move {
         let mut term = match signal(SignalKind::terminate()) {
@@ -295,7 +326,10 @@ fn spawn_signal_hook(handle: tauri::AppHandle) {
                 }
             },
         };
-        tracing::info!(signal = received, "signal received; quitting through the exit hook");
+        tracing::info!(
+            signal = received,
+            "signal received; quitting through the exit hook"
+        );
         handle.exit(0);
     });
 }

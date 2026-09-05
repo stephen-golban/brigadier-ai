@@ -76,21 +76,28 @@ const sessions = new Map<string, MockSession>();
 const approvals = new Map<string, ApprovalView>();
 const feedRows = new Map<string, FeedRowWire[]>();
 const conversations = new Map<string, ChatItem[]>();
-function appendChat(sessionId:string,kind:ChatItem['kind'],body:string,id?:string) {
+function appendChat(sessionId:string,kind:ChatItem['kind'],body:string,id?:string,parent_id:string|null=null) {
   const items=conversations.get(sessionId)??[];
   const seq=(items[items.length-1]?.seq??0)+1;
-  items.push({session_id:sessionId,id:id??`chat-${seq}`,seq,at:Date.now(),kind,body,parent_id:null});
+  items.push({session_id:sessionId,id:id??`chat-${seq}`,seq,at:Date.now(),kind,body,parent_id});
   conversations.set(sessionId,items.slice(-2000));
 }
 export function mockChatItems(sessionId:string,after:number):ChatItem[] {
   return (conversations.get(sessionId)??[]).filter(item=>item.seq>after).slice(0,20);
 }
 function seedConversation(sessionId:string) {
-  appendChat(sessionId,{type:'user-text'},'Show me the local workspace and explain the next change.');
-  appendChat(sessionId,{type:'thinking'},'This is a browser preview fixture. I would inspect the project structure before proposing a change.');
-  appendChat(sessionId,{type:'tool-call',name:'Read'},'README.md','preview-read');
+  appendChat(sessionId,{type:'user-text'},'Review the workspace and suggest the next change.');
+  appendChat(sessionId,{type:'assistant-text'},'I’ll check the workspace and group the findings.');
+  appendChat(sessionId,{type:'tool-call',name:'Agent'},'Agent: {"description":"Workspace research","prompt":"Inspect the editor and source control conventions."}','preview-agent');
+  appendChat(sessionId,{type:'tool-call',name:'Read'},'README.md','preview-read','preview-agent');
   appendChat(sessionId,{type:'tool-result',tool_call_id:'preview-read',is_error:false},'# Brigadier\nA local workspace for coding agents.');
-  appendChat(sessionId,{type:'assistant-text'},'This is the **browser preview** of the conversation layout. No agent has been called.\n\nOpen [README.md](README.md) to see the file panel. You can also browse changes and attach file context to your next message.\n\n| Surface | Purpose |\n| --- | --- |\n| Conversation | Read responses and expand activity |\n| Files | Browse the selected workspace |\n| Changes | Inspect staged and working tree diffs |\n\nInteractive shell tabs run in the desktop app.');
+  appendChat(sessionId,{type:'assistant-text'},'Editor and source control conventions reviewed.','preview-progress','preview-agent');
+  appendChat(sessionId,{type:'tool-call',name:'Bash'},'git status --short','preview-status');
+  appendChat(sessionId,{type:'tool-result',tool_call_id:'preview-status',is_error:false},' M src/components/ThreadView.tsx');
+  appendChat(sessionId,{type:'tool-call',name:'Bash'},'git diff --stat','preview-diff');
+  appendChat(sessionId,{type:'tool-result',tool_call_id:'preview-diff',is_error:false},'src/components/ThreadView.tsx | 24 +++++++++---');
+  appendChat(sessionId,{type:'tool-result',tool_call_id:'preview-agent',is_error:false},'Keep the final answer visible; put routine work inside an expandable row.');
+  appendChat(sessionId,{type:'assistant-text'},'Next: simplify the thread into one expandable work row, with nested agent activity.\n\nOpen [README.md](README.md) to explore the workspace.\n\n*Browser preview — simulated activity; no agent was called.*');
 }
 
 

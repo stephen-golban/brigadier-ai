@@ -52,6 +52,7 @@ export interface StartSessionArgs {
   model: string | null;
   permissionMode: PermissionMode;
   options?: AgentOptions;
+  isolated?: boolean;
 }
 
 export interface BurnArgs {
@@ -241,8 +242,8 @@ const tauriBridge: Bridge = {
   },
 
   listSessions: () => call<SessionView[]>("list_sessions"),
-  startSession: ({ projectId, prompt, model, permissionMode, options }) =>
-    call<SessionView>("start_session", { projectId, prompt, model, permissionMode, options }),
+  startSession: ({ projectId, prompt, model, permissionMode, options, isolated }) =>
+    call<SessionView>("start_session", { projectId, prompt, model, permissionMode, options, isolated }),
   resumeSession: (sessionId) => call<SessionView>("resume_session", { sessionId }),
   sendTurn: (sessionId, text) => call<{ turn_id: string }>("send_turn", { sessionId, text }),
   respond: (sessionId, requestId, decision) =>

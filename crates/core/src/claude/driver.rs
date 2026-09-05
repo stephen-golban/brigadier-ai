@@ -15,8 +15,8 @@ use crate::claude::binary::{probe_binary, MIN_VERSION};
 use crate::claude::hook::{ask_gated_tools, SharedHookPolicy};
 use crate::claude::process::{account_label, spawn, SpawnSpec};
 use crate::driver::{
-    BoxFuture, DriverError, DriverInfo, DriverKind, HookOverride, ProviderDriver, Resumed,
-    ResumeSession, StartSession,
+    BoxFuture, DriverError, DriverInfo, DriverKind, HookOverride, ProviderDriver, ResumeSession,
+    Resumed, StartSession,
 };
 use crate::event::{InstanceId, SessionId};
 use crate::session::SessionHandle;
@@ -99,8 +99,7 @@ impl ClaudeDriver {
     /// [`DriverError::VersionTooOld`] when the install predates `min_version`, and
     /// [`DriverError::Protocol`] when `--version` fails or prints nothing.
     pub async fn probe(config: ClaudeDriverConfig) -> Result<ClaudeDriver, DriverError> {
-        let (binary, version) =
-            probe_binary(config.binary.as_deref(), &config.min_version).await?;
+        let (binary, version) = probe_binary(config.binary.as_deref(), &config.min_version).await?;
         Ok(ClaudeDriver { config, binary, version, hook_policy: ask_gated_tools() })
     }
 
@@ -214,8 +213,16 @@ impl ProviderDriver for ClaudeDriver {
         }
     }
 
-    fn start_session(&self, req: StartSession) -> BoxFuture<'_, Result<SessionHandle, DriverError>> {
+    fn start_session(
+        &self,
+        mut req: StartSession,
+    ) -> BoxFuture<'_, Result<SessionHandle, DriverError>> {
         Box::pin(async move {
+            if req.env_overrides.contains_key("BRIGADIER_PEER_TOKEN") {
+                req.hook_policy = crate::driver::HookOverride::new(std::sync::Arc::new(
+                    crate::claude::hook::PeerTools(req.hook_policy.resolve(&self.hook_policy)),
+                ));
+            }
             let spec = SpawnSpec {
                 binary: self.binary.clone(),
                 cwd: req.cwd,
@@ -237,9 +244,14 @@ impl ProviderDriver for ClaudeDriver {
     // docs/research/agent-sdk.md §5.
     fn resume_session(
         &self,
-        req: ResumeSession,
+        mut req: ResumeSession,
     ) -> BoxFuture<'_, Result<SessionHandle, DriverError>> {
         Box::pin(async move {
+            if req.env_overrides.contains_key("BRIGADIER_PEER_TOKEN") {
+                req.hook_policy = crate::driver::HookOverride::new(std::sync::Arc::new(
+                    crate::claude::hook::PeerTools(req.hook_policy.resolve(&self.hook_policy)),
+                ));
+            }
             let spec = SpawnSpec {
                 binary: self.binary.clone(),
                 cwd: req.cwd,

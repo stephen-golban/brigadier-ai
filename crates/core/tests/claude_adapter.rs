@@ -35,11 +35,10 @@ use tokio::sync::{mpsc, oneshot};
 const PIPE: usize = 256 * 1024;
 
 fn fixture_lines(name: &str) -> VecDeque<String> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../claude-spike/fixtures")
-        .join(name);
-    let text =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("fixture {}: {e}", path.display()));
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../claude-spike/fixtures").join(name);
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("fixture {}: {e}", path.display()));
     text.lines().filter(|l| !l.trim().is_empty()).map(str::to_owned).collect()
 }
 
@@ -514,10 +513,7 @@ async fn s3_can_use_tool_deny() {
     assert_eq!(before.last().expect("last"), "request-opened");
 
     let request_id = approval_request_id(&rig.session, 1);
-    rig.commands
-        .respond(request_id, Decision::deny("denied by test"))
-        .await
-        .expect("denied");
+    rig.commands.respond(request_id, Decision::deny("denied by test")).await.expect("denied");
 
     let _turn = rig.next_sent().await;
     let deny = rig.next_sent().await;
@@ -816,10 +812,7 @@ async fn a_result_with_no_open_turn_is_still_reported() {
     });
     write_line(&mut rig.to_adapter, &bare.to_string()).await;
 
-    assert_eq!(
-        rig.labels_until(is_turn_end).await,
-        ["turn-started", "turn-completed(EndTurn)"]
-    );
+    assert_eq!(rig.labels_until(is_turn_end).await, ["turn-started", "turn-completed(EndTurn)"]);
     let completed = completed(&rig);
     assert_eq!(completed.len(), 1);
     about(completed[0].2, 0.125);
@@ -1090,10 +1083,7 @@ async fn a_withdrawn_request_resolves_without_an_answer() {
     });
     write_line(&mut rig.to_adapter, &cancel.to_string()).await;
 
-    assert_eq!(
-        label(&rig.next_event().await),
-        "request-resolved(deny:cancelled by provider)"
-    );
+    assert_eq!(label(&rig.next_event().await), "request-resolved(deny:cancelled by provider)");
 
     // Only the user turn was ever written; no `control_response` answered the withdrawn ask.
     let turn = rig.next_sent().await;
@@ -1381,8 +1371,100 @@ async fn a_decision_that_reaches_the_child_still_resolves() {
     let allow = rig.next_sent().await;
     assert_eq!(allow["response"]["response"]["behavior"], "allow");
     // ...and only then is the request resolved.
-    assert_eq!(rig.next_event().await, Event::RequestResolved {
-        request_id: approval_request_id(&rig.session, 1),
-        decision: Decision::allow(),
+    assert_eq!(
+        rig.next_event().await,
+        Event::RequestResolved {
+            request_id: approval_request_id(&rig.session, 1),
+            decision: Decision::allow(),
+        }
+    );
+}
+
+#[tokio::test]
+async fn native_context_is_summary_and_rewind_holds_sends_until_persistence() {
+    use brigadier_core::session::NativeControl;
+    let mut rig = Rig::start("s1-handshake-and-turn.ndjson", 64).await;
+    let commands = rig.commands.clone();
+    let pending =
+        tokio::spawn(async move { commands.native_control(NativeControl::ContextSummary).await });
+    let request = rig.next_sent().await;
+    assert_eq!(
+        request["request"],
+        serde_json::json!({"subtype":"get_context_usage","detail":"summary"})
+    );
+    write_line(&mut rig.to_adapter, &serde_json::json!({"type":"control_response","response":{"subtype":"success","request_id":request["request_id"],"response":{"totalTokens":3500,"maxTokens":200000}}}).to_string()).await;
+    assert_eq!(pending.await.unwrap().unwrap()["totalTokens"], 3500);
+    let commands = rig.commands.clone();
+    let pending = tokio::spawn(async move {
+        commands
+            .native_control(NativeControl::RewindConversation {
+                target_uuid: "first".into(),
+                last_seen_uuid: "latest".into(),
+            })
+            .await
     });
+    let request = rig.next_sent().await;
+    assert_eq!(
+        request["request"],
+        serde_json::json!({"subtype":"rewind_conversation","target_message_uuid":"first","last_seen_user_message_uuid":"latest","interrupt_if_running":false})
+    );
+    assert!(rig.commands.send_turn(TurnInput::text("race")).await.is_err());
+    write_line(&mut rig.to_adapter, &serde_json::json!({"type":"control_response","response":{"subtype":"success","request_id":request["request_id"],"response":{"rewound":true,"targetMessageUuid":"first","prefillText":"draft"}}}).to_string()).await;
+    let response = pending.await.unwrap().unwrap();
+    assert_eq!(response["rewound"], true);
+    assert!(response["brigadier_seq"].is_u64());
+    assert!(rig.commands.send_turn(TurnInput::text("before disk commit")).await.is_err());
+    rig.commands.native_control(NativeControl::FinishRewind).await.unwrap();
+    let turn = rig.commands.send_turn(TurnInput::text("edited")).await.unwrap();
+    let sent = rig.next_sent().await;
+    assert_eq!(sent["uuid"], turn.as_str());
+    assert_eq!(sent["message"]["content"][0]["text"], "edited");
+}
+
+#[tokio::test]
+async fn native_refusal_is_not_a_success_and_agent_completion_is_explicit() {
+    use brigadier_core::session::NativeControl;
+    let mut rig = Rig::start("s1-handshake-and-turn.ndjson", 64).await;
+    let commands = rig.commands.clone();
+    let pending = tokio::spawn(async move {
+        commands
+            .native_control(NativeControl::RewindConversation {
+                target_uuid: "old".into(),
+                last_seen_uuid: "old".into(),
+            })
+            .await
+    });
+    let request = rig.next_sent().await;
+    write_line(&mut rig.to_adapter,&serde_json::json!({"type":"control_response","response":{"subtype":"error","request_id":request["request_id"],"error":"Unsupported request"}}).to_string()).await;
+    assert!(pending.await.unwrap().is_err());
+    rig.commands.native_control(NativeControl::FinishRewind).await.unwrap();
+    write_line(&mut rig.to_adapter,&serde_json::json!({"type":"system","subtype":"task_started","task_id":"child","tool_use_id":"tool","description":"Review files"}).to_string()).await;
+    // Barrier through the provider pipe ensures the preceding task event was consumed.
+    let commands = rig.commands.clone();
+    let barrier =
+        tokio::spawn(async move { commands.native_control(NativeControl::ContextSummary).await });
+    let request = rig.next_sent().await;
+    write_line(&mut rig.to_adapter,&serde_json::json!({"type":"control_response","response":{"subtype":"success","request_id":request["request_id"],"response":{}}}).to_string()).await;
+    barrier.await.unwrap().unwrap();
+    let activity = rig.commands.native_control(NativeControl::Activity).await.unwrap();
+    assert_eq!(activity["agents"][0]["status"], "Working");
+    assert_eq!(activity["agents"][0]["model"], Value::Null);
+}
+
+#[tokio::test]
+async fn native_rewind_refuses_an_active_turn_without_an_uncertain_outcome() {
+    use brigadier_core::session::NativeControl;
+    let mut rig = Rig::start("s1-handshake-and-turn.ndjson", 64).await;
+    rig.commands.send_turn(TurnInput::text("working")).await.unwrap();
+    rig.next_sent().await;
+    let response = rig
+        .commands
+        .native_control(NativeControl::RewindConversation {
+            target_uuid: "old".into(),
+            last_seen_uuid: "latest".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(response["rewound"], false);
+    assert!(response["error"].as_str().unwrap().contains("current turn"));
 }

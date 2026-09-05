@@ -6,6 +6,7 @@ fn main() {
     // `report_paint` subtracts from the page's first contentful paint.
     // see docs/research/perceived-performance.md §5.1 ("you cannot recover exec time after the
     // fact") and §5.3.
+    if brigadier_lib::peer_cli() { return; }
     brigadier_lib::mark_process_start();
     brigadier_lib::run()
 }

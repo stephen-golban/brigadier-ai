@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
+import { SerializeAddon } from "@xterm/addon-serialize";
+import { workbenchApi } from "../workbenchApi";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import {
@@ -10,10 +12,18 @@ import {
 export default function TerminalView({
   context,
   visible,
+  tabId = "legacy",
+  onReady,
 }: {
   context: WorkspaceContext;
   visible: boolean;
+  tabId?: string;
+  onReady?: (id: string | null) => void;
 }) {
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
+  const ready = useRef(onReady);
+  ready.current = onReady;
   const host = useRef<HTMLDivElement>(null);
   const fitRef = useRef<() => void>(() => {});
   const [error, setError] = useState<string | null>(null);
@@ -29,9 +39,35 @@ export default function TerminalView({
       scrollback: 3000,
       theme: { background: "#181818", foreground: "#dedede" },
     });
+    const snapshotKey = `brigadier:terminal:${tabId}`;
+    let snapshot: { output?: string; cwd?: string } = {};
+    try {
+      snapshot = JSON.parse(localStorage.getItem(snapshotKey) ?? "{}");
+    } catch {
+      /* fresh shell */
+    }
+    const serialize = new SerializeAddon();
+    terminal.loadAddon(serialize);
+    const persist = () => {
+      try {
+        localStorage.setItem(
+          snapshotKey,
+          JSON.stringify({
+            ...snapshot,
+            output: serialize.serialize({ scrollback: 200 }),
+          }),
+        );
+      } catch {
+        /* bounded recovery is best effort */
+      }
+    };
     const fit = new FitAddon();
     terminal.loadAddon(fit);
     terminal.open(host.current);
+    if (snapshot.output)
+      terminal.write(
+        snapshot.output + "\r\n[Restored output. Starting a fresh shell.]\r\n",
+      );
     const resize = () => {
       if (!host.current?.clientWidth) return;
       fit.fit();
@@ -75,30 +111,48 @@ export default function TerminalView({
         if (!disposed) setError(errorMessage(e));
       }
     };
-    void workspaceApi.openTerminal(context, terminal.cols, terminal.rows).then(
-      (created) => {
-        if (disposed) {
-          void workspaceApi.closeTerminal(created);
-          return;
-        }
-        id = created;
-        resize();
-        terminal.focus();
-        void read();
-      },
-      (e) => {
-        if (!disposed) setError(errorMessage(e));
-      },
-    );
+    const recovery = setInterval(() => {
+      persist();
+      if (id)
+        void workbenchApi
+          .terminalInfo(id)
+          .then((info) => {
+            snapshot.cwd = info.cwd;
+          })
+          .catch(() => {});
+    }, 3000);
+    window.addEventListener("pagehide", persist);
+    void workspaceApi
+      .openTerminal(context, terminal.cols, terminal.rows, snapshot.cwd)
+      .then(
+        (created) => {
+          if (disposed) {
+            void workspaceApi.closeTerminal(created);
+            return;
+          }
+          id = created;
+          ready.current?.(created);
+          resize();
+          if (visibleRef.current) terminal.focus();
+          void read();
+        },
+        (e) => {
+          if (!disposed) setError(errorMessage(e));
+        },
+      );
     return () => {
       disposed = true;
       clearTimeout(timer);
       observer.disconnect();
       input.dispose();
+      persist();
+      clearInterval(recovery);
+      window.removeEventListener("pagehide", persist);
       terminal.dispose();
+      ready.current?.(null);
       if (id) void workspaceApi.closeTerminal(id).catch(() => {});
     };
-  }, [context.projectId, context.sessionId]);
+  }, [context.projectId, context.sessionId, tabId]);
   useEffect(() => {
     if (visible) fitRef.current();
   }, [visible]);

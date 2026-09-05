@@ -20,14 +20,19 @@ pub(crate) struct FilePreview {
 }
 #[derive(Serialize)]
 pub(crate) struct Change {
-    path: String,
-    index: String,
-    worktree: String,
+    pub path: String,
+    pub index: String,
+    pub worktree: String,
+    pub original: Option<String>,
 }
 #[derive(Serialize)]
 pub(crate) struct GitStatus {
     branch: String,
     changes: Vec<Change>,
+    additions: usize,
+    deletions: usize,
+    ahead: usize,
+    behind: usize,
 }
 
 pub(crate) async fn root(
@@ -60,7 +65,7 @@ pub(crate) async fn root(
         .map_err(|e| AppError::io(format!("Workspace unavailable: {e}")))
 }
 
-fn resolve(root: &Path, relative: &str) -> Result<PathBuf, AppError> {
+pub(crate) fn resolve(root: &Path, relative: &str) -> Result<PathBuf, AppError> {
     let relative = Path::new(relative);
     if relative
         .components()
@@ -82,7 +87,7 @@ fn resolve(root: &Path, relative: &str) -> Result<PathBuf, AppError> {
     Ok(path)
 }
 
-fn preview(root: &Path, relative: &str) -> Result<FilePreview, AppError> {
+pub(crate) fn preview(root: &Path, relative: &str) -> Result<FilePreview, AppError> {
     let path = resolve(root, relative)?;
     let metadata = path.metadata().map_err(|e| AppError::io(e.to_string()))?;
     if !metadata.is_file() {
@@ -173,7 +178,7 @@ pub(crate) async fn workspace_file(
         .map_err(|e| AppError::io(e.to_string()))?
 }
 
-async fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, AppError> {
+pub(crate) async fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, AppError> {
     let mut cmd = tokio::process::Command::new("/usr/bin/git");
     cmd.current_dir(root)
         .args([
@@ -219,7 +224,7 @@ async fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, AppError> {
     .await
     .map_err(|_| AppError::io("Git inspection timed out"))?;
     let (stdout, stderr, status) = result?;
-    if !status.success() {
+    if !status.success() && !(args.contains(&"--no-index") && status.code() == Some(1)) {
         return Err(AppError::io(
             String::from_utf8_lossy(&stderr).trim().to_owned(),
         ));
@@ -227,7 +232,7 @@ async fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, AppError> {
     Ok(stdout)
 }
 
-fn parse_status(bytes: &[u8]) -> Vec<Change> {
+pub(crate) fn parse_status(bytes: &[u8]) -> Vec<Change> {
     let mut records = bytes.split(|b| *b == 0).filter(|s| !s.is_empty());
     let mut changes = Vec::new();
     while let Some(record) = records.next() {
@@ -238,9 +243,12 @@ fn parse_status(bytes: &[u8]) -> Vec<Change> {
             path: String::from_utf8_lossy(&record[3..]).into_owned(),
             index: (record[0] as char).to_string(),
             worktree: (record[1] as char).to_string(),
+            original: None,
         });
         if record[0] == b'R' || record[0] == b'C' || record[1] == b'R' || record[1] == b'C' {
-            records.next();
+            changes.last_mut().unwrap().original = records
+                .next()
+                .map(|r| String::from_utf8_lossy(r).into_owned());
         }
     }
     changes
@@ -255,13 +263,53 @@ pub(crate) async fn workspace_git(
     let root = root(state.inner(), &project_id, session_id.as_deref()).await?;
     let bytes = git(
         &root,
-        &["status", "--porcelain=v1", "-z", "--untracked-files=normal"],
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
     )
     .await?;
     let branch = git(&root, &["symbolic-ref", "--short", "-q", "HEAD"])
         .await
         .unwrap_or_else(|_| b"Detached HEAD".to_vec());
+    let mut additions = 0;
+    let mut deletions = 0;
+    for args in [
+        vec!["diff", "--numstat", "--no-ext-diff", "--no-textconv"],
+        vec![
+            "diff",
+            "--cached",
+            "--numstat",
+            "--no-ext-diff",
+            "--no-textconv",
+        ],
+    ] {
+        if let Ok(bytes) = git(&root, &args).await {
+            for line in String::from_utf8_lossy(&bytes).lines() {
+                let mut cols = line.split('\t');
+                additions += cols
+                    .next()
+                    .and_then(|x| x.parse::<usize>().ok())
+                    .unwrap_or(0);
+                deletions += cols
+                    .next()
+                    .and_then(|x| x.parse::<usize>().ok())
+                    .unwrap_or(0);
+            }
+        }
+    }
+    let divergence = git(
+        &root,
+        &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"],
+    )
+    .await
+    .unwrap_or_default();
+    let divergence = String::from_utf8_lossy(&divergence);
+    let mut counts = divergence.split_whitespace();
+    let ahead = counts.next().and_then(|x| x.parse().ok()).unwrap_or(0);
+    let behind = counts.next().and_then(|x| x.parse().ok()).unwrap_or(0);
     Ok(GitStatus {
+        additions,
+        deletions,
+        ahead,
+        behind,
         branch: String::from_utf8_lossy(&branch).trim().to_owned(),
         changes: parse_status(&bytes),
     })
@@ -284,26 +332,44 @@ pub(crate) async fn workspace_diff(
     {
         return Err(AppError::invalid_argument("Invalid change path"));
     }
-    let mut args = vec!["diff", "--no-ext-diff", "--no-textconv", "--no-color"];
-    if staged {
-        args.push("--cached");
-    }
-    args.extend(["--", &path]);
-    let bytes = git(&root, &args).await?;
-    let content = if bytes.is_empty() && !staged {
-        let status = git(&root, &["status", "--porcelain=v1", "-z", "--", &path]).await?;
-        if status.starts_with(b"?? ") {
-            return preview(&root, &path);
-        }
-        "No changes in this comparison.".to_owned()
-    } else {
-        String::from_utf8_lossy(&bytes).into_owned()
-    };
+    let content = change_diff(&root, &path, staged).await?;
     Ok(FilePreview {
         path,
         content,
         truncated: false,
     })
+}
+
+pub(crate) async fn change_diff(root: &Path, path: &str, staged: bool) -> Result<String, AppError> {
+    let mut args = vec!["diff", "--no-ext-diff", "--no-textconv", "--no-color"];
+    if staged {
+        args.push("--cached");
+    }
+    args.extend(["--", path]);
+    let mut bytes = git(root, &args).await?;
+    if bytes.is_empty()
+        && !staged
+        && git(root, &["status", "--porcelain=v1", "-z", "--", path])
+            .await?
+            .starts_with(b"?? ")
+    {
+        // no-index describes a new file without modifying the real index.
+        bytes = git(
+            root,
+            &[
+                "diff",
+                "--no-index",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-color",
+                "--",
+                "/dev/null",
+                path,
+            ],
+        )
+        .await?;
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 #[cfg(test)]

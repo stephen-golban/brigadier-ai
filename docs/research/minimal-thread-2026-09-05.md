@@ -1,0 +1,19 @@
+# Minimal thread reference and decision
+
+The owner supplied two screenshots and a pasted trace on 2026-09-05. Observed in those references: plain assistant prose, quiet inline activity summaries, expandable work, and repeated agent start/update/finish entries interleaved with commands and commentary. The owner requests further condensation.
+
+Native observation was attempted with Computer Use `getApp('ChatGPT')`. The app inventory identifies ChatGPT as `com.openai.codex`; Computer Use refuses that app for safety reasons. No alternate capture mechanism was used. The screenshots establish appearance, not the implementation of ChatGPT's live accordions.
+
+Implementation decision: one collapsed work group per response, with tool input/output paired by explicit tool-call identity and child activity nested using the recorded parent identity. Consecutive tool categories can fold into a further group. Earlier assistant prose in that response belongs to work; the last main-session answer stays visible. Child-agent answers never replace the main answer. Interleaved unrelated work is not falsely attributed to an agent. Orphans and incomplete records remain inspectable. Failed calls remain signaled while collapsed. Approval controls stay outside the work accordion. No paid summarization or deletion of log content is needed.
+
+Existing interface evidence: `src/workspaceApi.ts` exposes item identity, parent identity, typed kind, timestamp, and update cursor. `crates/core/src/claude/adapter.rs` records parent tool-use identity and matching result IDs. Existing React/TanStack components and styling are reused; no new package/interface is introduced. The earlier pinned source audit (`chat-reference-source-audit-2026-09-05.md`, sections 4–5) documents grouped activity, preserving pending actions, and deferred detail rendering in Jan.
+
+## Delivered behavior and validation
+
+`src/threadProjection.ts` derives one work row between root user messages. It pairs call/output records, nests explicit parent links (including late parents), coalesces subagent lifecycle records by task ID, and preserves orphaned, cyclic, and repeated output for inspection. Consecutive trailing main-session text blocks are combined into one visible answer. While a response is running, intermediate prose remains inside work. This is a positional fallback: the stored chat protocol has no final/commentary channel metadata. Background session creation is not labeled as agent completion.
+
+`WorkTrace.tsx` renders quiet, initially collapsed summaries. Nested agents contain their own recorded progress and tools; adjacent commands share a group. Failed calls are indicated even when the work row is closed. Details mount on expansion and long lists load in batches of 40. The existing session disclosure persistence, raw Activity view, separate approvals, and virtualized transcript remain available. Collapsing a trace that makes the content fit removes the unnecessary Latest control.
+
+Validation: 281 UI tests pass, including 11 new projection/disclosure tests covering multi-block answers, interleaved parentage, lifecycle updates, late parents, failed/orphan/cyclic output, incomplete responses, keyboard activation, collapse/reopen state, and bounded rendering. TypeScript and Vite production builds pass. Browser mock QA verified the collapsed answer, nested agent and paired tool details, disclosure state after reload, and no horizontal overflow with the workspace panel open. No real agent or paid model call was used. Native ChatGPT inspection remains blocked as described above; this is an implementation based on the supplied references, not a verified reproduction of its internals.
+
+The macOS application bundle was rebuilt successfully at `target/release/bundle/macos/brigadier.app`. The 46 original-checkout baseline file hashes are unchanged. No commit or push was made.

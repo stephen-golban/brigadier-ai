@@ -22,13 +22,13 @@ use brigadier_core::session::Decision;
 use brigadier_supervisor::{
     ApprovalView, FeedBatch, FeedRowWire, ProjectDeletion, SessionDeletion, WorktreeCleanup,
 };
-use tauri::ipc::Channel;
 use tauri::State;
+use tauri::ipc::Channel;
 
 use brigadier_store::intents::IntentState;
 use brigadier_store::plan::{PhaseRow, PhaseState, UnknownRow, WorkOrderRow};
-use brigadier_supervisor::loop_::RunSpec;
 use brigadier_supervisor::SupervisorError;
+use brigadier_supervisor::loop_::RunSpec;
 
 use crate::error::AppError;
 use crate::state::{AppState, Ready};
@@ -68,7 +68,18 @@ pub(crate) async fn probe_claude(state: State<'_, AppState>) -> Result<ClaudeSta
 #[tauri::command]
 pub(crate) async fn list_models(state: State<'_, AppState>) -> Result<Vec<ModelInfo>, AppError> {
     state.get()?;
-    Ok(crate::views::models())
+    let available = brigadier_core::claude::capabilities::models(crate::state::CLAUDE_INSTANCE);
+    if available.is_empty() {
+        return Ok(crate::views::models());
+    }
+    Ok(available
+        .into_iter()
+        .map(|m| ModelInfo {
+            is_default: m.id == "default",
+            id: m.id,
+            label: m.label,
+        })
+        .collect())
 }
 
 /// Every project, oldest first.
@@ -86,7 +97,11 @@ pub(crate) async fn add_project(
     path: String,
     state: State<'_, AppState>,
 ) -> Result<ProjectView, AppError> {
-    let row = state.get()?.supervisor.add_project(PathBuf::from(path)).await?;
+    let row = state
+        .get()?
+        .supervisor
+        .add_project(PathBuf::from(path))
+        .await?;
     Ok(ProjectView::from(&row))
 }
 
@@ -110,7 +125,11 @@ pub(crate) async fn set_project_mcp(
             format!("unknown mcp policy {mcp:?}; expected off or inherit"),
         )
     })?;
-    let row = state.get()?.supervisor.set_project_mcp(&project_id, policy).await?;
+    let row = state
+        .get()?
+        .supervisor
+        .set_project_mcp(&project_id, policy)
+        .await?;
     Ok(ProjectView::from(&row))
 }
 
@@ -131,6 +150,7 @@ pub(crate) async fn start_session(
     model: Option<String>,
     permission_mode: String,
     options: Option<AgentOptions>,
+    isolated: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<SessionView, AppError> {
     // Fail with the code the UI has a remedy for. Without this the supervisor answers
@@ -144,14 +164,34 @@ pub(crate) async fn start_session(
         .ok_or_else(|| AppError::new("no_such_project", format!("no project {project_id}")))?;
 
     let mut req = StartSession::new(project.root_path);
-    req.prompt = Some(prompt);
+    req.prompt = Some(crate::workbench_data::contextualize(
+        &state.get()?.data_dir,
+        &project_id,
+        &prompt,
+    )?);
     req.model = model;
     // An unmodelled mode is passed through verbatim rather than rejected; the CLI owns the
     // vocabulary. see crates/core/src/driver.rs `PermissionMode`.
     req.permission_mode = PermissionMode::from(permission_mode.as_str());
     apply_agent_options(&mut req, options.as_ref())?;
 
-    let session_id = supervisor.start_session(&project_id, &DriverKind::new(CLAUDE_CODE), req).await?;
+    let title = prompt
+        .lines()
+        .next()
+        .unwrap_or("Session")
+        .chars()
+        .take(100)
+        .collect();
+    let peer_token = crate::peers::prepare(&mut req)?;
+    let session_id = supervisor
+        .start_project_session(
+            &project_id,
+            &DriverKind::new(CLAUDE_CODE),
+            req,
+            isolated.unwrap_or(false),
+        )
+        .await?;
+    crate::peers::bind(peer_token, session_id.as_str(), Some(title))?;
     session_view(state.inner(), &session_id).await
 }
 
@@ -175,7 +215,11 @@ pub(crate) async fn resume_session(
     // tells the operator nothing about a missing install.
     state.claude_status()?;
     let session_id = SessionId::new(session_id);
-    let session_id = state.get()?.supervisor.resume_session(&session_id).await?;
+    let session_id = state
+        .get()?
+        .supervisor
+        .resume_session_with_env(&session_id, crate::peers::resume_env(session_id.as_str())?)
+        .await?;
     session_view(state.inner(), &session_id).await
 }
 
@@ -186,9 +230,27 @@ pub(crate) async fn send_turn(
     text: String,
     state: State<'_, AppState>,
 ) -> Result<TurnStarted, AppError> {
-    let turn_id =
-        state.get()?.supervisor.send_turn(&SessionId::new(session_id), text).await?;
-    Ok(TurnStarted { turn_id: turn_id.into_inner() })
+    let id = SessionId::new(session_id);
+    let row = state
+        .get()?
+        .supervisor
+        .session(&id)
+        .await?
+        .ok_or_else(|| AppError::invalid_argument("Session no longer exists"))?;
+    let text = crate::workbench_data::contextualize(
+        &state.get()?.data_dir,
+        row.project_id.as_deref().unwrap_or(""),
+        &text,
+    )?;
+    let (passive, message_ids) = crate::peers::passive(id.as_str()).unwrap_or_default();
+    let text = format!("{text}{passive}");
+    let turn_id = state.get()?.supervisor.send_turn(&id, text).await?;
+    if let Err(e) = crate::peers::acknowledge(&message_ids) {
+        tracing::warn!("Could not acknowledge peer messages: {}", e.message);
+    }
+    Ok(TurnStarted {
+        turn_id: turn_id.into_inner(),
+    })
 }
 
 /// Answer a parked permission request.
@@ -202,7 +264,11 @@ pub(crate) async fn respond(
     state
         .get()?
         .supervisor
-        .respond(&SessionId::new(session_id), RequestId::new(request_id), decision)
+        .respond(
+            &SessionId::new(session_id),
+            RequestId::new(request_id),
+            decision,
+        )
         .await?;
     Ok(())
 }
@@ -213,7 +279,11 @@ pub(crate) async fn interrupt(
     session_id: String,
     state: State<'_, AppState>,
 ) -> Result<(), AppError> {
-    state.get()?.supervisor.interrupt(&SessionId::new(session_id)).await?;
+    state
+        .get()?
+        .supervisor
+        .interrupt(&SessionId::new(session_id))
+        .await?;
     Ok(())
 }
 
@@ -223,14 +293,24 @@ pub(crate) async fn end_session(
     session_id: String,
     state: State<'_, AppState>,
 ) -> Result<(), AppError> {
-    state.get()?.supervisor.end_session(&SessionId::new(session_id)).await?;
+    state
+        .get()?
+        .supervisor
+        .end_session(&SessionId::new(session_id))
+        .await?;
     Ok(())
 }
 
 /// Kill the session's process group.
 #[tauri::command]
 pub(crate) async fn kill(session_id: String, state: State<'_, AppState>) -> Result<(), AppError> {
-    state.get()?.supervisor.kill(&SessionId::new(session_id)).await?;
+    let _guard = crate::peers::LIFECYCLE.lock().await;
+    crate::peers::cancel_pending(&session_id)?;
+    state
+        .get()?
+        .supervisor
+        .kill(&SessionId::new(session_id))
+        .await?;
     Ok(())
 }
 
@@ -269,7 +349,11 @@ pub(crate) async fn delete_session(
     force: bool,
     state: State<'_, AppState>,
 ) -> Result<SessionDeletion, AppError> {
-    Ok(state.get()?.supervisor.delete_session(&SessionId::new(session_id), force).await?)
+    Ok(state
+        .get()?
+        .supervisor
+        .delete_session(&SessionId::new(session_id), force)
+        .await?)
 }
 
 /// Remove a project and its history from Brigadier, preserving the repository and worktrees.
@@ -279,7 +363,11 @@ pub(crate) async fn delete_project(
     force: bool,
     state: State<'_, AppState>,
 ) -> Result<ProjectDeletion, AppError> {
-    Ok(state.get()?.supervisor.delete_project(&project_id, force).await?)
+    Ok(state
+        .get()?
+        .supervisor
+        .delete_project(&project_id, force)
+        .await?)
 }
 
 /// The newest `n` feed rows for a session, oldest first — what a fresh mount replays before it
@@ -290,7 +378,11 @@ pub(crate) async fn feed_tail(
     n: usize,
     state: State<'_, AppState>,
 ) -> Result<Vec<FeedRowWire>, AppError> {
-    Ok(state.get()?.supervisor.feed_tail(&SessionId::new(session_id), n).await?)
+    Ok(state
+        .get()?
+        .supervisor
+        .feed_tail(&SessionId::new(session_id), n)
+        .await?)
 }
 
 /// Every unanswered approval, oldest first, each marked resumable or expired.
@@ -362,7 +454,10 @@ pub(crate) async fn start_run(
     if let Some(live) = ready.supervisor.runs().into_iter().find(|r| !r.stopping()) {
         return Err(AppError::new(
             "run_already_live",
-            format!("run {} is already live; stop it before starting another", live.plan_id()),
+            format!(
+                "run {} is already live; stop it before starting another",
+                live.plan_id()
+            ),
         ));
     }
 
@@ -383,7 +478,11 @@ pub(crate) async fn start_run(
     // rebuild; with nothing set it is `Limits::default()`.
     spec.limits = brigadier_supervisor::loop_::Limits::from_env();
     if let Some(plan_id) = resumable(ready, &project_id, &goal).await? {
-        tracing::info!(plan_id, project_id, "continuing an unfinished plan rather than writing a new one");
+        tracing::info!(
+            plan_id,
+            project_id,
+            "continuing an unfinished plan rather than writing a new one"
+        );
         spec = spec.resuming(plan_id);
     }
     let handle = ready.supervisor.start_run(spec).await.map_err(run_error)?;
@@ -391,7 +490,9 @@ pub(crate) async fn start_run(
     ready.clear_stopped(handle.plan_id());
     let plan_id = handle.plan_id().to_owned();
     run_view(ready, &plan_id).await?.ok_or_else(|| {
-        AppError::store(format!("run {plan_id} started but the store has no plan row for it"))
+        AppError::store(format!(
+            "run {plan_id} started but the store has no plan row for it"
+        ))
     })
 }
 
@@ -435,7 +536,11 @@ pub(crate) async fn stop_run(plan_id: String, state: State<'_, AppState>) -> Res
     // recorded, so the surface stops offering to stop a run that is not running.
     let was_live = ready.supervisor.stop_run(&plan_id);
     ready.mark_stopped(&plan_id);
-    tracing::info!(plan_id, was_live, "run stopped; in-flight orders are left to finish");
+    tracing::info!(
+        plan_id,
+        was_live,
+        "run stopped; in-flight orders are left to finish"
+    );
     Ok(())
 }
 
@@ -500,7 +605,7 @@ async fn settle(ready: &Ready, intent_id: &str, state: &str) -> Result<(), AppEr
         other => {
             return Err(AppError::invalid_argument(format!(
                 "not a settlement: {other:?}; expected done or not_done"
-            )))
+            )));
         }
     };
     let rows = ready.store().unsettled_intents().await?;
@@ -519,7 +624,13 @@ async fn settle(ready: &Ready, intent_id: &str, state: &str) -> Result<(), AppEr
             std::time::SystemTime::now(),
         )
         .await?;
-    if ready.store().unsettled_intents().await?.iter().any(|r| r.id == intent_id) {
+    if ready
+        .store()
+        .unsettled_intents()
+        .await?
+        .iter()
+        .any(|r| r.id == intent_id)
+    {
         return Err(AppError::store(format!(
             "intent {intent_id} is still unsettled after the operator write; nothing was recorded"
         )));
@@ -632,7 +743,10 @@ pub(crate) async fn record_frame_stats(
     let mut line = serde_json::to_vec(&stats)
         .map_err(|e| AppError::invalid_argument(format!("frame stats would not serialize: {e}")))?;
     line.push(b'\n');
-    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
     file.write_all(&line)?;
     Ok(())
 }
@@ -675,7 +789,12 @@ pub(crate) async fn report_paint(
     //
     // Matching on the prefix, not on one label, so a second signpost needs no change here. The
     // stage name is the label with the prefix stripped: `trace:dcl` becomes `dcl`.
-    if let PaintReport::Interaction { label, start_epoch_ms, .. } = &report {
+    if let PaintReport::Interaction {
+        label,
+        start_epoch_ms,
+        ..
+    } = &report
+    {
         if let Some(stage) = label.strip_prefix(TRACE_LABEL_PREFIX) {
             crate::trace::stage_at_epoch_ms(stage, *start_epoch_ms);
             return Ok(());
@@ -697,12 +816,19 @@ pub(crate) async fn report_paint(
         PaintReport::Interaction { .. } => None,
     };
 
-    let line_struct = PaintLine { process_start_epoch_ms, main_to_fcp_ms, report };
+    let line_struct = PaintLine {
+        process_start_epoch_ms,
+        main_to_fcp_ms,
+        report,
+    };
     let mut line = serde_json::to_vec(&line_struct).map_err(|e| {
         AppError::invalid_argument(format!("paint report would not serialize: {e}"))
     })?;
     line.push(b'\n');
-    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
     file.write_all(&line)?;
     Ok(())
 }
@@ -746,7 +872,9 @@ pub(crate) async fn burn(
     }
     #[cfg(not(any(debug_assertions, feature = "burn")))]
     {
-        Err(AppError::invalid_argument("burn is compiled out; build with --features burn"))
+        Err(AppError::invalid_argument(
+            "burn is compiled out; build with --features burn",
+        ))
     }
 }
 
@@ -766,7 +894,6 @@ pub(crate) async fn session_view(
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -781,7 +908,9 @@ mod tests {
     /// machine with no `claude` on `PATH` runs these tests unchanged.
     async fn ready() -> (tempfile::TempDir, Ready) {
         let dir = tempfile::tempdir().expect("data dir");
-        let ready = crate::state::build(dir.path().to_owned()).await.expect("state builds");
+        let ready = crate::state::build(dir.path().to_owned())
+            .await
+            .expect("state builds");
         (dir, ready)
     }
 
@@ -791,7 +920,11 @@ mod tests {
         let mut intent = IntentRow::new(id, KnownIntentKind::WorkOrder, SystemTime::now());
         intent.subject = Some("/repo/.brigadier/worktrees/abcd1234".to_owned());
         intent.detail_json = r#"{"order_id":"o1","phase_id":"ph1"}"#.to_owned();
-        ready.store().intent_open(intent).await.expect("intent opened");
+        ready
+            .store()
+            .intent_open(intent)
+            .await
+            .expect("intent opened");
         ready
             .store()
             .intent_close(
@@ -824,10 +957,15 @@ mod tests {
         // The wire's only value, and what the plan card renders.
         assert_eq!(before[0].state, "unknown");
 
-        settle(&ready, "i1", "done").await.expect("the owner's answer is recorded");
+        settle(&ready, "i1", "done")
+            .await
+            .expect("the owner's answer is recorded");
 
         let after = unsettled(&ready).await.expect("read");
-        assert!(after.is_empty(), "the answered intent is still being asked about: {after:?}");
+        assert!(
+            after.is_empty(),
+            "the answered intent is still being asked about: {after:?}"
+        );
     }
 
     /// `not_done` goes down the same path. The store still holds a `work_order` to `unknown`;
@@ -848,9 +986,13 @@ mod tests {
         unknown_work_order(&ready, "i3").await;
         settle(&ready, "i3", "done").await.expect("recorded");
 
-        let again = settle(&ready, "i3", "done").await.expect_err("a second answer is refused");
+        let again = settle(&ready, "i3", "done")
+            .await
+            .expect_err("a second answer is refused");
         assert_eq!(again.code, "no_such_intent", "{again}");
-        let never = settle(&ready, "nope", "done").await.expect_err("an unknown id is refused");
+        let never = settle(&ready, "nope", "done")
+            .await
+            .expect_err("an unknown id is refused");
         assert_eq!(never.code, "no_such_intent", "{never}");
     }
 
@@ -864,7 +1006,11 @@ mod tests {
             let e = settle(&ready, "i4", verb).await.expect_err("refused");
             assert_eq!(e.code, "invalid_argument", "{verb:?}: {e}");
         }
-        assert_eq!(unsettled(&ready).await.expect("read").len(), 1, "the row was touched");
+        assert_eq!(
+            unsettled(&ready).await.expect("read").len(),
+            1,
+            "the row was touched"
+        );
     }
 
     /// An `open` row — what a launch that died mid-order leaves — is settleable by the same
@@ -872,10 +1018,13 @@ mod tests {
     #[tokio::test]
     async fn an_intent_nothing_ever_closed_settles_too() {
         let (_dir, ready) = ready().await;
-        let mut intent =
-            IntentRow::new("i5", KnownIntentKind::WorktreeAdd, SystemTime::now());
+        let mut intent = IntentRow::new("i5", KnownIntentKind::WorktreeAdd, SystemTime::now());
         intent.subject = Some("/repo/.brigadier/worktrees/abcd1234".to_owned());
-        ready.store().intent_open(intent).await.expect("intent opened");
+        ready
+            .store()
+            .intent_open(intent)
+            .await
+            .expect("intent opened");
         assert_eq!(unsettled(&ready).await.expect("read").len(), 1);
 
         settle(&ready, "i5", "done").await.expect("recorded");
@@ -918,9 +1067,12 @@ fn apply_agent_options(
         || model.contains("opus-4-1")
         || model.contains("opus-4-0")
     {
-        return Err(AppError::invalid_argument("This model does not support effort"));
+        return Err(AppError::invalid_argument(
+            "This model does not support effort",
+        ));
     }
-    req.env_overrides.insert("CLAUDE_CODE_EFFORT_LEVEL".to_owned(), effort.to_owned());
+    req.env_overrides
+        .insert("CLAUDE_CODE_EFFORT_LEVEL".to_owned(), effort.to_owned());
     Ok(())
 }
 
@@ -929,14 +1081,37 @@ mod agent_option_tests {
     use super::*;
     #[test]
     fn effort_is_forwarded_and_unsupported_controls_fail() {
-        let mut request=StartSession::new("/tmp");
-        request.model=Some("claude-opus-5".into());
-        apply_agent_options(&mut request,None).unwrap();
-        assert_eq!(request.thinking,brigadier_core::driver::ThinkingPolicy::Inherit);
-        apply_agent_options(&mut request,Some(&AgentOptions{effort:Some("high".into())})).unwrap();
-        assert_eq!(request.env_overrides.get("CLAUDE_CODE_EFFORT_LEVEL").unwrap(),"high");
-        request.model=Some("claude-haiku-4-5".into());
-        assert!(apply_agent_options(&mut request,Some(&AgentOptions{effort:Some("high".into())})).is_err());
+        let mut request = StartSession::new("/tmp");
+        request.model = Some("claude-opus-5".into());
+        apply_agent_options(&mut request, None).unwrap();
+        assert_eq!(
+            request.thinking,
+            brigadier_core::driver::ThinkingPolicy::Inherit
+        );
+        apply_agent_options(
+            &mut request,
+            Some(&AgentOptions {
+                effort: Some("high".into()),
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            request
+                .env_overrides
+                .get("CLAUDE_CODE_EFFORT_LEVEL")
+                .unwrap(),
+            "high"
+        );
+        request.model = Some("claude-haiku-4-5".into());
+        assert!(
+            apply_agent_options(
+                &mut request,
+                Some(&AgentOptions {
+                    effort: Some("high".into())
+                })
+            )
+            .is_err()
+        );
         assert!(serde_json::from_str::<AgentOptions>(r#"{"speed":"fast"}"#).is_err());
     }
 }

@@ -14,7 +14,9 @@ function MarkdownContent({
         remarkPlugins={[remarkGfm]}
         skipHtml
         urlTransform={(url) =>
-          url.startsWith("/") || url.startsWith("./")
+          url.startsWith("/") ||
+          url.startsWith("./") ||
+          /^brigadier-note:[a-zA-Z0-9_-]+$/.test(url)
             ? url
             : defaultUrlTransform(url)
         }
@@ -22,7 +24,8 @@ function MarkdownContent({
           a: ({ href, children }) => {
             if (
               href &&
-              !/^[a-z][a-z0-9+.-]*:/i.test(href) &&
+              (!/^[a-z][a-z0-9+.-]*:/i.test(href) ||
+                /^brigadier-note:[a-zA-Z0-9_-]+$/.test(href)) &&
               !href.startsWith("//") &&
               !href.startsWith("#")
             ) {

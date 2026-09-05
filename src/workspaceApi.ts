@@ -19,10 +19,12 @@ export interface GitChange {
   path: string;
   index: string;
   worktree: string;
+  original?: string|null;
 }
 export interface GitStatus {
   branch: string;
   changes: GitChange[];
+  additions?:number; deletions?:number; ahead?:number; behind?:number;
 }
 export interface ChatItem {
   session_id: string;
@@ -32,6 +34,7 @@ export interface ChatItem {
   kind: ItemKind;
   body: string;
   parent_id: string | null;
+  provider_uuid?: string | null;
 }
 export const desktop = isTauri();
 const example = "# Brigadier\n\nA local workspace for your coding agents.\n";
@@ -80,15 +83,16 @@ export const workspaceApi = {
     context: WorkspaceContext,
     cols: number,
     rows: number,
+    cwd?: string,
   ): Promise<string> =>
     desktop
-      ? invoke("terminal_open", { ...context, cols, rows })
+      ? invoke("terminal_open", { ...context, cols, rows, cwd })
       : Promise.reject(
           new Error("Interactive terminals are available in the desktop app."),
         ),
   readTerminal: (
     id: string,
-  ): Promise<{ data: number[]; exited: boolean; dropped: number }> =>
+  ): Promise<{ data: number[]; exited: boolean; dropped: number; busy:boolean }> =>
     invoke("terminal_read", { id }),
   writeTerminal: (id: string, data: string): Promise<void> =>
     invoke("terminal_write", { id, data }),

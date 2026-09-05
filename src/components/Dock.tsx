@@ -1,3 +1,4 @@
+import type { MessageEditProps } from "./EditMessage";
 import { SelectMenu } from "./SelectMenu";
 import type { AgentOptions } from "../agentOptions";
 /** One chat composer: start a session, or continue the selected conversation. */
@@ -14,7 +15,7 @@ import type {
   WorktreeCleanup,
 } from "../wire";
 
-export interface DockProps {
+export interface DockProps extends MessageEditProps {
   project: ProjectView | null;
   /** The selected session, or null when none is. Selects the conversation to continue. */
   session: SessionRuntime | null;
@@ -29,6 +30,7 @@ export interface DockProps {
     model: string | null;
     permissionMode: PermissionMode;
   options?: AgentOptions;
+  isolated?: boolean;
   }) => void | Promise<boolean>;
   onSend: (sessionId: SessionId, text: string) => void | Promise<boolean>;
   onInterrupt: (sessionId: SessionId) => void;
@@ -90,6 +92,10 @@ export function Dock(props: DockProps) {
         />
       ) : (
         <Composer
+          key={`${session.sessionId}:${props.editing?.id ?? "draft"}`}
+          editing={props.editing}
+          onCancelEdit={props.onCancelEdit}
+          onRewound={props.onRewound}
           session={session}
           busy={busy}
           onSend={props.onSend}

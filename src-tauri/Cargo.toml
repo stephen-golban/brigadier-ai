@@ -58,6 +58,12 @@ tracing = { workspace = true }
 # 0.3.23 is the current release (`cargo search tracing-subscriber`, 2026-09-02).
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 portable-pty = "0.9"
+trash = "5"
+tempfile = "3.27"
+regex = "1"
+ignore = "0.4"
+globset = "0.4"
+uuid = { workspace = true }
 
 # `setrlimit`, safely. This crate is `#![deny(unsafe_code)]`, so `libc::setrlimit` (an unsafe
 # extern fn) cannot be called here at all. `nix` 0.31.3 is already in the workspace

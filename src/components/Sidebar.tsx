@@ -78,6 +78,7 @@ export type SessionDeleteAnswer = DeleteAnswer<SessionDeletion>;
 export type ProjectDeleteAnswer = DeleteAnswer<ProjectDeletion>;
 
 export interface SidebarProps {
+  titles?:Record<string,string>;
   projects: ProjectView[];
   sessions: Record<SessionId, SessionRuntime>;
   order: SessionId[];
@@ -242,6 +243,7 @@ function TrashIcon() {
 /* ------------------------------------------------------------- session row */
 
 interface SessionRowProps {
+  title?:string;
   session: SessionRuntime;
   selected: boolean;
   onSelect: (id: SessionId) => void;
@@ -257,6 +259,7 @@ interface SessionRowProps {
  * tick, not ten.
  */
 const SessionRow = memo(function SessionRow({
+  title,
   session,
   selected,
   onSelect,
@@ -268,8 +271,8 @@ const SessionRow = memo(function SessionRow({
 
   const branch = session.branch;
   const prefix = branch !== null && branch.startsWith(BRANCH_PREFIX) ? BRANCH_PREFIX : null;
-  const name =
-    branch === null ? shortId(session.sessionId) : prefix === null ? branch : branch.slice(prefix.length);
+  const name = title ?? (
+    branch === null ? shortId(session.sessionId) : prefix === null ? branch : branch.slice(prefix.length));
 
   const detail = [
     session.sessionId,
@@ -320,7 +323,7 @@ const SessionRow = memo(function SessionRow({
             aria-hidden="true"
           />
           <span className="side-branch">
-            {prefix !== null ? <span className="prefix">{prefix}</span> : null}
+            {!title && prefix !== null ? <span className="prefix">{prefix}</span> : null}
             <span className="ref">{name}</span>
           </span>
           <span className="sr-only">{statusWord(session.status, session.busy)}</span>
@@ -363,6 +366,7 @@ const SessionRow = memo(function SessionRow({
 /* ----------------------------------------------------------------- sidebar */
 
 export function Sidebar({
+  titles,
   projects,
   sessions,
   order,
@@ -681,6 +685,7 @@ export function Sidebar({
                     return (
                       <SessionRow
                         key={id}
+                        title={titles?.[id]}
                         session={s}
                         selected={id === selectedSessionId}
                         onSelect={selectSession}

@@ -100,7 +100,8 @@ pub struct SpawnSpec {
 // see docs/research/approvals.md §1(b) (documented) and §7 gap 1.
 //
 // `--strict-mcp-config` is passed under [`McpPolicy::Off`], which is the default, and no
-// `--mcp-config` ever is — so the allowed set is empty and no MCP server loads. Measured: the
+// `--mcp-config` is supplied for external servers. App-managed interactive sessions may
+// explicitly configure the internal brigadier peer server (workbench research brief). Measured: the
 // `system/init` frame reports `mcp_servers: []` on all six `off` runs and both of the owner's
 // servers connected on all six `on` runs, and the flag is worth 751.5 ms of the 1,395 ms median
 // spawn to `system/init`. `claude --help` on 2.1.259, this machine: "--strict-mcp-config  Only
@@ -139,6 +140,12 @@ pub fn build_argv(spec: &SpawnSpec) -> Vec<String> {
     // see docs/research/cli-protocol.md §1 for the conditional-flag order.
     if spec.mcp == McpPolicy::Off {
         argv.push("--strict-mcp-config".to_owned());
+    }
+    if let Some(executable) = spec.env_overrides.get("BRIGADIER_EXECUTABLE") {
+        if spec.env_overrides.contains_key("BRIGADIER_PEER_TOKEN") {
+            argv.push("--mcp-config".to_owned());
+            argv.push(serde_json::json!({"mcpServers":{"brigadier":{"type":"stdio","command":executable,"args":["--peer-mcp"]}}}).to_string());
+        }
     }
     argv.push("--permission-mode".to_owned());
     argv.push(spec.permission_mode.as_cli_flag().to_owned());
@@ -376,6 +383,20 @@ mod tests {
     /// without this the harness pays for deliberation on every mechanical turn. Off is that
     /// model's own API default.
     // see docs/research/thinking-control.md §1, §3 and §8.
+    #[test]
+    fn native_peer_server_is_explicit_without_exposing_credentials_in_argv() {
+        let mut request = spec();
+        request
+            .env_overrides
+            .insert("BRIGADIER_EXECUTABLE".into(), "/Applications/Brigadier App/brigadier".into());
+        request.env_overrides.insert("BRIGADIER_PEER_TOKEN".into(), "private-session-token".into());
+        let argv = build_argv(&request);
+        assert!(argv.iter().any(|a| a == "--strict-mcp-config"));
+        let index = argv.iter().position(|a| a == "--mcp-config").unwrap();
+        let config: serde_json::Value = serde_json::from_str(&argv[index + 1]).unwrap();
+        assert_eq!(config["mcpServers"]["brigadier"]["args"], serde_json::json!(["--peer-mcp"]));
+        assert!(!argv.join(" ").contains("private-session-token"));
+    }
     #[test]
     fn the_default_child_is_spawned_with_thinking_off() {
         assert_eq!(ThinkingPolicy::default(), ThinkingPolicy::Off, "off is the default policy");

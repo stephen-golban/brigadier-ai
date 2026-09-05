@@ -20,6 +20,7 @@ struct Terminal {
     exited: Arc<AtomicBool>,
     pid: Option<u32>,
     drained: Arc<AtomicBool>,
+    cwd: std::path::PathBuf,
 }
 #[derive(Default)]
 struct Output {
@@ -87,7 +88,7 @@ fn spawn(root: std::path::PathBuf, cols: u16, rows: u16) -> Result<String, AppEr
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_owned());
     let mut command = CommandBuilder::new(shell);
     command.arg("-l");
-    command.cwd(root);
+    command.cwd(&root);
     command.env("TERM", "xterm-256color");
     let mut reader = pair.master.try_clone_reader().map_err(error)?;
     let writer = pair.master.take_writer().map_err(error)?;
@@ -130,6 +131,7 @@ fn spawn(root: std::path::PathBuf, cols: u16, rows: u16) -> Result<String, AppEr
             exited,
             pid,
             drained,
+            cwd: root,
         },
     );
     Ok(id)
@@ -141,9 +143,14 @@ pub(crate) async fn terminal_open(
     session_id: Option<String>,
     cols: u16,
     rows: u16,
+    cwd: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<String, AppError> {
     let root = crate::workspace::root(state.inner(), &project_id, session_id.as_deref()).await?;
+    let root = cwd
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_absolute() && p.is_dir())
+        .unwrap_or(root);
     tauri::async_runtime::spawn_blocking(move || spawn(root, cols, rows))
         .await
         .map_err(error)?
@@ -153,6 +160,7 @@ pub(crate) struct TerminalOutput {
     data: Vec<u8>,
     exited: bool,
     dropped: usize,
+    busy: bool,
 }
 #[tauri::command]
 pub(crate) fn terminal_read(id: String) -> Result<TerminalOutput, AppError> {
@@ -166,6 +174,7 @@ pub(crate) fn terminal_read(id: String) -> Result<TerminalOutput, AppError> {
         data: output.bytes.drain(..count).collect(),
         exited: terminal.exited.load(Ordering::Acquire) && terminal.drained.load(Ordering::Acquire),
         dropped: std::mem::take(&mut output.dropped),
+        busy: busy(terminal),
     })
 }
 #[tauri::command]
@@ -203,9 +212,86 @@ pub(crate) fn terminal_close(id: String) {
     lock().remove(&id);
 }
 
+fn busy(t: &Terminal) -> bool {
+    if t.exited.load(Ordering::Acquire) {
+        return false;
+    }
+    match (t.master.process_group_leader(), t.pid) {
+        (Some(group), Some(pid)) => group > 0 && group as u32 != pid,
+        _ => true,
+    }
+}
+#[derive(Serialize)]
+pub(crate) struct TerminalInfo {
+    busy: bool,
+    cwd: String,
+}
+#[tauri::command]
+pub(crate) async fn terminal_info(id: String) -> Result<TerminalInfo, AppError> {
+    let (pid, active, cwd) = {
+        let registry = lock();
+        let t = registry
+            .get(&id)
+            .ok_or_else(|| AppError::invalid_argument("Terminal is closed"))?;
+        (t.pid, busy(t), t.cwd.clone())
+    };
+    let mut cwd = cwd.to_string_lossy().into_owned();
+    #[cfg(target_os = "macos")]
+    if let Some(pid) = pid {
+        let output = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            tokio::process::Command::new("/usr/sbin/lsof")
+                .args(["-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"])
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await;
+        if let Ok(Ok(out)) = output {
+            if let Some(path) = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .find_map(|l| l.strip_prefix('n'))
+            {
+                cwd = path.to_owned();
+            }
+        }
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(pid) = pid {
+        if let Ok(path) = std::fs::read_link(format!("/proc/{pid}/cwd")) {
+            cwd = path.to_string_lossy().into_owned();
+        }
+    }
+    Ok(TerminalInfo { busy: active, cwd })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn foreground_command_is_busy_and_shell_is_idle() {
+        let root = tempfile::tempdir().unwrap();
+        let id = spawn(root.path().to_path_buf(), 80, 24).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        loop {
+            if !terminal_read(id.clone()).unwrap().busy {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        terminal_write(id.clone(), "/bin/sleep 30\n".into())
+            .await
+            .unwrap();
+        loop {
+            if terminal_read(id.clone()).unwrap().busy {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        terminal_close(id.clone());
+        assert!(terminal_read(id).is_err());
+    }
     #[tokio::test]
     async fn local_shell_roundtrip_exit_and_close() {
         let root = tempfile::tempdir().unwrap();

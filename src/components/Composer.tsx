@@ -1,3 +1,4 @@
+import { useMessageEdit, type MessageEditProps } from "./EditMessage";
 import { PromptInput, useDraft } from "./PromptInput";
 /**
  * Send a turn to the selected session, and the three ways to stop one.
@@ -195,7 +196,7 @@ export function RunControl({
   );
 }
 
-export interface ComposerProps {
+export interface ComposerProps extends MessageEditProps {
   session: SessionRuntime | null;
   /** An IPC call started by this dock is in flight; both secondary actions go inert. */
   busy: boolean;
@@ -217,8 +218,14 @@ export function Composer({
   onKill,
   onResume,
   onCleanup,
+  editing,
+  onCancelEdit,
+  onRewound,
 }: ComposerProps) {
-  const [text, setText] = useDraft(`turn:${session?.sessionId ?? "none"}`);
+  const [draft, setDraft] = useDraft(`turn:${session?.sessionId ?? "none"}`);
+  const edit = useMessageEdit({ editing, onCancelEdit, onRewound });
+  const text = editing ? edit.text : draft;
+  const setText = editing ? edit.setText : setDraft;
   /** A cleanup came back `removed: false`: nothing was touched, and `blocked` says why. */
   const [refusal, setRefusal] = useState<WorktreeCleanup | null>(null);
   /** The last successful removal, so the dock can say the checkout is gone and resume is over. */
@@ -267,6 +274,10 @@ export function Composer({
   const [sending, setSending] = useState(false);
   const send = async () => {
     if (session === null || !live || busy || sending || text.trim() === "") return;
+    if (editing) {
+      if (!session.busy) await edit.submit();
+      return;
+    }
     setSending(true);
     try { if (await onSend(session.sessionId, text.trim()) !== false) setText(""); }
     finally { setSending(false); }
@@ -459,6 +470,16 @@ export function Composer({
   return (
     <>
       <div className="dock-box">
+        {editing && (
+          <div className="composer-edit-banner">
+            <span>{edit.rewound ? "Conversation rewound · ready to send" : "Editing message"}</span>
+            <button type="button" className="act" disabled={edit.busy || Boolean(edit.confirmation)} onClick={onCancelEdit}>
+              Cancel edit
+            </button>
+          </div>
+        )}
+        {editing && edit.error && <p role="alert" className="inline-error">{edit.error}</p>}
+        {editing && edit.confirmation}
         <PromptInput
           rows={2}
           value={text}
@@ -467,7 +488,8 @@ export function Composer({
               ? "Next turn. Return to send, Shift+Return for a new line."
               : "Select a running session"
           }
-          disabled={!live || busy || sending}
+          focusKey={sessionId ?? undefined}
+          disabled={!live || busy || sending || (Boolean(editing) && edit.disabled)}
           onText={setText}
           onKeyDown={(e) => {
             if (isSubmitKey(e)) {
@@ -538,8 +560,8 @@ export function Composer({
           <button
             type="button"
             className="send"
-            aria-label="send this turn"
-            disabled={!live || busy || sending || text.trim() === ""}
+            aria-label={editing ? "Send edited message" : "send this turn"}
+            disabled={!live || busy || sending || text.trim() === "" || (Boolean(editing) && (edit.disabled || session?.busy))}
             onClick={send}
           >
             <SendIcon />

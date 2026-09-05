@@ -1,3 +1,4 @@
+import type { ChatItem } from "./workspaceApi";
 /** The desktop shell: project sidebar, conversation, composer and optional workspace.
  * Saved automation plans are collapsed project history. A selected session shows its chat.
  * IPC uses the native bridge in Tauri and an in-memory mock in browser previews.
@@ -22,9 +23,11 @@ import type { ApprovalRow } from "./components/Approvals";
 import { Burn } from "./components/Burn";
 import { Dock } from "./components/Dock";
 import { ThreadView } from "./components/ThreadView";
-import { WorkspacePanel, type WorkspaceTab } from "./components/WorkspacePanel";
+import { useStoredState } from "./workbenchState";
+import { usePeers } from "./peerApi";
+import { ProjectWorkbench } from "./components/ProjectWorkbench";
 import { SidebarSimpleIcon } from "@phosphor-icons/react";
-import type { WorkspaceContext } from "./workspaceApi";
+
 import { FpsOverlay } from "./components/FpsOverlay";
 import { RunCard } from "./components/RunCard";
 import { Sidebar } from "./components/Sidebar";
@@ -126,10 +129,12 @@ const BURN_ROOT_MARKER = "brigadier-burn";
  */
 const BURN_UI = import.meta.env.DEV || import.meta.env.VITE_BURN === "1";
 
-interface WorkspaceView { context:WorkspaceContext; root:string; tabs:WorkspaceTab[]; active:string|null }
+
 export function App() {
-  const [workspaceOpen,setWorkspaceOpen]=useState(false);
-  const [workspaces,setWorkspaces]=useState<Record<string,WorkspaceView>>({});
+  const peers=usePeers();
+  const [workspaceOpen,setWorkspaceOpen]=useStoredState("brigadier:workspace-open",false);
+  const [sidebarOpen,setSidebarOpen]=useStoredState("brigadier:sidebar-open",true);
+
   const state = useSyncExternalStore(store.subscribe, store.getState);
 
   const [projects, setProjects] = useState<ProjectView[]>([]);
@@ -139,6 +144,9 @@ export function App() {
   const [claudeError, setClaudeError] = useState<AppError | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<ProjectId | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState<SessionId | null>(null);
+  const [editingMessage, setEditingMessage] = useState<ChatItem | null>(null);
+  const [conversationRevision, setConversationRevision] = useState(0);
+  useEffect(() => setEditingMessage(null), [selectedSessionId]);
   const [notice, setNotice] = useState<string | null>(null);
   /** The first `list_projects` has landed; before that every id looks unknown. */
   const [projectsLoaded, setProjectsLoaded] = useState(false);
@@ -219,7 +227,7 @@ export function App() {
       setModels(modelList);
       store.seedSessions(sessionList);
       store.seedApprovals(pending);
-      if (projectList.length > 0) setSelectedProjectId((prev) => prev ?? projectList[0]!.id);
+      if (projectList.length > 0) setSelectedProjectId((prev) => prev ?? projectList.find(p=>p.id===localStorage.getItem("brigadier:selected-project"))?.id ?? projectList[0]!.id);
     })();
 
     void b
@@ -240,6 +248,7 @@ export function App() {
   // Visibility drives what the Rust side bothers to send rows for.
   useEffect(() => {
     if (selectedProjectId === null) return;
+    localStorage.setItem("brigadier:selected-project",selectedProjectId);
     void bridge().setVisibleProjects([selectedProjectId]).catch(say);
   }, [selectedProjectId, say]);
 
@@ -376,31 +385,19 @@ export function App() {
       if (owner !== null) setSelectedProjectId(owner);
     }
     setSelectedSessionId(id);
+    if(id)window.dispatchEvent(new CustomEvent('workbench-select-session',{detail:id}));
   }, []);
 
+  useEffect(()=>{if(bridge().isMock)return;void bridge().listSessions().then(store.seedSessions).catch(()=>{});void bridge().listModels().then(setModels).catch(()=>{});},[peers.origins,selectedSessionId]);
   const selectedSession = selectedSessionId === null ? null : state.sessions[selectedSessionId] ?? null;
-  const workspaceKey = `${selectedProjectId}:${selectedSessionId}`;
   const openWorkspace = useCallback((path?:string) => {
-    if (!selectedProjectId) return;
-    const project=projects.find(p=>p.id===selectedProjectId);
-    if (!project) return;
-    const root=selectedSession?.cwd??project.root_path;
-    // Markdown file links may carry absolute workspace paths and a line suffix.
-    const relative=path?.replace(/#L\d+(?:-L\d+)?$/, '').replace(/:\d+(?::\d+)?$/, '').replace(/^\.\//,'');
-    const resolved=relative?.startsWith(root+'/')?relative.slice(root.length+1):relative;
-    setWorkspaces(previous=>{
-      const view=previous[workspaceKey]??{context:{projectId:selectedProjectId,sessionId:selectedSessionId},root,tabs:[],active:null};
-      if(!resolved)return {...previous,[workspaceKey]:view};
-      const id=`file:false:${resolved}`;
-      return {...previous,[workspaceKey]:{...view,tabs:view.tabs.some(t=>t.id===id)?view.tabs:[...view.tabs,{id,kind:'file',path:resolved}],active:id}};
-    });
-    setWorkspaceOpen(true);
-  },[selectedProjectId,selectedSessionId,selectedSession?.cwd,projects,workspaceKey]);
+    if(path) window.dispatchEvent(new CustomEvent('workbench-open-file',{detail:{path}}));
+    else setWorkspaceOpen(true);
+  },[]);
   useEffect(()=>{
-    const toggle=(event:KeyboardEvent)=>{if((event.metaKey||event.ctrlKey)&&event.altKey&&event.key.toLowerCase()==='b'){event.preventDefault();if(workspaceOpen)setWorkspaceOpen(false);else openWorkspace();}};
+    const toggle=(event:KeyboardEvent)=>{if((event.metaKey||event.ctrlKey)&&event.altKey&&event.key.toLowerCase()==='b'){event.preventDefault();setWorkspaceOpen(open=>!open);}};
     window.addEventListener('keydown',toggle);return()=>window.removeEventListener('keydown',toggle);
-  },[workspaceOpen,openWorkspace]);
-  useEffect(() => { if (workspaceOpen) openWorkspace(); }, [workspaceOpen, openWorkspace]);
+  },[]);
 
 
   /**
@@ -562,7 +559,7 @@ export function App() {
         const deletion = await bridge().deleteSession(sessionId, force);
         if (deletion.removed) {
           store.dropSession(sessionId);
-          setWorkspaces(old => Object.fromEntries(Object.entries(old).filter(([,v]) => v.context.sessionId !== sessionId)));
+          window.dispatchEvent(new CustomEvent("workbench-history-deleted", { detail: { sessionId } }));
           // A B4 span open against this session can never settle now — its rows are gone — so it
           // is cancelled rather than left to time out. The ref is read directly instead of going
           // through `selectSession`, which would put the selection in this callback's dependency
@@ -605,7 +602,7 @@ export function App() {
           // some *other* project.
           const owned = store.getState().sessions;
           store.dropProject(projectId);
-          setWorkspaces(old => Object.fromEntries(Object.entries(old).filter(([,v]) => v.context.projectId !== projectId)));
+          window.dispatchEvent(new CustomEvent("workbench-history-deleted", { detail: { projectId } }));
           setProjects((prev) => prev.filter((p) => p.id !== projectId));
           setSelectedProjectId((current) => (current === projectId ? null : current));
           if (paintSpan.current !== null && owned[paintSpan.current.sessionId]?.projectId === projectId) {
@@ -758,9 +755,10 @@ export function App() {
   const pendingTotal = approvalRows.length;
 
   return (
-    <div className="app">
+    <div className={`app ${sidebarOpen?"":"sidebar-collapsed"}`}>
       <Sidebar
         projects={projects}
+        titles={peers.titles}
         sessions={state.sessions}
         order={state.order}
         selectedProjectId={selectedProjectId}
@@ -772,7 +770,7 @@ export function App() {
         claudeError={claudeError}
         isMock={bridge().isMock}
         dev={BURN_UI ? <Burn onBurn={runBurn} /> : undefined}
-        onSelectProject={setSelectedProjectId}
+        onSelectProject={id=>{setSelectedProjectId(id);setSelectedSessionId(null);}}
         onSelectSession={selectSession}
         onAddProject={addProject}
         // Both plugins exist only in a real Tauri window. In a browser (`npm run dev`) the mock
@@ -789,6 +787,7 @@ export function App() {
 
       <main className="thread">
         <header className="thread-head">
+          <button className="icon-button" aria-label="Toggle sidebar" aria-pressed={sidebarOpen} onClick={()=>setSidebarOpen(!sidebarOpen)}><SidebarSimpleIcon size={20}/></button>
           <span className="head-id">
             <span className="head-name">
               <b>{selectedProject?.name ?? "No project"}</b>
@@ -833,6 +832,7 @@ export function App() {
           <button className="icon-button workspace-toggle" aria-label="Toggle workspace panel" aria-pressed={workspaceOpen} title="Workspace (⌥⌘B)" disabled={!selectedProjectId} onClick={()=>workspaceOpen?setWorkspaceOpen(false):openWorkspace()}><SidebarSimpleIcon size={20}/></button>
         </header>
 
+        <ProjectWorkbench peers={peers} project={selectedProject} session={selectedSession} sessions={state.sessions} selectedSessionId={selectedSessionId} onSelectSession={selectSession} workspaceOpen={workspaceOpen} setWorkspaceOpen={setWorkspaceOpen} models={models}>
         {runLive && run?.project_id === selectedProjectId && selectedSessionId === null ? (
           <div className="run-dock-status" role="status">
             Automation running: {run.goal}
@@ -847,6 +847,9 @@ export function App() {
         ) : null}
 
         <ThreadView
+          onEdit={setEditingMessage}
+          editing={editingMessage !== null}
+          revision={conversationRevision}
           sessionId={selectedSessionId}
           projectId={selectedProjectId}
           projectName={selectedProject?.name ?? null}
@@ -861,6 +864,9 @@ export function App() {
         />
 
         <Dock
+          editing={editingMessage?.session_id === selectedSessionId ? editingMessage : null}
+          onCancelEdit={() => setEditingMessage(current => current?.id === editingMessage?.id ? null : current)}
+          onRewound={() => setConversationRevision(n => n + 1)}
           project={selectedProject}
           session={selectedSession}
           models={models}
@@ -882,13 +888,9 @@ export function App() {
             void bridge().kill(id).catch(say);
           }}
         />
+        </ProjectWorkbench>
       </main>
-      {Object.entries(workspaces).map(([key,view])=><div key={key} className="workspace-slot" hidden={!workspaceOpen||key!==workspaceKey}>
-        <WorkspacePanel visible={workspaceOpen && key===workspaceKey} context={view.context} rootPath={view.root} tabs={view.tabs} active={view.active}
-          setTabs={tabs=>setWorkspaces(old=>({...old,[key]:{...old[key]!,tabs}}))}
-          setActive={active=>setWorkspaces(old=>({...old,[key]:{...old[key]!,active}}))}
-          onClose={()=>setWorkspaceOpen(false)} onAttach={(path,content)=>window.dispatchEvent(new CustomEvent('brigadier-attach',{detail:{path,content}}))}/>
-      </div>)}
+
     </div>
   );
 }
