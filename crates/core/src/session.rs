@@ -162,9 +162,42 @@ impl FinalText {
     }
 }
 
+/// Native controls verified against Claude 2.1.261. Other adapters refuse them.
+/// See docs/research/rewind-context-2026-09-05.md.
+#[derive(Clone, Debug)]
+pub enum NativeControl {
+    /// Current context estimate; never cumulative billing usage.
+    ContextSummary,
+    /// Observed main/child agent identity and lifecycle, without a provider round trip.
+    Activity,
+    /// Restore provider file checkpoints, or inspect them without changing files.
+    RewindFiles {
+        /// Verified native human message UUID.
+        message_uuid: String,
+        /// Inspect without restoring files.
+        dry_run: bool,
+    },
+    /// Remove the target human message and its following conversation.
+    RewindConversation {
+        /// Message to remove, along with all later messages.
+        target_uuid: String,
+        /// Last human message observed, used as the native concurrency guard.
+        last_seen_uuid: String,
+    },
+    /// Release the send barrier only after local persistence has caught up.
+    FinishRewind,
+}
+
 /// One instruction from the supervisor to the adapter driving a session.
 #[derive(Debug)]
 pub enum Command {
+    /// A bounded, provider-specific request with its complete response.
+    Native {
+        /// Operation; never arbitrary JSON supplied by the frontend.
+        request: NativeControl,
+        /// Provider response, including semantic refusals.
+        ack: oneshot::Sender<Result<serde_json::Value, CommandError>>,
+    },
     /// Send a user turn under a locally minted id.
     SendTurn {
         /// The id the adapter must use for this turn's events.
@@ -239,6 +272,21 @@ impl SessionCommands {
     ) -> Result<(), CommandError> {
         self.tx.send(cmd).await.map_err(|_| CommandError::Closed)?;
         rx.await.map_err(|_| CommandError::Closed)?
+    }
+
+    /// Send a verified provider control. A timeout is an unknown outcome, never success.
+    pub async fn native_control(
+        &self,
+        request: NativeControl,
+    ) -> Result<serde_json::Value, CommandError> {
+        let (ack, rx) = oneshot::channel();
+        self.tx.send(Command::Native { request, ack }).await.map_err(|_| CommandError::Closed)?;
+        tokio::time::timeout(std::time::Duration::from_secs(20), rx)
+            .await
+            .map_err(|_| {
+                CommandError::Rejected("Provider control timed out; outcome is unconfirmed".into())
+            })?
+            .map_err(|_| CommandError::Closed)?
     }
 
     /// Queue a user turn; returns the locally minted turn id the events will carry.

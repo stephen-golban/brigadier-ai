@@ -321,6 +321,37 @@ CREATE INDEX work_orders_phase ON work_orders(phase_id, dispatched_at);
     r#"
 ALTER TABLE phases ADD COLUMN base_sha TEXT;
 "#,
+    r#"
+CREATE TABLE chat_items (
+ session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+ id TEXT NOT NULL,
+ seq INTEGER NOT NULL,
+ at INTEGER NOT NULL,
+ kind TEXT NOT NULL,
+ body TEXT NOT NULL,
+ parent_id TEXT,
+ PRIMARY KEY(session_id, id)
+);
+CREATE INDEX chat_items_cursor ON chat_items(session_id, seq);
+"#,
+    r#"
+ALTER TABLE chat_items ADD COLUMN provider_uuid TEXT;
+CREATE TABLE chat_rewinds (
+ id TEXT PRIMARY KEY,
+ session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+ target_id TEXT NOT NULL,
+ target_seq INTEGER NOT NULL,
+ through_seq INTEGER,
+ state TEXT NOT NULL,
+ created_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX chat_rewinds_pending ON chat_rewinds(session_id) WHERE state='pending';
+CREATE TABLE chat_archive (
+ rewind_id TEXT NOT NULL REFERENCES chat_rewinds(id) ON DELETE CASCADE,
+ session_id TEXT NOT NULL,
+ item_json TEXT NOT NULL
+);
+"#,
 ];
 
 /// Where a session is in its life.
@@ -874,7 +905,7 @@ mod tests {
         let version: i64 =
             conn.pragma_query_value(None, "user_version", |r| r.get(0)).expect("version");
         assert_eq!(version, MIGRATIONS.len() as i64);
-        assert_eq!(version, 6, "migration 5, `phases.base_sha`, is the top rung");
+        assert_eq!(version, 8, "chat items migration is the top rung");
         let sql = format!("SELECT {PROJECT_COLUMNS} FROM projects WHERE id = 'p1'");
         let row = conn.query_row(&sql, [], project_from_row).expect("read");
         assert_eq!(row.mcp, McpPolicy::Off, "an existing project is switched off, not opted in");
@@ -915,7 +946,7 @@ mod tests {
         let version: i64 =
             conn.pragma_query_value(None, "user_version", |r| r.get(0)).expect("version");
         assert_eq!(version, MIGRATIONS.len() as i64);
-        assert_eq!(version, 6, "migration 5, `phases.base_sha`, is the top rung");
+        assert_eq!(version, 8, "chat items migration is the top rung");
 
         let has = |kind: &str, name: &str| -> bool {
             conn.query_row(
@@ -1116,7 +1147,7 @@ mod tests {
         let version: i64 =
             conn.pragma_query_value(None, "user_version", |r| r.get(0)).expect("version");
         assert_eq!(version, MIGRATIONS.len() as i64);
-        assert_eq!(version, 6, "migration 5, `phases.base_sha`, is the top rung");
+        assert_eq!(version, 8, "chat items migration is the top rung");
 
         let sql = format!("SELECT {} FROM phases WHERE id = 'ph1'", crate::plan::PHASE_COLUMNS);
         let row = conn.query_row(&sql, [], crate::plan::phase_from_row).expect("read");
@@ -1133,7 +1164,7 @@ mod tests {
         let conn = open_connection(&dir.path().join("t.sqlite")).expect("open");
         let version: i64 =
             conn.pragma_query_value(None, "user_version", |r| r.get(0)).expect("version");
-        assert_eq!(version, 6);
+        assert_eq!(version, 8);
         let has_column: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('phases') WHERE name = 'base_sha'",

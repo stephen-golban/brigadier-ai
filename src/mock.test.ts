@@ -396,3 +396,14 @@ describe("deleting, on the mock bridge", () => {
     });
   });
 });
+
+describe('normal browser preview approvals', () => {
+  it('auto-allows simulated tool activity without opening approval cards', async () => {
+    const mock = await fresh();
+    const batches: unknown[] = [];
+    await mock.subscribeFeed(batch => batches.push(batch));
+    await vi.advanceTimersByTimeAsync(9000);
+    expect(batches.length).toBeGreaterThan(0);
+    expect(await mock.pendingApprovals()).toEqual([]);
+  });
+});

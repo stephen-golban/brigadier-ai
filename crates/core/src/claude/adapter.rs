@@ -67,7 +67,8 @@ use crate::event::{
     ItemKind, RequestId, RequestKind, SessionId, StopReason, TurnId, Usage, SUMMARY_LIMIT,
 };
 use crate::session::{
-    Command, CommandError, Decision, FinalText, SessionBackend, SessionHandle, TurnInput,
+    Command, CommandError, Decision, FinalText, NativeControl, SessionBackend, SessionHandle,
+    TurnInput,
 };
 
 /// How many decoded lines the reader task may run ahead of the select loop.
@@ -259,6 +260,11 @@ struct Adapter<W> {
 
     /// The open turn's assistant **text** so far, main loop only, bounded to
     /// [`FINAL_TEXT_LIMIT`] by keeping the tail.
+    native_pending: HashMap<String, (NativeControl, oneshot::Sender<Result<Value, CommandError>>)>,
+    rewind_paused: bool,
+    observed_model: Option<String>,
+    tasks: Vec<Value>,
+    last_action: Option<String>,
     turn_text: String,
     /// The most recently completed turn's text, and nothing older. Shared with
     /// [`SessionCommands`](crate::session::SessionCommands), which is where a caller reads it —
@@ -333,6 +339,11 @@ where
         by_cli_id: HashMap::new(),
         withdrawn: HashSet::new(),
         pending_acks: HashMap::new(),
+        native_pending: HashMap::new(),
+        rewind_paused: false,
+        observed_model: None,
+        tasks: Vec::new(),
+        last_action: None,
         turn_text: String::new(),
         final_text,
     };
@@ -342,7 +353,10 @@ where
 
     if let Some(prompt) = adapter.config.prompt.clone() {
         // The prompt path opens a turn the supervisor never asked for, so the id is minted here.
-        adapter.start_turn(mint_turn_id(), TurnInput::text(prompt)).await;
+        adapter
+            .start_turn(mint_turn_id(), TurnInput::text(prompt))
+            .await
+            .map_err(|e| DriverError::Protocol(format!("could not send initial prompt: {e}")))?;
     }
 
     tokio::spawn(adapter.run(wires, buffered));
@@ -397,7 +411,17 @@ where
             if let Inbound::ControlResponse(response) = &line.frame {
                 if response.request_id() == request_id {
                     return match &response.response {
-                        ControlResponseBody::Success { .. } => Ok(buffered),
+                        ControlResponseBody::Success { .. } => {
+                            if let Ok(value) = serde_json::to_value(&response.response) {
+                                if let Some(body) = value.get("response") {
+                                    crate::claude::capabilities::record(
+                                        self.config.instance_id.as_str(),
+                                        body,
+                                    );
+                                }
+                            }
+                            Ok(buffered)
+                        }
                         ControlResponseBody::Error { error, .. } => {
                             Err(DriverError::Protocol(format!("initialize failed: {error}")))
                         }
@@ -546,6 +570,45 @@ where
     }
 
     fn on_system(&mut self, system: SystemMessage, raw: &str) {
+        if let SystemMessage::Other(other) = &system {
+            if ["task_started", "task_progress", "task_updated", "task_notification"]
+                .contains(&other.subtype.as_str())
+            {
+                if let Some(id) = other.extra.get("task_id").and_then(Value::as_str) {
+                    let index =
+                        self.tasks.iter().position(|t| t["id"] == id).unwrap_or_else(|| {
+                            if self.tasks.len() >= 64 {
+                                self.tasks.remove(0);
+                            }
+                            self.tasks
+                                .push(serde_json::json!({"id":id,"status":"Unknown","model":null}));
+                            self.tasks.len() - 1
+                        });
+                    let task = &mut self.tasks[index];
+                    for (from, to) in [
+                        ("description", "description"),
+                        ("summary", "action"),
+                        ("last_tool_name", "action"),
+                        ("tool_use_id", "toolId"),
+                    ] {
+                        if let Some(value) = other.extra.get(from).and_then(Value::as_str) {
+                            task[to] = bounded(value, 240).into();
+                        }
+                    }
+                    if other.subtype == "task_started" {
+                        task["status"] = "Working".into();
+                    }
+                    if let Some(status) = other
+                        .extra
+                        .get("status")
+                        .or_else(|| other.extra.get("patch").and_then(|v| v.get("status")))
+                        .and_then(Value::as_str)
+                    {
+                        task["status"] = bounded(status, 40).into();
+                    }
+                }
+            }
+        }
         match system {
             SystemMessage::Init(init) => self.on_init(init, raw),
             SystemMessage::CompactBoundary(boundary) => {
@@ -573,6 +636,7 @@ where
     // see docs/research/claude-direct-spike.md scenario 1, "`system/init` is emitted once per
     // turn" (measured).
     fn on_init(&mut self, init: SystemInit, raw: &str) {
+        self.observed_model = Some(init.model.clone().unwrap_or_default());
         let session_id = init.session_id.clone().unwrap_or_default();
         if self.session_started {
             let changed = matches!(
@@ -649,6 +713,15 @@ where
     // superseded items standing in the timeline. see docs/research/agent-sdk.md §6
     // (`SDKAssistantMessage.supersedes: UUID[]` — "evict those message uuids").
     fn on_assistant(&mut self, assistant: AssistantMessage, raw: &str) {
+        if let Some(model) = assistant.message.model.as_ref() {
+            if let Some(parent) = assistant.parent_tool_use_id.as_ref() {
+                if let Some(task) = self.tasks.iter_mut().find(|t| t["toolId"] == *parent) {
+                    task["model"] = model.clone().into();
+                }
+            } else {
+                self.observed_model = Some(model.clone());
+            }
+        }
         if let Some(superseded) = assistant.supersedes.as_ref().filter(|s| !s.is_empty()) {
             tracing::debug!(target: "claude.wire", ?superseded, "assistant frame supersedes earlier uuids");
         }
@@ -701,6 +774,9 @@ where
             // answering `tool_result.tool_use_id` carry, so all three correlate for free.
             ContentBlockKnown::ToolUse { id, name, input, .. } => {
                 let summary = format!("{name}: {}", compact(&input));
+                if parent.is_none() {
+                    self.last_action = Some(bounded(&summary, 240));
+                }
                 let kind = ItemKind::ToolCall { name };
                 self.emit_item(ItemId::new(id), kind, &summary, parent, raw);
             }
@@ -729,7 +805,8 @@ where
             else {
                 continue;
             };
-            let summary = summarize(&content.as_ref().map(result_text).unwrap_or_default());
+            let body = content.as_ref().map(result_text).unwrap_or_default();
+            let summary = summarize(&body);
             let is_error = is_error.unwrap_or(false);
             self.emit(
                 Event::item_completed(
@@ -740,6 +817,9 @@ where
                 ),
                 Some(raw),
             );
+            if let Some(envelope) = self.outbox.back_mut() {
+                envelope.body = Some(bounded(&body, 128 * 1024));
+            }
         }
     }
 
@@ -786,16 +866,15 @@ where
             Some("aborted_streaming" | "aborted_tools") => {
                 Event::TurnAborted { turn_id, reason: AbortReason::Interrupted }
             }
-            _ if view.success || view.terminal_reason == Some("completed") => Event::TurnCompleted {
-                turn_id,
-                stop_reason: stop_reason_of(view.stop_reason, view.terminal_reason),
-                usage: view.usage(),
-                cost_usd_cumulative: view.total_cost_usd,
-            },
-            _ => Event::TurnAborted {
-                turn_id,
-                reason: AbortReason::Error(view.failure_message()),
-            },
+            _ if view.success || view.terminal_reason == Some("completed") => {
+                Event::TurnCompleted {
+                    turn_id,
+                    stop_reason: stop_reason_of(view.stop_reason, view.terminal_reason),
+                    usage: view.usage(),
+                    cost_usd_cumulative: view.total_cost_usd,
+                }
+            }
+            _ => Event::TurnAborted { turn_id, reason: AbortReason::Error(view.failure_message()) },
         };
         self.emit(event, Some(raw));
     }
@@ -933,6 +1012,34 @@ where
 
     fn on_control_response(&mut self, response: &ControlResponse) {
         let request_id = response.request_id();
+        if let Some((request, ack)) = self.native_pending.remove(request_id) {
+            let result = match &response.response {
+                ControlResponseBody::Success { response, .. } => {
+                    Ok(response.clone().unwrap_or(Value::Null))
+                }
+                ControlResponseBody::Error { error, .. } => {
+                    Err(CommandError::Rejected(error.clone()))
+                }
+                ControlResponseBody::Unknown(_) => Err(CommandError::Rejected(
+                    "Unrecognized provider reply; outcome is unconfirmed".into(),
+                )),
+            };
+            if matches!(request, NativeControl::RewindConversation { .. })
+                && result.as_ref().ok().and_then(|v| v.get("rewound")).and_then(Value::as_bool)
+                    == Some(true)
+            {
+                self.rewind_paused = true;
+                self.turn_text.clear();
+            }
+            let result = result.map(|mut value| {
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("brigadier_seq".into(), self.seq.into());
+                }
+                value
+            });
+            let _ = ack.send(result);
+            return;
+        }
         let Some(ack) = self.pending_acks.remove(request_id) else {
             tracing::debug!(target: "claude.wire", request_id, "control_response with no waiter");
             return;
@@ -1033,7 +1140,78 @@ where
 
     async fn on_command(&mut self, command: Command) {
         match command {
+            Command::Native { request, ack } => {
+                if matches!(request, NativeControl::Activity) {
+                    let _ = ack.send(Ok(serde_json::json!({"provider":"Claude Code","cli":"claude","instance":self.config.instance_id,"model":self.observed_model,"status":if self.rewind_paused {"Rewinding"} else if !self.open_permissions.is_empty() {"Needs approval"} else if self.open_turn.is_some() {"Working"} else {"Idle"},"action":self.last_action,"agents":self.tasks})));
+                    return;
+                }
+                if matches!(request, NativeControl::FinishRewind) {
+                    self.rewind_paused = false;
+                    let _ = ack.send(Ok(Value::Null));
+                    return;
+                }
+                let mutating = matches!(
+                    request,
+                    NativeControl::RewindConversation { .. }
+                        | NativeControl::RewindFiles { dry_run: false, .. }
+                );
+                if self.shutdown
+                    || (mutating && (self.open_turn.is_some() || !self.open_permissions.is_empty()))
+                {
+                    let message =
+                        "Wait for the current turn and approvals to finish before rewinding";
+                    let reply = match request {
+                        NativeControl::RewindConversation { .. } => {
+                            Ok(serde_json::json!({"rewound":false,"error":message}))
+                        }
+                        NativeControl::RewindFiles { .. } => {
+                            Ok(serde_json::json!({"canRewind":false,"error":message}))
+                        }
+                        _ => Err(CommandError::Rejected(message.into())),
+                    };
+                    let _ = ack.send(reply);
+                    return;
+                }
+                self.native_pending.retain(|_, (_, waiter)| !waiter.is_closed());
+                if self.native_pending.len() >= 8 {
+                    let reply = if matches!(request, NativeControl::RewindConversation { .. }) {
+                        Ok(serde_json::json!({"rewound":false,"error":"Provider control is busy"}))
+                    } else {
+                        Err(CommandError::Rejected("Provider control is busy".into()))
+                    };
+                    let _ = ack.send(reply);
+                    return;
+                }
+                if mutating {
+                    self.rewind_paused = true;
+                }
+                let body = match &request {
+                    NativeControl::ContextSummary => {
+                        serde_json::json!({"subtype":"get_context_usage","detail":"summary"})
+                    }
+                    NativeControl::RewindFiles { message_uuid, dry_run } => {
+                        serde_json::json!({"subtype":"rewind_files","user_message_id":message_uuid,"dry_run":dry_run})
+                    }
+                    NativeControl::RewindConversation { target_uuid, last_seen_uuid } => {
+                        serde_json::json!({"subtype":"rewind_conversation","target_message_uuid":target_uuid,"last_seen_user_message_uuid":last_seen_uuid,"interrupt_if_running":false})
+                    }
+                    NativeControl::FinishRewind | NativeControl::Activity => unreachable!(),
+                };
+                let request_id = self.mint_control_id();
+                let frame = serde_json::json!({"type":"control_request","request_id":request_id,"request":body});
+                if let Err(e) = self.write_frame(&frame).await {
+                    let _ = ack.send(Err(CommandError::Rejected(e.to_string())));
+                } else {
+                    self.native_pending.insert(request_id, (request, ack));
+                }
+            }
             Command::SendTurn { turn_id, input, ack } => {
+                if self.rewind_paused {
+                    let _ = ack.send(Err(CommandError::Rejected(
+                        "Rewind is awaiting local persistence".into(),
+                    )));
+                    return;
+                }
                 if self.shutdown {
                     let _ = ack.send(Err(CommandError::Closed));
                     return;
@@ -1080,8 +1258,8 @@ where
                     }
                     None => {}
                 }
-                self.start_turn(turn_id, input).await;
-                let _ = ack.send(Ok(()));
+                let result = self.start_turn(turn_id, input).await;
+                let _ = ack.send(result);
             }
             // A real `result` follows, `terminal_reason: aborted_streaming`, and the session
             // survives. see docs/research/agent-sdk.md §10 and spike scenario 4 (1 ms round trip).
@@ -1122,7 +1300,7 @@ where
         }
     }
 
-    async fn start_turn(&mut self, turn_id: TurnId, input: TurnInput) {
+    async fn start_turn(&mut self, turn_id: TurnId, input: TurnInput) -> Result<(), CommandError> {
         if !input.attachment_paths.is_empty() {
             self.emit(
                 Event::RuntimeWarning {
@@ -1137,9 +1315,12 @@ where
         // A new turn starts on an empty buffer. This is also what discards a pre-empted minted
         // turn's text: that turn never produced a `result` here, so nothing kept it.
         self.turn_text.clear();
+        self.last_action = None;
         self.open_turn = Some(OpenTurn { id: turn_id.clone(), minted: false });
-        self.emit(Event::TurnStarted { turn_id }, None);
-        if let Err(e) = self.write_frame(&SdkUserMessage::text(input.text)).await {
+        self.emit(Event::TurnStarted { turn_id: turn_id.clone() }, None);
+        let mut frame = SdkUserMessage::text(input.text.clone());
+        frame.uuid = Some(turn_id.to_string());
+        if let Err(e) = self.write_frame(&frame).await {
             self.emit(
                 Event::RuntimeError {
                     message: format!("could not send the turn: {e}"),
@@ -1147,7 +1328,21 @@ where
                 },
                 None,
             );
+            self.open_turn = None;
+            self.emit(
+                Event::TurnAborted { turn_id, reason: AbortReason::Error(e.to_string()) },
+                None,
+            );
+            return Err(CommandError::Rejected(e.to_string()));
         }
+        self.emit_item(
+            ItemId::new(format!("{turn_id}:user")),
+            ItemKind::UserText,
+            &input.text,
+            None,
+            &serde_json::json!({"type":"user","uuid":frame.uuid}).to_string(),
+        );
+        Ok(())
     }
 
     /// Writes a host → CLI control request and parks the caller's ack until its response lands.
@@ -1261,6 +1456,9 @@ where
             Some(raw),
         );
         self.emit(Event::item_completed(item_id, kind, &summary, parent), Some(raw));
+        if let Some(envelope) = self.outbox.back_mut() {
+            envelope.body = Some(bounded(body, 128 * 1024));
+        }
     }
 
     /// Accumulate one assistant text block into the open turn's buffer.

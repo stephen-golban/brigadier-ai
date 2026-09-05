@@ -1,3 +1,4 @@
+import type { AgentOptions } from "./agentOptions";
 /**
  * The only module that spells a Tauri command name or an argument key.
  *
@@ -50,6 +51,8 @@ export interface StartSessionArgs {
   prompt: string;
   model: string | null;
   permissionMode: PermissionMode;
+  options?: AgentOptions;
+  isolated?: boolean;
 }
 
 export interface BurnArgs {
@@ -239,8 +242,8 @@ const tauriBridge: Bridge = {
   },
 
   listSessions: () => call<SessionView[]>("list_sessions"),
-  startSession: ({ projectId, prompt, model, permissionMode }) =>
-    call<SessionView>("start_session", { projectId, prompt, model, permissionMode }),
+  startSession: ({ projectId, prompt, model, permissionMode, options, isolated }) =>
+    call<SessionView>("start_session", { projectId, prompt, model, permissionMode, options, isolated }),
   resumeSession: (sessionId) => call<SessionView>("resume_session", { sessionId }),
   sendTurn: (sessionId, text) => call<{ turn_id: string }>("send_turn", { sessionId, text }),
   respond: (sessionId, requestId, decision) =>

@@ -23,13 +23,23 @@
 #[cfg(any(debug_assertions, feature = "burn"))]
 mod burn;
 mod commands;
+mod conversation;
+mod commit_message;
 mod error;
+mod peer_mcp;
+mod peers;
 mod reconcile;
+mod search;
 mod sink;
+mod source_control;
 mod state;
-mod tracker;
+mod terminal;
 mod trace;
+mod tracker;
 mod views;
+mod workbench_data;
+mod workspace;
+pub use peers::cli as peer_cli;
 
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -119,6 +129,19 @@ pub fn run() {
             commands::add_project,
             commands::set_project_mcp,
             commands::list_sessions,
+            peers::peer_snapshot,
+            peers::peer_decide,
+            commit_message::generate_commit_message,
+            source_control::workspace_git_action,
+            source_control::workspace_git_details,
+            search::workspace_search,
+            search::workspace_replace,
+            search::workspace_save,
+            workbench_data::workbench_load,
+            workbench_data::note_save,
+            workbench_data::note_delete,
+            workbench_data::commit_settings_save,
+            workbench_data::peer_settings_save,
             commands::start_session,
             commands::resume_session,
             commands::send_turn,
@@ -130,6 +153,23 @@ pub fn run() {
             commands::delete_session,
             commands::delete_project,
             commands::feed_tail,
+            commands::chat_items,
+            conversation::session_context,
+            conversation::session_activity,
+            conversation::rewind_history,
+            conversation::rewind_history_items,
+            conversation::preview_rewind,
+            conversation::apply_rewind,
+            workspace::workspace_entries,
+            workspace::workspace_file,
+            workspace::workspace_git,
+            workspace::workspace_diff,
+            terminal::terminal_info,
+            terminal::terminal_open,
+            terminal::terminal_read,
+            terminal::terminal_write,
+            terminal::terminal_resize,
+            terminal::terminal_close,
             commands::pending_approvals,
             commands::start_run,
             commands::current_run,
@@ -201,6 +241,9 @@ pub fn run() {
                         reconcile::run(&supervisor, &store, sender).await;
                     });
                     app.manage(AppState::ready(ready));
+                    if let Err(e) = peers::start(app.handle().clone()) {
+                        tracing::error!("Peer communication unavailable: {}", e.message);
+                    }
                 }
                 Err(err) => {
                     // Never `?`: an Err out of `setup` panics the process, and a read-only home
@@ -228,25 +271,25 @@ pub fn run() {
     trace::stage("builder_built");
 
     app.run(|handle, event| match event {
-            // The last window closed, or `AppHandle::exit` was called. The window is still on
-            // screen: end the sessions and signal their groups, bounded.
-            RunEvent::ExitRequested { .. } => {
-                if let Some(state) = handle.try_state::<AppState>() {
-                    state.shutdown_sync("ExitRequested", EXIT_GRACE);
-                }
+        // The last window closed, or `AppHandle::exit` was called. The window is still on
+        // screen: end the sessions and signal their groups, bounded.
+        RunEvent::ExitRequested { .. } => {
+            if let Some(state) = handle.try_state::<AppState>() {
+                state.shutdown_sync("ExitRequested", EXIT_GRACE);
             }
-            // The only arm macOS ⌘Q reaches (§12). So the graceful shutdown runs here too —
-            // idempotent, so the paths that came through `ExitRequested` pay nothing for it —
-            // and then the backstop kill and the last store flush. Blocking here is legal and is
-            // the point: nothing is on screen any more.
-            RunEvent::Exit => {
-                if let Some(state) = handle.try_state::<AppState>() {
-                    state.shutdown_sync("Exit", EXIT_GRACE);
-                    state.final_sweep(EXIT_GRACE);
-                }
+        }
+        // The only arm macOS ⌘Q reaches (§12). So the graceful shutdown runs here too —
+        // idempotent, so the paths that came through `ExitRequested` pay nothing for it —
+        // and then the backstop kill and the last store flush. Blocking here is legal and is
+        // the point: nothing is on screen any more.
+        RunEvent::Exit => {
+            if let Some(state) = handle.try_state::<AppState>() {
+                state.shutdown_sync("Exit", EXIT_GRACE);
+                state.final_sweep(EXIT_GRACE);
             }
-            _ => {}
-        });
+        }
+        _ => {}
+    });
 }
 
 /// Turn `SIGTERM` and `SIGINT` into a normal quit.
@@ -263,7 +306,7 @@ pub fn run() {
 /// (`Cargo.toml:10`).
 #[cfg(unix)]
 fn spawn_signal_hook(handle: tauri::AppHandle) {
-    use tokio::signal::unix::{signal, SignalKind};
+    use tokio::signal::unix::{SignalKind, signal};
 
     tauri::async_runtime::spawn(async move {
         let mut term = match signal(SignalKind::terminate()) {
@@ -283,7 +326,10 @@ fn spawn_signal_hook(handle: tauri::AppHandle) {
                 }
             },
         };
-        tracing::info!(signal = received, "signal received; quitting through the exit hook");
+        tracing::info!(
+            signal = received,
+            "signal received; quitting through the exit hook"
+        );
         handle.exit(0);
     });
 }

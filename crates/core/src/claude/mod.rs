@@ -54,3 +54,5 @@ pub use hook::{
     WALL_NESTED_CLAUDE_REASON, WORKTREE_PATH_TOOLS,
 };
 pub use process::{ExitInfo, KillHandle, SpawnSpec};
+
+pub mod capabilities;

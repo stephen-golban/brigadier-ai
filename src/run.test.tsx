@@ -253,10 +253,8 @@ describe("starting a run", () => {
     const user = userEvent.setup();
     await mountApp();
 
-    await user.selectOptions(
-      screen.getByRole("combobox", { name: /permissions/i }),
-      "bypass-permissions",
-    );
+    await user.click(screen.getByRole("button", { name: /permissions/i }));
+    await user.click(screen.getByRole("option", { name: /bypass/i }));
     await user.type(
       screen.getByRole("textbox", { name: "the goal, in plain English" }),
       "ship it",

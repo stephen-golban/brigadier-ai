@@ -1,3 +1,4 @@
+import type { ChatItem } from "./workspaceApi";
 /**
  * The whole window: a two-pane shell. Sidebar on the left (projects, their sessions nested
  * underneath, the pending-approvals count and the claude probe); a single thread column on the
@@ -43,7 +44,12 @@ import { Approvals } from "./components/Approvals";
 import type { ApprovalRow } from "./components/Approvals";
 import { Burn } from "./components/Burn";
 import { Dock } from "./components/Dock";
-import { Feed } from "./components/Feed";
+import { ThreadView } from "./components/ThreadView";
+import { useStoredState } from "./workbenchState";
+import { usePeers } from "./peerApi";
+import { ProjectWorkbench } from "./components/ProjectWorkbench";
+import { SidebarSimpleIcon } from "@phosphor-icons/react";
+
 import { FpsOverlay } from "./components/FpsOverlay";
 import { RunCard } from "./components/RunCard";
 import { Sidebar } from "./components/Sidebar";
@@ -146,7 +152,12 @@ const BURN_ROOT_MARKER = "brigadier-burn";
  */
 const BURN_UI = import.meta.env.DEV || import.meta.env.VITE_BURN === "1";
 
+
 export function App() {
+  const peers=usePeers();
+  const [workspaceOpen,setWorkspaceOpen]=useStoredState("brigadier:workspace-open",false);
+  const [sidebarOpen,setSidebarOpen]=useStoredState("brigadier:sidebar-open",true);
+
   const state = useSyncExternalStore(store.subscribe, store.getState);
 
   const [projects, setProjects] = useState<ProjectView[]>([]);
@@ -156,6 +167,9 @@ export function App() {
   const [claudeError, setClaudeError] = useState<AppError | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<ProjectId | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState<SessionId | null>(null);
+  const [editingMessage, setEditingMessage] = useState<ChatItem | null>(null);
+  const [conversationRevision, setConversationRevision] = useState(0);
+  useEffect(() => setEditingMessage(null), [selectedSessionId]);
   const [notice, setNotice] = useState<string | null>(null);
   /** The first `list_projects` has landed; before that every id looks unknown. */
   const [projectsLoaded, setProjectsLoaded] = useState(false);
@@ -236,7 +250,7 @@ export function App() {
       setModels(modelList);
       store.seedSessions(sessionList);
       store.seedApprovals(pending);
-      if (projectList.length > 0) setSelectedProjectId((prev) => prev ?? projectList[0]!.id);
+      if (projectList.length > 0) setSelectedProjectId((prev) => prev ?? projectList.find(p=>p.id===localStorage.getItem("brigadier:selected-project"))?.id ?? projectList[0]!.id);
     })();
 
     void b
@@ -257,6 +271,7 @@ export function App() {
   // Visibility drives what the Rust side bothers to send rows for.
   useEffect(() => {
     if (selectedProjectId === null) return;
+    localStorage.setItem("brigadier:selected-project",selectedProjectId);
     void bridge().setVisibleProjects([selectedProjectId]).catch(say);
   }, [selectedProjectId, say]);
 
@@ -393,9 +408,20 @@ export function App() {
       if (owner !== null) setSelectedProjectId(owner);
     }
     setSelectedSessionId(id);
+    if(id)window.dispatchEvent(new CustomEvent('workbench-select-session',{detail:id}));
   }, []);
 
+  useEffect(()=>{if(bridge().isMock)return;void bridge().listSessions().then(store.seedSessions).catch(()=>{});void bridge().listModels().then(setModels).catch(()=>{});},[peers.origins,selectedSessionId]);
   const selectedSession = selectedSessionId === null ? null : state.sessions[selectedSessionId] ?? null;
+  const openWorkspace = useCallback((path?:string) => {
+    if(path) window.dispatchEvent(new CustomEvent('workbench-open-file',{detail:{path}}));
+    else setWorkspaceOpen(true);
+  },[]);
+  useEffect(()=>{
+    const toggle=(event:KeyboardEvent)=>{if((event.metaKey||event.ctrlKey)&&event.altKey&&event.key.toLowerCase()==='b'){event.preventDefault();setWorkspaceOpen(open=>!open);}};
+    window.addEventListener('keydown',toggle);return()=>window.removeEventListener('keydown',toggle);
+  },[]);
+
 
   /**
    * Every pending approval, whatever project it belongs to — the list is deliberately **not**
@@ -492,13 +518,14 @@ export function App() {
 
   const startSession = useCallback(
     (args: StartSessionArgs) => {
-      void bridge()
+      return bridge()
         .startSession(args)
         .then((view) => {
           store.seedSessions([view]);
           setSelectedSessionId(view.session_id);
+          return true;
         })
-        .catch(say);
+        .catch(e => { say(e); return false; });
     },
     [say],
   );
@@ -705,12 +732,13 @@ export function App() {
       if (selectedProjectId === null) return;
       const projectId = selectedProjectId;
       setCommandBusy(true);
-      void bridge()
+      return bridge()
         .startRun(projectId, goal, model, permissionMode)
         .then((view) => {
           if (runRequest.current === projectId) setRun(view);
+          return true;
         })
-        .catch(say)
+        .catch(e => { say(e); return false; })
         .finally(() => setCommandBusy(false));
     },
     [selectedProjectId, say],
@@ -786,9 +814,10 @@ export function App() {
   const pendingTotal = approvalRows.length;
 
   return (
-    <div className="app">
+    <div className={`app ${sidebarOpen?"":"sidebar-collapsed"}`}>
       <Sidebar
         projects={projects}
+        titles={peers.titles}
         sessions={state.sessions}
         order={state.order}
         selectedProjectId={selectedProjectId}
@@ -800,7 +829,7 @@ export function App() {
         claudeError={claudeError}
         isMock={bridge().isMock}
         dev={BURN_UI ? <Burn onBurn={runBurn} /> : undefined}
-        onSelectProject={setSelectedProjectId}
+        onSelectProject={id=>{setSelectedProjectId(id);setSelectedSessionId(null);}}
         onSelectSession={selectSession}
         onAddProject={addProject}
         // Both plugins exist only in a real Tauri window. In a browser (`npm run dev`) the mock
@@ -817,6 +846,7 @@ export function App() {
 
       <main className="thread">
         <header className="thread-head">
+          <button className="icon-button" aria-label="Toggle sidebar" aria-pressed={sidebarOpen} onClick={()=>setSidebarOpen(!sidebarOpen)}><SidebarSimpleIcon size={20}/></button>
           <span className="head-id">
             <span className="head-name">
               <b>{selectedProject?.name ?? "No project"}</b>
@@ -858,8 +888,10 @@ export function App() {
             </button>
           ) : null}
           <FpsOverlay />
+          <button className="icon-button workspace-toggle" aria-label="Toggle workspace panel" aria-pressed={workspaceOpen} title="Workspace (⌥⌘B)" disabled={!selectedProjectId} onClick={()=>workspaceOpen?setWorkspaceOpen(false):openWorkspace()}><SidebarSimpleIcon size={20}/></button>
         </header>
 
+        <ProjectWorkbench peers={peers} project={selectedProject} session={selectedSession} sessions={state.sessions} selectedSessionId={selectedSessionId} onSelectSession={selectSession} workspaceOpen={workspaceOpen} setWorkspaceOpen={setWorkspaceOpen} models={models}>
         {/*
           Pinned, and the placement is the requirement rather than a preference: the card is a
           sibling of `<Feed>` inside the thread column, **above it and outside its scroller**, so
@@ -868,10 +900,14 @@ export function App() {
         */}
         <RunCard run={run} intents={intents} onSettle={settleIntent} />
 
-        <Feed
+        <ThreadView
+          onEdit={setEditingMessage}
+          editing={editingMessage !== null}
+          revision={conversationRevision}
           sessionId={selectedSessionId}
           projectId={selectedProjectId}
           projectName={selectedProject?.name ?? null}
+          onFile={openWorkspace}
         />
 
         <Approvals
@@ -891,6 +927,9 @@ export function App() {
           and a turn still goes to the selected session.
         */}
         <Dock
+          editing={editingMessage?.session_id === selectedSessionId ? editingMessage : null}
+          onCancelEdit={() => setEditingMessage(current => current?.id === editingMessage?.id ? null : current)}
+          onRewound={() => setConversationRevision(n => n + 1)}
           project={selectedProject}
           session={selectedSession}
           models={models}
@@ -903,7 +942,7 @@ export function App() {
           onResume={resumeSession}
           onCleanup={cleanupWorktree}
           onSend={(id, text) => {
-            void bridge().sendTurn(id, text).catch(say);
+            return bridge().sendTurn(id, text).then(() => true).catch(e => { say(e); return false; });
           }}
           onInterrupt={(id) => {
             void bridge().interrupt(id).catch(say);
@@ -915,7 +954,9 @@ export function App() {
             void bridge().kill(id).catch(say);
           }}
         />
+        </ProjectWorkbench>
       </main>
+
     </div>
   );
 }

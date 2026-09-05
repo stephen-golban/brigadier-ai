@@ -1,3 +1,6 @@
+import type { MessageEditProps } from "./EditMessage";
+import { SelectMenu } from "./SelectMenu";
+import type { AgentOptions } from "../agentOptions";
 /**
  * The dock: **one text field, and an explicit choice of what pressing enter does.**
  *
@@ -76,7 +79,7 @@ const MODES: readonly ModeOption[] = [
   { mode: "turn", label: "Turn", hint: "send this to the selected session" },
 ];
 
-export interface DockProps {
+export interface DockProps extends MessageEditProps {
   project: ProjectView | null;
   /** The selected session, or null when none is. Decides whether Turn is on offer. */
   session: SessionRuntime | null;
@@ -93,15 +96,17 @@ export interface DockProps {
    * live run showed `claude-opus-5[1m]` in the session header while the picker said Haiku.
    * `null` for the model is a real choice: the harness's role-based routing stays in charge.
    */
-  onStartRun: (goal: string, model: string | null, permissionMode: PermissionMode) => void;
+  onStartRun: (goal: string, model: string | null, permissionMode: PermissionMode) => void | Promise<boolean>;
   onStopRun: (planId: PlanId) => void;
   onStartSession: (args: {
     projectId: ProjectId;
     prompt: string;
     model: string | null;
     permissionMode: PermissionMode;
-  }) => void;
-  onSend: (sessionId: SessionId, text: string) => void;
+  options?: AgentOptions;
+  isolated?: boolean;
+  }) => void | Promise<boolean>;
+  onSend: (sessionId: SessionId, text: string) => void | Promise<boolean>;
   onInterrupt: (sessionId: SessionId) => void;
   onEnd: (sessionId: SessionId) => void;
   onKill: (sessionId: SessionId) => void;
@@ -121,6 +126,7 @@ export function Dock(props: DockProps) {
   /** `null` means "whatever the selection implies"; a press pins it until the selection moves. */
   const [chosen, setChosen] = useState<DockMode | null>(null);
   const sessionId = session?.sessionId ?? null;
+  useEffect(()=>{const choose=()=>setChosen("session");window.addEventListener("brigadier-new-session",choose);return()=>window.removeEventListener("brigadier-new-session",choose);},[]);
   useEffect(() => {
     setChosen(null);
   }, [sessionId]);
@@ -134,7 +140,7 @@ export function Dock(props: DockProps) {
   // A pinned mode that has stopped being on offer (Turn, after the session was deselected) falls
   // back rather than rendering a body for a thing that is not there.
   const mode: DockMode =
-    chosen !== null && offered.some((m) => m.mode === chosen) ? chosen : implied;
+    props.editing ? "turn" : chosen !== null && offered.some((m) => m.mode === chosen) ? chosen : implied;
 
   const cwd = session?.cwd ?? project?.root_path ?? null;
 
@@ -165,6 +171,8 @@ export function Dock(props: DockProps) {
         ) : null}
 
         <span className="grow" />
+        <SelectMenu label="Agent" value="claude" onChange={()=>{}} options={[{value:'claude',label:'Claude Code',description:'Connected local CLI. Uses your existing authentication.'}]}/>
+
 
         {/*
           The chooser. `aria-pressed` rather than a radio group: these are three buttons that
@@ -177,6 +185,7 @@ export function Dock(props: DockProps) {
               key={m.mode}
               type="button"
               className="dock-mode"
+              disabled={Boolean(props.editing)}
               aria-pressed={mode === m.mode}
               title={m.hint}
               onClick={() => setChosen(m.mode)}
@@ -206,6 +215,10 @@ export function Dock(props: DockProps) {
         />
       ) : (
         <Composer
+          key={`${sessionId}:${props.editing?.id ?? "draft"}`}
+          editing={props.editing}
+          onCancelEdit={props.onCancelEdit}
+          onRewound={props.onRewound}
           session={session}
           busy={busy}
           onSend={props.onSend}

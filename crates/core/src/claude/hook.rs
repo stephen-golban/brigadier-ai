@@ -273,10 +273,8 @@ impl WorkerWall {
     }
 
     fn path_decision(&self, input: &Value) -> HookJsonOutput {
-        let target = input
-            .get("file_path")
-            .or_else(|| input.get("notebook_path"))
-            .and_then(Value::as_str);
+        let target =
+            input.get("file_path").or_else(|| input.get("notebook_path")).and_then(Value::as_str);
         match target {
             Some(target) if self.resolves_inside(target) => decision("allow", WALL_ALLOW_REASON),
             Some(_) => {
@@ -544,9 +542,7 @@ impl HookPolicy for ReadOnlyWall {
                     .map(|segment| match segment.class {
                         BashClass::NestedClaude => (Rank::Deny, WALL_NESTED_CLAUDE_REASON),
                         BashClass::Read | BashClass::Inspect => (Rank::NoOpinion, ""),
-                        BashClass::Mutate | BashClass::Unknown => {
-                            (Rank::Ask, READ_ONLY_ASK_REASON)
-                        }
+                        BashClass::Mutate | BashClass::Unknown => (Rank::Ask, READ_ONLY_ASK_REASON),
                     })
                     .max_by_key(|(rank, _)| *rank)
                     .unwrap_or((Rank::Ask, "the line ran no command the classifier could see"));
@@ -655,11 +651,7 @@ fn git_subcommand(args: &[String]) -> Option<&str> {
         if !arg.starts_with('-') {
             return Some(arg.as_str());
         }
-        i += if tables::GIT_GLOBAL_FLAGS_WITH_ARG.contains(&arg.as_str()) {
-            2
-        } else {
-            1
-        };
+        i += if tables::GIT_GLOBAL_FLAGS_WITH_ARG.contains(&arg.as_str()) { 2 } else { 1 };
     }
     None
 }
@@ -718,7 +710,6 @@ fn decision(what: &str, reason: &str) -> HookJsonOutput {
     }
 }
 
-
 /// A shared policy, as the adapter holds it.
 pub type SharedHookPolicy = Arc<dyn HookPolicy>;
 
@@ -766,7 +757,8 @@ mod tests {
     #[test]
     fn an_ungated_tool_and_an_unnamed_callback_both_fall_through() {
         let policy = AskGatedTools::default();
-        for name in [Some("Read"), Some("Glob"), Some("Grep"), Some("WebFetch"), Some("TodoWrite")] {
+        for name in [Some("Read"), Some("Glob"), Some("Grep"), Some("WebFetch"), Some("TodoWrite")]
+        {
             let out = policy.pre_tool_use(name, &Value::Null);
             assert_eq!(serde_json::to_string(&out).expect("ser"), "{}", "{name:?} must not ask");
         }
@@ -823,9 +815,15 @@ mod tests {
     #[test]
     fn a_write_inside_the_worktree_is_allowed_and_one_above_it_asks() {
         let (dir, wall) = scratch();
-        assert_eq!(write_to(&wall, &dir.path().join("src/main.rs").display().to_string()), Some("allow".into()));
+        assert_eq!(
+            write_to(&wall, &dir.path().join("src/main.rs").display().to_string()),
+            Some("allow".into())
+        );
         // A file that does not exist yet is the ordinary case for `Write`.
-        assert_eq!(write_to(&wall, &dir.path().join("src/new/deep.rs").display().to_string()), Some("allow".into()));
+        assert_eq!(
+            write_to(&wall, &dir.path().join("src/new/deep.rs").display().to_string()),
+            Some("allow".into())
+        );
         // Relative paths resolve against the worktree root, which is the worker's cwd.
         assert_eq!(write_to(&wall, "src/main.rs"), Some("allow".into()));
 
@@ -833,10 +831,7 @@ mod tests {
         assert_eq!(write_to(&wall, &above.display().to_string()), Some("ask".into()));
         assert_eq!(write_to(&wall, "../escape.rs"), Some("ask".into()));
         // No path at all is a question, never an allow.
-        assert_eq!(
-            verdict(&wall.pre_tool_use(Some("Write"), &json!({}))),
-            Some("ask".into())
-        );
+        assert_eq!(verdict(&wall.pre_tool_use(Some("Write"), &json!({}))), Some("ask".into()));
         // `NotebookEdit` names its target differently.
         assert_eq!(
             verdict(&wall.pre_tool_use(
@@ -927,11 +922,7 @@ mod tests {
             ("cargo test | grep ok", Some("allow")),
         ];
         for (command, want) in rows {
-            assert_eq!(
-                bash(&wall, command).as_deref(),
-                *want,
-                "{command:?}"
-            );
+            assert_eq!(bash(&wall, command).as_deref(), *want, "{command:?}");
         }
     }
 
@@ -1196,9 +1187,49 @@ mod tests {
             .as_deref(),
             Some("allow")
         );
-        assert_eq!(
-            verdict(&policy.pre_tool_use(Some("Edit"), &json!({}))).as_deref(),
-            Some("ask")
-        );
+        assert_eq!(verdict(&policy.pre_tool_use(Some("Edit"), &json!({}))).as_deref(), Some("ask"));
+    }
+}
+
+/// A bounded text-only utility call must never execute a tool, including an unknown tool.
+#[derive(Clone, Copy, Debug)]
+pub struct DenyAll;
+impl HookPolicy for DenyAll {
+    fn pre_tool_use(&self, _tool_name: Option<&str>, _input: &Value) -> HookJsonOutput {
+        HookJsonOutput {
+            hook_specific_output: Some(json!({
+                "hookEventName":"PreToolUse", "permissionDecision":"deny",
+                "permissionDecisionReason":"Commit message generation does not use tools"
+            })),
+            ..HookJsonOutput::default()
+        }
+    }
+}
+
+/// Internal peer tools enforce session ownership in the app, so their ordinary calls are autonomous.
+/// Provider/user tools retain the selected session policy.
+pub struct PeerTools(pub SharedHookPolicy);
+impl HookPolicy for PeerTools {
+    fn pre_tool_use(&self, tool_name: Option<&str>, input: &Value) -> HookJsonOutput {
+        if matches!(
+            tool_name,
+            Some(
+                "mcp__brigadier__list_sessions"
+                    | "mcp__brigadier__create_session"
+                    | "mcp__brigadier__send_message"
+                    | "mcp__brigadier__read_inbox"
+                    | "mcp__brigadier__stop_session"
+                    | "mcp__brigadier__close_session"
+            )
+        ) {
+            HookJsonOutput {
+                hook_specific_output: Some(
+                    json!({"hookEventName":"PreToolUse", "permissionDecision":"allow"}),
+                ),
+                ..HookJsonOutput::default()
+            }
+        } else {
+            self.0.pre_tool_use(tool_name, input)
+        }
     }
 }
