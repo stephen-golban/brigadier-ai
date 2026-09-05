@@ -174,6 +174,16 @@ pub struct PlanAction {
 }
 
 /// Which model a work order is worth. A closed set, read strictly.
+///
+/// # The order is the contract
+///
+/// The tiers are **ordered**, `Haiku < Sonnet < Opus`, and that ordering is what every word like
+/// *exceeds*, *mid-tier* and *capped* means in
+/// [`Ceiling`](crate::loop_::routing::Ceiling), which is the only thing that decides what a child
+/// is started on. The order is given explicitly by [`ModelTier::rank`] and **never by declaration
+/// order**: the variants are declared strongest-first because that is how `docs/vision.md` §6
+/// reads them out, so a derived `Ord` would say the exact reverse of every clamp that depends on
+/// it. Adding a tier means giving it a rank, not placing a line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelTier {
@@ -186,6 +196,29 @@ pub enum ModelTier {
 }
 
 impl ModelTier {
+    /// Every tier, **weakest first**, which is [`ModelTier::rank`] order.
+    pub const ALL: [Self; 3] = [Self::Haiku, Self::Sonnet, Self::Opus];
+
+    /// The strongest tier. Nothing a planner can ask for exceeds it.
+    pub const STRONGEST: Self = Self::Opus;
+
+    /// The tier a work order is capped at when the owner picked no model: `docs/vision.md` §6's
+    /// *"judgement (lead, grill, review, judge) gets the strong model; work orders get mid-tier"*.
+    pub const MID: Self = Self::Sonnet;
+
+    /// The weakest tier, and the ceiling an **unrecognised** model id binds at.
+    pub const WEAKEST: Self = Self::Haiku;
+
+    /// Where this tier sits in the order. Higher is stronger, and this function *is* the ordering.
+    #[must_use]
+    pub fn rank(self) -> u8 {
+        match self {
+            Self::Haiku => 0,
+            Self::Sonnet => 1,
+            Self::Opus => 2,
+        }
+    }
+
     /// The slug this tier arrived as.
     #[must_use]
     pub fn as_slug(self) -> &'static str {
@@ -194,6 +227,57 @@ impl ModelTier {
             Self::Sonnet => "sonnet",
             Self::Haiku => "haiku",
         }
+    }
+
+    /// The tier a slug names, or `None`. The inverse of [`ModelTier::as_slug`].
+    #[must_use]
+    pub fn from_slug(slug: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|tier| tier.as_slug() == slug)
+    }
+
+    /// Which tier a **model id** belongs to, or `None` when this build does not recognise it.
+    ///
+    /// This is the crux of treating the owner's pick as a ceiling: the pick is an *id*
+    /// (`claude-haiku-4-5`, or the CLI's own alias `opus[1m]`) while an order carries a *tier*,
+    /// and the two have to be comparable before anything can be clamped.
+    ///
+    /// The id is lowercased, anything from a `[` on is dropped (`opus[1m]` and `sonnet[1m]` are
+    /// the CLI's own aliases and the bracket carries a context window, not a family), a leading
+    /// `claude-` is stripped, and the **first** `-`-separated segment that names a family decides.
+    /// That reads every id the dock offers (`src-tauri/src/views.rs`, `models()`): the four
+    /// full names, the four bare aliases, and the two bracketed ones.
+    ///
+    /// **`fable` maps to [`ModelTier::STRONGEST`].** Fable sits *above* Opus on the price list and
+    /// there is no tier above `Opus` to hold it; mapping it to the top is the honest reading of a
+    /// ceiling, because nothing a planner can ask for may exceed it.
+    ///
+    /// A `None` here does **not** mean "no ceiling" — see
+    /// [`Ceiling::new`](crate::loop_::routing::Ceiling::new), which binds an unrecognised pick at
+    /// [`ModelTier::WEAKEST`] so that it clamps everything rather than nothing.
+    #[must_use]
+    pub fn for_model_id(id: &str) -> Option<Self> {
+        let lower = id.trim().to_ascii_lowercase();
+        let head = lower.split('[').next().unwrap_or(lower.as_str());
+        let head = head.strip_prefix("claude-").unwrap_or(head);
+        head.split('-').find_map(|segment| match segment {
+            "haiku" => Some(Self::Haiku),
+            "sonnet" => Some(Self::Sonnet),
+            "opus" | "fable" => Some(Self::Opus),
+            _ => None,
+        })
+    }
+}
+
+impl Ord for ModelTier {
+    /// By [`ModelTier::rank`], never by declaration order.
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.rank().cmp(&other.rank())
+    }
+}
+
+impl PartialOrd for ModelTier {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -961,6 +1045,71 @@ fn resolves_inside(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The ordering is the contract, and it is the **reverse** of declaration order. A derived
+    /// `Ord` would make every clamp in the loop run backwards, so this is the test that fails
+    /// if someone ever reaches for `#[derive(PartialOrd, Ord)]` here.
+    #[test]
+    fn tiers_are_ordered_weakest_first_and_never_by_declaration_order() {
+        assert!(ModelTier::Haiku < ModelTier::Sonnet);
+        assert!(ModelTier::Sonnet < ModelTier::Opus);
+        assert!(ModelTier::Opus > ModelTier::Haiku);
+        assert_eq!(ModelTier::Opus.min(ModelTier::Haiku), ModelTier::Haiku);
+        assert_eq!(ModelTier::Haiku.min(ModelTier::Sonnet), ModelTier::Haiku);
+        // Declaration order is Opus, Sonnet, Haiku — strongest first — so a derived `Ord` would
+        // answer the opposite of every assertion above.
+        assert_eq!(ModelTier::ALL, [ModelTier::Haiku, ModelTier::Sonnet, ModelTier::Opus]);
+        let mut ranks: Vec<u8> = ModelTier::ALL.iter().map(|t| t.rank()).collect();
+        ranks.dedup();
+        assert_eq!(ranks, vec![0, 1, 2], "ranks are distinct and ascending");
+        assert_eq!(ModelTier::WEAKEST, ModelTier::Haiku);
+        assert_eq!(ModelTier::MID, ModelTier::Sonnet);
+        assert_eq!(ModelTier::STRONGEST, ModelTier::Opus);
+    }
+
+    #[test]
+    fn a_slug_round_trips_through_the_tier_it_names() {
+        for tier in ModelTier::ALL {
+            assert_eq!(ModelTier::from_slug(tier.as_slug()), Some(tier));
+        }
+        assert_eq!(ModelTier::from_slug("fable"), None, "not a tier the planner may ask for");
+        assert_eq!(ModelTier::from_slug("Opus"), None, "slugs are read strictly");
+    }
+
+    /// Every id the run dock offers (`src-tauri/src/views.rs`, `models()`), plus the two
+    /// bracketed CLI aliases, plus the shapes that must **not** be read as a family.
+    #[test]
+    fn every_model_id_the_dock_offers_maps_to_a_tier() {
+        for (id, want) in [
+            ("claude-haiku-4-5", ModelTier::Haiku),
+            ("claude-sonnet-5", ModelTier::Sonnet),
+            ("claude-opus-5", ModelTier::Opus),
+            // Fable is above Opus on the price list and there is no tier above Opus.
+            ("claude-fable-5-1", ModelTier::Opus),
+            ("haiku", ModelTier::Haiku),
+            ("sonnet", ModelTier::Sonnet),
+            ("opus", ModelTier::Opus),
+            ("fable", ModelTier::Opus),
+            ("opus[1m]", ModelTier::Opus),
+            ("sonnet[1m]", ModelTier::Sonnet),
+            // The one the owner's 2026-09-05 run was actually billed for.
+            ("claude-opus-5[1m]", ModelTier::Opus),
+            // Case and whitespace are not what makes an id unrecognised.
+            ("  Claude-Haiku-4-5  ", ModelTier::Haiku),
+            // A dated id, and the legacy `claude-3-5-sonnet` shape whose family is not first.
+            ("claude-haiku-4-5-20251001", ModelTier::Haiku),
+            ("claude-3-5-sonnet-20241022", ModelTier::Sonnet),
+        ] {
+            assert_eq!(ModelTier::for_model_id(id), Some(want), "{id}");
+        }
+    }
+
+    #[test]
+    fn an_id_this_build_does_not_know_maps_to_no_tier() {
+        for id in ["", "  ", "gpt-5", "claude-9", "gemini-3-pro", "claude-", "opusish"] {
+            assert_eq!(ModelTier::for_model_id(id), None, "{id:?}");
+        }
+    }
 
     fn fenced(body: &str) -> String {
         format!("Here is the plan.\n\n```json\n{body}\n```\n")

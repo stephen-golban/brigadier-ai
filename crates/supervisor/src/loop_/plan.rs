@@ -126,8 +126,9 @@ where
                 // (`crates/core/src/driver.rs`).
                 thinking: ThinkingPolicy::Inherit,
                 // `None` is the provider default, which is `docs/vision.md` §6's *judgement gets
-                // the strong model*. An explicit pick overrides it, here as everywhere.
-                model: run.model.clone(),
+                // the strong model*. An explicit pick is the ceiling, and for a judgement call the
+                // ceiling *is* the model (`loop_/routing.rs`).
+                model: run.ceiling.judgement(),
                 permission_mode: run.permission_mode.clone(),
             })
             .await?;

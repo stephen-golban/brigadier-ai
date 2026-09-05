@@ -133,6 +133,26 @@ impl Rig {
         self.run_with(fake, resolved(ReconcileOutcome::clean()), Limits::default()).await
     }
 
+    /// A run started with the owner's model pick, which is a **ceiling** over every child
+    /// (`crates/supervisor/src/loop_/routing.rs`).
+    async fn run_picking(&self, fake: Arc<Fake>, model: Option<&str>) -> Run {
+        self.sup
+            .prepare_run(RunSpec {
+                project_id: self.project_id.clone(),
+                goal: "ship the thing".to_owned(),
+                model: model.map(str::to_owned),
+                permission_mode: Default::default(),
+                driver: DriverKind::new(REPLAY),
+                barrier: resolved(ReconcileOutcome::clean()),
+                limits: Limits::default(),
+                call: Some(fake),
+                gate: Some(self.gate().await),
+                plan_id: None,
+            })
+            .await
+            .expect("a run is prepared")
+    }
+
     /// What a restart is: a new [`Run`] over the plan that is already on disk.
     async fn restart(&self, fake: Arc<Fake>, plan_id: &str, barrier: Barrier) -> Run {
         self.sup
@@ -189,6 +209,9 @@ struct Fake {
     answers: Mutex<BTreeMap<&'static str, VecDeque<String>>>,
     work: Mutex<BTreeMap<&'static str, Work>>,
     calls: Mutex<Vec<(&'static str, PathBuf)>>,
+    /// What each call was told to run on, in order. The ceiling's whole output, as the loop
+    /// actually handed it to a driver.
+    models: Mutex<Vec<(&'static str, Option<String>)>>,
     live: AtomicUsize,
     peak: AtomicUsize,
     delay: Mutex<Duration>,
@@ -227,6 +250,22 @@ impl Fake {
     fn peak(&self) -> usize {
         self.peak.load(Ordering::Relaxed)
     }
+
+    /// Every model this run asked for under `label`, in call order.
+    fn models(&self, label: &str) -> Vec<Option<String>> {
+        self.models
+            .lock()
+            .expect("lock")
+            .iter()
+            .filter(|(l, _)| *l == label)
+            .map(|(_, m)| m.clone())
+            .collect()
+    }
+
+    /// Every model this run asked for, whatever the label.
+    fn all_models(&self) -> Vec<Option<String>> {
+        self.models.lock().expect("lock").iter().map(|(_, m)| m.clone()).collect()
+    }
 }
 
 /// The order id the harness put in a worker's prompt, so a fake can name its file after it.
@@ -256,6 +295,7 @@ impl ModelCall for Fake {
                         CallCwd::Worktree { dir, .. } => dir.clone(),
                     },
                 ));
+                self.models.lock().expect("lock").push((req.label, req.model.clone()));
             }
             let live = self.live.fetch_add(1, Ordering::Relaxed) + 1;
             self.peak.fetch_max(live, Ordering::Relaxed);
@@ -328,11 +368,17 @@ fn plan_of(phases: &[(&str, &str)]) -> String {
 }
 
 fn dispatch_of(orders: &[(&str, &str)]) -> String {
+    dispatch_tiered(orders, "sonnet")
+}
+
+/// The same, with the tier the **planner** put on every order. The tier is the planner's own
+/// choice and, until 2026-09-05, reached `--model` unbounded.
+fn dispatch_tiered(orders: &[(&str, &str)], tier: &str) -> String {
     let body: Vec<String> = orders
         .iter()
         .map(|(id, owns)| {
             format!(
-                "{{\"id\":\"{id}\",\"title\":\"do {id}\",\"instructions\":\"do it\",\"owns\":[\"{owns}\"],\"model_tier\":\"sonnet\"}}"
+                "{{\"id\":\"{id}\",\"title\":\"do {id}\",\"instructions\":\"do it\",\"owns\":[\"{owns}\"],\"model_tier\":\"{tier}\"}}"
             )
         })
         .collect();
@@ -1047,6 +1093,12 @@ async fn run_picks(
 /// Before this, `start_run` took `project_id` and `goal` alone and every call passed
 /// `model: None`: the dock's picker said Haiku 4.5 while the session header read
 /// `claude-opus-5[1m]`.
+///
+/// Still true after 2026-09-05, when the pick became a **ceiling** rather than a literal
+/// (`crates/supervisor/src/loop_/routing.rs`), but for a narrower reason than it reads: `haiku`
+/// is the weakest tier, so it binds every lane. A pick above the bottom leaves an order the
+/// planner tiered *below* it on its own cheaper tier — see
+/// `an_opus_pick_still_lets_a_haiku_order_run_on_haiku`.
 #[tokio::test]
 async fn the_owners_model_and_mode_reach_every_child_of_the_run() {
     let Some(rig) = Rig::new().await else { return };
@@ -1072,10 +1124,14 @@ async fn the_owners_model_and_mode_reach_every_child_of_the_run() {
 }
 
 /// **No pick means `docs/vision.md` §6's role-based routing, not "no routing".** A judgement call
-/// takes the provider default; a work order takes the tier the lead assigned it, which until now
-/// reached nothing at all.
+/// takes the provider default; a work order takes the tier the lead assigned it, which until
+/// 2026-09-04 reached nothing at all.
+///
+/// **Correction, 2026-09-05:** *"takes the tier the lead assigned it"* holds only up to mid-tier.
+/// The tier below is `sonnet`, which is mid-tier, so it survives untouched; an `opus` order does
+/// not — see `no_pick_leaves_judgement_strong_and_caps_a_work_order_at_mid_tier`.
 #[tokio::test]
-async fn with_no_pick_a_work_order_takes_its_tier_and_judgement_takes_the_default() {
+async fn with_no_pick_a_work_order_takes_its_tier_up_to_mid_tier_and_judgement_takes_the_default() {
     let Some(rig) = Rig::new().await else { return };
     let calls = run_picks(&rig, None, PermissionMode::Default).await;
 
@@ -1191,4 +1247,161 @@ async fn a_call_killed_on_its_deadline_leaves_a_warning_on_the_feed() {
         "the warning must be numbered past the session's last event"
     );
     assert!(rows.len() > 1, "the session's own rows survived alongside it");
+}
+
+// ---------------------------------------------------------------------------------------------
+// the model ceiling — `crates/supervisor/src/loop_/routing.rs`
+//
+// The owner's pick is a **ceiling**, not a default (owner decision, 2026-09-05). These drive a
+// whole run and read what the loop actually handed a driver, rather than unit-testing the
+// arithmetic — the defect they exist for was never in the arithmetic, it was that
+// `dispatch.rs` reached the CLI with the planner's tier and nothing in between.
+// ---------------------------------------------------------------------------------------------
+
+/// The owner's sentence: *"picking Haiku means nothing in the run exceeds Haiku."* The planner
+/// tiers the order `opus`; every child still runs on the pick.
+#[tokio::test]
+async fn a_haiku_pick_clamps_an_opus_order_and_records_the_clamp() {
+    let Some(rig) = Rig::new().await else { return };
+    let fake = Fake::new()
+        .say("planner", plan_of(&[("routes", "true"), ("docs", "true")]))
+        .say("lead", dispatch_tiered(&[("o1", "src")], "opus"))
+        .say("worker", report_of("o1"))
+        .does("worker", Work::Under("src"), &rig.git);
+    let mut run = rig.run_picking(Arc::clone(&fake), Some("claude-haiku-4-5")).await;
+
+    assert_eq!(run.tick().await, Tick::Continue, "plan");
+    assert_eq!(run.tick().await, Tick::Continue, "dispatch");
+
+    let asked = fake.all_models();
+    assert!(!asked.is_empty(), "no call was made");
+    for model in &asked {
+        assert_eq!(
+            model.as_deref(),
+            Some("claude-haiku-4-5"),
+            "a child escaped the ceiling: {asked:?}"
+        );
+    }
+    // Named lanes, so a future refactor that drops one of them fails here rather than silently.
+    assert_eq!(fake.models("planner"), vec![Some("claude-haiku-4-5".to_owned())]);
+    assert_eq!(fake.models("lead"), vec![Some("claude-haiku-4-5".to_owned())]);
+    assert_eq!(fake.models("worker"), vec![Some("claude-haiku-4-5".to_owned())]);
+
+    // And the clamp is written down, not silent: the plan card's own column says the run was
+    // capped.
+    let phases = rig.store.handle().phases(run.plan_id()).await.expect("phases");
+    let first = phases.iter().min_by_key(|p| p.ordinal).expect("a phase");
+    let orders = rig.store.handle().work_orders(&first.id).await.expect("orders");
+    let report = orders[0].report.clone().expect("a report");
+    assert!(report.contains("opus"), "the tier that was capped is named: {report}");
+    assert!(report.contains("claude-haiku-4-5"), "the ceiling is named: {report}");
+    assert!(report.starts_with("model:"), "the clamp leads the report: {report}");
+}
+
+/// With no pick, §6's role-based routing survives — and the work-order lane is capped at
+/// mid-tier, which is the half that did not exist. Before 2026-09-05 the worker below was
+/// started on `--model opus` because the planner said so.
+#[tokio::test]
+async fn no_pick_leaves_judgement_strong_and_caps_a_work_order_at_mid_tier() {
+    let Some(rig) = Rig::new().await else { return };
+    let fake = Fake::new()
+        .say("planner", plan_of(&[("routes", "true"), ("docs", "true")]))
+        .say("lead", dispatch_tiered(&[("o1", "src")], "opus"))
+        .say("worker", report_of("o1"))
+        .does("worker", Work::Under("src"), &rig.git);
+    let mut run = rig.run_picking(Arc::clone(&fake), None).await;
+
+    assert_eq!(run.tick().await, Tick::Continue, "plan");
+    assert_eq!(run.tick().await, Tick::Continue, "dispatch");
+
+    // Judgement: the provider default, which is the owner's own strong model.
+    assert_eq!(fake.models("planner"), vec![None], "judgement keeps the strong model");
+    assert_eq!(fake.models("lead"), vec![None], "judgement keeps the strong model");
+    // The work order: mid-tier, not the top tier the planner asked for.
+    assert_eq!(fake.models("worker"), vec![Some("sonnet".to_owned())]);
+
+    let phases = rig.store.handle().phases(run.plan_id()).await.expect("phases");
+    let first = phases.iter().min_by_key(|p| p.ordinal).expect("a phase");
+    let orders = rig.store.handle().work_orders(&first.id).await.expect("orders");
+    let report = orders[0].report.clone().expect("a report");
+    assert!(report.contains("mid-tier"), "the cap is recorded: {report}");
+}
+
+/// The control for the test above: an order the planner tiered at or below mid-tier is not
+/// touched, so the cap is a cap and not a flat rewrite.
+#[tokio::test]
+async fn no_pick_leaves_a_haiku_order_on_haiku() {
+    let Some(rig) = Rig::new().await else { return };
+    let fake = Fake::new()
+        .say("planner", plan_of(&[("routes", "true"), ("docs", "true")]))
+        .say("lead", dispatch_tiered(&[("o1", "src")], "haiku"))
+        .say("worker", report_of("o1"))
+        .does("worker", Work::Under("src"), &rig.git);
+    let mut run = rig.run_picking(Arc::clone(&fake), None).await;
+
+    assert_eq!(run.tick().await, Tick::Continue, "plan");
+    assert_eq!(run.tick().await, Tick::Continue, "dispatch");
+    assert_eq!(fake.models("worker"), vec![Some("haiku".to_owned())]);
+
+    let phases = rig.store.handle().phases(run.plan_id()).await.expect("phases");
+    let first = phases.iter().min_by_key(|p| p.ordinal).expect("a phase");
+    let orders = rig.store.handle().work_orders(&first.id).await.expect("orders");
+    let report = orders[0].report.clone().expect("a report");
+    assert!(!report.starts_with("model:"), "nothing was capped, so nothing is claimed: {report}");
+}
+
+/// A ceiling is not a floor. An `opus` pick leaves a cheap order cheap, which is the difference
+/// between a ceiling and the pre-2026-09-05 reading that honoured the pick literally everywhere.
+#[tokio::test]
+async fn an_opus_pick_still_lets_a_haiku_order_run_on_haiku() {
+    let Some(rig) = Rig::new().await else { return };
+    let fake = Fake::new()
+        .say("planner", plan_of(&[("routes", "true"), ("docs", "true")]))
+        .say("lead", dispatch_tiered(&[("o1", "src")], "haiku"))
+        .say("worker", report_of("o1"))
+        .does("worker", Work::Under("src"), &rig.git);
+    let mut run = rig.run_picking(Arc::clone(&fake), Some("claude-opus-5")).await;
+
+    assert_eq!(run.tick().await, Tick::Continue, "plan");
+    assert_eq!(run.tick().await, Tick::Continue, "dispatch");
+    assert_eq!(fake.models("planner"), vec![Some("claude-opus-5".to_owned())]);
+    assert_eq!(fake.models("worker"), vec![Some("haiku".to_owned())], "under the ceiling");
+}
+
+/// A model id this build does not recognise must **not** silently become "no ceiling". It binds
+/// at the bottom instead, so every child runs on exactly the id the owner typed and the
+/// planner's tier reaches nothing.
+#[tokio::test]
+async fn an_unrecognised_model_id_does_not_widen_the_ceiling() {
+    let Some(rig) = Rig::new().await else { return };
+    let fake = Fake::new()
+        .say("planner", plan_of(&[("routes", "true"), ("docs", "true")]))
+        .say("lead", dispatch_tiered(&[("o1", "src")], "opus"))
+        .say("worker", report_of("o1"))
+        .does("worker", Work::Under("src"), &rig.git);
+    let mut run = rig.run_picking(Arc::clone(&fake), Some("claude-quokka-9")).await;
+
+    assert_eq!(run.tick().await, Tick::Continue, "plan");
+    assert_eq!(run.tick().await, Tick::Continue, "dispatch");
+
+    for model in fake.all_models() {
+        assert_eq!(
+            model.as_deref(),
+            Some("claude-quokka-9"),
+            "an unrecognised pick bound nothing"
+        );
+    }
+    // And specifically: it did **not** fall through to the no-pick lane, where the planner's
+    // `opus` would have become `--model sonnet` — a model the owner never named.
+    assert_ne!(fake.models("worker"), vec![Some("sonnet".to_owned())]);
+    assert_ne!(fake.models("worker"), vec![Some("opus".to_owned())]);
+
+    let phases = rig.store.handle().phases(run.plan_id()).await.expect("phases");
+    let first = phases.iter().min_by_key(|p| p.ordinal).expect("a phase");
+    let orders = rig.store.handle().work_orders(&first.id).await.expect("orders");
+    let report = orders[0].report.clone().expect("a report");
+    assert!(
+        report.contains("not a model this build recognises"),
+        "an unrecognised pick is visible, not silent: {report}"
+    );
 }
