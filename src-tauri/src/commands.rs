@@ -73,7 +73,9 @@ pub(crate) async fn list_models(state: State<'_, AppState>) -> Result<Vec<ModelI
 
 /// Every project, oldest first.
 #[tauri::command]
-pub(crate) async fn list_projects(state: State<'_, AppState>) -> Result<Vec<ProjectView>, AppError> {
+pub(crate) async fn list_projects(
+    state: State<'_, AppState>,
+) -> Result<Vec<ProjectView>, AppError> {
     let rows = state.get()?.supervisor.list_projects().await?;
     Ok(rows.iter().map(ProjectView::from).collect())
 }
@@ -103,7 +105,10 @@ pub(crate) async fn set_project_mcp(
     state: State<'_, AppState>,
 ) -> Result<ProjectView, AppError> {
     let policy = McpPolicy::from_slug(&mcp).ok_or_else(|| {
-        AppError::new("invalid_argument", format!("unknown mcp policy {mcp:?}; expected off or inherit"))
+        AppError::new(
+            "invalid_argument",
+            format!("unknown mcp policy {mcp:?}; expected off or inherit"),
+        )
     })?;
     let row = state.get()?.supervisor.set_project_mcp(&project_id, policy).await?;
     Ok(ProjectView::from(&row))
@@ -111,7 +116,9 @@ pub(crate) async fn set_project_mcp(
 
 /// Every session, newest first.
 #[tauri::command]
-pub(crate) async fn list_sessions(state: State<'_, AppState>) -> Result<Vec<SessionView>, AppError> {
+pub(crate) async fn list_sessions(
+    state: State<'_, AppState>,
+) -> Result<Vec<SessionView>, AppError> {
     let rows = state.get()?.supervisor.list_sessions().await?;
     Ok(rows.iter().map(SessionView::from).collect())
 }
@@ -123,6 +130,7 @@ pub(crate) async fn start_session(
     prompt: String,
     model: Option<String>,
     permission_mode: String,
+    options: Option<AgentOptions>,
     state: State<'_, AppState>,
 ) -> Result<SessionView, AppError> {
     // Fail with the code the UI has a remedy for. Without this the supervisor answers
@@ -141,6 +149,7 @@ pub(crate) async fn start_session(
     // An unmodelled mode is passed through verbatim rather than rejected; the CLI owns the
     // vocabulary. see crates/core/src/driver.rs `PermissionMode`.
     req.permission_mode = PermissionMode::from(permission_mode.as_str());
+    apply_agent_options(&mut req, options.as_ref())?;
 
     let session_id = supervisor.start_session(&project_id, &DriverKind::new(CLAUDE_CODE), req).await?;
     session_view(state.inner(), &session_id).await
@@ -499,10 +508,7 @@ async fn settle(ready: &Ready, intent_id: &str, state: &str) -> Result<(), AppEr
     // answered; neither is a question this command can answer, and `no_such_intent` is the code
     // the contract gives both.
     if !rows.iter().any(|r| r.id == intent_id) {
-        return Err(AppError::new(
-            "no_such_intent",
-            format!("no unsettled intent {intent_id}"),
-        ));
+        return Err(AppError::new("no_such_intent", format!("no unsettled intent {intent_id}")));
     }
     ready
         .store()
@@ -692,8 +698,9 @@ pub(crate) async fn report_paint(
     };
 
     let line_struct = PaintLine { process_start_epoch_ms, main_to_fcp_ms, report };
-    let mut line = serde_json::to_vec(&line_struct)
-        .map_err(|e| AppError::invalid_argument(format!("paint report would not serialize: {e}")))?;
+    let mut line = serde_json::to_vec(&line_struct).map_err(|e| {
+        AppError::invalid_argument(format!("paint report would not serialize: {e}"))
+    })?;
     line.push(b'\n');
     let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
     file.write_all(&line)?;
@@ -873,5 +880,63 @@ mod tests {
 
         settle(&ready, "i5", "done").await.expect("recorded");
         assert!(unsettled(&ready).await.expect("read").is_empty());
+    }
+}
+
+/// Selected-thread content is fetched separately from the small activity channel.
+#[tauri::command]
+pub(crate) async fn chat_items(
+    session_id: String,
+    after: u64,
+    state: State<'_, AppState>,
+) -> Result<Vec<brigadier_store::chat::ChatItem>, AppError> {
+    Ok(state.get()?.store().chat_items(session_id, after).await?)
+}
+
+/// Options accepted for a new Claude child. Unknown knobs fail instead of silently doing nothing.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AgentOptions {
+    effort: Option<String>,
+}
+fn apply_agent_options(
+    req: &mut StartSession,
+    options: Option<&AgentOptions>,
+) -> Result<(), AppError> {
+    // Interactive chat follows the selected model's thinking default. Harness lanes keep
+    // their own per-role policy; this function is called only by start_session.
+    req.thinking = brigadier_core::driver::ThinkingPolicy::Inherit;
+    let Some(effort) = options.and_then(|options| options.effort.as_deref()) else {
+        return Ok(());
+    };
+    if !["auto", "low", "medium", "high", "xhigh", "max"].contains(&effort) {
+        return Err(AppError::invalid_argument("Unsupported effort level"));
+    }
+    let model = req.model.as_deref().unwrap_or("");
+    if model.contains("haiku")
+        || model.contains("sonnet-4-5")
+        || model.contains("opus-4-1")
+        || model.contains("opus-4-0")
+    {
+        return Err(AppError::invalid_argument("This model does not support effort"));
+    }
+    req.env_overrides.insert("CLAUDE_CODE_EFFORT_LEVEL".to_owned(), effort.to_owned());
+    Ok(())
+}
+
+#[cfg(test)]
+mod agent_option_tests {
+    use super::*;
+    #[test]
+    fn effort_is_forwarded_and_unsupported_controls_fail() {
+        let mut request=StartSession::new("/tmp");
+        request.model=Some("claude-opus-5".into());
+        apply_agent_options(&mut request,None).unwrap();
+        assert_eq!(request.thinking,brigadier_core::driver::ThinkingPolicy::Inherit);
+        apply_agent_options(&mut request,Some(&AgentOptions{effort:Some("high".into())})).unwrap();
+        assert_eq!(request.env_overrides.get("CLAUDE_CODE_EFFORT_LEVEL").unwrap(),"high");
+        request.model=Some("claude-haiku-4-5".into());
+        assert!(apply_agent_options(&mut request,Some(&AgentOptions{effort:Some("high".into())})).is_err());
+        assert!(serde_json::from_str::<AgentOptions>(r#"{"speed":"fast"}"#).is_err());
     }
 }

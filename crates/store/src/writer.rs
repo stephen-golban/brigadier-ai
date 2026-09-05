@@ -86,26 +86,47 @@ pub(crate) enum DeleteTarget {
 
 /// One unit of work for the writer thread. Crate-private: the public surface is [`StoreHandle`].
 pub(crate) enum Op {
+    Chat(crate::chat::ChatItem),
     /// Insert or replace a project.
     UpsertProject(ProjectRow),
     /// Set one project's MCP policy. A missing project is a no-op here; the supervisor checks
     /// existence first and answers `no_such_project` itself.
-    SetProjectMcp { id: String, mcp: McpPolicy },
+    SetProjectMcp {
+        id: String,
+        mcp: McpPolicy,
+    },
     /// Merge a partial session row; `None` fields leave the stored value alone.
     UpsertSession(Box<SessionRow>),
     /// Append one terse feed row and advance the session's event cursor.
-    Feed { session_id: SessionId, seq: u64, at: SystemTime, kind: FeedKind, line: String },
+    Feed {
+        session_id: SessionId,
+        seq: u64,
+        at: SystemTime,
+        kind: FeedKind,
+        line: String,
+    },
     /// Overwrite the session's cumulative usage and cost.
     ///
     /// Overwrite, not `SET x = x + ?`: the provider reports `usage` and `total_cost_usd`
     /// cumulatively on every terminal frame, so summing them double-counts.
     // see docs/research/agent-sdk.md §6 and `brigadier_core::event::Usage`. The `x = x + ?`
     // shape of docs/research/persistence.md §3 still binds any counter that is *ours*; none is.
-    SetUsage { session_id: SessionId, usage: Usage, cost_usd_cumulative: f64 },
+    SetUsage {
+        session_id: SessionId,
+        usage: Usage,
+        cost_usd_cumulative: f64,
+    },
     /// Record a parked request so a reload can re-render it.
-    ApprovalOpened { session_id: SessionId, approval: Box<PendingApproval> },
+    ApprovalOpened {
+        session_id: SessionId,
+        approval: Box<PendingApproval>,
+    },
     /// Record the answer that unparked it.
-    ApprovalResolved { request_id: RequestId, decision: Decision, at: SystemTime },
+    ApprovalResolved {
+        request_id: RequestId,
+        decision: Decision,
+        at: SystemTime,
+    },
     /// Settle a session's lifecycle columns.
     SessionEnded {
         session_id: SessionId,
@@ -120,7 +141,10 @@ pub(crate) enum Op {
     /// is, is `COALESCE`d, so `None` means "leave alone" and there is no value that means
     /// "clear". A resumed session that keeps its old `ended_at` reads as ended while it is live.
     // see docs/research/resume.md §8 gap 5.
-    SessionResumed { session_id: SessionId, at: SystemTime },
+    SessionResumed {
+        session_id: SessionId,
+        at: SystemTime,
+    },
     /// Record an effect the harness is **about to** cause, and answer once it is committed.
     ///
     /// The only op that carries its own result back. Everything else here is fire-and-forget and
@@ -185,7 +209,10 @@ pub(crate) enum Op {
     UpsertPlan(Box<PlanRow>),
     /// Stamp the owner's approval on a plan. Guarded by `AND status = 'draft'`, so a second
     /// approval does not move the timestamp the autonomous run is authorized by.
-    PlanApproved { id: String, at: SystemTime },
+    PlanApproved {
+        id: String,
+        at: SystemTime,
+    },
     /// Record one re-planning event and bump the plan's revision counter, in one transaction.
     ///
     /// Both statements or neither: a plan whose `revision` does not match its newest
@@ -208,7 +235,10 @@ pub(crate) enum Op {
     /// `last_evidence` have to be *cleared*, which no `COALESCE`d upsert can do. A re-attempted
     /// phase that keeps the previous attempt's exit code reads red while it is running.
     // the same reasoning as `Op::SessionResumed`; see docs/research/resume.md §8 gap 5.
-    PhaseAttemptStarted { id: String, at: SystemTime },
+    PhaseAttemptStarted {
+        id: String,
+        at: SystemTime,
+    },
     /// Settle a phase with the gate's real exit code and a bounded excerpt of what it said.
     PhaseSettled {
         id: String,
@@ -250,7 +280,10 @@ pub(crate) enum Op {
     /// about to delete files on the strength of it. And a delete that fails its own
     /// post-condition has to roll back **only itself**, not the batch it was coalesced into, so
     /// it runs inside a savepoint.
-    Delete { what: DeleteTarget, reply: oneshot::Sender<Result<Option<DeleteOutcome>>> },
+    Delete {
+        what: DeleteTarget,
+        reply: oneshot::Sender<Result<Option<DeleteOutcome>>>,
+    },
     /// Run a closure against the connection, inside the current batch's transaction.
     ///
     /// Like [`Op::Flush`] it closes the coalescing window: a read submitted at the top of a
@@ -273,6 +306,20 @@ pub struct StoreHandle {
 impl StoreHandle {
     fn send(&self, op: Op) -> Result<()> {
         self.tx.send(op).map_err(|_| Error::Closed)
+    }
+
+    /// Persist a completed display item independently of the telemetry ring.
+    pub async fn chat_item(&self, item: crate::chat::ChatItem) -> Result<()> {
+        self.send(Op::Chat(item))
+    }
+
+    /// Page completed display items after a sequence cursor. The page is bounded.
+    pub async fn chat_items(
+        &self,
+        session_id: String,
+        after: u64,
+    ) -> Result<Vec<crate::chat::ChatItem>> {
+        self.query(move |conn| crate::chat::read(conn, &session_id, after)).await
     }
 
     /// Insert or replace a project.
@@ -514,14 +561,7 @@ impl StoreHandle {
         skipped_for_just_go: bool,
         at: SystemTime,
     ) -> Result<()> {
-        self.send(Op::UnknownSettled {
-            id,
-            state,
-            answer,
-            findings_path,
-            skipped_for_just_go,
-            at,
-        })
+        self.send(Op::UnknownSettled { id, state, answer, findings_path, skipped_for_just_go, at })
     }
 
     /// Insert a work order, or merge what dispatch learned about one.
@@ -903,12 +943,7 @@ pub(crate) fn spawn(
 /// wakes only for an op or for the deadline. An op that someone is waiting on — a
 /// [`Op::Query`], an [`Op::IntentOpen`], an [`Op::Flush`] or [`Op::Shutdown`] — ends the window
 /// immediately.
-fn run(
-    mut conn: Connection,
-    rx: mpsc::Receiver<Op>,
-    run_id: String,
-    config: StoreConfig,
-) {
+fn run(mut conn: Connection, rx: mpsc::Receiver<Op>, run_id: String, config: StoreConfig) {
     loop {
         let Ok(first) = rx.recv() else { break };
         let mut batch = vec![first];
@@ -1097,6 +1132,13 @@ fn apply_one(
     touched: &mut BTreeSet<String>,
 ) -> Result<()> {
     match op {
+        Op::Chat(item) => {
+            ensure_session(tx, &SessionId::new(&item.session_id), touched)?;
+            crate::chat::write(tx, &item)?;
+            // A crash between this projection and its feed row must not reuse this sequence.
+            tx.execute("UPDATE sessions SET last_event_seq=MAX(last_event_seq,?2) WHERE id=?1",
+                (&item.session_id, item.seq))?;
+        }
         Op::UpsertProject(p) => {
             // `mcp` is written on insert and on conflict alike: the row carries the policy, so
             // an upsert that omitted it would silently reset an opted-in project to `off`.
@@ -1126,7 +1168,13 @@ fn apply_one(
                  ON CONFLICT(session_id, seq) DO UPDATE SET at = excluded.at,
                      kind = excluded.kind, line = excluded.line",
             )?
-            .execute((session_id.as_str(), seq, schema::to_millis(at), kind.as_str(), &line))?;
+            .execute((
+                session_id.as_str(),
+                seq,
+                schema::to_millis(at),
+                kind.as_str(),
+                &line,
+            ))?;
             // `last_event_seq` is the cursor of the newest event that produced a *feed row*;
             // events with no terse line are deliberately not written at all.
             // see docs/research/persistence.md §3 — never a write per chunk.
@@ -1210,9 +1258,7 @@ fn apply_one(
                 .query_row((&id,), |row| row.get(0))
                 .optional()?;
             let (state, evidence) = match kind {
-                Some(kind) => {
-                    intents::hold_to_settleable(&IntentKind::new(kind), state, evidence)
-                }
+                Some(kind) => intents::hold_to_settleable(&IntentKind::new(kind), state, evidence),
                 None => (state, evidence),
             };
             tx.prepare_cached(
@@ -1525,9 +1571,7 @@ fn ensure_session(
 }
 
 fn upsert_session(tx: &rusqlite::Transaction<'_>, row: SessionRow) -> Result<()> {
-    let path = |p: Option<&std::path::PathBuf>| {
-        p.map(|p| p.to_string_lossy().into_owned())
-    };
+    let path = |p: Option<&std::path::PathBuf>| p.map(|p| p.to_string_lossy().into_owned());
     // `oversized_json` and not `bounded`: `summary_json` is a JSON column, and `bounded` appends
     // `…`, which turns a document into text that no longer parses. The same defect that was in
     // `change_json` and `owned_paths_json`; one helper covers all three.

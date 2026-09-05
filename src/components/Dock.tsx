@@ -1,3 +1,5 @@
+import { SelectMenu } from "./SelectMenu";
+import type { AgentOptions } from "../agentOptions";
 /** One chat composer: start a session, or continue the selected conversation. */
 import { Composer } from "./Composer";
 import { ModelIcon, PathIcon, ProjectIcon } from "./icons";
@@ -26,6 +28,7 @@ export interface DockProps {
     prompt: string;
     model: string | null;
     permissionMode: PermissionMode;
+  options?: AgentOptions;
   }) => void | Promise<boolean>;
   onSend: (sessionId: SessionId, text: string) => void | Promise<boolean>;
   onInterrupt: (sessionId: SessionId) => void;
@@ -73,6 +76,7 @@ export function Dock(props: DockProps) {
         ) : null}
 
         <span className="grow" />
+        <SelectMenu label="Agent" value="claude" onChange={()=>{}} options={[{value:'claude',label:'Claude Code',description:'Connected local CLI. Uses your existing authentication.'}]}/>
 
 
       </div>

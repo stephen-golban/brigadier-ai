@@ -136,6 +136,7 @@ impl AppState {
     // see docs/research/tauri-commands.md §5 (the callback may block; `block_on` compiles and
     // runs there) and docs/research/orphan-sweep.md §6 (close stdin, clean `exit 0` at 571 ms).
     pub(crate) fn shutdown_sync(&self, reason: &'static str, grace: Duration) {
+        crate::terminal::shutdown();
         let Some(ready) = &self.ready else { return };
         let live = ready.supervisor.live_sessions().len();
         if live == 0 {

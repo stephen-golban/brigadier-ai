@@ -1,3 +1,7 @@
+import { SelectMenu } from "./SelectMenu";
+import { effortLevels, type Effort } from "../agentOptions";
+import type { AgentOptions } from "../agentOptions";
+import { PromptInput, useDraft } from "./PromptInput";
 /**
  * Start a session: the dock's **Session** mode.
  *
@@ -25,7 +29,12 @@ import { useState } from "react";
 
 import { Pickers } from "./Pickers";
 import { isSubmitKey } from "../keys";
-import type { ModelInfo, PermissionMode, ProjectId, ProjectView } from "../wire";
+import type {
+  ModelInfo,
+  PermissionMode,
+  ProjectId,
+  ProjectView,
+} from "../wire";
 
 export interface NewSessionProps {
   project: ProjectView | null;
@@ -36,27 +45,43 @@ export interface NewSessionProps {
     prompt: string;
     model: string | null;
     permissionMode: PermissionMode;
-  }) => void;
+    options?: AgentOptions;
+  }) => void | Promise<boolean>;
 }
 
-export function NewSession({ project, models, disabled, onStart }: NewSessionProps) {
-  const [prompt, setPrompt] = useState("");
+export function NewSession({
+  project,
+  models,
+  disabled,
+  onStart,
+}: NewSessionProps) {
+  const [prompt, setPrompt] = useDraft(`session:${project?.id ?? "none"}`);
   const [model, setModel] = useState<string>("");
+  const [effort, setEffort] = useState<Effort>("auto");
   const [mode, setMode] = useState<PermissionMode>("default");
 
   const defaultModel = models.find((m) => m.default)?.id ?? models[0]?.id ?? "";
   const chosen = model === "" ? defaultModel : model;
   const ready = project !== null && prompt.trim() !== "" && !disabled;
 
-  const submit = () => {
-    if (project === null || prompt.trim() === "" || disabled) return;
-    onStart({
-      projectId: project.id,
-      prompt: prompt.trim(),
-      model: chosen === "" ? null : chosen,
-      permissionMode: mode,
-    });
-    setPrompt("");
+  const [sending, setSending] = useState(false);
+  const submit = async () => {
+    if (project === null || prompt.trim() === "" || disabled || sending) return;
+    setSending(true);
+    try {
+      const accepted = await onStart({
+        projectId: project.id,
+        prompt: prompt.trim(),
+        model: chosen === "" ? null : chosen,
+        permissionMode: mode,
+        ...(effort !== "auto" && effortLevels(chosen).includes(effort)
+          ? { options: { effort } }
+          : {}),
+      });
+      if (accepted !== false) setPrompt("");
+    } finally {
+      setSending(false);
+    }
   };
 
   /*
@@ -68,7 +93,7 @@ export function NewSession({ project, models, disabled, onStart }: NewSessionPro
   return (
     <>
       <div className="dock-box">
-        <textarea
+        <PromptInput
           rows={2}
           value={prompt}
           placeholder={
@@ -76,8 +101,8 @@ export function NewSession({ project, models, disabled, onStart }: NewSessionPro
               ? "Add a project first"
               : `What should we run in ${project.name}? Return to start, Shift+Return for a new line.`
           }
-          disabled={disabled || project === null}
-          onChange={(e) => setPrompt(e.target.value)}
+          disabled={disabled || sending || project === null}
+          onText={setPrompt}
           onKeyDown={(e) => {
             if (isSubmitKey(e)) {
               e.preventDefault();
@@ -96,13 +121,36 @@ export function NewSession({ project, models, disabled, onStart }: NewSessionPro
             noPickLabel={null}
           />
 
+          {effortLevels(chosen).length ? (
+            <SelectMenu
+              label="Effort"
+              value={effort}
+              onChange={(value) => setEffort(value as Effort)}
+              disabled={disabled}
+              options={effortLevels(chosen).map((value) => ({
+                value,
+                label:
+                  value === "auto"
+                    ? "Default effort"
+                    : `${value[0]!.toUpperCase()}${value.slice(1)}`,
+                description: {
+                  auto: "Let Claude choose",
+                  low: "Quick responses for simple tasks",
+                  medium: "Balance speed and depth",
+                  high: "More time for complex work",
+                  xhigh: "Extra reasoning for difficult problems",
+                  max: "The highest effort supported by this model",
+                }[value],
+              }))}
+            />
+          ) : null}
           {/* Secondary action slot, matching the turn composer's. */}
           <span className="grow" />
 
           <button
             type="button"
             className="send wide"
-            disabled={!ready}
+            disabled={!ready || sending}
             onClick={submit}
           >
             Start

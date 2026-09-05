@@ -5,6 +5,7 @@ import { App } from "./App";
 import { startPaintInstrumentation } from "./paint";
 import { ThemeProvider } from "./providers/ThemeProvider";
 import "./index.css";
+import "./chat.css";
 
 // The FCP observer is `buffered: true`, so it sees a first contentful paint that has already
 // happened. Its position relative to `createRoot` below therefore carries no meaning and is not

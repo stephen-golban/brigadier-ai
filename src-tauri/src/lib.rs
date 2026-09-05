@@ -27,9 +27,11 @@ mod error;
 mod reconcile;
 mod sink;
 mod state;
-mod tracker;
+mod terminal;
 mod trace;
+mod tracker;
 mod views;
+mod workspace;
 
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -130,6 +132,16 @@ pub fn run() {
             commands::delete_session,
             commands::delete_project,
             commands::feed_tail,
+            commands::chat_items,
+            workspace::workspace_entries,
+            workspace::workspace_file,
+            workspace::workspace_git,
+            workspace::workspace_diff,
+            terminal::terminal_open,
+            terminal::terminal_read,
+            terminal::terminal_write,
+            terminal::terminal_resize,
+            terminal::terminal_close,
             commands::pending_approvals,
             commands::start_run,
             commands::current_run,
@@ -228,25 +240,25 @@ pub fn run() {
     trace::stage("builder_built");
 
     app.run(|handle, event| match event {
-            // The last window closed, or `AppHandle::exit` was called. The window is still on
-            // screen: end the sessions and signal their groups, bounded.
-            RunEvent::ExitRequested { .. } => {
-                if let Some(state) = handle.try_state::<AppState>() {
-                    state.shutdown_sync("ExitRequested", EXIT_GRACE);
-                }
+        // The last window closed, or `AppHandle::exit` was called. The window is still on
+        // screen: end the sessions and signal their groups, bounded.
+        RunEvent::ExitRequested { .. } => {
+            if let Some(state) = handle.try_state::<AppState>() {
+                state.shutdown_sync("ExitRequested", EXIT_GRACE);
             }
-            // The only arm macOS ⌘Q reaches (§12). So the graceful shutdown runs here too —
-            // idempotent, so the paths that came through `ExitRequested` pay nothing for it —
-            // and then the backstop kill and the last store flush. Blocking here is legal and is
-            // the point: nothing is on screen any more.
-            RunEvent::Exit => {
-                if let Some(state) = handle.try_state::<AppState>() {
-                    state.shutdown_sync("Exit", EXIT_GRACE);
-                    state.final_sweep(EXIT_GRACE);
-                }
+        }
+        // The only arm macOS ⌘Q reaches (§12). So the graceful shutdown runs here too —
+        // idempotent, so the paths that came through `ExitRequested` pay nothing for it —
+        // and then the backstop kill and the last store flush. Blocking here is legal and is
+        // the point: nothing is on screen any more.
+        RunEvent::Exit => {
+            if let Some(state) = handle.try_state::<AppState>() {
+                state.shutdown_sync("Exit", EXIT_GRACE);
+                state.final_sweep(EXIT_GRACE);
             }
-            _ => {}
-        });
+        }
+        _ => {}
+    });
 }
 
 /// Turn `SIGTERM` and `SIGINT` into a normal quit.

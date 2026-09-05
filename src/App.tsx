@@ -21,7 +21,10 @@ import { Approvals } from "./components/Approvals";
 import type { ApprovalRow } from "./components/Approvals";
 import { Burn } from "./components/Burn";
 import { Dock } from "./components/Dock";
-import { Feed } from "./components/Feed";
+import { ThreadView } from "./components/ThreadView";
+import { WorkspacePanel, type WorkspaceTab } from "./components/WorkspacePanel";
+import { SidebarSimpleIcon } from "@phosphor-icons/react";
+import type { WorkspaceContext } from "./workspaceApi";
 import { FpsOverlay } from "./components/FpsOverlay";
 import { RunCard } from "./components/RunCard";
 import { Sidebar } from "./components/Sidebar";
@@ -123,7 +126,10 @@ const BURN_ROOT_MARKER = "brigadier-burn";
  */
 const BURN_UI = import.meta.env.DEV || import.meta.env.VITE_BURN === "1";
 
+interface WorkspaceView { context:WorkspaceContext; root:string; tabs:WorkspaceTab[]; active:string|null }
 export function App() {
+  const [workspaceOpen,setWorkspaceOpen]=useState(false);
+  const [workspaces,setWorkspaces]=useState<Record<string,WorkspaceView>>({});
   const state = useSyncExternalStore(store.subscribe, store.getState);
 
   const [projects, setProjects] = useState<ProjectView[]>([]);
@@ -373,6 +379,29 @@ export function App() {
   }, []);
 
   const selectedSession = selectedSessionId === null ? null : state.sessions[selectedSessionId] ?? null;
+  const workspaceKey = `${selectedProjectId}:${selectedSessionId}`;
+  const openWorkspace = useCallback((path?:string) => {
+    if (!selectedProjectId) return;
+    const project=projects.find(p=>p.id===selectedProjectId);
+    if (!project) return;
+    const root=selectedSession?.cwd??project.root_path;
+    // Markdown file links may carry absolute workspace paths and a line suffix.
+    const relative=path?.replace(/#L\d+(?:-L\d+)?$/, '').replace(/:\d+(?::\d+)?$/, '').replace(/^\.\//,'');
+    const resolved=relative?.startsWith(root+'/')?relative.slice(root.length+1):relative;
+    setWorkspaces(previous=>{
+      const view=previous[workspaceKey]??{context:{projectId:selectedProjectId,sessionId:selectedSessionId},root,tabs:[],active:null};
+      if(!resolved)return {...previous,[workspaceKey]:view};
+      const id=`file:false:${resolved}`;
+      return {...previous,[workspaceKey]:{...view,tabs:view.tabs.some(t=>t.id===id)?view.tabs:[...view.tabs,{id,kind:'file',path:resolved}],active:id}};
+    });
+    setWorkspaceOpen(true);
+  },[selectedProjectId,selectedSessionId,selectedSession?.cwd,projects,workspaceKey]);
+  useEffect(()=>{
+    const toggle=(event:KeyboardEvent)=>{if((event.metaKey||event.ctrlKey)&&event.altKey&&event.key.toLowerCase()==='b'){event.preventDefault();if(workspaceOpen)setWorkspaceOpen(false);else openWorkspace();}};
+    window.addEventListener('keydown',toggle);return()=>window.removeEventListener('keydown',toggle);
+  },[workspaceOpen,openWorkspace]);
+  useEffect(() => { if (workspaceOpen) openWorkspace(); }, [workspaceOpen, openWorkspace]);
+
 
   /**
    * Every pending approval, whatever project it belongs to — the list is deliberately **not**
@@ -469,13 +498,14 @@ export function App() {
 
   const startSession = useCallback(
     (args: StartSessionArgs) => {
-      void bridge()
+      return bridge()
         .startSession(args)
         .then((view) => {
           store.seedSessions([view]);
           setSelectedSessionId(view.session_id);
+          return true;
         })
-        .catch(say);
+        .catch(e => { say(e); return false; });
     },
     [say],
   );
@@ -532,6 +562,7 @@ export function App() {
         const deletion = await bridge().deleteSession(sessionId, force);
         if (deletion.removed) {
           store.dropSession(sessionId);
+          setWorkspaces(old => Object.fromEntries(Object.entries(old).filter(([,v]) => v.context.sessionId !== sessionId)));
           // A B4 span open against this session can never settle now — its rows are gone — so it
           // is cancelled rather than left to time out. The ref is read directly instead of going
           // through `selectSession`, which would put the selection in this callback's dependency
@@ -574,6 +605,7 @@ export function App() {
           // some *other* project.
           const owned = store.getState().sessions;
           store.dropProject(projectId);
+          setWorkspaces(old => Object.fromEntries(Object.entries(old).filter(([,v]) => v.context.projectId !== projectId)));
           setProjects((prev) => prev.filter((p) => p.id !== projectId));
           setSelectedProjectId((current) => (current === projectId ? null : current));
           if (paintSpan.current !== null && owned[paintSpan.current.sessionId]?.projectId === projectId) {
@@ -798,6 +830,7 @@ export function App() {
             </button>
           ) : null}
           <FpsOverlay />
+          <button className="icon-button workspace-toggle" aria-label="Toggle workspace panel" aria-pressed={workspaceOpen} title="Workspace (⌥⌘B)" disabled={!selectedProjectId} onClick={()=>workspaceOpen?setWorkspaceOpen(false):openWorkspace()}><SidebarSimpleIcon size={20}/></button>
         </header>
 
         {runLive && run?.project_id === selectedProjectId && selectedSessionId === null ? (
@@ -813,10 +846,11 @@ export function App() {
           </details>
         ) : null}
 
-        <Feed
+        <ThreadView
           sessionId={selectedSessionId}
           projectId={selectedProjectId}
           projectName={selectedProject?.name ?? null}
+          onFile={openWorkspace}
         />
 
         <Approvals
@@ -836,7 +870,7 @@ export function App() {
           onResume={resumeSession}
           onCleanup={cleanupWorktree}
           onSend={(id, text) => {
-            void bridge().sendTurn(id, text).catch(say);
+            return bridge().sendTurn(id, text).then(() => true).catch(e => { say(e); return false; });
           }}
           onInterrupt={(id) => {
             void bridge().interrupt(id).catch(say);
@@ -849,6 +883,12 @@ export function App() {
           }}
         />
       </main>
+      {Object.entries(workspaces).map(([key,view])=><div key={key} className="workspace-slot" hidden={!workspaceOpen||key!==workspaceKey}>
+        <WorkspacePanel visible={workspaceOpen && key===workspaceKey} context={view.context} rootPath={view.root} tabs={view.tabs} active={view.active}
+          setTabs={tabs=>setWorkspaces(old=>({...old,[key]:{...old[key]!,tabs}}))}
+          setActive={active=>setWorkspaces(old=>({...old,[key]:{...old[key]!,active}}))}
+          onClose={()=>setWorkspaceOpen(false)} onAttach={(path,content)=>window.dispatchEvent(new CustomEvent('brigadier-attach',{detail:{path,content}}))}/>
+      </div>)}
     </div>
   );
 }

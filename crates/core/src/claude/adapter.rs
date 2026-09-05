@@ -342,7 +342,8 @@ where
 
     if let Some(prompt) = adapter.config.prompt.clone() {
         // The prompt path opens a turn the supervisor never asked for, so the id is minted here.
-        adapter.start_turn(mint_turn_id(), TurnInput::text(prompt)).await;
+        adapter.start_turn(mint_turn_id(), TurnInput::text(prompt)).await
+            .map_err(|e| DriverError::Protocol(format!("could not send initial prompt: {e}")))?;
     }
 
     tokio::spawn(adapter.run(wires, buffered));
@@ -729,7 +730,8 @@ where
             else {
                 continue;
             };
-            let summary = summarize(&content.as_ref().map(result_text).unwrap_or_default());
+            let body = content.as_ref().map(result_text).unwrap_or_default();
+            let summary = summarize(&body);
             let is_error = is_error.unwrap_or(false);
             self.emit(
                 Event::item_completed(
@@ -740,6 +742,9 @@ where
                 ),
                 Some(raw),
             );
+            if let Some(envelope) = self.outbox.back_mut() {
+                envelope.body = Some(bounded(&body, 128 * 1024));
+            }
         }
     }
 
@@ -786,16 +791,15 @@ where
             Some("aborted_streaming" | "aborted_tools") => {
                 Event::TurnAborted { turn_id, reason: AbortReason::Interrupted }
             }
-            _ if view.success || view.terminal_reason == Some("completed") => Event::TurnCompleted {
-                turn_id,
-                stop_reason: stop_reason_of(view.stop_reason, view.terminal_reason),
-                usage: view.usage(),
-                cost_usd_cumulative: view.total_cost_usd,
-            },
-            _ => Event::TurnAborted {
-                turn_id,
-                reason: AbortReason::Error(view.failure_message()),
-            },
+            _ if view.success || view.terminal_reason == Some("completed") => {
+                Event::TurnCompleted {
+                    turn_id,
+                    stop_reason: stop_reason_of(view.stop_reason, view.terminal_reason),
+                    usage: view.usage(),
+                    cost_usd_cumulative: view.total_cost_usd,
+                }
+            }
+            _ => Event::TurnAborted { turn_id, reason: AbortReason::Error(view.failure_message()) },
         };
         self.emit(event, Some(raw));
     }
@@ -1080,8 +1084,8 @@ where
                     }
                     None => {}
                 }
-                self.start_turn(turn_id, input).await;
-                let _ = ack.send(Ok(()));
+                let result = self.start_turn(turn_id, input).await;
+                let _ = ack.send(result);
             }
             // A real `result` follows, `terminal_reason: aborted_streaming`, and the session
             // survives. see docs/research/agent-sdk.md §10 and spike scenario 4 (1 ms round trip).
@@ -1122,7 +1126,7 @@ where
         }
     }
 
-    async fn start_turn(&mut self, turn_id: TurnId, input: TurnInput) {
+    async fn start_turn(&mut self, turn_id: TurnId, input: TurnInput) -> Result<(), CommandError> {
         if !input.attachment_paths.is_empty() {
             self.emit(
                 Event::RuntimeWarning {
@@ -1138,8 +1142,8 @@ where
         // turn's text: that turn never produced a `result` here, so nothing kept it.
         self.turn_text.clear();
         self.open_turn = Some(OpenTurn { id: turn_id.clone(), minted: false });
-        self.emit(Event::TurnStarted { turn_id }, None);
-        if let Err(e) = self.write_frame(&SdkUserMessage::text(input.text)).await {
+        self.emit(Event::TurnStarted { turn_id: turn_id.clone() }, None);
+        if let Err(e) = self.write_frame(&SdkUserMessage::text(input.text.clone())).await {
             self.emit(
                 Event::RuntimeError {
                     message: format!("could not send the turn: {e}"),
@@ -1147,7 +1151,21 @@ where
                 },
                 None,
             );
+            self.open_turn = None;
+            self.emit(
+                Event::TurnAborted { turn_id, reason: AbortReason::Error(e.to_string()) },
+                None,
+            );
+            return Err(CommandError::Rejected(e.to_string()));
         }
+        self.emit_item(
+            ItemId::new(format!("{turn_id}:user")),
+            ItemKind::UserText,
+            &input.text,
+            None,
+            "",
+        );
+        Ok(())
     }
 
     /// Writes a host → CLI control request and parks the caller's ack until its response lands.
@@ -1261,6 +1279,9 @@ where
             Some(raw),
         );
         self.emit(Event::item_completed(item_id, kind, &summary, parent), Some(raw));
+        if let Some(envelope) = self.outbox.back_mut() {
+            envelope.body = Some(bounded(body, 128 * 1024));
+        }
     }
 
     /// Accumulate one assistant text block into the open turn's buffer.

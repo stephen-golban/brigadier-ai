@@ -18,6 +18,7 @@
  *     `src/wire.ts` and it is the whole set the CLI accepts, `bypass-permissions` included. See
  *     that constant for why leaving it out was a gate on a value that changed nothing.
  */
+import { SelectMenu } from "./SelectMenu";
 import { OFFERED_PERMISSION_MODES } from "../wire";
 import type { ModelInfo, PermissionMode } from "../wire";
 
@@ -48,42 +49,36 @@ export function Pickers({
   noPickLabel,
   modelHint,
 }: PickersProps) {
-  /** The chosen entry's own sentence, so the control explains itself without a legend. */
-  const modeNote = OFFERED_PERMISSION_MODES.find((m) => m.mode === mode)?.note;
-
   return (
     <>
-      <label title={modelHint}>
-        Model
-        <select
-          value={model}
-          disabled={disabled}
-          onChange={(e) => onModel(e.target.value)}
-        >
-          {noPickLabel !== null ? <option value="">{noPickLabel}</option> : null}
-          {models.length === 0 && noPickLabel === null ? <option value="">(none)</option> : null}
-          {models.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.label}
-              {m.default ? " (default)" : ""}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label title={modeNote}>
-        Permissions
-        <select
-          value={mode}
-          disabled={disabled}
-          onChange={(e) => onMode(e.target.value as PermissionMode)}
-        >
-          {OFFERED_PERMISSION_MODES.map((m) => (
-            <option key={m.mode} value={m.mode} title={m.note}>
-              {m.label}
-            </option>
-          ))}
-        </select>
-      </label>
+      <SelectMenu
+        label="Permissions"
+        value={mode}
+        onChange={(value) => onMode(value as PermissionMode)}
+        disabled={disabled}
+        options={OFFERED_PERMISSION_MODES.map((m) => ({
+          value: m.mode,
+          label: m.label.split(" — ")[0]!,
+          description: m.note,
+        }))}
+      />
+      <SelectMenu
+        label="Model"
+        value={model}
+        onChange={onModel}
+        disabled={disabled}
+        searchable
+        options={[
+          ...(noPickLabel === null
+            ? []
+            : [{ value: "", label: noPickLabel, description: modelHint }]),
+          ...models.map((m) => ({
+            value: m.id,
+            label: m.label.split(" — ")[0]!,
+            description: m.id,
+          })),
+        ]}
+      />
     </>
   );
 }

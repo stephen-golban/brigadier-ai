@@ -39,7 +39,10 @@ fn every_variant() -> Vec<(Event, Option<&'static str>)> {
             Some("session exited · graceful · exit 0"),
         ),
         (
-            Event::SessionExited { reason: ExitReason::Error("pipe closed".into()), exit_code: None },
+            Event::SessionExited {
+                reason: ExitReason::Error("pipe closed".into()),
+                exit_code: None,
+            },
             Some("session exited · error: pipe closed"),
         ),
         (Event::TurnStarted { turn_id: TurnId::new("t1") }, None),
@@ -209,10 +212,7 @@ fn every_variant() -> Vec<(Event, Option<&'static str>)> {
             Event::RuntimeWarning { message: "settings.json shadows the mode".into() },
             Some("warning · settings.json shadows the mode"),
         ),
-        (
-            Event::RuntimeError { message: "boom".into(), fatal: false },
-            Some("error · boom"),
-        ),
+        (Event::RuntimeError { message: "boom".into(), fatal: false }, Some("error · boom")),
         (
             Event::RuntimeError { message: "pipe closed".into(), fatal: true },
             Some("fatal error · pipe closed"),
@@ -265,10 +265,7 @@ fn kind_is_pinned_for_every_variant() {
             "sys",
         ),
         (Event::SessionExited { reason: ExitReason::Graceful, exit_code: Some(0) }, "sys"),
-        (
-            Event::SessionCompacted { trigger: CompactTrigger::Auto, pre_tokens: None },
-            "sys",
-        ),
+        (Event::SessionCompacted { trigger: CompactTrigger::Auto, pre_tokens: None }, "sys"),
         (Event::TurnStarted { turn_id: TurnId::new("t1") }, "turn"),
         (
             Event::TurnCompleted {
@@ -286,10 +283,7 @@ fn kind_is_pinned_for_every_variant() {
         (item(ItemKind::AssistantText), "text"),
         (item(ItemKind::Thinking), "think"),
         (item(ItemKind::ToolCall { name: "Bash".into() }), "tool"),
-        (
-            item(ItemKind::ToolResult { tool_call_id: "tu_1".into(), is_error: true }),
-            "tool",
-        ),
+        (item(ItemKind::ToolResult { tool_call_id: "tu_1".into(), is_error: true }), "tool"),
         (item(ItemKind::UserText), "user"),
         (
             item(ItemKind::Subagent {
@@ -384,6 +378,7 @@ fn env(seq: u64, event: Event) -> Envelope {
         session_id: SessionId::new("s1"),
         event,
         raw: Some("{\"raw\":\"never reaches the database\"}".into()),
+        body: None,
     }
 }
 
@@ -451,11 +446,8 @@ async fn apply_maps_a_session_lifetime_onto_the_store() {
         h,
     )
     .await;
-    apply(
-        &env(7, Event::SessionExited { reason: ExitReason::Graceful, exit_code: Some(0) }),
-        h,
-    )
-    .await;
+    apply(&env(7, Event::SessionExited { reason: ExitReason::Graceful, exit_code: Some(0) }), h)
+        .await;
     h.flush().await.expect("flush");
 
     let row = h.session(id.clone()).await.expect("read").expect("row");
@@ -502,4 +494,22 @@ async fn apply_maps_a_session_lifetime_onto_the_store() {
     assert_eq!(approvals.len(), 1);
     assert!(approvals[0].resolved_at.is_some());
     store.close().await.expect("close");
+}
+
+#[tokio::test]
+async fn chat_body_survives_reopen_independently_of_terse_feed() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let h = store.handle();
+    let body = "First paragraph.\n\n```rust\nfn main() {}\n```";
+    let item = env(1, Event::item_completed(
+        ItemId::new("assistant-1"), ItemKind::AssistantText, "First paragraph.", None,
+    )).with_body(body);
+    apply(&item, h).await;
+    assert_eq!(h.chat_items("s1".into(), 0).await.unwrap()[0].body, body);
+    assert_eq!(h.session(SessionId::new("s1")).await.unwrap().unwrap().last_event_seq, 1);
+    store.close().await.unwrap();
+    let reopened = Store::open(dir.path()).unwrap();
+    assert_eq!(reopened.handle().chat_items("s1".into(), 0).await.unwrap()[0].body, body);
+    reopened.close().await.unwrap();
 }

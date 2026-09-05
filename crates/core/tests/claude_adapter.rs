@@ -91,8 +91,14 @@ impl Rig {
             event_buffer,
             start_seq: 0,
         };
-        let connecting =
-            tokio::spawn(connect(config, adapter_stdout, adapter_stdin, exit_rx, kill, allow_all()));
+        let connecting = tokio::spawn(connect(
+            config,
+            adapter_stdout,
+            adapter_stdin,
+            exit_rx,
+            kill,
+            allow_all(),
+        ));
 
         // The adapter writes `initialize` before it reads anything back.
         let mut sent_log = Vec::new();
@@ -331,9 +337,10 @@ fn permission(rig: &Rig) -> (&str, Option<&str>) {
     rig.collected
         .iter()
         .find_map(|e| match e {
-            Event::RequestOpened { kind: RequestKind::ToolPermission { tool_name, tool_call_id, .. }, .. } => {
-                Some((tool_name.as_str(), tool_call_id.as_deref()))
-            }
+            Event::RequestOpened {
+                kind: RequestKind::ToolPermission { tool_name, tool_call_id, .. },
+                ..
+            } => Some((tool_name.as_str(), tool_call_id.as_deref())),
             _ => None,
         })
         .expect("a tool permission was opened")
@@ -377,6 +384,8 @@ async fn s1_handshake_and_turn() {
         rig.labels_until(is_turn_end).await,
         [
             "turn-started",
+            "item-started:user-text",
+            "item-completed:user-text",
             "session-started",
             "item-started:thinking",
             "item-completed:thinking",
@@ -391,9 +400,18 @@ async fn s1_handshake_and_turn() {
         .collected
         .iter()
         .find_map(|e| match e {
-            Event::SessionStarted { provider_session_id, resume_token, model, capabilities, .. } => {
-                Some((provider_session_id.clone(), resume_token.clone(), model.clone(), capabilities.clone()))
-            }
+            Event::SessionStarted {
+                provider_session_id,
+                resume_token,
+                model,
+                capabilities,
+                ..
+            } => Some((
+                provider_session_id.clone(),
+                resume_token.clone(),
+                model.clone(),
+                capabilities.clone(),
+            )),
             _ => None,
         })
         .expect("session started");
@@ -434,6 +452,8 @@ async fn s2_can_use_tool_allow() {
         rig.labels_until(is_request_opened).await,
         [
             "turn-started",
+            "item-started:user-text",
+            "item-completed:user-text",
             "session-started",
             "item-started:thinking",
             "item-completed:thinking",
@@ -547,6 +567,8 @@ async fn s4_interrupt_then_a_second_turn() {
         rig.labels_until(is_turn_end).await,
         [
             "turn-started",
+            "item-started:user-text",
+            "item-completed:user-text",
             "session-started",
             "item-started:thinking",
             "item-completed:thinking",
@@ -564,6 +586,8 @@ async fn s4_interrupt_then_a_second_turn() {
         rig.labels_until(is_turn_end).await,
         [
             "turn-started",
+            "item-started:user-text",
+            "item-completed:user-text",
             // The second `system/init` carries the same session id and emits nothing.
             "item-started:thinking",
             "item-completed:thinking",
@@ -604,6 +628,8 @@ async fn s6_hook_callback_is_answered_with_an_empty_object() {
         rig.labels_until(is_request_opened).await,
         [
             "turn-started",
+            "item-started:user-text",
+            "item-completed:user-text",
             "session-started",
             "item-started:thinking",
             "item-completed:thinking",
@@ -901,6 +927,8 @@ async fn kill_reaches_the_supervisor_and_reports_killed() {
         labels,
         [
             "turn-started",
+            "item-started:user-text",
+            "item-completed:user-text",
             "session-started",
             "turn-aborted(Killed)",
             &format!("session-exited({:?})", ExitReason::Killed),
@@ -1096,9 +1124,8 @@ async fn live_pong() {
     };
     let mut config = brigadier_core::claude::ClaudeDriverConfig::new("claude-code:live");
     config.binary = Some(PathBuf::from(binary));
-    config.default_model = Some(
-        std::env::var("CLAUDE_MODEL").unwrap_or_else(|_| "claude-haiku-4-5".to_owned()),
-    );
+    config.default_model =
+        Some(std::env::var("CLAUDE_MODEL").unwrap_or_else(|_| "claude-haiku-4-5".to_owned()));
     let driver = brigadier_core::claude::ClaudeDriver::probe(config).await.expect("probe");
 
     let cwd = std::env::temp_dir();
@@ -1222,6 +1249,8 @@ async fn a_fenced_json_block_survives_while_the_summary_stays_one_bounded_line()
         rig.labels_until(is_turn_end).await,
         [
             "turn-started",
+            "item-started:user-text",
+            "item-completed:user-text",
             "item-started:assistant-text",
             "item-completed:assistant-text",
             "turn-completed(EndTurn)",

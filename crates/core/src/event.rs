@@ -135,10 +135,17 @@ pub struct Envelope {
     // see docs/research/provider-driver.md §6 #14 — keep the wire payload, but bound it.
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "bounded_raw")]
     pub raw: Option<String>,
+    /// Display body, separate from diagnostic excerpts and terse summaries (128 KiB maximum).
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "bounded_body")]
+    pub body: Option<String>,
 }
 
-/// Bounds [`Envelope::raw`] on the way in, so `Deserialize` cannot smuggle past
-/// [`RAW_EXCERPT_LIMIT`] what [`Envelope::with_raw`] refuses to admit.
+/// Bound display content at the wire boundary as well as when emitting it.
+fn bounded_body<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(Option::<String>::deserialize(d)?.map(|body| bounded(&body, 128 * 1024)))
+}
+
+/// Bounds [`Envelope::raw`] on the way in, matching [`Envelope::with_raw`].
 fn bounded_raw<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
     Ok(Option::<String>::deserialize(d)?.map(|raw| bounded(&raw, RAW_EXCERPT_LIMIT)))
 }
@@ -146,12 +153,18 @@ fn bounded_raw<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Err
 impl Envelope {
     /// Build an envelope with no raw excerpt.
     pub fn new(seq: u64, instance_id: InstanceId, session_id: SessionId, event: Event) -> Self {
-        Self { seq, at: SystemTime::now(), instance_id, session_id, event, raw: None }
+        Self { seq, at: SystemTime::now(), instance_id, session_id, event, raw: None, body: None }
     }
 
     /// Attach a provider payload excerpt, truncated to [`RAW_EXCERPT_LIMIT`].
     pub fn with_raw(mut self, raw: &str) -> Self {
         self.raw = Some(bounded(raw, RAW_EXCERPT_LIMIT));
+        self
+    }
+
+    /// Attach display content without expanding the lightweight feed.
+    pub fn with_body(mut self, body: &str) -> Self {
+        self.body = Some(bounded(body, 128 * 1024));
         self
     }
 
@@ -515,6 +528,7 @@ mod tests {
             session_id: SessionId::new("s1"),
             event,
             raw: None,
+            body: None,
         }
     }
 
@@ -620,10 +634,8 @@ mod tests {
 
     #[test]
     fn envelope_omits_absent_raw() {
-        let json = serde_json::to_string(&env(Event::RuntimeWarning {
-            message: "hi".into(),
-        }))
-        .expect("serializes");
+        let json = serde_json::to_string(&env(Event::RuntimeWarning { message: "hi".into() }))
+            .expect("serializes");
         assert!(!json.contains("raw"), "{json}");
     }
 
