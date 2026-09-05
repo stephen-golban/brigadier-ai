@@ -31,7 +31,9 @@ pub const FEED_LINE_LIMIT: usize = 200;
 /// exists in `brigadier_core::event` — see [`kind`] for the mapping; `Unknown` is the one value
 /// [`kind`] never returns, reserved for a row whose kind was never recorded.
 // see docs/plans/ipc-contract.md "Feed channel" — the wire field is `k`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum FeedKind {
     /// A turn ended: [`Event::TurnStarted`], [`Event::TurnCompleted`], [`Event::TurnAborted`].
@@ -265,6 +267,9 @@ fn stop_str(reason: &StopReason) -> String {
 // see docs/research/persistence.md §1 — the pointer needs the cwd recorded at spawn, and the
 // file is a cache the provider sweeps after `cleanupPeriodDays`.
 pub async fn apply(env: &Envelope, handle: &StoreHandle) {
+    if let Some(item) = crate::chat::project(env) {
+        let _ = handle.chat_item(item).await;
+    }
     match &env.event {
         Event::SessionStarted { provider_session_id, model, cwd, resume_token, .. } => {
             let mut row = SessionRow::new(env.session_id.clone());

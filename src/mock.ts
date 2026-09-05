@@ -34,6 +34,7 @@ import type {
   SessionView,
   WorkOrderView,
 } from "./wire";
+import type { ChatItem } from "./workspaceApi";
 import type { Bridge, BurnArgs, StartSessionArgs } from "./bridge";
 
 /* ----------------------------------------------------------------- state */
@@ -74,6 +75,24 @@ const BURN_PROJECT_NAME = "burn";
 const sessions = new Map<string, MockSession>();
 const approvals = new Map<string, ApprovalView>();
 const feedRows = new Map<string, FeedRowWire[]>();
+const conversations = new Map<string, ChatItem[]>();
+function appendChat(sessionId:string,kind:ChatItem['kind'],body:string,id?:string) {
+  const items=conversations.get(sessionId)??[];
+  const seq=(items[items.length-1]?.seq??0)+1;
+  items.push({session_id:sessionId,id:id??`chat-${seq}`,seq,at:Date.now(),kind,body,parent_id:null});
+  conversations.set(sessionId,items.slice(-2000));
+}
+export function mockChatItems(sessionId:string,after:number):ChatItem[] {
+  return (conversations.get(sessionId)??[]).filter(item=>item.seq>after).slice(0,20);
+}
+function seedConversation(sessionId:string) {
+  appendChat(sessionId,{type:'user-text'},'Show me the local workspace and explain the next change.');
+  appendChat(sessionId,{type:'thinking'},'This is a browser preview fixture. I would inspect the project structure before proposing a change.');
+  appendChat(sessionId,{type:'tool-call',name:'Read'},'README.md','preview-read');
+  appendChat(sessionId,{type:'tool-result',tool_call_id:'preview-read',is_error:false},'# Brigadier\nA local workspace for coding agents.');
+  appendChat(sessionId,{type:'assistant-text'},'This is the **browser preview** of the conversation layout. No agent has been called.\n\nOpen [README.md](README.md) to see the file panel. You can also browse changes and attach file context to your next message.\n\n| Surface | Purpose |\n| --- | --- |\n| Conversation | Read responses and expand activity |\n| Files | Browse the selected workspace |\n| Changes | Inspect staged and working tree diffs |\n\nInteractive shell tabs run in the desktop app.');
+}
+
 
 let visible: Set<string> = new Set(projects.map((p) => p.id));
 let onBatch: ((b: FeedBatch) => void) | null = null;
@@ -360,9 +379,9 @@ function tick(): void {
     }
   }
 
-  // An approval every ~4 s on the first running session, so the prompt UI has something to do.
+  // Approval stress tests are opt-in. Normal browser previews auto-allow simulated tools.
   approvalClock += 16;
-  if (approvalClock >= 4000) {
+  if (params().get("approvals") === "manual" && approvalClock >= 4000) {
     approvalClock = 0;
     const running = [...sessions.values()].find((s) => s.view.status === "running");
     if (running !== undefined && approvals.size < 4) {
@@ -838,6 +857,7 @@ function noRows(): DeletedRows {
 
 /** Drop one session's rows from the mock's own state, and report what went. */
 function purgeSession(sessionId: string): { feed: number; approvals: number } {
+  conversations.delete(sessionId);
   const feed = feedRows.get(sessionId)?.length ?? 0;
   let gone = 0;
   for (const [id, a] of approvals) {
@@ -862,9 +882,10 @@ export const mockBridge: Bridge = {
       // which is what exercises the drop-to-counters path for a project that is not visible.
       const per = AMBIENT_RPS / AMBIENT_SESSIONS;
       for (let i = 0; i < AMBIENT_SESSIONS; i++) {
-        makeSession(projects[0]!.id, "claude-sonnet-4-5", per, null);
+        const sample=makeSession(projects[0]!.id, "claude-sonnet-4-5", per, null);
+        seedConversation(sample.view.session_id);
       }
-      seedCrossProjectApproval();
+      if (params().get("approvals") === "manual") seedCrossProjectApproval();
     }
     startTicking();
   },
@@ -940,6 +961,8 @@ export const mockBridge: Bridge = {
     }
     const s = makeSession(projectId, model ?? "claude-sonnet-4-5", 12, null);
     row(s, `user · ${prompt.slice(0, 120)}`, "user");
+    appendChat(s.view.session_id,{type:"user-text"},prompt);
+    appendChat(s.view.session_id,{type:"assistant-text"},"Browser preview: your message was received. Open the desktop app to run a real agent.");
     return { ...s.view };
   },
 
@@ -1063,6 +1086,8 @@ export const mockBridge: Bridge = {
       throw new AppError("session_not_running", `session is ${s.view.status}`);
     }
     row(s, `user · ${text.slice(0, 120)}`, "user");
+    appendChat(sessionId,{type:"user-text"},text);
+    appendChat(sessionId,{type:"assistant-text"},"Browser preview: no agent was called. Your draft and conversation controls work here; execution runs in the desktop app.");
     return { turn_id: `t-${s.turnId++}` };
   },
 

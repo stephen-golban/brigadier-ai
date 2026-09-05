@@ -57,6 +57,7 @@ tracing = { workspace = true }
 # `env-filter` is what makes `RUST_LOG` work; without it `EnvFilter` is not compiled.
 # 0.3.23 is the current release (`cargo search tracing-subscriber`, 2026-09-02).
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+portable-pty = "0.9"
 
 # `setrlimit`, safely. This crate is `#![deny(unsafe_code)]`, so `libc::setrlimit` (an unsafe
 # extern fn) cannot be called here at all. `nix` 0.31.3 is already in the workspace
