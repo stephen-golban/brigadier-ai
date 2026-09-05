@@ -8,8 +8,12 @@
  * §9 is "thread-primary, one column", and the pinned plan card that belongs above the thread is
  * W4-D's; a loud header here would be competing with it before it exists.
  *
- * The composer has two states, as the reference does: with a session selected it sends turns and
- * carries interrupt / end / kill; with none selected it is the "start a session" form.
+ * **One dock, one text field.** Until 2026-09-05 the column ended in two stacked fields — a run
+ * strip and whichever composer the selection implied — and nothing on screen said which was
+ * which; the owner asked, driving the app for the first time, why there were two.
+ * `src/components/Dock.tsx` is now the single surface, with an explicit choice of what pressing
+ * Return does: start a run, start a session, or send a turn to the selected one. No command
+ * changed, and neither did which of them is legal when.
  *
  * All IPC goes through `bridge()`, which is the real `invoke` inside Tauri and the in-memory
  * mock in a browser, with no code change between the two.
@@ -38,12 +42,12 @@ import type { PaintedSpan } from "./paint";
 import { Approvals } from "./components/Approvals";
 import type { ApprovalRow } from "./components/Approvals";
 import { Burn } from "./components/Burn";
-import { Composer, RunControl } from "./components/Composer";
+import { Dock } from "./components/Dock";
 import { Feed } from "./components/Feed";
 import { FpsOverlay } from "./components/FpsOverlay";
-import { NewSession } from "./components/NewSession";
 import { RunCard } from "./components/RunCard";
 import { Sidebar } from "./components/Sidebar";
+import type { ProjectDeleteAnswer, SessionDeleteAnswer } from "./components/Sidebar";
 import { runIsLive } from "./wire";
 import type {
   AppError,
@@ -53,6 +57,7 @@ import type {
   IntentSettlement,
   IntentView,
   ModelInfo,
+  PermissionMode,
   PlanId,
   ProjectId,
   ProjectView,
@@ -543,6 +548,88 @@ export function App() {
     [say],
   );
 
+  /**
+   * Delete a session from the machine: its rows, its raw logs, its pid file and its worktree.
+   *
+   * **A refusal comes back as a resolved value, not a rejection** (`docs/plans/ipc-contract.md`
+   * §Deleting), so both shapes are handed to the sidebar and neither is flattened into the other.
+   * The store row is dropped only on `removed: true`; a `removed: false` touched nothing at all,
+   * and pretending otherwise would take a session off screen that is still on disk.
+   *
+   * The branch is never deleted by anything, so the success notice names it: once the row is gone
+   * it is the only thing that says where the work went.
+   */
+  const deleteSession = useCallback(
+    async (sessionId: SessionId, force: boolean): Promise<SessionDeleteAnswer> => {
+      try {
+        const deletion = await bridge().deleteSession(sessionId, force);
+        if (deletion.removed) {
+          store.dropSession(sessionId);
+          // A B4 span open against this session can never settle now — its rows are gone — so it
+          // is cancelled rather than left to time out. The ref is read directly instead of going
+          // through `selectSession`, which would put the selection in this callback's dependency
+          // list and hand every `SessionRow` a fresh closure on every selection change.
+          if (paintSpan.current?.sessionId === sessionId) {
+            paintSpan.current.span.cancel();
+            paintSpan.current = null;
+          }
+          setSelectedSessionId((current) => (current === sessionId ? null : current));
+          setNotice(
+            `deleted session ${sessionId}: ${deletion.rows.feed} feed rows, ${deletion.logs_removed} logs` +
+              (deletion.branch === null ? "" : ` · branch ${deletion.branch} kept`),
+          );
+        }
+        return { deletion, error: null };
+      } catch (e) {
+        const error = toAppError(e);
+        say(error);
+        return { deletion: null, error };
+      }
+    },
+    [say],
+  );
+
+  /**
+   * Delete a project and every session under it.
+   *
+   * Same two-shaped answer as `deleteSession`, and one extra consequence: on `removed: true` the
+   * project's sessions are gone from the store as well, because the Rust side cascaded them —
+   * leaving their rows in the sidebar would draw sessions belonging to a project that no longer
+   * exists.
+   */
+  const deleteProject = useCallback(
+    async (projectId: ProjectId, force: boolean): Promise<ProjectDeleteAnswer> => {
+      try {
+        const deletion = await bridge().deleteProject(projectId, force);
+        if (deletion.removed) {
+          // Read before the drop: afterwards there is no row left to ask which project a session
+          // belonged to, and clearing the selection unconditionally would deselect a session in
+          // some *other* project.
+          const owned = store.getState().sessions;
+          store.dropProject(projectId);
+          setProjects((prev) => prev.filter((p) => p.id !== projectId));
+          setSelectedProjectId((current) => (current === projectId ? null : current));
+          if (paintSpan.current !== null && owned[paintSpan.current.sessionId]?.projectId === projectId) {
+            paintSpan.current.span.cancel();
+            paintSpan.current = null;
+          }
+          setSelectedSessionId((current) =>
+            current !== null && owned[current]?.projectId === projectId ? null : current,
+          );
+          setNotice(
+            `deleted project ${projectId}: ${deletion.rows.sessions} sessions, ${deletion.rows.feed} feed rows, ${deletion.rows.plans} plans · every branch kept`,
+          );
+        }
+        return { deletion, error: null };
+      } catch (e) {
+        const error = toAppError(e);
+        say(error);
+        return { deletion: null, error };
+      }
+    },
+    [say],
+  );
+
   const respond = useCallback(
     (sessionId: SessionId, requestId: RequestId, decision: Decision) => {
       void bridge().respond(sessionId, requestId, decision).catch(say);
@@ -602,14 +689,24 @@ export function App() {
     return () => clearInterval(id);
   }, [selectedProjectId, runLive, refreshRun]);
 
-  /** Hand the harness a goal in plain English. The answer is the plan, painted immediately. */
+  /**
+   * Hand the harness a goal in plain English. The answer is the plan, painted immediately.
+   *
+   * R4.1: the model and the permission mode go with it. They did not until 2026-09-05, so the
+   * dock's pickers reached nothing — the owner's first live run showed `claude-opus-5[1m]` in the
+   * session header while the picker said Haiku. `model === null` is a real choice and the better
+   * default: the harness's role-based routing stays in charge, so judgement takes the provider's
+   * strong default and a work order takes its per-order tier. It is sent as `null`, never as a
+   * sentinel — `start_run`'s `model` is an `Option<String>` and a placeholder would be handed
+   * straight to the CLI's `--model`.
+   */
   const startRun = useCallback(
-    (goal: string) => {
+    (goal: string, model: string | null, permissionMode: PermissionMode) => {
       if (selectedProjectId === null) return;
       const projectId = selectedProjectId;
       setCommandBusy(true);
       void bridge()
-        .startRun(projectId, goal)
+        .startRun(projectId, goal, model, permissionMode)
         .then((view) => {
           if (runRequest.current === projectId) setRun(view);
         })
@@ -712,6 +809,10 @@ export function App() {
         // a control rather than by offering one that fails.
         onPickProject={bridge().isMock ? undefined : pickProject}
         onReveal={bridge().isMock ? undefined : reveal}
+        // Not gated on `isMock`: both commands exist on the mock bridge too, refusal path
+        // included, so the browser exercises the same flow the window does.
+        onDeleteSession={deleteSession}
+        onDeleteProject={deleteProject}
       />
 
       <main className="thread">
@@ -781,47 +882,39 @@ export function App() {
         />
 
         {/*
-          Handing the harness a goal sits on the dock, where the owner already types, and above
-          both composers — the one that starts a session and the one that sends a turn. It is not
-          about either: a run is per project, and it outlives every session it dispatches.
+          One dock, one text field, and an explicit choice of what pressing enter does. Until
+          2026-09-05 there were two fields stacked here — the run strip above, and whichever
+          composer the selection implied below — and nothing on screen said which was which; the
+          owner asked, driving the app for the first time, why there were two. `Dock` is the
+          answer, and it changes no command: a run is still per project and still outlives every
+          session it dispatches, a session is still started with a model and a permission mode,
+          and a turn still goes to the selected session.
         */}
-        <RunControl
-          projectName={selectedProject?.name ?? null}
-          canStart={selectedProject !== null && claudeError === null}
+        <Dock
+          project={selectedProject}
+          session={selectedSession}
+          models={models}
           run={run}
           busy={commandBusy}
-          onStart={startRun}
-          onStop={stopRun}
+          blocked={claudeError !== null}
+          onStartRun={startRun}
+          onStopRun={stopRun}
+          onStartSession={startSession}
+          onResume={resumeSession}
+          onCleanup={cleanupWorktree}
+          onSend={(id, text) => {
+            void bridge().sendTurn(id, text).catch(say);
+          }}
+          onInterrupt={(id) => {
+            void bridge().interrupt(id).catch(say);
+          }}
+          onEnd={(id) => {
+            void bridge().endSession(id).catch(say);
+          }}
+          onKill={(id) => {
+            void bridge().kill(id).catch(say);
+          }}
         />
-
-        {selectedSession === null ? (
-          <NewSession
-            project={selectedProject}
-            models={models}
-            disabled={claudeError !== null}
-            onStart={startSession}
-          />
-        ) : (
-          <Composer
-            session={selectedSession}
-            projectName={selectedProject?.name ?? null}
-            busy={commandBusy}
-            onResume={resumeSession}
-            onCleanup={cleanupWorktree}
-            onSend={(id, text) => {
-              void bridge().sendTurn(id, text).catch(say);
-            }}
-            onInterrupt={(id) => {
-              void bridge().interrupt(id).catch(say);
-            }}
-            onEnd={(id) => {
-              void bridge().endSession(id).catch(say);
-            }}
-            onKill={(id) => {
-              void bridge().kill(id).catch(say);
-            }}
-          />
-        )}
       </main>
     </div>
   );

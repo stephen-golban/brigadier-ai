@@ -158,44 +158,56 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
         ) : null}
       </div>
 
-      {kind === null ? (
-        <p className="dim">
-          request too large to display · deny is the only safe answer
-        </p>
-      ) : kind.type === "tool-permission" ? (
-        <>
-          <pre className="excerpt">{kind.input_excerpt}</pre>
-          {kind.suggestions.length > 0 ? (
-            <ul className="suggestions">
-              {kind.suggestions.map((s, i) => (
-                <li key={i}>
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={applied.has(i)}
-                      disabled={readOnly}
-                      onChange={() => toggle(i)}
-                    />
-                    <span>apply</span>
-                  </label>
-                  <pre className="suggestion">{JSON.stringify(s)}</pre>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-        </>
-      ) : (
-        <>
-          <pre className="excerpt">{kind.prompt}</pre>
-          {kind.options.length > 0 ? (
-            <p className="dim">options: {kind.options.join(" · ")}</p>
-          ) : null}
+      {/*
+        R2, 2026-09-05. **The detail scrolls; the decision does not.**
+        `docs/STATUS.md` §5 defect 3 predicted that Allow and Deny fall below the fold and could
+        not confirm it against a mock with no open approval; the owner confirmed it in a real
+        window on 2026-09-04 — `Waiting on you · 1 open` with both buttons needing a scroll inside
+        the dock to reach, which he said he mostly did not notice.
+        This wrapper is the fix: the head and the action row are fixed children of the card, and
+        the excerpt and the suggestions are the only thing that yields. A card squeezed to the
+        window's 800x500 minimum therefore loses excerpt, never the decision.
+      */}
+      <div className="approval-body">
+        {kind === null ? (
           <p className="dim">
-            free-text answers are not wired this phase; allow/deny is the only decision the
-            contract carries.
+            request too large to display · deny is the only safe answer
           </p>
-        </>
-      )}
+        ) : kind.type === "tool-permission" ? (
+          <>
+            <pre className="excerpt">{kind.input_excerpt}</pre>
+            {kind.suggestions.length > 0 ? (
+              <ul className="suggestions">
+                {kind.suggestions.map((s, i) => (
+                  <li key={i}>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={applied.has(i)}
+                        disabled={readOnly}
+                        onChange={() => toggle(i)}
+                      />
+                      <span>apply</span>
+                    </label>
+                    <pre className="suggestion">{JSON.stringify(s)}</pre>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </>
+        ) : (
+          <>
+            <pre className="excerpt">{kind.prompt}</pre>
+            {kind.options.length > 0 ? (
+              <p className="dim">options: {kind.options.join(" · ")}</p>
+            ) : null}
+            <p className="dim">
+              free-text answers are not wired this phase; allow/deny is the only decision the
+              contract carries.
+            </p>
+          </>
+        )}
+      </div>
 
       {readOnly ? (
         <div className="approval-actions">

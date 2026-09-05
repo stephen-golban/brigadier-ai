@@ -30,10 +30,12 @@ import type {
   PaintReport,
   PermissionMode,
   PlanId,
+  ProjectDeletion,
   ProjectId,
   ProjectView,
   RequestId,
   RunView,
+  SessionDeletion,
   SessionId,
   SessionView,
   WorktreeCleanup,
@@ -100,6 +102,31 @@ export interface Bridge {
   /** Remove a session's git worktree. `force: false` asks; a dirty tree comes back untouched. */
   cleanupWorktree(sessionId: SessionId, force: boolean): Promise<WorktreeCleanup>;
 
+  /**
+   * Remove the session itself: its rows, its raw logs, its pid file and its worktree — four
+   * things, one call (`docs/plans/ipc-contract.md` §Deleting). **Not** `cleanupWorktree`, which
+   * removes a checkout and leaves the row in the sidebar.
+   *
+   * **A refusal resolves rather than rejecting.** `{ removed: false, worktree: { blocked, … } }`
+   * with nothing touched is the normal answer to `force: false` over a dirty or unmerged
+   * worktree; only `dirty`, `commits` and `branch_moved` are answered by calling again with
+   * `force: true`. A **live** session rejects instead, with `session_running`, and `force` does
+   * not change that.
+   *
+   * The branch is never deleted, by this or by anything else.
+   */
+  deleteSession(sessionId: SessionId, force: boolean): Promise<SessionDeletion>;
+  /**
+   * Remove a project and everything under it: every session with its rows, logs and worktree, and
+   * the whole plan tree.
+   *
+   * One live session refuses the **whole** project with `session_running` before anything is
+   * touched. After that the database half is all-or-nothing and the worktree half is not: the
+   * first refusing worktree ends the pass, and `worktrees[]` says what happened to each session
+   * up to and including it.
+   */
+  deleteProject(projectId: ProjectId, force: boolean): Promise<ProjectDeletion>;
+
   feedTail(sessionId: SessionId, n: number): Promise<FeedRowWire[]>;
   pendingApprovals(): Promise<ApprovalView[]>;
 
@@ -109,9 +136,29 @@ export interface Bridge {
    * one plan, and a loop that dispatches, gates and commits without a human.
    */
 
-  /** One goal in plain English becomes a plan. Errors: `no_such_project`, `invalid_argument`
-   *  (an empty goal), `run_already_live`. */
-  startRun(projectId: ProjectId, goal: string): Promise<RunView>;
+  /**
+   * One goal in plain English becomes a plan. Errors: `no_such_project`, `invalid_argument`
+   * (an empty goal), `run_already_live`.
+   *
+   * `model` and `permissionMode` are the owner's picks and both are **optional on the wire**
+   * (`Option<String>` in `src-tauri/src/commands.rs::start_run`), so omitting them is exactly the
+   * behaviour this command had before they existed.
+   *
+   *   - `model` — a chosen id applies to **every** child of the run: planner, lead, worker,
+   *     fixer. `null` is a real choice and the better default: it leaves the role-based routing
+   *     in charge, so judgement takes the provider's strong default and a work order takes its
+   *     per-order tier. Never send a sentinel string for "no pick".
+   *   - `permissionMode` — a bare string in the CLI's own vocabulary; an unmodelled value passes
+   *     through verbatim. It reaches the `--permission-mode` flag **and** the `PreToolUse`
+   *     policy, and in the project root it never removes the write gate
+   *     (`docs/research/permission-modes.md` §4–§5).
+   */
+  startRun(
+    projectId: ProjectId,
+    goal: string,
+    model?: string | null,
+    permissionMode?: PermissionMode | null,
+  ): Promise<RunView>;
   /** The newest plan for this project, live or finished, or `null` when there has never been one. */
   currentRun(projectId: ProjectId): Promise<RunView | null>;
   /**
@@ -203,11 +250,18 @@ const tauriBridge: Bridge = {
   kill: (sessionId) => call<void>("kill", { sessionId }),
   cleanupWorktree: (sessionId, force) =>
     call<WorktreeCleanup>("cleanup_worktree", { sessionId, force }),
+  deleteSession: (sessionId, force) =>
+    call<SessionDeletion>("delete_session", { sessionId, force }),
+  deleteProject: (projectId, force) =>
+    call<ProjectDeletion>("delete_project", { projectId, force }),
 
   feedTail: (sessionId, n) => call<FeedRowWire[]>("feed_tail", { sessionId, n }),
   pendingApprovals: () => call<ApprovalView[]>("pending_approvals"),
 
-  startRun: (projectId, goal) => call<RunView>("start_run", { projectId, goal }),
+  // `model: null` and `permissionMode: null` are `None` on the Rust side, which is what "no pick"
+  // has to send: a sentinel string would be handed to `--model` and refused by the CLI.
+  startRun: (projectId, goal, model = null, permissionMode = null) =>
+    call<RunView>("start_run", { projectId, goal, model, permissionMode }),
   currentRun: (projectId) => call<RunView | null>("current_run", { projectId }),
   stopRun: (planId) => call<void>("stop_run", { planId }),
   unsettledIntents: () => call<IntentView[]>("unsettled_intents"),

@@ -517,6 +517,63 @@ export function noteWorktreeRemoved(sessionId: SessionId): void {
 }
 
 /**
+ * `delete_session` came back `removed: true`: the row is gone from the database, so it goes from
+ * here too — the runtime, its ring of feed rows, and any approval that belonged to it.
+ *
+ * The approvals go with it because their rows were cascade-deleted on the Rust side
+ * (`docs/plans/ipc-contract.md` §Deleting: `feed`, `approvals` and `intents` cascade from
+ * `sessions`), so a card left on screen would be answerable against a request that no longer
+ * exists. The project ring is deliberately **not** filtered: it is a bounded ring of pre-rendered
+ * strings the live path appends to, and rebuilding it here would invent an ordering the live path
+ * never produces. Those rows age out.
+ *
+ * Idempotent, and returns whether anything went, so a caller can skip a re-render.
+ */
+export function dropSession(sessionId: SessionId): boolean {
+  const had = sessions.delete(sessionId);
+  sessionRows.delete(sessionId);
+  let dropped = had;
+  for (const [id, a] of approvals) {
+    if (a.sessionId === sessionId && approvals.delete(id)) dropped = true;
+  }
+  if (!dropped) return false;
+  rebuildState();
+  notify();
+  return true;
+}
+
+/**
+ * `delete_project` came back `removed: true`: every session under it went with it, so every
+ * runtime this store holds for that project goes too, plus the project's own row ring.
+ *
+ * The sessions are found by `projectId` on the runtime rather than from a list the caller passes,
+ * because the store is the only place that knows which sessions the feed has mentioned — a
+ * session created behind the UI's back is in here and not in `list_sessions`'s last answer.
+ */
+export function dropProject(projectId: ProjectId): boolean {
+  const own = [...sessions.values()].filter((s) => s.projectId === projectId);
+  let dropped = false;
+  for (const s of own) {
+    sessions.delete(s.sessionId);
+    sessionRows.delete(s.sessionId);
+    dropped = true;
+    for (const [id, a] of approvals) {
+      if (a.sessionId === s.sessionId) approvals.delete(id);
+    }
+  }
+  projectRows.delete(projectId);
+  if (knownProjects.delete(projectId)) dropped = true;
+  if (unknownProjects.delete(projectId)) {
+    unknownList = unknownProjects.size === 0 ? EMPTY_PROJECT_IDS : [...unknownProjects];
+    dropped = true;
+  }
+  if (!dropped) return false;
+  rebuildState();
+  notify();
+  return true;
+}
+
+/**
  * Fold `pending_approvals` in; `expired` rows are read-only survivors of a previous run.
  *
  * `ApprovalView.resolved` is **not** read: the Rust query behind `pending_approvals` filters

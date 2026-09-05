@@ -17,6 +17,7 @@ import {
 import type {
   ApprovalView,
   Decision,
+  DeletedRows,
   Envelope,
   Event,
   FeedBatch,
@@ -25,11 +26,15 @@ import type {
   IntentSettlement,
   IntentView,
   PhaseView,
+  ProjectDeletion,
   ProjectView,
   RequestKind,
   RunView,
+  SessionDeletion,
   SessionView,
+  SessionWorktree,
   WorkOrderView,
+  WorktreeCleanup,
 } from "./wire";
 import type { Bridge, BurnArgs, StartSessionArgs } from "./bridge";
 
@@ -805,6 +810,63 @@ function requireSession(sessionId: string): MockSession {
   return s;
 }
 
+/* ---------------------------------------------------------------- deleting
+ *
+ * `docs/plans/ipc-contract.md` §Deleting. The half of it worth having in a browser is the
+ * **refusal**: `removed: false` resolves rather than rejecting, so a front end that rendered it as
+ * a success would look correct in every test that only ever saw the happy path. The mock refuses
+ * every un-forced delete of a live checkout, so that branch is the *default* one `npm run dev`
+ * walks into.
+ *
+ * Nothing here touches a disk. No `git` runs, no directory is removed and no process is killed.
+ */
+
+/** Every count zero — what a refusal carries, and the base every success is built from. */
+function noRows(): DeletedRows {
+  return {
+    projects: 0,
+    sessions: 0,
+    feed: 0,
+    approvals: 0,
+    intents: 0,
+    plans: 0,
+    phases: 0,
+    plan_revisions: 0,
+    unknowns: 0,
+    work_orders: 0,
+    work_orders_orphaned: 0,
+  };
+}
+
+/**
+ * The worktree half of a delete, for one session.
+ *
+ * It refuses with `commits` rather than `dirty` on purpose: unmerged commits are the refusal the
+ * contract cares most about, because the branch is then the only copy of the work and naming it
+ * is the difference between reversible and lost. `force` answers it, and the branch survives —
+ * `view.branch` is deliberately left alone on every path, exactly as the Rust side leaves it.
+ */
+function mockDeleteWorktree(s: MockSession, force: boolean): WorktreeCleanup {
+  const branch = s.view.branch ?? "";
+  const base = { dirty_files: 0, commits: 0, branch, live_branch: branch };
+  if (s.worktreeRemoved) return { ...base, removed: true, blocked: null };
+  if (!force) return { ...base, removed: false, commits: 2, blocked: "commits" as const };
+  s.worktreeRemoved = true;
+  return { ...base, removed: true, blocked: null };
+}
+
+/** Drop one session's rows from the mock's own state, and report what went. */
+function purgeSession(sessionId: string): { feed: number; approvals: number } {
+  const feed = feedRows.get(sessionId)?.length ?? 0;
+  let gone = 0;
+  for (const [id, a] of approvals) {
+    if (a.session_id === sessionId && approvals.delete(id)) gone += 1;
+  }
+  sessions.delete(sessionId);
+  feedRows.delete(sessionId);
+  return { feed, approvals: gone };
+}
+
 export const mockBridge: Bridge = {
   isMock: true,
 
@@ -949,6 +1011,102 @@ export const mockBridge: Bridge = {
     s.worktreeRemoved = true;
     // The branch survives every cleanup path, so `view.branch` is deliberately left alone.
     return { ...base, removed: true, blocked: null };
+  },
+
+  /**
+   * Delete a session. `force: false` refuses over a live checkout and touches **nothing**; the
+   * same call with `force: true` removes it. A live session throws `session_running` and force
+   * does not change that — the check is what stands between a mis-click and an agent writing into
+   * a deleted inode.
+   */
+  async deleteSession(sessionId, force): Promise<SessionDeletion> {
+    const s = requireSession(sessionId);
+    if (s.view.status === "running" || s.view.status === "starting") {
+      throw new AppError(
+        "session_running",
+        `session ${sessionId} is still live; end it or kill it before deleting it (mock)`,
+      );
+    }
+    const branch = s.view.branch;
+    let worktree: WorktreeCleanup | null = null;
+    if (s.view.worktree_path !== null) {
+      worktree = mockDeleteWorktree(s, force);
+      if (worktree.blocked !== null) {
+        // Nothing touched: the rows, the log and the checkout are all still here.
+        return { session_id: sessionId, removed: false, rows: noRows(), worktree, logs_removed: 0, branch };
+      }
+    }
+    const purged = purgeSession(sessionId);
+    return {
+      session_id: sessionId,
+      removed: true,
+      rows: { ...noRows(), sessions: 1, feed: purged.feed, approvals: purged.approvals },
+      worktree,
+      logs_removed: 1,
+      branch,
+    };
+  },
+
+  /**
+   * Delete a project and every session under it.
+   *
+   * One live session refuses the whole project before anything is touched. After that the
+   * worktrees go one at a time and the **first refusal ends the pass**: `removed: false`, no rows,
+   * and `worktrees[]` carrying every session attempted including the refuser — with the ones
+   * removed before it left removed, which is the state the UI has to be able to draw.
+   */
+  async deleteProject(projectId, force): Promise<ProjectDeletion> {
+    const project = projects.find((p) => p.id === projectId);
+    if (project === undefined) {
+      throw new AppError("no_such_project", `no such project: ${projectId}`);
+    }
+    const own = [...sessions.values()].filter((s) => s.view.project_id === projectId);
+    const live = own.filter((s) => s.view.status === "running" || s.view.status === "starting");
+    if (live.length > 0) {
+      throw new AppError(
+        "session_running",
+        `project ${projectId} has ${live.length} live session(s) (${live
+          .map((s) => s.view.session_id)
+          .join(", ")}); end or kill them before deleting it (mock)`,
+      );
+    }
+
+    const worktrees: SessionWorktree[] = [];
+    for (const s of own) {
+      if (s.view.worktree_path === null) continue;
+      const cleanup = mockDeleteWorktree(s, force);
+      worktrees.push({ session_id: s.view.session_id, cleanup });
+      if (cleanup.blocked !== null) {
+        return {
+          project_id: projectId,
+          removed: false,
+          rows: noRows(),
+          worktrees,
+          logs_removed: 0,
+          gate_logs_removed: 0,
+          brigadier_dir_removed: false,
+        };
+      }
+    }
+
+    const rows = { ...noRows(), projects: 1, sessions: own.length };
+    for (const s of own) {
+      const purged = purgeSession(s.view.session_id);
+      rows.feed += purged.feed;
+      rows.approvals += purged.approvals;
+    }
+    if (runs.delete(projectId)) rows.plans = 1;
+    projects.splice(projects.indexOf(project), 1);
+    visible.delete(projectId);
+    return {
+      project_id: projectId,
+      removed: true,
+      rows,
+      worktrees,
+      logs_removed: own.length,
+      gate_logs_removed: 0,
+      brigadier_dir_removed: true,
+    };
   },
 
   async sendTurn(sessionId, text) {

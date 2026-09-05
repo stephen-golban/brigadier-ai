@@ -329,6 +329,94 @@ export interface WorktreeCleanup {
   blocked: CleanupBlocked | null;
 }
 
+/**
+ * Whether calling again with `force: true` can answer this refusal.
+ *
+ * Three of the six can (`crates/supervisor/src/worktree.rs:483-513` is the `!force` guard that
+ * decides it); the other three return **before** the force check and the operator has to act
+ * outside brigadier. A UI that offers "force" on one of those builds a button that is guaranteed
+ * to refuse again, which is why this predicate is shared rather than re-derived per call site.
+ */
+export function canForce(blocked: CleanupBlocked | null): boolean {
+  return blocked === "dirty" || blocked === "commits" || blocked === "branch_moved";
+}
+
+/* --------------------------------------------------------------- deleting
+ *
+ * `docs/plans/ipc-contract.md` §"Deleting". `cleanup_worktree` removes a checkout and leaves the
+ * session in the sidebar; **`delete_session` removes the session**. Different verbs, both needed.
+ *
+ * Two rules are encoded here rather than only written down, because a renderer gets each of them
+ * silently wrong:
+ *
+ *   - **A refusal is a return value, not an error.** `removed: false` comes back as a *success*
+ *     from `invoke`, carrying the `WorktreeCleanup` that said no. Drawing it as a completed
+ *     delete is the same defect class as an approvals dock showing a decision that never landed.
+ *   - **`branch` is on the refusal *and* on the success**, and it is the only thing that names
+ *     where the work went once the row is gone. Nothing in the Rust side deletes a branch.
+ */
+
+/** `brigadier_store::Deleted` — rows one delete removed, by table. All zero on a refusal. */
+export interface DeletedRows {
+  projects: number;
+  sessions: number;
+  feed: number;
+  approvals: number;
+  intents: number;
+  plans: number;
+  phases: number;
+  plan_revisions: number;
+  unknowns: number;
+  /** Orders deleted through their phase. */
+  work_orders: number;
+  /**
+   * Orders **kept**, with `session_id` set to null — the one deliberate exception in the cascade
+   * map, because the plan outlives the session that ran it (`docs/vision.md` §8). Not a leak: a
+   * work order that shows no session is a session that was deleted.
+   */
+  work_orders_orphaned: number;
+}
+
+/** `delete_session`'s answer (`crates/supervisor/src/removal.rs:41`). */
+export interface SessionDeletion {
+  session_id: SessionId;
+  /** `false` means **nothing at all** was touched: no rows, no log, no checkout. */
+  removed: boolean;
+  rows: DeletedRows;
+  /** The worktree half verbatim, or null when the session ran in the project root. */
+  worktree: WorktreeCleanup | null;
+  /** Raw NDJSON files removed from `<data_dir>/raw/`, rotations counted too. */
+  logs_removed: number;
+  /** The branch that still holds this session's commits. Survives every path. */
+  branch: string | null;
+}
+
+/** One session's worktree outcome inside a project delete. */
+export interface SessionWorktree {
+  session_id: SessionId;
+  cleanup: WorktreeCleanup;
+}
+
+/**
+ * `delete_project`'s answer (`crates/supervisor/src/removal.rs:78`).
+ *
+ * **The database half is all-or-nothing; the worktree half is not.** Worktrees go one session at
+ * a time *before* any row is deleted and the first refusal ends the pass, so `worktrees` lists
+ * every session attempted — including the one that said no — and checkouts removed before that
+ * point stay removed. Their branches survive, so nothing is lost, but the list is the truth a
+ * partial failure has to show instead of one line that would be false.
+ */
+export interface ProjectDeletion {
+  project_id: ProjectId;
+  removed: boolean;
+  rows: DeletedRows;
+  worktrees: SessionWorktree[];
+  logs_removed: number;
+  gate_logs_removed: number;
+  /** `<project root>/.brigadier/` went — **only** if it was empty. */
+  brigadier_dir_removed: boolean;
+}
+
 export interface ApprovalView {
   request_id: RequestId;
   session_id: SessionId;
@@ -506,15 +594,93 @@ export type PaintReport =
 /**
  * `PermissionMode` is a bare string on the wire, and an unmodelled value passes through
  * verbatim, so the union stays open.
+ *
+ * All **seven** values Claude Code accepts are modelled, in this crate's kebab-case wire spelling
+ * (`crates/core/src/driver.rs::PermissionMode::as_wire_str`); `as_cli_flag` is the camelCase the
+ * binary's own flag takes, and nothing on this side of the wire ever writes that spelling.
+ * `claude --help` lists six and omits `default`, whose documented alias is `manual`; both are
+ * accepted, so both are kept (`docs/research/permission-modes.md` §2, re-measured on 2.1.261).
  */
-export type KnownPermissionMode = "default" | "accept-edits" | "plan" | "bypass-permissions";
+export type KnownPermissionMode =
+  | "default"
+  | "manual"
+  | "accept-edits"
+  | "plan"
+  | "auto"
+  | "dont-ask"
+  | "bypass-permissions";
 export type PermissionMode = KnownPermissionMode | (string & {});
 
+/** One entry in the Permissions menu: the wire value, what to call it, and what it now does. */
+export interface PermissionModeOption {
+  mode: KnownPermissionMode;
+  /** The option's text. Says the effect, not the slug — the slug is the `value`. */
+  label: string;
+  /** The longer sentence, for the control's `title`. */
+  note: string;
+}
+
 /**
- * What the UI offers. `bypass-permissions` is deliberately absent: it silently disables the
- * approval path (`crates/core/src/driver.rs:92`), so it is not a menu item.
+ * What the Permissions menu offers: **the whole set the CLI accepts.**
+ *
+ * `bypass-permissions` used to be left out with the note that it "silently disables the approval
+ * path". That was true of the mode as a bare CLI flag and it is no longer true of what brigadier
+ * does with it. The mode alone never could stop a prompt — brigadier's `PreToolUse` hook answers
+ * `"ask"` for every writing tool and hooks run **before** the CLI consults the mode
+ * (`docs/research/permission-modes.md` §3) — so the old menu was gating on a value that changed
+ * nothing, while the owner watched a planner prompt him for twenty consecutive `Bash` calls.
+ *
+ * A mode now selects a **hook policy**, and the policy depends on a second axis the mode knows
+ * nothing about: **where the child is standing** (`permission-modes.md` §4–§5).
+ *
+ *   - a **worker**, in the throwaway worktree brigadier cut for it, gets `WorkerWall` in *every*
+ *     mode — the mode does not reach it, and the wall is about leaving the checkout;
+ *   - a **judgement call** — planner, lead, review — runs in the owner's **own** checkout, and
+ *     there anything but `default`/`manual` buys `ReadOnlyWall`: reads flow, every write still
+ *     asks. No mode on this menu removes that gate.
+ *
+ * So the dangerous-sounding entries relax **reads in your repository** and **all gating inside a
+ * throwaway worktree**, and never writes in your own tree. The labels say that, because a menu
+ * that reads "ask for nothing" over a control that still asks is the same lie in the other
+ * direction.
  */
-export const OFFERED_PERMISSION_MODES: KnownPermissionMode[] = ["default", "accept-edits", "plan"];
+export const OFFERED_PERMISSION_MODES: readonly PermissionModeOption[] = [
+  {
+    mode: "default",
+    label: "Default — every write asks",
+    note: "Today's behaviour: the harness gates Bash, Write, Edit, MultiEdit and NotebookEdit in every scope.",
+  },
+  {
+    mode: "manual",
+    label: "Manual — the CLI's own alias for default",
+    note: "Accepted by the binary and kept distinct because it is what the operator picked; the CLI resolves the alias itself.",
+  },
+  {
+    mode: "accept-edits",
+    label: "Accept edits — edits inside the session's checkout; Bash still asks",
+    note: "Interactive sessions only. A judgement call in your own repository still asks before every write.",
+  },
+  {
+    mode: "plan",
+    label: "Plan — reads and plans, writes nothing",
+    note: "The harness takes no opinion; the CLI's own plan mode is what refuses the writes.",
+  },
+  {
+    mode: "auto",
+    label: "Auto — the CLI classifies each command",
+    note: "Billable on API accounts: the classifier is a separate model call, and it is the only mode that runs one.",
+  },
+  {
+    mode: "dont-ask",
+    label: "Don't ask — no gate inside a worktree; your own tree still asks",
+    note: "A worker in its own throwaway checkout is ungated; a judgement call in the project root keeps ReadOnlyWall.",
+  },
+  {
+    mode: "bypass-permissions",
+    label: "Bypass — no gate inside a throwaway worktree; your own tree still asks",
+    note: "The strongest thing this menu offers, and it still never pre-authorizes a write in your own checkout.",
+  },
+];
 
 /* ------------------------------------------------------------- app error */
 
