@@ -300,89 +300,24 @@ describe("deleting, on the mock bridge", () => {
     return { b, sessionId: first.session_id };
   }
 
-  it("refuses a live session with session_running, and force does not change that", async () => {
+  it("deletes a live session on the first call, keeping its worktree", async () => {
     const { b, sessionId } = await seeded();
-
-    await expect(b.deleteSession(sessionId, false)).rejects.toMatchObject({
-      code: "session_running",
-    });
-    await expect(b.deleteSession(sessionId, true)).rejects.toMatchObject({
-      code: "session_running",
-    });
-    expect((await b.listSessions()).map((s) => s.session_id)).toContain(sessionId);
-  });
-
-  it("refuses an un-forced delete as a return value, with nothing touched", async () => {
-    const { b, sessionId } = await seeded();
-    await b.endSession(sessionId);
-
-    const refused = await b.deleteSession(sessionId, false);
-
-    // A refusal, not a rejection — and every count is zero, because nothing was touched at all.
-    expect(refused.removed).toBe(false);
-    expect(refused.worktree?.blocked).toBe("commits");
-    expect(refused.rows.sessions).toBe(0);
-    expect(refused.rows.feed).toBe(0);
-    expect(refused.logs_removed).toBe(0);
-    // The branch is on the refusal: once the row is gone it is the only name for the work.
-    expect(refused.branch).not.toBeNull();
-    expect((await b.listSessions()).map((s) => s.session_id)).toContain(sessionId);
-  });
-
-  it("deletes on the forced second call, and keeps the branch", async () => {
-    const { b, sessionId } = await seeded();
-    await b.endSession(sessionId);
-    const refused = await b.deleteSession(sessionId, false);
-
-    const done = await b.deleteSession(sessionId, true);
-
+    const done = await b.deleteSession(sessionId, false);
     expect(done.removed).toBe(true);
-    expect(done.rows.sessions).toBe(1);
-    // Same branch on the success as on the refusal: no path deletes one.
-    expect(done.branch).toBe(refused.branch);
-    expect((await b.listSessions()).map((s) => s.session_id)).not.toContain(sessionId);
+    expect(done.worktree).toBeNull();
+    expect(done.branch).not.toBeNull();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect((await b.listSessions()).map(s => s.session_id)).not.toContain(sessionId);
   });
-
-  it("refuses a project whose session is live, before anything is touched", async () => {
-    const { b } = await seeded();
-
-    await expect(b.deleteProject(PROJECT, false)).rejects.toMatchObject({
-      code: "session_running",
-    });
-    expect((await b.listProjects()).map((p) => p.id)).toContain(PROJECT);
-  });
-
-  /**
-   * The worktree half is not atomic: checkouts go one session at a time before any row is
-   * touched, and the first refusal ends the pass. `worktrees[]` is what the UI shows instead of a
-   * success that would be false.
-   */
-  it("stops a project delete at the first refusing worktree and reports the attempt", async () => {
+  it("removes a project with live sessions and its saved run", async () => {
     const { b, sessionId } = await seeded();
-    await b.endSession(sessionId);
-
-    const refused = await b.deleteProject(PROJECT, false);
-
-    expect(refused.removed).toBe(false);
-    expect(refused.rows.projects).toBe(0);
-    expect(refused.worktrees).toHaveLength(1);
-    expect(refused.worktrees[0]!.session_id).toBe(sessionId);
-    expect(refused.worktrees[0]!.cleanup.blocked).toBe("commits");
-    expect((await b.listProjects()).map((p) => p.id)).toContain(PROJECT);
-  });
-
-  it("takes the project, its sessions and its run when forced", async () => {
-    const { b, sessionId } = await seeded();
-    await b.endSession(sessionId);
-    await b.startRun(PROJECT, "a goal that will not survive the project");
-
-    const done = await b.deleteProject(PROJECT, true);
-
+    await b.startRun(PROJECT, "saved automation");
+    const done = await b.deleteProject(PROJECT, false);
     expect(done.removed).toBe(true);
-    expect(done.rows.sessions).toBe(1);
-    expect(done.rows.plans).toBe(1);
-    expect((await b.listProjects()).map((p) => p.id)).not.toContain(PROJECT);
-    expect((await b.listSessions()).map((s) => s.session_id)).not.toContain(sessionId);
+    expect(done.worktrees).toEqual([]);
+    expect(done.brigadier_dir_removed).toBe(false);
+    expect((await b.listProjects()).map(p => p.id)).not.toContain(PROJECT);
+    expect((await b.listSessions()).map(s => s.session_id)).not.toContain(sessionId);
     expect(await b.currentRun(PROJECT)).toBeNull();
   });
 

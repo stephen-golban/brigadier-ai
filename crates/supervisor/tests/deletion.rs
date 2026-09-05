@@ -17,7 +17,6 @@ use brigadier_core::driver::{DriverKind, ProviderDriver, StartSession};
 use brigadier_core::event::{Event, ItemId, ItemKind, SessionId};
 use brigadier_core::worktree::resolve_git;
 use brigadier_store::Store;
-use brigadier_supervisor::worktree::CleanupBlocked;
 use brigadier_supervisor::{
     ReplayDriver, Supervisor, SupervisorConfig, SupervisorError, VecSink,
 };
@@ -126,7 +125,7 @@ fn git_run(git: &Path, cwd: &Path, args: &[&str]) -> String {
 /// The whole of `docs/vision.md` §8 in one test: the rows go, the feed goes, the raw log goes,
 /// the checkout goes — and the branch stays.
 #[tokio::test(flavor = "multi_thread")]
-async fn deleting_a_session_removes_its_rows_its_log_and_its_worktree() {
+async fn deleting_a_session_removes_history_and_preserves_its_worktree() {
     let rig = Rig::new();
     let project = rig.project().await;
     let session = rig.start(&project).await;
@@ -145,9 +144,9 @@ async fn deleting_a_session_removes_its_rows_its_log_and_its_worktree() {
     assert_eq!(out.logs_removed, 1, "the raw NDJSON log went too");
     assert_eq!(out.branch.as_deref(), Some(branch.as_str()), "the report names the branch");
     assert_eq!(out.worktree.as_ref().and_then(|w| w.blocked), None);
-    assert!(out.worktree.as_ref().is_some_and(|w| w.removed));
+    assert!(out.worktree.is_none());
 
-    assert!(!worktree.exists(), "the checkout is still on disk");
+    assert!(worktree.exists(), "the checkout must remain on disk");
     assert!(rig.raw_logs(&session).is_empty(), "the raw log is still on disk");
     assert!(rig.sup.session(&session).await.expect("read").is_none(), "the row survived");
     assert!(rig.sup.feed_tail(&session, 10).await.expect("feed").is_empty());
@@ -161,32 +160,21 @@ async fn deleting_a_session_removes_its_rows_its_log_and_its_worktree() {
     drop(rig.dir);
 }
 
-/// A live session is not deletable, and the refusal is typed so the UI can name the remedy.
-///
-/// macOS lets a directory that is a running process's `cwd` be unlinked at exit 0 (**measured**,
-/// `docs/research/worktree-cleanup.md` §1.18), so nothing below this call would stop a delete
-/// that raced a running child. This check is the only thing that does.
+/// Deleting a running chat stops it without requiring a separate action.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_live_session_refuses_to_be_deleted() {
+async fn deleting_a_live_session_stops_it_and_does_not_recreate_history() {
     let rig = Rig::new();
     let project = rig.project().await;
     let session = rig.start(&project).await;
     let worktree = rig.worktree_of(&session).await;
-
-    let err = rig.sup.delete_session(&session, false).await.expect_err("a live session refuses");
-    assert_eq!(err.code(), "session_running", "{err}");
-    assert!(err.to_string().contains("end it or kill it"), "the message names the remedy: {err}");
-
-    // And a forced delete refuses just the same: `force` answers a dirty worktree, never a child.
-    let forced = rig.sup.delete_session(&session, true).await.expect_err("force does not override");
-    assert_eq!(forced.code(), "session_running", "{forced}");
-
-    assert!(worktree.is_dir(), "nothing was touched");
-    assert!(rig.sup.session(&session).await.expect("read").is_some(), "the row is still there");
-
-    rig.end_and_settle(&session).await;
+    let out = rig.sup.delete_session(&session, false).await.expect("delete live session");
+    assert!(out.removed);
+    assert!(!rig.sup.is_live(&session));
+    assert!(worktree.is_dir());
+    rig.store.handle().flush().await.expect("flush");
+    assert!(rig.sup.session(&session).await.expect("read").is_none());
+    assert!(rig.sup.feed_tail(&session, 10).await.expect("feed").is_empty());
     rig.store.close().await.expect("store closes");
-    drop(rig.dir);
 }
 
 /// A branch carrying commits no other ref keeps is not silently destroyed.
@@ -195,7 +183,7 @@ async fn a_live_session_refuses_to_be_deleted() {
 /// reports work unmerged after a squash-merge and reports it merged when it was applied upstream
 /// and then reverted (**measured**, `docs/research/worktree-cleanup.md` §§2.2–2.4).
 #[tokio::test(flavor = "multi_thread")]
-async fn a_session_whose_branch_holds_unmerged_commits_is_not_deleted_silently() {
+async fn deleting_a_locked_dirty_session_preserves_unmerged_commits_and_files() {
     let rig = Rig::new();
     let project = rig.project().await;
     let session = rig.start(&project).await;
@@ -207,28 +195,18 @@ async fn a_session_whose_branch_holds_unmerged_commits_is_not_deleted_silently()
     git_run(&rig.git, &worktree, &["add", "work.txt"]);
     git_run(&rig.git, &worktree, &["commit", "-qm", "the agent's work"]);
 
-    let refused = rig.sup.delete_session(&session, false).await.expect("an answer, not an error");
-    assert!(!refused.removed, "{refused:?}");
-    assert_eq!(
-        refused.worktree.as_ref().and_then(|w| w.blocked),
-        Some(CleanupBlocked::Commits),
-        "{refused:?}"
-    );
-    assert_eq!(refused.worktree.as_ref().map(|w| w.commits), Some(1));
-    assert_eq!(refused.rows, brigadier_store::Deleted::default(), "no row may have been touched");
-    assert_eq!(refused.logs_removed, 0);
-    assert!(refused.branch.is_some(), "the refusal names the branch that holds the work");
-
-    assert!(worktree.is_dir(), "the checkout is still there");
-    assert!(rig.sup.session(&session).await.expect("read").is_some(), "the row is still there");
-
-    // The operator says so explicitly, and even then the branch — and the commit — survive.
-    let branch = refused.branch.clone().expect("branch");
-    let forced = rig.sup.delete_session(&session, true).await.expect("forced delete");
-    assert!(forced.removed, "{forced:?}");
-    assert!(!worktree.exists());
+    std::fs::write(worktree.join("untracked.txt"), "keep me").expect("write");
+    std::fs::write(worktree.join(".env"), "fixture only").expect("write");
+    git_run(&rig.git, &rig.repo, &["worktree", "lock", worktree.to_str().unwrap()]);
+    let removed = rig.sup.delete_session(&session, false).await.expect("delete locked session");
+    assert!(removed.removed);
+    assert!(removed.worktree.is_none());
+    let branch = removed.branch.expect("branch");
+    assert!(worktree.is_dir());
+    assert_eq!(std::fs::read_to_string(worktree.join("untracked.txt")).unwrap(), "keep me");
+    assert_eq!(std::fs::read_to_string(worktree.join(".env")).unwrap(), "fixture only");
     assert!(rig.sup.session(&session).await.expect("read").is_none());
-    assert!(rig.branches().contains(&branch), "{:?}", rig.branches());
+    assert!(rig.branches().contains(&branch));
     let log = git_run(&rig.git, &rig.repo, &["log", "--oneline", &branch]);
     assert!(log.contains("the agent's work"), "the commit must survive the delete: {log:?}");
 
@@ -256,13 +234,13 @@ async fn deleting_a_project_takes_its_sessions_with_it() {
     assert_eq!(out.rows.projects, 1);
     assert_eq!(out.rows.sessions, 2, "{:?}", out.rows);
     assert!(out.rows.feed > 0);
-    assert_eq!(out.worktrees.len(), 2, "one entry per session that had a worktree");
+    assert!(out.worktrees.is_empty());
     assert!(out.worktrees.iter().all(|w| w.cleanup.removed && w.cleanup.blocked.is_none()));
     assert_eq!(out.logs_removed, 2);
-    assert!(out.brigadier_dir_removed, "an empty .brigadier/ is not left behind");
+    assert!(!out.brigadier_dir_removed);
 
-    assert!(!first_tree.exists() && !second_tree.exists());
-    assert!(!rig.repo.join(".brigadier").exists());
+    assert!(first_tree.exists() && second_tree.exists());
+    assert!(rig.repo.join(".brigadier").exists());
     assert!(rig.sup.project(&project).await.expect("read").is_none());
     assert!(rig.sup.session(&first).await.expect("read").is_none());
     assert!(rig.sup.session(&second).await.expect("read").is_none());
@@ -279,7 +257,7 @@ async fn deleting_a_project_takes_its_sessions_with_it() {
 /// The alternative — delete the settled sessions and then stop — is the half-succeeded delete
 /// this surface exists to avoid.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_project_with_a_live_session_refuses_before_touching_anything() {
+async fn deleting_a_project_stops_live_sessions_and_preserves_all_local_files() {
     let rig = Rig::new();
     let project = rig.project().await;
     let settled = rig.start(&project).await;
@@ -288,16 +266,18 @@ async fn a_project_with_a_live_session_refuses_before_touching_anything() {
     let live = rig.start(&project).await;
     let live_tree = rig.worktree_of(&live).await;
 
-    let err = rig.sup.delete_project(&project, false).await.expect_err("refuses");
-    assert_eq!(err.code(), "session_running", "{err}");
-    assert!(err.to_string().contains(live.as_str()), "the message names the session: {err}");
-
-    assert!(settled_tree.is_dir(), "the settled session's checkout must not have gone");
-    assert!(live_tree.is_dir());
-    assert!(rig.sup.project(&project).await.expect("read").is_some());
-    assert_eq!(rig.sup.list_sessions().await.expect("read").len(), 2);
-
-    rig.end_and_settle(&live).await;
+    git_run(&rig.git, &rig.repo, &["worktree", "lock", settled_tree.to_str().unwrap()]);
+    std::fs::write(live_tree.join("local.txt"), "keep local work").unwrap();
+    let out = rig.sup.delete_project(&project, false).await.expect("remove project");
+    assert!(out.removed);
+    assert!(!rig.sup.is_live(&live));
+    assert!(settled_tree.is_dir() && live_tree.is_dir());
+    assert_eq!(std::fs::read_to_string(live_tree.join("local.txt")).unwrap(), "keep local work");
+    assert_eq!(std::fs::read_to_string(rig.repo.join("f.txt")).unwrap(), "hi\n");
+    assert!(rig.sup.project(&project).await.expect("read").is_none());
+    assert!(rig.sup.list_sessions().await.expect("read").is_empty());
+    let readded = rig.sup.add_project(rig.repo.clone()).await.expect("re-add project");
+    assert!(rig.sup.project(&readded.id).await.expect("read").is_some());
     rig.store.close().await.expect("store closes");
     drop(rig.dir);
 }
@@ -382,4 +362,24 @@ async fn deleting_a_project_that_is_not_a_repository_takes_its_sessions_too() {
 
     rig.store.close().await.expect("store closes");
     drop(rig.dir);
+}
+
+/// A parked orchestration task cannot recreate a project after sidebar removal.
+#[tokio::test(flavor = "multi_thread")]
+async fn removing_a_project_cancels_its_orchestration_task() {
+    use brigadier_supervisor::loop_::{barrier::barrier, RunSpec};
+    let rig = Rig::new();
+    let project = rig.project().await;
+    let (_sender, waiting) = barrier();
+    let run = rig.sup.start_run(RunSpec::new(project.clone(), "fixture", rig.kind.clone(), waiting))
+        .await.expect("run");
+    assert!(run.active());
+    let out = rig.sup.delete_project(&project, false).await.expect("delete");
+    assert!(out.removed);
+    assert!(!run.active());
+    assert!(rig.sup.runs().is_empty());
+    assert!(rig.sup.list_projects().await.unwrap().is_empty());
+    assert!(rig.sup.list_sessions().await.unwrap().is_empty());
+    assert!(rig.repo.is_dir());
+    rig.store.close().await.unwrap();
 }

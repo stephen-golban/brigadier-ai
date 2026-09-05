@@ -19,16 +19,36 @@ pub const CLAUDE_BIN: &str = "claude";
 // see docs/research/claude-direct-spike.md "Environment" — `2.1.257 (Claude Code)`.
 pub const MIN_VERSION: &str = "2.1.257";
 
-/// First `claude` on `PATH` that is a file with an execute bit.
-///
-/// Mirrors [`crate::worktree::resolve_git`] deliberately: same walk, same executable test, so the
-/// two provider binaries resolve by one rule.
+/// Prefer PATH, then standard install locations that Finder launches may omit.
 pub fn resolve_claude() -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .filter(|dir| !dir.as_os_str().is_empty())
-        .map(|dir| dir.join(CLAUDE_BIN))
-        .find(|candidate| is_executable(candidate))
+    resolve_in(std::env::var_os("PATH").as_deref(), std::env::var_os("HOME").as_deref())
+}
+
+fn resolve_in(path: Option<&std::ffi::OsStr>, home: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = path.into_iter().flat_map(std::env::split_paths)
+        .filter(|dir| !dir.as_os_str().is_empty()).map(|dir| dir.join(CLAUDE_BIN)).collect();
+    if let Some(home) = home {
+        candidates.push(PathBuf::from(home).join(".local/bin/claude"));
+    }
+    #[cfg(target_os = "macos")]
+    candidates.extend([PathBuf::from("/opt/homebrew/bin/claude"), PathBuf::from("/usr/local/bin/claude")]);
+    candidates.into_iter().find(|candidate| is_executable(candidate))
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn finder_path_finds_native_install_but_explicit_path_wins() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let native = dir.path().join(".local/bin/claude");
+    std::fs::create_dir_all(native.parent().unwrap()).unwrap();
+    std::fs::write(&native, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(resolve_in(Some(std::ffi::OsStr::new("/usr/bin:/bin")), Some(dir.path().as_os_str())), Some(native));
+    let explicit = dir.path().join("claude");
+    std::fs::write(&explicit, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&explicit, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(resolve_in(Some(dir.path().as_os_str()), Some(dir.path().as_os_str())), Some(explicit));
 }
 
 #[cfg(unix)]

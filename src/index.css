@@ -2780,3 +2780,7 @@ textarea:disabled {
     animation: none !important;
   }
 }
+
+/* Saved automation plans are opt-in history, outside the chat transcript. */
+.automation-details { flex: 0 0 auto; min-height: 0; max-height: 35%; overflow: auto; }
+.automation-details > summary { padding: 8px 20px; color: var(--muted); font-size: 12px; cursor: pointer; }

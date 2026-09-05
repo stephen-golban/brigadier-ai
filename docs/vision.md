@@ -272,11 +272,14 @@ tests.*
 reports it *merged* when it was applied upstream then reverted (**[measured]**,
 `docs/research/worktree-cleanup.md`). The only sound signal is `rev-list --count base..branch == 0`.
 
-So the rule is **auto-remove only when there is nothing to lose**, and before any removal, commit
-uncommitted work to a ref so the deletion is reversible (Conductor's approach). Anything unmerged
-survives and is listed in the UI for one-click cleanup. Deleting a session removes its rows, its
-feed log and its worktree — and because **every phase commits to git, deleting a session destroys
-nothing that matters.** The work is in the repository; only the narration goes.
+Sidebar deletion removes Brigadier history and app-owned logs. It stops the session process
+without a confirmation dialog. Project removal stops its sessions and removes the project from
+Brigadier only. Repository files, worktrees (including locked and dirty checkouts), branches, and
+provider transcripts remain on disk. Worktree cleanup is a separate explicit operation.
+
+The main composer starts or continues a chat, without Run/Session/Turn modes. Saved automation
+plans belong in collapsed project history, never above a selected session's conversation. A saved
+plan is not a live run: only an executing orchestration task can produce a live indicator.
 
 **The honest exception to "no litter".** On this machine right now: 66 MB of our own raw NDJSON
 across 23 sessions, and **3.0 GB of provider transcript directories** (**[measured]**). The
@@ -337,8 +340,8 @@ with the owner's reserve line drawn on them.
 a session all paint before Rust confirms them. Starting a session is the important one: it hides the
 measured spawn, 1,395 ms with the user's MCP servers or 643.5 ms without
 (`docs/research/spawn-split.md`), which is otherwise the most visible dead time in the app, and a
-failed spawn turns the row that just appeared into an error in place. Deleting is optimistic with a
-few seconds of undo, which is what makes pruning feel free.
+failed spawn turns the row that just appeared into an error in place. Deletion hides the sidebar row on the first click while the backend stops the process and removes
+history. A failure restores the row with an inline error and retry; no confirmation dialog is shown.
 
 **Approvals are never optimistic.** The dock resolves only when Rust confirms the decision reached
 the model. Every other transition is a convenience; this one is the safety boundary, and a panel that

@@ -604,3 +604,28 @@ describe("unknown projects", () => {
     store.stop();
   });
 });
+
+
+describe("deleted history stays deleted", () => {
+  it("discards late signals, counters, rows and session fetches", async () => {
+    const store = await load();
+    store.start();
+    const session = view({ session_id: "deleted" });
+    store.seedSessions([session]);
+    store.pushBatch(batch({ rows: [row("deleted", 1), row("kept", 1)] }));
+    vi.advanceTimersByTime(FRAME_MS);
+    store.dropSession("deleted");
+    store.pushBatch(batch({ rows: [row("deleted", 2)], signals: [env("deleted", { type: "session-exited", reason: "killed", exit_code: null })], counters: [{ session_id: "deleted", rows_total: 2, rows_dropped: 0 }] }));
+    store.seedSessions([session]);
+    store.seedRows("deleted", [row("deleted", 3)]);
+    vi.advanceTimersByTime(FRAME_MS);
+    expect(store.getState().sessions.deleted).toBeUndefined();
+    expect(store.getSessionRows("deleted")).toEqual([]);
+    expect(store.getProjectRows(PROJECT).map(row => row.s)).toEqual(["kept"]);
+    store.dropProject(PROJECT);
+    store.pushBatch(batch({ rows: [row("kept", 2)] }));
+    vi.advanceTimersByTime(FRAME_MS);
+    expect(store.getState().order).toEqual([]);
+    expect(store.getProjectRows(PROJECT)).toEqual([]);
+  });
+});
