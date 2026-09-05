@@ -26,6 +26,7 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod chat;
 pub mod delete;
 pub mod feed;
 pub mod intents;
@@ -356,12 +357,7 @@ mod tests {
         upsert(&store, "done", Some(SessionStatus::Running)).await;
         store
             .handle()
-            .session_ended(
-                SessionId::new("done"),
-                ExitReason::Graceful,
-                Some(0),
-                SystemTime::now(),
-            )
+            .session_ended(SessionId::new("done"), ExitReason::Graceful, Some(0), SystemTime::now())
             .await
             .expect("session ended");
         let before = store

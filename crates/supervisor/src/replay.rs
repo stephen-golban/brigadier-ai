@@ -326,6 +326,9 @@ async fn run(
                 match cmd {
                     // A replay has no turn machinery, so an interrupt has nothing to cut short
                     // and ends the session, like `EndSession`.
+                    Some(Command::Native { ack, .. }) => {
+                        let _ = ack.send(Err(brigadier_core::session::CommandError::Rejected("Native controls are unavailable for replay sessions".into())));
+                    }
                     Some(Command::Kill { ack }) => {
                         let _ = ack.send(Ok(()));
                         break Some((ExitReason::Killed, None));

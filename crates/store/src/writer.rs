@@ -86,26 +86,47 @@ pub(crate) enum DeleteTarget {
 
 /// One unit of work for the writer thread. Crate-private: the public surface is [`StoreHandle`].
 pub(crate) enum Op {
+    Chat(crate::chat::ChatItem),
     /// Insert or replace a project.
     UpsertProject(ProjectRow),
     /// Set one project's MCP policy. A missing project is a no-op here; the supervisor checks
     /// existence first and answers `no_such_project` itself.
-    SetProjectMcp { id: String, mcp: McpPolicy },
+    SetProjectMcp {
+        id: String,
+        mcp: McpPolicy,
+    },
     /// Merge a partial session row; `None` fields leave the stored value alone.
     UpsertSession(Box<SessionRow>),
     /// Append one terse feed row and advance the session's event cursor.
-    Feed { session_id: SessionId, seq: u64, at: SystemTime, kind: FeedKind, line: String },
+    Feed {
+        session_id: SessionId,
+        seq: u64,
+        at: SystemTime,
+        kind: FeedKind,
+        line: String,
+    },
     /// Overwrite the session's cumulative usage and cost.
     ///
     /// Overwrite, not `SET x = x + ?`: the provider reports `usage` and `total_cost_usd`
     /// cumulatively on every terminal frame, so summing them double-counts.
     // see docs/research/agent-sdk.md §6 and `brigadier_core::event::Usage`. The `x = x + ?`
     // shape of docs/research/persistence.md §3 still binds any counter that is *ours*; none is.
-    SetUsage { session_id: SessionId, usage: Usage, cost_usd_cumulative: f64 },
+    SetUsage {
+        session_id: SessionId,
+        usage: Usage,
+        cost_usd_cumulative: f64,
+    },
     /// Record a parked request so a reload can re-render it.
-    ApprovalOpened { session_id: SessionId, approval: Box<PendingApproval> },
+    ApprovalOpened {
+        session_id: SessionId,
+        approval: Box<PendingApproval>,
+    },
     /// Record the answer that unparked it.
-    ApprovalResolved { request_id: RequestId, decision: Decision, at: SystemTime },
+    ApprovalResolved {
+        request_id: RequestId,
+        decision: Decision,
+        at: SystemTime,
+    },
     /// Settle a session's lifecycle columns.
     SessionEnded {
         session_id: SessionId,
@@ -120,7 +141,10 @@ pub(crate) enum Op {
     /// is, is `COALESCE`d, so `None` means "leave alone" and there is no value that means
     /// "clear". A resumed session that keeps its old `ended_at` reads as ended while it is live.
     // see docs/research/resume.md §8 gap 5.
-    SessionResumed { session_id: SessionId, at: SystemTime },
+    SessionResumed {
+        session_id: SessionId,
+        at: SystemTime,
+    },
     /// Record an effect the harness is **about to** cause, and answer once it is committed.
     ///
     /// The only op that carries its own result back. Everything else here is fire-and-forget and
@@ -185,7 +209,10 @@ pub(crate) enum Op {
     UpsertPlan(Box<PlanRow>),
     /// Stamp the owner's approval on a plan. Guarded by `AND status = 'draft'`, so a second
     /// approval does not move the timestamp the autonomous run is authorized by.
-    PlanApproved { id: String, at: SystemTime },
+    PlanApproved {
+        id: String,
+        at: SystemTime,
+    },
     /// Record one re-planning event and bump the plan's revision counter, in one transaction.
     ///
     /// Both statements or neither: a plan whose `revision` does not match its newest
@@ -208,7 +235,10 @@ pub(crate) enum Op {
     /// `last_evidence` have to be *cleared*, which no `COALESCE`d upsert can do. A re-attempted
     /// phase that keeps the previous attempt's exit code reads red while it is running.
     // the same reasoning as `Op::SessionResumed`; see docs/research/resume.md §8 gap 5.
-    PhaseAttemptStarted { id: String, at: SystemTime },
+    PhaseAttemptStarted {
+        id: String,
+        at: SystemTime,
+    },
     /// Settle a phase with the gate's real exit code and a bounded excerpt of what it said.
     PhaseSettled {
         id: String,
@@ -250,7 +280,10 @@ pub(crate) enum Op {
     /// about to delete files on the strength of it. And a delete that fails its own
     /// post-condition has to roll back **only itself**, not the batch it was coalesced into, so
     /// it runs inside a savepoint.
-    Delete { what: DeleteTarget, reply: oneshot::Sender<Result<Option<DeleteOutcome>>> },
+    Delete {
+        what: DeleteTarget,
+        reply: oneshot::Sender<Result<Option<DeleteOutcome>>>,
+    },
     /// Run a closure against the connection, inside the current batch's transaction.
     ///
     /// Like [`Op::Flush`] it closes the coalescing window: a read submitted at the top of a
@@ -273,6 +306,104 @@ pub struct StoreHandle {
 impl StoreHandle {
     fn send(&self, op: Op) -> Result<()> {
         self.tx.send(op).map_err(|_| Error::Closed)
+    }
+
+    /// Persist a completed display item independently of the telemetry ring.
+    pub async fn chat_item(&self, item: crate::chat::ChatItem) -> Result<()> {
+        self.send(Op::Chat(item))
+    }
+
+    /// Page completed display items after a sequence cursor. The page is bounded.
+    pub async fn chat_items(
+        &self,
+        session_id: String,
+        after: u64,
+    ) -> Result<Vec<crate::chat::ChatItem>> {
+        self.query(move |conn| crate::chat::read(conn, &session_id, after)).await
+    }
+
+    /// Recent native rewind records, including incomplete operations needing reconciliation.
+    pub async fn rewind_records(&self, session_id: String) -> Result<Vec<serde_json::Value>> {
+        self.query(move |conn| {
+            let mut stmt = conn.prepare("SELECT id,state,created_at FROM chat_rewinds WHERE session_id=?1 ORDER BY created_at DESC,rowid DESC LIMIT 20")?;
+            let rows = stmt.query_map([session_id], |r| Ok(serde_json::json!({"id":r.get::<_,String>(0)?,"state":r.get::<_,String>(1)?,"createdAt":r.get::<_,i64>(2)? * 1000})))?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        }).await
+    }
+
+    /// Page retained transcript bodies for one rewind. Reading does not alter provider state.
+    pub async fn rewind_items(
+        &self,
+        session_id: String,
+        rewind_id: String,
+        after: i64,
+    ) -> Result<Vec<serde_json::Value>> {
+        self.query(move |conn| {
+            let mut stmt = conn.prepare("SELECT rowid,item_json FROM chat_archive WHERE session_id=?1 AND rewind_id=?2 AND rowid>?3 ORDER BY rowid LIMIT 20")?;
+            let rows = stmt.query_map((session_id,rewind_id,after), |r| Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?)))?;
+            let rows=rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows.into_iter().filter_map(|(cursor,body)| serde_json::from_str::<serde_json::Value>(&body).ok().map(|item|serde_json::json!({"cursor":cursor,"item":item}))).collect())
+        }).await
+    }
+
+    /// Whether a native mutation needs reconciliation. Sending/resuming is blocked in this state.
+    pub async fn rewind_pending(&self, session_id: String) -> Result<bool> {
+        self.query(move |conn| {
+            Ok(conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM chat_rewinds WHERE session_id=?1 AND state='pending')",
+                [session_id],
+                |r| r.get(0),
+            )?)
+        })
+        .await
+    }
+
+    /// Retain the discarded conversation before invoking the native provider mutation.
+    pub async fn prepare_rewind(
+        &self,
+        id: String,
+        session_id: String,
+        target_id: String,
+    ) -> Result<()> {
+        self.query(move |conn| {
+            conn.execute_batch("SAVEPOINT prepare_rewind")?;
+            let result = (|| -> Result<()> {
+                let target_seq: i64 = conn.query_row("SELECT seq FROM chat_items WHERE session_id=?1 AND id=?2 AND provider_uuid IS NOT NULL", (&session_id, &target_id), |r| r.get(0))?;
+                conn.execute("INSERT INTO chat_rewinds(id,session_id,target_id,target_seq,state,created_at) VALUES (?1,?2,?3,?4,'pending',unixepoch())", (&id,&session_id,&target_id,target_seq))?;
+                let mut cursor = target_seq.saturating_sub(1) as u64;
+                loop {
+                    let page = crate::chat::read(conn, &session_id, cursor)?;
+                    if page.is_empty() { break; }
+                    for item in page {
+                        cursor = item.seq;
+                        conn.execute("INSERT INTO chat_archive(rewind_id,session_id,item_json) VALUES (?1,?2,?3)", (&id,&session_id,serde_json::to_string(&item).expect("chat item")))?;
+                    }
+                }
+                Ok(())
+            })();
+            if result.is_err() { conn.execute_batch("ROLLBACK TO prepare_rewind")?; }
+            conn.execute_batch("RELEASE prepare_rewind")?;
+            result
+        }).await?;
+        self.flush().await
+    }
+
+    /// Finalize after an authoritative native reply. Failed requests keep the visible history.
+    pub async fn finish_rewind(&self, id: String, through_seq: Option<u64>) -> Result<()> {
+        self.query(move |conn| {
+            conn.execute_batch("SAVEPOINT finish_rewind")?;
+            let result = (|| -> Result<()> {
+                if let Some(seq) = through_seq {
+                    conn.execute("DELETE FROM chat_items WHERE session_id=(SELECT session_id FROM chat_rewinds WHERE id=?1 AND state='pending') AND seq >= (SELECT target_seq FROM chat_rewinds WHERE id=?1) AND seq <= ?2", (&id,seq))?;
+                }
+                conn.execute("UPDATE chat_rewinds SET state=?2,through_seq=?3 WHERE id=?1 AND state='pending'", (&id,if through_seq.is_some(){"applied"}else{"refused"},through_seq))?;
+                Ok(())
+            })();
+            if result.is_err() { conn.execute_batch("ROLLBACK TO finish_rewind")?; }
+            conn.execute_batch("RELEASE finish_rewind")?;
+            result
+        }).await?;
+        self.flush().await
     }
 
     /// Insert or replace a project.
@@ -514,14 +645,7 @@ impl StoreHandle {
         skipped_for_just_go: bool,
         at: SystemTime,
     ) -> Result<()> {
-        self.send(Op::UnknownSettled {
-            id,
-            state,
-            answer,
-            findings_path,
-            skipped_for_just_go,
-            at,
-        })
+        self.send(Op::UnknownSettled { id, state, answer, findings_path, skipped_for_just_go, at })
     }
 
     /// Insert a work order, or merge what dispatch learned about one.
@@ -609,9 +733,8 @@ impl StoreHandle {
     /// Every project, oldest first by creation time.
     pub async fn list_projects(&self) -> Result<Vec<ProjectRow>> {
         self.query(|conn| {
-            let sql = format!(
-                "SELECT {PROJECT_COLUMNS} FROM projects ORDER BY created_at ASC, id ASC"
-            );
+            let sql =
+                format!("SELECT {PROJECT_COLUMNS} FROM projects ORDER BY created_at ASC, id ASC");
             let mut stmt = conn.prepare_cached(&sql)?;
             let rows = stmt.query_map([], schema::project_from_row)?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -637,9 +760,8 @@ impl StoreHandle {
     /// Every session, newest first by start time.
     pub async fn list_sessions(&self) -> Result<Vec<SessionRecord>> {
         self.query(|conn| {
-            let sql = format!(
-                "SELECT {SESSION_COLUMNS} FROM sessions ORDER BY started_at DESC, id ASC"
-            );
+            let sql =
+                format!("SELECT {SESSION_COLUMNS} FROM sessions ORDER BY started_at DESC, id ASC");
             let mut stmt = conn.prepare_cached(&sql)?;
             let rows = stmt.query_map([], schema::session_from_row)?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -903,12 +1025,7 @@ pub(crate) fn spawn(
 /// wakes only for an op or for the deadline. An op that someone is waiting on — a
 /// [`Op::Query`], an [`Op::IntentOpen`], an [`Op::Flush`] or [`Op::Shutdown`] — ends the window
 /// immediately.
-fn run(
-    mut conn: Connection,
-    rx: mpsc::Receiver<Op>,
-    run_id: String,
-    config: StoreConfig,
-) {
+fn run(mut conn: Connection, rx: mpsc::Receiver<Op>, run_id: String, config: StoreConfig) {
     loop {
         let Ok(first) = rx.recv() else { break };
         let mut batch = vec![first];
@@ -918,11 +1035,7 @@ fn run(
         while !matches!(
             batch.last(),
             Some(
-                Op::Query(_)
-                    | Op::IntentOpen(..)
-                    | Op::Delete { .. }
-                    | Op::Flush(_)
-                    | Op::Shutdown
+                Op::Query(_) | Op::IntentOpen(..) | Op::Delete { .. } | Op::Flush(_) | Op::Shutdown
             )
         ) {
             let left = deadline.saturating_duration_since(Instant::now());
@@ -999,7 +1112,8 @@ fn apply_batch(
     let mut opens: Vec<(Result<()>, oneshot::Sender<Result<()>>)> = Vec::new();
     // Answered after the commit, for the same reason `opens` is: the caller is about to remove
     // worktrees and log files on the strength of the answer.
-    type DeleteReply = (Result<Option<DeleteOutcome>>, oneshot::Sender<Result<Option<DeleteOutcome>>>);
+    type DeleteReply =
+        (Result<Option<DeleteOutcome>>, oneshot::Sender<Result<Option<DeleteOutcome>>>);
     let mut deletes: Vec<DeleteReply> = Vec::new();
     let mut queries = 0usize;
 
@@ -1097,6 +1211,15 @@ fn apply_one(
     touched: &mut BTreeSet<String>,
 ) -> Result<()> {
     match op {
+        Op::Chat(item) => {
+            ensure_session(tx, &SessionId::new(&item.session_id), touched)?;
+            crate::chat::write(tx, &item)?;
+            // A crash between this projection and its feed row must not reuse this sequence.
+            tx.execute(
+                "UPDATE sessions SET last_event_seq=MAX(last_event_seq,?2) WHERE id=?1",
+                (&item.session_id, item.seq),
+            )?;
+        }
         Op::UpsertProject(p) => {
             // `mcp` is written on insert and on conflict alike: the row carries the policy, so
             // an upsert that omitted it would silently reset an opted-in project to `off`.
@@ -1126,7 +1249,13 @@ fn apply_one(
                  ON CONFLICT(session_id, seq) DO UPDATE SET at = excluded.at,
                      kind = excluded.kind, line = excluded.line",
             )?
-            .execute((session_id.as_str(), seq, schema::to_millis(at), kind.as_str(), &line))?;
+            .execute((
+                session_id.as_str(),
+                seq,
+                schema::to_millis(at),
+                kind.as_str(),
+                &line,
+            ))?;
             // `last_event_seq` is the cursor of the newest event that produced a *feed row*;
             // events with no terse line are deliberately not written at all.
             // see docs/research/persistence.md §3 — never a write per chunk.
@@ -1210,9 +1339,7 @@ fn apply_one(
                 .query_row((&id,), |row| row.get(0))
                 .optional()?;
             let (state, evidence) = match kind {
-                Some(kind) => {
-                    intents::hold_to_settleable(&IntentKind::new(kind), state, evidence)
-                }
+                Some(kind) => intents::hold_to_settleable(&IntentKind::new(kind), state, evidence),
                 None => (state, evidence),
             };
             tx.prepare_cached(
@@ -1525,13 +1652,12 @@ fn ensure_session(
 }
 
 fn upsert_session(tx: &rusqlite::Transaction<'_>, row: SessionRow) -> Result<()> {
-    let path = |p: Option<&std::path::PathBuf>| {
-        p.map(|p| p.to_string_lossy().into_owned())
-    };
+    let path = |p: Option<&std::path::PathBuf>| p.map(|p| p.to_string_lossy().into_owned());
     // `oversized_json` and not `bounded`: `summary_json` is a JSON column, and `bounded` appends
     // `…`, which turns a document into text that no longer parses. The same defect that was in
     // `change_json` and `owned_paths_json`; one helper covers all three.
-    let summary = row.summary_json.as_deref().map(|s| schema::oversized_json(s, SUMMARY_JSON_LIMIT));
+    let summary =
+        row.summary_json.as_deref().map(|s| schema::oversized_json(s, SUMMARY_JSON_LIMIT));
     tx.prepare_cached(
         "INSERT INTO sessions (id, project_id, instance_id, driver_kind, provider_session_id,
              cwd, worktree_path, branch, model, status, transcript_path, resume_token,

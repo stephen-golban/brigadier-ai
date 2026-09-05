@@ -1,3 +1,5 @@
+import { useMessageEdit, type MessageEditProps } from "./EditMessage";
+import { PromptInput, useDraft } from "./PromptInput";
 /**
  * Send a turn to the selected session, and the three ways to stop one.
  *
@@ -66,7 +68,7 @@ export interface RunControlProps {
   busy: boolean;
   /** `list_models`, for the Model picker. Empty leaves only the no-pick entry, which is legal. */
   models: ModelInfo[];
-  onStart: (goal: string, model: string | null, permissionMode: PermissionMode) => void;
+  onStart: (goal: string, model: string | null, permissionMode: PermissionMode) => void | Promise<boolean>;
   onStop: (planId: PlanId) => void;
 }
 
@@ -92,18 +94,20 @@ export function RunControl({
   onStart,
   onStop,
 }: RunControlProps) {
-  const [goal, setGoal] = useState("");
+  const [goal, setGoal] = useDraft(`run:${projectName ?? "none"}`);
   /** `""` is "no pick" and is the initial state; see `NO_MODEL_PICK`. */
   const [model, setModel] = useState("");
   const [mode, setMode] = useState<PermissionMode>("default");
   const live = runIsLive(run);
 
-  const submit = () => {
-    if (!canStart || busy || goal.trim() === "") return;
+  const [sending, setSending] = useState(false);
+  const submit = async () => {
+    if (!canStart || busy || sending || goal.trim() === "") return;
     // `null`, never `""` and never a sentinel: `start_run`'s `model` is an `Option<String>` and a
     // placeholder string would be handed straight to the CLI's `--model`, which refuses it.
-    onStart(goal.trim(), model === "" ? null : model, mode);
-    setGoal("");
+    setSending(true);
+    try { if (await onStart(goal.trim(), model === "" ? null : model, mode) !== false) setGoal(""); }
+    finally { setSending(false); }
   };
 
   /*
@@ -141,7 +145,7 @@ export function RunControl({
 
   return (
     <div className="dock-box">
-      <textarea
+      <PromptInput
         rows={2}
         value={goal}
         aria-label="the goal, in plain English"
@@ -150,8 +154,8 @@ export function RunControl({
             ? "Select a project to hand it a goal"
             : `Hand ${projectName} a goal in plain English and walk away. Return to start, Shift+Return for a new line.`
         }
-        disabled={!canStart || busy}
-        onChange={(e) => setGoal(e.target.value)}
+        disabled={!canStart || busy || sending}
+        onText={setGoal}
         onKeyDown={(e) => {
           if (isSubmitKey(e)) {
             e.preventDefault();
@@ -175,7 +179,7 @@ export function RunControl({
           onModel={setModel}
           mode={mode}
           onMode={setMode}
-          disabled={!canStart || busy}
+          disabled={!canStart || busy || sending}
           noPickLabel={NO_MODEL_PICK}
           modelHint={MODEL_HINT}
         />
@@ -192,11 +196,11 @@ export function RunControl({
   );
 }
 
-export interface ComposerProps {
+export interface ComposerProps extends MessageEditProps {
   session: SessionRuntime | null;
   /** An IPC call started by this dock is in flight; both secondary actions go inert. */
   busy: boolean;
-  onSend: (sessionId: SessionId, text: string) => void;
+  onSend: (sessionId: SessionId, text: string) => void | Promise<boolean>;
   onInterrupt: (sessionId: SessionId) => void;
   onEnd: (sessionId: SessionId) => void;
   onKill: (sessionId: SessionId) => void;
@@ -214,8 +218,14 @@ export function Composer({
   onKill,
   onResume,
   onCleanup,
+  editing,
+  onCancelEdit,
+  onRewound,
 }: ComposerProps) {
-  const [text, setText] = useState("");
+  const [draft, setDraft] = useDraft(`turn:${session?.sessionId ?? "none"}`);
+  const edit = useMessageEdit({ editing, onCancelEdit, onRewound });
+  const text = editing ? edit.text : draft;
+  const setText = editing ? edit.setText : setDraft;
   /** A cleanup came back `removed: false`: nothing was touched, and `blocked` says why. */
   const [refusal, setRefusal] = useState<WorktreeCleanup | null>(null);
   /** The last successful removal, so the dock can say the checkout is gone and resume is over. */
@@ -261,10 +271,16 @@ export function Composer({
     }
   };
 
-  const send = () => {
-    if (session === null || !live || text.trim() === "") return;
-    onSend(session.sessionId, text.trim());
-    setText("");
+  const [sending, setSending] = useState(false);
+  const send = async () => {
+    if (session === null || !live || busy || sending || text.trim() === "") return;
+    if (editing) {
+      if (!session.busy) await edit.submit();
+      return;
+    }
+    setSending(true);
+    try { if (await onSend(session.sessionId, text.trim()) !== false) setText(""); }
+    finally { setSending(false); }
   };
 
   /* --------------------------------------------------------- the refusal note
@@ -454,7 +470,17 @@ export function Composer({
   return (
     <>
       <div className="dock-box">
-        <textarea
+        {editing && (
+          <div className="composer-edit-banner">
+            <span>{edit.rewound ? "Conversation rewound · ready to send" : "Editing message"}</span>
+            <button type="button" className="act" disabled={edit.busy || Boolean(edit.confirmation)} onClick={onCancelEdit}>
+              Cancel edit
+            </button>
+          </div>
+        )}
+        {editing && edit.error && <p role="alert" className="inline-error">{edit.error}</p>}
+        {editing && edit.confirmation}
+        <PromptInput
           rows={2}
           value={text}
           placeholder={
@@ -462,8 +488,9 @@ export function Composer({
               ? "Next turn. Return to send, Shift+Return for a new line."
               : "Select a running session"
           }
-          disabled={!live}
-          onChange={(e) => setText(e.target.value)}
+          focusKey={sessionId ?? undefined}
+          disabled={!live || busy || sending || (Boolean(editing) && edit.disabled)}
+          onText={setText}
           onKeyDown={(e) => {
             if (isSubmitKey(e)) {
               e.preventDefault();
@@ -533,8 +560,8 @@ export function Composer({
           <button
             type="button"
             className="send"
-            aria-label="send this turn"
-            disabled={!live || text.trim() === ""}
+            aria-label={editing ? "Send edited message" : "send this turn"}
+            disabled={!live || busy || sending || text.trim() === "" || (Boolean(editing) && (edit.disabled || session?.busy))}
             onClick={send}
           >
             <SendIcon />

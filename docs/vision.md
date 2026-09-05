@@ -1,5 +1,8 @@
 # brigadier — the vision
 
+> 2026-09-05 update: the owner requested a rich local chat composer, conversation widgets, and a workspace panel. This supersedes the older no-picker and terse-only UI guidance below. See [the implementation and remaining parity work](research/chat-workspace-implementation-2026-09-05.md) and [its IPC extension](plans/chat-workspace-ipc.md).
+
+
 Settled with the owner on 2026-09-02. This file replaces `brigadier-guide.md`, which described an
 installable CLI that no longer exists and was deleted the same day. It is recoverable from git
 history at `2327bb9` if the reasoning behind a decision is ever needed; nothing in it is current.

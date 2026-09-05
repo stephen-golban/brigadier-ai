@@ -41,7 +41,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use brigadier_core::approval::ApprovalTable;
 use brigadier_core::driver::{
-    DriverKind, McpPolicy, PermissionMode, ProviderDriver, Resumed, ResumeSession, StartSession,
+    DriverKind, McpPolicy, PermissionMode, ProviderDriver, ResumeSession, Resumed, StartSession,
 };
 use brigadier_core::event::{
     Envelope, Event, ExitReason, InstanceId, RequestId, SessionId, TurnId, Usage,
@@ -51,7 +51,9 @@ use brigadier_store::ndjson::RawLog;
 use brigadier_store::{ProjectRow, SessionRecord, SessionRow, SessionStatus, StoreHandle};
 use tokio::task::JoinHandle;
 
-pub use crate::batcher::{Batcher, DEFAULT_FRAME_INTERVAL, MAX_MESSAGE_BYTES, MAX_ROWS_PER_MESSAGE};
+pub use crate::batcher::{
+    Batcher, DEFAULT_FRAME_INTERVAL, MAX_MESSAGE_BYTES, MAX_ROWS_PER_MESSAGE,
+};
 pub use crate::error::SupervisorError;
 pub use crate::removal::{ProjectDeletion, SessionDeletion, SessionWorktree};
 pub use crate::replay::ReplayDriver;
@@ -558,8 +560,7 @@ impl Supervisor {
         project_id: &str,
         mcp: McpPolicy,
     ) -> Result<ProjectRow, SupervisorError> {
-        let mut project =
-            self.project(project_id).await?.ok_or(SupervisorError::NoSuchProject)?;
+        let mut project = self.project(project_id).await?.ok_or(SupervisorError::NoSuchProject)?;
         self.inner.store.set_project_mcp(project.id.clone(), mcp).await?;
         project.mcp = mcp;
         Ok(project)
@@ -601,7 +602,29 @@ impl Supervisor {
         kind: &DriverKind,
         req: StartSession,
     ) -> Result<SessionId, SupervisorError> {
-        self.spawn(project_id, kind, req, SpawnIn::FreshWorktree, false)
+        self.spawn(project_id, kind, req, SpawnIn::FreshWorktree, false).await.map(|s| s.session_id)
+    }
+
+    /// Interactive project sessions share the registered checkout unless isolation is requested.
+    /// Prepared orchestration worktrees keep their existing ownership and cleanup policy.
+    pub async fn start_project_session(
+        &self,
+        project_id: &str,
+        kind: &DriverKind,
+        mut req: StartSession,
+        isolated: bool,
+    ) -> Result<SessionId, SupervisorError> {
+        if isolated {
+            return self.start_session(project_id, kind, req).await;
+        }
+        let project = self.project(project_id).await?.ok_or(SupervisorError::NoSuchProject)?;
+        let dir = project.root_path;
+        req.hook_policy =
+            brigadier_core::driver::HookOverride::new(brigadier_core::claude::hook::policy_for(
+                &req.permission_mode,
+                &brigadier_core::claude::hook::HookScope::Interactive { root: dir.clone() },
+            ));
+        self.spawn(project_id, kind, req, SpawnIn::Prepared { dir, branch: None }, false)
             .await
             .map(|s| s.session_id)
     }
@@ -651,12 +674,8 @@ impl Supervisor {
         wheref: SpawnIn,
         tap: bool,
     ) -> Result<Spawned, SupervisorError> {
-        let project = self
-            .project(project_id)
-            .await?
-            .ok_or(SupervisorError::NoSuchProject)?;
-        let driver =
-            self.driver(kind).ok_or_else(|| SupervisorError::NoDriver(kind.clone()))?;
+        let project = self.project(project_id).await?.ok_or(SupervisorError::NoSuchProject)?;
+        let driver = self.driver(kind).ok_or_else(|| SupervisorError::NoDriver(kind.clone()))?;
 
         // The project decides, not the caller: the row is the one place the policy lives, so a
         // request that arrived with `Inherit` for an `Off` project is overridden here.
@@ -784,13 +803,21 @@ impl Supervisor {
         &self,
         session_id: &SessionId,
     ) -> Result<SessionId, SupervisorError> {
+        self.resume_session_with_env(session_id, Default::default()).await
+    }
+
+    /// Restore the app-owned peer connection for a resumed interactive session.
+    pub async fn resume_session_with_env(
+        &self,
+        session_id: &SessionId,
+        env: std::collections::BTreeMap<String, String>,
+    ) -> Result<SessionId, SupervisorError> {
         // Reserved before the first `await`, and released by `_guard` on every path out. The
         // liveness check lives inside the reservation because the two must be one atomic step:
         // everything below is a sequence of awaits ending in a process spawn, and a bare
         // `is_live` check would let a second concurrent call through the whole of it.
         self.inner.reserve_resume(session_id)?;
-        let _guard =
-            ResumeGuard { inner: Arc::clone(&self.inner), session_id: session_id.clone() };
+        let _guard = ResumeGuard { inner: Arc::clone(&self.inner), session_id: session_id.clone() };
 
         let record = self.session(session_id).await?.ok_or(SupervisorError::NoSuchSession)?;
         if !matches!(record.status, SessionStatus::Exited | SessionStatus::Failed) {
@@ -799,15 +826,16 @@ impl Supervisor {
                 record.status.as_str()
             )));
         }
+        if self.inner.store.rewind_pending(session_id.to_string()).await? {
+            return Err(SupervisorError::NotResumable("A rewind has an unconfirmed outcome; history is preserved for recovery".into()));
+        }
         let token = record.resume_token.clone().ok_or_else(|| {
             SupervisorError::NotResumable(format!(
                 "session {session_id} has no resume token; the provider never named its session"
             ))
         })?;
         let kind = record.driver_kind.clone().ok_or_else(|| {
-            SupervisorError::NotResumable(format!(
-                "session {session_id} records no driver kind"
-            ))
+            SupervisorError::NotResumable(format!("session {session_id} records no driver kind"))
         })?;
         let project_id = record.project_id.clone().ok_or_else(|| {
             SupervisorError::NotResumable(format!("session {session_id} belongs to no project"))
@@ -827,6 +855,7 @@ impl Supervisor {
         }
         let start_seq = record.last_event_seq;
         let mut req = ResumeSession::new(token, cwd.clone());
+        req.env_overrides = env;
         req.model = record.model.clone();
         req.permission_mode = PermissionMode::Default;
         req.mcp = project.mcp;
@@ -993,11 +1022,20 @@ impl Supervisor {
     /// # Errors
     /// [`SupervisorError::NoSuchSession`] when nothing is live under that id, and
     /// [`SupervisorError::SessionNotRunning`] when its adapter has gone.
+    /// Issue an explicit native provider operation. The adapter rejects unsupported providers.
+    pub async fn native_control(&self, session_id: &SessionId, request: brigadier_core::session::NativeControl) -> Result<serde_json::Value, SupervisorError> {
+        self.commands(session_id)?.native_control(request).await.map_err(error::from_command)
+    }
+
+    /// Send a user turn, refusing while a persisted rewind remains unresolved.
     pub async fn send_turn(
         &self,
         session_id: &SessionId,
         text: impl Into<String>,
     ) -> Result<TurnId, SupervisorError> {
+        if self.inner.store.rewind_pending(session_id.to_string()).await? {
+            return Err(error::from_command(brigadier_core::session::CommandError::Rejected("A rewind is pending reconciliation; conversation history is preserved".into())));
+        }
         self.commands(session_id)?
             .send_turn(TurnInput::text(text))
             .await
@@ -1027,10 +1065,7 @@ impl Supervisor {
         request_id: RequestId,
         decision: Decision,
     ) -> Result<(), SupervisorError> {
-        self.commands(session_id)?
-            .respond(request_id, decision)
-            .await
-            .map_err(error::from_respond)
+        self.commands(session_id)?.respond(request_id, decision).await.map_err(error::from_respond)
     }
 
     /// End the current turn; the session survives.
@@ -1383,7 +1418,10 @@ impl Supervisor {
     }
 
     /// Requests parked right now for one live session, oldest first.
-    pub fn pending_for(&self, session_id: &SessionId) -> Vec<brigadier_core::approval::PendingApproval> {
+    pub fn pending_for(
+        &self,
+        session_id: &SessionId,
+    ) -> Vec<brigadier_core::approval::PendingApproval> {
         lock(&self.inner.live).get(session_id).map(|s| s.approvals.pending()).unwrap_or_default()
     }
 
@@ -1435,10 +1473,8 @@ impl Supervisor {
         };
         // The routing key of the instance that ran the session. A row with none is one whose
         // child never came up, and nothing routes on this field for a warning anyway.
-        let instance_id = record
-            .instance_id
-            .clone()
-            .unwrap_or_else(|| InstanceId::new("brigadier"));
+        let instance_id =
+            record.instance_id.clone().unwrap_or_else(|| InstanceId::new("brigadier"));
         let env = Envelope::new(
             record.last_event_seq.saturating_add(1),
             instance_id,
@@ -1488,7 +1524,8 @@ impl Supervisor {
         Ok(records
             .iter()
             .map(|r| {
-                let expired = r.run_id != self.inner.run_id || !live.contains(r.session_id.as_str());
+                let expired =
+                    r.run_id != self.inner.run_id || !live.contains(r.session_id.as_str());
                 ApprovalView::from_record(r, expired)
             })
             .collect())
@@ -1655,9 +1692,7 @@ async fn fan_out(commands: Vec<SessionCommands>, how: Teardown, within: Duration
             };
         });
     }
-    let all = async {
-        while set.join_next().await.is_some() {}
-    };
+    let all = async { while set.join_next().await.is_some() {} };
     if tokio::time::timeout(within, all).await.is_err() {
         tracing::warn!(?how, "teardown command did not ack within its budget");
     }
@@ -1868,6 +1903,24 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn project_sessions_share_checkout_without_worktree_metadata() {
+        let rig = Rig::new();
+        let project = rig.project().await;
+        let id = rig
+            .sup
+            .start_project_session(&project, &rig.kind, StartSession::new(rig._dir.path()), false)
+            .await
+            .unwrap();
+        let row = rig.row(&id).await;
+        assert!(row.worktree_path.is_none());
+        assert!(row.branch.is_none());
+        assert_eq!(
+            std::path::Path::new(row.cwd.as_deref().unwrap()).canonicalize().unwrap(),
+            rig._dir.path().canonicalize().unwrap()
+        );
+        rig.sup.kill(&id).await.unwrap();
+    }
     /// A driver that records the MCP policy of every request it is handed, then delegates to a
     /// replay. The only way to see what the supervisor actually asks the driver for.
     #[derive(Debug)]
@@ -1967,7 +2020,10 @@ mod tests {
             .start_session(&project, &kind, StartSession::new(rig._dir.path()))
             .await
             .expect("starts again");
-        assert_eq!(lock(&seen).as_slice(), [McpPolicy::Off, McpPolicy::Inherit, McpPolicy::Inherit]);
+        assert_eq!(
+            lock(&seen).as_slice(),
+            [McpPolicy::Off, McpPolicy::Inherit, McpPolicy::Inherit]
+        );
         rig.sup.end_session(&fresh).await.expect("end");
         assert!(rig.until(Duration::from_secs(5), || !rig.sup.is_live(&fresh)).await);
         rig.store.close().await.expect("store closes");
@@ -2082,10 +2138,8 @@ mod tests {
         let session = rig.run_and_end(&project, 100).await;
         rig.store_token(&session).await;
 
-        let (a, b) = tokio::join!(
-            rig.sup.resume_session(&session),
-            rig.sup.resume_session(&session)
-        );
+        let (a, b) =
+            tokio::join!(rig.sup.resume_session(&session), rig.sup.resume_session(&session));
         let winners = [&a, &b].iter().filter(|r| r.is_ok()).count();
         assert_eq!(winners, 1, "exactly one resume may win: a={a:?} b={b:?}");
         let loser = a.err().or(b.err()).expect("one of them failed");

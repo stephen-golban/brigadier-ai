@@ -146,8 +146,8 @@ describe("the choice reaches the command it names", () => {
     const { spies } = mount();
     await userEvent.click(screen.getByRole("button", { name: "Session" }));
 
-    expect(screen.getByRole("combobox", { name: /model/i })).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: /permissions/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /model/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /permissions/i })).toBeInTheDocument();
 
     await userEvent.type(fields()[0]!, "read the schema");
     await userEvent.click(screen.getByRole("button", { name: "Start" }));
@@ -155,6 +155,7 @@ describe("the choice reaches the command it names", () => {
     expect(spies.onStartSession).toHaveBeenCalledWith({
       projectId: P1,
       prompt: "read the schema",
+      isolated: false,
       model: "claude-sonnet-4-5",
       permissionMode: "default",
     });
@@ -195,8 +196,8 @@ describe("the run's model and permission mode reach start_run", () => {
     mount();
     await userEvent.click(screen.getByRole("button", { name: "Run" }));
 
-    expect(screen.getByRole("combobox", { name: /model/i })).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: /permissions/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /model/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /permissions/i })).toBeInTheDocument();
   });
 
   it("sends the chosen model and mode, and the model applies to every child of the run", async () => {
@@ -207,14 +208,10 @@ describe("the run's model and permission mode reach start_run", () => {
       ],
     });
     await userEvent.click(screen.getByRole("button", { name: "Run" }));
-    await userEvent.selectOptions(
-      screen.getByRole("combobox", { name: /model/i }),
-      "claude-haiku-4-5",
-    );
-    await userEvent.selectOptions(
-      screen.getByRole("combobox", { name: /permissions/i }),
-      "bypass-permissions",
-    );
+    await userEvent.click(screen.getByRole("button", { name: /model/i }));
+    await userEvent.click(screen.getByRole("option", { name: /Haiku 4.5/i }));
+    await userEvent.click(screen.getByRole("button", { name: /permissions/i }));
+    await userEvent.click(screen.getByRole("option", { name: /bypass/i }));
     await userEvent.type(
       screen.getByRole("textbox", { name: "the goal, in plain English" }),
       "ship it",
@@ -237,10 +234,11 @@ describe("the run's model and permission mode reach start_run", () => {
     });
     await userEvent.click(screen.getByRole("button", { name: "Run" }));
 
-    const model = screen.getByRole("combobox", { name: /model/i });
-    expect((model as HTMLSelectElement).value).toBe("");
+    const model = screen.getByRole("button", { name: /model/i });
+    expect(model).toHaveTextContent("Per role (no pick)");
+    await userEvent.click(model);
     // Reachable *and* named: an unlabelled empty option reads as a field that failed to load.
-    expect(within(model).getByRole("option", { name: /no pick/i })).toBeInTheDocument();
+    expect(within(screen.getByRole("listbox", { name: /model/i })).getByRole("option", { name: /no pick/i })).toBeInTheDocument();
 
     await userEvent.type(
       screen.getByRole("textbox", { name: "the goal, in plain English" }),
@@ -262,8 +260,9 @@ describe("the run's model and permission mode reach start_run", () => {
     mount();
     await userEvent.click(screen.getByRole("button", { name: "Run" }));
 
-    const modes = screen.getByRole("combobox", { name: /permissions/i });
-    const values = within(modes)
+    const modes = screen.getByRole("button", { name: /permissions/i });
+    await userEvent.click(modes);
+    const values = within(screen.getByRole("listbox", { name: /permissions/i }))
       .getAllByRole("option")
       .map((o) => (o as HTMLOptionElement).value);
     expect(values).toEqual([
@@ -282,8 +281,9 @@ describe("the run's model and permission mode reach start_run", () => {
     mount();
     await userEvent.click(screen.getByRole("button", { name: "Session" }));
 
-    const modes = screen.getByRole("combobox", { name: /permissions/i });
-    expect(within(modes).getAllByRole("option")).toHaveLength(7);
+    const modes = screen.getByRole("button", { name: /permissions/i });
+    await userEvent.click(modes);
+    expect(within(screen.getByRole("listbox", { name: /permissions/i })).getAllByRole("option")).toHaveLength(7);
   });
 
   /** Session's picker has no empty entry: starting one session has always pre-selected a model,
@@ -292,9 +292,10 @@ describe("the run's model and permission mode reach start_run", () => {
     mount({ models: [{ id: "claude-haiku-4-5", label: "Haiku 4.5", default: true }] });
     await userEvent.click(screen.getByRole("button", { name: "Session" }));
 
-    const model = screen.getByRole("combobox", { name: /model/i });
-    expect((model as HTMLSelectElement).value).toBe("claude-haiku-4-5");
-    expect(within(model).queryByRole("option", { name: /no pick/i })).not.toBeInTheDocument();
+    const model = screen.getByRole("button", { name: /model/i });
+    expect(model).toHaveTextContent("Haiku 4.5");
+    await userEvent.click(model);
+    expect(within(screen.getByRole("listbox", { name: /model/i })).queryByRole("option", { name: /no pick/i })).not.toBeInTheDocument();
   });
 });
 
