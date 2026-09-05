@@ -456,6 +456,23 @@ impl RunHandle {
         self.stop.load(Ordering::Acquire)
     }
 
+    /// Cancel orchestration before its history is deleted. Session processes are stopped by
+    /// the caller after this task can no longer dispatch or write plan rows.
+    pub(crate) async fn cancel(&self) {
+        self.stop();
+        let task = lock(&self.task).take();
+        if let Some(task) = task {
+            task.abort();
+            let _ = task.await;
+        }
+    }
+
+    /// Whether this launch still has an executing orchestration task.
+    #[must_use]
+    pub fn active(&self) -> bool {
+        !self.stopping() && lock(&self.task).as_ref().is_some_and(|task| !task.is_finished())
+    }
+
     /// Wait for the run's task to finish. Returns immediately if it has already been awaited.
     pub async fn join(&self) {
         let task = lock(&self.task).take();
@@ -842,6 +859,7 @@ impl Supervisor {
     /// or a project that is not a git repository, and [`SupervisorError::SessionLive`] when a run
     /// is already live for that project.
     pub async fn start_run(&self, spec: RunSpec) -> Result<RunHandle, SupervisorError> {
+        let _lifecycle = self.inner.lifecycle.read().await;
         let mut run = self.prepare_run(spec).await?;
         let handle = RunHandle {
             plan_id: run.plan_id.clone(),

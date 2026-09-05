@@ -330,6 +330,8 @@ struct ConsumeSpec {
 }
 
 struct Inner {
+    // Serialize creation/resume with deletion so no child can recreate removed rows.
+    lifecycle: tokio::sync::RwLock<()>,
     store: StoreHandle,
     run_id: String,
     data_dir: PathBuf,
@@ -447,6 +449,7 @@ impl Supervisor {
                 taps: Mutex::new(BTreeMap::new()),
                 tap_count: AtomicU64::new(0),
                 runs: Mutex::new(BTreeMap::new()),
+                lifecycle: tokio::sync::RwLock::new(()),
             }),
         }
     }
@@ -630,6 +633,7 @@ impl Supervisor {
         dir: PathBuf,
         branch: Option<String>,
     ) -> Result<Spawned, SupervisorError> {
+        let _lifecycle = self.inner.lifecycle.read().await;
         if !dir.is_dir() {
             return Err(SupervisorError::InvalidArgument(format!(
                 "{} is not a directory to run a child in",
@@ -788,6 +792,7 @@ impl Supervisor {
         // liveness check lives inside the reservation because the two must be one atomic step:
         // everything below is a sequence of awaits ending in a process spawn, and a bare
         // `is_live` check would let a second concurrent call through the whole of it.
+        let _lifecycle = self.inner.lifecycle.read().await;
         self.inner.reserve_resume(session_id)?;
         let _guard =
             ResumeGuard { inner: Arc::clone(&self.inner), session_id: session_id.clone() };
@@ -1157,86 +1162,21 @@ impl Supervisor {
 
     // ---- deletion ------------------------------------------------------------------------
 
-    /// Remove one session from the machine: its rows, its raw log, its pid record and its
-    /// worktree. The branch survives.
-    ///
-    /// `docs/vision.md` §8, verbatim: *"deleting a session destroys nothing that matters. The
-    /// work is in the repository; only the narration goes."* That is true only because of the
-    /// two things this method does not do — it does not delete a branch, and it does not proceed
-    /// over a worktree that refused.
-    ///
-    /// ## Order, and why it is that order
-    ///
-    /// 1. refuse if a child is on the other end;
-    /// 2. [`Supervisor::cleanup_worktree`], which is **reused, never reimplemented**: it already
-    ///    encodes six measured refusals and four fixed defects, `git worktree remove` without
-    ///    `--force` deletes gitignored files at exit 0, and `removed: true` was a lie until it was
-    ///    made conditional on the path going away;
-    /// 3. only then the rows;
-    /// 4. then the pid record and the raw log.
-    ///
-    /// Worktree before rows is deliberate. If step 3 fails, the row still names the branch and a
-    /// second call finishes the job — `cleanup_worktree` is idempotent. Rows first would delete
-    /// the only record of *which branch* holds the work, and leave a checkout on disk that
-    /// nothing points at.
-    ///
-    /// ## Unmerged commits: refuse, do not snapshot
-    ///
-    /// A branch carrying commits no other ref keeps comes back as
-    /// [`crate::worktree::CleanupBlocked::Commits`] and **the delete stops there**, having
-    /// touched nothing. That is a refusal rather than a snapshot-to-a-ref because a snapshot
-    /// would duplicate a ref that already exists: no path in this crate deletes a branch, so
-    /// those commits are already safe under `brigadier/<id>` and always will be. What a delete
-    /// actually destroys is brigadier's *record of which branch that is* — so the refusal's job
-    /// is to put the branch name in front of the operator first, and
-    /// [`SessionDeletion::branch`] carries it on the refusal and on the success alike.
-    ///
-    /// `force = true` proceeds, and it is the caller's explicit ask; it still keeps the branch.
-    /// The count itself comes from `git rev-list --count`, never from `git`'s `cherry`
-    /// subcommand, which is measurably wrong in both directions.
-    ///
-    /// # Errors
-    /// [`SupervisorError::NoSuchSession`] when the store has no such row,
-    /// [`SupervisorError::SessionLive`] when a child is still running in it or a resume of it is
-    /// in flight, [`SupervisorError::InvalidArgument`] when the session records a worktree but no
-    /// project to resolve the repository from, [`SupervisorError::Worktree`] for a git failure,
-    /// and [`SupervisorError::Store`] — including `DeleteIncomplete`, which means **nothing was
-    /// deleted** — for the database half.
-    // see docs/vision.md §8, docs/research/worktree-cleanup.md §2 and "Hard rules" 2, 3 and 6.
+    /// Remove Brigadier history, preserving the checkout and all user files.
+    /// `force` is retained for IPC compatibility; deletion never cleans worktrees.
     pub async fn delete_session(
         &self,
         session_id: &SessionId,
-        force: bool,
+        _force: bool,
     ) -> Result<SessionDeletion, SupervisorError> {
+        let _lifecycle = self.inner.lifecycle.write().await;
         let record = self.session(session_id).await?.ok_or(SupervisorError::NoSuchSession)?;
-        // `is_engaged`, not `is_live`: a reserved-but-unspawned resume is about to run a child in
-        // the directory this call would remove.
-        if self.inner.is_engaged(session_id) {
-            return Err(SupervisorError::SessionLive(format!(
-                "session {session_id} is still live; end it or kill it before deleting it"
-            )));
+        if let Some(project_id) = &record.project_id {
+            self.cancel_project_runs(project_id).await?;
         }
+        self.stop_for_deletion(session_id).await?;
         let branch = record.branch.clone();
-        let mut worktree = None;
-        if record.worktree_path.is_some() {
-            let cleanup = self.cleanup_worktree(session_id, force).await?;
-            if cleanup.blocked.is_some() {
-                tracing::info!(
-                    session_id = session_id.as_str(),
-                    blocked = ?cleanup.blocked,
-                    "refusing to delete a session whose worktree refused"
-                );
-                return Ok(SessionDeletion {
-                    session_id: session_id.as_str().to_owned(),
-                    removed: false,
-                    rows: brigadier_store::Deleted::default(),
-                    worktree: Some(cleanup),
-                    logs_removed: 0,
-                    branch,
-                });
-            }
-            worktree = Some(cleanup);
-        }
+        let worktree = None;
         let rows = self
             .inner
             .store
@@ -1263,90 +1203,21 @@ impl Supervisor {
         })
     }
 
-    /// Remove one project and everything under it: every session, their rows, logs and
-    /// worktrees, and the whole plan tree.
-    ///
-    /// One `DELETE FROM projects` does the database half, because the schema already says what
-    /// depends on what — with the one documented exception that `work_orders.session_id` is
-    /// `ON DELETE SET NULL` rather than a cascade, so a plan's record that an order was
-    /// dispatched outlives the session that ran it. That exception is honoured, not corrected;
-    /// [`brigadier_store::Deleted::work_orders_orphaned`] counts what it kept.
-    ///
-    /// ## What refuses, and what a refusal costs
-    ///
-    /// **Every** session's liveness is checked before anything at all is touched, so a project
-    /// with one live session refuses whole rather than deleting the other forty and then
-    /// stopping. After that, worktrees are removed one session at a time through
-    /// [`Supervisor::cleanup_worktree`], and the **first refusal ends the pass**: no rows are
-    /// deleted, and [`ProjectDeletion::worktrees`] lists what happened to each session up to
-    /// that point. Checkouts removed before the refusal stay removed — their branches survive,
-    /// so nothing is lost — and the report is what says so rather than an "all done" that would
-    /// be false.
-    ///
-    /// The project's `.brigadier/` directory is removed **only if it is empty**, and its line in
-    /// `$GIT_COMMON_DIR/info/exclude` is left alone: that file is the operator's.
-    ///
-    /// # Errors
-    /// [`SupervisorError::NoSuchProject`], [`SupervisorError::SessionLive`] naming the sessions
-    /// that are live, [`SupervisorError::Worktree`] for a git failure, and
-    /// [`SupervisorError::Store`] for the database half.
-    // see docs/vision.md §8 and the migration 4 comment in `crates/store/src/schema.rs`.
+    /// Remove the project from Brigadier only. No path inside the repository is removed.
     pub async fn delete_project(
         &self,
         project_id: &str,
-        force: bool,
+        _force: bool,
     ) -> Result<ProjectDeletion, SupervisorError> {
-        let project = self.project(project_id).await?.ok_or(SupervisorError::NoSuchProject)?;
-        let sessions: Vec<SessionRecord> = self
-            .list_sessions()
-            .await?
-            .into_iter()
-            .filter(|s| s.project_id.as_deref() == Some(project_id))
-            .collect();
-
-        // Every one of them, before anything is touched.
-        let live: Vec<&str> = sessions
-            .iter()
-            .filter(|s| self.inner.is_engaged(&s.session_id))
-            .map(|s| s.session_id.as_str())
-            .collect();
-        if !live.is_empty() {
-            return Err(SupervisorError::SessionLive(format!(
-                "project {project_id} has {} live session(s) ({}); end or kill them before deleting it",
-                live.len(),
-                live.join(", ")
-            )));
-        }
-
-        let mut worktrees = Vec::new();
+        let _lifecycle = self.inner.lifecycle.write().await;
+        self.project(project_id).await?.ok_or(SupervisorError::NoSuchProject)?;
+        self.cancel_project_runs(project_id).await?;
+        let sessions: Vec<SessionRecord> = self.list_sessions().await?.into_iter()
+            .filter(|s| s.project_id.as_deref() == Some(project_id)).collect();
         for session in &sessions {
-            if session.worktree_path.is_none() {
-                continue;
-            }
-            let cleanup = self.cleanup_worktree(&session.session_id, force).await?;
-            let blocked = cleanup.blocked.is_some();
-            worktrees.push(SessionWorktree {
-                session_id: session.session_id.as_str().to_owned(),
-                cleanup,
-            });
-            if blocked {
-                tracing::info!(
-                    project_id,
-                    session_id = session.session_id.as_str(),
-                    "refusing to delete a project whose session worktree refused"
-                );
-                return Ok(ProjectDeletion {
-                    project_id: project_id.to_owned(),
-                    removed: false,
-                    rows: brigadier_store::Deleted::default(),
-                    worktrees,
-                    logs_removed: 0,
-                    gate_logs_removed: 0,
-                    brigadier_dir_removed: false,
-                });
-            }
+            self.stop_for_deletion(&session.session_id).await?;
         }
-
+        let worktrees = Vec::new();
         let outcome = self.inner.store.delete_project(project_id.to_owned()).await?;
         let (rows, ids) = outcome.map(|o| (o.rows, o.ids)).unwrap_or_default();
 
@@ -1361,7 +1232,7 @@ impl Supervisor {
             .iter()
             .filter(|phase_id| removal::remove_gate_logs(&self.inner.data_dir, phase_id))
             .count() as u32;
-        let brigadier_dir_removed = removal::remove_brigadier_dir(&project.root_path);
+        let brigadier_dir_removed = false;
         tracing::info!(
             project_id,
             sessions = rows.sessions,
@@ -1380,6 +1251,34 @@ impl Supervisor {
             gate_logs_removed,
             brigadier_dir_removed,
         })
+    }
+
+    async fn cancel_project_runs(&self, project_id: &str) -> Result<(), SupervisorError> {
+        for run in self.runs() {
+            if self.inner.store.plan(run.plan_id()).await?
+                .is_some_and(|p| p.project_id == project_id) {
+                run.cancel().await;
+                lock(&self.inner.runs).remove(run.plan_id());
+            }
+        }
+        Ok(())
+    }
+
+    async fn stop_for_deletion(&self, session_id: &SessionId) -> Result<(), SupervisorError> {
+        if !self.is_live(session_id) { return Ok(()); }
+        // Wait for the consumer to finish persisting its final events before deleting history.
+        let stopped = tokio::time::timeout(Duration::from_secs(5), async {
+            if let Err(error) = self.kill(session_id).await {
+                if self.is_live(session_id) { return Err(error); }
+            }
+            while self.is_live(session_id) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Ok(())
+        }).await;
+        stopped.unwrap_or_else(|_| Err(SupervisorError::SessionLive(
+            "The session did not stop. Try deleting it again.".to_owned()
+        )))
     }
 
     /// Requests parked right now for one live session, oldest first.

@@ -1,3 +1,4 @@
+import type { SessionDeleteAnswer } from "./Sidebar";
 /**
  * Behavioural tests for `src/components/Sidebar.tsx`.
  *
@@ -31,7 +32,7 @@ import { Sidebar } from "./Sidebar";
 import type { SidebarProps } from "./Sidebar";
 import type { SessionRuntime } from "../feedStore";
 import { AppError, ZERO_USAGE } from "../wire";
-import type { ProjectView, SessionId, SessionStatus, WorktreeCleanup } from "../wire";
+import type { ProjectView, SessionId, SessionStatus } from "../wire";
 
 afterEach(() => {
   cleanup();
@@ -588,299 +589,42 @@ const NO_ROWS = {
   work_orders_orphaned: 0,
 };
 
-function cleanup_(over: Partial<WorktreeCleanup> = {}): WorktreeCleanup {
-  return {
-    removed: false,
-    dirty_files: 0,
-    commits: 0,
-    branch: "brigadier/a80e2411",
-    live_branch: "brigadier/a80e2411",
-    blocked: null,
-    ...over,
-  };
-}
-
-describe("deleting a session", () => {
-  it("asks before it deletes, and the first click reaches no command", async () => {
-    const user = userEvent.setup();
-    const onDeleteSession = vi.fn();
-    mount({
-      projects: [project("p", "job-portal")],
-      sessions: { one: session("one", "p", "exited") },
-      order: ["one"],
-      // Selected, so the group is open and the row is on screen: a collapsed project draws a
-      // count, not its sessions.
-      selectedProjectId: "p",
-      onDeleteSession,
-    });
-
-    await user.click(screen.getByRole("button", { name: "delete session a80e2411" }));
-
-    expect(onDeleteSession).not.toHaveBeenCalled();
-    expect(screen.getByText(/Delete this session from the machine\?/)).toBeInTheDocument();
-    // The branch is named *before* the row that records it goes: it is the only thing left that
-    // says where the work went, and no path in the harness deletes one.
-    expect(screen.getByText(/branch brigadier\/a80e2411 is kept/)).toBeInTheDocument();
+describe("immediate sidebar removal", () => {
+  const removed = { removed: true, rows: NO_ROWS, worktree: null, branch: null, logs_removed: 0 };
+  it("deletes a running session on the first click without a confirmation", async () => {
+    const onDeleteSession = vi.fn(async () => ({ deletion: { ...removed, session_id: "one" }, error: null }));
+    mount({ projects: [project("p", "job-portal")], sessions: { one: session("one", "p", "running") }, order: ["one"], selectedProjectId: "p", onDeleteSession });
+    await userEvent.click(screen.getByRole("button", { name: "delete session a80e2411" }));
+    expect(onDeleteSession).toHaveBeenCalledExactlyOnceWith("one", false);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
   });
-
-  it("sends force: false on the confirmation, never on the first click", async () => {
-    const user = userEvent.setup();
-    const onDeleteSession = vi.fn(async () => ({
-      deletion: {
-        session_id: "one",
-        removed: true,
-        rows: { ...NO_ROWS, sessions: 1 },
-        worktree: null,
-        logs_removed: 1,
-        branch: "brigadier/a80e2411",
-      },
-      error: null as null,
-    }));
-    mount({
-      projects: [project("p", "job-portal")],
-      sessions: { one: session("one", "p", "exited") },
-      order: ["one"],
-      // Selected, so the group is open and the row is on screen: a collapsed project draws a
-      // count, not its sessions.
-      selectedProjectId: "p",
-      onDeleteSession,
-    });
-
-    await user.click(screen.getByRole("button", { name: "delete session a80e2411" }));
-    await user.click(screen.getByRole("button", { name: "Delete session" }));
-
-    expect(onDeleteSession).toHaveBeenCalledWith("one", false);
+  it("hides the session while deletion is still in flight, restoring it on failure", async () => {
+    let finish!: (value: SessionDeleteAnswer) => void;
+    const onDeleteSession = vi.fn(() => new Promise<SessionDeleteAnswer>(resolve => { finish = resolve; }));
+    mount({ projects: [project("p", "job-portal")], sessions: { one: session("one", "p", "running") }, order: ["one"], selectedProjectId: "p", onDeleteSession });
+    await userEvent.click(screen.getByRole("button", { name: "delete session a80e2411" }));
+    expect(screen.queryByRole("button", { name: "delete session a80e2411" })).not.toBeInTheDocument();
+    finish({ deletion: null, error: { name: "AppError", code: "store", message: "Retry needed" } });
+    expect(await screen.findByRole("alert")).toHaveTextContent("Retry needed");
+    expect(screen.getByRole("button", { name: "delete session a80e2411" })).toBeInTheDocument();
   });
-
-  /**
-   * Rule 2. `session_running` is the one refusal that **rejects** rather than resolving, and it
-   * has a remedy the operator can act on in this window — so it gets a sentence rather than a
-   * code. `force` does not answer it and no force button is drawn.
-   */
-  it("renders a session_running rejection as a refusal with its remedy, not as a success", async () => {
-    const user = userEvent.setup();
-    const onDeleteSession = vi.fn(async () => ({
-      deletion: null,
-      error: new AppError("session_running", "session one is still live; end it or kill it first"),
-    }));
-    mount({
-      projects: [project("p", "job-portal")],
-      sessions: { one: session("one", "p", "running") },
-      order: ["one"],
-      selectedProjectId: "p",
-      onDeleteSession,
-    });
-
-    await user.click(screen.getByRole("button", { name: "delete session a80e2411" }));
-    await user.click(screen.getByRole("button", { name: "Delete session" }));
-
-    const note = await screen.findByRole("alert");
-    expect(note).toHaveTextContent("This session is still running. End it or kill it first");
-    expect(note).toHaveTextContent("nothing was deleted");
-    // The row is still there — the refusal did not take it off screen.
-    expect(screen.getByRole("button", { name: /brigadier\/a80e2411/ })).toBeInTheDocument();
-    // Nothing offers to force past a live child; that check is what stands between a mis-click
-    // and an agent writing into a deleted inode.
-    expect(within(note).queryByRole("button", { name: /delete/i })).not.toBeInTheDocument();
+  it("removes a project on the first click and explains that local files are kept", async () => {
+    const onDeleteProject = vi.fn(async () => ({ deletion: { ...removed, project_id: "p", worktrees: [], gate_logs_removed: 0, brigadier_dir_removed: false }, error: null }));
+    mount({ projects: [project("p", "job-portal")], onDeleteProject });
+    const button = screen.getByRole("button", { name: "delete project job-portal" });
+    expect(button).toHaveAttribute("title", expect.stringContaining("Local files are kept"));
+    await userEvent.click(button);
+    expect(onDeleteProject).toHaveBeenCalledExactlyOnceWith("p", false);
+    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
   });
-
-  /**
-   * Rule 3. Unmerged commits refuse and the branch is kept, so the refusal's job is to put the
-   * branch name in front of the operator before the row that records it goes.
-   */
-  it("names the branch on an unmerged-commits refusal, and offers force as a second action", async () => {
-    const user = userEvent.setup();
-    const onDeleteSession = vi.fn(async () => ({
-      deletion: {
-        session_id: "one",
-        removed: false,
-        rows: NO_ROWS,
-        worktree: cleanup_({ commits: 3, blocked: "commits" as const }),
-        logs_removed: 0,
-        branch: "brigadier/a80e2411",
-      },
-      error: null as null,
-    }));
-    mount({
-      projects: [project("p", "job-portal")],
-      sessions: { one: session("one", "p", "exited") },
-      order: ["one"],
-      // Selected, so the group is open and the row is on screen: a collapsed project draws a
-      // count, not its sessions.
-      selectedProjectId: "p",
-      onDeleteSession,
-    });
-
-    await user.click(screen.getByRole("button", { name: "delete session a80e2411" }));
-    await user.click(screen.getByRole("button", { name: "Delete session" }));
-
-    const note = await screen.findByRole("alert");
-    expect(note).toHaveTextContent("Nothing was deleted");
-    expect(note).toHaveTextContent("3 commits that no other branch, tag or remote keeps");
-    expect(note).toHaveTextContent("branch brigadier/a80e2411 is kept");
-
-    // The force is the *second* action, drawn by the refusal itself.
-    await user.click(within(note).getByRole("button", { name: /Delete anyway, keep the branch/ }));
-    expect(onDeleteSession).toHaveBeenNthCalledWith(2, "one", true);
-  });
-
-  /**
-   * `unregistered`, `locked` and `left_on_disk` return **before** the force check
-   * (`crates/supervisor/src/worktree.rs:468, :472, :549`), so a force button on one of them is a
-   * button guaranteed to refuse again. The sentence ends in what to do outside brigadier instead.
-   */
-  it("offers no force for a refusal force cannot reach", async () => {
-    const user = userEvent.setup();
-    const onDeleteSession = vi.fn(async () => ({
-      deletion: {
-        session_id: "one",
-        removed: false,
-        rows: NO_ROWS,
-        worktree: cleanup_({ blocked: "locked" as const }),
-        logs_removed: 0,
-        branch: "brigadier/a80e2411",
-      },
-      error: null as null,
-    }));
-    mount({
-      projects: [project("p", "job-portal")],
-      sessions: { one: session("one", "p", "exited") },
-      order: ["one"],
-      // Selected, so the group is open and the row is on screen: a collapsed project draws a
-      // count, not its sessions.
-      selectedProjectId: "p",
-      onDeleteSession,
-    });
-
-    await user.click(screen.getByRole("button", { name: "delete session a80e2411" }));
-    await user.click(screen.getByRole("button", { name: "Delete session" }));
-
-    const note = await screen.findByRole("alert");
-    expect(note).toHaveTextContent("git worktree unlock");
-    expect(within(note).queryByRole("button", { name: /^Delete/ })).not.toBeInTheDocument();
-    expect(within(note).getByRole("button", { name: "Cancel" })).toBeInTheDocument();
-  });
-
-  it("draws no delete control at all when the host offers none", () => {
-    mount({
-      projects: [project("p", "job-portal")],
-      sessions: { one: session("one", "p", "exited") },
-      order: ["one"],
-      selectedProjectId: "p",
-    });
-
-    expect(screen.queryByRole("button", { name: /^delete session/ })).not.toBeInTheDocument();
-  });
-});
-
-describe("deleting a project", () => {
-  it("says what goes with it before it goes", async () => {
-    const user = userEvent.setup();
-    const onDeleteProject = vi.fn();
-    mount({
-      projects: [project("p", "job-portal")],
-      sessions: {
-        one: session("one", "p", "exited"),
-        two: session("two", "p", "exited", { branch: "brigadier/bbbb2222" }),
-      },
-      order: ["one", "two"],
-      selectedProjectId: "p",
-      onDeleteProject,
-    });
-
-    await user.click(screen.getByRole("button", { name: "delete project job-portal" }));
-
-    expect(onDeleteProject).not.toHaveBeenCalled();
-    expect(screen.getByText(/Delete job-portal from brigadier\?/)).toBeInTheDocument();
-    expect(screen.getByText(/2 sessions go with it/)).toBeInTheDocument();
-    expect(screen.getByText(/Every branch is kept/)).toBeInTheDocument();
-  });
-
-  /**
-   * Rule 4, and the one this whole surface exists for. The database half is all-or-nothing; the
-   * **worktree half is not**. Checkouts go one session at a time before any row is touched and
-   * the first refusal ends the pass, so the ones removed before it stay removed. A project that
-   * half-deleted and reported one line is exactly what this renders instead.
-   */
-  it("lists every session a partial delete attempted, including the one that refused", async () => {
-    const user = userEvent.setup();
-    const onDeleteProject = vi.fn(async () => ({
-      deletion: {
-        project_id: "p",
-        removed: false,
-        rows: NO_ROWS,
-        worktrees: [
-          {
-            session_id: "one",
-            cleanup: cleanup_({ removed: true, branch: "brigadier/aaaa1111", live_branch: "brigadier/aaaa1111" }),
-          },
-          {
-            session_id: "two",
-            cleanup: cleanup_({
-              dirty_files: 7,
-              blocked: "dirty" as const,
-              branch: "brigadier/bbbb2222",
-              live_branch: "brigadier/bbbb2222",
-            }),
-          },
-        ],
-        logs_removed: 0,
-        gate_logs_removed: 0,
-        brigadier_dir_removed: false,
-      },
-      error: null as null,
-    }));
-    mount({
-      projects: [project("p", "job-portal")],
-      sessions: {
-        one: session("one", "p", "exited", { branch: "brigadier/aaaa1111" }),
-        two: session("two", "p", "exited", { branch: "brigadier/bbbb2222" }),
-      },
-      order: ["one", "two"],
-      selectedProjectId: "p",
-      onDeleteProject,
-    });
-
-    await user.click(screen.getByRole("button", { name: "delete project job-portal" }));
-    await user.click(screen.getByRole("button", { name: "Delete project" }));
-
-    const note = await screen.findByRole("alert");
-    expect(note).toHaveTextContent("Nothing was deleted from the database");
-    // Both entries, and the one that already went says so rather than being folded away.
-    const entries = within(note).getAllByRole("listitem");
-    expect(entries).toHaveLength(2);
-    expect(entries[0]).toHaveTextContent("brigadier/aaaa1111");
-    expect(entries[0]).toHaveTextContent("checkout removed");
-    expect(entries[1]).toHaveTextContent("brigadier/bbbb2222");
-    expect(entries[1]).toHaveTextContent("7 files would be deleted");
-    // …and the survivors are named as survivors, not as losses.
-    expect(note).toHaveTextContent("every branch survives");
-
-    await user.click(within(note).getByRole("button", { name: /Delete 7 files and the session/ }));
-    expect(onDeleteProject).toHaveBeenNthCalledWith(2, "p", true);
-  });
-
-  it("renders a session_running rejection as a refusal naming the remedy", async () => {
-    const user = userEvent.setup();
-    const onDeleteProject = vi.fn(async () => ({
-      deletion: null,
-      error: new AppError("session_running", "project p has 1 live session(s) (one)"),
-    }));
-    mount({
-      projects: [project("p", "job-portal")],
-      sessions: { one: session("one", "p", "running") },
-      order: ["one"],
-      selectedProjectId: "p",
-      onDeleteProject,
-    });
-
-    await user.click(screen.getByRole("button", { name: "delete project job-portal" }));
-    await user.click(screen.getByRole("button", { name: "Delete project" }));
-
-    const note = await screen.findByRole("alert");
-    expect(note).toHaveTextContent("End or kill it first");
-    expect(note).toHaveTextContent("nothing was deleted, not even the other sessions");
-    // The project is still in the sidebar; a refusal takes nothing off screen.
-    expect(screen.getByText("job-portal")).toBeInTheDocument();
+  it("shows a failure inline and allows retry", async () => {
+    const onDeleteSession = vi.fn(async () => ({ deletion: null, error: { name: "AppError", code: "store", message: "Database unavailable" } }));
+    mount({ projects: [project("p", "job-portal")], sessions: { one: session("one", "p", "exited") }, order: ["one"], selectedProjectId: "p", onDeleteSession });
+    const button = screen.getByRole("button", { name: "delete session a80e2411" });
+    await userEvent.click(button);
+    expect(screen.getByRole("alert")).toHaveTextContent("Database unavailable");
+    await userEvent.click(screen.getByRole("button", { name: "delete session a80e2411" }));
+    expect(onDeleteSession).toHaveBeenCalledTimes(2);
   });
 });

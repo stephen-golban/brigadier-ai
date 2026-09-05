@@ -297,8 +297,19 @@ function applySignal(env: Envelope, projectId: ProjectId | null): void {
 
 /* ----------------------------------------------------------------- drain */
 
+// Final buffered batches and in-flight fetches must not resurrect a deleted sidebar row.
+const deletedSessions = new Set<SessionId>();
+const deletedProjects = new Set<ProjectId>();
+
 function applyBatch(batch: FeedBatch): void {
   const projectId = batch.project_id;
+  if (deletedProjects.has(projectId)) return;
+  if (deletedSessions.size > 0) batch = {
+    ...batch,
+    rows: batch.rows.filter(row => !deletedSessions.has(row.s)),
+    signals: batch.signals.filter(signal => !deletedSessions.has(signal.session_id)),
+    counters: batch.counters.filter(counter => !deletedSessions.has(counter.session_id)),
+  };
 
   // A batch for a project the sidebar has never listed. Record it once; `App` re-fetches
   // `list_projects` so the project (and its sessions) become selectable. Rows for it are
@@ -466,6 +477,7 @@ export function noteProjects(ids: readonly ProjectId[]): void {
 /** Fold `list_sessions` into the store without disturbing anything the feed already knows. */
 export function seedSessions(views: SessionView[]): void {
   for (const v of views) {
+    if (deletedSessions.has(v.session_id) || (v.project_id !== null && deletedProjects.has(v.project_id))) continue;
     const prev = sessions.get(v.session_id) ?? blank(v.session_id, v.project_id);
     // A view that says the session is live carries `ended_at_ms: null` / `exit_code: null` and
     // means it — that is exactly what `resume_session` returns for a session this store still
@@ -523,13 +535,16 @@ export function noteWorktreeRemoved(sessionId: SessionId): void {
  * The approvals go with it because their rows were cascade-deleted on the Rust side
  * (`docs/plans/ipc-contract.md` §Deleting: `feed`, `approvals` and `intents` cascade from
  * `sessions`), so a card left on screen would be answerable against a request that no longer
- * exists. The project ring is deliberately **not** filtered: it is a bounded ring of pre-rendered
- * strings the live path appends to, and rebuilding it here would invent an ordering the live path
- * never produces. Those rows age out.
+ * exists. Project feed rows belonging to the deleted session are removed too.
  *
  * Idempotent, and returns whether anything went, so a caller can skip a re-render.
  */
 export function dropSession(sessionId: SessionId): boolean {
+  deletedSessions.add(sessionId);
+  for (const [id, rows] of projectRows) {
+    const kept = rows.filter(row => row.s !== sessionId);
+    if (kept.length !== rows.length) projectRows.set(id, kept);
+  }
   const had = sessions.delete(sessionId);
   sessionRows.delete(sessionId);
   let dropped = had;
@@ -551,9 +566,11 @@ export function dropSession(sessionId: SessionId): boolean {
  * session created behind the UI's back is in here and not in `list_sessions`'s last answer.
  */
 export function dropProject(projectId: ProjectId): boolean {
+  deletedProjects.add(projectId);
   const own = [...sessions.values()].filter((s) => s.projectId === projectId);
   let dropped = false;
   for (const s of own) {
+    deletedSessions.add(s.sessionId);
     sessions.delete(s.sessionId);
     sessionRows.delete(s.sessionId);
     dropped = true;
@@ -588,6 +605,7 @@ export function dropProject(projectId: ProjectId): boolean {
  */
 export function seedApprovals(views: ApprovalView[]): void {
   for (const v of views) {
+    if (deletedSessions.has(v.session_id)) continue;
     approvals.set(v.request_id, {
       requestId: v.request_id,
       sessionId: v.session_id,
@@ -634,6 +652,7 @@ export function dismissApproval(requestId: string): void {
  * would produce an ordering the live path never produces.
  */
 export function seedRows(sessionId: SessionId, rows: FeedRowWire[]): void {
+  if (deletedSessions.has(sessionId)) return;
   const existing = sessionRows.get(sessionId) ?? EMPTY_ROWS;
 
   const merged: FeedRowWire[] = [];

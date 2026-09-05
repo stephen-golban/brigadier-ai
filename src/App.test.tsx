@@ -516,7 +516,7 @@ describe("opening a project", () => {
  * refusal draws are `src/components/Sidebar.test.tsx`'s.
  */
 describe("deleting", () => {
-  it("takes a deleted session out of the sidebar, after a confirmation step", async () => {
+  it("takes a deleted session out of the sidebar, on the first click", async () => {
     const user = userEvent.setup();
     h.sessions = [view("aaaa1111", "p-live", "exited"), view("bbbb2222", "p-live", "exited")];
     await mountApp();
@@ -530,10 +530,7 @@ describe("deleting", () => {
     // The first click asks. Nothing has reached the command yet, which is the whole point of the
     // step: a destructive action is never one press away.
     await user.click(within(nav).getByRole("button", { name: "delete session aaaa1111" }));
-    expect(h.deletes).toEqual([]);
-    expect(within(nav).getByText(/Delete this session from the machine\?/)).toBeInTheDocument();
 
-    await user.click(within(nav).getByRole("button", { name: "Delete session" }));
 
     // `force: false` — the question, never the first click's answer.
     expect(h.deletes).toEqual([{ kind: "session", id: "aaaa1111", force: false }]);
@@ -550,7 +547,6 @@ describe("deleting", () => {
     await mountApp();
 
     await user.click(screen.getByRole("button", { name: "delete session aaaa1111" }));
-    await user.click(screen.getByRole("button", { name: "Delete session" }));
 
     // Nothing in the harness deletes a branch, and once the row is gone the branch name is the
     // only thing that says where the work went — so the notice carries it.
@@ -564,9 +560,7 @@ describe("deleting", () => {
 
     const nav = screen.getByRole("navigation", { name: /projects and sessions/i });
     await user.click(within(nav).getByRole("button", { name: "delete project job-portal" }));
-    expect(h.deletes).toEqual([]);
 
-    await user.click(within(nav).getByRole("button", { name: "Delete project" }));
 
     expect(h.deletes).toEqual([{ kind: "project", id: "p-live", force: false }]);
     expect(

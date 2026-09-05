@@ -1,28 +1,6 @@
-/**
- * The whole window: a two-pane shell. Sidebar on the left (projects, their sessions nested
- * underneath, the pending-approvals count and the claude probe); a single thread column on the
- * right holding a quiet header, the feed, the approval cards docked above the composer, and the
- * composer itself centred on a fixed max width.
- *
- * The header is deliberately quiet — 14px name, 11px mono path, one branch chip. `docs/vision.md`
- * §9 is "thread-primary, one column", and the pinned plan card that belongs above the thread is
- * W4-D's; a loud header here would be competing with it before it exists.
- *
- * **One dock, one text field.** Until 2026-09-05 the column ended in two stacked fields — a run
- * strip and whichever composer the selection implied — and nothing on screen said which was
- * which; the owner asked, driving the app for the first time, why there were two.
- * `src/components/Dock.tsx` is now the single surface, with an explicit choice of what pressing
- * Return does: start a run, start a session, or send a turn to the selected one. No command
- * changed, and neither did which of them is legal when.
- *
- * All IPC goes through `bridge()`, which is the real `invoke` inside Tauri and the in-memory
- * mock in a browser, with no code change between the two.
- *
- * **Nothing here is optimistic, and that is current.** `docs/vision.md` §9 wants starting a
- * session, sending a turn and deleting one to paint before Rust confirms, and approvals never to.
- * Every handler below still awaits. An optimistic entry has to be retired by a *specific matched
- * echo* (`TurnStarted.turn_id`) rather than by "the operation finished" — VS Code #332087 is what
- * happens otherwise — and that machinery is not built. Half of it would be worse than none.
+/** The desktop shell: project sidebar, conversation, composer and optional workspace.
+ * Saved automation plans are collapsed project history. A selected session shows its chat.
+ * IPC uses the native bridge in Tauri and an in-memory mock in browser previews.
  */
 import {
   useCallback,
@@ -57,7 +35,6 @@ import type {
   IntentSettlement,
   IntentView,
   ModelInfo,
-  PermissionMode,
   PlanId,
   ProjectId,
   ProjectView,
@@ -548,17 +525,7 @@ export function App() {
     [say],
   );
 
-  /**
-   * Delete a session from the machine: its rows, its raw logs, its pid file and its worktree.
-   *
-   * **A refusal comes back as a resolved value, not a rejection** (`docs/plans/ipc-contract.md`
-   * §Deleting), so both shapes are handed to the sidebar and neither is flattened into the other.
-   * The store row is dropped only on `removed: true`; a `removed: false` touched nothing at all,
-   * and pretending otherwise would take a session off screen that is still on disk.
-   *
-   * The branch is never deleted by anything, so the success notice names it: once the row is gone
-   * it is the only thing that says where the work went.
-   */
+  /** Delete history; the supervisor stops the process and preserves local files. */
   const deleteSession = useCallback(
     async (sessionId: SessionId, force: boolean): Promise<SessionDeleteAnswer> => {
       try {
@@ -617,7 +584,7 @@ export function App() {
             current !== null && owned[current]?.projectId === projectId ? null : current,
           );
           setNotice(
-            `deleted project ${projectId}: ${deletion.rows.sessions} sessions, ${deletion.rows.feed} feed rows, ${deletion.rows.plans} plans · every branch kept`,
+            `Project removed from Brigadier. Local files are kept.`,
           );
         }
         return { deletion, error: null };
@@ -664,7 +631,7 @@ export function App() {
     // painting this answer would put one project's plan under another project's name.
     if (runRequest.current !== projectId) return;
     setRun(view);
-    setIntents(list);
+    setIntents(list.filter(intent => intent.project_id === projectId));
   }, []);
 
   /**
@@ -688,33 +655,6 @@ export function App() {
     }, RUN_POLL_MS);
     return () => clearInterval(id);
   }, [selectedProjectId, runLive, refreshRun]);
-
-  /**
-   * Hand the harness a goal in plain English. The answer is the plan, painted immediately.
-   *
-   * R4.1: the model and the permission mode go with it. They did not until 2026-09-05, so the
-   * dock's pickers reached nothing — the owner's first live run showed `claude-opus-5[1m]` in the
-   * session header while the picker said Haiku. `model === null` is a real choice and the better
-   * default: the harness's role-based routing stays in charge, so judgement takes the provider's
-   * strong default and a work order takes its per-order tier. It is sent as `null`, never as a
-   * sentinel — `start_run`'s `model` is an `Option<String>` and a placeholder would be handed
-   * straight to the CLI's `--model`.
-   */
-  const startRun = useCallback(
-    (goal: string, model: string | null, permissionMode: PermissionMode) => {
-      if (selectedProjectId === null) return;
-      const projectId = selectedProjectId;
-      setCommandBusy(true);
-      void bridge()
-        .startRun(projectId, goal, model, permissionMode)
-        .then((view) => {
-          if (runRequest.current === projectId) setRun(view);
-        })
-        .catch(say)
-        .finally(() => setCommandBusy(false));
-    },
-    [selectedProjectId, say],
-  );
 
   /**
    * Stop dispatching. **Nothing is killed** (`docs/plans/ipc-contract.md` §"The run"): a worker
@@ -860,13 +800,18 @@ export function App() {
           <FpsOverlay />
         </header>
 
-        {/*
-          Pinned, and the placement is the requirement rather than a preference: the card is a
-          sibling of `<Feed>` inside the thread column, **above it and outside its scroller**, so
-          nothing the owner steers with can scroll away (`docs/vision.md` §9). Moving it inside
-          the feed would make it a row.
-        */}
-        <RunCard run={run} intents={intents} onSettle={settleIntent} />
+        {runLive && run?.project_id === selectedProjectId && selectedSessionId === null ? (
+          <div className="run-dock-status" role="status">
+            Automation running: {run.goal}
+            <button className="act" onClick={() => stopRun(run.plan_id)}>Stop automation</button>
+          </div>
+        ) : null}
+        {selectedSessionId === null && (run !== null || intents.length > 0) ? (
+          <details key={selectedProjectId} className="automation-details">
+            <summary>Automation history</summary>
+            <RunCard run={run} intents={intents} onSettle={settleIntent} />
+          </details>
+        ) : null}
 
         <Feed
           sessionId={selectedSessionId}
@@ -881,24 +826,12 @@ export function App() {
           onFocus={focusApproval}
         />
 
-        {/*
-          One dock, one text field, and an explicit choice of what pressing enter does. Until
-          2026-09-05 there were two fields stacked here — the run strip above, and whichever
-          composer the selection implied below — and nothing on screen said which was which; the
-          owner asked, driving the app for the first time, why there were two. `Dock` is the
-          answer, and it changes no command: a run is still per project and still outlives every
-          session it dispatches, a session is still started with a model and a permission mode,
-          and a turn still goes to the selected session.
-        */}
         <Dock
           project={selectedProject}
           session={selectedSession}
           models={models}
-          run={run}
           busy={commandBusy}
           blocked={claudeError !== null}
-          onStartRun={startRun}
-          onStopRun={stopRun}
           onStartSession={startSession}
           onResume={resumeSession}
           onCleanup={cleanupWorktree}

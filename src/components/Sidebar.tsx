@@ -60,7 +60,6 @@
 import { memo, useCallback, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 
-import { canForce } from "../wire";
 import type { SessionRuntime } from "../feedStore";
 import type {
   AppError,
@@ -72,18 +71,8 @@ import type {
   SessionDeletion,
   SessionId,
   SessionStatus,
-  WorktreeCleanup,
 } from "../wire";
 
-/**
- * What a delete answered: the command's own reply, or the error it rejected with. Exactly one of
- * the two is non-null.
- *
- * The distinction is the point of R4.2 and it is not cosmetic. `delete_session` refuses a dirty
- * worktree by **resolving** with `removed: false`, and rejects a live session with
- * `session_running`. Both are refusals to the operator and neither is a success, so the sidebar
- * has to be handed both without one of them being flattened into "it worked".
- */
 export type DeleteAnswer<T> = { deletion: T; error: null } | { deletion: null; error: AppError };
 export type SessionDeleteAnswer = DeleteAnswer<SessionDeletion>;
 export type ProjectDeleteAnswer = DeleteAnswer<ProjectDeletion>;
@@ -127,23 +116,10 @@ export interface SidebarProps {
    * not drawn at all rather than drawn dead.
    */
   onReveal?: (path: string) => void;
-  /**
-   * Delete one session from the machine: its rows, its raw logs, its pid file and its worktree.
-   * **Never its branch** — nothing in the harness deletes one.
-   *
-   * `force: false` is the question and the answer comes back in the return value, so a `deletion`
-   * with `removed: false` is a **refusal** and must be drawn as one. A live session rejects
-   * instead, with `session_running`, and force does not change that.
-   *
-   * Undefined leaves the control undrawn, the same treatment `onReveal` gets.
-   */
+  /** Remove Brigadier history; preserve repository and worktree files. */
   onDeleteSession?: (sessionId: SessionId, force: boolean) => Promise<SessionDeleteAnswer>;
-  /**
-   * Delete a project and every session under it. Same two-shaped answer, plus one more rule: on a
-   * refusal `worktrees[]` lists every session attempted, and the checkouts removed before the
-   * refusal **stay removed**, so the list is what has to be shown instead of one line.
-   */
   onDeleteProject?: (projectId: ProjectId, force: boolean) => Promise<ProjectDeleteAnswer>;
+
 }
 
 /** `starting` and `running` are both "something is happening in here". */
@@ -263,129 +239,6 @@ function TrashIcon() {
   );
 }
 
-/* ---------------------------------------------------------------- deleting
- *
- * Four rules from `docs/plans/ipc-contract.md` §Deleting are drawn here, and each one exists
- * because getting it wrong is a lie rather than a blemish:
- *
- *   1. **A refusal is a return value.** `removed: false` resolves as `Ok`; rendering it as a
- *      completed delete is the same defect class as an approvals dock showing a decision that
- *      never landed.
- *   2. **`session_running` is a remedy, not a failure.** Say to end or kill it first.
- *   3. **Unmerged commits refuse and the branch is kept.** Naming the branch is the difference
- *      between reversible and lost, so it is named on the refusal and on the success.
- *   4. **A project's worktree half is not atomic.** The first refusal ends the pass and the
- *      checkouts already removed stay removed, so `worktrees[]` is rendered entry by entry.
- */
-
-/** One local delete flow, per row. `busy` is a call in flight; nothing else may be pressed. */
-type DeleteStage<T> =
-  | { stage: "idle" }
-  | { stage: "confirm" }
-  /** The command resolved with `removed: false`: nothing was touched, and it says why. */
-  | { stage: "refused"; answer: T }
-  /** The command rejected. `session_running` is the one worth its own sentence. */
-  | { stage: "error"; error: AppError };
-
-function plural(n: number, one: string): string {
-  return `${n} ${one}${n === 1 ? "" : "s"}`;
-}
-
-/** A reason this build has no sentence for: a type error at the call site, not a blank line. */
-function unhandledBlocked(blocked: never): string {
-  return `Nothing was deleted, and this build has no explanation for the reason given (${String(blocked)}).`;
-}
-
-/**
- * Why one worktree refused, in full. `force` answers only `dirty`, `commits` and `branch_moved`;
- * the other three return before the force check, so their sentences end in what the operator has
- * to do outside brigadier rather than in a button that would refuse again.
- */
-function blockedSentence(c: WorktreeCleanup): string {
-  switch (c.blocked) {
-    case null:
-      return "Nothing was deleted, and no reason was reported.";
-    case "dirty":
-      return `Nothing was deleted. Removing the checkout would delete ${plural(
-        c.dirty_files,
-        "file",
-      )} — ignored files are counted, so .env, build output and node_modules/ go with them.`;
-    case "commits":
-      return `Nothing was deleted. This worktree holds ${plural(
-        c.commits,
-        "commit",
-      )} that no other branch, tag or remote keeps.`;
-    case "branch_moved":
-      return c.live_branch === null
-        ? `Nothing was deleted. This checkout has a detached HEAD; the session recorded ${c.branch}. Something moved it, so what a delete would take is not what this session put there.`
-        : `Nothing was deleted. ${c.live_branch} is checked out here, not the ${c.branch} this session recorded. Something moved it, so what a delete would take is not what this session put there.`;
-    case "locked":
-      return "Nothing was deleted. A git worktree lock is held on this checkout — another process's claim on it. Only remove -f -f clears a lock and that is not brigadier's to give, so forcing from here would refuse again: run git worktree unlock yourself once you know nothing is using it.";
-    case "unregistered":
-      return "Nothing was deleted. git does not register this directory as a worktree of the repository, so it can neither describe it nor remove it — and brigadier does not rm -rf what git cannot describe. Look at it and delete it yourself.";
-    case "left_on_disk":
-      return "Nothing was deleted. git reported the worktree removed and the directory is still there, so nothing is being called removed. Check it and delete it yourself; there is nothing here for force to do.";
-    default:
-      return unhandledBlocked(c.blocked);
-  }
-}
-
-/** The same refusal in a few words, for one line of a project's per-session list. */
-function blockedShort(c: WorktreeCleanup): string {
-  switch (c.blocked) {
-    case null:
-      return "kept, no reason reported";
-    case "dirty":
-      return `kept — ${plural(c.dirty_files, "file")} would be deleted`;
-    case "commits":
-      return `kept — ${plural(c.commits, "commit")} no other ref holds`;
-    case "branch_moved":
-      return c.live_branch === null
-        ? "kept — detached HEAD, not the branch recorded"
-        : `kept — ${c.live_branch} is checked out, not the branch recorded`;
-    case "locked":
-      return "kept — a git worktree lock is held on it";
-    case "unregistered":
-      return "kept — git does not register it as a worktree";
-    case "left_on_disk":
-      return "kept — git removed it and the directory is still there";
-    default:
-      return unhandledBlocked(c.blocked);
-  }
-}
-
-/** What a force button offers, or null when force does not reach this reason. */
-function forceLabel(c: WorktreeCleanup): string | null {
-  if (!canForce(c.blocked)) return null;
-  switch (c.blocked) {
-    case "dirty":
-      return `Delete ${plural(c.dirty_files, "file")} and the session`;
-    case "commits":
-      return "Delete anyway, keep the branch";
-    default:
-      return c.live_branch === null
-        ? "Delete it with a detached HEAD"
-        : `Delete it with ${c.live_branch} checked out`;
-  }
-}
-
-/**
- * The sentence a rejected delete gets. `session_running` earns its own because it is the one with
- * a remedy the operator can act on in this window; every other code prints itself, and `store`
- * says the thing a partial-delete fear needs to hear.
- */
-function errorSentence(e: AppError, what: "session" | "project"): string {
-  if (e.code === "session_running") {
-    return what === "session"
-      ? "This session is still running. End it or kill it first — nothing was deleted."
-      : "A session in this project is still running. End or kill it first; nothing was deleted, not even the other sessions.";
-  }
-  if (e.code === "store") {
-    return `Nothing was deleted: the database half runs in one savepoint and rolled back whole. ${e.message}`;
-  }
-  return `${e.code}: ${e.message}`;
-}
-
 /* ------------------------------------------------------------- session row */
 
 interface SessionRowProps {
@@ -410,7 +263,7 @@ const SessionRow = memo(function SessionRow({
   onReveal,
   onDelete,
 }: SessionRowProps) {
-  const [del, setDel] = useState<DeleteStage<SessionDeletion>>({ stage: "idle" });
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
 
   const branch = session.branch;
@@ -434,109 +287,23 @@ const SessionRow = memo(function SessionRow({
   // button still says "there is a folder here, you just cannot have it", which would be a lie.
   const worktree = session.worktreePath;
 
-  /**
-   * One press of Delete. `force` is only ever `true` on a **second** press, from a button the
-   * refusal itself drew, and never on the first click.
-   */
-  const run = async (force: boolean) => {
-    if (onDelete === undefined) return;
+  // Hide immediately while the backend stops the process; restore only on failure.
+  const run = async () => {
+    if (onDelete === undefined || deleting) return;
     setDeleting(true);
-    let answer: SessionDeleteAnswer;
+    setDeleteError(null);
     try {
-      answer = await onDelete(session.sessionId, force);
+      const answer = await onDelete(session.sessionId, false);
+      if (answer.error) setDeleteError(answer.error.message);
+      else if (!answer.deletion.removed) setDeleteError("Session could not be deleted. Try again.");
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : String(error));
     } finally {
       setDeleting(false);
     }
-    if (answer.error !== null) {
-      setDel({ stage: "error", error: answer.error });
-      return;
-    }
-    // `removed: true` and the row is about to leave the sidebar entirely, so there is no state
-    // worth keeping; `removed: false` is a refusal and is what the note below draws.
-    setDel(answer.deletion.removed ? { stage: "idle" } : { stage: "refused", answer: answer.deletion });
   };
 
-  const cancel = (
-    <button
-      type="button"
-      className="act"
-      disabled={deleting}
-      onClick={() => setDel({ stage: "idle" })}
-    >
-      Cancel
-    </button>
-  );
-
-  /** The branch line. Rule 3: named on the refusal *and* before the delete that removes its row. */
-  const branchNote =
-    branch === null
-      ? "This session has no branch: it ran in the project root, which is never touched."
-      : `The branch ${branch} is kept — nothing in brigadier deletes one, and once the row is gone it is the only name that says where the work went.`;
-
-  const note = (() => {
-    switch (del.stage) {
-      case "idle":
-        return null;
-      case "confirm":
-        return (
-          <div className="side-delete-note">
-            <p>
-              Delete this session from the machine? Its rows, its raw log and its worktree go.{" "}
-              {branchNote}
-            </p>
-            <p className="side-delete-acts">
-              <button
-                type="button"
-                className="act danger"
-                disabled={deleting}
-                onClick={() => void run(false)}
-              >
-                Delete session
-              </button>{" "}
-              {cancel}
-            </p>
-          </div>
-        );
-      case "error":
-        return (
-          <div className="side-delete-note bad" role="alert">
-            <p>{errorSentence(del.error, "session")}</p>
-            <p className="side-delete-acts">{cancel}</p>
-          </div>
-        );
-      case "refused": {
-        const c = del.answer.worktree;
-        const force = c === null ? null : forceLabel(c);
-        return (
-          <div className="side-delete-note bad" role="alert">
-            <p>
-              {c === null
-                ? "Nothing was deleted, and no worktree was reported for this session."
-                : blockedSentence(c)}{" "}
-              {del.answer.branch === null
-                ? branchNote
-                : `The branch ${del.answer.branch} is kept whatever happens.`}
-            </p>
-            <p className="side-delete-acts">
-              {force !== null ? (
-                <>
-                  <button
-                    type="button"
-                    className="act danger"
-                    disabled={deleting}
-                    onClick={() => void run(true)}
-                  >
-                    {force}
-                  </button>{" "}
-                </>
-              ) : null}
-              {cancel}
-            </p>
-          </div>
-        );
-      }
-    }
-  })();
+  if (deleting) return null;
 
   return (
     <>
@@ -581,15 +348,14 @@ const SessionRow = memo(function SessionRow({
             className="side-delete"
             title={`delete session ${session.sessionId}`}
             aria-label={`delete session ${name}`}
-            aria-expanded={del.stage !== "idle"}
             disabled={deleting}
-            onClick={() => setDel(del.stage === "idle" ? { stage: "confirm" } : { stage: "idle" })}
+            onClick={() => void run()}
           >
             <TrashIcon />
           </button>
         ) : null}
       </div>
-      {note}
+      {deleteError && <p className="side-delete-note bad" role="alert">{deleteError}</p>}
     </>
   );
 });
@@ -625,41 +391,22 @@ export function Sidebar({
   const [picking, setPicking] = useState(false);
   /** Explicit caret clicks only. An id absent here uses the derived default below. */
   const [openOverride, setOpenOverride] = useState<Record<ProjectId, boolean>>({});
-  /**
-   * Where each project's delete flow has got to, keyed by id rather than held in a per-row
-   * component: a project row is drawn inside a `.map`, where a hook cannot go, and one record is
-   * a smaller change than extracting a component for one piece of state.
-   */
-  const [projectDel, setProjectDel] = useState<Record<ProjectId, DeleteStage<ProjectDeletion>>>({});
-  /** The project whose delete is in flight, so its buttons go inert without freezing the rest. */
-  const [projectBusy, setProjectBusy] = useState<ProjectId | null>(null);
-
-  const setStage = useCallback((id: ProjectId, next: DeleteStage<ProjectDeletion>) => {
-    setProjectDel((prev) => ({ ...prev, [id]: next }));
-  }, []);
-
-  /** One press of a project's Delete. `force` only ever on a second press, from the refusal. */
-  const deleteProject = useCallback(
-    async (id: ProjectId, force: boolean) => {
-      if (onDeleteProject === undefined) return;
-      setProjectBusy(id);
-      let answer: ProjectDeleteAnswer;
-      try {
-        answer = await onDeleteProject(id, force);
-      } finally {
-        setProjectBusy(null);
-      }
-      if (answer.error !== null) {
-        setStage(id, { stage: "error", error: answer.error });
-        return;
-      }
-      setStage(
-        id,
-        answer.deletion.removed ? { stage: "idle" } : { stage: "refused", answer: answer.deletion },
-      );
-    },
-    [onDeleteProject, setStage],
-  );
+  const [projectErrors, setProjectErrors] = useState<Record<ProjectId, string>>({});
+  const [projectBusy, setProjectBusy] = useState<Set<ProjectId>>(new Set());
+  const deleteProject = useCallback(async (id: ProjectId) => {
+    if (!onDeleteProject) return;
+    setProjectBusy(previous => new Set(previous).add(id));
+    setProjectErrors(previous => ({ ...previous, [id]: "" }));
+    try {
+      const answer = await onDeleteProject(id, false);
+      const error = answer.error?.message ?? (!answer.deletion?.removed ? "Project could not be removed. Try again." : "");
+      setProjectErrors(previous => ({ ...previous, [id]: error }));
+    } catch (error) {
+      setProjectErrors(previous => ({ ...previous, [id]: error instanceof Error ? error.message : String(error) }));
+    } finally {
+      setProjectBusy(previous => { const next = new Set(previous); next.delete(id); return next; });
+    }
+  }, [onDeleteProject]);
 
   /** Sessions per project, in the store's own newest-first order, computed once per commit. */
   const byProject = useMemo(() => {
@@ -762,98 +509,6 @@ export function Sidebar({
         ? "checking your install"
         : claude.binary;
 
-  /**
-   * A project's delete flow, drawn under its row.
-   *
-   * The refusal branch is the one that earns the space. `delete_project`'s database half is
-   * all-or-nothing and its **worktree half is not**: checkouts are removed one session at a time
-   * before any row is touched, and the first refusal ends the pass. So a refusal is not "nothing
-   * happened" — some checkouts are already gone — and `worktrees[]` carries one entry per session
-   * attempted, the refuser included. Rendering one line over that array is exactly the false
-   * summary this rule exists to prevent, so every entry is drawn.
-   */
-  const projectNote = (p: ProjectView, sessionCount: number) => {
-    const stage: DeleteStage<ProjectDeletion> = projectDel[p.id] ?? { stage: "idle" };
-    if (stage.stage === "idle") return null;
-    const busy = projectBusy === p.id;
-    const cancel = (
-      <button
-        type="button"
-        className="act"
-        disabled={busy}
-        onClick={() => setStage(p.id, { stage: "idle" })}
-      >
-        Cancel
-      </button>
-    );
-
-    if (stage.stage === "confirm") {
-      return (
-        <div className="side-delete-note">
-          <p>
-            Delete {p.name} from brigadier? {plural(sessionCount, "session")} go with it — their
-            rows, their raw logs and their worktrees — and so does the whole plan tree. Every
-            branch is kept, and your repository is not touched.
-          </p>
-          <p className="side-delete-acts">
-            <button
-              type="button"
-              className="act danger"
-              disabled={busy}
-              onClick={() => void deleteProject(p.id, false)}
-            >
-              Delete project
-            </button>{" "}
-            {cancel}
-          </p>
-        </div>
-      );
-    }
-
-    if (stage.stage === "error") {
-      return (
-        <div className="side-delete-note bad" role="alert">
-          <p>{errorSentence(stage.error, "project")}</p>
-          <p className="side-delete-acts">{cancel}</p>
-        </div>
-      );
-    }
-
-    const refuser = stage.answer.worktrees.find((w) => !w.cleanup.removed);
-    const force = refuser === undefined ? null : forceLabel(refuser.cleanup);
-    return (
-      <div className="side-delete-note bad" role="alert">
-        <p>
-          Nothing was deleted from the database, and the worktree pass stopped at the first
-          refusal. Checkouts removed before it stay removed; every branch survives.
-        </p>
-        <ul className="side-delete-list">
-          {stage.answer.worktrees.map((w) => (
-            <li key={w.session_id}>
-              <code>{w.cleanup.branch}</code> · {shortId(w.session_id)} —{" "}
-              {w.cleanup.removed ? "checkout removed" : blockedShort(w.cleanup)}
-            </li>
-          ))}
-        </ul>
-        {refuser !== undefined ? <p>{blockedSentence(refuser.cleanup)}</p> : null}
-        <p className="side-delete-acts">
-          {force !== null ? (
-            <>
-              <button
-                type="button"
-                className="act danger"
-                disabled={busy}
-                onClick={() => void deleteProject(p.id, true)}
-              >
-                {force}
-              </button>{" "}
-            </>
-          ) : null}
-          {cancel}
-        </p>
-      </div>
-    );
-  };
 
   return (
     <nav className="sidebar" aria-label="Projects and sessions">
@@ -916,6 +571,7 @@ export function Sidebar({
         ) : null}
 
         {projects.map((p) => {
+            if (projectBusy.has(p.id)) return null;
           const own = byProject.get(p.id) ?? [];
           const selected = p.id === selectedProjectId;
           const pending = pendingApprovals?.[p.id] ?? 0;
@@ -938,7 +594,6 @@ export function Sidebar({
           // drawn twice, 230px apart; the rail is gone (`src/index.css`, `.side-holds`).
           const holds =
             !open && selectedSessionId !== null && own.includes(selectedSessionId);
-          const stage: DeleteStage<ProjectDeletion> = projectDel[p.id] ?? { stage: "idle" };
 
           return (
             <div key={p.id} className="side-group">
@@ -1006,20 +661,17 @@ export function Sidebar({
                   <button
                     type="button"
                     className="side-delete"
-                    title={`delete ${p.name} and every session under it`}
+                    title={`Remove ${p.name} from Brigadier. Local files are kept.`}
                     aria-label={`delete project ${p.name}`}
-                    aria-expanded={stage.stage !== "idle"}
-                    disabled={projectBusy === p.id}
-                    onClick={() =>
-                      setStage(p.id, stage.stage === "idle" ? { stage: "confirm" } : { stage: "idle" })
-                    }
+                    disabled={projectBusy.has(p.id)}
+                    onClick={() => void deleteProject(p.id)}
                   >
                     <TrashIcon />
                   </button>
                 ) : null}
               </div>
 
-              {projectNote(p, own.length)}
+              {projectErrors[p.id] && <p className="side-delete-note bad" role="alert">{projectErrors[p.id]}</p>}
 
               {open ? (
                 <div className="side-sessions" id={listId}>

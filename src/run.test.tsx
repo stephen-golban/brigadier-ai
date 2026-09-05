@@ -25,7 +25,7 @@
  * `feedStore` is a module singleton, and a hand-called `cleanup()`.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import type { IntentSettlement, IntentView, PhaseView, RunView } from "./wire";
@@ -214,163 +214,32 @@ afterEach(() => {
 
 /* ------------------------------------------------------------------ tests */
 
-describe("starting a run", () => {
-  it("hands the selected project the goal the owner typed", async () => {
-    const user = userEvent.setup();
+describe("automation history stays out of chat", () => {
+  it("keeps pending phases collapsed until the user opens history", async () => {
+    h.runs["p-live"] = run({ status: "abandoned" });
     await mountApp();
-
-    const field = screen.getByRole("textbox", { name: "the goal, in plain English" });
-    await user.type(field, "Make the store durable across a crash");
-    await act(async () => {
-      await user.click(screen.getByRole("button", { name: "Start run" }));
-    });
-
-    // The picks ride with the goal since R4.1. `model: null` is the untouched picker and is a
-    // real choice: the harness's role-based routing stays in charge, so judgement takes the
-    // provider's strong default and a work order takes its per-order tier. It must be `null` and
-    // not a sentinel — `start_run`'s `model` is an `Option<String>` and a placeholder would be
-    // handed straight to the CLI's `--model`, which refuses it.
-    expect(h.started).toEqual([
-      {
-        projectId: "p-live",
-        goal: "Make the store durable across a crash",
-        model: null,
-        permissionMode: "default",
-      },
-    ]);
-    // …and the plan it answered with is painted without waiting for a poll.
-    const card = await screen.findByRole("region", { name: "the run" });
-    expect(within(card).getByText("Make the store durable across a crash")).toBeInTheDocument();
-    expect(within(card).getByText("Pin the intent tables")).toBeInTheDocument();
-  });
-
-  /**
-   * R4.1, end to end through the shell. `list_models` answers `[]` in this file's fake, so the
-   * model picker has only its no-pick entry — which is the case worth pinning here anyway: what
-   * `start_run` must never receive is a sentinel standing in for "no pick".
-   */
-  it("carries the permission mode the dock is showing", async () => {
-    const user = userEvent.setup();
-    await mountApp();
-
-    await user.selectOptions(
-      screen.getByRole("combobox", { name: /permissions/i }),
-      "bypass-permissions",
-    );
-    await user.type(
-      screen.getByRole("textbox", { name: "the goal, in plain English" }),
-      "ship it",
-    );
-    await act(async () => {
-      await user.click(screen.getByRole("button", { name: "Start run" }));
-    });
-
-    expect(h.started).toEqual([
-      { projectId: "p-live", goal: "ship it", model: null, permissionMode: "bypass-permissions" },
-    ]);
-  });
-
-  it("will not send an empty goal", async () => {
-    const user = userEvent.setup();
-    await mountApp();
-
-    const start = screen.getByRole("button", { name: "Start run" });
-    expect(start).toBeDisabled();
-    await user.type(screen.getByRole("textbox", { name: "the goal, in plain English" }), "   ");
-    expect(start).toBeDisabled();
+    const history = await screen.findByText("Automation history");
+    expect(history.closest("details")).not.toHaveAttribute("open");
+    expect(screen.getByRole("region", { name: "the run" })).not.toBeVisible();
+    expect(screen.queryByText("Stop automation")).not.toBeInTheDocument();
+    await userEvent.click(history);
+    expect(screen.getByRole("region", { name: "the run" })).toBeVisible();
     expect(h.started).toEqual([]);
   });
-
-  it("offers Stop instead of the goal field once a run is live", async () => {
-    const user = userEvent.setup();
-    h.runs = { "p-live": run() };
+  it("keeps a stop action for a real live automation without replacing chat", async () => {
+    h.runs["p-live"] = run();
     await mountApp();
-
-    // `start_run` refuses a second run with `run_already_live`, so offering the field again would
-    // be offering a control whose only outcome is an error.
-    await screen.findByRole("button", { name: "Stop run" });
-    expect(
-      screen.queryByRole("textbox", { name: "the goal, in plain English" }),
-    ).not.toBeInTheDocument();
-
-    await act(async () => {
-      await user.click(screen.getByRole("button", { name: "Stop run" }));
-    });
+    await userEvent.click(await screen.findByRole("button", { name: "Stop automation" }));
     expect(h.stopped).toEqual(["pl-1"]);
-
-    // A stopped run is not live, so the field comes back.
-    expect(
-      await screen.findByRole("textbox", { name: "the goal, in plain English" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start" })).toBeInTheDocument();
   });
-
-  it("offers no run control at all with no project selected", async () => {
-    h.projects = [];
-    const { App } = await import("./App");
-    render(<App />);
-    const field = await screen.findByRole("textbox", { name: "the goal, in plain English" });
-    expect(field).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Start run" })).toBeDisabled();
-  });
-});
-
-describe("the plan card is pinned", () => {
-  /**
-   * `docs/vision.md` §9: *"Nothing the owner steers with ever scrolls away."* That is geometry,
-   * and in jsdom — which has no layout at all — the only honest way to state it is structural:
-   * the card is inside the thread column, it comes **before** the feed, and it is **not inside the
-   * feed's scrolling element**. A card inside that element would scroll with the rows however it
-   * were styled.
-   *
-   * `.feed-scroller` is used here as a locator for another component, not as an assertion about
-   * this one's styling — which is the line `Feed.test.tsx` draws. That the CSS then holds it in
-   * place is **not** checked here and has not been seen in a real window.
-   */
-  it("sits in the thread column, above the feed and outside its scroller", async () => {
-    h.runs = { "p-live": run() };
-    const { container } = await mountApp();
-
-    const card = await screen.findByRole("region", { name: "the run" });
-    const main = screen.getByRole("main");
-    const scroller = container.querySelector(".feed-scroller");
-
-    expect(main.contains(card)).toBe(true);
-    expect(scroller).not.toBeNull();
-    expect(scroller!.contains(card)).toBe(false);
-    // DOCUMENT_POSITION_FOLLOWING: the feed comes after the card.
-    expect(card.compareDocumentPosition(scroller!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  });
-
-  it("draws no card for a project that has never had a run", async () => {
+  it("shows no automation history for a new project", async () => {
     await mountApp();
-    expect(screen.queryByRole("region", { name: "the run" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Automation history")).not.toBeInTheDocument();
   });
-});
-
-describe("settling an intent from the card", () => {
-  it("sends one of the two values settle_intent takes, and re-reads the list", async () => {
-    const user = userEvent.setup();
-    h.runs = { "p-live": run() };
-    h.intents = [intent({ intent_id: "in-7" })];
+  it("does not display another project's unsettled intents", async () => {
+    h.intents = [intent({ project_id: "other" })];
     await mountApp();
-
-    await act(async () => {
-      await user.click(await screen.findByRole("button", { name: "Mark not done" }));
-    });
-
-    expect(h.settled).toEqual([{ intentId: "in-7", state: "not_done" }]);
-    // The refetch after the settle is what takes the row off the card.
-    await screen.findByRole("region", { name: "the run" });
-    expect(screen.queryByRole("button", { name: "Mark not done" })).not.toBeInTheDocument();
-  });
-
-  it("shows an intent whose kind this build does not know", async () => {
-    h.runs = { "p-live": run() };
-    h.intents = [intent({ intent_id: "in-9", kind: "db_migrate" })];
-    await mountApp();
-
-    // A pass-through slug: rendered as itself rather than hidden or collapsed into a known one.
-    expect(await screen.findByText("db_migrate")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Mark done" })).toBeInTheDocument();
+    expect(screen.queryByText("Automation history")).not.toBeInTheDocument();
   });
 });
