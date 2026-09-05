@@ -119,7 +119,7 @@ function markupSources(): Array<[string, string]> {
 /** The stylesheet, as text. Non-empty is asserted below; an empty read is the vacuous-pass trap
  *  this whole file exists to avoid. */
 function cssText(): string {
-  return fs.readFileSync(CSS_PATH, "utf8") + "\n" + fs.readFileSync("src/chat.css", "utf8") + "\n" + fs.readFileSync("src/workbench.css", "utf8");
+  return fs.readFileSync(CSS_PATH, "utf8") + "\n" + fs.readFileSync("src/chat.css", "utf8") + "\n" + fs.readFileSync("src/workbench.css", "utf8") + "\n" + fs.readFileSync("src/desktop.css", "utf8");
 }
 
 /** Every string literal in a JSX expression, with `${…}` interpolations blanked out. */
@@ -234,7 +234,7 @@ describe("the class extractor", () => {
     // `Approvals.tsx` build theirs with template literals. All three shapes must be seen.
     const used = classesUsed();
     expect(used.has("lead")).toBe(true);
-    expect(used.has("selected")).toBe(true);
+    expect(used.has("project-row")).toBe(true);
   });
 
   it("does not mistake JavaScript for class names", () => {

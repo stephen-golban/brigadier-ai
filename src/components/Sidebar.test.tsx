@@ -1,44 +1,34 @@
-import type { SessionDeleteAnswer } from "./Sidebar";
-/**
- * Behavioural tests for `src/components/Sidebar.tsx`.
- *
- * These pin what `docs/vision.md` §9 says the sidebar must *do*, never how it draws it. W4-D and
- * W4-E come after this order and will move markup around; `docs/plans/phase-4.md` states the rule
- * and the reason — *a test that survives the migration proves the migration; a test that dies
- * with the component proves only that the old component existed* — so every assertion below is on
- * text, roles or accessible names, and not one of them names a class or a tag.
- *
- * What is pinned, and why each one is load-bearing rather than decorative:
- *
- *   - **A collapsed project still carries a run marker.** §9: "work in a project you are not
- *     looking at is never invisible". This is the single behaviour the redesign exists to add.
- *   - **Collapsing hides the sessions and shows a count.** §9's "finished projects collapse to
- *     one line with a count".
- *   - **A session is rendered by its branch, not its path.** `docs/plans/ipc-contract.md`:
- *     "`brigadier/<8 hex>`, or null with no worktree. Rendered instead of the path."
- *   - **A project with something live in it opens by itself**, and a quiet one does not — the
- *     derived default that makes the two above reachable without the user hunting for them.
- *
- * Mechanics match `src/feedStore.test.ts` and `src/providers/ThemeProvider.test.tsx`:
- * `globals: false`, so every helper is imported from "vitest"; `@testing-library/react`'s
- * auto-cleanup only registers itself when a global `afterEach` exists, which `globals: false`
- * denies it, so `cleanup()` is called by hand.
- */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-
-import { Sidebar } from "./Sidebar";
-import type { SidebarProps } from "./Sidebar";
+import { Sidebar, type SidebarProps } from "./Sidebar";
 import type { SessionRuntime } from "../feedStore";
-import { AppError, ZERO_USAGE } from "../wire";
-import type { ProjectView, SessionId, SessionStatus } from "../wire";
-
+import {
+  ZERO_USAGE,
+  AppError,
+  type ProjectView,
+  type SessionId,
+  type SessionStatus,
+} from "../wire";
+import { workbenchApi, defaultSettings } from "../workbenchApi";
+beforeEach(() => {
+  localStorage.clear();
+  vi.spyOn(workbenchApi, "load").mockResolvedValue({
+    notes: [],
+    projects: {},
+    global: defaultSettings,
+    displayName: "Stephen",
+  });
+});
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
 });
-
-function project(id: string, name: string, root = `/repos/${name}`): ProjectView {
+function project(
+  id: string,
+  name: string,
+  root = `/repos/${name}`,
+): ProjectView {
   return { id, name, root_path: root, created_at_ms: 1_700_000_000_000 };
 }
 
@@ -97,534 +87,165 @@ function mount(over: Partial<SidebarProps> = {}) {
   return props;
 }
 
-describe("the sidebar's projects", () => {
-  it("opens a project that has a live session, and leaves a quiet one closed", () => {
-    mount({
-      projects: [project("p-live", "job-portal"), project("p-quiet", "dotfiles")],
-      sessions: {
-        live: session("live", "p-live", "running"),
-        done: session("done", "p-quiet", "exited"),
-      },
-      order: ["live", "done"],
-    });
-
-    // The live project's session row is on screen; the quiet one's is not.
-    expect(screen.getByRole("button", { name: /collapse job-portal/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /expand dotfiles/i })).toBeInTheDocument();
-  });
-
-  it("keeps a run marker on a project the user has collapsed", async () => {
-    const user = userEvent.setup();
-    mount({
-      projects: [project("p-live", "job-portal")],
-      sessions: { live: session("live", "p-live", "running") },
-      order: ["live"],
-    });
-
-    await user.click(screen.getByRole("button", { name: /collapse job-portal/i }));
-
-    // The sessions are gone…
-    expect(screen.queryByRole("button", { name: /brigadier\/a80e2411/ })).not.toBeInTheDocument();
-    // …and the fact that something is running inside is still on screen. §9's load-bearing rule.
-    expect(screen.getByRole("img", { name: "1 running" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /expand job-portal/i })).toBeInTheDocument();
-  });
-
-  it("shows a session count in place of the sessions once collapsed", async () => {
-    const user = userEvent.setup();
-    mount({
-      projects: [project("p-old", "old-crm")],
-      selectedProjectId: "p-old",
-      sessions: {
-        a: session("a", "p-old", "exited", { branch: "brigadier/00000001" }),
-        b: session("b", "p-old", "exited", { branch: "brigadier/00000002" }),
-        c: session("c", "p-old", "exited", { branch: "brigadier/00000003" }),
-      },
-      order: ["a", "b", "c"],
-    });
-
-    // Selected, so it starts open: three rows, no count.
-    expect(screen.getAllByRole("button", { name: /brigadier\/0000000/ })).toHaveLength(3);
-    expect(screen.queryByText("3")).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: /collapse old-crm/i }));
-
-    expect(screen.queryByRole("button", { name: /brigadier\/0000000/ })).not.toBeInTheDocument();
-    expect(screen.getByText("3")).toBeInTheDocument();
-  });
-
-  it("does not let the caret change the selection", async () => {
+describe("flat project navigation", () => {
+  it("keeps projects flat and selects one without exposing session rows", async () => {
     const user = userEvent.setup();
     const props = mount({
-      projects: [project("p-live", "job-portal")],
-      sessions: { live: session("live", "p-live", "running") },
-      order: ["live"],
+      projects: [project("p", "Brigadier")],
+      sessions: { s: session("s", "p", "running", { busy: true }) },
     });
-
-    await user.click(screen.getByRole("button", { name: /collapse job-portal/i }));
-
-    expect(props.onSelectProject).not.toHaveBeenCalled();
-    expect(props.onSelectSession).not.toHaveBeenCalled();
+    const nav = screen.getByRole("navigation", { name: "Projects" });
+    const row = within(nav).getByRole("button", { name: /Brigadier.*Working/ });
+    expect(row).not.toHaveAttribute("aria-expanded");
+    await user.click(row);
+    expect(props.onSelectProject).toHaveBeenCalledWith("p");
+    expect(screen.queryByText("brigadier/a80e2411")).not.toBeInTheDocument();
   });
-});
-
-describe("a collapsed project that holds the open session", () => {
-  /**
-   * Observed on 2026-09-03: collapsing `brigadier-ai` while its session filled the main panel
-   * left the sidebar with nothing acknowledging the thread on screen. Same principle as the run
-   * marker — a sidebar that disowns what is on screen is disorienting — but a different fact,
-   * so a different indicator.
-   */
-  it("says so, and says it distinctly from the run marker", async () => {
+  it("shows both working and attention per project", () => {
+    mount({
+      projects: [project("p", "Brigadier")],
+      sessions: { s: session("s", "p", "running", { busy: true }) },
+      attention: { s: true },
+    });
+    expect(screen.getByRole("img", { name: "Working" })).toBeVisible();
+    expect(screen.getByRole("img", { name: "Needs attention" })).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: /Approvals/ }),
+    ).not.toBeInTheDocument();
+  });
+  it("does not show an idle process as working", () => {
+    mount({
+      projects: [project("p", "Brigadier")],
+      sessions: { s: session("s", "p", "running") },
+    });
+    expect(
+      screen.queryByRole("img", { name: "Working" }),
+    ).not.toBeInTheDocument();
+  });
+  it("renames the displayed project without changing its root", async () => {
+    const save = vi
+      .spyOn(workbenchApi, "saveDesktopSettings")
+      .mockResolvedValue({ notes: [], projects: {}, global: defaultSettings });
     const user = userEvent.setup();
-    mount({
-      projects: [project("p-live", "job-portal")],
-      selectedProjectId: "p-live",
-      selectedSessionId: "live",
-      sessions: { live: session("live", "p-live", "running") },
-      order: ["live"],
-    });
-
-    await user.click(screen.getByRole("button", { name: /collapse job-portal/i }));
-
-    expect(screen.queryByRole("button", { name: /brigadier\/a80e2411/ })).not.toBeInTheDocument();
-    const holds = screen.getByRole("img", { name: "holds the open session" });
-    const running = screen.getByRole("img", { name: "1 running" });
-    // Two facts, two indicators. They must not have collapsed into one.
-    expect(holds).toBeInTheDocument();
-    expect(running).toBeInTheDocument();
-    expect(holds).not.toBe(running);
+    mount({ projects: [project("p", "Brigadier")] });
+    await user.click(screen.getByRole("button", { name: "Rename Brigadier" }));
+    await user.clear(screen.getByLabelText("New name"));
+    await user.type(screen.getByLabelText("New name"), "My project");
+    await user.click(screen.getByRole("button", { name: "Rename" }));
+    expect(save).toHaveBeenCalledWith("Stephen", { p: "My project" });
+    expect(screen.getByRole("button", { name: "Brigadier" })).toHaveAttribute(
+      "title",
+      "/repos/Brigadier",
+    );
   });
-
-  /**
-   * W4-C2 drew this one fact twice: this element, plus an accent rail painted onto the row by a
-   * CSS `box-shadow` 230px to its left. **A DOM test can only pin the half that is a DOM
-   * element** — the rail existed nowhere in the tree and was found by a pixel scan of a real
-   * screenshot. This pins the half that is pinnable; the CSS half is held by there being no rule
-   * left that targets the row.
-   */
-  it("draws the fact with exactly one element", async () => {
+  it("reveals the actual root and confirms project removal", async () => {
     const user = userEvent.setup();
-    mount({
-      projects: [project("p-live", "job-portal")],
-      selectedProjectId: "p-live",
-      selectedSessionId: "live",
-      sessions: { live: session("live", "p-live", "running") },
-      order: ["live"],
-    });
-
-    await user.click(screen.getByRole("button", { name: /collapse job-portal/i }));
-
-    expect(screen.getAllByRole("img", { name: "holds the open session" })).toHaveLength(1);
-  });
-
-  it("carries the marker for a project whose held session is not running", async () => {
-    const user = userEvent.setup();
-    mount({
-      projects: [project("p-old", "old-crm")],
-      selectedProjectId: "p-old",
-      selectedSessionId: "done",
-      sessions: { done: session("done", "p-old", "exited") },
-      order: ["done"],
-    });
-
-    await user.click(screen.getByRole("button", { name: /collapse old-crm/i }));
-
-    expect(screen.getByRole("img", { name: "holds the open session" })).toBeInTheDocument();
-    expect(screen.queryByRole("img", { name: /running/ })).not.toBeInTheDocument();
-  });
-
-  it("drops the marker once the group is open again, where the row itself says it", async () => {
-    const user = userEvent.setup();
-    mount({
-      projects: [project("p-old", "old-crm")],
-      selectedProjectId: "p-old",
-      selectedSessionId: "done",
-      sessions: { done: session("done", "p-old", "exited") },
-      order: ["done"],
-    });
-
-    await user.click(screen.getByRole("button", { name: /collapse old-crm/i }));
-    expect(screen.getByRole("img", { name: "holds the open session" })).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: /expand old-crm/i }));
-    expect(screen.queryByRole("img", { name: "holds the open session" })).not.toBeInTheDocument();
-  });
-
-  it("does not mark a collapsed project that holds no open session", async () => {
-    const user = userEvent.setup();
-    mount({
-      projects: [project("p-a", "job-portal"), project("p-b", "dotfiles")],
-      selectedProjectId: "p-a",
-      selectedSessionId: "mine",
-      sessions: {
-        mine: session("mine", "p-a", "exited"),
-        theirs: session("theirs", "p-b", "exited", { branch: "brigadier/99999999" }),
-      },
-      order: ["mine", "theirs"],
-    });
-
-    await user.click(screen.getByRole("button", { name: /collapse job-portal/i }));
-    expect(screen.getAllByRole("img", { name: "holds the open session" })).toHaveLength(1);
-  });
-});
-
-describe("the sidebar's sessions", () => {
-  it("labels a session by its branch and keeps the path out of the label", () => {
-    mount({
-      projects: [project("p-live", "job-portal")],
-      selectedProjectId: "p-live",
-      sessions: {
-        live: session("live", "p-live", "running", {
-          worktreePath: "/repos/job-portal/.worktrees/a80e2411",
-        }),
-      },
-      order: ["live"],
-    });
-
-    const row = screen.getByRole("button", { name: /brigadier\/a80e2411/ });
-    expect(row).toBeInTheDocument();
-    expect(row.textContent).not.toContain("/repos/job-portal");
-    // The uuid tail the old sidebar showed instead of a branch is not the label either.
-    expect(row.textContent).not.toContain("live");
-  });
-
-  it("falls back to the session id when the project is not a git repo", () => {
-    mount({
-      projects: [project("p-plain", "scratch")],
-      selectedProjectId: "p-plain",
-      sessions: {
-        "0f1e2d3c4b5a": session("0f1e2d3c4b5a", "p-plain", "running", {
-          branch: null,
-          worktreePath: null,
-        }),
-      },
-      order: ["0f1e2d3c4b5a"],
-    });
-
-    expect(screen.getByRole("button", { name: /4b5a/ })).toBeInTheDocument();
-  });
-
-  it("reports a session's status to assistive technology, not only as a colour", () => {
-    mount({
-      projects: [project("p-live", "job-portal")],
-      selectedProjectId: "p-live",
-      sessions: { live: session("live", "p-live", "failed") },
-      order: ["live"],
-    });
-
-    expect(screen.getByRole("button", { name: /failed/ })).toBeInTheDocument();
-  });
-
-  /**
-   * The busy dot's pulse is a CSS animation: invisible to a screen reader, switched off under
-   * `prefers-reduced-motion`, and not observable from a test at all. The fact it carries is, so
-   * the row says it in words too, and this is the only assertable half of that behaviour.
-   */
-  it("announces an open turn as working, not merely running", () => {
-    mount({
-      projects: [project("p-live", "job-portal")],
-      selectedProjectId: "p-live",
-      sessions: { live: session("live", "p-live", "running", { busy: true }) },
-      order: ["live"],
-    });
-
-    // Scoped to the session row: the project row above it also announces "1 running", from the
-    // run marker nested inside it, and that is a different statement about a different subject.
-    const row = screen.getByRole("button", { name: /brigadier\/a80e2411/ });
-    expect(row).toHaveAccessibleName(/working/);
-    expect(row).not.toHaveAccessibleName(/running/);
-  });
-
-  it("announces a running session with no open turn as running", () => {
-    mount({
-      projects: [project("p-live", "job-portal")],
-      selectedProjectId: "p-live",
-      sessions: { live: session("live", "p-live", "running") },
-      order: ["live"],
-    });
-
-    const row = screen.getByRole("button", { name: /brigadier\/a80e2411/ });
-    expect(row).toHaveAccessibleName(/running/);
-    expect(row).not.toHaveAccessibleName(/working/);
-  });
-
-  it("hands the session id to onSelectSession when a row is clicked", async () => {
-    const user = userEvent.setup();
+    const remove = vi.fn().mockResolvedValue({ deletion: {}, error: null });
     const props = mount({
-      projects: [project("p-live", "job-portal")],
-      selectedProjectId: "p-live",
-      sessions: { live: session("live", "p-live", "running") },
-      order: ["live"],
+      projects: [project("p", "Brigadier")],
+      onReveal: vi.fn(),
+      onDeleteProject: remove,
     });
-
-    await user.click(screen.getByRole("button", { name: /brigadier\/a80e2411/ }));
-
-    expect(props.onSelectSession).toHaveBeenCalledTimes(1);
-    expect(props.onSelectSession).toHaveBeenCalledWith("live");
+    await user.click(
+      screen.getByRole("button", { name: "Project actions Brigadier" }),
+    );
+    await user.click(screen.getByText("Reveal in Finder"));
+    expect(props.onReveal).toHaveBeenCalledWith("/repos/Brigadier");
+    await user.click(
+      screen.getByRole("button", { name: "Project actions Brigadier" }),
+    );
+    await user.click(screen.getByText("Remove project"));
+    expect(remove).not.toHaveBeenCalled();
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: "Remove project",
+      }),
+    );
+    expect(remove).toHaveBeenCalledWith("p", false);
   });
 });
-
-describe("the sidebar's own rows", () => {
-  it("says how many approvals are waiting, and says nothing when none are", () => {
-    const { rerender } = renderCounts(0);
-    expect(screen.queryByText(/waiting/)).not.toBeInTheDocument();
-    rerender(2);
-    expect(screen.getByText("2 waiting")).toBeInTheDocument();
-  });
-
-  it("clears the session selection from the New session row", async () => {
+describe("project opening", () => {
+  it("uses the native picker when available", async () => {
     const user = userEvent.setup();
-    const props = mount({ projects: [project("p", "one")] });
-    await user.click(screen.getByRole("button", { name: "New session" }));
-    expect(props.onSelectSession).toHaveBeenCalledWith(null);
+    const pick = vi.fn().mockResolvedValue(null);
+    mount({ onPickProject: pick });
+    await user.click(screen.getByRole("button", { name: "Add project" }));
+    expect(pick).toHaveBeenCalledOnce();
+    expect(screen.queryByLabelText("Project path")).not.toBeInTheDocument();
   });
-
-  it("shows no window gauge, because no reading exists to draw one from", () => {
-    mount({ projects: [project("p", "one")] });
-    // W2-C carries `rate_limit_event.unifiedWindows` to the webview; until it does, a bar, a
-    // zero or a dash here would be a number nobody measured.
-    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
-    expect(screen.queryByText(/%/)).not.toBeInTheDocument();
-  });
-});
-
-/** Mount the sidebar with `n` pending approvals, and hand back a way to change `n`. */
-function renderCounts(n: number) {
-  const props: SidebarProps = {
-    projects: [project("p", "one")],
-    sessions: {},
-    order: [],
-    selectedProjectId: null,
-    selectedSessionId: null,
-    pendingTotal: n,
-    appInfo: null,
-    claude: null,
-    claudeError: null,
-    isMock: true,
-    onSelectProject: vi.fn(),
-    onSelectSession: vi.fn(),
-    onAddProject: vi.fn(),
-  };
-  const view = render(<Sidebar {...props} />);
-  return {
-    rerender(next: number) {
-      view.rerender(<Sidebar {...props} pendingTotal={next} />);
-    },
-  };
-}
-
-describe("the sidebar's project list", () => {
-  it("names each project once, whatever its state", () => {
+  it("opens a path fallback after picker refusal", async () => {
+    const user = userEvent.setup();
     mount({
-      projects: [project("a", "job-portal"), project("b", "brigadier-ai"), project("c", "old-crm")],
+      onPickProject: vi
+        .fn()
+        .mockResolvedValue(new AppError("invalid_argument", "Missing folder")),
     });
-    const nav = screen.getByRole("navigation");
-    expect(within(nav).getByText("job-portal")).toBeInTheDocument();
-    expect(within(nav).getByText("brigadier-ai")).toBeInTheDocument();
-    expect(within(nav).getByText("old-crm")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Add project" }));
+    expect(screen.getByLabelText("Project path")).toBeVisible();
+  });
+  it("keeps a refused typed path available to correct", async () => {
+    const user = userEvent.setup();
+    const add = vi
+      .fn()
+      .mockResolvedValue(new AppError("invalid_argument", "Missing folder"));
+    mount({ onAddProject: add });
+    await user.click(screen.getByRole("button", { name: "Add project" }));
+    await user.type(screen.getByLabelText("Project path"), "/repos/work");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    expect(add).toHaveBeenCalledWith("/repos/work");
+    expect(screen.getByLabelText("Project path")).toHaveValue("/repos/work");
   });
 });
-
-/*
- * ------------------------------------------------------------------ the project-open flow
- *
- * The owner's sentence for this order: *launch the app, click **Add project**, and pick a folder
- * in a native macOS directory picker — not paste an absolute path into a text field.*
- *
- * What can be pinned here and what cannot is worth stating, because the gap is the whole risk.
- * These tests exercise the **call**: that clicking the control invokes the picker rather than
- * revealing a text field, that a cancel is silent, that a refusal is drawn where the owner is
- * looking, and that the typed path still works when there is no picker. They do **not** open a
- * macOS dialog, and nothing in this suite can — `@tauri-apps/plugin-dialog` needs a Tauri window,
- * and jsdom is not one. The picker itself is proven only by
- * `docs/research/tauri-dialog.md`'s reading of the plugin's own types and permission files.
- *
- * The seam that makes that testable is `onPickProject`'s *absence*: undefined means "no picker in
- * this runtime", which is a browser, and the "+" falls back to the field. So the same prop
- * expresses the degradation and gates the test.
- */
-describe("adding a project", () => {
-  it("opens the native picker rather than a text field", async () => {
-    const user = userEvent.setup();
-    const onPickProject = vi.fn(async () => null);
-    mount({ onPickProject });
-
-    await user.click(screen.getByRole("button", { name: "add a project" }));
-
-    expect(onPickProject).toHaveBeenCalledTimes(1);
-    // The point of the order: no path is typed. The fallback field stays closed on the happy path.
-    expect(screen.queryByLabelText("project path")).not.toBeInTheDocument();
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-  });
-
-  it("says nothing and opens nothing when the picker is cancelled", async () => {
-    const user = userEvent.setup();
-    // A cancelled `open({ directory: true })` resolves `null`, which `App.pickProject` turns into
-    // `null` — the same value success returns (`docs/research/tauri-dialog.md` §2). A cancel is
-    // not an error and must not be drawn as one.
-    const onPickProject = vi.fn(async () => null);
-    const onAddProject = vi.fn();
-    mount({ onPickProject, onAddProject });
-
-    await user.click(screen.getByRole("button", { name: "add a project" }));
-
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("project path")).not.toBeInTheDocument();
-    // Nothing was added by the typed route either; that `add_project` was not called at all is
-    // pinned in `src/App.test.tsx`, which owns the bridge.
-    expect(onAddProject).not.toHaveBeenCalled();
-  });
-
-  it("draws a refused folder beside the control, and opens the typed field as the way out", async () => {
-    const user = userEvent.setup();
-    const onPickProject = vi.fn(async () => new AppError("invalid_argument", "not a repository root"));
-    mount({ onPickProject });
-
-    await user.click(screen.getByRole("button", { name: "add a project" }));
-
-    expect(screen.getByRole("alert")).toHaveTextContent("not a repository root");
-    // The escape hatch: a picker that fails must never leave the owner with no route in.
-    expect(screen.getByLabelText("project path")).toBeInTheDocument();
-  });
-
-  it("still adds a typed path when there is no picker", async () => {
-    const user = userEvent.setup();
-    const onAddProject = vi.fn(async () => null);
-    // No `onPickProject`: a browser, where the mock bridge is selected and no dialog plugin exists.
-    mount({ onAddProject });
-
-    await user.click(screen.getByRole("button", { name: "add a project by path" }));
-    await user.type(screen.getByLabelText("project path"), "  /repos/job-portal  ");
-    await user.click(screen.getByRole("button", { name: "Add" }));
-
-    expect(onAddProject).toHaveBeenCalledTimes(1);
-    expect(onAddProject).toHaveBeenCalledWith("/repos/job-portal");
-    // Accepted, so the field closes behind it.
-    expect(screen.queryByLabelText("project path")).not.toBeInTheDocument();
-  });
-
-  it("keeps a refused typed path in the field instead of making it be retyped", async () => {
-    const user = userEvent.setup();
-    const onAddProject = vi.fn(async () => new AppError("invalid_argument", "not a directory"));
-    mount({ onAddProject });
-
-    await user.click(screen.getByRole("button", { name: "add a project by path" }));
-    const field = screen.getByLabelText("project path");
-    await user.type(field, "/repos/not-a-repo");
-    await user.click(screen.getByRole("button", { name: "Add" }));
-
-    expect(screen.getByRole("alert")).toHaveTextContent("not a directory");
-    expect(field).toHaveValue("/repos/not-a-repo");
-  });
-});
-
-/*
- * `tauri-plugin-opener` was a dead dependency until this order: registered in `lib.rs`, called by
- * nothing. Its job here is two reveals, and the load-bearing case is the one where there is
- * nothing to reveal.
- */
-describe("revealing in Finder", () => {
-  it("reveals a project by its root path", async () => {
-    const user = userEvent.setup();
-    const onReveal = vi.fn();
-    mount({ projects: [project("p", "job-portal")], onReveal });
-
-    await user.click(screen.getByRole("button", { name: "reveal job-portal in Finder" }));
-
-    expect(onReveal).toHaveBeenCalledWith("/repos/job-portal");
-  });
-
-  it("offers no reveal for a session with no worktree", () => {
-    // `worktree_path` is null whenever the project is not a git repository (contract §Worktrees).
-    // The control is **absent**, not disabled: a disabled button claims a folder exists.
-    const sessions = {
-      withTree: session("withTree", "p", "running"),
-      noTree: session("noTree", "p", "running", { worktreePath: null, branch: null }),
-    };
-    mount({ projects: [project("p", "job-portal")], sessions, onReveal: vi.fn() });
-
-    expect(screen.getByRole("button", { name: /reveal .* worktree in Finder/ })).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: /worktree in Finder/ })).toHaveLength(1);
-  });
-
-  it("offers no reveal at all outside a Tauri window", () => {
-    // `onReveal` undefined is the browser: the opener plugin does not exist there, so neither
-    // does the control.
-    mount({
-      projects: [project("p", "job-portal")],
-      sessions: { one: session("one", "p", "running") },
+describe("notes and profile", () => {
+  it("lists notes from every project and folds the accordion", async () => {
+    vi.mocked(workbenchApi.load).mockResolvedValue({
+      notes: [
+        {
+          id: "n",
+          title: "Ideas",
+          content: "text",
+          projectId: "different",
+          revision: 1,
+          alwaysInclude: false,
+          language: "markdown",
+        },
+      ],
+      projects: {},
+      global: defaultSettings,
+      displayName: "Stephen",
     });
-
-    expect(screen.queryByRole("button", { name: /in Finder/ })).not.toBeInTheDocument();
+    const user = userEvent.setup();
+    mount();
+    expect(await screen.findByText("Ideas")).toBeVisible();
+    const open = vi.fn();
+    window.addEventListener("workbench-open-note", open);
+    await user.click(screen.getByRole("button", { name: "Ideas" }));
+    expect(open).toHaveBeenCalled();
+    window.removeEventListener("workbench-open-note", open);
+    await user.click(screen.getByRole("button", { name: "Notes" }));
+    expect(screen.queryByText("Ideas")).not.toBeInTheDocument();
   });
-});
-
-/*
- * Deleting — R4.2, 2026-09-05.
- *
- * `docs/plans/ipc-contract.md` §Deleting. The owner had 44 sessions in his sidebar, 40 of them
- * synthetic burn rows with no way to remove them, and `cleanup_worktree` is the wrong verb: it
- * takes the checkout and leaves the row.
- *
- * Every assertion below is about **not lying to him**, which is what the four contract rules are
- * for. A refusal resolves rather than rejecting, so the one defect this surface can produce is
- * drawing a delete that did not happen as one that did — the same defect class as an approvals
- * dock showing a decision that never landed, which was a real bug in this repo two days before
- * this was written.
- */
-
-/** `DeletedRows` with every count zero: what every refusal carries. */
-const NO_ROWS = {
-  projects: 0,
-  sessions: 0,
-  feed: 0,
-  approvals: 0,
-  intents: 0,
-  plans: 0,
-  phases: 0,
-  plan_revisions: 0,
-  unknowns: 0,
-  work_orders: 0,
-  work_orders_orphaned: 0,
-};
-
-describe("immediate sidebar removal", () => {
-  const removed = { removed: true, rows: NO_ROWS, worktree: null, branch: null, logs_removed: 0 };
-  it("deletes a running session on the first click without a confirmation", async () => {
-    const onDeleteSession = vi.fn(async () => ({ deletion: { ...removed, session_id: "one" }, error: null }));
-    mount({ projects: [project("p", "job-portal")], sessions: { one: session("one", "p", "running") }, order: ["one"], selectedProjectId: "p", onDeleteSession });
-    await userEvent.click(screen.getByRole("button", { name: "delete session a80e2411" }));
-    expect(onDeleteSession).toHaveBeenCalledExactlyOnceWith("one", false);
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+  it("creates a note through the shared note API", async () => {
+    const save = vi
+      .spyOn(workbenchApi, "saveNote")
+      .mockImplementation(async (n) => ({ ...n, revision: 1 }));
+    const user = userEvent.setup();
+    mount();
+    await user.click(screen.getByRole("button", { name: "Add note" }));
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Untitled note",
+        projectId: null,
+        content: "",
+      }),
+    );
   });
-  it("hides the session while deletion is still in flight, restoring it on failure", async () => {
-    let finish!: (value: SessionDeleteAnswer) => void;
-    const onDeleteSession = vi.fn(() => new Promise<SessionDeleteAnswer>(resolve => { finish = resolve; }));
-    mount({ projects: [project("p", "job-portal")], sessions: { one: session("one", "p", "running") }, order: ["one"], selectedProjectId: "p", onDeleteSession });
-    await userEvent.click(screen.getByRole("button", { name: "delete session a80e2411" }));
-    expect(screen.queryByRole("button", { name: "delete session a80e2411" })).not.toBeInTheDocument();
-    finish({ deletion: null, error: { name: "AppError", code: "store", message: "Retry needed" } });
-    expect(await screen.findByRole("alert")).toHaveTextContent("Retry needed");
-    expect(screen.getByRole("button", { name: "delete session a80e2411" })).toBeInTheDocument();
-  });
-  it("removes a project on the first click and explains that local files are kept", async () => {
-    const onDeleteProject = vi.fn(async () => ({ deletion: { ...removed, project_id: "p", worktrees: [], gate_logs_removed: 0, brigadier_dir_removed: false }, error: null }));
-    mount({ projects: [project("p", "job-portal")], onDeleteProject });
-    const button = screen.getByRole("button", { name: "delete project job-portal" });
-    expect(button).toHaveAttribute("title", expect.stringContaining("Local files are kept"));
-    await userEvent.click(button);
-    expect(onDeleteProject).toHaveBeenCalledExactlyOnceWith("p", false);
-    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
-  });
-  it("shows a failure inline and allows retry", async () => {
-    const onDeleteSession = vi.fn(async () => ({ deletion: null, error: { name: "AppError", code: "store", message: "Database unavailable" } }));
-    mount({ projects: [project("p", "job-portal")], sessions: { one: session("one", "p", "exited") }, order: ["one"], selectedProjectId: "p", onDeleteSession });
-    const button = screen.getByRole("button", { name: "delete session a80e2411" });
-    await userEvent.click(button);
-    expect(screen.getByRole("alert")).toHaveTextContent("Database unavailable");
-    await userEvent.click(screen.getByRole("button", { name: "delete session a80e2411" }));
-    expect(onDeleteSession).toHaveBeenCalledTimes(2);
+  it("shows the local profile and opens Settings", async () => {
+    const user = userEvent.setup();
+    mount();
+    expect(await screen.findByText("Stephen")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    expect(screen.getByRole("dialog")).toBeVisible();
+    expect(screen.getByText("Notes folder")).toBeVisible();
   });
 });

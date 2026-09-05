@@ -8,7 +8,7 @@ import type { ChatItem } from "../workspaceApi";
 
 vi.mock("./Markdown", () => ({
   Markdown: ({ text }: { text: string }) => <p>{text}</p>,
-  CopyButton: () => <button aria-label="Copy" />
+  CopyButton: () => <button aria-label="Copy" />,
 }));
 afterEach(cleanup);
 const item = (
@@ -56,13 +56,13 @@ describe("work disclosure", () => {
     );
     expect(screen.queryByText("npm test")).not.toBeInTheDocument();
     const summary = screen.getByRole("button", {
-      name: "Worked · 1 action 1 failed",
+      name: "Worked 1 failed",
     });
     await user.tab();
     expect(summary).toHaveFocus();
     await user.keyboard("{Enter}");
     expect(summary).toHaveAttribute("aria-expanded", "true");
-    expect(screen.queryByText("npm test")).not.toBeInTheDocument();
+    expect(screen.getByText("Ran npm test")).toBeVisible();
     await user.tab();
     await user.keyboard(" ");
     expect(screen.getAllByText("npm test")).toHaveLength(1);
@@ -70,7 +70,7 @@ describe("work disclosure", () => {
     await user.click(summary);
     expect(screen.queryByText("npm test")).not.toBeInTheDocument();
     await user.click(summary);
-    expect(screen.getByText("npm test")).toBeInTheDocument();
+    expect(screen.getAllByText("npm test")).toHaveLength(1);
   });
   it("nests an agent’s progress and leaves unrelated commands alongside the agent", async () => {
     const user = userEvent.setup();
@@ -108,8 +108,9 @@ describe("work disclosure", () => {
       screen.getByText("Found the relevant behavior."),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Command" }).closest(".trace-entry")
-        ?.parentElement?.className,
+      screen
+        .getByRole("button", { name: "Ran git status" })
+        .closest(".trace-entry")?.parentElement?.className,
     ).toBe("work-details");
   });
   it("batches repeated commands and mounts long traces incrementally", async () => {
@@ -120,9 +121,13 @@ describe("work disclosure", () => {
     render(<Harness items={items} />);
     await user.click(screen.getByRole("button", { name: /Worked/ }));
     expect(screen.queryByText("command 0")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Command · 100" }));
-    expect(screen.getAllByRole("button", { name: "Command" })).toHaveLength(40);
+    await user.click(screen.getByRole("button", { name: "Ran commands" }));
+    expect(
+      screen.getAllByRole("button", { name: /^Ran command \d+/ }),
+    ).toHaveLength(40);
     await user.click(screen.getByRole("button", { name: "Show more (60)" }));
-    expect(screen.getAllByRole("button", { name: "Command" })).toHaveLength(80);
+    expect(
+      screen.getAllByRole("button", { name: /^Ran command \d+/ }),
+    ).toHaveLength(80);
   });
 });

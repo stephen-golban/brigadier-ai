@@ -11,8 +11,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use brigadier_core::approval::PendingApproval;
 use brigadier_core::driver::{DriverKind, McpPolicy};
 use brigadier_core::event::{
-    bounded, ExitReason, InstanceId, RequestId, RequestKind, SessionId, Usage,
-    INPUT_EXCERPT_LIMIT,
+    bounded, ExitReason, InstanceId, RequestId, RequestKind, SessionId, Usage, INPUT_EXCERPT_LIMIT,
 };
 use rusqlite::{Connection, Row};
 
@@ -354,7 +353,19 @@ CREATE TABLE chat_archive (
  item_json TEXT NOT NULL
 );
 "#,
-
+    // Session cleanup explicitly purges these after all workspace writers drain.
+    r#"
+CREATE TABLE workspace_epochs (
+ session_id TEXT NOT NULL, turn_id TEXT NOT NULL, body TEXT NOT NULL,
+ updated_at INTEGER NOT NULL, PRIMARY KEY(session_id,turn_id)
+);
+CREATE TABLE workspace_rewinds (
+ id TEXT PRIMARY KEY, session_id TEXT NOT NULL, workspace TEXT NOT NULL,
+ phase TEXT NOT NULL, body TEXT NOT NULL, updated_at INTEGER NOT NULL
+);
+CREATE INDEX workspace_rewinds_pending ON workspace_rewinds(workspace,phase);
+CREATE TABLE workspace_applies (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, body TEXT NOT NULL);
+"#,
 ];
 
 /// Where a session is in its life.
@@ -641,8 +652,12 @@ pub(crate) fn session_from_row(row: &Row<'_>) -> rusqlite::Result<SessionRecord>
     Ok(SessionRecord {
         session_id: SessionId::new(row.get::<_, String>("id")?),
         project_id: row.get("project_id")?,
-        instance_id: row.get::<_, Option<String>>("instance_id")?.map(InstanceId::new),
-        driver_kind: row.get::<_, Option<String>>("driver_kind")?.map(DriverKind::new),
+        instance_id: row
+            .get::<_, Option<String>>("instance_id")?
+            .map(InstanceId::new),
+        driver_kind: row
+            .get::<_, Option<String>>("driver_kind")?
+            .map(DriverKind::new),
         provider_session_id: row.get("provider_session_id")?,
         cwd: path_of(row, "cwd")?,
         worktree_path: path_of(row, "worktree_path")?,
@@ -746,7 +761,10 @@ fn migrate(conn: &Connection) -> Result<()> {
     let applied: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
     let applied = usize::try_from(applied).unwrap_or(0);
     if applied > MIGRATIONS.len() {
-        return Err(Error::Newer { found: applied, known: MIGRATIONS.len() });
+        return Err(Error::Newer {
+            found: applied,
+            known: MIGRATIONS.len(),
+        });
     }
     for (n, sql) in MIGRATIONS.iter().enumerate().skip(applied) {
         let version = n as i64 + 1;
@@ -871,16 +889,22 @@ mod tests {
     fn a_row_that_predates_the_kind_column_reads_back_as_unknown() {
         let dir = tempfile::tempdir().expect("tempdir");
         let conn = open_connection(&dir.path().join("t.sqlite")).expect("open");
-        conn.execute("INSERT INTO sessions(id) VALUES ('s1')", []).expect("session");
+        conn.execute("INSERT INTO sessions(id) VALUES ('s1')", [])
+            .expect("session");
         conn.execute(
             "INSERT INTO feed(session_id, seq, at, line) VALUES ('s1', 1, 0, 'an old row')",
             [],
         )
         .expect("feed");
-        let mut stmt =
-            conn.prepare("SELECT session_id, seq, at, kind, line FROM feed").expect("prepare");
+        let mut stmt = conn
+            .prepare("SELECT session_id, seq, at, kind, line FROM feed")
+            .expect("prepare");
         let row = stmt.query_row([], feed_from_row).expect("read");
-        assert_eq!(row.kind, FeedKind::Unknown, "an unrecorded kind is not `sys`");
+        assert_eq!(
+            row.kind,
+            FeedKind::Unknown,
+            "an unrecorded kind is not `sys`"
+        );
         assert_eq!(row.line, "an old row", "the line itself is never lost");
     }
 
@@ -896,7 +920,8 @@ mod tests {
             let conn = Connection::open(&path).expect("open");
             for (n, sql) in MIGRATIONS.iter().enumerate().take(2) {
                 conn.execute_batch(sql).expect("old rung");
-                conn.pragma_update(None, "user_version", n as i64 + 1).expect("bump");
+                conn.pragma_update(None, "user_version", n as i64 + 1)
+                    .expect("bump");
             }
             conn.execute(
                 "INSERT INTO projects(id, name, root_path, created_at) VALUES ('p1', 'old', '/r', 0)",
@@ -905,13 +930,18 @@ mod tests {
             .expect("a project with no mcp column at all");
         }
         let conn = open_connection(&path).expect("reopen runs the ladder");
-        let version: i64 =
-            conn.pragma_query_value(None, "user_version", |r| r.get(0)).expect("version");
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .expect("version");
         assert_eq!(version, MIGRATIONS.len() as i64);
-        assert_eq!(version, 8, "installed chat rewind schema is the top rung");
+        assert_eq!(version, 9, "workspace checkpoints schema is the top rung");
         let sql = format!("SELECT {PROJECT_COLUMNS} FROM projects WHERE id = 'p1'");
         let row = conn.query_row(&sql, [], project_from_row).expect("read");
-        assert_eq!(row.mcp, McpPolicy::Off, "an existing project is switched off, not opted in");
+        assert_eq!(
+            row.mcp,
+            McpPolicy::Off,
+            "an existing project is switched off, not opted in"
+        );
         assert_eq!(row.name, "old", "nothing else about the row moves");
     }
 
@@ -927,7 +957,8 @@ mod tests {
             let conn = Connection::open(&path).expect("open");
             for (n, sql) in MIGRATIONS.iter().enumerate().take(3) {
                 conn.execute_batch(sql).expect("old rung");
-                conn.pragma_update(None, "user_version", n as i64 + 1).expect("bump");
+                conn.pragma_update(None, "user_version", n as i64 + 1)
+                    .expect("bump");
             }
             conn.execute(
                 "INSERT INTO projects(id, name, root_path, created_at, mcp)
@@ -935,8 +966,11 @@ mod tests {
                 [],
             )
             .expect("project");
-            conn.execute("INSERT INTO sessions(id, project_id) VALUES ('s1', 'p1')", [])
-                .expect("session");
+            conn.execute(
+                "INSERT INTO sessions(id, project_id) VALUES ('s1', 'p1')",
+                [],
+            )
+            .expect("session");
             conn.execute(
                 "INSERT INTO feed(session_id, seq, at, kind, line)
                  VALUES ('s1', 1, 11, 'text', 'an old row')",
@@ -946,10 +980,11 @@ mod tests {
         }
 
         let conn = open_connection(&path).expect("reopen runs the ladder");
-        let version: i64 =
-            conn.pragma_query_value(None, "user_version", |r| r.get(0)).expect("version");
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .expect("version");
         assert_eq!(version, MIGRATIONS.len() as i64);
-        assert_eq!(version, 8, "installed chat rewind schema is the top rung");
+        assert_eq!(version, 9, "workspace checkpoints schema is the top rung");
 
         let has = |kind: &str, name: &str| -> bool {
             conn.query_row(
@@ -960,9 +995,14 @@ mod tests {
             .expect("sqlite_master")
                 == 1
         };
-        for table in
-            ["intents", "plans", "phases", "plan_revisions", "unknowns", "work_orders"]
-        {
+        for table in [
+            "intents",
+            "plans",
+            "phases",
+            "plan_revisions",
+            "unknowns",
+            "work_orders",
+        ] {
             assert!(has("table", table), "migration did not create {table}");
         }
         for index in [
@@ -977,19 +1017,27 @@ mod tests {
 
         // Nothing that was already there moved.
         let sql = format!("SELECT {PROJECT_COLUMNS} FROM projects WHERE id = 'p1'");
-        let row = conn.query_row(&sql, [], project_from_row).expect("read project");
+        let row = conn
+            .query_row(&sql, [], project_from_row)
+            .expect("read project");
         assert_eq!(row.name, "old");
-        assert_eq!(row.mcp, McpPolicy::Inherit, "an opted-in project stays opted in");
+        assert_eq!(
+            row.mcp,
+            McpPolicy::Inherit,
+            "an opted-in project stays opted in"
+        );
         assert_eq!(to_millis(row.created_at), 7);
-        let mut stmt =
-            conn.prepare("SELECT session_id, seq, at, kind, line FROM feed").expect("prepare");
+        let mut stmt = conn
+            .prepare("SELECT session_id, seq, at, kind, line FROM feed")
+            .expect("prepare");
         let feed = stmt.query_row([], feed_from_row).expect("read feed");
         assert_eq!(feed.line, "an old row");
         assert_eq!(feed.kind, FeedKind::Text);
         assert_eq!(feed.seq, 1);
         // And the new tables start empty: there is nothing to backfill.
-        let intents: i64 =
-            conn.query_row("SELECT COUNT(*) FROM intents", [], |r| r.get(0)).expect("count");
+        let intents: i64 = conn
+            .query_row("SELECT COUNT(*) FROM intents", [], |r| r.get(0))
+            .expect("count");
         assert_eq!(intents, 0);
     }
 
@@ -1030,7 +1078,8 @@ mod tests {
             let conn = Connection::open(&path).expect("open");
             for (n, sql) in MIGRATIONS.iter().enumerate().take(TRANSACTIONAL_FROM) {
                 conn.execute_batch(sql).expect("old rung");
-                conn.pragma_update(None, "user_version", n as i64 + 1).expect("bump");
+                conn.pragma_update(None, "user_version", n as i64 + 1)
+                    .expect("bump");
             }
             conn.execute_batch("CREATE TABLE work_orders (id TEXT PRIMARY KEY);")
                 .expect("the obstruction");
@@ -1039,12 +1088,24 @@ mod tests {
         {
             let conn = Connection::open(&path).expect("reopen");
             migrate(&conn).expect_err("rung 4 must fail on the table that already exists");
-            let version: i64 =
-                conn.pragma_query_value(None, "user_version", |r| r.get(0)).expect("version");
-            assert_eq!(version, 4, "rung 3 committed; rung 4's bump rolled back with its DDL");
-            assert_eq!(count(&conn, "intents"), 1, "the rung that did commit is still there");
+            let version: i64 = conn
+                .pragma_query_value(None, "user_version", |r| r.get(0))
+                .expect("version");
+            assert_eq!(
+                version, 4,
+                "rung 3 committed; rung 4's bump rolled back with its DDL"
+            );
+            assert_eq!(
+                count(&conn, "intents"),
+                1,
+                "the rung that did commit is still there"
+            );
             for table in ["plans", "phases", "plan_revisions", "unknowns"] {
-                assert_eq!(count(&conn, table), 0, "{table} outlived the rung that created it");
+                assert_eq!(
+                    count(&conn, table),
+                    0,
+                    "{table} outlived the rung that created it"
+                );
             }
         }
 
@@ -1052,13 +1113,22 @@ mod tests {
         // with rung 4's leftovers on disk it died on `table plans already exists` instead.
         {
             let conn = Connection::open(&path).expect("reopen");
-            conn.execute_batch("DROP TABLE work_orders;").expect("clear");
+            conn.execute_batch("DROP TABLE work_orders;")
+                .expect("clear");
         }
         let conn = open_connection(&path).expect("the next open must not trip over a partial rung");
-        let version: i64 =
-            conn.pragma_query_value(None, "user_version", |r| r.get(0)).expect("version");
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .expect("version");
         assert_eq!(version, MIGRATIONS.len() as i64);
-        for table in ["intents", "plans", "phases", "plan_revisions", "unknowns", "work_orders"] {
+        for table in [
+            "intents",
+            "plans",
+            "phases",
+            "plan_revisions",
+            "unknowns",
+            "work_orders",
+        ] {
             assert_eq!(count(&conn, table), 1, "the reopen did not create {table}");
         }
     }
@@ -1083,14 +1153,17 @@ mod tests {
         // Every rung below the transactional threshold, as a previous build left them.
         for (n, sql) in MIGRATIONS.iter().enumerate().take(TRANSACTIONAL_FROM) {
             conn.execute_batch(sql).expect("old rung");
-            conn.pragma_update(None, "user_version", n as i64 + 1).expect("bump");
+            conn.pragma_update(None, "user_version", n as i64 + 1)
+                .expect("bump");
         }
         // `pragma_update` writes the value into the statement text, so a write is a `Pragma`
         // action carrying `Some(value)` and a read carries `None`. Only the write is refused.
         conn.authorizer(Some(|ctx: AuthContext<'_>| match ctx.action {
-            AuthAction::Pragma { pragma_name: "user_version", pragma_value: Some(_), .. } => {
-                Authorization::Deny
-            }
+            AuthAction::Pragma {
+                pragma_name: "user_version",
+                pragma_value: Some(_),
+                ..
+            } => Authorization::Deny,
             _ => Authorization::Allow,
         }))
         .expect("authorizer");
@@ -1098,9 +1171,13 @@ mod tests {
         let err = migrate(&conn).expect_err("the bump must be refused");
         assert!(err.to_string().contains("not authorized"), "{err}");
 
-        let version: i64 =
-            conn.pragma_query_value(None, "user_version", |r| r.get(0)).expect("version");
-        assert_eq!(version, TRANSACTIONAL_FROM as i64, "the bump did not land, by construction");
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .expect("version");
+        assert_eq!(
+            version, TRANSACTIONAL_FROM as i64,
+            "the bump did not land, by construction"
+        );
         let tables: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'intents'",
@@ -1125,7 +1202,8 @@ mod tests {
             let conn = Connection::open(&path).expect("open");
             for (n, sql) in MIGRATIONS.iter().enumerate().take(5) {
                 conn.execute_batch(sql).expect("old rung");
-                conn.pragma_update(None, "user_version", n as i64 + 1).expect("bump");
+                conn.pragma_update(None, "user_version", n as i64 + 1)
+                    .expect("bump");
             }
             conn.execute(
                 "INSERT INTO projects(id, name, root_path, created_at, mcp)
@@ -1147,15 +1225,28 @@ mod tests {
         }
 
         let conn = open_connection(&path).expect("reopen runs the ladder");
-        let version: i64 =
-            conn.pragma_query_value(None, "user_version", |r| r.get(0)).expect("version");
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .expect("version");
         assert_eq!(version, MIGRATIONS.len() as i64);
-        assert_eq!(version, 8, "installed chat rewind schema is the top rung");
+        assert_eq!(version, 9, "workspace checkpoints schema is the top rung");
 
-        let sql = format!("SELECT {} FROM phases WHERE id = 'ph1'", crate::plan::PHASE_COLUMNS);
-        let row = conn.query_row(&sql, [], crate::plan::phase_from_row).expect("read");
-        assert_eq!(row.base_sha, None, "a phase that predates the column records no base");
-        assert_eq!(row.commit_sha.as_deref(), Some("abc123"), "nothing else about the row moves");
+        let sql = format!(
+            "SELECT {} FROM phases WHERE id = 'ph1'",
+            crate::plan::PHASE_COLUMNS
+        );
+        let row = conn
+            .query_row(&sql, [], crate::plan::phase_from_row)
+            .expect("read");
+        assert_eq!(
+            row.base_sha, None,
+            "a phase that predates the column records no base"
+        );
+        assert_eq!(
+            row.commit_sha.as_deref(),
+            Some("abc123"),
+            "nothing else about the row moves"
+        );
         assert_eq!(row.title, "schema");
     }
 
@@ -1165,9 +1256,10 @@ mod tests {
     fn a_fresh_file_lands_on_the_top_rung_with_base_sha() {
         let dir = tempfile::tempdir().expect("tempdir");
         let conn = open_connection(&dir.path().join("t.sqlite")).expect("open");
-        let version: i64 =
-            conn.pragma_query_value(None, "user_version", |r| r.get(0)).expect("version");
-        assert_eq!(version, 8);
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .expect("version");
+        assert_eq!(version, 9);
         let has_column: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('phases') WHERE name = 'base_sha'",
@@ -1175,7 +1267,10 @@ mod tests {
                 |r| r.get(0),
             )
             .expect("table_info");
-        assert_eq!(has_column, 1, "a fresh file gets the column from the ladder, not from a patch");
+        assert_eq!(
+            has_column, 1,
+            "a fresh file gets the column from the ladder, not from a patch"
+        );
     }
 
     /// A file written by a build with more rungs than this one is refused, not opened and half
@@ -1189,7 +1284,8 @@ mod tests {
             let conn = open_connection(&path).expect("open");
             // One rung past this build: exactly the relationship a `user_version` 6 file has to a
             // build that shipped 5 rungs.
-            conn.pragma_update(None, "user_version", MIGRATIONS.len() as i64 + 1).expect("bump");
+            conn.pragma_update(None, "user_version", MIGRATIONS.len() as i64 + 1)
+                .expect("bump");
         }
         let conn = Connection::open(&path).expect("open");
         match migrate(&conn) {
@@ -1221,21 +1317,43 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("installed.sqlite");
         {
-            let conn = open_connection(&path).unwrap();
-            conn.execute_batch("INSERT INTO sessions(id) VALUES ('s');
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            for (index, migration) in MIGRATIONS.iter().take(8).enumerate() {
+                conn.execute_batch(migration).unwrap();
+                conn.pragma_update(None, "user_version", index as i64 + 1)
+                    .unwrap();
+            }
+            conn.execute_batch(
+                "INSERT INTO sessions(id) VALUES ('s');
                 INSERT INTO chat_items(session_id,id,seq,at,kind,body,provider_uuid)
                 VALUES ('s','item',1,1,'user-text','fixture','provider-item');
                 INSERT INTO chat_rewinds(id,session_id,target_id,target_seq,state,created_at)
                 VALUES ('r','s','item',1,'pending',1);
-                INSERT INTO chat_archive(rewind_id,session_id,item_json) VALUES ('r','s','{}');").unwrap();
+                INSERT INTO chat_archive(rewind_id,session_id,item_json) VALUES ('r','s','{}');",
+            )
+            .unwrap();
         }
         let conn = open_connection(&path).unwrap();
-        assert_eq!(conn.pragma_query_value(None, "user_version", |row| row.get::<_,i64>(0)).unwrap(), 8);
-        assert_eq!(conn.query_row("SELECT provider_uuid FROM chat_items", [], |row| row.get::<_,String>(0)).unwrap(), "provider-item");
-        conn.execute("DELETE FROM sessions WHERE id='s'", []).unwrap();
+        assert_eq!(
+            conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            9
+        );
+        assert_eq!(
+            conn.query_row("SELECT provider_uuid FROM chat_items", [], |row| row
+                .get::<_, String>(0))
+                .unwrap(),
+            "provider-item"
+        );
+        conn.execute("DELETE FROM sessions WHERE id='s'", [])
+            .unwrap();
         for table in ["chat_items", "chat_rewinds", "chat_archive"] {
-            assert_eq!(conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get::<_,i64>(0)).unwrap(), 0);
+            assert_eq!(
+                conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                0
+            );
         }
     }
-
 }

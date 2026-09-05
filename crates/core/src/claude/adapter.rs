@@ -262,6 +262,10 @@ struct Adapter<W> {
     /// [`FINAL_TEXT_LIMIT`] by keeping the tail.
     native_pending: HashMap<String, (NativeControl, oneshot::Sender<Result<Value, CommandError>>)>,
     rewind_paused: bool,
+    checkpoint_send: Option<TurnId>,
+    checkpoint_tasks_overflow: bool,
+    checkpoint_revision: Option<u64>,
+    inbound_revision: u64,
     observed_model: Option<String>,
     tasks: Vec<Value>,
     last_action: Option<String>,
@@ -306,7 +310,11 @@ where
         config.instance_id.clone(),
         config.event_buffer,
     );
-    let SessionBackend { commands, events, approvals } = backend;
+    let SessionBackend {
+        commands,
+        events,
+        approvals,
+    } = backend;
     // The slot the handle reads from. Taken from the handle rather than passed through the
     // backend, so `SessionBackend`'s shape — which a replay driver destructures — is untouched.
     let final_text = handle.commands.final_text_slot();
@@ -341,6 +349,10 @@ where
         pending_acks: HashMap::new(),
         native_pending: HashMap::new(),
         rewind_paused: false,
+        checkpoint_send: None,
+        checkpoint_tasks_overflow: false,
+        checkpoint_revision: None,
+        inbound_revision: 0,
         observed_model: None,
         tasks: Vec::new(),
         last_action: None,
@@ -348,7 +360,13 @@ where
         final_text,
     };
 
-    let mut wires = Wires { inbound: inbound_rx, commands, resolved, exit, events };
+    let mut wires = Wires {
+        inbound: inbound_rx,
+        commands,
+        resolved,
+        exit,
+        events,
+    };
     let buffered = adapter.handshake(&mut wires).await?;
 
     if let Some(prompt) = adapter.config.prompt.clone() {
@@ -385,10 +403,12 @@ where
         });
         let request = ControlRequest::new(
             request_id.clone(),
-            known(ControlRequestKnown::Initialize(Box::new(InitializeRequest {
-                hooks: Some(hooks),
-                ..InitializeRequest::default()
-            }))),
+            known(ControlRequestKnown::Initialize(Box::new(
+                InitializeRequest {
+                    hooks: Some(hooks),
+                    ..InitializeRequest::default()
+                },
+            ))),
         );
         self.write_frame(&request)
             .await
@@ -527,6 +547,7 @@ where
     // -------------------------------------------------------------------------------------
 
     async fn on_inbound(&mut self, line: InboundLine) {
+        self.inbound_revision = self.inbound_revision.wrapping_add(1);
         let InboundLine { frame, raw } = line;
         match frame {
             Inbound::Message(CliMessage::Known(message)) => self.on_message(*message, &raw),
@@ -537,8 +558,10 @@ where
             Inbound::ControlResponse(response) => self.on_control_response(&response),
             Inbound::ControlCancel(cancel) => self.on_control_cancel(&cancel.request_id),
             Inbound::Unknown(value) => {
-                let message =
-                    format!("non-object line on stdout: {}", bounded(&value.to_string(), 200));
+                let message = format!(
+                    "non-object line on stdout: {}",
+                    bounded(&value.to_string(), 200)
+                );
                 self.emit(Event::RuntimeWarning { message }, Some(&raw));
             }
         }
@@ -571,13 +594,22 @@ where
 
     fn on_system(&mut self, system: SystemMessage, raw: &str) {
         if let SystemMessage::Other(other) = &system {
-            if ["task_started", "task_progress", "task_updated", "task_notification"]
-                .contains(&other.subtype.as_str())
+            if [
+                "task_started",
+                "task_progress",
+                "task_updated",
+                "task_notification",
+            ]
+            .contains(&other.subtype.as_str())
             {
                 if let Some(id) = other.extra.get("task_id").and_then(Value::as_str) {
-                    let index =
-                        self.tasks.iter().position(|t| t["id"] == id).unwrap_or_else(|| {
+                    let index = self
+                        .tasks
+                        .iter()
+                        .position(|t| t["id"] == id)
+                        .unwrap_or_else(|| {
                             if self.tasks.len() >= 64 {
+                                self.checkpoint_tasks_overflow = true;
                                 self.tasks.remove(0);
                             }
                             self.tasks
@@ -617,7 +649,13 @@ where
                     _ => CompactTrigger::Auto,
                 };
                 let pre_tokens = boundary.compact_metadata.pre_tokens;
-                self.emit(Event::SessionCompacted { trigger, pre_tokens }, Some(raw));
+                self.emit(
+                    Event::SessionCompacted {
+                        trigger,
+                        pre_tokens,
+                    },
+                    Some(raw),
+                );
             }
             // Hook lifecycle frames need `includeHookEvents`; `status`, `permission_denied` and
             // the 25 other subtypes are informational. `result.permission_denials` is the
@@ -680,7 +718,10 @@ where
             // see docs/research/async-subagent-results.md §B.
             if self.open_turn.is_none() {
                 let turn_id = mint_turn_id();
-                self.open_turn = Some(OpenTurn { id: turn_id.clone(), minted: true });
+                self.open_turn = Some(OpenTurn {
+                    id: turn_id.clone(),
+                    minted: true,
+                });
                 self.emit(Event::TurnStarted { turn_id }, None);
             }
             return;
@@ -693,8 +734,14 @@ where
         self.emit(
             Event::SessionStarted {
                 provider_session_id: session_id,
-                model: init.model.or_else(|| self.config.model.clone()).unwrap_or_default(),
-                cwd: init.cwd.map(PathBuf::from).unwrap_or_else(|| self.config.cwd.clone()),
+                model: init
+                    .model
+                    .or_else(|| self.config.model.clone())
+                    .unwrap_or_default(),
+                cwd: init
+                    .cwd
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| self.config.cwd.clone()),
                 capabilities: init.capabilities.unwrap_or_default(),
                 resume_token,
             },
@@ -768,11 +815,19 @@ where
             }
             ContentBlockKnown::RedactedThinking { .. } => {
                 let item_id = self.block_item_id(uuid, index);
-                self.emit_item(item_id, ItemKind::Thinking, "(redacted thinking)", parent, raw);
+                self.emit_item(
+                    item_id,
+                    ItemKind::Thinking,
+                    "(redacted thinking)",
+                    parent,
+                    raw,
+                );
             }
             // The item id **is** the `tool_use` id: it is what `can_use_tool.tool_use_id` and the
             // answering `tool_result.tool_use_id` carry, so all three correlate for free.
-            ContentBlockKnown::ToolUse { id, name, input, .. } => {
+            ContentBlockKnown::ToolUse {
+                id, name, input, ..
+            } => {
                 let summary = format!("{name}: {}", compact(&input));
                 if parent.is_none() {
                     self.last_action = Some(bounded(&summary, 240));
@@ -811,7 +866,10 @@ where
             self.emit(
                 Event::item_completed(
                     ItemId::new(format!("{tool_use_id}:result")),
-                    ItemKind::ToolResult { tool_call_id: tool_use_id, is_error },
+                    ItemKind::ToolResult {
+                        tool_call_id: tool_use_id,
+                        is_error,
+                    },
                     &summary,
                     parent.clone(),
                 ),
@@ -853,7 +911,12 @@ where
             None => {
                 tracing::debug!(target: "claude.wire", subtype = view.subtype, "result with no open turn; minting a continuation");
                 let turn_id = mint_turn_id();
-                self.emit(Event::TurnStarted { turn_id: turn_id.clone() }, None);
+                self.emit(
+                    Event::TurnStarted {
+                        turn_id: turn_id.clone(),
+                    },
+                    None,
+                );
                 turn_id
             }
         };
@@ -863,9 +926,10 @@ where
         self.close_turn_text(&turn_id);
         let event = match view.terminal_reason {
             // The two abort reasons in `TerminalReason` (`sdk.d.ts:8443`).
-            Some("aborted_streaming" | "aborted_tools") => {
-                Event::TurnAborted { turn_id, reason: AbortReason::Interrupted }
-            }
+            Some("aborted_streaming" | "aborted_tools") => Event::TurnAborted {
+                turn_id,
+                reason: AbortReason::Interrupted,
+            },
             _ if view.success || view.terminal_reason == Some("completed") => {
                 Event::TurnCompleted {
                     turn_id,
@@ -874,7 +938,10 @@ where
                     cost_usd_cumulative: view.total_cost_usd,
                 }
             }
-            _ => Event::TurnAborted { turn_id, reason: AbortReason::Error(view.failure_message()) },
+            _ => Event::TurnAborted {
+                turn_id,
+                reason: AbortReason::Error(view.failure_message()),
+            },
         };
         self.emit(event, Some(raw));
     }
@@ -888,7 +955,8 @@ where
         let known = match request.request {
             ControlRequestBody::Known(known) => *known,
             ControlRequestBody::Unknown(other) => {
-                self.reject_control(cli_request_id, &other.subtype, raw).await;
+                self.reject_control(cli_request_id, &other.subtype, raw)
+                    .await;
                 return;
             }
         };
@@ -906,22 +974,28 @@ where
             // `initialize.supportedDialogKinds` (`sdk.d.ts:4307`); we declare none, and an
             // explicit refusal is the safer default for a harness that must never wedge.
             ControlRequestKnown::McpMessage(_) => {
-                self.reject_control(cli_request_id, "mcp_message", raw).await;
+                self.reject_control(cli_request_id, "mcp_message", raw)
+                    .await;
             }
             ControlRequestKnown::Elicitation(_) => {
-                self.reject_control(cli_request_id, "elicitation", raw).await;
+                self.reject_control(cli_request_id, "elicitation", raw)
+                    .await;
             }
             ControlRequestKnown::RequestUserDialog(_) => {
-                self.reject_control(cli_request_id, "request_user_dialog", raw).await;
+                self.reject_control(cli_request_id, "request_user_dialog", raw)
+                    .await;
             }
             ControlRequestKnown::OauthTokenRefresh(_) => {
-                self.reject_control(cli_request_id, "oauth_token_refresh", raw).await;
+                self.reject_control(cli_request_id, "oauth_token_refresh", raw)
+                    .await;
             }
             ControlRequestKnown::HostAuthTokenRefresh(_) => {
-                self.reject_control(cli_request_id, "host_auth_token_refresh", raw).await;
+                self.reject_control(cli_request_id, "host_auth_token_refresh", raw)
+                    .await;
             }
             ControlRequestKnown::RemoteControlWorkSecret(_) => {
-                self.reject_control(cli_request_id, "remote_control_work_secret", raw).await;
+                self.reject_control(cli_request_id, "remote_control_work_secret", raw)
+                    .await;
             }
             // Host → CLI subtypes; the CLI never asks us these.
             ControlRequestKnown::Initialize(_) => {
@@ -931,7 +1005,8 @@ where
                 self.reject_control(cli_request_id, "interrupt", raw).await;
             }
             ControlRequestKnown::SetPermissionMode(_) => {
-                self.reject_control(cli_request_id, "set_permission_mode", raw).await;
+                self.reject_control(cli_request_id, "set_permission_mode", raw)
+                    .await;
             }
             ControlRequestKnown::SetModel(_) => {
                 self.reject_control(cli_request_id, "set_model", raw).await;
@@ -962,8 +1037,11 @@ where
             },
             ask.tool_use_id.clone(),
         );
-        let receiver =
-            self.approvals.open(request_id.clone(), kind.clone(), self.config.approval_timeout);
+        let receiver = self.approvals.open(
+            request_id.clone(),
+            kind.clone(),
+            self.config.approval_timeout,
+        );
         let resolved_tx = self.resolved_tx.clone();
         let parked_id = request_id.clone();
         // One forwarder per park, rather than a `FuturesUnordered` in the loop: it needs no
@@ -977,11 +1055,21 @@ where
 
         self.open_permissions.insert(
             request_id.clone(),
-            OpenPermission { cli_request_id: cli_request_id.clone(), original_input: ask.input },
+            OpenPermission {
+                cli_request_id: cli_request_id.clone(),
+                original_input: ask.input,
+            },
         );
         self.by_cli_id.insert(cli_request_id, request_id.clone());
         let turn_id = self.open_turn.as_ref().map(|open| open.id.clone());
-        self.emit(Event::RequestOpened { request_id, kind, turn_id }, Some(raw));
+        self.emit(
+            Event::RequestOpened {
+                request_id,
+                kind,
+                turn_id,
+            },
+            Some(raw),
+        );
     }
 
     /// The `PreToolUse` gate. Answers whatever the policy says — `{}` under
@@ -1025,10 +1113,15 @@ where
                 )),
             };
             if matches!(request, NativeControl::RewindConversation { .. })
-                && result.as_ref().ok().and_then(|v| v.get("rewound")).and_then(Value::as_bool)
+                && result
+                    .as_ref()
+                    .ok()
+                    .and_then(|v| v.get("rewound"))
+                    .and_then(Value::as_bool)
                     == Some(true)
             {
                 self.rewind_paused = true;
+                self.checkpoint_revision = Some(self.inbound_revision);
                 self.turn_text.clear();
             }
             let result = result.map(|mut value| {
@@ -1063,7 +1156,9 @@ where
             return;
         };
         self.withdrawn.insert(request_id.clone());
-        let _ = self.approvals.resolve(&request_id, Decision::deny(CANCELLED_REASON));
+        let _ = self
+            .approvals
+            .resolve(&request_id, Decision::deny(CANCELLED_REASON));
     }
 
     // -------------------------------------------------------------------------------------
@@ -1091,11 +1186,16 @@ where
 
         if !withdrawn {
             let result = match &decision {
-                Decision::Allow { updated_input, updated_permissions } => PermissionResult::Allow {
+                Decision::Allow {
+                    updated_input,
+                    updated_permissions,
+                } => PermissionResult::Allow {
                     // The spike's working allow echoed the original `input` back as
                     // `updatedInput`; keep that unless the operator edited the arguments.
                     updated_input: Some(
-                        updated_input.clone().unwrap_or_else(|| open.original_input.clone()),
+                        updated_input
+                            .clone()
+                            .unwrap_or_else(|| open.original_input.clone()),
                     ),
                     updated_permissions: (!updated_permissions.is_empty())
                         .then(|| Value::Array(updated_permissions.clone())),
@@ -1110,7 +1210,11 @@ where
                 },
             };
             let undelivered = match ControlResponse::success(open.cli_request_id, &result) {
-                Ok(response) => self.write_frame(&response).await.err().map(|e| e.to_string()),
+                Ok(response) => self
+                    .write_frame(&response)
+                    .await
+                    .err()
+                    .map(|e| e.to_string()),
                 Err(e) => Some(e.to_string()),
             };
             if let Some(why) = undelivered {
@@ -1131,7 +1235,13 @@ where
             }
         }
 
-        self.emit(Event::RequestResolved { request_id, decision }, None);
+        self.emit(
+            Event::RequestResolved {
+                request_id,
+                decision,
+            },
+            None,
+        );
     }
 
     // -------------------------------------------------------------------------------------
@@ -1145,8 +1255,63 @@ where
                     let _ = ack.send(Ok(serde_json::json!({"provider":"Claude Code","cli":"claude","instance":self.config.instance_id,"model":self.observed_model,"status":if self.rewind_paused {"Rewinding"} else if !self.open_permissions.is_empty() {"Needs approval"} else if self.open_turn.is_some() {"Working"} else {"Idle"},"action":self.last_action,"agents":self.tasks})));
                     return;
                 }
+                if matches!(request, NativeControl::CheckpointBarrier) {
+                    let busy = self.shutdown
+                        || self.checkpoint_tasks_overflow
+                        || self.open_turn.is_some()
+                        || !self.open_permissions.is_empty()
+                        || self.tasks.iter().any(|t| {
+                            !matches!(
+                                t["status"].as_str(),
+                                Some("completed" | "failed" | "stopped")
+                            )
+                        })
+                        || !self.native_pending.is_empty()
+                        || self.rewind_paused;
+                    if busy {
+                        let _=ack.send(Err(CommandError::Rejected("Workspace checkpoint requires an idle provider with no background tasks".into())));
+                    } else {
+                        self.rewind_paused = true;
+                        self.checkpoint_revision = Some(self.inbound_revision);
+                        let _ = ack.send(Ok(serde_json::json!({"seq":self.seq})));
+                    }
+                    return;
+                }
+                if let NativeControl::CheckpointVerify { seq } = &request {
+                    let valid = self.rewind_paused
+                        && *seq == self.seq
+                        && self.checkpoint_revision == Some(self.inbound_revision)
+                        && self.open_turn.is_none();
+                    let _ = ack.send(if valid {
+                        Ok(Value::Null)
+                    } else {
+                        Err(CommandError::Rejected(
+                            "Provider advanced during workspace capture".into(),
+                        ))
+                    });
+                    return;
+                }
+                if let NativeControl::CheckpointRelease { seq, turn_id } = &request {
+                    if !self.rewind_paused
+                        || *seq != self.seq
+                        || self.open_turn.is_some()
+                        || self.checkpoint_revision != Some(self.inbound_revision)
+                    {
+                        self.rewind_paused = false;
+                        let _ = ack.send(Err(CommandError::Rejected(
+                            "Provider advanced during workspace capture".into(),
+                        )));
+                    } else {
+                        self.checkpoint_send = turn_id.clone();
+                        self.rewind_paused = turn_id.is_some();
+                        let _ = ack.send(Ok(Value::Null));
+                    }
+                    return;
+                }
                 if matches!(request, NativeControl::FinishRewind) {
                     self.rewind_paused = false;
+                    self.checkpoint_revision = None;
+                    self.checkpoint_send = None;
                     let _ = ack.send(Ok(Value::Null));
                     return;
                 }
@@ -1156,7 +1321,20 @@ where
                         | NativeControl::RewindFiles { dry_run: false, .. }
                 );
                 if self.shutdown
-                    || (mutating && (self.open_turn.is_some() || !self.open_permissions.is_empty()))
+                    || (mutating
+                        && self.rewind_paused
+                        && self.checkpoint_revision.is_some()
+                        && self.checkpoint_revision != Some(self.inbound_revision))
+                    || (mutating
+                        && (self.open_turn.is_some()
+                            || !self.open_permissions.is_empty()
+                            || self.checkpoint_tasks_overflow
+                            || self.tasks.iter().any(|t| {
+                                !matches!(
+                                    t["status"].as_str(),
+                                    Some("completed" | "failed" | "stopped")
+                                )
+                            })))
                 {
                     let message =
                         "Wait for the current turn and approvals to finish before rewinding";
@@ -1172,7 +1350,8 @@ where
                     let _ = ack.send(reply);
                     return;
                 }
-                self.native_pending.retain(|_, (_, waiter)| !waiter.is_closed());
+                self.native_pending
+                    .retain(|_, (_, waiter)| !waiter.is_closed());
                 if self.native_pending.len() >= 8 {
                     let reply = if matches!(request, NativeControl::RewindConversation { .. }) {
                         Ok(serde_json::json!({"rewound":false,"error":"Provider control is busy"}))
@@ -1189,13 +1368,23 @@ where
                     NativeControl::ContextSummary => {
                         serde_json::json!({"subtype":"get_context_usage","detail":"summary"})
                     }
-                    NativeControl::RewindFiles { message_uuid, dry_run } => {
+                    NativeControl::RewindFiles {
+                        message_uuid,
+                        dry_run,
+                    } => {
                         serde_json::json!({"subtype":"rewind_files","user_message_id":message_uuid,"dry_run":dry_run})
                     }
-                    NativeControl::RewindConversation { target_uuid, last_seen_uuid } => {
+                    NativeControl::RewindConversation {
+                        target_uuid,
+                        last_seen_uuid,
+                    } => {
                         serde_json::json!({"subtype":"rewind_conversation","target_message_uuid":target_uuid,"last_seen_user_message_uuid":last_seen_uuid,"interrupt_if_running":false})
                     }
-                    NativeControl::FinishRewind | NativeControl::Activity => unreachable!(),
+                    NativeControl::FinishRewind
+                    | NativeControl::Activity
+                    | NativeControl::CheckpointBarrier
+                    | NativeControl::CheckpointRelease { .. }
+                    | NativeControl::CheckpointVerify { .. } => unreachable!(),
                 };
                 let request_id = self.mint_control_id();
                 let frame = serde_json::json!({"type":"control_request","request_id":request_id,"request":body});
@@ -1205,7 +1394,24 @@ where
                     self.native_pending.insert(request_id, (request, ack));
                 }
             }
-            Command::SendTurn { turn_id, input, ack } => {
+            Command::SendTurn {
+                turn_id,
+                input,
+                ack,
+            } => {
+                if self.checkpoint_send.as_ref() == Some(&turn_id) {
+                    self.checkpoint_send = None;
+                    self.rewind_paused = false;
+                    if self.open_turn.is_some()
+                        || !self.open_permissions.is_empty()
+                        || self.checkpoint_revision != Some(self.inbound_revision)
+                    {
+                        let _ = ack.send(Err(CommandError::Rejected(
+                            "Provider is no longer idle".into(),
+                        )));
+                        return;
+                    }
+                }
                 if self.rewind_paused {
                     let _ = ack.send(Err(CommandError::Rejected(
                         "Rewind is awaiting local persistence".into(),
@@ -1289,12 +1495,13 @@ where
                 self.send_control(body, ack).await;
             }
             Command::SetPermissionMode { mode, ack } => {
-                let body =
-                    known(ControlRequestKnown::SetPermissionMode(SetPermissionModeRequest {
+                let body = known(ControlRequestKnown::SetPermissionMode(
+                    SetPermissionModeRequest {
                         // The CLI's own camelCase vocabulary, not this crate's kebab-case.
                         mode: mode.as_cli_flag().to_owned(),
                         extra: Default::default(),
-                    }));
+                    },
+                ));
                 self.send_control(body, ack).await;
             }
         }
@@ -1316,8 +1523,16 @@ where
         // turn's text: that turn never produced a `result` here, so nothing kept it.
         self.turn_text.clear();
         self.last_action = None;
-        self.open_turn = Some(OpenTurn { id: turn_id.clone(), minted: false });
-        self.emit(Event::TurnStarted { turn_id: turn_id.clone() }, None);
+        self.open_turn = Some(OpenTurn {
+            id: turn_id.clone(),
+            minted: false,
+        });
+        self.emit(
+            Event::TurnStarted {
+                turn_id: turn_id.clone(),
+            },
+            None,
+        );
         let mut frame = SdkUserMessage::text(input.text.clone());
         frame.uuid = Some(turn_id.to_string());
         if let Err(e) = self.write_frame(&frame).await {
@@ -1330,7 +1545,10 @@ where
             );
             self.open_turn = None;
             self.emit(
-                Event::TurnAborted { turn_id, reason: AbortReason::Error(e.to_string()) },
+                Event::TurnAborted {
+                    turn_id,
+                    reason: AbortReason::Error(e.to_string()),
+                },
                 None,
             );
             return Err(CommandError::Rejected(e.to_string()));
@@ -1387,7 +1605,10 @@ where
         for request_id in open {
             self.open_permissions.remove(&request_id);
             self.emit(
-                Event::RequestResolved { request_id, decision: Decision::deny(EXIT_REASON) },
+                Event::RequestResolved {
+                    request_id,
+                    decision: Decision::deny(EXIT_REASON),
+                },
                 None,
             );
         }
@@ -1455,7 +1676,10 @@ where
             Event::item_started(item_id.clone(), kind.clone(), &summary, parent.clone()),
             Some(raw),
         );
-        self.emit(Event::item_completed(item_id, kind, &summary, parent), Some(raw));
+        self.emit(
+            Event::item_completed(item_id, kind, &summary, parent),
+            Some(raw),
+        );
         if let Some(envelope) = self.outbox.back_mut() {
             envelope.body = Some(bounded(body, 128 * 1024));
         }
@@ -1534,7 +1758,11 @@ fn known(request: ControlRequestKnown) -> ControlRequestBody {
 }
 
 fn type_of(value: &Value) -> String {
-    value.get("type").and_then(Value::as_str).unwrap_or("<no type>").to_owned()
+    value
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("<no type>")
+        .to_owned()
 }
 
 fn compact(value: &Value) -> String {
@@ -1575,7 +1803,11 @@ fn keep_tail(s: &mut String, max_bytes: usize) {
 
 /// One terse line, bounded. A summary is a label, never content.
 fn summarize(body: &str) -> String {
-    let line = body.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    let line = body
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
     bounded(line, SUMMARY_LIMIT)
 }
 
@@ -1720,20 +1952,38 @@ mod tests {
 
     #[test]
     fn stop_reasons_map_or_ride_verbatim() {
-        assert_eq!(stop_reason_of(Some("end_turn"), Some("completed")), StopReason::EndTurn);
-        assert_eq!(stop_reason_of(Some("max_tokens"), None), StopReason::MaxTokens);
+        assert_eq!(
+            stop_reason_of(Some("end_turn"), Some("completed")),
+            StopReason::EndTurn
+        );
+        assert_eq!(
+            stop_reason_of(Some("max_tokens"), None),
+            StopReason::MaxTokens
+        );
         assert_eq!(stop_reason_of(Some("refusal"), None), StopReason::Refusal);
-        assert_eq!(stop_reason_of(None, Some("max_turns")), StopReason::MaxTurns);
+        assert_eq!(
+            stop_reason_of(None, Some("max_turns")),
+            StopReason::MaxTurns
+        );
         assert_eq!(stop_reason_of(None, Some("completed")), StopReason::EndTurn);
-        assert_eq!(stop_reason_of(Some("tool_use"), None), StopReason::Other("tool_use".into()));
-        assert_eq!(stop_reason_of(None, Some("api_error")), StopReason::Other("api_error".into()));
+        assert_eq!(
+            stop_reason_of(Some("tool_use"), None),
+            StopReason::Other("tool_use".into())
+        );
+        assert_eq!(
+            stop_reason_of(None, Some("api_error")),
+            StopReason::Other("api_error".into())
+        );
     }
 
     #[test]
     fn approval_ids_are_derivable_from_the_session() {
         let session = SessionId::new("s1");
         assert_eq!(approval_request_id(&session, 1).as_str(), "s1:approval:1");
-        assert_ne!(approval_request_id(&session, 1), approval_request_id(&session, 2));
+        assert_ne!(
+            approval_request_id(&session, 1),
+            approval_request_id(&session, 2)
+        );
     }
 
     #[test]
@@ -1786,7 +2036,11 @@ mod tests {
             "input_tokens": 18, "output_tokens": 172,
             "cache_read_input_tokens": 52852, "cache_creation_input_tokens": 190
         });
-        let fallback = ResultView { model_usage: None, usage: Some(&usage), ..view };
+        let fallback = ResultView {
+            model_usage: None,
+            usage: Some(&usage),
+            ..view
+        };
         assert_eq!(
             fallback.usage(),
             Usage {

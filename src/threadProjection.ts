@@ -15,6 +15,7 @@ export type ThreadRow =
       running: boolean;
       failures: number;
       count: number;
+      durationMs?: number;
     };
 
 export function isAgent(item: ChatItem): boolean {
@@ -45,9 +46,10 @@ export function traceLabel(item: ChatItem): string {
   if (item.kind.type === "tool-result") return "Tool output";
   const name = item.kind.name.toLowerCase();
   if (["bash", "shell", "exec_command", "write_stdin"].includes(name))
-    return "Command";
-  if (["read", "readfile", "read_file", "glob", "grep"].includes(name))
+    return "Ran commands";
+  if (["read", "readfile", "read_file"].includes(name))
     return "Read files";
+  if (["glob", "grep", "search", "ripgrep"].includes(name)) return "Searched files";
   if (["edit", "write", "multiedit", "apply_patch"].includes(name))
     return "Edit files";
   if (["websearch", "webfetch"].includes(name)) return "Web research";
@@ -67,6 +69,7 @@ export function traceFailed(node: TraceNode): boolean {
 export function projectThread(items: ChatItem[], busy: boolean): ThreadRow[] {
   const rows: ThreadRow[] = [];
   let turn: ChatItem[] = [];
+  let startedAt:number|null=null;
   const flush = (running: boolean) => {
     if (!turn.length) return;
     const nodes = new Map<string, TraceNode>();
@@ -149,6 +152,7 @@ export function projectThread(items: ChatItem[], busy: boolean): ThreadRow[] {
         nodes: work,
         running,
         failures: all.filter(traceFailed).length,
+        durationMs: startedAt && turn[turn.length-1]!.at>=startedAt ? turn[turn.length-1]!.at-startedAt : undefined,
         count: all.filter(
           (n) =>
             n.item.kind.type === "tool-call" || n.item.kind.type === "subagent",
@@ -168,6 +172,7 @@ export function projectThread(items: ChatItem[], busy: boolean): ThreadRow[] {
   for (const item of items) {
     if (item.kind.type === "user-text" && !item.parent_id) {
       flush(false);
+      startedAt=item.at;
       rows.push({ type: "message", id: item.id, item });
     } else turn.push(item);
   }

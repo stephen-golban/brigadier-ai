@@ -2,7 +2,7 @@
 use crate::{error::AppError, state::AppState};
 use brigadier_core::{driver::StartSession, event::SessionId};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, HashMap},
     path::PathBuf,
@@ -48,7 +48,7 @@ struct Service {
     data: Mutex<PeerData>,
 }
 pub(crate) static LIFECYCLE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-static CREATION: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(crate) static CREATION: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static SERVICE: OnceLock<Service> = OnceLock::new();
 fn service() -> Result<&'static Service, AppError> {
     SERVICE
@@ -151,7 +151,7 @@ pub(crate) fn prepare(req: &mut StartSession) -> Result<String, AppError> {
             .to_string_lossy()
             .into_owned(),
     );
-    let instructions = r#"Brigadier exposes native MCP tools: list_sessions, create_session, send_message, read_inbox, stop_session, close_session. Prefer those tools. As a fallback, invoke the executable in BRIGADIER_EXECUTABLE with --peer and a single JSON argument. Examples: "$BRIGADIER_EXECUTABLE" --peer '{"action":"list"}'; {"action":"create","prompt":"Concrete task","title":"Short title","model":"optional CLI model","isolated":false}; {"action":"message","sessionId":"target","text":"message","work":true}; {"action":"inbox"}; {"action":"stop","sessionId":"target"}; {"action":"close","sessionId":"target"}. You can create ordinary project sessions autonomously. Work messages wake idle peers and queue while busy. Informational messages (work:false) stay passive: read inbox when useful; do not start reply loops. You can stop/close your own created sessions; actions on others await owner confirmation. Closing preserves history and files. Default cwd is the shared project folder, so coordinate file ownership when editing concurrently. Never pass or print connection credentials. The environment authenticates this session automatically."#;
+    let instructions = r#"Brigadier exposes native MCP tools: list_sessions, create_session, send_message, read_inbox, stop_session, close_session. Prefer those tools. As a fallback, invoke the executable in BRIGADIER_EXECUTABLE with --peer and a single JSON argument. Examples: "$BRIGADIER_EXECUTABLE" --peer '{"action":"list"}'; {"action":"create","prompt":"Concrete task","title":"Short title","model":"optional CLI model","isolated":true}; {"action":"message","sessionId":"target","text":"message","work":true}; {"action":"inbox"}; {"action":"stop","sessionId":"target"}; {"action":"close","sessionId":"target"}. You can create ordinary project sessions autonomously. Work messages wake idle peers and queue while busy. Informational messages (work:false) stay passive: read inbox when useful; do not start reply loops. You can stop/close your own created sessions; actions on others await owner confirmation. Closing preserves history and files. New sessions use isolated worktrees seeded from the current project source; isolated:false explicitly selects the shared project folder. Apply finished changes to the project only when the owner requests it. Never pass or print connection credentials. The environment authenticates this session automatically."#;
     req.prompt = Some(format!(
         "{}\n\n{}",
         req.prompt.as_deref().unwrap_or(""),
@@ -228,6 +228,7 @@ async fn dispatch(app: &tauri::AppHandle, v: Value) -> Result<Value, AppError> {
     let caller = caller.ok_or_else(|| AppError::invalid_argument("Unknown session credential"))?;
     let state = app.state::<AppState>();
     let sup = &state.get()?.supervisor;
+    sup.require_session_available(&SessionId::new(&caller))?;
     let row = sup
         .session(&SessionId::new(&caller))
         .await?
@@ -258,16 +259,15 @@ async fn dispatch(app: &tauri::AppHandle, v: Value) -> Result<Value, AppError> {
         );
     }
     if action == "inbox" {
-        return Ok(json!(
-            snapshot()?
-                .messages
-                .into_iter()
-                .filter(|m| m.to == caller)
-                .collect::<Vec<_>>()
-        ));
+        return Ok(json!(snapshot()?
+            .messages
+            .into_iter()
+            .filter(|m| m.to == caller)
+            .collect::<Vec<_>>()));
     }
     if action == "create" {
         let _creation = CREATION.lock().await;
+        sup.require_session_available(&SessionId::new(&caller))?;
         if sup
             .list_sessions()
             .await?
@@ -524,6 +524,28 @@ fn cancel_messages(data: &mut PeerData, target: &str) {
             message.error = Some("Session stopped before delivery".into());
         }
     }
+}
+pub(crate) fn forget_sessions(ids: &[String]) -> Result<(), AppError> {
+    if SERVICE.get().is_none() {
+        return Ok(());
+    }
+    change(|d| {
+        d.origins
+            .retain(|child, parent| !ids.contains(child) && !ids.contains(parent));
+        d.titles.retain(|id, _| !ids.contains(id));
+        d.closed.retain(|id| !ids.contains(id));
+        d.messages
+            .retain(|m| !ids.contains(&m.from) && !ids.contains(&m.to));
+        d.requests
+            .retain(|r| !ids.contains(&r.from) && !ids.contains(&r.to));
+        Ok(())
+    })?;
+    service()?
+        .tokens
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|_, id| !ids.contains(id));
+    Ok(())
 }
 pub(crate) fn snapshot() -> Result<PeerData, AppError> {
     Ok(service()?

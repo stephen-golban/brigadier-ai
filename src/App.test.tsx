@@ -36,7 +36,12 @@ import type { FeedRowWire, SessionStatus, SessionView } from "./wire";
 
 /** Shared with the hoisted `vi.mock` factories below; reset in `beforeEach`. */
 const h = vi.hoisted(() => ({
-  projects: [] as Array<{ id: string; name: string; root_path: string; created_at_ms: number }>,
+  projects: [] as Array<{
+    id: string;
+    name: string;
+    root_path: string;
+    created_at_ms: number;
+  }>,
   sessions: [] as unknown[],
   /** What `feed_tail` answers with, per session id. */
   tailRows: {} as Record<string, unknown[]>,
@@ -64,7 +69,11 @@ const h = vi.hoisted(() => ({
    *  asserted, and it is the whole point of the cancel test. */
   added: [] as string[],
   /** Every `delete_session` / `delete_project` call, in order, with the `force` it carried. */
-  deletes: [] as Array<{ kind: "session" | "project"; id: string; force: boolean }>,
+  deletes: [] as Array<{
+    kind: "session" | "project";
+    id: string;
+    force: boolean;
+  }>,
 }));
 
 vi.mock("./paint", () => ({
@@ -108,7 +117,10 @@ vi.mock("./bridge", async (importOriginal) => {
     },
     async addProject(path: string) {
       h.added.push(path);
-      const p = project(`p-${h.added.length}`, path.split("/").filter(Boolean).pop() ?? path);
+      const p = project(
+        `p-${h.added.length}`,
+        path.split("/").filter(Boolean).pop() ?? path,
+      );
       h.projects = [...h.projects, p];
       return p;
     },
@@ -142,10 +154,12 @@ vi.mock("./bridge", async (importOriginal) => {
      */
     async deleteSession(sessionId: string, force: boolean) {
       h.deletes.push({ kind: "session", id: sessionId, force });
-      const gone = h.sessions.find((s) => (s as SessionView).session_id === sessionId) as
-        | SessionView
-        | undefined;
-      h.sessions = h.sessions.filter((s) => (s as SessionView).session_id !== sessionId);
+      const gone = h.sessions.find(
+        (s) => (s as SessionView).session_id === sessionId,
+      ) as SessionView | undefined;
+      h.sessions = h.sessions.filter(
+        (s) => (s as SessionView).session_id !== sessionId,
+      );
       return {
         session_id: sessionId,
         removed: true,
@@ -157,8 +171,12 @@ vi.mock("./bridge", async (importOriginal) => {
     },
     async deleteProject(projectId: string, force: boolean) {
       h.deletes.push({ kind: "project", id: projectId, force });
-      const own = h.sessions.filter((s) => (s as SessionView).project_id === projectId);
-      h.sessions = h.sessions.filter((s) => (s as SessionView).project_id !== projectId);
+      const own = h.sessions.filter(
+        (s) => (s as SessionView).project_id === projectId,
+      );
+      h.sessions = h.sessions.filter(
+        (s) => (s as SessionView).project_id !== projectId,
+      );
       h.projects = h.projects.filter((p) => p.id !== projectId);
       return {
         project_id: projectId,
@@ -172,7 +190,9 @@ vi.mock("./bridge", async (importOriginal) => {
     },
     feedTail(sessionId: string) {
       if (h.hold) {
-        return new Promise<unknown[]>((answer) => h.parked.push({ id: sessionId, answer }));
+        return new Promise<unknown[]>((answer) =>
+          h.parked.push({ id: sessionId, answer }),
+        );
       }
       return Promise.resolve(h.tailRows[sessionId] ?? []);
     },
@@ -201,7 +221,12 @@ vi.mock("./bridge", async (importOriginal) => {
 });
 
 function project(id: string, name: string) {
-  return { id, name, root_path: `/repos/${name}`, created_at_ms: 1_700_000_000_000 };
+  return {
+    id,
+    name,
+    root_path: `/repos/${name}`,
+    created_at_ms: 1_700_000_000_000,
+  };
 }
 
 /** `DeletedRows` with every count zero — what a refusal carries and what a success builds on. */
@@ -219,7 +244,11 @@ const NO_ROWS = {
   work_orders_orphaned: 0,
 };
 
-function view(sessionId: string, projectId: string, status: SessionStatus = "running"): SessionView {
+function view(
+  sessionId: string,
+  projectId: string,
+  status: SessionStatus = "running",
+): SessionView {
   return {
     session_id: sessionId,
     project_id: projectId,
@@ -243,7 +272,13 @@ function view(sessionId: string, projectId: string, status: SessionStatus = "run
  *  real class rather than `"unknown"`, so the fixture is not silently the special case that no
  *  filter may touch. `src/components/Feed.test.tsx` is where `k` is actually exercised. */
 function row(sessionId: string, q: number): FeedRowWire {
-  return { s: sessionId, q, t: 1_700_000_000_000 + q, l: `line ${q}`, k: "sys" };
+  return {
+    s: sessionId,
+    q,
+    t: 1_700_000_000_000 + q,
+    l: `line ${q}`,
+    k: "sys",
+  };
 }
 
 /** Mount the app and wait for the mount effect's `Promise.all` to have landed. */
@@ -276,13 +311,34 @@ afterEach(() => {
 
 /* ------------------------------------------------------------------ tests */
 
+async function selectHistory(
+  user: ReturnType<typeof userEvent.setup>,
+  id: string,
+) {
+  const session = (h.sessions as SessionView[]).find(
+    (s) => s.session_id === id,
+  )!;
+  const project = h.projects.find((p) => p.id === session.project_id)!;
+  const row = within(
+    screen.getByRole("navigation", { name: "Projects" }),
+  ).getByRole("button", { name: project.name });
+  if (row.getAttribute("aria-current") !== "page") await user.click(row);
+  if (!screen.queryByRole("textbox", { name: "Search session history" }))
+    await user.click(screen.getByRole("button", { name: "Session history" }));
+  await user.click(
+    await screen.findByRole("button", {
+      name: new RegExp(`Session ${id.slice(-6)}`),
+    }),
+  );
+}
+
 describe("the B4 paint span", () => {
   it("opens exactly one span, under the label the budget is filed under", async () => {
     const user = userEvent.setup();
     h.sessions = [view("aaaa1111", "p-live")];
     await mountApp();
 
-    await user.click(await screen.findByRole("button", { name: /brigadier\/aaaa1111/ }));
+    await selectHistory(user, "aaaa1111");
 
     expect(h.spans).toHaveLength(1);
     expect(h.spans[0]!.label).toBe("b4-session-painted");
@@ -295,7 +351,7 @@ describe("the B4 paint span", () => {
     await mountApp();
 
     await act(async () => {
-      await user.click(await screen.findByRole("button", { name: /brigadier\/aaaa1111/ }));
+      await selectHistory(user, "aaaa1111");
     });
 
     expect(h.spans).toHaveLength(1);
@@ -309,7 +365,7 @@ describe("the B4 paint span", () => {
     await mountApp();
 
     await act(async () => {
-      await user.click(await screen.findByRole("button", { name: /brigadier\/aaaa1111/ }));
+      await selectHistory(user, "aaaa1111");
     });
 
     // An empty session has no "last screenful"; timing its empty state would flatter the p95.
@@ -323,8 +379,8 @@ describe("the B4 paint span", () => {
     h.hold = true;
     await mountApp();
 
-    await user.click(await screen.findByRole("button", { name: /brigadier\/aaaa1111/ }));
-    await user.click(await screen.findByRole("button", { name: /brigadier\/bbbb2222/ }));
+    await selectHistory(user, "aaaa1111");
+    await selectHistory(user, "bbbb2222");
 
     expect(h.spans).toHaveLength(2);
     expect(h.spans[0]!.cancelled).toBe(1);
@@ -358,7 +414,7 @@ describe("the B4 paint span", () => {
     h.hold = true;
     await mountApp();
 
-    await user.click(await screen.findByRole("button", { name: /brigadier\/aaaa1111/ }));
+    await selectHistory(user, "aaaa1111");
     await user.click(screen.getByRole("button", { name: "New session" }));
 
     expect(h.spans).toHaveLength(1);
@@ -372,7 +428,7 @@ describe("the B4 paint span", () => {
     h.hold = true;
     await mountApp();
 
-    await user.click(await screen.findByRole("button", { name: /brigadier\/aaaa1111/ }));
+    await selectHistory(user, "aaaa1111");
     expect(h.spans[0]!.cancelled).toBe(0);
 
     cleanup();
@@ -397,13 +453,20 @@ describe("the project a session belongs to", () => {
 
     // The mount effect selects the first project, and the session belongs to the second.
     const thread = screen.getByRole("main");
-    expect(within(thread).getAllByText("brigadier-ai").length).toBeGreaterThan(0);
+    expect(within(thread).getAllByText("brigadier-ai").length).toBeGreaterThan(
+      0,
+    );
 
-    await user.click(await screen.findByRole("button", { name: /brigadier\/bbbb2222/ }));
+    await selectHistory(user, "bbbb2222");
 
     // The thread column no longer names any project but the session's own.
     expect(within(thread).queryByText("brigadier-ai")).not.toBeInTheDocument();
-    expect(within(thread).getAllByText("burn").length).toBeGreaterThan(0);
+    expect(
+      within(screen.getByRole("navigation", { name: "Projects" })).getByRole(
+        "button",
+        { name: "burn" },
+      ),
+    ).toHaveAttribute("aria-current", "page");
   });
 
   it("makes that project visible, so Rust actually sends its rows", async () => {
@@ -414,7 +477,7 @@ describe("the project a session belongs to", () => {
 
     expect(h.lastVisible()).toEqual(["p-one"]);
 
-    await user.click(await screen.findByRole("button", { name: /brigadier\/bbbb2222/ }));
+    await selectHistory(user, "bbbb2222");
 
     // Without this the batcher drops every row for the session that was just opened.
     expect(h.lastVisible()).toEqual(["p-two"]);
@@ -426,7 +489,7 @@ describe("the project a session belongs to", () => {
     h.sessions = [view("aaaa1111", "p-one")];
     await mountApp();
 
-    await user.click(await screen.findByRole("button", { name: /brigadier\/aaaa1111/ }));
+    await selectHistory(user, "aaaa1111");
 
     expect(h.lastVisible()).toEqual(["p-one"]);
     expect(h.spans).toHaveLength(1);
@@ -443,9 +506,9 @@ describe("the shell's handlers", () => {
     // Clicking a session with its tail parked must not invent rows, a status change, or a
     // second session row. `docs/vision.md` §9's optimistic transitions are W4-D's, and an
     // optimistic entry has to be retired by a matched echo that does not exist yet.
-    await user.click(await screen.findByRole("button", { name: /brigadier\/aaaa1111/ }));
+    await selectHistory(user, "aaaa1111");
 
-    expect(screen.getAllByRole("button", { name: /brigadier\// })).toHaveLength(1);
+    expect(screen.getAllByRole("tab")).toHaveLength(1);
   });
 });
 
@@ -473,7 +536,7 @@ describe("opening a project", () => {
     h.picked = "/repos/brigadier-ai";
     await mountApp();
 
-    await user.click(screen.getByRole("button", { name: "add a project" }));
+    await user.click(screen.getByRole("button", { name: "Add project" }));
 
     expect(h.added).toEqual(["/repos/brigadier-ai"]);
     // And it landed in the list under the name the Rust side gave it.
@@ -489,7 +552,7 @@ describe("opening a project", () => {
     h.picked = null;
     await mountApp();
 
-    await user.click(screen.getByRole("button", { name: "add a project" }));
+    await user.click(screen.getByRole("button", { name: "Add project" }));
 
     expect(h.added).toEqual([]);
     // No banner, no inline message: a cancel is silent.
@@ -502,9 +565,11 @@ describe("opening a project", () => {
     h.sessions = [view("aaaa1111", "p-live")];
     await mountApp();
 
-    expect(screen.queryByRole("button", { name: "add a project" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "add a project by path" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /in Finder/ })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Add project" }));
+    expect(screen.getByLabelText("Project path")).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: /in Finder/ }),
+    ).not.toBeInTheDocument();
   });
 });
 
@@ -516,56 +581,66 @@ describe("opening a project", () => {
  * refusal draws are `src/components/Sidebar.test.tsx`'s.
  */
 describe("deleting", () => {
-  it("takes a deleted session out of the sidebar, on the first click", async () => {
+  it("requires confirmation and removes only the chosen history", async () => {
     const user = userEvent.setup();
-    h.sessions = [view("aaaa1111", "p-live", "exited"), view("bbbb2222", "p-live", "exited")];
+    h.sessions = [
+      view("aaaa1111", "p-live", "exited"),
+      view("bbbb2222", "p-live", "exited"),
+    ];
     await mountApp();
-
-    // Scoped to the sidebar throughout: the success notice at the top of the thread names the
-    // surviving branch, so an unscoped query for the branch would match the notice and read as a
-    // row that never went.
-    const nav = screen.getByRole("navigation", { name: /projects and sessions/i });
-    expect(await within(nav).findByRole("button", { name: /brigadier\/aaaa1111/ })).toBeInTheDocument();
-
-    // The first click asks. Nothing has reached the command yet, which is the whole point of the
-    // step: a destructive action is never one press away.
-    await user.click(within(nav).getByRole("button", { name: "delete session aaaa1111" }));
-
-
-    // `force: false` — the question, never the first click's answer.
-    expect(h.deletes).toEqual([{ kind: "session", id: "aaaa1111", force: false }]);
+    await user.click(
+      screen.getByRole("button", { name: "Delete session aaaa1111" }),
+    );
+    expect(h.deletes).toHaveLength(0);
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: "Delete session",
+      }),
+    );
+    expect(h.deletes).toEqual([
+      { kind: "session", id: "aaaa1111", force: true },
+    ]);
     expect(
-      within(nav).queryByRole("button", { name: /brigadier\/aaaa1111/ }),
+      screen.queryByRole("button", { name: /Session aa1111/ }),
     ).not.toBeInTheDocument();
-    // The one beside it is untouched.
-    expect(within(nav).getByRole("button", { name: /brigadier\/bbbb2222/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Session bb2222/ }),
+    ).toBeVisible();
   });
-
-  it("names the surviving branch once the row that recorded it is gone", async () => {
+  it("cancel leaves the history available", async () => {
     const user = userEvent.setup();
     h.sessions = [view("aaaa1111", "p-live", "exited")];
     await mountApp();
-
-    await user.click(screen.getByRole("button", { name: "delete session aaaa1111" }));
-
-    // Nothing in the harness deletes a branch, and once the row is gone the branch name is the
-    // only thing that says where the work went — so the notice carries it.
-    expect(screen.getByText(/branch brigadier\/aaaa1111 kept/)).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "Delete session aaaa1111" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(h.deletes).toHaveLength(0);
+    expect(
+      screen.getByRole("button", { name: /Session aa1111/ }),
+    ).toBeVisible();
   });
-
-  it("takes a deleted project and every session under it out of the sidebar", async () => {
+  it("removes a project after confirmation, preserving on-disk files", async () => {
     const user = userEvent.setup();
     h.sessions = [view("aaaa1111", "p-live", "exited")];
     await mountApp();
-
-    const nav = screen.getByRole("navigation", { name: /projects and sessions/i });
-    await user.click(within(nav).getByRole("button", { name: "delete project job-portal" }));
-
-
-    expect(h.deletes).toEqual([{ kind: "project", id: "p-live", force: false }]);
+    await user.click(
+      screen.getByRole("button", { name: "Project actions job-portal" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Remove project" }));
+    expect(h.deletes).toHaveLength(0);
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: "Remove project",
+      }),
+    );
+    expect(h.deletes).toEqual([
+      { kind: "project", id: "p-live", force: false },
+    ]);
     expect(
-      within(nav).queryByRole("button", { name: /brigadier\/aaaa1111/ }),
+      within(screen.getByRole("navigation", { name: "Projects" })).queryByText(
+        "job-portal",
+      ),
     ).not.toBeInTheDocument();
-    expect(within(nav).queryByText("job-portal")).not.toBeInTheDocument();
   });
 });

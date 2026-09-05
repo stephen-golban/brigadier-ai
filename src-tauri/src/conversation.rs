@@ -27,6 +27,7 @@ struct Plan {
     target: ChatItem,
     latest_uuid: String,
     through_seq: u64,
+    workspace: Option<brigadier_core::checkpoint::RestorePlan>,
     created: Instant,
 }
 static PLANS: OnceLock<Mutex<HashMap<String, Plan>>> = OnceLock::new();
@@ -36,7 +37,11 @@ async fn items(state: &AppState, id: &str) -> Result<Vec<ChatItem>, AppError> {
     let mut all = Vec::new();
     let mut after = 0;
     loop {
-        let page = state.get()?.store().chat_items(id.to_owned(), after).await?;
+        let page = state
+            .get()?
+            .store()
+            .chat_items(id.to_owned(), after)
+            .await?;
         if page.is_empty() {
             return Ok(all);
         }
@@ -60,10 +65,18 @@ pub(crate) async fn session_context(
             json!({"available":false,"reason":"Rewind outcome requires reconciliation","rewindPending":true}),
         );
     }
-    match state.get()?.supervisor.native_control(&id, NativeControl::ContextSummary).await {
+    match state
+        .get()?
+        .supervisor
+        .native_control(&id, NativeControl::ContextSummary)
+        .await
+    {
         Ok(value) => {
             let used = value.get("totalTokens").and_then(Value::as_u64);
-            let limit = value.get("maxTokens").and_then(Value::as_u64).filter(|n| *n > 0);
+            let limit = value
+                .get("maxTokens")
+                .and_then(Value::as_u64)
+                .filter(|n| *n > 0);
             if let (Some(used), Some(limit)) = (used, limit) {
                 Ok(
                     json!({"available":true,"used":used,"limit":limit,"model":value.get("model"),"estimated":true,"sampledAt":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis()}),
@@ -84,13 +97,20 @@ pub(crate) async fn session_context(
 fn has_file_changes(history: &[ChatItem], target_seq: u64) -> bool {
     use brigadier_core::event::ItemKind;
     history.iter().filter(|i| i.seq >= target_seq).any(|call| {
-        let ItemKind::ToolCall { name } = &call.kind else { return false };
-        if !matches!(name.as_str(), "Edit" | "Write" | "MultiEdit" | "NotebookEdit") {
+        let ItemKind::ToolCall { name } = &call.kind else {
+            return false;
+        };
+        if !matches!(
+            name.as_str(),
+            "Edit" | "Write" | "MultiEdit" | "NotebookEdit"
+        ) {
             return false;
         }
         // Ignore an explicitly identical replacement, even if a provider accepts it.
-        if let Some(input) =
-            call.body.find('{').and_then(|at| serde_json::from_str::<Value>(&call.body[at..]).ok())
+        if let Some(input) = call
+            .body
+            .find('{')
+            .and_then(|at| serde_json::from_str::<Value>(&call.body[at..]).ok())
         {
             if name == "Edit"
                 && input.get("old_string").is_some()
@@ -148,7 +168,12 @@ pub(crate) async fn preview_rewind(
         preview.reason = Some("Resume this session before editing a message.".into());
         return Ok(preview);
     }
-    if state.get()?.store().rewind_pending(session_id.clone()).await? {
+    if state
+        .get()?
+        .store()
+        .rewind_pending(session_id.clone())
+        .await?
+    {
         preview.reason = Some(
             "A previous rewind has an unconfirmed outcome; history is preserved for recovery."
                 .into(),
@@ -160,10 +185,39 @@ pub(crate) async fn preview_rewind(
         return Ok(preview);
     }
     preview.conversation = true;
-    // File restoration is unavailable. Do not query a partial native file preview
-    // on the ordinary send path: stored successful edits decide confirmation.
-    preview.files_reason = Some("File restoration is currently unavailable.".into());
-    let mut plans = PLANS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    let turns = history
+        .iter()
+        .filter(|i| {
+            i.seq >= target.seq
+                && i.parent_id.is_none()
+                && matches!(i.kind, brigadier_core::event::ItemKind::UserText)
+        })
+        .map(|i| i.provider_uuid.clone().unwrap_or_default())
+        .collect();
+    let workspace = match sup.checkpoint_preview(&id, turns).await {
+        Ok(plan) => {
+            preview.files = plan.changes.iter().map(|c| c.path.clone()).collect();
+            preview.has_file_changes = !plan.changes.is_empty();
+            if plan.conflicts.is_empty() {
+                preview.files_available = true;
+                Some(plan)
+            } else {
+                preview.files_reason = Some(format!(
+                    "Conflicting manual edits: {}",
+                    plan.conflicts.join(", ")
+                ));
+                None
+            }
+        }
+        Err(e) => {
+            preview.files_reason = Some(e.to_string());
+            None
+        }
+    };
+    let mut plans = PLANS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     plans.retain(|_, p| p.created.elapsed() < Duration::from_secs(300));
     if plans.len() >= 10 {
         plans.clear();
@@ -171,6 +225,7 @@ pub(crate) async fn preview_rewind(
     plans.insert(
         preview.ticket.clone(),
         Plan {
+            workspace,
             session: session_id,
             target,
             latest_uuid: latest.unwrap(),
@@ -192,6 +247,7 @@ pub(crate) enum RewindScope {
 pub(crate) async fn apply_rewind(
     ticket: String,
     scope: RewindScope,
+    text: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<Value, AppError> {
     let _guard = APPLY.lock().await;
@@ -204,10 +260,9 @@ pub(crate) async fn apply_rewind(
             AppError::invalid_argument("Press Send again to refresh the rewind preview")
         })?;
     if plan.created.elapsed() > Duration::from_secs(300) {
-        return Err(AppError::invalid_argument("Press Send again to refresh the rewind preview"));
-    }
-    if matches!(scope, RewindScope::ConversationAndFiles) {
-        return Err(AppError::invalid_argument("Combined rewind is unavailable: this CLI cannot expose a complete file restore preview and recovery set"));
+        return Err(AppError::invalid_argument(
+            "Press Send again to refresh the rewind preview",
+        ));
     }
     let id = SessionId::new(&plan.session);
     let sup = &state.get()?.supervisor;
@@ -227,6 +282,76 @@ pub(crate) async fn apply_rewind(
             "Conversation changed; press Send again to review the updated span",
         ));
     }
+    if matches!(scope, RewindScope::ConversationAndFiles) {
+        let workspace = plan
+            .workspace
+            .ok_or_else(|| AppError::invalid_argument("This span has no complete restore plan"))?;
+        let draft = text
+            .filter(|t| !t.trim().is_empty())
+            .ok_or_else(|| AppError::invalid_argument("Edited message is required"))?;
+        let row = sup
+            .session(&id)
+            .await?
+            .ok_or_else(|| AppError::invalid_argument("Session no longer exists"))?;
+        let contextual = crate::workbench_data::contextualize(
+            &state.get()?.data_dir,
+            row.project_id.as_deref().unwrap_or(""),
+            &draft,
+        )?;
+        let (passive, message_ids) = crate::peers::passive(id.as_str()).unwrap_or_default();
+        let input = brigadier_core::session::TurnInput::text(format!("{contextual}{passive}"));
+        let op = brigadier_store::checkpoint::WorkspaceRewind {
+            id: ticket.clone(),
+            session: plan.session,
+            workspace: workspace.current.root.to_string_lossy().into_owned(),
+            phase: "preview".into(),
+            plan: workspace,
+            draft,
+            target_id: plan.target.id,
+            target_uuid: plan.target.provider_uuid.unwrap(),
+            latest_uuid: plan.latest_uuid,
+            through_seq: None,
+            paths_started: 0,
+            new_turn: None,
+            error: None,
+        };
+        let workspace_root = op.workspace.clone();
+        let sup = sup.clone();
+        // The durable transaction outlives webview navigation/cancellation.
+        let outcome = tokio::spawn(async move { sup.checkpoint_rewind_send(op, input).await })
+            .await
+            .map_err(|e| AppError::new("rewind_unconfirmed", e.to_string()))?;
+        let turn = match outcome {
+            Ok(turn) => turn,
+            Err(e) => {
+                let pending = state
+                    .get()?
+                    .store()
+                    .workspace_rewinds(workspace_root)
+                    .await?
+                    .iter()
+                    .any(|o| {
+                        o.id == ticket
+                            && !matches!(
+                                o.phase.as_str(),
+                                "complete" | "rolled-back" | "rewound-unsent"
+                            )
+                    });
+                return Err(AppError::new(
+                    if pending {
+                        "rewind_unconfirmed"
+                    } else {
+                        "rewind_refused"
+                    },
+                    e.to_string(),
+                ));
+            }
+        };
+        let _ = crate::peers::acknowledge(&message_ids);
+        return Ok(
+            json!({"rewound":true,"recoveryId":ticket,"filesRestored":true,"sent":true,"turnId":turn}),
+        );
+    }
     state
         .get()?
         .store()
@@ -243,23 +368,37 @@ pub(crate) async fn apply_rewind(
                 "Provider did not confirm rewind. Saved history is retained; sending is paused.",
             ));
         }
-        state.get()?.store().finish_rewind(ticket.clone(), None).await?;
+        state
+            .get()?
+            .store()
+            .finish_rewind(ticket.clone(), None)
+            .await?;
         sup.native_control(&id, NativeControl::FinishRewind).await?;
         return Err(AppError::new(
             "rewind_refused",
-            reply.get("error").and_then(Value::as_str).unwrap_or("Provider refused rewind"),
+            reply
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("Provider refused rewind"),
         ));
     }
     if reply.get("targetMessageUuid").and_then(Value::as_str) != Some(target_uuid.as_str()) {
         return Err(AppError::new("rewind_unconfirmed", "Provider confirmed a different rewind target; sending is paused and saved history is retained"));
     }
-    let through = reply.get("brigadier_seq").and_then(Value::as_u64).ok_or_else(|| {
-        AppError::new(
-            "rewind_unconfirmed",
-            "Rewind succeeded but local cursor is missing; sending is paused",
-        )
-    })?;
-    state.get()?.store().finish_rewind(ticket.clone(), Some(through)).await?;
+    let through = reply
+        .get("brigadier_seq")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            AppError::new(
+                "rewind_unconfirmed",
+                "Rewind succeeded but local cursor is missing; sending is paused",
+            )
+        })?;
+    state
+        .get()?
+        .store()
+        .finish_rewind(ticket.clone(), Some(through))
+        .await?;
     sup.native_control(&id, NativeControl::FinishRewind).await?;
     Ok(json!({"rewound":true,"recoveryId":ticket,"filesRestored":false}))
 }
@@ -283,8 +422,28 @@ pub(crate) async fn rewind_history(
     session_id: String,
     state: State<'_, AppState>,
 ) -> Result<Value, AppError> {
-    let records = state.get()?.store().rewind_records(session_id).await?;
-    Ok(json!({"records":records,"recoveryRoot":state.get()?.data_dir.join("rewinds")}))
+    let records = state
+        .get()?
+        .store()
+        .rewind_records(session_id.clone())
+        .await?;
+    let row = state
+        .get()?
+        .supervisor
+        .session(&SessionId::new(&session_id))
+        .await?;
+    let workspace = if let Some(root) = row.and_then(|r| r.cwd) {
+        state
+            .get()?
+            .store()
+            .workspace_rewinds(root.to_string_lossy().into_owned())
+            .await?
+    } else {
+        vec![]
+    };
+    Ok(
+        json!({"records":records,"workspaceOperations":workspace.iter().map(|o|json!({"id":o.id,"phase":o.phase,"draft":o.draft,"error":o.error})).collect::<Vec<_>>(),"recoveryRoot":state.get()?.data_dir.join("checkpoints")}),
+    )
 }
 #[tauri::command]
 pub(crate) async fn rewind_history_items(
@@ -293,7 +452,12 @@ pub(crate) async fn rewind_history_items(
     after: i64,
     state: State<'_, AppState>,
 ) -> Result<Vec<Value>, AppError> {
-    state.get()?.store().rewind_items(session_id, rewind_id, after).await.map_err(AppError::from)
+    state
+        .get()?
+        .store()
+        .rewind_items(session_id, rewind_id, after)
+        .await
+        .map_err(AppError::from)
 }
 
 #[cfg(test)]
@@ -314,14 +478,29 @@ mod tests {
     #[test]
     fn confirmation_requires_successful_edits_in_the_affected_span() {
         use brigadier_core::event::ItemKind;
-        let call = item("edit", 4, ItemKind::ToolCall { name: "Edit".into() });
+        let call = item(
+            "edit",
+            4,
+            ItemKind::ToolCall {
+                name: "Edit".into(),
+            },
+        );
         let success = item(
             "result",
             5,
-            ItemKind::ToolResult { tool_call_id: "edit".into(), is_error: false },
+            ItemKind::ToolResult {
+                tool_call_id: "edit".into(),
+                is_error: false,
+            },
         );
-        let failed =
-            item("failed", 5, ItemKind::ToolResult { tool_call_id: "edit".into(), is_error: true });
+        let failed = item(
+            "failed",
+            5,
+            ItemKind::ToolResult {
+                tool_call_id: "edit".into(),
+                is_error: true,
+            },
+        );
         assert!(!has_file_changes(&[item("user", 2, ItemKind::UserText)], 2));
         assert!(!has_file_changes(std::slice::from_ref(&call), 2));
         assert!(!has_file_changes(&[call.clone(), failed], 2));
@@ -335,14 +514,44 @@ mod tests {
         assert!(!has_file_changes(&[noop, success], 2));
         assert!(!has_file_changes(
             &[
-                item("read", 4, ItemKind::ToolCall { name: "Read".into() }),
+                item(
+                    "read",
+                    4,
+                    ItemKind::ToolCall {
+                        name: "Read".into()
+                    }
+                ),
                 item(
                     "read-result",
                     5,
-                    ItemKind::ToolResult { tool_call_id: "read".into(), is_error: false }
+                    ItemKind::ToolResult {
+                        tool_call_id: "read".into(),
+                        is_error: false
+                    }
                 )
             ],
             2
         ));
     }
+}
+
+#[tauri::command]
+pub(crate) async fn recover_workspace_rewind(
+    session_id: String,
+    operation: String,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
+    let root = state
+        .get()?
+        .supervisor
+        .session(&SessionId::new(session_id))
+        .await?
+        .and_then(|r| r.cwd)
+        .ok_or_else(|| AppError::invalid_argument("Session workspace is unavailable"))?;
+    state
+        .get()?
+        .supervisor
+        .checkpoint_recover(root, operation)
+        .await
+        .map_err(AppError::from)
 }

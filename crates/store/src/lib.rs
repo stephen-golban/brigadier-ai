@@ -27,6 +27,7 @@
 #![warn(missing_docs)]
 
 pub mod chat;
+pub mod checkpoint;
 pub mod delete;
 pub mod feed;
 pub mod intents;
@@ -148,7 +149,10 @@ pub struct StoreConfig {
 
 impl Default for StoreConfig {
     fn default() -> Self {
-        Self { batch_window: Duration::from_millis(250), feed_cap: 500 }
+        Self {
+            batch_window: Duration::from_millis(250),
+            feed_cap: 500,
+        }
     }
 }
 
@@ -243,14 +247,22 @@ impl Store {
         // see docs/research/persistence.md §6.
         let expired = schema::expire_pending_approvals(&conn, SystemTime::now())?;
         if expired > 0 {
-            tracing::info!(expired, run_id, "expired approvals left by a previous launch");
+            tracing::info!(
+                expired,
+                run_id,
+                "expired approvals left by a previous launch"
+            );
         }
 
         // Same reasoning, one table over: a session still `starting` or `running` in the file is
         // one whose consumer task died with the process, and nothing will ever settle it.
         let stale = schema::settle_stale_sessions(&conn, SystemTime::now())?;
         if stale > 0 {
-            tracing::info!(stale, run_id, "failed sessions left unfinished by a previous launch");
+            tracing::info!(
+                stale,
+                run_id,
+                "failed sessions left unfinished by a previous launch"
+            );
         }
 
         // The crate's first retention rule, and `intents` is the only table that needs one.
@@ -259,7 +271,11 @@ impl Store {
         // see docs/research/intent-records.md §6.
         let swept = intents::sweep_settled(&conn, SystemTime::now())?;
         if swept > 0 {
-            tracing::info!(swept, run_id, "settled intents older than the retention cutoff");
+            tracing::info!(
+                swept,
+                run_id,
+                "settled intents older than the retention cutoff"
+            );
         }
 
         if let Ok(meta) = std::fs::metadata(&path) {
@@ -269,7 +285,13 @@ impl Store {
         }
 
         let (handle, join) = writer::spawn(conn, run_id.clone(), config)?;
-        Ok(Self { handle, join: Some(join), run_id, path, lock })
+        Ok(Self {
+            handle,
+            join: Some(join),
+            run_id,
+            path,
+            lock,
+        })
     }
 
     /// The clone-cheap handle every writer and reader goes through.
@@ -357,7 +379,12 @@ mod tests {
         upsert(&store, "done", Some(SessionStatus::Running)).await;
         store
             .handle()
-            .session_ended(SessionId::new("done"), ExitReason::Graceful, Some(0), SystemTime::now())
+            .session_ended(
+                SessionId::new("done"),
+                ExitReason::Graceful,
+                Some(0),
+                SystemTime::now(),
+            )
             .await
             .expect("session ended");
         let before = store
@@ -378,8 +405,15 @@ mod tests {
 
         for id in ["running", "starting"] {
             let row = read(id).await;
-            assert_eq!(row.status, SessionStatus::Failed, "{id} was left unfinished");
-            assert!(row.ended_at.is_some(), "{id} must be stamped with an end time");
+            assert_eq!(
+                row.status,
+                SessionStatus::Failed,
+                "{id} was left unfinished"
+            );
+            assert!(
+                row.ended_at.is_some(),
+                "{id} must be stamped with an end time"
+            );
             assert_eq!(row.exit_code, None, "{id} never reported an exit code");
         }
 
@@ -431,13 +465,22 @@ mod tests {
             .await
             .expect("session ended");
         store.handle().flush().await.expect("flush");
-        let ended = store.handle().session(id.clone()).await.expect("read").expect("row");
+        let ended = store
+            .handle()
+            .session(id.clone())
+            .await
+            .expect("read")
+            .expect("row");
         assert_eq!(ended.status, SessionStatus::Exited);
         assert!(ended.ended_at.is_some());
         assert_eq!(ended.exit_code, Some(0));
 
         // What the supervisor's resume path does, in order: clear, then merge the new instance.
-        store.handle().session_resumed(id.clone(), SystemTime::now()).await.expect("resumed");
+        store
+            .handle()
+            .session_resumed(id.clone(), SystemTime::now())
+            .await
+            .expect("resumed");
         let mut row = SessionRow::new(id.clone());
         row.status = Some(SessionStatus::Starting);
         row.instance_id = Some(brigadier_core::event::InstanceId::new("claude-code:2"));
@@ -446,16 +489,27 @@ mod tests {
         store.handle().upsert_session(row).await.expect("upsert");
         store.handle().flush().await.expect("flush");
 
-        let resumed = store.handle().session(id.clone()).await.expect("read").expect("row");
+        let resumed = store
+            .handle()
+            .session(id.clone())
+            .await
+            .expect("read")
+            .expect("row");
         assert_eq!(resumed.status, SessionStatus::Starting);
-        assert_eq!(resumed.ended_at, None, "a live session must not carry an end time");
+        assert_eq!(
+            resumed.ended_at, None,
+            "a live session must not carry an end time"
+        );
         assert_eq!(resumed.exit_code, None, "nor a stale exit code");
         assert_eq!(
             resumed.started_at, ended.started_at,
             "the start time is kept here — only until the resumed child announces itself, when \
              `feed::apply`'s SessionStarted branch overwrites it"
         );
-        assert_eq!(resumed.instance_id.as_ref().map(|i| i.as_str()), Some("claude-code:2"));
+        assert_eq!(
+            resumed.instance_id.as_ref().map(|i| i.as_str()),
+            Some("claude-code:2")
+        );
 
         store.close().await.expect("store closes");
     }
@@ -483,13 +537,28 @@ mod tests {
         for seq in 1..=3u64 {
             store
                 .handle()
-                .feed(id.clone(), seq, at(seq), FeedKind::Unknown, format!("before {seq}"))
+                .feed(
+                    id.clone(),
+                    seq,
+                    at(seq),
+                    FeedKind::Unknown,
+                    format!("before {seq}"),
+                )
                 .await
                 .expect("feed");
         }
         store.handle().flush().await.expect("flush");
-        let before = store.handle().feed_tail(id.clone(), 100).await.expect("tail");
-        let old_seq = store.handle().session(id.clone()).await.expect("read").expect("row")
+        let before = store
+            .handle()
+            .feed_tail(id.clone(), 100)
+            .await
+            .expect("tail");
+        let old_seq = store
+            .handle()
+            .session(id.clone())
+            .await
+            .expect("read")
+            .expect("row")
             .last_event_seq;
         assert_eq!(old_seq, 3, "last_event_seq tracks the newest row");
 
@@ -498,22 +567,42 @@ mod tests {
             let seq = old_seq + offset;
             store
                 .handle()
-                .feed(id.clone(), seq, at(100 + seq), FeedKind::Unknown, format!("after {seq}"))
+                .feed(
+                    id.clone(),
+                    seq,
+                    at(100 + seq),
+                    FeedKind::Unknown,
+                    format!("after {seq}"),
+                )
                 .await
                 .expect("feed");
         }
         store.handle().flush().await.expect("flush");
 
-        let after = store.handle().feed_tail(id.clone(), 100).await.expect("tail");
+        let after = store
+            .handle()
+            .feed_tail(id.clone(), 100)
+            .await
+            .expect("tail");
         assert_eq!(after.len(), 5, "nothing was overwritten: {after:?}");
-        assert_eq!(&after[..3], &before[..], "every pre-resume row is byte-identical");
+        assert_eq!(
+            &after[..3],
+            &before[..],
+            "every pre-resume row is byte-identical"
+        );
         assert!(
             after[3..].iter().all(|r| r.seq > old_seq),
             "every post-resume row lands after the old ones: {:?}",
             &after[3..]
         );
         assert_eq!(
-            store.handle().session(id.clone()).await.expect("read").expect("row").last_event_seq,
+            store
+                .handle()
+                .session(id.clone())
+                .await
+                .expect("read")
+                .expect("row")
+                .last_event_seq,
             5
         );
 
@@ -521,12 +610,26 @@ mod tests {
         // have rewritten the oldest row in place rather than appending.
         store
             .handle()
-            .feed(id.clone(), 1, at(999), FeedKind::Unknown, "a restart at seq 1".to_owned())
+            .feed(
+                id.clone(),
+                1,
+                at(999),
+                FeedKind::Unknown,
+                "a restart at seq 1".to_owned(),
+            )
             .await
             .expect("feed");
         store.handle().flush().await.expect("flush");
-        let clobbered = store.handle().feed_tail(id.clone(), 100).await.expect("tail");
-        assert_eq!(clobbered.len(), 5, "the collision silently updated instead of erroring");
+        let clobbered = store
+            .handle()
+            .feed_tail(id.clone(), 100)
+            .await
+            .expect("tail");
+        assert_eq!(
+            clobbered.len(),
+            5,
+            "the collision silently updated instead of erroring"
+        );
         assert_eq!(clobbered[0].line, "a restart at seq 1");
 
         store.close().await.expect("store closes");

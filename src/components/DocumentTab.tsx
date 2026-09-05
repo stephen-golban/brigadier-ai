@@ -1,3 +1,5 @@
+import { documentCommands } from "../documentCommands";
+import { desktopApi } from "../desktopApi";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { workspaceApi, errorMessage } from "../workspaceApi";
 import { workbenchApi, type Note } from "../workbenchApi";
@@ -70,6 +72,7 @@ export function DocumentTab({
   const [rendered, setRendered] = useState(false);
   const [selection, setSelection] = useState<[number, number]>([1, 1]);
   const noteRef = useRef(note);
+  const noteConflict = useRef(false);
   const bufferRef = useRef(buffer);
   bufferRef.current = buffer;
   const mounted = useRef(true);
@@ -82,7 +85,23 @@ export function DocumentTab({
     } catch {
       /* recover from source */
     }
-    if (recovered) setBuffer(recovered);
+    if (
+      tab.kind === "note" &&
+      recovered &&
+      note &&
+      recovered.content !== recovered.before &&
+      recovered.before !== note.content
+    ) {
+      noteConflict.current = true;
+      setError(
+        "This note changed outside Brigadier. Save As to keep your draft, or reload from disk.",
+      );
+    }
+    if (
+      recovered &&
+      (tab.kind !== "note" || recovered.content !== recovered.before)
+    )
+      setBuffer(recovered);
     else if (tab.kind === "note") {
       setBuffer({
         content: note?.content ?? "",
@@ -94,7 +113,11 @@ export function DocumentTab({
     } else {
       void (
         tab.kind === "diff"
-          ? workspaceApi.diff(tab.context, tab.path, !!tab.staged)
+          ? tab.recorded && tab.context.sessionId
+            ? desktopApi
+                .diff(tab.context.sessionId, tab.path, tab.turn ?? null)
+                .then((content) => ({ content, truncated: false }))
+            : workspaceApi.diff(tab.context, tab.path, !!tab.staged)
           : workspaceApi.file(tab.context, tab.path)
       )
         .then((f) => {
@@ -133,6 +156,10 @@ export function DocumentTab({
     });
   };
   const saveNote = async () => {
+    if (noteConflict.current)
+      throw new Error(
+        "This note changed outside Brigadier. Save As to keep your draft, or reload from disk.",
+      );
     const n = noteRef.current;
     const b = bufferRef.current;
     if (!n || !b) return;
@@ -178,20 +205,33 @@ export function DocumentTab({
   );
   useEffect(() => {
     if (note && note.revision > (noteRef.current?.revision ?? 0)) {
+      if (bufferRef.current?.content === bufferRef.current?.before) {
+        setBuffer((current) =>
+          current
+            ? { ...current, content: note.content, before: note.content }
+            : current,
+        );
+      } else if (note.content !== noteRef.current?.content) {
+        noteConflict.current = true;
+        setError(
+          "This note changed outside Brigadier. Save As to keep your draft, or reload from disk.",
+        );
+      }
       noteRef.current = note;
     }
   }, [note]);
   const save = async (target?: string) => {
-    if (!buffer) return;
+    if (!buffer) return false;
     if (tab.kind === "note" && !target) {
       noteQueue.current = noteQueue.current
         .then(saveNote)
         .catch((e) => setError(errorMessage(e)));
-      return;
+      await noteQueue.current;
+      return bufferRef.current?.content === noteRef.current?.content;
     }
     if (tab.kind === "untitled" && !target) {
       setSaveAs(true);
-      return;
+      return false;
     }
     setSaving(true);
     setError("");
@@ -215,12 +255,37 @@ export function DocumentTab({
       setSaveAs(false);
       if (target) onSaved(target);
       refresh();
+      return bufferRef.current?.content === buffer.content;
     } catch (e) {
       setError(errorMessage(e));
+      return false;
     } finally {
       setSaving(false);
     }
   };
+  useEffect(() => {
+    const dirty =
+      !!buffer &&
+      tab.kind !== "diff" &&
+      buffer.content !== (buffer.before ?? "");
+    documentCommands.set(tab.id, { save: () => save(), dirty });
+    window.dispatchEvent(new Event("workbench-document-state"));
+    const key = (event: KeyboardEvent) => {
+      if (
+        (event.metaKey || event.ctrlKey) &&
+        event.key.toLowerCase() === "s" &&
+        !event.altKey
+      ) {
+        event.preventDefault();
+        void save();
+      }
+    };
+    window.addEventListener("keydown", key);
+    return () => {
+      documentCommands.delete(tab.id);
+      window.removeEventListener("keydown", key);
+    };
+  }, [tab.id, buffer]);
   const stage = async (lines: number[]) => {
     if (!buffer) return;
     setSaving(true);
@@ -339,7 +404,10 @@ export function DocumentTab({
           <button
             type="button"
             className="act"
-            onClick={() => setSaveAs(false)}
+            onClick={() => {
+              setSaveAs(false);
+              window.dispatchEvent(new Event("workbench-save-as-cancelled"));
+            }}
           >
             Cancel
           </button>
@@ -350,7 +418,7 @@ export function DocumentTab({
           <input
             aria-label="Note title"
             defaultValue={note.title}
-            key={note.id}
+            key={`${note.id}:${note.title}`}
             onBlur={(e) => {
               if (e.target.value !== noteRef.current?.title)
                 void updateNote({ title: e.target.value });
@@ -392,12 +460,29 @@ export function DocumentTab({
           <span>{saved ? "Saved" : "Autosaves"}</span>
         </div>
       )}
+      {noteConflict.current && note && (
+        <button
+          className="act"
+          onClick={() => {
+            noteConflict.current = false;
+            setBuffer({
+              content: note.content,
+              before: note.content,
+              language: note.language,
+            });
+            localStorage.removeItem(documentKey(tab));
+            setError("");
+          }}
+        >
+          Discard draft and reload from disk
+        </button>
+      )}
       {error && (
         <p className="inline-error" role="alert">
           {error}
         </p>
       )}
-      {tab.kind === "diff" && buffer && hunks.length > 0 && (
+      {tab.kind === "diff" && !tab.recorded && buffer && hunks.length > 0 && (
         <div className="diff-actions">
           <button
             className="act"

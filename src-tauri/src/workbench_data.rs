@@ -70,6 +70,18 @@ pub(crate) struct Data {
     #[serde(default)]
     pub notes: Vec<Note>,
     #[serde(default)]
+    pub notes_folder: Option<String>,
+    #[serde(default)]
+    pub notes_error: Option<String>,
+    #[serde(default)]
+    pub note_files: BTreeMap<String, crate::note_files::Entry>,
+    #[serde(default)]
+    pub notes_migrated: bool,
+    #[serde(default)]
+    pub display_name: String,
+    #[serde(default)]
+    pub project_names: BTreeMap<String, String>,
+    #[serde(default)]
     pub global: CommitSettings,
     #[serde(default)]
     pub projects: BTreeMap<String, CommitSettings>,
@@ -83,24 +95,51 @@ fn load(path: &Path) -> Result<Data, AppError> {
     }
 }
 pub(crate) fn read(dir: &Path) -> Result<Data, AppError> {
-    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    load(&dir.join("workbench.json"))
+    update(dir, |d| Ok(d.clone()))
 }
 fn update<T>(dir: &Path, f: impl FnOnce(&mut Data) -> Result<T, AppError>) -> Result<T, AppError> {
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let path = dir.join("workbench.json");
     let mut data = load(&path)?;
+    let before = serde_json::to_vec(&data).map_err(|e| AppError::io(e.to_string()))?;
+    data.notes_error = crate::note_files::refresh(dir, &mut data)
+        .err()
+        .map(|e| e.message);
+    if data.display_name.is_empty() {
+        data.display_name = std::env::var("USER").unwrap_or_else(|_| "Local user".into());
+    }
     let result = f(&mut data)?;
     let bytes = serde_json::to_vec(&data).map_err(|e| AppError::io(e.to_string()))?;
-    std::fs::create_dir_all(dir).map_err(|e| AppError::io(e.to_string()))?;
-    use std::io::Write;
-    let mut temp = tempfile::NamedTempFile::new_in(dir).map_err(|e| AppError::io(e.to_string()))?;
-    temp.write_all(&bytes)
-        .and_then(|_| temp.as_file().sync_all())
-        .map_err(|e| AppError::io(e.to_string()))?;
-    temp.persist(&path)
-        .map_err(|e| AppError::io(e.to_string()))?;
+    if before != bytes {
+        crate::note_files::atomic_write(&path, &bytes)?;
+    }
     Ok(result)
+}
+#[tauri::command]
+pub(crate) async fn desktop_settings_save(
+    display_name: String,
+    project_names: BTreeMap<String, String>,
+    state: State<'_, AppState>,
+) -> Result<Data, AppError> {
+    if display_name.len() > 200 || project_names.values().any(|v| v.len() > 200) {
+        return Err(AppError::invalid_argument("Name exceeds 200 characters"));
+    }
+    update(&state.get()?.data_dir, |d| {
+        d.display_name = display_name.trim().to_owned();
+        d.project_names = project_names;
+        Ok(d.clone())
+    })
+}
+#[tauri::command]
+pub(crate) async fn notes_folder_save(
+    folder: String,
+    state: State<'_, AppState>,
+) -> Result<Data, AppError> {
+    let dir = &state.get()?.data_dir;
+    update(dir, |d| {
+        crate::note_files::change_folder(dir, d, &folder)?;
+        Ok(d.clone())
+    })
 }
 #[tauri::command]
 pub(crate) async fn workbench_load(state: State<'_, AppState>) -> Result<Data, AppError> {
@@ -127,7 +166,10 @@ fn save_note(dir: &Path, mut note: Note) -> Result<Note, AppError> {
         return Err(AppError::invalid_argument("Note exceeds size limits"));
     }
     update(dir, |data| {
-        if let Some(old) = data.notes.iter_mut().find(|n| n.id == note.id) {
+        if let Some(error) = &data.notes_error {
+            return Err(AppError::io(error));
+        }
+        if let Some(old) = data.notes.iter().find(|n| n.id == note.id) {
             if old.revision != note.revision {
                 return Err(AppError::new(
                     "note_conflict",
@@ -135,12 +177,20 @@ fn save_note(dir: &Path, mut note: Note) -> Result<Note, AppError> {
                 ));
             }
             note.revision += 1;
-            *old = note.clone();
+            crate::note_files::save(dir, data, &note)?;
+            *data.notes.iter_mut().find(|n| n.id == note.id).unwrap() = note.clone();
         } else {
             if data.notes.len() >= 500 {
                 return Err(AppError::invalid_argument("Notepad limit is 500 notes"));
             }
+            if note.revision > 0 {
+                return Err(AppError::new(
+                    "note_conflict",
+                    "This note was removed outside Brigadier.",
+                ));
+            }
             note.revision = 1;
+            crate::note_files::save(dir, data, &note)?;
             data.notes.push(note.clone());
         }
         Ok(note)
@@ -149,6 +199,7 @@ fn save_note(dir: &Path, mut note: Note) -> Result<Note, AppError> {
 #[tauri::command]
 pub(crate) async fn note_delete(id: String, state: State<'_, AppState>) -> Result<(), AppError> {
     update(&state.get()?.data_dir, |d| {
+        crate::note_files::delete(&state.get()?.data_dir, d, &id)?;
         d.notes.retain(|n| n.id != id);
         Ok(())
     })
@@ -280,7 +331,16 @@ mod tests {
         .unwrap();
         assert_eq!(saved.revision, 2);
         assert!(save_note(dir.path(), first).is_err());
-        assert_eq!(read(dir.path()).unwrap().notes[0].content, "new");
+        assert_eq!(
+            read(dir.path())
+                .unwrap()
+                .notes
+                .iter()
+                .find(|n| n.id == "mine")
+                .unwrap()
+                .content,
+            "new"
+        );
         assert!(!CommitSettings::default().co_author);
         assert!(!Note::default().always_include);
     }

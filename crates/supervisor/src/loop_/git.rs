@@ -76,6 +76,36 @@ impl Output {
 /// is the exit code (`merge-base --is-ancestor`, `merge`), and folding that into `Err` would make
 /// "the answer is no" indistinguishable from "git is not installed".
 pub async fn run(git: &Path, cwd: &Path, args: &[&str]) -> Result<Output, GitError> {
+    let git = git.to_path_buf();
+    let cwd = cwd.to_path_buf();
+    let args = args.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    // Once issued, a Git mutation retains workspace ownership until the child exits, even
+    // if its caller stops waiting. Do not release the lease ahead of an in-flight commit.
+    tokio::spawn(async move {
+        run_owned(
+            &git,
+            &cwd,
+            &args.iter().map(String::as_str).collect::<Vec<_>>(),
+        )
+        .await
+    })
+    .await
+    .map_err(std::io::Error::other)?
+}
+async fn run_owned(git: &Path, cwd: &Path, args: &[&str]) -> Result<Output, GitError> {
+    let _lease = if args.first().is_some_and(|a| {
+        matches!(
+            *a,
+            "merge" | "checkout" | "reset" | "commit" | "add" | "worktree" | "switch" | "restore"
+        )
+    }) {
+        Some(
+            brigadier_core::checkpoint::WorkspaceLease::acquire(cwd)
+                .map_err(std::io::Error::other)?,
+        )
+    } else {
+        None
+    };
     let out = Command::new(git)
         .arg("-C")
         .arg(cwd)
@@ -101,7 +131,11 @@ pub async fn checked(git: &Path, cwd: &Path, args: &[&str]) -> Result<String, Gi
     if out.ok() {
         return Ok(out.stdout);
     }
-    Err(GitError::Failed { args: args.join(" "), code: out.code, stderr: out.stderr })
+    Err(GitError::Failed {
+        args: args.join(" "),
+        code: out.code,
+        stderr: out.stderr,
+    })
 }
 
 /// `git rev-parse --verify <rev>^{commit}`: one commit sha, or the reason there is none.
@@ -127,11 +161,7 @@ pub async fn rev_parse(git: &Path, cwd: &Path, rev: &str) -> Result<String, GitE
 /// and a `--no-ff` phase merge has two, so a postcondition comparing the whole `%P` string reads
 /// `unknown` on every phase this loop ever commits (**measured** on git 2.50.1,
 /// `docs/research/intent-records.md` §10.2b).
-pub async fn first_parent(
-    git: &Path,
-    cwd: &Path,
-    rev: &str,
-) -> Result<Option<String>, GitError> {
+pub async fn first_parent(git: &Path, cwd: &Path, rev: &str) -> Result<Option<String>, GitError> {
     let arg = format!("{rev}^1");
     let out = run(git, cwd, &["rev-parse", "--verify", "--quiet", &arg]).await?;
     if out.ok() && !out.stdout.is_empty() {
@@ -142,7 +172,11 @@ pub async fn first_parent(
     if out.stderr.is_empty() {
         return Ok(None);
     }
-    Err(GitError::Failed { args: format!("rev-parse {arg}"), code: out.code, stderr: out.stderr })
+    Err(GitError::Failed {
+        args: format!("rev-parse {arg}"),
+        code: out.code,
+        stderr: out.stderr,
+    })
 }
 
 /// `git log -1 --format=%s <rev>`: the top commit's subject.
@@ -194,7 +228,10 @@ pub async fn commits(
         .filter(|l| !l.is_empty())
         .map(|l| {
             let (sha, subject) = l.split_once('\0').unwrap_or((l, ""));
-            Commit { sha: sha.to_owned(), subject: subject.to_owned() }
+            Commit {
+                sha: sha.to_owned(),
+                subject: subject.to_owned(),
+            }
         })
         .collect())
 }
@@ -208,7 +245,11 @@ pub async fn changed_paths(
 ) -> Result<Vec<String>, GitError> {
     let range = format!("{base}..{tip}");
     let out = checked(git, cwd, &["diff", "--name-only", &range]).await?;
-    Ok(out.lines().filter(|l| !l.is_empty()).map(str::to_owned).collect())
+    Ok(out
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(str::to_owned)
+        .collect())
 }
 
 /// What a merge did.
@@ -234,7 +275,12 @@ pub async fn merge_no_ff(
     rev: &str,
     message: &str,
 ) -> Result<Merged, GitError> {
-    let out = run(git, cwd, &["merge", "--no-ff", "--no-edit", "-m", message, rev]).await?;
+    let out = run(
+        git,
+        cwd,
+        &["merge", "--no-ff", "--no-edit", "-m", message, rev],
+    )
+    .await?;
     if out.ok() {
         if out.stdout.contains("Already up to date") {
             return Ok(Merged::AlreadyUpToDate);
@@ -253,17 +299,23 @@ pub async fn checkout_new_branch(
     branch: &str,
     base: &str,
 ) -> Result<(), GitError> {
-    checked(git, cwd, &["checkout", "-b", branch, base]).await.map(|_| ())
+    checked(git, cwd, &["checkout", "-b", branch, base])
+        .await
+        .map(|_| ())
 }
 
 /// `git reset --hard <rev>`, the undo for a fixer that made things worse.
 pub async fn reset_hard(git: &Path, cwd: &Path, rev: &str) -> Result<(), GitError> {
-    checked(git, cwd, &["reset", "--hard", rev]).await.map(|_| ())
+    checked(git, cwd, &["reset", "--hard", rev])
+        .await
+        .map(|_| ())
 }
 
 /// `git merge-base --is-ancestor <a> <b>`: whether `a` is contained in `b`.
 pub async fn is_ancestor(git: &Path, cwd: &Path, a: &str, b: &str) -> Result<bool, GitError> {
-    Ok(run(git, cwd, &["merge-base", "--is-ancestor", a, b]).await?.ok())
+    Ok(run(git, cwd, &["merge-base", "--is-ancestor", a, b])
+        .await?
+        .ok())
 }
 
 /// The branch `HEAD` is on in `cwd`, or `None` when it is detached.
@@ -279,7 +331,9 @@ pub async fn current_branch(git: &Path, cwd: &Path) -> Result<Option<String>, Gi
 /// Where a repository keeps its worktrees, canonicalised the way git reports it.
 #[must_use]
 pub fn worktree_dir(project_root: &Path, id: &str) -> PathBuf {
-    project_root.join(crate::worktree::WORKTREES_SUBDIR).join(id)
+    project_root
+        .join(crate::worktree::WORKTREES_SUBDIR)
+        .join(id)
 }
 
 #[cfg(test)]
@@ -324,11 +378,15 @@ pub(crate) mod tests {
         }
 
         pub async fn commit(&self, message: &str) -> String {
-            checked(&self.git, self.root(), &["add", "-A"]).await.expect("add");
+            checked(&self.git, self.root(), &["add", "-A"])
+                .await
+                .expect("add");
             checked(&self.git, self.root(), &["commit", "-q", "-m", message])
                 .await
                 .expect("commit");
-            rev_parse(&self.git, self.root(), "HEAD").await.expect("head")
+            rev_parse(&self.git, self.root(), "HEAD")
+                .await
+                .expect("head")
         }
 
         pub async fn git(&self, args: &[&str]) -> Output {
@@ -338,61 +396,97 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn a_no_ff_merges_first_parent_is_the_base_and_p_is_not() {
-        let Some(repo) = Repo::new().await else { return };
-        let base = rev_parse(&repo.git, repo.root(), "HEAD").await.expect("base");
+        let Some(repo) = Repo::new().await else {
+            return;
+        };
+        let base = rev_parse(&repo.git, repo.root(), "HEAD")
+            .await
+            .expect("base");
         repo.git(&["checkout", "-q", "-b", "side"]).await;
         repo.write("a.txt", "a\n");
         repo.commit("side work").await;
         repo.git(&["checkout", "-q", "main"]).await;
 
-        let merged =
-            merge_no_ff(&repo.git, repo.root(), "side", "phase 1").await.expect("merge");
+        let merged = merge_no_ff(&repo.git, repo.root(), "side", "phase 1")
+            .await
+            .expect("merge");
         assert_eq!(merged, Merged::Commit);
 
-        let first = first_parent(&repo.git, repo.root(), "HEAD").await.expect("first parent");
-        assert_eq!(first.as_deref(), Some(base.as_str()), "the first parent is the baseline");
+        let first = first_parent(&repo.git, repo.root(), "HEAD")
+            .await
+            .expect("first parent");
+        assert_eq!(
+            first.as_deref(),
+            Some(base.as_str()),
+            "the first parent is the baseline"
+        );
 
         // The claim the postcondition rests on: `%P` is not the baseline, so a comparison of the
         // whole field reads `unknown` on a merge this loop just made.
-        let all_parents =
-            checked(&repo.git, repo.root(), &["log", "-1", "--format=%P"]).await.expect("%P");
-        assert_ne!(all_parents, base, "%P lists both parents; comparing it whole is the bug");
+        let all_parents = checked(&repo.git, repo.root(), &["log", "-1", "--format=%P"])
+            .await
+            .expect("%P");
+        assert_ne!(
+            all_parents, base,
+            "%P lists both parents; comparing it whole is the bug"
+        );
         assert!(all_parents.starts_with(&base));
         assert_eq!(
-            subject(&repo.git, repo.root(), "HEAD").await.expect("subject"),
+            subject(&repo.git, repo.root(), "HEAD")
+                .await
+                .expect("subject"),
             "phase 1"
         );
     }
 
     #[tokio::test]
     async fn a_root_commit_has_no_first_parent_and_that_is_not_an_error() {
-        let Some(repo) = Repo::new().await else { return };
-        let root = rev_parse(&repo.git, repo.root(), "HEAD").await.expect("head");
-        assert_eq!(first_parent(&repo.git, repo.root(), &root).await.expect("ok"), None);
+        let Some(repo) = Repo::new().await else {
+            return;
+        };
+        let root = rev_parse(&repo.git, repo.root(), "HEAD")
+            .await
+            .expect("head");
+        assert_eq!(
+            first_parent(&repo.git, repo.root(), &root)
+                .await
+                .expect("ok"),
+            None
+        );
     }
 
     #[tokio::test]
     async fn a_fast_forward_writes_no_commit_and_is_not_a_conflict() {
-        let Some(repo) = Repo::new().await else { return };
+        let Some(repo) = Repo::new().await else {
+            return;
+        };
         repo.git(&["checkout", "-q", "-b", "side"]).await;
         repo.write("a.txt", "a\n");
         let tip = repo.commit("side work").await;
         repo.git(&["checkout", "-q", "main"]).await;
         // Land it, then try to land it again: the second is the already-up-to-date case.
         assert_eq!(
-            merge_no_ff(&repo.git, repo.root(), "side", "phase 1").await.expect("merge"),
+            merge_no_ff(&repo.git, repo.root(), "side", "phase 1")
+                .await
+                .expect("merge"),
             Merged::Commit
         );
         assert_eq!(
-            merge_no_ff(&repo.git, repo.root(), "side", "phase 1 again").await.expect("merge"),
+            merge_no_ff(&repo.git, repo.root(), "side", "phase 1 again")
+                .await
+                .expect("merge"),
             Merged::AlreadyUpToDate
         );
-        assert!(is_ancestor(&repo.git, repo.root(), &tip, "HEAD").await.expect("ancestor"));
+        assert!(is_ancestor(&repo.git, repo.root(), &tip, "HEAD")
+            .await
+            .expect("ancestor"));
     }
 
     #[tokio::test]
     async fn a_conflict_leaves_a_clean_tree_rather_than_a_half_merge() {
-        let Some(repo) = Repo::new().await else { return };
+        let Some(repo) = Repo::new().await else {
+            return;
+        };
         repo.git(&["checkout", "-q", "-b", "side"]).await;
         repo.write("README", "side\n");
         repo.commit("side").await;
@@ -401,36 +495,63 @@ pub(crate) mod tests {
         repo.commit("main").await;
 
         assert_eq!(
-            merge_no_ff(&repo.git, repo.root(), "side", "phase 1").await.expect("merge"),
+            merge_no_ff(&repo.git, repo.root(), "side", "phase 1")
+                .await
+                .expect("merge"),
             Merged::Conflict
         );
         let status = repo.git(&["status", "--porcelain"]).await;
-        assert!(status.stdout.is_empty(), "the merge was aborted: {status:?}");
+        assert!(
+            status.stdout.is_empty(),
+            "the merge was aborted: {status:?}"
+        );
     }
 
     #[tokio::test]
     async fn rev_list_counts_the_range_and_reads_zero_only_when_nothing_is_left() {
-        let Some(repo) = Repo::new().await else { return };
-        let base = rev_parse(&repo.git, repo.root(), "HEAD").await.expect("base");
+        let Some(repo) = Repo::new().await else {
+            return;
+        };
+        let base = rev_parse(&repo.git, repo.root(), "HEAD")
+            .await
+            .expect("base");
         repo.git(&["checkout", "-q", "-b", "side"]).await;
         repo.write("a.txt", "a\n");
         repo.commit("side").await;
-        assert_eq!(rev_list_count(&repo.git, repo.root(), &base, "side").await.expect("n"), 1);
-        assert_eq!(rev_list_count(&repo.git, repo.root(), "side", "side").await.expect("n"), 0);
+        assert_eq!(
+            rev_list_count(&repo.git, repo.root(), &base, "side")
+                .await
+                .expect("n"),
+            1
+        );
+        assert_eq!(
+            rev_list_count(&repo.git, repo.root(), "side", "side")
+                .await
+                .expect("n"),
+            0
+        );
     }
 
     #[tokio::test]
     async fn commits_and_paths_come_back_re_derived() {
-        let Some(repo) = Repo::new().await else { return };
-        let base = rev_parse(&repo.git, repo.root(), "HEAD").await.expect("base");
+        let Some(repo) = Repo::new().await else {
+            return;
+        };
+        let base = rev_parse(&repo.git, repo.root(), "HEAD")
+            .await
+            .expect("base");
         repo.git(&["checkout", "-q", "-b", "side"]).await;
         repo.write("src/a.rs", "a\n");
         repo.commit("added a").await;
-        let got = commits(&repo.git, repo.root(), &base, "side").await.expect("commits");
+        let got = commits(&repo.git, repo.root(), &base, "side")
+            .await
+            .expect("commits");
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].subject, "added a");
         assert_eq!(
-            changed_paths(&repo.git, repo.root(), &base, "side").await.expect("paths"),
+            changed_paths(&repo.git, repo.root(), &base, "side")
+                .await
+                .expect("paths"),
             vec!["src/a.rs".to_owned()]
         );
     }

@@ -13,6 +13,7 @@ use std::{
 use tauri::State;
 
 struct Terminal {
+    session_id: Option<String>,
     master: Box<dyn MasterPty + Send>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     killer: Box<dyn ChildKiller + Send + Sync>,
@@ -60,6 +61,14 @@ fn terminals() -> &'static Mutex<HashMap<String, Terminal>> {
 fn lock() -> std::sync::MutexGuard<'static, HashMap<String, Terminal>> {
     terminals().lock().unwrap_or_else(|e| e.into_inner())
 }
+pub(crate) fn close_sessions(ids: &[String]) {
+    lock().retain(|_, terminal| {
+        !terminal
+            .session_id
+            .as_ref()
+            .is_some_and(|id| ids.contains(id))
+    });
+}
 pub(crate) fn shutdown() {
     lock().clear();
 }
@@ -76,6 +85,7 @@ fn error(e: impl std::fmt::Display) -> AppError {
 }
 
 fn spawn(root: std::path::PathBuf, cols: u16, rows: u16) -> Result<String, AppError> {
+    let lease = brigadier_core::checkpoint::WorkspaceLease::acquire(&root).map_err(error)?;
     let mut registry = lock();
     if registry.len() >= 12 {
         return Err(AppError::invalid_argument(
@@ -118,12 +128,14 @@ fn spawn(root: std::path::PathBuf, cols: u16, rows: u16) -> Result<String, AppEr
     let done = exited.clone();
     std::thread::spawn(move || {
         let _ = child.wait();
+        drop(lease);
         done.store(true, Ordering::Release);
     });
     let id = format!("terminal-{}", NEXT.fetch_add(1, Ordering::Relaxed));
     registry.insert(
         id.clone(),
         Terminal {
+            session_id: None,
             master: pair.master,
             writer: Arc::new(Mutex::new(writer)),
             killer,
@@ -146,14 +158,30 @@ pub(crate) async fn terminal_open(
     cwd: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<String, AppError> {
+    let _lifecycle = crate::peers::LIFECYCLE.lock().await;
     let root = crate::workspace::root(state.inner(), &project_id, session_id.as_deref()).await?;
-    let root = cwd
-        .map(std::path::PathBuf::from)
-        .filter(|p| p.is_absolute() && p.is_dir())
-        .unwrap_or(root);
-    tauri::async_runtime::spawn_blocking(move || spawn(root, cols, rows))
+    state.get()?.supervisor.workspace_writable(&root).await?;
+    if cwd
+        .as_deref()
+        .is_some_and(|p| std::path::Path::new(p) != root)
+    {
+        return Err(AppError::invalid_argument(
+            "Open the terminal at its workspace root so writer ownership can be tracked",
+        ));
+    }
+    if let Some(id) = &session_id {
+        state
+            .get()?
+            .supervisor
+            .require_session_available(&brigadier_core::event::SessionId::new(id))?;
+    }
+    let id = tauri::async_runtime::spawn_blocking(move || spawn(root, cols, rows))
         .await
-        .map_err(error)?
+        .map_err(error)??;
+    if let Some(terminal) = lock().get_mut(&id) {
+        terminal.session_id = session_id;
+    }
+    Ok(id)
 }
 #[derive(Serialize)]
 pub(crate) struct TerminalOutput {

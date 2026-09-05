@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   rewindHistory,
+  recoverWorkspaceRewind,
   rewindHistoryItems,
   type RewindHistory as History,
   type ArchivedItem,
@@ -79,6 +80,18 @@ export function RewindHistory({
           )}
         </section>
       ))}
+      {history?.workspaceOperations?.map(op => <section key={op.id}>
+        <small>Workspace recovery: {op.id}</small>
+        <p>{op.phase === "complete" ? "Files restored and edited message sent" : op.phase === "rolled-back" ? "Original files restored" : op.phase === "rewound-unsent" ? "Conversation rewound; saved draft has not been sent" : "Workspace paused — recovery required"}</p>
+        {op.phase === "rewound-unsent" && <p>Copy the saved draft below, resume the session if needed, and send it as a new message.</p>}
+        {op.error && <p>{op.error}</p>}
+        <pre>{op.draft}</pre><CopyButton text={op.draft} />
+        {["prepared", "restoring", "native-refused", "rolled-back", "complete", "native-confirmed", "archived", "rewound-unsent"].includes(op.phase) && <button className="act" onClick={async () => {
+          try { await recoverWorkspaceRewind(sessionId,op.id);setHistory(await rewindHistory(sessionId));setError(""); }
+          catch(e) {setError(errorMessage(e));}
+        }}>{["complete", "rolled-back", "rewound-unsent"].includes(op.phase) ? "Release recovery lock" : ["native-confirmed", "archived"].includes(op.phase) ? "Finish recovery and keep saved draft" : "Restore original files"}</button>}
+        {!["prepared", "restoring", "native-refused", "rolled-back", "complete", "native-confirmed", "archived", "rewound-unsent"].includes(op.phase) && <p>The provider or send outcome needs reconciliation. The saved draft can be copied; the operation will not be repeated automatically.</p>}
+      </section>)}
       <footer>
         <button className="act" onClick={onClose}>
           Close

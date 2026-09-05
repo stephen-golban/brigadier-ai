@@ -22,14 +22,17 @@
 
 #[cfg(any(debug_assertions, feature = "burn"))]
 mod burn;
+mod cleanup;
 mod commands;
-mod conversation;
 mod commit_message;
+mod conversation;
 mod error;
+mod note_files;
 mod peer_mcp;
 mod peers;
 mod reconcile;
 mod search;
+mod session_changes;
 mod sink;
 mod source_control;
 mod state;
@@ -123,6 +126,15 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             commands::app_info,
+            cleanup::session_discard,
+            session_changes::session_changes,
+            session_changes::session_diff,
+            session_changes::session_apply_preview,
+            session_changes::session_undo_preview,
+            session_changes::session_apply,
+            session_changes::session_apply_history,
+            cleanup::session_cleanup_status,
+            cleanup::session_cleanup_retry,
             commands::probe_claude,
             commands::list_models,
             commands::list_projects,
@@ -138,6 +150,8 @@ pub fn run() {
             search::workspace_replace,
             search::workspace_save,
             workbench_data::workbench_load,
+            workbench_data::notes_folder_save,
+            workbench_data::desktop_settings_save,
             workbench_data::note_save,
             workbench_data::note_delete,
             workbench_data::commit_settings_save,
@@ -160,6 +174,7 @@ pub fn run() {
             conversation::rewind_history_items,
             conversation::preview_rewind,
             conversation::apply_rewind,
+            conversation::recover_workspace_rewind,
             workspace::workspace_entries,
             workspace::workspace_file,
             workspace::workspace_git,
@@ -244,6 +259,9 @@ pub fn run() {
                     if let Err(e) = peers::start(app.handle().clone()) {
                         tracing::error!("Peer communication unavailable: {}", e.message);
                     }
+                    if let Err(e) = cleanup::start(app.handle().clone()) {
+                        tracing::error!("Session cleanup unavailable: {}", e.message);
+                    }
                 }
                 Err(err) => {
                     // Never `?`: an Err out of `setup` panics the process, and a read-only home
@@ -306,7 +324,7 @@ pub fn run() {
 /// (`Cargo.toml:10`).
 #[cfg(unix)]
 fn spawn_signal_hook(handle: tauri::AppHandle) {
-    use tokio::signal::unix::{SignalKind, signal};
+    use tokio::signal::unix::{signal, SignalKind};
 
     tauri::async_runtime::spawn(async move {
         let mut term = match signal(SignalKind::terminate()) {

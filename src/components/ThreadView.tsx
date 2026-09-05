@@ -1,3 +1,6 @@
+import type { PeerData } from "../peerApi";
+import { useSessionChanges } from "../desktopApi";
+import { ChangedFilesCard } from "./SessionReview";
 import {
   useEffect,
   useLayoutEffect,
@@ -13,22 +16,20 @@ import {
   PencilSimpleIcon,
 } from "@phosphor-icons/react";
 import { Markdown, CopyButton } from "./Markdown";
-import { Feed } from "./Feed";
 import { workspaceApi, errorMessage, type ChatItem } from "../workspaceApi";
 import * as store from "../feedStore";
 import { projectThread } from "../threadProjection";
-import { SessionContext } from "./SessionContext";
-import { RewindHistory } from "./RewindHistory";
 import { WorkTrace } from "./WorkTrace";
 
 export function ThreadView({
   sessionId,
-  projectId,
   projectName,
   onFile,
   onEdit,
   editing = false,
   revision = 0,
+  peers,
+  onSelectSession,
 }: {
   sessionId: string | null;
   projectId: string | null;
@@ -37,67 +38,31 @@ export function ThreadView({
   onEdit?: (item: ChatItem) => void;
   editing?: boolean;
   revision?: number;
+  peers?: PeerData;
+  onSelectSession?: (id: string) => void;
 }) {
-  const [activity, setActivity] = useState(false);
-  const [history, setHistory] = useState(false);
-  const state = useSyncExternalStore(store.subscribe, store.getState);
-  const current = sessionId ? state.sessions[sessionId] : undefined;
-  // Keyed child owns fetch lifetime, scroll attachment and disclosure state.
   return (
     <section className="conversation">
-      {history && sessionId && (
-        <RewindHistory
-          key={sessionId}
-          sessionId={sessionId}
-          onClose={() => setHistory(false)}
-        />
-      )}
-      <div className="conversation-toolbar">
-        <div role="group" aria-label="Thread view">
-          <button
-            aria-pressed={!activity && sessionId !== null}
-            disabled={!sessionId}
-            onClick={() => setActivity(false)}
-          >
-            Conversation
-          </button>
-          <button
-            aria-pressed={activity || sessionId === null}
-            onClick={() => setActivity(true)}
-          >
-            Activity
-          </button>
-        </div>
-        {sessionId && (
-          <button className="history-trigger" onClick={() => setHistory(true)}>
-            Saved history
-          </button>
-        )}
-        {sessionId && (
-          <SessionContext
-            key={sessionId}
-            sessionId={sessionId}
-            revision={revision + (current?.lastEventSeq ?? 0)}
-            busy={current?.busy ?? false}
-          />
-        )}
-      </div>
-      {activity || sessionId === null ? (
-        <Feed
-          sessionId={sessionId}
-          projectId={projectId}
-          projectName={projectName}
-        />
-      ) : (
+      {sessionId ? (
         <Transcript
           key={sessionId}
           sessionId={sessionId}
           onFile={onFile}
-          onActivity={() => setActivity(true)}
           revision={revision}
           onEdit={onEdit}
           editing={editing}
+          peers={peers}
+          onSelectSession={onSelectSession}
         />
+      ) : (
+        <div className="new-conversation">
+          <ChatCircleIcon size={44} />
+          <h1>
+            {projectName
+              ? `What should we build in ${projectName}?`
+              : "What should we build?"}
+          </h1>
+        </div>
       )}
     </section>
   );
@@ -106,18 +71,21 @@ export function ThreadView({
 function Transcript({
   sessionId,
   onFile,
-  onActivity,
+  peers,
+  onSelectSession,
   revision,
   onEdit,
   editing,
 }: {
   sessionId: string;
   onFile: (path: string) => void;
-  onActivity: () => void;
+  peers?: PeerData;
+  onSelectSession?: (id: string) => void;
   revision: number;
   onEdit?: (item: ChatItem) => void;
   editing: boolean;
 }) {
+  const changes = useSessionChanges(sessionId);
   const [items, setItems] = useState<ChatItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -274,14 +242,36 @@ function Transcript({
                 ? "Waiting for the first response…"
                 : "No saved message bodies in this session."}
             </p>
-            <button className="act" onClick={onActivity}>
-              View activity history
-            </button>
           </div>
         ) : null}
         <div className="chat-sizer" style={{ height: totalSize }}>
           {virtual.getVirtualItems().map((row) => {
             const entry = visible[row.index]!;
+            const user = visible
+              .slice(0, row.index + 1)
+              .reverse()
+              .find(
+                (r) => r.type === "message" && r.item.kind.type === "user-text",
+              );
+            const turn =
+              user?.type === "message"
+                ? (user.item.provider_uuid ?? user.item.id)
+                : null;
+            const files =
+              changes.turns.find((t) => t.turnId === turn)?.files ?? [];
+            const previousUser = visible
+              .slice(0, row.index)
+              .reverse()
+              .find(
+                (r) => r.type === "message" && r.item.kind.type === "user-text",
+              );
+            const separator =
+              entry.type === "message" &&
+              entry.item.kind.type === "user-text" &&
+              entry.item.at > 0 &&
+              (!previousUser ||
+                (previousUser.type === "message" &&
+                  entry.item.at - previousUser.item.at > 15 * 60 * 1000));
             return (
               <article
                 key={entry.id}
@@ -305,34 +295,69 @@ function Transcript({
                   />
                 ) : entry.item.kind.type === "user-text" ? (
                   <>
-                    <div className="user-bubble">{entry.item.body}</div>
-                    <div className="message-actions">
-                      <CopyButton text={entry.item.body} />
-                      <button
-                        className="icon-button"
-                        aria-label="Edit message"
-                        title={
-                          busy
-                            ? "Wait for the current turn to finish"
-                            : "Edit message"
-                        }
-                        disabled={busy || editing || !onEdit}
-                        onClick={() => onEdit?.(entry.item)}
-                      >
-                        <PencilSimpleIcon size={15} />
-                      </button>
-                    </div>
+                    {separator && (
+                      <div className="message-separator">
+                        {dateLabel(entry.item.at)}
+                      </div>
+                    )}
+                    <UserMessage
+                      item={entry.item}
+                      peers={peers}
+                      initial={row.index === 0}
+                      busy={busy}
+                      editing={editing}
+                      onEdit={onEdit}
+                      onSelectSession={onSelectSession}
+                    />
                   </>
                 ) : (
                   <>
                     <Markdown text={entry.item.body} onFile={onFile} />
-                    <CopyButton text={entry.item.body} />
+                    <div className="assistant-actions">
+                      <CopyButton text={entry.item.body} />
+                    </div>
+                    {turn && (
+                      <ChangedFilesCard
+                        sessionId={sessionId}
+                        turn={turn}
+                        files={files}
+                      />
+                    )}
                   </>
                 )}
               </article>
             );
           })}
         </div>
+        {peers?.messages
+          .filter((m) => m.to === sessionId && !m.work)
+          .map((message) => (
+            <details className="peer-inline-message" key={message.id}>
+              <summary>
+                Message from {peers.titles[message.from] ?? "another session"}
+              </summary>
+              <button
+                className="message-provenance"
+                onClick={() => onSelectSession?.(message.from)}
+              >
+                Open source session
+              </button>
+              <Markdown text={message.text} onFile={onFile} />
+              <CopyButton text={message.text} />
+              {message.error && <p className="inline-error">{message.error}</p>}
+            </details>
+          ))}
+        {peers?.requests
+          .filter((r) => r.to === sessionId && r.resolved)
+          .map((request) => (
+            <details className="peer-inline-message" key={request.id}>
+              <summary>
+                Resolved {request.action} request from{" "}
+                {peers.titles[request.from] ?? "another session"}
+              </summary>
+              <p>This request was handled.</p>
+            </details>
+          ))}
         {busy && !visible.some((row) => row.type === "work" && row.running) ? (
           <div className="working-state" role="status">
             <span className="working-dot" />
@@ -344,9 +369,12 @@ function Transcript({
         ) : null}
       </div>
       {!following ? (
-        <button className="jump-latest" onClick={follow}>
-          <ArrowDownIcon size={14} />
-          Latest
+        <button
+          className="jump-latest"
+          aria-label="Jump to latest"
+          onClick={follow}
+        >
+          <ArrowDownIcon size={19} />
         </button>
       ) : null}
     </div>
@@ -364,4 +392,94 @@ function stopLabel(reason: string) {
   } catch {
     return reason;
   }
+}
+
+function dateLabel(at: number) {
+  const date = new Date(at);
+  return `${date.toDateString() === new Date().toDateString() ? "Today" : date.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`;
+}
+function UserMessage({
+  item,
+  peers,
+  initial,
+  busy,
+  editing,
+  onEdit,
+  onSelectSession,
+}: {
+  item: ChatItem;
+  peers?: PeerData;
+  initial: boolean;
+  busy: boolean;
+  editing: boolean;
+  onEdit?: (item: ChatItem) => void;
+  onSelectSession?: (id: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const match = item.body.match(
+    /^Work request from peer session ([^:\n]+):\n([\s\S]*)$/,
+  );
+  const source =
+    match?.[1] ?? (initial ? peers?.origins[item.session_id] : undefined);
+  let text = item.body.split("\n\nBrigadier exposes native MCP tools:")[0]!;
+  if (match) {
+    try {
+      text = JSON.parse(match[2]!);
+    } catch {
+      text = match[2]!;
+    }
+  }
+  const long =
+    text.length > (source ? 200 : 480) || text.split("\n").length > 8;
+  return (
+    <div className={`user-message ${source ? "peer-message" : ""}`}>
+      {source && (
+        <button
+          className="message-provenance"
+          onClick={() => onSelectSession?.(source)}
+        >
+          Sent by {peers?.titles[source] ?? "Brigadier"} from another session
+        </button>
+      )}
+      <div className="user-bubble">
+        <div className={long && !expanded ? "message-collapsed" : ""}>
+          {text}
+        </div>
+        {long && (
+          <button
+            className="show-more"
+            aria-expanded={expanded}
+            onClick={() => setExpanded(!expanded)}
+          >
+            {expanded ? "Show less" : "Show more"}
+            <span aria-hidden="true">⌄</span>
+          </button>
+        )}
+      </div>
+      <div className="message-actions">
+        {item.at > 0 && (
+          <time dateTime={new Date(item.at).toISOString()}>
+            {new Date(item.at).toLocaleTimeString(undefined, {
+              hour: "numeric",
+              minute: "2-digit",
+            })}
+          </time>
+        )}
+        <CopyButton text={text} />
+        {!source && (
+          <button
+            className="icon-button"
+            aria-label="Edit message"
+            title={
+              busy ? "Wait for the current turn to finish" : "Edit message"
+            }
+            disabled={busy || editing || !onEdit}
+            onClick={() => onEdit?.(item)}
+          >
+            <PencilSimpleIcon size={15} />
+          </button>
+        )}
+      </div>
+    </div>
+  );
 }

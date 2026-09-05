@@ -2,11 +2,14 @@ import { useCallback, useState } from "react";
 import type { WorkspaceContext } from "./workspaceApi";
 export interface ProjectTab {
   id: string;
-  kind: "session" | "terminal" | "file" | "diff" | "untitled" | "note";
+  kind:
+    "draft" | "session" | "terminal" | "file" | "diff" | "untitled" | "note";
   path: string;
   context: WorkspaceContext;
   root: string;
   staged?: boolean;
+  turn?: string | null;
+  recorded?: boolean;
   line?: number;
 }
 export interface ProjectLayout {
@@ -64,4 +67,13 @@ export function languageFor(path: string) {
       } as Record<string, string>
     )[path.split(".").pop()?.toLowerCase() ?? ""] ?? "plaintext"
   );
+}
+
+export function hasSavedEdits(t: ProjectTab) {
+  try {
+    const b = JSON.parse(localStorage.getItem(documentKey(t)) ?? "null");
+    return !!b && b.content !== (b.before ?? "");
+  } catch {
+    return false;
+  }
 }

@@ -30,6 +30,10 @@ export interface WorkbenchData {
   peers?: PeerSettings;
   projectPeers?: Record<string, PeerSettings>;
   notes: Note[];
+  notesFolder?: string | null;
+  notesError?: string | null;
+  displayName?: string;
+  projectNames?: Record<string,string>;
   global: CommitSettings;
   projects: Record<string, CommitSettings>;
 }
@@ -98,6 +102,8 @@ const desktopOnly = () =>
     ),
   );
 export const workbenchApi = {
+  saveDesktopSettings: (displayName:string,projectNames:Record<string,string>):Promise<WorkbenchData> => desktop ? invoke("desktop_settings_save",{displayName,projectNames}) : Promise.resolve().then(()=>{sample.displayName=displayName;sample.projectNames=projectNames;return saveSample();}),
+  setNotesFolder: (folder:string):Promise<WorkbenchData> => desktop ? invoke("notes_folder_save",{folder}) : Promise.resolve().then(()=>{sample.notesFolder=folder;return saveSample();}),
   load: (): Promise<WorkbenchData> =>
     desktop
       ? invoke("workbench_load")
