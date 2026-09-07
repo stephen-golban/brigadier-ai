@@ -33,6 +33,10 @@ export interface WorkbenchData {
   notesFolder?: string | null;
   notesError?: string | null;
   displayName?: string;
+  nameConfirmed?: boolean;
+  welcomeCompleted?: boolean;
+  introSeen?: boolean;
+  launchMusic?: boolean | null;
   projectNames?: Record<string,string>;
   global: CommitSettings;
   projects: Record<string, CommitSettings>;
@@ -102,7 +106,19 @@ const desktopOnly = () =>
     ),
   );
 export const workbenchApi = {
-  saveDesktopSettings: (displayName:string,projectNames:Record<string,string>):Promise<WorkbenchData> => desktop ? invoke("desktop_settings_save",{displayName,projectNames}) : Promise.resolve().then(()=>{sample.displayName=displayName;sample.projectNames=projectNames;return saveSample();}),
+  saveDesktopSettings: (displayName: string, projectNames: Record<string,string>): Promise<WorkbenchData> =>
+    Promise.resolve().then(() => {
+      displayName = validateDisplayName(displayName);
+      if (desktop) return invoke("desktop_settings_save", {displayName, projectNames});
+      sample.displayName = displayName;
+      sample.nameConfirmed = true;
+      sample.projectNames = projectNames;
+      return saveSample();
+    }),
+  saveLaunchPreferences: (patch: Partial<Pick<WorkbenchData, "displayName" | "nameConfirmed" | "welcomeCompleted" | "introSeen" | "launchMusic">>): WorkbenchData => {
+    Object.assign(sample, patch);
+    return saveSample();
+  },
   setNotesFolder: (folder:string):Promise<WorkbenchData> => desktop ? invoke("notes_folder_save",{folder}) : Promise.resolve().then(()=>{sample.notesFolder=folder;return saveSample();}),
   load: (): Promise<WorkbenchData> =>
     desktop
@@ -217,3 +233,11 @@ export const workbenchApi = {
   terminalInfo: (id: string): Promise<{ busy: boolean; cwd: string }> =>
     invoke("terminal_info", { id }),
 };
+
+export function validateDisplayName(value: string): string {
+  const name = value.trim();
+  if (!name) throw new Error("Enter your name to continue");
+  if ([...name].length > 200 || /[\u0000-\u001f\u007f-\u009f]/.test(name))
+    throw new Error("Use a name of up to 200 characters");
+  return name;
+}

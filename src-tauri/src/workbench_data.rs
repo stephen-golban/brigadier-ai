@@ -80,6 +80,14 @@ pub(crate) struct Data {
     #[serde(default)]
     pub display_name: String,
     #[serde(default)]
+    pub name_confirmed: bool,
+    #[serde(default)]
+    pub welcome_completed: bool,
+    #[serde(default)]
+    pub intro_seen: bool,
+    #[serde(default)]
+    pub launch_music: Option<bool>,
+    #[serde(default)]
     pub project_names: BTreeMap<String, String>,
     #[serde(default)]
     pub global: CommitSettings,
@@ -105,9 +113,6 @@ fn update<T>(dir: &Path, f: impl FnOnce(&mut Data) -> Result<T, AppError>) -> Re
     data.notes_error = crate::note_files::refresh(dir, &mut data)
         .err()
         .map(|e| e.message);
-    if data.display_name.is_empty() {
-        data.display_name = std::env::var("USER").unwrap_or_else(|_| "Local user".into());
-    }
     let result = f(&mut data)?;
     let bytes = serde_json::to_vec(&data).map_err(|e| AppError::io(e.to_string()))?;
     if before != bytes {
@@ -121,14 +126,46 @@ pub(crate) async fn desktop_settings_save(
     project_names: BTreeMap<String, String>,
     state: State<'_, AppState>,
 ) -> Result<Data, AppError> {
-    if display_name.len() > 200 || project_names.values().any(|v| v.len() > 200) {
+    let display_name = validate_name(&display_name)?;
+    if project_names.values().any(|v| v.len() > 200) {
         return Err(AppError::invalid_argument("Name exceeds 200 characters"));
     }
     update(&state.get()?.data_dir, |d| {
-        d.display_name = display_name.trim().to_owned();
+        d.display_name = display_name;
+        d.name_confirmed = true;
         d.project_names = project_names;
         Ok(d.clone())
     })
+}
+
+pub(crate) fn validate_name(name: &str) -> Result<String, AppError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(AppError::invalid_argument("Enter your name to continue"));
+    }
+    if name.chars().count() > 200 || name.chars().any(char::is_control) {
+        return Err(AppError::invalid_argument(
+            "Use a name of up to 200 characters",
+        ));
+    }
+    Ok(name.to_owned())
+}
+
+/// Launch preferences share the existing atomic document, without triggering note scans.
+pub(crate) fn launch_update<T>(
+    dir: &Path,
+    f: impl FnOnce(&mut Data) -> Result<T, AppError>,
+) -> Result<T, AppError> {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let path = dir.join("workbench.json");
+    let mut data = load(&path)?;
+    let before = serde_json::to_vec(&data).map_err(|e| AppError::io(e.to_string()))?;
+    let result = f(&mut data)?;
+    let bytes = serde_json::to_vec(&data).map_err(|e| AppError::io(e.to_string()))?;
+    if before != bytes {
+        crate::note_files::atomic_write(&path, &bytes)?;
+    }
+    Ok(result)
 }
 #[tauri::command]
 pub(crate) async fn notes_folder_save(

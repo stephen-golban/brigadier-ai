@@ -1,7 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 
-import { App } from "./App";
+import { Launch } from "./Launch";
 import { startPaintInstrumentation } from "./paint";
 import { ThemeProvider } from "./providers/ThemeProvider";
 import "./index.css";
@@ -21,7 +21,7 @@ startPaintInstrumentation();
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <ThemeProvider>
-      <App />
+      <Launch />
     </ThemeProvider>
   </React.StrictMode>,
 );
@@ -29,3 +29,4 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
 import "./workbench.css";
 
 import "./desktop.css";
+import "./launch.css";

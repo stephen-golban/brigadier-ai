@@ -7,6 +7,7 @@ import { workbenchApi, type WorkbenchData } from "../workbenchApi";
 import { desktop, errorMessage } from "../workspaceApi";
 import { desktopApi, notify, type CleanupJob } from "../desktopApi";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
+import { launchApi } from "../launchApi";
 export function DesktopSettings({
   data,
   onData,
@@ -33,6 +34,8 @@ export function DesktopSettings({
   const [confirm, setConfirm] = useState<Confirmation | null>(null);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
+  const [savingName, setSavingName] = useState(false);
+  const [savingMusic, setSavingMusic] = useState(false);
   const saveFolder = async (value: string) => {
     try {
       onData(await workbenchApi.setNotesFolder(value));
@@ -85,10 +88,13 @@ export function DesktopSettings({
           <form
             onSubmit={(e) => {
               e.preventDefault();
+              if (savingName) return;
+              setSavingName(true);
               void workbenchApi
                 .saveDesktopSettings(name, data.projectNames ?? {})
-                .then(onData)
-                .catch((e) => setError(errorMessage(e)));
+                .then(next => { onData(next); setName(next.displayName ?? ""); setError(""); })
+                .catch((e) => setError(errorMessage(e)))
+                .finally(() => setSavingName(false));
             }}
           >
             <label>
@@ -98,10 +104,21 @@ export function DesktopSettings({
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 maxLength={200}
+                required
+                disabled={savingName}
               />
             </label>
-            <button className="act">Save name</button>
+            <button className="act" disabled={savingName || !name.trim()}>{savingName ? "Saving…" : "Save name"}</button>
           </form>
+          <h3>Welcome</h3>
+          <label className="settings-launch">
+            <input type="checkbox" checked={data.launchMusic ?? true} disabled={savingMusic} onChange={e => {
+              const enabled=e.target.checked;setSavingMusic(true);
+              void launchApi.music(enabled).then(()=>workbenchApi.load()).then(onData).catch(e=>setError(errorMessage(e))).finally(()=>setSavingMusic(false));
+            }}/>
+            Launch music
+          </label>
+          <button className="act" onClick={()=>{onClose();launchApi.replay();}}>Replay welcome</button>
           <h3>Notes folder</h3>
           <p>
             Notes are Markdown files. Existing notes keep their references when

@@ -10,9 +10,13 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "brigadier",
+        "visible": false,
+        "transparent": true,
+        "decorations": false,
         "width": 1280,
         "height": 800,
         "minWidth": 800,

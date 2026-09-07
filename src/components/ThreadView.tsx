@@ -20,6 +20,8 @@ import { workspaceApi, errorMessage, type ChatItem } from "../workspaceApi";
 import * as store from "../feedStore";
 import { projectThread } from "../threadProjection";
 import { WorkTrace } from "./WorkTrace";
+import { BrandMark } from "./BrandMark";
+import { workbenchApi } from "../workbenchApi";
 
 export function ThreadView({
   sessionId,
@@ -41,6 +43,13 @@ export function ThreadView({
   peers?: PeerData;
   onSelectSession?: (id: string) => void;
 }) {
+  const [greetingName,setGreetingName]=useState("");
+  useEffect(()=>{
+    let live=true;
+    const read=()=>{void workbenchApi.load().then(d=>{if(live)setGreetingName(d.displayName?.trim()??"");}).catch(()=>{});};
+    read();window.addEventListener("workbench-data-changed",read);
+    return()=>{live=false;window.removeEventListener("workbench-data-changed",read);};
+  },[]);
   return (
     <section className="conversation">
       {sessionId ? (
@@ -56,11 +65,11 @@ export function ThreadView({
         />
       ) : (
         <div className="new-conversation">
-          <ChatCircleIcon size={44} />
+          <BrandMark />
           <h1>
             {projectName
               ? `What should we build in ${projectName}?`
-              : "What should we build?"}
+              : greetingName ? `What will you build, ${greetingName}?` : "What should we build?"}
           </h1>
         </div>
       )}

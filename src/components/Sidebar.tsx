@@ -31,6 +31,7 @@ import { notify } from "../desktopApi";
 import { working } from "../attention";
 import { DesktopSettings } from "./DesktopSettings";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
+import { BrandMark } from "./BrandMark";
 export type DeleteAnswer<T> =
   { deletion: T; error: null } | { deletion: null; error: AppError };
 export type SessionDeleteAnswer = DeleteAnswer<SessionDeletion>;
@@ -105,6 +106,15 @@ export function Sidebar(props: SidebarProps) {
   } | null>(null);
   const [projectMenu, setProjectMenu] = useState<string | null>(null);
   const [addPath, setAddPath] = useState<string | null>(null);
+  useEffect(() => {
+    const startProject = () => {
+      if (props.projects.length) return;
+      if (props.onPickProject) void props.onPickProject().then(error=>{if(error){notify(error.message,true);setAddPath("");}});
+      else setAddPath("");
+    };
+    window.addEventListener("brigadier-onboarding-complete",startProject);
+    return()=>window.removeEventListener("brigadier-onboarding-complete",startProject);
+  },[props.projects.length,props.onPickProject]);
   useEffect(() => {
     let live = true;
     let timer: ReturnType<typeof setTimeout>;
@@ -193,7 +203,7 @@ export function Sidebar(props: SidebarProps) {
   };
   return (
     <aside className="sidebar desktop-sidebar">
-      <div className="sidebar-brand">Brigadier</div>
+      <div className="sidebar-brand"><BrandMark />Brigadier</div>
       <button
         className="sidebar-action"
         onClick={() => window.dispatchEvent(new Event("workbench-new-session"))}
