@@ -27,6 +27,7 @@ mod commands;
 mod commit_message;
 mod conversation;
 mod error;
+mod launch;
 mod note_files;
 mod peer_mcp;
 mod peers;
@@ -152,6 +153,14 @@ pub fn run() {
             workbench_data::workbench_load,
             workbench_data::notes_folder_save,
             workbench_data::desktop_settings_save,
+            launch::launch_preferences,
+            launch::launch_status,
+            launch::launch_seen,
+            launch::launch_complete,
+            launch::launch_music,
+            launch::launch_finish,
+            launch::launch_reveal,
+            launch::launch_restart,
             workbench_data::note_save,
             workbench_data::note_delete,
             workbench_data::commit_settings_save,
@@ -223,54 +232,49 @@ pub fn run() {
                     let msg = format!("no application data directory: {e}");
                     tracing::error!("{msg}");
                     app.manage(AppState::failed(crate::error::AppError::io(msg)));
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                    }
                     return Ok(());
                 }
             };
-            match tauri::async_runtime::block_on(state::build(data_dir)) {
-                Ok(ready) => {
-                    tracing::info!(?ready, "brigadier started");
-                    // `git worktree prune` per project, off the setup thread. A worktree
-                    // directory deleted by hand stays in `git worktree list` as prunable and
-                    // blocks the next `add` at the same path; prune never touches a branch
-                    // (**measured**), and every failure inside is a `warn`, so nothing here can
-                    // hold or fail startup.
-                    // see docs/research/worktree-git.md §4.
-                    //
-                    // Reconciliation goes in the same task, **after** the prune and never beside
-                    // it. Both call `git worktree repair`, and the two verbs do not commute: a
-                    // `prune` that lands before a `repair` removes the entry, after which repair
-                    // answers `error: unable to locate repository` with no way back
-                    // (**measured**, `crates/supervisor/src/worktree.rs::prune_project`). Run
-                    // concurrently, that race would turn a renamed project folder into a
-                    // `repair_failed` that refuses every run in it. One task, in order, costs
-                    // nothing — both passes are two `git` calls per project — and the barrier is
-                    // published either way, because a sender dropped without publishing is what
-                    // the loop reads as `reconcile_failed`.
-                    // see docs/research/intent-records.md §4.1 and §4.2 step 1.
-                    let supervisor = ready.supervisor.clone();
-                    let store = ready.store().clone();
-                    let sender = ready.take_reconcile_sender();
-                    tauri::async_runtime::spawn(async move {
-                        supervisor.prune_worktrees().await;
-                        let Some(sender) = sender else { return };
-                        reconcile::run(&supervisor, &store, sender).await;
-                    });
-                    app.manage(AppState::ready(ready));
-                    if let Err(e) = peers::start(app.handle().clone()) {
-                        tracing::error!("Peer communication unavailable: {}", e.message);
-                    }
-                    if let Err(e) = cleanup::start(app.handle().clone()) {
-                        tracing::error!("Session cleanup unavailable: {}", e.message);
-                    }
-                }
-                Err(err) => {
-                    // Never `?`: an Err out of `setup` panics the process, and a read-only home
-                    // directory — or a second instance on one data directory — must produce a
-                    // window that says so.
-                    tracing::error!(code = %err.code, message = %err.message, "startup failed");
-                    app.manage(AppState::failed(err));
+            app.manage(AppState::pending());
+            if let Err(err) = launch::setup(app.handle(), data_dir.clone()) {
+                tracing::error!(message = %err.message, "launch window setup failed");
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
                 }
             }
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let result = state::build(data_dir).await;
+                if !handle.state::<AppState>().initialize(result) {
+                    return;
+                }
+                match handle.state::<AppState>().get() {
+                    Ok(ready) => {
+                        tracing::info!(?ready, "brigadier started");
+                        let supervisor = ready.supervisor.clone();
+                        let store = ready.store().clone();
+                        let sender = ready.take_reconcile_sender();
+                        tauri::async_runtime::spawn(async move {
+                            supervisor.prune_worktrees().await;
+                            if let Some(sender) = sender {
+                                reconcile::run(&supervisor, &store, sender).await;
+                            }
+                        });
+                        if let Err(e) = peers::start(handle.clone()) {
+                            tracing::error!("Peer communication unavailable: {}", e.message);
+                        }
+                        if let Err(e) = cleanup::start(handle.clone()) {
+                            tracing::error!("Session cleanup unavailable: {}", e.message);
+                        }
+                    }
+                    Err(err) => {
+                        tracing::error!(code = %err.code, message = %err.message, "startup failed")
+                    }
+                }
+            });
             // A terminal's `kill -TERM` (or ctrl-C on `tauri dev`) does not raise any `RunEvent`
             // at all — measured: the exit hook below runs no code — so the sessions are lost and
             // the next launch marks them failed. Route both signals into `AppHandle::exit`, which

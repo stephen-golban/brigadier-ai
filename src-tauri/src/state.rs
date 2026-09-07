@@ -5,13 +5,13 @@
 //!
 //! The whole of `setup` is fallible and **none of it may `?` out**: `Builder::setup` returning
 //! `Err` panics the process with no graceful path (`tauri-commands.md` §4.1). A read-only home
-//! directory must produce a window that says so, not a crash. So [`AppState`] is two-valued:
-//! either everything opened, or a single startup message that every command returns as
-//! `AppError { code: "store", .. }`.
+//! directory must produce a window that says so, not a crash. [`AppState`] starts pending
+//! while the launch window paints, then publishes either the working services or the
+//! original startup error. Shutdown prevents a late publication.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
 use brigadier_core::claude::{ClaudeDriver, ClaudeDriverConfig};
@@ -85,32 +85,44 @@ impl std::fmt::Debug for Ready {
     }
 }
 
-/// The managed value: a working app, or the reason there is not one.
+/// The managed value: pending startup, a working app, or its startup error.
 #[derive(Debug)]
 pub(crate) struct AppState {
-    ready: Option<Ready>,
-    startup_error: Option<AppError>,
+    initialized: OnceLock<Result<Ready, AppError>>,
+    closing: Mutex<bool>,
 }
 
 impl AppState {
-    /// A working app.
-    pub(crate) fn ready(ready: Ready) -> Self {
-        Self { ready: Some(ready), startup_error: None }
+    pub(crate) fn pending() -> Self {
+        Self {
+            initialized: OnceLock::new(),
+            closing: Mutex::new(false),
+        }
+    }
+
+    /// Publication and shutdown are serialized; no services start after an early quit.
+    pub(crate) fn initialize(&self, value: Result<Ready, AppError>) -> bool {
+        let closing = self.closing.lock().unwrap_or_else(|e| e.into_inner());
+        if *closing {
+            return false;
+        }
+        self.initialized.set(value).is_ok()
     }
 
     /// Startup failed; every command will say so, with the code startup produced — a data
     /// directory another instance holds answers `data_dir_locked`, not `store`.
     pub(crate) fn failed(error: AppError) -> Self {
-        Self { ready: None, startup_error: Some(error) }
+        let state = Self::pending();
+        state.initialize(Err(error));
+        state
     }
 
     /// The working state, or the startup failure as a command error.
     pub(crate) fn get(&self) -> Result<&Ready, AppError> {
-        match (&self.ready, &self.startup_error) {
-            (Some(ready), _) => Ok(ready),
-            (None, Some(err)) => Err(err.clone()),
-            // Unreachable by construction; still not worth a panic in a command.
-            (None, None) => Err(AppError::store("app state was never initialized")),
+        match self.initialized.get() {
+            Some(Ok(ready)) => Ok(ready),
+            Some(Err(err)) => Err(err.clone()),
+            None => Err(AppError::new("startup_pending", "Brigadier is opening")),
         }
     }
 
@@ -136,8 +148,9 @@ impl AppState {
     // see docs/research/tauri-commands.md §5 (the callback may block; `block_on` compiles and
     // runs there) and docs/research/orphan-sweep.md §6 (close stdin, clean `exit 0` at 571 ms).
     pub(crate) fn shutdown_sync(&self, reason: &'static str, grace: Duration) {
+        *self.closing.lock().unwrap_or_else(|e| e.into_inner()) = true;
         crate::terminal::shutdown();
-        let Some(ready) = &self.ready else { return };
+        let Ok(ready) = self.get() else { return };
         let live = ready.supervisor.live_sessions().len();
         if live == 0 {
             tracing::debug!(reason, "graceful shutdown skipped: nothing live");
@@ -156,7 +169,7 @@ impl AppState {
     /// (`crates/proc/src/tracker.rs:117`) and the pass before this one already called it through
     /// the supervisor, so this is not a retry of anything. The store flush always runs.
     pub(crate) fn final_sweep(&self, grace: Duration) {
-        let Some(ready) = &self.ready else { return };
+        let Ok(ready) = self.get() else { return };
         if let Some(tracker) = &ready.tracker {
             let outcomes = tracker.shutdown_sync(grace);
             if outcomes.is_empty() {
@@ -354,3 +367,24 @@ fn open_pid_dir(data_dir: &Path, run_id: &str) -> Option<Arc<PidTracker>> {
     Some(Arc::new(PidTracker::new(dir, run_id)))
 }
 
+#[cfg(test)]
+mod launch_lifecycle_tests {
+    use super::*;
+
+    #[test]
+    fn startup_publishes_once_and_preserves_the_original_failure() {
+        let state = AppState::pending();
+        assert_eq!(state.get().unwrap_err().code, "startup_pending");
+        assert!(state.initialize(Err(AppError::new("data_dir_locked", "Already open"))));
+        assert!(!state.initialize(Err(AppError::io("Later failure"))));
+        assert_eq!(state.get().unwrap_err().code, "data_dir_locked");
+    }
+
+    #[test]
+    fn quitting_during_startup_prevents_late_publication() {
+        let state = AppState::pending();
+        state.shutdown_sync("test", Duration::ZERO);
+        assert!(!state.initialize(Err(AppError::io("Late result"))));
+        assert_eq!(state.get().unwrap_err().code, "startup_pending");
+    }
+}

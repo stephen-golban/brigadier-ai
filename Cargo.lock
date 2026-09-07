@@ -294,6 +294,7 @@ dependencies = [
  "brigadier-proc",
  "brigadier-store",
  "brigadier-supervisor",
+ "dispatch2",
  "globset",
  "ignore",
  "nix 0.31.3",
