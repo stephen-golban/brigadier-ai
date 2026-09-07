@@ -1,0 +1,396 @@
+/* Dense shadcn composition using the existing desktop palette. The scroll region
+   owns the file list; refreshing it never moves or remounts the commit composer. */
+.workspace-tool-body[data-mode="changes"] {
+  display: flex;
+  overflow: hidden;
+  padding-bottom: 0;
+}
+.workspace-tool-body > .workspace-changes:not([hidden]) {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+.source-control.scm-panel {
+  container: scm / inline-size;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  color: var(--color-text);
+  background: var(--color-thread-bg);
+  font-size: 12px;
+}
+.scm-panel .scm-header {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--color-line);
+}
+.scm-panel .scm-branch {
+  flex: 1;
+  justify-content: flex-start;
+  min-width: 0;
+  height: 30px;
+  padding: 0 5px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.scm-branch > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scm-branch .scm-chevron {
+  width: 12px;
+  color: var(--color-text-muted);
+}
+.scm-panel .scm-sync {
+  padding: 0 5px;
+  white-space: nowrap;
+  font: 10px var(--font-mono);
+  color: var(--color-text-muted);
+}
+.scm-panel .scm-icon {
+  height: 26px;
+  width: 26px;
+  flex-shrink: 0;
+  padding: 0;
+  border-radius: var(--radius-xs);
+  color: var(--color-text-muted);
+}
+.scm-panel .scm-icon svg {
+  width: 15px;
+  height: 15px;
+}
+.scm-panel .scm-icon:hover {
+  color: var(--color-text);
+}
+.scm-panel .scm-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 8px 6px 16px;
+  scrollbar-gutter: stable;
+}
+.scm-panel .scm-group {
+  margin-bottom: 9px;
+}
+.scm-panel .scm-group-heading {
+  display: flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 4px;
+  gap: 4px;
+}
+.scm-panel .scm-group-toggle {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  gap: 7px;
+  min-width: 0;
+  min-height: 30px;
+  padding: 0 4px;
+  border-radius: var(--radius-xs);
+  text-align: left;
+  font-size: 11px;
+  font-weight: 550;
+  color: var(--color-feed-text);
+}
+.scm-group-toggle:hover {
+  background: var(--color-surface);
+}
+.scm-group-toggle .scm-disclosure {
+  width: 12px;
+  height: 12px;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+.scm-group-toggle[data-state="open"] .scm-disclosure {
+  transform: rotate(90deg);
+}
+.scm-count {
+  min-width: 19px;
+  padding: 1px 5px;
+  border-radius: var(--radius-xs);
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  font: 10px/16px var(--font-mono);
+  text-align: center;
+}
+.scm-panel .scm-file-row {
+  flex-wrap: nowrap;
+  gap: 3px;
+  min-height: 34px;
+  padding: 0 3px 0 8px;
+  border: 0;
+  border-radius: var(--radius-xs);
+}
+.scm-file-row:hover,
+.scm-file-row:focus-within {
+  background: var(--color-surface);
+}
+.scm-file-row .scm-file-open {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1;
+  min-width: 0;
+  min-height: 34px;
+  text-align: left;
+  border-radius: var(--radius-xs);
+}
+.scm-file-icon {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+}
+.scm-file-name {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--color-feed-text);
+}
+.scm-file-path {
+  flex: 0 3 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--color-text-muted);
+}
+.scm-file-status {
+  width: 15px;
+  flex-shrink: 0;
+  text-align: center;
+  font: 10px var(--font-mono);
+  color: var(--color-text-muted);
+}
+.scm-file-status[data-status="M"],
+.scm-file-status[data-status="R"] {
+  color: var(--color-accent);
+}
+.scm-file-status[data-status="A"],
+.scm-file-status[data-status="U"] {
+  color: var(--color-ok);
+}
+.scm-file-status[data-status="D"] {
+  color: var(--color-bad);
+}
+.scm-file-row .scm-file-actions {
+  gap: 0;
+  opacity: 0;
+}
+.scm-file-row:hover .scm-file-actions,
+.scm-file-row:focus-within .scm-file-actions {
+  opacity: 1;
+}
+.scm-panel .scm-group-empty {
+  margin: 5px 0 10px 28px;
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+.scm-panel .scm-empty {
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  gap: 7px;
+  padding: 40px 16px;
+  text-align: center;
+  color: var(--color-text-muted);
+}
+.scm-empty strong {
+  margin-top: 3px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-feed-text);
+}
+.scm-empty span {
+  font-size: 11px;
+}
+.scm-panel .scm-composer {
+  flex-shrink: 0;
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--color-line);
+  background: var(--color-rail-bg);
+}
+.scm-composer-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.scm-composer-heading label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-feed-text);
+}
+.scm-panel .scm-message-group {
+  border-radius: var(--radius-row);
+  background: var(--color-thread-bg);
+  box-shadow: none;
+}
+.scm-panel .scm-message {
+  min-height: 70px;
+  max-height: 160px;
+  field-sizing: fixed;
+  padding: 10px 11px 4px;
+  font-size: 12px;
+  line-height: 1.6;
+  outline: none;
+}
+.scm-panel .scm-message-toolbar {
+  justify-content: space-between;
+  gap: 4px;
+  padding: 5px 7px 7px;
+}
+.scm-message-toolbar button {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  border-radius: var(--radius-xs);
+}
+.scm-staged-count {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--color-text-muted);
+}
+.scm-panel .scm-commit-buttons {
+  display: flex;
+  width: 100%;
+  margin-top: 9px;
+}
+.scm-panel .scm-commit {
+  flex: 1;
+  font-size: 12px;
+  height: 32px;
+  border-radius: var(--radius-xs) 0 0 var(--radius-xs);
+  box-shadow: none;
+}
+.scm-panel .scm-commit-options {
+  width: 32px;
+  height: 32px;
+  border-radius: 0 var(--radius-xs) var(--radius-xs) 0;
+  border-left: 1px solid
+    color-mix(in srgb, var(--color-thread-bg) 20%, transparent);
+  box-shadow: none;
+}
+.scm-error {
+  margin: 0 0 8px;
+  font-size: 11px;
+  color: var(--color-bad);
+  overflow-wrap: anywhere;
+  max-height: 100px;
+  overflow-y: auto;
+}
+.scm-menu {
+  min-width: 200px;
+}
+.scm-menu [role="menuitem"] {
+  font-size: 12px;
+}
+.scm-menu [role="menuitem"]:focus,
+.scm-menu [role="menuitem"][data-state="open"] {
+  background: var(--color-composer-bg);
+}
+.scm-stash-label {
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scm-dialog {
+  max-height: min(80vh, 700px);
+  overflow-y: auto;
+}
+.scm-dialog .commit-preferences {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+}
+.scm-dialog .commit-preferences label {
+  font-size: 12px;
+  margin: 14px 0;
+}
+.scm-dialog .segmented {
+  background: var(--color-rail-bg);
+}
+.scm-dialog .segmented [aria-pressed="true"] {
+  background: var(--color-composer-bg);
+}
+.scm-dialog .commit-preferences select {
+  color: var(--color-text);
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  padding: 5px;
+  border-radius: var(--radius-xs);
+}
+.scm-branch-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 12px;
+}
+.scm-branch-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.scm-branch-actions button {
+  font-size: 12px;
+}
+.scm-history {
+  overflow: auto;
+  font: 11px/1.7 var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.scm-panel .session-review {
+  border: 0;
+  border-top: 1px solid var(--color-line);
+  margin: 16px 4px 0;
+  padding: 12px 4px 0;
+}
+.scm-panel .session-review header {
+  font-size: 11px;
+  color: var(--color-feed-text);
+}
+.scm-panel .session-review > button {
+  padding: 7px 0;
+  font-size: 11px;
+}
+.scm-panel .session-review p {
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+.scm-panel button:focus-visible {
+  outline: 2px solid var(--color-control);
+  outline-offset: 1px;
+}
+@media (hover: none) {
+  .scm-file-row .scm-file-actions {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .scm-panel *,
+  .scm-menu,
+  .scm-dialog {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+@container scm (max-width: 320px) {
+  .scm-file-path {
+    display: none;
+  }
+}

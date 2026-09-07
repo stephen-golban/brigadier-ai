@@ -1,3 +1,10 @@
+import {
+  ChainOfThoughtStep,
+  ChainOfThoughtTrigger,
+  ChainOfThoughtContent,
+} from "./prompt-kit/chain-of-thought";
+import { CircularLoader } from "./prompt-kit/loader";
+import { Button } from "./ui/button";
 import { useState } from "react";
 import {
   TerminalIcon,
@@ -7,7 +14,6 @@ import {
   PencilSimpleIcon,
   WrenchIcon,
   UsersThreeIcon,
-  CaretRightIcon,
 } from "@phosphor-icons/react";
 import { Markdown, CopyButton } from "./Markdown";
 import {
@@ -48,31 +54,31 @@ export function WorkTrace({
       ? `Worked for ${duration}`
       : "Worked";
   return (
-    <div className="work-trace">
-      <button
-        className="work-summary"
-        aria-expanded={open}
-        aria-controls={`trace-${row.id}`}
-        onClick={() => toggle(row.running ? `closed:${row.id}` : row.id)}
+    <ChainOfThoughtStep
+      open={open}
+      onOpenChange={() => toggle(row.running ? `closed:${row.id}` : row.id)}
+      isLast
+    >
+      <ChainOfThoughtTrigger
+        className="py-2"
+        leftIcon={row.running ? <CircularLoader size="sm" /> : undefined}
       >
-        {row.running && <span className="working-dot" />}
-        <span>{label}</span>
-        <CaretRightIcon className={open ? "rotated" : ""} />{" "}
+        <span>{label}</span>{" "}
         {row.failures > 0 && (
-          <span className="trace-failure">{row.failures} failed</span>
+          <span className="text-destructive text-xs">
+            {row.failures} failed
+          </span>
         )}
-      </button>
-      {open && (
-        <div className="work-details" id={`trace-${row.id}`}>
-          <TraceList
-            nodes={row.nodes}
-            expanded={expanded}
-            toggle={toggle}
-            onFile={onFile}
-          />
-        </div>
-      )}
-    </div>
+      </ChainOfThoughtTrigger>
+      <ChainOfThoughtContent>
+        <TraceList
+          nodes={row.nodes}
+          expanded={expanded}
+          toggle={toggle}
+          onFile={onFile}
+        />
+      </ChainOfThoughtContent>
+    </ChainOfThoughtStep>
   );
 }
 function TraceList({
@@ -120,37 +126,39 @@ function TraceList({
         const id = `batch:${first.item.id}`;
         const open = expanded.has(id);
         return (
-          <div className="trace-entry" key={id}>
-            <button
-              className="trace-summary"
-              aria-expanded={open}
-              onClick={() => toggle(id)}
-            >
-              <CaretRightIcon className={open ? "rotated" : ""} />
+          <ChainOfThoughtStep
+            key={id}
+            open={open}
+            onOpenChange={() => toggle(id)}
+            isLast
+          >
+            <ChainOfThoughtTrigger className="py-1">
               <span>
                 {[...new Set(group.map((n) => traceLabel(n.item)))].join(", ")}
               </span>
               {group.some(traceFailed) && (
-                <span className="trace-failure">Failed</span>
+                <span className="text-destructive text-xs">Failed</span>
               )}
-            </button>
-            {open && (
-              <div className="trace-children">
-                <TraceBatch
-                  nodes={group}
-                  expanded={expanded}
-                  toggle={toggle}
-                  onFile={onFile}
-                />
-              </div>
-            )}
-          </div>
+            </ChainOfThoughtTrigger>
+            <ChainOfThoughtContent>
+              <TraceBatch
+                nodes={group}
+                expanded={expanded}
+                toggle={toggle}
+                onFile={onFile}
+              />
+            </ChainOfThoughtContent>
+          </ChainOfThoughtStep>
         );
       })}
       {groups.length > limit && (
-        <button className="trace-more" onClick={() => setLimit((n) => n + 40)}>
+        <Button
+          variant="link"
+          size="sm"
+          onClick={() => setLimit((n) => n + 40)}
+        >
           Show more activity ({groups.length - limit})
-        </button>
+        </Button>
       )}
     </>
   );
@@ -179,9 +187,13 @@ function TraceBatch({
         />
       ))}
       {nodes.length > limit && (
-        <button className="trace-more" onClick={() => setLimit((n) => n + 40)}>
+        <Button
+          variant="link"
+          size="sm"
+          onClick={() => setLimit((n) => n + 40)}
+        >
           Show more ({nodes.length - limit})
-        </button>
+        </Button>
       )}
     </>
   );
@@ -218,7 +230,7 @@ function TraceEntry({
               : WrenchIcon;
   if (item.kind.type === "assistant-text" && !children.length)
     return (
-      <div className="trace-progress">
+      <div className="my-3 space-y-2 text-sm">
         <Markdown text={item.body} onFile={onFile} />
         <CopyButton text={item.body} />
       </div>
@@ -226,60 +238,63 @@ function TraceEntry({
   const textOnly =
     item.kind.type === "thinking" || item.kind.type === "assistant-text";
   return (
-    <div className="trace-entry">
-      <button
-        className="trace-summary"
-        aria-expanded={open}
-        aria-controls={`detail-${item.id}`}
-        onClick={() => toggle(item.id)}
+    <ChainOfThoughtStep
+      open={open}
+      onOpenChange={() => toggle(item.id)}
+      isLast
+      data-trace-id={item.id}
+    >
+      <ChainOfThoughtTrigger
+        className="w-full py-1 [&>div]:min-w-0 [&>div>span:last-child]:truncate"
+        leftIcon={<Icon size={15} />}
       >
-        <CaretRightIcon className={open ? "rotated" : ""} />
-        <Icon size={15} />
         <span title={label}>{label}</span>{" "}
-        {failed ? <span className="trace-failure">Failed</span> : null}{" "}
+        {failed ? (
+          <span className="text-destructive text-xs">Failed</span>
+        ) : null}{" "}
         {agent && updates.length > 0 && (
-          <span className="trace-outcome">{updates.length} updates</span>
+          <span className="text-xs text-muted-foreground">
+            {updates.length} updates
+          </span>
         )}
-      </button>
-      {open && (
-        <div className="trace-children" id={`detail-${item.id}`}>
-          {textOnly ? (
-            <Markdown text={item.body} onFile={onFile} />
-          ) : agent ? (
-            <details className="trace-raw">
-              <summary>Task details</summary>
-              <pre>{item.body}</pre>
-            </details>
-          ) : (
-            <div className="trace-raw">
-              <pre>{item.body}</pre>
-            </div>
-          )}
-          <CopyButton text={item.body} />
-          {updates.map((update) => (
-            <div key={update.id} className="trace-progress">
-              <Markdown text={update.body} onFile={onFile} />
-              <CopyButton text={update.body} />
-            </div>
-          ))}
-          {children.length > 0 && (
-            <TraceList
-              nodes={children}
-              expanded={expanded}
-              toggle={toggle}
-              onFile={onFile}
-            />
-          )}
-          {result && (
-            <div className="trace-raw">
-              <span>{failed ? "Error" : "Output"}</span>
-              <pre>{result.body}</pre>
-              <CopyButton text={result.body} />
-            </div>
-          )}
-        </div>
-      )}
-    </div>
+      </ChainOfThoughtTrigger>
+      <ChainOfThoughtContent>
+        {textOnly ? (
+          <Markdown text={item.body} onFile={onFile} />
+        ) : agent ? (
+          <details className="rounded-lg border border-border bg-card p-3 text-xs [&_pre]:max-h-80 [&_pre]:overflow-auto [&_pre]:whitespace-pre-wrap [&_pre]:break-words">
+            <summary>Task details</summary>
+            <pre>{item.body}</pre>
+          </details>
+        ) : (
+          <div className="rounded-lg border border-border bg-card p-3 text-xs [&_pre]:max-h-80 [&_pre]:overflow-auto [&_pre]:whitespace-pre-wrap [&_pre]:break-words">
+            <pre>{item.body}</pre>
+          </div>
+        )}
+        <CopyButton text={item.body} />
+        {updates.map((update) => (
+          <div key={update.id} className="my-3 space-y-2 text-sm">
+            <Markdown text={update.body} onFile={onFile} />
+            <CopyButton text={update.body} />
+          </div>
+        ))}
+        {children.length > 0 && (
+          <TraceList
+            nodes={children}
+            expanded={expanded}
+            toggle={toggle}
+            onFile={onFile}
+          />
+        )}
+        {result && (
+          <div className="rounded-lg border border-border bg-card p-3 text-xs [&_pre]:max-h-80 [&_pre]:overflow-auto [&_pre]:whitespace-pre-wrap [&_pre]:break-words">
+            <span>{failed ? "Error" : "Output"}</span>
+            <pre>{result.body}</pre>
+            <CopyButton text={result.body} />
+          </div>
+        )}
+      </ChainOfThoughtContent>
+    </ChainOfThoughtStep>
   );
 }
 

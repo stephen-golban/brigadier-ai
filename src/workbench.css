@@ -709,18 +709,6 @@
 .note-mention-menu small {
   color: #999;
 }
-.attachment-actions {
-  position: relative;
-}
-.sidebar {
-  background: #171717;
-  border-right: 1px solid #242424;
-  width: 250px;
-  flex-basis: 250px;
-  transition:
-    width 0.2s ease,
-    flex-basis 0.2s ease;
-}
 .thread-head {
   min-height: 54px;
   border-bottom: 1px solid #282828;
@@ -728,12 +716,6 @@
 .thread-head .head-path {
   font-size: 10px;
   color: #777;
-}
-.sidebar button {
-  border-radius: 7px;
-}
-.sidebar .session-row {
-  min-height: 33px;
 }
 .thread {
   min-width: 0;
@@ -753,10 +735,6 @@
   }
 }
 @media (max-width: 1150px) {
-  .sidebar {
-    width: 210px;
-    flex-basis: 210px;
-  }
   .overview-trigger span:first-of-type {
     display: none;
   }
@@ -793,7 +771,6 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .workbench-side,
-  .sidebar,
   .workbench-main {
     animation: none;
     transition: none;
@@ -835,23 +812,5 @@
   white-space: pre-wrap;
   color: #bbb;
 }
-.app.sidebar-collapsed > .sidebar {
-  flex-basis: 0;
-}
-.app.sidebar-collapsed > .sidebar {
-  visibility: hidden;
-  overflow: hidden;
-  width: 0;
-  padding: 0;
-  border: 0;
-}
-.sidebar {
-  transition:
-    flex-basis 0.18s ease,
-    width 0.18s ease;
-}
 @media (prefers-reduced-motion: reduce) {
-  .sidebar {
-    transition: none;
-  }
 }

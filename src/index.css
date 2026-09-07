@@ -1,13 +1,27 @@
-/* Tailwind scans application markup only. Shared shadcn components use utilities;
+/* Tailwind scans application markup only. Prompt Kit and shadcn components use utilities;
  * legacy shell styles continue to use the desktop tokens below. See index.css.test.ts. */
 @import "tailwindcss" source(none);
+@import "tw-animate-css";
+@plugin "@tailwindcss/typography";
 @source "../src/**/*.tsx";
 @source not "../src/**/*.test.tsx";
 @source "../index.html";
 @custom-variant dark (&:where(.dark, .dark *));
 
-/* Adapt shadcn's semantic colors to Brigadier's existing desktop palette. */
+@layer base {
+  * { border-color: var(--color-line); }
+}
+
+/* Adapt Prompt Kit's semantic colors to Brigadier's existing desktop palette. */
 @theme inline {
+  --color-sidebar: var(--color-rail-bg);
+  --color-sidebar-foreground: var(--color-text-sidebar);
+  --color-sidebar-primary: var(--color-text);
+  --color-sidebar-primary-foreground: var(--color-thread-bg);
+  --color-sidebar-accent: var(--color-composer-bg);
+  --color-sidebar-accent-foreground: var(--color-text);
+  --color-sidebar-border: var(--color-line);
+  --color-sidebar-ring: var(--color-control);
   --color-background: var(--color-thread-bg);
   --color-foreground: var(--color-text);
   --color-primary: var(--color-text);
@@ -163,7 +177,8 @@ body {
   overflow: hidden;
 }
 
-@layer base {
+@layer base{
+
 button,
 input,
 select,
@@ -177,13 +192,12 @@ textarea {
 }
 }
 
+@layer base{
 
-@layer base {
 button {
   cursor: pointer;
 }
 }
-
 
 /* The reset above must not reach the native controls that draw themselves. */
 input[type="checkbox"],
@@ -195,7 +209,8 @@ input[type="radio"] {
   accent-color: var(--color-control);
 }
 
-@layer base {
+@layer base{
+
 button:disabled,
 input:disabled,
 select:disabled,
@@ -205,14 +220,13 @@ textarea:disabled {
 }
 }
 
+@layer base{
 
-@layer base {
 :focus-visible {
   outline: 2px solid var(--color-accent);
   outline-offset: 1px;
 }
 }
-
 
 .dim {
   color: var(--color-text-muted);
@@ -247,12 +261,6 @@ textarea:disabled {
 
 /* ------------------------------------------------------------- layout */
 
-.app {
-  display: flex;
-  height: 100%;
-  min-height: 0;
-}
-
 /* ------------------------------------------------------------ sidebar */
 
 /*
@@ -272,39 +280,6 @@ textarea:disabled {
  *     box or a fallback serif is up to whichever font on the machine claims the codepoint, and
  *     they never sit on the label's baseline. Inline SVG at `currentColor` always does.
  */
-
-.sidebar {
-  flex: 0 0 var(--sidebar-w);
-  width: var(--sidebar-w);
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  background: var(--color-sidebar-bg);
-  color: var(--color-text-sidebar);
-}
-
-.sidebar-brand {
-  display: flex;
-  align-items: center;
-  height: var(--head-h);
-  padding: 0 16px;
-  flex: 0 0 auto;
-}
-
-.sidebar-brand h1 {
-  margin: 0;
-  font-size: var(--fs-lg); /* [measured] ~18px cap-derived, bold */
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  color: var(--color-text);
-}
-
-.sidebar-scroll {
-  flex: 1 1 auto;
-  overflow-y: auto;
-  min-height: 0;
-  padding-bottom: 12px;
-}
 
 /* --- the two action rows above Projects ------------------------------- */
 
@@ -721,10 +696,6 @@ textarea:disabled {
  *
  *   #e1e1e1 on rgba(accent, .28) over  rest 5.47 · hover 4.98 · selected 4.69
  */
-.sidebar .chip {
-  background: rgba(239, 140, 87, 0.28);
-  color: var(--color-text-sidebar);
-}
 
 .chip.plain {
   background: rgba(255, 255, 255, 0.08);
@@ -2257,22 +2228,6 @@ textarea:disabled {
   background: var(--color-composer-bg);
   border-radius: var(--radius-lg);
   padding: 10px 12px;
-}
-
-.dock-box textarea {
-  display: block;
-  width: 100%;
-  min-height: 44px;
-  max-height: 220px;
-  padding: 4px 4px 8px;
-  resize: none;
-  font-size: 14px;
-  line-height: 1.5;
-  background: transparent;
-}
-
-.dock-box textarea::placeholder {
-  color: var(--color-text-placeholder);
 }
 
 /* What a live run shows where the goal field would be. `start_run` refuses a second run on the

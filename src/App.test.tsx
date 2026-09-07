@@ -342,9 +342,7 @@ async function selectHistory(
   if (!screen.queryByRole("textbox", { name: "Search session history" }))
     await user.click(screen.getByRole("button", { name: "Session history" }));
   await user.click(
-    await screen.findByRole("button", {
-      name: new RegExp(`Session ${id.slice(-6)}`),
-    }),
+    await within(screen.getByRole("navigation", { name: "Projects" })).findByRole("button", { name: `Session ${id.slice(-6)}` }),
   );
 }
 
@@ -431,7 +429,7 @@ describe("the B4 paint span", () => {
     await mountApp();
 
     await selectHistory(user, "aaaa1111");
-    await user.click(screen.getByRole("button", { name: "New session" }));
+    await user.click(screen.getByRole("button", { name: "New session in job-portal" }));
 
     expect(h.spans).toHaveLength(1);
     expect(h.spans[0]!.cancelled).toBe(1);
@@ -605,22 +603,21 @@ describe("deleting", () => {
     ];
     await mountApp();
     await user.click(
-      screen.getByRole("button", { name: "Delete session aaaa1111" }),
+      screen.getByRole("button", { name: "Move session to Trash aaaa1111" }),
     );
     expect(h.deletes).toHaveLength(0);
     await user.click(
       within(screen.getByRole("dialog")).getByRole("button", {
-        name: "Delete session",
+        name: "Move to Trash",
       }),
     );
-    expect(h.deletes).toEqual([
-      { kind: "session", id: "aaaa1111", force: true },
-    ]);
+    expect(h.deletes).toEqual([]);
+    expect(JSON.parse(localStorage.getItem("brigadier:navigation:v1")!).trash[0].id).toBe("aaaa1111");
     expect(
       screen.queryByRole("button", { name: /Session aa1111/ }),
     ).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /Session bb2222/ }),
+      screen.getAllByRole("button", { name: /^Session bb2222/ })[0],
     ).toBeVisible();
   });
   it("cancel leaves the history available", async () => {
@@ -628,12 +625,12 @@ describe("deleting", () => {
     h.sessions = [view("aaaa1111", "p-live", "exited")];
     await mountApp();
     await user.click(
-      screen.getByRole("button", { name: "Delete session aaaa1111" }),
+      screen.getByRole("button", { name: "Move session to Trash aaaa1111" }),
     );
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     expect(h.deletes).toHaveLength(0);
     expect(
-      screen.getByRole("button", { name: /Session aa1111/ }),
+      screen.getAllByRole("button", { name: /^Session aa1111/ })[0],
     ).toBeVisible();
   });
   it("removes a project after confirmation, preserving on-disk files", async () => {
@@ -643,16 +640,15 @@ describe("deleting", () => {
     await user.click(
       screen.getByRole("button", { name: "Project actions job-portal" }),
     );
-    await user.click(screen.getByRole("button", { name: "Remove project" }));
+    await user.click(screen.getByRole("menuitem", { name: "Move to Trash" }));
     expect(h.deletes).toHaveLength(0);
     await user.click(
       within(screen.getByRole("dialog")).getByRole("button", {
-        name: "Remove project",
+        name: "Move to Trash",
       }),
     );
-    expect(h.deletes).toEqual([
-      { kind: "project", id: "p-live", force: false },
-    ]);
+    expect(h.deletes).toEqual([]);
+    expect(JSON.parse(localStorage.getItem("brigadier:navigation:v1")!).trash[0].id).toBe("p-live");
     expect(
       within(screen.getByRole("navigation", { name: "Projects" })).queryByText(
         "job-portal",

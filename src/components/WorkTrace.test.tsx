@@ -107,11 +107,14 @@ describe("work disclosure", () => {
     expect(
       screen.getByText("Found the relevant behavior."),
     ).toBeInTheDocument();
-    expect(
-      screen
-        .getByRole("button", { name: "Ran git status" })
-        .closest(".trace-entry")?.parentElement?.className,
-    ).toBe("work-details");
+    const agent = screen
+      .getByRole("button", { name: "Workspace research" })
+      .closest('[data-trace-id="agent"]');
+    const command = screen
+      .getByRole("button", { name: "Ran git status" })
+      .closest('[data-trace-id="cmd"]');
+    expect(agent).not.toContainElement(command as HTMLElement);
+    expect(command).toBeVisible();
   });
   it("batches repeated commands and mounts long traces incrementally", async () => {
     const user = userEvent.setup();

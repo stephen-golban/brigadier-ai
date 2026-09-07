@@ -23,6 +23,20 @@ usage gauge and reserve, model routing, worker pre-authorization, cleanup with s
 numbers, eight known unfixed defects (one of them a security hole), and the landmine list. Every
 entry in that list was bought with either real money on a live model or a bug that reached a review.
 
+## Chat components
+
+The chat UI uses [Prompt Kit](https://github.com/ibelick/prompt-kit), vendored in
+`src/components/prompt-kit`, with shadcn primitives in `src/components/ui`.
+Use these components for prompts, messages, Markdown/code, and activity disclosures.
+`src/index.css` maps their semantic colors to the desktop palette; avoid adding parallel CSS
+implementations or styling overrides to the chat stylesheets.
+
+Brigadier's adapters retain drafts, file/note context, message editing, and virtualized history.
+Local fixes to the vendored source cover IME input, refs, safe links, reference-style Markdown,
+and asynchronous syntax highlighting. Preserve these when updating from upstream.
+`components.json` configures the Prompt Kit registry; vendored source and license details are in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Run `npm test` and `npm run build` after updates.
+
 ## Layout
 
 | path | what |

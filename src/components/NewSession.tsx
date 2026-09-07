@@ -1,3 +1,5 @@
+import { PromptInputActions } from "./prompt-kit/prompt-input";
+import { Button } from "./ui/button";
 import { SelectMenu } from "./SelectMenu";
 import { effortLevels, type Effort } from "../agentOptions";
 import type { AgentOptions } from "../agentOptions";
@@ -59,7 +61,7 @@ export function NewSession({
   const [prompt, setPrompt] = useDraft(`session:${project?.id ?? "none"}`);
   const [model, setModel] = useState<string>("");
   const [effort, setEffort] = useState<Effort>("auto");
-  const [isolated,setIsolated]=useState(true);
+  const [isolated, setIsolated] = useState(true);
   const [mode, setMode] = useState<PermissionMode>("default");
 
   const defaultModel = models.find((m) => m.default)?.id ?? models[0]?.id ?? "";
@@ -95,25 +97,24 @@ export function NewSession({
    */
   return (
     <>
-      <div className="dock-box">
-        <PromptInput
-          rows={2}
-          value={prompt}
-          placeholder={
-            project === null
-              ? "Add a project first"
-              : `What should we run in ${project.name}? Return to start, Shift+Return for a new line.`
+      <PromptInput
+        rows={2}
+        value={prompt}
+        placeholder={
+          project === null
+            ? "Add a project first"
+            : `What should we run in ${project.name}? Return to start, Shift+Return for a new line.`
+        }
+        disabled={disabled || sending || project === null}
+        onText={setPrompt}
+        onKeyDown={(e) => {
+          if (isSubmitKey(e)) {
+            e.preventDefault();
+            submit();
           }
-          disabled={disabled || sending || project === null}
-          onText={setPrompt}
-          onKeyDown={(e) => {
-            if (isSubmitKey(e)) {
-              e.preventDefault();
-              submit();
-            }
-          }}
-        />
-        <div className="dock-actions">
+        }}
+      >
+        <PromptInputActions className="flex-1 flex-wrap justify-end">
           <Pickers
             models={models}
             model={chosen}
@@ -147,20 +148,36 @@ export function NewSession({
               }))}
             />
           ) : null}
-          <SelectMenu label="Working folder" value={isolated?'isolated':'shared'} onChange={v=>setIsolated(v==='isolated')} options={[{value:'shared',label:'Project folder',description:'Share the project checkout'},{value:'isolated',label:'Isolated worktree',description:'Create a separate branch and working folder'}]}/>
+          <SelectMenu
+            label="Working folder"
+            value={isolated ? "isolated" : "shared"}
+            onChange={(v) => setIsolated(v === "isolated")}
+            options={[
+              {
+                value: "shared",
+                label: "Project folder",
+                description: "Share the project checkout",
+              },
+              {
+                value: "isolated",
+                label: "Isolated worktree",
+                description: "Create a separate branch and working folder",
+              },
+            ]}
+          />
           {/* Secondary action slot, matching the turn composer's. */}
           <span className="grow" />
 
-          <button
+          <Button
             type="button"
-            className="send wide"
+            className="rounded-full"
             disabled={!ready || sending}
             onClick={submit}
           >
             Start
-          </button>
-        </div>
-      </div>
+          </Button>
+        </PromptInputActions>
+      </PromptInput>
     </>
   );
 }

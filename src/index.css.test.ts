@@ -101,7 +101,7 @@ function cssText(): string {
     "\n" +
     fs.readFileSync("src/desktop.css", "utf8") +
     "\n" +
-    fs.readFileSync("src/launch.css", "utf8")
+    fs.readFileSync("src/launch.css", "utf8") + "\n" + fs.readFileSync("src/components/SourceControl.css", "utf8")
   );
 }
 
@@ -132,7 +132,10 @@ function literalsIn(expr: string): string[] {
       buf += expr[j];
       j += 1;
     }
-    out.push(buf);
+    // Equality operands choose a variant; only the branch strings are classes.
+    const before = expr.slice(0, i).trimEnd();
+    const after = expr.slice(j + 1).trimStart();
+    if (!/(?:===|!==|==|!=)$/.test(before) && !/^(?:===|!==|==|!=)/.test(after)) out.push(buf);
     i = j;
   }
   return out;
@@ -201,12 +204,12 @@ describe("the class extractor", () => {
     const used = classesUsed();
     expect(used.size).toBeGreaterThan(60);
     for (const known of [
-      "sidebar",
+      "project-workbench",
       "feed-row",
       "feed-line",
       "dock-box",
       "jump-pill",
-      "thread",
+      "project-tabbar",
     ]) {
       expect(used.has(known)).toBe(true);
     }
@@ -225,7 +228,7 @@ describe("the class extractor", () => {
     // `Approvals.tsx` build theirs with template literals. All three shapes must be seen.
     const used = classesUsed();
     expect(used.has("lead")).toBe(true);
-    expect(used.has("project-row")).toBe(true);
+    expect(used.has("group/project")).toBe(true);
   });
 
   it("does not mistake JavaScript for class names", () => {
@@ -248,7 +251,7 @@ describe("every class the markup uses is styled", () => {
     const markers = new Set(["group", "dark", "not-prose"]);
     const candidates = [...classesUsed()].filter(
       ([cls]) =>
-        !defined.has(cls) && !UNSTYLED_HOOKS.has(cls) && !markers.has(cls),
+        !defined.has(cls) && !UNSTYLED_HOOKS.has(cls) && !markers.has(cls) && !/^(group|peer)(\/[\w-]+)?$/.test(cls),
     );
     const generated = design.candidatesToCss(candidates.map(([cls]) => cls));
     const orphans = candidates
@@ -259,7 +262,7 @@ describe("every class the markup uses is styled", () => {
       "Classes must have legacy styles or compile with the app's Tailwind theme",
     ).toEqual([]);
     expect(
-      design.candidatesToCss(["bg-secondary", "border-input", "size-7"]),
+      design.candidatesToCss(["bg-secondary", "prose", "size-7"]),
     ).not.toContain(null);
     expect(design.candidatesToCss(["not-a-real-utility"])).toEqual([null]);
   });

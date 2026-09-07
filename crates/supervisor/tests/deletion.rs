@@ -618,3 +618,21 @@ async fn interactive_worktree_inherits_current_files_without_modifying_project()
     rig.sup.discard_session(&id).await.unwrap();
     rig.sup.shutdown().await;
 }
+
+/// Moving to app Trash must wait for exit but retain history and dirty worktree contents.
+#[tokio::test(flavor = "multi_thread")]
+async fn stopping_for_trash_retains_history_and_dirty_worktree() {
+    let rig = Rig::new();
+    let project = rig.project().await;
+    let session = rig.start(&project).await;
+    let worktree = rig.worktree_of(&session).await;
+    std::fs::write(worktree.join("keep.txt"), "unsaved work").unwrap();
+    assert!(rig.sup.is_live(&session));
+    rig.sup.stop_sessions_for_trash(&[session.clone()], Some(&project)).await.unwrap();
+    assert!(!rig.sup.is_live(&session));
+    assert!(rig.sup.session(&session).await.unwrap().is_some());
+    assert!(rig.sup.project(&project).await.unwrap().is_some());
+    assert_eq!(std::fs::read_to_string(worktree.join("keep.txt")).unwrap(), "unsaved work");
+    assert!(!rig.raw_logs(&session).is_empty());
+    rig.store.close().await.unwrap();
+}

@@ -1,3 +1,4 @@
+import { navigationApi } from "../navigationApi";
 import { createPortal } from "react-dom";
 import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -5,7 +6,7 @@ import { XIcon, FolderIcon, TrashIcon } from "@phosphor-icons/react";
 import type { SessionRuntime } from "../feedStore";
 import { workbenchApi, type WorkbenchData } from "../workbenchApi";
 import { desktop, errorMessage } from "../workspaceApi";
-import { desktopApi, notify, type CleanupJob } from "../desktopApi";
+import { desktopApi, type CleanupJob } from "../desktopApi";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
 import { launchApi } from "../launchApi";
 import { NameInput } from "./NameInput";
@@ -48,19 +49,41 @@ export function DesktopSettings({
       setError(errorMessage(e));
     }
   };
-  const dispose = (id?: string) =>
-    setConfirm({
-      title: id ? "Delete session?" : "Clear all history and sessions?",
-      body: "This stops the selected agents and deletes their conversations, checkpoints and exclusively owned worktrees. Projects and notes stay available.",
-      confirmLabel: id ? "Delete session" : "Clear all sessions",
-      onCancel: () => setConfirm(null),
-      onConfirm: () => {
-        setConfirm(null);
-        void desktopApi
-          .discard(id ? [id] : [], !id)
-          .catch((e) => notify(errorMessage(e), true, () => dispose(id)));
-      },
-    });
+  const dispose = async (id?: string) => {
+    try {
+      const plans = await Promise.all(
+        (id ? [id] : Object.keys(sessions)).map((id) =>
+          navigationApi.preview("session", id),
+        ),
+      );
+      const running = [...new Set(plans.flatMap((p) => p.running))];
+      setConfirm({
+        title: running.length ? "Stop and move to Trash?" : "Move to Trash?",
+        body: (
+          <>
+            <p>
+              The selected sessions and their child agents can be restored from
+              Trash. Repository files and worktrees stay on disk.
+            </p>
+            {running.length > 0 && (
+              <p>
+                Running sessions to stop:{" "}
+                {running.map((id) => titles[id] ?? id).join(", ")}
+              </p>
+            )}
+          </>
+        ),
+        confirmLabel: "Move to Trash",
+        onCancel: () => setConfirm(null),
+        onConfirm: async () => {
+          for (const plan of plans) await navigationApi.move(plan);
+          setConfirm(null);
+        },
+      });
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  };
   return createPortal(
     <dialog
       ref={dialog}
@@ -94,7 +117,11 @@ export function DesktopSettings({
               setSavingName(true);
               void workbenchApi
                 .saveDesktopSettings(name, data.projectNames ?? {})
-                .then(next => { onData(next); setName(next.displayName ?? ""); setError(""); })
+                .then((next) => {
+                  onData(next);
+                  setName(next.displayName ?? "");
+                  setError("");
+                })
                 .catch((e) => setError(errorMessage(e)))
                 .finally(() => setSavingName(false));
             }}
@@ -110,17 +137,38 @@ export function DesktopSettings({
                 disabled={savingName}
               />
             </label>
-            <button className="act" disabled={savingName || !name.trim()}>{savingName ? "Saving…" : "Save name"}</button>
+            <button className="act" disabled={savingName || !name.trim()}>
+              {savingName ? "Saving…" : "Save name"}
+            </button>
           </form>
           <h3>Welcome</h3>
           <label className="settings-launch">
-            <input type="checkbox" checked={data.launchMusic ?? true} disabled={savingMusic} onChange={e => {
-              const enabled=e.target.checked;setSavingMusic(true);
-              void launchApi.music(enabled).then(()=>workbenchApi.load()).then(onData).catch(e=>setError(errorMessage(e))).finally(()=>setSavingMusic(false));
-            }}/>
+            <input
+              type="checkbox"
+              checked={data.launchMusic ?? true}
+              disabled={savingMusic}
+              onChange={(e) => {
+                const enabled = e.target.checked;
+                setSavingMusic(true);
+                void launchApi
+                  .music(enabled)
+                  .then(() => workbenchApi.load())
+                  .then(onData)
+                  .catch((e) => setError(errorMessage(e)))
+                  .finally(() => setSavingMusic(false));
+              }}
+            />
             Intro music
           </label>
-          <button className="act" onClick={()=>{onClose();launchApi.replay();}}>Replay welcome</button>
+          <button
+            className="act"
+            onClick={() => {
+              onClose();
+              launchApi.replay();
+            }}
+          >
+            Replay welcome
+          </button>
           <ResetOnboardingButton onReset={onClose} />
           <h3>Notes folder</h3>
           <p>

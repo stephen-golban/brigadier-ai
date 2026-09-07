@@ -290,6 +290,7 @@ dependencies = [
 name = "brigadier"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "brigadier-core",
  "brigadier-proc",
  "brigadier-store",

@@ -98,10 +98,27 @@ the text is an owner decision, deferred, not answered here.
 - `src/providers/ThemeProvider.tsx` was not re-diffed against upstream for this file; the change
   list in §1 is that file's own in-file notice.
 
-## Shared button — MIT
+## Prompt Kit — MIT
 
-`src/components/ui/button.tsx` is adapted from ibelick/prompt-kit at `de80375967400aa0c6ebab9d3ba4f9258ab79fcc`. Source: https://github.com/ibelick/prompt-kit. Copyright (c) 2025 Julien Thibeaut. License: [prompt-kit-MIT.txt](licenses/prompt-kit-MIT.txt). It uses the existing desktop palette.
+Source: https://github.com/ibelick/prompt-kit at `de80375967400aa0c6ebab9d3ba4f9258ab79fcc`.
+Copyright (c) 2025 Julien Thibeaut. License: [prompt-kit-MIT.txt](licenses/prompt-kit-MIT.txt).
+
+Vendored components: `src/components/prompt-kit/{prompt-input,message,markdown,code-block,chain-of-thought,loader}.tsx` and their `src/components/ui/{button,textarea,tooltip,collapsible,avatar}.tsx` dependencies.
+
+Local adaptations preserve IME input and forwarded refs, lazy-load Markdown, render complete documents for reference links, retain safe file/note URL routing, handle unknown code languages and stale highlighting, and use the existing desktop palette. Loader includes only the circular variant.
 
 ## shadcn/ui Input
 
 `src/components/ui/input.tsx` is adapted from the shadcn/ui New York Input registry at https://ui.shadcn.com/r/styles/new-york/input.json (retrieved 2026-09-07). Copyright (c) 2023 shadcn. MIT licence: [shadcn-ui-MIT.txt](licenses/shadcn-ui-MIT.txt).
+
+## shadcn/ui sidebar-10 and navigation primitives
+
+The sidebar composition is adapted from [sidebar-10](https://ui.shadcn.com/blocks/sidebar#sidebar-10), retrieved from the official `new-york-v4` registry on 2026-09-07. Vendored primitives in `src/components/ui`: sidebar, dialog, command, dropdown-menu, sheet, separator, popover, scroll-area, skeleton; responsive hook in `src/hooks/use-mobile.ts`.
+
+Copyright (c) 2023 shadcn. MIT licence: [shadcn-ui-MIT.txt](licenses/shadcn-ui-MIT.txt). Local adaptations connect Brigadier projects, session tabs, Notes and Trash; persist controlled sidebar state in local storage; and map semantic colors to the app palette.
+
+## shadcn/ui source control primitives
+
+`src/components/ui/{item,input-group,button-group}.tsx` are adapted from the official [shadcn/ui new-york-v4 registry](https://ui.shadcn.com/r/styles/new-york-v4/item.json), retrieved 2026-09-07. Imports use the existing local utilities and UI components. The source control layout draws on the [sidebar-11](https://ui.shadcn.com/blocks/sidebar#sidebar-11) Changes pattern.
+
+Copyright (c) 2023 shadcn. MIT licence: [shadcn-ui-MIT.txt](licenses/shadcn-ui-MIT.txt).

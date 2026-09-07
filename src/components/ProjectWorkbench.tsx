@@ -1,7 +1,7 @@
+import { isTrashed, type NavigationData } from "../navigationApi";
 import { hasSavedEdits } from "../workbenchState";
 import { SessionCard } from "./SessionCard";
 import { ProjectHistory } from "./ProjectHistory";
-import { desktopApi, notify } from "../desktopApi";
 import { documentCommands } from "../documentCommands";
 import { documentKey } from "../workbenchState";
 import { working } from "../attention";
@@ -69,6 +69,9 @@ export function ProjectWorkbench({
   children,
   historyContent,
   attention = {},
+  sidebarToggle,
+  newSessionRequest,
+  navigation,
 }: {
   peers: PeerData;
   project: ProjectView | null;
@@ -82,6 +85,9 @@ export function ProjectWorkbench({
   children: ReactNode;
   historyContent?: ReactNode;
   attention?: Record<string, boolean>;
+  sidebarToggle?: ReactNode;
+  newSessionRequest?: { projectId: string; token: number } | null;
+  navigation?: NavigationData;
 }) {
   const [sessionPrefs, setSessionPrefs] = useState(false);
   const [dataLoaded, setDataLoaded] = useState(false);
@@ -177,7 +183,27 @@ export function ProjectWorkbench({
   const terminalIds = useRef(new Map<string, string>());
   const menuRef = useRef<HTMLDivElement>(null);
   const layoutKey = project?.id ?? "__notes__";
-  const layout = layouts[layoutKey] ?? empty;
+  const storedLayout = layouts[layoutKey] ?? empty;
+  const visibleTabs = storedLayout.tabs.filter(
+    (t) =>
+      !navigation ||
+      (!(t.kind === "session" && isTrashed(navigation, "session", t.path)) &&
+        !(
+          t.kind === "terminal" &&
+          isTrashed(navigation, "session", t.context.sessionId)
+        ) &&
+        !(
+          t.kind === "note" &&
+          isTrashed(navigation, "note", t.id.replace(/^note:/, ""))
+        )),
+  );
+  const layout = {
+    ...storedLayout,
+    tabs: visibleTabs,
+    active: visibleTabs.some((t) => t.id === storedLayout.active)
+      ? storedLayout.active
+      : (visibleTabs[visibleTabs.length - 1]?.id ?? null),
+  };
   const selected = layout.tabs.find((t) => t.id === layout.active);
   useEffect(() => {
     if (!project) return;
@@ -276,10 +302,13 @@ export function ProjectWorkbench({
       };
     });
   }, [selectedSessionId, project?.id]);
+  // Keep the last status visible while refreshing the same workspace.
+  useEffect(() => {
+    setStatus(null);
+  }, [context.projectId, context.sessionId]);
   useEffect(() => {
     if (!context.projectId) return;
     let live = true;
-    setStatus(null);
     void workspaceApi
       .git(context)
       .then((s) => {
@@ -495,27 +524,6 @@ export function ProjectWorkbench({
     setLayouts((old) => ({ ...old, [id]: { tabs, active } }));
   };
   const close = async (tab: ProjectTab) => {
-    if (tab.kind === "session") {
-      const s = sessions[tab.path];
-      if (working(s)) {
-        setConfirm({
-          title: "Stop and delete session?",
-          body: "This stops the agent and its workhorses and deletes their history, checkpoints and exclusively owned worktrees.",
-          confirmLabel: "Stop and delete",
-          onCancel: () => setConfirm(null),
-          onConfirm: async () => {
-            remove(tab);
-            setConfirm(null);
-            const discard = () =>
-              void desktopApi
-                .discard([tab.path])
-                .catch((e) => notify(errorMessage(e), true, discard));
-            discard();
-          },
-        });
-        return;
-      }
-    }
     if (tab.kind === "terminal") {
       const id = terminalIds.current.get(tab.id);
       if (id) {
@@ -723,7 +731,12 @@ export function ProjectWorkbench({
     };
     const documentState = () => setDocumentRevision((n) => n + 1);
     const key = (e: KeyboardEvent) => {
-      if (document.querySelector("dialog[open], .settings-overlay")) return;
+      if (
+        document.querySelector(
+          'dialog[open], [role="dialog"], .settings-overlay',
+        )
+      )
+        return;
       const command =
         e.metaKey || (!navigator.platform.includes("Mac") && e.ctrlKey);
       const cycle =
@@ -804,18 +817,74 @@ export function ProjectWorkbench({
       }),
     );
   }, [showConversation, selected?.id]);
+  const handledRequest = useRef<number | null>(null);
+  useEffect(() => {
+    if (
+      newSessionRequest?.projectId === project?.id &&
+      newSessionRequest &&
+      handledRequest.current !== newSessionRequest.token
+    ) {
+      handledRequest.current = newSessionRequest.token;
+      create("session");
+    }
+  }, [newSessionRequest, project?.id]);
   return (
     <div className="project-workbench">
-      <div className="project-tabbar">
+      <header
+        className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3"
+        data-tauri-drag-region
+      >
+        {sidebarToggle ?? (
+          <button
+            className="icon-button"
+            aria-label="Toggle sidebar"
+            onClick={() =>
+              window.dispatchEvent(new Event("brigadier-toggle-sidebar"))
+            }
+          >
+            <SidebarSimpleIcon size={19} />
+          </button>
+        )}
+        <span className="min-w-0 truncate text-sm font-medium">
+          {project
+            ? (data.projectNames?.[project.id] ?? project.name)
+            : "Brigadier"}
+        </span>
+        <span className="grow" />
         <button
           className="icon-button"
-          aria-label="Toggle sidebar"
-          onClick={() =>
-            window.dispatchEvent(new Event("brigadier-toggle-sidebar"))
-          }
+          aria-label="Session history"
+          title="Session history"
+          disabled={!project}
+          onClick={() => setHistory(!history)}
         >
-          <SidebarSimpleIcon size={19} />
+          <ClockCounterClockwiseIcon size={18} />
         </button>
+        {(
+          [
+            ["files", "Tree", FolderIcon],
+            ["search", "Search", MagnifyingGlassIcon],
+            ["changes", "Changes", GitDiffIcon],
+          ] as const
+        ).map(([value, label, Icon]) => (
+          <button
+            className="icon-button"
+            key={value}
+            aria-label={label}
+            title={label}
+            aria-pressed={workspaceOpen && mode === value}
+            disabled={!project}
+            onClick={() => {
+              setReviewTurn(null);
+              setWorkspaceOpen(!workspaceOpen || mode !== value);
+              setMode(value);
+            }}
+          >
+            <Icon size={19} />
+          </button>
+        ))}
+      </header>
+      <div className="project-tabbar">
         <div role="tablist" aria-label="Project tabs" className="project-tabs">
           {layout.tabs.map((t) => {
             const Icon =
@@ -938,39 +1007,6 @@ export function ProjectWorkbench({
             </div>
           )}
         </div>
-        <span className="grow" />
-        <button
-          className="icon-button"
-          aria-label="Session history"
-          title="Session history"
-          disabled={!project}
-          onClick={() => setHistory(!history)}
-        >
-          <ClockCounterClockwiseIcon size={18} />
-        </button>
-        {(
-          [
-            ["files", "Tree", FolderIcon],
-            ["search", "Search", MagnifyingGlassIcon],
-            ["changes", "Changes", GitDiffIcon],
-          ] as const
-        ).map(([value, label, Icon]) => (
-          <button
-            className="icon-button"
-            key={value}
-            aria-label={label}
-            title={label}
-            aria-pressed={workspaceOpen && mode === value}
-            disabled={!project}
-            onClick={() => {
-              setReviewTurn(null);
-              setWorkspaceOpen(!workspaceOpen || mode !== value);
-              setMode(value);
-            }}
-          >
-            <Icon size={19} />
-          </button>
-        ))}
       </div>
       {error && (
         <div className="workbench-error" role="alert">
@@ -1146,6 +1182,7 @@ export function ProjectWorkbench({
         {project && (
           <div className="workbench-side" hidden={!workspaceOpen}>
             <WorkspaceTools
+              visible={workspaceOpen}
               reviewTurn={reviewTurn}
               context={context}
               root={root}

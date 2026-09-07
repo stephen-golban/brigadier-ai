@@ -17,3 +17,8 @@ localStorage.setItem("brigadier.fps", "off");
 import {beforeEach} from "vitest";
 beforeEach(()=>{localStorage.clear();sessionStorage.clear();localStorage.setItem("brigadier.fps","off");});
 Object.defineProperty(HTMLDialogElement.prototype,"showModal",{configurable:true,value:function(){this.setAttribute("open","");}});
+
+Object.defineProperty(window, "matchMedia", { configurable: true, writable: true, value: (query: string) => ({ matches: false, media: query, addEventListener() {}, removeEventListener() {} }) });
+HTMLElement.prototype.scrollIntoView = function() {};
+
+globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };

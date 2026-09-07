@@ -1530,6 +1530,29 @@ impl Supervisor {
 
     // ---- deletion ------------------------------------------------------------------------
 
+    /// Stop affected sessions and their project runs without deleting history or worktrees.
+    pub async fn stop_sessions_for_trash(
+        &self,
+        ids: &[SessionId],
+        project: Option<&str>,
+    ) -> Result<(), SupervisorError> {
+        let _lifecycle = self.inner.lifecycle.write().await;
+        if let Some(project) = project {
+            self.cancel_project_runs(project).await?;
+        }
+        for id in ids {
+            if let Some(record) = self.session(id).await? {
+                if let Some(project) = &record.project_id {
+                    self.cancel_project_runs(project).await?;
+                }
+            }
+        }
+        for id in ids {
+            self.stop_for_deletion(id).await?;
+        }
+        Ok(())
+    }
+
     /// Remove Brigadier history, preserving the checkout and all user files.
     /// `force` is retained for IPC compatibility; deletion never cleans worktrees.
     pub async fn delete_session(

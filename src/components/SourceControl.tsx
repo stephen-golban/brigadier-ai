@@ -1,5 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
 import {
+  CaretDownIcon,
+  CaretRightIcon,
+  GearSixIcon,
+  ClockCounterClockwiseIcon,
   PlusIcon,
   MinusIcon,
   ArrowCounterClockwiseIcon,
@@ -26,6 +30,40 @@ import {
 import type { ModelInfo } from "../wire";
 import { SelectMenu } from "./SelectMenu";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
+import { Button } from "./ui/button";
+import { ButtonGroup } from "./ui/button-group";
+import { Input } from "./ui/input";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupTextarea,
+} from "./ui/input-group";
+import { Item, ItemActions, ItemGroup } from "./ui/item";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "./ui/collapsible";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from "./ui/dropdown-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "./ui/dialog";
+import "./SourceControl.css";
 export function CommitPreferences({
   data,
   projectId,
@@ -141,6 +179,7 @@ export function SourceControl({
   data,
   onData,
   models,
+  children,
 }: {
   context: WorkspaceContext;
   status: GitStatus | null;
@@ -154,7 +193,10 @@ export function SourceControl({
   data: WorkbenchData;
   onData: (d: WorkbenchData) => void;
   models: ModelInfo[];
+  children?: ReactNode;
 }) {
+  const messageId = useId();
+  const referenceId = useId();
   const key = `commit:${context.projectId}:${context.sessionId ?? ""}`;
   const [entry, setEntry] = useState({
     key,
@@ -173,14 +215,31 @@ export function SourceControl({
   const [prefs, setPrefs] = useState(false);
   const [details, setDetails] = useState<GitDetails | null>(null);
   const [ref, setRef] = useState("");
-  const [remote, setRemote] = useState("");
-  const [history, setHistory] = useState(false);
+  const [gitDialog, setGitDialog] = useState<"branch" | "history" | null>(null);
   const settings = data.projects[context.projectId] ?? data.global;
   useEffect(() => {
     setDetails(null);
     setError("");
     setRef("");
+    setMenu(false);
+    setGitDialog(null);
+    setPrefs(false);
   }, [context.projectId, context.sessionId]);
+  useEffect(() => {
+    if (!menu && !gitDialog) return;
+    let live = true;
+    void workbenchApi
+      .gitDetails(context)
+      .then((next) => {
+        if (live) setDetails(next);
+      })
+      .catch((e) => {
+        if (live) setError(errorMessage(e));
+      });
+    return () => {
+      live = false;
+    };
+  }, [menu, gitDialog, context.projectId, context.sessionId]);
   const run = async (request: GitAction) => {
     setBusy(true);
     setError("");
@@ -305,171 +364,141 @@ export function SourceControl({
       : []),
   ];
   return (
-    <section className="source-control">
-      <div className="section-heading">
-        <b>Source Control</b>
-        <span className="grow" />
-        <button className="icon-button" title="Refresh" onClick={refresh}>
+    <section className="source-control scm-panel" aria-label="Source Control">
+      <header className="scm-header">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="scm-branch"
+          title={status?.branch ?? "Repository"}
+          onClick={() => setGitDialog("branch")}
+        >
+          <GitBranchIcon />
+          <span>{status?.branch ?? "Repository"}</span>
+          <CaretDownIcon className="scm-chevron" />
+        </Button>
+        {!!((status?.ahead ?? 0) + (status?.behind ?? 0)) && (
+          <span
+            className="scm-sync"
+            title={`${status?.ahead ?? 0} outgoing, ${status?.behind ?? 0} incoming commits`}
+          >
+            {status?.ahead ?? 0}↑ {status?.behind ?? 0}↓
+          </span>
+        )}
+        <Button
+          variant="ghost"
+          size="icon"
+          className="scm-icon"
+          title="Refresh"
+          aria-label="Refresh"
+          onClick={refresh}
+        >
           <ArrowClockwiseIcon />
-        </button>
-        <button
-          className="icon-button"
-          aria-label="Git actions"
-          aria-expanded={menu}
-          onClick={() => {
-            setMenu(!menu);
-            if (!details)
-              void workbenchApi
-                .gitDetails(context)
-                .then(setDetails)
-                .catch((e) => setError(errorMessage(e)));
-          }}
-        >
-          <DotsThreeIcon />
-        </button>
-      </div>
-      <button
-        className="branch-button"
-        onClick={() => {
-          setMenu(true);
-          void workbenchApi
-            .gitDetails(context)
-            .then(setDetails)
-            .catch((e) => setError(errorMessage(e)));
-        }}
-      >
-        <GitBranchIcon />
-        {status?.branch ?? "Repository"}
-        <span className="grow" />
-        {status?.ahead ?? 0}↑ {status?.behind ?? 0}↓
-      </button>
-      <div className="commit-input">
-        <textarea
-          aria-label="Commit message"
-          placeholder="Message (⌘Enter to commit)"
-          value={message}
-          rows={3}
-          onChange={(e) => setMessage(e.target.value)}
-          onKeyDown={(e) => {
-            if (
-              (e.metaKey || e.ctrlKey) &&
-              e.key === "Enter" &&
-              message.trim() &&
-              !busy
-            ) {
-              e.preventDefault();
-              commit();
-            }
-          }}
-        />
-        <button
-          className="icon-button"
-          disabled={busy || !staged.length}
-          aria-label="Generate commit message"
-          title="Generate a message from staged changes"
-          onClick={() => {
-            const targetKey = key;
-            setBusy(true);
-            workbenchApi
-              .generate(context, settings.model)
-              .then((r) => {
-                localStorage.setItem(targetKey, r.message);
-                setEntry({ key: targetKey, value: r.message });
-              })
-              .catch((e) => setError(errorMessage(e)))
-              .finally(() => setBusy(false));
-          }}
-        >
-          <SparkleIcon />
-        </button>
-      </div>
-      <div className="commit-buttons">
-        <button
-          className="primary-action"
-          disabled={busy || !message.trim() || !status?.changes.length}
-          onClick={() => commit()}
-        >
-          <CheckIcon />
-          Commit
-        </button>
-        <button
-          className="act"
-          aria-label="Commit options"
-          onClick={() => setMenu(!menu)}
-        >
-          ⌄
-        </button>
-      </div>
-      <button
-        className="quiet-button"
-        aria-expanded={prefs}
-        onClick={() => setPrefs(!prefs)}
-      >
-        Commit settings
-      </button>
-      {prefs && (
-        <CommitPreferences
-          data={data}
-          projectId={context.projectId}
-          models={models}
-          changed={onData}
-        />
-      )}
-      {menu && (
-        <div className="git-menu">
-          {!!details?.remotes.length && (
-            <label>
-              Publish remote
-              <select
-                aria-label="Publish remote"
-                value={remote || details.remotes[0]}
-                onChange={(e) => setRemote(e.target.value)}
+        </Button>
+        <DropdownMenu open={menu} onOpenChange={setMenu}>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="scm-icon"
+              aria-label="Git actions"
+              title="Git actions"
+            >
+              <DotsThreeIcon />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="scm-menu">
+            <DropdownMenuLabel>Repository</DropdownMenuLabel>
+            {(["fetch", "pull", "push", "sync"] as const).map((action) => (
+              <DropdownMenuItem
+                key={action}
+                disabled={busy}
+                onSelect={() => void run({ action })}
               >
-                {details.remotes.map((r) => (
-                  <option key={r} value={r}>
-                    {r}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-          <div className="action-grid">
-            {["fetch", "pull", "push", "sync", "publish", "stash"].map(
-              (action) => (
-                <button
-                  key={action}
-                  disabled={busy}
-                  onClick={() =>
-                    void run({
-                      action,
-                      ...(action === "publish"
-                        ? {
-                            reference:
-                              remote || details?.remotes[0] || "origin",
-                          }
-                        : {}),
-                    })
-                  }
+                {action[0]!.toUpperCase() + action.slice(1)}
+              </DropdownMenuItem>
+            ))}
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger disabled={busy}>
+                Publish branch
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="scm-menu">
+                {(details?.remotes.length ? details.remotes : ["origin"]).map(
+                  (remote) => (
+                    <DropdownMenuItem
+                      key={remote}
+                      onSelect={() =>
+                        void run({ action: "publish", reference: remote })
+                      }
+                    >
+                      {remote}
+                    </DropdownMenuItem>
+                  ),
+                )}
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={() => setGitDialog("branch")}>
+              <GitBranchIcon />
+              Branches and references…
+            </DropdownMenuItem>
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger disabled={busy}>
+                Stashes
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="scm-menu">
+                <DropdownMenuItem
+                  onSelect={() => void run({ action: "stash" })}
                 >
-                  {action[0]!.toUpperCase() + action.slice(1)}
-                </button>
-              ),
-            )}
-            <button
-              disabled={busy || !message.trim()}
-              onClick={() => commit("commit_all")}
-            >
-              Commit All
-            </button>
-            <button
-              disabled={busy || !message.trim()}
-              onClick={() => commit("amend")}
-            >
-              Commit (Amend)
-            </button>
-            <button
+                  Stash changes
+                </DropdownMenuItem>
+                {!!details?.stashes.length && <DropdownMenuSeparator />}
+                {details?.stashes.map((stash) => (
+                  <DropdownMenuSub key={stash}>
+                    <DropdownMenuSubTrigger
+                      className="scm-stash-label"
+                      title={stash}
+                    >
+                      {stash}
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent className="scm-menu">
+                      {[
+                        ["stash_apply", "Apply"],
+                        ["stash_pop", "Pop"],
+                        ["stash_drop", "Drop"],
+                      ].map(([action, label]) => (
+                        <DropdownMenuItem
+                          key={action}
+                          variant={
+                            action === "stash_drop" ? "destructive" : "default"
+                          }
+                          onSelect={() =>
+                            action === "stash_drop"
+                              ? ask("Drop stash", `Remove ${stash}?`, {
+                                  action,
+                                  reference: stash.split(":")[0],
+                                })
+                              : void run({
+                                  action: action!,
+                                  reference: stash.split(":")[0],
+                                })
+                          }
+                        >
+                          {label}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
+                ))}
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+            <DropdownMenuItem onSelect={() => setGitDialog("history")}>
+              <ClockCounterClockwiseIcon />
+              Source Control history
+            </DropdownMenuItem>
+            <DropdownMenuItem
               disabled={busy}
-              onClick={() =>
+              onSelect={() =>
                 ask(
                   "Undo last commit",
                   "Keep the last commit’s changes staged and remove that commit from this branch?",
@@ -477,153 +506,49 @@ export function SourceControl({
                 )
               }
             >
+              <ArrowCounterClockwiseIcon />
               Undo Last Commit
-            </button>
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={() => setPrefs(true)}>
+              <GearSixIcon />
+              Commit settings
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </header>
+
+      <div className="scm-scroll" aria-label="Changed files">
+        {status === null ? (
+          <div className="scm-empty" role="status">
+            Loading changes…
           </div>
-          <label>
-            Branch / reference
-            <input
-              value={ref}
-              onChange={(e) => setRef(e.target.value)}
-              list="git-branches"
-              placeholder="Choose or enter a branch"
-            />
-          </label>
-          <datalist id="git-branches">
-            {details?.branches.map((b) => (
-              <option key={b} value={b} />
-            ))}
-          </datalist>
-          <div className="action-grid">
-            {[
-              ["checkout", "Checkout"],
-              ["branch", "Create branch"],
-              ["merge", "Merge"],
-              ["rebase", "Rebase"],
-            ].map(([action, label]) => (
-              <button
-                key={action}
-                disabled={busy || !ref.trim()}
-                onClick={() =>
-                  void run({ action: action!, reference: ref.trim() })
-                }
-              >
-                {label}
-              </button>
-            ))}
+        ) : status.changes.length === 0 ? (
+          <div className="scm-empty">
+            <CheckIcon size={24} />
+            <strong>No pending changes</strong>
+            <span>Your working tree is clean.</span>
           </div>
-          <div className="action-grid">
-            <button onClick={() => void run({ action: "merge_abort" })}>
-              Abort merge
-            </button>
-            <button onClick={() => void run({ action: "rebase_abort" })}>
-              Abort rebase
-            </button>
-            <button onClick={() => void run({ action: "rebase_continue" })}>
-              Continue rebase
-            </button>
-          </div>
-          {details?.stashes.map((s) => (
-            <div className="stash-row" key={s}>
-              <span>{s}</span>
-              {[
-                ["stash_apply", "Apply"],
-                ["stash_pop", "Pop"],
-                ["stash_drop", "Drop"],
-              ].map(([action, label]) => (
-                <button
-                  key={action}
-                  onClick={() =>
-                    action === "stash_drop"
-                      ? ask("Drop stash", `Remove ${s}?`, {
-                          action,
-                          reference: s.split(":")[0],
-                        })
-                      : void run({
-                          action: action!,
-                          reference: s.split(":")[0],
-                        })
-                  }
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          ))}
-          <button className="quiet-button" onClick={() => setHistory(!history)}>
-            Source Control history
-          </button>
-          {history && (
-            <pre className="git-history">
-              {details?.history || "No commits yet"}
-            </pre>
-          )}
-        </div>
-      )}
-      {error && (
-        <p className="inline-error" role="alert">
-          {error}
-        </p>
-      )}
-      {groups.map((group) => (
-        <section
-          className="change-group"
-          key={group.name}
-          onDragOver={(e) => e.preventDefault()}
-          onDrop={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            try {
-              const moved = JSON.parse(
-                e.dataTransfer.getData("application/brigadier-git"),
-              );
-              if (moved.staged !== group.staged)
-                void run({
-                  action: group.staged ? "stage" : "unstage",
-                  path: moved.path,
-                });
-            } catch {
-              /* unrelated drop */
-            }
-          }}
-        >
-          <div className="section-heading">
-            <b>{group.name}</b>
-            <span>{group.changes.length}</span>
-            <span className="grow" />
-            <button
-              disabled={busy}
-              className="icon-button"
-              aria-label={
-                group.staged ? "Unstage all changes" : "Stage all changes"
-              }
-              onClick={() =>
-                void run({ action: group.staged ? "unstage" : "stage" })
-              }
-            >
-              {group.staged ? <MinusIcon /> : <PlusIcon />}
-            </button>
-          </div>
-          {group.changes.map((c) => (
-            <div
-              key={c.path}
-              className="scm-row"
-              draggable
-              onDragStart={(e) => {
-                e.dataTransfer.setData(
-                  "application/brigadier-git",
-                  JSON.stringify({ path: c.path, staged: group.staged }),
-                );
-              }}
+        ) : (
+          groups.map((group) => (
+            <Collapsible
+              key={group.name}
+              defaultOpen
+              className="scm-group"
               onDragOver={(e) => e.preventDefault()}
               onDrop={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
+                if (busy) return;
                 try {
                   const moved = JSON.parse(
                     e.dataTransfer.getData("application/brigadier-git"),
                   );
-                  if (moved.staged !== group.staged)
+                  if (
+                    typeof moved.path === "string" &&
+                    typeof moved.staged === "boolean" &&
+                    moved.staged !== group.staged
+                  )
                     void run({
                       action: group.staged ? "stage" : "unstage",
                       path: moved.path,
@@ -633,68 +558,365 @@ export function SourceControl({
                 }
               }}
             >
-              <button
-                className="tree-row"
-                onClick={() => onOpen(c.path, "diff", group.staged)}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  onOpen(c.path, "file");
-                }}
-                title={c.path}
-              >
-                <FileIcon />
-                <span>{c.path.split("/").pop()}</span>
-                <small>
-                  {c.path.includes("/")
-                    ? c.path.split("/").slice(0, -1).join("/")
-                    : ""}
-                </small>
-                <b
-                  className="git-decoration"
-                  data-status={
-                    c.index === "?" ? "U" : group.staged ? c.index : c.worktree
-                  }
+              <div className="scm-group-heading">
+                <CollapsibleTrigger
+                  className="scm-group-toggle"
+                  aria-label={group.name}
                 >
-                  {c.index === "?" ? "U" : group.staged ? c.index : c.worktree}
-                </b>
-              </button>
-              <button
-                className="icon-button"
-                disabled={busy}
-                aria-label={`${group.staged ? "Unstage" : "Stage"} ${c.path}`}
-                onClick={() =>
-                  void run({
-                    action: group.staged ? "unstage" : "stage",
-                    path: c.path,
-                  })
-                }
-              >
-                {group.staged ? <MinusIcon /> : <PlusIcon />}
-              </button>
-              {!group.staged && (
-                <button
-                  disabled={busy}
-                  className="icon-button"
-                  aria-label={`Discard ${c.path}`}
+                  <CaretRightIcon className="scm-disclosure" />
+                  <span>{group.name}</span>
+                  <span className="scm-count">{group.changes.length}</span>
+                </CollapsibleTrigger>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="scm-icon"
+                  disabled={busy || !group.changes.length}
+                  aria-label={
+                    group.staged ? "Unstage all changes" : "Stage all changes"
+                  }
+                  title={
+                    group.staged ? "Unstage all changes" : "Stage all changes"
+                  }
                   onClick={() =>
-                    ask(
-                      "Discard changes",
-                      `Discard uncommitted changes in ${c.path}? A recoverable copy will be moved to Trash.`,
-                      { action: "discard", path: c.path },
-                    )
+                    void run({ action: group.staged ? "unstage" : "stage" })
                   }
                 >
-                  <ArrowCounterClockwiseIcon />
-                </button>
-              )}
+                  {group.staged ? <MinusIcon /> : <PlusIcon />}
+                </Button>
+              </div>
+              <CollapsibleContent>
+                <ItemGroup aria-label={`${group.name} files`}>
+                  {group.changes.map((change) => {
+                    const code =
+                      change.index === "?"
+                        ? "U"
+                        : group.staged
+                          ? change.index
+                          : change.worktree;
+                    const directory = change.path.includes("/")
+                      ? change.path.slice(0, change.path.lastIndexOf("/"))
+                      : "";
+                    return (
+                      <Item
+                        key={change.path}
+                        role="listitem"
+                        size="sm"
+                        className="scm-file-row"
+                        draggable={!busy}
+                        onDragStart={(e) =>
+                          e.dataTransfer.setData(
+                            "application/brigadier-git",
+                            JSON.stringify({
+                              path: change.path,
+                              staged: group.staged,
+                            }),
+                          )
+                        }
+                      >
+                        <button
+                          className="scm-file-open"
+                          title={change.path}
+                          onClick={() =>
+                            onOpen(change.path, "diff", group.staged)
+                          }
+                          onContextMenu={(e) => {
+                            e.preventDefault();
+                            onOpen(change.path, "file");
+                          }}
+                        >
+                          <FileIcon className="scm-file-icon" />
+                          <span className="scm-file-name">
+                            {change.path.split("/").pop()}
+                          </span>
+                          {directory && (
+                            <span className="scm-file-path">{directory}</span>
+                          )}
+                        </button>
+                        <span
+                          className="scm-file-status"
+                          data-status={code}
+                          title={statusLabel(code)}
+                        >
+                          {code}
+                        </span>
+                        <ItemActions className="scm-file-actions">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="scm-icon"
+                            disabled={busy}
+                            aria-label={`${group.staged ? "Unstage" : "Stage"} ${change.path}`}
+                            title={group.staged ? "Unstage" : "Stage"}
+                            onClick={() =>
+                              void run({
+                                action: group.staged ? "unstage" : "stage",
+                                path: change.path,
+                              })
+                            }
+                          >
+                            {group.staged ? <MinusIcon /> : <PlusIcon />}
+                          </Button>
+                          {!group.staged && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="scm-icon"
+                              disabled={busy}
+                              aria-label={`Discard ${change.path}`}
+                              title="Discard changes"
+                              onClick={() =>
+                                ask(
+                                  "Discard changes",
+                                  `Discard uncommitted changes in ${change.path}? A recoverable copy will be moved to Trash.`,
+                                  { action: "discard", path: change.path },
+                                )
+                              }
+                            >
+                              <ArrowCounterClockwiseIcon />
+                            </Button>
+                          )}
+                        </ItemActions>
+                      </Item>
+                    );
+                  })}
+                </ItemGroup>
+                {!group.changes.length && (
+                  <p className="scm-group-empty">
+                    {group.staged
+                      ? "No staged changes"
+                      : "No changes in this group"}
+                  </p>
+                )}
+              </CollapsibleContent>
+            </Collapsible>
+          ))
+        )}
+        {children}
+      </div>
+
+      <footer className="scm-composer">
+        {error && (
+          <p className="scm-error" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="scm-composer-heading">
+          <label htmlFor={messageId}>Commit message</label>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="scm-icon"
+            aria-label="Commit settings"
+            title="Commit settings"
+            onClick={() => setPrefs(true)}
+          >
+            <GearSixIcon />
+          </Button>
+        </div>
+        <InputGroup className="scm-message-group">
+          <InputGroupTextarea
+            id={messageId}
+            aria-label="Commit message"
+            placeholder="Describe your changes…"
+            value={message}
+            rows={3}
+            className="scm-message"
+            onChange={(e) => setMessage(e.target.value)}
+            onKeyDown={(e) => {
+              if (
+                (e.metaKey || e.ctrlKey) &&
+                e.key === "Enter" &&
+                message.trim() &&
+                !busy &&
+                status?.changes.length
+              ) {
+                e.preventDefault();
+                commit();
+              }
+            }}
+          />
+          <InputGroupAddon align="block-end" className="scm-message-toolbar">
+            <InputGroupButton
+              disabled={busy || !staged.length}
+              aria-label="Generate commit message"
+              title="Generate a message from staged changes"
+              onClick={() => {
+                const targetKey = key;
+                setBusy(true);
+                setError("");
+                workbenchApi
+                  .generate(context, settings.model)
+                  .then((r) => {
+                    localStorage.setItem(targetKey, r.message);
+                    setEntry({ key: targetKey, value: r.message });
+                  })
+                  .catch((e) => setError(errorMessage(e)))
+                  .finally(() => setBusy(false));
+              }}
+            >
+              <SparkleIcon />
+              Generate
+            </InputGroupButton>
+            <span className="scm-staged-count">{staged.length} staged</span>
+          </InputGroupAddon>
+        </InputGroup>
+        <ButtonGroup className="scm-commit-buttons" aria-label="Commit actions">
+          <Button
+            className="scm-commit"
+            disabled={busy || !message.trim() || !status?.changes.length}
+            onClick={() => commit()}
+          >
+            <CheckIcon />
+            {busy ? "Working…" : "Commit"}
+          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                className="scm-commit-options"
+                size="icon"
+                aria-label="Commit options"
+                disabled={busy || !message.trim()}
+              >
+                <CaretDownIcon />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent side="top" align="end" className="scm-menu">
+              <DropdownMenuItem
+                disabled={!message.trim() || !status?.changes.length}
+                onSelect={() => commit("commit_all")}
+              >
+                Commit All
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={!message.trim()}
+                onSelect={() => commit("amend")}
+              >
+                Commit (Amend)
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </ButtonGroup>
+      </footer>
+
+      <Dialog open={prefs} onOpenChange={setPrefs}>
+        <DialogContent className="scm-dialog">
+          <DialogHeader>
+            <DialogTitle>Commit settings</DialogTitle>
+            <DialogDescription>
+              Choose defaults for commit messages and staging.
+            </DialogDescription>
+          </DialogHeader>
+          <CommitPreferences
+            data={data}
+            projectId={context.projectId}
+            models={models}
+            changed={onData}
+          />
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={gitDialog !== null}
+        onOpenChange={(open) => {
+          if (!open) setGitDialog(null);
+        }}
+      >
+        <DialogContent className="scm-dialog">
+          <DialogHeader>
+            <DialogTitle>
+              {gitDialog === "history"
+                ? "Source Control history"
+                : "Branches and references"}
+            </DialogTitle>
+            <DialogDescription>
+              {gitDialog === "history"
+                ? "Recent commits in this workspace."
+                : "Switch branches or work with another Git reference."}
+            </DialogDescription>
+          </DialogHeader>
+          {gitDialog === "history" ? (
+            <pre className="scm-history">
+              {details?.history ||
+                (details ? "No commits yet" : "Loading history…")}
+            </pre>
+          ) : (
+            <div className="scm-branch-controls">
+              <label htmlFor={referenceId}>Branch / reference</label>
+              <Input
+                id={referenceId}
+                value={ref}
+                onChange={(e) => setRef(e.target.value)}
+                list={`${referenceId}-options`}
+                placeholder="Choose or enter a branch"
+              />
+              <datalist id={`${referenceId}-options`}>
+                {details?.branches.map((branch) => (
+                  <option key={branch} value={branch} />
+                ))}
+              </datalist>
+              <div className="scm-branch-actions">
+                {[
+                  ["checkout", "Checkout"],
+                  ["branch", "Create branch"],
+                  ["merge", "Merge"],
+                  ["rebase", "Rebase"],
+                ].map(([action, label]) => (
+                  <Button
+                    key={action}
+                    variant="outline"
+                    size="sm"
+                    disabled={busy || !ref.trim()}
+                    onClick={async () => {
+                      if (await run({ action: action!, reference: ref.trim() }))
+                        setGitDialog(null);
+                    }}
+                  >
+                    {label}
+                  </Button>
+                ))}
+              </div>
+              <div className="scm-branch-actions">
+                {[
+                  ["merge_abort", "Abort merge"],
+                  ["rebase_abort", "Abort rebase"],
+                  ["rebase_continue", "Continue rebase"],
+                ].map(([action, label]) => (
+                  <Button
+                    key={action}
+                    variant="ghost"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => void run({ action: action! })}
+                  >
+                    {label}
+                  </Button>
+                ))}
+              </div>
             </div>
-          ))}
-        </section>
-      ))}
-      {status?.changes.length === 0 && (
-        <p className="panel-empty">No pending changes</p>
-      )}
+          )}
+          {error && (
+            <p className="scm-error" role="alert">
+              {error}
+            </p>
+          )}
+        </DialogContent>
+      </Dialog>
       {confirm && <ConfirmDialog {...confirm} />}
     </section>
+  );
+}
+
+function statusLabel(code: string) {
+  return (
+    (
+      {
+        M: "Modified",
+        U: "Untracked",
+        A: "Added",
+        D: "Deleted",
+        R: "Renamed",
+        C: "Copied",
+      } as Record<string, string>
+    )[code] ?? code
   );
 }
