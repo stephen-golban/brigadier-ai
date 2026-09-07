@@ -435,7 +435,7 @@ export function Sidebar(props: SidebarProps) {
         <SidebarHeader>
           <div
             className="flex h-12 items-center gap-2 px-2 font-semibold"
-            data-tauri-drag-region
+            data-tauri-drag-region="deep"
           >
             <BrandMark className="size-6 shrink-0" />
             <span>Brigadier</span>

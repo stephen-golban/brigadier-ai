@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 
 import { Launch } from "./Launch";
+import { WindowChrome } from "./components/WindowChrome";
 import { startPaintInstrumentation } from "./paint";
 import { ThemeProvider } from "./providers/ThemeProvider";
 import "./index.css";
@@ -22,6 +23,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <ThemeProvider>
       <Launch />
+      <WindowChrome />
     </ThemeProvider>
   </React.StrictMode>,
 );
