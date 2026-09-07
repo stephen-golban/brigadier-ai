@@ -1,10 +1,11 @@
+import { navigationApi } from "../navigationApi";
+import { ActionDialog, type PendingAction } from "./ActionDialog";
 import { useState } from "react";
 import { ChatCircleIcon, PlusIcon, TrashIcon } from "@phosphor-icons/react";
 import type { SessionRuntime } from "../feedStore";
 import { working } from "../attention";
-import { desktopApi, notify } from "../desktopApi";
+import { notify } from "../desktopApi";
 import { errorMessage } from "../workspaceApi";
-import { ConfirmDialog } from "./ConfirmDialog";
 export function ProjectHistory({
   projectName,
   sessions,
@@ -21,7 +22,7 @@ export function ProjectHistory({
   onNew: () => void;
 }) {
   const [query, setQuery] = useState("");
-  const [deleting, setDeleting] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<PendingAction | null>(null);
   return (
     <section className="project-history">
       <header>
@@ -69,8 +70,41 @@ export function ProjectHistory({
               </button>
               <button
                 className="icon-button"
-                aria-label={`Delete session ${s.sessionId}`}
-                onClick={() => setDeleting(s.sessionId)}
+                aria-label={`Move session to Trash ${s.sessionId}`}
+                onClick={() => {
+                  void navigationApi
+                    .preview("session", s.sessionId)
+                    .then((plan) =>
+                      setDeleting({
+                        title: plan.running.length
+                          ? "Stop and move to Trash?"
+                          : "Move to Trash?",
+                        description: (
+                          <>
+                            <p>
+                              This session and its child agents can be restored
+                              from Trash. Repository files and worktrees stay on
+                              disk.
+                            </p>
+                            {plan.running.length > 0 && (
+                              <p>
+                                Running sessions to stop:{" "}
+                                {plan.running
+                                  .map((id) => titles[id] ?? id)
+                                  .join(", ")}
+                              </p>
+                            )}
+                          </>
+                        ),
+                        label: "Move to Trash",
+                        destructive: true,
+                        run: async () => {
+                          await navigationApi.move(plan);
+                        },
+                      }),
+                    )
+                    .catch((e) => notify(errorMessage(e), true));
+                }}
               >
                 <TrashIcon />
               </button>
@@ -81,19 +115,7 @@ export function ProjectHistory({
         <p className="history-empty">Your past sessions will appear here.</p>
       )}
       {deleting && (
-        <ConfirmDialog
-          title="Delete session?"
-          body="Stop this session and its workhorses, then delete their history and owned worktrees."
-          confirmLabel="Delete session"
-          onCancel={() => setDeleting(null)}
-          onConfirm={() => {
-            const id = deleting;
-            setDeleting(null);
-            void desktopApi
-              .discard([id])
-              .catch((e) => notify(errorMessage(e), true));
-          }}
-        />
+        <ActionDialog action={deleting} onClose={() => setDeleting(null)} />
       )}
     </section>
   );

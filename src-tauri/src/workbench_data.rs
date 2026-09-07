@@ -103,7 +103,10 @@ fn load(path: &Path) -> Result<Data, AppError> {
     }
 }
 pub(crate) fn read(dir: &Path) -> Result<Data, AppError> {
-    update(dir, |d| Ok(d.clone()))
+    let mut data = update(dir, |d| Ok(d.clone()))?;
+    let navigation = crate::navigation::read(dir)?;
+    data.notes.retain(|n| !navigation.hidden(&crate::navigation::Kind::Note, &n.id));
+    Ok(data)
 }
 fn update<T>(dir: &Path, f: impl FnOnce(&mut Data) -> Result<T, AppError>) -> Result<T, AppError> {
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -203,6 +206,7 @@ pub(crate) async fn note_save(note: Note, state: State<'_, AppState>) -> Result<
     save_note(&state.get()?.data_dir, note)
 }
 fn save_note(dir: &Path, mut note: Note) -> Result<Note, AppError> {
+    crate::navigation::require_available(dir, crate::navigation::Kind::Note, &note.id)?;
     if note.content.len() > 128 * 1024
         || note.title.len() > 200
         || note.id.len() > 100
@@ -243,12 +247,16 @@ fn save_note(dir: &Path, mut note: Note) -> Result<Note, AppError> {
 }
 #[tauri::command]
 pub(crate) async fn note_delete(id: String, state: State<'_, AppState>) -> Result<(), AppError> {
-    update(&state.get()?.data_dir, |d| {
-        crate::note_files::delete(&state.get()?.data_dir, d, &id)?;
+    remove_note(&state.get()?.data_dir, &id)
+}
+pub(crate) fn remove_note(dir: &Path, id: &str) -> Result<(), AppError> {
+    update(dir, |d| {
+        crate::note_files::delete(dir, d, id)?;
         d.notes.retain(|n| n.id != id);
         Ok(())
     })
 }
+
 #[tauri::command]
 pub(crate) async fn commit_settings_save(
     project_id: Option<String>,

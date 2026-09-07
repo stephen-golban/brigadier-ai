@@ -1,3 +1,5 @@
+import { PromptInputActions } from "./prompt-kit/prompt-input";
+import { Button } from "./ui/button";
 import { SessionContext } from "./SessionContext";
 import { useMessageEdit, type MessageEditProps } from "./EditMessage";
 import { PromptInput, useDraft } from "./PromptInput";
@@ -156,26 +158,25 @@ export function RunControl({
   }
 
   return (
-    <div className="dock-box">
-      <PromptInput
-        rows={2}
-        value={goal}
-        aria-label="the goal, in plain English"
-        placeholder={
-          projectName === null
-            ? "Select a project to hand it a goal"
-            : `Hand ${projectName} a goal in plain English and walk away. Return to start, Shift+Return for a new line.`
+    <PromptInput
+      rows={2}
+      value={goal}
+      aria-label="the goal, in plain English"
+      placeholder={
+        projectName === null
+          ? "Select a project to hand it a goal"
+          : `Hand ${projectName} a goal in plain English and walk away. Return to start, Shift+Return for a new line.`
+      }
+      disabled={!canStart || busy || sending}
+      onText={setGoal}
+      onKeyDown={(e) => {
+        if (isSubmitKey(e)) {
+          e.preventDefault();
+          submit();
         }
-        disabled={!canStart || busy || sending}
-        onText={setGoal}
-        onKeyDown={(e) => {
-          if (isSubmitKey(e)) {
-            e.preventDefault();
-            submit();
-          }
-        }}
-      />
-      <div className="dock-actions">
+      }}
+    >
+      <PromptInputActions className="flex-1 flex-wrap justify-end">
         <span className="status-chip">
           {projectName === null
             ? "No project selected"
@@ -197,16 +198,16 @@ export function RunControl({
           noPickLabel={NO_MODEL_PICK}
           modelHint={MODEL_HINT}
         />
-        <button
+        <Button
           type="button"
-          className="send wide"
+          className="rounded-full"
           disabled={!canStart || busy || goal.trim() === ""}
           onClick={submit}
         >
           Start run
-        </button>
-      </div>
-    </div>
+        </Button>
+      </PromptInputActions>
+    </PromptInput>
   );
 }
 
@@ -519,47 +520,50 @@ export function Composer({
    */
   return (
     <>
-      <div className="dock-box">
-        {editing && (
-          <div className="composer-edit-banner">
-            <span>
-              {edit.rewound
-                ? "Conversation rewound · ready to send"
-                : "Editing message"}
-            </span>
-            <button
-              type="button"
-              className="act"
-              disabled={edit.busy || Boolean(edit.confirmation)}
-              onClick={onCancelEdit}
-            >
-              Cancel edit
-            </button>
-          </div>
-        )}
-        {editing && edit.error && (
-          <p role="alert" className="inline-error">
-            {edit.error}
-          </p>
-        )}
-        {editing && edit.confirmation}
-        <PromptInput
-          rows={2}
-          value={text}
-          placeholder={live ? "Do anything" : "Select a running session"}
-          focusKey={sessionId ?? undefined}
-          disabled={
-            !live || busy || sending || (Boolean(editing) && edit.disabled)
+      <PromptInput
+        header={
+          <>
+            {editing && (
+              <div className="composer-edit-banner">
+                <span>
+                  {edit.rewound
+                    ? "Conversation rewound · ready to send"
+                    : "Editing message"}
+                </span>
+                <button
+                  type="button"
+                  className="act"
+                  disabled={edit.busy || Boolean(edit.confirmation)}
+                  onClick={onCancelEdit}
+                >
+                  Cancel edit
+                </button>
+              </div>
+            )}
+            {editing && edit.error && (
+              <p role="alert" className="inline-error">
+                {edit.error}
+              </p>
+            )}
+            {editing && edit.confirmation}
+          </>
+        }
+        rows={2}
+        value={text}
+        placeholder={live ? "Do anything" : "Select a running session"}
+        focusKey={sessionId ?? undefined}
+        disabled={
+          !live || busy || sending || (Boolean(editing) && edit.disabled)
+        }
+        onText={setText}
+        onKeyDown={(e) => {
+          if (isSubmitKey(e)) {
+            e.preventDefault();
+            send();
           }
-          onText={setText}
-          onKeyDown={(e) => {
-            if (isSubmitKey(e)) {
-              e.preventDefault();
-              send();
-            }
-          }}
-        />
-        <div className="dock-actions">
+        }}
+      >
+        <PromptInputActions className="flex-1 flex-wrap justify-end">
           <span className={chipClass}>
             {session === null
               ? "No session selected"
@@ -632,9 +636,10 @@ export function Composer({
               </button>
             </div>
           </details>
-          <button
+          <Button
             type="button"
-            className="send"
+            size="icon"
+            className="rounded-full"
             aria-label={editing ? "Send edited message" : "send this turn"}
             disabled={
               !live ||
@@ -646,9 +651,9 @@ export function Composer({
             onClick={send}
           >
             <SendIcon />
-          </button>
-        </div>
-      </div>
+          </Button>
+        </PromptInputActions>
+      </PromptInput>
 
       {session !== null && session.resumed && removed === null ? (
         <p className="dock-note">

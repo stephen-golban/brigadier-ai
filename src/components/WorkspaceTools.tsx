@@ -42,6 +42,7 @@ export function WorkspaceTools({
   onData,
   models,
   reviewTurn = null,
+  visible = true,
 }: {
   context: WorkspaceContext;
   root: string;
@@ -62,6 +63,7 @@ export function WorkspaceTools({
   onData: (d: WorkbenchData) => void;
   models: ModelInfo[];
   reviewTurn?: string | null;
+  visible?: boolean;
 }) {
   const [width, setWidth] = useState(
     () => Number(localStorage.getItem("brigadier:workspace-width")) || 350,
@@ -139,9 +141,9 @@ export function WorkspaceTools({
         <FolderIcon />
         <span>{root.split("/").pop()}</span>
         <span className="grow" />
-        <span>{status?.branch}</span>
+        {mode !== "changes" && <span>{status?.branch}</span>}
       </div>
-      <div className="workspace-tool-body">
+      <div className="workspace-tool-body" data-mode={mode}>
         <div hidden={mode !== "files"}>
           <div className="section-heading">
             <b>Explorer</b>
@@ -155,33 +157,36 @@ export function WorkspaceTools({
             onOpen={(p) => onOpen(p, "file")}
           />
         </div>
-        <div hidden={mode !== "changes"}>
-          {mode === "changes" && context.sessionId && (
-            <SessionReview
-              turn={reviewTurn}
-              sessionId={context.sessionId}
-              onOpen={(path) =>
-                window.dispatchEvent(
-                  new CustomEvent("workbench-recorded-diff", {
-                    detail: {
-                      sessionId: context.sessionId,
-                      path,
-                      turn: reviewTurn,
-                    },
-                  }),
-                )
-              }
-            />
+        <div hidden={mode !== "changes"} className="workspace-changes">
+          {visible && mode === "changes" && (
+            <SourceControl
+              context={context}
+              status={status}
+              refresh={refresh}
+              onOpen={onOpen}
+              data={data}
+              onData={onData}
+              models={models}
+            >
+              {mode === "changes" && context.sessionId && (
+                <SessionReview
+                  turn={reviewTurn}
+                  sessionId={context.sessionId}
+                  onOpen={(path) =>
+                    window.dispatchEvent(
+                      new CustomEvent("workbench-recorded-diff", {
+                        detail: {
+                          sessionId: context.sessionId,
+                          path,
+                          turn: reviewTurn,
+                        },
+                      }),
+                    )
+                  }
+                />
+              )}
+            </SourceControl>
           )}
-          <SourceControl
-            context={context}
-            status={status}
-            refresh={refresh}
-            onOpen={onOpen}
-            data={data}
-            onData={onData}
-            models={models}
-          />
         </div>
         <div hidden={mode !== "search"}>
           <ProjectSearch

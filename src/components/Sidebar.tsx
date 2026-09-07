@@ -1,41 +1,96 @@
-import { useEffect, useState, type ReactNode } from "react";
+// Sidebar-10 composition adapted from shadcn/ui. See THIRD_PARTY_NOTICES.md.
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
-  FolderIcon,
-  PlusIcon,
-  CaretDownIcon,
-  GearSixIcon,
-  PencilSimpleIcon,
-  TrashIcon,
-  NotebookIcon,
-  ChatCircleIcon,
-} from "@phosphor-icons/react";
+  ChevronRight,
+  FileText,
+  Folder,
+  MoreHorizontal,
+  Plus,
+  Search,
+  Settings,
+  Pin,
+  Trash2,
+  Pencil,
+  Check,
+  X,
+} from "lucide-react";
 import type { SessionRuntime } from "../feedStore";
 import type {
   AppError,
   AppInfo,
   ClaudeStatus,
-  ProjectDeletion,
   ProjectId,
   ProjectView,
-  SessionDeletion,
   SessionId,
 } from "../wire";
 import {
   workbenchApi,
   defaultSettings,
   type WorkbenchData,
-  type Note,
 } from "../workbenchApi";
+import {
+  navigationApi,
+  useNavigationData,
+  isTrashed,
+  type TrashKind,
+} from "../navigationApi";
 import { errorMessage } from "../workspaceApi";
 import { notify } from "../desktopApi";
 import { working } from "../attention";
 import { DesktopSettings } from "./DesktopSettings";
-import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
 import { BrandMark } from "./BrandMark";
-export type DeleteAnswer<T> =
-  { deletion: T; error: null } | { deletion: null; error: AppError };
-export type SessionDeleteAnswer = DeleteAnswer<SessionDeletion>;
-export type ProjectDeleteAnswer = DeleteAnswer<ProjectDeletion>;
+import { NotesLibrary } from "./NotesLibrary";
+import { TrashLibrary } from "./TrashLibrary";
+import { ActionDialog, type PendingAction } from "./ActionDialog";
+import { Button } from "./ui/button";
+import { Input } from "./ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "./ui/dialog";
+import {
+  CommandDialog,
+  CommandInput,
+  CommandList,
+  CommandEmpty,
+  CommandGroup,
+  CommandItem,
+} from "./ui/command";
+import {
+  Sidebar as SidebarPrimitive,
+  SidebarHeader,
+  SidebarContent,
+  SidebarFooter,
+  SidebarGroup,
+  SidebarGroupLabel,
+  SidebarGroupContent,
+  SidebarMenu,
+  SidebarMenuItem,
+  SidebarMenuButton,
+  SidebarMenuAction,
+  SidebarMenuSub,
+  SidebarMenuSubItem,
+  SidebarMenuSubButton,
+  SidebarRail,
+  useSidebar,
+} from "./ui/sidebar";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "./ui/collapsible";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuLabel,
+} from "./ui/dropdown-menu";
+import { useStoredState } from "../workbenchState";
 
 export interface SidebarProps {
   titles?: Record<string, string>;
@@ -79,369 +134,774 @@ export interface SidebarProps {
    * not drawn at all rather than drawn dead.
    */
   onReveal?: (path: string) => void;
-  /** Remove Brigadier history; preserve repository and worktree files. */
-  onDeleteSession?: (
-    sessionId: SessionId,
-    force: boolean,
-  ) => Promise<SessionDeleteAnswer>;
-  onDeleteProject?: (
-    projectId: ProjectId,
-    force: boolean,
-  ) => Promise<ProjectDeleteAnswer>;
+
 }
 
+const colors: Record<string, string> = {
+  red: "#ef4444",
+  orange: "#f97316",
+  amber: "#fbbf24",
+  green: "#22c55e",
+  blue: "#3b82f6",
+  violet: "#8b5cf6",
+  pink: "#ec4899",
+};
+const icons = new Map<string, Promise<string | null>>();
+function ProjectIcon({ project }: { project: ProjectView }) {
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    const key = `${project.id}:${project.root_path}`;
+    if (!icons.has(key))
+      icons.set(
+        key,
+        navigationApi.icon(project.id).catch(() => null),
+      );
+    void icons.get(key)!.then((value) => {
+      if (live) setSrc(value);
+    });
+    return () => {
+      live = false;
+    };
+  }, [project.id, project.root_path]);
+  return src ? (
+    <img
+      src={src}
+      alt=""
+      className="size-4 shrink-0 object-contain"
+      onError={() => setSrc(null)}
+    />
+  ) : (
+    <Folder className="size-4 shrink-0" />
+  );
+}
 export function Sidebar(props: SidebarProps) {
+  const { data: navigation, error: navigationError } = useNavigationData();
+  const { isMobile, setOpenMobile } = useSidebar();
   const [data, setData] = useState<WorkbenchData>({
     notes: [],
     global: defaultSettings,
     projects: {},
   });
-  const [notesOpen, setNotesOpen] = useState(true);
-  const [settings, setSettings] = useState(false);
-  const [confirm, setConfirm] = useState<Confirmation | null>(null);
-  const [renaming, setRenaming] = useState<{
-    kind: "project" | "note";
-    id: string;
-    name: string;
-  } | null>(null);
-  const [projectMenu, setProjectMenu] = useState<string | null>(null);
-  const [addPath, setAddPath] = useState<string | null>(null);
+  const [expanded, setExpanded] = useStoredState<Record<string, boolean>>(
+    "brigadier:project-expanded:v1",
+    {},
+  );
+  const [all, setAll] = useState<Set<string>>(new Set());
+  const [settings, setSettings] = useState(false),
+    [notes, setNotes] = useState(false),
+    [trash, setTrash] = useState(false),
+    [search, setSearch] = useState(false);
+  const [noteId, setNoteId] = useState<string | undefined>();
+  const [action, setAction] = useState<PendingAction | null>(null);
+  const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(
+    null,
+  );
+  const [addPath, setAddPath] = useState<string | null>(null),
+    [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const saving = useRef(false);
   useEffect(() => {
-    const startProject = () => {
-      if (props.projects.length) return;
-      if (props.onPickProject) void props.onPickProject().then(error=>{if(error){notify(error.message,true);setAddPath("");}});
-      else setAddPath("");
+    let live = true,
+      revision = 0;
+    const refresh = () => {
+      const request = ++revision;
+      void workbenchApi
+        .load()
+        .then((d) => {
+          if (live && request === revision) setData(d);
+        })
+        .catch((e) => {
+          if (live) setError(errorMessage(e));
+        });
     };
-    window.addEventListener("brigadier-onboarding-complete",startProject);
-    return()=>window.removeEventListener("brigadier-onboarding-complete",startProject);
-  },[props.projects.length,props.onPickProject]);
-  useEffect(() => {
-    let live = true;
-    let timer: ReturnType<typeof setTimeout>;
-    const load = async () => {
-      try {
-        const d = await workbenchApi.load();
-        if (live) setData(d);
-      } catch (e) {
-        if (live) notify(errorMessage(e), true);
-      } finally {
-        if (live) timer = setTimeout(load, 2500);
+    refresh();
+    const timer = setInterval(refresh, 2500);
+    const show = () => setSettings(true);
+    const openNotes = () => {
+      setNoteId(undefined);
+      setNotes(true);
+    };
+    const key = (e: KeyboardEvent) => {
+      if (
+        (e.metaKey || e.ctrlKey) &&
+        !e.altKey &&
+        e.key.toLowerCase() === "k"
+      ) {
+        e.preventDefault();
+        setSearch((s) => !s);
       }
     };
-    void load();
-    const refresh = () => {
-      clearTimeout(timer);
-      void load();
-    };
-    const show = () => setSettings(true);
     window.addEventListener("workbench-data-changed", refresh);
     window.addEventListener("brigadier-settings", show);
+    window.addEventListener("brigadier-open-notes", openNotes);
+    window.addEventListener("keydown", key);
     return () => {
       live = false;
-      clearTimeout(timer);
+      clearInterval(timer);
       window.removeEventListener("workbench-data-changed", refresh);
       window.removeEventListener("brigadier-settings", show);
+      window.removeEventListener("brigadier-open-notes", openNotes);
+      window.removeEventListener("keydown", key);
     };
   }, []);
   const changed = (next: WorkbenchData) => {
     setData(next);
     window.dispatchEvent(new Event("workbench-data-changed"));
   };
-  const showNote = (note: Note) =>
-    window.dispatchEvent(
-      new CustomEvent("workbench-open-note", { detail: note }),
-    );
-  const newNote = () => {
-    const names = new Set(data.notes.map((n) => n.title));
-    let title = "Untitled note",
-      n = 2;
-    while (names.has(title)) title = `Untitled note ${n++}`;
-    void workbenchApi
-      .saveNote({
-        id: crypto.randomUUID(),
-        projectId: null,
-        title,
-        content: "",
-        language: "markdown",
-        alwaysInclude: false,
-        revision: 0,
-      })
-      .then((note) => {
-        changed({ ...data, notes: [...data.notes, note] });
-        setNotesOpen(true);
-        showNote(note);
-      })
+  const closeMobile = () => {
+    if (isMobile) setOpenMobile(false);
+  };
+  const selectProject = (id: string) => {
+    props.onSelectProject(id);
+    closeMobile();
+  };
+  const selectSession = (id: string) => {
+    props.onSelectSession(id);
+    closeMobile();
+  };
+  const addProject = async () => {
+    if (busy) return;
+    setError("");
+    if (!props.onPickProject) {
+      setAddPath("");
+      return;
+    }
+    setBusy(true);
+    try {
+      const e = await props.onPickProject();
+      if (e) {
+        setError(e.message);
+        setAddPath("");
+      }
+    } catch (e) {
+      setError(errorMessage(e));
+      setAddPath("");
+    } finally {
+      setBusy(false);
+    }
+  };
+  useEffect(() => {
+    const start = () => {
+      if (!props.projects.length) void addProject();
+    };
+    window.addEventListener("brigadier-onboarding-complete", start);
+    return () =>
+      window.removeEventListener("brigadier-onboarding-complete", start);
+  }, [props.projects.length, props.onPickProject]);
+  const customize = (
+    kind: "color" | "pin",
+    id: string,
+    value: string | null,
+  ) => {
+    void navigationApi
+      .customize(kind, id, value)
       .catch((e) => notify(errorMessage(e), true));
   };
   const rename = async () => {
-    if (!renaming || !renaming.name.trim()) return;
+    if (!renaming || saving.current) return;
+    saving.current = true;
+    setBusy(true);
+    setError("");
     try {
-      if (renaming.kind === "project")
-        changed(
-          await workbenchApi.saveDesktopSettings(data.displayName ?? "", {
-            ...data.projectNames,
-            [renaming.id]: renaming.name.trim(),
-          }),
-        );
-      else {
-        const note = data.notes.find((n) => n.id === renaming.id);
-        if (note) {
-          const saved = await workbenchApi.saveNote({
-            ...note,
-            title: renaming.name.trim(),
-          });
-          changed({
-            ...data,
-            notes: data.notes.map((n) => (n.id === saved.id ? saved : n)),
-          });
-        }
-      }
+      await navigationApi.customize("name", renaming.id, renaming.name);
       setRenaming(null);
+      setData(await workbenchApi.load());
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      saving.current = false;
+      setBusy(false);
+    }
+  };
+  const moveToTrash = async (kind: TrashKind, id: string) => {
+    try {
+      const plan = await navigationApi.preview(kind, id);
+      setAction({
+        title: plan.running.length
+          ? "Stop and move to Trash?"
+          : "Move to Trash?",
+        label: plan.running.length ? "Stop and move to Trash" : "Move to Trash",
+        destructive: true,
+        description: (
+          <div className="space-y-2">
+            <p>
+              “{plan.entry.title}” can be restored from Trash. Repository files
+              and worktrees stay on disk.
+            </p>
+            {plan.running.length > 0 && (
+              <>
+                <p>These running sessions will stop first:</p>
+                <ul className="max-h-44 list-disc overflow-auto pl-5">
+                  {plan.running.map((s) => (
+                    <li key={s}>{props.titles?.[s] ?? s}</li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </div>
+        ),
+        run: async () => {
+          await navigationApi.move(plan);
+          window.dispatchEvent(
+            new CustomEvent("workbench-items-trashed", { detail: plan.entry }),
+          );
+        },
+      });
     } catch (e) {
       notify(errorMessage(e), true);
     }
   };
-  return (
-    <aside className="sidebar desktop-sidebar">
-      <div className="sidebar-brand"><BrandMark />Brigadier</div>
-      <button
-        className="sidebar-action"
-        onClick={() => window.dispatchEvent(new Event("workbench-new-session"))}
+  const activeProjects = props.projects.filter(
+    (p) => !isTrashed(navigation, "project", p.id),
+  );
+  const activeSessions = Object.values(props.sessions).filter(
+    (s) =>
+      !isTrashed(navigation, "session", s.sessionId) &&
+      !isTrashed(navigation, "project", s.projectId),
+  );
+  const title = (id: string) => props.titles?.[id] ?? `Session ${id.slice(-6)}`;
+  const projectName = (p: ProjectView) => data.projectNames?.[p.id] ?? p.name;
+  const sessionRow = (s: SessionRuntime, pinned = false) => (
+    <SidebarMenuSubItem key={s.sessionId} className="group/session relative">
+      <SidebarMenuSubButton
+        asChild
+        isActive={props.selectedSessionId === s.sessionId}
+        className="pr-8"
       >
-        <ChatCircleIcon />
-        New session
-      </button>
-      <div className="sidebar-section-heading">
-        <span>Projects</span>
         <button
-          className="icon-button"
-          aria-label="Add project"
-          onClick={() => {
-            if (props.onPickProject)
-              void props.onPickProject().then((error) => {
-                if (error) {
-                  notify(error.message, true);
-                  setAddPath("");
-                }
-              });
-            else setAddPath("");
-          }}
+          onClick={() => selectSession(s.sessionId)}
+          title={title(s.sessionId)}
         >
-          <PlusIcon />
+          {pinned && <Pin className="size-3" />}
+          <span className="truncate">{title(s.sessionId)}</span>
+          {working(s) && (
+            <i className="status-spinner" role="img" aria-label="Working" />
+          )}
+          {props.attention?.[s.sessionId] && (
+            <i
+              className="attention-dot"
+              role="img"
+              aria-label="Needs attention"
+            />
+          )}
         </button>
-      </div>
-      {addPath !== null && (
-        <form
-          className="sidebar-add"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void Promise.resolve(props.onAddProject(addPath)).then((error) => {
-              if (error) notify(error.message, true);
-              else setAddPath(null);
-            });
-          }}
-        >
-          <input
-            autoFocus
-            aria-label="Project path"
-            value={addPath}
-            onChange={(e) => setAddPath(e.target.value)}
-            placeholder="Project folder"
-          />
-          <button>Add</button>
-        </form>
-      )}
-      <nav className="project-list" aria-label="Projects">
-        {props.projects.map((project) => {
-          const sessions = Object.values(props.sessions).filter(
-            (s) => s.projectId === project.id,
-          );
-          const busy = sessions.some(working);
-          const attention =
-            !!props.pendingApprovals?.[project.id] ||
-            sessions.some((s) => props.attention?.[s.sessionId]);
-          return (
-            <div
-              className={`project-row ${props.selectedProjectId === project.id ? "selected" : ""}`}
-              key={project.id}
+      </SidebarMenuSubButton>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <SidebarMenuAction
+            showOnHover
+            aria-label={`Session actions ${title(s.sessionId)}`}
+          >
+            <MoreHorizontal />
+          </SidebarMenuAction>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent side={isMobile ? "bottom" : "right"} align="start">
+          <DropdownMenuItem
+            onSelect={() =>
+              customize(
+                "pin",
+                s.sessionId,
+                navigation.pinnedSessions.includes(s.sessionId)
+                  ? null
+                  : "pinned",
+              )
+            }
+          >
+            <Pin />
+            {navigation.pinnedSessions.includes(s.sessionId)
+              ? "Unpin session"
+              : "Pin session"}
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            variant="destructive"
+            onSelect={() => void moveToTrash("session", s.sessionId)}
+          >
+            <Trash2 />
+            Move to Trash
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </SidebarMenuSubItem>
+  );
+  return (
+    <>
+      <SidebarPrimitive
+        className="border-r-0"
+        collapsible="offcanvas"
+        aria-label="Main navigation"
+      >
+        <SidebarHeader>
+          <div
+            className="flex h-12 items-center gap-2 px-2 font-semibold"
+            data-tauri-drag-region
+          >
+            <BrandMark className="size-6 shrink-0" />
+            <span>Brigadier</span>
+          </div>
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <SidebarMenuButton onClick={() => setSearch(true)}>
+                <Search />
+                <span>Search</span>
+                <kbd className="ml-auto text-xs text-muted-foreground">⌘K</kbd>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </SidebarHeader>
+        <SidebarContent>
+          {navigationError && (
+            <p role="alert" className="px-4 text-xs text-destructive">
+              {navigationError}
+            </p>
+          )}
+          {navigation.pinnedSessions.some((id) =>
+            activeSessions.some((s) => s.sessionId === id),
+          ) && (
+            <SidebarGroup>
+              <SidebarGroupLabel>Pinned</SidebarGroupLabel>
+              <SidebarMenu>
+                {navigation.pinnedSessions
+                  .map((id) => activeSessions.find((s) => s.sessionId === id))
+                  .filter((s): s is SessionRuntime => !!s)
+                  .map((s) => sessionRow(s, true))}
+              </SidebarMenu>
+            </SidebarGroup>
+          )}
+          <SidebarGroup>
+            <SidebarGroupLabel>Projects</SidebarGroupLabel>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="absolute top-1 right-2 size-7"
+              aria-label="Add project"
+              disabled={busy}
+              onClick={() => void addProject()}
             >
-              <button
-                className="project-select"
-                title={project.root_path}
-                aria-current={
-                  props.selectedProjectId === project.id ? "page" : undefined
-                }
-                onClick={() => props.onSelectProject(project.id)}
-              >
-                <FolderIcon />
-                <span>{data.projectNames?.[project.id] ?? project.name}</span>
-                {busy && (
-                  <i
-                    className="status-spinner"
-                    role="img"
-                    aria-label="Working"
-                  />
-                )}
-                {attention && (
-                  <i
-                    className="attention-dot"
-                    role="img"
-                    aria-label="Needs attention"
-                  />
-                )}
-              </button>
-              <button
-                className="icon-button row-menu"
-                aria-label={`Project actions ${project.name}`}
-                onClick={() =>
-                  setProjectMenu(projectMenu === project.id ? null : project.id)
-                }
-              >
-                ···
-              </button>
-              {projectMenu === project.id && (
-                <div className="project-menu">
-                  {props.onReveal && (
-                    <button
-                      onClick={() => {
-                        props.onReveal?.(project.root_path);
-                        setProjectMenu(null);
-                      }}
-                    >
-                      Reveal in Finder
-                    </button>
-                  )}
-                  {props.onDeleteProject && (
-                    <button
-                      onClick={() =>
-                        setConfirm({
-                          title: "Remove project?",
-                          body: "Remove this project and its session history from Brigadier. Files on disk stay in place.",
-                          confirmLabel: "Remove project",
-                          onCancel: () => setConfirm(null),
-                          onConfirm: async () => {
-                            const result = await props.onDeleteProject!(
-                              project.id,
-                              false,
-                            );
-                            if (result.error)
-                              throw new Error(result.error.message);
-                            setConfirm(null);
-                            setProjectMenu(null);
-                          },
-                        })
+              <Plus />
+            </Button>
+            <SidebarGroupContent role="navigation" aria-label="Projects">
+              <SidebarMenu>
+                {activeProjects.map((project) => {
+                  const sessions = activeSessions
+                    .filter((s) => s.projectId === project.id)
+                    .sort(
+                      (a, b) => (b.startedAtMs ?? 0) - (a.startedAtMs ?? 0),
+                    );
+                  const open =
+                    expanded[project.id] ??
+                    props.selectedProjectId === project.id;
+                  const selected = props.selectedProjectId === project.id;
+                  return (
+                    <Collapsible
+                      key={project.id}
+                      open={open}
+                      onOpenChange={(value) =>
+                        setExpanded((old) => ({ ...old, [project.id]: value }))
                       }
+                      asChild
                     >
-                      Remove project
-                    </button>
-                  )}
-                </div>
-              )}
-              <button
-                className="icon-button row-menu"
-                aria-label={`Rename ${project.name}`}
-                onClick={() =>
-                  setRenaming({
-                    kind: "project",
-                    id: project.id,
-                    name: data.projectNames?.[project.id] ?? project.name,
-                  })
-                }
+                      <SidebarMenuItem className="group/project">
+                        {renaming?.id === project.id ? (
+                          <div className="flex items-center gap-1">
+                            <Input
+                              autoFocus
+                              aria-label="New name"
+                              value={renaming.name}
+                              maxLength={200}
+                              disabled={busy}
+                              onChange={(e) =>
+                                setRenaming({
+                                  ...renaming,
+                                  name: e.target.value,
+                                })
+                              }
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                  e.preventDefault();
+                                  void rename();
+                                }
+                                if (e.key === "Escape") setRenaming(null);
+                              }}
+                              onFocus={(e) => e.currentTarget.select()}
+                              className="h-8"
+                            />
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="size-7"
+                              aria-label="Save project name"
+                              disabled={busy}
+                              onClick={() => void rename()}
+                            >
+                              <Check />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="size-7"
+                              aria-label="Cancel rename"
+                              disabled={busy}
+                              onClick={() => setRenaming(null)}
+                            >
+                              <X />
+                            </Button>
+                          </div>
+                        ) : (
+                          <>
+                            <SidebarMenuButton
+                              isActive={selected}
+                              className="pr-16"
+                              title={project.root_path}
+                              aria-current={selected ? "page" : undefined}
+                              onClick={() => selectProject(project.id)}
+                              onDoubleClick={() =>
+                                setRenaming({
+                                  id: project.id,
+                                  name: projectName(project),
+                                })
+                              }
+                            >
+                              <ProjectIcon project={project} />
+                              <span>{projectName(project)}</span>
+                              {navigation.projectColors[project.id] && (
+                                <span
+                                  aria-label={`${navigation.projectColors[project.id]} project tag`}
+                                  className="size-2 shrink-0 rounded-full"
+                                  style={{
+                                    backgroundColor:
+                                      colors[
+                                        navigation.projectColors[project.id]!
+                                      ],
+                                  }}
+                                />
+                              )}
+                              {sessions.some(working) && (
+                                <i
+                                  className="status-spinner"
+                                  role="img"
+                                  aria-label="Working"
+                                />
+                              )}
+                              {props.pendingApprovals?.[project.id] ||
+                              sessions.some(
+                                (s) => props.attention?.[s.sessionId],
+                              ) ? (
+                                <i
+                                  className="attention-dot"
+                                  role="img"
+                                  aria-label="Needs attention"
+                                />
+                              ) : null}
+                            </SidebarMenuButton>
+                            <CollapsibleTrigger asChild>
+                              <SidebarMenuAction
+                                className="left-2 bg-sidebar opacity-0 group-hover/project:opacity-100 group-focus-within/project:opacity-100 data-[state=open]:rotate-90"
+                                aria-label={`${open ? "Collapse" : "Expand"} ${projectName(project)}`}
+                              >
+                                <ChevronRight />
+                              </SidebarMenuAction>
+                            </CollapsibleTrigger>
+                            <SidebarMenuAction
+                              className="right-8 opacity-0 group-hover/project:opacity-100 group-focus-within/project:opacity-100"
+                              aria-label={`New session in ${projectName(project)}`}
+                              onClick={() => {
+                                props.onSelectProject(project.id);
+                                setExpanded((old) => ({
+                                  ...old,
+                                  [project.id]: true,
+                                }));
+                                window.dispatchEvent(
+                                  new CustomEvent(
+                                    "brigadier-new-project-session",
+                                    { detail: project.id },
+                                  ),
+                                );
+                                closeMobile();
+                              }}
+                            >
+                              <Plus />
+                            </SidebarMenuAction>
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <SidebarMenuAction
+                                  showOnHover
+                                  aria-label={`Project actions ${projectName(project)}`}
+                                >
+                                  <MoreHorizontal />
+                                </SidebarMenuAction>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent
+                                className="w-56"
+                                side={isMobile ? "bottom" : "right"}
+                                align="start"
+                              >
+                                <DropdownMenuItem
+                                  onSelect={() =>
+                                    setRenaming({
+                                      id: project.id,
+                                      name: projectName(project),
+                                    })
+                                  }
+                                >
+                                  <Pencil />
+                                  Rename
+                                </DropdownMenuItem>
+                                {props.onReveal && (
+                                  <DropdownMenuItem
+                                    onSelect={() =>
+                                      props.onReveal?.(project.root_path)
+                                    }
+                                  >
+                                    <Folder />
+                                    Reveal in Finder
+                                  </DropdownMenuItem>
+                                )}
+                                <DropdownMenuSeparator />
+                                <DropdownMenuLabel>
+                                  Project color
+                                </DropdownMenuLabel>
+                                <div className="flex gap-1 px-2 pb-2">
+                                  {Object.entries(colors).map(
+                                    ([name, color]) => (
+                                      <Button
+                                        key={name}
+                                        variant="ghost"
+                                        size="icon"
+                                        className="size-6 rounded-full"
+                                        aria-label={`${name} tag`}
+                                        aria-pressed={
+                                          navigation.projectColors[
+                                            project.id
+                                          ] === name
+                                        }
+                                        onClick={() =>
+                                          customize("color", project.id, name)
+                                        }
+                                      >
+                                        <span
+                                          className="size-3 rounded-full"
+                                          style={{ backgroundColor: color }}
+                                        />
+                                      </Button>
+                                    ),
+                                  )}
+                                </div>
+                                <DropdownMenuItem
+                                  onSelect={() =>
+                                    customize("color", project.id, null)
+                                  }
+                                >
+                                  No color
+                                </DropdownMenuItem>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem
+                                  variant="destructive"
+                                  onSelect={() =>
+                                    void moveToTrash("project", project.id)
+                                  }
+                                >
+                                  <Trash2 />
+                                  Move to Trash
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </>
+                        )}
+                        <CollapsibleContent>
+                          <SidebarMenuSub>
+                            {(all.has(project.id)
+                              ? sessions
+                              : sessions.slice(0, 5)
+                            ).map((s) => sessionRow(s))}
+                            {sessions.length > 5 && (
+                              <SidebarMenuSubItem>
+                                <SidebarMenuSubButton asChild>
+                                  <button
+                                    onClick={() =>
+                                      setAll((old) => {
+                                        const next = new Set(old);
+                                        if (next.has(project.id))
+                                          next.delete(project.id);
+                                        else next.add(project.id);
+                                        return next;
+                                      })
+                                    }
+                                  >
+                                    {all.has(project.id)
+                                      ? "Show less"
+                                      : `Show more (${sessions.length - 5})`}
+                                  </button>
+                                </SidebarMenuSubButton>
+                              </SidebarMenuSubItem>
+                            )}
+                            {!sessions.length && (
+                              <li className="py-2 text-xs text-muted-foreground">
+                                No sessions yet
+                              </li>
+                            )}
+                          </SidebarMenuSub>
+                        </CollapsibleContent>
+                      </SidebarMenuItem>
+                    </Collapsible>
+                  );
+                })}
+              </SidebarMenu>
+            </SidebarGroupContent>
+            {!activeProjects.length && (
+              <p className="px-2 py-4 text-xs text-muted-foreground">
+                Add a project to get started.
+              </p>
+            )}
+            {error && addPath === null && (
+              <p role="alert" className="px-2 text-xs text-destructive">
+                {error}
+              </p>
+            )}
+          </SidebarGroup>
+        </SidebarContent>
+        <SidebarFooter>
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <SidebarMenuButton onClick={() => setSettings(true)}>
+                <Settings />
+                <span>Settings</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                onClick={() => {
+                  setNoteId(undefined);
+                  setNotes(true);
+                }}
               >
-                <PencilSimpleIcon />
-              </button>
-            </div>
-          );
-        })}
-      </nav>
-      <div className="sidebar-section-heading notes-heading">
-        <button
-          aria-expanded={notesOpen}
-          onClick={() => setNotesOpen(!notesOpen)}
-        >
-          <CaretDownIcon className={notesOpen ? "" : "closed"} />
-          Notes
-        </button>
-        <button className="icon-button" aria-label="Add note" onClick={newNote}>
-          <PlusIcon />
-        </button>
-      </div>
-      {notesOpen && (
-        <div className="sidebar-notes">
-          {data.notesError ? (
-            <button
-              className="notes-reconnect"
-              onClick={() => setSettings(true)}
-            >
-              Reconnect notes folder
-            </button>
-          ) : (
-            data.notes.map((note) => (
-              <div className="note-row" key={note.id}>
-                <button className="note-select" onClick={() => showNote(note)}>
-                  <NotebookIcon />
-                  <span>{note.title}</span>
-                </button>
-                <button
-                  className="icon-button row-menu"
-                  aria-label={`Rename note ${note.title}`}
-                  onClick={() =>
-                    setRenaming({ kind: "note", id: note.id, name: note.title })
-                  }
+                <FileText />
+                <span>Notes</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton onClick={() => setTrash(true)}>
+                <Trash2 />
+                <span>Trash</span>
+                {navigation.trash.length > 0 && (
+                  <span className="ml-auto text-xs text-muted-foreground">
+                    {navigation.trash.length}
+                  </span>
+                )}
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </SidebarFooter>
+        <SidebarRail />
+      </SidebarPrimitive>
+      <CommandDialog
+        open={search}
+        onOpenChange={setSearch}
+        title="Search"
+        description="Find a project, session, or note by name."
+      >
+        <CommandInput placeholder="Search projects, sessions, notes…" />
+        <CommandList>
+          <CommandEmpty>No matches.</CommandEmpty>
+          <CommandGroup heading="Projects">
+            {activeProjects.map((p) => (
+              <CommandItem
+                key={p.id}
+                value={`project ${p.id} ${projectName(p)}`}
+                onSelect={() => {
+                  selectProject(p.id);
+                  setSearch(false);
+                }}
+              >
+                <Folder />
+                {projectName(p)}
+              </CommandItem>
+            ))}
+          </CommandGroup>
+          <CommandGroup heading="Sessions">
+            {activeSessions.map((s) => (
+              <CommandItem
+                key={s.sessionId}
+                value={`session ${s.sessionId} ${title(s.sessionId)} ${activeProjects.find((p) => p.id === s.projectId)?.name ?? ""}`}
+                onSelect={() => {
+                  selectSession(s.sessionId);
+                  setSearch(false);
+                }}
+              >
+                <FileText />
+                <span className="truncate">{title(s.sessionId)}</span>
+              </CommandItem>
+            ))}
+          </CommandGroup>
+          <CommandGroup heading="Notes">
+            {data.notes
+              .filter((n) => !isTrashed(navigation, "note", n.id))
+              .map((n) => (
+                <CommandItem
+                  key={n.id}
+                  value={`note ${n.id} ${n.title}`}
+                  onSelect={() => {
+                    setNoteId(n.id);
+                    setNotes(true);
+                    setSearch(false);
+                  }}
                 >
-                  <PencilSimpleIcon />
-                </button>
-                <button
-                  className="icon-button row-menu"
-                  aria-label={`Delete note ${note.title}`}
-                  onClick={() =>
-                    setConfirm({
-                      title: "Delete note?",
-                      body: `“${note.title}” will be removed from your notes folder.`,
-                      confirmLabel: "Delete note",
-                      onCancel: () => setConfirm(null),
-                      onConfirm: async () => {
-                        await workbenchApi.deleteNote(note.id);
-                        changed({
-                          ...data,
-                          notes: data.notes.filter((n) => n.id !== note.id),
-                        });
-                        window.dispatchEvent(
-                          new CustomEvent("workbench-note-deleted", {
-                            detail: note.id,
-                          }),
-                        );
-                        setConfirm(null);
-                      },
-                    })
-                  }
-                >
-                  <TrashIcon />
-                </button>
-              </div>
-            ))
-          )}
-          {!data.notes.length && !data.notesError && (
-            <button className="empty-notes" onClick={newNote}>
-              Create your first note
-            </button>
-          )}
-        </div>
-      )}
-      <footer className="sidebar-footer">
-        <span className="user-avatar">
-          {(data.displayName || "U").slice(0, 1).toUpperCase()}
-        </span>
-        <span>{data.displayName || "Local user"}</span>
-        <button
-          className="icon-button"
-          aria-label="Settings"
-          title="Settings (⌘,)"
-          onClick={() => setSettings(true)}
-        >
-          <GearSixIcon size={21} />
-        </button>
-      </footer>
+                  <FileText />
+                  {n.title}
+                </CommandItem>
+              ))}
+          </CommandGroup>
+        </CommandList>
+      </CommandDialog>
+      <Dialog
+        open={addPath !== null}
+        onOpenChange={(open) => {
+          if (!open && !busy) setAddPath(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add project</DialogTitle>
+            <DialogDescription>
+              Choose the repository folder to open in Brigadier.
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            className="space-y-3"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (busy || !addPath?.trim()) return;
+              setBusy(true);
+              setError("");
+              void Promise.resolve(props.onAddProject(addPath.trim()))
+                .then((result) => {
+                  if (result) setError(result.message);
+                  else setAddPath(null);
+                })
+                .catch((e) => setError(errorMessage(e)))
+                .finally(() => setBusy(false));
+            }}
+          >
+            <Input
+              autoFocus
+              aria-label="Project path"
+              placeholder="Project folder"
+              value={addPath ?? ""}
+              onChange={(e) => setAddPath(e.target.value)}
+              disabled={busy}
+            />
+            {error && (
+              <p role="alert" className="text-sm text-destructive">
+                {error}
+              </p>
+            )}
+            <Button disabled={busy || !addPath?.trim()} type="submit">
+              {busy ? "Adding…" : "Add"}
+            </Button>
+          </form>
+        </DialogContent>
+      </Dialog>
       {settings && (
         <DesktopSettings
           data={data}
@@ -452,31 +912,21 @@ export function Sidebar(props: SidebarProps) {
           onClose={() => setSettings(false)}
         />
       )}
-      {renaming && (
-        <ConfirmDialog
-          title={renaming.kind === "project" ? "Rename project" : "Rename note"}
-          body={
-            <label>
-              Display name
-              <input
-                autoFocus
-                aria-label="New name"
-                value={renaming.name}
-                onChange={(e) =>
-                  setRenaming({ ...renaming, name: e.target.value })
-                }
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") void rename();
-                }}
-              />
-            </label>
-          }
-          confirmLabel="Rename"
-          onCancel={() => setRenaming(null)}
-          onConfirm={rename}
+      {notes && (
+        <NotesLibrary
+          data={data}
+          navigation={navigation}
+          initialId={noteId}
+          onData={changed}
+          onClose={() => setNotes(false)}
         />
       )}
-      {confirm && <ConfirmDialog {...confirm} />}
-    </aside>
+      {trash && (
+        <TrashLibrary data={navigation} onClose={() => setTrash(false)} />
+      )}
+      {action && (
+        <ActionDialog action={action} onClose={() => setAction(null)} />
+      )}
+    </>
   );
 }

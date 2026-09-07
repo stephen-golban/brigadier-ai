@@ -1,3 +1,9 @@
+import { useNavigationData, isTrashed } from "./navigationApi";
+import {
+  SidebarProvider,
+  SidebarInset,
+  SidebarTrigger,
+} from "./components/ui/sidebar";
 import type { ChatItem } from "./workspaceApi";
 /** The desktop shell: project sidebar, conversation, composer and optional workspace.
  * Saved automation plans are collapsed project history. A selected session shows its chat.
@@ -32,7 +38,6 @@ import { useAttention } from "./attention";
 
 import { RunCard } from "./components/RunCard";
 import { Sidebar } from "./components/Sidebar";
-import type { ProjectDeleteAnswer, SessionDeleteAnswer } from "./components/Sidebar";
 import { runIsLive } from "./wire";
 import type {
   AppError,
@@ -130,21 +135,58 @@ const BURN_ROOT_MARKER = "brigadier-burn";
  */
 const BURN_UI = import.meta.env.DEV || import.meta.env.VITE_BURN === "1";
 
-
 export function App({ onReady }: { onReady?: () => void } = {}) {
-  const peers=usePeers();
-  const [workspaceOpen,setWorkspaceOpen]=useStoredState("brigadier:workspace-open",false);
-  const [sidebarOpen,setSidebarOpen]=useStoredState("brigadier:sidebar-open",true);
+  const peers = usePeers();
+  const [workspaceOpen, setWorkspaceOpen] = useStoredState(
+    "brigadier:workspace-open",
+    false,
+  );
+  const [sidebarOpen, setSidebarOpen] = useStoredState(
+    "brigadier:sidebar-open",
+    true,
+  );
 
-  const state = useSyncExternalStore(store.subscribe, store.getState);
+  const rawState = useSyncExternalStore(store.subscribe, store.getState);
+  const navigation = useNavigationData();
+  const state = useMemo(() => {
+    const sessions = Object.fromEntries(
+      Object.entries(rawState.sessions).filter(
+        ([id, session]) =>
+          navigation.loaded &&
+          !isTrashed(navigation.data, "session", id) &&
+          !isTrashed(navigation.data, "project", session.projectId),
+      ),
+    );
+    return {
+      ...rawState,
+      sessions,
+      order: rawState.order.filter((id) => !!sessions[id]),
+    };
+  }, [rawState, navigation.data, navigation.loaded]);
 
-  const [projects, setProjects] = useState<ProjectView[]>([]);
+  const [allProjects, setProjects] = useState<ProjectView[]>([]);
+  const projects = useMemo(
+    () =>
+      allProjects.filter(
+        (p) =>
+          navigation.loaded && !isTrashed(navigation.data, "project", p.id),
+      ),
+    [allProjects, navigation.data, navigation.loaded],
+  );
+  const [newSessionRequest, setNewSessionRequest] = useState<{
+    projectId: string;
+    token: number;
+  } | null>(null);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
   const [claude, setClaude] = useState<ClaudeStatus | null>(null);
   const [claudeError, setClaudeError] = useState<AppError | null>(null);
-  const [selectedProjectId, setSelectedProjectId] = useState<ProjectId | null>(null);
-  const [selectedSessionId, setSelectedSessionId] = useState<SessionId | null>(null);
+  const [selectedProjectId, setSelectedProjectId] = useState<ProjectId | null>(
+    null,
+  );
+  const [selectedSessionId, setSelectedSessionId] = useState<SessionId | null>(
+    null,
+  );
   const [editingMessage, setEditingMessage] = useState<ChatItem | null>(null);
   const [conversationRevision, setConversationRevision] = useState(0);
   useEffect(() => setEditingMessage(null), [selectedSessionId]);
@@ -186,7 +228,9 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
   const refetchTimer = useRef<number | null>(null);
 
   /** The B4 span in flight, and the session it was opened for. At most one, ever. */
-  const paintSpan = useRef<{ sessionId: SessionId; span: PaintedSpan } | null>(null);
+  const paintSpan = useRef<{ sessionId: SessionId; span: PaintedSpan } | null>(
+    null,
+  );
 
   const say = useCallback((e: unknown) => {
     const err = toAppError(e);
@@ -210,16 +254,17 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
     void b.subscribeFeed(store.pushBatch).catch(say);
 
     void (async () => {
-      const [info, projectList, modelList, sessionList, pending] = await Promise.all([
-        b.appInfo().catch(() => null),
-        b.listProjects().catch((e: unknown) => {
-          say(e);
-          return [] as ProjectView[];
-        }),
-        b.listModels().catch(() => [] as ModelInfo[]),
-        b.listSessions().catch(() => []),
-        b.pendingApprovals().catch(() => []),
-      ]);
+      const [info, projectList, modelList, sessionList, pending] =
+        await Promise.all([
+          b.appInfo().catch(() => null),
+          b.listProjects().catch((e: unknown) => {
+            say(e);
+            return [] as ProjectView[];
+          }),
+          b.listModels().catch(() => [] as ModelInfo[]),
+          b.listSessions().catch(() => []),
+          b.pendingApprovals().catch(() => []),
+        ]);
       if (cancelled) return;
       setAppInfo(info);
       setProjects(projectList);
@@ -228,7 +273,16 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
       setModels(modelList);
       store.seedSessions(sessionList);
       store.seedApprovals(pending);
-      if (projectList.length > 0) setSelectedProjectId((prev) => prev ?? projectList.find(p=>p.id===localStorage.getItem("brigadier:selected-project"))?.id ?? projectList[0]!.id);
+      if (projectList.length > 0)
+        setSelectedProjectId(
+          (prev) =>
+            prev ??
+            projectList.find(
+              (p) =>
+                p.id === localStorage.getItem("brigadier:selected-project"),
+            )?.id ??
+            projectList[0]!.id,
+        );
     })();
 
     void b
@@ -248,13 +302,46 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
 
   // Onboarding can fade only after the initial workspace data has committed.
   useEffect(() => {
-    if (projectsLoaded) onReady?.();
-  }, [projectsLoaded, onReady]);
+    if (projectsLoaded && (navigation.loaded || navigation.error)) onReady?.();
+  }, [projectsLoaded, navigation.loaded, navigation.error, onReady]);
+
+  useEffect(() => {
+    if (!navigation.loaded || !projectsLoaded) return;
+    if (!projects.some((p) => p.id === selectedProjectId)) {
+      setSelectedProjectId(projects[0]?.id ?? null);
+      setSelectedSessionId(null);
+    } else if (selectedSessionId && !state.sessions[selectedSessionId])
+      setSelectedSessionId(null);
+  }, [
+    navigation.loaded,
+    projectsLoaded,
+    projects,
+    selectedProjectId,
+    selectedSessionId,
+    state.sessions,
+  ]);
+  useEffect(() => {
+    const refresh = () => {
+      void refreshProjects().catch(say);
+    };
+    const create = (event: Event) => {
+      const projectId = (event as CustomEvent<string>).detail;
+      setSelectedProjectId(projectId);
+      setSelectedSessionId(null);
+      setNewSessionRequest({ projectId, token: Date.now() });
+    };
+    window.addEventListener("brigadier-navigation-changed", refresh);
+    window.addEventListener("brigadier-new-project-session", create);
+    return () => {
+      window.removeEventListener("brigadier-navigation-changed", refresh);
+      window.removeEventListener("brigadier-new-project-session", create);
+    };
+  }, [refreshProjects, say]);
 
   // Visibility drives what the Rust side bothers to send rows for.
   useEffect(() => {
     if (selectedProjectId === null) return;
-    localStorage.setItem("brigadier:selected-project",selectedProjectId);
+    localStorage.setItem("brigadier:selected-project", selectedProjectId);
     void bridge().setVisibleProjects([selectedProjectId]).catch(say);
   }, [selectedProjectId, say]);
 
@@ -391,20 +478,48 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
       if (owner !== null) setSelectedProjectId(owner);
     }
     setSelectedSessionId(id);
-    if(id)window.dispatchEvent(new CustomEvent('workbench-select-session',{detail:id}));
+    if (id)
+      window.dispatchEvent(
+        new CustomEvent("workbench-select-session", { detail: id }),
+      );
   }, []);
 
-  useEffect(()=>{if(bridge().isMock)return;void bridge().listSessions().then(store.seedSessions).catch(()=>{});void bridge().listModels().then(setModels).catch(()=>{});},[peers.origins,selectedSessionId]);
-  const selectedSession = selectedSessionId === null ? null : state.sessions[selectedSessionId] ?? null;
-  const openWorkspace = useCallback((path?:string) => {
-    if(path) window.dispatchEvent(new CustomEvent('workbench-open-file',{detail:{path}}));
+  useEffect(() => {
+    if (bridge().isMock) return;
+    void bridge()
+      .listSessions()
+      .then(store.seedSessions)
+      .catch(() => {});
+    void bridge()
+      .listModels()
+      .then(setModels)
+      .catch(() => {});
+  }, [peers.origins, selectedSessionId]);
+  const selectedSession =
+    selectedSessionId === null
+      ? null
+      : (state.sessions[selectedSessionId] ?? null);
+  const openWorkspace = useCallback((path?: string) => {
+    if (path)
+      window.dispatchEvent(
+        new CustomEvent("workbench-open-file", { detail: { path } }),
+      );
     else setWorkspaceOpen(true);
-  },[]);
-  useEffect(()=>{
-    const toggle=(event:KeyboardEvent)=>{if((event.metaKey||event.ctrlKey)&&event.altKey&&event.key.toLowerCase()==='b'){event.preventDefault();setWorkspaceOpen(open=>!open);}};
-    window.addEventListener('keydown',toggle);return()=>window.removeEventListener('keydown',toggle);
-  },[]);
-
+  }, []);
+  useEffect(() => {
+    const toggle = (event: KeyboardEvent) => {
+      if (
+        (event.metaKey || event.ctrlKey) &&
+        event.altKey &&
+        event.key.toLowerCase() === "b"
+      ) {
+        event.preventDefault();
+        setWorkspaceOpen((open) => !open);
+      }
+    };
+    window.addEventListener("keydown", toggle);
+    return () => window.removeEventListener("keydown", toggle);
+  }, []);
 
   /**
    * Every pending approval, whatever project it belongs to — the list is deliberately **not**
@@ -421,9 +536,12 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
       return {
         approval: a,
         projectId,
-        projectName: projectId === null ? null : byId.get(projectId)?.name ?? projectId,
+        projectName:
+          projectId === null ? null : (byId.get(projectId)?.name ?? projectId),
         elsewhere:
-          projectId !== null && selectedProjectId !== null && projectId !== selectedProjectId,
+          projectId !== null &&
+          selectedProjectId !== null &&
+          projectId !== selectedProjectId,
       };
     });
   }, [state.approvals, state.sessions, projects, selectedProjectId]);
@@ -439,10 +557,13 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
   }, [approvalRows]);
 
   /** Jump to the approval's session; its project too when the store knows it. */
-  const focusApproval = useCallback((projectId: ProjectId | null, sessionId: SessionId) => {
-    if (projectId !== null) setSelectedProjectId(projectId);
-    setSelectedSessionId(sessionId);
-  }, []);
+  const focusApproval = useCallback(
+    (projectId: ProjectId | null, sessionId: SessionId) => {
+      if (projectId !== null) setSelectedProjectId(projectId);
+      setSelectedSessionId(sessionId);
+    },
+    [],
+  );
 
   /**
    * Add a project by absolute path. `add_project` in Rust is the only validator — it refuses a
@@ -508,7 +629,10 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
           setSelectedSessionId(view.session_id);
           return true;
         })
-        .catch(e => { say(e); return false; });
+        .catch((e) => {
+          say(e);
+          return false;
+        });
     },
     [say],
   );
@@ -542,7 +666,10 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
    * the notice and reported to the composer as `null` so it leaves its own state alone.
    */
   const cleanupWorktree = useCallback(
-    async (sessionId: SessionId, force: boolean): Promise<WorktreeCleanup | null> => {
+    async (
+      sessionId: SessionId,
+      force: boolean,
+    ): Promise<WorktreeCleanup | null> => {
       setCommandBusy(true);
       try {
         const result = await bridge().cleanupWorktree(sessionId, force);
@@ -553,80 +680,6 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
         return null;
       } finally {
         setCommandBusy(false);
-      }
-    },
-    [say],
-  );
-
-  /** Delete history; the supervisor stops the process and preserves local files. */
-  const deleteSession = useCallback(
-    async (sessionId: SessionId, force: boolean): Promise<SessionDeleteAnswer> => {
-      try {
-        const deletion = await bridge().deleteSession(sessionId, force);
-        if (deletion.removed) {
-          store.dropSession(sessionId);
-          window.dispatchEvent(new CustomEvent("workbench-history-deleted", { detail: { sessionId } }));
-          // A B4 span open against this session can never settle now — its rows are gone — so it
-          // is cancelled rather than left to time out. The ref is read directly instead of going
-          // through `selectSession`, which would put the selection in this callback's dependency
-          // list and hand every `SessionRow` a fresh closure on every selection change.
-          if (paintSpan.current?.sessionId === sessionId) {
-            paintSpan.current.span.cancel();
-            paintSpan.current = null;
-          }
-          setSelectedSessionId((current) => (current === sessionId ? null : current));
-          setNotice(
-            `deleted session ${sessionId}: ${deletion.rows.feed} feed rows, ${deletion.logs_removed} logs` +
-              (deletion.branch === null ? "" : ` · branch ${deletion.branch} kept`),
-          );
-        }
-        return { deletion, error: null };
-      } catch (e) {
-        const error = toAppError(e);
-        say(error);
-        return { deletion: null, error };
-      }
-    },
-    [say],
-  );
-
-  /**
-   * Delete a project and every session under it.
-   *
-   * Same two-shaped answer as `deleteSession`, and one extra consequence: on `removed: true` the
-   * project's sessions are gone from the store as well, because the Rust side cascaded them —
-   * leaving their rows in the sidebar would draw sessions belonging to a project that no longer
-   * exists.
-   */
-  const deleteProject = useCallback(
-    async (projectId: ProjectId, force: boolean): Promise<ProjectDeleteAnswer> => {
-      try {
-        const deletion = await bridge().deleteProject(projectId, force);
-        if (deletion.removed) {
-          // Read before the drop: afterwards there is no row left to ask which project a session
-          // belonged to, and clearing the selection unconditionally would deselect a session in
-          // some *other* project.
-          const owned = store.getState().sessions;
-          store.dropProject(projectId);
-          window.dispatchEvent(new CustomEvent("workbench-history-deleted", { detail: { projectId } }));
-          setProjects((prev) => prev.filter((p) => p.id !== projectId));
-          setSelectedProjectId((current) => (current === projectId ? null : current));
-          if (paintSpan.current !== null && owned[paintSpan.current.sessionId]?.projectId === projectId) {
-            paintSpan.current.span.cancel();
-            paintSpan.current = null;
-          }
-          setSelectedSessionId((current) =>
-            current !== null && owned[current]?.projectId === projectId ? null : current,
-          );
-          setNotice(
-            `Project removed from Brigadier. Local files are kept.`,
-          );
-        }
-        return { deletion, error: null };
-      } catch (e) {
-        const error = toAppError(e);
-        say(error);
-        return { deletion: null, error };
       }
     },
     [say],
@@ -650,24 +703,27 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
    * stated rather than hidden — a `current_run` that starts failing shows as a card that stops
    * updating, not as an error. Every *operator-initiated* call below still reports.
    */
-  const refreshRun = useCallback(async (projectId: ProjectId | null): Promise<void> => {
-    runRequest.current = projectId;
-    if (projectId === null) {
-      setRun(null);
-      setIntents([]);
-      return;
-    }
-    const b = bridge();
-    const [view, list] = await Promise.all([
-      b.currentRun(projectId).catch(() => null),
-      b.unsettledIntents().catch(() => [] as IntentView[]),
-    ]);
-    // The selection moved while this was in flight: another fetch is already on its way, and
-    // painting this answer would put one project's plan under another project's name.
-    if (runRequest.current !== projectId) return;
-    setRun(view);
-    setIntents(list.filter(intent => intent.project_id === projectId));
-  }, []);
+  const refreshRun = useCallback(
+    async (projectId: ProjectId | null): Promise<void> => {
+      runRequest.current = projectId;
+      if (projectId === null) {
+        setRun(null);
+        setIntents([]);
+        return;
+      }
+      const b = bridge();
+      const [view, list] = await Promise.all([
+        b.currentRun(projectId).catch(() => null),
+        b.unsettledIntents().catch(() => [] as IntentView[]),
+      ]);
+      // The selection moved while this was in flight: another fetch is already on its way, and
+      // painting this answer would put one project's plan under another project's name.
+      if (runRequest.current !== projectId) return;
+      setRun(view);
+      setIntents(list.filter((intent) => intent.project_id === projectId));
+    },
+    [],
+  );
 
   /**
    * Two triggers, and both are the contract's.
@@ -739,15 +795,16 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
       // The temp-dir segment is the precise marker; the bare name is the fallback, and would
       // otherwise collide with an operator's own repo called `burn`.
       const candidates = list.filter(
-        (p) => p.root_path.includes(BURN_ROOT_MARKER) || p.name === BURN_PROJECT_NAME,
+        (p) =>
+          p.root_path.includes(BURN_ROOT_MARKER) ||
+          p.name === BURN_PROJECT_NAME,
       );
-      const burnProject = candidates
-        .slice()
-        .sort((a, b) => {
-          const marked = Number(b.root_path.includes(BURN_ROOT_MARKER)) -
-            Number(a.root_path.includes(BURN_ROOT_MARKER));
-          return marked !== 0 ? marked : b.created_at_ms - a.created_at_ms;
-        })[0];
+      const burnProject = candidates.slice().sort((a, b) => {
+        const marked =
+          Number(b.root_path.includes(BURN_ROOT_MARKER)) -
+          Number(a.root_path.includes(BURN_ROOT_MARKER));
+        return marked !== 0 ? marked : b.created_at_ms - a.created_at_ms;
+      })[0];
       if (burnProject === undefined) return;
       // The visibility effect above pushes `set_visible_projects([burnProject.id])` off this.
       setSelectedProjectId(burnProject.id);
@@ -757,18 +814,43 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
   );
 
   const selectedProject =
-    selectedProjectId === null ? null : projects.find((p) => p.id === selectedProjectId) ?? null;
+    selectedProjectId === null
+      ? null
+      : (projects.find((p) => p.id === selectedProjectId) ?? null);
   const pendingTotal = approvalRows.length;
-  const jobs=useCleanup();
-  const [viewedSession,setViewedSession]=useState<string|null>(null);
-  const attention=useAttention(state.sessions,viewedSession,[...approvalRows.map(r=>r.approval.sessionId),...peers.requests.filter(r=>!r.resolved).map(r=>r.to)]);
-  useEffect(()=>{const active=(e:Event)=>setViewedSession((e as CustomEvent<string|null>).detail);const toggle=()=>setSidebarOpen(v=>!v);window.addEventListener("workbench-active-session",active);window.addEventListener("brigadier-toggle-sidebar",toggle);return()=>{window.removeEventListener("workbench-active-session",active);window.removeEventListener("brigadier-toggle-sidebar",toggle);};},[]);
-  useEffect(()=>{if(notice){notify(notice,true);setNotice(null);}},[notice]);
-
+  const jobs = useCleanup();
+  const [viewedSession, setViewedSession] = useState<string | null>(null);
+  const attention = useAttention(state.sessions, viewedSession, [
+    ...approvalRows.map((r) => r.approval.sessionId),
+    ...peers.requests.filter((r) => !r.resolved).map((r) => r.to),
+  ]);
+  useEffect(() => {
+    const active = (e: Event) =>
+      setViewedSession((e as CustomEvent<string | null>).detail);
+    const toggle = () => setSidebarOpen((v) => !v);
+    window.addEventListener("workbench-active-session", active);
+    window.addEventListener("brigadier-toggle-sidebar", toggle);
+    return () => {
+      window.removeEventListener("workbench-active-session", active);
+      window.removeEventListener("brigadier-toggle-sidebar", toggle);
+    };
+  }, []);
+  useEffect(() => {
+    if (notice) {
+      notify(notice, true);
+      setNotice(null);
+    }
+  }, [notice]);
 
   return (
-    <div className={`app ${sidebarOpen?"":"sidebar-collapsed"}`}>
-      <Sidebar attention={attention} jobs={jobs}
+    <SidebarProvider
+      open={sidebarOpen}
+      onOpenChange={setSidebarOpen}
+      className="h-svh min-h-0 overflow-hidden"
+    >
+      <Sidebar
+        attention={attention}
+        jobs={jobs}
         projects={projects}
         titles={peers.titles}
         sessions={state.sessions}
@@ -782,7 +864,10 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
         claudeError={claudeError}
         isMock={bridge().isMock}
         dev={BURN_UI ? <Burn onBurn={runBurn} /> : undefined}
-        onSelectProject={id=>{setSelectedProjectId(id);setSelectedSessionId(null);}}
+        onSelectProject={(id) => {
+          setSelectedProjectId(id);
+          setSelectedSessionId(null);
+        }}
         onSelectSession={selectSession}
         onAddProject={addProject}
         // Both plugins exist only in a real Tauri window. In a browser (`npm run dev`) the mock
@@ -791,73 +876,112 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
         // a control rather than by offering one that fails.
         onPickProject={bridge().isMock ? undefined : pickProject}
         onReveal={bridge().isMock ? undefined : reveal}
-        // Not gated on `isMock`: both commands exist on the mock bridge too, refusal path
-        // included, so the browser exercises the same flow the window does.
-        onDeleteSession={deleteSession}
-        onDeleteProject={deleteProject}
       />
 
-      <main className="thread">
-
-        <ProjectWorkbench attention={attention} peers={peers} project={selectedProject} session={selectedSession} sessions={state.sessions} selectedSessionId={selectedSessionId} onSelectSession={selectSession} workspaceOpen={workspaceOpen} setWorkspaceOpen={setWorkspaceOpen} models={models} historyContent={<>
-{runLive && run?.project_id === selectedProjectId && selectedSessionId === null ? (
-          <div className="run-dock-status" role="status">
-            Automation running: {run.goal}
-            <button className="act" onClick={() => stopRun(run.plan_id)}>Stop automation</button>
-          </div>
-        ) : null}
-        {selectedSessionId === null && (run !== null || intents.length > 0) ? (
-          <details key={selectedProjectId} className="automation-details">
-            <summary>Automation history</summary>
-            <RunCard run={run} intents={intents} onSettle={settleIntent} />
-          </details>
-        ) : null}
-</>}>
-        <ThreadView peers={peers} onSelectSession={selectSession}
-          onEdit={setEditingMessage}
-          editing={editingMessage !== null}
-          revision={conversationRevision}
-          sessionId={selectedSessionId}
-          projectId={selectedProjectId}
-          projectName={selectedProject?.name ?? null}
-          onFile={openWorkspace}
-        />
-
-        <Approvals
-          approvals={approvalRows.filter(row=>row.approval.sessionId===selectedSessionId)}
-          onRespond={respond}
-          onDismiss={store.dismissApproval}
-          onFocus={focusApproval}
-        />
-
-        <Dock
-          editing={editingMessage?.session_id === selectedSessionId ? editingMessage : null}
-          onCancelEdit={() => setEditingMessage(current => current?.id === editingMessage?.id ? null : current)}
-          onRewound={() => setConversationRevision(n => n + 1)}
+      <SidebarInset className="min-h-0 min-w-0 overflow-hidden">
+        <ProjectWorkbench
+          sidebarToggle={<SidebarTrigger />}
+          newSessionRequest={newSessionRequest}
+          navigation={navigation.data}
+          attention={attention}
+          peers={peers}
           project={selectedProject}
           session={selectedSession}
+          sessions={state.sessions}
+          selectedSessionId={selectedSessionId}
+          onSelectSession={selectSession}
+          workspaceOpen={workspaceOpen}
+          setWorkspaceOpen={setWorkspaceOpen}
           models={models}
-          busy={commandBusy}
-          blocked={claudeError !== null}
-          onStartSession={startSession}
-          onResume={resumeSession}
-          onCleanup={cleanupWorktree}
-          onSend={(id, text) => {
-            return bridge().sendTurn(id, text).then(() => true).catch(e => { say(e); return false; });
-          }}
-          onInterrupt={(id) => {
-            void bridge().interrupt(id).catch(say);
-          }}
-          onEnd={(id) => {
-            void bridge().endSession(id).catch(say);
-          }}
-          onKill={(id) => {
-            void bridge().kill(id).catch(say);
-          }}
-        />
+          historyContent={
+            <>
+              {runLive &&
+              run?.project_id === selectedProjectId &&
+              selectedSessionId === null ? (
+                <div className="run-dock-status" role="status">
+                  Automation running: {run.goal}
+                  <button className="act" onClick={() => stopRun(run.plan_id)}>
+                    Stop automation
+                  </button>
+                </div>
+              ) : null}
+              {selectedSessionId === null &&
+              (run !== null || intents.length > 0) ? (
+                <details key={selectedProjectId} className="automation-details">
+                  <summary>Automation history</summary>
+                  <RunCard
+                    run={run}
+                    intents={intents}
+                    onSettle={settleIntent}
+                  />
+                </details>
+              ) : null}
+            </>
+          }
+        >
+          <ThreadView
+            peers={peers}
+            onSelectSession={selectSession}
+            onEdit={setEditingMessage}
+            editing={editingMessage !== null}
+            revision={conversationRevision}
+            sessionId={selectedSessionId}
+            projectId={selectedProjectId}
+            projectName={selectedProject?.name ?? null}
+            onFile={openWorkspace}
+          />
+
+          <Approvals
+            approvals={approvalRows.filter(
+              (row) => row.approval.sessionId === selectedSessionId,
+            )}
+            onRespond={respond}
+            onDismiss={store.dismissApproval}
+            onFocus={focusApproval}
+          />
+
+          <Dock
+            editing={
+              editingMessage?.session_id === selectedSessionId
+                ? editingMessage
+                : null
+            }
+            onCancelEdit={() =>
+              setEditingMessage((current) =>
+                current?.id === editingMessage?.id ? null : current,
+              )
+            }
+            onRewound={() => setConversationRevision((n) => n + 1)}
+            project={selectedProject}
+            session={selectedSession}
+            models={models}
+            busy={commandBusy}
+            blocked={claudeError !== null}
+            onStartSession={startSession}
+            onResume={resumeSession}
+            onCleanup={cleanupWorktree}
+            onSend={(id, text) => {
+              return bridge()
+                .sendTurn(id, text)
+                .then(() => true)
+                .catch((e) => {
+                  say(e);
+                  return false;
+                });
+            }}
+            onInterrupt={(id) => {
+              void bridge().interrupt(id).catch(say);
+            }}
+            onEnd={(id) => {
+              void bridge().endSession(id).catch(say);
+            }}
+            onKill={(id) => {
+              void bridge().kill(id).catch(say);
+            }}
+          />
         </ProjectWorkbench>
-      </main>
-      <Toasts/>
-    </div>
+      </SidebarInset>
+      <Toasts />
+    </SidebarProvider>
   );
 }

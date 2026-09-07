@@ -2,14 +2,22 @@ import {
   useContext,
   useCallback,
   useEffect,
-  useLayoutEffect,
   useRef,
   useState,
   type TextareaHTMLAttributes,
+  type ReactNode,
 } from "react";
 import { NoteScope } from "../noteScope";
 import { workbenchApi, type Note } from "../workbenchApi";
-import { PlusIcon, PaperclipIcon } from "@phosphor-icons/react";
+import { PlusIcon } from "@phosphor-icons/react";
+
+import {
+  PromptInput as KitPromptInput,
+  PromptInputTextarea,
+  PromptInputActions,
+  PromptInputAction,
+} from "./prompt-kit/prompt-input";
+import { Button } from "./ui/button";
 
 export function useDraft(key: string): [string, (value: string) => void] {
   const read = (k: string) => {
@@ -39,10 +47,12 @@ export function PromptInput(
   props: TextareaHTMLAttributes<HTMLTextAreaElement> & {
     onText: (value: string) => void;
     focusKey?: string;
+    header?: ReactNode;
+    children?: ReactNode;
   },
 ) {
   const projectId = useContext(NoteScope);
-  const { onText, focusKey, ...rest } = props;
+  const { onText, focusKey, header, children, ...rest } = props;
   const textarea = useRef<HTMLTextAreaElement>(null),
     file = useRef<HTMLInputElement>(null);
   useEffect(() => {
@@ -57,13 +67,6 @@ export function PromptInput(
   const value = String(props.value ?? "");
   const latest = useRef({ value, onText, disabled: props.disabled });
   latest.current = { value, onText, disabled: props.disabled };
-  useLayoutEffect(() => {
-    const el = textarea.current;
-    if (el) {
-      el.style.height = "auto";
-      el.style.height = `${Math.min(240, Math.max(54, el.scrollHeight))}px`;
-    }
-  }, [value]);
   useEffect(() => {
     const attach = (e: Event) => {
       if (latest.current.disabled) return;
@@ -81,6 +84,7 @@ export function PromptInput(
       textarea.current?.focus();
     };
     const mention = (e: Event) => {
+      if (latest.current.disabled) return;
       const note = (e as CustomEvent<Note>).detail;
       latest.current.onText(
         `${latest.current.value}${latest.current.value ? " " : ""}@[${note.title}](brigadier-note:${note.id}) `,
@@ -118,57 +122,27 @@ export function PromptInput(
     }
   };
   return (
-    <>
-      <div
-        className="prompt-input"
-        onDragOver={(e) => {
-          if (!props.disabled) e.preventDefault();
-        }}
-        onDrop={(e) => {
-          e.preventDefault();
-          if (!props.disabled) void addFiles(e.dataTransfer.files);
-        }}
-      >
-        <textarea
-          {...rest}
-          ref={textarea}
-          onChange={(e) => {
-            onText(e.target.value);
-            if (e.target.value.endsWith("@")) {
-              setNoteMenu(true);
-              void workbenchApi
-                .load()
-                .then((d) =>
-                  setNotes(
-                    d.notes.filter(
-                      (n) => n.projectId === null || n.projectId === projectId,
-                    ),
-                  ),
-                )
-                .catch(() => {});
-            }
-          }}
-        />
-      </div>
-      <div className="attachment-actions">
-        <button
-          type="button"
-          className="icon-button"
-          aria-label="Attach text files"
-          title="Attach text files or drop them in the composer"
-          disabled={props.disabled}
-          onClick={() => file.current?.click()}
-        >
-          <PlusIcon size={18} />
-        </button>
-        <PaperclipIcon size={12} />
-        <span>Drop files to add context</span>
-        <button
-          type="button"
-          className="act"
-          aria-label="Mention a note"
-          onClick={() => {
-            setNoteMenu(!noteMenu);
+    <KitPromptInput
+      value={value}
+      onValueChange={onText}
+      disabled={props.disabled}
+      className="relative bg-secondary"
+      data-slot="prompt-input"
+      onDragOver={(e) => {
+        if (!props.disabled) e.preventDefault();
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        if (!props.disabled) void addFiles(e.dataTransfer.files);
+      }}
+    >
+      {header}
+      <PromptInputTextarea
+        {...rest}
+        ref={textarea}
+        onChange={(e) => {
+          if (e.target.value.endsWith("@")) {
+            setNoteMenu(true);
             void workbenchApi
               .load()
               .then((d) =>
@@ -178,12 +152,56 @@ export function PromptInput(
                   ),
                 ),
               )
-              .catch((e) => setError(String(e)));
-          }}
-        >
-          @ Note
-        </button>
-        {noteMenu && (
+              .catch(() => {});
+          }
+        }}
+      />
+      <PromptInputActions
+        className="relative flex-wrap justify-between px-1 pt-2"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center gap-1">
+          <PromptInputAction tooltip="Attach text files or drop them in the composer">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label="Attach text files"
+              title="Attach text files or drop them in the composer"
+              disabled={props.disabled}
+              onClick={() => file.current?.click()}
+            >
+              <PlusIcon size={18} />
+            </Button>
+          </PromptInputAction>
+          <PromptInputAction tooltip="Mention a note">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={props.disabled}
+              aria-label="Mention a note"
+              onClick={() => {
+                setNoteMenu(!noteMenu);
+                void workbenchApi
+                  .load()
+                  .then((d) =>
+                    setNotes(
+                      d.notes.filter(
+                        (n) =>
+                          n.projectId === null || n.projectId === projectId,
+                      ),
+                    ),
+                  )
+                  .catch((e) => setError(String(e)));
+              }}
+            >
+              @ Note
+            </Button>
+          </PromptInputAction>
+        </div>
+        {children}
+        {noteMenu && !props.disabled && (
           <div className="note-mention-menu">
             {notes.map((note) => (
               <button
@@ -208,19 +226,20 @@ export function PromptInput(
           ref={file}
           type="file"
           multiple
+          disabled={props.disabled}
           hidden
           onChange={(e) => {
             void addFiles(e.target.files);
             e.target.value = "";
           }}
         />
-      </div>
+      </PromptInputActions>
       {error ? (
         <p className="inline-error" role="alert">
           {error}
         </p>
       ) : null}
-    </>
+    </KitPromptInput>
   );
 }
 

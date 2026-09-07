@@ -154,6 +154,11 @@ pub(crate) async fn start_session(
     state: State<'_, AppState>,
 ) -> Result<SessionView, AppError> {
     let _creation = crate::peers::CREATION.lock().await;
+    crate::navigation::require_available(
+        &state.get()?.data_dir,
+        crate::navigation::Kind::Project,
+        &project_id,
+    )?;
     // Fail with the code the UI has a remedy for. Without this the supervisor answers
     // `NoDriver` → `driver`, which tells the operator nothing about the missing install.
     state.claude_status()?;
@@ -212,6 +217,12 @@ pub(crate) async fn resume_session(
     session_id: String,
     state: State<'_, AppState>,
 ) -> Result<SessionView, AppError> {
+    let _lifecycle = crate::peers::LIFECYCLE.lock().await;
+    crate::navigation::require_available(
+        &state.get()?.data_dir,
+        crate::navigation::Kind::Session,
+        &session_id,
+    )?;
     // Same reason as `start_session`: the supervisor would answer `NoDriver` → `driver`, which
     // tells the operator nothing about a missing install.
     state.claude_status()?;
@@ -231,6 +242,12 @@ pub(crate) async fn send_turn(
     text: String,
     state: State<'_, AppState>,
 ) -> Result<TurnStarted, AppError> {
+    let _lifecycle = crate::peers::LIFECYCLE.lock().await;
+    crate::navigation::require_available(
+        &state.get()?.data_dir,
+        crate::navigation::Kind::Session,
+        &session_id,
+    )?;
     let id = SessionId::new(session_id);
     let row = state
         .get()?
@@ -434,6 +451,12 @@ pub(crate) async fn start_run(
     permission_mode: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<RunView, AppError> {
+    let _creation = crate::peers::CREATION.lock().await;
+    crate::navigation::require_available(
+        &state.get()?.data_dir,
+        crate::navigation::Kind::Project,
+        &project_id,
+    )?;
     // Same reason `start_session` does it: without this the supervisor answers `NoDriver` →
     // `driver`, which tells the operator nothing about a missing install — and a run spawns
     // children on its own initiative, so the honest failure has to arrive at the button.

@@ -61,6 +61,7 @@ portable-pty = "0.9"
 trash = "5"
 tempfile = "3.27"
 regex = "1"
+base64 = "0.22"
 ignore = "0.4"
 globset = "0.4"
 uuid = { workspace = true }

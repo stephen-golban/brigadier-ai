@@ -29,6 +29,8 @@ mod conversation;
 mod error;
 mod launch;
 mod note_files;
+mod navigation;
+mod project_icon;
 mod peer_mcp;
 mod peers;
 mod reconcile;
@@ -172,6 +174,13 @@ pub fn run() {
             commands::end_session,
             commands::kill,
             commands::cleanup_worktree,
+            navigation::navigation_load,
+            navigation::navigation_customize,
+            navigation::trash_preview,
+            navigation::trash_move,
+            navigation::trash_restore,
+            navigation::trash_purge,
+            project_icon::project_icon,
             commands::delete_session,
             commands::delete_project,
             commands::feed_tail,

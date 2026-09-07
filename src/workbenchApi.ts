@@ -108,6 +108,10 @@ const desktopOnly = () =>
     ),
   );
 export const workbenchApi = {
+  renameProject: async (id: string, name: string): Promise<void> => {
+    if (desktop) { await invoke("navigation_customize", {kind: "name", id, value: name}); return; }
+    sample.projectNames ??= {}; sample.projectNames[id] = name; saveSample();
+  },
   saveDesktopSettings: (displayName: string, projectNames: Record<string,string>): Promise<WorkbenchData> =>
     Promise.resolve().then(() => {
       displayName = validateDisplayName(displayName);
@@ -125,7 +129,12 @@ export const workbenchApi = {
   load: (): Promise<WorkbenchData> =>
     desktop
       ? invoke("workbench_load")
-      : Promise.resolve(structuredClone(sample)),
+      : Promise.resolve().then(() => {
+          const data = structuredClone(sample);
+          const trash = JSON.parse(localStorage.getItem("brigadier:navigation:v1") ?? "null")?.trash ?? [];
+          data.notes = data.notes.filter(n => !trash.some((t: {kind: string; id: string}) => t.kind === "note" && t.id === n.id));
+          return data;
+        }),
   saveNote: (note: Note): Promise<Note> =>
     desktop
       ? invoke("note_save", { note })

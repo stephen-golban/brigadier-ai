@@ -1,3 +1,11 @@
+import {
+  Message,
+  MessageContent,
+  MessageActions,
+  MessageAction,
+} from "./prompt-kit/message";
+import { CircularLoader } from "./prompt-kit/loader";
+import { Button } from "./ui/button";
 import type { PeerData } from "../peerApi";
 import { useSessionChanges } from "../desktopApi";
 import { ChangedFilesCard } from "./SessionReview";
@@ -43,13 +51,24 @@ export function ThreadView({
   peers?: PeerData;
   onSelectSession?: (id: string) => void;
 }) {
-  const [greetingName,setGreetingName]=useState("");
-  useEffect(()=>{
-    let live=true;
-    const read=()=>{void workbenchApi.load().then(d=>{if(live)setGreetingName(d.displayName?.trim()??"");}).catch(()=>{});};
-    read();window.addEventListener("workbench-data-changed",read);
-    return()=>{live=false;window.removeEventListener("workbench-data-changed",read);};
-  },[]);
+  const [greetingName, setGreetingName] = useState("");
+  useEffect(() => {
+    let live = true;
+    const read = () => {
+      void workbenchApi
+        .load()
+        .then((d) => {
+          if (live) setGreetingName(d.displayName?.trim() ?? "");
+        })
+        .catch(() => {});
+    };
+    read();
+    window.addEventListener("workbench-data-changed", read);
+    return () => {
+      live = false;
+      window.removeEventListener("workbench-data-changed", read);
+    };
+  }, []);
   return (
     <section className="conversation">
       {sessionId ? (
@@ -69,7 +88,9 @@ export function ThreadView({
           <h1>
             {projectName
               ? `What should we build in ${projectName}?`
-              : greetingName ? `What will you build, ${greetingName}?` : "What should we build?"}
+              : greetingName
+                ? `What will you build, ${greetingName}?`
+                : "What should we build?"}
           </h1>
         </div>
       )}
@@ -320,11 +341,13 @@ function Transcript({
                     />
                   </>
                 ) : (
-                  <>
-                    <Markdown text={entry.item.body} onFile={onFile} />
-                    <div className="assistant-actions">
+                  <Message className="min-w-0 flex-col gap-2">
+                    <MessageContent className="bg-transparent p-0">
+                      <Markdown text={entry.item.body} onFile={onFile} />
+                    </MessageContent>
+                    <MessageActions>
                       <CopyButton text={entry.item.body} />
-                    </div>
+                    </MessageActions>
                     {turn && (
                       <ChangedFilesCard
                         sessionId={sessionId}
@@ -332,7 +355,7 @@ function Transcript({
                         files={files}
                       />
                     )}
-                  </>
+                  </Message>
                 )}
               </article>
             );
@@ -369,7 +392,7 @@ function Transcript({
           ))}
         {busy && !visible.some((row) => row.type === "work" && row.running) ? (
           <div className="working-state" role="status">
-            <span className="working-dot" />
+            <CircularLoader size="sm" />
             Working…
           </div>
         ) : null}
@@ -378,13 +401,15 @@ function Transcript({
         ) : null}
       </div>
       {!following ? (
-        <button
-          className="jump-latest"
+        <Button
+          variant="outline"
+          size="icon"
+          className="absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full shadow-md"
           aria-label="Jump to latest"
           onClick={follow}
         >
           <ArrowDownIcon size={19} />
-        </button>
+        </Button>
       ) : null}
     </div>
   );
@@ -441,7 +466,7 @@ function UserMessage({
   const long =
     text.length > (source ? 200 : 480) || text.split("\n").length > 8;
   return (
-    <div className={`user-message ${source ? "peer-message" : ""}`}>
+    <Message className="min-w-0 flex-col items-end gap-1">
       {source && (
         <button
           className="message-provenance"
@@ -450,22 +475,28 @@ function UserMessage({
           Sent by {peers?.titles[source] ?? "Brigadier"} from another session
         </button>
       )}
-      <div className="user-bubble">
-        <div className={long && !expanded ? "message-collapsed" : ""}>
+      <MessageContent className="max-w-[85%] rounded-2xl px-4 py-3 whitespace-pre-wrap sm:max-w-[75%]">
+        <div
+          className={
+            long && !expanded ? (source ? "line-clamp-2" : "line-clamp-5") : ""
+          }
+        >
           {text}
         </div>
         {long && (
-          <button
-            className="show-more"
+          <Button
+            variant="link"
+            size="sm"
+            className="h-auto px-0 pt-2 text-muted-foreground"
             aria-expanded={expanded}
             onClick={() => setExpanded(!expanded)}
           >
             {expanded ? "Show less" : "Show more"}
             <span aria-hidden="true">⌄</span>
-          </button>
+          </Button>
         )}
-      </div>
-      <div className="message-actions">
+      </MessageContent>
+      <MessageActions className="gap-1 text-xs">
         {item.at > 0 && (
           <time dateTime={new Date(item.at).toISOString()}>
             {new Date(item.at).toLocaleTimeString(undefined, {
@@ -476,19 +507,27 @@ function UserMessage({
         )}
         <CopyButton text={text} />
         {!source && (
-          <button
-            className="icon-button"
-            aria-label="Edit message"
-            title={
+          <MessageAction
+            tooltip={
               busy ? "Wait for the current turn to finish" : "Edit message"
             }
-            disabled={busy || editing || !onEdit}
-            onClick={() => onEdit?.(item)}
           >
-            <PencilSimpleIcon size={15} />
-          </button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-7"
+              aria-label="Edit message"
+              title={
+                busy ? "Wait for the current turn to finish" : "Edit message"
+              }
+              disabled={busy || editing || !onEdit}
+              onClick={() => onEdit?.(item)}
+            >
+              <PencilSimpleIcon size={15} />
+            </Button>
+          </MessageAction>
         )}
-      </div>
-    </div>
+      </MessageActions>
+    </Message>
   );
 }

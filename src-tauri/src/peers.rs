@@ -228,6 +228,11 @@ async fn dispatch(app: &tauri::AppHandle, v: Value) -> Result<Value, AppError> {
     let caller = caller.ok_or_else(|| AppError::invalid_argument("Unknown session credential"))?;
     let state = app.state::<AppState>();
     let sup = &state.get()?.supervisor;
+    crate::navigation::require_available(
+        &state.get()?.data_dir,
+        crate::navigation::Kind::Session,
+        &caller,
+    )?;
     sup.require_session_available(&SessionId::new(&caller))?;
     let row = sup
         .session(&SessionId::new(&caller))
@@ -267,6 +272,11 @@ async fn dispatch(app: &tauri::AppHandle, v: Value) -> Result<Value, AppError> {
     }
     if action == "create" {
         let _creation = CREATION.lock().await;
+        crate::navigation::require_available(
+            &state.get()?.data_dir,
+            crate::navigation::Kind::Session,
+            &caller,
+        )?;
         sup.require_session_available(&SessionId::new(&caller))?;
         if sup
             .list_sessions()
@@ -470,6 +480,16 @@ async fn deliver(app: tauri::AppHandle, message: Message) {
         loop {
             {
                 let _guard = LIFECYCLE.lock().await;
+                crate::navigation::require_available(
+                    &state.get()?.data_dir,
+                    crate::navigation::Kind::Session,
+                    &message.to,
+                )?;
+                crate::navigation::require_available(
+                    &state.get()?.data_dir,
+                    crate::navigation::Kind::Session,
+                    &message.from,
+                )?;
                 if !snapshot()?
                     .messages
                     .iter()
