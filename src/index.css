@@ -1,122 +1,32 @@
-/*
- * Styled to match the installed ChatGPT macOS app (26.825.51511) in its Codex view.
- *
- * Every value tagged [measured] was read out of a screencapture of that app's own window taken
- * on 2026-09-02 and sampled pixel by pixel; see `docs/plans/ui-restyle-notes.md` for the method
- * and the screenshot. Values tagged [derived] were interpolated between measured ones, and the
- * two tagged [contrast] deliberately depart from the reference because the measured colour
- * fails WCAG AA against its own background. One value carries [owner <date>]: it was set by an
- * owner decision rather than sampled or derived, and the date is when that call was made.
- *
- * The app is dark only. The reference stays dark under a light system appearance (captured both
- * ways; only its translucent sidebar material changed), so there is no light scheme here either.
- *
- * Tailwind 4 supplies preflight and the token layer (see the @theme block below); the rules
- * in this file are still hand-written and read their tokens as var(), not utility classes.
- */
-
-/*
- * The scanner is a **whitelist**. It replaced a blacklist that had failed twice, silently.
- *
- * Tailwind's oxide scanner walks the FILESYSTEM, not the module graph, and with no `source(…)` it
- * scans the whole repository: `{ base, pattern: "**\/*" }` in
- * `node_modules/@tailwindcss/vite/dist/index.mjs`. Every `.rs`, `.md`, `.toml`, fixture, capture
- * and lockfile in the tree. It reads Markdown as happily as it reads `.tsx`, and it does not
- * parse: any bare word shaped like a utility becomes one.
- *
- * **Two leaks, from two directories nobody thought to enumerate.**
- *
- *   1. `docs/research/oklch-tokens.md` describes this token layer and names `bg-accent`,
- *      `text-accent` and friends in prose — enough to emit `.bg-accent`, `.bg-accent\/50`,
- *      `.border-thread-bg` and six more, +0.31 kB of CSS nothing renders [measured,
- *      docs/research/oklch-tokens.md §5]. That leak produced the blacklist.
- *   2. `crates/proc/src/pidfile.rs:19` says, in a doc comment, "a different kernel — a
- *      container, a VM, a restored backup". That emitted six `.container` rules — one base plus five
- *      `@media` breakpoints, 0.28 kB — and it is **committed, weeks old, and shipped into
- *      production undetected** since `d95d6e3` [measured 2026-09-03, W4-D1b].
- *
- * The blacklist was chosen over a whitelist deliberately, and the stated reason was: *"I chose
- * excluding one bad directory over `source("../src")` because whitelisting fails silent for
- * future orders."* **That reason was exactly backwards.** The blacklist is what failed silently,
- * because enumerating what to exclude is unbounded — every directory in the repo, plus every
- * directory anyone adds later. What to include is bounded.
- *
- * **And `source("../src")`, the whitelist that reason argued against, would not have been enough
- * either.** Measured before this landed: scoping the root to `../src` still emitted all six of
- * those rules, from two files inside `src/` — this comment, which names the leaked class in order
- * to document it, and `src/components/Feed.test.tsx`, which calls Testing Library's
- * `view.container`. The trap is not which directory. It is that **prose and test code are not
- * markup**, and the only files in this repo that carry a class name are non-test `.tsx` and
- * `index.html`. That is what the directives below say.
- *
- * **A standing hazard, named because it is not mechanically prevented:** this comment says
- * "container" four times. No root below matches a `.css` file, so the scanner does not read it
- * today — but widen the roots to `.css` or `.md` and this paragraph re-emits the very rules it
- * documents. The `scanner policy` test fails on any root change, so that is a decision someone
- * has to make in the open rather than a thing that happens to them; the orphan gate would not
- * catch it, because a leak costs bytes, not correctness.
- *
- * The stated worry was not dismissed, it was made untrue. `src/index.css.test.ts` is the standing
- * gate. It asserts that **every class in the markup has a hand-written rule in this file**, which
- * is the whole invariant, because this app uses no Tailwind utility class anywhere — narrowing
- * the scanner dropped 2.51 kB of generated rules and did not change a pixel. Anyone who starts
- * depending on a generated utility fails that test with a message telling them why. Its
- * `SCANNED_ROOTS` mirrors the directives below and it fails if the two drift, so a root cannot be
- * added or removed here without the test being updated to match. What it does not cover is listed
- * in its own header rather than implied here.
- *
- * A typo in a glob below is **not** itself detected — unlike `source("…")`, whose path must
- * resolve to a directory or the build throws (`@tailwindcss/vite/dist/index.mjs`), a glob that
- * matches nothing is legal. Its only consequence is that a utility would stop being generated,
- * and that is precisely what the gate catches, one step downstream.
- *
- * Verified against the installed Tailwind 4.3.3, not recalled — the rule
- * `docs/research/frontend-stack.md` §2 followed for `@source not`. In
- * `node_modules/tailwindcss/dist/lib.mjs`: `source(none)` disables automatic detection, any other
- * value becomes `{ base, pattern }`, and paths must be quoted or it throws. In
- * `node_modules/@tailwindcss/vite/dist/index.mjs` that value **replaces** the `"**\/*"` root
- * rather than adding to it, and explicit `@source` directives are concatenated on top.
- *
- * Paths are relative to this file.
- */
+/* Tailwind scans application markup only. Shared shadcn components use utilities;
+ * legacy shell styles continue to use the desktop tokens below. See index.css.test.ts. */
 @import "tailwindcss" source(none);
 @source "../src/**/*.tsx";
 @source not "../src/**/*.test.tsx";
-
-/*
- * The one file carrying markup that lives outside `src/`. It has no class on it today, but
- * `docs/vision.md` §9 has already settled that it will: painting the shell in `index.html` is the
- * only route to the B1 budget, because a splash window is a second WKWebView and pays the ~100 ms
- * construction cost twice to hide it once, and tauri #15652 makes a `visible: false` window
- * unsafe. Declared now, before the order that needs it lands, so that order does not spend an
- * afternoon debugging an unstyled shell.
- *
- * `@source not "../docs"` is **gone, not moved**. `docs/` is outside every root declared above,
- * so the negation matched nothing; keeping it would have implied a protection the whitelist
- * already provides and pointed the next reader at the strategy that failed.
- */
 @source "../index.html";
+@custom-variant dark (&:where(.dark, .dark *));
 
-/*
- * The 18 colours live in `@theme static`, not plain `@theme`, and are namespaced `--color-*`.
- * Both are load-bearing (docs/research/frontend-stack.md §2.2-§2.3, docs/research/oklch-tokens.md):
- *
- *   - plain `@theme` emits only the variables some utility class references, and every rule below
- *     reads its tokens as raw `var(--color-…)`. Under plain `@theme` those variables would be
- *     dropped and the app would render unstyled with no error. `static` emits all of them.
- *   - `--color-*` is the namespace that makes Tailwind generate `bg-accent` / `text-accent` /
- *     `border-accent`. A token named `--accent` inside `@theme` generates no utility at all.
- *
- * Values are oklch at L 4dp / C 5dp / H 2dp. That precision is not cosmetic: all 18 round-trip to
- * the identical 8-bit hex and every annotated contrast ratio reproduces to within 0.002. Coarser
- * rounding does not (docs/research/frontend-stack.md §2.6, and §1 of the oklch-tokens file):
- * L 2dp / C 3dp / H 1dp breaks 11 of 18 and moves a ratio by up to 0.110, and two decimals on all
- * three breaks 13 of 18 and moves one by up to 0.105. What that costs, concretely: at two decimals
- * --color-text-muted-side's #a5a5a5 and the #a3a3a3 it replaced both round to L 0.72 and read as
- * 4.557:1, so the rounding cannot tell a token that fails AA from the fix for it. Achromatic greys
- * carry a meaningless hue at C=0 and are written `oklch(L 0 0)`. The original hex is on every
- * line; it is the artifact that was measured.
- */
+/* Adapt shadcn's semantic colors to Brigadier's existing desktop palette. */
+@theme inline {
+  --color-background: var(--color-thread-bg);
+  --color-foreground: var(--color-text);
+  --color-primary: var(--color-text);
+  --color-primary-foreground: var(--color-thread-bg);
+  --color-secondary: var(--color-surface);
+  --color-secondary-foreground: var(--color-text);
+  --color-muted: var(--color-surface);
+  --color-muted-foreground: var(--color-text-muted);
+  --color-card: var(--color-rail-bg);
+  --color-card-foreground: var(--color-text);
+  --color-popover: var(--color-surface);
+  --color-popover-foreground: var(--color-text);
+  --color-border: var(--color-line);
+  --color-input: var(--color-line);
+  --color-ring: var(--color-control);
+  --color-destructive: var(--color-bad);
+  --color-destructive-foreground: var(--color-text);
+  --color-accent-foreground: var(--color-text);
+}
 
 @theme static {
   /* --- surfaces ------------------------------------------------------- */
@@ -253,6 +163,7 @@ body {
   overflow: hidden;
 }
 
+@layer base {
 button,
 input,
 select,
@@ -264,10 +175,15 @@ textarea {
   border-radius: var(--radius-row);
   padding: 0;
 }
+}
 
+
+@layer base {
 button {
   cursor: pointer;
 }
+}
+
 
 /* The reset above must not reach the native controls that draw themselves. */
 input[type="checkbox"],
@@ -279,6 +195,7 @@ input[type="radio"] {
   accent-color: var(--color-control);
 }
 
+@layer base {
 button:disabled,
 input:disabled,
 select:disabled,
@@ -286,11 +203,16 @@ textarea:disabled {
   opacity: 0.4;
   cursor: default;
 }
+}
 
+
+@layer base {
 :focus-visible {
   outline: 2px solid var(--color-accent);
   outline-offset: 1px;
 }
+}
+
 
 .dim {
   color: var(--color-text-muted);

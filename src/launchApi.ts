@@ -11,7 +11,6 @@ export interface LaunchPreferences {
   completed: boolean;
   introSeen: boolean;
   music: boolean;
-  desktopReveal: boolean;
 }
 function preferences(data: WorkbenchData): LaunchPreferences {
   const name = data.nameConfirmed ? (data.displayName ?? "").trim() : "";
@@ -20,7 +19,6 @@ function preferences(data: WorkbenchData): LaunchPreferences {
     completed: !!data.welcomeCompleted && !!name,
     introSeen: !!data.introSeen,
     music: data.launchMusic ?? true,
-    desktopReveal: false,
   };
 }
 function changed() {
@@ -59,11 +57,12 @@ export const launchApi = {
     else workbenchApi.saveLaunchPreferences({ launchMusic: music });
     changed();
   },
-  finish: async () => {
-    if (desktop) await invoke("launch_finish");
-  },
-  reveal: async () => {
-    if (desktop) await invoke("launch_reveal");
+  reset: async () => {
+    if (desktop) await invoke("launch_reset");
+    else workbenchApi.saveLaunchPreferences({
+      displayName: "", nameConfirmed: false, welcomeCompleted: false, introSeen: false,
+    });
+    window.dispatchEvent(new Event("brigadier-reset-welcome"));
   },
   restart: async () => {
     if (desktop) await invoke("launch_restart");

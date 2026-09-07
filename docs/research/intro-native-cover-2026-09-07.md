@@ -1,5 +1,7 @@
 # Native handoff cover, 2026-09-07
 
+Superseded by [onboarding continuity](../plans/onboarding-continuity-2026-09-07.md): native framing now happens before name entry, and the greeting-to-workspace fade no longer uses a cover window. The investigation below records the earlier approach.
+
 ## Recommendation
 
 A separate **native window without a webview** can hold a solid graphite frame while the main transparent WKWebView resizes and its native decorations change. This removes the cover's dependence on the surface undergoing reallocation. This is a source-supported mechanism, not yet a verified visual result: a native recording must still verify the actual transition.

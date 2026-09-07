@@ -131,7 +131,7 @@ const BURN_ROOT_MARKER = "brigadier-burn";
 const BURN_UI = import.meta.env.DEV || import.meta.env.VITE_BURN === "1";
 
 
-export function App() {
+export function App({ onReady }: { onReady?: () => void } = {}) {
   const peers=usePeers();
   const [workspaceOpen,setWorkspaceOpen]=useStoredState("brigadier:workspace-open",false);
   const [sidebarOpen,setSidebarOpen]=useStoredState("brigadier:sidebar-open",true);
@@ -245,6 +245,11 @@ export function App() {
       store.stop();
     };
   }, [say]);
+
+  // Onboarding can fade only after the initial workspace data has committed.
+  useEffect(() => {
+    if (projectsLoaded) onReady?.();
+  }, [projectsLoaded, onReady]);
 
   // Visibility drives what the Rust side bothers to send rows for.
   useEffect(() => {

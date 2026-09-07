@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { desktop, type WorkspaceContext } from "./workspaceApi";
+import { validateDisplayName } from "./name";
+export { validateDisplayName } from "./name";
 export interface Note {
   id: string;
   projectId: string | null;
@@ -233,11 +235,3 @@ export const workbenchApi = {
   terminalInfo: (id: string): Promise<{ busy: boolean; cwd: string }> =>
     invoke("terminal_info", { id }),
 };
-
-export function validateDisplayName(value: string): string {
-  const name = value.trim();
-  if (!name) throw new Error("Enter your name to continue");
-  if ([...name].length > 200 || /[\u0000-\u001f\u007f-\u009f]/.test(name))
-    throw new Error("Use a name of up to 200 characters");
-  return name;
-}

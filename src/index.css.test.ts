@@ -1,52 +1,6 @@
-/**
- * The standing gate on `src/index.css`'s scanner policy.
- *
- * # Why this file exists
- *
- * Tailwind's oxide scanner walks the FILESYSTEM, not the module graph. Until 2026-09-03 it was
- * pointed at the whole repository and fenced with a blacklist (`@source not "../docs"`), chosen
- * over a whitelist for a stated reason: *"whitelisting fails silent for future orders."*
- *
- * The blacklist is what failed silently, twice, from two directories nobody thought to enumerate:
- * `docs/` (prose naming `bg-accent`), and `crates/proc/src/pidfile.rs:19`, whose doc comment says
- * "a different kernel — a **container**, a VM" and shipped six `.container` rules into production
- * for weeks. `src/index.css` now whitelists instead. **This file is the thing that makes the
- * stated worry untrue rather than merely dismissed.**
- *
- * # The hazard it gates
- *
- * Over-exclusion, in one direction only: **a class the markup uses whose rule is not emitted.**
- * That fails as an unstyled element with no error anywhere, which is the same failure mode
- * `@theme static` exists to prevent (`docs/research/frontend-stack.md` §2.2). A narrowed scanner
- * causes it silently; this test converts it into a red gate.
- *
- * The invariant that makes a cheap check sufficient: **this app styles itself entirely by hand.**
- * Every class in every component resolves through a rule written in `src/index.css`; not one
- * Tailwind utility class is used anywhere (measured 2026-09-04, and it is why narrowing the
- * scanner dropped 2.51 kB of generated rules without changing a pixel). So "is this class
- * hand-written?" and "will this class be styled?" are the same question, and answering it needs
- * no build.
- *
- * **It deliberately reads the hand-written `src/index.css`, never the built bundle.** Two class
- * names in this app — `grow` and `sr-only` — are also Tailwind utility names, and today the
- * bundle carries a generated rule for each *in addition* to the hand-written ones. Checking the
- * bundle would let those pass on the generated rule and hide the day the generated rule goes
- * away. Checking the source is what makes a new dependency on generation fail here.
- *
- * # What this does NOT cover, stated so it is not mistaken for more than it is
- *
- *   - **Leaks.** It gates styles going missing, not noise arriving. A scanner widened back to the
- *     whole repo would re-leak `.container` and this test would stay green; `scanner policy`
- *     below is the (weaker, textual) guard for that direction.
- *   - **Dynamically built class names** — string concatenation, a lookup table, a `clsx`-style
- *     helper. Only literals inside a `class`/`className` attribute are seen.
- *   - **Files outside the scanned roots.** It reads the same set `src/index.css` declares, and
- *     `scanner policy` fails if that set changes without this file changing with it.
- *   - **Whether a hand-written rule actually applies.** `.side-section .grow` counts as defining
- *     `grow`; that the element is really inside a `.side-section` is not checked.
- *
- * Mechanics match `src/feedStore.test.ts`: `globals: false`, so every helper is imported.
- */
+/** Checks the markup scanner and catches missing legacy styles or invalid Tailwind utilities.
+ * Utilities are validated by the installed Tailwind compiler with this app's theme/plugins.
+ * The scanner remains limited to non-test TSX and index.html. */
 import { describe, expect, it } from "vitest";
 
 /**
@@ -70,14 +24,25 @@ import { describe, expect, it } from "vitest";
  */
 interface FsLike {
   readFileSync(path: string, encoding: "utf8"): string;
+  realpathSync(path: string): string;
 }
-const fs = (await import(/* @vite-ignore */ "node:" + "fs")) as unknown as FsLike;
+const fs = (await import(
+  /* @vite-ignore */ "node:" + "fs"
+)) as unknown as FsLike;
 
 /** Relative to the repository root, which is Vitest's working directory. */
 const CSS_PATH = "src/index.css";
 
-const TSX = import.meta.glob("./**/*.tsx", { query: "?raw", import: "default", eager: true });
-const HTML = import.meta.glob("../index.html", { query: "?raw", import: "default", eager: true });
+const TSX = import.meta.glob("./**/*.tsx", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+});
+const HTML = import.meta.glob("../index.html", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+});
 
 /**
  * The scanner's roots, mirroring `src/index.css`'s directives. `scanner policy` below fails if
@@ -93,14 +58,21 @@ const NOT_SCANNED = ["src/**/*.test.tsx"] as const;
  * This list is the permanent record of what the gate found on its first run, rather than a
  * silence: three attributes across the whole app draw nothing at all. None is a visual bug — each
  * is a hook whose layout comes from its parent — but each reads like a styled class and is not.
- * The list shrinks the day anyone styles one. It must never grow to accommodate a **utility**
- * class: a Tailwind name landing here would be the exact failure this file gates, laundered into
- * an exemption.
+ * The list shrinks the day anyone styles one. Utilities are checked against Tailwind instead.
  */
 const UNSTYLED_HOOKS = new Map<string, string>([
-  ["burn", "`<details className=\"burn\">` in the dev-only Burn panel; predates W4, no rule ever"],
-  ["mark-t", "the clock inside `.feed-mark`; spacing is the parent's `display: flex; gap: 8px`"],
-  ["mark-s", "the session ref inside `.feed-mark`; same, and W4-D2 may style both by kind"],
+  [
+    "burn",
+    '`<details className="burn">` in the dev-only Burn panel; predates W4, no rule ever',
+  ],
+  [
+    "mark-t",
+    "the clock inside `.feed-mark`; spacing is the parent's `display: flex; gap: 8px`",
+  ],
+  [
+    "mark-s",
+    "the session ref inside `.feed-mark`; same, and W4-D2 may style both by kind",
+  ],
 ]);
 
 /* ------------------------------------------------------------------ sources */
@@ -112,14 +84,25 @@ function markupSources(): Array<[string, string]> {
     if (path.endsWith(".test.tsx")) continue;
     out.push([path.replace(/^\.\//, "src/"), text as string]);
   }
-  for (const [, text] of Object.entries(HTML)) out.push(["index.html", text as string]);
+  for (const [, text] of Object.entries(HTML))
+    out.push(["index.html", text as string]);
   return out;
 }
 
 /** The stylesheet, as text. Non-empty is asserted below; an empty read is the vacuous-pass trap
  *  this whole file exists to avoid. */
 function cssText(): string {
-  return fs.readFileSync(CSS_PATH, "utf8") + "\n" + fs.readFileSync("src/chat.css", "utf8") + "\n" + fs.readFileSync("src/workbench.css", "utf8") + "\n" + fs.readFileSync("src/desktop.css", "utf8") + "\n" + fs.readFileSync("src/launch.css", "utf8");
+  return (
+    fs.readFileSync(CSS_PATH, "utf8") +
+    "\n" +
+    fs.readFileSync("src/chat.css", "utf8") +
+    "\n" +
+    fs.readFileSync("src/workbench.css", "utf8") +
+    "\n" +
+    fs.readFileSync("src/desktop.css", "utf8") +
+    "\n" +
+    fs.readFileSync("src/launch.css", "utf8")
+  );
 }
 
 /** Every string literal in a JSX expression, with `${…}` interpolations blanked out. */
@@ -177,7 +160,8 @@ function classesUsed(): Map<string, Set<string>> {
           if (c === '"' || c === "'" || c === "`") {
             const s = c;
             j += 1;
-            while (j < text.length && text[j] !== s) j += text[j] === "\\" ? 2 : 1;
+            while (j < text.length && text[j] !== s)
+              j += text[j] === "\\" ? 2 : 1;
           } else if (c === "{") depth += 1;
           else if (c === "}") depth -= 1;
           j += 1;
@@ -216,7 +200,14 @@ describe("the class extractor", () => {
   it("finds the app's classes, so the gate below cannot pass on an empty set", () => {
     const used = classesUsed();
     expect(used.size).toBeGreaterThan(60);
-    for (const known of ["sidebar", "feed-row", "feed-line", "dock-box", "jump-pill", "thread"]) {
+    for (const known of [
+      "sidebar",
+      "feed-row",
+      "feed-line",
+      "dock-box",
+      "jump-pill",
+      "thread",
+    ]) {
       expect(used.has(known)).toBe(true);
     }
   });
@@ -245,28 +236,32 @@ describe("the class extractor", () => {
   });
 });
 
-describe("every class the markup uses is styled by hand", () => {
-  it("has a rule in src/index.css, or is a declared unstyled hook", () => {
+describe("every class the markup uses is styled", () => {
+  it("has a legacy rule, a generated utility, or a declared marker", async () => {
+    const tailwind = await import(/* @vite-ignore */ "@tailwindcss/" + "node");
+    const design = await tailwind.__unstable__loadDesignSystem(
+      fs.readFileSync(CSS_PATH, "utf8"),
+      { base: fs.realpathSync("src") },
+    );
     const defined = classesDefined();
-    const orphans: string[] = [];
-    for (const [cls, files] of classesUsed()) {
-      if (defined.has(cls) || UNSTYLED_HOOKS.has(cls)) continue;
-      orphans.push(`  .${cls}  used in ${[...files].sort().join(", ")}`);
-    }
+    // These mark ancestors/exclusions; Tailwind emits their styles on descendants.
+    const markers = new Set(["group", "dark", "not-prose"]);
+    const candidates = [...classesUsed()].filter(
+      ([cls]) =>
+        !defined.has(cls) && !UNSTYLED_HOOKS.has(cls) && !markers.has(cls),
+    );
+    const generated = design.candidatesToCss(candidates.map(([cls]) => cls));
+    const orphans = candidates
+      .filter((_, i) => !generated[i])
+      .map(([cls, files]) => `.${cls} used in ${[...files].join(", ")}`);
     expect(
-      orphans.join("\n"),
-      [
-        "These classes appear in markup but no rule in src/index.css defines them.",
-        "",
-        "If you meant a Tailwind utility: this project does not use them. The scanner is",
-        "whitelisted to " + SCANNED_ROOTS.join(" and ") + ", and a utility outside that scope",
-        "is never generated — the element would render unstyled with no error. Either write",
-        "the rule in src/index.css, or widen the scanner deliberately and update SCANNED_ROOTS.",
-        "",
-        "If the class is a deliberate hook that draws nothing, add it to UNSTYLED_HOOKS with a",
-        "reason. Never add a Tailwind utility name there.",
-      ].join("\n"),
-    ).toBe("");
+      orphans,
+      "Classes must have legacy styles or compile with the app's Tailwind theme",
+    ).toEqual([]);
+    expect(
+      design.candidatesToCss(["bg-secondary", "border-input", "size-7"]),
+    ).not.toContain(null);
+    expect(design.candidatesToCss(["not-a-real-utility"])).toEqual([null]);
   });
 
   it("keeps UNSTYLED_HOOKS honest: every entry is still unstyled and still used", () => {
@@ -274,10 +269,14 @@ describe("every class the markup uses is styled by hand", () => {
     const defined = classesDefined();
     const used = classesUsed();
     for (const [cls, why] of UNSTYLED_HOOKS) {
-      expect(defined.has(cls), `.${cls} now has a rule; drop it from UNSTYLED_HOOKS (${why})`).toBe(
-        false,
-      );
-      expect(used.has(cls), `.${cls} is no longer used; drop it from UNSTYLED_HOOKS`).toBe(true);
+      expect(
+        defined.has(cls),
+        `.${cls} now has a rule; drop it from UNSTYLED_HOOKS (${why})`,
+      ).toBe(false);
+      expect(
+        used.has(cls),
+        `.${cls} is no longer used; drop it from UNSTYLED_HOOKS`,
+      ).toBe(true);
     }
   });
 });
@@ -302,8 +301,12 @@ describe("scanner policy", () => {
      */
     const directives = [...css().matchAll(/^@source\s+(not\s+)?"([^"]+)"/gm)];
     const rel = (p: string) => p.replace(/^\.\.\//, "");
-    const positive = directives.filter((m) => m[1] === undefined).map((m) => rel(m[2]!));
-    const negative = directives.filter((m) => m[1] !== undefined).map((m) => rel(m[2]!));
+    const positive = directives
+      .filter((m) => m[1] === undefined)
+      .map((m) => rel(m[2]!));
+    const negative = directives
+      .filter((m) => m[1] !== undefined)
+      .map((m) => rel(m[2]!));
     expect(positive.sort()).toEqual([...SCANNED_ROOTS].sort());
     expect(negative.sort()).toEqual([...NOT_SCANNED].sort());
   });

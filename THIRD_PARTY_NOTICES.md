@@ -97,3 +97,11 @@ the text is an owner decision, deferred, not answered here.
   `docs/research/jan.md` §1 names that as the one-line de-risk.
 - `src/providers/ThemeProvider.tsx` was not re-diffed against upstream for this file; the change
   list in §1 is that file's own in-file notice.
+
+## Shared button — MIT
+
+`src/components/ui/button.tsx` is adapted from ibelick/prompt-kit at `de80375967400aa0c6ebab9d3ba4f9258ab79fcc`. Source: https://github.com/ibelick/prompt-kit. Copyright (c) 2025 Julien Thibeaut. License: [prompt-kit-MIT.txt](licenses/prompt-kit-MIT.txt). It uses the existing desktop palette.
+
+## shadcn/ui Input
+
+`src/components/ui/input.tsx` is adapted from the shadcn/ui New York Input registry at https://ui.shadcn.com/r/styles/new-york/input.json (retrieved 2026-09-07). Copyright (c) 2023 shadcn. MIT licence: [shadcn-ui-MIT.txt](licenses/shadcn-ui-MIT.txt).
