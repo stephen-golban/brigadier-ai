@@ -832,7 +832,7 @@ export function ProjectWorkbench({
     <div className="project-workbench">
       <header
         className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3"
-        data-tauri-drag-region
+        data-tauri-drag-region="deep"
       >
         {sidebarToggle ?? (
           <button

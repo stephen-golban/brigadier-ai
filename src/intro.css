@@ -1,0 +1,353 @@
+/* Animated onboarding is independent of workspace styling and fills the webview. */
+.launch {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  color: #f2f5ff;
+  font-family: ui-rounded, "SF Pro Rounded", system-ui, sans-serif;
+  overflow: hidden;
+  isolation: isolate;
+  background: #030716;
+}
+.launch[data-stage="loading"] {
+  background: var(--color-canvas, #181818);
+}
+.launch[data-stage="loading"] .launch-loading {
+  background: var(--color-canvas, #181818);
+  animation: welcome-resolve 0.3s 0.6s both;
+}
+.launch-window {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+}
+.cosmic-field,
+.cosmic-field canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.cosmic-fallback {
+  background:
+    radial-gradient(ellipse at 15% 65%, #164ca777, transparent 50%),
+    radial-gradient(ellipse at 80% 55%, #5439be77, transparent 52%), #030716;
+}
+.cosmic-fallback canvas {
+  display: none;
+}
+.launch-mark {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  animation: brand-resolve 6.3s both;
+  pointer-events: none;
+}
+.launch-mark .brand-mark {
+  width: 128px;
+  height: 128px;
+  color: #f0f4ff;
+}
+.launch-welcome,
+.welcome-name,
+.welcome-greeting {
+  grid-area: 1 / 1;
+}
+.launch-welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 38px;
+  text-align: center;
+}
+.welcome-headline {
+  font-size: clamp(40px, 6.2vw, 76px);
+  font-weight: 600;
+  letter-spacing: -0.035em;
+  line-height: 1.08;
+  margin: 0;
+  outline: none;
+}
+.welcome-headline > span {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  padding: 0.13em 0.18em;
+  margin: -0.13em -0.18em;
+}
+.welcome-headline > span > span {
+  display: inline-block;
+  animation: welcome-word-reveal 1.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.welcome-action {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  animation: welcome-button-reveal 0.9s cubic-bezier(0.22, 1, 0.36, 1) 9.05s
+    both;
+}
+.welcome-next.welcome-continue:disabled {
+  cursor: default;
+  /* Input gating must not add a second fade or jump from 40% to 100% opacity. */
+  opacity: 1;
+}
+.launch-interactive .welcome-headline > span > span,
+.launch-interactive .welcome-action {
+  animation: none;
+  opacity: 1;
+  filter: none;
+  transform: none;
+}
+.welcome-next:hover,
+.welcome-continue:hover {
+  background: #fff;
+}
+.welcome-next:focus-visible,
+.welcome-continue:focus-visible,
+.launch-restart:focus-visible {
+  outline: 2px solid #bbccff;
+  outline-offset: 5px;
+}
+.welcome-name {
+  width: min(680px, calc(100% - 48px));
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.launch[data-stage="entering-name"] .launch-welcome {
+  animation: welcome-exit 0.2s ease-out both;
+}
+.launch[data-stage="entering-name"] .welcome-name {
+  animation: name-enter 0.28s ease-out 0.12s both;
+}
+.launch[data-stage="entering-name"] .welcome-name input {
+  opacity: 1;
+}
+@keyframes welcome-exit {
+  to { opacity: 0; transform: translateY(-8px); }
+}
+@keyframes name-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.welcome-name h1,
+.welcome-greeting h1 {
+  font-size: clamp(32px, 3.8vw, 48px);
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -1px;
+  margin: 0;
+  text-wrap: balance;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+.welcome-name h1 {
+  white-space: nowrap;
+  font-size: clamp(24px, 3.8vw, 48px);
+}
+.welcome-name > p,
+.welcome-greeting > p {
+  font-size: 17px;
+  line-height: 1.5;
+  color: #c6cde2;
+  margin: 18px 0 38px;
+}
+.welcome-name input {
+  width: min(340px, 100%);
+  margin-top: 32px;
+  height: 48px;
+  padding: 0 18px;
+  border: 1px solid #7c8aaa;
+  border-radius: 16px;
+  background: #080c1960;
+  color: #f2f6ff;
+  font: inherit;
+  font-size: 18px;
+  box-shadow: none;
+}
+.welcome-name input::placeholder {
+  color: #bec6dc;
+}
+.welcome-name input:focus {
+  outline: none;
+  border-color: #c8d4ff;
+  box-shadow: 0 0 0 3px #a8bcff24;
+}
+.welcome-continue {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 36px;
+  padding: 9px 18px;
+  background: #e6edff;
+  color: #202943;
+  border: 0;
+  border-radius: 7px;
+  font-size: 14px;
+  font-weight: 550;
+  cursor: pointer;
+}
+.welcome-name .welcome-continue {
+  margin-top: 30px;
+}
+.welcome-continue [data-slot="kbd"] {
+  color: inherit;
+  background: rgb(32 41 67 / 8%);
+}
+.welcome-continue:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.welcome-name .welcome-error {
+  color: #ffd0cc;
+  font-size: 14px;
+  margin: 14px 0 0;
+}
+.welcome-greeting {
+  text-align: center;
+  max-width: 85%;
+  animation: welcome-resolve 0.7s both;
+}
+.launch-loading {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 12px;
+  background: #18181b;
+  color: #bdc5d9;
+  font-size: 14px;
+}
+.launch-error {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(460px, calc(100% - 40px));
+  padding: 30px;
+  border-radius: 16px;
+  background: #171b29;
+  color: #f2f5ff;
+  box-shadow: 0 25px 100px #0008;
+}
+.launch-error h2 {
+  font-size: 22px;
+  margin: 0 0 12px;
+}
+.launch-error p {
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  margin-bottom: 24px;
+  color: #cad1e5;
+}
+.launch-restart {
+  border: 0;
+  background: var(--color-canvas, #181818);
+  color: #c8d4ff;
+  padding: 10px 15px;
+  cursor: pointer;
+}
+.launch-reset {
+  position: absolute;
+  right: 24px;
+  bottom: 20px;
+  color: #c8d4ff;
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+}
+.launch-revealing {
+  animation: workspace-reveal 0.5s ease-out both;
+  pointer-events: none;
+}
+@keyframes brand-resolve {
+  0%,
+  64% {
+    opacity: 0;
+    filter: blur(16px);
+    transform: scale(0.92);
+  }
+  76%,
+  88% {
+    opacity: 1;
+    filter: blur(0);
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    filter: blur(12px);
+    transform: scale(1.03);
+  }
+}
+@keyframes welcome-button-reveal {
+  from {
+    opacity: 0;
+    filter: blur(6px);
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0);
+  }
+}
+@keyframes welcome-word-reveal {
+  from {
+    opacity: 0;
+    filter: blur(12px);
+    transform: translateY(105%) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0) scale(1);
+  }
+}
+@keyframes welcome-resolve {
+  from {
+    opacity: 0;
+    filter: blur(11px);
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0);
+  }
+}
+@keyframes workspace-reveal {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+.launch-reduced .launch-mark {
+  display: none;
+}
+.launch-reduced .welcome-headline > span > span,
+.launch-reduced .welcome-action,
+.launch-reduced .welcome-name,
+.launch-reduced .welcome-greeting {
+  animation: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .launch-revealing {
+    animation-duration: 0.1s;
+  }
+}
+@media (max-height: 500px) {
+  .welcome-name > p {
+    margin: 10px 0 20px;
+  }
+  .welcome-name .welcome-continue {
+    margin-top: 18px;
+  }
+}

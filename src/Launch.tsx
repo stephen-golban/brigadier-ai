@@ -6,7 +6,8 @@ import {
   useRef,
   useState,
 } from "react";
-import { ArrowRightIcon } from "@phosphor-icons/react";
+import { Kbd } from "./components/controls/kbd";
+import "./intro.css";
 import { launchApi, type LaunchPreferences } from "./launchApi";
 import { errorMessage } from "./workspaceApi";
 import { BrandMark } from "./components/BrandMark";
@@ -412,7 +413,7 @@ export function Launch() {
                     onClick={() => void next()}
                   >
                     <span>Continue</span>
-                    <ArrowRightIcon aria-hidden="true" />
+                    <Kbd aria-hidden="true">Enter</Kbd>
                   </button>
                 </div>
               </div>
@@ -461,10 +462,11 @@ export function Launch() {
                 )}
                 <button
                   className="welcome-continue"
+                  aria-keyshortcuts="Enter"
                   disabled={saving || stage !== "name" || !name.trim()}
                 >
                   {saving ? "Saving…" : "Continue"}
-                  <ArrowRightIcon aria-hidden="true" />
+                  <Kbd aria-hidden="true">Enter</Kbd>
                 </button>
               </form>
             )}
