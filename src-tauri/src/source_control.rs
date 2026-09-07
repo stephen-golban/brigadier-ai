@@ -505,6 +505,39 @@ mod tests {
         git(root, &["add", "--", "file"]).await.unwrap();
         git(root, &["commit", "-m", "seed"]).await.unwrap();
     }
+    #[tokio::test]
+    async fn large_changes_can_be_staged_committed_and_pushed() {
+        let dir = repo().await;
+        let root = dir.path();
+        let remote = tempfile::tempdir().unwrap();
+        git(remote.path(), &["init", "--bare"]).await.unwrap();
+        git(
+            root,
+            &["remote", "add", "origin", remote.path().to_str().unwrap()],
+        )
+        .await
+        .unwrap();
+        seed(root, "seed\n").await;
+        execute(root, action("publish", None)).await.unwrap();
+
+        let content = "large change\n".repeat(250_000);
+        std::fs::write(root.join("file"), &content).unwrap();
+        execute(root, action("stage", Some("file"))).await.unwrap();
+        let mut commit = action("commit", None);
+        commit.message = Some("Update large file".into());
+        execute(root, commit).await.unwrap();
+        execute(root, action("push", None)).await.unwrap();
+        assert_eq!(
+            git(root, &["rev-parse", "HEAD"]).await.unwrap(),
+            git(remote.path(), &["rev-parse", "refs/heads/main"])
+                .await
+                .unwrap(),
+        );
+        assert!(git(root, &["status", "--porcelain"])
+            .await
+            .unwrap()
+            .is_empty());
+    }
     async fn diff(root: &Path, staged: bool) -> String {
         let mut args = vec!["diff", "--no-ext-diff", "--no-textconv", "--no-color"];
         if staged {

@@ -179,6 +179,24 @@ pub(crate) async fn workspace_file(
 }
 
 pub(crate) async fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, AppError> {
+    Ok(git_output(root, args, 2 * 1024 * 1024, false).await?.0)
+}
+
+/// Keep a bounded prefix while draining the process so large diffs can be summarized.
+pub(crate) async fn git_excerpt(
+    root: &Path,
+    args: &[&str],
+    limit: usize,
+) -> Result<(Vec<u8>, bool), AppError> {
+    git_output(root, args, limit, true).await
+}
+
+async fn git_output(
+    root: &Path,
+    args: &[&str],
+    limit: usize,
+    truncate: bool,
+) -> Result<(Vec<u8>, bool), AppError> {
     let mut cmd = tokio::process::Command::new("/usr/bin/git");
     cmd.current_dir(root)
         .args([
@@ -192,7 +210,8 @@ pub(crate) async fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, AppError>
         .env("GIT_TERMINAL_PROMPT", "0")
         .kill_on_drop(true);
     use tokio::io::AsyncReadExt;
-    cmd.stdout(std::process::Stdio::piped())
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| AppError::io(e.to_string()))?;
     let stdout = child.stdout.take().expect("piped stdout");
@@ -200,24 +219,32 @@ pub(crate) async fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, AppError>
     async fn bounded_read(
         reader: impl tokio::io::AsyncRead + Unpin,
         limit: usize,
-    ) -> Result<Vec<u8>, AppError> {
+        truncate: bool,
+    ) -> Result<(Vec<u8>, bool), AppError> {
         let mut bytes = Vec::new();
-        reader
-            .take(limit as u64 + 1)
+        let mut prefix = reader.take(limit as u64 + 1);
+        prefix
             .read_to_end(&mut bytes)
             .await
             .map_err(|e| AppError::io(e.to_string()))?;
         if bytes.len() > limit {
-            return Err(AppError::invalid_argument(
-                "Git output exceeds the preview limit; inspect it in a terminal",
-            ));
+            if !truncate {
+                return Err(AppError::invalid_argument(
+                    "Git output exceeds the preview limit; inspect it in a terminal",
+                ));
+            }
+            bytes.truncate(limit);
+            tokio::io::copy(&mut prefix.into_inner(), &mut tokio::io::sink())
+                .await
+                .map_err(|e| AppError::io(e.to_string()))?;
+            return Ok((bytes, true));
         }
-        Ok(bytes)
+        Ok((bytes, false))
     }
     let result = tokio::time::timeout(std::time::Duration::from_secs(15), async {
         tokio::try_join!(
-            bounded_read(stdout, 2 * 1024 * 1024),
-            bounded_read(stderr, 64 * 1024),
+            bounded_read(stdout, limit, truncate),
+            bounded_read(stderr, 64 * 1024, false),
             async { child.wait().await.map_err(|e| AppError::io(e.to_string())) }
         )
     })
@@ -233,7 +260,7 @@ pub(crate) async fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, AppError>
     };
     if !status.success() && !(args.contains(&"--no-index") && status.code() == Some(1)) {
         return Err(AppError::io(
-            String::from_utf8_lossy(&stderr).trim().to_owned(),
+            String::from_utf8_lossy(&stderr.0).trim().to_owned(),
         ));
     }
     Ok(stdout)
