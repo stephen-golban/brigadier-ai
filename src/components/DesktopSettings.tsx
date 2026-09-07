@@ -8,6 +8,8 @@ import { desktop, errorMessage } from "../workspaceApi";
 import { desktopApi, notify, type CleanupJob } from "../desktopApi";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
 import { launchApi } from "../launchApi";
+import { NameInput } from "./NameInput";
+import { ResetOnboardingButton } from "./ResetOnboardingButton";
 export function DesktopSettings({
   data,
   onData,
@@ -99,10 +101,10 @@ export function DesktopSettings({
           >
             <label>
               Display name
-              <input
+              <NameInput
                 autoFocus
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onValueChange={setName}
                 maxLength={200}
                 required
                 disabled={savingName}
@@ -116,9 +118,10 @@ export function DesktopSettings({
               const enabled=e.target.checked;setSavingMusic(true);
               void launchApi.music(enabled).then(()=>workbenchApi.load()).then(onData).catch(e=>setError(errorMessage(e))).finally(()=>setSavingMusic(false));
             }}/>
-            Launch music
+            Intro music
           </label>
           <button className="act" onClick={()=>{onClose();launchApi.replay();}}>Replay welcome</button>
+          <ResetOnboardingButton onReset={onClose} />
           <h3>Notes folder</h3>
           <p>
             Notes are Markdown files. Existing notes keep their references when

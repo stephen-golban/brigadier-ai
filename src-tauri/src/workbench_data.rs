@@ -139,11 +139,19 @@ pub(crate) async fn desktop_settings_save(
 }
 
 pub(crate) fn validate_name(name: &str) -> Result<String, AppError> {
+    static LATIN_NAME: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let allowed = LATIN_NAME.get_or_init(|| {
+        regex::Regex::new(r"^(?:[\p{Latin}&&\p{Letter}]| )+$")
+            .expect("valid Latin name pattern")
+    });
+    if !name.trim().is_empty() && !allowed.is_match(name) {
+        return Err(AppError::invalid_argument("Use only Latin letters and spaces"));
+    }
     let name = name.trim();
     if name.is_empty() {
         return Err(AppError::invalid_argument("Enter your name to continue"));
     }
-    if name.chars().count() > 200 || name.chars().any(char::is_control) {
+    if name.chars().count() > 200 {
         return Err(AppError::invalid_argument(
             "Use a name of up to 200 characters",
         ));

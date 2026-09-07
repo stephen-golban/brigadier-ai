@@ -55,15 +55,19 @@ export function CosmicField({
   start,
   reveal,
   reduced,
-  desktopReveal,
 }: {
   start: number;
   reveal: boolean;
   reduced: boolean;
-  desktopReveal: boolean;
 }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const [fallback, setFallback] = useState(false);
+  const scene = useRef({ start, reveal, reduced });
+  const redraw = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    scene.current = { start, reveal, reduced };
+    redraw.current?.();
+  }, [start, reveal, reduced]);
   useEffect(() => {
     const el = canvas.current;
     if (!el) return;
@@ -92,6 +96,7 @@ export function CosmicField({
     const release = () => {
       if (disposed) return;
       disposed = true;
+      redraw.current = null;
       cancelAnimationFrame(raf);
       if (buffer) context.deleteBuffer(buffer);
       if (program) context.deleteProgram(program);
@@ -142,6 +147,7 @@ export function CosmicField({
       let last = -100;
       const draw = (now: number) => {
         if (disposed) return;
+        const { start, reveal, reduced } = scene.current;
         if (now - last >= 1000 / 30) {
           last = now;
           const scale = Math.min(devicePixelRatio || 1, 1.5),
@@ -158,24 +164,26 @@ export function CosmicField({
           context.uniform2f(uniforms.size, el.width, el.height);
           context.uniform2f(
             uniforms.bounds,
-            desktopReveal ? Math.min(1280, w - 100) : w,
-            desktopReveal ? Math.min(800, h - 100) : h,
+            w,
+            h,
           );
           context.uniform1f(uniforms.density, scale);
           context.uniform1f(uniforms.time, (now - start) / 1000);
           context.uniform1f(uniforms.reveal, Number(reveal));
           context.uniform1f(uniforms.reduced, Number(reduced));
-          context.uniform1f(uniforms.desktop, Number(desktopReveal));
+          context.uniform1f(uniforms.desktop, 0);
           context.drawArrays(context.TRIANGLES, 0, 6);
         }
         if (!reduced) raf = requestAnimationFrame(draw);
       };
-      // Paint once even when WKWebView starts hidden; rAF resumes when it becomes visible.
-      draw(performance.now());
       const resize = () => {
+        cancelAnimationFrame(raf);
         last = -100;
-        if (reduced) draw(performance.now());
+        draw(performance.now());
       };
+      redraw.current = resize;
+      // Changing the scene updates uniforms; it never tears down the GL program.
+      resize();
       const lost = (event: Event) => {
         event.preventDefault();
         setFallback(true);
@@ -195,7 +203,7 @@ export function CosmicField({
       release();
       setFallback(true);
     }
-  }, [start, reveal, reduced, desktopReveal]);
+  }, []);
   return (
     <div
       className={`cosmic-field ${fallback ? "cosmic-fallback" : ""}`}

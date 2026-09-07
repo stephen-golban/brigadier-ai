@@ -11,24 +11,18 @@ import { launchApi, type LaunchPreferences } from "./launchApi";
 import { errorMessage } from "./workspaceApi";
 import { BrandMark } from "./components/BrandMark";
 import { CosmicField } from "./components/CosmicField";
+import { NameInput } from "./components/NameInput";
+import { ResetOnboardingButton } from "./components/ResetOnboardingButton";
 const App = lazy(() => import("./App").then((m) => ({ default: m.App })));
 type Stage =
   | "loading"
   | "cinematic"
   | "welcome"
+  | "entering-name"
   | "name"
   | "greeting"
-  | "leaving"
-  | "handoff"
-  | "settling"
   | "revealing"
   | "done";
-
-function Workspace({ onReady }: { onReady: () => void }) {
-  // This effect cannot run until the lazy App has committed through Suspense.
-  useEffect(onReady, [onReady]);
-  return <App />;
-}
 
 function useReducedMotion() {
   const [reduced, setReduced] = useState(
@@ -103,23 +97,16 @@ export function Launch() {
   const [attempt, setAttempt] = useState(0);
   const [returnCue, setReturnCue] = useState(false);
   const [formError, setFormError] = useState("");
-  const [appMounted, setAppMounted] = useState(false);
-  const workspaceReady = useCallback(() => setAppMounted(true), []);
-  const [cardSize, setCardSize] = useState({ width: 1280, height: 800 });
+  const [appReady, setAppReady] = useState(false);
+  const workspaceReady = useCallback(() => setAppReady(true), []);
   const reduced = useReducedMotion();
   const input = useRef<HTMLInputElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const active = stage !== "done" && stage !== "loading";
-  const transitioning =
-    stage === "leaving" ||
-    stage === "handoff" ||
-    stage === "settling" ||
-    stage === "revealing";
-  const track = returnCue
-    ? "/audio/return.m4a"
-    : active && !transitioning
-      ? `/audio/welcome.m4a?replay=${start}`
-      : null;
+  const transitioning = stage === "revealing";
+  const track = active && !transitioning
+    ? `/audio/welcome.m4a?replay=${start}`
+    : null;
   useMusic(track, !!prefs?.music && !error);
 
   useEffect(() => {
@@ -145,10 +132,6 @@ export function Launch() {
       .then((p) => {
         if (!live) return;
         setPrefs(p);
-        setCardSize({
-          width: Math.min(1280, window.innerWidth - 100),
-          height: Math.min(800, window.innerHeight - 100),
-        });
         setName(p.name);
         setStart(performance.now());
         if (p.completed) {
@@ -182,9 +165,10 @@ export function Launch() {
     // timer can run ahead of the compositor and cut the reveal short in WKWebView.
   }, [stage, reduced]);
   useEffect(() => {
+    if (stage === "entering-name" && reduced) setStage("name");
     if (stage === "name") input.current?.focus();
     if (stage === "welcome") heading.current?.focus();
-  }, [stage]);
+  }, [stage, reduced]);
   useEffect(() => {
     let live = true;
     const refresh = async () => {
@@ -209,68 +193,50 @@ export function Launch() {
           if (live) setError(errorMessage(e));
         });
     };
+    const resetWelcome = () => {
+      setPrefs(null);
+      setName("");
+      setReplay(false);
+      setReturnCue(false);
+      setAppReady(false);
+      setFormError("");
+      setError("");
+      setStage("loading");
+      setAttempt((n) => n + 1);
+    };
     window.addEventListener("workbench-data-changed", preferencesChanged);
     window.addEventListener("brigadier-replay-welcome", replayWelcome);
+    window.addEventListener("brigadier-reset-welcome", resetWelcome);
     return () => {
       live = false;
       window.removeEventListener("brigadier-replay-welcome", replayWelcome);
+      window.removeEventListener("brigadier-reset-welcome", resetWelcome);
       window.removeEventListener("workbench-data-changed", preferencesChanged);
     };
   }, [reduced]);
   const leave = useCallback(() => {
-    if (appMounted) setStage("leaving");
-  }, [appMounted]);
+    if (appReady) setStage("revealing");
+  }, [appReady]);
+  // Start the minimum greeting time when it appears, independently of loading.
+  const [greetingHeld, setGreetingHeld] = useState(false);
   useEffect(() => {
-    if (stage !== "greeting" || !ready || !appMounted || error) return;
-    const timer = setTimeout(() => void leave(), reduced ? 200 : 1400);
+    if (stage !== "greeting") {
+      setGreetingHeld(false);
+      return;
+    }
+    const timer = setTimeout(() => setGreetingHeld(true), reduced ? 200 : 1400);
     return () => clearTimeout(timer);
-  }, [stage, ready, appMounted, error, reduced, leave]);
+  }, [stage, reduced]);
   useEffect(() => {
-    if (stage !== "handoff") return;
-    let live = true;
-    // Native finish installs an independent opaque cover before resizing WebKit.
-    void launchApi
-      .finish()
-      .then(() => {
-        if (!live) return;
-        setPrefs((p) => (p ? { ...p, desktopReveal: false } : p));
-        setStage("settling");
-      })
-      .catch((e) => {
-        if (!live) return;
-        setError(errorMessage(e));
-        setStage("greeting");
-      });
-    return () => {
-      live = false;
-    };
-  }, [stage]);
-  useEffect(() => {
-    if (stage !== "settling") return;
-    let live = true,
-      frame = 0;
-    // App is visible and laid out at the final size beneath both covers. Only
-    // release the native cover after a paint; the DOM cover then performs the fade.
-    frame = requestAnimationFrame(() => {
-      frame = requestAnimationFrame(() => {
-        void launchApi
-          .reveal()
-          .then(() => {
-            if (live) setStage("revealing");
-          })
-          .catch((e) => {
-            if (live) {
-              setError(errorMessage(e));
-              setStage("greeting");
-            }
-          });
-      });
+    if (stage !== "greeting" || !greetingHeld || !ready || !appReady || error)
+      return;
+    // App is already visible beneath the opaque greeting. Give its ready layout
+    // a paint opportunity before fading the entire overlay, including the text.
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(leave);
     });
-    return () => {
-      live = false;
-      cancelAnimationFrame(frame);
-    };
-  }, [stage]);
+    return () => cancelAnimationFrame(frame);
+  }, [stage, greetingHeld, ready, appReady, error, leave]);
   const completeTransition = () => {
     setStage("done");
     setReplay(false);
@@ -287,13 +253,14 @@ export function Launch() {
     setError("");
     try {
       await launchApi.seen();
-      setStage("name");
+      setStage(reduced ? "name" : "entering-name");
     } catch (e) {
+      setStage("welcome");
       setError(errorMessage(e));
     } finally {
       setSaving(false);
     }
-  }, [stage, saving, replay, prefs?.completed, leave]);
+  }, [stage, saving, replay, prefs?.completed, reduced, leave]);
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if (
@@ -324,12 +291,12 @@ export function Launch() {
   }, [stage, error, next]);
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (saving) return;
+    if (saving || stage !== "name") return;
     setSaving(true);
     setFormError("");
     try {
       const saved = await launchApi.complete(name);
-      setPrefs((p) => ({ ...saved, desktopReveal: p?.desktopReveal ?? false }));
+      setPrefs(saved);
       setName(saved.name);
       setStage("greeting");
     } catch (e) {
@@ -344,10 +311,14 @@ export function Launch() {
     !!prefs &&
     (prefs.completed ||
       stage === "greeting" ||
-      stage === "leaving" ||
+      stage === "name" ||
       stage === "done");
-  const nativeReveal = !!prefs?.desktopReveal && !replay;
-  const scene = (stage === "cinematic" || stage === "welcome") && !reduced;
+  const welcome =
+    stage === "cinematic" ||
+    stage === "welcome" ||
+    stage === "entering-name" ||
+    (replay && transitioning);
+  const scene = welcome && !reduced;
   return (
     <>
       {showApp && (
@@ -355,9 +326,9 @@ export function Launch() {
           className="launch-app"
           style={{
             visibility:
-              active && stage !== "settling" && stage !== "revealing"
-                ? "hidden"
-                : undefined,
+              prefs?.completed || stage === "greeting" || transitioning
+                ? undefined
+                : "hidden",
           }}
           inert={active || !!error}
           aria-hidden={active || !!error}
@@ -365,13 +336,13 @@ export function Launch() {
           <Suspense
             fallback={<div className="launch-loading">Opening workspace…</div>}
           >
-            <Workspace onReady={workspaceReady} />
+            <App onReady={workspaceReady} />
           </Suspense>
         </div>
       )}
       {(active || !ready || !prefs || !!error) && (
         <section
-          className={`launch ${nativeReveal ? "launch-desktop" : ""} ${reduced ? "launch-reduced" : ""} ${transitioning ? `launch-${stage}` : ""}`}
+          className={`launch ${reduced ? "launch-reduced" : ""} ${transitioning ? `launch-${stage}` : ""}`}
           aria-label="Welcome to Brigadier"
           data-stage={stage}
           onAnimationEnd={(event) => {
@@ -383,46 +354,24 @@ export function Launch() {
               completeTransition();
           }}
         >
-          {(stage === "greeting" || transitioning) && (
-            <div
-              className="launch-surface"
-              style={
-                nativeReveal
-                  ? { width: cardSize.width, height: cardSize.height }
-                  : undefined
-              }
+          {prefs && (
+            <CosmicField
+              start={start}
+              reveal={stage === "cinematic"}
+              reduced={reduced}
             />
           )}
-          {prefs &&
-            stage !== "handoff" &&
-            stage !== "settling" &&
-            stage !== "revealing" && (
-              <CosmicField
-                start={start}
-                reveal={stage === "cinematic"}
-                reduced={reduced}
-                desktopReveal={nativeReveal}
-              />
-            )}
-          <div
-            className="launch-window"
-            onAnimationEnd={(event) => {
-              if (
-                event.target === event.currentTarget &&
-                event.animationName === "launch-depart" &&
-                stage === "leaving"
-              )
-                setStage("handoff");
-            }}
-          >
+          <div className="launch-window">
             {scene && (
               <div className="launch-mark" aria-hidden="true">
                 <BrandMark />
               </div>
             )}
-            {(stage === "cinematic" || stage === "welcome") && (
+            {welcome && (
               <div
-                className={`launch-welcome ${stage === "welcome" ? "launch-interactive" : ""}`}
+                className={`launch-welcome ${stage !== "cinematic" ? "launch-interactive" : ""}`}
+                inert={stage === "entering-name"}
+                aria-hidden={stage === "entering-name"}
               >
                 <h1
                   ref={heading}
@@ -458,7 +407,7 @@ export function Launch() {
                     aria-keyshortcuts="Enter"
                     aria-label={replay ? "Return to workspace" : "Continue"}
                     disabled={
-                      stage !== "welcome" || saving || (replay && !appMounted)
+                      stage !== "welcome" || saving || (replay && !appReady)
                     }
                     onClick={() => void next()}
                   >
@@ -468,21 +417,29 @@ export function Launch() {
                 </div>
               </div>
             )}
-            {stage === "name" && (
-              <form className="welcome-name" onSubmit={submit} noValidate>
+            {(stage === "name" || stage === "entering-name") && (
+              <form
+                className="welcome-name"
+                onSubmit={submit}
+                noValidate
+                inert={stage === "entering-name"}
+                onAnimationEnd={(event) => {
+                  if (event.target === event.currentTarget && event.animationName === "name-enter")
+                    setStage((current) => current === "entering-name" ? "name" : current);
+                }}
+              >
                 <h1>What should we call you?</h1>
-                <p>Make yourself at home.</p>
                 <label className="sr-only" htmlFor="welcome-name">
                   Your name
                 </label>
-                <input
+                <NameInput
                   id="welcome-name"
                   ref={input}
                   autoComplete="given-name"
                   placeholder="Your name"
                   value={name}
-                  onChange={(e) => {
-                    setName(e.target.value);
+                  onValueChange={(value) => {
+                    setName(value);
                     setFormError("");
                   }}
                   required
@@ -491,7 +448,7 @@ export function Launch() {
                   aria-describedby={
                     formError ? "welcome-name-error" : undefined
                   }
-                  disabled={saving}
+                  disabled={saving || stage !== "name"}
                 />
                 {formError && (
                   <p
@@ -504,7 +461,7 @@ export function Launch() {
                 )}
                 <button
                   className="welcome-continue"
-                  disabled={saving || !name.trim()}
+                  disabled={saving || stage !== "name" || !name.trim()}
                 >
                   {saving ? "Saving…" : "Continue"}
                   <ArrowRightIcon aria-hidden="true" />
@@ -524,6 +481,9 @@ export function Launch() {
               </div>
             )}
           </div>
+          {(stage === "cinematic" || stage === "welcome" || stage === "name") && (
+            <ResetOnboardingButton className="launch-reset" />
+          )}
           {error && (
             <div className="launch-error" role="alert">
               <h2>Brigadier couldn’t open</h2>
@@ -532,7 +492,7 @@ export function Launch() {
                 className="welcome-continue"
                 onClick={() => {
                   setError("");
-                  if (prefs?.completed && stage === "greeting") void leave();
+                  if (stage === "welcome") void next();
                   else {
                     setStage("loading");
                     setAttempt((n) => n + 1);

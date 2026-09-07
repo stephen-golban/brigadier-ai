@@ -43,6 +43,7 @@ const h = vi.hoisted(() => ({
     created_at_ms: number;
   }>,
   sessions: [] as unknown[],
+  initialData: null as Promise<void> | null,
   /** What `feed_tail` answers with, per session id. */
   tailRows: {} as Record<string, unknown[]>,
   /** While true, `feed_tail` parks instead of answering, and the promise lands in `parked`. */
@@ -113,6 +114,7 @@ vi.mock("./bridge", async (importOriginal) => {
       return [];
     },
     async listProjects() {
+      if (h.initialData) await h.initialData;
       return h.projects;
     },
     async addProject(path: string) {
@@ -295,6 +297,7 @@ beforeEach(() => {
   h.projects = [project("p-live", "job-portal")];
   h.visible = [];
   h.sessions = [];
+  h.initialData = null;
   h.tailRows = {};
   h.hold = false;
   h.parked = [];
@@ -310,6 +313,19 @@ afterEach(() => {
 });
 
 /* ------------------------------------------------------------------ tests */
+
+it("reports workspace readiness only after initial data is rendered", async () => {
+  let release!: () => void;
+  h.initialData = new Promise<void>((resolve) => { release = resolve; });
+  const { App } = await import("./App");
+  const onReady = vi.fn(() => {
+    expect(screen.getAllByText("job-portal").length).toBeGreaterThan(0);
+  });
+  await act(async () => { render(<App onReady={onReady} />); });
+  expect(onReady).not.toHaveBeenCalled();
+  await act(async () => { release(); });
+  expect(onReady).toHaveBeenCalledOnce();
+});
 
 async function selectHistory(
   user: ReturnType<typeof userEvent.setup>,

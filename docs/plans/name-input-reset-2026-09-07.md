@@ -1,0 +1,9 @@
+# Name input and onboarding reset
+
+The onboarding and Settings display-name fields use a shared NameInput built on the shadcn/ui Input. It accepts Unicode Latin letters and ordinary spaces, normalizes accented letters to NFC, filters typing/pasting, and restores the caret after rejected input. Arrow/Home/End navigation includes selection and word/line modifiers; macOS control-code arrow input is handled as navigation. Frontend and Rust persistence validation reject digits, punctuation, emoji, non-Latin scripts, and control characters.
+
+Reset onboarding is available on the onboarding screen and under Settings → Welcome. It clears only display name and onboarding flags, replays the intro inside the existing app window, and resets the frontend without restarting the app process. Music preference, notes, projects, and session data remain intact. Failed resets display an error and can be retried.
+
+Validation: 43 targeted frontend tests and four native launch tests passed. Browser integration passed the continuous workspace crossfade, name validation/navigation, reset from Settings and onboarding, profile persistence, replay, mute, and reduced motion. Native testing verified left-arrow insertion position, up/down navigation without control characters, pasted accented Latin letters, invalid-character filtering, and reset returning to the opening cinematic. The app PID stayed the same across reset; saved notes, project preferences, and music were compared against the backup and preserved.
+
+Installed and verified at /Applications/Brigadier.app. Backup: ~/Library/Application Support/Brigadier-update-backups/20260907-151041-name-reset. Native synthetic typing of accented characters was unreliable in the computer-use tool; native clipboard paste and automated input tests verified the accented-letter behavior.

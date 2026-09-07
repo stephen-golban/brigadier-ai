@@ -1,4 +1,4 @@
-/* Selected Cosmic bridge direction. Native WKWebView stays transparent; the app paints opaque. */
+/* The intro and workspace paint opaque backgrounds inside one fixed native window. */
 html,
 body,
 #root {
@@ -26,9 +26,6 @@ body,
   isolation: isolate;
   background: #030716;
 }
-.launch-desktop {
-  background: transparent;
-}
 .launch[data-stage="loading"] {
   background: transparent;
 }
@@ -41,14 +38,6 @@ body,
   inset: 0;
   display: grid;
   place-items: center;
-}
-.launch-desktop .launch-window {
-  inset: auto;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  width: min(1280px, calc(100vw - 100px));
-  height: min(800px, calc(100vh - 100px));
 }
 .cosmic-field,
 .cosmic-field canvas {
@@ -66,15 +55,6 @@ body,
 .cosmic-fallback canvas {
   display: none;
 }
-.launch-desktop .cosmic-fallback {
-  inset: auto;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  width: min(1280px, calc(100vw - 100px));
-  height: min(800px, calc(100vh - 100px));
-  border-radius: 18px;
-}
 .launch-mark {
   position: absolute;
   inset: 0;
@@ -87,6 +67,11 @@ body,
   width: 128px;
   height: 128px;
   color: #f0f4ff;
+}
+.launch-welcome,
+.welcome-name,
+.welcome-greeting {
+  grid-area: 1 / 1;
 }
 .launch-welcome {
   display: flex;
@@ -149,7 +134,22 @@ body,
   display: flex;
   flex-direction: column;
   align-items: center;
-  animation: welcome-resolve 0.65s both;
+}
+.launch[data-stage="entering-name"] .launch-welcome {
+  animation: welcome-exit 0.2s ease-out both;
+}
+.launch[data-stage="entering-name"] .welcome-name {
+  animation: name-enter 0.28s ease-out 0.12s both;
+}
+.launch[data-stage="entering-name"] .welcome-name input {
+  opacity: 1;
+}
+@keyframes welcome-exit {
+  to { opacity: 0; transform: translateY(-8px); }
+}
+@keyframes name-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 .welcome-name h1,
 .welcome-greeting h1 {
@@ -175,10 +175,11 @@ body,
 }
 .welcome-name input {
   width: min(340px, 100%);
+  margin-top: 32px;
   height: 48px;
   padding: 0 18px;
   border: 1px solid #7c8aaa;
-  border-radius: 16px;
+  border-radius: 8px;
   background: #080c1960;
   color: #f2f6ff;
   font: inherit;
@@ -190,7 +191,8 @@ body,
 }
 .welcome-name input:focus {
   outline: none;
-  box-shadow: none;
+  border-color: #c8d4ff;
+  box-shadow: 0 0 0 3px #a8bcff24;
 }
 .welcome-continue {
   display: inline-flex;
@@ -269,36 +271,16 @@ body,
   padding: 10px 15px;
   cursor: pointer;
 }
-.launch-surface {
+.launch-reset {
   position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  width: 100%;
-  height: 100%;
-  max-width: 100%;
-  max-height: 100%;
-  background: #18181b;
-}
-.launch-desktop .launch-surface {
-  border-radius: 18px;
-}
-.launch-leaving .cosmic-field,
-.launch-leaving .launch-window {
-  animation: launch-depart 0.7s both;
-}
-.launch-handoff .launch-window,
-.launch-settling .launch-window,
-.launch-revealing .launch-window {
-  opacity: 0;
+  right: 24px;
+  bottom: 20px;
+  color: #c8d4ff;
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
 }
 .launch-revealing {
   animation: workspace-reveal 0.5s ease-out both;
-}
-.launch-leaving,
-.launch-handoff,
-.launch-settling,
-.launch-revealing {
   pointer-events: none;
 }
 .return-motif {
@@ -401,14 +383,6 @@ body,
     transform: translateY(0);
   }
 }
-@keyframes launch-depart {
-  from {
-    opacity: 1;
-  }
-  to {
-    opacity: 0;
-  }
-}
 @keyframes workspace-reveal {
   from {
     opacity: 1;
@@ -444,8 +418,6 @@ body,
   .return-motif {
     display: none;
   }
-  .launch-leaving .cosmic-field,
-  .launch-leaving .launch-window,
   .launch-revealing {
     animation-duration: 0.1s;
   }
