@@ -1,7 +1,10 @@
-import { useState, type ReactNode } from "react";
+import { desktop } from "../workspaceApi";
+import { confirm as nativeConfirm } from "@tauri-apps/plugin-dialog";
+import { useState, useEffect, useRef, type ReactNode } from "react";
 import { Modal } from "./controls/modal";
 import { Button } from "./controls/button";
 export interface Confirmation {
+  native?: boolean;
   title: string;
   body: ReactNode;
   confirmLabel?: string;
@@ -11,6 +14,7 @@ export interface Confirmation {
   onCancel: () => void;
 }
 export function ConfirmDialog({
+  native = false,
   title,
   body,
   confirmLabel = "Confirm",
@@ -21,6 +25,32 @@ export function ConfirmDialog({
 }: Confirmation) {
   const [busy, setBusy] = useState(false),
     [error, setError] = useState("");
+  const [useNative, setUseNative] = useState(
+    native && desktop && typeof body === "string" && !secondaryLabel,
+  );
+  const requested = useRef(false);
+  useEffect(() => {
+    if (!useNative || requested.current) return;
+    requested.current = true;
+    void nativeConfirm(body as string, {
+      title,
+      kind: "warning",
+      okLabel: confirmLabel,
+      cancelLabel: "Cancel",
+    })
+      .then(async (accepted) => {
+        if (accepted) {
+          try {
+            await onConfirm();
+          } catch (e) {
+            setError(e instanceof Error ? e.message : String(e));
+            setUseNative(false);
+          }
+        } else onCancel();
+      })
+      .catch(() => setUseNative(false));
+  }, [useNative, body, title, confirmLabel, onConfirm, onCancel]);
+  if (useNative) return null;
   return (
     <Modal.Backdrop
       isOpen

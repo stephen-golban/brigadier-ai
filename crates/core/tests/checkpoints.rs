@@ -42,6 +42,64 @@ impl Rig {
     }
 }
 #[test]
+fn worktree_seeding_leaves_provenance_to_macos_and_preserves_other_attributes() {
+    let source = Rig::new();
+    source.write(".gitignore", b"node_modules/\n");
+    let file = fs::File::open(source.root.join(".gitignore")).unwrap();
+    for (name, value) in [
+        ("com.apple.provenance", b"provenance".as_slice()),
+        (
+            "com.apple.quarantine",
+            b"0081;00000000;Brigadier test;".as_slice(),
+        ),
+        ("user.brigadier-test", b"keep this metadata".as_slice()),
+    ] {
+        rustix::fs::fsetxattr(&file, name, value, rustix::fs::XattrFlags::empty()).unwrap();
+    }
+    let mut provenance = [0; 1024];
+    assert!(rustix::fs::fgetxattr(&file, "com.apple.provenance", &mut provenance).unwrap() > 0);
+    let original = source.capture();
+    let attributes = &original.files[".gitignore"]
+        .metadata
+        .as_ref()
+        .unwrap()
+        .attributes;
+    assert!(!attributes.contains_key("com.apple.provenance"));
+    assert_eq!(
+        attributes["com.apple.quarantine"],
+        b"0081;00000000;Brigadier test;"
+    );
+    assert_eq!(attributes["user.brigadier-test"], b"keep this metadata");
+
+    // Older checkpoint records must compare like new captures, including when embedded
+    // in persisted recovery plans. Otherwise they fail before a restore can start.
+    let mut legacy = serde_json::to_value(&original).unwrap();
+    legacy["files"][".gitignore"]["metadata"]["attributes"]["com.apple.provenance"] =
+        serde_json::json!([1, 2, 3]);
+    let restored: Snapshot = serde_json::from_value(legacy).unwrap();
+    assert_eq!(restored, original);
+
+    let target = source._dir.path().join("worktree");
+    fs::create_dir(&target).unwrap();
+    git(&target, &["init", "-q"]);
+    fs::write(target.join(".gitignore"), b"old\n").unwrap();
+    let current = source.store.capture(&target, Coverage::default()).unwrap();
+    let plan = plan_apply(&current.files.clone(), &restored.files, current).unwrap();
+    assert!(!plan.changes.is_empty());
+    source.store.validate_restore(&plan).unwrap();
+    for change in &plan.changes {
+        source
+            .store
+            .apply_change(&target, &plan.current.identity, change)
+            .unwrap();
+    }
+    assert_eq!(
+        source.store.capture(&target, Coverage::default()).unwrap().files,
+        original.files
+    );
+}
+
+#[test]
 fn raw_restore_preserves_index_manual_files_modes_and_xattrs() {
     let r = Rig::new();
     r.write("tracked", b"staged\r\n");
@@ -376,4 +434,33 @@ fn recovery_marker_is_idempotent_only_for_its_owner() {
         .unwrap();
     drop(lease);
     WorkspaceLease::acquire(&r.root).unwrap();
+}
+
+#[test]
+fn interactive_shells_allow_writers_but_guard_destructive_operations_in_both_directions() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("root");
+    let child = root.join("child");
+    let sibling = temp.path().join("sibling");
+    fs::create_dir_all(&child).unwrap(); fs::create_dir_all(&sibling).unwrap();
+    let shell = WorkspaceLease::terminal(&root).unwrap();
+    assert!(WorkspaceLease::writer(&root).is_ok());
+    assert!(WorkspaceLease::writer(&child).is_ok());
+    assert!(WorkspaceLease::acquire(&root).is_err());
+    assert!(WorkspaceLease::acquire(&child).is_err());
+    assert!(WorkspaceLease::acquire(&sibling).is_ok());
+    let writer = WorkspaceLease::writer(&root).unwrap();
+    assert!(WorkspaceLease::writer(&child).is_err());
+    drop(writer); drop(shell);
+    let shell = WorkspaceLease::terminal(&child).unwrap();
+    assert!(WorkspaceLease::acquire(&root).is_err());
+    drop(shell);
+    let restore = WorkspaceLease::acquire(&root).unwrap();
+    assert!(WorkspaceLease::terminal(&child).is_err());
+    assert!(WorkspaceLease::terminal(&root).is_err());
+    assert!(WorkspaceLease::terminal(&sibling).is_ok());
+    drop(restore);
+    let restore = WorkspaceLease::acquire(&child).unwrap();
+    assert!(WorkspaceLease::terminal(&root).is_err());
+    drop(restore);
 }

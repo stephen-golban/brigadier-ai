@@ -1,3 +1,4 @@
+import { Telescope as TelescopeIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import {
   AssistantRuntimeProvider,
@@ -16,7 +17,12 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { PencilSimpleIcon } from "@phosphor-icons/react";
+import {
+  PencilSimpleIcon,
+  HammerIcon,
+  ArrowsClockwiseIcon,
+  BugIcon,
+} from "@phosphor-icons/react";
 import { Button } from "./controls/button";
 import { MessageAction } from "./assistant-ui/elements/tooltip-icon-button";
 import { Thread } from "./assistant-ui/elements/thread";
@@ -35,6 +41,7 @@ export function ThreadView({
   requests,
   sessionId,
   projectName,
+  projectId,
   onFile,
   onEdit,
   editing = false,
@@ -86,7 +93,7 @@ export function ThreadView({
           onSelectSession={onSelectSession}
         />
       ) : (
-        <div className="new-conversation flex min-h-0 flex-1 flex-col items-center justify-center gap-4 px-6 text-text-secondary [&_h1]:text-lg">
+        <div className="new-conversation flex min-h-0 flex-1 flex-col items-center justify-center gap-4 px-6 text-text-secondary">
           <BrandMark />
           <h1>
             {projectName
@@ -95,6 +102,53 @@ export function ThreadView({
                 ? `What will you build, ${greetingName}?`
                 : "What should we build?"}
           </h1>
+          {projectId && (
+            <div className="welcome-starters">
+              {[
+                {
+                  title: "Explore and understand code",
+                  prompt:
+                    "Explore this project and explain its architecture and main flows.",
+                  Icon: TelescopeIcon,
+                  color: "#5795ed",
+                },
+                {
+                  title: "Build a new feature, app, or tool",
+                  prompt: "Help me build a new feature: ",
+                  Icon: HammerIcon,
+                  color: "#a77ddd",
+                },
+                {
+                  title: "Review code and suggest changes",
+                  prompt:
+                    "Review the current changes and suggest improvements. Focus on bugs and regressions.",
+                  Icon: ArrowsClockwiseIcon,
+                  color: "#62a781",
+                },
+                {
+                  title: "Fix issues and failures",
+                  prompt: "Help me investigate and fix this issue: ",
+                  Icon: BugIcon,
+                  color: "#d88a55",
+                },
+              ].map(({ title, prompt, Icon, color }) => (
+                <Button
+                  key={title}
+                  className="welcome-starter"
+                  onClick={() =>
+                    window.dispatchEvent(
+                      new CustomEvent("workbench-starter", {
+                        detail: { projectId, prompt },
+                      }),
+                    )
+                  }
+                >
+                  <Icon size={18} style={{ color }} />
+                  <span>{title}</span>
+                </Button>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </section>

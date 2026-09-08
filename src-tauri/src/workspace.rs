@@ -113,6 +113,36 @@ pub(crate) fn preview(root: &Path, relative: &str) -> Result<FilePreview, AppErr
     })
 }
 
+#[derive(Serialize)]
+pub(crate) struct FileStat {
+    directory: bool,
+    size: u64,
+    modified: u64,
+}
+#[tauri::command]
+pub(crate) async fn workspace_file_stat(
+    project_id: String,
+    session_id: Option<String>,
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<FileStat, AppError> {
+    let root = root(state.inner(), &project_id, session_id.as_deref()).await?;
+    let path = resolve(&root, &path)?;
+    let meta = tokio::fs::metadata(path)
+        .await
+        .map_err(|e| AppError::io(e.to_string()))?;
+    Ok(FileStat {
+        directory: meta.is_dir(),
+        size: meta.len(),
+        modified: meta
+            .modified()
+            .ok()
+            .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|m| m.as_millis() as u64)
+            .unwrap_or(0),
+    })
+}
+
 #[tauri::command]
 pub(crate) async fn workspace_entries(
     project_id: String,
@@ -241,7 +271,12 @@ async fn git_output(
         }
         Ok((bytes, false))
     }
-    let result = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+    let timeout_seconds = if matches!(args.first(), Some(&"clone" | &"fetch" | &"pull" | &"push")) {
+        300
+    } else {
+        15
+    };
+    let result = tokio::time::timeout(std::time::Duration::from_secs(timeout_seconds), async {
         tokio::try_join!(
             bounded_read(stdout, limit, truncate),
             bounded_read(stderr, 64 * 1024, false),
@@ -249,7 +284,7 @@ async fn git_output(
         )
     })
     .await
-    .map_err(|_| AppError::io("Git inspection timed out"));
+    .map_err(|_| AppError::io("Git operation timed out"));
     let (stdout, stderr, status) = match result.and_then(|r| r) {
         Ok(out) => out,
         Err(e) => {

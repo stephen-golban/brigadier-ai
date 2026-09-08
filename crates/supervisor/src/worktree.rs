@@ -804,6 +804,31 @@ mod tests {
         }
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn session_base_branch_inherits_only_the_current_checkout() {
+        let rig = Rig::new(true);
+        let project = rig.project().await;
+        let _terminal = brigadier_core::checkpoint::WorkspaceLease::terminal(&rig.repo).unwrap();
+        git_run(&rig.git, &rig.repo, &["branch", "alternate"]);
+        std::fs::write(rig.repo.join("f.txt"), "committed main").unwrap();
+        git_run(&rig.git, &rig.repo, &["commit", "-am", "main changes"]);
+        std::fs::write(rig.repo.join("f.txt"), "uncommitted main").unwrap();
+        std::fs::write(rig.repo.join("new.txt"), "untracked").unwrap();
+        for (branch, expected, untracked) in [("alternate", "hi\n", false), ("main", "uncommitted main", true)] {
+            let id = rig.sup.start_project_session_from(&project, &rig.kind, StartSession::new(&rig.repo), true, Some(branch.into())).await.unwrap();
+            let row = rig.row(&id).await;
+            let path = row.worktree_path.unwrap();
+            assert_eq!(std::fs::read_to_string(path.join("f.txt")).unwrap(), expected);
+            assert_eq!(path.join("new.txt").exists(), untracked);
+            rig.end_and_settle(&id).await;
+        }
+        assert_eq!(git_run(&rig.git, &rig.repo, &["branch", "--show-current"]).trim(), "main");
+        assert_eq!(std::fs::read_to_string(rig.repo.join("f.txt")).unwrap(), "uncommitted main");
+        assert!(session_base(&rig.repo, "--detach").await.is_err());
+        assert!(session_base(&rig.repo, "missing").await.is_err());
+        rig.store.close().await.unwrap();
+    }
+
     /// A driver that refuses every start. The only way to exercise the rollback path, which is
     /// otherwise reachable only when a real `claude` will not come up.
     #[derive(Debug)]
@@ -1953,4 +1978,16 @@ mod tests {
         );
         rig.store.close().await.expect("store closes");
     }
+}
+
+/// Only local branch names are accepted. Inherit edits only from the checked-out branch.
+pub(crate) async fn session_base(root: &Path, branch: &str) -> Result<(Option<String>, bool), SupervisorError> {
+    let git = resolve_git().ok_or_else(|| SupervisorError::InvalidArgument("Git is unavailable".into()))?;
+    let reference = format!("refs/heads/{branch}");
+    let valid = tokio::process::Command::new(&git).args(["check-ref-format", &reference]).output().await?;
+    let exists = tokio::process::Command::new(&git).current_dir(root).args(["show-ref", "--verify", "--quiet", &reference]).output().await?;
+    if !valid.status.success() || !exists.status.success() { return Err(SupervisorError::InvalidArgument("Choose an existing local branch".into())); }
+    let current = tokio::process::Command::new(&git).current_dir(root).args(["symbolic-ref", "--quiet", "HEAD"]).output().await?;
+    let inherit = current.status.success() && String::from_utf8_lossy(&current.stdout).trim() == reference;
+    Ok((Some(reference), inherit))
 }

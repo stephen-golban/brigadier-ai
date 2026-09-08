@@ -1,3 +1,5 @@
+import { workbenchApi } from "../workbenchApi";
+import { workspaceApi } from "../workspaceApi";
 import { ComposerActions as PromptInputActions } from "./assistant-ui/elements/composer";
 import { Button } from "./controls/button";
 import { SelectMenu } from "./SelectMenu";
@@ -27,7 +29,7 @@ import { PromptInput, useDraft } from "./PromptInput";
  * `claude_not_installed` or `claude_too_old`, the sidebar's bottom row says so and start is
  * blocked here.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { Pickers } from "./Pickers";
 import { isSubmitKey } from "../keys";
@@ -49,6 +51,7 @@ export interface NewSessionProps {
     permissionMode: PermissionMode;
     options?: AgentOptions;
     isolated?: boolean;
+    baseBranch?: string;
   }) => void | Promise<boolean>;
 }
 
@@ -62,6 +65,46 @@ export function NewSession({
   const [model, setModel] = useState<string>("");
   const [effort, setEffort] = useState<Effort>("auto");
   const [isolated, setIsolated] = useState(true);
+  const [branches, setBranches] = useState<string[]>([]);
+  const [branch, setBranch] = useState("");
+  const [currentBranch, setCurrentBranch] = useState("");
+  const [starterFocus, setStarterFocus] = useState("");
+  useEffect(() => {
+    let live = true;
+    setBranches([]);
+    setBranch("");
+    setCurrentBranch("");
+    if (project) {
+      const context = { projectId: project.id, sessionId: null };
+      void Promise.all([
+        workbenchApi.gitDetails(context),
+        workspaceApi.git(context),
+      ])
+        .then(([details, git]) => {
+          if (live) {
+            const localBranches = details.localBranches ?? details.branches;
+            setBranches(localBranches);
+            setCurrentBranch(git.branch);
+            setBranch(localBranches.includes(git.branch) ? git.branch : "");
+          }
+        })
+        .catch(() => {});
+    }
+    const starter = (event: Event) => {
+      const detail = (
+        event as CustomEvent<{ projectId: string; prompt: string }>
+      ).detail;
+      if (detail.projectId === project?.id) {
+        setPrompt(detail.prompt);
+        setStarterFocus(crypto.randomUUID());
+      }
+    };
+    window.addEventListener("workbench-starter", starter);
+    return () => {
+      live = false;
+      window.removeEventListener("workbench-starter", starter);
+    };
+  }, [project?.id]);
   const [mode, setMode] = useState<PermissionMode>("default");
 
   const defaultModel = models.find((m) => m.default)?.id ?? models[0]?.id ?? "";
@@ -79,6 +122,7 @@ export function NewSession({
         model: chosen === "" ? null : chosen,
         permissionMode: mode,
         isolated,
+        ...(isolated && branch ? { baseBranch: branch } : {}),
         ...(effort !== "auto" && effortLevels(chosen).includes(effort)
           ? { options: { effort } }
           : {}),
@@ -97,7 +141,34 @@ export function NewSession({
    */
   return (
     <>
+      {branches.length > 0 && (
+        <div className="mx-auto mb-2 flex max-w-[780px] items-center gap-2 text-xs text-text-secondary">
+          <SelectMenu
+            searchable
+            label="Base branch"
+            value={isolated ? branch : currentBranch}
+            onChange={setBranch}
+            disabled={!isolated || disabled || sending}
+            options={branches.map((value) => ({
+              value,
+              label: value,
+              description:
+                value === currentBranch
+                  ? "Includes current uncommitted files"
+                  : "Start from this branch’s committed files",
+            }))}
+          />
+          <span className="text-[10px] text-text-tertiary">
+            {isolated
+              ? branch === currentBranch
+                ? "Includes uncommitted files"
+                : "Clean branch contents"
+              : "Project checkout"}
+          </span>
+        </div>
+      )}
       <PromptInput
+        focusKey={starterFocus}
         rows={2}
         value={prompt}
         placeholder={

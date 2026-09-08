@@ -1,4 +1,4 @@
-import { useSessionNavigation, setSessionArchived } from "../sessionNavigation";
+import { useSessionNavigation } from "../sessionNavigation";
 import { createPortal } from "react-dom";
 import { EditProjectDialog } from "./EditProjectDialog";
 import { ArchiveIcon } from "./ArchiveIcon";
@@ -20,7 +20,6 @@ import {
 } from "react";
 import {
   ChevronRight,
-  ArchiveRestore,
   Tag,
   Plus,
   Settings,
@@ -176,7 +175,6 @@ export function Sidebar(props: SidebarProps) {
     [],
   );
   const { archivedIds } = useSessionNavigation();
-  const [archivedOpen, setArchivedOpen] = useState(false);
   const [all, setAll] = useState<Set<string>>(new Set());
   const [settings, setSettings] = useState(false),
     [notes, setNotes] = useState(false),
@@ -392,13 +390,7 @@ export function Sidebar(props: SidebarProps) {
       navigation.pinnedSessions.includes(id) ? null : "pinned",
     );
   const archiveSession = (id: string) => {
-    try {
-      setSessionArchived(id, true);
-    } catch (e) {
-      notify(errorMessage(e), true);
-      return;
-    }
-    if (props.selectedSessionId === id) props.onSelectSession(null);
+    window.dispatchEvent(new CustomEvent("workbench-archive-session", { detail: { sessionId: id } }));
   };
   const visibleSessions = activeSessions.filter(
     (s) => !archivedIds.includes(s.sessionId),
@@ -478,7 +470,7 @@ export function Sidebar(props: SidebarProps) {
             className="session-row pr-8"
             onClick={() => selectSession(s.sessionId)}
           >
-            <span className="session-label min-w-0 flex-1 truncate text-left">
+            <span className="session-label min-w-0 flex-1 truncate text-left text-text">
               {title(s.sessionId)}
             </span>
             <span className="session-indicator absolute top-0 right-1 flex h-7 w-6 items-center justify-center">
@@ -730,7 +722,7 @@ export function Sidebar(props: SidebarProps) {
                             }}
                           >
                             <span className="size-4 shrink-0" />
-                            <span className="project-label min-w-0 flex-1 truncate text-left">
+                            <span className="project-label min-w-0 flex-1 truncate text-left text-text">
                               {projectName(project)}
                             </span>
                             {navigation.projectColors[project.id] && (
@@ -973,10 +965,6 @@ export function Sidebar(props: SidebarProps) {
                 <Settings />
                 Settings
               </Dropdown.Item>
-              <Dropdown.Item onAction={() => setArchivedOpen(true)}>
-                <ArchiveIcon />
-                Archived chats
-              </Dropdown.Item>
               <Separator />
               <Dropdown.Item onAction={() => setTrash(true)}>
                 <Trash2 />
@@ -989,15 +977,29 @@ export function Sidebar(props: SidebarProps) {
               </Dropdown.Item>
             </DropdownContent>
           </Dropdown>
-          <Button
-            isIconOnly
-            className="ml-auto size-7 text-text-secondary"
-            aria-label="Settings"
-            title="Settings"
-            onClick={() => setSettings(true)}
+          <Tooltip
+            className="ml-auto"
+            content={
+              <>
+                Settings{" "}
+                <Kbd>
+                  {navigator.platform.startsWith("Mac") ? "⌘," : "Ctrl ,"}
+                </Kbd>
+              </>
+            }
           >
-            <Settings />
-          </Button>
+            <Button
+              isIconOnly
+              className="size-7 text-text-secondary"
+              aria-label="Settings"
+              aria-keyshortcuts={
+                navigator.platform.startsWith("Mac") ? "Meta+," : "Control+,"
+              }
+              onClick={() => setSettings(true)}
+            >
+              <Settings />
+            </Button>
+          </Tooltip>
         </SidebarFooter>
       </SidebarPrimitive>
       {renaming && (
@@ -1021,45 +1023,6 @@ export function Sidebar(props: SidebarProps) {
           }}
         />
       )}
-      <Dialog open={archivedOpen} onOpenChange={setArchivedOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Archived chats</DialogTitle>
-            <DialogDescription>
-              Archived chats are hidden from this device’s sidebar. Their
-              history and running work are preserved.
-            </DialogDescription>
-          </DialogHeader>
-          <ul className="m-0 max-h-80 list-none overflow-y-auto p-0">
-            {activeSessions
-              .filter((s) => archivedIds.includes(s.sessionId))
-              .map((s) => (
-                <li key={s.sessionId} className="flex h-10 items-center gap-3">
-                  <span className="min-w-0 flex-1 truncate">
-                    {title(s.sessionId)}
-                  </span>
-                  <Button
-                    aria-label={`Restore ${title(s.sessionId)}`}
-                    onClick={() => setSessionArchived(s.sessionId, false)}
-                  >
-                    <ArchiveRestore />
-                    Restore
-                  </Button>
-                  <Button
-                    isIconOnly
-                    aria-label={`Move ${title(s.sessionId)} to Trash`}
-                    onClick={() => void moveToTrash("session", s.sessionId)}
-                  >
-                    <Trash2 />
-                  </Button>
-                </li>
-              ))}
-            {!activeSessions.some((s) => archivedIds.includes(s.sessionId)) && (
-              <li className="py-4 text-text-disabled">No archived chats</li>
-            )}
-          </ul>
-        </DialogContent>
-      </Dialog>
       <SearchDialog
         open={search}
         onOpenChange={setSearch}

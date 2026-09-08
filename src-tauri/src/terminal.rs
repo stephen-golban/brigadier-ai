@@ -7,7 +7,7 @@ use std::{
     io::{Read, Write},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, Mutex, OnceLock,
+        Arc, Mutex, OnceLock, Weak,
     },
 };
 use tauri::State;
@@ -22,6 +22,9 @@ struct Terminal {
     pid: Option<u32>,
     drained: Arc<AtomicBool>,
     cwd: std::path::PathBuf,
+    // The waiter owns the lease until the shell exits. Terminal tabs at the same
+    // canonical root share it; keeping an exited tab open must not retain ownership.
+    lease: Weak<brigadier_core::checkpoint::WorkspaceLease>,
 }
 #[derive(Default)]
 struct Output {
@@ -85,13 +88,24 @@ fn error(e: impl std::fmt::Display) -> AppError {
 }
 
 fn spawn(root: std::path::PathBuf, cols: u16, rows: u16) -> Result<String, AppError> {
-    let lease = brigadier_core::checkpoint::WorkspaceLease::acquire(&root).map_err(error)?;
+    let root = std::fs::canonicalize(root).map_err(error)?;
     let mut registry = lock();
     if registry.len() >= 12 {
         return Err(AppError::invalid_argument(
             "Close a terminal before opening another (limit 12)",
         ));
     }
+    let lease = registry
+        .values()
+        .filter(|terminal| terminal.cwd == root)
+        .find_map(|terminal| terminal.lease.upgrade())
+        .map(Ok)
+        .unwrap_or_else(|| {
+            brigadier_core::checkpoint::WorkspaceLease::terminal(&root)
+                .map(Arc::new)
+                .map_err(error)
+        })?;
+    let shared_lease = Arc::downgrade(&lease);
     let pair = native_pty_system()
         .openpty(size(cols, rows))
         .map_err(error)?;
@@ -144,6 +158,7 @@ fn spawn(root: std::path::PathBuf, cols: u16, rows: u16) -> Result<String, AppEr
             pid,
             drained,
             cwd: root,
+            lease: shared_lease,
         },
     );
     Ok(id)
@@ -295,6 +310,73 @@ pub(crate) async fn terminal_info(id: String) -> Result<TerminalInfo, AppError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn terminals_share_workspace_until_last_shell_exits() {
+        struct Shells(Vec<String>);
+        impl Drop for Shells {
+            fn drop(&mut self) {
+                for id in &self.0 {
+                    terminal_close(id.clone());
+                }
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let mut shells = Shells(Vec::new());
+        let first = spawn(root.path().to_path_buf(), 80, 24).unwrap();
+        shells.0.push(first.clone());
+        let second = spawn(root.path().join("."), 80, 24).unwrap();
+        shells.0.push(second.clone());
+        assert_ne!(first, second);
+        {
+            let registry = lock();
+            assert!(Weak::ptr_eq(&registry[&first].lease, &registry[&second].lease));
+        }
+        for (id, marker) in [(&first, "FIRST"), (&second, "SECOND")] {
+            terminal_write(id.clone(), format!("printf '{marker}_%s\\n' READY\n"))
+                .await
+                .unwrap();
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut first_output = Vec::new();
+        let mut second_output = Vec::new();
+        loop {
+            first_output.extend(terminal_read(first.clone()).unwrap().data);
+            second_output.extend(terminal_read(second.clone()).unwrap().data);
+            if String::from_utf8_lossy(&first_output).contains("FIRST_READY")
+                && String::from_utf8_lossy(&second_output).contains("SECOND_READY")
+            {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "shells did not respond independently");
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(!String::from_utf8_lossy(&first_output).contains("SECOND_READY"));
+        assert!(!String::from_utf8_lossy(&second_output).contains("FIRST_READY"));
+        // Closing one tab neither kills the other shell nor releases its restore guard.
+        let first_exited = lock()[&first].exited.clone();
+        terminal_close(first);
+        while !first_exited.load(Ordering::Acquire) {
+            assert!(std::time::Instant::now() < deadline);
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let third = spawn(root.path().to_path_buf(), 80, 24).unwrap();
+        shells.0.push(third.clone());
+        assert!(brigadier_core::checkpoint::WorkspaceLease::acquire(root.path()).is_err());
+        let third_exited = lock()[&third].exited.clone();
+        terminal_close(third);
+        while !third_exited.load(Ordering::Acquire) {
+            assert!(std::time::Instant::now() < deadline);
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        terminal_write(second.clone(), "exit\n".into()).await.unwrap();
+        while !terminal_read(second.clone()).unwrap().exited {
+            assert!(std::time::Instant::now() < deadline);
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        // An exited tab remains readable without keeping the workspace locked.
+        assert!(brigadier_core::checkpoint::WorkspaceLease::acquire(root.path()).is_ok());
+    }
+
     #[tokio::test]
     async fn foreground_command_is_busy_and_shell_is_idle() {
         let root = tempfile::tempdir().unwrap();

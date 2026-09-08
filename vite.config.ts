@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url";
+import { readdirSync } from "node:fs";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
@@ -21,6 +22,9 @@ export default defineConfig(async () => ({
   resolve: {
     alias: { "@": srcDir },
   },
+  // Keep VS Code service identifiers in one module graph and retain extension asset URLs.
+  // Mixing prebundled overrides with unbundled themes creates duplicate service symbols.
+  optimizeDeps: { exclude: readdirSync(new URL("./node_modules/@codingame", import.meta.url)).map(name => `@codingame/${name}`) },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

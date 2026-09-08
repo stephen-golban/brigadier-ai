@@ -73,10 +73,6 @@
   ::placeholder {
     color: var(--color-text-tertiary);
   }
-  :focus-visible {
-    outline: 2px solid var(--color-text-secondary);
-    outline-offset: 2px;
-  }
   button,
   input,
   textarea,
@@ -116,6 +112,9 @@
     background: var(--color-text-secondary);
   }
 }
+
+/* App-wide preference, including editor widgets and the opening screen. */
+*, *::before, *::after { outline: none !important; }
 
 /* All standard icon buttons share metrics and states, independent of placement classes. */
 .button[data-icon-button="standard"] {
@@ -442,3 +441,74 @@
 @media (prefers-reduced-motion: reduce) {
   .notepad-split, .notepad-editor { transition: none; }
 }
+.main-tab-strip { scrollbar-width: none; }
+.main-tab-strip::-webkit-scrollbar { display: none; }
+.workbench-tab { font-size: 12px; height: 26px; gap: 4px; border-radius: 7px; padding: 0 4px 0 8px; }
+.workbench-tab .button[data-icon-button="standard"] {
+  width: 16px;
+  height: 16px;
+  min-width: 16px;
+  padding: 3px;
+  border-radius: 50%;
+}
+.workbench-tab .button[data-icon-button="standard"] svg { width: 10px; height: 10px; }
+.workbench-tab > button { opacity: 0; }
+.workbench-tab:hover > button, .workbench-tab:focus-within > button, .workbench-tab[aria-selected="true"] > button { opacity: 1; }
+.note-title-input:focus-visible { outline: none; border-bottom: 1px solid var(--color-text-tertiary); border-radius: 0; }
+.workbench-tab .tab-menu { opacity: 0; pointer-events: none; }
+.workbench-tab:hover .tab-menu,
+.workbench-tab:focus-within .tab-menu,
+.workbench-tab .tab-menu:has([aria-expanded="true"]) { opacity: 1; pointer-events: auto; }
+
+/* Keep workspace tools at the right edge while the active page gives up space. */
+.workbench-panel-actions { margin-right: -8px; }
+.workbench-change-count {
+  position: absolute;
+  top: 0;
+  right: -1px;
+  min-width: 10px;
+  height: 10px;
+  padding: 0 2px;
+  border-radius: 5px;
+  background: var(--color-elevated);
+  color: var(--color-text-secondary);
+  font-size: 7px;
+  font-weight: 500;
+  line-height: 10px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.workbench-side {
+  width: 0;
+  max-width: 65%;
+  overflow: hidden;
+  visibility: hidden;
+  transition: width 240ms cubic-bezier(.2,.8,.2,1), visibility 0s 240ms;
+}
+.workbench-side[data-open="true"] {
+  width: var(--workspace-panel-width, 280px);
+  visibility: visible;
+  transition-delay: 0s;
+}
+.workbench-side-content {
+  min-width: 220px;
+  border-left: 1px solid var(--color-hairline);
+  opacity: 0;
+  transform: translateX(16px);
+  transition: opacity 180ms ease, transform 240ms cubic-bezier(.2,.8,.2,1);
+}
+.workbench-side[data-open="true"] .workbench-side-content { opacity: 1; transform: translateX(0); }
+.workbench-side[data-resizing="true"] { transition: none; }
+.workbench-side .layout-resizer:hover,
+.workbench-side .layout-resizer:focus-visible { background: var(--color-hover); }
+.open-file-empty > svg { width: 32px; height: 32px; }
+.open-file-empty h2 { margin-top: 8px; }
+@media (prefers-reduced-motion: reduce) {
+  .workbench-side, .workbench-side-content { transition: none; }
+}
+
+.welcome-starters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; width: 100%; max-width: 680px; margin-top: 16px; }
+.welcome-starter.button { height: 108px; padding: 14px; display: flex; flex-direction: column; align-items: flex-start; justify-content: space-between; border: 1px solid var(--color-hairline); border-radius: 14px; white-space: normal; text-align: left; font-size: 12px; font-weight: 400; }
+.new-conversation h1 { font-size: 24px; font-weight: 400; color: var(--color-text); text-align: center; }
+@media (max-width: 950px) { .welcome-starters { grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: 430px; } .welcome-starter.button { height: 88px; } }

@@ -94,6 +94,79 @@ function mount(over: Partial<SidebarProps> = {}) {
 }
 
 describe("sidebar navigation", () => {
+  it.each([null, "s"])(
+    "uses primary text for project and session titles with selected session %s",
+    async (selectedSessionId) => {
+      localStorage.setItem(
+        "brigadier:project-expanded:v1",
+        JSON.stringify({ p: true, q: true }),
+      );
+      localStorage.setItem(
+        "brigadier:pinned-projects:v1",
+        JSON.stringify(["q"]),
+      );
+      vi.spyOn(navigationApi, "load").mockResolvedValue({
+        ...emptyNavigation,
+        pinnedSessions: ["s"],
+      });
+      mount({
+        projects: [project("p", "Example"), project("q", "Pinned project")],
+        sessions: {
+          s: session("s", "p", "exited"),
+          t: session("t", "q", "exited"),
+        },
+        selectedProjectId: "p",
+        selectedSessionId,
+      });
+      await screen.findByRole("button", { name: "Pinned" });
+      for (const name of ["New chat", "Notepad"])
+        expect(screen.getByRole("button", { name })).toHaveClass("text-text");
+      const projects = screen.getByRole("navigation", { name: "Projects" });
+      for (const name of [
+        "Example",
+        "Pinned project",
+        "Session s",
+        "Session t",
+      ])
+        expect(
+          within(projects)
+            .getByRole("button", { name })
+            .querySelector(".project-label, .session-label"),
+        ).toHaveClass("text-text");
+      const pinned = document.getElementById("sidebar-pinned")!;
+      expect(
+        within(pinned)
+          .getByRole("button", { name: "Session s" })
+          .querySelector(".session-label"),
+      ).toHaveClass("text-text");
+    },
+  );
+  it.each([
+    ["MacIntel", "⌘,", "Meta+,"],
+    ["Win32", "Ctrl ,", "Control+,"],
+    ["Linux x86_64", "Ctrl ,", "Control+,"],
+  ])(
+    "shows the Settings glass tooltip and shortcut on %s",
+    async (platform, hint, shortcut) => {
+      vi.spyOn(navigator, "platform", "get").mockReturnValue(platform);
+      const user = userEvent.setup();
+      mount();
+      const settings = screen.getByRole("button", { name: "Settings" });
+      expect(settings).toHaveAttribute("aria-keyshortcuts", shortcut);
+      expect(settings).not.toHaveAttribute("title");
+      await user.hover(settings);
+      const tooltip = screen.getByRole("tooltip");
+      expect(tooltip).toHaveClass("glass-surface");
+      expect(tooltip).toHaveTextContent(`Settings ${hint}`);
+      expect(tooltip.querySelector("kbd")).toHaveTextContent(hint);
+      expect(settings).toHaveAttribute("aria-describedby", tooltip.id);
+      await user.keyboard("{Escape}");
+      expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+      await user.click(settings);
+      expect(screen.getByRole("dialog", { name: "Settings" })).toBeVisible();
+      expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    },
+  );
   it("expands projects and caps their recent sessions at five", async () => {
     const user = userEvent.setup();
     const sessions = Object.fromEntries(
@@ -205,7 +278,7 @@ describe("sidebar navigation", () => {
     expect(props.onSelectProject).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.getByLabelText("Note content")).toHaveValue("Keep this");
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(screen.getByRole("button", { name: "Create note" }));
     expect(save).toHaveBeenCalledWith(
       expect.objectContaining({ content: "Keep this", projectId: null }),
     );
@@ -224,7 +297,9 @@ describe("sidebar navigation", () => {
       within(dialog).getByLabelText("Note content"),
       "Quick idea",
     );
-    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+    await user.click(
+      within(dialog).getByRole("button", { name: "Create note" }),
+    );
     expect(save).toHaveBeenCalledWith(
       expect.objectContaining({
         title: "Untitled note",
@@ -232,9 +307,13 @@ describe("sidebar navigation", () => {
         projectId: null,
       }),
     );
-    await user.click(within(dialog).getByRole("button", { name: "All notes" }));
+    await user.click(
+      within(dialog).getByRole("button", { name: "Close note editor" }),
+    );
     await user.click(screen.getByRole("button", { name: "Notepad" }));
-    expect(screen.queryByLabelText("Note content")).not.toBeInTheDocument();
+    expect(
+      screen.getByLabelText("Note content").closest("aside"),
+    ).toHaveAttribute("aria-hidden", "true");
   });
   it("searches project names without Home, Inbox, or Ask AI links", async () => {
     const user = userEvent.setup();
@@ -296,36 +375,17 @@ describe("sidebar navigation", () => {
     await user.click(expand);
     expect(screen.getByRole("button", { name: "Session s" })).toBe(chat);
   });
-  it("archives and restores chats without trashing or stopping the session", async () => {
+  it("routes archiving through the workbench close confirmation", async () => {
     const user = userEvent.setup();
-    const move = vi.spyOn(navigationApi, "move");
-    const props = mount({
-      projects: [project("p", "Example")],
-      sessions: { s: session("s", "p", "running") },
-      selectedProjectId: "p",
-      selectedSessionId: "s",
-    });
+    const event = vi.fn();
+    window.addEventListener("workbench-archive-session", event);
+    const props = mount({ projects: [project("p", "Example")], sessions: { s: session("s", "p", "running") }, selectedProjectId: "p", selectedSessionId: "s" });
     await user.click(screen.getByRole("button", { name: "Archive Session s" }));
-    expect(props.onSelectSession).toHaveBeenCalledWith(null);
-    expect(
-      screen.queryByRole("button", { name: "Session s" }),
-    ).not.toBeInTheDocument();
-    expect(
-      JSON.parse(localStorage.getItem("brigadier:archived-sessions:v1")!),
-    ).toEqual(["s"]);
-    await user.click(
-      await screen.findByRole("button", { name: "Account: Stephen" }),
-    );
-    await user.click(screen.getByRole("menuitem", { name: "Archived chats" }));
-    await user.click(screen.getByRole("button", { name: "Restore Session s" }));
-    expect(
-      JSON.parse(localStorage.getItem("brigadier:archived-sessions:v1")!),
-    ).toEqual([]);
-    expect(move).not.toHaveBeenCalled();
-    await user.keyboard("{Escape}");
-    expect(
-      screen.getByRole("button", { name: "Session s" }),
-    ).toBeInTheDocument();
+    expect(event).toHaveBeenCalledOnce();
+    expect(event.mock.calls[0][0].detail).toEqual({ sessionId: "s" });
+    expect(props.onSelectSession).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Session s" })).toBeVisible();
+    window.removeEventListener("workbench-archive-session", event);
   });
   it("starts a chat from the pencil action without toggling the project closed", async () => {
     const user = userEvent.setup();

@@ -1,4 +1,11 @@
-import { createContext, useContext, useId, type ComponentProps } from "react";
+import {
+  createContext,
+  useContext,
+  useId,
+  useEffect,
+  useRef,
+  type ComponentProps,
+} from "react";
 import { navigateItems } from "./overlay";
 const State = createContext({
   selected: "",
@@ -47,10 +54,16 @@ function Tab({
 }: ComponentProps<"div"> & { id: string }) {
   const state = useContext(State);
   const selected = state.selected === id;
+  const tabRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (selected)
+      tabRef.current?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+  }, [selected]);
   // A tab can contain a separate close button; use a focusable tab container, not nested buttons.
   return (
     <div
       {...props}
+      ref={tabRef}
       id={`${state.id}-tab-${id}`}
       role="tab"
       aria-selected={selected}

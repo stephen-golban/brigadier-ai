@@ -23,6 +23,8 @@
 #[cfg(any(debug_assertions, feature = "burn"))]
 mod burn;
 mod cleanup;
+mod session_archive;
+mod tab_menu;
 mod commands;
 mod commit_message;
 mod conversation;
@@ -129,6 +131,10 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             commands::app_info,
+            session_archive::archive_load,
+            session_archive::archive_set,
+            session_archive::archive_settings,
+            session_archive::archive_delete,
             cleanup::session_discard,
             session_changes::session_changes,
             session_changes::session_diff,
@@ -149,7 +155,9 @@ pub fn run() {
             commit_message::generate_commit_message,
             source_control::workspace_git_action,
             source_control::workspace_git_details,
+            source_control::workspace_clone_repository,
             search::workspace_search,
+            search::workspace_find_files,
             search::workspace_replace,
             search::workspace_save,
             workbench_data::workbench_load,
@@ -195,6 +203,7 @@ pub fn run() {
             conversation::recover_workspace_rewind,
             workspace::workspace_entries,
             workspace::workspace_file,
+            workspace::workspace_file_stat,
             workspace::workspace_git,
             workspace::workspace_diff,
             terminal::terminal_info,
@@ -231,6 +240,7 @@ pub fn run() {
         })
         .setup(|app| {
             trace::stage("setup_entry");
+            tab_menu::install(app.handle())?;
             // `setup` runs on `RuntimeRunEvent::Ready`, after the window exists, on the main
             // thread — which is *not* a runtime thread, so `block_on` is legal here and is what
             // `Supervisor::new` needs (it spawns the per-frame flusher).
@@ -275,6 +285,7 @@ pub fn run() {
                         if let Err(e) = peers::start(handle.clone()) {
                             tracing::error!("Peer communication unavailable: {}", e.message);
                         }
+                        session_archive::start(handle.clone());
                         if let Err(e) = cleanup::start(handle.clone()) {
                             tracing::error!("Session cleanup unavailable: {}", e.message);
                         }

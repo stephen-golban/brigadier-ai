@@ -12,6 +12,7 @@ export type NativeMenuEntry =
       enabled?: boolean;
       checked?: boolean;
       icon?: ReactElement;
+      accelerator?: string;
       action?: () => void;
       items?: NativeMenuEntry[];
     };
@@ -33,6 +34,7 @@ function options(
       enabled: entry.enabled,
       ...(entry.checked === undefined ? {} : { checked: entry.checked }),
       ...(entry.icon ? { icon: images.get(entry.icon) } : {}),
+      accelerator: entry.accelerator,
       action: entry.action,
     };
   });

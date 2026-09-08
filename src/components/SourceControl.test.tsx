@@ -1,47 +1,28 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   act,
   cleanup,
   fireEvent,
   render,
   screen,
+  waitFor,
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { SourceControl } from "./SourceControl";
-import { workbenchApi, defaultSettings } from "../workbenchApi";
-import type { GitStatus } from "../workspaceApi";
-
-const context = { projectId: "project", sessionId: null };
-const status: GitStatus = {
-  branch: "feature/panel",
-  changes: [
-    { path: "src/staged.ts", index: "M", worktree: " " },
-    { path: "src/edited.ts", index: " ", worktree: "M" },
-    { path: "src/new.ts", index: "?", worktree: "?" },
-  ],
-};
-const props = {
-  context,
-  status,
-  refresh: vi.fn(),
-  onOpen: vi.fn(),
-  onData: vi.fn(),
-  models: [],
-  data: {
-    notes: [],
-    projects: {},
-    global: { ...defaultSettings, coAuthor: false },
-  },
-};
+import {
+  CommitPreferences,
+  SourceControl,
+  type SourceControlProps,
+} from "./SourceControl";
+import { defaultSettings, workbenchApi } from "../workbenchApi";
 beforeEach(() => {
-  vi.clearAllMocks();
+  localStorage.clear();
   vi.spyOn(workbenchApi, "gitAction").mockResolvedValue("");
   vi.spyOn(workbenchApi, "gitDetails").mockResolvedValue({
-    branches: ["main"],
-    remotes: ["origin"],
-    stashes: [],
-    history: "abc123 Improve Git panel",
+    branches: ["main", "feature"],
+    remotes: [],
+    history: "",
+    stashes: ["stash@{0}: saved work"],
   });
 });
 afterEach(() => {
@@ -49,152 +30,187 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("Source Control", () => {
-  it("keeps group expansion on refresh and stages files without opening the diff", async () => {
-    const user = userEvent.setup();
-    const view = render(<SourceControl {...props} />);
-    await user.click(screen.getByRole("button", { name: "Staged Changes" }));
-    expect(screen.queryByTitle("src/staged.ts")).not.toBeInTheDocument();
-    view.rerender(
-      <SourceControl
-        {...props}
-        status={{ ...status, changes: [...status.changes] }}
-      />,
-    );
-    expect(
-      screen.getByRole("button", { name: "Staged Changes" }),
-    ).toHaveAttribute("aria-expanded", "false");
-    await user.click(
-      screen.getByRole("button", { name: "Stage src/edited.ts" }),
-    );
-    expect(workbenchApi.gitAction).toHaveBeenCalledWith(context, {
-      action: "stage",
-      path: "src/edited.ts",
-    });
-    expect(props.onOpen).not.toHaveBeenCalled();
-    await user.click(screen.getByTitle("src/edited.ts"));
-    expect(props.onOpen).toHaveBeenCalledWith("src/edited.ts", "diff", false);
-    await user.click(screen.getByRole("button", { name: "Staged Changes" }));
-    await user.click(
-      screen.getByRole("button", { name: "Unstage src/staged.ts" }),
-    );
-    expect(workbenchApi.gitAction).toHaveBeenCalledWith(context, {
-      action: "unstage",
-      path: "src/staged.ts",
-    });
-  });
+const props = (): SourceControlProps => ({
+  context: { projectId: "p", sessionId: "s" },
+  status: {
+    branch: "main",
+    changes: [
+      { path: "src/ready.ts", index: "M", worktree: " " },
+      { path: "src/edit.ts", index: " ", worktree: "M" },
+      { path: "notes.md", index: "?", worktree: "?" },
+    ],
+  },
+  refresh: vi.fn(),
+  onOpen: vi.fn(),
+  data: { global: { ...defaultSettings }, projects: {}, notes: [] },
+  onData: vi.fn(),
+  models: [],
+});
 
-  it("accepts a file dropped onto a collapsed staging group and confirms discard", async () => {
-    const user = userEvent.setup();
-    render(<SourceControl {...props} />);
-    const heading = screen.getByRole("button", {
-      name: "Staged Changes",
-    });
-    await user.click(heading);
-    fireEvent.drop(heading, {
-      dataTransfer: {
-        getData: () => JSON.stringify({ path: "src/edited.ts", staged: false }),
-      },
-    });
-    await act(async () => {});
-    expect(workbenchApi.gitAction).toHaveBeenCalledWith(context, {
-      action: "stage",
-      path: "src/edited.ts",
-    });
-    vi.mocked(workbenchApi.gitAction).mockClear();
-    await user.click(
-      screen.getByRole("button", { name: "Discard src/edited.ts" }),
-    );
-    expect(workbenchApi.gitAction).not.toHaveBeenCalled();
-    await user.click(
-      within(screen.getByRole("dialog")).getByRole("button", {
-        name: "Cancel",
+it("places the native composer above file groups and opens the appropriate staged diff", async () => {
+  const p = props();
+  render(<SourceControl {...p} />);
+  const composer = screen.getByTestId("commit-composer");
+  const staged = screen.getByRole("button", {
+    name: "Staged Changes",
+  });
+  expect(
+    composer.compareDocumentPosition(staged) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  await userEvent.click(
+    screen.getByRole("button", { name: "Open changes in src/ready.ts" }),
+  );
+  expect(p.onOpen).toHaveBeenCalledWith("src/ready.ts", "diff", true);
+  await userEvent.click(
+    screen.getByRole("button", { name: "Stage src/edit.ts" }),
+  );
+  expect(workbenchApi.gitAction).toHaveBeenCalledWith(p.context, {
+    action: "stage",
+    path: "src/edit.ts",
+  });
+  expect(screen.queryByText("Review Working Changes")).not.toBeInTheDocument();
+});
+
+it("requires confirmation to discard and does not mutate on cancel", async () => {
+  render(<SourceControl {...props()} />);
+  await userEvent.click(
+    screen.getByRole("button", { name: "Discard src/edit.ts" }),
+  );
+  await userEvent.click(
+    screen.getByRole("button", { name: "Cancel" }),
+  );
+  expect(workbenchApi.gitAction).not.toHaveBeenCalled();
+});
+
+it("cancelling smart commit leaves the draft and preference untouched", async () => {
+  const p = props();
+  p.status!.changes = [{ path: "file.ts", index: " ", worktree: "M" }];
+  render(<SourceControl {...p} />);
+  await userEvent.type(
+    screen.getByRole("textbox", { name: "Commit message" }),
+    "Update file",
+  );
+  await userEvent.click(
+    screen.getByRole("button", { name: "Commit" }),
+  );
+  await userEvent.click(
+    screen.getByRole("button", { name: "Cancel" }),
+  );
+  expect(workbenchApi.gitAction).not.toHaveBeenCalled();
+  expect(screen.getByRole("textbox", { name: "Commit message" })).toHaveValue(
+    "Update file",
+  );
+  expect(p.data.global.smartCommit).toBe(false);
+});
+
+it("clears a committed draft before push failure and keeps a rejected commit draft", async () => {
+  const p = props();
+  render(<SourceControl {...p} />);
+  const message = screen.getByRole("textbox", { name: "Commit message" });
+  await userEvent.type(message, "Update file");
+  vi.mocked(workbenchApi.gitAction).mockImplementation(
+    async (_context, request) => {
+      if (request.action === "push") {
+        expect(localStorage.getItem("commit:p:s")).toBe("");
+        throw new Error("Remote unavailable");
+      }
+      return "Committed";
+    },
+  );
+  await userEvent.click(screen.getByRole("button", { name: "Commit options" }));
+  await userEvent.click(
+    screen.getByRole("menuitem", { name: "Commit & Push" }),
+  );
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Remote unavailable",
+  );
+  expect(message).toHaveValue("");
+  expect(
+    vi.mocked(workbenchApi.gitAction).mock.calls.map((call) => call[1].action),
+  ).toEqual(["commit", "push"]);
+  vi.mocked(workbenchApi.gitAction).mockRejectedValue(new Error("Hook failed"));
+  await userEvent.type(message, "Second message");
+  fireEvent.keyDown(message, { key: "Enter", metaKey: true });
+  await waitFor(() =>
+    expect(screen.getByRole("alert")).toHaveTextContent("Hook failed"),
+  );
+  expect(message).toHaveValue("Second message");
+});
+
+it("isolates a pending generated message when switching sessions", async () => {
+  let resolve!: (value: { message: string; model: string }) => void;
+  vi.spyOn(workbenchApi, "generate").mockImplementation(
+    () =>
+      new Promise((done) => {
+        resolve = done;
       }),
-    );
-    expect(workbenchApi.gitAction).not.toHaveBeenCalled();
-  });
+  );
+  const p = props(),
+    view = render(<SourceControl {...p} />);
+  await userEvent.click(
+    screen.getByRole("button", { name: "Generate commit message" }),
+  );
+  view.rerender(
+    <SourceControl {...p} context={{ projectId: "p", sessionId: "other" }} />,
+  );
+  await userEvent.type(
+    screen.getByRole("textbox", { name: "Commit message" }),
+    "Other draft",
+  );
+  await act(async () => resolve({ message: "Original generated message", model: "auto" }));
+  expect(screen.getByRole("textbox", { name: "Commit message" })).toHaveValue(
+    "Other draft",
+  );
+  expect(localStorage.getItem("commit:p:s")).toBe("Original generated message");
+  expect(localStorage.getItem("commit:p:other")).toBe("Other draft");
+});
 
-  it("generates and commits with the keyboard, retaining the message on failure", async () => {
-    const user = userEvent.setup();
-    vi.spyOn(workbenchApi, "generate").mockResolvedValue({
-      message: "Refine Git panel",
-      model: "auto",
-    });
-    vi.mocked(workbenchApi.gitAction).mockRejectedValueOnce(
-      new Error("Commit failed"),
-    );
-    render(<SourceControl {...props} />);
-    await user.click(
-      screen.getByRole("button", { name: "Generate commit message" }),
-    );
-    const message = screen.getByRole("textbox", { name: "Commit message" });
-    expect(message).toHaveValue("Refine Git panel");
-    fireEvent.keyDown(message, { key: "Enter", metaKey: true });
-    expect(await screen.findByRole("alert")).toHaveTextContent("Commit failed");
-    expect(message).toHaveValue("Refine Git panel");
-    await user.click(screen.getByRole("button", { name: "Commit" }));
-    expect(workbenchApi.gitAction).toHaveBeenLastCalledWith(context, {
-      action: "commit",
-      message: "Refine Git panel",
-    });
-    expect(message).toHaveValue("");
-    expect(props.refresh).toHaveBeenCalled();
+it("supports tree view and branch checkout without exposing excluded Git controls", async () => {
+  const p = props();
+  render(<SourceControl {...p} />);
+  await userEvent.click(screen.getByRole("button", { name: "Git actions" }));
+  expect(
+    screen.queryByRole("menuitem", { name: "Clone" }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("menuitem", { name: "Tags" }),
+  ).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("menuitem", { name: "View as Tree" }));
+  expect(screen.getAllByRole("button", { name: "Folder src" })).toHaveLength(2);
+  await userEvent.click(
+    screen.getByRole("button", { name: "Checkout branch" }),
+  );
+  const dialog = screen.getByRole("dialog", { name: "Checkout branch" });
+  await userEvent.click(
+    await within(dialog).findByRole("button", { name: "feature" }),
+  );
+  expect(workbenchApi.gitAction).toHaveBeenCalledWith(p.context, {
+    action: "checkout",
+    reference: "feature",
   });
-
-  it("keeps repository actions and commit options in separate menus", async () => {
-    const user = userEvent.setup();
-    render(<SourceControl {...props} />);
-    await user.click(screen.getByRole("button", { name: "Git actions" }));
-    expect(screen.getByRole("menuitem", { name: "Fetch" })).toBeVisible();
-    expect(
-      screen.queryByRole("menuitem", { name: "Commit All" }),
-    ).not.toBeInTheDocument();
-    await user.click(
-      screen.getByRole("menuitem", { name: "Source Control history" }),
-    );
-    const history = await screen.findByRole("dialog", {
-      name: "Source Control history",
-    });
-    expect(
-      await within(history).findByText("abc123 Improve Git panel"),
-    ).toBeVisible();
-    await user.keyboard("{Escape}");
-    await user.type(
-      screen.getByLabelText("Commit message"),
-      "Commit all changes",
-    );
-    await user.click(screen.getByRole("button", { name: "Commit options" }));
-    await user.click(screen.getByRole("menuitem", { name: "Commit All" }));
-    expect(workbenchApi.gitAction).toHaveBeenCalledWith(context, {
-      action: "commit_all",
-      message: "Commit all changes",
-    });
-  });
-
-  it("opens branch operations and settings without replacing the file list", async () => {
-    const user = userEvent.setup();
-    render(<SourceControl {...props} />);
-    const row = screen.getByTitle("src/edited.ts");
-    await user.click(screen.getByRole("button", { name: "feature/panel" }));
-    await user.type(
-      screen.getByRole("combobox", { name: "Branch / reference" }),
-      "main",
-    );
-    await user.click(screen.getByRole("button", { name: "Checkout" }));
-    expect(workbenchApi.gitAction).toHaveBeenCalledWith(context, {
-      action: "checkout",
-      reference: "main",
-    });
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(screen.getByTitle("src/edited.ts")).toBe(row);
-    await user.click(screen.getByRole("button", { name: "Commit settings" }));
-    expect(
-      screen.getByRole("dialog", { name: "Commit settings" }),
-    ).toBeVisible();
-    expect(
-      screen.getByRole("checkbox", { name: "Use global defaults" }),
-    ).toBeChecked();
-    await user.keyboard("{Escape}");
-    expect(screen.getByTitle("src/edited.ts")).toBe(row);
-  });
+});
+it("retains project-specific smart commit settings behind the menu", async () => {
+  const data = {
+    notes: [],
+    projects: { project: { ...defaultSettings, smartCommit: false } },
+    global: defaultSettings,
+  };
+  const save = vi.spyOn(workbenchApi, "saveSettings").mockResolvedValue(data);
+  render(
+    <CommitPreferences
+      data={data}
+      projectId="project"
+      models={[]}
+      changed={() => {}}
+    />,
+  );
+  await userEvent.setup().click(
+    screen.getByRole("checkbox", {
+      name: "Smart commit when nothing is staged",
+    }),
+  );
+  expect(save).toHaveBeenCalledWith(
+    "project",
+    expect.objectContaining({ smartCommit: true }),
+  );
 });

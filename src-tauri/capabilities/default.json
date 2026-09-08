@@ -8,6 +8,7 @@
     "core:window:allow-start-dragging",
     "core:window:allow-set-effects",
     "opener:default",
-    "dialog:allow-open"
+    "dialog:allow-open",
+    "dialog:allow-confirm"
   ]
 }

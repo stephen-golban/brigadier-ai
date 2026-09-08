@@ -31,6 +31,7 @@ export interface DockProps extends MessageEditProps {
     permissionMode: PermissionMode;
     options?: AgentOptions;
     isolated?: boolean;
+    baseBranch?: string;
   }) => void | Promise<boolean>;
   onSend: (sessionId: SessionId, text: string) => void | Promise<boolean>;
   onInterrupt: (sessionId: SessionId) => void;

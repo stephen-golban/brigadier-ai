@@ -1,16 +1,31 @@
 import { FolderIcon } from "./NavigationIcons";
 import { SearchIcon } from "./SearchIcon";
-import { Details, DetailsSummary } from "./controls/details";
 import { Input } from "./controls/input";
 import { Button } from "./controls/button";
-import { SessionReview } from "./SessionReview";
-import { useEffect, useRef, useState } from "react";
+import { VscodePanels } from "./VscodePanels";
+import { SourceControl } from "./SourceControl";
+import { useEffect, useState } from "react";
 import {
   FileIcon,
+  FileCodeIcon,
+  FileCssIcon,
+  FileHtmlIcon,
+  FileImageIcon,
+  FileJsIcon,
+  FileJsxIcon,
+  FileMdIcon,
+  FilePyIcon,
+  FileRsIcon,
+  FileTextIcon,
+  FileTsIcon,
+  FileTsxIcon,
+  BracketsCurlyIcon,
   CaretRightIcon,
   GitBranchIcon,
+  SunIcon,
+  LightningIcon,
   NotebookIcon,
-  XIcon,
+  type Icon,
 } from "@phosphor-icons/react";
 import {
   workspaceApi,
@@ -20,37 +35,30 @@ import {
   type WorkspaceContext,
 } from "../workspaceApi";
 import {
-  workbenchApi,
   type WorkbenchData,
-  type SearchQuery,
-  type SearchResults,
   type Note,
 } from "../workbenchApi";
 import type { ModelInfo } from "../wire";
-import { SourceControl } from "./SourceControl";
-import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
 export type WorkspaceMode = "files" | "changes" | "search" | "notes";
 export function WorkspaceTools({
   context,
   root,
   mode,
-  onMode,
   status,
   refresh,
   revision,
   onOpen,
   onNote,
-  onClose,
+  selectedPath,
   data,
   onData,
   models,
-  reviewTurn = null,
+  openPaths = [],
   visible = true,
 }: {
   context: WorkspaceContext;
   root: string;
   mode: WorkspaceMode;
-  onMode: (mode: WorkspaceMode) => void;
   status: GitStatus | null;
   refresh: () => void;
   revision: number;
@@ -61,11 +69,13 @@ export function WorkspaceTools({
     line?: number,
   ) => void;
   onNote: (note: Note) => void;
-  onClose: () => void;
+  /** Workspace-relative path, using the same format as onOpen. */
+  selectedPath?: string | null;
   data: WorkbenchData;
   onData: (d: WorkbenchData) => void;
   models: ModelInfo[];
   reviewTurn?: string | null;
+  openPaths?: string[];
   visible?: boolean;
 }) {
   return (
@@ -73,101 +83,38 @@ export function WorkspaceTools({
       className="workspace-tools-panel relative flex min-h-0 flex-1 flex-col"
       aria-label="Workspace tools"
     >
-      <div className="workspace-mode-bar hidden">
-        {(
-          [
-            ["files", "Explorer", FolderIcon],
-            ["changes", "Source Control", GitBranchIcon],
-            ["search", "Search", SearchIcon],
-          ] as const
-        ).map(([value, label, Icon]) => (
-          <Button
-            key={value}
-            isIconOnly
-            className="icon-button size-8 p-0"
-            aria-label={label}
-            title={label}
-            aria-pressed={mode === value}
-            onClick={() => onMode(value)}
-          >
-            <Icon size={19} />
-          </Button>
-        ))}
-        <span className="grow" />
-        <Button
-          isIconOnly
-          className="icon-button size-8 p-0"
-          aria-label="Close workspace"
-          onClick={onClose}
+      {mode === "notes" && (
+        <div
+          className="workspace-root flex h-8 shrink-0 items-center gap-2 px-3 text-xs text-text-tertiary"
+          title={root}
         >
-          <XIcon />
-        </Button>
-      </div>
+          <FolderIcon />
+          <span>{root.split("/").pop()}</span>
+          <span className="grow" />
+          <span>{status?.branch}</span>
+        </div>
+      )}
       <div
-        className="workspace-root flex h-8 shrink-0 items-center gap-2 px-3 text-xs text-text-tertiary"
-        title={root}
-      >
-        <FolderIcon />
-        <span>{root.split("/").pop()}</span>
-        <span className="grow" />
-        {mode !== "changes" && <span>{status?.branch}</span>}
-      </div>
-      <div
-        className="workspace-tool-body min-h-0 flex-1 overflow-auto p-3"
+        className={`workspace-tool-body min-h-0 flex-1 ${mode !== "notes" ? "overflow-hidden bg-canvas" : "overflow-auto p-3"}`}
         data-mode={mode}
       >
-        <div hidden={mode !== "files"}>
-          <div className="section-heading mb-2 flex items-center gap-2 text-text-secondary">
-            <b>Explorer</b>
-          </div>
-          <Directory
+        <div hidden={mode !== "files"} className="h-full">
+          <FilesTree
+            key={JSON.stringify([context.projectId, context.sessionId, root])}
             context={context}
-            path=""
-            depth={0}
             revision={revision}
             status={status}
+            selectedPath={selectedPath}
             onOpen={(p) => onOpen(p, "file")}
           />
         </div>
-        <div hidden={mode !== "changes"} className="workspace-changes">
-          {visible && mode === "changes" && (
-            <SourceControl
-              context={context}
-              status={status}
-              refresh={refresh}
-              onOpen={onOpen}
-              data={data}
-              onData={onData}
-              models={models}
-            >
-              {mode === "changes" && context.sessionId && (
-                <SessionReview
-                  turn={reviewTurn}
-                  sessionId={context.sessionId}
-                  onOpen={(path) =>
-                    window.dispatchEvent(
-                      new CustomEvent("workbench-recorded-diff", {
-                        detail: {
-                          sessionId: context.sessionId,
-                          path,
-                          turn: reviewTurn,
-                        },
-                      }),
-                    )
-                  }
-                />
-              )}
-            </SourceControl>
-          )}
-        </div>
-        <div hidden={mode !== "search"}>
-          <ProjectSearch
-            key={`${context.projectId}:${context.sessionId}`}
-            context={context}
-            onOpen={(p, l) => onOpen(p, "file", false, l)}
-            refresh={refresh}
-          />
-        </div>
+        {mode === "changes" && <SourceControl context={context} status={status} refresh={refresh} onOpen={onOpen}
+          data={data} onData={onData} models={models} selectedPath={selectedPath}
+        />}
+        {mode === "search" && <VscodePanels
+          active={visible} context={context} root={root} mode="search"
+          status={status} revision={revision} refresh={refresh} onOpen={onOpen} openPaths={openPaths}
+        />}
         <div hidden={mode !== "notes"}>
           <div className="section-heading mb-2 flex items-center gap-2 text-text-secondary">
             <b>Notepad</b>
@@ -204,325 +151,373 @@ export function WorkspaceTools({
     </section>
   );
 }
-function Directory({
+// Browse only the root and explicitly opened directories. Filename search uses
+// findFiles, supplemented by visited entries (which may include ignored files).
+type DirectoryListing = {
+  revision: number;
+  entries: FileEntry[];
+  error?: string;
+};
+type FileMatches = {
+  paths: string[];
+  truncated: boolean;
+  error?: string;
+};
+
+function fileTreeFromPaths(paths: Set<string>): Map<string, FileEntry[]> {
+  const directories = new Map<string, Map<string, FileEntry>>();
+  for (const path of paths) {
+    const parts = path.split("/");
+    let parent = "";
+    parts.forEach((name, index) => {
+      const entryPath = parent ? `${parent}/${name}` : name;
+      const entries = directories.get(parent) ?? new Map<string, FileEntry>();
+      entries.set(entryPath, {
+        name,
+        path: entryPath,
+        directory: index < parts.length - 1,
+      });
+      directories.set(parent, entries);
+      parent = entryPath;
+    });
+  }
+  return new Map(
+    [...directories].map(([path, entries]) => [
+      path,
+      [...entries.values()].sort(
+        (a, b) =>
+          Number(b.directory) - Number(a.directory) ||
+          a.name.localeCompare(b.name),
+      ),
+    ]),
+  );
+}
+
+const fileTypes: { extensions: string[]; icon: Icon; color: string }[] = [
+  { extensions: ["tsx"], icon: FileTsxIcon, color: "#6cb6ff" },
+  { extensions: ["ts"], icon: FileTsIcon, color: "#6cb6ff" },
+  { extensions: ["jsx"], icon: FileJsxIcon, color: "#e5c07b" },
+  { extensions: ["js", "mjs", "cjs"], icon: FileJsIcon, color: "#e5c07b" },
+  { extensions: ["css", "scss", "sass"], icon: FileCssIcon, color: "#c49bea" },
+  { extensions: ["html"], icon: FileHtmlIcon, color: "#e99572" },
+  {
+    extensions: ["json", "jsonc", "yaml", "yml", "toml"],
+    icon: BracketsCurlyIcon,
+    color: "#e99572",
+  },
+  { extensions: ["md", "mdx"], icon: FileMdIcon, color: "#81b9a0" },
+  { extensions: ["rs"], icon: FileRsIcon, color: "#dfa180" },
+  { extensions: ["py"], icon: FilePyIcon, color: "#81b9a0" },
+  {
+    extensions: ["png", "jpg", "jpeg", "gif", "svg", "webp", "ico"],
+    icon: FileImageIcon,
+    color: "#b49cdb",
+  },
+  {
+    extensions: ["sh", "go", "rb", "c", "cpp", "h", "swift"],
+    icon: FileCodeIcon,
+    color: "#81b9a0",
+  },
+  { extensions: ["txt"], icon: FileTextIcon, color: "#a1a1a1" },
+];
+
+function FileTypeIcon({ name }: { name: string }) {
+  const filename = name.toLowerCase();
+  const extension = filename.split(".").pop() ?? "";
+  const type =
+    filename === ".gitignore"
+      ? { icon: GitBranchIcon, color: "#e99572" }
+      : filename === "claude.md"
+        ? { icon: SunIcon, color: "#e99572" }
+        : filename === "vite.config.ts"
+          ? { icon: LightningIcon, color: "#b49cdb" }
+          : fileTypes.find((type) => type.extensions.includes(extension));
+  const { icon: TypeIcon, color } = type ?? {
+    icon: FileIcon,
+    color: "#7f7f7f",
+  };
+  return (
+    <TypeIcon
+      aria-hidden="true"
+      className="shrink-0"
+      weight={type ? "regular" : "fill"}
+      style={{ color }}
+    />
+  );
+}
+
+function FilesTree({
   context,
-  path,
-  depth,
   revision,
   status,
+  selectedPath,
   onOpen,
 }: {
   context: WorkspaceContext;
-  path: string;
-  depth: number;
   revision: number;
   status: GitStatus | null;
+  selectedPath?: string | null;
   onOpen: (path: string) => void;
 }) {
-  const [entries, setEntries] = useState<FileEntry[]>([]);
+  const [listings, setListings] = useState<Record<string, DirectoryListing>>(
+    {},
+  );
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [error, setError] = useState("");
+  const [filter, setFilter] = useState("");
+  const [filterCollapsed, setFilterCollapsed] = useState<Set<string>>(
+    new Set(),
+  );
+  const [matches, setMatches] = useState<FileMatches | null>(null);
+  const query = filter.trim().toLowerCase();
   useEffect(() => {
+    if (!query) return;
     let live = true;
-    void workspaceApi
-      .entries(context, path)
-      .then((e) => {
-        if (live) {
-          setEntries(e);
-          setError("");
+    // Query edits clear matches in the input handler; revision refreshes keep
+    // the current results mounted until their replacement arrives.
+    const timer = window.setTimeout(() => {
+      void workspaceApi.findFiles(context, query).then(
+        (result) => {
+          if (live) setMatches(result);
+        },
+        (error) => {
+          if (live)
+            setMatches({
+              paths: [],
+              truncated: false,
+              error: errorMessage(error),
+            });
+        },
+      );
+    }, 180);
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+    };
+  }, [context.projectId, context.sessionId, filter, query, revision]);
+  useEffect(() => {
+    const paths = [
+      ...new Set(["", ...Object.keys(listings), ...expanded]),
+    ].filter((path) => listings[path]?.revision !== revision);
+    if (!paths.length) return;
+    let live = true;
+    void Promise.all(
+      paths.map(async (path) => {
+        try {
+          return [
+            path,
+            { revision, entries: await workspaceApi.entries(context, path) },
+          ] as const;
+        } catch (error) {
+          return [
+            path,
+            { revision, entries: [], error: errorMessage(error) },
+          ] as const;
         }
-      })
-      .catch((e) => {
-        if (live) setError(errorMessage(e));
-      });
+      }),
+    ).then((loaded) => {
+      if (live)
+        setListings((old) => ({ ...old, ...Object.fromEntries(loaded) }));
+    });
     return () => {
       live = false;
     };
-  }, [context.projectId, context.sessionId, path, revision]);
-  return (
-    <div>
-      {error && (
-        <p className="inline-error my-2 text-[13px] text-error">{error}</p>
-      )}
-      {entries.map((e) => {
-        const changes =
-          status?.changes.filter(
-            (c) =>
-              c.path === e.path ||
-              (e.directory && c.path.startsWith(e.path + "/")),
-          ) ?? [];
-        const code = changes.some((c) => c.index === "?" || c.index === "A")
-          ? "U"
-          : changes.some((c) => c.worktree === "D" || c.index === "D")
-            ? "D"
-            : changes.length
-              ? "M"
-              : "";
-        return (
-          <div key={e.path}>
-            <Button
-              className={`tree-row flex h-8 w-full items-center gap-2 rounded-md text-text-secondary hover:bg-hover [&_svg]:size-4 ${code ? "git-" + code : ""}`}
-              style={{ paddingLeft: 12 + depth * 14 }}
-              aria-expanded={e.directory ? expanded.has(e.path) : undefined}
-              title={
-                changes.length
-                  ? `${e.path} · ${changes.length} changed file(s)`
-                  : e.path
-              }
-              onClick={() =>
-                e.directory
-                  ? setExpanded((old) => {
-                      const next = new Set(old);
-                      if (next.has(e.path)) next.delete(e.path);
-                      else next.add(e.path);
-                      return next;
-                    })
-                  : onOpen(e.path)
-              }
-            >
-              {e.directory ? (
-                <>
-                  <CaretRightIcon
-                    className={expanded.has(e.path) ? "rotated" : ""}
-                  />
-                  <FolderIcon />
-                </>
-              ) : (
-                <FileIcon />
-              )}
-              <span>{e.name}</span>
-              {code && (
-                <b className="git-decoration">{e.directory ? "●" : code}</b>
-              )}
-            </Button>
-            {e.directory && expanded.has(e.path) && (
-              <Directory
-                context={context}
-                path={e.path}
-                depth={depth + 1}
-                revision={revision}
-                status={status}
-                onOpen={onOpen}
-              />
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-function ProjectSearch({
-  context,
-  onOpen,
-  refresh,
-}: {
-  context: WorkspaceContext;
-  onOpen: (p: string, l: number) => void;
-  refresh: () => void;
-}) {
-  const key = `search:${context.projectId}:${context.sessionId ?? ""}`;
-  const [query, setQuery] = useState<SearchQuery>(() => {
-    try {
-      return (
-        JSON.parse(localStorage.getItem(key) ?? "null") ?? {
-          text: "",
-          regex: false,
-          caseSensitive: false,
-          wholeWord: false,
-          include: "",
-          exclude: "",
-          replacement: null,
+  }, [context.projectId, context.sessionId, revision, expanded, listings]);
+
+  // Keep existing rows mounted during refresh, including the focused button.
+  const entriesAt = (path: string) => listings[path]?.entries ?? [];
+  const searchReady = matches !== null;
+  const matchingPaths = new Set<string>(searchReady ? matches.paths : []);
+  if (query && searchReady) {
+    const visit = (path: string) => {
+      for (const entry of entriesAt(path)) {
+        if (entry.directory) {
+          visit(entry.path);
+          continue;
         }
+        if (!entry.path.toLowerCase().includes(query)) continue;
+        matchingPaths.add(entry.path);
+      }
+    };
+    visit("");
+  }
+  const filteredTree = query ? fileTreeFromPaths(matchingPaths) : null;
+  const toggle = (path: string) => {
+    const update = query ? setFilterCollapsed : setExpanded;
+    update((old) => {
+      const next = new Set(old);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  };
+  const directory = (path: string, depth: number) => {
+    const listing = listings[path];
+    if (!query && !listing) {
+      return (
+        <p className="px-3 py-2 text-xs text-text-tertiary" role="status">
+          Loading files…
+        </p>
       );
-    } catch {
-      return {
-        text: "",
-        regex: false,
-        caseSensitive: false,
-        wholeWord: false,
-        include: "",
-        exclude: "",
-        replacement: null,
-      };
     }
-  });
-  const [results, setResults] = useState<SearchResults | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [confirm, setConfirm] = useState<Confirmation | null>(null);
-  const request = useRef(0);
-  const change = (patch: Partial<SearchQuery>) => {
-    request.current++;
-    setBusy(false);
-    setResults(null);
-    const next = { ...query, ...patch };
-    setQuery(next);
-    localStorage.setItem(key, JSON.stringify(next));
-  };
-  const search = async () => {
-    const id = ++request.current;
-    setBusy(true);
-    setError("");
-    try {
-      const r = await workbenchApi.search(context, query);
-      if (request.current === id) setResults(r);
-    } catch (e) {
-      if (request.current === id) setError(errorMessage(e));
-    } finally {
-      if (request.current === id) setBusy(false);
+    if (!query && listing.error) {
+      return (
+        <p
+          role="alert"
+          className="inline-error px-3 py-2 text-[13px] text-error"
+        >
+          {path && `${path}: `}
+          {listing.error}
+        </p>
+      );
     }
-  };
-  return (
-    <section className="project-search flex flex-col gap-3 [&_form]:flex [&_form]:flex-col [&_form]:gap-2">
-      <div className="section-heading mb-2 flex items-center gap-2 text-text-secondary">
-        <b>Search</b>
-      </div>
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          void search();
-        }}
-      >
-        <Input
-          aria-label="Search project"
-          placeholder="Search"
-          value={query.text}
-          onChange={(e) => change({ text: e.target.value })}
-        />
-        <div className="search-flags flex flex-wrap gap-2">
-          {(
-            [
-              ["caseSensitive", "Match case", "Aa"],
-              ["wholeWord", "Match whole word", "ab"],
-              ["regex", "Use regular expression", ".*"],
-            ] as const
-          ).map(([flag, label, text]) => (
-            <Button
-              key={flag}
-              type="button"
-              title={label}
-              aria-label={label}
-              aria-pressed={query[flag]}
-              onClick={() => change({ [flag]: !query[flag] })}
-            >
-              {text}
-            </Button>
-          ))}
+    return (
+      filteredTree ? (filteredTree.get(path) ?? []) : entriesAt(path)
+    ).map((entry) => {
+      const changes =
+        status?.changes.filter(
+          (change) =>
+            change.path === entry.path ||
+            (entry.directory && change.path.startsWith(entry.path + "/")),
+        ) ?? [];
+      const code = changes.some(
+        (change) => change.index === "?" || change.index === "A",
+      )
+        ? "U"
+        : changes.some(
+              (change) => change.worktree === "D" || change.index === "D",
+            )
+          ? "D"
+          : changes.length
+            ? "M"
+            : "";
+      const open = query
+        ? !filterCollapsed.has(entry.path)
+        : expanded.has(entry.path);
+      const selected = !entry.directory && selectedPath === entry.path;
+      return (
+        <div key={entry.path}>
           <Button
-            type="button"
-            aria-pressed={query.replacement !== null}
+            className={`tree-row flex h-7 w-full justify-start gap-1.5 rounded-[8px] border-0 pr-3 text-left text-[13px] shadow-none hover:bg-hover [&_svg]:size-4 ${selected ? "bg-selected text-text" : "bg-transparent text-text-secondary"}`}
+            style={{ paddingLeft: 6 + depth * 14 }}
+            aria-label={entry.name}
+            aria-expanded={entry.directory ? open : undefined}
+            aria-current={selected ? "page" : undefined}
+            title={
+              changes.length
+                ? `${entry.path} · ${changes.length} changed file(s)`
+                : entry.path
+            }
             onClick={() =>
-              change({ replacement: query.replacement === null ? "" : null })
+              entry.directory ? toggle(entry.path) : onOpen(entry.path)
             }
           >
-            Replace
-          </Button>
-        </div>
-        {query.replacement !== null && (
-          <Input
-            aria-label="Replace with"
-            placeholder="Replace"
-            value={query.replacement}
-            onChange={(e) => change({ replacement: e.target.value })}
-          />
-        )}
-        <label>
-          Files to include
-          <Input
-            aria-label="Files to include"
-            placeholder="e.g. src/**, *.ts"
-            value={query.include}
-            onChange={(e) => change({ include: e.target.value })}
-          />
-        </label>
-        <label>
-          Files to exclude
-          <Input
-            aria-label="Files to exclude"
-            placeholder="e.g. dist, *.test.ts"
-            value={query.exclude}
-            onChange={(e) => change({ exclude: e.target.value })}
-          />
-        </label>
-        <Button type="submit" className="act" disabled={!query.text || busy}>
-          {busy
-            ? "Searching…"
-            : query.replacement !== null
-              ? "Preview replacement"
-              : "Search"}
-        </Button>
-      </form>
-      {error && (
-        <p role="alert" className="inline-error my-2 text-[13px] text-error">
-          {error}
-        </p>
-      )}
-      {results && (
-        <>
-          <p className="search-summary text-text-secondary">
-            {results.hits.length} results in {results.files} files
-            {results.truncated ? " · Limit reached; narrow your search" : ""}
-          </p>
-          {results.replacements.length > 0 && (
-            <>
-              <Button
-                className="primary-action"
-                disabled={busy || results.truncated}
-                onClick={() =>
-                  setConfirm({
-                    title: "Replace across files",
-                    body: `Replace ${results.replacements.reduce((n, c) => n + c.count, 0)} matches in ${results.replacements.length} files? Files edited since this preview will be refused.`,
-                    confirmLabel: "Replace all",
-                    onCancel: () => setConfirm(null),
-                    onConfirm: async () => {
-                      setConfirm(null);
-                      setBusy(true);
-                      try {
-                        await workbenchApi.replace(
-                          context,
-                          results.replacements,
-                        );
-                        refresh();
-                        setResults(null);
-                      } catch (e) {
-                        setError(errorMessage(e));
-                      } finally {
-                        setBusy(false);
-                      }
-                    },
-                  })
+            {entry.directory ? (
+              <CaretRightIcon
+                aria-hidden="true"
+                className={`shrink-0 transition-transform duration-200 motion-reduce:transition-none ${open ? "rotate-90" : ""}`}
+              />
+            ) : (
+              <FileTypeIcon name={entry.name} />
+            )}
+            <span className="min-w-0 truncate">{entry.name}</span>
+            {code && (
+              <b
+                aria-label={
+                  code === "U"
+                    ? "Added or untracked"
+                    : code === "D"
+                      ? "Deleted"
+                      : "Modified"
                 }
+                className={`git-decoration ml-auto text-[11px] font-normal ${code === "U" ? "text-ok" : code === "D" ? "text-error" : "text-warn"}`}
               >
-                Replace all
-              </Button>
-              {results.replacements.map((c) => (
-                <Details key={c.path} className="replace-preview">
-                  <DetailsSummary>
-                    {c.path} · {c.count} replacements
-                  </DetailsSummary>
-                  <b>Before</b>
-                  <pre>{c.before}</pre>
-                  <b>After</b>
-                  <pre>{c.after}</pre>
-                </Details>
-              ))}
+                {entry.directory ? "●" : code}
+              </b>
+            )}
+          </Button>
+          {entry.directory && open && directory(entry.path, depth + 1)}
+        </div>
+      );
+    });
+  };
+  return (
+    <section aria-label="Files" className="flex h-full min-h-0 flex-col">
+      <div className="shrink-0 p-2">
+        <div className="relative">
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-text-tertiary"
+          >
+            <SearchIcon size={14} />
+          </span>
+          <Input
+            aria-label="Filter files"
+            placeholder="Filter files…"
+            className="h-8 w-full rounded-[12px] border border-hairline bg-input-shell pl-8 text-[13px]"
+            value={filter}
+            onChange={(event) => {
+              setFilter(event.target.value);
+              setMatches(null);
+              setFilterCollapsed(new Set());
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.stopPropagation();
+                setFilter("");
+                setMatches(null);
+              }
+            }}
+          />
+        </div>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto px-2 pb-2">
+        {query ? (
+          !searchReady ? (
+            <p role="status" className="px-3 py-2 text-xs text-text-tertiary">
+              Searching files…
+            </p>
+          ) : (
+            <>
+              {matches.error && (
+                <p role="alert" className="px-3 py-2 text-[13px] text-error">
+                  {matches.error}
+                </p>
+              )}
+              {directory("", 0)}
+              {!matchingPaths.size && !matches.error && (
+                <p
+                  role="status"
+                  className="px-3 py-2 text-xs text-text-tertiary"
+                >
+                  No matching files
+                </p>
+              )}
+              {matches.truncated && (
+                <p
+                  role="status"
+                  className="px-3 py-2 text-xs text-text-tertiary"
+                >
+                  Result limit reached. Refine your filter.
+                </p>
+              )}
             </>
-          )}
-          {results.hits.map((hit, i) => (
-            <Button
-              key={`${hit.path}:${hit.line}:${hit.column}:${i}`}
-              className="search-result flex w-full items-center gap-2 text-left text-text-secondary"
-              onClick={() => onOpen(hit.path, hit.line)}
-            >
-              <span>
-                {hit.path}:{hit.line}
-              </span>
-              <code>{hit.text}</code>
-            </Button>
-          ))}
-        </>
-      )}
-      {confirm && <ConfirmDialog {...confirm} />}
+          )
+        ) : (
+          <>
+            {directory("", 0)}
+            {listings[""]?.revision === revision &&
+              !listings[""].error &&
+              !entriesAt("").length && (
+                <p
+                  role="status"
+                  className="px-3 py-2 text-xs text-text-tertiary"
+                >
+                  This folder is empty.
+                </p>
+              )}
+          </>
+        )}
+      </div>
     </section>
   );
 }

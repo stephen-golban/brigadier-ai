@@ -1,3 +1,4 @@
+import { archiveSession } from "./sessionArchive";
 import { useMemo, useSyncExternalStore } from "react";
 
 const titlesKey = "brigadier:session-titles:v1";
@@ -31,10 +32,8 @@ export function renameSession(id: string, name: string) {
     [id]: title,
   });
 }
-export function setSessionArchived(id: string, archived: boolean) {
-  const ids = read<string[]>(archivedKey, []).filter((item) => item !== id);
-  if (archived) ids.push(id);
-  write(archivedKey, ids);
+export async function setSessionArchived(id: string, archived: boolean) {
+  await archiveSession(id, archived);
 }
 export function useSessionNavigation() {
   const titles = useSyncExternalStore(subscribe, () =>

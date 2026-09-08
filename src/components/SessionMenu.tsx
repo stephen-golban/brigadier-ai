@@ -91,8 +91,8 @@ export function SessionMenu({
             nativeIcon={<ArchiveIcon />}
             onAction={() =>
               void run(() => {
-                setSessionArchived(sessionId, !archived);
-                if (!archived) onArchive();
+                if (archived) return setSessionArchived(sessionId, false);
+                onArchive();
               })
             }
           >

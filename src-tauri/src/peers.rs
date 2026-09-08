@@ -318,6 +318,7 @@ async fn dispatch(app: &tauri::AppHandle, v: Value) -> Result<Value, AppError> {
             "default".into(),
             None,
             v.get("isolated").and_then(Value::as_bool),
+            None,
             app.state(),
         )
         .await?;
@@ -480,6 +481,8 @@ async fn deliver(app: tauri::AppHandle, message: Message) {
         loop {
             {
                 let _guard = LIFECYCLE.lock().await;
+                crate::session_archive::require_active(&state.get()?.data_dir, &message.to)?;
+                crate::session_archive::require_active(&state.get()?.data_dir, &message.from)?;
                 crate::navigation::require_available(
                     &state.get()?.data_dir,
                     crate::navigation::Kind::Session,

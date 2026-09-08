@@ -51,8 +51,29 @@ pub struct FileMetadata {
     pub uid: u32,
     /// File group.
     pub gid: u32,
-    /// Raw extended attribute names and bytes.
+    /// Restorable extended attributes; macOS owns provenance independently of file contents.
+    #[serde(deserialize_with = "deserialize_attributes")]
     pub attributes: BTreeMap<String, Vec<u8>>,
+}
+
+pub(crate) fn restorable_attribute(name: &str) -> bool {
+    // macOS can accept fsetxattr yet rewrite this value. Copying it causes the metadata
+    // round-trip check to fail; leave its creation and maintenance to the OS. Quarantine
+    // and every other attribute remain covered and must still round-trip exactly.
+    name != "com.apple.provenance"
+}
+
+fn deserialize_attributes<'de, D>(
+    deserializer: D,
+) -> std::result::Result<BTreeMap<String, Vec<u8>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // Old snapshots and recovery plans also contain provenance. Normalize on read so
+    // their equality/conflict checks use the same metadata scope as fresh captures.
+    let mut attributes = BTreeMap::<String, Vec<u8>>::deserialize(deserializer)?;
+    attributes.retain(|name, _| restorable_attribute(name));
+    Ok(attributes)
 }
 /// Covered paths, validated workspace-relative UTF-8 names.
 pub type Manifest = BTreeMap<String, PathState>;

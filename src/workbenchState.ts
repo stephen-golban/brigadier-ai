@@ -3,7 +3,14 @@ import type { WorkspaceContext } from "./workspaceApi";
 export interface ProjectTab {
   id: string;
   kind:
-    "draft" | "session" | "terminal" | "file" | "diff" | "untitled" | "note";
+    | "files"
+    | "draft"
+    | "session"
+    | "terminal"
+    | "file"
+    | "diff"
+    | "untitled"
+    | "note";
   path: string;
   context: WorkspaceContext;
   root: string;
