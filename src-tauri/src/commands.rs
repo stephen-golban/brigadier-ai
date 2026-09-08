@@ -144,6 +144,7 @@ pub(crate) async fn list_sessions(
 
 /// Start a Claude session in a project's root and send `prompt` as its first turn.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Named arguments are the existing Tauri IPC contract.
 pub(crate) async fn start_session(
     project_id: String,
     prompt: String,

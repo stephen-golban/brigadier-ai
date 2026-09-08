@@ -174,9 +174,11 @@ mod tests {
     }
     #[test]
     fn completion_needs_an_explicit_valid_name() {
-        let mut d = Data::default();
-        d.display_name = "Mac User".into();
-        d.welcome_completed = true;
+        let mut d = Data {
+            display_name: "Mac User".into(),
+            welcome_completed: true,
+            ..Data::default()
+        };
         assert!(!preferences(&d).completed);
         d.name_confirmed = true;
         assert!(preferences(&d).completed);

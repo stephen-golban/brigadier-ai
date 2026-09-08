@@ -113,6 +113,62 @@ pub fn plan_restore(epochs: &[Epoch], current: Snapshot) -> Result<RestorePlan> 
     })
 }
 
+/// Apply a session delta onto another workspace. Divergent paths are explicit conflicts.
+/// Unrelated project edits, staged state and the source checkout are preserved.
+pub fn plan_apply(base: &Manifest, changed: &Manifest, current: Snapshot) -> Result<RestorePlan> {
+    let mut target = current.files.clone();
+    let mut conflicts = Vec::new();
+    for path in base.keys().chain(changed.keys()).collect::<BTreeSet<_>>() {
+        let before = base.get(path);
+        let after = changed.get(path);
+        if before == after || current.files.get(path) == after {
+            continue;
+        }
+        if current.files.get(path) != before {
+            conflicts.push(path.clone());
+            continue;
+        }
+        match after {
+            Some(value) => {
+                target.insert(path.clone(), value.clone());
+            }
+            None => {
+                target.remove(path);
+            }
+        }
+    }
+    for path in target.keys() {
+        let mut parent = std::path::Path::new(path).parent();
+        while let Some(at) = parent {
+            if target.contains_key(&at.to_string_lossy().to_string()) {
+                conflicts.push(path.clone());
+            }
+            parent = at.parent();
+        }
+    }
+    let changes = target
+        .keys()
+        .chain(current.files.keys())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter_map(|path| {
+            let before = current.files.get(path).cloned();
+            let after = target.get(path).cloned();
+            (before != after).then_some(Change {
+                path: path.clone(),
+                before,
+                after,
+            })
+        })
+        .collect();
+    Ok(RestorePlan {
+        current,
+        target,
+        changes,
+        conflicts,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,60 +275,4 @@ mod tests {
         b.git.head = "changed".into();
         assert!(plan_restore(&[epoch(a.clone(), a)], b).is_err());
     }
-}
-
-/// Apply a session delta onto another workspace. Divergent paths are explicit conflicts.
-/// Unrelated project edits, staged state and the source checkout are preserved.
-pub fn plan_apply(base: &Manifest, changed: &Manifest, current: Snapshot) -> Result<RestorePlan> {
-    let mut target = current.files.clone();
-    let mut conflicts = Vec::new();
-    for path in base.keys().chain(changed.keys()).collect::<BTreeSet<_>>() {
-        let before = base.get(path);
-        let after = changed.get(path);
-        if before == after || current.files.get(path) == after {
-            continue;
-        }
-        if current.files.get(path) != before {
-            conflicts.push(path.clone());
-            continue;
-        }
-        match after {
-            Some(value) => {
-                target.insert(path.clone(), value.clone());
-            }
-            None => {
-                target.remove(path);
-            }
-        }
-    }
-    for path in target.keys() {
-        let mut parent = std::path::Path::new(path).parent();
-        while let Some(at) = parent {
-            if target.contains_key(&at.to_string_lossy().to_string()) {
-                conflicts.push(path.clone());
-            }
-            parent = at.parent();
-        }
-    }
-    let changes = target
-        .keys()
-        .chain(current.files.keys())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .filter_map(|path| {
-            let before = current.files.get(path).cloned();
-            let after = target.get(path).cloned();
-            (before != after).then_some(Change {
-                path: path.clone(),
-                before,
-                after,
-            })
-        })
-        .collect();
-    Ok(RestorePlan {
-        current,
-        target,
-        changes,
-        conflicts,
-    })
 }

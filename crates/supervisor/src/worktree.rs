@@ -691,6 +691,18 @@ pub(crate) async fn cleanup(
     })
 }
 
+/// Only local branch names are accepted. Inherit edits only from the checked-out branch.
+pub(crate) async fn session_base(root: &Path, branch: &str) -> Result<(Option<String>, bool), SupervisorError> {
+    let git = resolve_git().ok_or_else(|| SupervisorError::InvalidArgument("Git is unavailable".into()))?;
+    let reference = format!("refs/heads/{branch}");
+    let valid = tokio::process::Command::new(&git).args(["check-ref-format", &reference]).output().await?;
+    let exists = tokio::process::Command::new(&git).current_dir(root).args(["show-ref", "--verify", "--quiet", &reference]).output().await?;
+    if !valid.status.success() || !exists.status.success() { return Err(SupervisorError::InvalidArgument("Choose an existing local branch".into())); }
+    let current = tokio::process::Command::new(&git).current_dir(root).args(["symbolic-ref", "--quiet", "HEAD"]).output().await?;
+    let inherit = current.status.success() && String::from_utf8_lossy(&current.stdout).trim() == reference;
+    Ok((Some(reference), inherit))
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -1978,16 +1990,4 @@ mod tests {
         );
         rig.store.close().await.expect("store closes");
     }
-}
-
-/// Only local branch names are accepted. Inherit edits only from the checked-out branch.
-pub(crate) async fn session_base(root: &Path, branch: &str) -> Result<(Option<String>, bool), SupervisorError> {
-    let git = resolve_git().ok_or_else(|| SupervisorError::InvalidArgument("Git is unavailable".into()))?;
-    let reference = format!("refs/heads/{branch}");
-    let valid = tokio::process::Command::new(&git).args(["check-ref-format", &reference]).output().await?;
-    let exists = tokio::process::Command::new(&git).current_dir(root).args(["show-ref", "--verify", "--quiet", &reference]).output().await?;
-    if !valid.status.success() || !exists.status.success() { return Err(SupervisorError::InvalidArgument("Choose an existing local branch".into())); }
-    let current = tokio::process::Command::new(&git).current_dir(root).args(["symbolic-ref", "--quiet", "HEAD"]).output().await?;
-    let inherit = current.status.success() && String::from_utf8_lossy(&current.stdout).trim() == reference;
-    Ok((Some(reference), inherit))
 }
