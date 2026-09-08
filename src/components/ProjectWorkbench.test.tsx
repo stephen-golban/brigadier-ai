@@ -497,7 +497,13 @@ describe("session workspaces", () => {
     await userEvent.click(
       screen.getByRole("button", { name: "Hide terminal" }),
     );
-    expect(terminal).not.toBeVisible();
+    // The dock now closes through CSS animation; jsdom does not load that CSS.
+    // Assert its closed accessibility/layout state while preserving the PTY view.
+    const dock = terminal.closest(".terminal-dock");
+    expect(dock).toHaveAttribute("data-open", "false");
+    expect(dock).toHaveAttribute("aria-hidden", "true");
+    expect(dock).toHaveAttribute("inert");
+    expect(dock).toHaveStyle({ height: "0px" });
     expect(terminal).toBeInTheDocument();
   });
   it("confirms killing a busy terminal and does not archive the session", async () => {
