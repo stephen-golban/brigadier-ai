@@ -559,7 +559,7 @@ async fn deliberate_discard_removes_owned_dirty_worktree_branch_and_history() {
     let path = rig.worktree_of(&id).await;
     std::fs::write(path.join("only-here"), "discard me").unwrap();
     let branch = rig.sup.session(&id).await.unwrap().unwrap().branch.unwrap();
-    rig.sup.mark_deleting(&[id.clone()]);
+    rig.sup.mark_deleting(std::slice::from_ref(&id));
     assert!(rig.sup.require_session_available(&id).is_err());
     rig.sup.discard_session(&id).await.unwrap();
     assert!(!rig.sup.is_live(&id));
@@ -628,7 +628,7 @@ async fn stopping_for_trash_retains_history_and_dirty_worktree() {
     let worktree = rig.worktree_of(&session).await;
     std::fs::write(worktree.join("keep.txt"), "unsaved work").unwrap();
     assert!(rig.sup.is_live(&session));
-    rig.sup.stop_sessions_for_trash(&[session.clone()], Some(&project)).await.unwrap();
+    rig.sup.stop_sessions_for_trash(std::slice::from_ref(&session), Some(&project)).await.unwrap();
     assert!(!rig.sup.is_live(&session));
     assert!(rig.sup.session(&session).await.unwrap().is_some());
     assert!(rig.sup.project(&project).await.unwrap().is_some());

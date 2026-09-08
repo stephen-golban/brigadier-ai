@@ -84,11 +84,13 @@ pub(crate) enum DeleteTarget {
     Project(String),
 }
 
+type DurableWrite = Box<dyn FnOnce(&Connection) -> Result<()> + Send>;
+
 /// One unit of work for the writer thread. Crate-private: the public surface is [`StoreHandle`].
 pub(crate) enum Op {
     /// Durability barrier: callback result is acknowledged only after FULL commit.
     Durable(
-        Box<dyn FnOnce(&Connection) -> Result<()> + Send>,
+        DurableWrite,
         oneshot::Sender<Result<()>>,
     ),
     Chat(crate::chat::ChatItem),

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "brigadier",
+  "productName": "Brigadier",
   "version": "0.1.0",
   "identifier": "ai.brigadier.app",
   "build": {
@@ -13,7 +13,7 @@
     "macOSPrivateApi": true,
     "windows": [
       {
-        "title": "brigadier",
+        "title": "Brigadier",
         "visible": false,
         "transparent": true,
         "theme": "Dark",

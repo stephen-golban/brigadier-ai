@@ -31,6 +31,10 @@ fn discover(root: &Path) -> Option<String> {
         "static/logo.svg",
         "assets/icon.png",
     ];
+    let external = regex::Regex::new(
+        r#"(?:href|src)\s*=\s*["']\s*(?:https?:|//|data:|javascript:)"#,
+    )
+    .ok()?;
     for candidate in candidates {
         let Ok(path) = root.join(candidate).canonicalize() else {
             continue;
@@ -68,10 +72,6 @@ fn discover(root: &Path) -> Option<String> {
                     continue;
                 }
                 // xmlns URLs are harmless; external resource references are not allowed.
-                let external = regex::Regex::new(
-                    r#"(?:href|src)\s*=\s*["']\s*(?:https?:|//|data:|javascript:)"#,
-                )
-                .ok()?;
                 if external.is_match(&lower) {
                     continue;
                 }
