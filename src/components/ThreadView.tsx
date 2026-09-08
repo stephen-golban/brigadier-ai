@@ -2,12 +2,10 @@ import { Telescope as TelescopeIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import {
   AssistantRuntimeProvider,
-  ThreadPrimitive,
-  MessagePrimitive,
   useExternalStoreRuntime,
   type ThreadMessageLike,
 } from "@assistant-ui/react";
-import { Surface, Spinner } from "./controls/status";
+import { Spinner } from "./controls/status";
 import { Disclosure } from "./controls/disclosure";
 import {
   useEffect,
@@ -26,6 +24,12 @@ import {
 import { Button } from "./controls/button";
 import { MessageAction } from "./assistant-ui/elements/tooltip-icon-button";
 import { Thread } from "./assistant-ui/elements/thread";
+import {
+  ChatPanelAssistantMessage,
+  ChatPanelUserMessage,
+} from "./assistant-ui/elements/chat-panel";
+import { ThinkingIndicator } from "./assistant-ui/elements/thinking-indicator";
+import "./assistant-ui/elements/elements.css";
 import { Markdown, CopyButton } from "./Markdown";
 import { BrandMark } from "./BrandMark";
 import { WorkTrace } from "./WorkTrace";
@@ -35,7 +39,7 @@ import { workspaceApi, errorMessage, type ChatItem } from "../workspaceApi";
 import { workbenchApi } from "../workbenchApi";
 import { bridge } from "../bridge";
 import * as store from "../feedStore";
-import { projectThread, type ThreadRow } from "../threadProjection";
+import { projectThread } from "../threadProjection";
 import { peerMessageContent } from "../peerPresentation";
 import type { PeerData } from "../peerApi";
 export function ThreadView({
@@ -260,30 +264,27 @@ function Transcript({
     };
   }, [sessionId, revision]);
   const rows = useMemo(() => projectThread(items, busy), [items, busy]);
-  const messages = useMemo<ThreadMessageLike[]>(() => {
-    let turn: string | null = null;
-    return rows.map((row, index) => {
-      if (row.type === "message" && row.item.kind.type === "user-text")
-        turn = row.item.provider_uuid ?? row.item.id;
-      return {
+  // The runtime owns only viewport behavior. Render saved rows directly with the
+  // standalone Elements, so its synthetic startup message cannot enter our renderer.
+  const messages = useMemo<ThreadMessageLike[]>(
+    () =>
+      rows.map((row) => ({
         id: row.id,
         role:
           row.type === "message" && row.item.kind.type === "user-text"
             ? "user"
             : "assistant",
-        content: [
-          {
-            type: "text",
-            text:
-              row.type === "message"
-                ? row.item.body
-                : row.running
-                  ? "Working…"
-                  : "Activity",
-          },
-        ],
-        metadata: { custom: { brigadier: row, index, turn } },
-      };
+        content:
+          row.type === "message" ? [{ type: "text", text: row.item.body }] : [],
+      })),
+    [rows],
+  );
+  const turns = useMemo(() => {
+    let turn: string | null = null;
+    return rows.map((row) => {
+      if (row.type === "message" && row.item.kind.type === "user-text")
+        turn = row.item.provider_uuid ?? row.item.id;
+      return turn;
     });
   }, [rows]);
   const runtime = useExternalStoreRuntime({
@@ -354,74 +355,73 @@ function Transcript({
               : "No saved message bodies in this session."}
           </p>
         ) : null}
-        <ThreadPrimitive.Messages>
-          {({ message }) => {
-            const row = message.metadata.custom.brigadier as ThreadRow | undefined;
-            // The external runtime appends an optimistic assistant message while a turn is
-            // running, including before chat hydration. It has no saved Brigadier row; our
-            // loading/working indicators already cover that interval.
-            if (!row) return null;
-            const index = message.metadata.custom.index as number;
-            const turn = message.metadata.custom.turn as string | null;
-            return (
-              <MessagePrimitive.Root
-                className={`aui-message mb-6 ${row.type === "work" ? "aui-activity" : row.item.kind.type}`}
-              >
-                {row.type === "work" ? (
-                  <WorkTrace
-                    row={row}
-                    sessionTitles={peers?.titles}
-                    onSelectSession={onSelectSession}
-                    expanded={expanded}
-                    toggle={toggle}
-                    onFile={onFile}
-                  />
-                ) : row.item.kind.type === "user-text" ? (
-                  <>
-                    {row.item.at > 0 && (
-                      <div className="message-separator mb-2 text-xs text-text-tertiary">
-                        {dateLabel(row.item.at)}
-                      </div>
-                    )}
-                    <UserMessage
-                      item={row.item}
-                      peers={peers}
-                      initial={index === 0}
-                      busy={busy}
-                      editing={editing}
-                      onEdit={onEdit}
-                      onSelectSession={onSelectSession}
-                    />
-                  </>
-                ) : (
-                  <>
-                    <Markdown text={row.item.body} onFile={onFile} />
-                    <div className="aui-message-actions mt-2 flex items-center gap-1">
-                      <CopyButton text={row.item.body} />
+        {rows.map((row, index) => {
+          const turn = turns[index];
+          return (
+            <div
+              key={row.id}
+              data-message-id={row.id}
+              className={`aui-message group/message ${row.type === "work" ? "aui-activity" : row.item.kind.type}`}
+            >
+              {row.type === "work" ? (
+                <WorkTrace
+                  row={row}
+                  sessionTitles={peers?.titles}
+                  onSelectSession={onSelectSession}
+                  expanded={expanded}
+                  toggle={toggle}
+                  onFile={onFile}
+                />
+              ) : row.item.kind.type === "user-text" ? (
+                <>
+                  {row.item.at > 0 && (
+                    <div className="message-separator mb-2 text-xs text-text-tertiary">
+                      {dateLabel(row.item.at)}
                     </div>
-                    {turn && (
-                      <ChangedFilesCard
-                        sessionId={sessionId}
-                        turn={turn}
-                        files={
-                          changes.turns.find((t) => t.turnId === turn)?.files ??
-                          []
-                        }
-                      />
-                    )}
-                  </>
-                )}
-              </MessagePrimitive.Root>
-            );
-          }}
-        </ThreadPrimitive.Messages>
+                  )}
+                  <UserMessage
+                    item={row.item}
+                    peers={peers}
+                    initial={index === 0}
+                    busy={busy}
+                    editing={editing}
+                    onEdit={onEdit}
+                    onSelectSession={onSelectSession}
+                  />
+                </>
+              ) : (
+                <ChatPanelAssistantMessage className="w-full max-w-none text-sm text-text leading-relaxed">
+                  <Markdown text={row.item.body} onFile={onFile} />
+                  <div className="aui-message-actions flex items-center gap-1">
+                    <CopyButton text={row.item.body} />
+                  </div>
+                  {row.final && turn && (
+                    <ChangedFilesCard
+                      sessionId={sessionId}
+                      turn={turn}
+                      files={
+                        changes.turns.find((t) => t.turnId === turn)?.files ??
+                        []
+                      }
+                    />
+                  )}
+                </ChatPanelAssistantMessage>
+              )}
+            </div>
+          );
+        })}
         {peers?.messages
           .filter((m) => m.to === sessionId && (!m.work || !m.delivered))
           .map((m) => (
             <Disclosure key={m.id}>
               <Disclosure.Heading>
                 <Disclosure.Trigger>
-                  {m.work ? (m.error ? "Message delivery failed" : "Message queued") : "Message"} from {peers.titles[m.from] ?? "another session"}
+                  {m.work
+                    ? m.error
+                      ? "Message delivery failed"
+                      : "Message queued"
+                    : "Message"}{" "}
+                  from {peers.titles[m.from] ?? "another session"}
                   <Disclosure.Indicator />
                 </Disclosure.Trigger>
               </Disclosure.Heading>
@@ -457,14 +457,8 @@ function Transcript({
               </Disclosure.Content>
             </Disclosure>
           ))}
-        {busy && !rows.some((r) => r.type === "work" && r.running) && (
-          <div
-            className="flex items-center gap-2 text-text-secondary"
-            role="status"
-          >
-            <Spinner size="sm" />
-            Working…
-          </div>
+        {busy && (
+          <ThinkingIndicator label="Working…" role="status" className="py-2" />
         )}
         {!busy && session?.lastStop && session.lastStop !== "end-turn" && (
           <div className="turn-state">{stopLabel(session.lastStop)}</div>
@@ -517,13 +511,14 @@ function UserMessage({
     <div className="flex min-w-0 flex-col items-end gap-1">
       {source && (
         <Button
-          className="message-provenance"
+          className="message-provenance max-w-full justify-end truncate text-xs text-text-secondary"
+          title={peers?.titles[source] ?? "Open source session"}
           onClick={() => onSelectSession?.(source)}
         >
-          Sent by {peers?.titles[source] ?? "Brigadier"} from another session
+          From {shortSessionTitle(peers?.titles[source])}
         </Button>
       )}
-      <Surface className="max-w-[85%] rounded-lg px-4 py-3 whitespace-pre-wrap sm:max-w-[75%]">
+      <ChatPanelUserMessage className="max-w-[85%] bg-elevated px-4 py-3 text-sm whitespace-pre-wrap sm:max-w-[75%]">
         <div
           className={
             long && !expanded ? (source ? "line-clamp-2" : "line-clamp-5") : ""
@@ -543,8 +538,8 @@ function UserMessage({
             <span aria-hidden="true">⌄</span>
           </Button>
         )}
-      </Surface>
-      <div className="gap-1 text-xs">
+      </ChatPanelUserMessage>
+      <div className="aui-message-actions flex items-center gap-1 text-xs text-text-tertiary">
         {item.at > 0 && (
           <time dateTime={new Date(item.at).toISOString()}>
             {new Date(item.at).toLocaleTimeString(undefined, {
@@ -578,4 +573,12 @@ function UserMessage({
       </div>
     </div>
   );
+}
+
+function shortSessionTitle(title?: string) {
+  if (!title) return "another session";
+  const singleLine = title.replace(/\s+/g, " ").trim();
+  return singleLine.length > 42
+    ? `${singleLine.slice(0, 41).trimEnd()}…`
+    : singleLine;
 }

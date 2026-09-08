@@ -32,7 +32,7 @@ function work(row: ThreadRow | undefined) {
 }
 
 describe("minimal thread projection", () => {
-  it("folds progress and tool output while preserving every final text block", () => {
+  it("keeps progress and paired tool output in chronological order", () => {
     const rows = project([
       user,
       text("starting"),
@@ -41,13 +41,17 @@ describe("minimal thread projection", () => {
       text("first paragraph"),
       text("second paragraph"),
     ]);
-    expect(rows.map((r) => r.type)).toEqual(["message", "work", "message"]);
-    expect(work(rows[1]).nodes.map((n) => n.item.id)).toEqual([
-      "starting",
-      "cmd",
+    expect(rows.map((r) => r.type)).toEqual([
+      "message",
+      "message",
+      "work",
+      "message",
     ]);
-    expect(work(rows[1]).nodes[1]?.result?.body).toBe("out");
-    expect(rows[2]).toMatchObject({
+    expect(rows[1]).toMatchObject({ item: { body: "starting" } });
+    expect(work(rows[2]).nodes.map((n) => n.item.id)).toEqual(["cmd"]);
+    expect(work(rows[2]).nodes[0]?.result?.body).toBe("out");
+    expect(rows[3]).toMatchObject({
+      final: true,
       item: { body: "first paragraph\n\nsecond paragraph" },
     });
   });
@@ -128,7 +132,7 @@ describe("minimal thread projection", () => {
     ]);
     expect(rows[2]).toMatchObject({ item: { body: "answer" } });
   });
-  it("keeps unfinished progress inside work and separates successive user turns", () => {
+  it("shows live progress and separates successive user turns", () => {
     const rows = project(
       [
         user,
@@ -146,18 +150,16 @@ describe("minimal thread projection", () => {
       "message",
       "message",
       "work",
+      "message",
     ]);
     expect(work(rows[1]).running).toBe(false);
     expect(work(rows[4]).running).toBe(true);
-    expect(work(rows[4]).nodes.map((n) => n.item.id)).toEqual([
-      "next",
-      "still working",
-    ]);
+    expect(work(rows[4]).nodes.map((n) => n.item.id)).toEqual(["next"]);
   });
-  it("does not promote pre-tool progress to a final answer after interruption", () => {
+  it("keeps pre-tool progress visible after interruption", () => {
     expect(
       project([user, text("starting"), call("unfinished")]).map((r) => r.type),
-    ).toEqual(["message", "work"]);
+    ).toEqual(["message", "message", "work"]);
   });
   it("can attach activity referring to a result before that result arrives", () => {
     const group = work(
@@ -171,4 +173,36 @@ describe("minimal thread projection", () => {
     expect(group.nodes).toHaveLength(1);
     expect(group.nodes[0]?.children[0]?.item.body).toBe("child");
   });
+});
+
+it.each([false, true])(
+  "omits empty reasoning while preserving real provider text (busy=%s)",
+  (busy) => {
+    const rows = project(
+      [
+        user,
+        item("empty", { type: "thinking" }, "  "),
+        text("progress"),
+        item("reason", { type: "thinking" }, "Provider reasoning"),
+        text("answer"),
+      ],
+      busy,
+    );
+    expect(rows.map((r) => r.id)).toEqual([
+      "u",
+      "progress",
+      "work:reason",
+      "answer",
+    ]);
+    expect(work(rows[2]).nodes[0]?.item.body).toBe("Provider reasoning");
+  },
+);
+it("keeps stable row identities across streaming, result arrival, and completion", () => {
+  const items = [user, text("before"), call("cmd"), text("after")];
+  const live = project(items, true);
+  const done = project([...items, result("out", "cmd")]);
+  expect(done.map((r) => r.id)).toEqual(live.map((r) => r.id));
+  expect(work(done[2]).nodes[0]?.result?.id).toBe("out");
+  expect(done[3]).toMatchObject({ final: true });
+  expect(live[3]).not.toHaveProperty("final");
 });

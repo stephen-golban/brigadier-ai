@@ -1,0 +1,42 @@
+// Installed from assistant-ui Elements (MIT); Brigadier theme and integration extensions.
+"use client";
+
+import type { ComponentProps } from "react";
+import { cn } from "@/lib/utils";
+import { mono, ShimmerLabel } from "@/lib/surfaces";
+
+export function ThinkingIndicator({
+  label,
+  elapsed,
+  className,
+  ...props
+}: Omit<ComponentProps<"div">, "children" | "label" | "elapsed"> & {
+  label: string;
+  elapsed?: string;
+}) {
+  return (
+    <div
+      data-slot="thinking-indicator"
+      className={cn(
+        "text-text/55 flex items-center gap-2.5 text-sm",
+        className,
+      )}
+
+      {...props}
+    >
+      <span
+        aria-hidden
+        className="size-1.5 shrink-0 animate-pulse rounded-full bg-attention motion-reduce:animate-none dark:bg-attention"
+      />
+      <ShimmerLabel
+        key={label}
+        className="fade-in slide-in-from-bottom-1 animate-in relative inline-block leading-none duration-300"
+      >
+        {label}
+      </ShimmerLabel>
+      {elapsed !== undefined && (
+        <span className={cn(mono, "text-text/30 tabular-nums")}>{elapsed}</span>
+      )}
+    </div>
+  );
+}
