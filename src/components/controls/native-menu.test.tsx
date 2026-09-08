@@ -143,3 +143,28 @@ it("falls back and releases earlier icons if a later icon cannot render", async 
   expect(host.imageClose).toHaveBeenCalledOnce();
   expect(host.create).not.toHaveBeenCalled();
 });
+
+it("passes shortcut accelerators alongside icons without adding key labels to native titles", async () => {
+  render(
+    <Dropdown native>
+      <Button>New tab</Button>
+      <DropdownContent>
+        <Dropdown.Item
+          textValue="Terminal"
+          nativeIcon={<svg />}
+          accelerator="CmdOrCtrl+Alt+T"
+        >
+          <Label>Terminal</Label>
+          <kbd>⌥⌘T</kbd>
+        </Dropdown.Item>
+      </DropdownContent>
+    </Dropdown>,
+  );
+  await userEvent.click(screen.getByRole("button", { name: "New tab" }));
+  await waitFor(() => expect(host.create).toHaveBeenCalledOnce());
+  expect(host.create.mock.calls[0][0].items[0]).toMatchObject({
+    text: "Terminal",
+    accelerator: "CmdOrCtrl+Alt+T",
+    icon: { rid: 9 },
+  });
+});

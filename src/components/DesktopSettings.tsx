@@ -1,3 +1,4 @@
+import { ArchiveSettings } from "./ArchiveSettings";
 import { FolderIcon } from "./NavigationIcons";
 import { Checkbox } from "./controls/checkbox";
 import { Input } from "./controls/input";
@@ -105,6 +106,7 @@ export function DesktopSettings({
               </Button>
             </header>
             <div className="settings-scroll flex min-h-0 flex-col gap-4 overflow-y-auto [&_h3]:text-text-secondary [&_form]:flex [&_form]:flex-col [&_form]:gap-2 [&_label]:flex [&_label]:flex-col [&_label]:gap-2">
+              <ArchiveSettings />
               <h3>Appearance</h3>
               <div className="theme-switch flex items-center justify-between">
                 <span>Theme</span>

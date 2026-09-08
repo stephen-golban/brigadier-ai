@@ -1,10 +1,12 @@
+import { syncArchive, readArchive } from "./sessionArchive";
+import { listen } from "@tauri-apps/api/event";
 import { renameSession } from "./sessionNavigation";
 import { NavigationHistoryControls } from "./components/NavigationHistoryControls";
 import { Button } from "./components/controls/button";
 import { Details, DetailsSummary } from "./components/controls/details";
 import { useNavigationData, isTrashed } from "./navigationApi";
 import { SidebarProvider, SidebarInset } from "./components/controls/sidebar";
-import type { ChatItem } from "./workspaceApi";
+import { desktop, type ChatItem } from "./workspaceApi";
 /** The desktop shell: project sidebar, conversation, composer and optional workspace.
  * Saved automation plans are collapsed project history. A selected session shows its chat.
  * IPC uses the native bridge in Tauri and an in-memory mock in browser previews.
@@ -300,6 +302,52 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
     return () => {
       cancelled = true;
       store.stop();
+    };
+  }, [say]);
+
+  useEffect(() => {
+    let stopped = false,
+      reading = false;
+    const refresh = async () => {
+      if (stopped || reading) return;
+      reading = true;
+      try {
+        await syncArchive();
+      } catch (e) {
+        if (!stopped) say(e);
+      } finally {
+        reading = false;
+      }
+    };
+    void refresh();
+    const timer = setInterval(() => void refresh(), 5000);
+    const listeners = !desktop
+      ? []
+      : [
+          listen("archive-changed", () => void refresh()),
+          listen("native-close-tab", () =>
+            window.dispatchEvent(new Event("workbench-close-tab")),
+          ),
+          listen("native-new-session", () =>
+            window.dispatchEvent(new Event("workbench-new-session")),
+          ),
+          listen("native-new-terminal", () =>
+            window.dispatchEvent(new Event("workbench-new-terminal")),
+          ),
+          listen("native-new-files", () =>
+            window.dispatchEvent(new Event("workbench-new-files")),
+          ),
+        ].map((promise) =>
+          promise.catch((e) => {
+            if (!stopped) say(e);
+            return () => {};
+          }),
+        );
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+      for (const listener of listeners)
+        void listener.then((unlisten) => unlisten()).catch(() => {});
     };
   }, [say]);
 
@@ -911,7 +959,21 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
         dev={BURN_UI ? <Burn onBurn={runBurn} /> : undefined}
         onSelectProject={(id) => {
           setSelectedProjectId(id);
-          setSelectedSessionId(null);
+          try {
+            const layout = JSON.parse(
+              localStorage.getItem("brigadier:project-tabs:v1") ?? "{}",
+            )[id];
+            const tab = layout?.tabs.find(
+              (t: { id: string }) => t.id === layout.active,
+            );
+            setSelectedSessionId(
+              tab?.kind === "session" && !readArchive().entries[tab.path]
+                ? tab.path
+                : null,
+            );
+          } catch {
+            setSelectedSessionId(null);
+          }
         }}
         onSelectSession={selectSession}
         onAddProject={addProject}

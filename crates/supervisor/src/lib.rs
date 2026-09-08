@@ -305,7 +305,7 @@ struct Install {
 pub(crate) enum SpawnIn {
     /// Cut a new `brigadier/<id>` worktree off `HEAD` and run there. Today's behaviour, and the
     /// only one [`Supervisor::start_session`] uses.
-    FreshWorktree { inherit: bool },
+    FreshWorktree { inherit: bool, base: Option<String> },
     /// Run in a directory that already exists. Nothing is created and nothing is rolled back;
     /// the caller owns the checkout and its lifetime.
     Prepared {
@@ -638,7 +638,7 @@ impl Supervisor {
             project_id,
             kind,
             req,
-            SpawnIn::FreshWorktree { inherit: false },
+            SpawnIn::FreshWorktree { inherit: false, base: None },
             false,
         )
         .await
@@ -648,12 +648,21 @@ impl Supervisor {
     /// Interactive project sessions share the registered checkout unless isolation is requested.
     /// Prepared orchestration worktrees keep their existing ownership and cleanup policy.
     pub async fn start_project_session(
-        &self,
-        project_id: &str,
-        kind: &DriverKind,
-        mut req: StartSession,
-        isolated: bool,
+        &self, project_id: &str, kind: &DriverKind, req: StartSession, isolated: bool,
     ) -> Result<SessionId, SupervisorError> {
+        self.start_project_session_from(project_id, kind, req, isolated, None).await
+    }
+
+    /// Select a local base branch without changing the project's checkout.
+    pub async fn start_project_session_from(
+        &self, project_id: &str, kind: &DriverKind, mut req: StartSession, isolated: bool,
+        base_branch: Option<String>,
+    ) -> Result<SessionId, SupervisorError> {
+        let (base, inherit) = if let Some(branch) = base_branch {
+            if !isolated { return Err(SupervisorError::InvalidArgument("A base branch requires an isolated worktree".into())); }
+            let project = self.project(project_id).await?.ok_or(SupervisorError::NoSuchProject)?;
+            worktree::session_base(&project.root_path, &branch).await?
+        } else { (None, true) };
         let prompt = req.prompt.take();
         if isolated {
             let id = self
@@ -661,7 +670,7 @@ impl Supervisor {
                     project_id,
                     kind,
                     req,
-                    SpawnIn::FreshWorktree { inherit: true },
+                    SpawnIn::FreshWorktree { inherit, base },
                     false,
                 )
                 .await?
@@ -771,8 +780,8 @@ impl Supervisor {
         req.mcp = project.mcp;
         let wheref_was_fresh = matches!(wheref, SpawnIn::FreshWorktree { .. });
         let (prepared, mut branch) = match wheref {
-            SpawnIn::FreshWorktree { inherit } => {
-                let prepared = worktree::prepare(&project.root_path).await?;
+            SpawnIn::FreshWorktree { inherit, base } => {
+                let prepared = if let Some(base) = base { worktree::prepare_from(&project.root_path, Some(&base)).await? } else { worktree::prepare(&project.root_path).await? };
                 if inherit {
                     if let Some(made) = &prepared {
                         if let Err(error) = self
@@ -833,7 +842,7 @@ impl Supervisor {
         self.workspace_writable(&cwd).await?;
         let writer_lease = if req.prompt.is_some() {
             Some(
-                brigadier_core::checkpoint::WorkspaceLease::acquire(&cwd)
+                brigadier_core::checkpoint::WorkspaceLease::writer(&cwd)
                     .map_err(|e| SupervisorError::InvalidArgument(e.to_string()))?,
             )
         } else {

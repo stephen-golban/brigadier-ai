@@ -151,6 +151,7 @@ pub(crate) async fn start_session(
     permission_mode: String,
     options: Option<AgentOptions>,
     isolated: Option<bool>,
+    base_branch: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<SessionView, AppError> {
     let _creation = crate::peers::CREATION.lock().await;
@@ -190,11 +191,12 @@ pub(crate) async fn start_session(
         .collect();
     let peer_token = crate::peers::prepare(&mut req)?;
     let session_id = supervisor
-        .start_project_session(
+        .start_project_session_from(
             &project_id,
             &DriverKind::new(CLAUDE_CODE),
             req,
             isolated.unwrap_or(true),
+            base_branch,
         )
         .await?;
     crate::peers::bind(peer_token, session_id.as_str(), Some(title))?;
@@ -218,6 +220,7 @@ pub(crate) async fn resume_session(
     state: State<'_, AppState>,
 ) -> Result<SessionView, AppError> {
     let _lifecycle = crate::peers::LIFECYCLE.lock().await;
+    crate::session_archive::require_active(&state.get()?.data_dir, &session_id)?;
     crate::navigation::require_available(
         &state.get()?.data_dir,
         crate::navigation::Kind::Session,
@@ -260,6 +263,7 @@ pub(crate) async fn send_turn(
     state: State<'_, AppState>,
 ) -> Result<TurnStarted, AppError> {
     let _lifecycle = crate::peers::LIFECYCLE.lock().await;
+    crate::session_archive::require_active(&state.get()?.data_dir, &session_id)?;
     crate::navigation::require_available(
         &state.get()?.data_dir,
         crate::navigation::Kind::Session,

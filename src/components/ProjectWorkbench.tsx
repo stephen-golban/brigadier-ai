@@ -1,3 +1,7 @@
+import { useSessionArchive } from "../sessionArchive";
+import { setSessionArchived } from "../sessionNavigation";
+import { Plus, Folders as FoldersIcon } from "lucide-react";
+import { EditIcon } from "./EditIcon";
 import { SessionMenu } from "./SessionMenu";
 import { working } from "../attention";
 import { MoreIcon } from "./NavigationIcons";
@@ -7,6 +11,7 @@ import { Tabs } from "./controls/tabs";
 import { DropdownContent } from "./controls/menu";
 import { Dropdown, Label, Separator } from "./controls/overlay";
 import { Input } from "./controls/input";
+import { Kbd } from "./controls/kbd";
 import { Button } from "./controls/button";
 import { isTrashed, type NavigationData } from "../navigationApi";
 import { hasSavedEdits } from "../workbenchState";
@@ -23,12 +28,12 @@ import {
   useRef,
   useState,
   type ReactNode,
+  type CSSProperties,
 } from "react";
 import {
   XIcon,
   TerminalIcon,
   FileIcon,
-  NotebookIcon,
   GitDiffIcon,
 } from "@phosphor-icons/react";
 import type { ProjectView, SessionId, ModelInfo } from "../wire";
@@ -71,7 +76,6 @@ export function ProjectWorkbench({
   models,
   children,
   historyContent,
-  attention = {},
   sidebarToggle,
   newSessionRequest,
   navigation,
@@ -93,6 +97,13 @@ export function ProjectWorkbench({
   newSessionRequest?: { projectId: string; token: number } | null;
   navigation?: NavigationData;
 }) {
+  const archive = useSessionArchive();
+  const archivedSessions = Object.values(sessions).filter(
+    (s) =>
+      s.projectId === project?.id &&
+      archive.entries[s.sessionId] &&
+      !(navigation && isTrashed(navigation, "session", s.sessionId)),
+  );
   const [sessionPrefs, setSessionPrefs] = useState(false);
   const [dataLoaded, setDataLoaded] = useState(false);
   const [layouts, setLayouts] = useStoredState<Record<string, ProjectLayout>>(
@@ -166,17 +177,16 @@ export function ProjectWorkbench({
       window.removeEventListener("workbench-files-restored", restored);
   }, []);
   const [error, setError] = useState("");
-  const [menu, setMenu] = useState(false);
   const [openPath, setOpenPath] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<Confirmation | null>(null);
   const [history, setHistory] = useState(false);
-  const [panelMode, setPanelMode] = useState<string>(mode);
   const [panelWidth, setPanelWidth] = useStoredState(
     "brigadier:workspace-width",
-    480,
+    280,
   );
+  const [resizingPanel, setResizingPanel] = useState(false);
   const resizePanel = (value: number) =>
-    setPanelWidth(Math.max(300, Math.min(900, value)));
+    setPanelWidth(Math.max(240, Math.min(900, value)));
 
   const [, setDocumentRevision] = useState(0);
   const closedTabs = useRef<ProjectTab[]>([]);
@@ -193,22 +203,25 @@ export function ProjectWorkbench({
     setHistory(false);
   }, [project?.id]);
   const terminalIds = useRef(new Map<string, string>());
-  const menuRef = useRef<HTMLDivElement>(null);
+  const tabStrip = useRef<HTMLDivElement>(null);
+  const focusAfterClose = useRef(false);
   const layoutKey = project?.id ?? "__notes__";
   const storedLayout = layouts[layoutKey] ?? empty;
-  const visibleTabs = storedLayout.tabs.filter(
-    (t) =>
-      !navigation ||
-      (!(t.kind === "session" && isTrashed(navigation, "session", t.path)) &&
-        !(
-          t.kind === "terminal" &&
-          isTrashed(navigation, "session", t.context.sessionId)
-        ) &&
-        !(
-          t.kind === "note" &&
-          isTrashed(navigation, "note", t.id.replace(/^note:/, ""))
-        )),
-  );
+  const visibleTabs = storedLayout.tabs
+    .filter((t) => !(t.kind === "session" && archive.entries[t.path]))
+    .filter(
+      (t) =>
+        !navigation ||
+        (!(t.kind === "session" && isTrashed(navigation, "session", t.path)) &&
+          !(
+            t.kind === "terminal" &&
+            isTrashed(navigation, "session", t.context.sessionId)
+          ) &&
+          !(
+            t.kind === "note" &&
+            isTrashed(navigation, "note", t.id.replace(/^note:/, ""))
+          )),
+    );
   const layout = {
     ...storedLayout,
     tabs: visibleTabs,
@@ -216,32 +229,52 @@ export function ProjectWorkbench({
       ? storedLayout.active
       : (visibleTabs[visibleTabs.length - 1]?.id ?? null),
   };
-  const selected = layout.tabs.find((t) => t.id === layout.active);
-  const panelTab = layout.tabs.find((t) => t.id === panelMode);
   useEffect(() => {
-    if (
-      !["files", "changes", "search", "notes"].includes(panelMode) &&
-      !panelTab
-    )
-      setPanelMode("files");
-  }, [panelMode, panelTab]);
+    if (focusAfterClose.current) {
+      focusAfterClose.current = false;
+      const target = tabStrip.current?.querySelector<HTMLElement>(
+        '[role="tab"][aria-selected="true"]',
+      );
+      (
+        target ??
+        tabStrip.current?.parentElement?.querySelector<HTMLElement>(
+          '[aria-label="New tab"]',
+        )
+      )?.focus();
+    }
+  }, [layout.active]);
+  const selected = layout.tabs.find((t) => t.id === layout.active);
+  const resourceActive =
+    !!selected && !["session", "draft"].includes(selected.kind);
+  const panelTab = resourceActive ? selected : undefined;
   useEffect(() => {
     if (!project) return;
     const saved = layouts[project.id];
     const savedPanel = saved?.tabs.find(
       (t) => t.id === saved.active && !["session", "draft"].includes(t.kind),
     );
-    if (savedPanel) setPanelMode(savedPanel.id);
-    const t =
-      saved?.tabs.find((t) => t.id === saved.active && t.kind === "session") ??
-      saved?.tabs
-        .slice()
-        .reverse()
-        .find((t) => t.kind === "session");
+    if (savedPanel) {
+      return;
+    }
+    const t = saved?.tabs.find(
+      (t) =>
+        t.id === saved.active &&
+        t.kind === "session" &&
+        !archive.entries[t.path],
+    );
     if (!selectedSessionId && t?.kind === "session" && sessions[t.path])
       onSelectSession(t.path);
   }, [project?.id]);
-  const activeSession = session?.projectId === project?.id ? session : null;
+  useEffect(() => {
+    if (selectedSessionId && archive.entries[selectedSessionId])
+      onSelectSession(selected?.kind === "session" ? selected.path : null);
+  }, [archive, selectedSessionId, selected?.id]);
+  const activeSession =
+    session &&
+    session.projectId === project?.id &&
+    !archive.entries[session.sessionId]
+      ? session
+      : null;
   const context =
     selected && selected.kind !== "session"
       ? selected.context
@@ -301,6 +334,7 @@ export function ProjectWorkbench({
     if (
       !project ||
       !selectedSessionId ||
+      !!archive.entries[selectedSessionId] ||
       sessions[selectedSessionId]?.projectId !== project.id
     )
       return;
@@ -386,8 +420,6 @@ export function ProjectWorkbench({
         ? cleaned.slice(root.length + 1)
         : cleaned.replace(/^\.\//, "");
       const id = `${kind}:${context.sessionId ?? "root"}:${staged}:${relative}`;
-      setPanelMode(id);
-      setWorkspaceOpen(true);
       const tab: ProjectTab = {
         id,
         kind,
@@ -399,15 +431,20 @@ export function ProjectWorkbench({
       };
       setLayouts((old) => {
         const l = old[project.id] ?? empty;
-        return {
-          ...old,
-          [project.id]: {
-            tabs: l.tabs.some((t) => t.id === id)
-              ? l.tabs.map((t) => (t.id === id ? { ...t, line: tab.line } : t))
-              : [...l.tabs, tab],
-            active: id,
-          },
-        };
+        // A Files menu tab is a placeholder for its first document. Toolbar
+        // panel toggles never create a placeholder or change the selected tab.
+        const placeholder = l.tabs.find(
+          (t) => t.id === l.active && t.kind === "files",
+        );
+        const existing = l.tabs.some((t) => t.id === id);
+        const tabs = existing
+          ? l.tabs
+              .filter((t) => t.id !== placeholder?.id)
+              .map((t) => (t.id === id ? { ...t, line: tab.line } : t))
+          : placeholder
+            ? l.tabs.map((t) => (t.id === placeholder.id ? tab : t))
+            : [...l.tabs, tab];
+        return { ...old, [project.id]: { tabs, active: id } };
       });
     },
     [project?.id, context.sessionId, root, setLayouts],
@@ -427,7 +464,6 @@ export function ProjectWorkbench({
     const review = (e: Event) => {
       setReviewTurn((e as CustomEvent).detail?.turn ?? null);
       setMode("changes");
-      setPanelMode("changes");
       setWorkspaceOpen(true);
     };
     const diff = (e: Event) => {
@@ -459,10 +495,6 @@ export function ProjectWorkbench({
   }, [sessions, project?.id]);
   const add = (tab: ProjectTab) => {
     setHistory(false);
-    if (!["session", "draft"].includes(tab.kind)) {
-      setPanelMode(tab.id);
-      setWorkspaceOpen(true);
-    }
 
     setLayouts((old) => {
       const l = old[layoutKey] ?? empty;
@@ -474,7 +506,6 @@ export function ProjectWorkbench({
         },
       };
     });
-    setMenu(false);
   };
   const openNote = (note: Note) =>
     add({
@@ -484,9 +515,14 @@ export function ProjectWorkbench({
       context,
       root,
     });
-  const create = (kind: "session" | "terminal" | "untitled" | "note") => {
+  const create = (
+    kind: "session" | "terminal" | "untitled" | "note" | "files",
+  ) => {
     if (!project) return;
-    setMenu(false);
+    if (kind === "files") {
+      setMode("files");
+      setWorkspaceOpen(true);
+    }
     if (kind === "session") {
       onSelectSession(null);
       add({
@@ -527,17 +563,15 @@ export function ProjectWorkbench({
       path:
         kind === "terminal"
           ? `Terminal ${layout.tabs.filter((t) => t.kind === "terminal").length + 1}`
-          : "Untitled",
+          : kind === "files"
+            ? "Open file"
+            : "Untitled",
       context,
       root,
     });
   };
   const select = (t: ProjectTab) => {
     setHistory(false);
-    if (!["session", "draft"].includes(t.kind)) {
-      setPanelMode(t.id);
-      setWorkspaceOpen(true);
-    }
 
     setLayouts((old) => ({
       ...old,
@@ -549,22 +583,68 @@ export function ProjectWorkbench({
   const remove = (tab: ProjectTab) => {
     const id = tab.context.projectId || "__notes__";
     const l = layouts[id] ?? empty;
+    focusAfterClose.current = !!tabStrip.current?.contains(
+      document.activeElement,
+    );
     const index = l.tabs.findIndex((t) => t.id === tab.id);
     const tabs = l.tabs.filter((t) => t.id !== tab.id);
     const next = tabs[Math.min(index, tabs.length - 1)];
     const active = l.active === tab.id ? (next?.id ?? null) : l.active;
-    if (tab.kind === "session" && selectedSessionId === tab.path)
-      onSelectSession(next?.kind === "session" ? next.path : null);
+    if (id === layoutKey && l.active === tab.id) {
+      if (next?.kind === "session") onSelectSession(next.path);
+      else if (next?.kind === "draft" || !next) onSelectSession(null);
+    }
     setLayouts((old) => ({ ...old, [id]: { tabs, active } }));
   };
+  const closing = useRef(false);
   const close = async (tab: ProjectTab) => {
+    if (closing.current || confirm) return;
+    if (tab.kind === "session") {
+      const related = new Set([tab.path]);
+      for (let before = -1; before !== related.size; ) {
+        before = related.size;
+        for (const [child, parent] of Object.entries(peers.origins))
+          if (related.has(parent)) related.add(child);
+      }
+      const archiveAndClose = async () => {
+        await setSessionArchived(tab.path, true);
+        closedTabs.current = [
+          ...closedTabs.current.filter((t) => t.id !== tab.id),
+          tab,
+        ].slice(-20);
+        remove(tab);
+        setConfirm(null);
+      };
+      if ([...related].some((id) => working(sessions[id]))) {
+        setConfirm({
+          native: true,
+          title: "Stop and archive session?",
+          body: "Closing this tab will stop its AI work and child agents, then archive the conversation in History.",
+          confirmLabel: "Stop and close",
+          onCancel: () => setConfirm(null),
+          onConfirm: archiveAndClose,
+        });
+      } else {
+        closing.current = true;
+        try {
+          await archiveAndClose();
+        } catch (e) {
+          setError(errorMessage(e));
+        } finally {
+          closing.current = false;
+        }
+      }
+      return;
+    }
     if (tab.kind === "terminal") {
       const id = terminalIds.current.get(tab.id);
       if (id) {
         try {
+          closing.current = true;
           const info = await workbenchApi.terminalInfo(id);
           if (info.busy) {
             setConfirm({
+              native: true,
               title: "Close running terminal?",
               body: "Closing this terminal will stop its running command.",
               confirmLabel: "Stop and close",
@@ -580,6 +660,8 @@ export function ProjectWorkbench({
         } catch (e) {
           setError(errorMessage(e));
           return;
+        } finally {
+          closing.current = false;
         }
       }
     }
@@ -632,17 +714,18 @@ export function ProjectWorkbench({
     ].slice(-20);
     remove(tab);
   };
-  const attach = (path: string, content: string) => {
+  const revealConversation = () => {
     const threadTab =
       layout.tabs.find(
         (t) => t.kind === "session" && t.path === selectedSessionId,
-      ) ?? layout.tabs.find((t) => t.kind === "session");
+      ) ??
+      layout.tabs.find((t) => t.kind === "session") ??
+      layout.tabs.find((t) => t.kind === "draft");
     if (threadTab) select(threadTab);
-    else if (project)
-      setLayouts((old) => ({
-        ...old,
-        [project.id]: { ...(old[project.id] ?? empty), active: null },
-      }));
+    else create("session");
+  };
+  const attach = (path: string, content: string) => {
+    revealConversation();
     setTimeout(
       () =>
         window.dispatchEvent(
@@ -654,16 +737,7 @@ export function ProjectWorkbench({
   useEffect(() => {
     const mention = (e: Event) => {
       const note = (e as CustomEvent<Note>).detail;
-      const threadTab =
-        layout.tabs.find(
-          (t) => t.kind === "session" && t.path === selectedSessionId,
-        ) ?? layout.tabs.find((t) => t.kind === "session");
-      if (threadTab) select(threadTab);
-      else if (project)
-        setLayouts((old) => ({
-          ...old,
-          [project.id]: { ...(old[project.id] ?? empty), active: null },
-        }));
+      revealConversation();
       setTimeout(
         () =>
           window.dispatchEvent(
@@ -727,11 +801,22 @@ export function ProjectWorkbench({
       setDeciding(false);
     }
   };
-  const [reviewTurn, setReviewTurn] = useState<string | null>(null);
-  const showHistory = !!project && (history || layout.tabs.length === 0);
-  const showConversation = !showHistory;
+  const [, setReviewTurn] = useState<string | null>(null);
+  const showConversation = !resourceActive;
   useEffect(() => {
-    const newSession = () => create("session");
+    const modalOpen = () =>
+      !!document.querySelector(
+        'dialog[open], [role="dialog"], .settings-overlay',
+      );
+    const newSession = () => {
+      if (!modalOpen()) create("session");
+    };
+    const newTerminal = () => {
+      if (!modalOpen()) create("terminal");
+    };
+    const newFiles = () => {
+      if (!modalOpen()) create("files");
+    };
     const note = (e: Event) => {
       const n = (e as CustomEvent<Note>).detail;
       setNote(n);
@@ -763,6 +848,11 @@ export function ProjectWorkbench({
     };
     const documentState = () => setDocumentRevision((n) => n + 1);
     const key = (e: KeyboardEvent) => {
+      if (e.isComposing) return;
+      const consume = () => {
+        e.preventDefault();
+        e.stopPropagation();
+      };
       if (
         document.querySelector(
           'dialog[open], [role="dialog"], .settings-overlay',
@@ -771,47 +861,47 @@ export function ProjectWorkbench({
         return;
       const command =
         e.metaKey || (!navigator.platform.includes("Mac") && e.ctrlKey);
+      // Option changes event.key on macOS; physical key codes keep these stable.
+      if (e.altKey) {
+        if (
+          command &&
+          !e.shiftKey &&
+          (e.code === "KeyT" || e.code === "KeyF")
+        ) {
+          consume();
+          create(e.code === "KeyT" ? "terminal" : "files");
+        }
+        return;
+      }
       const cycle =
-        (e.ctrlKey && e.key === "Tab") ||
+        (e.ctrlKey && ["Tab", "PageUp", "PageDown"].includes(e.key)) ||
         (command &&
           e.shiftKey &&
           (e.code === "BracketLeft" || e.code === "BracketRight"));
       if (cycle) {
-        e.preventDefault();
+        consume();
         const direction =
           e.key === "Tab"
             ? e.shiftKey
               ? -1
               : 1
-            : e.code === "BracketLeft"
+            : e.code === "BracketLeft" || e.key === "PageUp"
               ? -1
               : 1;
-        const ids = [
-          "files",
-          "changes",
-          "search",
-          "notes",
-          ...layout.tabs
-            .filter((t) => !["session", "draft"].includes(t.kind))
-            .map((t) => t.id),
-        ];
-        const at = ids.indexOf(panelMode);
-        const nextId = ids[(at + direction + ids.length) % ids.length]!;
-        const next = layout.tabs.find((t) => t.id === nextId);
+        const at = layout.tabs.findIndex((t) => t.id === layout.active);
+        const next =
+          layout.tabs[
+            (at + direction + layout.tabs.length) % layout.tabs.length
+          ];
         if (next) select(next);
-        else {
-          setPanelMode(nextId);
-          setMode(nextId as WorkspaceMode);
-          setWorkspaceOpen(true);
-        }
         return;
       }
       if (!command || e.altKey) return;
       if (e.key === ",") {
-        e.preventDefault();
+        consume();
         window.dispatchEvent(new Event("brigadier-settings"));
       } else if (e.key.toLowerCase() === "t") {
-        e.preventDefault();
+        consume();
         if (e.shiftKey) {
           const previous = closedTabs.current.pop();
           if (
@@ -819,20 +909,24 @@ export function ProjectWorkbench({
             (!previous.context.sessionId ||
               sessions[previous.context.sessionId])
           ) {
-            add(previous);
-            if (previous.kind === "session") onSelectSession(previous.path);
+            if (previous.kind === "session")
+              void setSessionArchived(previous.path, false)
+                .then(() => {
+                  add(previous);
+                  onSelectSession(previous.path);
+                })
+                .catch((e) => setError(errorMessage(e)));
+            else add(previous);
           }
         } else create("session");
       } else if (e.key.toLowerCase() === "w") {
-        e.preventDefault();
-        if (workspaceOpen && panelTab) void close(panelTab);
-        else if (workspaceOpen) setWorkspaceOpen(false);
-        else if (selected) void close(selected);
+        consume();
+        if (selected) void close(selected);
       } else if (e.key.toLowerCase() === "o") {
-        e.preventDefault();
+        consume();
         setOpenPath("");
       } else if (/^[1-9]$/.test(e.key)) {
-        e.preventDefault();
+        consume();
         const tab =
           e.key === "9"
             ? layout.tabs[layout.tabs.length - 1]
@@ -840,27 +934,51 @@ export function ProjectWorkbench({
         if (tab) select(tab);
       }
     };
+    const nativeClose = () => {
+      if (
+        !document.querySelector(
+          'dialog[open], [role="dialog"], .settings-overlay',
+        ) &&
+        selected
+      )
+        void close(selected);
+    };
+    const archiveTab = (event: Event) => {
+      const id = (event as CustomEvent<{ sessionId: string }>).detail.sessionId;
+      const source = sessions[id];
+      if (!source) return;
+      const tab = Object.values(layouts)
+        .flatMap((l) => l.tabs)
+        .find((t) => t.kind === "session" && t.path === id) ?? {
+        id: `session:${id}`,
+        kind: "session" as const,
+        path: id,
+        context: { projectId: source.projectId ?? "", sessionId: id },
+        root: source.cwd ?? "",
+      };
+      void close(tab);
+    };
+    window.addEventListener("workbench-close-tab", nativeClose);
+    window.addEventListener("workbench-archive-session", archiveTab);
     window.addEventListener("workbench-new-session", newSession);
+    window.addEventListener("workbench-new-terminal", newTerminal);
+    window.addEventListener("workbench-new-files", newFiles);
     window.addEventListener("workbench-open-note", note);
     window.addEventListener("workbench-note-deleted", removed);
     window.addEventListener("workbench-document-state", documentState);
-    window.addEventListener("keydown", key);
+    window.addEventListener("keydown", key, true);
     return () => {
+      window.removeEventListener("workbench-close-tab", nativeClose);
+      window.removeEventListener("workbench-archive-session", archiveTab);
       window.removeEventListener("workbench-new-session", newSession);
+      window.removeEventListener("workbench-new-terminal", newTerminal);
+      window.removeEventListener("workbench-new-files", newFiles);
       window.removeEventListener("workbench-open-note", note);
       window.removeEventListener("workbench-note-deleted", removed);
       window.removeEventListener("workbench-document-state", documentState);
-      window.removeEventListener("keydown", key);
+      window.removeEventListener("keydown", key, true);
     };
-  }, [
-    layout,
-    project?.id,
-    selectedSessionId,
-    sessions,
-    data,
-    panelMode,
-    workspaceOpen,
-  ]);
+  }, [layout, project?.id, selectedSessionId, sessions, data, workspaceOpen]);
   useEffect(() => {
     window.dispatchEvent(
       new CustomEvent("workbench-active-session", {
@@ -869,6 +987,14 @@ export function ProjectWorkbench({
       }),
     );
   }, [showConversation, activeSession?.sessionId]);
+  const panelVisible =
+    workspaceOpen && (!history || archivedSessions.length > 0);
+  const togglePanel = (next: WorkspaceMode) => {
+    setReviewTurn(null);
+    setMode(next);
+    setHistory(false);
+    setWorkspaceOpen(!panelVisible || history || mode !== next);
+  };
   const handledRequest = useRef<number | null>(null);
   useEffect(() => {
     if (
@@ -881,7 +1007,14 @@ export function ProjectWorkbench({
     }
   }, [newSessionRequest, project?.id]);
   return (
-    <div className="project-workbench relative flex min-h-0 min-w-0 flex-1 flex-col bg-canvas">
+    <Tabs
+      selectedKey={layout.active ?? ""}
+      onSelectionChange={(id) => {
+        const t = layout.tabs.find((t) => t.id === id);
+        if (t) select(t);
+      }}
+      className="project-workbench relative flex min-h-0 min-w-0 flex-1 flex-col bg-canvas"
+    >
       <header
         className="project-topbar flex h-11 shrink-0 items-center gap-3 border-b border-hairline px-4 text-text-secondary"
         data-tauri-drag-region="deep"
@@ -900,107 +1033,252 @@ export function ProjectWorkbench({
             <SidebarIcon size={19} />
           </Button>
         )}
-        <FolderIcon size={18} className="shrink-0 text-text" />
-        <span className="min-w-0 truncate text-[14px] font-medium text-text">
-          {showConversation && activeSession
-            ? (peers.titles[activeSession.sessionId] ??
-              `Session ${activeSession.sessionId.slice(-6)}`)
-            : project
+        {!layout.tabs.length && (
+          <span className="truncate text-sm text-text">
+            {project
               ? (data.projectNames?.[project.id] ?? project.name)
               : "Brigadier"}
-        </span>
-        <div ref={menuRef} className="shrink-0">
-          {showConversation && activeSession ? (
-            <SessionMenu
-              key={activeSession.sessionId}
-              sessionId={activeSession.sessionId}
-              title={
-                peers.titles[activeSession.sessionId] ??
-                `Session ${activeSession.sessionId.slice(-6)}`
-              }
-              canFork={
-                !!activeSession.providerSessionId && !working(activeSession)
-              }
-              onFork={
-                onForkSession
-                  ? () => onForkSession(activeSession.sessionId)
-                  : undefined
-              }
-              onArchive={() => onSelectSession(null)}
-              onHistory={() => setHistory(!history)}
-            />
-          ) : (
-            <Dropdown native isOpen={menu} onOpenChange={setMenu}>
-              <Button
-                size="icon"
-                className="size-7"
-                aria-label="Workspace actions"
-                disabled={!project}
-              >
-                <MoreIcon />
-              </Button>
-              <DropdownContent className="w-56">
-                <Dropdown.Item
-                  id="history"
-                  textValue="Session history"
-                  onAction={() => setHistory(!history)}
+          </span>
+        )}
+        <Tabs.ListContainer
+          ref={tabStrip}
+          className="main-tab-strip flex min-w-0 items-center gap-1"
+        >
+          <Tabs.List aria-label="Project tabs" className="shrink-0 gap-1">
+            {layout.tabs.map((t) => {
+              const title =
+                t.kind === "session"
+                  ? (peers.titles[t.path] ?? `Session ${t.path.slice(-6)}`)
+                  : t.kind === "draft"
+                    ? "New session"
+                    : t.kind === "note"
+                      ? (data.notes.find((n) => `note:${n.id}` === t.id)
+                          ?.title ?? t.path)
+                      : t.path.split("/").pop() || "Open file";
+              const Icon =
+                t.kind === "session" || t.kind === "draft"
+                  ? EditIcon
+                  : t.kind === "terminal"
+                    ? TerminalIcon
+                    : FileIcon;
+              return (
+                <Tabs.Tab
+                  key={t.id}
+                  id={t.id}
+                  aria-label={title}
+                  className="workbench-tab shrink-0"
+                  title={title}
                 >
-                  <ClockCounterClockwiseIcon size={16} />
-                  <Label>Session history</Label>
-                </Dropdown.Item>
-                <Separator />
-                {(
-                  [
-                    ["files", "Tree", FolderIcon],
-                    ["search", "Search", SearchIcon],
-                    ["changes", "Changes", GitDiffIcon],
-                  ] as const
-                ).map(([value, label, Icon]) => (
-                  <Dropdown.Item
-                    key={value}
-                    id={value}
-                    textValue={label}
-                    onAction={() => {
-                      setReviewTurn(null);
-                      setWorkspaceOpen(!workspaceOpen || mode !== value);
-                      setMode(value);
-                      setPanelMode(value);
+                  <Icon size={14} className="shrink-0" />
+                  <span className="max-w-[160px] truncate">{title}</span>
+                  {(documentCommands.get(t.id)?.dirty ?? hasSavedEdits(t)) && (
+                    <i
+                      className="size-1.5 shrink-0 rounded-full bg-text-secondary"
+                      aria-label="Unsaved changes"
+                    />
+                  )}
+                  <span
+                    className="tab-menu shrink-0"
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    {t.kind === "session" ? (
+                      <SessionMenu
+                        sessionId={t.path}
+                        title={title}
+                        canFork={
+                          !!sessions[t.path]?.providerSessionId &&
+                          !working(sessions[t.path])
+                        }
+                        onFork={
+                          onForkSession
+                            ? () => onForkSession(t.path)
+                            : undefined
+                        }
+                        onArchive={() => {
+                          void close(t);
+                        }}
+                        onHistory={
+                          archivedSessions.length
+                            ? () => {
+                                if (layout.active !== t.id) select(t);
+                                setHistory(true);
+                                setWorkspaceOpen(true);
+                              }
+                            : undefined
+                        }
+                      />
+                    ) : (
+                      <Dropdown native>
+                        <Button
+                          size="icon"
+                          aria-label={
+                            t.kind === "draft"
+                              ? "Workspace actions"
+                              : `Tab actions ${title}`
+                          }
+                          title="Tab actions"
+                        >
+                          <MoreIcon />
+                        </Button>
+                        <DropdownContent className="w-48">
+                          {t.kind === "draft" &&
+                            archivedSessions.length > 0 && (
+                              <>
+                                <Dropdown.Item
+                                  onAction={() => {
+                                    select(t);
+                                    setHistory(true);
+                                    setWorkspaceOpen(true);
+                                  }}
+                                >
+                                  <ClockCounterClockwiseIcon />
+                                  <Label>Session history</Label>
+                                </Dropdown.Item>
+                                <Separator />
+                              </>
+                            )}
+                          {["files", "file", "untitled"].includes(t.kind) && (
+                            <Dropdown.Item onAction={() => create("untitled")}>
+                              <Plus />
+                              <Label>New file</Label>
+                            </Dropdown.Item>
+                          )}
+                          <Dropdown.Item onAction={() => void close(t)}>
+                            <XIcon />
+                            <Label>Close tab</Label>
+                          </Dropdown.Item>
+                        </DropdownContent>
+                      </Dropdown>
+                    )}
+                  </span>
+                  <Button
+                    size="icon"
+                    aria-label={`Close ${title}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void close(t);
                     }}
                   >
-                    <Icon size={16} />
-                    <Label>{label}</Label>
-                  </Dropdown.Item>
-                ))}
-                <Separator />
-                {(
-                  [
-                    ["session", "New Session"],
-                    ["terminal", "Terminal"],
-                    ["untitled", "New File"],
-                    ["note", "New Note"],
-                  ] as const
-                ).map(([kind, label]) => (
-                  <Dropdown.Item
-                    key={kind}
-                    id={kind}
-                    textValue={label}
-                    onAction={() => create(kind)}
-                  >
-                    <Label>{label}</Label>
-                  </Dropdown.Item>
-                ))}
-                <Dropdown.Item
-                  id="open"
-                  textValue="Open File"
-                  onAction={() => {
-                    setOpenPath("");
-                    setMenu(false);
-                  }}
-                >
-                  <Label>Open File</Label>
-                </Dropdown.Item>
-              </DropdownContent>
-            </Dropdown>
+                    <XIcon size={10} />
+                  </Button>
+                </Tabs.Tab>
+              );
+            })}
+          </Tabs.List>
+          <Dropdown native>
+            <Button
+              size="icon"
+              aria-label="New tab"
+              title="New tab (⌘T / Ctrl+T)"
+              disabled={!project}
+            >
+              <Plus />
+            </Button>
+            <DropdownContent className="w-52">
+              <Dropdown.Item
+                id="session"
+                textValue="Session"
+                aria-label="Session"
+                nativeIcon={<EditIcon />}
+                accelerator="CmdOrCtrl+T"
+                onAction={() => create("session")}
+              >
+                <EditIcon />
+                <Label>Session</Label>
+                <Kbd className="ml-auto text-[11px]">
+                  {navigator.platform.startsWith("Mac") ? "⌘T" : "Ctrl T"}
+                </Kbd>
+              </Dropdown.Item>
+              <Dropdown.Item
+                id="terminal"
+                textValue="Terminal"
+                aria-label="Terminal"
+                nativeIcon={<TerminalIcon />}
+                accelerator="CmdOrCtrl+Alt+T"
+                onAction={() => create("terminal")}
+              >
+                <TerminalIcon />
+                <Label>Terminal</Label>
+                <Kbd className="ml-auto text-[11px]">
+                  {navigator.platform.startsWith("Mac") ? "⌥⌘T" : "Ctrl Alt T"}
+                </Kbd>
+              </Dropdown.Item>
+              <Dropdown.Item
+                id="files"
+                textValue="Files"
+                aria-label="Files"
+                nativeIcon={<FolderIcon />}
+                accelerator="CmdOrCtrl+Alt+F"
+                onAction={() => create("files")}
+              >
+                <FolderIcon />
+                <Label>Files</Label>
+                <Kbd className="ml-auto text-[11px]">
+                  {navigator.platform.startsWith("Mac") ? "⌥⌘F" : "Ctrl Alt F"}
+                </Kbd>
+              </Dropdown.Item>
+            </DropdownContent>
+          </Dropdown>
+        </Tabs.ListContainer>
+
+        <span className="grow" />
+        <div
+          className="workbench-panel-actions flex shrink-0 items-center gap-1"
+          role="group"
+          aria-label="Workspace panels"
+        >
+          {(
+            [
+              ["files", "Files", FoldersIcon],
+              ["search", "Search", SearchIcon],
+              ["changes", "Changes", GitDiffIcon],
+            ] as const
+          ).map(([value, label, Icon]) => (
+            <Button
+              key={value}
+              size="icon"
+              aria-label={label}
+              title={
+                value === "changes" && status?.changes.length
+                  ? `Changes (${status.changes.length})`
+                  : label
+              }
+              className="relative"
+              aria-description={
+                value === "changes" && status
+                  ? `${status.changes.length} changed ${status.changes.length === 1 ? "file" : "files"}`
+                  : undefined
+              }
+              aria-controls="workspace-panel"
+              aria-pressed={panelVisible && !history && mode === value}
+              onClick={() => togglePanel(value)}
+              disabled={!project}
+            >
+              <Icon size={18} />
+              {value === "changes" && !!status?.changes.length && (
+                <span className="workbench-change-count" aria-hidden="true">
+                  {status.changes.length}
+                </span>
+              )}
+            </Button>
+          ))}
+          {archivedSessions.length > 0 && (
+            <Button
+              size="icon"
+              aria-label="History"
+              title="History"
+              aria-controls="workspace-panel"
+              aria-pressed={panelVisible && history}
+              onClick={() => {
+                if (history && workspaceOpen) setWorkspaceOpen(false);
+                else {
+                  setHistory(true);
+                  setWorkspaceOpen(true);
+                }
+              }}
+            >
+              <ClockCounterClockwiseIcon />
+            </Button>
           )}
         </div>
       </header>
@@ -1050,26 +1328,26 @@ export function ProjectWorkbench({
           </Button>
         </form>
       )}
-      <div
-        className={`workbench-body flex min-h-0 flex-1 overflow-hidden ${workspaceOpen ? "has-workspace" : ""}`}
+      {resourceActive && (
+        <div
+          className="workbench-path flex h-10 shrink-0 items-center border-b border-hairline px-4 text-sm text-text-secondary"
+          title={root}
+        >
+          <span className="truncate">
+            {selected?.kind === "file" || selected?.kind === "diff"
+              ? `/ ${selected.path}`
+              : "/"}
+          </span>
+        </div>
+      )}
+      <Tabs.Panel
+        id={layout.active ?? ""}
+        className={`workbench-body flex min-h-0 flex-1 overflow-hidden ${panelVisible ? "has-workspace" : ""}`}
       >
-        <div className="workbench-main flex min-h-0 min-w-0 flex-1 flex-col">
-          {showHistory && historyContent}
-          {showHistory && project && (
-            <ProjectHistory
-              projectName={data.projectNames?.[project.id] ?? project.name}
-              sessions={Object.values(sessions).filter(
-                (s) => s.projectId === project.id,
-              )}
-              titles={peers.titles}
-              attention={attention}
-              onSelect={(id) => {
-                setHistory(false);
-                onSelectSession(id);
-              }}
-              onNew={() => create("session")}
-            />
-          )}
+        <div
+          className="workbench-main flex min-h-0 min-w-0 flex-1 flex-col"
+          hidden={resourceActive}
+        >
           {showConversation && activeSession && (
             <SessionCard
               session={activeSession}
@@ -1079,7 +1357,6 @@ export function ProjectWorkbench({
               onChanges={() => {
                 setReviewTurn(null);
                 setMode("changes");
-                setPanelMode("changes");
                 setWorkspaceOpen(true);
               }}
               onSettings={() => setSessionPrefs(true)}
@@ -1090,7 +1367,7 @@ export function ProjectWorkbench({
             hidden={!showConversation}
           >
             <NoteScope.Provider value={project?.id ?? null}>
-              {!showHistory && historyContent}
+              {historyContent}
               {children}
               {pendingRequest && (
                 <div className="peer-request">
@@ -1134,237 +1411,171 @@ export function ProjectWorkbench({
             </NoteScope.Provider>
           </div>
         </div>
-        {project && (
-          <>
-            {workspaceOpen && (
+        <div
+          className="workbench-document flex min-h-0 min-w-0 flex-1 flex-col"
+          hidden={!resourceActive}
+        >
+          {Object.values(layouts)
+            .flatMap((l) => l.tabs)
+            .filter((t) => t.kind === "terminal")
+            .map((t) => (
               <div
-                className="layout-resizer w-1 shrink-0 cursor-col-resize touch-none bg-hairline hover:bg-hover"
-                role="separator"
-                aria-label="Resize workspace"
-                aria-orientation="vertical"
-                aria-valuemin={300}
-                aria-valuemax={900}
-                aria-valuenow={panelWidth}
-                tabIndex={0}
-                onKeyDown={(e) => {
-                  if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
-                    e.preventDefault();
-                    resizePanel(
-                      panelWidth + (e.key === "ArrowLeft" ? 24 : -24),
-                    );
-                  }
-                }}
-                onPointerDown={(e) => {
-                  e.currentTarget.setPointerCapture(e.pointerId);
-                  e.currentTarget.dataset.start = String(e.clientX);
-                  e.currentTarget.dataset.width = String(panelWidth);
-                }}
-                onPointerMove={(e) => {
-                  if (e.currentTarget.hasPointerCapture(e.pointerId))
-                    resizePanel(
-                      Number(e.currentTarget.dataset.width) +
-                        Number(e.currentTarget.dataset.start) -
-                        e.clientX,
-                    );
-                }}
-                onPointerUp={(e) =>
-                  e.currentTarget.releasePointerCapture(e.pointerId)
+                className="terminal-surface h-full min-h-0 overflow-hidden"
+                key={t.id}
+                hidden={
+                  !resourceActive ||
+                  selected?.id !== t.id ||
+                  t.context.projectId !== project?.id
                 }
+              >
+                <Suspense
+                  fallback={
+                    <p className="p-3 text-text-secondary">Loading terminal…</p>
+                  }
+                >
+                  <TerminalView
+                    context={t.context}
+                    visible={
+                      resourceActive &&
+                      selected?.id === t.id &&
+                      t.context.projectId === project?.id
+                    }
+                    tabId={t.id}
+                    onReady={(id) => {
+                      if (id) terminalIds.current.set(t.id, id);
+                      else terminalIds.current.delete(t.id);
+                    }}
+                  />
+                </Suspense>
+              </div>
+            ))}
+          {selected?.kind === "files" && (
+            <div className="open-file-empty flex flex-1 flex-col items-center justify-center gap-3 text-text-secondary">
+              <FoldersIcon size={32} />
+              <h2 className="text-lg text-text">Open file</h2>
+              <p className="text-sm">Select a file from the workspace tree</p>
+            </div>
+          )}
+          {panelTab &&
+            !["session", "draft", "terminal", "files"].includes(
+              panelTab.kind,
+            ) &&
+            (panelTab.kind !== "note" || dataLoaded) && (
+              <DocumentTab
+                key={panelTab.id}
+                tab={panelTab}
+                note={
+                  panelTab.kind === "note"
+                    ? data.notes.find((n) => `note:${n.id}` === panelTab.id)
+                    : undefined
+                }
+                onNote={setNote}
+                onSaved={(path) => {
+                  const closing = closeAfterSaveAs.current === panelTab.id;
+                  closeAfterSaveAs.current = null;
+                  if (panelTab.kind === "untitled") remove(panelTab);
+                  if (!closing) open(path);
+                }}
+                onAttach={attach}
+                refresh={refresh}
               />
             )}
-            <aside
-              className="workbench-side relative flex min-h-0 max-w-[65%] shrink-0 flex-col bg-canvas"
-              hidden={!workspaceOpen}
-              style={{ width: panelWidth }}
-              aria-label="Workspace"
-            >
-              <Tabs
-                selectedKey={panelMode}
-                onSelectionChange={(key) => {
-                  const tab = layout.tabs.find((t) => t.id === key);
-                  if (tab) select(tab);
-                  else {
-                    setMode(key as WorkspaceMode);
-                    setPanelMode(String(key));
-                  }
-                }}
-                variant="secondary"
-                className="workspace-tabs flex h-full min-h-0 flex-col"
-              >
-                <Tabs.ListContainer className="workspace-tab-list shrink-0 pr-10">
-                  <Tabs.List aria-label="Workspace tabs">
-                    <Tabs.Tab id="files">
-                      Files
-                      <Tabs.Indicator />
-                    </Tabs.Tab>
-                    <Tabs.Tab id="changes">
-                      Changes
-                      <Tabs.Indicator />
-                    </Tabs.Tab>
-                    <Tabs.Tab id="search">
-                      Search
-                      <Tabs.Indicator />
-                    </Tabs.Tab>
-                    <Tabs.Tab id="notes">
-                      Notes
-                      <Tabs.Indicator />
-                    </Tabs.Tab>
-                    {layout.tabs
-                      .filter((t) => !["session", "draft"].includes(t.kind))
-                      .map((t) => (
-                        <Tabs.Tab key={t.id} id={t.id}>
-                          {t.kind === "terminal" ? (
-                            <TerminalIcon size={14} />
-                          ) : t.kind === "note" ? (
-                            <NotebookIcon size={14} />
-                          ) : t.kind === "diff" ? (
-                            <GitDiffIcon size={14} />
-                          ) : (
-                            <FileIcon size={14} />
-                          )}
-                          <span>
-                            {t.kind === "note"
-                              ? (data.notes.find((n) => `note:${n.id}` === t.id)
-                                  ?.title ?? t.path)
-                              : t.path.split("/").pop()}
-                          </span>
-                          {(documentCommands.get(t.id)?.dirty ??
-                            hasSavedEdits(t)) && (
-                            <i
-                              className="dirty-dot inline-block size-1.5 rounded-full bg-text-secondary"
-                              aria-label="Unsaved changes"
-                            />
-                          )}
-                          <Button
-                            size="icon"
-                            aria-label={`Close ${t.path}`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              void close(t);
-                            }}
-                          >
-                            <XIcon size={12} />
-                          </Button>
-                          <Tabs.Indicator />
-                        </Tabs.Tab>
-                      ))}
-                  </Tabs.List>
-                </Tabs.ListContainer>
-                <Tabs.Panel
-                  id={panelMode}
-                  className="workspace-tab-panel flex min-h-0 flex-1 flex-col overflow-hidden"
-                >
-                  <div
-                    hidden={
-                      !["files", "changes", "search", "notes"].includes(
-                        panelMode,
-                      )
+        </div>
+        {project && (
+          <aside
+            id="workspace-panel"
+            className="workbench-side relative flex min-h-0 min-w-0 shrink-0 flex-col bg-canvas"
+            data-open={panelVisible}
+            data-resizing={resizingPanel}
+            aria-label="Workspace"
+            aria-hidden={!panelVisible}
+            inert={!panelVisible}
+            style={
+              { "--workspace-panel-width": `${panelWidth}px` } as CSSProperties
+            }
+          >
+            <div
+              className="layout-resizer absolute inset-y-0 left-0 z-10 w-1 cursor-col-resize touch-none"
+              role="separator"
+              aria-label="Resize workspace"
+              aria-orientation="vertical"
+              aria-valuemin={240}
+              aria-valuemax={900}
+              aria-valuenow={panelWidth}
+              tabIndex={panelVisible ? 0 : -1}
+              onKeyDown={(e) => {
+                if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+                  e.preventDefault();
+                  resizePanel(panelWidth + (e.key === "ArrowLeft" ? 24 : -24));
+                }
+              }}
+              onPointerDown={(e) => {
+                setResizingPanel(true);
+                e.currentTarget.setPointerCapture(e.pointerId);
+                e.currentTarget.dataset.start = String(e.clientX);
+                e.currentTarget.dataset.width = String(panelWidth);
+              }}
+              onPointerMove={(e) => {
+                if (e.currentTarget.hasPointerCapture(e.pointerId))
+                  resizePanel(
+                    Number(e.currentTarget.dataset.width) +
+                      Number(e.currentTarget.dataset.start) -
+                      e.clientX,
+                  );
+              }}
+              onPointerUp={(e) =>
+                e.currentTarget.releasePointerCapture(e.pointerId)
+              }
+              onLostPointerCapture={() => setResizingPanel(false)}
+            />
+            <div className="workbench-side-content flex min-h-0 flex-1 flex-col">
+              {history ? (
+                <ProjectHistory
+                  projectName={data.projectNames?.[project.id] ?? project.name}
+                  sessions={archivedSessions}
+                  titles={peers.titles}
+                  entries={archive.entries}
+                  settings={archive.settings}
+                  onSelect={async (id) => {
+                    try {
+                      await setSessionArchived(id, false);
+                      onSelectSession(id);
+                    } catch (e) {
+                      setError(errorMessage(e));
                     }
-                    className="workspace-browser flex min-h-0 flex-1 flex-col"
-                  >
-                    <WorkspaceTools
-                      visible={
-                        workspaceOpen &&
-                        ["files", "changes", "search", "notes"].includes(
-                          panelMode,
-                        )
-                      }
-                      reviewTurn={reviewTurn}
-                      context={context}
-                      root={root}
-                      mode={mode}
-                      onMode={(value) => {
-                        setMode(value);
-                        setPanelMode(value);
-                      }}
-                      status={status}
-                      revision={revision}
-                      refresh={refresh}
-                      onOpen={open}
-                      onNote={openNote}
-                      data={data}
-                      onData={setData}
-                      models={models}
-                      onClose={() => setWorkspaceOpen(false)}
-                    />
-                  </div>
-                  {Object.values(layouts)
-                    .flatMap((l) => l.tabs)
-                    .filter((t) => t.kind === "terminal")
-                    .map((t) => (
-                      <div
-                        className="terminal-surface h-full min-h-0 overflow-hidden"
-                        key={t.id}
-                        hidden={
-                          panelMode !== t.id ||
-                          t.context.projectId !== project?.id ||
-                          !workspaceOpen
-                        }
-                      >
-                        <Suspense
-                          fallback={
-                            <p className="panel-empty p-3 text-text-disabled">
-                              Loading terminal…
-                            </p>
-                          }
-                        >
-                          <TerminalView
-                            context={t.context}
-                            visible={
-                              panelMode === t.id &&
-                              workspaceOpen &&
-                              t.context.projectId === project?.id
-                            }
-                            tabId={t.id}
-                            onReady={(id) => {
-                              if (id) terminalIds.current.set(t.id, id);
-                              else terminalIds.current.delete(t.id);
-                            }}
-                          />
-                        </Suspense>
-                      </div>
-                    ))}
-                  {panelTab &&
-                    panelMode === panelTab.id &&
-                    workspaceOpen &&
-                    !["session", "draft", "terminal"].includes(panelTab.kind) &&
-                    (panelTab.kind !== "note" || dataLoaded) && (
-                      <DocumentTab
-                        key={panelTab.id}
-                        tab={panelTab}
-                        note={
-                          panelTab.kind === "note"
-                            ? data.notes.find(
-                                (n) => `note:${n.id}` === panelTab.id,
-                              )
-                            : undefined
-                        }
-                        onNote={setNote}
-                        onSaved={(path) => {
-                          const closing =
-                            closeAfterSaveAs.current === panelTab.id;
-                          closeAfterSaveAs.current = null;
-                          if (panelTab.kind === "untitled") remove(panelTab);
-                          if (!closing) open(path);
-                        }}
-                        onAttach={attach}
-                        refresh={refresh}
-                      />
-                    )}
-                </Tabs.Panel>
-              </Tabs>
-              <Button
-                className="workspace-close absolute top-0 right-0"
-                size="icon"
-                aria-label="Close workspace"
-                onClick={() => setWorkspaceOpen(false)}
-              >
-                <XIcon size={16} />
-              </Button>
-            </aside>
-          </>
+                  }}
+                />
+              ) : (
+                <WorkspaceTools
+                  visible={panelVisible}
+                  openPaths={layout.tabs
+                    .filter(
+                      (tab) =>
+                        tab.kind === "file" &&
+                        tab.context.projectId === context.projectId &&
+                        tab.context.sessionId === context.sessionId,
+                    )
+                    .map((tab) => tab.path)}
+                  context={context}
+                  root={root}
+                  mode={mode}
+                  selectedPath={
+                    selected?.kind === "file" ? selected.path : undefined
+                  }
+                  status={status}
+                  revision={revision}
+                  refresh={refresh}
+                  onOpen={open}
+                  onNote={openNote}
+                  data={data}
+                  onData={setData}
+                  models={models}
+                />
+              )}
+            </div>
+          </aside>
         )}
-      </div>
+      </Tabs.Panel>
       {sessionPrefs && project && (
         <SessionPreferences
           projectId={project.id}
@@ -1374,6 +1585,6 @@ export function ProjectWorkbench({
         />
       )}
       {confirm && <ConfirmDialog {...confirm} />}
-    </div>
+    </Tabs>
   );
 }

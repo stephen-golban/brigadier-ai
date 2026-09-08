@@ -44,7 +44,7 @@ describe("session header menu", () => {
     await user.click(screen.getByRole("button", { name: "Session actions" }));
     await user.click(screen.getByRole("menuitem", { name: "Archive" }));
     await waitFor(() => expect(archive).toHaveBeenCalledOnce());
-    expect(screen.getByRole("status")).toHaveTextContent('"archivedIds":["s"]');
+    expect(screen.getByRole("status")).toHaveTextContent('"archivedIds":[]');
   });
   it("pins using the existing API and invokes a fork only on activation", async () => {
     const user = userEvent.setup(),

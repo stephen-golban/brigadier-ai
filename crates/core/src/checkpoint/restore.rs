@@ -18,6 +18,9 @@ fn attributes(file: &File) -> Result<BTreeMap<String, Vec<u8>>> {
     for name in names[..size].split(|b| *b == 0).filter(|b| !b.is_empty()) {
         let name =
             std::str::from_utf8(name).map_err(|_| unavailable("Non-UTF-8 extended attribute"))?;
+        if !restorable_attribute(name) {
+            continue;
+        }
         let mut data = vec![0; 64 * 1024];
         let len = at::fgetxattr(file, name, data.as_mut_slice()).map_err(err)?;
         total += len;

@@ -60,7 +60,13 @@ pub(crate) async fn execute(root: &Path, r: GitAction) -> Result<String, AppErro
         .map_err(|e| AppError::io(e.to_string()))?
 }
 async fn execute_owned(root: &Path, r: GitAction) -> Result<String, AppError> {
-    let _lease = brigadier_core::checkpoint::WorkspaceLease::acquire(root)
+    // Index/ref-only actions can coexist with interactive shells. Replacing working files
+    // still requires exclusive ownership, just like restore and worktree deletion.
+    let concurrent = r.action.starts_with("commit") || matches!(r.action.as_str(),
+        "stage" | "unstage" | "stage_lines" | "unstage_lines" | "amend" | "undo_commit" |
+        "fetch" | "fetch_all" | "fetch_prune" | "push" | "push_to" | "push_tags" | "publish");
+    let _lease = if concurrent { brigadier_core::checkpoint::WorkspaceLease::writer(root) }
+        else { brigadier_core::checkpoint::WorkspaceLease::acquire(root) }
         .map_err(|e| AppError::invalid_argument(e.to_string()))?;
     if let Some(path) = &r.path {
         path_arg(path)?;
@@ -171,24 +177,57 @@ async fn execute_owned(root: &Path, r: GitAction) -> Result<String, AppError> {
             apply(root, patch).await?;
             Vec::new()
         }
-        "commit" | "commit_all" | "amend" => {
+        "commit"
+        | "commit_staged"
+        | "commit_all"
+        | "amend"
+        | "commit_amend"
+        | "commit_staged_amend"
+        | "commit_all_amend"
+        | "commit_signoff"
+        | "commit_staged_signoff"
+        | "commit_all_signoff" => {
             let message = r.message.as_deref().unwrap_or("").trim();
             if message.is_empty() || message.len() > 64000 {
                 return Err(AppError::invalid_argument(
                     "Enter a commit message (up to 64 KiB)",
                 ));
             }
-            if r.action == "commit_all" {
+            if r.action.starts_with("commit_all") {
                 git(root, &["add", "-A", "--", "."]).await?;
             }
             let mut args = vec!["commit", "-m", message];
-            if r.action == "amend" {
+            if r.action == "amend" || r.action.contains("amend") {
                 args.push("--amend");
+            }
+            if r.action.contains("signoff") {
+                args.push("--signoff");
+            }
+            let output = git(root, &args).await?;
+            output
+        }
+        "undo_commit" => git(root, &["reset", "--soft", "HEAD~1"]).await?,
+        "fetch" => git(root, &["fetch"]).await?,
+        "fetch_prune" => git(root, &["fetch", "--prune"]).await?,
+        "fetch_all" => git(root, &["fetch", "--all"]).await?,
+        "pull_rebase" => git(root, &["pull", "--rebase"]).await?,
+        "pull_from" | "push_to" => {
+            let remote = r.reference.as_deref().unwrap_or("");
+            reference(remote)?;
+            let mut args = vec![
+                if r.action == "pull_from" {
+                    "pull"
+                } else {
+                    "push"
+                },
+                remote,
+            ];
+            if let Some(branch) = r.message.as_deref().filter(|s| !s.is_empty()) {
+                reference(branch)?;
+                args.push(branch);
             }
             git(root, &args).await?
         }
-        "undo_commit" => git(root, &["reset", "--soft", "HEAD~1"]).await?,
-        "fetch" => git(root, &["fetch", "--all", "--prune"]).await?,
         "pull" => git(root, &["pull"]).await?,
         "push" => git(root, &["push"]).await?,
         "sync" => {
@@ -219,19 +258,54 @@ async fn execute_owned(root: &Path, r: GitAction) -> Result<String, AppError> {
                 _ => git(root, &["stash", "drop", value]).await?,
             }
         }
-        "stash" => {
+        "stash" | "stash_untracked" | "stash_staged" => {
+            // Stash invokes clean internally. Literal pathspec mode makes that cleanup
+            // retain untracked files even after storing them. This command takes no paths.
+            let mut args = vec!["--no-literal-pathspecs", "stash", "push"];
+            if r.action == "stash_untracked" {
+                args.push("--include-untracked");
+            }
+            if r.action == "stash_staged" {
+                args.push("--staged");
+            }
+            if let Some(message) = r.message.as_deref().filter(|s| !s.is_empty()) {
+                args.extend(["-m", message]);
+            }
+            git(root, &args).await?
+        }
+        "stash_pop_latest" => git(root, &["stash", "pop"]).await?,
+        "stash_apply_latest" => git(root, &["stash", "apply"]).await?,
+        "stash_clear" => git(root, &["stash", "clear"]).await?,
+        "stash_show" => {
+            let value = r.reference.as_deref().unwrap_or("stash@{0}");
+            reference(value)?;
             git(
                 root,
-                &[
-                    "stash",
-                    "push",
-                    "--include-untracked",
-                    "-m",
-                    r.message.as_deref().unwrap_or("Brigadier stash"),
-                ],
+                &["stash", "show", "--patch", "--include-untracked", value],
             )
             .await?
         }
+        "branch_delete" | "branch_rename" | "tag" | "tag_delete" | "remote_remove"
+        | "remote_add" => {
+            let value = r.reference.as_deref().unwrap_or("");
+            reference(value)?;
+            let second = r.message.as_deref().unwrap_or("");
+            match r.action.as_str() {
+                "branch_delete" => git(root, &["branch", "-d", value]).await?,
+                "branch_rename" => git(root, &["branch", "-m", value]).await?,
+                "tag" => {
+                    git(root, &["check-ref-format", &format!("refs/tags/{value}")]).await?;
+                    git(root, &["tag", value]).await?
+                }
+                "tag_delete" => git(root, &["tag", "-d", value]).await?,
+                "remote_remove" => git(root, &["remote", "remove", value]).await?,
+                _ => {
+                    reference(second)?;
+                    git(root, &["remote", "add", value, second]).await?
+                }
+            }
+        }
+        "push_tags" => git(root, &["push", "--tags"]).await?,
         "merge_abort" => git(root, &["merge", "--abort"]).await?,
         "rebase_abort" => git(root, &["rebase", "--abort"]).await?,
         "rebase_continue" => git(root, &["-c", "core.editor=true", "rebase", "--continue"]).await?,
@@ -434,9 +508,13 @@ async fn apply(root: &Path, patch: String) -> Result<(), AppError> {
 #[derive(Serialize)]
 pub(crate) struct GitDetails {
     branches: Vec<String>,
+    #[serde(rename = "localBranches")]
+    local_branches: Vec<String>,
     remotes: Vec<String>,
     history: String,
     stashes: Vec<String>,
+    tags: Vec<String>,
+    rebasing: bool,
 }
 #[tauri::command]
 pub(crate) async fn workspace_git_details(
@@ -452,6 +530,7 @@ pub(crate) async fn workspace_git_details(
             .collect::<Vec<_>>()
     };
     Ok(GitDetails {
+        local_branches: lines(git(&root, &["branch", "--format=%(refname:short)"]).await?),
         branches: lines(git(&root, &["branch", "--all", "--format=%(refname:short)"]).await?),
         remotes: lines(git(&root, &["remote"]).await?),
         history: String::from_utf8_lossy(
@@ -470,7 +549,40 @@ pub(crate) async fn workspace_git_details(
         )
         .into_owned(),
         stashes: lines(git(&root, &["stash", "list"]).await?),
+        tags: lines(git(&root, &["tag", "--list"]).await?),
+        rebasing: {
+            let git_dir = git(&root, &["rev-parse", "--absolute-git-dir"]).await?;
+            let git_dir = std::path::PathBuf::from(String::from_utf8_lossy(&git_dir).trim());
+            git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists()
+        },
     })
+}
+
+#[tauri::command]
+pub(crate) async fn workspace_clone_repository(
+    url: String,
+    destination: String,
+) -> Result<String, AppError> {
+    reference(&url)?;
+    let destination = std::path::PathBuf::from(destination);
+    if !destination.is_absolute() || destination.exists() {
+        return Err(AppError::invalid_argument(
+            "Choose a new folder for the clone",
+        ));
+    }
+    let parent = destination
+        .parent()
+        .ok_or_else(|| AppError::invalid_argument("Choose a parent folder"))?;
+    let parent = parent
+        .canonicalize()
+        .map_err(|e| AppError::io(e.to_string()))?;
+    let name = destination
+        .file_name()
+        .ok_or_else(|| AppError::invalid_argument("Enter a folder name"))?
+        .to_string_lossy();
+    reference(&name)?;
+    git(&parent, &["clone", "--", &url, &name]).await?;
+    Ok(parent.join(name.as_ref()).to_string_lossy().into_owned())
 }
 
 #[cfg(test)]
@@ -504,6 +616,20 @@ mod tests {
         std::fs::write(root.join("file"), text).unwrap();
         git(root, &["add", "--", "file"]).await.unwrap();
         git(root, &["commit", "-m", "seed"]).await.unwrap();
+    }
+    #[tokio::test]
+    async fn open_terminals_allow_stage_and_commit_but_protect_working_files() {
+        let dir = repo().await;
+        let root = dir.path();
+        seed(root, "before").await;
+        let _terminal = brigadier_core::checkpoint::WorkspaceLease::terminal(root).unwrap();
+        std::fs::write(root.join("file"), "after").unwrap();
+        execute(root, action("stage", Some("file"))).await.unwrap();
+        let mut commit = action("commit", None); commit.message = Some("With open terminal".into());
+        execute(root, commit).await.unwrap();
+        std::fs::write(root.join("file"), "uncommitted").unwrap();
+        assert!(execute(root, action("discard", Some("file"))).await.is_err());
+        assert_eq!(std::fs::read_to_string(root.join("file")).unwrap(), "uncommitted");
     }
     #[tokio::test]
     async fn large_changes_can_be_staged_committed_and_pushed() {
@@ -666,5 +792,46 @@ mod tests {
             .unwrap();
         assert!(git(r, &["ls-files"]).await.unwrap().is_empty());
         assert!(r.join(":(glob)*").exists());
+    }
+    #[tokio::test]
+    async fn commit_variants_stash_scopes_and_tags_work_on_real_repositories() {
+        let d = repo().await;
+        let root = d.path();
+        seed(root, "before\n").await;
+        std::fs::write(root.join("file"), "after\n").unwrap();
+        let mut commit = action("commit_all_signoff", None);
+        commit.message = Some("signed change".into());
+        execute(root, commit).await.unwrap();
+        let log = String::from_utf8_lossy(&git(root, &["log", "-1", "--format=%B"]).await.unwrap())
+            .to_string();
+        assert!(log.contains("Signed-off-by: Test <test@example.invalid>"));
+        std::fs::write(root.join("file"), "stash me\n").unwrap();
+        std::fs::write(root.join("untracked"), "keep me\n").unwrap();
+        execute(root, action("stash", None)).await.unwrap();
+        assert!(root.join("untracked").exists());
+        execute(root, action("stash_pop_latest", None))
+            .await
+            .unwrap();
+        execute(root, action("stash_untracked", None))
+            .await
+            .unwrap();
+        assert!(!root.join("untracked").exists());
+        execute(root, action("stash_pop_latest", None))
+            .await
+            .unwrap();
+        assert!(root.join("untracked").exists());
+        let mut tag = action("tag", None);
+        tag.reference = Some("v-test".into());
+        execute(root, tag).await.unwrap();
+        assert!(git(root, &["rev-parse", "refs/tags/v-test"]).await.is_ok());
+        let mut remove = action("tag_delete", None);
+        remove.reference = Some("v-test".into());
+        execute(root, remove).await.unwrap();
+        assert!(git(root, &["rev-parse", "--verify", "refs/tags/v-test"])
+            .await
+            .is_err());
+        assert!(execute(root, action("commit_unsupported", None))
+            .await
+            .is_err());
     }
 }

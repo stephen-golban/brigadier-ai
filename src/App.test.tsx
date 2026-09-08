@@ -345,13 +345,6 @@ async function selectHistory(
     screen.getByRole("navigation", { name: "Projects" }),
   ).getByRole("button", { name: project.name });
   if (row.getAttribute("aria-current") !== "page") await user.click(row);
-  if (!screen.queryByRole("textbox", { name: "Search session history" })) {
-    await user.click(
-      screen.queryByRole("button", { name: "Workspace actions" }) ??
-        screen.getAllByRole("button", { name: "Session actions" })[0],
-    );
-    await user.click(screen.getByRole("menuitem", { name: "Session history" }));
-  }
   await user.click(
     await within(
       screen.getByRole("navigation", { name: "Projects" }),
@@ -620,18 +613,22 @@ describe("deleting", () => {
     ];
     await mountApp();
     await user.click(
-      screen.getByRole("button", { name: "Move session to Trash aaaa1111" }),
+      screen.getByRole("button", { name: "Archive Session aa1111" }),
+    );
+    await user.click(await screen.findByRole("button", { name: "History" }));
+    await user.click(
+      screen.getByRole("button", { name: "Delete, keep files" }),
     );
     expect(h.deletes).toHaveLength(0);
     await user.click(
       within(screen.getByRole("dialog")).getByRole("button", {
-        name: "Move to Trash",
+        name: "Delete",
       }),
     );
     expect(h.deletes).toEqual([]);
     expect(
-      JSON.parse(localStorage.getItem("brigadier:navigation:v1")!).trash[0].id,
-    ).toBe("aaaa1111");
+      JSON.parse(localStorage.getItem("brigadier:session-archive:v1")!).deleted,
+    ).toContain("aaaa1111");
     expect(
       screen.queryByRole("button", { name: /Session aa1111/ }),
     ).not.toBeInTheDocument();
@@ -644,12 +641,16 @@ describe("deleting", () => {
     h.sessions = [view("aaaa1111", "p-live", "exited")];
     await mountApp();
     await user.click(
-      screen.getByRole("button", { name: "Move session to Trash aaaa1111" }),
+      screen.getByRole("button", { name: "Archive Session aa1111" }),
+    );
+    await user.click(await screen.findByRole("button", { name: "History" }));
+    await user.click(
+      screen.getByRole("button", { name: "Delete, keep files" }),
     );
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     expect(h.deletes).toHaveLength(0);
     expect(
-      screen.getAllByRole("button", { name: /^Session aa1111/ })[0],
+      screen.getByRole("button", { name: "Session aa1111" }),
     ).toBeVisible();
   });
   it("removes a project after confirmation, preserving on-disk files", async () => {

@@ -33,10 +33,10 @@ impl Supervisor {
         let snapshots = self.snapshots()?;
         tokio::task::spawn_blocking(move || {
             let original = {
-                let _lease = WorkspaceLease::acquire(&source)?;
+                let _lease = WorkspaceLease::writer(&source)?;
                 snapshots.capture(&source, Coverage::default())?
             };
-            let _lease = WorkspaceLease::acquire(&target)?;
+            let _lease = WorkspaceLease::writer(&target)?;
             let current = snapshots.capture(&target, Coverage::default())?;
             let plan = brigadier_core::checkpoint::plan_apply(
                 &current.files.clone(),
@@ -168,7 +168,7 @@ impl Supervisor {
         self.checkpoint_maintenance().await?;
         let root = self.checkpoint_root(id).await?;
         self.workspace_writable(&root).await?;
-        let lease = WorkspaceLease::acquire(&root).map_err(failure)?;
+        let lease = WorkspaceLease::writer(&root).map_err(failure)?;
         let seq = self.barrier(id).await?;
         let result = async {
             let pre = self.capture_at(root).await?;

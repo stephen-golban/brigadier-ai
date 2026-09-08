@@ -40,6 +40,8 @@ export const desktop = isTauri();
 const example = "# Brigadier\n\nA local workspace for your coding agents.\n";
 // Browser fixtures are visibly marked by the existing application-wide mock indicator.
 export const workspaceApi = {
+  stat: (context: WorkspaceContext, path: string): Promise<{ directory: boolean; size: number; modified: number }> =>
+    desktop ? invoke("workspace_file_stat", { ...context, path }) : Promise.resolve({ directory: !path || path === "src", size: example.length, modified: 1 }),
   entries: (context: WorkspaceContext, path: string): Promise<FileEntry[]> =>
     desktop
       ? invoke("workspace_entries", { ...context, path })
@@ -51,6 +53,18 @@ export const workspaceApi = {
                 { name: "README.md", path: "README.md", directory: false },
               ],
         ),
+  findFiles: (
+    context: WorkspaceContext,
+    query: string,
+  ): Promise<{ paths: string[]; truncated: boolean }> =>
+    desktop
+      ? invoke("workspace_find_files", { ...context, query })
+      : Promise.resolve({
+          paths: ["README.md", "src/App.tsx"].filter((path) =>
+            path.toLowerCase().includes(query.toLowerCase()),
+          ),
+          truncated: false,
+        }),
   file: (context: WorkspaceContext, path: string): Promise<FilePreview> =>
     desktop
       ? invoke("workspace_file", { ...context, path })

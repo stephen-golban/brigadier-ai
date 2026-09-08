@@ -58,6 +58,9 @@ export interface SearchQuery {
   include: string;
   exclude: string;
   replacement: string | null;
+  useIgnoreFiles?: boolean;
+  paths?: string[];
+  includeAll?: string[];
 }
 export interface Replacement {
   path: string;
@@ -66,7 +69,7 @@ export interface Replacement {
   count: number;
 }
 export interface SearchResults {
-  hits: { path: string; line: number; column: number; text: string }[];
+  hits: { path: string; line: number; column: number; endColumn?: number; endLine?: number; text: string }[];
   replacements: Replacement[];
   truncated: boolean;
   files: number;
@@ -81,9 +84,12 @@ export interface GitAction {
 }
 export interface GitDetails {
   branches: string[];
+  localBranches?: string[];
   remotes: string[];
   history: string;
   stashes: string[];
+  tags?: string[];
+  rebasing?: boolean;
 }
 let sample: WorkbenchData = {
   notes: [],
@@ -184,6 +190,8 @@ export const workbenchApi = {
           } else sample.peers = settings ?? { ...defaultPeerSettings };
           return saveSample();
         }),
+  cloneRepository: (url: string, destination: string): Promise<string> =>
+    desktop ? invoke("workspace_clone_repository", { url, destination }) : desktopOnly(),
   gitAction: (c: WorkspaceContext, request: GitAction): Promise<string> =>
     desktop ? invoke("workspace_git_action", { ...c, request }) : desktopOnly(),
   gitDetails: (c: WorkspaceContext): Promise<GitDetails> =>
@@ -205,6 +213,8 @@ export const workbenchApi = {
                   path: "README.md",
                   line: 1,
                   column: 3,
+                  endColumn: 11,
+                  endLine: 1,
                   text: "# Brigadier (sample result)",
                 },
               ]

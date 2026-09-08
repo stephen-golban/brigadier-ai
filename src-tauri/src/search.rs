@@ -6,7 +6,78 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::time::{Duration, Instant};
 use tauri::State;
+#[derive(Serialize)]
+pub(crate) struct FileResults {
+    paths: Vec<String>,
+    truncated: bool,
+}
+
+fn find_files(dir: &Path, query: &str) -> FileResults {
+    find_files_with_limits(dir, query, 100_000, Duration::from_secs(2))
+}
+
+fn find_files_with_limits(
+    dir: &Path,
+    query: &str,
+    max_entries: usize,
+    timeout: Duration,
+) -> FileResults {
+    let deadline = Instant::now() + timeout;
+    let query = query.to_lowercase();
+    let mut result = FileResults {
+        paths: vec![],
+        truncated: false,
+    };
+    for (visited, entry) in ignore::WalkBuilder::new(dir)
+        .hidden(false)
+        .follow_links(false)
+        .filter_entry(|e| e.file_name() != ".git" && e.file_name() != ".brigadier")
+        .build()
+        .enumerate()
+    {
+        if visited >= max_entries || Instant::now() >= deadline {
+            result.truncated = true;
+            break;
+        }
+        let Ok(entry) = entry else { continue };
+        if !entry.file_type().is_some_and(|t| t.is_file()) {
+            continue;
+        }
+        let path = entry
+            .path()
+            .strip_prefix(dir)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        // The relative path includes the filename; no preview or content reads are needed.
+        // An empty query lists all files, subject to the same traversal and result caps.
+        if path.to_lowercase().contains(&query) {
+            result.paths.push(path);
+            if result.paths.len() >= 2000 {
+                result.truncated = true;
+                break;
+            }
+        }
+    }
+    result.paths.sort();
+    result
+}
+
+#[tauri::command]
+pub(crate) async fn workspace_find_files(
+    project_id: String,
+    session_id: Option<String>,
+    query: String,
+    state: State<'_, AppState>,
+) -> Result<FileResults, AppError> {
+    let dir = root(state.inner(), &project_id, session_id.as_deref()).await?;
+    tauri::async_runtime::spawn_blocking(move || find_files(&dir, &query))
+        .await
+        .map_err(|e| AppError::io(e.to_string()))
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Query {
@@ -17,6 +88,12 @@ pub(crate) struct Query {
     pub include: String,
     pub exclude: String,
     pub replacement: Option<String>,
+    #[serde(default)]
+    pub use_ignore_files: Option<bool>,
+    #[serde(default)]
+    pub paths: Option<Vec<String>>,
+    #[serde(default)]
+    pub include_all: Vec<String>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,6 +101,8 @@ pub(crate) struct Hit {
     path: String,
     line: usize,
     column: usize,
+    end_column: usize,
+    end_line: usize,
     text: String,
 }
 #[derive(Serialize, Deserialize)]
@@ -44,15 +123,30 @@ pub(crate) struct Results {
 }
 fn patterns(value: &str) -> Result<globset::GlobSet, AppError> {
     let mut builder = globset::GlobSetBuilder::new();
-    for pattern in value.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-        for pattern in [
-            pattern.to_owned(),
-            format!("**/{pattern}"),
-            format!("{pattern}/**"),
-            format!("**/{pattern}/**"),
-        ] {
+    // Commas inside brace alternatives or character classes belong to the glob.
+    let mut depth = 0usize;
+    let parts = value.split(|c| match c {
+        '{' | '[' => {
+            depth += 1;
+            false
+        }
+        '}' | ']' => {
+            depth = depth.saturating_sub(1);
+            false
+        }
+        ',' => depth == 0,
+        _ => false,
+    });
+    for pattern in parts.map(str::trim).filter(|s| !s.is_empty()) {
+        let mut variants = vec![pattern.to_owned(), format!("{pattern}/**")];
+        if !pattern.contains('/') {
+            variants.extend([format!("**/{pattern}"), format!("**/{pattern}/**")]);
+        }
+        for pattern in variants {
             builder.add(
-                globset::Glob::new(&pattern)
+                globset::GlobBuilder::new(&pattern)
+                    .literal_separator(true)
+                    .build()
                     .map_err(|e| AppError::invalid_argument(e.to_string()))?,
             );
         }
@@ -79,12 +173,18 @@ fn search(dir: &Path, q: &Query) -> Result<Results, AppError> {
     };
     let regex = regex::RegexBuilder::new(&source)
         .case_insensitive(!q.case_sensitive)
+        .multi_line(true)
         .size_limit(2 * 1024 * 1024)
         .build()
         .map_err(|e| {
             AppError::invalid_argument(format!("Unsupported or invalid regular expression: {e}"))
         })?;
     let include = patterns(&q.include)?;
+    let include_all = q
+        .include_all
+        .iter()
+        .map(|value| patterns(value))
+        .collect::<Result<Vec<_>, _>>()?;
     let exclude = patterns(&q.exclude)?;
     let mut result = Results {
         hits: vec![],
@@ -97,6 +197,10 @@ fn search(dir: &Path, q: &Query) -> Result<Results, AppError> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     for entry in ignore::WalkBuilder::new(dir)
         .hidden(false)
+        .git_ignore(q.use_ignore_files.unwrap_or(true))
+        .git_global(q.use_ignore_files.unwrap_or(true))
+        .git_exclude(q.use_ignore_files.unwrap_or(true))
+        .ignore(q.use_ignore_files.unwrap_or(true))
         .follow_links(false)
         .filter_entry(|e| e.file_name() != ".git" && e.file_name() != ".brigadier")
         .build()
@@ -116,6 +220,15 @@ fn search(dir: &Path, q: &Query) -> Result<Results, AppError> {
             .unwrap()
             .to_string_lossy()
             .replace('\\', "/");
+        if include_all
+            .iter()
+            .any(|patterns| !patterns.is_empty() && !patterns.is_match(&path))
+        {
+            continue;
+        }
+        if q.paths.as_ref().is_some_and(|paths| !paths.contains(&path)) {
+            continue;
+        }
         if (!include.is_empty() && !include.is_match(&path)) || exclude.is_match(&path) {
             continue;
         }
@@ -129,19 +242,33 @@ fn search(dir: &Path, q: &Query) -> Result<Results, AppError> {
             continue;
         }
         result.files += 1;
-        for (i, line) in file.content.lines().enumerate() {
-            for found in regex.find_iter(line) {
-                if result.hits.len() >= 2000 {
-                    result.truncated = true;
-                    break;
-                }
-                result.hits.push(Hit {
-                    path: path.clone(),
-                    line: i + 1,
-                    column: line[..found.start()].chars().count() + 1,
-                    text: line.chars().take(1000).collect(),
-                });
+        let line_starts: Vec<usize> = std::iter::once(0)
+            .chain(file.content.match_indices('\n').map(|(i, _)| i + 1))
+            .collect();
+        for found in regex.find_iter(&file.content) {
+            if result.hits.len() >= 2000 {
+                result.truncated = true;
+                break;
             }
+            let line = line_starts.partition_point(|start| *start <= found.start());
+            let line_start = line_starts[line - 1];
+            let end_line = line_starts.partition_point(|start| *start <= found.end());
+            let end_start = line_starts[end_line - 1];
+            let preview_end = file.content[found.end()..]
+                .find('\n')
+                .map(|i| i + found.end())
+                .unwrap_or(file.content.len());
+            result.hits.push(Hit {
+                path: path.clone(),
+                line,
+                column: file.content[line_start..found.start()]
+                    .encode_utf16()
+                    .count()
+                    + 1,
+                end_column: file.content[end_start..found.end()].encode_utf16().count(),
+                end_line,
+                text: file.content[line_start..preview_end].to_owned(),
+            });
         }
         if let Some(replacement) = &q.replacement {
             let after = if q.regex {
@@ -319,31 +446,143 @@ pub(crate) async fn workspace_save(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn find_files_discovers_nested_unopened_files_without_previewing_contents() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("src/unopened/deep")).unwrap();
+        std::fs::write(d.path().join("src/unopened/deep/App.tsx"), "").unwrap();
+        std::fs::write(d.path().join("notes.txt"), "App.tsx").unwrap();
+        // Binary files larger than the content-preview limit are still filename matches.
+        std::fs::write(d.path().join("App.bin"), vec![0; 512 * 1024 + 1]).unwrap();
+
+        let result = find_files(d.path(), "App.");
+        assert_eq!(result.paths, ["App.bin", "src/unopened/deep/App.tsx"]);
+        assert!(!result.truncated);
+        assert!(find_files(d.path(), "missing").paths.is_empty());
+    }
+
+    #[test]
+    fn find_files_matches_case_insensitive_filenames_and_relative_paths() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join("src")).unwrap();
+        std::fs::write(d.path().join("src/App.tsx"), "").unwrap();
+        std::fs::write(d.path().join("README.md"), "").unwrap();
+
+        assert_eq!(find_files(d.path(), "aPP.TSX").paths, ["src/App.tsx"]);
+        assert_eq!(find_files(d.path(), "SRC/aPP").paths, ["src/App.tsx"]);
+        assert_eq!(find_files(d.path(), "readME").paths, ["README.md"]);
+        let result = find_files(d.path(), "");
+        assert_eq!(result.paths, ["README.md", "src/App.tsx"]);
+        assert!(!result.truncated);
+    }
+
+    #[test]
+    fn find_files_respects_ignore_rules_and_skips_internals_but_includes_hidden_files() {
+        let d = tempfile::tempdir().unwrap();
+        for dir in [
+            ".git",
+            ".brigadier",
+            "ignored",
+            "src/.brigadier",
+            "src/.git",
+        ] {
+            std::fs::create_dir_all(d.path().join(dir)).unwrap();
+            std::fs::write(d.path().join(dir).join("needle.txt"), "").unwrap();
+        }
+        std::fs::write(d.path().join(".gitignore"), "ignored/\n*.log\n").unwrap();
+        std::fs::write(d.path().join(".ignore"), "needle.tmp\n").unwrap();
+        std::fs::write(d.path().join("src/.gitignore"), "needle.local\n").unwrap();
+        for path in [
+            "needle.log",
+            "needle.tmp",
+            "src/needle.local",
+            ".needle.txt",
+            "src/needle.txt",
+        ] {
+            std::fs::write(d.path().join(path), "").unwrap();
+        }
+
+        let result = find_files(d.path(), "needle");
+        assert_eq!(result.paths, [".needle.txt", "src/needle.txt"]);
+        assert!(!result.truncated);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn find_files_skips_file_and_directory_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let d = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join("real")).unwrap();
+        std::fs::write(d.path().join("real/needle.txt"), "").unwrap();
+        std::fs::write(outside.path().join("needle.txt"), "").unwrap();
+        symlink("real/needle.txt", d.path().join("needle-link.txt")).unwrap();
+        symlink("real", d.path().join("linked-dir")).unwrap();
+        symlink(outside.path(), d.path().join("outside")).unwrap();
+        symlink(
+            outside.path().join("needle.txt"),
+            d.path().join("needle-outside.txt"),
+        )
+        .unwrap();
+        symlink("missing", d.path().join("needle-dangling.txt")).unwrap();
+        symlink(d.path(), d.path().join("real/loop")).unwrap();
+
+        let result = find_files(d.path(), "needle");
+        assert_eq!(result.paths, ["real/needle.txt"]);
+        assert!(!result.truncated);
+    }
+
+    #[test]
+    fn find_files_caps_results() {
+        let d = tempfile::tempdir().unwrap();
+        for i in 0..2001 {
+            std::fs::write(d.path().join(format!("file-{i}.txt")), "").unwrap();
+        }
+
+        let result = find_files(d.path(), "file-");
+        assert_eq!(result.paths.len(), 2000);
+        assert!(result.truncated);
+    }
+
+    #[test]
+    fn find_files_bounds_traversal_even_without_matches() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("a/b/c")).unwrap();
+
+        let result = find_files_with_limits(d.path(), "missing", 2, Duration::from_secs(2));
+        assert!(result.paths.is_empty());
+        assert!(result.truncated);
+
+        let result = find_files_with_limits(d.path(), "", 100_000, Duration::ZERO);
+        assert!(result.paths.is_empty());
+        assert!(result.truncated);
+    }
+
     #[test]
     fn replacement_rejects_stale_preview_and_preserves_other_files() {
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("a"), "one").unwrap();
         std::fs::write(d.path().join("b"), "edited").unwrap();
-        assert!(
-            replace(
-                d.path(),
-                &[
-                    Replacement {
-                        path: "a".into(),
-                        before: "one".into(),
-                        after: "two".into(),
-                        count: 1
-                    },
-                    Replacement {
-                        path: "b".into(),
-                        before: "one".into(),
-                        after: "two".into(),
-                        count: 1
-                    }
-                ]
-            )
-            .is_err()
-        );
+        assert!(replace(
+            d.path(),
+            &[
+                Replacement {
+                    path: "a".into(),
+                    before: "one".into(),
+                    after: "two".into(),
+                    count: 1
+                },
+                Replacement {
+                    path: "b".into(),
+                    before: "one".into(),
+                    after: "two".into(),
+                    count: 1
+                }
+            ]
+        )
+        .is_err());
         assert_eq!(std::fs::read_to_string(d.path().join("a")).unwrap(), "one");
     }
     #[test]
@@ -360,11 +599,88 @@ mod tests {
             include: "*.ts".into(),
             exclude: "".into(),
             replacement: Some("$literal".into()),
+            paths: None,
+            include_all: vec![],
+            use_ignore_files: None,
         };
         let root = d.path().canonicalize().unwrap();
         let r = search(&root, &q).unwrap();
         assert_eq!(r.hits.len(), 2);
         assert_eq!(r.replacements[0].after, "$literal $literal\n");
         replace(&root, &r.replacements).unwrap();
+    }
+    #[test]
+    fn vscode_search_ranges_use_utf16_and_support_multiline_matches() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("a.txt"), "😀hello\nworld\n").unwrap();
+        let q = Query {
+            text: "hello\nworld".into(),
+            regex: false,
+            case_sensitive: true,
+            whole_word: false,
+            include: String::new(),
+            exclude: String::new(),
+            replacement: None,
+            use_ignore_files: None,
+            paths: None,
+            include_all: vec![],
+        };
+        let result = search(&d.path().canonicalize().unwrap(), &q).unwrap();
+        assert_eq!(result.hits.len(), 1);
+        let hit = &result.hits[0];
+        assert_eq!(
+            (hit.line, hit.column, hit.end_line, hit.end_column),
+            (1, 3, 2, 5)
+        );
+        assert_eq!(hit.text, "😀hello\nworld");
+    }
+    #[test]
+    fn vscode_globs_preserve_brace_alternatives_and_folder_boundaries() {
+        let globs = patterns("src/*.{ts,tsx}, README.md").unwrap();
+        assert!(globs.is_match("src/a.ts"));
+        assert!(globs.is_match("src/a.tsx"));
+        assert!(globs.is_match("docs/README.md"));
+        assert!(!globs.is_match("nested/src/a.ts"));
+        assert!(!globs.is_match("src/nested/a.ts"));
+        assert!(!globs.is_match("src/a.js"));
+    }
+    #[test]
+    fn vscode_ignore_toggle_and_open_file_scope_are_applied() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join(".git")).unwrap();
+        std::fs::write(d.path().join(".gitignore"), "ignored.txt\n").unwrap();
+        std::fs::write(d.path().join("ignored.txt"), "needle").unwrap();
+        std::fs::write(d.path().join("open.txt"), "needle").unwrap();
+        let mut q = Query {
+            text: "needle".into(),
+            regex: false,
+            case_sensitive: false,
+            whole_word: false,
+            include: String::new(),
+            exclude: String::new(),
+            replacement: None,
+            use_ignore_files: Some(true),
+            paths: None,
+            include_all: vec![],
+        };
+        assert_eq!(
+            search(&d.path().canonicalize().unwrap(), &q).unwrap().files,
+            1
+        );
+        q.use_ignore_files = Some(false);
+        assert_eq!(
+            search(&d.path().canonicalize().unwrap(), &q).unwrap().files,
+            2
+        );
+        q.paths = Some(vec!["open.txt".into()]);
+        assert_eq!(
+            search(&d.path().canonicalize().unwrap(), &q).unwrap().files,
+            1
+        );
+        q.paths = Some(vec![]);
+        assert_eq!(
+            search(&d.path().canonicalize().unwrap(), &q).unwrap().files,
+            0
+        );
     }
 }

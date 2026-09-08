@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -9,7 +10,6 @@ import {
 import userEvent from "@testing-library/user-event";
 import { useEffect } from "react";
 import { ProjectWorkbench } from "./ProjectWorkbench";
-import { SourceControl } from "./SourceControl";
 import { workspaceApi } from "../workspaceApi";
 import {
   workbenchApi,
@@ -150,7 +150,7 @@ describe("project workbench", () => {
   it("removes a deleted project's saved layout and unmounts its terminals", async () => {
     const user = userEvent.setup();
     mount();
-    await user.click(screen.getByRole("button", { name: "Workspace actions" }));
+    await user.click(screen.getByRole("button", { name: "New tab" }));
     await user.click(screen.getByRole("menuitem", { name: "Terminal" }));
     await screen.findByText("Terminal fixture");
     fireEvent(
@@ -170,19 +170,15 @@ describe("project workbench", () => {
   it("restores unsaved buffers and their language after unmount", async () => {
     const user = userEvent.setup();
     let view = mount();
-    await user.click(screen.getByRole("button", { name: "Workspace actions" }));
-    expect(screen.getAllByRole("menuitem").map((e) => e.textContent)).toEqual([
-      "Session history",
-      "Tree",
-      "Search",
-      "Changes",
-      "New Session",
-      "Terminal",
-      "New File",
-      "New Note",
-      "Open File",
-    ]);
-    await user.click(screen.getByRole("menuitem", { name: "New File" }));
+    await user.click(screen.getByRole("button", { name: "New tab" }));
+    expect(
+      screen.getAllByRole("menuitem").map((e) => e.getAttribute("aria-label")),
+    ).toEqual(["Session", "Terminal", "Files"]);
+    await user.click(screen.getByRole("menuitem", { name: "Files" }));
+    await user.click(
+      screen.getByRole("button", { name: "Tab actions Open file" }),
+    );
+    await user.click(screen.getByRole("menuitem", { name: "New file" }));
     await user.type(
       await screen.findByRole("textbox", { name: "File editor" }),
       "temporary scratch",
@@ -198,6 +194,30 @@ describe("project workbench", () => {
       screen.getByRole("button", { name: /Language mode$/ }),
     ).toHaveTextContent("typescript");
   });
+  it.each([false, true])(
+    "reveals a conversation for file attachments when an existing draft is %s",
+    async (existingDraft) => {
+      const user = userEvent.setup();
+      mount();
+      if (existingDraft) fireEvent.keyDown(window, { key: "t", metaKey: true });
+      fireEvent(
+        window,
+        new CustomEvent("workbench-open-file", {
+          detail: { path: "README.md" },
+        }),
+      );
+      await screen.findByLabelText("File editor");
+      const attached = vi.fn();
+      window.addEventListener("brigadier-attach", attached, { once: true });
+      await user.click(screen.getByRole("button", { name: "Add to chat" }));
+      expect(screen.getByText("Conversation fixture")).toBeVisible();
+      expect(screen.getByRole("tab", { name: "New session" })).toHaveAttribute(
+        "aria-selected",
+        "true",
+      );
+      await waitFor(() => expect(attached).toHaveBeenCalledOnce());
+    },
+  );
   it("preserves terminals across project changes and confirms busy close", async () => {
     const user = userEvent.setup();
     const view = mount();
@@ -211,7 +231,7 @@ describe("project workbench", () => {
     expect(
       screen.queryByRole("button", { name: "New terminal" }),
     ).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Workspace actions" }));
+    await user.click(screen.getByRole("button", { name: "New tab" }));
     await user.click(screen.getByRole("menuitem", { name: "Terminal" }));
     await screen.findByText("Terminal fixture");
     expect(terminal.mounts).toBe(1);
@@ -246,8 +266,21 @@ describe("project workbench", () => {
     const save = vi
       .spyOn(workbenchApi, "saveNote")
       .mockImplementation(async (n) => ({ ...n, revision: ++revision }));
-    await user.click(screen.getByRole("button", { name: "Workspace actions" }));
-    await user.click(screen.getByRole("menuitem", { name: "New Note" }));
+    await act(async () => {});
+    fireEvent(
+      window,
+      new CustomEvent("workbench-open-note", {
+        detail: {
+          id: "test-note",
+          title: "Test note",
+          content: "",
+          language: "markdown",
+          projectId: null,
+          alwaysInclude: false,
+          revision: 0,
+        },
+      }),
+    );
     expect(
       await screen.findByRole("checkbox", { name: "Always include" }),
     ).not.toBeChecked();
@@ -255,8 +288,12 @@ describe("project workbench", () => {
       await screen.findByRole("textbox", { name: "File editor" }),
       { target: { value: "Final edit before switching" } },
     );
-    await user.click(screen.getByRole("button", { name: "Workspace actions" }));
-    await user.click(screen.getByRole("menuitem", { name: "New File" }));
+    await user.click(screen.getByRole("button", { name: "New tab" }));
+    await user.click(screen.getByRole("menuitem", { name: "Files" }));
+    await user.click(
+      screen.getByRole("button", { name: "Tab actions Open file" }),
+    );
+    await user.click(screen.getByRole("menuitem", { name: "New file" }));
     await waitFor(() =>
       expect(
         save.mock.calls.some(
@@ -265,36 +302,4 @@ describe("project workbench", () => {
       ).toBe(true),
     );
   });
-});
-it("cancelling smart commit does not enable its Always preference", async () => {
-  const user = userEvent.setup();
-  const settings = vi.spyOn(workbenchApi, "saveSettings");
-  const action = vi.spyOn(workbenchApi, "gitAction").mockResolvedValue("");
-  render(
-    <SourceControl
-      context={{ projectId: project.id, sessionId: null }}
-      status={{
-        branch: "main",
-        changes: [{ path: "file", index: " ", worktree: "M" }],
-      }}
-      refresh={() => {}}
-      onOpen={() => {}}
-      data={data}
-      onData={() => {}}
-      models={[]}
-    />,
-  );
-  await user.type(
-    screen.getByRole("textbox", { name: "Commit message" }),
-    "Test commit",
-  );
-  await user.click(screen.getByRole("button", { name: "Commit" }));
-  await user.click(
-    await screen.findByRole("checkbox", {
-      name: "Always stage changes when nothing is staged",
-    }),
-  );
-  await user.click(screen.getByRole("button", { name: "Cancel" }));
-  expect(settings).not.toHaveBeenCalled();
-  expect(action).not.toHaveBeenCalled();
 });

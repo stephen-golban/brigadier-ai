@@ -296,6 +296,7 @@ function Item({
   onAction,
   checked: _checked,
   nativeIcon: _nativeIcon,
+  accelerator: _accelerator,
   isDisabled,
   textValue,
   variant,
@@ -306,6 +307,7 @@ function Item({
   onAction?: () => void;
   checked?: boolean;
   nativeIcon?: ReactElement;
+  accelerator?: string;
   textValue?: string;
 }) {
   const state = useContext(State);
@@ -413,6 +415,7 @@ function nativeEntries(nodes: ReactNode): NativeMenuEntry[] | null {
         enabled: !(item.props.isDisabled || item.props.disabled),
         checked: item.props.checked,
         icon: item.props.nativeIcon,
+        accelerator: item.props.accelerator,
         action: item.props.onAction,
       });
     } else {

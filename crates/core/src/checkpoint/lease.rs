@@ -22,16 +22,32 @@ pub struct WorkspaceLease {
     identity: String,
     ancestors: Vec<String>,
 }
+#[derive(Clone, Copy, PartialEq)]
+enum Mode {
+    Exclusive,
+    Writer,
+    Terminal,
+}
 impl WorkspaceLease {
     /// Refuse overlapping ancestor, descendant, or identical writers in any app process.
     pub fn acquire(root: &Path) -> Result<Self> {
-        Self::open(root, None)
+        Self::open(root, None, Mode::Exclusive)
     }
     /// Reacquire a blocked workspace for its exact recovery operation only.
     pub fn recover(root: &Path, operation: &str) -> Result<Self> {
-        Self::open(root, Some(operation))
+        Self::open(root, Some(operation), Mode::Exclusive)
     }
-    fn open(root: &Path, recovery: Option<&str>) -> Result<Self> {
+    /// Serialize app-owned writers while allowing the user's interactive shells to remain open.
+    /// Shell edits are external activity; capture still validates the files it reads.
+    pub fn writer(root: &Path) -> Result<Self> {
+        Self::open(root, None, Mode::Writer)
+    }
+    /// Protect a shell from destructive restore/removal, without blocking ordinary AI turns.
+    /// The terminal registry shares this lease for shells at the same canonical root.
+    pub fn terminal(root: &Path) -> Result<Self> {
+        Self::open(root, None, Mode::Terminal)
+    }
+    fn open(root: &Path, recovery: Option<&str>, mode: Mode) -> Result<Self> {
         let root = fs::canonicalize(root)?;
         if !root.is_dir() {
             return Err(unavailable("Workspace is not a directory"));
@@ -85,28 +101,47 @@ impl WorkspaceLease {
             identity,
             ancestors,
         };
-        // Shared ancestors allow siblings; exclusive root excludes both directions of
-        // nesting. Each descriptor is independently opened and guarded immediately.
+        // Writer locks retain the existing ancestor/descendant exclusion between AI turns.
+        // Two separate terminal gates distinguish a shell rooted at an ancestor from a shell
+        // below us. Destructive operations conflict in both directions; siblings remain free.
         for (i, key) in lease.ancestors.iter().enumerate().rev() {
-            let mut options = OpenOptions::new();
-            options.read(true).write(true).create(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600).custom_flags(nix::libc::O_NOFOLLOW);
-            }
-            let file = options.open(dir.join(key.replace(':', "-")))?;
-            let locked = if i == 0 {
-                file.try_lock()
-            } else {
-                file.try_lock_shared()
+            let key = key.replace(':', "-");
+            let mut take = |name: String, exclusive: bool| -> Result<()> {
+                let mut options = OpenOptions::new();
+                options.read(true).write(true).create(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    options.mode(0o600).custom_flags(nix::libc::O_NOFOLLOW);
+                }
+                let file = options.open(dir.join(name))?;
+                let locked = if exclusive {
+                    file.try_lock()
+                } else {
+                    file.try_lock_shared()
+                };
+                locked.map_err(|e| unavailable(format!("Workspace overlaps another running turn, terminal, or restore operation: {e}")))?;
+                lease.files.push(file);
+                Ok(())
             };
-            locked.map_err(|e| {
-                unavailable(format!(
-                    "Workspace overlaps another running turn, terminal, or restore operation: {e}"
-                ))
-            })?;
-            lease.files.push(file);
+            if mode != Mode::Terminal {
+                take(key.clone(), i == 0)?;
+            }
+            match mode {
+                Mode::Exclusive => {
+                    take(format!("terminal-root-{key}"), false)?;
+                    if i == 0 {
+                        take(format!("terminal-desc-{key}"), true)?;
+                    }
+                }
+                Mode::Terminal => {
+                    take(format!("terminal-desc-{key}"), false)?;
+                    if i == 0 {
+                        take(format!("terminal-root-{key}"), true)?;
+                    }
+                }
+                Mode::Writer => {}
+            }
         }
         // Durable blockers outlive their OS locks. Publishing a marker requires the same
         // hierarchy lease, so an overlapping writer cannot race this scan.

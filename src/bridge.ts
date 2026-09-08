@@ -53,6 +53,7 @@ export interface StartSessionArgs {
   permissionMode: PermissionMode;
   options?: AgentOptions;
   isolated?: boolean;
+  baseBranch?: string;
 }
 
 export interface BurnArgs {
@@ -99,12 +100,19 @@ export interface Bridge {
   resumeSession(sessionId: SessionId): Promise<SessionView>;
   forkSession(sessionId: SessionId): Promise<SessionView>;
   sendTurn(sessionId: SessionId, text: string): Promise<{ turn_id: string }>;
-  respond(sessionId: SessionId, requestId: RequestId, decision: Decision): Promise<void>;
+  respond(
+    sessionId: SessionId,
+    requestId: RequestId,
+    decision: Decision,
+  ): Promise<void>;
   interrupt(sessionId: SessionId): Promise<void>;
   endSession(sessionId: SessionId): Promise<void>;
   kill(sessionId: SessionId): Promise<void>;
   /** Remove a session's git worktree. `force: false` asks; a dirty tree comes back untouched. */
-  cleanupWorktree(sessionId: SessionId, force: boolean): Promise<WorktreeCleanup>;
+  cleanupWorktree(
+    sessionId: SessionId,
+    force: boolean,
+  ): Promise<WorktreeCleanup>;
 
   /**
    * Remove the session itself: its rows, its raw logs, its pid file and its worktree — four
@@ -211,7 +219,8 @@ const tauriBridge: Bridge = {
     await call<void>("subscribe_feed", { onBatch: channel });
   },
 
-  setVisibleProjects: (projectIds) => call<void>("set_visible_projects", { projectIds }),
+  setVisibleProjects: (projectIds) =>
+    call<void>("set_visible_projects", { projectIds }),
 
   appInfo: () => call<AppInfo>("app_info"),
   probeClaude: () => call<ClaudeStatus>("probe_claude"),
@@ -243,11 +252,29 @@ const tauriBridge: Bridge = {
   },
 
   listSessions: () => call<SessionView[]>("list_sessions"),
-  startSession: ({ projectId, prompt, model, permissionMode, options, isolated }) =>
-    call<SessionView>("start_session", { projectId, prompt, model, permissionMode, options, isolated }),
-  resumeSession: (sessionId) => call<SessionView>("resume_session", { sessionId }),
+  startSession: ({
+    projectId,
+    prompt,
+    model,
+    permissionMode,
+    options,
+    isolated,
+    baseBranch,
+  }) =>
+    call<SessionView>("start_session", {
+      projectId,
+      prompt,
+      model,
+      permissionMode,
+      options,
+      isolated,
+      baseBranch,
+    }),
+  resumeSession: (sessionId) =>
+    call<SessionView>("resume_session", { sessionId }),
   forkSession: (sessionId) => call<SessionView>("fork_session", { sessionId }),
-  sendTurn: (sessionId, text) => call<{ turn_id: string }>("send_turn", { sessionId, text }),
+  sendTurn: (sessionId, text) =>
+    call<{ turn_id: string }>("send_turn", { sessionId, text }),
   respond: (sessionId, requestId, decision) =>
     call<void>("respond", { sessionId, requestId, decision }),
   interrupt: (sessionId) => call<void>("interrupt", { sessionId }),
@@ -260,7 +287,8 @@ const tauriBridge: Bridge = {
   deleteProject: (projectId, force) =>
     call<ProjectDeletion>("delete_project", { projectId, force }),
 
-  feedTail: (sessionId, n) => call<FeedRowWire[]>("feed_tail", { sessionId, n }),
+  feedTail: (sessionId, n) =>
+    call<FeedRowWire[]>("feed_tail", { sessionId, n }),
   pendingApprovals: () => call<ApprovalView[]>("pending_approvals"),
 
   // `model: null` and `permissionMode: null` are `None` on the Rust side, which is what "no pick"
@@ -270,7 +298,8 @@ const tauriBridge: Bridge = {
   currentRun: (projectId) => call<RunView | null>("current_run", { projectId }),
   stopRun: (planId) => call<void>("stop_run", { planId }),
   unsettledIntents: () => call<IntentView[]>("unsettled_intents"),
-  settleIntent: (intentId, state) => call<void>("settle_intent", { intentId, state }),
+  settleIntent: (intentId, state) =>
+    call<void>("settle_intent", { intentId, state }),
 
   recordFrameStats: (stats) => call<void>("record_frame_stats", { stats }),
   reportPaint: (report) => call<void>("report_paint", { report }),
