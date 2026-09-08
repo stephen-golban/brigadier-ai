@@ -655,7 +655,7 @@ impl Supervisor {
 
     /// Select a local base branch without changing the project's checkout.
     pub async fn start_project_session_from(
-        &self, project_id: &str, kind: &DriverKind, mut req: StartSession, isolated: bool,
+        &self, project_id: &str, kind: &DriverKind, req: StartSession, isolated: bool,
         base_branch: Option<String>,
     ) -> Result<SessionId, SupervisorError> {
         let (base, inherit) = if let Some(branch) = base_branch {
@@ -663,6 +663,21 @@ impl Supervisor {
             let project = self.project(project_id).await?.ok_or(SupervisorError::NoSuchProject)?;
             worktree::session_base(&project.root_path, &branch).await?
         } else { (None, true) };
+        self.start_project_session_prepared(project_id, kind, req, isolated, base, inherit).await
+    }
+
+    /// Peer work starts from committed HEAD. Copying the parent checkout would require a
+    /// writer lease on an ancestor of the calling session's running worktree.
+    pub async fn start_peer_session(
+        &self, project_id: &str, kind: &DriverKind, req: StartSession, isolated: bool,
+    ) -> Result<SessionId, SupervisorError> {
+        self.start_project_session_prepared(project_id, kind, req, isolated, None, false).await
+    }
+
+    async fn start_project_session_prepared(
+        &self, project_id: &str, kind: &DriverKind, mut req: StartSession, isolated: bool,
+        base: Option<String>, inherit: bool,
+    ) -> Result<SessionId, SupervisorError> {
         let prompt = req.prompt.take();
         if isolated {
             let id = self

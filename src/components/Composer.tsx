@@ -655,7 +655,7 @@ export function Composer({
             size="icon"
             className="rounded-full"
             variant="primary"
-            aria-label={editing ? "Send edited message" : "send this turn"}
+            aria-label={sending ? "Preparing message" : editing ? "Send edited message" : "send this turn"}
             disabled={
               !live ||
               busy ||
@@ -665,7 +665,7 @@ export function Composer({
             }
             onClick={send}
           >
-            <SendIcon />
+            {sending ? <span role="status" className="animate-pulse">…</span> : <SendIcon />}
           </Button>
         </PromptInputActions>
       </PromptInput>

@@ -58,7 +58,7 @@ fn tools() -> Value {
         ),
         (
             "create_session",
-            "Create a visible session for a concrete task. Defaults to your project and an isolated worktree. Use list_projects for another project ID.",
+            "Create a visible session for a concrete task. Defaults to your project and an isolated worktree from committed HEAD; uncommitted files are not copied. Keep isolation enabled for parallel work. Use list_projects for another project ID.",
             json!({"prompt":{"type":"string"},"title":{"type":"string"},"model":{"type":"string"},"isolated":{"type":"boolean","default":true},"projectId":{"type":"string"}}),
             vec!["prompt"],
         ),
