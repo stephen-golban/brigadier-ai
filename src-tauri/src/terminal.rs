@@ -87,7 +87,17 @@ fn error(e: impl std::fmt::Display) -> AppError {
     AppError::io(e.to_string())
 }
 
+#[cfg(test)]
 fn spawn(root: std::path::PathBuf, cols: u16, rows: u16) -> Result<String, AppError> {
+    spawn_profile(root.clone(), root, cols, rows, None)
+}
+fn spawn_profile(
+    root: std::path::PathBuf,
+    cwd: std::path::PathBuf,
+    cols: u16,
+    rows: u16,
+    shell: Option<String>,
+) -> Result<String, AppError> {
     let root = std::fs::canonicalize(root).map_err(error)?;
     let mut registry = lock();
     if registry.len() >= 12 {
@@ -109,10 +119,10 @@ fn spawn(root: std::path::PathBuf, cols: u16, rows: u16) -> Result<String, AppEr
     let pair = native_pty_system()
         .openpty(size(cols, rows))
         .map_err(error)?;
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_owned());
+    let shell = shell.unwrap_or_else(default_shell);
     let mut command = CommandBuilder::new(shell);
     command.arg("-l");
-    command.cwd(&root);
+    command.cwd(&cwd);
     command.env("TERM", "xterm-256color");
     let mut reader = pair.master.try_clone_reader().map_err(error)?;
     let writer = pair.master.take_writer().map_err(error)?;
@@ -164,6 +174,72 @@ fn spawn(root: std::path::PathBuf, cols: u16, rows: u16) -> Result<String, AppEr
     Ok(id)
 }
 
+fn default_shell() -> String {
+    std::env::var("SHELL")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "/bin/zsh".to_owned())
+}
+#[derive(Serialize)]
+pub(crate) struct ShellProfile {
+    path: String,
+    name: String,
+    default: bool,
+}
+#[tauri::command]
+pub(crate) fn terminal_profiles() -> Vec<ShellProfile> {
+    let default = default_shell();
+    let configured = std::fs::read_to_string("/etc/shells").unwrap_or_default();
+    let mut paths = vec![default.clone()];
+    paths.extend(
+        configured
+            .lines()
+            .filter(|line| line.starts_with('/'))
+            .map(str::to_owned),
+    );
+    paths.extend(
+        [
+            "/opt/homebrew/bin/fish",
+            "/opt/homebrew/bin/zsh",
+            "/opt/homebrew/bin/bash",
+            "/usr/local/bin/fish",
+            "/usr/local/bin/zsh",
+            "/usr/local/bin/bash",
+        ]
+        .map(str::to_owned),
+    );
+    let mut seen = std::collections::HashSet::new();
+    paths
+        .into_iter()
+        .filter(|path| {
+            if !seen.insert(path.clone()) {
+                return false;
+            }
+            let Ok(metadata) = std::fs::metadata(path) else {
+                return false;
+            };
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+            }
+            #[cfg(not(unix))]
+            {
+                metadata.is_file()
+            }
+        })
+        .map(|path| ShellProfile {
+            name: std::path::Path::new(&path)
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+            default: path == default,
+            path,
+        })
+        .collect()
+}
+
 #[tauri::command]
 pub(crate) async fn terminal_open(
     project_id: String,
@@ -171,18 +247,31 @@ pub(crate) async fn terminal_open(
     cols: u16,
     rows: u16,
     cwd: Option<String>,
+    shell: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<String, AppError> {
     let _lifecycle = crate::peers::LIFECYCLE.lock().await;
     let root = crate::workspace::root(state.inner(), &project_id, session_id.as_deref()).await?;
     state.get()?.supervisor.workspace_writable(&root).await?;
-    if cwd
-        .as_deref()
-        .is_some_and(|p| std::path::Path::new(p) != root)
-    {
+    let cwd = match cwd {
+        Some(path) => std::fs::canonicalize(path).unwrap_or_else(|_| root.clone()),
+        None => root.clone(),
+    };
+    let root = std::fs::canonicalize(root).map_err(error)?;
+    if !cwd.starts_with(&root) {
         return Err(AppError::invalid_argument(
-            "Open the terminal at its workspace root so writer ownership can be tracked",
+            "The terminal directory must be inside its session workspace",
         ));
+    }
+    if let Some(path) = &shell {
+        if !terminal_profiles()
+            .iter()
+            .any(|profile| &profile.path == path)
+        {
+            return Err(AppError::invalid_argument(
+                "Select an installed shell from Terminal Profiles",
+            ));
+        }
     }
     if let Some(id) = &session_id {
         state
@@ -190,9 +279,10 @@ pub(crate) async fn terminal_open(
             .supervisor
             .require_session_available(&brigadier_core::event::SessionId::new(id))?;
     }
-    let id = tauri::async_runtime::spawn_blocking(move || spawn(root, cols, rows))
-        .await
-        .map_err(error)??;
+    let id =
+        tauri::async_runtime::spawn_blocking(move || spawn_profile(root, cwd, cols, rows, shell))
+            .await
+            .map_err(error)??;
     if let Some(terminal) = lock().get_mut(&id) {
         terminal.session_id = session_id;
     }
@@ -311,6 +401,58 @@ pub(crate) async fn terminal_info(id: String) -> Result<TerminalInfo, AppError> 
 mod tests {
     use super::*;
     #[tokio::test]
+    async fn selected_shell_starts_in_split_directory_and_archive_closes_only_its_owner() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = root.path().join("nested");
+        std::fs::create_dir(&cwd).unwrap();
+        let first = spawn_profile(
+            root.path().to_path_buf(),
+            cwd.clone(),
+            80,
+            24,
+            Some("/bin/bash".into()),
+        )
+        .unwrap();
+        let second = spawn(root.path().to_path_buf(), 80, 24).unwrap();
+        lock().get_mut(&first).unwrap().session_id = Some("archive-terminal-test".into());
+        lock().get_mut(&second).unwrap().session_id = Some("keep-terminal-test".into());
+        terminal_write(
+            first.clone(),
+            "printf 'SHELL_%s\\n' \"$BASH_VERSION\"; pwd\n".into(),
+        )
+        .await
+        .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut bytes = Vec::new();
+        loop {
+            bytes.extend(terminal_read(first.clone()).unwrap().data);
+            let output = String::from_utf8_lossy(&bytes);
+            if output.contains(cwd.to_str().unwrap())
+                && output.lines().any(|line| {
+                    line.starts_with("SHELL_")
+                        && line.chars().nth(6).is_some_and(|c| c.is_ascii_digit())
+                })
+            {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "{output}");
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        close_sessions(&["archive-terminal-test".into()]);
+        assert!(terminal_read(first).is_err());
+        assert!(terminal_read(second.clone()).is_ok());
+        terminal_close(second);
+    }
+    #[test]
+    fn profiles_include_only_installed_executables_and_identify_the_default() {
+        let profiles = terminal_profiles();
+        assert!(profiles.iter().any(|p| p.path == "/bin/bash"));
+        assert_eq!(profiles.iter().filter(|p| p.default).count(), 1);
+        assert!(profiles
+            .iter()
+            .all(|p| std::path::Path::new(&p.path).is_file()));
+    }
+    #[tokio::test]
     async fn terminals_share_workspace_until_last_shell_exits() {
         struct Shells(Vec<String>);
         impl Drop for Shells {
@@ -329,7 +471,10 @@ mod tests {
         assert_ne!(first, second);
         {
             let registry = lock();
-            assert!(Weak::ptr_eq(&registry[&first].lease, &registry[&second].lease));
+            assert!(Weak::ptr_eq(
+                &registry[&first].lease,
+                &registry[&second].lease
+            ));
         }
         for (id, marker) in [(&first, "FIRST"), (&second, "SECOND")] {
             terminal_write(id.clone(), format!("printf '{marker}_%s\\n' READY\n"))
@@ -347,7 +492,10 @@ mod tests {
             {
                 break;
             }
-            assert!(std::time::Instant::now() < deadline, "shells did not respond independently");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "shells did not respond independently"
+            );
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         assert!(!String::from_utf8_lossy(&first_output).contains("SECOND_READY"));
@@ -368,7 +516,9 @@ mod tests {
             assert!(std::time::Instant::now() < deadline);
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-        terminal_write(second.clone(), "exit\n".into()).await.unwrap();
+        terminal_write(second.clone(), "exit\n".into())
+            .await
+            .unwrap();
         while !terminal_read(second.clone()).unwrap().exited {
             assert!(std::time::Instant::now() < deadline);
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;

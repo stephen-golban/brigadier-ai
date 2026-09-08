@@ -98,12 +98,14 @@ export const workspaceApi = {
     cols: number,
     rows: number,
     cwd?: string,
+    shell?: string,
   ): Promise<string> =>
     desktop
-      ? invoke("terminal_open", { ...context, cols, rows, cwd })
+      ? invoke("terminal_open", { ...context, cols, rows, cwd, shell })
       : Promise.reject(
           new Error("Interactive terminals are available in the desktop app."),
         ),
+  terminalProfiles: (): Promise<{ path: string; name: string; default: boolean }[]> => desktop ? invoke("terminal_profiles") : Promise.resolve([]),
   readTerminal: (
     id: string,
   ): Promise<{ data: number[]; exited: boolean; dropped: number; busy:boolean }> =>

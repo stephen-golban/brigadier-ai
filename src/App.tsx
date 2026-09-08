@@ -334,6 +334,19 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
           listen("native-new-terminal", () =>
             window.dispatchEvent(new Event("workbench-new-terminal")),
           ),
+          listen<string>("native-session-action", (event) =>
+            window.dispatchEvent(
+              new CustomEvent("workbench-session-action", {
+                detail: event.payload,
+              }),
+            ),
+          ),
+          listen("native-toggle-terminal", () =>
+            window.dispatchEvent(new Event("workbench-terminal-toggle")),
+          ),
+          listen("native-split-terminal", () =>
+            window.dispatchEvent(new Event("workbench-terminal-split")),
+          ),
           listen("native-new-files", () =>
             window.dispatchEvent(new Event("workbench-new-files")),
           ),
@@ -694,8 +707,8 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
    * `feed_tail` prefill above and the old history re-renders under the new child
    * (`docs/plans/ipc-contract.md` §resume_session).
    */
-  const forkSession = async (sessionId: SessionId) => {
-    const view = await bridge().forkSession(sessionId);
+  const forkSession = async (sessionId: SessionId, newWorktree: boolean) => {
+    const view = await bridge().forkSession(sessionId, newWorktree);
     store.seedSessions([view]);
     try {
       renameSession(
@@ -960,15 +973,14 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
         onSelectProject={(id) => {
           setSelectedProjectId(id);
           try {
-            const layout = JSON.parse(
-              localStorage.getItem("brigadier:project-tabs:v1") ?? "{}",
+            const last = JSON.parse(
+              localStorage.getItem("brigadier:last-project-session") ?? "{}",
             )[id];
-            const tab = layout?.tabs.find(
-              (t: { id: string }) => t.id === layout.active,
-            );
             setSelectedSessionId(
-              tab?.kind === "session" && !readArchive().entries[tab.path]
-                ? tab.path
+              last &&
+                !readArchive().entries[last] &&
+                store.getState().sessions[last]
+                ? last
                 : null,
             );
           } catch {

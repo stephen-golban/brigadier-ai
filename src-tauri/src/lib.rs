@@ -211,6 +211,7 @@ pub fn run() {
             workspace::workspace_diff,
             terminal::terminal_info,
             terminal::terminal_open,
+            terminal::terminal_profiles,
             terminal::terminal_read,
             terminal::terminal_write,
             terminal::terminal_resize,

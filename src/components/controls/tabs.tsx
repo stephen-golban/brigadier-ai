@@ -68,7 +68,7 @@ function Tab({
       role="tab"
       aria-selected={selected}
       aria-controls={`${state.id}-panel-${id}`}
-      tabIndex={selected ? 0 : -1}
+      tabIndex={props.tabIndex ?? (selected ? 0 : -1)}
       className={`tabs__tab flex h-8 cursor-default items-center gap-2 rounded-md px-3 text-[13px] hover:bg-hover ${selected ? "bg-selected" : ""} ${props.className ?? ""}`}
       onClick={() => state.select(id)}
       onFocus={(event) => {

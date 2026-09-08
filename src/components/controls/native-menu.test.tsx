@@ -4,13 +4,18 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 const host = vi.hoisted(() => ({
   enabled: true,
   create: vi.fn(),
+  submenu: vi.fn(),
+  submenuClose: vi.fn(),
   popup: vi.fn(),
   close: vi.fn(),
   image: vi.fn(),
   imageClose: vi.fn(),
 }));
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => host.enabled }));
-vi.mock("@tauri-apps/api/menu", () => ({ Menu: { new: host.create } }));
+vi.mock("@tauri-apps/api/menu", () => ({
+  Menu: { new: host.create },
+  Submenu: { new: host.submenu },
+}));
 vi.mock("./native-menu-image", () => ({ nativeMenuImage: host.image }));
 import { Dropdown, Label, Separator } from "./overlay";
 import { DropdownContent } from "./menu";
@@ -18,6 +23,10 @@ import { Button } from "./button";
 
 beforeEach(() => {
   host.enabled = true;
+  host.submenuClose.mockReset().mockResolvedValue(undefined);
+  host.submenu
+    .mockReset()
+    .mockResolvedValue({ rid: 11, kind: "Submenu", close: host.submenuClose });
   host.image.mockReset().mockResolvedValue({ rid: 9, close: host.imageClose });
   host.imageClose.mockReset().mockResolvedValue(undefined);
   host.create
@@ -166,5 +175,48 @@ it("passes shortcut accelerators alongside icons without adding key labels to na
     text: "Terminal",
     accelerator: "CmdOrCtrl+J",
     icon: { rid: 9 },
+  });
+});
+
+// The session Fork submenu must retain its own icon as well as each action's icon.
+it("preserves submenu icons and accelerators in native options", async () => {
+  render(
+    <Dropdown native>
+      <Button>Session actions</Button>
+      <DropdownContent>
+        <Dropdown.Item
+          textValue="Rename"
+          nativeIcon={<svg />}
+          accelerator="CmdOrCtrl+Alt+R"
+        >
+          Rename
+        </Dropdown.Item>
+        <Dropdown.SubmenuTrigger>
+          <Dropdown.Item textValue="Fork" nativeIcon={<svg />}>
+            Fork
+          </Dropdown.Item>
+          <DropdownContent>
+            <Dropdown.Item nativeIcon={<svg />}>Fork session</Dropdown.Item>
+          </DropdownContent>
+        </Dropdown.SubmenuTrigger>
+      </DropdownContent>
+    </Dropdown>,
+  );
+  await userEvent.click(
+    screen.getByRole("button", { name: "Session actions" }),
+  );
+  await waitFor(() => expect(host.close).toHaveBeenCalled());
+  const items = host.create.mock.calls[0][0].items;
+  expect(items[0]).toMatchObject({
+    text: "Rename",
+    accelerator: "CmdOrCtrl+Alt+R",
+    icon: { rid: 9 },
+  });
+  expect(items[1]).toMatchObject({ rid: 11, kind: "Submenu" });
+  expect(host.submenuClose).toHaveBeenCalledOnce();
+  expect(host.submenu.mock.calls[0][0]).toMatchObject({
+    text: "Fork",
+    icon: { rid: 9 },
+    items: [{ text: "Fork session", icon: { rid: 9 } }],
   });
 });
