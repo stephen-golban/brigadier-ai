@@ -1,0 +1,53 @@
+@import "tw-shimmer";
+@tailwind utilities source(none);
+@source inline("shimmer");
+
+@keyframes elements-expand {
+  from {
+    height: 0;
+  }
+  to {
+    height: var(--radix-collapsible-content-height);
+  }
+}
+
+/* Layout belongs to the conversation; the installed Elements own each surface. */
+.aui-thread-content > .aui-message {
+  margin-bottom: 20px;
+}
+.aui-thread-content > .aui-activity {
+  margin-bottom: 14px;
+}
+.aui-message {
+  position: relative;
+  min-width: 0;
+}
+.aui-message.assistant-text
+  > [data-slot="chat-panel-assistant-message"]
+  > .aui-message-actions {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 1;
+}
+.aui-message-actions {
+  opacity: 0;
+  transition: opacity 120ms;
+}
+.aui-message:hover .aui-message-actions,
+.aui-message:focus-within .aui-message-actions {
+  opacity: 1;
+}
+@media (hover: none) {
+  .aui-message-actions {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .shimmer {
+    animation: none;
+  }
+  .aui-message-actions {
+    transition: none;
+  }
+}

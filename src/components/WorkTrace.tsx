@@ -1,173 +1,87 @@
-import { SearchIcon } from "./SearchIcon";
-import { ToolCall } from "./assistant-ui/elements/tool-call";
-import { Details, DetailsSummary } from "./controls/details";
-import {
-  ReasoningRoot,
-  ReasoningTrigger,
-  ReasoningContent,
-} from "./assistant-ui/elements/reasoning";
-import { Spinner } from "./controls/status";
-import { Button } from "./controls/button";
 import { createContext, useContext, useState } from "react";
-import { peerToolSessions } from "../peerPresentation";
-const SessionLinks = createContext<{ titles: Record<string, string>; select?: (id: string) => void }>({ titles: {} });
-import {
-  TerminalIcon,
-  BookOpenIcon,
-  BrainIcon,
-  PencilSimpleIcon,
-  WrenchIcon,
-  UsersThreeIcon,
-} from "@phosphor-icons/react";
+import { ToolCall } from "./assistant-ui/elements/tool-call";
+import { ReasoningPanel } from "./assistant-ui/elements/reasoning-panel";
+import { Button } from "./controls/button";
 import { Markdown, CopyButton } from "./Markdown";
+import { peerToolSessions } from "../peerPresentation";
 import {
+  flattenTrace,
   isAgent,
   traceLabel,
   traceFailed,
   type TraceNode,
   type ThreadRow,
 } from "../threadProjection";
-type WorkRow = Extract<ThreadRow, { type: "work" }>;
-export function WorkTrace({
-  row,
-  expanded,
-  toggle,
-  onFile,
-  sessionTitles = {},
-  onSelectSession,
-}: {
-  sessionTitles?: Record<string, string>;
-  onSelectSession?: (id: string) => void;
-  row: WorkRow;
+
+const SessionLinks = createContext<{
+  titles: Record<string, string>;
+  select?: (id: string) => void;
+}>({ titles: {} });
+type TraceProps = {
   expanded: Set<string>;
   toggle: (id: string) => void;
   onFile: (path: string) => void;
+  running: boolean;
+};
+export function WorkTrace({
+  row,
+  sessionTitles = {},
+  onSelectSession,
+  ...props
+}: Omit<TraceProps, "running"> & {
+  row: Extract<ThreadRow, { type: "work" }>;
+  sessionTitles?: Record<string, string>;
+  onSelectSession?: (id: string) => void;
 }) {
-  const open =
-    expanded.has(row.id) || (row.running && !expanded.has(`closed:${row.id}`));
-  const seconds = !row.durationMs
-    ? null
-    : Math.max(0, Math.floor(row.durationMs / 1000));
-  const duration =
-    seconds === null
-      ? ""
-      : seconds >= 3600
-        ? `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m ${seconds % 60}s`
-        : seconds >= 60
-          ? `${Math.floor(seconds / 60)}m ${seconds % 60}s`
-          : `${seconds}s`;
-  const unfinished: TraceNode[] = [];
-  const inspect = (nodes: TraceNode[]) => {
-    for (const node of nodes) {
-      if (node.item.kind.type === "tool-call" && !node.result)
-        unfinished.push(node);
-      inspect(node.children);
-    }
-  };
-  if (row.running) inspect(row.nodes);
-  const currentAction = unfinished.sort((a, b) => a.item.at - b.item.at)[
-    unfinished.length - 1
-  ];
-  const label = row.running
-    ? "Working…"
-    : duration
-      ? `Worked for ${duration}`
-      : "Worked";
   return (
-    <SessionLinks.Provider value={{ titles: sessionTitles, select: onSelectSession }}>
-    <ReasoningRoot
-      open={open}
-      onOpenChange={() => toggle(row.running ? `closed:${row.id}` : row.id)}
+    <SessionLinks.Provider
+      value={{ titles: sessionTitles, select: onSelectSession }}
     >
-      <ReasoningTrigger
-        className="py-2"
-        leftIcon={row.running ? <Spinner size="sm" /> : undefined}
-      >
-        <span>{label}</span>
-        {currentAction && (
-          <span className="min-w-0 truncate text-xs text-text-secondary">
-            {conciseAction(currentAction.item)}
-          </span>
-        )}{" "}
-        {row.failures > 0 && (
-          <span className="text-error text-xs">{row.failures} failed</span>
-        )}
-      </ReasoningTrigger>
-      <ReasoningContent>
-        <TraceList
-          nodes={row.nodes}
-          expanded={expanded}
-          toggle={toggle}
-          onFile={onFile}
-        />
-      </ReasoningContent>
-    </ReasoningRoot>
+      <TraceList nodes={row.nodes} running={row.running} {...props} />
     </SessionLinks.Provider>
   );
 }
-function TraceList({
-  nodes,
-  expanded,
-  toggle,
-  onFile,
-}: {
-  nodes: TraceNode[];
-  expanded: Set<string>;
-  toggle: (id: string) => void;
-  onFile: (path: string) => void;
-}) {
+
+function TraceList({ nodes, ...props }: TraceProps & { nodes: TraceNode[] }) {
   const [limit, setLimit] = useState(40);
-  // Only adjacent, unrelated leaf calls share a category; explicit parentage always wins.
+  // Only adjacent independent calls collapse together. Prose remains in sequence,
+  // and explicit parentage keeps each child inside its owning tool.
   const groups: TraceNode[][] = [];
   for (const node of nodes) {
     const last = groups[groups.length - 1];
-    if (
-      last &&
-      node.item.kind.type === "tool-call" &&
-      !isAgent(node.item) &&
-      !node.children.length &&
-      last[0]!.item.kind.type === "tool-call" &&
-      !isAgent(last[0]!.item) &&
-      !last[0]!.children.length
-    )
-      last.push(node);
+    const batchable = (n: TraceNode) =>
+      n.item.kind.type === "tool-call" &&
+      !isAgent(n.item) &&
+      !n.children.length;
+    if (last && batchable(node) && batchable(last[0]!)) last.push(node);
     else groups.push([node]);
   }
   return (
-    <>
+    <div className="flex min-w-0 flex-col gap-1">
       {groups.slice(0, limit).map((group) => {
         const first = group[0]!;
         if (group.length === 1)
-          return (
-            <TraceEntry
-              key={first.item.id}
-              node={first}
-              expanded={expanded}
-              toggle={toggle}
-              onFile={onFile}
-            />
-          );
+          return <TraceEntry key={first.item.id} node={first} {...props} />;
         const id = `batch:${first.item.id}`;
-        const open = expanded.has(id);
+        const label = [...new Set(group.map((n) => traceLabel(n.item)))].join(
+          ", ",
+        );
         return (
-          <ReasoningRoot key={id} open={open} onOpenChange={() => toggle(id)}>
-            <ReasoningTrigger className="py-1">
-              <span>
-                {[...new Set(group.map((n) => traceLabel(n.item)))].join(", ")}
-              </span>
-              {group.some(traceFailed) && (
-                <span className="text-error text-xs">Failed</span>
-              )}
-            </ReasoningTrigger>
-            <ReasoningContent>
-              <TraceBatch
-                nodes={group}
-                expanded={expanded}
-                toggle={toggle}
-                onFile={onFile}
-              />
-            </ReasoningContent>
-          </ReasoningRoot>
+          <ToolCall
+            key={id}
+            id={id}
+            label={label}
+            activeLabel={label}
+            running={props.running && group.some((n) => !n.result)}
+            failed={group.some(traceFailed)}
+            completed={group.every((n) => n.result !== undefined)}
+            open={props.expanded.has(id)}
+            onOpenChange={() => props.toggle(id)}
+          >
+            <div className="ml-1 border-l border-hairline pl-4 py-2">
+              <TraceBatch nodes={group} {...props} />
+            </div>
+          </ToolCall>
         );
       })}
       {groups.length > limit && (
@@ -179,31 +93,15 @@ function TraceList({
           Show more activity ({groups.length - limit})
         </Button>
       )}
-    </>
+    </div>
   );
 }
-function TraceBatch({
-  nodes,
-  expanded,
-  toggle,
-  onFile,
-}: {
-  nodes: TraceNode[];
-  expanded: Set<string>;
-  toggle: (id: string) => void;
-  onFile: (path: string) => void;
-}) {
+function TraceBatch({ nodes, ...props }: TraceProps & { nodes: TraceNode[] }) {
   const [limit, setLimit] = useState(40);
   return (
     <>
       {nodes.slice(0, limit).map((node) => (
-        <TraceEntry
-          key={node.item.id}
-          node={node}
-          expanded={expanded}
-          toggle={toggle}
-          onFile={onFile}
-        />
+        <TraceEntry key={node.item.id} node={node} {...props} />
       ))}
       {nodes.length > limit && (
         <Button
@@ -222,132 +120,110 @@ function TraceEntry({
   expanded,
   toggle,
   onFile,
-}: {
-  node: TraceNode;
-  expanded: Set<string>;
-  toggle: (id: string) => void;
-  onFile: (path: string) => void;
-}) {
-  const { item, result, children, updates } = node;
+  running,
+}: TraceProps & { node: TraceNode }) {
+  const { item, result, updates, children } = node;
   const links = useContext(SessionLinks);
   const open = expanded.has(item.id);
-  const agent = isAgent(item);
-  const failed = traceFailed(node);
-  const category = traceLabel(item);
-  const label = conciseAction(item);
-  const Icon = isAgent(item)
-    ? UsersThreeIcon
-    : category === "Read files"
-      ? BookOpenIcon
-      : category === "Ran commands"
-        ? TerminalIcon
-        : category === "Thinking"
-          ? BrainIcon
-          : category === "Edit files"
-            ? PencilSimpleIcon
-            : category.includes("earch")
-              ? SearchIcon
-              : WrenchIcon;
-  if (item.kind.type === "tool-call" && item.kind.name.startsWith("mcp__brigadier__")) {
-    const sessions = peerToolSessions(item.body, result?.body);
-    return <ToolCall
-      id={item.id}
-      label={label}
-      request={item.body}
-      result={result?.body}
-      failed={failed}
-      open={open}
-      onOpenChange={() => toggle(item.id)}
-      actions={<div className="mt-2 flex flex-wrap items-center gap-2">
-        {links.select && sessions.map((s) => <Button key={s.id} variant="link" size="sm" onClick={() => links.select?.(s.id)}>
-          {links.titles[s.id] ?? s.title ?? s.id}{s.status ? ` · ${s.status}` : ""}
-        </Button>)}
-        <CopyButton text={result?.body ?? item.body} />
-      </div>}
-    />;
-  }
-  if (item.kind.type === "assistant-text" && !children.length)
+  if (item.kind.type === "thinking") {
+    if (!item.body.trim())
+      return children.length ? (
+        <TraceList
+          nodes={children}
+          expanded={expanded}
+          toggle={toggle}
+          onFile={onFile}
+          running={running}
+        />
+      ) : null;
     return (
-      <div className="my-3 space-y-2 text-sm">
-        <Markdown text={item.body} onFile={onFile} />
-        <CopyButton text={item.body} />
-      </div>
-    );
-  if (
-    item.kind.type === "tool-call" &&
-    !agent &&
-    !children.length &&
-    !updates.length
-  )
-    return (
-      <ToolCall
-        id={item.id}
-        label={label}
-        request={item.body}
-        result={result?.body}
-        failed={failed}
+      <ReasoningPanel
+        steps={[
+          { title: "", body: <Markdown text={item.body} onFile={onFile} /> },
+        ]}
+        visibleSteps={1}
+        streaming={false}
         open={open}
         onOpenChange={() => toggle(item.id)}
-        actions={<CopyButton text={result?.body ?? item.body} />}
+        restingLabel="Reasoning"
+        className="max-w-none"
       />
     );
-  const textOnly =
-    item.kind.type === "thinking" || item.kind.type === "assistant-text";
-  return (
-    <ReasoningRoot
-      open={open}
-      onOpenChange={() => toggle(item.id)}
-      data-trace-id={item.id}
-    >
-      <ReasoningTrigger
-        className="w-full py-1 [&>div]:min-w-0 [&>div>span:last-child]:truncate"
-        leftIcon={<Icon size={15} />}
-      >
-        <span title={label}>{label}</span>{" "}
-        {failed ? <span className="text-error text-xs">Failed</span> : null}{" "}
-        {agent && updates.length > 0 && (
-          <span className="text-xs text-text-secondary">
-            {updates.length} updates
-          </span>
-        )}
-      </ReasoningTrigger>
-      <ReasoningContent>
-        {textOnly ? (
-          <Markdown text={item.body} onFile={onFile} />
-        ) : agent ? (
-          <Details className="rounded-lg border border-hairline bg-elevated p-3 text-xs [&_pre]:max-h-80 [&_pre]:overflow-auto [&_pre]:whitespace-pre-wrap [&_pre]:break-words">
-            <DetailsSummary>Task details</DetailsSummary>
-            <pre>{item.body}</pre>
-          </Details>
-        ) : (
-          <div className="rounded-lg border border-hairline bg-elevated p-3 text-xs [&_pre]:max-h-80 [&_pre]:overflow-auto [&_pre]:whitespace-pre-wrap [&_pre]:break-words">
-            <pre>{item.body}</pre>
-          </div>
-        )}
-        <CopyButton text={item.body} />
-        {updates.map((update) => (
-          <div key={update.id} className="my-3 space-y-2 text-sm">
-            <Markdown text={update.body} onFile={onFile} />
-            <CopyButton text={update.body} />
-          </div>
-        ))}
+  }
+  if (item.kind.type === "assistant-text" || item.kind.type === "user-text")
+    return (
+      <div className="py-2">
+        {item.body.trim() && <Markdown text={item.body} onFile={onFile} />}
         {children.length > 0 && (
           <TraceList
             nodes={children}
             expanded={expanded}
             toggle={toggle}
             onFile={onFile}
+            running={running}
           />
         )}
-        {result && (
-          <div className="rounded-lg border border-hairline bg-elevated p-3 text-xs [&_pre]:max-h-80 [&_pre]:overflow-auto [&_pre]:whitespace-pre-wrap [&_pre]:break-words">
-            <span>{failed ? "Error" : "Output"}</span>
-            <pre>{result.body}</pre>
-            <CopyButton text={result.body} />
-          </div>
-        )}
-      </ReasoningContent>
-    </ReasoningRoot>
+      </div>
+    );
+  const sessions =
+    item.kind.type === "tool-call" &&
+    item.kind.name.startsWith("mcp__brigadier__")
+      ? peerToolSessions(item.body, result?.body)
+      : [];
+  const failed = flattenTrace([node]).some(traceFailed);
+  const label = conciseAction(item);
+  const output = item.kind.type === "tool-result" ? item.body : result?.body;
+  const request = item.kind.type === "tool-result" ? undefined : item.body;
+  return (
+    <ToolCall
+      id={item.id}
+      label={label}
+      activeLabel={label}
+      request={request}
+      result={output}
+      failed={failed}
+      running={running && item.kind.type === "tool-call" && !result}
+      open={open}
+      onOpenChange={() => toggle(item.id)}
+      actions={
+        <div className="flex flex-wrap items-center gap-2">
+          {links.select &&
+            sessions.map((s) => (
+              <Button
+                key={s.id}
+                variant="link"
+                size="sm"
+                onClick={() => links.select?.(s.id)}
+              >
+                {links.titles[s.id] ?? s.title ?? s.id}
+                {s.status ? ` · ${s.status}` : ""}
+              </Button>
+            ))}
+          {(output ?? request)?.trim() && (
+            <CopyButton text={(output ?? request)!} />
+          )}
+        </div>
+      }
+    >
+      {(updates.length > 0 || children.length > 0) && (
+        <div className="ml-1 border-l border-hairline pl-4 py-2">
+          {updates
+            .filter((u) => u.body.trim())
+            .map((update) => (
+              <div key={update.id} className="py-2">
+                <Markdown text={update.body} onFile={onFile} />
+              </div>
+            ))}
+          <TraceList
+            nodes={children}
+            expanded={expanded}
+            toggle={toggle}
+            onFile={onFile}
+            running={running}
+          />
+        </div>
+      )}
+    </ToolCall>
   );
 }
 
