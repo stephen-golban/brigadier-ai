@@ -118,6 +118,27 @@ afterEach(() => {
 });
 
 describe("the rAF drain", () => {
+  it("drains while native animation frames are suspended and cancels the fallback on stop", async () => {
+    const store = await load();
+    const frames = vi.spyOn(globalThis, "requestAnimationFrame").mockReturnValue(1);
+    const notified = vi.fn();
+    store.subscribe(notified);
+    store.start();
+    store.pushBatch(batch({ rows: rows("s1", [1]), signals: [env("s1", { type: "turn-started", turn_id: "t1" })] }));
+    vi.advanceTimersByTime(250);
+    expect(store.getSessionRows("s1").map((r) => r.q)).toEqual([1]);
+    expect(notified).toHaveBeenCalledTimes(1);
+    expect(store.getState().sessions.s1?.busy).toBe(true);
+    store.pushBatch(batch({ signals: [env("s1", turnCompleted("t1", 0))] }));
+    vi.advanceTimersByTime(250);
+    expect(store.getState().sessions.s1?.busy).toBe(false);
+    store.stop();
+    store.pushBatch(batch({ rows: rows("s1", [2]) }));
+    vi.advanceTimersByTime(500);
+    expect(notified).toHaveBeenCalledTimes(2);
+    frames.mockRestore();
+  });
+
   it("coalesces every batch buffered in one frame into a single notification", async () => {
     const store = await load();
     let notifies = 0;

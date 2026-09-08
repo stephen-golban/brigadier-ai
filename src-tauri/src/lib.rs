@@ -197,6 +197,7 @@ pub fn run() {
             commands::delete_project,
             commands::feed_tail,
             commands::chat_items,
+            commands::chat_turns,
             conversation::session_context,
             conversation::session_activity,
             conversation::rewind_history,

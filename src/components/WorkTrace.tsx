@@ -1,4 +1,19 @@
-import { createContext, useContext, useState } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
+import {
+  ChevronRightIcon,
+  BookOpenIcon,
+  TerminalIcon,
+  SearchIcon,
+  PencilIcon,
+  GlobeIcon,
+  WorkflowIcon,
+} from "lucide-react";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "./ui/collapsible";
+import { ShimmerLabel } from "../lib/surfaces";
 import { ToolCall } from "./assistant-ui/elements/tool-call";
 import { ReasoningPanel } from "./assistant-ui/elements/reasoning-panel";
 import { Button } from "./controls/button";
@@ -9,6 +24,9 @@ import {
   isAgent,
   traceLabel,
   traceFailed,
+  activeWorkLabel,
+  activitySummary,
+  workDuration,
   type TraceNode,
   type ThreadRow,
 } from "../threadProjection";
@@ -33,11 +51,84 @@ export function WorkTrace({
   sessionTitles?: Record<string, string>;
   onSelectSession?: (id: string) => void;
 }) {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (!row.running || row.startedAt == null) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [row.running, row.startedAt]);
+  // Only work preceding a final answer folds. An interrupted turn stays inspectable.
+  const open = !row.canCollapse || props.expanded.has(row.id);
+  const elapsed =
+    row.running && row.startedAt != null
+      ? Math.max(0, now - row.startedAt)
+      : row.durationMs;
+  const duration = elapsed != null ? workDuration(elapsed) : null;
+  const outcome = row.running
+    ? "Working"
+    : row.status === "failed"
+      ? "Failed"
+      : row.status === "interrupted"
+        ? "You stopped"
+        : row.status === "stopped"
+          ? "Stopped"
+          : "Worked";
+  const summary = `${outcome}${duration && (!row.running || elapsed! >= 1000) ? `${row.status === "interrupted" ? " after" : " for"} ${duration}` : ""}`;
+  const heading = (
+    <>
+      <span>{summary}</span>
+      {row.canCollapse && (
+        <ChevronRightIcon
+          aria-hidden
+          className={`size-3.5 transition-transform motion-reduce:transition-none ${open ? "rotate-90" : ""}`}
+        />
+      )}
+      {row.failures > 0 && (
+        <span className="text-error">
+          {" "}
+          · {row.failures} {row.failures === 1 ? "failure" : "failures"}
+        </span>
+      )}
+    </>
+  );
+  const last = row.nodes[row.nodes.length - 1];
+  const needsThinking =
+    row.running &&
+    (!last ||
+      last.item.kind.type === "assistant-text" ||
+      last.item.kind.type === "thinking");
   return (
     <SessionLinks.Provider
       value={{ titles: sessionTitles, select: onSelectSession }}
     >
-      <TraceList nodes={row.nodes} running={row.running} {...props} />
+      <Collapsible
+        open={open}
+        onOpenChange={() => props.toggle(row.id)}
+        data-work-status={row.status}
+        className="work-block min-w-0"
+      >
+        <div className="work-turn-heading mb-4 border-b border-hairline pb-2 text-[13.5px] text-text-secondary tabular-nums">
+          {row.canCollapse ? (
+            <CollapsibleTrigger className="flex items-center gap-1 rounded-sm text-left focus-visible:outline focus-visible:outline-1">
+              {heading}
+            </CollapsibleTrigger>
+          ) : (
+            <div className="flex items-center gap-1">{heading}</div>
+          )}
+        </div>
+        <CollapsibleContent>
+          <TraceList nodes={row.nodes} running={row.running} {...props} />
+          {needsThinking && (
+            <div
+              role="status"
+              className="mt-4 text-[13.5px] text-text-secondary"
+            >
+              <ShimmerLabel active>Thinking</ShimmerLabel>
+            </div>
+          )}
+        </CollapsibleContent>
+      </Collapsible>
     </SessionLinks.Provider>
   );
 }
@@ -56,62 +147,71 @@ function TraceList({ nodes, ...props }: TraceProps & { nodes: TraceNode[] }) {
     if (last && batchable(node) && batchable(last[0]!)) last.push(node);
     else groups.push([node]);
   }
+  const more = groups.length > limit && (
+    <Button variant="link" size="sm" onClick={() => setLimit((n) => n + 40)}>
+      {props.running ? "Show earlier activity" : "Show more activity"} (
+      {groups.length - limit})
+    </Button>
+  );
   return (
     <div className="flex min-w-0 flex-col gap-1">
-      {groups.slice(0, limit).map((group) => {
-        const first = group[0]!;
-        if (group.length === 1)
-          return <TraceEntry key={first.item.id} node={first} {...props} />;
-        const id = `batch:${first.item.id}`;
-        const label = [...new Set(group.map((n) => traceLabel(n.item)))].join(
-          ", ",
-        );
-        return (
-          <ToolCall
-            key={id}
-            id={id}
-            label={label}
-            activeLabel={label}
-            running={props.running && group.some((n) => !n.result)}
-            failed={group.some(traceFailed)}
-            completed={group.every((n) => n.result !== undefined)}
-            open={props.expanded.has(id)}
-            onOpenChange={() => props.toggle(id)}
-          >
-            <div className="ml-1 border-l border-hairline pl-4 py-2">
-              <TraceBatch nodes={group} {...props} />
-            </div>
-          </ToolCall>
-        );
-      })}
-      {groups.length > limit && (
-        <Button
-          variant="link"
-          size="sm"
-          onClick={() => setLimit((n) => n + 40)}
-        >
-          Show more activity ({groups.length - limit})
-        </Button>
+      {props.running && more}
+      {(props.running ? groups.slice(-limit) : groups.slice(0, limit)).map(
+        (group, index, shown) => {
+          const live = props.running && index === shown.length - 1;
+          const first = group[0]!;
+          if (group.length === 1)
+            return (
+              <TraceEntry
+                key={first.item.id}
+                node={first}
+                {...props}
+                running={live}
+                current={live}
+              />
+            );
+          const id = `batch:${first.item.id}`;
+          const label = activitySummary(group);
+          return (
+            <ToolCall
+              key={id}
+              id={id}
+              icon={<ActivityIcon item={first.item} />}
+              label={label}
+              activeLabel={activeWorkLabel(group)}
+              running={live}
+              failed={group.some(traceFailed)}
+              completed={group.every((n) => n.result !== undefined)}
+              open={props.expanded.has(id)}
+              onOpenChange={() => props.toggle(id)}
+            >
+              <div className="work-group-details max-h-56 overflow-y-auto py-1">
+                <TraceBatch nodes={group} {...props} running={live} />
+              </div>
+            </ToolCall>
+          );
+        },
       )}
+      {!props.running && more}
     </div>
   );
 }
 function TraceBatch({ nodes, ...props }: TraceProps & { nodes: TraceNode[] }) {
   const [limit, setLimit] = useState(40);
+  const more = nodes.length > limit && (
+    <Button variant="link" size="sm" onClick={() => setLimit((n) => n + 40)}>
+      {props.running ? "Show earlier" : "Show more"} ({nodes.length - limit})
+    </Button>
+  );
   return (
     <>
-      {nodes.slice(0, limit).map((node) => (
-        <TraceEntry key={node.item.id} node={node} {...props} />
-      ))}
-      {nodes.length > limit && (
-        <Button
-          variant="link"
-          size="sm"
-          onClick={() => setLimit((n) => n + 40)}
-        >
-          Show more ({nodes.length - limit})
-        </Button>
+      {props.running && more}
+      {(props.running ? nodes.slice(-limit) : nodes.slice(0, limit)).map(
+        (node) => (
+          <TraceEntry key={node.item.id} node={node} {...props} />
+        ),
       )}
+      {!props.running && more}
     </>
   );
 }
@@ -121,7 +221,8 @@ function TraceEntry({
   toggle,
   onFile,
   running,
-}: TraceProps & { node: TraceNode }) {
+  current = false,
+}: TraceProps & { node: TraceNode; current?: boolean }) {
   const { item, result, updates, children } = node;
   const links = useContext(SessionLinks);
   const open = expanded.has(item.id);
@@ -177,12 +278,23 @@ function TraceEntry({
   return (
     <ToolCall
       id={item.id}
+      icon={<ActivityIcon item={item} />}
       label={label}
-      activeLabel={label}
+      activeLabel={
+        current && result
+          ? "Thinking"
+          : label
+              .replace(/^Ran /, "Running ")
+              .replace(/^Searched /, "Searching ")
+              .replace(/^Read /, "Reading ")
+              .replace(/^Edited /, "Editing ")
+      }
       request={request}
       result={output}
       failed={failed}
-      running={running && item.kind.type === "tool-call" && !result}
+      running={
+        current || (running && item.kind.type === "tool-call" && !result)
+      }
       open={open}
       onOpenChange={() => toggle(item.id)}
       actions={
@@ -237,9 +349,14 @@ function conciseAction(item: TraceNode["item"]) {
     /* Older records remain expandable verbatim. */
   }
   const path = input.file_path ?? input.path ?? input.file;
-  if (label === "Read files" && typeof path === "string") return `Read ${path}`;
+  // The disclosure retains the full request; the activity line needs only the file.
+  const filename =
+    typeof path === "string"
+      ? (path.split(/[\\/]/).filter(Boolean).pop() ?? path)
+      : undefined;
+  if (label === "Read files" && filename) return `Read ${filename}`;
   if (label === "Edit files" && typeof path === "string")
-    return `Edited ${path}`;
+    return `Edited ${filename}`;
   if (label === "Ran commands")
     return `Ran ${String(
       input.command ??
@@ -253,4 +370,20 @@ function conciseAction(item: TraceNode["item"]) {
   if (label === "Searched files")
     return `Searched for ${String(input.pattern ?? input.query ?? "files").slice(0, 120)}${path ? ` in ${path}` : ""}`;
   return label;
+}
+
+function ActivityIcon({ item }: { item: TraceNode["item"] }) {
+  const label = traceLabel(item);
+  const Icon = isAgent(item)
+    ? WorkflowIcon
+    : label === "Read files"
+      ? BookOpenIcon
+      : label === "Searched files"
+        ? SearchIcon
+        : label === "Edit files"
+          ? PencilIcon
+          : label === "Web research"
+            ? GlobeIcon
+            : TerminalIcon;
+  return <Icon aria-hidden className="size-3.5 shrink-0" />;
 }

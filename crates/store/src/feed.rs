@@ -267,6 +267,9 @@ fn stop_str(reason: &StopReason) -> String {
 // see docs/research/persistence.md §1 — the pointer needs the cwd recorded at spawn, and the
 // file is a cache the provider sweeps after `cleanupPeriodDays`.
 pub async fn apply(env: &Envelope, handle: &StoreHandle) {
+    if matches!(env.event, Event::TurnStarted { .. } | Event::TurnCompleted { .. } | Event::TurnAborted { .. } | Event::SessionExited { .. }) {
+        let _ = handle.chat_turn_event(env.clone()).await;
+    }
     if let Some(item) = crate::chat::project(env) {
         let _ = handle.chat_item(item).await;
     }

@@ -95,7 +95,7 @@ const transcript = [
     6,
   ),
 ];
-it("renders prose around activity, preserves edit and file actions, and copies only visible bodies", async () => {
+it("folds intermediate prose, preserves final edit/file actions, and copies visible bodies", async () => {
   const user = userEvent.setup();
   const edit = vi.fn(),
     file = vi.fn();
@@ -112,14 +112,17 @@ it("renders prose around activity, preserves edit and file actions, and copies o
       requests={<button>Approve pending request</button>}
     />,
   );
-  await screen.findByText("I’ll inspect the diff.");
+  await screen.findByRole("button", { name: /Worked/ });
+  expect(screen.queryByText("I’ll inspect the diff.")).toBeNull();
   expect(
     [...container.querySelectorAll("[data-message-id]")].map((el) =>
       el.getAttribute("data-message-id"),
     ),
-  ).toEqual(["user", "before", "work:call", "after"]);
+  ).toEqual(["user", "work:user", "after"]);
   expect(screen.queryByText("Thinking")).toBeNull();
-  expect(screen.getAllByRole("button", { name: "Copy" })).toHaveLength(3);
+  expect(screen.getAllByRole("button", { name: "Copy" })).toHaveLength(2);
+  await user.click(screen.getByRole("button", { name: /Worked/ }));
+  expect(screen.getByText("I’ll inspect the diff.")).toBeVisible();
   await user.click(
     screen.getByRole("button", { name: /Ran git diff.*Failed/ }),
   );
@@ -141,8 +144,9 @@ it("restores expanded tools after switching sessions and reloading history", asy
   );
   const props = { projectId: "p", projectName: "Example", onFile: vi.fn() };
   const view = render(<ThreadView {...props} sessionId="idle" />);
+  await user.click(await screen.findByRole("button", { name: /Worked/ }));
   await user.click(
-    await screen.findByRole("button", { name: /Ran git diff.*Failed/ }),
+    screen.getByRole("button", { name: /Ran git diff.*Failed/ }),
   );
   view.rerender(<ThreadView {...props} sessionId="other" />);
   await screen.findByText("Other session");
@@ -218,6 +222,9 @@ it.each([
     />,
   );
   expect(await screen.findByText("I’ll inspect the diff.")).toBeVisible();
+  expect(
+    screen.queryByRole("button", { name: /You stopped|Stopped/ }),
+  ).toBeNull();
   expect(screen.getByText(label!)).toBeVisible();
   expect(screen.queryByText("Working…")).toBeNull();
 });
@@ -241,4 +248,125 @@ it("hydrates all history pages before resting", async () => {
   expect(await screen.findByText("Saved turn 22")).toBeVisible();
   expect(chat).toHaveBeenCalledWith("idle", 20);
   expect(screen.getByText("Saved turn 0")).toBeVisible();
+});
+
+it("renders a recorded duration after history reload without hiding the final answer", async () => {
+  vi.spyOn(workspaceApi, "chat").mockResolvedValue(transcript);
+  vi.spyOn(workspaceApi, "chatTurns").mockResolvedValue([
+    {
+      id: "turn",
+      start_seq: 1,
+      end_seq: 7,
+      started_at: 1000,
+      ended_at: 135000,
+      status: "completed",
+    },
+  ]);
+  render(
+    <ThreadView
+      sessionId="idle"
+      projectId="p"
+      projectName="Example"
+      onFile={() => {}}
+    />,
+  );
+  expect(
+    await screen.findByRole("button", {
+      name: /Worked for 2m 14s.*1 failure/,
+    }),
+  ).toHaveAttribute("aria-expanded", "false");
+  expect(screen.getByText(/The command failed/)).toBeVisible();
+  expect(screen.queryByText("I’ll inspect the diff.")).toBeNull();
+});
+
+it("folds a full turn while preserving commentary boundaries and independent tool disclosures", async () => {
+  const user = userEvent.setup();
+  const progress = [
+    "Inspecting the conversation.",
+    "Implementing work blocks.",
+    "Checking the result.",
+  ];
+  const page = [
+    saved("user", { type: "user-text" }, "Add compact work blocks", 1),
+  ];
+  for (const [index, body] of progress.entries()) {
+    page.push(
+      saved(
+        `progress-${index}`,
+        { type: "assistant-text" },
+        body,
+        page.length + 1,
+      ),
+    );
+    for (let command = 0; command < 2; command++) {
+      const id = `command-${index}-${command}`;
+      page.push(
+        saved(
+          id,
+          { type: "tool-call", name: "Bash" },
+          `check ${index}-${command}`,
+          page.length + 1,
+        ),
+      );
+      page.push(
+        saved(
+          `${id}-result`,
+          { type: "tool-result", tool_call_id: id, is_error: false },
+          `Output ${index}-${command}`,
+          page.length + 1,
+        ),
+      );
+    }
+  }
+  page.push(
+    saved(
+      "answer",
+      { type: "assistant-text" },
+      "Implemented compact work blocks.",
+      page.length + 1,
+    ),
+  );
+  vi.spyOn(workspaceApi, "chat").mockResolvedValue(page);
+  vi.spyOn(workspaceApi, "chatTurns").mockResolvedValue([
+    {
+      id: "turn",
+      start_seq: 1,
+      end_seq: page.length + 1,
+      started_at: 1000,
+      ended_at: 954000,
+      status: "completed",
+    },
+  ]);
+  render(
+    <ThreadView
+      sessionId="idle"
+      projectId="p"
+      projectName="Example"
+      onFile={() => {}}
+    />,
+  );
+
+  const parent = await screen.findByRole("button", {
+    name: "Worked for 15m 53s",
+  });
+  expect(parent).toHaveAttribute("aria-expanded", "false");
+  expect(screen.getByText("Implemented compact work blocks.")).toBeVisible();
+  for (const body of progress) expect(screen.queryByText(body)).toBeNull();
+  expect(screen.queryByRole("button", { name: "Ran commands" })).toBeNull();
+
+  await user.click(parent);
+  for (const body of progress) expect(screen.getByText(body)).toBeVisible();
+  const groups = screen.getAllByRole("button", { name: "Ran commands" });
+  expect(groups).toHaveLength(3);
+  await user.click(groups[1]!);
+  await user.click(screen.getByRole("button", { name: "Ran check 1-0" }));
+  expect(screen.getByText("Output 1-0")).toBeVisible();
+  expect(screen.queryByText("Output 0-0")).toBeNull();
+  expect(screen.queryByText("Output 2-0")).toBeNull();
+
+  await user.click(parent);
+  expect(screen.queryByText("Output 1-0")).toBeNull();
+  expect(screen.getByText("Implemented compact work blocks.")).toBeVisible();
+  await user.click(parent);
+  expect(screen.getByText("Output 1-0")).toBeVisible();
 });

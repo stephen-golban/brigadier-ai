@@ -366,6 +366,15 @@ CREATE TABLE workspace_rewinds (
 CREATE INDEX workspace_rewinds_pending ON workspace_rewinds(workspace,phase);
 CREATE TABLE workspace_applies (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, body TEXT NOT NULL);
 "#,
+    r#"
+CREATE TABLE chat_turns (
+ session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+ id TEXT NOT NULL, start_seq INTEGER NOT NULL, end_seq INTEGER,
+ started_at INTEGER NOT NULL, ended_at INTEGER, status TEXT NOT NULL,
+ PRIMARY KEY(session_id,id)
+);
+CREATE INDEX chat_turns_cursor ON chat_turns(session_id,start_seq);
+"#,
 ];
 
 /// Where a session is in its life.
@@ -934,7 +943,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .expect("version");
         assert_eq!(version, MIGRATIONS.len() as i64);
-        assert_eq!(version, 9, "workspace checkpoints schema is the top rung");
+        assert_eq!(version, 10, "conversation lifecycle schema is the top rung");
         let sql = format!("SELECT {PROJECT_COLUMNS} FROM projects WHERE id = 'p1'");
         let row = conn.query_row(&sql, [], project_from_row).expect("read");
         assert_eq!(
@@ -984,7 +993,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .expect("version");
         assert_eq!(version, MIGRATIONS.len() as i64);
-        assert_eq!(version, 9, "workspace checkpoints schema is the top rung");
+        assert_eq!(version, 10, "conversation lifecycle schema is the top rung");
 
         let has = |kind: &str, name: &str| -> bool {
             conn.query_row(
@@ -1229,7 +1238,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .expect("version");
         assert_eq!(version, MIGRATIONS.len() as i64);
-        assert_eq!(version, 9, "workspace checkpoints schema is the top rung");
+        assert_eq!(version, 10, "conversation lifecycle schema is the top rung");
 
         let sql = format!(
             "SELECT {} FROM phases WHERE id = 'ph1'",
@@ -1259,7 +1268,7 @@ mod tests {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .expect("version");
-        assert_eq!(version, 9);
+        assert_eq!(version, 10);
         let has_column: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('phases') WHERE name = 'base_sha'",
@@ -1337,7 +1346,7 @@ mod tests {
         assert_eq!(
             conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            9
+            10
         );
         assert_eq!(
             conn.query_row("SELECT provider_uuid FROM chat_items", [], |row| row

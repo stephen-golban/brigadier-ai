@@ -4,6 +4,8 @@ The conversation uses assistant-ui's editable standalone Chat Panel, Tool Call, 
 
 ## Behavior
 
+The parent folding behavior below is superseded by [compact work blocks](../research/compact-work-blocks-2026-09-09.md): intermediate prose now folds with activity after completion.
+
 - Main-session prose appears chronologically between adjacent activity groups, during execution and after completion. Pairing still runs across the whole turn so late results and explicitly parented child activity remain inspectable.
 - Empty provider reasoning is omitted; actual reasoning remains expandable. One compact Working indicator represents a live session. Unknown or interrupted calls do not receive success checkmarks; failed calls remain visibly marked.
 - User bubbles, short clickable peer attribution, hover/focus message actions, raw tool details, child session links, file links and final changed-file cards use existing Brigadier handlers.

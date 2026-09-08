@@ -4,6 +4,65 @@ use brigadier_core::event::{bounded, Envelope, Event, ItemKind};
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
+/// Recorded lifecycle boundaries, independent of message delivery and the telemetry ring.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChatTurn {
+    /// Harness turn identity.
+    pub id: String,
+    /// Sequence of the start event.
+    pub start_seq: u64,
+    /// Sequence of the terminal event, absent while open.
+    pub end_seq: Option<u64>,
+    /// Start wall clock in milliseconds.
+    pub started_at: i64,
+    /// Terminal wall clock in milliseconds, absent while open.
+    pub ended_at: Option<i64>,
+    /// Recorded lifecycle outcome, independent of individual tool failures.
+    pub status: String,
+}
+
+pub(crate) fn write_turn(conn: &Connection, env: &Envelope) -> Result<()> {
+    use brigadier_core::event::{AbortReason, ExitReason, StopReason};
+    let session = env.session_id.as_str();
+    let at = crate::schema::to_millis(env.at);
+    if let Event::TurnStarted { turn_id } = &env.event {
+        conn.execute("INSERT OR IGNORE INTO chat_turns(session_id,id,start_seq,started_at,status) VALUES (?1,?2,?3,?4,'running')",
+            (session, turn_id.as_str(), env.seq, at))?;
+        conn.execute("DELETE FROM chat_turns WHERE session_id=?1 AND id IN (SELECT id FROM chat_turns WHERE session_id=?1 ORDER BY start_seq DESC LIMIT -1 OFFSET 2000)", [session])?;
+    } else {
+        let (id, status) = match &env.event {
+            Event::TurnCompleted { turn_id, stop_reason, .. } => (Some(turn_id.as_str()), match stop_reason {
+                StopReason::EndTurn => "completed",
+                StopReason::Error(_) => "failed",
+                _ => "stopped",
+            }),
+            Event::TurnAborted { turn_id, reason } => (Some(turn_id.as_str()), match reason {
+                AbortReason::Error(_) => "failed",
+                _ => "interrupted",
+            }),
+            Event::SessionExited { reason, .. } => (None, match reason {
+                ExitReason::Crashed | ExitReason::Error(_) => "failed",
+                _ => "interrupted",
+            }),
+            _ => return Ok(()),
+        };
+        // Replays cannot overwrite a recorded terminal outcome; a process exit closes
+        // only open turns. A missing start never fabricates a duration.
+        conn.execute("UPDATE chat_turns SET end_seq=?3,ended_at=?4,status=?5 WHERE session_id=?1 AND (?2 IS NULL OR id=?2) AND end_seq IS NULL AND start_seq<=?3",
+            (session, id, env.seq, at, status))?;
+    }
+    Ok(())
+}
+
+pub(crate) fn read_turns(conn: &Connection, session: &str) -> Result<Vec<ChatTurn>> {
+    let mut statement = conn.prepare_cached("SELECT id,start_seq,end_seq,started_at,ended_at,status FROM chat_turns WHERE session_id=?1 ORDER BY start_seq DESC LIMIT 2000")?;
+    let rows = statement.query_map([session], |r| Ok(ChatTurn {
+        id: r.get(0)?, start_seq: r.get(1)?, end_seq: r.get(2)?,
+        started_at: r.get(3)?, ended_at: r.get(4)?, status: r.get(5)?,
+    }))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 /// A completed provider item. Kind is structured, never inferred from display text.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChatItem {

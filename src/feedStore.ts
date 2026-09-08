@@ -374,6 +374,7 @@ function rebuildState(): void {
 }
 
 let rafId = 0;
+let drainTimer: ReturnType<typeof setTimeout> | undefined;
 let running = false;
 
 /**
@@ -382,8 +383,11 @@ let running = false;
  */
 let rowsChanged = false;
 
-function drain(): void {
-  rafId = requestAnimationFrame(drain);
+function drain(animationFrame: boolean): void {
+  if (!running) return;
+  cancelAnimationFrame(rafId);
+  clearTimeout(drainTimer);
+  scheduleDrain();
 
   if (buffer.length > 0) {
     const batches = buffer;
@@ -412,7 +416,14 @@ function drain(): void {
     ingest.windowStart = now;
   }
 
-  fps.sampleFrame();
+  if (animationFrame) fps.sampleFrame();
+}
+
+function scheduleDrain(): void {
+  rafId = requestAnimationFrame(() => drain(true));
+  // WKWebView pauses animation frames when occluded. Approval and turn signals
+  // must still catch up with the durable transcript's independent polling.
+  drainTimer = setTimeout(() => drain(false), 250);
 }
 
 function notify(): void {
@@ -423,13 +434,14 @@ function notify(): void {
 export function start(): void {
   if (running) return;
   running = true;
-  rafId = requestAnimationFrame(drain);
+  scheduleDrain();
 }
 
 /** Stop the loop (tests, teardown). */
 export function stop(): void {
   running = false;
   cancelAnimationFrame(rafId);
+  clearTimeout(drainTimer);
 }
 
 /* ------------------------------------------------------------- snapshots */
