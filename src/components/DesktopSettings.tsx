@@ -1,8 +1,12 @@
+import { FolderIcon } from "./NavigationIcons";
+import { Checkbox } from "./controls/checkbox";
+import { Input } from "./controls/input";
+import { Button } from "./controls/button";
 import { navigationApi } from "../navigationApi";
-import { createPortal } from "react-dom";
-import { useEffect, useRef, useState } from "react";
+import { Modal } from "./controls/modal";
+import { useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { XIcon, FolderIcon, TrashIcon } from "@phosphor-icons/react";
+import { XIcon, TrashIcon } from "@phosphor-icons/react";
 import type { SessionRuntime } from "../feedStore";
 import { workbenchApi, type WorkbenchData } from "../workbenchApi";
 import { desktop, errorMessage } from "../workspaceApi";
@@ -26,12 +30,6 @@ export function DesktopSettings({
   jobs: CleanupJob[];
   onClose: () => void;
 }) {
-  const dialog = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
-    const previous = document.activeElement as HTMLElement | null;
-    dialog.current?.showModal();
-    return () => previous?.focus();
-  }, []);
   const [name, setName] = useState(data.displayName ?? "");
   const [folder, setFolder] = useState(data.notesFolder ?? "");
   const [confirm, setConfirm] = useState<Confirmation | null>(null);
@@ -84,203 +82,222 @@ export function DesktopSettings({
       setError(errorMessage(e));
     }
   };
-  return createPortal(
-    <dialog
-      ref={dialog}
-      aria-label="Settings"
-      onCancel={(e) => {
-        e.preventDefault();
-        if (!confirm) onClose();
-      }}
-      className="settings-overlay"
-      onKeyDown={(e) => {
-        if (e.key === "Escape" && !confirm) onClose();
+  return (
+    <Modal.Backdrop
+      isOpen
+      isDismissable={false}
+      onOpenChange={(open) => {
+        if (!open && !confirm) onClose();
       }}
     >
-      <section className="desktop-settings">
-        <header>
-          <h2>Settings</h2>
-          <button
-            className="icon-button"
-            aria-label="Close settings"
-            onClick={onClose}
-          >
-            <XIcon />
-          </button>
-        </header>
-        <div className="settings-scroll">
-          <h3>Profile</h3>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (savingName) return;
-              setSavingName(true);
-              void workbenchApi
-                .saveDesktopSettings(name, data.projectNames ?? {})
-                .then((next) => {
-                  onData(next);
-                  setName(next.displayName ?? "");
-                  setError("");
-                })
-                .catch((e) => setError(errorMessage(e)))
-                .finally(() => setSavingName(false));
-            }}
-          >
-            <label>
-              Display name
-              <NameInput
-                autoFocus
-                value={name}
-                onValueChange={setName}
-                maxLength={200}
-                required
-                disabled={savingName}
-              />
-            </label>
-            <button className="act" disabled={savingName || !name.trim()}>
-              {savingName ? "Saving…" : "Save name"}
-            </button>
-          </form>
-          <h3>Welcome</h3>
-          <label className="settings-launch">
-            <input
-              type="checkbox"
-              checked={data.launchMusic ?? true}
-              disabled={savingMusic}
-              onChange={(e) => {
-                const enabled = e.target.checked;
-                setSavingMusic(true);
-                void launchApi
-                  .music(enabled)
-                  .then(() => workbenchApi.load())
-                  .then(onData)
-                  .catch((e) => setError(errorMessage(e)))
-                  .finally(() => setSavingMusic(false));
-              }}
-            />
-            Intro music
-          </label>
-          <button
-            className="act"
-            onClick={() => {
-              onClose();
-              launchApi.replay();
-            }}
-          >
-            Replay welcome
-          </button>
-          <ResetOnboardingButton onReset={onClose} />
-          <h3>Notes folder</h3>
-          <p>
-            Notes are Markdown files. Existing notes keep their references when
-            you choose a different folder.
-          </p>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              void saveFolder(folder);
-            }}
-          >
-            <label>
-              Folder
-              <input
-                value={folder}
-                placeholder="Default: app data / notes"
-                onChange={(e) => setFolder(e.target.value)}
-              />
-            </label>
-            <button
-              type="button"
-              className="act"
-              onClick={() => {
-                if (desktop)
-                  void open({
-                    directory: true,
-                    multiple: false,
-                    title: "Choose notes folder",
-                  })
-                    .then((path) => {
-                      if (typeof path === "string") void saveFolder(path);
+      <Modal.Container size="lg" scroll="inside">
+        <Modal.Dialog aria-label="Settings">
+          <section className="desktop-settings flex min-h-0 flex-col gap-4 [&_header]:flex [&_header]:items-center [&_header]:justify-between">
+            <header>
+              <h2>Settings</h2>
+              <Button
+                isIconOnly
+                className="icon-button size-8 p-0"
+                aria-label="Close settings"
+                onClick={onClose}
+              >
+                <XIcon />
+              </Button>
+            </header>
+            <div className="settings-scroll flex min-h-0 flex-col gap-4 overflow-y-auto [&_h3]:text-text-secondary [&_form]:flex [&_form]:flex-col [&_form]:gap-2 [&_label]:flex [&_label]:flex-col [&_label]:gap-2">
+              <h3>Appearance</h3>
+              <div className="theme-switch flex items-center justify-between">
+                <span>Theme</span>
+                <span className="text-text-secondary">Dark</span>
+              </div>
+              <h3>Profile</h3>
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (savingName) return;
+                  setSavingName(true);
+                  void workbenchApi
+                    .saveDesktopSettings(name, data.projectNames ?? {})
+                    .then((next) => {
+                      onData(next);
+                      setName(next.displayName ?? "");
+                      setError("");
                     })
-                    .catch((e) => setError(errorMessage(e)));
-              }}
-              disabled={!desktop}
-            >
-              <FolderIcon />
-              Choose folder
-            </button>
-            <button className="act" disabled={!folder.trim()}>
-              Use folder
-            </button>
-          </form>
-          {data.notesError && <p className="inline-error">{data.notesError}</p>}
-          <h3>History and sessions</h3>
-          <input
-            aria-label="Find a session in settings"
-            placeholder="Find a session…"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
-          <div className="settings-sessions">
-            {Object.values(sessions)
-              .filter((s) =>
-                (titles[s.sessionId] ?? s.sessionId)
-                  .toLowerCase()
-                  .includes(query.toLowerCase()),
-              )
-              .map((s) => (
-                <div key={s.sessionId}>
-                  <span>
-                    {titles[s.sessionId] ?? `Session ${s.sessionId.slice(-6)}`}
-                    <small>{s.busy ? "Working" : s.status}</small>
-                  </span>
-                  <button
-                    className="icon-button"
-                    aria-label={`Delete ${titles[s.sessionId] ?? s.sessionId}`}
-                    onClick={() => dispose(s.sessionId)}
-                  >
-                    <TrashIcon />
-                  </button>
-                </div>
-              ))}
-          </div>
-          <button
-            className="act danger"
-            disabled={!Object.keys(sessions).length}
-            onClick={() => dispose()}
-          >
-            Clear all history and sessions
-          </button>
-          {jobs.length > 0 && (
-            <>
-              <h3>Session cleanup</h3>
-              {jobs.map((job) => (
-                <div className="cleanup-job" key={job.id}>
-                  <span>{job.error ?? "Removing session files…"}</span>
-                  {job.error && (
-                    <button
-                      onClick={() =>
-                        void desktopApi
-                          .retryCleanup(job.id)
-                          .catch((e) => setError(errorMessage(e)))
-                      }
+                    .catch((e) => setError(errorMessage(e)))
+                    .finally(() => setSavingName(false));
+                }}
+              >
+                <label>
+                  Display name
+                  <NameInput
+                    autoFocus
+                    value={name}
+                    onValueChange={setName}
+                    maxLength={200}
+                    required
+                    disabled={savingName}
+                  />
+                </label>
+                <Button
+                  type="submit"
+                  className="act"
+                  disabled={savingName || !name.trim()}
+                >
+                  {savingName ? "Saving…" : "Save name"}
+                </Button>
+              </form>
+              <h3>Welcome</h3>
+              <Checkbox
+                className="intro-music-setting"
+                checked={data.launchMusic ?? true}
+                disabled={savingMusic}
+                onCheckedChange={(e) => {
+                  const enabled = e;
+                  setSavingMusic(true);
+                  void launchApi
+                    .music(enabled)
+                    .then(() => workbenchApi.load())
+                    .then(onData)
+                    .catch((e) => setError(errorMessage(e)))
+                    .finally(() => setSavingMusic(false));
+                }}
+              >
+                Intro music
+              </Checkbox>
+              <Button
+                className="act"
+                onClick={() => {
+                  onClose();
+                  launchApi.replay();
+                }}
+              >
+                Replay welcome
+              </Button>
+              <ResetOnboardingButton onReset={onClose} />
+              <h3>Notes folder</h3>
+              <p>
+                Notes are Markdown files. Existing notes keep their references
+                when you choose a different folder.
+              </p>
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void saveFolder(folder);
+                }}
+              >
+                <label>
+                  Folder
+                  <Input
+                    value={folder}
+                    placeholder="Default: app data / notes"
+                    onChange={(e) => setFolder(e.target.value)}
+                  />
+                </label>
+                <Button
+                  type="button"
+                  className="act"
+                  onClick={() => {
+                    if (desktop)
+                      void open({
+                        directory: true,
+                        multiple: false,
+                        title: "Choose notes folder",
+                      })
+                        .then((path) => {
+                          if (typeof path === "string") void saveFolder(path);
+                        })
+                        .catch((e) => setError(errorMessage(e)));
+                  }}
+                  disabled={!desktop}
+                >
+                  <FolderIcon />
+                  Choose folder
+                </Button>
+                <Button type="submit" className="act" disabled={!folder.trim()}>
+                  Use folder
+                </Button>
+              </form>
+              {data.notesError && (
+                <p className="inline-error my-2 text-[13px] text-error">
+                  {data.notesError}
+                </p>
+              )}
+              <h3>History and sessions</h3>
+              <Input
+                aria-label="Find a session in settings"
+                placeholder="Find a session…"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+              />
+              <div className="settings-sessions max-h-64 overflow-auto [&>div]:flex [&>div]:items-center [&>div]:justify-between [&_small]:block [&_small]:text-text-tertiary">
+                {Object.values(sessions)
+                  .filter((s) =>
+                    (titles[s.sessionId] ?? s.sessionId)
+                      .toLowerCase()
+                      .includes(query.toLowerCase()),
+                  )
+                  .map((s) => (
+                    <div key={s.sessionId}>
+                      <span>
+                        {titles[s.sessionId] ??
+                          `Session ${s.sessionId.slice(-6)}`}
+                        <small>{s.busy ? "Working" : s.status}</small>
+                      </span>
+                      <Button
+                        isIconOnly
+                        className="icon-button size-8 p-0"
+                        aria-label={`Delete ${titles[s.sessionId] ?? s.sessionId}`}
+                        onClick={() => dispose(s.sessionId)}
+                      >
+                        <TrashIcon />
+                      </Button>
+                    </div>
+                  ))}
+              </div>
+              <Button
+                className="act danger text-warn"
+                disabled={!Object.keys(sessions).length}
+                onClick={() => dispose()}
+              >
+                Clear all history and sessions
+              </Button>
+              {jobs.length > 0 && (
+                <>
+                  <h3>Session cleanup</h3>
+                  {jobs.map((job) => (
+                    <div
+                      className="cleanup-job flex justify-between gap-2"
+                      key={job.id}
                     >
-                      Retry
-                    </button>
-                  )}
-                </div>
-              ))}
-            </>
-          )}
-          {error && (
-            <p role="alert" className="inline-error">
-              {error}
-            </p>
-          )}
-        </div>
-      </section>
-      {confirm && <ConfirmDialog {...confirm} />}
-    </dialog>,
-    document.body,
+                      <span>{job.error ?? "Removing session files…"}</span>
+                      {job.error && (
+                        <Button
+                          onClick={() =>
+                            void desktopApi
+                              .retryCleanup(job.id)
+                              .catch((e) => setError(errorMessage(e)))
+                          }
+                        >
+                          Retry
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                </>
+              )}
+              {error && (
+                <p
+                  role="alert"
+                  className="inline-error my-2 text-[13px] text-error"
+                >
+                  {error}
+                </p>
+              )}
+            </div>
+          </section>
+          {confirm && <ConfirmDialog {...confirm} />}
+        </Modal.Dialog>
+      </Modal.Container>
+    </Modal.Backdrop>
   );
 }

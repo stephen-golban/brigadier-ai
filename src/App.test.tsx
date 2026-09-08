@@ -316,14 +316,20 @@ afterEach(() => {
 
 it("reports workspace readiness only after initial data is rendered", async () => {
   let release!: () => void;
-  h.initialData = new Promise<void>((resolve) => { release = resolve; });
+  h.initialData = new Promise<void>((resolve) => {
+    release = resolve;
+  });
   const { App } = await import("./App");
   const onReady = vi.fn(() => {
     expect(screen.getAllByText("job-portal").length).toBeGreaterThan(0);
   });
-  await act(async () => { render(<App onReady={onReady} />); });
+  await act(async () => {
+    render(<App onReady={onReady} />);
+  });
   expect(onReady).not.toHaveBeenCalled();
-  await act(async () => { release(); });
+  await act(async () => {
+    release();
+  });
   expect(onReady).toHaveBeenCalledOnce();
 });
 
@@ -339,10 +345,17 @@ async function selectHistory(
     screen.getByRole("navigation", { name: "Projects" }),
   ).getByRole("button", { name: project.name });
   if (row.getAttribute("aria-current") !== "page") await user.click(row);
-  if (!screen.queryByRole("textbox", { name: "Search session history" }))
-    await user.click(screen.getByRole("button", { name: "Session history" }));
+  if (!screen.queryByRole("textbox", { name: "Search session history" })) {
+    await user.click(
+      screen.queryByRole("button", { name: "Workspace actions" }) ??
+        screen.getAllByRole("button", { name: "Session actions" })[0],
+    );
+    await user.click(screen.getByRole("menuitem", { name: "Session history" }));
+  }
   await user.click(
-    await within(screen.getByRole("navigation", { name: "Projects" })).findByRole("button", { name: `Session ${id.slice(-6)}` }),
+    await within(
+      screen.getByRole("navigation", { name: "Projects" }),
+    ).findByRole("button", { name: `Session ${id.slice(-6)}` }),
   );
 }
 
@@ -429,7 +442,9 @@ describe("the B4 paint span", () => {
     await mountApp();
 
     await selectHistory(user, "aaaa1111");
-    await user.click(screen.getByRole("button", { name: "New session in job-portal" }));
+    await user.click(
+      screen.getByRole("button", { name: "New session in job-portal" }),
+    );
 
     expect(h.spans).toHaveLength(1);
     expect(h.spans[0]!.cancelled).toBe(1);
@@ -522,7 +537,9 @@ describe("the shell's handlers", () => {
     // optimistic entry has to be retired by a matched echo that does not exist yet.
     await selectHistory(user, "aaaa1111");
 
-    expect(screen.getAllByRole("tab")).toHaveLength(1);
+    expect(
+      screen.getAllByRole("button", { name: "Session aa1111" }),
+    ).toHaveLength(1);
   });
 });
 
@@ -612,7 +629,9 @@ describe("deleting", () => {
       }),
     );
     expect(h.deletes).toEqual([]);
-    expect(JSON.parse(localStorage.getItem("brigadier:navigation:v1")!).trash[0].id).toBe("aaaa1111");
+    expect(
+      JSON.parse(localStorage.getItem("brigadier:navigation:v1")!).trash[0].id,
+    ).toBe("aaaa1111");
     expect(
       screen.queryByRole("button", { name: /Session aa1111/ }),
     ).not.toBeInTheDocument();
@@ -640,7 +659,7 @@ describe("deleting", () => {
     await user.click(
       screen.getByRole("button", { name: "Project actions job-portal" }),
     );
-    await user.click(screen.getByRole("menuitem", { name: "Move to Trash" }));
+    await user.click(screen.getByRole("menuitem", { name: "Remove project" }));
     expect(h.deletes).toHaveLength(0);
     await user.click(
       within(screen.getByRole("dialog")).getByRole("button", {
@@ -648,7 +667,9 @@ describe("deleting", () => {
       }),
     );
     expect(h.deletes).toEqual([]);
-    expect(JSON.parse(localStorage.getItem("brigadier:navigation:v1")!).trash[0].id).toBe("p-live");
+    expect(
+      JSON.parse(localStorage.getItem("brigadier:navigation:v1")!).trash[0].id,
+    ).toBe("p-live");
     expect(
       within(screen.getByRole("navigation", { name: "Projects" })).queryByText(
         "job-portal",

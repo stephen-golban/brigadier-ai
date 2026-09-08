@@ -97,6 +97,7 @@ export interface Bridge {
   startSession(args: StartSessionArgs): Promise<SessionView>;
   /** Continue an ended session in place: same `session_id`, same feed, a new child. */
   resumeSession(sessionId: SessionId): Promise<SessionView>;
+  forkSession(sessionId: SessionId): Promise<SessionView>;
   sendTurn(sessionId: SessionId, text: string): Promise<{ turn_id: string }>;
   respond(sessionId: SessionId, requestId: RequestId, decision: Decision): Promise<void>;
   interrupt(sessionId: SessionId): Promise<void>;
@@ -245,6 +246,7 @@ const tauriBridge: Bridge = {
   startSession: ({ projectId, prompt, model, permissionMode, options, isolated }) =>
     call<SessionView>("start_session", { projectId, prompt, model, permissionMode, options, isolated }),
   resumeSession: (sessionId) => call<SessionView>("resume_session", { sessionId }),
+  forkSession: (sessionId) => call<SessionView>("fork_session", { sessionId }),
   sendTurn: (sessionId, text) => call<{ turn_id: string }>("send_turn", { sessionId, text }),
   respond: (sessionId, requestId, decision) =>
     call<void>("respond", { sessionId, requestId, decision }),

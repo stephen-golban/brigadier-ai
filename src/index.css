@@ -1,2663 +1,444 @@
-/* Tailwind scans application markup only. Prompt Kit and shadcn components use utilities;
- * legacy shell styles continue to use the desktop tokens below. See index.css.test.ts. */
 @import "tailwindcss" source(none);
-@import "tw-animate-css";
-@plugin "@tailwindcss/typography";
-@source "../src/**/*.tsx";
-@source not "../src/**/*.test.tsx";
-@source "../index.html";
-@custom-variant dark (&:where(.dark, .dark *));
-
-@layer base {
-  * { border-color: var(--color-line); }
-}
-
-/* Adapt Prompt Kit's semantic colors to Brigadier's existing desktop palette. */
-@theme inline {
-  --color-sidebar: var(--color-rail-bg);
-  --color-sidebar-foreground: var(--color-text-sidebar);
-  --color-sidebar-primary: var(--color-text);
-  --color-sidebar-primary-foreground: var(--color-thread-bg);
-  --color-sidebar-accent: var(--color-composer-bg);
-  --color-sidebar-accent-foreground: var(--color-text);
-  --color-sidebar-border: var(--color-line);
-  --color-sidebar-ring: var(--color-control);
-  --color-background: var(--color-thread-bg);
-  --color-foreground: var(--color-text);
-  --color-primary: var(--color-text);
-  --color-primary-foreground: var(--color-thread-bg);
-  --color-secondary: var(--color-surface);
-  --color-secondary-foreground: var(--color-text);
-  --color-muted: var(--color-surface);
-  --color-muted-foreground: var(--color-text-muted);
-  --color-card: var(--color-rail-bg);
-  --color-card-foreground: var(--color-text);
-  --color-popover: var(--color-surface);
-  --color-popover-foreground: var(--color-text);
-  --color-border: var(--color-line);
-  --color-input: var(--color-line);
-  --color-ring: var(--color-control);
-  --color-destructive: var(--color-bad);
-  --color-destructive-foreground: var(--color-text);
-  --color-accent-foreground: var(--color-text);
-}
+@source "./**/*.tsx";
+@source not "./**/*.test.tsx";
 
 @theme static {
-  /* --- surfaces ------------------------------------------------------- */
-  --color-thread-bg: oklch(0.2090 0 0); /* #181818 [measured] main conversation area */
-  --color-sidebar-bg: oklch(0.3513 0.00137 197.09); /* #3a3b3b [measured] sidebar; native vibrancy, so wallpaper-dependent */
-  --color-sidebar-hover: oklch(0.3861 0.00216 247.88); /* #434445 [derived] halfway to the selected pill */
-  --color-sidebar-active: oklch(0.4085 0.00213 247.88); /* #494a4b [measured] selected row pill */
-  --color-sidebar-line: oklch(0.4122 0.00212 247.88); /* #4a4b4c [measured] 1px rule above the account row */
-  --color-rail-bg: oklch(0.2393 0 0); /* #1f1f1f [measured] strip behind the composer's context tabs */
-  --color-surface: oklch(0.2478 0 0); /* #212121 [derived] cards, between the rail and the composer */
-  --color-composer-bg: oklch(0.2850 0 0); /* #2a2a2a [measured] composer input box */
-  --color-line: oklch(0.3523 0 0); /* #3b3b3b [measured] 1px border on the thread's suggestion cards */
+  --spacing: 4px;
+  --color-*: initial;
+  --radius-*: initial;
+  --shadow-*: initial;
 
-  /* --- text ----------------------------------------------------------- */
-  /* Ratios below were re-derived from these oklch values, not copied forward; three of the
-   * original comments were wrong and are corrected here. docs/research/oklch-tokens.md §4. */
-  --color-text: oklch(1.0000 0 0); /* #ffffff [measured]; 17.76:1 on --color-thread-bg */
-  --color-text-sidebar: oklch(0.9097 0 0); /* #e1e1e1 [measured] sidebar row label; 8.59:1 on --color-sidebar-bg */
-  --color-text-muted: oklch(0.6133 0 0); /* #848484 [measured] section label; 4.75:1 on --color-thread-bg (the old comment said 4.6:1) */
-  /* [contrast] The measured #848484 is 3.005:1 on --color-sidebar-bg, so this row was lightened.
-   * The first lightening stopped short: #a3a3a3 is 4.456:1, under the 4.5:1 AA threshold for
-   * normal text, and its comment claimed 4.6:1. Owner bumped it to #a5a5a5 on 2026-09-03, which
-   * clears at 4.563:1 — the one token in this file whose value is a decision rather than a
-   * measurement or a derivation. docs/research/oklch-tokens.md §4. */
-  --color-text-muted-side: oklch(0.7219 0 0); /* #a5a5a5 [owner 2026-09-03] sidebar secondary text; 4.563:1 on --color-sidebar-bg, passes AA */
-  --color-text-placeholder: oklch(0.6862 0 0); /* #9a9a9a [contrast] measured #606060 is 2.28:1 on --color-composer-bg (the old comment said 2.9:1); this is 5.10:1 */
+  --color-canvas: #181818;
+  --color-sidebar: #202020;
+  --color-elevated: #2b2b2b;
+  --color-input: #2a2a2a;
+  --color-input-shell: #1f1f1f;
+  --color-hairline: rgba(255, 255, 255, 0.08);
+  --color-hover: rgba(255, 255, 255, 0.05);
+  --color-selected: rgba(255, 255, 255, 0.08);
+  --color-pressed: rgba(255, 255, 255, 0.12);
+  --color-text: #e3e3e3;
+  --color-text-secondary: #a1a1a1;
+  --color-text-tertiary: #7f7f7f;
+  --color-text-disabled: #676767;
+  --color-attention: #3b82f6;
+  --color-warn: #ef8c57;
+  --color-ok: #74b58a;
+  --color-error: #e07a7a;
+  --color-backdrop: rgba(0, 0, 0, 0.5);
+  --color-menu-glass: rgba(32, 32, 32, 0.78);
+  --color-glass-edge: rgba(255, 255, 255, 0.24);
+  --color-sidebar-tint: rgba(32, 32, 32, 0.18);
+  --color-sidebar-glass: rgba(32, 32, 32, 0.42);
+  --color-sidebar-blue: #294858;
+  --color-sidebar-teal: #234644;
+  --color-shadow: rgba(0, 0, 0, 0.25);
 
-  /* --- state ---------------------------------------------------------- */
-  --color-accent: oklch(0.7354 0.13858 47.76); /* #ef8c57 [measured] the composer's "Full access" chip; 7.24:1 on --color-thread-bg */
-  --color-ok: oklch(0.7558 0.13470 156.47); /* #5cc98c [derived] no green in the reference; running / allow; 8.61:1 */
-  --color-bad: oklch(0.6856 0.16581 25.41); /* #ef6a63 [derived] no red in the reference; failed / deny; 5.84:1 */
-  --color-on-solid: oklch(0.2090 0 0); /* #181818 [measured] glyph inside the white send button */
-  /* Two values that escaped the token layer until 2026-09-03: both were raw hex in the rules
-   * below, and the first of them is the feed's entire body text (`.feed-line` since W4-D1
-   * renamed the row's columns away; it was `.col-l`). Ratios re-derived, not carried forward. */
-  --color-feed-text: oklch(0.8699 0 0); /* #d4d4d4 [measured] feed row body; 11.98:1 on --color-thread-bg, 10.53:1 on the hovered row's #242424 */
-  --color-control: oklch(0.5417 0 0); /* #6f6f6f [measured] native checkbox/radio fill, and since W4-D1 the jump pill's border; 3.21:1 on --color-surface and 3.53:1 on --color-thread-bg, both over the 3:1 WCAG 1.4.11 asks of a non-text control */
-  /* Two tokens added by W4-D1 for the feed's margin, 2026-09-03. Both ratios are derived below
-   * against the ground each one actually paints on, in both of the row's states.
-   *
-   * The mark is the design panel's "literal grey token, not opacity" finding taken literally:
-   * white at 55% over --color-thread-bg composites to #979797, and that is written here as a
-   * colour rather than left as an `opacity` on a muted token, because opacity would also thin the
-   * glyph. It clears AA on the plain thread ground and on the hovered row's ground, which is the
-   * pairing the narrow-window layout puts it on (see the `max-width: 1200px` block below). */
-  --color-feed-mark: oklch(0.6764 0 0); /* #979797 [derived 2026-09-03] feed margin clock and session ref; 6.079:1 on --color-thread-bg, 5.344:1 on the hovered row's #242424, 5.643:1 on --color-rail-bg */
-  /* The minute rule. **Decorative and redundant**, and it does not claim WCAG 1.4.11's 3:1: the
-   * boundary it draws is also printed as text in the margin beside it, so nothing is conveyed by
-   * the line alone. Stated rather than implied, because a rule whose comment certifies one ground
-   * and stays silent about the other is exactly how a 3.699:1 line shipped earlier in this wave. */
-  --color-feed-rule: oklch(0.4091 0 0); /* #4a4a4a [derived 2026-09-03] feed minute rule; 2.004:1 on --color-thread-bg and 1.761:1 on the hovered row's #242424, both deliberate */
-
-  /* --- radii and type -------------------------------------------------
-   * These have Tailwind namespaces of their own (--radius-*, --font-*), so they belong in
-   * @theme; the remaining geometry values do not and stay in :root below. */
-  /* [derived 2026-09-03] One small radius for the controls that used to pick 5px or 6px each on
-   * their own — the caret, the "+" beside Projects, the path input, the burn fields. Shape
-   * consistency is part of what the owner's "1999 app" verdict was pointing at: a window with
-   * four different corner radii on four controls of the same size reads as unplanned. */
-  --radius-xs: 6px;
-  --radius-row: 8px; /* [measured] sidebar pill corner */
-  --radius-md: 12px; /* [measured] thread card corner */
-  --radius-lg: 20px; /* [measured] composer corner */
-
-  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui,
-    sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, ui-sans-serif,
+    Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --radius-sm: 4px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-composer: 28px;
+  --shadow-overlay: 0 8px 24px var(--color-shadow);
 }
 
-:root {
-  /* --- geometry -------------------------------------------------------
-   * No Tailwind namespace fits a sidebar width or a row pitch, and these are only ever read as
-   * var(). Tailwind rewrites nothing outside @theme, so they keep their original names. */
-  --sidebar-w: 276px; /* [measured] 275.5 */
-  --row-h: 30px; /* [measured] sidebar row pitch and pill height */
-  --row-h-nested: 27px; /* [derived 2026-09-03] session rows, one step under the measured project row */
-  --head-h: 52px; /* [derived 2026-09-03] brand strip and thread header, so the two columns start on one line */
-  --thread-max: 736px; /* [measured] composer box width */
-  --content-max: 712px; /* [measured] context strip and card row width; the feed's reading measure */
-  /* The virtualizer's fixed row height, and the row's line-height. **Kept in step with `ROW_H` in
-   * `src/components/Feed.tsx`** — they must be the same integer or the line stops being centred
-   * in its box, and a fractional value drifts against the sizer at devicePixelRatio 2. 18 → 28
-   * [derived 2026-09-03]; the reasoning is on `ROW_H`. */
-  --feed-row-h: 28px;
-
-  /* --- type scale -----------------------------------------------------
-   * The owner's verdict on 2026-09-02 was that the measured palette fixed the colour and nothing
-   * else: "looks nothing like ChatGPT, more like a year 1999 app". A flat list of rows all at one
-   * size and one weight is most of what that verdict is about, and a named scale is what stops it
-   * coming back. The two measured sizes are kept at their measured values and the steps between
-   * them are derived, so nothing sampled is discarded.
-   *
-   * Named `--fs-*` rather than `--text-*` deliberately: `--text-*` is a Tailwind namespace and a
-   * token there would emit `text-xs`/`text-sm`/… utilities nothing in this repo uses. Same
-   * reasoning as the `source(none)` whitelist above — the design system must not leak rules into
-   * the bundle for prose about itself, and prose is most of what the scanner used to read. */
-  --fs-xs: 11px; /* [derived] counts, run meta, the path line */
-  --fs-sm: 12px; /* [measured] section label and the trailing meta slot */
-  --fs-md: 13px; /* [derived] nested session rows: one step under the measured project row */
-  --fs-base: 14px; /* [measured] sidebar row label; also the document base */
-  --fs-lg: 17px; /* [measured] the wordmark */
-
-  /* --- motion ---------------------------------------------------------
-   * This is a desktop app whose whole premise is that it feels instant, so motion here is short,
-   * decelerating and never in front of an interaction: a row tint, a caret turning, a group
-   * arriving. Two durations and one curve, reused everywhere, so nothing invents its own timing.
-   * The `prefers-reduced-motion` block at the end of this file switches all of it off. */
-  --dur-fast: 90ms; /* hover and press feedback */
-  --dur: 140ms; /* a caret turning, a group arriving */
-  --ease: cubic-bezier(0.2, 0, 0, 1);
-
-  /* Tailwind does not set color-scheme; this is what makes native controls and scrollbars dark. */
-  color-scheme: dark;
-  font-family: var(--font-sans);
-  font-size: 14px; /* [measured] sidebar row label */
-  line-height: 1.45;
-  -webkit-font-smoothing: antialiased;
-}
-
-* {
-  box-sizing: border-box;
-}
-
-html,
-body,
-#root {
-  height: 100%;
-  margin: 0;
-}
-
-body {
-  background: var(--color-thread-bg);
-  color: var(--color-text);
-  overflow: hidden;
-}
-
-@layer base{
-
-button,
-input,
-select,
-textarea {
-  font: inherit;
-  color: inherit;
-  background: transparent;
-  border: 0;
-  border-radius: var(--radius-row);
-  padding: 0;
-}
-}
-
-@layer base{
-
-button {
-  cursor: pointer;
-}
-}
-
-/* The reset above must not reach the native controls that draw themselves. */
-input[type="checkbox"],
-input[type="radio"] {
-  appearance: auto;
-  -webkit-appearance: auto;
-  width: 13px;
-  height: 13px;
-  accent-color: var(--color-control);
-}
-
-@layer base{
-
-button:disabled,
-input:disabled,
-select:disabled,
-textarea:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-}
-
-@layer base{
-
-:focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 1px;
-}
-}
-
-.dim {
-  color: var(--color-text-muted);
-}
-
-.ok-text {
-  color: var(--color-ok);
-}
-
-.bad-text {
-  color: var(--color-bad);
-}
-
-.mono {
-  font-family: var(--font-mono);
-}
-
-/* Text for assistive technology only. A session row's status is a coloured dot, which is not a
-   label; this is the label. Standard clip-rect recipe, not a `display: none` (which removes it
-   from the accessibility tree along with the pixels). */
-.sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: -1px;
-  padding: 0;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-  border: 0;
-}
-
-/* ------------------------------------------------------------- layout */
-
-/* ------------------------------------------------------------ sidebar */
-
-/*
- * `docs/vision.md` §9, built rather than approximated. What changed on 2026-09-03, and why each
- * change answers "looks nothing like ChatGPT, more like a year 1999 app":
- *
- *   - **Hierarchy by size, weight and family, not just by colour.** A project is a name: 14px
- *     system, medium. A session is a ref: 12px mono, and its `brigadier/` prefix recedes to the
- *     muted token while the eight hex digits that actually differ carry the row. Before this,
- *     every line in the sidebar was 14px at one weight, which is what a Win32 list box is.
- *   - **One vertical rhythm.** Every gap in this section is 4 / 8 / 12 / 16 / 24. The file used
- *     to reach for 2, 6, 9, 10, 18 and 20 as well, per rule, which is why nothing lined up.
- *   - **Motion.** Rows tint over 90 ms, the caret turns over 140 ms, a group of sessions arrives
- *     with a 140 ms lift. Nothing waits on an animation; a snapping hover is the single loudest
- *     "this is old" signal an app gives off.
- *   - **Real glyphs.** The `✎ ◈ ▤` text characters are gone. Whether those render as an icon, a
- *     box or a fallback serif is up to whichever font on the machine claims the codepoint, and
- *     they never sit on the label's baseline. Inline SVG at `currentColor` always does.
- */
-
-/* --- the two action rows above Projects ------------------------------- */
-
-/* "New session" is the one thing this column is for, so it is the one row with a surface of its
-   own. Everything else in the sidebar is flat until you touch it. */
-.side-new {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: calc(100% - 16px);
-  margin: 0 8px;
-  min-height: 32px;
-  padding: 0 10px;
-  border-radius: var(--radius-row);
-  background: rgba(255, 255, 255, 0.07);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
-  color: var(--color-text);
-  font-size: var(--fs-base);
-  font-weight: 500;
-  text-align: left;
-  transition: background-color var(--dur-fast) var(--ease);
-}
-
-.side-new:hover {
-  background: rgba(255, 255, 255, 0.12);
-}
-
-/* A press that moves. Transform only, so it is one composited frame, and the reduced-motion
-   block leaves the offset while removing the tween. */
-.side-new:active {
-  transform: translateY(0.5px);
-}
-
-/* The pending-approvals count. Read-only: it reports, it is not a target, so it does not light
-   up on hover and it does not pretend to be a button. */
-.side-nav {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: calc(100% - 16px);
-  margin: 4px 8px 0;
-  min-height: var(--row-h);
-  padding: 0 10px;
-  border-radius: var(--radius-row);
-  font-size: var(--fs-base);
-  color: var(--color-text-muted-side);
-}
-
-/* Something is actually waiting on a person. The row stops being furniture. */
-.side-nav.waiting {
-  color: var(--color-text-sidebar);
-}
-
-.side-new svg,
-.side-nav svg {
-  flex: 0 0 auto;
-}
-
-.side-label {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* --- the Projects header --------------------------------------------- */
-
-.side-section {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 12px 0 16px;
-  margin: 24px 0 4px; /* [derived] was 20/2; on the 4px rhythm, and one step more air above */
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--color-text-muted-side);
-}
-
-.side-section .grow {
-  flex: 1 1 auto;
-}
-
-.side-section-add {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 20px;
-  width: 20px;
-  height: 20px;
-  border-radius: var(--radius-xs);
-  color: var(--color-text-muted-side);
-  transition:
-    background-color var(--dur-fast) var(--ease),
-    color var(--dur-fast) var(--ease),
-    transform var(--dur) var(--ease);
-}
-
-.side-section-add:hover {
-  background: var(--color-sidebar-hover);
-  color: var(--color-text);
-}
-
-/* The "+" becomes an "×" when the path form is open. One glyph, two states, no second icon. */
-.side-section-add[aria-expanded="true"] {
-  transform: rotate(45deg);
-  color: var(--color-text);
-}
-
-/* --- a project and the sessions nested under it ----------------------- */
-
-.side-group {
-  margin-bottom: 4px;
-}
-
-/* The caret and the selecting button share one pill, so the row reads as a single object while
-   staying two hit targets. A button nested inside a button is invalid HTML and collapsing a
-   project must never steal the selection. */
-.side-project {
-  display: flex;
-  align-items: center;
-  margin: 0 8px;
-  border-radius: var(--radius-row);
-  transition: background-color var(--dur-fast) var(--ease);
-}
-
-.side-project:hover {
-  background: var(--color-sidebar-hover);
-}
-
-.side-project.selected {
-  background: var(--color-sidebar-active);
-}
-
-/*
- * A collapsed project that holds the session on screen. Without this the sidebar disowns the
- * thread in the main panel entirely: fold the group and nothing anywhere acknowledges where what
- * you are reading lives.
- *
- * Deliberately **not** the run marker, and deliberately not the selected pill. "Something is
- * running in here" and "the thing you are reading is in here" are different facts: the first is a
- * round green dot, this is a straight accent bar beside it, and the selected pill is a fill.
- * Three shapes for three statements, and — since 2026-09-03 — three *elements* for three
- * statements. Only drawn while the group is closed: an open group shows the selected row itself,
- * and a permanent ancestor highlight would be decoration rather than a signal.
- *
- * 4.58:1 on --color-sidebar-bg [derived 2026-09-03], over the 3:1 WCAG 1.4.11 asks of a
- * meaningful non-text graphic, and the element carries `aria-label="holds the open session"` for
- * anyone who cannot see it at all.
- *
- * **W4-C2 drew this fact twice and painted one of them wrong**, and both halves of that are worth
- * keeping written down.
- *
- * It also put `box-shadow: inset 2px 0 0 var(--color-accent)` on the row, 230px to the left of
- * this bar. That rule does not do what its author believed. **An inset box-shadow is a
- * subtractive paint**: the browser fills the padding box with the shadow colour and punches out
- * the same box offset by 2px, so what gets painted is a *difference of two rounded rectangles*,
- * not a 2px strip. With a border-radius the two rects' curves do not coincide and the antialiased
- * seam tints the row's whole top and bottom edge — measured at 496 tinted device pixels per edge,
- * (82,71,64) on a (58,59,59) ground, and confirmed absent on both a sibling row and the selected
- * row. The row read as outlined in orange, competing with the fill that means "selected".
- *
- * The lesson generalises past this rule: **do not draw a mark with a property whose painted
- * region is derived by subtraction.** This bar is a plain in-flow box. Its painted region is its
- * own border box, 2px by 10px, stated rather than inferred, and it cannot reach a row edge
- * whatever the radius does.
- */
-.side-holds {
-  flex: 0 0 2px;
-  width: 2px;
-  height: 10px;
-  border-radius: 1px;
-  background: var(--color-accent);
-}
-
-.side-caret {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 18px;
-  width: 18px;
-  height: var(--row-h);
-  border-radius: var(--radius-xs);
-  color: var(--color-text-muted-side);
-}
-
-.side-caret svg {
-  transition: transform var(--dur) var(--ease);
-}
-
-.side-caret[aria-expanded="true"] svg {
-  transform: rotate(90deg);
-}
-
-.side-project:hover .side-caret,
-.side-project.selected .side-caret {
-  color: var(--color-text-sidebar);
-}
-
-.side-project-btn {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 1 1 auto;
-  min-width: 0;
-  min-height: var(--row-h);
-  padding: 0 10px 0 4px;
-  border-radius: 0 var(--radius-row) var(--radius-row) 0;
-  font-size: var(--fs-base);
-  font-weight: 500;
-  color: var(--color-text-sidebar);
-  text-align: left;
-}
-
-.side-project.selected .side-project-btn {
-  color: var(--color-text);
-}
-
-/* Trailing slot: the pending chip, the run marker, and the count a collapsed group carries.
-   Steps up on the hover and selected grounds for the same reason `.side-branch .prefix` does —
-   --color-text-muted-side is 3.96:1 on #434445 and 3.61:1 on #494a4b, both under AA. */
-.side-meta {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--color-text-muted-side);
-  font-size: var(--fs-sm);
-}
-
-.side-project:hover .side-meta,
-.side-project.selected .side-meta {
-  color: var(--color-text-sidebar); /* 7.46:1 on hover, 6.79:1 on selected [derived 2026-09-03] */
-}
-
-/* §9's "finished projects collapse to one line with a count". Tabular so a two-digit count does
-   not shove the run marker sideways. */
-.side-count {
-  min-width: 10px;
-  text-align: right;
-  font-size: var(--fs-xs);
-  font-variant-numeric: tabular-nums;
-}
-
-/* Sessions arrive rather than appear. 140 ms, transform and opacity only, so it is one
-   composited frame and it never delays the click that caused it. */
-.side-sessions {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  padding-top: 2px;
-  animation: side-group-in var(--dur) var(--ease);
-}
-
-@keyframes side-group-in {
-  from {
-    opacity: 0;
-    transform: translateY(-3px);
+@layer base {
+  :root {
+    color-scheme: dark;
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--color-text);
+    background: var(--color-canvas);
+    -webkit-font-smoothing: antialiased;
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    margin: 0;
+  }
+  * {
+    border-color: var(--color-hairline);
+  }
+  ::selection {
+    background: var(--color-selected);
+    color: var(--color-text);
+  }
+  ::placeholder {
+    color: var(--color-text-tertiary);
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-text-secondary);
+    outline-offset: 2px;
+  }
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+  }
+  input,
+  textarea,
+  select {
+    color: var(--color-text);
+    accent-color: var(--color-text-secondary);
+  }
+  option {
+    color: var(--color-text);
+    background: var(--color-elevated);
+  }
+  progress,
+  meter {
+    appearance: none;
+    border: 0;
+    background: var(--color-selected);
+    color: var(--color-text-secondary);
+  }
+  progress::-webkit-progress-bar,
+  meter::-webkit-meter-bar {
+    background: var(--color-selected);
+    border: 0;
+  }
+  progress::-webkit-progress-value,
+  meter::-webkit-meter-optimum-value,
+  meter::-webkit-meter-suboptimum-value,
+  meter::-webkit-meter-even-less-good-value {
+    background: var(--color-text-secondary);
+  }
+  progress::-moz-progress-bar,
+  meter::-moz-meter-bar {
+    background: var(--color-text-secondary);
   }
 }
 
-/*
- * A session is a git ref, and it is drawn as one: mono, 12px, one step quieter than the project
- * name above it. Its content starts at 26px from the sidebar edge (8 margin + 18 padding), which
- * is exactly where the project label starts, so the nesting is a real alignment rather than an
- * arbitrary indent.
- */
-/*
- * Split in two on 2026-09-04, when the row gained a "reveal in Finder" button: a button nested
- * inside a button is invalid HTML, exactly as `.side-project` above already records. `.side-session`
- * is now the pill — background, radius, the row's colour — and `.side-session-btn` is the part
- * that selects. Every measurement below moved with the half it belongs to; nothing changed value.
- */
-.side-session {
-  display: flex;
-  align-items: center;
-  width: calc(100% - 16px);
-  margin: 0 8px;
-  border-radius: var(--radius-row);
-  color: var(--color-text-muted-side);
-  transition:
-    background-color var(--dur-fast) var(--ease),
-    color var(--dur-fast) var(--ease);
-}
-
-.side-session-btn {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 1 1 auto;
-  min-width: 0;
-  min-height: var(--row-h-nested);
-  padding: 0 10px 0 18px;
-  border-radius: var(--radius-row);
-  font-size: var(--fs-md);
-  color: inherit;
-  text-align: left;
-}
-
-.side-session:hover {
-  background: var(--color-sidebar-hover);
-  color: var(--color-text-sidebar);
-}
-
-.side-session.selected {
-  background: var(--color-sidebar-active);
-  color: var(--color-text);
-}
-
-.side-branch {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  letter-spacing: -0.01em;
-}
-
-/*
- * Every branch in the window starts `brigadier/`. The shared half recedes; the eight hex digits
- * that differ are the ones that read. A weight difference, never an opacity one.
- *
- * **A contrast ratio is a property of a pair, not of a colour**, and a sidebar row has three
- * grounds, not one. Every pair below was re-derived on 2026-09-03 against the ground it actually
- * paints on, after the first cut of this rule asserted a ratio it did not produce:
- *
- *                        rest #3a3b3b   hover #434445   selected #494a4b
- *   .prefix              4.56 (a5a5a5)  7.46 (e1e1e1)   6.79 (e1e1e1)
- *   .ref                 8.59 (e1e1e1)  9.76 (ffffff)   8.88 (ffffff)
- *
- * Two things that cut of the rule got wrong. `.ref` was `color: inherit`, so at rest it resolved
- * to the row's own --color-text-muted-side and the two halves were the *same colour* — the
- * hierarchy this comment described did not exist until the row was hovered. And
- * --color-text-muted-side is 3.96:1 on the hover ground and 3.61:1 on the selected one, so the
- * prefix failed AA in exactly the two states a user puts a row into on purpose. Both halves now
- * step up together and the tier between them is preserved in all three states.
- */
-.side-branch .prefix {
-  color: var(--color-text-muted-side);
-}
-
-.side-branch .ref {
-  color: var(--color-text-sidebar);
-}
-
-.side-session:hover .side-branch .prefix,
-.side-session.selected .side-branch .prefix {
-  color: var(--color-text-sidebar);
-}
-
-.side-session.selected .side-branch .ref,
-.side-session:hover .side-branch .ref {
-  color: var(--color-text);
-}
-
-/*
- * Only a failed session says its status in words.
- *
- * It says it in a red *wash* with light text, not in red text, and that is the whole point.
- * --color-bad is #ef6a63, measured and correct at 5.84:1 on --color-thread-bg — and **3.70:1 on
- * --color-sidebar-bg**, which is what the first cut of this rule shipped at 11px. Lifting the red
- * until it clears AA on all three sidebar grounds needs L 0.79 or so, by which point it is a pale
- * salmon that no longer reads as an alarm; #ff8078 (L 0.7428) is already only 3.64:1 on a
- * selected row. So the alarm colour moved to the fill, where the requirement is legibility of the
- * text on top of it rather than of the colour itself:
- *
- *   #e1e1e1 on rgba(bad, .30) over  rest 5.88 · hover 5.33 · selected 4.97   [derived 2026-09-03]
- *
- * --color-bad itself is unchanged; other rules depend on it against the thread ground where it
- * is correct.
- */
-.side-flag {
-  flex: 0 0 auto;
-  padding: 0 6px;
-  border-radius: 999px;
-  font-size: var(--fs-xs);
-  line-height: 16px;
-  background: rgba(239, 106, 99, 0.3);
-  color: var(--color-text-sidebar);
-}
-
-.side-empty {
-  padding: 4px 10px 4px 26px;
-  margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--color-text-muted-side);
-}
-
-.side-empty.first {
-  padding: 4px 16px;
-}
-
-.chip {
-  flex: 0 0 auto;
-  padding: 0 6px;
-  border-radius: 999px;
-  font-size: var(--fs-xs);
-  line-height: 17px;
-  background: rgba(239, 140, 87, 0.18);
-  color: var(--color-accent);
-  white-space: nowrap;
-}
-
-/*
- * The same pair problem as `.side-flag`, and it predates W4-C: accent text on its own 18% accent
- * wash is 5.31:1 over --color-thread-bg, where the chip was designed, and **3.43:1 over
- * --color-sidebar-bg, 3.07:1 hovered and 2.84:1 on a selected row** [derived 2026-09-03]. The
- * thread-side chip is left exactly as measured; only the sidebar's copy trades its accent text
- * for the wash-carries-the-meaning treatment `.side-flag` uses.
- *
- *   #e1e1e1 on rgba(accent, .28) over  rest 5.47 · hover 4.98 · selected 4.69
- */
-
-.chip.plain {
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--color-text-muted-side);
-  font-family: var(--font-mono);
-  letter-spacing: -0.01em;
-}
-
-/*
- * The status marker, and §9's `*` versus `o` read literally: a filled dot is live, a hollow ring
- * is idle. 6px rather than 8px — at this row height 8px was a bullet, and the sketch's marker is
- * punctuation.
- */
-.dot {
-  flex: 0 0 6px;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: transparent;
-  box-shadow: inset 0 0 0 1px var(--color-text-muted-side);
-}
-
-.dot.running {
-  background: var(--color-ok);
-  box-shadow: none;
-}
-
-.dot.starting {
-  background: var(--color-accent);
-  box-shadow: none;
-}
-
-.dot.failed {
-  background: var(--color-bad);
-  box-shadow: none;
-}
-
-/*
- * A turn is open. This is the one perpetual animation in the window and it is here because §9
- * calls it load-bearing: work in a project you are not looking at must never be invisible, and a
- * static ring says "running" while a pulse says "running *now*". One 6px dot animating a box
- * shadow is a composited repaint of ~40px²; the reduced-motion block below drops it to the
- * static ring it replaced.
- */
-.dot.busy {
-  animation: dot-pulse 1.8s var(--ease) infinite;
-}
-
-@keyframes dot-pulse {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 rgba(92, 201, 140, 0.5);
-  }
-  70% {
-    box-shadow: 0 0 0 4px rgba(92, 201, 140, 0);
-  }
-}
-
-/* Path input, revealed by the "+" on the Projects header. */
-.side-add {
-  display: flex;
-  gap: 8px;
-  margin: 4px 8px 8px;
-}
-
-.side-add input {
-  flex: 1 1 auto;
-  min-width: 0;
-  height: 28px;
-  padding: 0 8px;
-  border-radius: var(--radius-xs);
-  background: rgba(0, 0, 0, 0.22);
-  border: 1px solid var(--color-sidebar-line);
-  font-size: var(--fs-md);
-  font-family: var(--font-mono);
-}
-
-.side-add input::placeholder {
-  color: var(--color-text-muted-side);
-  font-family: var(--font-sans);
-}
-
-.side-add button {
-  flex: 0 0 auto;
-  height: 28px;
-  padding: 0 12px;
-  border-radius: var(--radius-xs);
-  background: rgba(255, 255, 255, 0.1);
-  font-size: var(--fs-md);
-  transition: background-color var(--dur-fast) var(--ease);
-}
-
-.side-add button:hover {
-  background: rgba(255, 255, 255, 0.16);
-}
-
-/*
- * `add_project`'s own refusal — "not a directory", "not a repository root" — under the control
- * that caused it. The global notice at the top of the thread still fires; this is the copy that
- * is next to the field the owner is looking at.
- *
- * --color-bad is the token the failed-session flag and the bad avatar already use, so a red in
- * this sidebar means one thing. `word-break` because the message quotes a path, and a path with
- * no spaces in a 240px column otherwise pushes the whole sidebar wider.
- */
-.side-add-error {
-  margin: 0 8px 8px;
-  padding: 0 2px;
-  font-size: var(--fs-sm);
-  line-height: 1.4;
-  color: var(--color-bad);
-  overflow-wrap: anywhere;
-}
-
-/*
- * Reveal in Finder, on a project row and on a session row. Hidden until the row is hovered or the
- * button itself is focused, because it is a secondary action on every row in the list and drawing
- * 20 of them at rest would turn the sidebar into a toolbar.
- *
- * Opacity, not `visibility` or `display`: the button stays in the accessible tree and stays
- * tabbable, so the action is reachable without a pointer at all. `:focus-visible` is what makes
- * that honest — tab to it and it appears.
- */
-.side-reveal {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 20px;
-  width: 20px;
-  height: 20px;
-  margin-right: 6px;
-  border-radius: var(--radius-xs);
-  color: var(--color-text-muted-side);
-  opacity: 0;
-  transition:
-    opacity var(--dur-fast) var(--ease),
-    background-color var(--dur-fast) var(--ease),
-    color var(--dur-fast) var(--ease);
-}
-
-.side-project:hover .side-reveal,
-.side-session:hover .side-reveal,
-.side-reveal:focus-visible {
-  opacity: 1;
-}
-
-.side-reveal:hover {
-  background: var(--color-sidebar-hover);
-  color: var(--color-text);
-}
-
-/*
- * Delete, on a project row and on a session row. Same hover-revealed treatment as `.side-reveal`
- * beside it and for the same reason — a secondary action on every row in a list of forty — with
- * one difference: it goes red on hover, because it is the only control in this sidebar that
- * destroys something. `--color-bad` is the token the failed flag and the bad avatar already use.
- *
- * Not hidden with `display` or `visibility`: it stays in the accessible tree and stays tabbable,
- * and `:focus-visible` is what makes that honest.
- */
-.side-delete {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 20px;
-  width: 20px;
-  height: 20px;
-  margin-right: 6px;
-  border-radius: var(--radius-xs);
-  color: var(--color-text-muted-side);
-  opacity: 0;
-  transition:
-    opacity var(--dur-fast) var(--ease),
-    background-color var(--dur-fast) var(--ease),
-    color var(--dur-fast) var(--ease);
-}
-
-.side-project:hover .side-delete,
-.side-session:hover .side-delete,
-.side-delete:focus-visible,
-.side-delete[aria-expanded="true"] {
-  opacity: 1;
-}
-
-.side-delete:hover:not(:disabled) {
-  background: rgba(239, 106, 99, 0.16);
-  color: var(--color-bad);
-}
-
-.side-delete:disabled {
-  opacity: 0.4;
-}
-
-/*
- * What a delete is about to do, or what it refused to do, under the row it belongs to.
- *
- * It is prose in a 240px column and it is deliberately not abbreviated: the four things this note
- * has to be able to say — a live session must be ended first, a dirty or unmerged worktree
- * refused and nothing was touched, the branch survives and is named, and a project's worktree
- * pass stopped part-way with some checkouts already gone — are each a sentence, and a sidebar
- * that shortened them into a code would be handing the owner a puzzle at the one moment he is
- * about to destroy something.
- *
- * `.bad` is the refusal colouring, matching `.side-add-error`: red is what a refusal reads as
- * everywhere else in this window.
- */
-.side-delete-note {
-  margin: 2px 8px 6px;
-  padding: 6px 8px;
-  border-radius: var(--radius-xs);
-  background: var(--color-sidebar-hover);
-  font-size: var(--fs-sm);
-  line-height: 1.45;
-  color: var(--color-text-sidebar);
-  overflow-wrap: anywhere;
-}
-
-.side-delete-note.bad {
-  color: var(--color-bad);
-}
-
-.side-delete-note p {
-  margin: 0 0 6px;
-}
-
-.side-delete-note code {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-}
-
-/* The buttons sit on the text rather than in an action row, as `.dock-note .act` does. */
-.side-delete-acts {
-  margin-bottom: 0;
-}
-
-.side-delete-note .act {
-  height: 22px;
-  padding: 0 8px;
-  vertical-align: middle;
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--color-text-sidebar);
-}
-
-/*
- * Every session a project delete attempted, one per line, including the one that refused.
- *
- * `delete_project`'s database half is all-or-nothing and its worktree half is not: checkouts go
- * one at a time before any row is touched, and the ones removed before the refusal **stay
- * removed**. One summary line over that array would be the false report this list exists to
- * prevent, so the list is not collapsible and has no "and N more".
- */
-.side-delete-list {
-  margin: 0 0 6px;
-  padding-left: 14px;
-  list-style: disc;
-}
-
-.side-delete-list li {
-  margin-bottom: 2px;
-}
-
-/* Dev-only burn panel, above the status bar. */
-.side-dev {
-  flex: 0 0 auto;
-  margin: 0 8px 8px;
-  font-size: var(--fs-sm);
-  color: var(--color-text-muted-side);
-}
-
-.side-dev summary {
-  cursor: pointer;
-  padding: 4px 8px;
-  border-radius: var(--radius-xs);
-  list-style: none;
-}
-
-.side-dev summary::-webkit-details-marker {
-  display: none;
-}
-
-.side-dev summary:hover {
-  background: var(--color-sidebar-hover);
-}
-
-/* The bottom bar: the reference's account row, carrying our claude probe and run id. */
-.side-status {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 46px; /* [measured] */
-  padding: 8px 12px;
-  border-top: 1px solid var(--color-sidebar-line); /* [measured] 1px */
-}
-
-.side-status .avatar {
-  flex: 0 0 24px;
+/* All standard icon buttons share metrics and states, independent of placement classes. */
+.button[data-icon-button="standard"] {
   width: 24px;
   height: 24px;
-  border-radius: 50%;
-  background: var(--color-sidebar-active);
-  color: var(--color-text-sidebar);
-  font-size: 10px;
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.side-status .avatar.bad {
-  background: rgba(239, 106, 99, 0.25);
-  color: var(--color-bad);
-}
-
-.side-status .who {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.side-status .who strong {
-  display: block;
-  font-size: var(--fs-md);
-  font-weight: 500;
-  color: var(--color-text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.side-status .who span {
-  display: block;
-  font-size: var(--fs-xs);
-  color: var(--color-text-muted-side);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-
-/* -------------------------------------------------------------- thread */
-
-.thread {
-  flex: 1 1 auto;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-  background: var(--color-thread-bg);
-}
-
-/*
- * The header replaces a single ellipsized status line that read
- * `name · /very/long/path · session <uuid> · running`, where the piece you actually wanted was
- * whichever piece the ellipsis had eaten. Two lines with an actual hierarchy — the name at 14/600
- * and everything else at 11px mono muted — say the same thing in the same height and can be read
- * at a glance.
- *
- * Quiet on purpose. `docs/vision.md` §9 is "thread-primary, one column", and the pinned plan card
- * that belongs above the thread is W4-D's; a header competing with it now would have to be
- * shrunk again later.
- */
-.thread-head {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-height: var(--head-h);
-  padding: 8px 16px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-  color: var(--color-text-muted);
-}
-
-.thread-head .head-id {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.thread-head .head-name {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  font-size: var(--fs-base);
-  line-height: 1.3;
-}
-
-.thread-head .head-name b {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--color-text);
-  font-weight: 600;
-  letter-spacing: -0.01em;
-}
-
-.thread-head .head-path {
-  display: block;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  letter-spacing: -0.01em;
-  color: var(--color-text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.notice {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  max-width: 50%;
-  min-width: 0;
-  padding: 3px 10px;
-  border-radius: 999px;
-  background: rgba(239, 106, 99, 0.16);
-  color: var(--color-bad);
-  font-size: var(--fs-sm);
-  transition: background-color var(--dur-fast) var(--ease);
-}
-
-/* The hover feedback is a ring, not a darker wash. W4-C's first cut deepened the fill to 0.26,
-   which took --color-bad from 4.70:1 to **3.94:1** against its own hovered background — a hover
-   state that fails AA is still a state the text is read in. The ring costs nothing. */
-.notice:hover {
-  box-shadow: inset 0 0 0 1px rgba(239, 106, 99, 0.45);
-}
-
-.notice .notice-text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.notice svg {
-  flex: 0 0 auto;
-  opacity: 0.75;
-}
-
-/* ---------------------------------------------------------------- feed */
-
-/*
- * W4-D1, 2026-09-03. The rows this section used to draw were a fixed-pitch log table: a
- * `HH:MM:SS` column, a right-aligned envelope-`seq` column, `field · field · field` records in
- * 12px mono at an 18px pitch, on alternating #181818 / #1d1d1d stripes. The rationale for each
- * change is on `src/components/Feed.tsx`; the geometry is here.
- *
- * The shape in one line: **one reading column at `--content-max`, and the metadata in the margin
- * beside it.** A table's keys go in columns on the left, before the content; a document's go in
- * the margin, where they cannot be read first. Nothing here parses the row's text.
- *
- * **W4-D2, 2026-09-04, landed the `k` kind field and the geometry did not move.** It cost exactly
- * two rules — `.feed-line.bad` and `.feed-line.ask`, both further down — plus `.feed-band` and
- * `.feed-verbose` for the toggle that hides model prose. The column, the pitch and the margin are
- * unchanged, and the still-true half of the sentence above is why: a rule that reads `k` needs
- * nothing from the string.
- */
-
-/*
- * `min-height` added by W4-D2, 2026-09-04. Without it this pane was the only flex child of
- * `.thread` that could yield, so it absorbed the whole squeeze when an approval opened: at the
- * window's minimum (viewport 800x468) it measured **59.5px = 1.39 rows** of a 28px pitch, with
- * the top visible row cut through the middle of its glyphs
- * (`docs/research/visual-checks-2026-09-04.md` §2.5). 52 head + 196.5 approvals + 160 dock =
- * 408.5 of 468.
- *
- * **132, not the 112 that file proposed**, and the difference is the band: `box-sizing:
- * border-box` is set on `*` above, so 112 would have been 92px of scroller — 3.28 rows — once the
- * 20px band came out of it. 132 - 20 = 112 = exactly four whole rows in the scroller, which is
- * what "~112 px (4 rows)" was asking for. `.approvals` becomes shrinkable in the same change, so
- * this floor is what it yields against.
- */
-.feed {
-  position: relative;
-  flex: 1 1 auto;
-  display: flex;
-  flex-direction: column;
-  min-height: 132px;
-  /* A band for `.feed-band`, so the count never sits on top of row 0. 20 rather than 15: on the
-     4 / 8 / 12 rhythm the rest of the file keeps. */
-  padding-top: 20px;
-}
-
-/* The band above row 0: the verbose toggle, then the row count. Aligned with the right edge of
-   the reading column rather than with the pane, so it reads as belonging to the column and not as
-   a corner badge. Falls back to a 16px inset once the column is wider than the pane leaves room
-   for — which is the same inset `.feed-sizer` takes below, so the two stay flush at every width.
-
-   `pointer-events` is off on the band and back on for the button alone: the count is a report and
-   was never a target, and the band spans dead space the rows underneath should still get. */
-.feed-band {
-  position: absolute;
-  top: 0;
-  right: max(16px, calc((100% - var(--content-max)) / 2));
-  z-index: 1;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  pointer-events: none;
-}
-
-.feed-count {
-  font-size: var(--fs-xs);
-  font-family: var(--font-mono);
-  color: var(--color-text-muted); /* #848484, 4.748:1 on --color-thread-bg; never on a hovered row */
-}
-
-/*
- * The verbose toggle. `docs/vision.md` §9: "Model prose lives entirely behind a verbose toggle."
- *
- * Bordered rather than bare, for the reason `.jump-pill` records: a control identified only by its
- * label is not identified. It borrows the same token, `--color-control` — **3.534:1 on
- * --color-thread-bg**, over WCAG 1.4.11's 3:1 for a non-text control — rather than
- * `--color-line`, which is 1.585:1 on that ground and is a frame nobody can see.
- *
- * Three states, three grounds, all derived here rather than inherited from another rule's comment:
- *
- *   - **off** — `--color-text-muted` #848484 on `--color-thread-bg` #181818: **4.748:1**, AA.
- *     Border `--color-control` #6f6f6f on the same: **3.534:1**, over 1.4.11's 3:1.
- *   - **hover** — `--color-text-muted-side` #a5a5a5 on `--color-thread-bg`: **7.210:1**, AA.
- *     (That token's own comment certifies it against `--color-sidebar-bg` at 4.563:1 and nothing
- *     else. A ratio is a property of a pair; this is the pair.)
- *   - **on** (`aria-pressed="true"`) — `--color-accent` #ef8c57 on `--color-thread-bg`:
- *     **7.240:1**, AA. Border the same token: **7.240:1**, over 3:1.
- *
- * State is on `aria-pressed`, not on a second class: the attribute is what a screen reader reads,
- * and styling off it makes the two impossible to disagree.
- */
-.feed-verbose {
-  pointer-events: auto;
-  padding: 0 8px;
-  border: 1px solid var(--color-control);
-  border-radius: 999px;
-  font-size: var(--fs-xs);
-  font-family: var(--font-mono);
-  line-height: 16px;
-  color: var(--color-text-muted);
+  min-width: 24px;
+  padding: 4px;
+  gap: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  box-shadow: none;
   transition:
-    color var(--dur-fast) var(--ease),
-    border-color var(--dur-fast) var(--ease);
+    background-color 120ms ease,
+    color 120ms ease;
+}
+.button[data-icon-button="standard"] svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: currentColor;
+}
+.button[data-icon-button="standard"]:not(:disabled):hover {
+  background: var(--color-selected);
+  color: var(--color-text);
+}
+.button[data-icon-button="standard"]:not(:disabled):is(
+    :active,
+    [aria-pressed="true"],
+    [aria-haspopup][aria-expanded="true"]
+  ) {
+  background: var(--color-pressed);
+  color: var(--color-text);
+}
+.button[data-icon-button="standard"]:is(
+    [data-variant="danger"],
+    [data-variant="destructive"]
+  ) {
+  color: var(--color-warn);
+}
+.button[data-icon-button="standard"]:disabled {
+  background: transparent;
+  color: var(--color-text-disabled);
 }
 
-.feed-verbose:hover {
-  color: var(--color-text-muted-side);
+/* The sidebar alone reveals the native macOS material; the thread stays opaque. */
+:root[data-sidebar-vibrancy="true"],
+:root[data-sidebar-vibrancy="true"] .app-shell,
+:root[data-sidebar-vibrancy="true"] .launch-app {
+  background: transparent;
 }
-
-.feed-verbose[aria-pressed="true"] {
-  color: var(--color-accent);
-  border-color: var(--color-accent);
+:root[data-sidebar-vibrancy="true"] .app-navigation {
+  background: var(--color-sidebar-tint);
 }
-
-.feed-scroller {
-  flex: 1 1 auto;
-  overflow-y: auto;
-  overflow-x: hidden;
-  min-height: 0;
-  contain: layout paint;
-}
-
-/*
- * The reading column. `--content-max` is the thread's inner measure — the width the composer's
- * context strip and the reference's card row were both measured at — and until now it was defined
- * and referenced nowhere while the feed ran full-bleed. 712px of column inside a ~1004px pane
- * leaves ~146px of margin on each side, which is where `.feed-mark` lives and is most of what
- * gives the pane a silhouette instead of a uniform grain.
- *
- * **The `min()` is a fix, 2026-09-04.** With a bare `max-width: var(--content-max)` this was the
- * one element in the pane that touched both edges: on any window narrower than **932px** — the
- * enforced 800px minimum included — the pane is under 712px, the margins vanish, and the rows ran
- * flush from the sidebar divider to the window's right edge while `.thread-head` stayed inset
- * 16px. Measured at viewport 800: `.feed-sizer` 220 → 800, left gutter **0**, right gutter **0**,
- * and on the real release window the ellipsis of a truncated row landed at pt 798.5 of an 800pt
- * window (`docs/research/visual-checks-2026-09-04.md` §2.4).
- *
- * **`min()` on `max-width`, not `padding-inline`,** which was the other proposal there. Padding
- * would inset the row's *content* while leaving the sizer's box at the pane edge, so
- * `.feed-count`'s `max(16px, …)` — which tracks the box — would then float 16px inside the ink it
- * labels. Shrinking the box keeps the count, the band and the rows on one edge at every width.
- * Above 1200px the term never binds and nothing moves; below it, `.feed-mark` is already inline
- * (see the `max-width: 1200px` block), so nothing is positioned in the margin this reclaims.
- */
-.feed-sizer {
+.app-shell {
+  --window-controls-inset: 14px;
+  --chrome-height: 46px;
   position: relative;
-  width: 100%;
-  max-width: min(var(--content-max), calc(100% - 32px));
-  margin: 0 auto;
+  /* Browser-only backdrop: native vibrancy overrides this with real window material. */
+  background:
+    radial-gradient(
+      ellipse 320px 600px at 0 0,
+      var(--color-sidebar-blue),
+      transparent
+    ),
+    radial-gradient(
+      ellipse 300px 700px at 0 100%,
+      var(--color-sidebar-teal),
+      transparent
+    ),
+    var(--color-sidebar);
 }
-
-/*
- * `overflow` and `paint` containment deliberately are NOT on the row: `.feed-mark` is positioned
- * outside the row's box, in the margin, and either one would clip it away. `contain: layout size`
- * keeps the rest — and the row is `position: absolute`, so it is already a containing block for
- * the mark without `contain: layout` having to make it one.
- */
-.feed-row {
+.workspace-chrome {
   position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  display: flex;
-  align-items: center;
-  font-size: var(--fs-md);
-  line-height: var(--feed-row-h);
-  contain: layout size;
-  transition: background-color var(--dur-fast) var(--ease);
-}
-
-/*
- * The stripes are gone. What they were for — tracking one row across a wide table — is done by
- * the measure at rest and by this on demand, for the row under the pointer only. 5% white over
- * --color-thread-bg composites to #242424: 1.137:1 against the unhovered row, so it reads as a
- * band without becoming a second surface, and every text colour in the row is re-derived against
- * it (--color-feed-text 10.53:1, --color-text 15.61:1, --color-feed-mark 5.344:1).
- *
- * 90ms, which is under the 100ms the panel asked of hover feedback. No row ever animates in.
- */
-.feed-row:hover {
-  background: rgba(255, 255, 255, 0.05);
-}
-
-.feed-row:hover .feed-line {
-  color: var(--color-text);
-}
-
-/*
- * The minute rule, drawn as an inset shadow rather than a `border-top`: with `box-sizing:
- * border-box` a border would take a pixel out of the content box on boundary rows only, and shift
- * their baseline out of step with every other row.
- *
- * It marks the clock minute and nothing else. A session change does not draw one — see the
- * comment at the `lead` computation in `Feed.tsx`: in a project view with several live sessions
- * every row is a session boundary, and a rule on every row is the grid this work removed.
- */
-.feed-row.lead {
-  box-shadow: inset 0 1px 0 var(--color-feed-rule);
-}
-
-/* The line. The only thing inside the measure, and the only thing at full reading weight. */
-.feed-line {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--color-feed-text);
-  transition: color var(--dur-fast) var(--ease);
-}
-
-/*
- * The two per-kind treatments W4-D1 asked for and could not have. **A third joined them on
- * 2026-09-05 (`.feed-line.quiet`, below) and one of these two widened**: `bad` now also covers a
- * failed tool result, which is `k === "tool"` on the wire — `crates/store/src/feed.rs` maps
- * `ItemKind::ToolResult` to `FeedKind::Tool` whichever way `is_error` reads and puts the
- * difference in the label, so `src/feedGroups.ts` reads the label for it and says so. The rule
- * the old sentence was defending still stands: a kind that wants a colour of its own has to earn
- * it, and ten differently-tinted greys are the log table this wave removed, in colour.
- *
- * **A failure is not the same grey as a successful tool call.** `--color-bad` #ef6a63 —
- * **5.846:1** on `--color-thread-bg` #181818 and **5.110:1** on the hovered row's #242424, both
- * AA. The second pair is the one that needed deriving: `.feed-row:hover .feed-line` lifts every
- * line to `--color-text`, which would have turned a failure white the moment a pointer crossed
- * it, so hover is overridden here at equal specificity and the row stays red in both states.
- */
-.feed-line.bad {
-  color: var(--color-bad);
-}
-
-.feed-row:hover .feed-line.bad {
-  color: var(--color-bad);
-}
-
-/*
- * **An approval is the one row that means a person is blocked.** It carries weight the way the
- * sidebar's ask row does — `.side-nav.waiting` lifts that row out of `--color-text-muted-side`
- * into full reading colour and changes nothing else — with 600 on top, because a sidebar row is
- * one of ten and sits still while a feed row is one of thousands and scrolls past.
- *
- * `--color-text` #ffffff: **17.76:1** on `--color-thread-bg` and **15.61:1** on the hovered row's
- * #242424. Both pairs are already carried by the token's own comment and by `.feed-row:hover`;
- * re-derived rather than assumed, and unchanged. The weight adds no colour obligation, and the
- * row height is fixed by `--feed-row-h`, so nothing reflows.
- */
-.feed-line.ask {
-  color: var(--color-text);
-  font-weight: 600;
-}
-
-/*
- * R2, 2026-09-05. **A reasoning row is the least informative line in the pane**, and after the
- * fold there is at most one of them per block (`src/feedGroups.ts`). It stays — hiding it would
- * remove information rather than prose, which is the argument W4-D2 made for not putting `think`
- * behind the verbose toggle — but it stops competing with the rows around it.
- *
- * `--color-text-muted` #848484: **4.75:1** on `--color-thread-bg` #181818 and **4.18:1** on the
- * hovered row's #242424. The second pair is under AA for normal text, so hover is overridden the
- * way `.feed-line.bad` overrides it — a quiet row lifts to the full reading colour under the
- * pointer instead of staying at a ratio it cannot hold. That is the inverse of the failure row's
- * treatment and it is deliberate: red carries meaning that hover must not erase, grey carries
- * only de-emphasis, which hover is entitled to lift.
- */
-.feed-line.quiet {
-  color: var(--color-text-muted);
-}
-
-/*
- * The fold affordance. Present only on a line that has members under it, which after the fold is
- * a minority of rows, so the column's right edge stays as ragged as the line lengths already make
- * it rather than gaining a second column of controls.
- *
- * `+2` in mono because it is a count, and the chevron beside it because a count alone does not say
- * it is a control. `flex: 0 0 auto`, so the line ellipsizes against it rather than pushing it off
- * the row; the row's height is fixed by `--feed-row-h` and nothing here can reflow it.
- *
- * `--color-feed-mark` #979797 is the margin's own token: **6.079:1** on `--color-thread-bg` and
- * **5.344:1** on the hovered row's #242424 (both already derived where the token is defined), and
- * it lifts to the full reading colour on hover, which is over 3:1 either way for WCAG 1.4.11.
- */
-.feed-fold {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 18px;
-  margin-left: 8px;
-  padding: 0 6px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--color-feed-mark);
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  line-height: 1;
-  transition:
-    background-color var(--dur-fast) var(--ease),
-    color var(--dur-fast) var(--ease);
-}
-
-.feed-fold:hover {
-  background: rgba(255, 255, 255, 0.12);
-  color: var(--color-text);
-}
-
-/* Rotated rather than swapped for a second path: an open group and a closed one draw the same
-   ink, which is what makes the state read as one control rather than two icons. */
-.feed-fold svg {
-  transition: transform var(--dur) var(--ease);
-}
-
-.feed-fold[aria-expanded="true"] svg {
-  transform: rotate(180deg);
-}
-
-/*
- * A member revealed by an open fold. Indented by the width of the affordance that revealed it, so
- * the eye can see where the group starts and stops without a bracket, a rule or a second surface.
- *
- * It draws no minute rule even on a minute boundary (`Feed.tsx` suppresses `lead` on these): the
- * rule marks a boundary *between* groups, and one drawn inside an open group would read as the
- * group having ended.
- */
-.feed-row.nested .feed-line {
-  padding-left: 18px;
-}
-
-/*
- * The margin mark: the clock minute, and in a project view the session ref. Right-aligned in the
- * left margin, hard against the column, and present only on rows where one of the two changed —
- * so most rows have no mark at all and the margin reads as a rhythm rather than a column.
- *
- * Mono, because a clock and a ref are data; the line beside it is a sentence. Same split the
- * sidebar makes between a project's name and a session's ref.
- */
-.feed-mark {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  right: 100%;
-  display: flex;
-  align-items: center;
+  inset: 0 auto auto 0;
+  z-index: 40;
+  height: var(--chrome-height);
   gap: 8px;
-  margin-right: 14px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  color: var(--color-feed-mark);
-  white-space: nowrap;
-  pointer-events: none;
+  width: 264px;
+  padding-left: var(--window-controls-inset);
+  border-right: 1px solid var(--color-hairline);
+  border-bottom: 1px solid transparent;
+  background: var(--color-sidebar);
+  transition: width 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
-
-/* The reference's empty chat: a mark, one question, nothing else. */
-.thread-empty {
+:root[data-sidebar-vibrancy="true"] .workspace-chrome {
+  background: var(--color-sidebar-tint);
+}
+.app-shell[data-sidebar-open="false"] .workspace-chrome {
+  width: calc(var(--window-controls-inset) + 68px);
+  border-right: 0;
+  border-bottom: 1px solid var(--color-hairline);
+  background: var(--color-canvas);
+}
+.app-shell[data-sidebar-open="false"] .workspace-chrome::after {
+  content: "";
   position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 14px;
-  padding: 24px;
-  text-align: center;
-  pointer-events: none;
+  inset: 12px 0 12px auto;
+  width: 1px;
+  background: var(--color-hairline);
 }
-
-/* The 44px bordered square is gone with the `>_` that sat in it. Its border was `--color-line` on
-   --color-thread-bg, **1.585:1** — a frame nobody could see, drawn around a glyph, and one fewer
-   near-invisible rule on the page is worth more than the box was. The glyph carries itself at
-   --color-text-muted, 4.748:1 on --color-thread-bg. */
-.thread-empty .mark {
-  display: flex;
-  color: var(--color-text-muted);
+.project-topbar {
+  height: var(--chrome-height, 46px);
+  transition: padding-left 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
-
-.thread-empty h2 {
-  margin: 0;
-  font-size: 24px; /* [measured] */
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  color: var(--color-text);
+.app-shell[data-sidebar-open="false"] .project-topbar {
+  padding-left: calc(var(--window-controls-inset) + 84px);
 }
-
-.thread-empty p {
-  margin: 0;
-  max-width: 46ch;
-  font-size: 13px;
-  color: var(--color-text-muted);
+.app-shell[data-sidebar-peek="true"] .workspace-chrome {
+  border-top-right-radius: var(--radius-lg);
+  width: 264px;
+  border-bottom-color: transparent;
+  border-right: 1px solid var(--color-hairline);
 }
-
-/*
- * The jump affordance. Its border was `--color-line` on `--color-thread-bg` at **1.585:1**, and
- * its fill is 1.103:1 against the same ground — so the only thing that made it a control was its
- * label, and WCAG 1.4.11 asks 3:1 of the visual information that identifies a control. It borrows
- * `--color-control`, the token that already exists for exactly this: 3.534:1 against the feed
- * behind it and 3.205:1 against its own fill.
- *
- * The hover used to lighten the fill to `--color-composer-bg`, which would have taken that border
- * to **2.856:1** — a state that fails is still a state the control is used in, the same trap
- * `.notice:hover` was pulled out of earlier in this wave. So hover moves the border instead:
- * `--color-text-muted-side` is 6.537:1 on the unchanged fill.
- */
-.jump-pill {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-  bottom: 12px;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 4px 14px;
-  border-radius: 999px;
-  background: var(--color-surface);
-  border: 1px solid var(--color-control);
-  color: var(--color-text);
-  font-size: var(--fs-sm);
-  transition: border-color var(--dur-fast) var(--ease);
-}
-
-.jump-pill:hover {
-  border-color: var(--color-text-muted-side);
-}
-
-.jump-pill:active {
-  transform: translateX(-50%) translateY(0.5px);
-}
-
-/* ----------------------------------------------------------- approvals */
-
-/* Docked above the composer, inside the same centred column, so a waiting prompt reads as part
-   of the conversation rather than as a panel off to one side.
-
-   `flex: 0 1 auto` since 2026-09-04, paired with `.feed { min-height: 132px }` above. It was
-   `0 0 auto`, so it could not yield, and at viewport 800x468 its 42vh (196.5px) plus a fixed
-   160px `.dock` plus the 52px head took 408.5 of 468 and left the feed 1.39 rows
-   (`docs/research/visual-checks-2026-09-04.md` §2.5). It still asks for 42vh and still gets it
-   whenever the window can pay; `max-height` is a ceiling, and this is what makes it stop being a
-   floor as well. `.approvals-body` is already `overflow-y: auto; min-height: 0`, so what it
-   yields it scrolls rather than clips. */
-.approvals {
-  flex: 0 1 auto;
-  width: 100%;
-  max-width: var(--thread-max);
-  margin: 0 auto;
-  padding: 0 16px;
-  max-height: 42vh;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-
-/* `display: flex` above would otherwise beat the UA's `[hidden] { display: none }`. */
-.approvals[hidden] {
+.app-shell[data-sidebar-peek="true"] .workspace-chrome::after {
   display: none;
 }
-
-.approvals-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 2px;
-  font-size: 12px;
-  color: var(--color-text-muted);
+.app-shell[data-sidebar-peek="true"] .collapsed-new-chat {
+  visibility: hidden;
 }
-
-.approvals-body {
-  overflow-y: auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding-bottom: 4px;
-}
-
-/*
- * R2, 2026-09-05. **The card is a column whose middle is the only thing that yields.**
- *
- * `docs/STATUS.md` §5 defect 3 predicted this and could not confirm it — the store's one approval
- * was already resolved and `pending_approvals` came back empty, so it shipped on a Chromium-plus-
- * mock measurement. The owner confirmed it in a real window on 2026-09-04: `Waiting on you ·
- * 1 open` with **Allow and Deny below the fold**, needing a scroll inside the dock, and he said he
- * mostly did not notice it. A decision the operator does not see is the same failure as one that
- * did not land, and this is the one surface in the product that is never optimistic.
- *
- * `flex: 0 0 auto` on the head and on `.approval-actions`, `flex: 1 1 auto; min-height: 0` on
- * `.approval-body`: what a squeezed card loses is excerpt, never the decision. `.approvals-body`
- * above still scrolls between cards when several are open, so the first card's buttons are
- * reachable without a scroll and the rest are one scroll away — which is the ordering that
- * matters, because the store sorts oldest first.
- */
-.approval {
-  display: flex;
-  flex-direction: column;
-  /* The floor that makes "reachable without scrolling" a guarantee rather than an aspiration.
-     Derived from the rules below, not measured: 20px of padding + 2px of border + ~20px of head +
-     28px of `.act` + 10px of its margin = 80, plus a few px of body. Under this the card stops
-     shrinking and `.approvals-body` scrolls between cards instead — which is the right failure,
-     because a card crushed below its own decision is the defect this section is fixing. */
-  min-height: 84px;
-  background: var(--color-surface);
-  border: 1px solid var(--color-line);
-  border-radius: var(--radius-md);
-  padding: 10px 12px;
-  font-size: 13px;
-}
-
-/* The detail. The only part of a card that yields, and it scrolls what it yields rather than
-   clipping it. `overscroll-behavior` keeps a flick inside the excerpt from scrolling the dock
-   behind it and moving the buttons out from under the pointer. */
-.approval-body {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-
-.approval.expired {
-  opacity: 0.65;
-}
-
-.approval.elsewhere {
-  border-left: 2px solid var(--color-accent);
-}
-
-/* Fixed, so a squeezed card keeps the name of the tool it is asking about. */
-.approval-head {
+.sidebar-shell {
+  width: 264px;
   flex: 0 0 auto;
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  flex-wrap: wrap;
+  transition: width 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.sidebar-shell[data-open="false"] {
+  width: 0;
+}
+/* Keep the navigation anchored while the thread covers/reveals its width. */
+.sidebar-shell .app-navigation {
+  position: fixed;
+  inset: var(--chrome-height) auto 0 0;
+  z-index: 30;
+  height: calc(100dvh - var(--chrome-height));
+  clip-path: inset(0 0 0 0);
+  transition: clip-path 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.sidebar-shell[data-open="false"] .app-navigation {
+  clip-path: inset(0 100% 0 0);
+}
+.sidebar-shell[data-peek="true"] .app-navigation {
+  border-bottom-right-radius: var(--radius-lg);
+  clip-path: inset(0 0 0 0);
+  box-shadow: var(--shadow-overlay);
+  background: var(--color-canvas);
+}
+:root[data-sidebar-vibrancy="true"]
+  .sidebar-shell[data-peek="true"]
+  .app-navigation {
+  background: var(--color-canvas);
 }
 
-.approval-head strong {
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.approval-head .dim {
-  font-size: 12px;
-}
-
-.excerpt,
-.suggestion {
-  background: rgba(0, 0, 0, 0.28);
-  border: 1px solid var(--color-line);
-  border-radius: var(--radius-row);
-  margin: 8px 0 0;
-  padding: 8px 10px;
-  /* 160 -> 120 [derived 2026-09-05]. At the window's 800x500 minimum an open approval leaves the
-     card about 110px of its own, so a 160px excerpt was on its own taller than everything the
-     card had — it is the block that pushed Allow and Deny under the fold. `.approval-body`
-     scrolls whatever this still cannot show, so nothing is lost, only deferred. */
-  max-height: 120px;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.suggestion {
-  margin: 2px 0 6px;
-  max-height: 90px;
-}
-
-.suggestions {
-  list-style: none;
-  margin: 8px 0 0;
-  padding: 0;
-}
-
-.suggestions label {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--color-text-muted);
-}
-
-/* Fixed, and the reason the card is a flex column at all: **the decision never scrolls away.**
-   `flex-wrap` so that at the 800px minimum, where the deny-reason field shares the row with two
-   buttons, the row grows a second line instead of pushing Confirm deny off the right edge. */
-.approval-actions {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 10px;
-}
-
-.approval-actions .reason {
-  flex: 1 1 auto;
-  min-width: 0;
-  height: 30px;
-  padding: 0 10px;
-  background: rgba(0, 0, 0, 0.28);
-  border: 1px solid var(--color-line);
-  font-size: 13px;
-}
-
-/* ------------------------------------------------------------- the run */
-
-/*
- * The pinned plan card, and the strip that starts a run.
- *
- * `docs/vision.md` §9: the plan sits pinned above the thread, collapsible to one line, expandable
- * to the full checklist, and **nothing the owner steers with ever scrolls away**. That last clause
- * is geometry, not decoration, and it is what these rules exist for:
- *
- *   - `.run-card` is a flex child of `.thread`, a sibling of `.feed` and outside its scroller, so
- *     the feed cannot carry it off the top of the window. `flex: 0 1 auto` with `min-height: 0`
- *     is the same shape `.approvals` takes and for the same reason: it asks for the height it
- *     needs and yields it back to the feed's `min-height: 132px` floor when the window is small,
- *     rather than being a second floor of its own.
- *   - `.run-phases` is where that yielding is absorbed. A twelve-phase plan scrolls **inside the
- *     card**; the card itself never scrolls out of view.
- *
- * Deliberately plain. This is the smallest surface that makes the run usable and no more: no new
- * token, no animation, no icon, one border and the type scale that is already here.
- */
-
-/*
- * R2, 2026-09-05. **`min-height: 0` let this card be squeezed smaller than its own collapsed
- * line, and the line then painted on top of the feed's band.** Two screenshots from the owner's
- * first drive show `no phases yet` sitting over the `verbose` pill and the `N rows` counter in
- * the top right.
- *
- * The mechanism, and it is not the band's fault: `.feed` already reserves the band's 20px with
- * `padding-top`, so in normal flow the two never meet. This card is `flex: 0 1 auto` with
- * `min-height: 0`, which is the pair that lets a flex item shrink past its content — and it has
- * no `overflow`, so what it was squeezed out of it drew anyway, over the next item.
- *
- * Both halves are fixed rather than one:
- *
- *   - **`min-height: 38px`** is the collapsed line's own height, derived from the rules below:
- *     `.run-toggle` is 11px text at `line-height: 1.45` (15.95) + 4px padding + 2px border = 22,
- *     `.run-line` adds 4 + 4, this card adds its 8px `padding-top`. So the one line the card is
- *     "collapsible to" (`docs/vision.md` §9) is now a floor it cannot be pushed under.
- *   - **`overflow: hidden`** is the guarantee, for every case the floor does not cover — a
- *     twelve-phase checklist, a long unsettled-intent list, a future row nobody has written yet.
- *     Content the card cannot show is clipped at its own edge instead of painting over the feed.
- *     Nothing that matters is clipped by it: `.run-phases` and `.run-intent-list` both scroll
- *     inside the card, which is where anything that does not fit actually goes.
- *
- * Not verified in a real window. jsdom has no layout, so `src/layout.test.ts` pins these
- * declarations and nothing more; the pixels need a human.
- */
-.run-card {
-  flex: 0 1 auto;
-  width: 100%;
-  max-width: var(--thread-max);
-  margin: 0 auto;
-  padding: 8px 16px 0;
-  display: flex;
-  flex-direction: column;
-  min-height: 38px;
-  overflow: hidden;
-  font-size: var(--fs-md);
-}
-
-.run-line {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  min-width: 0;
-  padding: 4px 0;
-}
-
-.run-toggle {
-  flex: 0 0 auto;
-  padding: 2px 8px;
-  border: 1px solid var(--color-line);
-  border-radius: var(--radius-xs);
-  font-size: var(--fs-xs);
-  color: var(--color-text-muted);
-}
-
-.run-toggle:hover {
-  color: var(--color-text);
-}
-
-.run-goal {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--color-text);
-  font-weight: 600;
-}
-
-.run-counts,
-.run-now {
-  flex: 0 0 auto;
-  font-size: var(--fs-xs);
-  color: var(--color-text-muted);
-  max-width: 40%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* The checklist. Scrolls inside the card; the card stays put. */
-.run-phases {
-  list-style: none;
-  margin: 4px 0 0;
-  padding: 0;
-  overflow-y: auto;
-  min-height: 0;
-  max-height: 34vh;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.run-phase {
-  background: var(--color-surface);
-  border: 1px solid var(--color-line);
-  border-radius: var(--radius-md);
-  padding: 8px 10px;
-}
-
-.run-phase-head {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  min-width: 0;
-}
-
-.run-ord {
-  flex: 0 0 auto;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  color: var(--color-text-muted);
-}
-
-.run-title {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--color-text);
-}
-
-/*
- * The state word. Colour is a second channel here, never the only one — the word itself is always
- * printed, so a card read in greyscale loses nothing.
- *
- * These modifier classes are applied through a template literal (`run-state ${state}`), which
- * `src/index.css.test.ts` explicitly does not see. That is safe **only** because every rule below
- * is hand-written: Tailwind's scanner never had to find them, and `source(none)` means it would
- * not have generated them if it had.
- */
-.run-state {
-  flex: 0 0 auto;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  color: var(--color-text-muted);
-}
-
-.run-state.running,
-.run-state.dispatched {
-  color: var(--color-accent);
-}
-
-.run-state.green,
-.run-state.reported {
-  color: var(--color-ok);
-}
-
-/* `unknown` sits with `blocked` and `failed`, never with `dispatched`. The contract's rule: it
-   is not a spinner, it is a phase that stopped and needs a decision. */
-.run-state.blocked,
-.run-state.failed,
-.run-state.unknown {
-  color: var(--color-bad);
-}
-
-.run-attempts {
-  flex: 0 0 auto;
-  font-size: var(--fs-xs);
-  color: var(--color-text-muted);
-}
-
-.run-gate {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  margin-top: 4px;
-  min-width: 0;
-}
-
-.run-verify {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  padding: 1px 6px;
-  border-radius: var(--radius-xs);
-  background: rgba(0, 0, 0, 0.28);
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  color: var(--color-feed-text);
-}
-
-/* A phase with no verify command. Muted would read as "not filled in yet"; it is a standing fact
-   about the phase, so it takes the accent the composer's mode chip uses. */
-.run-nogate {
-  font-size: var(--fs-xs);
-  color: var(--color-accent);
-}
-
-.run-exit {
-  flex: 0 0 auto;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-}
-
-.run-sha {
-  flex: 0 0 auto;
-  font-size: var(--fs-xs);
-  color: var(--color-text-muted);
-}
-
-.run-dod,
-.run-evidence {
-  margin: 4px 0 0;
-  font-size: var(--fs-xs);
-  color: var(--color-text-muted);
-}
-
-/* One line, always. The component already collapses whitespace and clamps the string; this is the
-   second half of the same rule, so a long `last_evidence` can never become a log pane. */
-.run-evidence {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.run-orders {
-  list-style: none;
-  margin: 6px 0 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.run-order {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 8px;
-  min-width: 0;
-  font-size: var(--fs-xs);
-}
-
-.run-order-title {
-  min-width: 0;
-  color: var(--color-feed-text);
-}
-
-.run-order-ref,
-.run-paths {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--color-text-muted);
-}
-
-.run-order-why {
-  flex: 1 1 100%;
-  color: var(--color-text-muted);
-}
-
-/* ------------------------------------------------------- unsettled intents */
-
-/*
- * **Not the approvals dock, and it must not look like one.** That dock is the safety boundary,
- * where "allowed" and "denied" each mean exactly one thing; an unsettled intent is the harness
- * asking whether something it cannot observe actually happened, and neither answer authorizes
- * anything. So: no card, no `--color-surface` panel, no accent rail. A rule, a sentence and two
- * plain `.act` buttons.
- */
-/* `0 1 auto` since 2026-09-05, paired with `overflow: hidden` on the card: it was `0 0 auto`, so
-   in a short window a long intent list was the one block that could neither shrink nor scroll and
-   had to go somewhere — over the feed. It yields now, and `.run-intent-list` scrolls what it
-   yields. */
-.run-intents {
-  flex: 0 1 auto;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--color-line);
-}
-
-.run-intents-head {
-  margin: 0;
-  font-size: var(--fs-xs);
-  color: var(--color-text-muted);
-}
-
-.run-intent-list {
-  list-style: none;
-  margin: 6px 0 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  overflow-y: auto;
-  min-height: 0;
-}
-
-.run-intent {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  min-width: 0;
-  font-size: var(--fs-xs);
-}
-
-/* The slug, verbatim and unstyled by kind: a build that adds a kind must not break this window,
-   so nothing here can depend on which kind it is. */
-.run-intent-kind {
-  flex: 0 0 auto;
-  color: var(--color-bad);
-}
-
-.run-intent-subject {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--color-text-muted);
-}
-
-.run-intent-why {
-  min-width: 0;
-  flex: 1 1 200px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--color-text-muted);
-}
-
-.run-intent-actions {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-/* ------------------------------------------------------------- run dock */
-
-/*
- * **The 40px strip that used to sit here is gone**, and with it `.run-dock` and
- * `.run-dock-input`. R2, 2026-09-05: it was one of the two stacked text fields the owner counted,
- * and the run now shares the composer's own box, chosen by name on the strip above it
- * (`.dock-modes`). What survives is the pair of spans the live-run state prints, because a live
- * run has no field and says so instead.
- *
- * That is ~40px handed back to `.approvals`, which is the surface that had nowhere to put its
- * Allow and Deny buttons at the window's 800x500 minimum.
- */
-
-.run-dock-status {
-  flex: 0 0 auto;
-  font-size: var(--fs-xs);
-  font-family: var(--font-mono);
-  color: var(--color-ok);
-}
-
-.run-dock-goal {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: var(--fs-md);
-  color: var(--color-text-muted);
-}
-
-/* ------------------------------------------------------------ composer */
-
-/* The reference's composer: a context strip on a darker rail, then a rounded box holding the
-   text area and one action row, centred on the thread's max width. */
-.dock {
-  flex: 0 0 auto;
-  width: 100%;
-  max-width: var(--thread-max);
-  margin: 0 auto;
-  /* 12px of air above the strip so the feed's last row is not flush against it. */
-  padding: 12px 0 14px; /* [measured] 14.5px below the box */
-}
-
-.dock-context {
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  height: 38px; /* [measured] */
-  margin: 0 12px -10px;
-  padding: 0 14px 10px;
-  border-radius: var(--radius-md) var(--radius-md) 0 0;
-  background: var(--color-rail-bg);
-  font-size: 13px;
-  color: var(--color-text-sidebar);
-}
-
-.dock-context span {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* An inline SVG, not a text glyph, since 2026-09-03 — `src/components/icons.tsx` says why.
-   `display: flex` is what puts it on the label's optical centre; a text glyph never was.
-   --color-text-muted is 4.407:1 on --color-rail-bg, over the 3:1 WCAG 1.4.11 asks of a
-   meaningful non-text graphic, and each one sits beside its own label anyway. */
-.dock-context .glyph {
-  display: flex;
-  flex: 0 0 auto;
-  color: var(--color-text-muted);
-}
-
-/* Pushes the mode chooser to the right end of the strip. The context spans keep `min-width: 0`
-   and ellipsize, so a long path yields to the chooser rather than pushing it off the row. */
-.dock-context .grow {
-  flex: 1 1 auto;
-  min-width: 8px;
-}
-
-/*
- * The chooser: what pressing Return does.
- *
- * R2, 2026-09-05. It rides **inside** the context strip rather than on a row of its own, and that
- * is the whole reason the merge costs no height: the strip is a measured 38px that was carrying
- * three labels and a lot of air. Removing the run strip and adding this is a net ~40px handed
- * back to the approvals dock.
- *
- * `aria-pressed`, not a radio group: three buttons that change what one control below them does
- * is what a toggle button is, and `role="radiogroup"` would promise arrow-key roving that is not
- * implemented. The pressed one takes the composer's own surface as a fill so the group reads as a
- * segmented control without a border of its own.
- */
-.dock-modes {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 2px;
-  border-radius: 999px;
-  background: rgba(0, 0, 0, 0.22);
-}
-
-/* --color-text-muted #848484 is 4.407:1 on --color-rail-bg, which the strip's own glyph rule
-   already derives; the pressed state lifts to --color-text-sidebar #e1e1e1 on the composer fill. */
-.dock-mode {
-  flex: 0 0 auto;
-  height: 22px;
-  padding: 0 10px;
-  border-radius: 999px;
-  font-size: var(--fs-sm);
-  color: var(--color-text-muted);
-  white-space: nowrap;
-  transition:
-    background-color var(--dur-fast) var(--ease),
-    color var(--dur-fast) var(--ease);
-}
-
-.dock-mode:hover {
-  color: var(--color-text);
-}
-
-.dock-mode[aria-pressed="true"] {
-  background: var(--color-composer-bg);
-  color: var(--color-text-sidebar);
-}
-
-.dock-box {
-  position: relative;
-  background: var(--color-composer-bg);
-  border-radius: var(--radius-lg);
-  padding: 10px 12px;
-}
-
-/* What a live run shows where the goal field would be. `start_run` refuses a second run on the
-   same project with `run_already_live`, so there is nothing to type and no field is drawn; the
-   goal and the Stop control take the space instead, at the same height the textarea had. */
-.dock-live {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  min-height: 44px;
-  margin: 0;
-  padding: 12px 4px 8px;
-  min-width: 0;
-}
-
-.dock-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 32px;
-}
-
-/* Left of the action row: the reference's status chip. Right: model, cost and the send button.
-   `.dock-actions .grow` is the gap between them, and the slot a Resume button belongs in. */
-.dock-actions .grow {
-  flex: 1 1 auto;
-  min-width: 8px;
-}
-
-.dock-actions label {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--color-text-muted);
-}
-
-.dock-actions select {
-  height: 26px;
-  padding: 0 4px;
-  border-radius: var(--radius-xs);
-  font-size: 12px;
-  color: var(--color-text-sidebar);
-  background: rgba(255, 255, 255, 0.06);
-}
-
-/* Secondary actions (interrupt, end, kill, and later resume): flat text buttons at the size the
-   reference gives its mic and attach controls. */
-.act {
-  flex: 0 0 auto;
+/* Compact rows retain their text/icon alignment and wrapper-free row actions. */
+.app-navigation .navigation-row {
   height: 28px;
-  padding: 0 10px;
-  border-radius: 999px;
-  font-size: var(--fs-sm);
-  color: var(--color-text-muted);
+  padding-block: 2px;
+  border-radius: 8px;
+}
+.app-navigation .navigation-action,
+.app-navigation .folder-toggle {
+  height: 28px;
+}
+
+.group\/session .navigation-action svg {
+  width: 14px;
+  height: 14px;
+}
+
+.sidebar-reveal {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.sidebar-reveal[data-open="true"] {
+  grid-template-rows: 1fr;
+}
+.sidebar-reveal[data-open="false"] {
+  visibility: hidden;
   transition:
-    background-color var(--dur-fast) var(--ease),
-    color var(--dur-fast) var(--ease);
+    grid-template-rows 200ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    visibility 200ms step-end;
 }
-
-.act:active:not(:disabled) {
-  transform: translateY(0.5px);
+.projects-chevron {
+  opacity: 0;
+  transition:
+    opacity 120ms ease,
+    transform 200ms ease;
 }
-
-.act:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--color-text);
+.group\/section:hover .projects-chevron,
+.group\/section:focus-within .projects-chevron {
+  opacity: 1;
 }
-
-.act.danger:hover:not(:disabled) {
-  background: rgba(239, 106, 99, 0.16);
-  color: var(--color-bad);
+.row-action,
+.section-action {
+  opacity: 0;
+  pointer-events: none;
 }
-
-/* The one solid control in the window, exactly as the reference has it. */
-.send {
-  flex: 0 0 30px; /* [measured] 30px circle */
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
-  background: var(--color-text);
-  color: var(--color-on-solid);
-  font-size: 14px;
-  line-height: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.group\/project:hover .row-action,
+.group\/session:hover .row-action,
+.group\/section:hover .section-action,
+.row-action:focus-visible,
+.section-action:focus-visible,
+.row-action[aria-expanded="true"] {
+  opacity: 1;
+  pointer-events: auto;
 }
-
-.send:disabled {
-  opacity: 0.28;
+.group\/project:hover .project-row,
+.group\/project:has(.row-action[aria-expanded="true"]) .project-row {
+  background: var(--color-hover);
 }
-
-.send:not(:disabled) {
-  transition: transform var(--dur-fast) var(--ease);
+.group\/project .project-row[data-active="true"] {
+  background: var(--color-selected);
 }
-
-.send:active:not(:disabled) {
-  transform: scale(0.94);
+.group\/project:hover .project-label,
+.group\/project:focus-within .project-label {
+  padding-right: 48px;
 }
-
-.send.wide {
-  flex: 0 0 auto;
-  width: auto;
-  border-radius: 999px;
-  padding: 0 14px;
+.group\/session:hover .session-row,
+.group\/session:focus-within .session-row {
+  padding-right: 56px;
+}
+.session-status-spinner svg {
+  width: 11px;
+  height: 11px;
+  animation: session-status-spin 850ms linear infinite;
+}
+@keyframes session-status-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.group\/session:hover .session-indicator,
+.group\/session:focus-within .session-indicator,
+.group\/project:hover .project-indicator {
+  display: none;
+}
+@supports (
+  (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))
+) {
+  .app-navigation,
+  .workspace-chrome {
+    background: var(--color-sidebar-glass);
+    backdrop-filter: blur(28px) saturate(1.15);
+    -webkit-backdrop-filter: blur(28px) saturate(1.15);
+  }
+  .blur-menu.overlay-surface,
+  .glass-surface {
+    background: var(--color-menu-glass);
+    border-color: var(--color-glass-edge);
+    backdrop-filter: blur(24px) saturate(1.15);
+    -webkit-backdrop-filter: blur(24px) saturate(1.15);
+  }
+}
+.blur-menu [role="menuitem"] {
+  height: 28px;
+  border-radius: var(--radius-sm);
+  padding-inline: 10px;
   font-size: 13px;
-  font-weight: 500;
 }
-
-.status-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 24px;
-  padding: 0 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--color-text-muted);
-  white-space: nowrap;
-}
-
-.status-chip.live {
-  background: rgba(92, 201, 140, 0.16);
-  color: var(--color-ok);
-}
-
-.status-chip.warn {
-  background: rgba(239, 140, 87, 0.16);
-  color: var(--color-accent);
-}
-
-/* One-line notes under the composer box: the resumed-in-default-mode warning, the cleanup
-   confirmation, and what a completed cleanup left behind. */
-.dock-note {
-  margin: 8px 14px 0;
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--color-text-muted);
-}
-
-.dock-note.warn {
-  color: var(--color-accent);
-}
-
-.dock-note code {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--color-text-sidebar);
-}
-
-/* The buttons inside a note sit on the text baseline rather than in the action row. */
-.dock-note .act {
-  height: 24px;
-  vertical-align: middle;
-  background: rgba(255, 255, 255, 0.06);
-}
-
-.dock-usage {
-  margin: 6px 14px 0;
-  font-size: 11px;
-  font-family: var(--font-mono);
-  color: var(--color-text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* --------------------------------------------------------------- meter */
-
-/*
- * **`flex: 0 1 auto` and `min-width: 0` since 2026-09-04, and this one shipped.** Reproduced in
- * the real release window at 800x500: clicking the pill left the header showing only the meter
- * capsule, clipped at the window's right edge, with the project title and its path **gone from
- * the header entirely** (`docs/research/visual-checks-2026-09-04.md` §2.6). At viewport 800 the
- * arithmetic was `.head-id` width **0**, `.fps` width **757.3**, and
- * `documentElement.scrollWidth - clientWidth = 205` — the page scrolled sideways.
- *
- * **The fix belongs on `.fps`, not on `.head-id`.** `.head-id` was already `flex: 1 1 auto;
- * min-width: 0` with both of its children `overflow: hidden; text-overflow: ellipsis` — it was
- * fully shrinkable, and being the only shrinkable item is exactly why it was the one starved to
- * zero. Nothing added to it can help while the item beside it refuses to give up a pixel. So the
- * meter becomes shrinkable too and the two divide the overflow in proportion to their content.
- *
- * That much is unconditional, because that much is what stops the title reaching width 0 and the
- * page scrolling sideways. `overflow` and `text-overflow` are on the button itself, which is the
- * block container the nowrap line overflows.
- *
- * **`max-width: 55%` is a refinement, not the fix, and it now lives in the
- * `@media (max-width: 1200px)` block below.** All the cap does is move pixels from the meter to
- * the title, one for one. At viewport 800 it moves 67.3: the title goes 167.3 → 234.6 and the
- * meter 368.7 → 301.4. The meter is diagnostic and the title is content, so at the narrow end the
- * content keeps the larger half — but 167.3px was never the defect; 0px was, and `flex: 0 1 auto;
- * min-width: 0` above is what fixed that.
- *
- * **It is scoped because the same trade is a loss at the wide end.** At the default 1280 the cap
- * moved 120.0: the meter went 654.6 → 534.6, which cost it `dom 215 · rows 694 in 223 batches`,
- * and the title went 305.4 → 425.4, which it did not need. Unconditional, a constraint bought for
- * the 800px case was being paid at every width.
- *
- * **1200px is the boundary and 960px is not.** Uncapped the title is 204.0px at viewport 961 and
- * 233.3px at 1050, both under the 234.6px the cap guarantees at 800, so a 960px breakpoint would
- * leave the title *narrower* just above it than at the app's own 800px minimum. Uncapped it is
- * 279.6px at 1201 and 305.4px at 1280, clear of 234.6px, so above 1200 the cap has nothing left
- * to buy.
- *
- * Numbers vary by a few px with the meter's own digit counts (`dom 193` vs `dom 215`); the
- * comparisons are same-load. [measured 2026-09-04, Chromium 152 headless over `npm run dev` —
- * **not WKWebView**, where the release-window confirmation was taken.]
- *
- * Not fixed here: the meter's full string needs 750.6px of button and gets 654.6px at 1280 even
- * uncapped, so `in 223 batches` is still ellipsized below ~1440. Shortening the string is
- * `FpsOverlay.tsx`'s problem, not this rule's.
- */
-.fps {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  padding: 2px 10px;
-  border-radius: 999px;
-  background: var(--color-surface);
-  border: 1px solid var(--color-line);
-  color: var(--color-text-muted);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  white-space: nowrap;
-}
-
-.fps.bad {
-  border-color: var(--color-bad);
-  color: var(--color-bad);
-}
-
-.fps.off {
-  opacity: 0.5;
-}
-
-/* ---------------------------------------------------------------- burn */
-
-.burn-form {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 4px 8px 0;
-}
-
-.burn-form label {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--color-text-muted-side);
-}
-
-.burn-form label.grow {
-  flex: 1 1 100%;
-}
-
-.burn-form input {
-  min-width: 0;
-  height: 24px;
-  padding: 0 6px;
-  background: rgba(0, 0, 0, 0.22);
-  border: 1px solid var(--color-sidebar-line);
-  border-radius: var(--radius-xs);
-  font-size: 12px;
-}
-
-.burn-form input[type="number"] {
-  width: 56px;
-}
-
-.burn-form label.grow input {
-  flex: 1 1 auto;
-}
-
-.burn-form button {
-  height: 24px;
-  padding: 0 10px;
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: var(--radius-xs);
-  font-size: 12px;
-}
-
-.burn-out {
-  margin: 6px 8px 0;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1.5;
-  word-break: break-word;
-}
-
-/*
- * The feed's margin runs out before the window does.
- *
- * The mark hangs at `right: 100%`, outside the 712px column, and the scroller clips at its own
- * padding box (`overflow-x: hidden`). The budget, derived: `HH:MM` plus a six-character session
- * ref at 11px mono is ~78px of ink, plus the 14px gap, so the column needs ~92px of margin on the
- * left to hold it. Pane = window - `--sidebar-w`, and the margin is half of what is left over:
- *
- *   window 1120, sidebar 276 -> pane 844 -> margin (844 - 712) / 2 = 66px   too tight
- *   window 1200, sidebar 276 -> pane 924 -> margin 106px                    fits
- *
- * So below 1200px the mark comes back inside the row and sits at the end of it, right-aligned
- * after the line, where it is still not read before the content. It then paints on the row's own
- * ground, which is why `--color-feed-mark` is certified against the hovered #242424 as well as
- * against `--color-thread-bg`: 5.344:1, over AA either way.
- *
- * A mark that is sometimes present makes the *right* edge of the column ragged, which the line
- * lengths already are. It would have made the *left* edge ragged, which is why it goes after the
- * line and not before it.
- */
-@media (max-width: 1200px) {
-  .feed-mark {
-    position: static;
-    margin-right: 0;
-    margin-left: 16px;
+@media (hover: none) {
+  .row-action,
+  .section-action {
+    opacity: 1;
+    pointer-events: auto;
   }
-
-  /*
-   * The meter's share cap, scoped here and reasoned about in full at `.fps` above. Below 1200 the
-   * header cannot pay for both, and the title is the one that yields under proportional shrink —
-   * 204.0px at viewport 961, 167.3px at 800 — so the cap floors it at 234.6px at 800 and 389.4px
-   * at 1200. Above 1200 the title already holds 279.6px unaided and the cap only eats meter text.
-   */
-  .fps {
-    max-width: 55%;
+  .project-label,
+  .session-label {
+    padding-right: 48px;
+  }
+  .session-indicator,
+  .project-indicator {
+    display: none;
   }
 }
-
-/*
- * The window's minimum is 800x500 (`src-tauri/tauri.conf.json`). At 800 the measured 276px
- * sidebar is 34% of the frame and the feed's rows ellipsize hard — the reading column is
- * `--content-max` at 712px and there are only ~580px of pane to give it. Nothing breaks; it is
- * simply badly proportioned at the small end, so the column steps down below 960px and keeps its
- * measured width everywhere the measurement was taken. Session content still starts at 26px.
- *
- * **This comment used to claim a full `brigadier/<8 hex>` still fits here. It does not, and the
- * claim was never checked.** Measured on the real render: the string is 141.0px of ink, and a
- * session row carrying the failed chip leaves it 119.0px. It truncated to `brigadier/73fb…` —
- * dropping four of the eight hex digits, which is precisely the half the design three hundred
- * lines above calls the half that carries meaning. The row was throwing away the discriminating
- * characters to keep a prefix that is byte-identical on every session in the app.
- *
- * The budget, from the rules above at --sidebar-w 220px [derived 2026-09-03]:
- *
- *   row 204 (100% - 16) - 18 - 10 padding = 176 content
- *     - 6 dot - 8 gap                     = 162 for the branch, on a row with no chip
- *     - 8 gap - 41 chip                   = 113 for the branch, on a failed row
- *
- * (113 derived against 119.0 measured; the 6px is a difference between my box model and the real
- * font metrics, and both sit under the 141.0 the string needs, so the conclusion is the same.)
- *
- * So at this width the prefix yields instead of the digits: it goes to the screen-reader-only
- * recipe rather than `display: none`, so the accessible name still reads the whole branch and only
- * the pixels are dropped. The eight digits need 62.7px of the 113 and fit with 50px to spare, on a
- * failed row and a clean one alike. A row with no chip has 162px and would have fitted the whole
- * string, so this trades a prefix nobody can use to discriminate for the guarantee that no row at
- * any width ever loses a hex digit.
- */
-@media (max-width: 960px) {
-  :root {
-    --sidebar-w: 220px;
-  }
-
-  /* The `.sr-only` recipe, applied to a run of characters that is the same on every row here. */
-  .side-branch .prefix {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
-}
-
-/*
- * The vertical budget at the window's own minimum, 800x500 (`src-tauri/tauri.conf.json`).
- *
- * R2, 2026-09-05, and it exists for one row of pixels: **Allow and Deny.** The owner confirmed in
- * a real window that an open approval put both buttons below the fold of the dock, and said he
- * mostly did not notice the card at all. The rules above make the card's head and its action row
- * fixed and its excerpt the only thing that yields — that is the structural half — but structure
- * cannot conjure height, and at 500px the column is genuinely oversubscribed.
- *
- * The arithmetic, all **[derived]** from the declarations in this file, none of it measured:
- *
- *     500  window minimum
- *   -  52  .thread-head          --head-h
- *   -  38  .run-card             its new floor: the collapsed line and nothing less
- *   - 104  .feed                 20px band + 3 x 28px rows  (this block; 132 = 4 rows otherwise)
- *   - 160  .dock                 26 padding + 28 context strip + 106 box
- *   -----
- *     146  .approvals
- *   -  29  .approvals-head       12px at 1.45 + 6px padding twice
- *   -   4  .approvals-body       padding-bottom
- *   -----
- *     113  one .approval, against the 84 it needs for head + decision
- *
- * So the decision fits with ~33px of excerpt showing, and `.approval-body` scrolls the rest of
- * the excerpt rather than pushing the buttons anywhere. **Not verified in a real window** — jsdom
- * has no layout and this arithmetic is a model of the box model, not a measurement of it;
- * `src/layout.test.ts` pins the declarations and says the same thing about what it cannot prove.
- *
- * **What this trades, stated rather than hidden:** the feed shows three rows instead of four at
- * this one window size. It stays a whole number of rows — W4-D2's 132 was chosen as 20 + 4x28
- * precisely so no row is cut through its glyphs, and 104 is 20 + 3x28 for the same reason. Above
- * 560px nothing here applies and the feed keeps its four.
- */
-@media (max-height: 560px) {
-  .feed {
-    min-height: 104px;
-  }
-
-  /* At this height the excerpt's own 120px ceiling is more than the whole card has. It is the
-     detail; the decision is the point. */
-  .excerpt,
-  .suggestion {
-    max-height: 72px;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  * {
-    transition: none !important;
-    animation: none !important;
+  .session-status-spinner svg {
+    animation: none;
+  }
+  .button[data-icon-button="standard"] {
+    transition: none;
+  }
+  .workspace-chrome,
+  .project-topbar,
+  .sidebar-shell,
+  .sidebar-shell .app-navigation,
+  .sidebar-reveal,
+  .sidebar-reveal[data-open="false"] {
+    transition: none;
+  }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .app-shell {
+    background: var(--color-canvas);
+  }
+  .app-navigation,
+  .workspace-chrome {
+    background: var(--color-sidebar);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .blur-menu.overlay-surface,
+  .glass-surface {
+    background: var(--color-elevated);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
   }
 }
 
-/* Saved automation plans are opt-in history, outside the chat transcript. */
-.automation-details { flex: 0 0 auto; min-height: 0; max-height: 35%; overflow: auto; }
-.automation-details > summary { padding: 8px 20px; color: var(--muted); font-size: 12px; cursor: pointer; }
+.notepad-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0fr);
+  height: 100%;
+  min-height: 0;
+  transition: grid-template-columns 240ms cubic-bezier(.2,.8,.2,1);
+}
+.notepad-split[data-open="true"] { grid-template-columns: minmax(0, .85fr) minmax(0, 1fr); }
+.notepad-editor { border-left: 1px solid transparent; opacity: 0; transition: opacity 180ms, border-color 240ms; }
+.notepad-split[data-open="true"] .notepad-editor { border-color: var(--color-hairline); opacity: 1; }
+.note-title-input { border-color: transparent; background: transparent; box-shadow: none; padding-left: 0; }
+@media (max-width: 760px) {
+  .notepad-split[data-open="true"] { grid-template-columns: minmax(0, .5fr) minmax(0, 1fr); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .notepad-split, .notepad-editor { transition: none; }
+}

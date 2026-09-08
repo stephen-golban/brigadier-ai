@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+  waitFor,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { DocumentTab } from "./DocumentTab";
 import { workbenchApi } from "../workbenchApi";
@@ -81,4 +88,39 @@ describe("external note changes", () => {
     );
     expect(screen.getByLabelText("File editor")).toHaveValue("disk text");
   });
+});
+
+it("submits Save As through the native form button", async () => {
+  const user = userEvent.setup();
+  const saved = vi.fn();
+  const save = vi.spyOn(workbenchApi, "save").mockResolvedValue(undefined);
+  render(
+    <DocumentTab
+      {...props}
+      tab={{
+        ...props.tab,
+        id: "scratch:save-as",
+        kind: "untitled",
+        path: "Untitled",
+      }}
+      onSaved={saved}
+    />,
+  );
+  await user.type(
+    await screen.findByLabelText("File editor"),
+    "preserve my edits",
+  );
+  await user.click(screen.getByRole("button", { name: "Save As" }));
+  const path = screen.getByLabelText("New file path");
+  await user.type(path, "notes.txt");
+  await user.click(
+    within(path.closest("form")!).getByRole("button", { name: "Save" }),
+  );
+  await waitFor(() => expect(saved).toHaveBeenCalledWith("notes.txt"));
+  expect(save).toHaveBeenCalledWith(
+    { projectId: "p", sessionId: null },
+    "notes.txt",
+    "preserve my edits",
+    null,
+  );
 });

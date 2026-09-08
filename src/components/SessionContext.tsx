@@ -1,3 +1,5 @@
+import { Popover } from "./controls/overlay";
+import { Button } from "./controls/button";
 import { useEffect, useState } from "react";
 import { sessionApi, type ContextReading } from "../sessionApi";
 import { errorMessage } from "../workspaceApi";
@@ -43,49 +45,41 @@ export function SessionContext({
   }, [sessionId, revision, busy]);
   const percent = contextPercent(reading);
   return (
-    <details className="session-context">
-      <summary
+    <Popover>
+      <Button
+        variant="ghost"
+        className="gap-1 px-2"
         aria-label={
           percent === null
             ? "Context usage unknown"
             : `Context usage approximately ${percent}%`
         }
       >
-        <svg viewBox="0 0 20 20" aria-hidden="true">
-          <circle cx="10" cy="10" r="7" className="context-track" />
-          {percent !== null && (
-            <circle
-              cx="10"
-              cy="10"
-              r="7"
-              className="context-value"
-              pathLength="100"
-              strokeDasharray={`${Math.min(100, percent)} 100`}
-            />
-          )}
-        </svg>
+        <meter aria-label={percent === null ? "Usage unknown" : "Context used"} value={percent ?? 0} min={0} max={100} className="h-2 w-4" />
         <span>{percent === null ? "—" : `${percent}%`}</span>
-      </summary>
-      <div className="context-details">
-        <b>Current context</b>
-        {percent === null ? (
-          <p>{reading?.reason ?? "Reading provider context…"}</p>
-        ) : (
-          <>
-            <p>
-              ≈ {reading!.used!.toLocaleString()} /{" "}
-              {reading!.limit!.toLocaleString()} tokens
-            </p>
-            <p>{reading!.model}</p>
-            <small>
-              Provider estimate · Includes instructions and tools · Updated{" "}
-              {reading!.sampledAt
-                ? new Date(reading!.sampledAt).toLocaleTimeString()
-                : "now"}
-            </small>
-          </>
-        )}
-      </div>
-    </details>
+      </Button>
+      <Popover.Content placement="top end">
+        <Popover.Dialog aria-label="Context usage" className="w-64 p-3 text-sm">
+          <b>Current context</b>
+          {percent === null ? (
+            <p>{reading?.reason ?? "Reading provider context…"}</p>
+          ) : (
+            <>
+              <p>
+                ≈ {reading!.used!.toLocaleString()} /{" "}
+                {reading!.limit!.toLocaleString()} tokens
+              </p>
+              <p>{reading!.model}</p>
+              <small>
+                Provider estimate · Includes instructions and tools · Updated{" "}
+                {reading!.sampledAt
+                  ? new Date(reading!.sampledAt).toLocaleTimeString()
+                  : "now"}
+              </small>
+            </>
+          )}
+        </Popover.Dialog>
+      </Popover.Content>
+    </Popover>
   );
 }

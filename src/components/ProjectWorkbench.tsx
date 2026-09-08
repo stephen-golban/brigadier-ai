@@ -1,16 +1,20 @@
+import { SessionMenu } from "./SessionMenu";
+import { working } from "../attention";
+import { MoreIcon } from "./NavigationIcons";
+import { FolderIcon, SidebarIcon } from "./NavigationIcons";
+import { SearchIcon } from "./SearchIcon";
+import { Tabs } from "./controls/tabs";
+import { DropdownContent } from "./controls/menu";
+import { Dropdown, Label, Separator } from "./controls/overlay";
+import { Input } from "./controls/input";
+import { Button } from "./controls/button";
 import { isTrashed, type NavigationData } from "../navigationApi";
 import { hasSavedEdits } from "../workbenchState";
 import { SessionCard } from "./SessionCard";
 import { ProjectHistory } from "./ProjectHistory";
 import { documentCommands } from "../documentCommands";
 import { documentKey } from "../workbenchState";
-import { working } from "../attention";
-import {
-  SidebarSimpleIcon,
-  FolderIcon,
-  MagnifyingGlassIcon,
-  ClockCounterClockwiseIcon,
-} from "@phosphor-icons/react";
+import { ClockCounterClockwiseIcon } from "@phosphor-icons/react";
 import {
   lazy,
   Suspense,
@@ -21,11 +25,9 @@ import {
   type ReactNode,
 } from "react";
 import {
-  PlusIcon,
   XIcon,
   TerminalIcon,
   FileIcon,
-  ChatCircleIcon,
   NotebookIcon,
   GitDiffIcon,
 } from "@phosphor-icons/react";
@@ -63,6 +65,7 @@ export function ProjectWorkbench({
   sessions,
   selectedSessionId,
   onSelectSession,
+  onForkSession,
   workspaceOpen,
   setWorkspaceOpen,
   models,
@@ -79,6 +82,7 @@ export function ProjectWorkbench({
   sessions: Record<string, SessionRuntime>;
   selectedSessionId: string | null;
   onSelectSession: (id: SessionId | null) => void;
+  onForkSession?: (id: SessionId) => Promise<void>;
   workspaceOpen: boolean;
   setWorkspaceOpen: (open: boolean) => void;
   models: ModelInfo[];
@@ -166,6 +170,14 @@ export function ProjectWorkbench({
   const [openPath, setOpenPath] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<Confirmation | null>(null);
   const [history, setHistory] = useState(false);
+  const [panelMode, setPanelMode] = useState<string>(mode);
+  const [panelWidth, setPanelWidth] = useStoredState(
+    "brigadier:workspace-width",
+    480,
+  );
+  const resizePanel = (value: number) =>
+    setPanelWidth(Math.max(300, Math.min(900, value)));
+
   const [, setDocumentRevision] = useState(0);
   const closedTabs = useRef<ProjectTab[]>([]);
   const closeAfterSaveAs = useRef<string | null>(null);
@@ -205,10 +217,27 @@ export function ProjectWorkbench({
       : (visibleTabs[visibleTabs.length - 1]?.id ?? null),
   };
   const selected = layout.tabs.find((t) => t.id === layout.active);
+  const panelTab = layout.tabs.find((t) => t.id === panelMode);
+  useEffect(() => {
+    if (
+      !["files", "changes", "search", "notes"].includes(panelMode) &&
+      !panelTab
+    )
+      setPanelMode("files");
+  }, [panelMode, panelTab]);
   useEffect(() => {
     if (!project) return;
     const saved = layouts[project.id];
-    const t = saved?.tabs.find((t) => t.id === saved.active);
+    const savedPanel = saved?.tabs.find(
+      (t) => t.id === saved.active && !["session", "draft"].includes(t.kind),
+    );
+    if (savedPanel) setPanelMode(savedPanel.id);
+    const t =
+      saved?.tabs.find((t) => t.id === saved.active && t.kind === "session") ??
+      saved?.tabs
+        .slice()
+        .reverse()
+        .find((t) => t.kind === "session");
     if (!selectedSessionId && t?.kind === "session" && sessions[t.path])
       onSelectSession(t.path);
   }, [project?.id]);
@@ -327,14 +356,6 @@ export function ProjectWorkbench({
     return () => clearInterval(timer);
   }, [project?.id]);
   useEffect(() => {
-    if (!menu) return;
-    const close = (e: PointerEvent) => {
-      if (!menuRef.current?.contains(e.target as Node)) setMenu(false);
-    };
-    document.addEventListener("pointerdown", close);
-    return () => document.removeEventListener("pointerdown", close);
-  }, [menu]);
-  useEffect(() => {
     const handler = (e: Event) => {
       const id = (e as CustomEvent<string>).detail;
       if (project && sessions[id]?.projectId === project.id)
@@ -365,6 +386,8 @@ export function ProjectWorkbench({
         ? cleaned.slice(root.length + 1)
         : cleaned.replace(/^\.\//, "");
       const id = `${kind}:${context.sessionId ?? "root"}:${staged}:${relative}`;
+      setPanelMode(id);
+      setWorkspaceOpen(true);
       const tab: ProjectTab = {
         id,
         kind,
@@ -404,6 +427,7 @@ export function ProjectWorkbench({
     const review = (e: Event) => {
       setReviewTurn((e as CustomEvent).detail?.turn ?? null);
       setMode("changes");
+      setPanelMode("changes");
       setWorkspaceOpen(true);
     };
     const diff = (e: Event) => {
@@ -435,6 +459,11 @@ export function ProjectWorkbench({
   }, [sessions, project?.id]);
   const add = (tab: ProjectTab) => {
     setHistory(false);
+    if (!["session", "draft"].includes(tab.kind)) {
+      setPanelMode(tab.id);
+      setWorkspaceOpen(true);
+    }
+
     setLayouts((old) => {
       const l = old[layoutKey] ?? empty;
       return {
@@ -505,6 +534,11 @@ export function ProjectWorkbench({
   };
   const select = (t: ProjectTab) => {
     setHistory(false);
+    if (!["session", "draft"].includes(t.kind)) {
+      setPanelMode(t.id);
+      setWorkspaceOpen(true);
+    }
+
     setLayouts((old) => ({
       ...old,
       [layoutKey]: { ...(old[layoutKey] ?? empty), active: t.id },
@@ -695,9 +729,7 @@ export function ProjectWorkbench({
   };
   const [reviewTurn, setReviewTurn] = useState<string | null>(null);
   const showHistory = !!project && (history || layout.tabs.length === 0);
-  const showConversation =
-    !showHistory &&
-    (!selected || selected.kind === "session" || selected.kind === "draft");
+  const showConversation = !showHistory;
   useEffect(() => {
     const newSession = () => create("session");
     const note = (e: Event) => {
@@ -754,12 +786,24 @@ export function ProjectWorkbench({
             : e.code === "BracketLeft"
               ? -1
               : 1;
-        const at = layout.tabs.findIndex((t) => t.id === layout.active);
-        const next =
-          layout.tabs[
-            (at + direction + layout.tabs.length) % layout.tabs.length
-          ];
+        const ids = [
+          "files",
+          "changes",
+          "search",
+          "notes",
+          ...layout.tabs
+            .filter((t) => !["session", "draft"].includes(t.kind))
+            .map((t) => t.id),
+        ];
+        const at = ids.indexOf(panelMode);
+        const nextId = ids[(at + direction + ids.length) % ids.length]!;
+        const next = layout.tabs.find((t) => t.id === nextId);
         if (next) select(next);
+        else {
+          setPanelMode(nextId);
+          setMode(nextId as WorkspaceMode);
+          setWorkspaceOpen(true);
+        }
         return;
       }
       if (!command || e.altKey) return;
@@ -781,7 +825,9 @@ export function ProjectWorkbench({
         } else create("session");
       } else if (e.key.toLowerCase() === "w") {
         e.preventDefault();
-        if (selected) void close(selected);
+        if (workspaceOpen && panelTab) void close(panelTab);
+        else if (workspaceOpen) setWorkspaceOpen(false);
+        else if (selected) void close(selected);
       } else if (e.key.toLowerCase() === "o") {
         e.preventDefault();
         setOpenPath("");
@@ -806,17 +852,23 @@ export function ProjectWorkbench({
       window.removeEventListener("workbench-document-state", documentState);
       window.removeEventListener("keydown", key);
     };
-  }, [layout, project?.id, selectedSessionId, sessions, data]);
+  }, [
+    layout,
+    project?.id,
+    selectedSessionId,
+    sessions,
+    data,
+    panelMode,
+    workspaceOpen,
+  ]);
   useEffect(() => {
     window.dispatchEvent(
       new CustomEvent("workbench-active-session", {
         detail:
-          showConversation && selected?.kind === "session"
-            ? selected.path
-            : null,
+          showConversation && activeSession ? activeSession.sessionId : null,
       }),
     );
-  }, [showConversation, selected?.id]);
+  }, [showConversation, activeSession?.sessionId]);
   const handledRequest = useRef<number | null>(null);
   useEffect(() => {
     if (
@@ -829,200 +881,148 @@ export function ProjectWorkbench({
     }
   }, [newSessionRequest, project?.id]);
   return (
-    <div className="project-workbench">
+    <div className="project-workbench relative flex min-h-0 min-w-0 flex-1 flex-col bg-canvas">
       <header
-        className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3"
+        className="project-topbar flex h-11 shrink-0 items-center gap-3 border-b border-hairline px-4 text-text-secondary"
         data-tauri-drag-region="deep"
       >
-        {sidebarToggle ?? (
-          <button
-            className="icon-button"
+        {sidebarToggle !== undefined ? (
+          sidebarToggle
+        ) : (
+          <Button
+            isIconOnly
+            className="icon-button size-8 p-0"
             aria-label="Toggle sidebar"
             onClick={() =>
               window.dispatchEvent(new Event("brigadier-toggle-sidebar"))
             }
           >
-            <SidebarSimpleIcon size={19} />
-          </button>
+            <SidebarIcon size={19} />
+          </Button>
         )}
-        <span className="min-w-0 truncate text-sm font-medium">
-          {project
-            ? (data.projectNames?.[project.id] ?? project.name)
-            : "Brigadier"}
+        <FolderIcon size={18} className="shrink-0 text-text" />
+        <span className="min-w-0 truncate text-[14px] font-medium text-text">
+          {showConversation && activeSession
+            ? (peers.titles[activeSession.sessionId] ??
+              `Session ${activeSession.sessionId.slice(-6)}`)
+            : project
+              ? (data.projectNames?.[project.id] ?? project.name)
+              : "Brigadier"}
         </span>
-        <span className="grow" />
-        <button
-          className="icon-button"
-          aria-label="Session history"
-          title="Session history"
-          disabled={!project}
-          onClick={() => setHistory(!history)}
-        >
-          <ClockCounterClockwiseIcon size={18} />
-        </button>
-        {(
-          [
-            ["files", "Tree", FolderIcon],
-            ["search", "Search", MagnifyingGlassIcon],
-            ["changes", "Changes", GitDiffIcon],
-          ] as const
-        ).map(([value, label, Icon]) => (
-          <button
-            className="icon-button"
-            key={value}
-            aria-label={label}
-            title={label}
-            aria-pressed={workspaceOpen && mode === value}
-            disabled={!project}
-            onClick={() => {
-              setReviewTurn(null);
-              setWorkspaceOpen(!workspaceOpen || mode !== value);
-              setMode(value);
-            }}
-          >
-            <Icon size={19} />
-          </button>
-        ))}
-      </header>
-      <div className="project-tabbar">
-        <div role="tablist" aria-label="Project tabs" className="project-tabs">
-          {layout.tabs.map((t) => {
-            const Icon =
-              t.kind === "session"
-                ? ChatCircleIcon
-                : t.kind === "terminal"
-                  ? TerminalIcon
-                  : t.kind === "note"
-                    ? NotebookIcon
-                    : t.kind === "diff"
-                      ? GitDiffIcon
-                      : FileIcon;
-            return (
-              <div className="project-tab" key={t.id}>
-                <button
-                  role="tab"
-                  aria-selected={layout.active === t.id}
-                  title={t.path}
-                  onClick={() => select(t)}
-                  onKeyDown={(e) => {
-                    if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
-                      e.preventDefault();
-                      const i = layout.tabs.indexOf(t);
-                      select(
-                        layout.tabs[
-                          (i +
-                            (e.key === "ArrowRight" ? 1 : -1) +
-                            layout.tabs.length) %
-                            layout.tabs.length
-                        ]!,
-                      );
-                      const tabs = e.currentTarget
-                        .closest("[role=tablist]")
-                        ?.querySelectorAll<HTMLButtonElement>("[role=tab]");
-                      tabs?.[
-                        (i +
-                          (e.key === "ArrowRight" ? 1 : -1) +
-                          layout.tabs.length) %
-                          layout.tabs.length
-                      ]?.focus();
-                    }
+        <div ref={menuRef} className="shrink-0">
+          {showConversation && activeSession ? (
+            <SessionMenu
+              key={activeSession.sessionId}
+              sessionId={activeSession.sessionId}
+              title={
+                peers.titles[activeSession.sessionId] ??
+                `Session ${activeSession.sessionId.slice(-6)}`
+              }
+              canFork={
+                !!activeSession.providerSessionId && !working(activeSession)
+              }
+              onFork={
+                onForkSession
+                  ? () => onForkSession(activeSession.sessionId)
+                  : undefined
+              }
+              onArchive={() => onSelectSession(null)}
+              onHistory={() => setHistory(!history)}
+            />
+          ) : (
+            <Dropdown native isOpen={menu} onOpenChange={setMenu}>
+              <Button
+                size="icon"
+                className="size-7"
+                aria-label="Workspace actions"
+                disabled={!project}
+              >
+                <MoreIcon />
+              </Button>
+              <DropdownContent className="w-56">
+                <Dropdown.Item
+                  id="history"
+                  textValue="Session history"
+                  onAction={() => setHistory(!history)}
+                >
+                  <ClockCounterClockwiseIcon size={16} />
+                  <Label>Session history</Label>
+                </Dropdown.Item>
+                <Separator />
+                {(
+                  [
+                    ["files", "Tree", FolderIcon],
+                    ["search", "Search", SearchIcon],
+                    ["changes", "Changes", GitDiffIcon],
+                  ] as const
+                ).map(([value, label, Icon]) => (
+                  <Dropdown.Item
+                    key={value}
+                    id={value}
+                    textValue={label}
+                    onAction={() => {
+                      setReviewTurn(null);
+                      setWorkspaceOpen(!workspaceOpen || mode !== value);
+                      setMode(value);
+                      setPanelMode(value);
+                    }}
+                  >
+                    <Icon size={16} />
+                    <Label>{label}</Label>
+                  </Dropdown.Item>
+                ))}
+                <Separator />
+                {(
+                  [
+                    ["session", "New Session"],
+                    ["terminal", "Terminal"],
+                    ["untitled", "New File"],
+                    ["note", "New Note"],
+                  ] as const
+                ).map(([kind, label]) => (
+                  <Dropdown.Item
+                    key={kind}
+                    id={kind}
+                    textValue={label}
+                    onAction={() => create(kind)}
+                  >
+                    <Label>{label}</Label>
+                  </Dropdown.Item>
+                ))}
+                <Dropdown.Item
+                  id="open"
+                  textValue="Open File"
+                  onAction={() => {
+                    setOpenPath("");
+                    setMenu(false);
                   }}
                 >
-                  <Icon />
-                  <span>
-                    {t.kind === "session"
-                      ? (peers.titles[t.path] ?? `Session ${t.path.slice(-6)}`)
-                      : t.kind === "note"
-                        ? (data.notes.find((n) => `note:${n.id}` === t.id)
-                            ?.title ?? t.path)
-                        : t.path.split("/").pop()}
-                  </span>
-                  {t.kind === "session" && working(sessions[t.path]) && (
-                    <i className="status-spinner" aria-label="Working" />
-                  )}
-                  {t.kind === "session" && attention[t.path] && (
-                    <i className="attention-dot" aria-label="Needs attention" />
-                  )}
-                  {(documentCommands.get(t.id)?.dirty ?? hasSavedEdits(t)) && (
-                    <i className="dirty-dot" aria-label="Unsaved changes" />
-                  )}
-                </button>
-                <button
-                  className="icon-button"
-                  aria-label={`Close ${t.kind === "note" ? (data.notes.find((n) => `note:${n.id}` === t.id)?.title ?? t.path) : t.path}`}
-                  onClick={() => void close(t)}
-                >
-                  <XIcon size={12} />
-                </button>
-              </div>
-            );
-          })}
-        </div>
-        <div
-          className="new-tab-menu"
-          ref={menuRef}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") setMenu(false);
-          }}
-        >
-          <button
-            className="icon-button"
-            aria-label="New tab"
-            title="New tab"
-            aria-expanded={menu}
-            disabled={!project}
-            onClick={() => setMenu(!menu)}
-          >
-            <PlusIcon size={18} />
-          </button>
-          {menu && (
-            <div className="tab-menu" role="menu">
-              {[
-                ["session", "New Session"],
-                ["terminal", "Terminal"],
-                ["untitled", "New File"],
-              ].map(([kind, label]) => (
-                <button
-                  role="menuitem"
-                  key={kind}
-                  onClick={() =>
-                    create(kind as "session" | "terminal" | "untitled")
-                  }
-                >
-                  {label}
-                </button>
-              ))}
-              <button
-                role="menuitem"
-                onClick={() => {
-                  setOpenPath("");
-                  setMenu(false);
-                }}
-              >
-                Open File
-              </button>
-              <button role="menuitem" onClick={() => create("note")}>
-                New Note
-              </button>
-            </div>
+                  <Label>Open File</Label>
+                </Dropdown.Item>
+              </DropdownContent>
+            </Dropdown>
           )}
         </div>
-      </div>
+      </header>
       {error && (
-        <div className="workbench-error" role="alert">
+        <div
+          className="workbench-error flex items-center justify-between gap-2 px-3 text-error"
+          role="alert"
+        >
           <span>{error}</span>
-          <button
-            className="icon-button"
+          <Button
+            isIconOnly
+            className="icon-button size-8 p-0"
             aria-label="Dismiss workspace error"
             onClick={() => setError("")}
           >
             <XIcon />
-          </button>
+          </Button>
         </div>
       )}
       {openPath !== null && (
         <form
-          className="open-file-bar"
+          className="open-file-bar flex items-center gap-2 p-2"
           onSubmit={(e) => {
             e.preventDefault();
             if (openPath.trim()) {
@@ -1031,25 +1031,29 @@ export function ProjectWorkbench({
             }
           }}
         >
-          <input
+          <Input
             autoFocus
             placeholder="File path in this workspace"
             aria-label="Open file path"
             value={openPath}
             onChange={(e) => setOpenPath(e.target.value)}
           />
-          <button className="act">Open</button>
-          <button
+          <Button type="submit" className="act">
+            Open
+          </Button>
+          <Button
             type="button"
             className="act"
             onClick={() => setOpenPath(null)}
           >
             Cancel
-          </button>
+          </Button>
         </form>
       )}
-      <div className={`workbench-body ${workspaceOpen ? "has-workspace" : ""}`}>
-        <div className="workbench-main">
+      <div
+        className={`workbench-body flex min-h-0 flex-1 overflow-hidden ${workspaceOpen ? "has-workspace" : ""}`}
+      >
+        <div className="workbench-main flex min-h-0 min-w-0 flex-1 flex-col">
           {showHistory && historyContent}
           {showHistory && project && (
             <ProjectHistory
@@ -1066,23 +1070,25 @@ export function ProjectWorkbench({
               onNew={() => create("session")}
             />
           )}
-          {showConversation &&
-            activeSession &&
-            selected?.kind === "session" && (
-              <SessionCard
-                session={activeSession}
-                sessions={sessions}
-                peers={peers}
-                onSelect={onSelectSession}
-                onChanges={() => {
-                  setReviewTurn(null);
-                  setMode("changes");
-                  setWorkspaceOpen(true);
-                }}
-                onSettings={() => setSessionPrefs(true)}
-              />
-            )}
-          <div className="conversation-surface" hidden={!showConversation}>
+          {showConversation && activeSession && (
+            <SessionCard
+              session={activeSession}
+              sessions={sessions}
+              peers={peers}
+              onSelect={onSelectSession}
+              onChanges={() => {
+                setReviewTurn(null);
+                setMode("changes");
+                setPanelMode("changes");
+                setWorkspaceOpen(true);
+              }}
+              onSettings={() => setSessionPrefs(true)}
+            />
+          )}
+          <div
+            className="conversation-surface flex min-h-0 min-w-0 flex-1 flex-col"
+            hidden={!showConversation}
+          >
             <NoteScope.Provider value={project?.id ?? null}>
               {!showHistory && historyContent}
               {children}
@@ -1098,14 +1104,14 @@ export function ProjectWorkbench({
                     </b>
                     .
                   </span>
-                  <button
+                  <Button
                     className="act"
                     disabled={deciding}
                     onClick={() => void decide(false)}
                   >
                     Cancel
-                  </button>
-                  <button
+                  </Button>
+                  <Button
                     className="act"
                     disabled={deciding}
                     onClick={() =>
@@ -1122,83 +1128,241 @@ export function ProjectWorkbench({
                     }
                   >
                     Review
-                  </button>
+                  </Button>
                 </div>
               )}
             </NoteScope.Provider>
           </div>
-          {Object.values(layouts)
-            .flatMap((l) => l.tabs)
-            .filter((t) => t.kind === "terminal")
-            .map((t) => (
-              <div
-                className="terminal-surface"
-                key={t.id}
-                hidden={
-                  selected?.id !== t.id || t.context.projectId !== project?.id
-                }
-              >
-                <Suspense
-                  fallback={<p className="panel-empty">Loading terminal…</p>}
-                >
-                  <TerminalView
-                    context={t.context}
-                    visible={
-                      selected?.id === t.id &&
-                      t.context.projectId === project?.id
-                    }
-                    tabId={t.id}
-                    onReady={(id) => {
-                      if (id) terminalIds.current.set(t.id, id);
-                      else terminalIds.current.delete(t.id);
-                    }}
-                  />
-                </Suspense>
-              </div>
-            ))}
-          {selected &&
-            !["session", "draft", "terminal"].includes(selected.kind) &&
-            (selected.kind !== "note" || dataLoaded) && (
-              <DocumentTab
-                key={selected.id}
-                tab={selected}
-                note={
-                  selected.kind === "note"
-                    ? data.notes.find((n) => `note:${n.id}` === selected.id)
-                    : undefined
-                }
-                onNote={setNote}
-                onSaved={(path) => {
-                  const closing = closeAfterSaveAs.current === selected.id;
-                  closeAfterSaveAs.current = null;
-                  if (selected.kind === "untitled") remove(selected);
-                  if (!closing) open(path);
-                }}
-                onAttach={attach}
-                refresh={refresh}
-              />
-            )}
         </div>
         {project && (
-          <div className="workbench-side" hidden={!workspaceOpen}>
-            <WorkspaceTools
-              visible={workspaceOpen}
-              reviewTurn={reviewTurn}
-              context={context}
-              root={root}
-              mode={mode}
-              onMode={setMode}
-              status={status}
-              revision={revision}
-              refresh={refresh}
-              onOpen={open}
-              onNote={openNote}
-              data={data}
-              onData={setData}
-              models={models}
-              onClose={() => setWorkspaceOpen(false)}
-            />
-          </div>
+          <>
+            {workspaceOpen && (
+              <div
+                className="layout-resizer w-1 shrink-0 cursor-col-resize touch-none bg-hairline hover:bg-hover"
+                role="separator"
+                aria-label="Resize workspace"
+                aria-orientation="vertical"
+                aria-valuemin={300}
+                aria-valuemax={900}
+                aria-valuenow={panelWidth}
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+                    e.preventDefault();
+                    resizePanel(
+                      panelWidth + (e.key === "ArrowLeft" ? 24 : -24),
+                    );
+                  }
+                }}
+                onPointerDown={(e) => {
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                  e.currentTarget.dataset.start = String(e.clientX);
+                  e.currentTarget.dataset.width = String(panelWidth);
+                }}
+                onPointerMove={(e) => {
+                  if (e.currentTarget.hasPointerCapture(e.pointerId))
+                    resizePanel(
+                      Number(e.currentTarget.dataset.width) +
+                        Number(e.currentTarget.dataset.start) -
+                        e.clientX,
+                    );
+                }}
+                onPointerUp={(e) =>
+                  e.currentTarget.releasePointerCapture(e.pointerId)
+                }
+              />
+            )}
+            <aside
+              className="workbench-side relative flex min-h-0 max-w-[65%] shrink-0 flex-col bg-canvas"
+              hidden={!workspaceOpen}
+              style={{ width: panelWidth }}
+              aria-label="Workspace"
+            >
+              <Tabs
+                selectedKey={panelMode}
+                onSelectionChange={(key) => {
+                  const tab = layout.tabs.find((t) => t.id === key);
+                  if (tab) select(tab);
+                  else {
+                    setMode(key as WorkspaceMode);
+                    setPanelMode(String(key));
+                  }
+                }}
+                variant="secondary"
+                className="workspace-tabs flex h-full min-h-0 flex-col"
+              >
+                <Tabs.ListContainer className="workspace-tab-list shrink-0 pr-10">
+                  <Tabs.List aria-label="Workspace tabs">
+                    <Tabs.Tab id="files">
+                      Files
+                      <Tabs.Indicator />
+                    </Tabs.Tab>
+                    <Tabs.Tab id="changes">
+                      Changes
+                      <Tabs.Indicator />
+                    </Tabs.Tab>
+                    <Tabs.Tab id="search">
+                      Search
+                      <Tabs.Indicator />
+                    </Tabs.Tab>
+                    <Tabs.Tab id="notes">
+                      Notes
+                      <Tabs.Indicator />
+                    </Tabs.Tab>
+                    {layout.tabs
+                      .filter((t) => !["session", "draft"].includes(t.kind))
+                      .map((t) => (
+                        <Tabs.Tab key={t.id} id={t.id}>
+                          {t.kind === "terminal" ? (
+                            <TerminalIcon size={14} />
+                          ) : t.kind === "note" ? (
+                            <NotebookIcon size={14} />
+                          ) : t.kind === "diff" ? (
+                            <GitDiffIcon size={14} />
+                          ) : (
+                            <FileIcon size={14} />
+                          )}
+                          <span>
+                            {t.kind === "note"
+                              ? (data.notes.find((n) => `note:${n.id}` === t.id)
+                                  ?.title ?? t.path)
+                              : t.path.split("/").pop()}
+                          </span>
+                          {(documentCommands.get(t.id)?.dirty ??
+                            hasSavedEdits(t)) && (
+                            <i
+                              className="dirty-dot inline-block size-1.5 rounded-full bg-text-secondary"
+                              aria-label="Unsaved changes"
+                            />
+                          )}
+                          <Button
+                            size="icon"
+                            aria-label={`Close ${t.path}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void close(t);
+                            }}
+                          >
+                            <XIcon size={12} />
+                          </Button>
+                          <Tabs.Indicator />
+                        </Tabs.Tab>
+                      ))}
+                  </Tabs.List>
+                </Tabs.ListContainer>
+                <Tabs.Panel
+                  id={panelMode}
+                  className="workspace-tab-panel flex min-h-0 flex-1 flex-col overflow-hidden"
+                >
+                  <div
+                    hidden={
+                      !["files", "changes", "search", "notes"].includes(
+                        panelMode,
+                      )
+                    }
+                    className="workspace-browser flex min-h-0 flex-1 flex-col"
+                  >
+                    <WorkspaceTools
+                      visible={
+                        workspaceOpen &&
+                        ["files", "changes", "search", "notes"].includes(
+                          panelMode,
+                        )
+                      }
+                      reviewTurn={reviewTurn}
+                      context={context}
+                      root={root}
+                      mode={mode}
+                      onMode={(value) => {
+                        setMode(value);
+                        setPanelMode(value);
+                      }}
+                      status={status}
+                      revision={revision}
+                      refresh={refresh}
+                      onOpen={open}
+                      onNote={openNote}
+                      data={data}
+                      onData={setData}
+                      models={models}
+                      onClose={() => setWorkspaceOpen(false)}
+                    />
+                  </div>
+                  {Object.values(layouts)
+                    .flatMap((l) => l.tabs)
+                    .filter((t) => t.kind === "terminal")
+                    .map((t) => (
+                      <div
+                        className="terminal-surface h-full min-h-0 overflow-hidden"
+                        key={t.id}
+                        hidden={
+                          panelMode !== t.id ||
+                          t.context.projectId !== project?.id ||
+                          !workspaceOpen
+                        }
+                      >
+                        <Suspense
+                          fallback={
+                            <p className="panel-empty p-3 text-text-disabled">
+                              Loading terminal…
+                            </p>
+                          }
+                        >
+                          <TerminalView
+                            context={t.context}
+                            visible={
+                              panelMode === t.id &&
+                              workspaceOpen &&
+                              t.context.projectId === project?.id
+                            }
+                            tabId={t.id}
+                            onReady={(id) => {
+                              if (id) terminalIds.current.set(t.id, id);
+                              else terminalIds.current.delete(t.id);
+                            }}
+                          />
+                        </Suspense>
+                      </div>
+                    ))}
+                  {panelTab &&
+                    panelMode === panelTab.id &&
+                    workspaceOpen &&
+                    !["session", "draft", "terminal"].includes(panelTab.kind) &&
+                    (panelTab.kind !== "note" || dataLoaded) && (
+                      <DocumentTab
+                        key={panelTab.id}
+                        tab={panelTab}
+                        note={
+                          panelTab.kind === "note"
+                            ? data.notes.find(
+                                (n) => `note:${n.id}` === panelTab.id,
+                              )
+                            : undefined
+                        }
+                        onNote={setNote}
+                        onSaved={(path) => {
+                          const closing =
+                            closeAfterSaveAs.current === panelTab.id;
+                          closeAfterSaveAs.current = null;
+                          if (panelTab.kind === "untitled") remove(panelTab);
+                          if (!closing) open(path);
+                        }}
+                        onAttach={attach}
+                        refresh={refresh}
+                      />
+                    )}
+                </Tabs.Panel>
+              </Tabs>
+              <Button
+                className="workspace-close absolute top-0 right-0"
+                size="icon"
+                aria-label="Close workspace"
+                onClick={() => setWorkspaceOpen(false)}
+              >
+                <XIcon size={16} />
+              </Button>
+            </aside>
+          </>
         )}
       </div>
       {sessionPrefs && project && (

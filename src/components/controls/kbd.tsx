@@ -12,3 +12,12 @@ export function Kbd({ className, ...props }: ComponentProps<"kbd">) {
     />
   );
 }
+export function KbdGroup({ className, ...props }: ComponentProps<"span">) {
+  return (
+    <span
+      data-slot="kbd-group"
+      {...props}
+      className={cn("inline-flex items-center gap-1", className)}
+    />
+  );
+}

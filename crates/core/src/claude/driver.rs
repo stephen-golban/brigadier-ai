@@ -229,6 +229,7 @@ impl ProviderDriver for ClaudeDriver {
                 model: req.model.or_else(|| self.config.default_model.clone()),
                 permission_mode: req.permission_mode,
                 resume: None,
+                fork: false,
                 config_dir: self.config.config_dir.clone(),
                 mcp: req.mcp,
                 thinking: req.thinking,
@@ -258,6 +259,7 @@ impl ProviderDriver for ClaudeDriver {
                 model: req.model.or_else(|| self.config.default_model.clone()),
                 permission_mode: req.permission_mode,
                 resume: Some(req.token),
+                fork: req.fork,
                 config_dir: self.config.config_dir.clone(),
                 // A resume is gated exactly like a start; nothing about reopening a conversation
                 // widens what the child may reach. see docs/research/spawn-split.md §6.

@@ -125,7 +125,13 @@ describe("Git status refresh", () => {
       workspaceOpen
       setWorkspaceOpen={vi.fn()}
       models={[]}
-      peers={{ origins: {}, titles: {}, closed: [], messages: [], requests: [] }}
+      peers={{
+        origins: {},
+        titles: {},
+        closed: [],
+        messages: [],
+        requests: [],
+      }}
     >
       Conversation
     </ProjectWorkbench>
@@ -138,34 +144,48 @@ describe("Git status refresh", () => {
   it.each(["poll", "manual", "restored"])(
     "keeps existing rows mounted during a %s refresh and updates them in place",
     async (trigger) => {
-      const git = vi.spyOn(workspaceApi, "git").mockResolvedValue(status("one.ts"));
-      await act(async () => { render(workbench()); });
+      const git = vi
+        .spyOn(workspaceApi, "git")
+        .mockResolvedValue(status("one.ts"));
+      await act(async () => {
+        render(workbench());
+      });
       const row = screen.getByTitle("one.ts");
       row.focus();
       const message = screen.getByLabelText("Commit message");
       fireEvent.change(message, { target: { value: "Work in progress" } });
       row.focus();
       let finish!: (value: GitStatus) => void;
-      git.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+      git.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      );
       await act(async () => {
         if (trigger === "poll") await vi.advanceTimersByTimeAsync(5000);
-        else if (trigger === "manual") fireEvent.click(screen.getByTitle("Refresh"));
+        else if (trigger === "manual")
+          fireEvent.click(screen.getByTitle("Refresh"));
         else window.dispatchEvent(new Event("workbench-files-restored"));
       });
       expect(git).toHaveBeenCalledTimes(2);
       expect(screen.getByTitle("one.ts")).toBe(row);
       expect(row).toHaveFocus();
       expect(screen.queryByText("Repository")).not.toBeInTheDocument();
-      await act(async () => finish({
-        ...status("one.ts"),
-        changes: [...status("one.ts").changes, ...status("two.ts").changes],
-      }));
+      await act(async () =>
+        finish({
+          ...status("one.ts"),
+          changes: [...status("one.ts").changes, ...status("two.ts").changes],
+        }),
+      );
       expect(screen.getByTitle("one.ts")).toBe(row);
       expect(screen.getByTitle("two.ts")).toBeVisible();
       expect(message).toHaveValue("Work in progress");
 
       git.mockRejectedValue(new Error("Git temporarily unavailable"));
-      await act(async () => { fireEvent.click(screen.getByTitle("Refresh")); });
+      await act(async () => {
+        fireEvent.click(screen.getByTitle("Refresh"));
+      });
       expect(screen.getByTitle("one.ts")).toBe(row);
       expect(screen.getByTitle("two.ts")).toBeVisible();
     },
@@ -173,18 +193,34 @@ describe("Git status refresh", () => {
   it.each(["project", "session"])(
     "clears the old workspace on a %s switch and ignores its pending refresh",
     async (target) => {
-      const git = vi.spyOn(workspaceApi, "git").mockResolvedValue(status("old.ts"));
+      const git = vi
+        .spyOn(workspaceApi, "git")
+        .mockResolvedValue(status("old.ts"));
       let view!: ReturnType<typeof render>;
-      await act(async () => { view = render(workbench()); });
+      await act(async () => {
+        view = render(workbench());
+      });
       expect(screen.getByTitle("old.ts")).toBeVisible();
       let finishOld!: (value: GitStatus) => void;
       let finishNew!: (value: GitStatus) => void;
-      git.mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve; }));
+      git.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishOld = resolve;
+          }),
+      );
       fireEvent.click(screen.getByTitle("Refresh"));
-      git.mockImplementationOnce(() => new Promise((resolve) => { finishNew = resolve; }));
-      view.rerender(target === "project"
-        ? workbench({ ...project, id: "other-project" })
-        : workbench(project, { ...parent, sessionId: "other-session" }));
+      git.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishNew = resolve;
+          }),
+      );
+      view.rerender(
+        target === "project"
+          ? workbench({ ...project, id: "other-project" })
+          : workbench(project, { ...parent, sessionId: "other-session" }),
+      );
       expect(screen.queryByTitle("old.ts")).not.toBeInTheDocument();
       await act(async () => finishNew(status("new.ts")));
       await act(async () => finishOld(status("stale.ts")));
@@ -196,61 +232,64 @@ describe("Git status refresh", () => {
 describe("project tabs", () => {
   it("does not automatically open owned workhorses", async () => {
     render(<Harness />);
-    expect(await screen.findByRole("tab", { name: "Main task" })).toBeVisible();
-    expect(screen.getAllByRole("tab")).toHaveLength(1);
+    expect(await screen.findByText("Conversation parent")).toBeVisible();
+    expect(
+      screen.queryByRole("tab", { name: "Main task" }),
+    ).not.toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Environment and agents" }),
+    );
     await userEvent.click(screen.getByRole("button", { name: /Research/ }));
-    expect(screen.getAllByRole("tab")).toHaveLength(2);
+    expect(await screen.findByText("Conversation child")).toBeVisible();
   });
   it("closes finished tabs into history and reopens them by keyboard", async () => {
     const discard = vi.spyOn(desktopApi, "discard");
     render(<Harness />);
-    await screen.findByRole("tab");
+    await screen.findByText("Conversation parent");
     key("w");
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Search session history")).toBeVisible();
     expect(discard).not.toHaveBeenCalled();
     key("T", { shiftKey: true });
-    expect(screen.getByRole("tab", { name: "Main task" })).toHaveAttribute(
-      "aria-selected",
-      "true",
-    );
+    expect(screen.getByText("Conversation parent")).toBeVisible();
   });
   it("closes a working tab without stopping or deleting its session", async () => {
     const discard = vi.spyOn(desktopApi, "discard");
     render(<Harness busy />);
-    await screen.findByRole("tab");
+    await screen.findByText("Conversation parent");
     key("w");
     expect(discard).not.toHaveBeenCalled();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.queryByRole("tab")).not.toBeInTheDocument();
     key("T", { shiftKey: true });
-    expect(screen.getByRole("tab", {name: /Main task/})).toBeVisible();
+    expect(screen.getByText("Conversation parent")).toBeVisible();
   });
-  it("opens files in the main tab strip and cycles both directions", async () => {
+  it("keeps the conversation visible while opening and cycling workspace tabs", async () => {
     render(<Harness />);
-    await screen.findByRole("tab");
+    await screen.findByText("Conversation parent");
     act(() => {
       window.dispatchEvent(
         new CustomEvent("workbench-open-file", { detail: { path: "file.ts" } }),
       );
     });
     expect(await screen.findByLabelText("File editor")).toHaveValue("before");
-    expect(screen.getAllByRole("tab")).toHaveLength(2);
-    fireEvent.keyDown(window, { key: "Tab", ctrlKey: true });
-    expect(screen.getByRole("tab", { name: "Main task" })).toHaveAttribute(
+    expect(screen.getByText("Conversation parent")).toBeVisible();
+    expect(screen.getByRole("tab", { name: /file.ts/ })).toHaveAttribute(
       "aria-selected",
       "true",
     );
+    fireEvent.keyDown(window, { key: "Tab", ctrlKey: true });
+    expect(screen.getByRole("tab", { name: "Files" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByText("Conversation parent")).toBeVisible();
     fireEvent.keyDown(window, { key: "Tab", ctrlKey: true, shiftKey: true });
     expect(screen.getByRole("tab", { name: /file.ts/ })).toHaveAttribute(
       "aria-selected",
       "true",
     );
-    key("1");
-    expect(screen.getByRole("tab", { name: "Main task" })).toHaveAttribute(
-      "aria-selected",
-      "true",
-    );
+    expect(screen.getByText("Conversation parent")).toBeVisible();
   });
   it("keeps a dirty file on Cancel and awaits Save before closing", async () => {
     let finish!: () => void;
@@ -260,7 +299,7 @@ describe("project tabs", () => {
         () => new Promise<void>((resolve) => (finish = resolve)),
       );
     render(<Harness />);
-    await screen.findByRole("tab");
+    await screen.findByText("Conversation parent");
     act(() => {
       window.dispatchEvent(
         new CustomEvent("workbench-open-file", { detail: { path: "file.ts" } }),
@@ -275,7 +314,9 @@ describe("project tabs", () => {
     await userEvent.click(
       within(screen.getByRole("dialog")).getByRole("button", { name: "Save" }),
     );
-    expect(screen.getByRole("tab", { name: /file.ts/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole("tab", { name: /file.ts/, hidden: true }),
+    ).toBeInTheDocument();
     expect(save).toHaveBeenCalledWith(
       { projectId: "p", sessionId: "parent" },
       "file.ts",

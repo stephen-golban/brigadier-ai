@@ -1,5 +1,5 @@
-import { PromptInputActions } from "./prompt-kit/prompt-input";
-import { Button } from "./ui/button";
+import { ComposerActions as PromptInputActions } from "./assistant-ui/elements/composer";
+import { Button } from "./controls/button";
 import { SelectMenu } from "./SelectMenu";
 import { effortLevels, type Effort } from "../agentOptions";
 import type { AgentOptions } from "../agentOptions";
@@ -171,6 +171,7 @@ export function NewSession({
           <Button
             type="button"
             className="rounded-full"
+            variant="primary"
             disabled={!ready || sending}
             onClick={submit}
           >

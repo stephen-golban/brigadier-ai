@@ -1,10 +1,13 @@
+import { FolderIcon } from "./NavigationIcons";
+import { SearchIcon } from "./SearchIcon";
+import { Details, DetailsSummary } from "./controls/details";
+import { Input } from "./controls/input";
+import { Button } from "./controls/button";
 import { SessionReview } from "./SessionReview";
 import { useEffect, useRef, useState } from "react";
 import {
-  FolderIcon,
   FileIcon,
   CaretRightIcon,
-  MagnifyingGlassIcon,
   GitBranchIcon,
   NotebookIcon,
   XIcon,
@@ -65,87 +68,56 @@ export function WorkspaceTools({
   reviewTurn?: string | null;
   visible?: boolean;
 }) {
-  const [width, setWidth] = useState(
-    () => Number(localStorage.getItem("brigadier:workspace-width")) || 350,
-  );
-  const resize = (width: number) => {
-    const w = Math.min(800, Math.max(280, width));
-    setWidth(w);
-    localStorage.setItem("brigadier:workspace-width", String(w));
-  };
   return (
-    <aside
-      className="workspace-tools-panel"
-      style={{ width }}
-      aria-label="Workspace"
+    <section
+      className="workspace-tools-panel relative flex min-h-0 flex-1 flex-col"
+      aria-label="Workspace tools"
     >
-      <div
-        className="workspace-resize"
-        role="separator"
-        aria-label="Resize workspace"
-        aria-orientation="vertical"
-        aria-valuemin={280}
-        aria-valuemax={800}
-        aria-valuenow={width}
-        tabIndex={0}
-        onKeyDown={(e) => {
-          if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
-            e.preventDefault();
-            resize(width + (e.key === "ArrowLeft" ? 24 : -24));
-          }
-        }}
-        onPointerDown={(e) => {
-          e.currentTarget.setPointerCapture(e.pointerId);
-          e.currentTarget.dataset.start = String(e.clientX);
-          e.currentTarget.dataset.width = String(width);
-        }}
-        onPointerMove={(e) => {
-          if (e.currentTarget.hasPointerCapture(e.pointerId))
-            resize(
-              Number(e.currentTarget.dataset.width) +
-                Number(e.currentTarget.dataset.start) -
-                e.clientX,
-            );
-        }}
-        onPointerUp={(e) => e.currentTarget.releasePointerCapture(e.pointerId)}
-      />
-      <div className="workspace-mode-bar">
+      <div className="workspace-mode-bar hidden">
         {(
           [
             ["files", "Explorer", FolderIcon],
             ["changes", "Source Control", GitBranchIcon],
-            ["search", "Search", MagnifyingGlassIcon],
+            ["search", "Search", SearchIcon],
           ] as const
         ).map(([value, label, Icon]) => (
-          <button
+          <Button
             key={value}
-            className="icon-button"
+            isIconOnly
+            className="icon-button size-8 p-0"
             aria-label={label}
             title={label}
             aria-pressed={mode === value}
             onClick={() => onMode(value)}
           >
             <Icon size={19} />
-          </button>
+          </Button>
         ))}
         <span className="grow" />
-        <button
-          className="icon-button"
+        <Button
+          isIconOnly
+          className="icon-button size-8 p-0"
           aria-label="Close workspace"
           onClick={onClose}
         >
           <XIcon />
-        </button>
+        </Button>
       </div>
-      <div className="workspace-root" title={root}>
+      <div
+        className="workspace-root flex h-8 shrink-0 items-center gap-2 px-3 text-xs text-text-tertiary"
+        title={root}
+      >
         <FolderIcon />
         <span>{root.split("/").pop()}</span>
         <span className="grow" />
         {mode !== "changes" && <span>{status?.branch}</span>}
       </div>
-      <div className="workspace-tool-body" data-mode={mode}>
+      <div
+        className="workspace-tool-body min-h-0 flex-1 overflow-auto p-3"
+        data-mode={mode}
+      >
         <div hidden={mode !== "files"}>
-          <div className="section-heading">
+          <div className="section-heading mb-2 flex items-center gap-2 text-text-secondary">
             <b>Explorer</b>
           </div>
           <Directory
@@ -197,7 +169,7 @@ export function WorkspaceTools({
           />
         </div>
         <div hidden={mode !== "notes"}>
-          <div className="section-heading">
+          <div className="section-heading mb-2 flex items-center gap-2 text-text-secondary">
             <b>Notepad</b>
           </div>
           {(["project", "global"] as const).map((scope) => (
@@ -210,26 +182,26 @@ export function WorkspaceTools({
                     : n.projectId === null,
                 )
                 .map((n) => (
-                  <button
-                    className="tree-row"
+                  <Button
+                    className="tree-row flex h-8 w-full items-center gap-2 rounded-md text-text-secondary hover:bg-hover [&_svg]:size-4"
                     key={n.id}
                     onClick={() => onNote(n)}
                   >
                     <NotebookIcon />
                     <span>{n.title || "Untitled note"}</span>
                     {n.alwaysInclude && <small>Always included</small>}
-                  </button>
+                  </Button>
                 ))}
             </section>
           ))}
           {!data.notes.length && (
-            <p className="panel-empty">
+            <p className="panel-empty p-3 text-text-disabled">
               Create a note from the tab bar’s + menu.
             </p>
           )}
         </div>
       </div>
-    </aside>
+    </section>
   );
 }
 function Directory({
@@ -269,7 +241,9 @@ function Directory({
   }, [context.projectId, context.sessionId, path, revision]);
   return (
     <div>
-      {error && <p className="inline-error">{error}</p>}
+      {error && (
+        <p className="inline-error my-2 text-[13px] text-error">{error}</p>
+      )}
       {entries.map((e) => {
         const changes =
           status?.changes.filter(
@@ -286,8 +260,8 @@ function Directory({
               : "";
         return (
           <div key={e.path}>
-            <button
-              className={`tree-row ${code ? "git-" + code : ""}`}
+            <Button
+              className={`tree-row flex h-8 w-full items-center gap-2 rounded-md text-text-secondary hover:bg-hover [&_svg]:size-4 ${code ? "git-" + code : ""}`}
               style={{ paddingLeft: 12 + depth * 14 }}
               aria-expanded={e.directory ? expanded.has(e.path) : undefined}
               title={
@@ -320,7 +294,7 @@ function Directory({
               {code && (
                 <b className="git-decoration">{e.directory ? "●" : code}</b>
               )}
-            </button>
+            </Button>
             {e.directory && expanded.has(e.path) && (
               <Directory
                 context={context}
@@ -399,8 +373,8 @@ function ProjectSearch({
     }
   };
   return (
-    <section className="project-search">
-      <div className="section-heading">
+    <section className="project-search flex flex-col gap-3 [&_form]:flex [&_form]:flex-col [&_form]:gap-2">
+      <div className="section-heading mb-2 flex items-center gap-2 text-text-secondary">
         <b>Search</b>
       </div>
       <form
@@ -409,13 +383,13 @@ function ProjectSearch({
           void search();
         }}
       >
-        <input
+        <Input
           aria-label="Search project"
           placeholder="Search"
           value={query.text}
           onChange={(e) => change({ text: e.target.value })}
         />
-        <div className="search-flags">
+        <div className="search-flags flex flex-wrap gap-2">
           {(
             [
               ["caseSensitive", "Match case", "Aa"],
@@ -423,7 +397,7 @@ function ProjectSearch({
               ["regex", "Use regular expression", ".*"],
             ] as const
           ).map(([flag, label, text]) => (
-            <button
+            <Button
               key={flag}
               type="button"
               title={label}
@@ -432,9 +406,9 @@ function ProjectSearch({
               onClick={() => change({ [flag]: !query[flag] })}
             >
               {text}
-            </button>
+            </Button>
           ))}
-          <button
+          <Button
             type="button"
             aria-pressed={query.replacement !== null}
             onClick={() =>
@@ -442,10 +416,10 @@ function ProjectSearch({
             }
           >
             Replace
-          </button>
+          </Button>
         </div>
         {query.replacement !== null && (
-          <input
+          <Input
             aria-label="Replace with"
             placeholder="Replace"
             value={query.replacement}
@@ -454,7 +428,7 @@ function ProjectSearch({
         )}
         <label>
           Files to include
-          <input
+          <Input
             aria-label="Files to include"
             placeholder="e.g. src/**, *.ts"
             value={query.include}
@@ -463,35 +437,35 @@ function ProjectSearch({
         </label>
         <label>
           Files to exclude
-          <input
+          <Input
             aria-label="Files to exclude"
             placeholder="e.g. dist, *.test.ts"
             value={query.exclude}
             onChange={(e) => change({ exclude: e.target.value })}
           />
         </label>
-        <button className="act" disabled={!query.text || busy}>
+        <Button type="submit" className="act" disabled={!query.text || busy}>
           {busy
             ? "Searching…"
             : query.replacement !== null
               ? "Preview replacement"
               : "Search"}
-        </button>
+        </Button>
       </form>
       {error && (
-        <p role="alert" className="inline-error">
+        <p role="alert" className="inline-error my-2 text-[13px] text-error">
           {error}
         </p>
       )}
       {results && (
         <>
-          <p className="search-summary">
+          <p className="search-summary text-text-secondary">
             {results.hits.length} results in {results.files} files
             {results.truncated ? " · Limit reached; narrow your search" : ""}
           </p>
           {results.replacements.length > 0 && (
             <>
-              <button
+              <Button
                 className="primary-action"
                 disabled={busy || results.truncated}
                 onClick={() =>
@@ -520,31 +494,31 @@ function ProjectSearch({
                 }
               >
                 Replace all
-              </button>
+              </Button>
               {results.replacements.map((c) => (
-                <details key={c.path} className="replace-preview">
-                  <summary>
+                <Details key={c.path} className="replace-preview">
+                  <DetailsSummary>
                     {c.path} · {c.count} replacements
-                  </summary>
+                  </DetailsSummary>
                   <b>Before</b>
                   <pre>{c.before}</pre>
                   <b>After</b>
                   <pre>{c.after}</pre>
-                </details>
+                </Details>
               ))}
             </>
           )}
           {results.hits.map((hit, i) => (
-            <button
+            <Button
               key={`${hit.path}:${hit.line}:${hit.column}:${i}`}
-              className="search-result"
+              className="search-result flex w-full items-center gap-2 text-left text-text-secondary"
               onClick={() => onOpen(hit.path, hit.line)}
             >
               <span>
                 {hit.path}:{hit.line}
               </span>
               <code>{hit.text}</code>
-            </button>
+            </Button>
           ))}
         </>
       )}

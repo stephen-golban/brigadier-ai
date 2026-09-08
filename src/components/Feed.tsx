@@ -1,3 +1,4 @@
+import { Button } from "./controls/button";
 /**
  * The virtualized feed: one line per event, read as a column rather than scanned as a table.
  *
@@ -108,7 +109,14 @@
  *     answered yet. `src/feedGroups.ts` states both as invariants and
  *     `src/feedGroups.test.ts` fails if either stops holding.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
 import { buildFeed } from "../feedGroups";
@@ -167,7 +175,13 @@ function shortId(id: string): string {
  *  something to delegate. `currentColor` always renders. */
 function LinesMark() {
   return (
-    <svg viewBox="0 0 28 28" width="28" height="28" aria-hidden="true" focusable="false">
+    <svg
+      viewBox="0 0 28 28"
+      width="28"
+      height="28"
+      aria-hidden="true"
+      focusable="false"
+    >
       <path
         d="M4 8h20M4 14h15M4 20h9"
         fill="none"
@@ -184,7 +198,13 @@ function LinesMark() {
  *  and a closed group draw the same ink. */
 function ChevronDownIcon() {
   return (
-    <svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" focusable="false">
+    <svg
+      viewBox="0 0 10 10"
+      width="10"
+      height="10"
+      aria-hidden="true"
+      focusable="false"
+    >
       <path
         d="M1.75 3.75 5 7l3.25-3.25"
         fill="none"
@@ -206,7 +226,9 @@ export interface FeedProps {
 
 export function Feed({ sessionId, projectId, projectName }: FeedProps) {
   const all = useSyncExternalStore(store.subscribe, () =>
-    sessionId !== null ? store.getSessionRows(sessionId) : store.getProjectRows(projectId),
+    sessionId !== null
+      ? store.getSessionRows(sessionId)
+      : store.getProjectRows(projectId),
   );
 
   /**
@@ -227,7 +249,9 @@ export function Feed({ sessionId, projectId, projectName }: FeedProps) {
    * setting — and it survives a session switch, which costs nothing because the ids are unique
    * per session.
    */
-  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set<string>());
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
+  );
 
   const toggleFold = useCallback((key: string) => {
     setExpanded((prev) => {
@@ -245,7 +269,10 @@ export function Feed({ sessionId, projectId, projectName }: FeedProps) {
    * it**: a screenful of collapsed groups mounts the same number of rows as a screenful of raw
    * ones and covers more of the session. Nothing here mounts a row it does not draw.
    */
-  const view = useMemo(() => buildFeed(all, verbose, expanded), [all, verbose, expanded]);
+  const view = useMemo(
+    () => buildFeed(all, verbose, expanded),
+    [all, verbose, expanded],
+  );
   const lines = view.lines;
   const hidden = all.length - view.shown;
 
@@ -292,7 +319,7 @@ export function Feed({ sessionId, projectId, projectName }: FeedProps) {
   const items = virtualizer.getVirtualItems();
 
   return (
-    <section className="feed">
+    <section className="feed relative flex min-h-0 flex-1 flex-col">
       {/*
         The band above row 0: the toggle, then the count. One absolutely-positioned flex row so
         the two stay on one line and keep the alignment `.feed-count` already had — hard against
@@ -302,8 +329,8 @@ export function Feed({ sessionId, projectId, projectName }: FeedProps) {
         30 rows would be the worst outcome of this whole feature: the operator would be reading a
         feed with holes in it and have no way to know.
       */}
-      <div className="feed-band">
-        <button
+      <div className="feed-band flex shrink-0 items-center justify-end gap-2 px-3 text-xs text-text-tertiary">
+        <Button
           type="button"
           className="feed-verbose"
           aria-pressed={verbose}
@@ -311,7 +338,7 @@ export function Feed({ sessionId, projectId, projectName }: FeedProps) {
           onClick={() => setVerbose((v) => !v)}
         >
           verbose
-        </button>
+        </Button>
         <span className="feed-count">
           {hidden > 0
             ? `${view.shown} of ${all.length} rows`
@@ -319,17 +346,23 @@ export function Feed({ sessionId, projectId, projectName }: FeedProps) {
           {all.length >= store.ROW_CAP ? ` (capped at ${store.ROW_CAP})` : ""}
         </span>
       </div>
-      <div className="feed-scroller" ref={scrollerRef} onScroll={syncAtEnd}>
-        <div className="feed-sizer" style={{ height: `${virtualizer.getTotalSize()}px` }}>
+      <div className="feed-scroller min-h-0 flex-1 overflow-y-auto" ref={scrollerRef} onScroll={syncAtEnd}>
+        <div
+          className="feed-sizer relative mx-auto w-full max-w-[780px]"
+          style={{ height: `${virtualizer.getTotalSize()}px` }}
+        >
           {items.map((item) => {
             const line = lines[item.index];
             if (line === undefined) return null;
             const r = line.row;
             // Both structural and both O(1). `lines` is the whole array, so the line before this
             // one is a plain index lookup even though only a window of them is mounted.
-            const prev = item.index === 0 ? undefined : lines[item.index - 1]?.row;
-            const newMinute = prev === undefined || minuteOf(prev.t) !== minuteOf(r.t);
-            const newSession = sessionId === null && (prev === undefined || prev.s !== r.s);
+            const prev =
+              item.index === 0 ? undefined : lines[item.index - 1]?.row;
+            const newMinute =
+              prev === undefined || minuteOf(prev.t) !== minuteOf(r.t);
+            const newSession =
+              sessionId === null && (prev === undefined || prev.s !== r.s);
             // The rule marks the clock minute and nothing else. Session changes deliberately do
             // NOT draw one: in a project view with three live sessions the rows interleave, every
             // row would be a boundary, and a rule on every row is the grid this order removed.
@@ -340,9 +373,16 @@ export function Feed({ sessionId, projectId, projectName }: FeedProps) {
               <div
                 key={item.key}
                 className={
-                  line.nested ? "feed-row nested" : lead ? "feed-row lead" : "feed-row"
+                  line.nested
+                    ? "feed-row nested"
+                    : lead
+                      ? "feed-row lead"
+                      : "feed-row"
                 }
-                style={{ height: `${ROW_H}px`, transform: `translateY(${item.start}px)` }}
+                style={{
+                  height: `${ROW_H}px`,
+                  transform: `translateY(${item.start}px)`,
+                }}
                 title={`${clock(r.t)}  ${r.l}`}
               >
                 {/*
@@ -369,7 +409,7 @@ export function Feed({ sessionId, projectId, projectName }: FeedProps) {
                   {r.l}
                 </span>
                 {line.folded > 0 ? (
-                  <button
+                  <Button
                     type="button"
                     className="feed-fold"
                     aria-expanded={line.open}
@@ -382,12 +422,16 @@ export function Feed({ sessionId, projectId, projectName }: FeedProps) {
                   >
                     {line.open ? null : `+${line.folded}`}
                     <ChevronDownIcon />
-                  </button>
+                  </Button>
                 ) : null}
                 {newMinute || newSession ? (
-                  <span className="feed-mark">
-                    {newMinute ? <span className="mark-t">{hhmm(r.t)}</span> : null}
-                    {newSession ? <span className="mark-s">{shortId(r.s)}</span> : null}
+                  <span className="feed-mark text-xs text-text-tertiary">
+                    {newMinute ? (
+                      <span className="mark-t">{hhmm(r.t)}</span>
+                    ) : null}
+                    {newSession ? (
+                      <span className="mark-s">{shortId(r.s)}</span>
+                    ) : null}
                   </span>
                 ) : null}
               </div>
@@ -402,7 +446,7 @@ export function Feed({ sessionId, projectId, projectName }: FeedProps) {
         first, which would be a lie the toggle told.
       */}
       {all.length === 0 ? (
-        <div className="thread-empty">
+        <div className="thread-empty mx-auto flex max-w-lg flex-col gap-3 p-6 text-text-disabled">
           <span className="mark" aria-hidden="true">
             <LinesMark />
           </span>
@@ -420,7 +464,7 @@ export function Feed({ sessionId, projectId, projectName }: FeedProps) {
           </p>
         </div>
       ) : view.shown === 0 ? (
-        <div className="thread-empty">
+        <div className="thread-empty mx-auto flex max-w-lg flex-col gap-3 p-6 text-text-disabled">
           <span className="mark" aria-hidden="true">
             <LinesMark />
           </span>
@@ -429,10 +473,10 @@ export function Feed({ sessionId, projectId, projectName }: FeedProps) {
         </div>
       ) : null}
       {atEnd ? null : (
-        <button type="button" className="jump-pill" onClick={jump}>
+        <Button type="button" className="jump-pill" onClick={jump}>
           Jump to latest
           <ChevronDownIcon />
-        </button>
+        </Button>
       )}
     </section>
   );

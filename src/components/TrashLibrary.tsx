@@ -6,9 +6,9 @@ import {
   DialogDescription,
   DialogHeader,
   DialogTitle,
-} from "./ui/dialog";
-import { Input } from "./ui/input";
-import { Button } from "./ui/button";
+} from "./controls/dialog";
+import { Input } from "./controls/input";
+import { Button } from "./controls/button";
 import { ActionDialog, type PendingAction } from "./ActionDialog";
 import {
   navigationApi,
@@ -69,13 +69,13 @@ export function TrashLibrary({
               .map((entry) => (
                 <div
                   key={`${entry.kind}:${entry.id}`}
-                  className="flex items-center gap-3 rounded-lg border border-border p-3"
+                  className="flex items-center gap-3 rounded-lg border border-hairline p-3"
                 >
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium">
                       {entry.title}
                     </p>
-                    <p className="text-xs capitalize text-muted-foreground">
+                    <p className="text-xs capitalize text-text-secondary">
                       {entry.kind} ·{" "}
                       {new Date(entry.trashedAt).toLocaleDateString()}
                       {entry.kind === "project"
@@ -114,13 +114,13 @@ export function TrashLibrary({
                 </div>
               ))}
             {!data.trash.length && (
-              <p className="py-12 text-center text-sm text-muted-foreground">
+              <p className="py-12 text-center text-sm text-text-secondary">
                 Trash is empty.
               </p>
             )}
           </div>
           {error && (
-            <p role="alert" className="text-sm text-destructive">
+            <p role="alert" className="text-sm text-error">
               {error}
             </p>
           )}

@@ -1,3 +1,6 @@
+import { Details, DetailsSummary } from "./controls/details";
+import { Button } from "./controls/button";
+import { Input } from "./controls/input";
 /**
  * Dev-only burn panel: run N synthetic sessions at a rate through the real feed path and report
  * what the frame meter saw.
@@ -47,12 +50,14 @@ export function Burn({ onBurn }: BurnProps) {
   };
 
   return (
-    <details className="burn">
-      <summary>burn harness (dev) · {busy ? "running" : "idle"}</summary>
+    <Details className="burn">
+      <DetailsSummary>
+        burn harness (dev) · {busy ? "running" : "idle"}
+      </DetailsSummary>
       <div className="burn-form">
         <label>
           sessions
-          <input
+          <Input
             type="number"
             min={1}
             value={sessions}
@@ -61,7 +66,7 @@ export function Burn({ onBurn }: BurnProps) {
         </label>
         <label>
           rows/s each
-          <input
+          <Input
             type="number"
             min={1}
             value={rowsPerSec}
@@ -70,7 +75,7 @@ export function Burn({ onBurn }: BurnProps) {
         </label>
         <label>
           seconds
-          <input
+          <Input
             type="number"
             min={1}
             value={durationS}
@@ -81,22 +86,24 @@ export function Burn({ onBurn }: BurnProps) {
       <div className="burn-form">
         <label className="grow">
           fixture
-          <input value={fixture} onChange={(e) => setFixture(e.target.value)} />
+          <Input value={fixture} onChange={(e) => setFixture(e.target.value)} />
         </label>
-        <button type="button" disabled={busy} onClick={() => void run()}>
+        <Button type="button" disabled={busy} onClick={() => void run()}>
           burn
-        </button>
+        </Button>
       </div>
       {error !== null ? <p className="burn-out bad-text">{error}</p> : null}
       {summary !== null ? (
         <p className={summary.pass ? "burn-out ok-text" : "burn-out bad-text"}>
-          {summary.pass ? "PASS" : "FAIL"} · {summary.windows} windows · min {summary.min_hz} Hz
-          (budget {summary.budget_ms} ms, p95 limit {summary.p95_limit_ms} ms) · worst window p95{" "}
-          {summary.worst_p95_ms} ms · worst frame {summary.worst_ms} ms · dropped{" "}
-          {summary.total_dropped} · longest drop run {summary.longest_drop_run} · dom{" "}
-          {summary.max_dom_nodes} · hz from p50 in {summary.p50_derived_windows} window(s)
+          {summary.pass ? "PASS" : "FAIL"} · {summary.windows} windows · min{" "}
+          {summary.min_hz} Hz (budget {summary.budget_ms} ms, p95 limit{" "}
+          {summary.p95_limit_ms} ms) · worst window p95 {summary.worst_p95_ms}{" "}
+          ms · worst frame {summary.worst_ms} ms · dropped{" "}
+          {summary.total_dropped} · longest drop run {summary.longest_drop_run}{" "}
+          · dom {summary.max_dom_nodes} · hz from p50 in{" "}
+          {summary.p50_derived_windows} window(s)
         </p>
       ) : null}
-    </details>
+    </Details>
   );
 }

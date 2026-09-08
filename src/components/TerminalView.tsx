@@ -1,3 +1,4 @@
+import { themeColor } from "../lib/theme";
 import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { SerializeAddon } from "@xterm/addon-serialize";
@@ -20,6 +21,7 @@ export default function TerminalView({
   tabId?: string;
   onReady?: (id: string | null) => void;
 }) {
+  const terminalRef = useRef<Terminal | null>(null);
   const visibleRef = useRef(visible);
   visibleRef.current = visible;
   const ready = useRef(onReady);
@@ -32,13 +34,39 @@ export default function TerminalView({
     let disposed = false,
       id: string | null = null,
       timer: ReturnType<typeof setTimeout>;
+    const foreground = themeColor("text");
+    const secondary = themeColor("text-secondary");
+    const terminalTheme = {
+      background: themeColor("canvas"),
+      foreground,
+      cursor: foreground,
+      cursorAccent: themeColor("canvas"),
+      selectionBackground: themeColor("selected"),
+      black: secondary,
+      red: secondary,
+      green: secondary,
+      yellow: secondary,
+      blue: secondary,
+      magenta: secondary,
+      cyan: secondary,
+      white: foreground,
+      brightBlack: secondary,
+      brightRed: foreground,
+      brightGreen: foreground,
+      brightYellow: foreground,
+      brightBlue: foreground,
+      brightMagenta: foreground,
+      brightCyan: foreground,
+      brightWhite: foreground,
+    };
     const terminal = new Terminal({
       fontSize: 12,
       fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-      cursorBlink: true,
+      cursorBlink: false,
       scrollback: 3000,
-      theme: { background: "#181818", foreground: "#dedede" },
+      theme: terminalTheme,
     });
+    terminalRef.current = terminal;
     const snapshotKey = `brigadier:terminal:${tabId}`;
     let snapshot: { output?: string; cwd?: string } = {};
     try {
@@ -149,6 +177,7 @@ export default function TerminalView({
       clearInterval(recovery);
       window.removeEventListener("pagehide", persist);
       terminal.dispose();
+      terminalRef.current = null;
       ready.current?.(null);
       if (id) void workspaceApi.closeTerminal(id).catch(() => {});
     };
@@ -159,7 +188,7 @@ export default function TerminalView({
   return (
     <>
       {error ? (
-        <p className="inline-error" role="alert">
+        <p className="inline-error my-2 text-[13px] text-error" role="alert">
           {error}
         </p>
       ) : null}

@@ -567,6 +567,9 @@ pub(crate) fn forget_sessions(ids: &[String]) -> Result<(), AppError> {
         .retain(|_, id| !ids.contains(id));
     Ok(())
 }
+pub(crate) fn record_fork(id: &str, source: &str) -> Result<(), AppError> {
+    change(|data| { data.origins.insert(id.into(), source.into()); Ok(()) })
+}
 pub(crate) fn snapshot() -> Result<PeerData, AppError> {
     Ok(service()?
         .data

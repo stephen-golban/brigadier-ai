@@ -1,3 +1,6 @@
+import { Popover } from "./controls/overlay";
+import { AgentStatus } from "./assistant-ui/elements/agent-status";
+import { Button } from "./controls/button";
 import { useEffect, useState } from "react";
 import { RobotIcon, CaretDownIcon } from "@phosphor-icons/react";
 import type { SessionRuntime } from "../feedStore";
@@ -68,8 +71,8 @@ export function AgentsPanel({
   }, [open, ids]);
   const working = rows.filter((s) => s.busy).length;
   return (
-    <div className="agents-widget">
-      <button
+    <Popover isOpen={open} onOpenChange={setOpen}>
+      <Button
         className="agents-trigger"
         aria-label="Agents"
         aria-expanded={open}
@@ -82,84 +85,109 @@ export function AgentsPanel({
             : `${rows.length} ${rows.length === 1 ? "agent" : "agents"}`}
         </span>
         <CaretDownIcon size={12} />
-      </button>
+      </Button>
       {open && (
-        <div className="agents-card" role="region" aria-label="Agent activity">
-          <b>Agents</b>
-          {rows.length === 0 && <p>No sessions in this project.</p>}
-          {rows.map((s) => {
-            const a =
-              s.status === "exited" || s.status === "failed"
-                ? undefined
-                : activity[s.sessionId];
-            const provider = providerIdentity(s.instanceId);
-            const status =
-              a?.status ??
-              (s.status === "running"
-                ? s.busy
-                  ? "Working"
-                  : "Idle"
-                : s.status);
-            return (
-              <div className="agent-entry" key={s.sessionId}>
-                <button
-                  aria-current={s.sessionId === selectedId ? "true" : undefined}
-                  onClick={() => {
-                    onSelect(s.sessionId);
-                    setOpen(false);
-                  }}
-                >
-                  <strong>
-                    {peers.titles[s.sessionId] ??
-                      `Session ${s.sessionId.slice(-6)}`}
-                  </strong>
-                  <span className="agent-status">{status}</span>
-                  <small>
-                    {a?.provider ?? provider.name} · {a?.cli ?? provider.cli} ·{" "}
-                    {a?.model || s.model || "Model not reported"}
-                  </small>
-                  {a?.action && (
-                    <span className="agent-action">
-                      {status === "Working" ? "" : "Last: "}
-                      {a.action}
-                    </span>
-                  )}
-                  {peers.origins[s.sessionId] && (
-                    <small>
-                      From{" "}
-                      {peers.titles[peers.origins[s.sessionId]!] ??
-                        peers.origins[s.sessionId]}
-                    </small>
-                  )}
-                </button>
-                {a?.agents.map((child) => (
-                  <button
-                    className="child-agent"
-                    key={child.id}
+        <Popover.Content placement="top end">
+          <Popover.Dialog className="agents-card flex w-[340px] max-h-[65dvh] flex-col gap-3 overflow-auto p-3 text-[13px]" aria-label="Agent activity">
+            <b>Agents</b>
+            {rows.length === 0 && <p>No sessions in this project.</p>}
+            {rows.map((s) => {
+              const a =
+                s.status === "exited" || s.status === "failed"
+                  ? undefined
+                  : activity[s.sessionId];
+              const provider = providerIdentity(s.instanceId);
+              const status =
+                a?.status ??
+                (s.status === "running"
+                  ? s.busy
+                    ? "Working"
+                    : "Idle"
+                  : s.status);
+              return (
+                <div className="agent-entry" key={s.sessionId}>
+                  <Button
+                    aria-current={
+                      s.sessionId === selectedId ? "true" : undefined
+                    }
                     onClick={() => {
                       onSelect(s.sessionId);
                       setOpen(false);
                     }}
                   >
-                    <strong>{child.description || child.id}</strong>
-                    <span className="agent-status">{child.status}</span>
+                    <strong>
+                      {peers.titles[s.sessionId] ??
+                        `Session ${s.sessionId.slice(-6)}`}
+                    </strong>
+                    <AgentStatus
+                      label={status}
+                      state={
+                        s.status === "failed"
+                          ? "failed"
+                          : s.status === "exited"
+                            ? "done"
+                            : s.busy
+                              ? "working"
+                              : "idle"
+                      }
+                    />
                     <small>
-                      {a.provider} · {a.cli} ·{" "}
-                      {child.model || "Model not reported"}
+                      {a?.provider ?? provider.name} · {a?.cli ?? provider.cli}{" "}
+                      · {a?.model || s.model || "Model not reported"}
                     </small>
-                    {child.action && (
-                      <span className="agent-action">{child.action}</span>
+                    {a?.action && (
+                      <span className="agent-action">
+                        {status === "Working" ? "" : "Last: "}
+                        {a.action}
+                      </span>
                     )}
-                  </button>
-                ))}
-              </div>
-            );
-          })}
-          <small className="agent-future">
-            Claude sessions run here. Other CLI integrations are not connected.
-          </small>
-        </div>
+                    {peers.origins[s.sessionId] && (
+                      <small>
+                        From{" "}
+                        {peers.titles[peers.origins[s.sessionId]!] ??
+                          peers.origins[s.sessionId]}
+                      </small>
+                    )}
+                  </Button>
+                  {a?.agents.map((child) => (
+                    <Button
+                      className="child-agent"
+                      key={child.id}
+                      onClick={() => {
+                        onSelect(s.sessionId);
+                        setOpen(false);
+                      }}
+                    >
+                      <strong>{child.description || child.id}</strong>
+                      <AgentStatus
+                        label={child.status}
+                        state={
+                          child.status.toLowerCase() === "working"
+                            ? "working"
+                            : child.status.toLowerCase() === "failed"
+                              ? "failed"
+                              : "idle"
+                        }
+                      />
+                      <small>
+                        {a.provider} · {a.cli} ·{" "}
+                        {child.model || "Model not reported"}
+                      </small>
+                      {child.action && (
+                        <span className="agent-action">{child.action}</span>
+                      )}
+                    </Button>
+                  ))}
+                </div>
+              );
+            })}
+            <small className="agent-future">
+              Claude sessions run here. Other CLI integrations are not
+              connected.
+            </small>
+          </Popover.Dialog>
+        </Popover.Content>
       )}
-    </div>
+    </Popover>
   );
 }

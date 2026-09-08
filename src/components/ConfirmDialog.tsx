@@ -1,5 +1,6 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { createPortal } from "react-dom";
+import { useState, type ReactNode } from "react";
+import { Modal } from "./controls/modal";
+import { Button } from "./controls/button";
 export interface Confirmation {
   title: string;
   body: ReactNode;
@@ -13,60 +14,69 @@ export function ConfirmDialog({
   title,
   body,
   confirmLabel = "Confirm",
-  secondaryLabel, onSecondary,
+  secondaryLabel,
+  onSecondary,
   onConfirm,
   onCancel,
 }: Confirmation) {
-  const ref = useRef<HTMLDialogElement>(null);
-  const cancel = useRef<HTMLButtonElement>(null);
-  const id = useId();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  useEffect(() => {
-    const previous = document.activeElement as HTMLElement | null;
-    ref.current?.showModal();
-    cancel.current?.focus();
-    return () => previous?.focus();
-  }, []);
-  return createPortal(
-    <dialog
-      ref={ref}
-      className="workbench-dialog"
-      aria-labelledby={id}
-      onCancel={(e) => {
-        e.preventDefault();
-        if (!busy) onCancel();
+  const [busy, setBusy] = useState(false),
+    [error, setError] = useState("");
+  return (
+    <Modal.Backdrop
+      isOpen
+      isDismissable={false}
+      isKeyboardDismissDisabled={busy}
+      onOpenChange={(open) => {
+        if (!open && !busy) onCancel();
       }}
     >
-      <h2 id={id}>{title}</h2>
-      <div>{body}</div>
-      {error && (
-        <p role="alert" className="inline-error">
-          {error}
-        </p>
-      )}
-      <footer>
-        <button ref={cancel} className="act" disabled={busy} onClick={onCancel}>
-          Cancel
-        </button>
-        {secondaryLabel && <button className="act" disabled={busy} onClick={onSecondary}>{secondaryLabel}</button>}
-        <button
-          className="primary-action"
-          disabled={busy}
-          onClick={() => {
-            setBusy(true);
-            Promise.resolve()
-              .then(onConfirm)
-              .catch((e) => {
-                setError(e?.message ?? String(e));
-                setBusy(false);
-              });
-          }}
-        >
-          {busy ? "Working…" : confirmLabel}
-        </button>
-      </footer>
-    </dialog>,
-    document.body,
+      <Modal.Container size="lg" scroll="inside">
+        <Modal.Dialog aria-label={title}>
+          <Modal.Header>
+            <Modal.Heading>{title}</Modal.Heading>
+          </Modal.Header>
+          <Modal.Body>
+            {body}
+            {error && (
+              <p role="alert" className="text-error">
+                {error}
+              </p>
+            )}
+          </Modal.Body>
+          <Modal.Footer>
+            <Button
+              autoFocus
+              variant="secondary"
+              isDisabled={busy}
+              onPress={onCancel}
+            >
+              Cancel
+            </Button>
+            {secondaryLabel && (
+              <Button
+                variant="secondary"
+                isDisabled={busy}
+                onPress={onSecondary}
+              >
+                {secondaryLabel}
+              </Button>
+            )}
+            <Button
+              isDisabled={busy}
+              onPress={() => {
+                setBusy(true);
+                setError("");
+                void Promise.resolve()
+                  .then(onConfirm)
+                  .catch((e) => setError(e?.message ?? String(e)))
+                  .finally(() => setBusy(false));
+              }}
+            >
+              {busy ? "Working…" : confirmLabel}
+            </Button>
+          </Modal.Footer>
+        </Modal.Dialog>
+      </Modal.Container>
+    </Modal.Backdrop>
   );
 }

@@ -64,6 +64,8 @@ pub struct SpawnSpec {
     pub permission_mode: PermissionMode,
     /// Provider session id to reopen, for a resume.
     pub resume: Option<String>,
+    /// Resume history under a fresh provider id.
+    pub fork: bool,
     /// `CLAUDE_CONFIG_DIR`, the account boundary. `HOME` is never touched.
     // see docs/research/agent-sdk.md §9 and docs/research/provider-driver.md.
     pub config_dir: Option<PathBuf>,
@@ -135,6 +137,7 @@ pub fn build_argv(spec: &SpawnSpec) -> Vec<String> {
         // One argument with `=`, the 0.3.257 shape, not the two-argument 0.3.159 shape.
         // see docs/research/claude-direct-spike.md "Exact argv".
         argv.push(format!("--resume={token}"));
+        if spec.fork { argv.push("--fork-session".to_owned()); }
     }
     // Before `--permission-mode`, which is where the SDK emits it too.
     // see docs/research/cli-protocol.md §1 for the conditional-flag order.
@@ -355,6 +358,7 @@ mod tests {
             model: None,
             permission_mode: PermissionMode::Default,
             resume: None,
+            fork: false,
             config_dir: None,
             mcp: McpPolicy::Off,
             thinking: ThinkingPolicy::default(),
@@ -527,6 +531,15 @@ mod tests {
 
     /// A resumed child is gated the same way a fresh one is: the flag lands after `--resume=`
     /// and before `--permission-mode`, the SDK's own order.
+    #[test]
+    fn fork_uses_a_new_provider_id_only_with_an_explicit_resume() {
+        let argv = build_argv(&SpawnSpec { resume: Some("source-id".into()), fork: true, ..spec() });
+        assert!(argv.iter().any(|arg| arg == "--resume=source-id"));
+        assert!(argv.iter().any(|arg| arg == "--fork-session"));
+        assert!(!build_argv(&SpawnSpec { fork: true, ..spec() }).iter().any(|arg| arg == "--fork-session"));
+        assert!(!build_argv(&SpawnSpec { resume: Some("source-id".into()), ..spec() }).iter().any(|arg| arg == "--fork-session"));
+    }
+
     #[test]
     fn a_resumed_child_is_gated_by_the_same_policy() {
         let argv = build_argv(&SpawnSpec { resume: Some("8380cdea".into()), ..spec() });

@@ -7,9 +7,10 @@ import {
   useState,
 } from "react";
 import { Kbd } from "./components/controls/kbd";
-import "./intro.css";
 import { launchApi, type LaunchPreferences } from "./launchApi";
 import { errorMessage } from "./workspaceApi";
+import { useMusic } from "./hooks/useMusic";
+import "./intro.css";
 import { BrandMark } from "./components/BrandMark";
 import { CosmicField } from "./components/CosmicField";
 import { NameInput } from "./components/NameInput";
@@ -39,53 +40,6 @@ function useReducedMotion() {
   }, []);
   return reduced;
 }
-function useMusic(track: string | null, enabled: boolean) {
-  useEffect(() => {
-    if (!track || !enabled) return;
-    const audio = new Audio(track);
-    audio.volume = 0.6;
-    let live = true;
-    const removeRetry = () => {
-      window.removeEventListener("pointerdown", play);
-      window.removeEventListener("keydown", play);
-    };
-    // If autoplay is denied, retry on the user's next normal interaction.
-    // The intro has no separate sound control; its preference lives in Settings.
-    const play = () => {
-      void audio
-        .play()
-        .then(removeRetry)
-        .catch(() => {
-          if (!live) return;
-          window.addEventListener("pointerdown", play);
-          window.addEventListener("keydown", play);
-        });
-    };
-    play();
-    return () => {
-      live = false;
-      removeRetry();
-      if (audio.paused) {
-        audio.removeAttribute("src");
-        audio.load();
-        return;
-      }
-      const start = performance.now(),
-        volume = audio.volume;
-      const fade = setInterval(() => {
-        audio.volume =
-          volume * Math.max(0, 1 - (performance.now() - start) / 600);
-        if (performance.now() - start >= 600) {
-          clearInterval(fade);
-          audio.pause();
-          audio.removeAttribute("src");
-          audio.load();
-        }
-      }, 30);
-    };
-  }, [track, enabled]);
-}
-
 export function Launch() {
   const [prefs, setPrefs] = useState<LaunchPreferences | null>(null);
   const [stage, setStage] = useState<Stage>("loading");
@@ -96,7 +50,6 @@ export function Launch() {
   const [start, setStart] = useState(() => performance.now());
   const [replay, setReplay] = useState(false);
   const [attempt, setAttempt] = useState(0);
-  const [returnCue, setReturnCue] = useState(false);
   const [formError, setFormError] = useState("");
   const [appReady, setAppReady] = useState(false);
   const workspaceReady = useCallback(() => setAppReady(true), []);
@@ -137,7 +90,6 @@ export function Launch() {
         setStart(performance.now());
         if (p.completed) {
           setStage("done");
-          setReturnCue(true);
         } else
           setStage(p.introSeen ? "name" : reduced ? "welcome" : "cinematic");
       })
@@ -151,11 +103,6 @@ export function Launch() {
     // Reduced motion changes after mount are handled without restarting onboarding.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [attempt]);
-  useEffect(() => {
-    if (!returnCue) return;
-    const timer = setTimeout(() => setReturnCue(false), 4500);
-    return () => clearTimeout(timer);
-  }, [returnCue]);
   useEffect(() => {
     if (stage !== "cinematic") return;
     if (reduced) {
@@ -185,7 +132,6 @@ export function Launch() {
         .then(() => {
           if (!live) return;
           setReplay(true);
-          setReturnCue(false);
           setStart(performance.now());
           setStage(reduced ? "welcome" : "cinematic");
           setError("");
@@ -198,7 +144,6 @@ export function Launch() {
       setPrefs(null);
       setName("");
       setReplay(false);
-      setReturnCue(false);
       setAppReady(false);
       setFormError("");
       setError("");
@@ -512,11 +457,6 @@ export function Launch() {
             </div>
           )}
         </section>
-      )}
-      {returnCue && ready && stage === "done" && (
-        <div className="return-motif" aria-hidden="true">
-          <BrandMark />
-        </div>
       )}
     </>
   );

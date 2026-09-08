@@ -1,3 +1,7 @@
+import { SelectMenu } from "./SelectMenu";
+import { Checkbox } from "./controls/checkbox";
+import { Input } from "./controls/input";
+import { Button } from "./controls/button";
 import { documentCommands } from "../documentCommands";
 import { desktopApi } from "../desktopApi";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
@@ -320,13 +324,14 @@ export function DocumentTab({
       })
       .catch((e) => setError(errorMessage(e)));
   };
+  const [hunk, setHunk] = useState("");
   const hunks =
     buffer?.content
       .split("\n")
       .flatMap((l, i) => (l.startsWith("@@ ") ? [i + 1] : [])) ?? [];
   return (
-    <section className="document-tab">
-      <div className="document-toolbar">
+    <section className="document-tab flex h-full min-h-0 flex-col bg-canvas">
+      <div className="document-toolbar flex shrink-0 flex-wrap items-center gap-2 p-2 text-text-secondary">
         <span title={tab.path}>
           {note?.title ?? tab.path}
           {buffer &&
@@ -339,50 +344,48 @@ export function DocumentTab({
         <span className="grow" />
         {buffer && tab.kind !== "diff" && (
           <>
-            <select
-              aria-label="Language mode"
+            <SelectMenu
+              label="Language mode"
               value={buffer.language}
-              onChange={(e) => update({ language: e.target.value })}
-            >
-              {languages.map((l) => (
-                <option key={l} value={l}>
-                  {l === "plaintext" ? "Plain Text" : l}
-                </option>
-              ))}
-            </select>
-            <button
+              onChange={(language) => update({ language })}
+              options={languages.map((l) => ({
+                value: l,
+                label: l === "plaintext" ? "Plain Text" : l,
+              }))}
+            />
+            <Button
               className="act"
               disabled={saving}
               onClick={() => void save()}
             >
               {saving ? "Saving…" : tab.kind === "note" ? "Save note" : "Save"}
-            </button>
-            <button className="act" onClick={() => setSaveAs(!saveAs)}>
+            </Button>
+            <Button className="act" onClick={() => setSaveAs(!saveAs)}>
               Save As
-            </button>
+            </Button>
           </>
         )}
         {buffer && (
-          <button
+          <Button
             className="act"
             onClick={() => onAttach(tab.path, buffer.content)}
           >
             Add to chat
-          </button>
+          </Button>
         )}
         {buffer?.language === "markdown" && (
-          <button
+          <Button
             className="act"
             aria-pressed={rendered}
             onClick={() => setRendered(!rendered)}
           >
             Preview
-          </button>
+          </Button>
         )}
       </div>
       {saveAs && (
         <form
-          className="save-as"
+          className="save-as flex items-center gap-2 p-2"
           onSubmit={(e) => {
             e.preventDefault();
             if (path.trim()) void save(path.trim());
@@ -390,7 +393,7 @@ export function DocumentTab({
         >
           <label>
             Save in {tab.root}
-            <input
+            <Input
               autoFocus
               aria-label="New file path"
               placeholder="Relative path, e.g. notes.md"
@@ -398,10 +401,14 @@ export function DocumentTab({
               onChange={(e) => setPath(e.target.value)}
             />
           </label>
-          <button className="primary-action" disabled={saving || !path.trim()}>
+          <Button
+            type="submit"
+            className="primary-action"
+            disabled={saving || !path.trim()}
+          >
             Save
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
             className="act"
             onClick={() => {
@@ -410,12 +417,12 @@ export function DocumentTab({
             }}
           >
             Cancel
-          </button>
+          </Button>
         </form>
       )}
       {note && (
-        <div className="note-properties">
-          <input
+        <div className="note-properties flex flex-wrap items-center gap-2 p-2 text-text-secondary">
+          <Input
             aria-label="Note title"
             defaultValue={note.title}
             key={`${note.id}:${note.title}`}
@@ -424,30 +431,26 @@ export function DocumentTab({
                 void updateNote({ title: e.target.value });
             }}
           />
-          <select
-            aria-label="Note scope"
+          <SelectMenu
+            label="Note scope"
             value={note.projectId === null ? "global" : "project"}
-            onChange={(e) =>
+            onChange={(value) =>
               void updateNote({
-                projectId:
-                  e.target.value === "global" ? null : tab.context.projectId,
+                projectId: value === "global" ? null : tab.context.projectId,
               })
             }
+            options={[
+              { value: "project", label: "Project note" },
+              { value: "global", label: "Global note" },
+            ]}
+          />
+          <Checkbox
+            checked={note.alwaysInclude}
+            onCheckedChange={(e) => void updateNote({ alwaysInclude: e })}
           >
-            <option value="project">Project note</option>
-            <option value="global">Global note</option>
-          </select>
-          <label>
-            <input
-              type="checkbox"
-              checked={note.alwaysInclude}
-              onChange={(e) =>
-                void updateNote({ alwaysInclude: e.target.checked })
-              }
-            />
             Always include
-          </label>
-          <button
+          </Checkbox>
+          <Button
             className="act"
             onClick={() =>
               window.dispatchEvent(
@@ -456,12 +459,12 @@ export function DocumentTab({
             }
           >
             Mention in chat
-          </button>
+          </Button>
           <span>{saved ? "Saved" : "Autosaves"}</span>
         </div>
       )}
       {noteConflict.current && note && (
-        <button
+        <Button
           className="act"
           onClick={() => {
             noteConflict.current = false;
@@ -475,16 +478,16 @@ export function DocumentTab({
           }}
         >
           Discard draft and reload from disk
-        </button>
+        </Button>
       )}
       {error && (
-        <p className="inline-error" role="alert">
+        <p className="inline-error my-2 text-[13px] text-error" role="alert">
           {error}
         </p>
       )}
       {tab.kind === "diff" && !tab.recorded && buffer && hunks.length > 0 && (
-        <div className="diff-actions">
-          <button
+        <div className="diff-actions flex items-center gap-2 p-2">
+          <Button
             className="act"
             disabled={saving}
             onClick={() =>
@@ -497,25 +500,22 @@ export function DocumentTab({
             }
           >
             {tab.staged ? "Unstage" : "Stage"} selected lines
-          </button>
-          <select aria-label="Diff hunk" defaultValue="">
-            <option value="" disabled>
-              Stage or unstage a hunk…
-            </option>
-            {hunks.map((line, index) => (
-              <option value={index} key={line}>
-                Hunk {index + 1}: {buffer.content.split("\n")[line - 1]}
-              </option>
-            ))}
-          </select>
-          <button
+          </Button>
+          <SelectMenu
+            label="Diff hunk"
+            value={hunk}
+            onChange={setHunk}
+            options={hunks.map((line, index) => ({
+              value: String(index),
+              label: `Hunk ${index + 1}: ${buffer.content.split("\n")[line - 1]}`,
+            }))}
+          />
+          <Button
             className="act"
             disabled={saving}
-            onClick={(e) => {
-              const select = e.currentTarget
-                .previousElementSibling as HTMLSelectElement;
-              const index = Number(select.value);
-              if (select.value === "") return;
+            onClick={() => {
+              const index = Number(hunk);
+              if (hunk === "" || !hunks[index]) return;
               const start = hunks[index]!;
               const end =
                 (hunks[index + 1] ?? buffer.content.split("\n").length + 1) - 1;
@@ -525,16 +525,22 @@ export function DocumentTab({
             }}
           >
             {tab.staged ? "Unstage" : "Stage"} hunk
-          </button>
+          </Button>
         </div>
       )}
       {buffer ? (
         rendered ? (
-          <div className="document-markdown">
+          <div className="document-markdown min-h-0 flex-1 overflow-auto p-5 text-text">
             <Markdown text={buffer.content} />
           </div>
         ) : (
-          <Suspense fallback={<p className="panel-empty">Loading editor…</p>}>
+          <Suspense
+            fallback={
+              <p className="panel-empty p-3 text-text-disabled">
+                Loading editor…
+              </p>
+            }
+          >
             <CodeEditor
               id={tab.id}
               value={buffer.content}
@@ -550,7 +556,9 @@ export function DocumentTab({
           </Suspense>
         )
       ) : (
-        !error && <p className="panel-empty">Loading file…</p>
+        !error && (
+          <p className="panel-empty p-3 text-text-disabled">Loading file…</p>
+        )
       )}
     </section>
   );

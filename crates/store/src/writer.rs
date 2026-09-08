@@ -318,6 +318,14 @@ impl StoreHandle {
         self.send(Op::Chat(item))
     }
 
+    /// Copy a stable prefix into a newly created session without changing the source.
+    pub async fn fork_chat_history(&self, source: String, target: String, through: u64) -> Result<()> {
+        self.query(move |conn| {
+            conn.execute("INSERT INTO chat_items(session_id,id,seq,at,kind,body,parent_id,provider_uuid) SELECT ?2,id,seq,at,kind,body,parent_id,provider_uuid FROM chat_items WHERE session_id=?1 AND seq<=?3", (&source, &target, through))?;
+            Ok(())
+        }).await
+    }
+
     /// Page completed display items after a sequence cursor. The page is bounded.
     pub async fn chat_items(
         &self,

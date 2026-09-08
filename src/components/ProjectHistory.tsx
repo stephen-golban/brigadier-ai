@@ -1,3 +1,5 @@
+import { Input } from "./controls/input";
+import { Button } from "./controls/button";
 import { navigationApi } from "../navigationApi";
 import { ActionDialog, type PendingAction } from "./ActionDialog";
 import { useState } from "react";
@@ -24,22 +26,22 @@ export function ProjectHistory({
   const [query, setQuery] = useState("");
   const [deleting, setDeleting] = useState<PendingAction | null>(null);
   return (
-    <section className="project-history">
+    <section className="project-history mx-auto w-full max-w-[780px] overflow-auto p-6 [&_header]:mb-4 [&_header]:flex [&_header]:items-center [&_header]:gap-3">
       <header>
         <ChatCircleIcon size={28} />
         <h1>{projectName}</h1>
-        <button className="act" onClick={onNew}>
+        <Button className="act" onClick={onNew}>
           <PlusIcon />
           New session
-        </button>
+        </Button>
       </header>
-      <input
+      <Input
         aria-label="Search session history"
         placeholder="Search past sessions…"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
       />
-      <div className="history-list">
+      <div className="history-list flex flex-col gap-1 [&>div]:flex [&>div]:items-center [&>div]:gap-2 [&_small]:block [&_small]:text-text-tertiary">
         {sessions
           .filter((s) =>
             (titles[s.sessionId] ?? s.sessionId)
@@ -49,7 +51,7 @@ export function ProjectHistory({
           .sort((a, b) => (b.startedAtMs ?? 0) - (a.startedAtMs ?? 0))
           .map((s) => (
             <div key={s.sessionId}>
-              <button onClick={() => onSelect(s.sessionId)}>
+              <Button onClick={() => onSelect(s.sessionId)}>
                 <ChatCircleIcon />
                 <span>
                   {titles[s.sessionId] ?? `Session ${s.sessionId.slice(-6)}`}
@@ -66,10 +68,13 @@ export function ProjectHistory({
                   </small>
                 </span>
                 {working(s) && <i className="status-spinner" />}
-                {attention[s.sessionId] && <i className="attention-dot" />}
-              </button>
-              <button
-                className="icon-button"
+                {attention[s.sessionId] && (
+                  <i className="attention-dot inline-block size-1.5 rounded-full bg-text-secondary" />
+                )}
+              </Button>
+              <Button
+                isIconOnly
+                className="icon-button size-8 p-0"
                 aria-label={`Move session to Trash ${s.sessionId}`}
                 onClick={() => {
                   void navigationApi
@@ -107,7 +112,7 @@ export function ProjectHistory({
                 }}
               >
                 <TrashIcon />
-              </button>
+              </Button>
             </div>
           ))}
       </div>

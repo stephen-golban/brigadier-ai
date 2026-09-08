@@ -1,6 +1,6 @@
 /** One vector master supplies the intro, sidebar and generated platform icons. */
 export function BrandMark({
-  className = "brand-mark",
+  className = "brand-mark size-8 shrink-0 fill-current",
 }: {
   className?: string;
 }) {

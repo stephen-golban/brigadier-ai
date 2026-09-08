@@ -1,5 +1,7 @@
-import { PromptInputActions } from "./prompt-kit/prompt-input";
-import { Button } from "./ui/button";
+import { MoreIcon } from "./NavigationIcons";
+import { Dropdown } from "./controls/overlay";
+import { ComposerActions as PromptInputActions } from "./assistant-ui/elements/composer";
+import { Button } from "./controls/button";
 import { SessionContext } from "./SessionContext";
 import { useMessageEdit, type MessageEditProps } from "./EditMessage";
 import { PromptInput, useDraft } from "./PromptInput";
@@ -133,7 +135,7 @@ export function RunControl({
    */
   if (live && run !== null) {
     return (
-      <div className="dock-box">
+      <div className="dock-box mx-auto w-full max-w-[780px]">
         <p className="dock-live">
           <span className="run-dock-status">Run live</span>
           <span className="run-dock-goal" title={run.goal}>
@@ -141,17 +143,17 @@ export function RunControl({
           </span>
         </p>
         <div className="dock-actions">
-          <span className="status-chip live">dispatching</span>
+          <span className="status-chip text-text-secondary">dispatching</span>
           <span className="grow" />
-          <button
+          <Button
             type="button"
-            className="act danger"
+            className="act danger text-warn"
             disabled={busy}
             title="stop dispatching new orders; in-flight orders finish and are collected"
             onClick={() => onStop(run.plan_id)}
           >
             Stop run
-          </button>
+          </Button>
         </div>
       </div>
     );
@@ -201,6 +203,7 @@ export function RunControl({
         <Button
           type="button"
           className="rounded-full"
+          variant="primary"
           disabled={!canStart || busy || goal.trim() === ""}
           onClick={submit}
         >
@@ -331,25 +334,25 @@ export function Composer({
     n === 1 ? singular : many;
 
   const dismissButton = (label: string) => (
-    <button
+    <Button
       type="button"
       className="act"
       disabled={busy}
       onClick={() => setRefusal(null)}
     >
       {label}
-    </button>
+    </Button>
   );
 
   const forceButton = (label: string) => (
-    <button
+    <Button
       type="button"
-      className="act danger"
+      className="act danger text-warn"
       disabled={busy}
       onClick={() => void runCleanup(true)}
     >
       {label}
-    </button>
+    </Button>
   );
 
   /** Named wherever the remedy is the operator going and looking at the directory. */
@@ -452,14 +455,14 @@ export function Composer({
                   : `Remove it with ${r.live_branch} checked out`,
               )
             ) : (
-              <button
+              <Button
                 type="button"
                 className="act"
                 disabled={busy}
                 onClick={() => setArmed(true)}
               >
                 I have looked at the worktree
-              </button>
+              </Button>
             )}{" "}
             {dismissButton("Keep it")}
           </>
@@ -507,9 +510,9 @@ export function Composer({
     session === null
       ? "status-chip"
       : session.busy
-        ? "status-chip warn"
+        ? "status-chip text-warn"
         : live
-          ? "status-chip live"
+          ? "status-chip text-text-secondary"
           : "status-chip";
 
   /*
@@ -530,18 +533,21 @@ export function Composer({
                     ? "Conversation rewound · ready to send"
                     : "Editing message"}
                 </span>
-                <button
+                <Button
                   type="button"
                   className="act"
                   disabled={edit.busy || Boolean(edit.confirmation)}
                   onClick={onCancelEdit}
                 >
                   Cancel edit
-                </button>
+                </Button>
               </div>
             )}
             {editing && edit.error && (
-              <p role="alert" className="inline-error">
+              <p
+                role="alert"
+                className="inline-error my-2 text-[13px] text-error"
+              >
                 {edit.error}
               </p>
             )}
@@ -574,7 +580,7 @@ export function Composer({
 
           {/* Secondary action slot, beside the status chip. */}
           {canResume ? (
-            <button
+            <Button
               type="button"
               className="act"
               disabled={busy}
@@ -582,10 +588,10 @@ export function Composer({
               onClick={() => session && onResume(session.sessionId)}
             >
               Resume
-            </button>
+            </Button>
           ) : null}
           {canCleanup ? (
-            <button
+            <Button
               type="button"
               className="act"
               disabled={busy}
@@ -593,13 +599,13 @@ export function Composer({
               onClick={() => void runCleanup(false)}
             >
               Clean up worktree
-            </button>
+            </Button>
           ) : null}
 
           <span className="grow" />
 
           {session && (
-            <span className="session-model">
+            <span className="session-model max-w-52 truncate text-xs text-text-secondary">
               {session.model ?? "Claude Code"}
             </span>
           )}
@@ -610,36 +616,45 @@ export function Composer({
               busy={session.busy}
             />
           )}
-          <details className="composer-more">
-            <summary aria-label="Session actions">•••</summary>
-            <div>
-              <button
-                type="button"
-                disabled={!live}
-                onClick={() => session && onInterrupt(session.sessionId)}
-              >
-                Interrupt
-              </button>
-              <button
-                type="button"
-                disabled={!live}
-                onClick={() => session && onEnd(session.sessionId)}
-              >
-                End session
-              </button>
-              <button
-                type="button"
-                disabled={!live}
-                onClick={() => session && onKill(session.sessionId)}
-              >
-                Kill process
-              </button>
-            </div>
-          </details>
+          <Dropdown native>
+            <Button size="icon" aria-label="Session actions">
+              <MoreIcon />
+            </Button>
+            <Dropdown.Popover placement="top end">
+              <Dropdown.Menu aria-label="Session actions">
+                <Dropdown.Item
+                  id="interrupt"
+                  textValue="Interrupt"
+                  isDisabled={!live}
+                  onAction={() => session && onInterrupt(session.sessionId)}
+                >
+                  Interrupt
+                </Dropdown.Item>
+                <Dropdown.Item
+                  id="end"
+                  textValue="End session"
+                  isDisabled={!live}
+                  onAction={() => session && onEnd(session.sessionId)}
+                >
+                  End session
+                </Dropdown.Item>
+                <Dropdown.Item
+                  id="kill"
+                  textValue="Kill process"
+                  variant="danger"
+                  isDisabled={!live}
+                  onAction={() => session && onKill(session.sessionId)}
+                >
+                  Kill process
+                </Dropdown.Item>
+              </Dropdown.Menu>
+            </Dropdown.Popover>
+          </Dropdown>
           <Button
             type="button"
             size="icon"
             className="rounded-full"
+            variant="primary"
             aria-label={editing ? "Send edited message" : "send this turn"}
             disabled={
               !live ||
@@ -656,18 +671,20 @@ export function Composer({
       </PromptInput>
 
       {session !== null && session.resumed && removed === null ? (
-        <p className="dock-note">
+        <p className="dock-note mx-auto mt-2 max-w-[780px] text-xs text-text-secondary">
           Resumed in default permission mode — the mode this session ran in
           before is not stored anywhere and was not restored.
         </p>
       ) : null}
 
       {refusal !== null ? (
-        <p className="dock-note warn">{refusalNote(refusal)}</p>
+        <p className="dock-note warn mx-auto mt-2 max-w-[780px] text-xs text-text-secondary text-warn">
+          {refusalNote(refusal)}
+        </p>
       ) : null}
 
       {removed !== null ? (
-        <p className="dock-note">
+        <p className="dock-note mx-auto mt-2 max-w-[780px] text-xs text-text-secondary">
           Worktree removed. The branch <code>{removed.branch}</code> is
           untouched; this session can no longer be resumed.
         </p>
@@ -683,7 +700,7 @@ export function Composer({
         now as the only measure of what a turn spent.
       */}
       {session !== null ? (
-        <div className="dock-usage">
+        <div className="dock-usage mx-auto mt-2 max-w-[780px] text-xs text-text-tertiary">
           {session.usage.input_tokens} in / {session.usage.output_tokens} out ·
           cache {session.usage.cache_read_tokens} read /{" "}
           {session.usage.cache_creation_tokens} write · rows {session.rowsTotal}

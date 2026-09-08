@@ -60,6 +60,7 @@ export function Pickers({
           value: m.mode,
           label: m.label.split(" — ")[0]!,
           description: m.note,
+          warning: m.mode === "bypass-permissions" || m.mode === "dont-ask",
         }))}
       />
       <SelectMenu
