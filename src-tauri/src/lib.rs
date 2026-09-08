@@ -34,6 +34,7 @@ mod note_files;
 mod navigation;
 mod project_icon;
 mod peer_mcp;
+mod peer_sessions;
 mod peers;
 mod reconcile;
 mod search;

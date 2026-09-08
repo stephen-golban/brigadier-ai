@@ -21,7 +21,7 @@ pub(crate) fn install(app: &tauri::AppHandle) -> tauri::Result<()> {
                 "new-terminal-tab",
                 "New Terminal",
                 true,
-                Some("CmdOrCtrl+Alt+T"),
+                Some("CmdOrCtrl+J"),
             )?,
             &MenuItem::with_id(
                 app,

@@ -1,5 +1,8 @@
 # STATUS — where the brigadier harness actually stands
 
+Session coordination update: **2026-09-08**. Cross-project discovery, session reads, queued messages,
+creation, and bounded waits are implemented. See [behavior, verification, and limits](plans/session-coordination-implementation-2026-09-08.md).
+
 Latest desktop update: **2026-09-06**. The confirmed desktop redesign, file-backed Notes,
 background session disposal, isolated workspace inheritance/apply, and checkpoint rewind
 are implemented. Read [the implementation and verification report](plans/chatgpt-redesign-implementation-2026-09-06.md)
@@ -686,5 +689,4 @@ every bundle format for the platform being built on. Leave it alone.
   directory, or expect to prune afterwards. **The rows are not deleted and deleting them is the
   owner's call, not made.** Any citation of a window count in `frame-stats.ndjson` must now say which
   slice it means.
-
 

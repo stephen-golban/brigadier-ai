@@ -733,13 +733,7 @@ it.each(["MacIntel", "Win32"])(
       "aria-selected",
       "true",
     );
-    // macOS Option produces a different character, but code remains KeyT/KeyF.
-    fireEvent.keyDown(window, {
-      key: platform === "MacIntel" ? "†" : "t",
-      code: "KeyT",
-      altKey: true,
-      ...modifiers,
-    });
+    fireEvent.keyDown(window, { key: "j", code: "KeyJ", ...modifiers });
     expect(
       await screen.findByRole("tab", { name: "Terminal 1" }),
     ).toHaveAttribute("aria-selected", "true");
@@ -786,7 +780,7 @@ it.each(["MacIntel", "Win32"])(
     await userEvent.click(screen.getByRole("button", { name: "New tab" }));
     for (const [name, mac, other] of [
       ["Session", "⌘T", "Ctrl T"],
-      ["Terminal", "⌥⌘T", "Ctrl Alt T"],
+      ["Terminal", "⌘J", "Ctrl J"],
       ["Files", "⌥⌘F", "Ctrl Alt F"],
     ]) {
       const item = await screen.findByRole("menuitem", { name });

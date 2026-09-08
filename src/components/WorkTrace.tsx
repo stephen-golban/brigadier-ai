@@ -8,7 +8,9 @@ import {
 } from "./assistant-ui/elements/reasoning";
 import { Spinner } from "./controls/status";
 import { Button } from "./controls/button";
-import { useState } from "react";
+import { createContext, useContext, useState } from "react";
+import { peerToolSessions } from "../peerPresentation";
+const SessionLinks = createContext<{ titles: Record<string, string>; select?: (id: string) => void }>({ titles: {} });
 import {
   TerminalIcon,
   BookOpenIcon,
@@ -31,7 +33,11 @@ export function WorkTrace({
   expanded,
   toggle,
   onFile,
+  sessionTitles = {},
+  onSelectSession,
 }: {
+  sessionTitles?: Record<string, string>;
+  onSelectSession?: (id: string) => void;
   row: WorkRow;
   expanded: Set<string>;
   toggle: (id: string) => void;
@@ -68,6 +74,7 @@ export function WorkTrace({
       ? `Worked for ${duration}`
       : "Worked";
   return (
+    <SessionLinks.Provider value={{ titles: sessionTitles, select: onSelectSession }}>
     <ReasoningRoot
       open={open}
       onOpenChange={() => toggle(row.running ? `closed:${row.id}` : row.id)}
@@ -95,6 +102,7 @@ export function WorkTrace({
         />
       </ReasoningContent>
     </ReasoningRoot>
+    </SessionLinks.Provider>
   );
 }
 function TraceList({
@@ -221,6 +229,7 @@ function TraceEntry({
   onFile: (path: string) => void;
 }) {
   const { item, result, children, updates } = node;
+  const links = useContext(SessionLinks);
   const open = expanded.has(item.id);
   const agent = isAgent(item);
   const failed = traceFailed(node);
@@ -239,6 +248,24 @@ function TraceEntry({
             : category.includes("earch")
               ? SearchIcon
               : WrenchIcon;
+  if (item.kind.type === "tool-call" && item.kind.name.startsWith("mcp__brigadier__")) {
+    const sessions = peerToolSessions(item.body, result?.body);
+    return <ToolCall
+      id={item.id}
+      label={label}
+      request={item.body}
+      result={result?.body}
+      failed={failed}
+      open={open}
+      onOpenChange={() => toggle(item.id)}
+      actions={<div className="mt-2 flex flex-wrap items-center gap-2">
+        {links.select && sessions.map((s) => <Button key={s.id} variant="link" size="sm" onClick={() => links.select?.(s.id)}>
+          {links.titles[s.id] ?? s.title ?? s.id}{s.status ? ` · ${s.status}` : ""}
+        </Button>)}
+        <CopyButton text={result?.body ?? item.body} />
+      </div>}
+    />;
+  }
   if (item.kind.type === "assistant-text" && !children.length)
     return (
       <div className="my-3 space-y-2 text-sm">

@@ -73,7 +73,22 @@ pub(crate) fn write(conn: &Connection, item: &ChatItem) -> Result<()> {
 }
 
 pub(crate) fn read(conn: &Connection, session_id: &str, after: u64) -> Result<Vec<ChatItem>> {
-    let mut statement = conn.prepare_cached("SELECT id,seq,at,kind,body,parent_id,provider_uuid FROM chat_items WHERE session_id=?1 AND seq>?2 ORDER BY seq LIMIT 20")?;
+    read_page(conn, session_id, after, false)
+}
+
+pub(crate) fn recent(conn: &Connection, session_id: &str, after: Option<u64>) -> Result<Vec<ChatItem>> {
+    let mut items = read_page(conn, session_id, after.unwrap_or(0), after.is_none())?;
+    if after.is_none() { items.reverse(); }
+    Ok(items)
+}
+
+fn read_page(conn: &Connection, session_id: &str, after: u64, newest: bool) -> Result<Vec<ChatItem>> {
+    let sql = if newest {
+        "SELECT id,seq,at,kind,body,parent_id,provider_uuid FROM chat_items WHERE session_id=?1 AND seq>?2 ORDER BY seq DESC LIMIT 20"
+    } else {
+        "SELECT id,seq,at,kind,body,parent_id,provider_uuid FROM chat_items WHERE session_id=?1 AND seq>?2 ORDER BY seq LIMIT 20"
+    };
+    let mut statement = conn.prepare_cached(sql)?;
     let rows = statement.query_map((session_id, after as i64), |row| {
         let kind: String = row.get(3)?;
         Ok(ChatItem {
@@ -138,6 +153,12 @@ mod tests {
         let page = read(&conn, "s", 0).unwrap();
         assert_eq!(page.len(), 20);
         assert_eq!(page[0].seq, 5);
+        let tail = recent(&conn, "s", None).unwrap();
+        assert_eq!(tail.len(), 20);
+        assert_eq!(tail.first().unwrap().seq, 1985);
+        assert_eq!(tail.last().unwrap().seq, 2004);
+        assert!(recent(&conn, "s", Some(2004)).unwrap().is_empty());
+        assert_eq!(recent(&conn, "s", Some(1999)).unwrap().iter().map(|i| i.seq).collect::<Vec<_>>(), vec![2000, 2001, 2002, 2003, 2004]);
         conn.execute("DELETE FROM sessions", []).unwrap();
         assert!(read(&conn, "s", 0).unwrap().is_empty());
     }

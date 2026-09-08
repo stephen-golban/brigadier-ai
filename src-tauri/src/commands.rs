@@ -155,6 +155,21 @@ pub(crate) async fn start_session(
     state: State<'_, AppState>,
 ) -> Result<SessionView, AppError> {
     let _creation = crate::peers::CREATION.lock().await;
+    start_session_locked(project_id, prompt, model, permission_mode, options, isolated, base_branch, state).await
+}
+
+// Caller holds CREATION across validation and spawn (including agent-created sessions).
+#[allow(clippy::too_many_arguments)] // Mirrors the Tauri command boundary above.
+pub(crate) async fn start_session_locked(
+    project_id: String,
+    prompt: String,
+    model: Option<String>,
+    permission_mode: String,
+    options: Option<AgentOptions>,
+    isolated: Option<bool>,
+    base_branch: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<SessionView, AppError> {
     crate::navigation::require_available(
         &state.get()?.data_dir,
         crate::navigation::Kind::Project,

@@ -36,6 +36,7 @@ import { workbenchApi } from "../workbenchApi";
 import { bridge } from "../bridge";
 import * as store from "../feedStore";
 import { projectThread, type ThreadRow } from "../threadProjection";
+import { peerMessageContent } from "../peerPresentation";
 import type { PeerData } from "../peerApi";
 export function ThreadView({
   requests,
@@ -365,6 +366,8 @@ function Transcript({
                 {row.type === "work" ? (
                   <WorkTrace
                     row={row}
+                    sessionTitles={peers?.titles}
+                    onSelectSession={onSelectSession}
                     expanded={expanded}
                     toggle={toggle}
                     onFile={onFile}
@@ -409,12 +412,12 @@ function Transcript({
           }}
         </ThreadPrimitive.Messages>
         {peers?.messages
-          .filter((m) => m.to === sessionId && !m.work)
+          .filter((m) => m.to === sessionId && (!m.work || !m.delivered))
           .map((m) => (
             <Disclosure key={m.id}>
               <Disclosure.Heading>
                 <Disclosure.Trigger>
-                  Message from {peers.titles[m.from] ?? "another session"}
+                  {m.work ? (m.error ? "Message delivery failed" : "Message queued") : "Message"} from {peers.titles[m.from] ?? "another session"}
                   <Disclosure.Indicator />
                 </Disclosure.Trigger>
               </Disclosure.Heading>
@@ -503,19 +506,7 @@ function UserMessage({
   onSelectSession?: (id: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const match = item.body.match(
-    /^Work request from peer session ([^:\n]+):\n([\s\S]*)$/,
-  );
-  const source =
-    match?.[1] ?? (initial ? peers?.origins[item.session_id] : undefined);
-  let text = item.body.split("\n\nBrigadier exposes native MCP tools:")[0]!;
-  if (match) {
-    try {
-      text = JSON.parse(match[2]!);
-    } catch {
-      text = match[2]!;
-    }
-  }
+  const { source, text } = peerMessageContent(item, peers, initial);
   const long =
     text.length > (source ? 200 : 480) || text.split("\n").length > 8;
   return (

@@ -8,6 +8,7 @@ export interface PeerMessage {
   to: string;
   text: string;
   work: boolean;
+  turnId?: string | null;
   delivered: boolean;
   error: string | null;
 }

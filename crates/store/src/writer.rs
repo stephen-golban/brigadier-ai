@@ -336,6 +336,11 @@ impl StoreHandle {
             .await
     }
 
+    /// Recent conversation, or the next bounded page after an already delivered cursor.
+    pub async fn recent_chat_items(&self, session_id: String, after: Option<u64>) -> Result<Vec<crate::chat::ChatItem>> {
+        self.query(move |conn| crate::chat::recent(conn, &session_id, after)).await
+    }
+
     /// Recent native rewind records, including incomplete operations needing reconciliation.
     pub async fn rewind_records(&self, session_id: String) -> Result<Vec<serde_json::Value>> {
         self.query(move |conn| {

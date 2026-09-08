@@ -863,13 +863,9 @@ export function ProjectWorkbench({
         e.metaKey || (!navigator.platform.includes("Mac") && e.ctrlKey);
       // Option changes event.key on macOS; physical key codes keep these stable.
       if (e.altKey) {
-        if (
-          command &&
-          !e.shiftKey &&
-          (e.code === "KeyT" || e.code === "KeyF")
-        ) {
+        if (command && !e.shiftKey && e.code === "KeyF") {
           consume();
-          create(e.code === "KeyT" ? "terminal" : "files");
+          create("files");
         }
         return;
       }
@@ -900,6 +896,9 @@ export function ProjectWorkbench({
       if (e.key === ",") {
         consume();
         window.dispatchEvent(new Event("brigadier-settings"));
+      } else if (e.key.toLowerCase() === "j" && !e.shiftKey) {
+        consume();
+        create("terminal");
       } else if (e.key.toLowerCase() === "t") {
         consume();
         if (e.shiftKey) {
@@ -1194,13 +1193,13 @@ export function ProjectWorkbench({
                 textValue="Terminal"
                 aria-label="Terminal"
                 nativeIcon={<TerminalIcon />}
-                accelerator="CmdOrCtrl+Alt+T"
+                accelerator="CmdOrCtrl+J"
                 onAction={() => create("terminal")}
               >
                 <TerminalIcon />
                 <Label>Terminal</Label>
                 <Kbd className="ml-auto text-[11px]">
-                  {navigator.platform.startsWith("Mac") ? "⌥⌘T" : "Ctrl Alt T"}
+                  {navigator.platform.startsWith("Mac") ? "⌘J" : "Ctrl J"}
                 </Kbd>
               </Dropdown.Item>
               <Dropdown.Item
