@@ -28,6 +28,22 @@ export function isAgent(item: ChatItem): boolean {
   );
 }
 export function traceLabel(item: ChatItem): string {
+  if (item.kind.type === "tool-call") {
+    const peerLabels: Record<string, string> = {
+      list_projects: "Listed projects",
+      list_sessions: "Listed sessions",
+      read_session: "Read session",
+      wait_sessions: "Wait for sessions",
+      create_session: "Created session",
+      send_message: "Sent message to session",
+      read_inbox: "Read session inbox",
+      stop_session: "Stop session",
+      close_session: "Close session",
+    };
+    const name = item.kind.name.replace(/^mcp__brigadier__/, "");
+    if (item.kind.name.startsWith("mcp__brigadier__") && peerLabels[name])
+      return peerLabels[name]!;
+  }
   if (item.kind.type === "subagent")
     return item.kind.description || "Agent task";
   if (isAgent(item)) {

@@ -152,10 +152,10 @@ it("passes shortcut accelerators alongside icons without adding key labels to na
         <Dropdown.Item
           textValue="Terminal"
           nativeIcon={<svg />}
-          accelerator="CmdOrCtrl+Alt+T"
+          accelerator="CmdOrCtrl+J"
         >
           <Label>Terminal</Label>
-          <kbd>⌥⌘T</kbd>
+          <kbd>⌘J</kbd>
         </Dropdown.Item>
       </DropdownContent>
     </Dropdown>,
@@ -164,7 +164,7 @@ it("passes shortcut accelerators alongside icons without adding key labels to na
   await waitFor(() => expect(host.create).toHaveBeenCalledOnce());
   expect(host.create.mock.calls[0][0].items[0]).toMatchObject({
     text: "Terminal",
-    accelerator: "CmdOrCtrl+Alt+T",
+    accelerator: "CmdOrCtrl+J",
     icon: { rid: 9 },
   });
 });

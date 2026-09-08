@@ -1215,6 +1215,9 @@ impl HookPolicy for PeerTools {
             tool_name,
             Some(
                 "mcp__brigadier__list_sessions"
+                    | "mcp__brigadier__list_projects"
+                    | "mcp__brigadier__read_session"
+                    | "mcp__brigadier__wait_sessions"
                     | "mcp__brigadier__create_session"
                     | "mcp__brigadier__send_message"
                     | "mcp__brigadier__read_inbox"

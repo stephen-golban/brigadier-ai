@@ -93,7 +93,8 @@ export function SessionPreferences({
             ))}
           </fieldset>
           <p>
-            Managing another session always asks for your confirmation. Turning
+            Sessions can discover and read other project sessions. Creating sessions and
+            sending messages respect both projects’ settings. Managing another session always asks for your confirmation. Turning
             off child management also requires confirmation for child sessions.
           </p>
           {error && (
