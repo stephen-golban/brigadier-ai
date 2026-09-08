@@ -1,15 +1,11 @@
-import { useState } from "react";
-import { FileText, Plus, Save, Trash2 } from "lucide-react";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "./ui/dialog";
-import { Button } from "./ui/button";
-import { Input } from "./ui/input";
-import { Textarea } from "./ui/textarea";
+import { Checkbox } from "./controls/checkbox";
+import { useState, useImperativeHandle, type Ref } from "react";
+import { Plus, Trash2, X } from "lucide-react";
+import { NotesIcon } from "./NotesIcon";
+import { SearchIcon } from "./SearchIcon";
+import { Button } from "./controls/button";
+import { Input } from "./controls/input";
+import { Textarea } from "./controls/textarea";
 import { ActionDialog, type PendingAction } from "./ActionDialog";
 import { Markdown } from "./Markdown";
 import { workbenchApi, type Note, type WorkbenchData } from "../workbenchApi";
@@ -20,38 +16,61 @@ import {
 } from "../navigationApi";
 import { errorMessage } from "../workspaceApi";
 
+export interface NotesLibraryHandle {
+  leave: (next: () => void) => void;
+  open: (id?: string, create?: boolean) => void;
+}
+
 export function NotesLibrary({
+  ref,
   data,
   navigation,
   initialId,
+  initialNew = false,
   onData,
-  onClose,
 }: {
+  ref?: Ref<NotesLibraryHandle>;
   data: WorkbenchData;
   navigation: NavigationData;
   initialId?: string;
+  initialNew?: boolean;
   onData: (data: WorkbenchData) => void;
-  onClose: () => void;
 }) {
   const notes = data.notes.filter((n) => !isTrashed(navigation, "note", n.id));
-  const [note, setNote] = useState<Note | null>(
-    () => notes.find((n) => n.id === initialId) ?? notes[0] ?? null,
+  const draft = (): Note => {
+    const names = new Set(notes.map((n) => n.title));
+    let title = "Untitled note",
+      count = 2;
+    while (names.has(title)) title = `Untitled note ${count++}`;
+    return {
+      id: crypto.randomUUID(),
+      title,
+      content: "",
+      language: "markdown",
+      projectId: null,
+      alwaysInclude: false,
+      revision: 0,
+    };
+  };
+  const [note, setNote] = useState<Note | null>(() =>
+    initialNew ? draft() : (notes.find((n) => n.id === initialId) ?? null),
   );
-  const [saved, setSaved] = useState(note);
+  const [paneOpen, setPaneOpen] = useState(!!note);
+  const [saved, setSaved] = useState(initialNew ? null : note);
   const [query, setQuery] = useState(""),
     [preview, setPreview] = useState(false);
   const [busy, setBusy] = useState(false),
     [error, setError] = useState("");
   const [action, setAction] = useState<PendingAction | null>(null);
   const dirty =
-    !!note &&
+    paneOpen && !!note &&
     (!saved ||
       note.title !== saved.title ||
       note.content !== saved.content ||
       note.alwaysInclude !== saved.alwaysInclude);
   const choose = (next: Note | null) => {
-    setNote(next);
-    setSaved(next);
+    setPaneOpen(!!next);
+    if (next) { setNote(next); setSaved(next); }
     setError("");
   };
   const leave = (next: () => void) => {
@@ -88,198 +107,104 @@ export function NotesLibrary({
   };
   const create = () =>
     leave(() => {
-      const names = new Set(notes.map((n) => n.title));
-      let title = "Untitled note",
-        count = 2;
-      while (names.has(title)) title = `Untitled note ${count++}`;
+      setPaneOpen(true);
       setSaved(null);
-      setNote({
-        id: crypto.randomUUID(),
-        title,
-        content: "",
-        language: "markdown",
-        projectId: null,
-        alwaysInclude: false,
-        revision: 0,
-      });
+      setNote(draft());
       setError("");
       setPreview(false);
     });
+  useImperativeHandle(ref, () => ({
+    leave,
+    open: (id, newNote) =>
+      leave(() => {
+        choose(
+          newNote ? draft() : (notes.find((item) => item.id === id) ?? null),
+        );
+        if (newNote) setSaved(null);
+        setPreview(false);
+      }),
+  }));
+  const filtered = notes.filter((item) =>
+    `${item.title} ${item.content}`.toLowerCase().includes(query.toLowerCase()),
+  );
   return (
     <>
-      <Dialog
-        open
-        onOpenChange={(open) => {
-          if (!open) leave(onClose);
+      <section
+        aria-label="Notepad"
+        className="flex h-full min-h-0 flex-col bg-canvas"
+        onKeyDown={(event) => {
+          if (
+            (event.metaKey || event.ctrlKey) &&
+            event.key.toLowerCase() === "s"
+          ) {
+            event.preventDefault();
+            void save();
+          }
         }}
       >
-        <DialogContent
-          className="flex h-[min(80vh,720px)] max-w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl"
-          onInteractOutside={(e) => e.preventDefault()}
-          onKeyDown={(e) => {
-            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
-              e.preventDefault();
-              void save();
-            }
-          }}
-        >
-          <DialogHeader className="border-b border-border px-5 py-4">
-            <DialogTitle>Notes</DialogTitle>
-            <DialogDescription>
-              All your notes, available across projects.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex min-h-0 flex-1">
-            <aside className="flex w-48 shrink-0 flex-col border-r border-border p-3 sm:w-64">
-              <Input
-                aria-label="Search notes"
-                placeholder="Search notes…"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-              />
-              <Button
-                variant="ghost"
-                className="my-2 justify-start"
-                onClick={create}
-                disabled={busy}
-              >
-                <Plus />
-                New note
+        <div className="notepad-split" data-open={paneOpen}>
+          <div className="notepad-list min-w-0 overflow-y-auto">
+            <header className="project-topbar flex shrink-0 items-center justify-end px-3" data-tauri-drag-region="deep">
+              <Button variant="primary" className="bg-text text-canvas hover:bg-text/90" onClick={create} disabled={busy}>
+                <Plus /> Create
               </Button>
-              <div className="min-h-0 flex-1 space-y-1 overflow-y-auto">
-                {notes
-                  .filter((n) =>
-                    n.title.toLowerCase().includes(query.toLowerCase()),
-                  )
-                  .map((n) => (
-                    <Button
-                      variant={note?.id === n.id ? "secondary" : "ghost"}
-                      className="w-full justify-start"
-                      key={n.id}
-                      disabled={busy}
-                      onClick={() => leave(() => choose(n))}
-                    >
-                      <FileText />
-                      <span className="truncate">{n.title}</span>
+            </header>
+            <div className="mx-auto flex w-full max-w-[768px] flex-col gap-6 px-6 pb-12 pt-6">
+              <div>
+                <h1 className="text-[28px] font-medium tracking-tight">Notepad</h1>
+                <p className="mt-2 text-[15px] text-text-secondary">Keep ideas and context in notes, available across your projects.</p>
+              </div>
+              <div className="flex h-9 items-center gap-2 rounded-full border border-hairline bg-elevated px-3 text-text-secondary">
+                <SearchIcon />
+                <input aria-label="Search notes" placeholder="Search notes" value={query} onChange={(event) => setQuery(event.target.value)} className="min-w-0 flex-1 bg-transparent text-sm text-text outline-none placeholder:text-text-tertiary" />
+              </div>
+              <section aria-label="Notes">
+                <h2 className="mb-3 text-sm font-normal text-text-secondary">Your notes</h2>
+                <div className="flex flex-col gap-2">
+                  {filtered.map((item) => (
+                    <Button key={item.id} className={`h-auto w-full items-start justify-start gap-3 rounded-lg px-2 py-3 text-left ${paneOpen && note?.id === item.id ? "bg-selected" : ""}`} onClick={() => leave(() => { choose(item); setPreview(false); })}>
+                      <NotesIcon className="mt-0.5 shrink-0" />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[15px] text-text">{item.title}</span>
+                        <span className="mt-1 block truncate text-sm font-normal text-text-secondary">{item.content.replace(/\s+/g, " ").trim() || "Empty note"}</span>
+                      </span>
                     </Button>
                   ))}
-                {!notes.length && (
-                  <p className="p-2 text-sm text-muted-foreground">
-                    No notes yet.
-                  </p>
-                )}
-              </div>
-              {data.notesError && (
-                <p role="alert" className="text-xs text-destructive">
-                  {data.notesError}
-                </p>
-              )}
-            </aside>
-            <section className="flex min-w-0 flex-1 flex-col gap-3 p-4">
-              {note ? (
-                <>
-                  <Input
-                    aria-label="Note title"
-                    value={note.title}
-                    maxLength={200}
-                    disabled={busy}
-                    onChange={(e) =>
-                      setNote({ ...note, title: e.target.value })
-                    }
-                    className="text-lg font-medium"
-                  />
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Button
-                      variant={preview ? "secondary" : "ghost"}
-                      size="sm"
-                      onClick={() => setPreview(!preview)}
-                    >
-                      {preview ? "Edit" : "Preview"}
-                    </Button>
-                    <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                      <input
-                        type="checkbox"
-                        checked={note.alwaysInclude}
-                        disabled={busy}
-                        onChange={(e) =>
-                          setNote({ ...note, alwaysInclude: e.target.checked })
-                        }
-                      />
-                      Always include in prompts
-                    </label>
-                    <span className="grow" />
-                    {saved && (
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        aria-label="Move note to Trash"
-                        disabled={busy}
-                        onClick={() => {
-                          setAction({
-                            title: "Move note to Trash?",
-                            description: dirty
-                              ? "Unsaved changes will be discarded. The saved note can be restored from Trash."
-                              : "You can restore this note from Trash.",
-                            label: "Move to Trash",
-                            destructive: true,
-                            run: async () => {
-                              const plan = await navigationApi.preview(
-                                "note",
-                                note.id,
-                              );
-                              await navigationApi.move(plan);
-                              choose(null);
-                              await refresh();
-                            },
-                          });
-                        }}
-                      >
-                        <Trash2 />
-                      </Button>
-                    )}
-                    <Button
-                      size="sm"
-                      disabled={busy || !dirty || !note.title.trim()}
-                      onClick={() => void save()}
-                    >
-                      <Save />
-                      {busy ? "Saving…" : "Save"}
-                    </Button>
-                  </div>
-                  {preview ? (
-                    <div className="min-h-0 flex-1 overflow-auto">
-                      <Markdown text={note.content} />
-                    </div>
-                  ) : (
-                    <Textarea
-                      aria-label="Note content"
-                      value={note.content}
-                      disabled={busy}
-                      onChange={(e) =>
-                        setNote({ ...note, content: e.target.value })
-                      }
-                      className="min-h-0 flex-1 resize-none font-mono text-sm [field-sizing:fixed]"
-                    />
-                  )}
-                  <p className="text-xs text-muted-foreground">
-                    {dirty ? "Unsaved changes · ⌘S to save" : "Saved"}
-                  </p>
-                </>
-              ) : (
-                <div className="m-auto text-center text-sm text-muted-foreground">
-                  <FileText className="mx-auto mb-3 size-8" />
-                  <p>Select a note or create one.</p>
+                  {!filtered.length && <p className="py-5 text-sm text-text-secondary">{notes.length ? "No notes found." : "No notes yet. Create a note to get started."}</p>}
                 </div>
-              )}
-              {error && (
-                <p role="alert" className="text-sm text-destructive">
-                  {error}
-                </p>
-              )}
-            </section>
+              </section>
+              {data.notesError && <p role="alert" className="text-sm text-error">{data.notesError}</p>}
+            </div>
           </div>
-        </DialogContent>
-      </Dialog>
+          <aside className="notepad-editor overflow-hidden" aria-label="Note editor" aria-hidden={!paneOpen} inert={!paneOpen}>
+            {note && <div className="flex h-full min-h-0 flex-col">
+              <header className="flex h-[46px] shrink-0 items-center justify-between px-6 text-sm text-text-secondary">
+                <span>{saved ? "Edit note" : "New note"}</span>
+                <Button size="icon" aria-label="Close note editor" title="Close note editor" disabled={busy} onClick={() => leave(() => choose(null))}><X /></Button>
+              </header>
+              <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
+                <Input aria-label="Note title" autoFocus value={note.title} placeholder="Note title" maxLength={200} disabled={busy} onChange={(e) => setNote({ ...note, title: e.target.value })} className="note-title-input text-lg font-medium" />
+                <div className="flex min-h-[220px] flex-1 flex-col gap-2">
+                  <div className="flex items-center justify-between text-sm text-text-secondary"><span>Content</span><Button size="sm" onClick={() => setPreview(!preview)}>{preview ? "Edit" : "Preview"}</Button></div>
+                  {preview ? <div className="min-h-[180px] flex-1 overflow-auto rounded-xl border border-hairline bg-elevated p-4"><Markdown text={note.content} /></div> : <Textarea aria-label="Note content" placeholder="Write your note…" value={note.content} disabled={busy} onChange={(e) => setNote({ ...note, content: e.target.value })} className="min-h-[180px] flex-1 resize-none rounded-xl bg-elevated p-4 font-mono text-sm [field-sizing:fixed]" />}
+                </div>
+                <section className="flex flex-col gap-2">
+                  <h2 className="text-sm font-normal text-text-secondary">Details</h2>
+                  <div className="rounded-xl border border-hairline bg-elevated p-4">
+                    <Checkbox className="flex items-center justify-between gap-4 text-sm" checked={note.alwaysInclude} disabled={busy} onCheckedChange={(value) => setNote({ ...note, alwaysInclude: value })}>Always include in prompts</Checkbox>
+                  </div>
+                </section>
+                {error && <p role="alert" className="text-sm text-error">{error}</p>}
+              </div>
+              <footer className="flex min-h-[58px] shrink-0 items-center gap-3 border-t border-hairline px-6 py-3">
+                {saved && <Button size="icon" aria-label="Move note to Trash" title="Move note to Trash" disabled={busy} onClick={() => setAction({ title: "Move note to Trash?", description: dirty ? "Unsaved changes will be discarded. The saved note can be restored from Trash." : "You can restore this note from Trash.", label: "Move to Trash", destructive: true, run: async () => { const plan = await navigationApi.preview("note", note.id); await navigationApi.move(plan); choose(null); await refresh(); } })}><Trash2 /></Button>}
+                <span className="grow text-xs text-text-secondary">{dirty ? "Unsaved changes · ⌘S to save" : "Saved"}</span>
+                <Button variant="primary" className="bg-text text-canvas hover:bg-text/90" disabled={busy || !dirty || !note.title.trim()} onClick={() => void save()}>{busy ? "Saving…" : saved ? "Save" : "Create note"}</Button>
+              </footer>
+            </div>}
+          </aside>
+        </div>
+      </section>
       {action && (
         <ActionDialog action={action} onClose={() => setAction(null)} />
       )}

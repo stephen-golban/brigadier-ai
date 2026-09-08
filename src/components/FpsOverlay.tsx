@@ -1,3 +1,4 @@
+import { Button } from "./controls/button";
 /**
  * The live frame meter, bottom-right. On by default in dev, behind a toggle in a release build.
  *
@@ -16,9 +17,13 @@ export function FpsOverlay() {
 
   if (!enabled) {
     return (
-      <button type="button" className="fps off" onClick={() => fps.setEnabled(true)}>
+      <Button
+        type="button"
+        className="fps off"
+        onClick={() => fps.setEnabled(true)}
+      >
         fps
-      </button>
+      </Button>
     );
   }
 
@@ -26,7 +31,7 @@ export function FpsOverlay() {
   const bad = report !== null && !fps.windowPasses(report);
 
   return (
-    <button
+    <Button
       type="button"
       className={bad ? "fps bad" : "fps"}
       title="click to turn the meter off"
@@ -36,12 +41,13 @@ export function FpsOverlay() {
         <span>measuring…</span>
       ) : (
         <span>
-          {report.hz} Hz{report.hz_source === "p50" ? " (p50)" : ""} · p50 {report.p50_ms} · p95{" "}
-          {report.p95_ms} · p99 {report.p99_ms} · worst {report.worst_ms} ms · {report.dropped}{" "}
-          dropped (run {report.longest_drop_run}) · dom {report.dom_nodes} · rows {ingest.rowsIn} in{" "}
-          {ingest.batches} batches
+          {report.hz} Hz{report.hz_source === "p50" ? " (p50)" : ""} · p50{" "}
+          {report.p50_ms} · p95 {report.p95_ms} · p99 {report.p99_ms} · worst{" "}
+          {report.worst_ms} ms · {report.dropped} dropped (run{" "}
+          {report.longest_drop_run}) · dom {report.dom_nodes} · rows{" "}
+          {ingest.rowsIn} in {ingest.batches} batches
         </span>
       )}
-    </button>
+    </Button>
   );
 }

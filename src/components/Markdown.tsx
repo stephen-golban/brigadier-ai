@@ -1,5 +1,5 @@
-import { MessageAction } from "./prompt-kit/message";
-import { Button } from "./ui/button";
+import { MessageAction } from "./assistant-ui/elements/tooltip-icon-button";
+import { Button } from "./controls/button";
 import { useEffect, useState, lazy, Suspense } from "react";
 import { CopyIcon, CheckIcon } from "@phosphor-icons/react";
 
@@ -23,7 +23,7 @@ export function CopyButton({ text }: { text: string }) {
         type="button"
         variant="ghost"
         size="icon"
-        className="size-7 text-muted-foreground"
+        className="size-7 text-text-secondary"
         aria-label={
           error ? "Copy failed; try again" : copied ? "Copied" : "Copy"
         }

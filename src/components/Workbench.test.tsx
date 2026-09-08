@@ -77,7 +77,7 @@ function mount() {
     sessions: {},
     selectedSessionId: null,
     onSelectSession: vi.fn(),
-    workspaceOpen: false,
+    workspaceOpen: true,
     setWorkspaceOpen: vi.fn(),
     models: [],
     peers: { origins: {}, titles: {}, closed: [], messages: [], requests: [] },
@@ -95,36 +95,74 @@ describe("project workbench", () => {
   it("retires a deleted session's saved tabs without dropping notes or scratch buffers", async () => {
     const context = { projectId: project.id, sessionId: "deleted-session" };
     const tabs = [
-      { id: "session:deleted-session", kind: "session", path: "deleted-session", context, root: "/test" },
-      { id: "file:deleted", kind: "file", path: "README.md", context, root: "/test" },
-      { id: "note:saved", kind: "note", path: "Saved note", context, root: "/test" },
-      { id: "scratch:saved", kind: "untitled", path: "Draft", context, root: "/test" },
+      {
+        id: "session:deleted-session",
+        kind: "session",
+        path: "deleted-session",
+        context,
+        root: "/test",
+      },
+      {
+        id: "file:deleted",
+        kind: "file",
+        path: "README.md",
+        context,
+        root: "/test",
+      },
+      {
+        id: "note:saved",
+        kind: "note",
+        path: "Saved note",
+        context,
+        root: "/test",
+      },
+      {
+        id: "scratch:saved",
+        kind: "untitled",
+        path: "Draft",
+        context,
+        root: "/test",
+      },
     ];
-    localStorage.setItem("brigadier:project-tabs:v1", JSON.stringify({
-      [project.id]: { tabs, active: null },
-    }));
+    localStorage.setItem(
+      "brigadier:project-tabs:v1",
+      JSON.stringify({
+        [project.id]: { tabs, active: null },
+      }),
+    );
     mount();
-    fireEvent(window, new CustomEvent("workbench-history-deleted", {
-      detail: { sessionId: "deleted-session" },
-    }));
+    fireEvent(
+      window,
+      new CustomEvent("workbench-history-deleted", {
+        detail: { sessionId: "deleted-session" },
+      }),
+    );
     await waitFor(() => {
-      const saved = JSON.parse(localStorage.getItem("brigadier:project-tabs:v1")!);
-      expect(saved[project.id].tabs.map((tab: { id: string }) => tab.id))
-        .toEqual(["note:saved", "scratch:saved"]);
+      const saved = JSON.parse(
+        localStorage.getItem("brigadier:project-tabs:v1")!,
+      );
+      expect(
+        saved[project.id].tabs.map((tab: { id: string }) => tab.id),
+      ).toEqual(["note:saved", "scratch:saved"]);
       expect(saved[project.id].active).toBe("scratch:saved");
     });
   });
   it("removes a deleted project's saved layout and unmounts its terminals", async () => {
     const user = userEvent.setup();
     mount();
-    await user.click(screen.getByRole("button", { name: "New tab" }));
+    await user.click(screen.getByRole("button", { name: "Workspace actions" }));
     await user.click(screen.getByRole("menuitem", { name: "Terminal" }));
     await screen.findByText("Terminal fixture");
-    fireEvent(window, new CustomEvent("workbench-history-deleted", {
-      detail: { projectId: project.id },
-    }));
+    fireEvent(
+      window,
+      new CustomEvent("workbench-history-deleted", {
+        detail: { projectId: project.id },
+      }),
+    );
     await waitFor(() => {
-      const saved = JSON.parse(localStorage.getItem("brigadier:project-tabs:v1")!);
+      const saved = JSON.parse(
+        localStorage.getItem("brigadier:project-tabs:v1")!,
+      );
       expect(saved[project.id]).toBeUndefined();
       expect(terminal.unmounts).toBe(1);
     });
@@ -132,31 +170,33 @@ describe("project workbench", () => {
   it("restores unsaved buffers and their language after unmount", async () => {
     const user = userEvent.setup();
     let view = mount();
-    await user.click(screen.getByRole("button", { name: "New tab" }));
+    await user.click(screen.getByRole("button", { name: "Workspace actions" }));
     expect(screen.getAllByRole("menuitem").map((e) => e.textContent)).toEqual([
+      "Session history",
+      "Tree",
+      "Search",
+      "Changes",
       "New Session",
       "Terminal",
       "New File",
-      "Open File",
       "New Note",
+      "Open File",
     ]);
     await user.click(screen.getByRole("menuitem", { name: "New File" }));
     await user.type(
       await screen.findByRole("textbox", { name: "File editor" }),
       "temporary scratch",
     );
-    await user.selectOptions(
-      screen.getByRole("combobox", { name: "Language mode" }),
-      "typescript",
-    );
+    await user.click(screen.getByRole("button", { name: /Language mode$/ }));
+    await user.click(screen.getByRole("option", { name: "typescript" }));
     view.unmount();
     view = mount();
     expect(
       await screen.findByRole("textbox", { name: "File editor" }),
     ).toHaveValue("temporary scratch");
-    expect(screen.getByRole("combobox", { name: "Language mode" })).toHaveValue(
-      "typescript",
-    );
+    expect(
+      screen.getByRole("button", { name: /Language mode$/ }),
+    ).toHaveTextContent("typescript");
   });
   it("preserves terminals across project changes and confirms busy close", async () => {
     const user = userEvent.setup();
@@ -171,7 +211,7 @@ describe("project workbench", () => {
     expect(
       screen.queryByRole("button", { name: "New terminal" }),
     ).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "New tab" }));
+    await user.click(screen.getByRole("button", { name: "Workspace actions" }));
     await user.click(screen.getByRole("menuitem", { name: "Terminal" }));
     await screen.findByText("Terminal fixture");
     expect(terminal.mounts).toBe(1);
@@ -206,7 +246,7 @@ describe("project workbench", () => {
     const save = vi
       .spyOn(workbenchApi, "saveNote")
       .mockImplementation(async (n) => ({ ...n, revision: ++revision }));
-    await user.click(screen.getByRole("button", { name: "New tab" }));
+    await user.click(screen.getByRole("button", { name: "Workspace actions" }));
     await user.click(screen.getByRole("menuitem", { name: "New Note" }));
     expect(
       await screen.findByRole("checkbox", { name: "Always include" }),
@@ -215,7 +255,7 @@ describe("project workbench", () => {
       await screen.findByRole("textbox", { name: "File editor" }),
       { target: { value: "Final edit before switching" } },
     );
-    await user.click(screen.getByRole("button", { name: "New tab" }));
+    await user.click(screen.getByRole("button", { name: "Workspace actions" }));
     await user.click(screen.getByRole("menuitem", { name: "New File" }));
     await waitFor(() =>
       expect(

@@ -1,14 +1,13 @@
+import type { ReactNode } from "react";
 import {
-  Message,
-  MessageContent,
-  MessageActions,
-  MessageAction,
-} from "./prompt-kit/message";
-import { CircularLoader } from "./prompt-kit/loader";
-import { Button } from "./ui/button";
-import type { PeerData } from "../peerApi";
-import { useSessionChanges } from "../desktopApi";
-import { ChangedFilesCard } from "./SessionReview";
+  AssistantRuntimeProvider,
+  ThreadPrimitive,
+  MessagePrimitive,
+  useExternalStoreRuntime,
+  type ThreadMessageLike,
+} from "@assistant-ui/react";
+import { Surface, Spinner } from "./controls/status";
+import { Disclosure } from "./controls/disclosure";
 import {
   useEffect,
   useLayoutEffect,
@@ -17,21 +16,23 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
-import {
-  ArrowDownIcon,
-  ChatCircleIcon,
-  PencilSimpleIcon,
-} from "@phosphor-icons/react";
+import { PencilSimpleIcon } from "@phosphor-icons/react";
+import { Button } from "./controls/button";
+import { MessageAction } from "./assistant-ui/elements/tooltip-icon-button";
+import { Thread } from "./assistant-ui/elements/thread";
 import { Markdown, CopyButton } from "./Markdown";
-import { workspaceApi, errorMessage, type ChatItem } from "../workspaceApi";
-import * as store from "../feedStore";
-import { projectThread } from "../threadProjection";
-import { WorkTrace } from "./WorkTrace";
 import { BrandMark } from "./BrandMark";
+import { WorkTrace } from "./WorkTrace";
+import { ChangedFilesCard } from "./SessionReview";
+import { useSessionChanges } from "../desktopApi";
+import { workspaceApi, errorMessage, type ChatItem } from "../workspaceApi";
 import { workbenchApi } from "../workbenchApi";
-
+import { bridge } from "../bridge";
+import * as store from "../feedStore";
+import { projectThread, type ThreadRow } from "../threadProjection";
+import type { PeerData } from "../peerApi";
 export function ThreadView({
+  requests,
   sessionId,
   projectName,
   onFile,
@@ -41,6 +42,7 @@ export function ThreadView({
   peers,
   onSelectSession,
 }: {
+  requests?: ReactNode;
   sessionId: string | null;
   projectId: string | null;
   projectName: string | null;
@@ -70,9 +72,10 @@ export function ThreadView({
     };
   }, []);
   return (
-    <section className="conversation">
+    <section className="conversation flex min-h-0 min-w-0 flex-1 flex-col">
       {sessionId ? (
         <Transcript
+          requests={requests}
           key={sessionId}
           sessionId={sessionId}
           onFile={onFile}
@@ -83,7 +86,7 @@ export function ThreadView({
           onSelectSession={onSelectSession}
         />
       ) : (
-        <div className="new-conversation">
+        <div className="new-conversation flex min-h-0 flex-1 flex-col items-center justify-center gap-4 px-6 text-text-secondary [&_h1]:text-lg">
           <BrandMark />
           <h1>
             {projectName
@@ -99,6 +102,7 @@ export function ThreadView({
 }
 
 function Transcript({
+  requests,
   sessionId,
   onFile,
   peers,
@@ -107,6 +111,7 @@ function Transcript({
   onEdit,
   editing,
 }: {
+  requests?: ReactNode;
   sessionId: string;
   onFile: (path: string) => void;
   peers?: PeerData;
@@ -116,10 +121,16 @@ function Transcript({
   editing: boolean;
 }) {
   const changes = useSessionChanges(sessionId);
-  const [items, setItems] = useState<ChatItem[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [loaded, setLoaded] = useState(false);
-  const savedScroll = useRef<{ top: number; following: boolean }>(
+  const [items, setItems] = useState<ChatItem[]>([]),
+    [error, setError] = useState<string | null>(null),
+    [loaded, setLoaded] = useState(false),
+    [hydrated, setHydrated] = useState(false);
+  const state = useSyncExternalStore(store.subscribe, store.getState),
+    session = state.sessions[sessionId],
+    busy = session?.busy ?? false;
+  const scroll = useRef<HTMLDivElement>(null),
+    restored = useRef(false);
+  const saved = useRef<{ top: number; following: boolean }>(
     (() => {
       try {
         return (
@@ -132,14 +143,6 @@ function Transcript({
       }
     })(),
   );
-  const [following, setFollowing] = useState(savedScroll.current.following);
-  const [hydrated, setHydrated] = useState(false);
-  const restored = useRef(false);
-  const state = useSyncExternalStore(store.subscribe, store.getState);
-  const session = state.sessions[sessionId];
-  const busy = session?.busy ?? false;
-  const scroll = useRef<HTMLDivElement>(null);
-  const atEnd = useRef(savedScroll.current.following);
   const [expanded, setExpanded] = useState<Set<string>>(() => {
     try {
       return new Set(
@@ -152,14 +155,20 @@ function Transcript({
     }
   });
   useEffect(() => {
-    localStorage.setItem(
-      `brigadier:expanded:${sessionId}`,
-      JSON.stringify([...expanded]),
-    );
+    try {
+      localStorage.setItem(
+        `brigadier:expanded:${sessionId}`,
+        JSON.stringify([...expanded]),
+      );
+    } catch {
+      /* Keep in-memory state. */
+    }
   }, [expanded, sessionId]);
   useEffect(() => {
     setItems([]);
     setLoaded(false);
+    setHydrated(false);
+    restored.current = false;
     let cancelled = false,
       cursor = 0,
       timer: ReturnType<typeof setTimeout>;
@@ -195,7 +204,56 @@ function Transcript({
       clearTimeout(timer);
     };
   }, [sessionId, revision]);
-  const visible = useMemo(() => projectThread(items, busy), [items, busy]);
+  const rows = useMemo(() => projectThread(items, busy), [items, busy]);
+  const messages = useMemo<ThreadMessageLike[]>(() => {
+    let turn: string | null = null;
+    return rows.map((row, index) => {
+      if (row.type === "message" && row.item.kind.type === "user-text")
+        turn = row.item.provider_uuid ?? row.item.id;
+      return {
+        id: row.id,
+        role:
+          row.type === "message" && row.item.kind.type === "user-text"
+            ? "user"
+            : "assistant",
+        content: [
+          {
+            type: "text",
+            text:
+              row.type === "message"
+                ? row.item.body
+                : row.running
+                  ? "Working…"
+                  : "Activity",
+          },
+        ],
+        metadata: { custom: { brigadier: row, index, turn } },
+      };
+    });
+  }, [rows]);
+  const runtime = useExternalStoreRuntime({
+    messages,
+    convertMessage: (message) => message,
+    isRunning: busy,
+    isLoading: !loaded,
+    onNew: async (message) => {
+      const text = message.content
+        .filter((p) => p.type === "text")
+        .map((p) => p.text)
+        .join("\n");
+      await bridge().sendTurn(sessionId, text);
+    },
+    onCancel: async () => {
+      await bridge().interrupt(sessionId);
+    },
+  });
+  useLayoutEffect(() => {
+    if (hydrated && !restored.current && scroll.current) {
+      restored.current = true;
+      if (!saved.current.following)
+        scroll.current.scrollTop = saved.current.top;
+    }
+  }, [hydrated]);
   const toggle = (id: string) =>
     setExpanded((old) => {
       const next = new Set(old);
@@ -203,137 +261,71 @@ function Transcript({
       else next.add(id);
       return next;
     });
-  const virtual = useVirtualizer({
-    count: visible.length,
-    getScrollElement: () => scroll.current,
-    estimateSize: (index) => (visible[index]?.type === "message" ? 180 : 40),
-    getItemKey: (index) => visible[index]!.id,
-    overscan: 5,
-    useFlushSync: false,
-  });
-  const totalSize = virtual.getTotalSize();
-  useLayoutEffect(() => {
-    const el = scroll.current;
-    // Collapsing activity can make the whole transcript fit without firing a scroll event.
-    if (el && el.scrollHeight - el.clientHeight < 64) {
-      atEnd.current = true;
-      setFollowing(true);
-    }
-  }, [totalSize, expanded]);
-  useLayoutEffect(() => {
-    if (hydrated && !restored.current && scroll.current) {
-      restored.current = true;
-      if (!savedScroll.current.following)
-        scroll.current.scrollTop = savedScroll.current.top;
-    }
-  }, [hydrated]);
-  useLayoutEffect(() => {
-    if (atEnd.current && visible.length)
-      virtual.scrollToIndex(visible.length - 1, { align: "end" });
-  }, [visible, virtual]);
-  const follow = () => {
-    atEnd.current = true;
-    setFollowing(true);
-    virtual.scrollToIndex(Math.max(0, visible.length - 1), { align: "end" });
-  };
   return (
-    <div className="transcript-wrap">
-      <div
-        className="transcript"
-        ref={scroll}
+    <AssistantRuntimeProvider runtime={runtime}>
+      <Thread
+        viewportRef={scroll}
+        scrollToBottomOnInitialize={saved.current.following}
         onScroll={() => {
           const el = scroll.current;
-          if (!el) return;
-          atEnd.current = el.scrollHeight - el.scrollTop - el.clientHeight < 64;
-          setFollowing(atEnd.current);
-          if (restored.current)
-            try {
-              localStorage.setItem(
-                `brigadier:scroll:${sessionId}`,
-                JSON.stringify({ top: el.scrollTop, following: atEnd.current }),
-              );
-            } catch {
-              /* In-memory scroll remains available. */
-            }
+          if (!el || !restored.current) return;
+          try {
+            localStorage.setItem(
+              `brigadier:scroll:${sessionId}`,
+              JSON.stringify({
+                top: el.scrollTop,
+                following:
+                  el.scrollHeight - el.scrollTop - el.clientHeight < 64,
+              }),
+            );
+          } catch {
+            /* Scroll still works without storage. */
+          }
         }}
       >
-        {error ? (
-          <p role="alert" className="inline-error">
+        {error && (
+          <p role="alert" className="inline-error my-2 text-[13px] text-error">
             {error}
           </p>
-        ) : null}
+        )}
         {!loaded ? (
-          <p className="thread-empty">Loading conversation…</p>
-        ) : visible.length === 0 ? (
-          <div className="thread-empty">
-            <ChatCircleIcon size={28} />
-            <p>
-              {busy
-                ? "Waiting for the first response…"
-                : "No saved message bodies in this session."}
-            </p>
+          <div className="thread-empty mx-auto flex max-w-lg flex-col gap-3 p-6 text-text-disabled">
+            <Spinner size="sm" /> Loading conversation…
           </div>
+        ) : !rows.length ? (
+          <p className="thread-empty mx-auto flex max-w-lg flex-col gap-3 p-6 text-text-disabled">
+            {busy
+              ? "Waiting for the first response…"
+              : "No saved message bodies in this session."}
+          </p>
         ) : null}
-        <div className="chat-sizer" style={{ height: totalSize }}>
-          {virtual.getVirtualItems().map((row) => {
-            const entry = visible[row.index]!;
-            const user = visible
-              .slice(0, row.index + 1)
-              .reverse()
-              .find(
-                (r) => r.type === "message" && r.item.kind.type === "user-text",
-              );
-            const turn =
-              user?.type === "message"
-                ? (user.item.provider_uuid ?? user.item.id)
-                : null;
-            const files =
-              changes.turns.find((t) => t.turnId === turn)?.files ?? [];
-            const previousUser = visible
-              .slice(0, row.index)
-              .reverse()
-              .find(
-                (r) => r.type === "message" && r.item.kind.type === "user-text",
-              );
-            const separator =
-              entry.type === "message" &&
-              entry.item.kind.type === "user-text" &&
-              entry.item.at > 0 &&
-              (!previousUser ||
-                (previousUser.type === "message" &&
-                  entry.item.at - previousUser.item.at > 15 * 60 * 1000));
+        <ThreadPrimitive.Messages>
+          {({ message }) => {
+            const row = message.metadata.custom.brigadier as ThreadRow;
+            const index = message.metadata.custom.index as number;
+            const turn = message.metadata.custom.turn as string | null;
             return (
-              <article
-                key={entry.id}
-                ref={virtual.measureElement}
-                data-index={row.index}
-                className={`chat-item ${entry.type === "work" ? "work-row" : entry.item.kind.type}`}
-                style={{
-                  position: "absolute",
-                  top: 0,
-                  left: 0,
-                  width: "100%",
-                  transform: `translateY(${row.start}px)`,
-                }}
+              <MessagePrimitive.Root
+                className={`aui-message mb-6 ${row.type === "work" ? "aui-activity" : row.item.kind.type}`}
               >
-                {entry.type === "work" ? (
+                {row.type === "work" ? (
                   <WorkTrace
-                    row={entry}
+                    row={row}
                     expanded={expanded}
                     toggle={toggle}
                     onFile={onFile}
                   />
-                ) : entry.item.kind.type === "user-text" ? (
+                ) : row.item.kind.type === "user-text" ? (
                   <>
-                    {separator && (
-                      <div className="message-separator">
-                        {dateLabel(entry.item.at)}
+                    {row.item.at > 0 && (
+                      <div className="message-separator mb-2 text-xs text-text-tertiary">
+                        {dateLabel(row.item.at)}
                       </div>
                     )}
                     <UserMessage
-                      item={entry.item}
+                      item={row.item}
                       peers={peers}
-                      initial={row.index === 0}
+                      initial={index === 0}
                       busy={busy}
                       editing={editing}
                       onEdit={onEdit}
@@ -341,77 +333,84 @@ function Transcript({
                     />
                   </>
                 ) : (
-                  <Message className="min-w-0 flex-col gap-2">
-                    <MessageContent className="bg-transparent p-0">
-                      <Markdown text={entry.item.body} onFile={onFile} />
-                    </MessageContent>
-                    <MessageActions>
-                      <CopyButton text={entry.item.body} />
-                    </MessageActions>
+                  <>
+                    <Markdown text={row.item.body} onFile={onFile} />
+                    <div className="aui-message-actions mt-2 flex items-center gap-1">
+                      <CopyButton text={row.item.body} />
+                    </div>
                     {turn && (
                       <ChangedFilesCard
                         sessionId={sessionId}
                         turn={turn}
-                        files={files}
+                        files={
+                          changes.turns.find((t) => t.turnId === turn)?.files ??
+                          []
+                        }
                       />
                     )}
-                  </Message>
+                  </>
                 )}
-              </article>
+              </MessagePrimitive.Root>
             );
-          })}
-        </div>
+          }}
+        </ThreadPrimitive.Messages>
         {peers?.messages
           .filter((m) => m.to === sessionId && !m.work)
-          .map((message) => (
-            <details className="peer-inline-message" key={message.id}>
-              <summary>
-                Message from {peers.titles[message.from] ?? "another session"}
-              </summary>
-              <button
-                className="message-provenance"
-                onClick={() => onSelectSession?.(message.from)}
-              >
-                Open source session
-              </button>
-              <Markdown text={message.text} onFile={onFile} />
-              <CopyButton text={message.text} />
-              {message.error && <p className="inline-error">{message.error}</p>}
-            </details>
+          .map((m) => (
+            <Disclosure key={m.id}>
+              <Disclosure.Heading>
+                <Disclosure.Trigger>
+                  Message from {peers.titles[m.from] ?? "another session"}
+                  <Disclosure.Indicator />
+                </Disclosure.Trigger>
+              </Disclosure.Heading>
+              <Disclosure.Content>
+                <Disclosure.Body>
+                  <Button onClick={() => onSelectSession?.(m.from)}>
+                    Open source session
+                  </Button>
+                  <Markdown text={m.text} onFile={onFile} />
+                  <CopyButton text={m.text} />
+                  {m.error && (
+                    <p className="inline-error my-2 text-[13px] text-error">
+                      {m.error}
+                    </p>
+                  )}
+                </Disclosure.Body>
+              </Disclosure.Content>
+            </Disclosure>
           ))}
         {peers?.requests
           .filter((r) => r.to === sessionId && r.resolved)
-          .map((request) => (
-            <details className="peer-inline-message" key={request.id}>
-              <summary>
-                Resolved {request.action} request from{" "}
-                {peers.titles[request.from] ?? "another session"}
-              </summary>
-              <p>This request was handled.</p>
-            </details>
+          .map((r) => (
+            <Disclosure key={r.id}>
+              <Disclosure.Heading>
+                <Disclosure.Trigger>
+                  Resolved {r.action} request from{" "}
+                  {peers.titles[r.from] ?? "another session"}
+                  <Disclosure.Indicator />
+                </Disclosure.Trigger>
+              </Disclosure.Heading>
+              <Disclosure.Content>
+                <Disclosure.Body>This request was handled.</Disclosure.Body>
+              </Disclosure.Content>
+            </Disclosure>
           ))}
-        {busy && !visible.some((row) => row.type === "work" && row.running) ? (
-          <div className="working-state" role="status">
-            <CircularLoader size="sm" />
+        {busy && !rows.some((r) => r.type === "work" && r.running) && (
+          <div
+            className="flex items-center gap-2 text-text-secondary"
+            role="status"
+          >
+            <Spinner size="sm" />
             Working…
           </div>
-        ) : null}
-        {!busy && session?.lastStop && session.lastStop !== "end-turn" ? (
+        )}
+        {!busy && session?.lastStop && session.lastStop !== "end-turn" && (
           <div className="turn-state">{stopLabel(session.lastStop)}</div>
-        ) : null}
-      </div>
-      {!following ? (
-        <Button
-          variant="outline"
-          size="icon"
-          className="absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full shadow-md"
-          aria-label="Jump to latest"
-          onClick={follow}
-        >
-          <ArrowDownIcon size={19} />
-        </Button>
-      ) : null}
-    </div>
+        )}
+        {requests}
+      </Thread>
+    </AssistantRuntimeProvider>
   );
 }
 
@@ -466,16 +465,16 @@ function UserMessage({
   const long =
     text.length > (source ? 200 : 480) || text.split("\n").length > 8;
   return (
-    <Message className="min-w-0 flex-col items-end gap-1">
+    <div className="flex min-w-0 flex-col items-end gap-1">
       {source && (
-        <button
+        <Button
           className="message-provenance"
           onClick={() => onSelectSession?.(source)}
         >
           Sent by {peers?.titles[source] ?? "Brigadier"} from another session
-        </button>
+        </Button>
       )}
-      <MessageContent className="max-w-[85%] rounded-2xl px-4 py-3 whitespace-pre-wrap sm:max-w-[75%]">
+      <Surface className="max-w-[85%] rounded-lg px-4 py-3 whitespace-pre-wrap sm:max-w-[75%]">
         <div
           className={
             long && !expanded ? (source ? "line-clamp-2" : "line-clamp-5") : ""
@@ -487,7 +486,7 @@ function UserMessage({
           <Button
             variant="link"
             size="sm"
-            className="h-auto px-0 pt-2 text-muted-foreground"
+            className="h-auto px-0 pt-2 text-text-secondary"
             aria-expanded={expanded}
             onClick={() => setExpanded(!expanded)}
           >
@@ -495,8 +494,8 @@ function UserMessage({
             <span aria-hidden="true">⌄</span>
           </Button>
         )}
-      </MessageContent>
-      <MessageActions className="gap-1 text-xs">
+      </Surface>
+      <div className="gap-1 text-xs">
         {item.at > 0 && (
           <time dateTime={new Date(item.at).toISOString()}>
             {new Date(item.at).toLocaleTimeString(undefined, {
@@ -527,7 +526,7 @@ function UserMessage({
             </Button>
           </MessageAction>
         )}
-      </MessageActions>
-    </Message>
+      </div>
+    </div>
   );
 }

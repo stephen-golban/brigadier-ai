@@ -1,9 +1,9 @@
+import { renameSession } from "./sessionNavigation";
+import { NavigationHistoryControls } from "./components/NavigationHistoryControls";
+import { Button } from "./components/controls/button";
+import { Details, DetailsSummary } from "./components/controls/details";
 import { useNavigationData, isTrashed } from "./navigationApi";
-import {
-  SidebarProvider,
-  SidebarInset,
-  SidebarTrigger,
-} from "./components/ui/sidebar";
+import { SidebarProvider, SidebarInset } from "./components/controls/sidebar";
 import type { ChatItem } from "./workspaceApi";
 /** The desktop shell: project sidebar, conversation, composer and optional workspace.
  * Saved automation plans are collapsed project history. A selected session shows its chat.
@@ -37,7 +37,7 @@ import { notify, useCleanup } from "./desktopApi";
 import { useAttention } from "./attention";
 
 import { RunCard } from "./components/RunCard";
-import { Sidebar } from "./components/Sidebar";
+import { Sidebar, type SidebarHandle } from "./components/Sidebar";
 import { runIsLive } from "./wire";
 import type {
   AppError,
@@ -141,6 +141,9 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
     "brigadier:workspace-open",
     false,
   );
+  const sidebar = useRef<SidebarHandle>(null);
+  const [notepadOpen, setNotepadOpen] = useState(false);
+  const [notepadHost, setNotepadHost] = useState<HTMLDivElement | null>(null);
   const [sidebarOpen, setSidebarOpen] = useStoredState(
     "brigadier:sidebar-open",
     true,
@@ -643,6 +646,23 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
    * `feed_tail` prefill above and the old history re-renders under the new child
    * (`docs/plans/ipc-contract.md` §resume_session).
    */
+  const forkSession = async (sessionId: SessionId) => {
+    const view = await bridge().forkSession(sessionId);
+    store.seedSessions([view]);
+    try {
+      renameSession(
+        view.session_id,
+        `Fork of ${peers.titles[sessionId] ?? `Session ${sessionId.slice(-6)}`}`.slice(
+          0,
+          200,
+        ),
+      );
+    } catch (error) {
+      say(error);
+    }
+    setSelectedProjectId(view.project_id);
+    setSelectedSessionId(view.session_id);
+  };
   const resumeSession = useCallback(
     (sessionId: SessionId) => {
       setCommandBusy(true);
@@ -846,9 +866,34 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
     <SidebarProvider
       open={sidebarOpen}
       onOpenChange={setSidebarOpen}
+      attention={pendingTotal > 0 || Object.values(attention).some(Boolean)}
+      navigationControls={
+        <NavigationHistoryControls
+          page={notepadOpen ? "notepad" : "workspace"}
+          beforeNavigate={(next) => sidebar.current?.leaveNotepad(next)}
+          projectId={selectedProjectId}
+          sessionId={selectedSessionId}
+          isAvailable={({ projectId, sessionId, page }) =>
+            page === "notepad" ||
+            (!!projects.find((p) => p.id === projectId) &&
+              (!sessionId || !!state.sessions[sessionId]))
+          }
+          onNavigate={({ projectId, sessionId, page }) => {
+            if (page === "notepad") {
+              sidebar.current?.openNotepad();
+              return;
+            }
+            setSelectedProjectId(projectId);
+            selectSession(sessionId);
+          }}
+        />
+      }
       className="h-svh min-h-0 overflow-hidden"
     >
       <Sidebar
+        ref={sidebar}
+        notepadHost={notepadHost}
+        onNotepadOpenChange={setNotepadOpen}
         attention={attention}
         jobs={jobs}
         projects={projects}
@@ -879,107 +924,125 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
       />
 
       <SidebarInset className="min-h-0 min-w-0 overflow-hidden">
-        <ProjectWorkbench
-          sidebarToggle={<SidebarTrigger />}
-          newSessionRequest={newSessionRequest}
-          navigation={navigation.data}
-          attention={attention}
-          peers={peers}
-          project={selectedProject}
-          session={selectedSession}
-          sessions={state.sessions}
-          selectedSessionId={selectedSessionId}
-          onSelectSession={selectSession}
-          workspaceOpen={workspaceOpen}
-          setWorkspaceOpen={setWorkspaceOpen}
-          models={models}
-          historyContent={
-            <>
-              {runLive &&
-              run?.project_id === selectedProjectId &&
-              selectedSessionId === null ? (
-                <div className="run-dock-status" role="status">
-                  Automation running: {run.goal}
-                  <button className="act" onClick={() => stopRun(run.plan_id)}>
-                    Stop automation
-                  </button>
-                </div>
-              ) : null}
-              {selectedSessionId === null &&
-              (run !== null || intents.length > 0) ? (
-                <details key={selectedProjectId} className="automation-details">
-                  <summary>Automation history</summary>
-                  <RunCard
-                    run={run}
-                    intents={intents}
-                    onSettle={settleIntent}
-                  />
-                </details>
-              ) : null}
-            </>
-          }
+        <div
+          ref={setNotepadHost}
+          hidden={!notepadOpen}
+          className="h-full min-h-0"
+        />
+        <div
+          className="min-h-0 flex-1 flex-col"
+          style={{ display: notepadOpen ? "none" : "flex" }}
         >
-          <ThreadView
+          <ProjectWorkbench
+            sidebarToggle={null}
+            newSessionRequest={newSessionRequest}
+            navigation={navigation.data}
+            attention={attention}
             peers={peers}
-            onSelectSession={selectSession}
-            onEdit={setEditingMessage}
-            editing={editingMessage !== null}
-            revision={conversationRevision}
-            sessionId={selectedSessionId}
-            projectId={selectedProjectId}
-            projectName={selectedProject?.name ?? null}
-            onFile={openWorkspace}
-          />
-
-          <Approvals
-            approvals={approvalRows.filter(
-              (row) => row.approval.sessionId === selectedSessionId,
-            )}
-            onRespond={respond}
-            onDismiss={store.dismissApproval}
-            onFocus={focusApproval}
-          />
-
-          <Dock
-            editing={
-              editingMessage?.session_id === selectedSessionId
-                ? editingMessage
-                : null
-            }
-            onCancelEdit={() =>
-              setEditingMessage((current) =>
-                current?.id === editingMessage?.id ? null : current,
-              )
-            }
-            onRewound={() => setConversationRevision((n) => n + 1)}
             project={selectedProject}
             session={selectedSession}
+            sessions={state.sessions}
+            selectedSessionId={selectedSessionId}
+            onSelectSession={selectSession}
+            onForkSession={forkSession}
+            workspaceOpen={workspaceOpen}
+            setWorkspaceOpen={setWorkspaceOpen}
             models={models}
-            busy={commandBusy}
-            blocked={claudeError !== null}
-            onStartSession={startSession}
-            onResume={resumeSession}
-            onCleanup={cleanupWorktree}
-            onSend={(id, text) => {
-              return bridge()
-                .sendTurn(id, text)
-                .then(() => true)
-                .catch((e) => {
-                  say(e);
-                  return false;
-                });
-            }}
-            onInterrupt={(id) => {
-              void bridge().interrupt(id).catch(say);
-            }}
-            onEnd={(id) => {
-              void bridge().endSession(id).catch(say);
-            }}
-            onKill={(id) => {
-              void bridge().kill(id).catch(say);
-            }}
-          />
-        </ProjectWorkbench>
+            historyContent={
+              <>
+                {runLive &&
+                run?.project_id === selectedProjectId &&
+                selectedSessionId === null ? (
+                  <div className="run-dock-status" role="status">
+                    Automation running: {run.goal}
+                    <Button
+                      className="act"
+                      onClick={() => stopRun(run.plan_id)}
+                    >
+                      Stop automation
+                    </Button>
+                  </div>
+                ) : null}
+                {selectedSessionId === null &&
+                (run !== null || intents.length > 0) ? (
+                  <Details
+                    key={selectedProjectId}
+                    className="automation-details max-h-[35%] shrink-0 overflow-auto"
+                  >
+                    <DetailsSummary>Automation history</DetailsSummary>
+                    <RunCard
+                      run={run}
+                      intents={intents}
+                      onSettle={settleIntent}
+                    />
+                  </Details>
+                ) : null}
+              </>
+            }
+          >
+            <ThreadView
+              requests={
+                <Approvals
+                  approvals={approvalRows.filter(
+                    (row) => row.approval.sessionId === selectedSessionId,
+                  )}
+                  onRespond={respond}
+                  onDismiss={store.dismissApproval}
+                  onFocus={focusApproval}
+                />
+              }
+              peers={peers}
+              onSelectSession={selectSession}
+              onEdit={setEditingMessage}
+              editing={editingMessage !== null}
+              revision={conversationRevision}
+              sessionId={selectedSessionId}
+              projectId={selectedProjectId}
+              projectName={selectedProject?.name ?? null}
+              onFile={openWorkspace}
+            />
+
+            <Dock
+              editing={
+                editingMessage?.session_id === selectedSessionId
+                  ? editingMessage
+                  : null
+              }
+              onCancelEdit={() =>
+                setEditingMessage((current) =>
+                  current?.id === editingMessage?.id ? null : current,
+                )
+              }
+              onRewound={() => setConversationRevision((n) => n + 1)}
+              project={selectedProject}
+              session={selectedSession}
+              models={models}
+              busy={commandBusy}
+              blocked={claudeError !== null}
+              onStartSession={startSession}
+              onResume={resumeSession}
+              onCleanup={cleanupWorktree}
+              onSend={(id, text) => {
+                return bridge()
+                  .sendTurn(id, text)
+                  .then(() => true)
+                  .catch((e) => {
+                    say(e);
+                    return false;
+                  });
+              }}
+              onInterrupt={(id) => {
+                void bridge().interrupt(id).catch(say);
+              }}
+              onEnd={(id) => {
+                void bridge().endSession(id).catch(say);
+              }}
+              onKill={(id) => {
+                void bridge().kill(id).catch(say);
+              }}
+            />
+          </ProjectWorkbench>
+        </div>
       </SidebarInset>
       <Toasts />
     </SidebarProvider>

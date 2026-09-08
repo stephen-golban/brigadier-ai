@@ -401,3 +401,43 @@ async fn live_resume_continues_the_conversation_and_the_feed() {
         row.cost_usd_cumulative
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "spawns Claude Haiku for two short turns to verify real fork continuity"]
+async fn live_fork_preserves_context_with_a_new_provider_id() {
+    let binary = std::env::var("CLAUDE_BIN").expect("CLAUDE_BIN required");
+    let root = tempfile::tempdir().unwrap();
+    assert!(std::process::Command::new("git").args(["init", "-q"]).current_dir(root.path()).status().unwrap().success());
+    ensure_initial_commit(root.path());
+    let mut config = ClaudeDriverConfig::new("claude-code:live-fork");
+    config.binary = Some(PathBuf::from(binary));
+    config.default_model = Some(MODEL.into());
+    let driver = ClaudeDriver::probe(config).await.unwrap();
+    let mut live = Live::new();
+    live.sup.register_driver(Arc::new(driver));
+    let project = live.sup.add_project(root.path().to_owned()).await.unwrap();
+    let mut request = StartSession::new(root.path());
+    request.model = Some(MODEL.into());
+    request.prompt = Some(REMEMBER_PROMPT.into());
+    let parent = live.sup.start_project_session(&project.id, &DriverKind::new(CLAUDE_CODE), request, false).await.unwrap();
+    live.wait_for("parent answer", TURN_TIMEOUT, &parent, is_turn_completed).await;
+    live.sup.end_session(&parent).await.unwrap();
+    live.wait_for("parent exit", TURN_TIMEOUT, &parent, |e| matches!(e.event, Event::SessionExited {..})).await;
+    live.store.handle().flush().await.unwrap();
+    let before = live.sup.session(&parent).await.unwrap().unwrap();
+    let child = live.sup.fork_session(&parent, Default::default()).await.unwrap();
+    assert_ne!(parent, child);
+    assert!(!live.store.handle().chat_items(child.to_string(), 0).await.unwrap().is_empty());
+    live.seen.clear();
+    live.sup.send_turn(&child, RECALL_PROMPT).await.unwrap();
+    live.wait_for("fork answer", TURN_TIMEOUT, &child, |e| e.session_id == child && is_turn_completed(e)).await;
+    live.store.handle().flush().await.unwrap();
+    let fork = live.sup.session(&child).await.unwrap().unwrap();
+    assert_ne!(fork.provider_session_id, before.provider_session_id);
+    assert!(assistant_texts(&live.raw_log(&child)).iter().any(|text| text.to_lowercase().contains(SECRET)));
+    assert_eq!(live.sup.session(&parent).await.unwrap().unwrap(), before);
+    let cost = before.cost_usd_cumulative + fork.cost_usd_cumulative;
+    assert!(cost < COST_CEILING_USD, "fork probe exceeded cost ceiling: {cost}");
+    eprintln!("Fork continuity verified; total cost ${cost:.5}");
+    live.sup.shutdown().await;
+}

@@ -21,23 +21,21 @@ Package dependencies are not covered — see §3.
 
 ## 1. janhq/jan — Apache License 2.0
 
-| | |
-|---|---|
-| Upstream project | `janhq/jan` — <https://github.com/janhq/jan> |
-| Copyright | `Copyright 2025 Menlo Research` — upstream `LICENSE:3` [measured], `docs/research/jan.md` §1 |
-| Upstream file taken | `web-app/src/providers/ThemeProvider.tsx` (79 lines) |
-| Read at upstream commit | `9e12b2a80edb98a2776637f4ab2c5bee953c5cb3` (2026-08-29) |
-| Local path | `src/providers/ThemeProvider.tsx` |
-| Licence | Apache License, Version 2.0 |
-| Licence text in this repo | `licenses/Apache-2.0.txt` |
-| Modified | **yes** |
-| Files taken from Jan, total | **1** |
+|                             |                                                                                              |
+| --------------------------- | -------------------------------------------------------------------------------------------- |
+| Upstream project            | `janhq/jan` — <https://github.com/janhq/jan>                                                 |
+| Copyright                   | `Copyright 2025 Menlo Research` — upstream `LICENSE:3` [measured], `docs/research/jan.md` §1 |
+| Upstream file taken         | `web-app/src/providers/ThemeProvider.tsx` (79 lines)                                         |
+| Read at upstream commit     | `9e12b2a80edb98a2776637f4ab2c5bee953c5cb3` (2026-08-29)                                      |
+| Local path                  | `src/providers/ThemeProvider.tsx`                                                            |
+| Licence                     | Apache License, Version 2.0                                                                  |
+| Licence text in this repo   | `licenses/Apache-2.0.txt`                                                                    |
+| Modified                    | **yes**                                                                                      |
+| Files taken from Jan, total | **1**                                                                                        |
 
-**The file was modified.** Apache-2.0 §4(b) requires a changed file to carry a prominent notice
-that it changed. `src/providers/ThemeProvider.tsx:1-41` carries that notice and lists the three
-adaptations: React context plus `localStorage` in place of Jan's zustand store, a runtime user-agent
-sniff in place of Jan's `IS_LINUX` build-time define, and every Tauri call behind `isTauri()`.
-Jan's structure, its `applyIfAuto` race fix and its Linux desktop-portal fallback are theirs.
+**The file was modified.** The current provider carries the upstream attribution and a
+change notice. It now enforces the dark-only token contract and migrates stored theme
+preferences. The earlier OS theme switching and desktop-portal fallback have been removed.
 
 ### 1.1 The directory boundary — read this before taking a second Jan file
 
@@ -98,27 +96,8 @@ the text is an owner decision, deferred, not answered here.
 - `src/providers/ThemeProvider.tsx` was not re-diffed against upstream for this file; the change
   list in §1 is that file's own in-file notice.
 
-## Prompt Kit — MIT
+## assistant-ui — MIT
 
-Source: https://github.com/ibelick/prompt-kit at `de80375967400aa0c6ebab9d3ba4f9258ab79fcc`.
-Copyright (c) 2025 Julien Thibeaut. License: [prompt-kit-MIT.txt](licenses/prompt-kit-MIT.txt).
+Source: [assistant-ui Elements and registry](https://github.com/assistant-ui/assistant-ui), retrieved 2026-09-07. Copyright (c) 2025 AgentbaseAI Inc. License: [assistant-ui-MIT.txt](licenses/assistant-ui-MIT.txt).
 
-Vendored components: `src/components/prompt-kit/{prompt-input,message,markdown,code-block,chain-of-thought,loader}.tsx` and their `src/components/ui/{button,textarea,tooltip,collapsible,avatar}.tsx` dependencies.
-
-Local adaptations preserve IME input and forwarded refs, lazy-load Markdown, render complete documents for reference links, retain safe file/note URL routing, handle unknown code languages and stale highlighting, and use the existing desktop palette. Loader includes only the circular variant.
-
-## shadcn/ui Input
-
-`src/components/ui/input.tsx` is adapted from the shadcn/ui New York Input registry at https://ui.shadcn.com/r/styles/new-york/input.json (retrieved 2026-09-07). Copyright (c) 2023 shadcn. MIT licence: [shadcn-ui-MIT.txt](licenses/shadcn-ui-MIT.txt).
-
-## shadcn/ui sidebar-10 and navigation primitives
-
-The sidebar composition is adapted from [sidebar-10](https://ui.shadcn.com/blocks/sidebar#sidebar-10), retrieved from the official `new-york-v4` registry on 2026-09-07. Vendored primitives in `src/components/ui`: sidebar, dialog, command, dropdown-menu, sheet, separator, popover, scroll-area, skeleton; responsive hook in `src/hooks/use-mobile.ts`.
-
-Copyright (c) 2023 shadcn. MIT licence: [shadcn-ui-MIT.txt](licenses/shadcn-ui-MIT.txt). Local adaptations connect Brigadier projects, session tabs, Notes and Trash; persist controlled sidebar state in local storage; and map semantic colors to the app palette.
-
-## shadcn/ui source control primitives
-
-`src/components/ui/{item,input-group,button-group}.tsx` are adapted from the official [shadcn/ui new-york-v4 registry](https://ui.shadcn.com/r/styles/new-york-v4/item.json), retrieved 2026-09-07. Imports use the existing local utilities and UI components. The source control layout draws on the [sidebar-11](https://ui.shadcn.com/blocks/sidebar#sidebar-11) Changes pattern.
-
-Copyright (c) 2023 shadcn. MIT licence: [shadcn-ui-MIT.txt](licenses/shadcn-ui-MIT.txt).
+Adapted components live in `src/components/assistant-ui/elements`: thread, composer, Markdown, reasoning, tool calls, approval cards, artifact cards, agent status and plans. Base controls use native HTML elements. Brigadier supplies existing backend state, safe file navigation, independent phase states and approval decisions. `src/hooks/use-copy-to-clipboard.ts` is from the same registry.

@@ -235,6 +235,23 @@ pub(crate) async fn resume_session(
     session_view(state.inner(), &session_id).await
 }
 
+/// Branch provider history into a new, idle session and isolated Git workspace.
+#[tauri::command]
+pub(crate) async fn fork_session(session_id: String, state: State<'_, AppState>) -> Result<SessionView, AppError> {
+    let _creation = crate::peers::CREATION.lock().await;
+    let _lifecycle = crate::peers::LIFECYCLE.lock().await;
+    let runtime = state.get()?;
+    crate::navigation::require_available(&runtime.data_dir, crate::navigation::Kind::Session, &session_id)?;
+    state.claude_status()?;
+    let mut request = StartSession::new(".");
+    let token = crate::peers::prepare(&mut request)?;
+    let id = runtime.supervisor.fork_session(&SessionId::new(session_id.clone()), request.env_overrides).await?;
+    let title = crate::peers::snapshot()?.titles.get(&session_id).cloned().unwrap_or_else(|| "Session".into());
+    crate::peers::bind(token, id.as_str(), Some(format!("Fork of {title}")))?;
+    crate::peers::record_fork(id.as_str(), &session_id)?;
+    session_view(state.inner(), &id).await
+}
+
 /// Queue a user turn on a live session.
 #[tauri::command]
 pub(crate) async fn send_turn(

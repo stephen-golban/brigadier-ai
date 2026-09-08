@@ -1,3 +1,4 @@
+import { useSessionNavigation } from "./sessionNavigation";
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { desktop } from "./workspaceApi";
@@ -39,6 +40,7 @@ export const peerApi = {
 };
 export function usePeers() {
   const [data, setData] = useState(empty);
+  const { titles } = useSessionNavigation();
   useEffect(() => {
     if (!desktop) return;
     let live = true;
@@ -62,5 +64,5 @@ export function usePeers() {
       clearInterval(timer);
     };
   }, []);
-  return data;
+  return { ...data, titles: { ...data.titles, ...titles } };
 }

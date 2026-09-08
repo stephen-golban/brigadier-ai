@@ -2,9 +2,12 @@ import { useState } from "react";
 import { ArrowCounterClockwiseIcon } from "@phosphor-icons/react";
 import { launchApi } from "../launchApi";
 import { errorMessage } from "../workspaceApi";
-import { Button } from "./ui/button";
+import { Button } from "./controls/button";
 
-export function ResetOnboardingButton({ className, onReset }: {
+export function ResetOnboardingButton({
+  className,
+  onReset,
+}: {
   className?: string;
   onReset?: () => void;
 }) {

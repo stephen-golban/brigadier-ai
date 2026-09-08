@@ -1,16 +1,30 @@
-// Sidebar-10 composition adapted from shadcn/ui. See THIRD_PARTY_NOTICES.md.
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useSessionNavigation, setSessionArchived } from "../sessionNavigation";
+import { createPortal } from "react-dom";
+import { EditProjectDialog } from "./EditProjectDialog";
+import { ArchiveIcon } from "./ArchiveIcon";
+import { MoreIcon, PinIcon } from "./NavigationIcons";
+import { BellIcon } from "./BellIcon";
+import { FolderIcon, FolderOpenIcon } from "./NavigationIcons";
+import { SearchIcon } from "./SearchIcon";
+import { EditIcon } from "./EditIcon";
+import { SessionStatus } from "./SessionStatus";
+import { DropdownContent } from "./controls/menu";
+// Project navigation composed from native controls.
+import {
+  useEffect,
+  useRef,
+  useState,
+  useImperativeHandle,
+  type Ref,
+  type ReactNode,
+} from "react";
 import {
   ChevronRight,
-  FileText,
-  Folder,
-  MoreHorizontal,
+  ArchiveRestore,
+  Tag,
   Plus,
-  Search,
   Settings,
-  Pin,
   Trash2,
-  Pencil,
   Check,
   X,
 } from "lucide-react";
@@ -38,34 +52,27 @@ import { errorMessage } from "../workspaceApi";
 import { notify } from "../desktopApi";
 import { working } from "../attention";
 import { DesktopSettings } from "./DesktopSettings";
-import { BrandMark } from "./BrandMark";
-import { NotesLibrary } from "./NotesLibrary";
+import { NotesIcon } from "./NotesIcon";
+import { NotesLibrary, type NotesLibraryHandle } from "./NotesLibrary";
 import { TrashLibrary } from "./TrashLibrary";
 import { ActionDialog, type PendingAction } from "./ActionDialog";
-import { Button } from "./ui/button";
-import { Input } from "./ui/input";
+import { Button } from "./controls/button";
+import { Input } from "./controls/input";
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
   DialogDescription,
-} from "./ui/dialog";
-import {
-  CommandDialog,
-  CommandInput,
-  CommandList,
-  CommandEmpty,
-  CommandGroup,
-  CommandItem,
-} from "./ui/command";
+} from "./controls/dialog";
+import { SearchDialog } from "./controls/search-dialog";
 import {
   Sidebar as SidebarPrimitive,
   SidebarHeader,
   SidebarContent,
   SidebarFooter,
   SidebarGroup,
-  SidebarGroupLabel,
+  SidebarSectionHeading,
   SidebarGroupContent,
   SidebarMenu,
   SidebarMenuItem,
@@ -74,25 +81,23 @@ import {
   SidebarMenuSub,
   SidebarMenuSubItem,
   SidebarMenuSubButton,
-  SidebarRail,
   useSidebar,
-} from "./ui/sidebar";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "./ui/collapsible";
-import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuLabel,
-} from "./ui/dropdown-menu";
+} from "./controls/sidebar";
+import { Dropdown, Separator } from "./controls/overlay";
+import { SidebarReveal } from "./controls/sidebar-reveal";
+import { Kbd } from "./controls/kbd";
+import { Tooltip } from "./controls/tooltip";
 import { useStoredState } from "../workbenchState";
 
+export interface SidebarHandle {
+  leaveNotepad: (next: () => void) => void;
+  openNotepad: () => void;
+}
+
 export interface SidebarProps {
+  ref?: Ref<SidebarHandle>;
+  notepadHost?: HTMLElement | null;
+  onNotepadOpenChange?: (open: boolean) => void;
   titles?: Record<string, string>;
   attention?: Record<string, boolean>;
   jobs?: import("../desktopApi").CleanupJob[];
@@ -134,47 +139,18 @@ export interface SidebarProps {
    * not drawn at all rather than drawn dead.
    */
   onReveal?: (path: string) => void;
-
 }
 
-const colors: Record<string, string> = {
-  red: "#ef4444",
-  orange: "#f97316",
-  amber: "#fbbf24",
-  green: "#22c55e",
-  blue: "#3b82f6",
-  violet: "#8b5cf6",
-  pink: "#ec4899",
-};
-const icons = new Map<string, Promise<string | null>>();
-function ProjectIcon({ project }: { project: ProjectView }) {
-  const [src, setSrc] = useState<string | null>(null);
-  useEffect(() => {
-    let live = true;
-    const key = `${project.id}:${project.root_path}`;
-    if (!icons.has(key))
-      icons.set(
-        key,
-        navigationApi.icon(project.id).catch(() => null),
-      );
-    void icons.get(key)!.then((value) => {
-      if (live) setSrc(value);
-    });
-    return () => {
-      live = false;
-    };
-  }, [project.id, project.root_path]);
-  return src ? (
-    <img
-      src={src}
-      alt=""
-      className="size-4 shrink-0 object-contain"
-      onError={() => setSrc(null)}
-    />
-  ) : (
-    <Folder className="size-4 shrink-0" />
-  );
-}
+// Preserve stored tag identifiers while removing their palette styling.
+const projectTags = [
+  "red",
+  "orange",
+  "amber",
+  "green",
+  "blue",
+  "violet",
+  "pink",
+];
 export function Sidebar(props: SidebarProps) {
   const { data: navigation, error: navigationError } = useNavigationData();
   const { isMobile, setOpenMobile } = useSidebar();
@@ -187,11 +163,53 @@ export function Sidebar(props: SidebarProps) {
     "brigadier:project-expanded:v1",
     {},
   );
+  const [pinnedOpen, setPinnedOpen] = useStoredState(
+    "brigadier:pinned-open:v1",
+    true,
+  );
+  const [projectsOpen, setProjectsOpen] = useStoredState(
+    "brigadier:projects-open:v1",
+    true,
+  );
+  const [pinnedProjects, setPinnedProjects] = useStoredState<string[]>(
+    "brigadier:pinned-projects:v1",
+    [],
+  );
+  const { archivedIds } = useSessionNavigation();
+  const [archivedOpen, setArchivedOpen] = useState(false);
   const [all, setAll] = useState<Set<string>>(new Set());
   const [settings, setSettings] = useState(false),
     [notes, setNotes] = useState(false),
     [trash, setTrash] = useState(false),
     [search, setSearch] = useState(false);
+  const notepad = useRef<NotesLibraryHandle>(null);
+  useEffect(
+    () => props.onNotepadOpenChange?.(notes),
+    [notes, props.onNotepadOpenChange],
+  );
+  const closeNotepad = (next: () => void) => {
+    const done = () => {
+      setNotes(false);
+      setNewNote(false);
+      next();
+    };
+    if (notes) notepad.current?.leave(done);
+    else done();
+  };
+  const openNotepad = (id?: string, create = false) => {
+    if (notes) notepad.current?.open(id, create);
+    else {
+      setNoteId(id);
+      setNewNote(create);
+      setNotes(true);
+    }
+    if (isMobile) setOpenMobile(false);
+  };
+  useImperativeHandle(props.ref, () => ({
+    leaveNotepad: closeNotepad,
+    openNotepad,
+  }));
+  const [newNote, setNewNote] = useState(false);
   const [noteId, setNoteId] = useState<string | undefined>();
   const [action, setAction] = useState<PendingAction | null>(null);
   const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(
@@ -218,10 +236,6 @@ export function Sidebar(props: SidebarProps) {
     refresh();
     const timer = setInterval(refresh, 2500);
     const show = () => setSettings(true);
-    const openNotes = () => {
-      setNoteId(undefined);
-      setNotes(true);
-    };
     const key = (e: KeyboardEvent) => {
       if (
         (e.metaKey || e.ctrlKey) &&
@@ -234,17 +248,20 @@ export function Sidebar(props: SidebarProps) {
     };
     window.addEventListener("workbench-data-changed", refresh);
     window.addEventListener("brigadier-settings", show);
-    window.addEventListener("brigadier-open-notes", openNotes);
     window.addEventListener("keydown", key);
     return () => {
       live = false;
       clearInterval(timer);
       window.removeEventListener("workbench-data-changed", refresh);
       window.removeEventListener("brigadier-settings", show);
-      window.removeEventListener("brigadier-open-notes", openNotes);
       window.removeEventListener("keydown", key);
     };
   }, []);
+  useEffect(() => {
+    const open = () => openNotepad();
+    window.addEventListener("brigadier-open-notes", open);
+    return () => window.removeEventListener("brigadier-open-notes", open);
+  });
   const changed = (next: WorkbenchData) => {
     setData(next);
     window.dispatchEvent(new Event("workbench-data-changed"));
@@ -252,14 +269,16 @@ export function Sidebar(props: SidebarProps) {
   const closeMobile = () => {
     if (isMobile) setOpenMobile(false);
   };
-  const selectProject = (id: string) => {
-    props.onSelectProject(id);
-    closeMobile();
-  };
-  const selectSession = (id: string) => {
-    props.onSelectSession(id);
-    closeMobile();
-  };
+  const selectProject = (id: string) =>
+    closeNotepad(() => {
+      props.onSelectProject(id);
+      closeMobile();
+    });
+  const selectSession = (id: string) =>
+    closeNotepad(() => {
+      props.onSelectSession(id);
+      closeMobile();
+    });
   const addProject = async () => {
     if (busy) return;
     setError("");
@@ -352,9 +371,13 @@ export function Sidebar(props: SidebarProps) {
       notify(errorMessage(e), true);
     }
   };
-  const activeProjects = props.projects.filter(
-    (p) => !isTrashed(navigation, "project", p.id),
-  );
+  const activeProjects = props.projects
+    .filter((p) => !isTrashed(navigation, "project", p.id))
+    .sort(
+      (a, b) =>
+        Number(pinnedProjects.includes(b.id)) -
+        Number(pinnedProjects.includes(a.id)),
+    );
   const activeSessions = Object.values(props.sessions).filter(
     (s) =>
       !isTrashed(navigation, "session", s.sessionId) &&
@@ -362,498 +385,791 @@ export function Sidebar(props: SidebarProps) {
   );
   const title = (id: string) => props.titles?.[id] ?? `Session ${id.slice(-6)}`;
   const projectName = (p: ProjectView) => data.projectNames?.[p.id] ?? p.name;
-  const sessionRow = (s: SessionRuntime, pinned = false) => (
-    <SidebarMenuSubItem key={s.sessionId} className="group/session relative">
-      <SidebarMenuSubButton
-        asChild
-        isActive={props.selectedSessionId === s.sessionId}
-        className="pr-8"
-      >
-        <button
-          onClick={() => selectSession(s.sessionId)}
-          title={title(s.sessionId)}
+  const pinSession = (id: string) =>
+    customize(
+      "pin",
+      id,
+      navigation.pinnedSessions.includes(id) ? null : "pinned",
+    );
+  const archiveSession = (id: string) => {
+    try {
+      setSessionArchived(id, true);
+    } catch (e) {
+      notify(errorMessage(e), true);
+      return;
+    }
+    if (props.selectedSessionId === id) props.onSelectSession(null);
+  };
+  const visibleSessions = activeSessions.filter(
+    (s) => !archivedIds.includes(s.sessionId),
+  );
+  const newSession = (projectId: string) =>
+    closeNotepad(() => {
+      props.onSelectProject(projectId);
+      setExpanded((old) => ({ ...old, [projectId]: true }));
+      window.dispatchEvent(
+        new CustomEvent("brigadier-new-project-session", { detail: projectId }),
+      );
+      closeMobile();
+    });
+  const startNewChat = () => {
+    const project =
+      activeProjects.find((p) => p.id === props.selectedProjectId) ??
+      activeProjects[0];
+    if (project) newSession(project.id);
+    else void addProject();
+  };
+  useEffect(() => {
+    window.addEventListener("brigadier-new-chat", startNewChat);
+    const key = (event: KeyboardEvent) => {
+      const command = navigator.platform.startsWith("Mac")
+        ? event.metaKey
+        : event.ctrlKey;
+      if (
+        !command ||
+        event.altKey ||
+        event.shiftKey ||
+        event.key.toLowerCase() !== "n" ||
+        document.querySelector('dialog[open], [role="dialog"]')
+      )
+        return;
+      event.preventDefault();
+      if (!event.repeat) startNewChat();
+    };
+    window.addEventListener("keydown", key);
+    return () => {
+      window.removeEventListener("brigadier-new-chat", startNewChat);
+      window.removeEventListener("keydown", key);
+    };
+  });
+  const sessionRow = (s: SessionRuntime) => {
+    const pinned = navigation.pinnedSessions.includes(s.sessionId);
+    const project = props.projects.find((p) => p.id === s.projectId);
+    return (
+      <SidebarMenuSubItem key={s.sessionId} className="group/session">
+        <Tooltip
+          className="w-full"
+          onlyWhenTruncated=".session-label"
+          placement="right"
+          content={
+            <div className="w-72 max-w-full space-y-2 py-1">
+              <div className="flex items-start gap-3">
+                <span className="min-w-0 flex-1 break-words text-[13px] text-text">
+                  {title(s.sessionId)}
+                </span>
+                <span className="flex h-5 w-4 shrink-0 items-center justify-center">
+                  <SessionStatus
+                    attention={props.attention?.[s.sessionId]}
+                    working={working(s)}
+                  />
+                </span>
+              </div>
+              <div className="flex items-center gap-2 text-text-secondary">
+                <FolderIcon />
+                <span className="min-w-0 break-words">
+                  {project ? projectName(project) : "Project"}
+                </span>
+              </div>
+            </div>
+          }
         >
-          {pinned && <Pin className="size-3" />}
-          <span className="truncate">{title(s.sessionId)}</span>
-          {working(s) && (
-            <i className="status-spinner" role="img" aria-label="Working" />
-          )}
-          {props.attention?.[s.sessionId] && (
-            <i
-              className="attention-dot"
-              role="img"
-              aria-label="Needs attention"
-            />
-          )}
-        </button>
-      </SidebarMenuSubButton>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
+          <SidebarMenuSubButton
+            isActive={!notes && props.selectedSessionId === s.sessionId}
+            className="session-row pr-8"
+            onClick={() => selectSession(s.sessionId)}
+          >
+            <span className="session-label min-w-0 flex-1 truncate text-left">
+              {title(s.sessionId)}
+            </span>
+            <span className="session-indicator absolute top-0 right-1 flex h-7 w-6 items-center justify-center">
+              <SessionStatus
+                attention={props.attention?.[s.sessionId]}
+                working={working(s)}
+              />
+            </span>
+          </SidebarMenuSubButton>
+        </Tooltip>
+        <Tooltip
+          content={pinned ? "Unpin session" : "Pin session"}
+          className="absolute top-0 right-7 h-7 w-6"
+        >
           <SidebarMenuAction
             showOnHover
-            aria-label={`Session actions ${title(s.sessionId)}`}
+            className="relative right-auto"
+            aria-label={`${pinned ? "Unpin" : "Pin"} ${title(s.sessionId)}`}
+            onClick={() => pinSession(s.sessionId)}
           >
-            <MoreHorizontal />
+            <PinIcon filled={pinned} />
           </SidebarMenuAction>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent side={isMobile ? "bottom" : "right"} align="start">
-          <DropdownMenuItem
-            onSelect={() =>
-              customize(
-                "pin",
-                s.sessionId,
-                navigation.pinnedSessions.includes(s.sessionId)
-                  ? null
-                  : "pinned",
-              )
-            }
+        </Tooltip>
+        <Tooltip
+          content="Archive session"
+          className="absolute top-0 right-1 h-7 w-6"
+        >
+          <SidebarMenuAction
+            showOnHover
+            className="relative right-auto"
+            aria-label={`Archive ${title(s.sessionId)}`}
+            onClick={() => archiveSession(s.sessionId)}
           >
-            <Pin />
-            {navigation.pinnedSessions.includes(s.sessionId)
-              ? "Unpin session"
-              : "Pin session"}
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem
-            variant="destructive"
-            onSelect={() => void moveToTrash("session", s.sessionId)}
-          >
-            <Trash2 />
-            Move to Trash
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-    </SidebarMenuSubItem>
-  );
+            <ArchiveIcon />
+          </SidebarMenuAction>
+        </Tooltip>
+      </SidebarMenuSubItem>
+    );
+  };
+  const accountName = data.displayName?.trim() || "Local workspace";
+  const initials =
+    data.displayName
+      ?.trim()
+      .split(/\s+/)
+      .map((part) => part[0])
+      .slice(0, 2)
+      .join("")
+      .toUpperCase() || "B";
   return (
     <>
-      <SidebarPrimitive
-        className="border-r-0"
-        collapsible="offcanvas"
-        aria-label="Main navigation"
-      >
+      <SidebarPrimitive collapsible="offcanvas" aria-label="Main navigation">
         <SidebarHeader>
           <div
-            className="flex h-12 items-center gap-2 px-2 font-semibold"
+            className="mb-5 flex h-8 items-center gap-2 px-4 text-[17px] font-semibold"
             data-tauri-drag-region="deep"
           >
-            <BrandMark className="size-6 shrink-0" />
             <span>Brigadier</span>
+            <div className="-mr-2 ml-auto flex items-center gap-1">
+              <Tooltip
+                content={
+                  <>
+                    Search{" "}
+                    <Kbd>
+                      {navigator.platform.startsWith("Mac") ? "⌘K" : "Ctrl K"}
+                    </Kbd>
+                  </>
+                }
+              >
+                <Button
+                  isIconOnly
+                  aria-label="Search"
+                  aria-keyshortcuts={
+                    navigator.platform.startsWith("Mac")
+                      ? "Meta+K"
+                      : "Control+K"
+                  }
+                  className="size-8 text-text-secondary"
+                  onClick={() => setSearch(true)}
+                >
+                  <SearchIcon />
+                </Button>
+              </Tooltip>
+              <Dropdown>
+                <Button
+                  isIconOnly
+                  aria-label="Notifications"
+                  className="relative size-8 text-text-secondary"
+                >
+                  <BellIcon />
+                  {(props.pendingTotal > 0 ||
+                    Object.values(props.attention ?? {}).some(Boolean)) && (
+                    <span className="absolute top-1 right-1 size-1.5 rounded-full bg-attention" />
+                  )}
+                </Button>
+                <DropdownContent className="w-64">
+                  {activeSessions
+                    .filter((session) => props.attention?.[session.sessionId])
+                    .map((session) => (
+                      <Dropdown.Item
+                        key={session.sessionId}
+                        onAction={() => selectSession(session.sessionId)}
+                      >
+                        <span className="truncate">
+                          {title(session.sessionId)}
+                        </span>
+                      </Dropdown.Item>
+                    ))}
+                  {!activeSessions.some(
+                    (session) => props.attention?.[session.sessionId],
+                  ) && (
+                    <div className="px-3 py-2 text-text-secondary">
+                      {props.pendingTotal
+                        ? `${props.pendingTotal} pending approval${props.pendingTotal === 1 ? "" : "s"}`
+                        : "You're all caught up"}
+                    </div>
+                  )}
+                </DropdownContent>
+              </Dropdown>
+            </div>
           </div>
           <SidebarMenu>
             <SidebarMenuItem>
-              <SidebarMenuButton onClick={() => setSearch(true)}>
-                <Search />
-                <span>Search</span>
-                <kbd className="ml-auto text-xs text-muted-foreground">⌘K</kbd>
+              <Tooltip
+                className="w-full"
+                content={
+                  <>
+                    New chat{" "}
+                    <Kbd>
+                      {navigator.platform.startsWith("Mac") ? "⌘N" : "Ctrl N"}
+                    </Kbd>
+                  </>
+                }
+              >
+                <SidebarMenuButton
+                  onClick={startNewChat}
+                  className="text-text [&_svg]:text-text"
+                  aria-label="New chat"
+                  aria-keyshortcuts={
+                    navigator.platform.startsWith("Mac")
+                      ? "Meta+N"
+                      : "Control+N"
+                  }
+                >
+                  <span className="flex size-4 items-center justify-center">
+                    <EditIcon />
+                  </span>
+                  <span>New chat</span>
+                </SidebarMenuButton>
+              </Tooltip>
+            </SidebarMenuItem>
+            <SidebarMenuItem className="flex items-center gap-1">
+              <SidebarMenuButton
+                className="min-w-0 flex-1 text-text [&_svg]:text-text"
+                isActive={notes}
+                onClick={() => openNotepad()}
+              >
+                <NotesIcon />
+                <span>Notepad</span>
               </SidebarMenuButton>
+              <Tooltip content="New note">
+                <Button
+                  isIconOnly
+                  aria-label="New note"
+                  className="size-8 shrink-0 text-text-tertiary hover:text-text"
+                  onClick={() => openNotepad(undefined, true)}
+                >
+                  <Plus size={16} strokeWidth={1.5} />
+                </Button>
+              </Tooltip>
             </SidebarMenuItem>
           </SidebarMenu>
         </SidebarHeader>
         <SidebarContent>
           {navigationError && (
-            <p role="alert" className="px-4 text-xs text-destructive">
+            <p role="alert" className="px-3 text-error">
               {navigationError}
             </p>
           )}
           {navigation.pinnedSessions.some((id) =>
-            activeSessions.some((s) => s.sessionId === id),
+            visibleSessions.some((s) => s.sessionId === id),
           ) && (
             <SidebarGroup>
-              <SidebarGroupLabel>Pinned</SidebarGroupLabel>
-              <SidebarMenu>
-                {navigation.pinnedSessions
-                  .map((id) => activeSessions.find((s) => s.sessionId === id))
-                  .filter((s): s is SessionRuntime => !!s)
-                  .map((s) => sessionRow(s, true))}
-              </SidebarMenu>
+              <SidebarSectionHeading
+                label="Pinned"
+                open={pinnedOpen}
+                controls="sidebar-pinned"
+                onToggle={() => setPinnedOpen((open) => !open)}
+              />
+              <SidebarReveal open={pinnedOpen} id="sidebar-pinned">
+                <SidebarMenu>
+                  {navigation.pinnedSessions
+                    .map((id) =>
+                      visibleSessions.find((s) => s.sessionId === id),
+                    )
+                    .filter((s): s is SessionRuntime => !!s)
+                    .map(sessionRow)}
+                </SidebarMenu>
+              </SidebarReveal>
             </SidebarGroup>
           )}
           <SidebarGroup>
-            <SidebarGroupLabel>Projects</SidebarGroupLabel>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="absolute top-1 right-2 size-7"
-              aria-label="Add project"
-              disabled={busy}
-              onClick={() => void addProject()}
-            >
-              <Plus />
-            </Button>
-            <SidebarGroupContent role="navigation" aria-label="Projects">
-              <SidebarMenu>
-                {activeProjects.map((project) => {
-                  const sessions = activeSessions
-                    .filter((s) => s.projectId === project.id)
-                    .sort(
-                      (a, b) => (b.startedAtMs ?? 0) - (a.startedAtMs ?? 0),
-                    );
-                  const open =
-                    expanded[project.id] ??
-                    props.selectedProjectId === project.id;
-                  const selected = props.selectedProjectId === project.id;
-                  return (
-                    <Collapsible
-                      key={project.id}
-                      open={open}
-                      onOpenChange={(value) =>
-                        setExpanded((old) => ({ ...old, [project.id]: value }))
-                      }
-                      asChild
-                    >
-                      <SidebarMenuItem className="group/project">
-                        {renaming?.id === project.id ? (
-                          <div className="flex items-center gap-1">
-                            <Input
-                              autoFocus
-                              aria-label="New name"
-                              value={renaming.name}
-                              maxLength={200}
-                              disabled={busy}
-                              onChange={(e) =>
-                                setRenaming({
-                                  ...renaming,
-                                  name: e.target.value,
-                                })
-                              }
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter") {
-                                  e.preventDefault();
-                                  void rename();
-                                }
-                                if (e.key === "Escape") setRenaming(null);
-                              }}
-                              onFocus={(e) => e.currentTarget.select()}
-                              className="h-8"
-                            />
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="size-7"
-                              aria-label="Save project name"
-                              disabled={busy}
-                              onClick={() => void rename()}
-                            >
-                              <Check />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="size-7"
-                              aria-label="Cancel rename"
-                              disabled={busy}
-                              onClick={() => setRenaming(null)}
-                            >
-                              <X />
-                            </Button>
-                          </div>
-                        ) : (
-                          <>
-                            <SidebarMenuButton
-                              isActive={selected}
-                              className="pr-16"
-                              title={project.root_path}
-                              aria-current={selected ? "page" : undefined}
-                              onClick={() => selectProject(project.id)}
-                              onDoubleClick={() =>
-                                setRenaming({
-                                  id: project.id,
-                                  name: projectName(project),
-                                })
-                              }
-                            >
-                              <ProjectIcon project={project} />
-                              <span>{projectName(project)}</span>
-                              {navigation.projectColors[project.id] && (
-                                <span
-                                  aria-label={`${navigation.projectColors[project.id]} project tag`}
-                                  className="size-2 shrink-0 rounded-full"
-                                  style={{
-                                    backgroundColor:
-                                      colors[
-                                        navigation.projectColors[project.id]!
-                                      ],
-                                  }}
+            <div className="group/section relative">
+              <SidebarSectionHeading
+                label="Projects"
+                open={projectsOpen}
+                controls="sidebar-projects"
+                onToggle={() => setProjectsOpen((open) => !open)}
+              />
+              <SidebarMenuAction
+                className="section-action right-2"
+                aria-label="Add project"
+                title="Add project"
+                disabled={busy}
+                onClick={() => void addProject()}
+              >
+                <Plus />
+              </SidebarMenuAction>
+            </div>
+            <SidebarReveal open={projectsOpen} id="sidebar-projects">
+              <SidebarGroupContent role="navigation" aria-label="Projects">
+                <SidebarMenu className="gap-3">
+                  {activeProjects.map((project) => {
+                    const sessions = visibleSessions
+                      .filter((s) => s.projectId === project.id)
+                      .sort(
+                        (a, b) => (b.startedAtMs ?? 0) - (a.startedAtMs ?? 0),
+                      );
+                    const open =
+                      expanded[project.id] ??
+                      props.selectedProjectId === project.id;
+                    const selected = props.selectedProjectId === project.id;
+                    const toggle = () =>
+                      setExpanded((old) => ({ ...old, [project.id]: !open }));
+                    return (
+                      <SidebarMenuItem key={project.id}>
+                        <div className="group/project relative">
+                          <SidebarMenuButton
+                            isActive={
+                              !notes && selected && !props.selectedSessionId
+                            }
+                            className="project-row pr-2"
+                            title={project.root_path}
+                            aria-expanded={open}
+                            aria-controls={`project-sessions-${project.id}`}
+                            aria-current={selected ? "page" : undefined}
+                            onClick={() => {
+                              toggle();
+                              selectProject(project.id);
+                            }}
+                          >
+                            <span className="size-4 shrink-0" />
+                            <span className="project-label min-w-0 flex-1 truncate text-left">
+                              {projectName(project)}
+                            </span>
+                            {navigation.projectColors[project.id] && (
+                              <span
+                                aria-label={`${navigation.projectColors[project.id]} project tag`}
+                                className="sr-only"
+                              />
+                            )}
+                            {!open && (
+                              <span className="project-indicator">
+                                <SessionStatus
+                                  attention={
+                                    !!props.pendingApprovals?.[project.id] ||
+                                    sessions.some(
+                                      (s) => props.attention?.[s.sessionId],
+                                    )
+                                  }
+                                  working={sessions.some(working)}
                                 />
-                              )}
-                              {sessions.some(working) && (
-                                <i
-                                  className="status-spinner"
-                                  role="img"
-                                  aria-label="Working"
-                                />
-                              )}
-                              {props.pendingApprovals?.[project.id] ||
-                              sessions.some(
-                                (s) => props.attention?.[s.sessionId],
-                              ) ? (
-                                <i
-                                  className="attention-dot"
-                                  role="img"
-                                  aria-label="Needs attention"
-                                />
-                              ) : null}
-                            </SidebarMenuButton>
-                            <CollapsibleTrigger asChild>
-                              <SidebarMenuAction
-                                className="left-2 bg-sidebar opacity-0 group-hover/project:opacity-100 group-focus-within/project:opacity-100 data-[state=open]:rotate-90"
-                                aria-label={`${open ? "Collapse" : "Expand"} ${projectName(project)}`}
-                              >
-                                <ChevronRight />
-                              </SidebarMenuAction>
-                            </CollapsibleTrigger>
+                              </span>
+                            )}
+                          </SidebarMenuButton>
+                          <button
+                            type="button"
+                            className="folder-toggle absolute top-0 left-1 flex h-8 w-6 items-center justify-center text-text-secondary hover:text-text"
+                            aria-label={`${open ? "Collapse" : "Expand"} ${projectName(project)}`}
+                            aria-expanded={open}
+                            aria-controls={`project-sessions-${project.id}`}
+                            onClick={toggle}
+                          >
+                            {open ? (
+                              <FolderOpenIcon className="size-4" />
+                            ) : (
+                              <FolderIcon className="size-4" />
+                            )}
+                          </button>
+                          <Dropdown native>
                             <SidebarMenuAction
-                              className="right-8 opacity-0 group-hover/project:opacity-100 group-focus-within/project:opacity-100"
-                              aria-label={`New session in ${projectName(project)}`}
-                              onClick={() => {
-                                props.onSelectProject(project.id);
-                                setExpanded((old) => ({
-                                  ...old,
-                                  [project.id]: true,
-                                }));
-                                window.dispatchEvent(
-                                  new CustomEvent(
-                                    "brigadier-new-project-session",
-                                    { detail: project.id },
-                                  ),
-                                );
-                                closeMobile();
-                              }}
+                              showOnHover
+                              className="right-7"
+                              aria-label={`Project actions ${projectName(project)}`}
+                              title="Project actions"
                             >
-                              <Plus />
+                              <MoreIcon />
                             </SidebarMenuAction>
-                            <DropdownMenu>
-                              <DropdownMenuTrigger asChild>
-                                <SidebarMenuAction
-                                  showOnHover
-                                  aria-label={`Project actions ${projectName(project)}`}
-                                >
-                                  <MoreHorizontal />
-                                </SidebarMenuAction>
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent
-                                className="w-56"
-                                side={isMobile ? "bottom" : "right"}
-                                align="start"
+                            <DropdownContent
+                              className="w-[280px]"
+                              side={isMobile ? "bottom" : "right"}
+                              align="start"
+                            >
+                              <Tooltip
+                                content={
+                                  pinnedProjects.includes(project.id)
+                                    ? "Unpin project"
+                                    : "Pin project"
+                                }
+                                className="w-full"
                               >
-                                <DropdownMenuItem
-                                  onSelect={() =>
-                                    setRenaming({
-                                      id: project.id,
-                                      name: projectName(project),
-                                    })
+                                <Dropdown.Item
+                                  nativeIcon={
+                                    <PinIcon
+                                      filled={pinnedProjects.includes(
+                                        project.id,
+                                      )}
+                                    />
+                                  }
+                                  onAction={() =>
+                                    setPinnedProjects((ids) =>
+                                      ids.includes(project.id)
+                                        ? ids.filter((id) => id !== project.id)
+                                        : [...ids, project.id],
+                                    )
                                   }
                                 >
-                                  <Pencil />
-                                  Rename
-                                </DropdownMenuItem>
-                                {props.onReveal && (
-                                  <DropdownMenuItem
-                                    onSelect={() =>
-                                      props.onReveal?.(project.root_path)
+                                  <PinIcon
+                                    filled={pinnedProjects.includes(project.id)}
+                                  />
+                                  {pinnedProjects.includes(project.id)
+                                    ? "Unpin"
+                                    : "Pin"}
+                                </Dropdown.Item>
+                              </Tooltip>
+                              <Dropdown.Item
+                                nativeIcon={<Settings />}
+                                onAction={() => {
+                                  setError("");
+                                  setRenaming({
+                                    id: project.id,
+                                    name: projectName(project),
+                                  });
+                                }}
+                              >
+                                <Settings />
+                                Edit
+                              </Dropdown.Item>
+                              <Dropdown.Item
+                                onAction={() => newSession(project.id)}
+                              >
+                                <EditIcon />
+                                New chat
+                              </Dropdown.Item>
+                              {props.onReveal && (
+                                <Dropdown.Item
+                                  onAction={() =>
+                                    props.onReveal?.(project.root_path)
+                                  }
+                                >
+                                  <FolderOpenIcon />
+                                  Reveal in Finder
+                                </Dropdown.Item>
+                              )}
+                              <Separator />
+                              <Dropdown.SubmenuTrigger>
+                                <Dropdown.Item>
+                                  <Tag />
+                                  Project tag
+                                  <ChevronRight className="ml-auto" />
+                                </Dropdown.Item>
+                                <DropdownContent className="w-48">
+                                  {projectTags.map((name) => (
+                                    <Dropdown.Item
+                                      key={name}
+                                      id={`color:${name}`}
+                                      textValue={`${name} tag`}
+                                      checked={
+                                        navigation.projectColors[project.id] ===
+                                        name
+                                      }
+                                      onAction={() =>
+                                        customize("color", project.id, name)
+                                      }
+                                    >
+                                      <span className="flex size-4 items-center">
+                                        {navigation.projectColors[
+                                          project.id
+                                        ] === name && <Check />}
+                                      </span>
+                                      {name} tag
+                                    </Dropdown.Item>
+                                  ))}
+                                  <Separator />
+                                  <Dropdown.Item
+                                    onAction={() =>
+                                      customize("color", project.id, null)
                                     }
                                   >
-                                    <Folder />
-                                    Reveal in Finder
-                                  </DropdownMenuItem>
-                                )}
-                                <DropdownMenuSeparator />
-                                <DropdownMenuLabel>
-                                  Project color
-                                </DropdownMenuLabel>
-                                <div className="flex gap-1 px-2 pb-2">
-                                  {Object.entries(colors).map(
-                                    ([name, color]) => (
-                                      <Button
-                                        key={name}
-                                        variant="ghost"
-                                        size="icon"
-                                        className="size-6 rounded-full"
-                                        aria-label={`${name} tag`}
-                                        aria-pressed={
-                                          navigation.projectColors[
-                                            project.id
-                                          ] === name
-                                        }
-                                        onClick={() =>
-                                          customize("color", project.id, name)
-                                        }
-                                      >
-                                        <span
-                                          className="size-3 rounded-full"
-                                          style={{ backgroundColor: color }}
-                                        />
-                                      </Button>
-                                    ),
-                                  )}
-                                </div>
-                                <DropdownMenuItem
-                                  onSelect={() =>
-                                    customize("color", project.id, null)
-                                  }
-                                >
-                                  No color
-                                </DropdownMenuItem>
-                                <DropdownMenuSeparator />
-                                <DropdownMenuItem
-                                  variant="destructive"
-                                  onSelect={() =>
-                                    void moveToTrash("project", project.id)
-                                  }
-                                >
-                                  <Trash2 />
-                                  Move to Trash
-                                </DropdownMenuItem>
-                              </DropdownMenuContent>
-                            </DropdownMenu>
-                          </>
-                        )}
-                        <CollapsibleContent>
+                                    <X />
+                                    No color
+                                  </Dropdown.Item>
+                                </DropdownContent>
+                              </Dropdown.SubmenuTrigger>
+                              <Separator />
+                              <Dropdown.Item
+                                nativeIcon={<X />}
+                                onAction={() =>
+                                  void moveToTrash("project", project.id)
+                                }
+                              >
+                                <X />
+                                Remove project
+                              </Dropdown.Item>
+                            </DropdownContent>
+                          </Dropdown>
+                          <SidebarMenuAction
+                            showOnHover
+                            aria-label={`New session in ${projectName(project)}`}
+                            title="New chat"
+                            onClick={() => newSession(project.id)}
+                          >
+                            <EditIcon />
+                          </SidebarMenuAction>
+                        </div>
+                        <SidebarReveal
+                          open={open}
+                          id={`project-sessions-${project.id}`}
+                        >
                           <SidebarMenuSub>
                             {(all.has(project.id)
                               ? sessions
                               : sessions.slice(0, 5)
-                            ).map((s) => sessionRow(s))}
+                            ).map(sessionRow)}
                             {sessions.length > 5 && (
                               <SidebarMenuSubItem>
-                                <SidebarMenuSubButton asChild>
-                                  <button
-                                    onClick={() =>
-                                      setAll((old) => {
-                                        const next = new Set(old);
-                                        if (next.has(project.id))
-                                          next.delete(project.id);
-                                        else next.add(project.id);
-                                        return next;
-                                      })
-                                    }
-                                  >
-                                    {all.has(project.id)
-                                      ? "Show less"
-                                      : `Show more (${sessions.length - 5})`}
-                                  </button>
+                                <SidebarMenuSubButton
+                                  onClick={() =>
+                                    setAll((old) => {
+                                      const next = new Set(old);
+                                      if (next.has(project.id))
+                                        next.delete(project.id);
+                                      else next.add(project.id);
+                                      return next;
+                                    })
+                                  }
+                                >
+                                  {all.has(project.id)
+                                    ? "Show less"
+                                    : `Show more (${sessions.length - 5})`}
                                 </SidebarMenuSubButton>
                               </SidebarMenuSubItem>
                             )}
                             {!sessions.length && (
-                              <li className="py-2 text-xs text-muted-foreground">
-                                No sessions yet
+                              <li className="flex h-8 items-center pl-8 text-text-disabled">
+                                No chats
                               </li>
                             )}
                           </SidebarMenuSub>
-                        </CollapsibleContent>
+                        </SidebarReveal>
                       </SidebarMenuItem>
-                    </Collapsible>
-                  );
-                })}
-              </SidebarMenu>
-            </SidebarGroupContent>
-            {!activeProjects.length && (
-              <p className="px-2 py-4 text-xs text-muted-foreground">
-                Add a project to get started.
-              </p>
-            )}
-            {error && addPath === null && (
-              <p role="alert" className="px-2 text-xs text-destructive">
-                {error}
-              </p>
-            )}
+                    );
+                  })}
+                </SidebarMenu>
+              </SidebarGroupContent>
+              {!activeProjects.length && (
+                <p className="px-3 py-2 text-text-disabled">
+                  Add a project to get started.
+                </p>
+              )}
+              {error && addPath === null && !renaming && (
+                <p role="alert" className="px-3 text-error">
+                  {error}
+                </p>
+              )}
+            </SidebarReveal>
           </SidebarGroup>
         </SidebarContent>
-        <SidebarFooter>
-          <SidebarMenu>
-            <SidebarMenuItem>
-              <SidebarMenuButton onClick={() => setSettings(true)}>
+        <SidebarFooter className="flex h-[46px] items-center gap-1 border-t border-hairline px-2 py-2">
+          <Dropdown>
+            <button
+              type="button"
+              className="flex h-[30px] min-w-0 items-center gap-2 rounded-md px-2 text-[14px] text-text hover:bg-selected"
+              aria-label={`Account: ${accountName}`}
+            >
+              <span className="flex size-[18px] shrink-0 items-center justify-center rounded-full bg-text-tertiary text-[9px] text-text">
+                {initials}
+              </span>
+              <span className="truncate">{accountName}</span>
+            </button>
+            <DropdownContent side="top" className="w-56">
+              <Dropdown.Item onAction={() => setSettings(true)}>
                 <Settings />
-                <span>Settings</span>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton
-                onClick={() => {
-                  setNoteId(undefined);
-                  setNotes(true);
-                }}
-              >
-                <FileText />
-                <span>Notes</span>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton onClick={() => setTrash(true)}>
+                Settings
+              </Dropdown.Item>
+              <Dropdown.Item onAction={() => setArchivedOpen(true)}>
+                <ArchiveIcon />
+                Archived chats
+              </Dropdown.Item>
+              <Separator />
+              <Dropdown.Item onAction={() => setTrash(true)}>
                 <Trash2 />
-                <span>Trash</span>
+                Trash
                 {navigation.trash.length > 0 && (
-                  <span className="ml-auto text-xs text-muted-foreground">
+                  <span className="ml-auto text-text-secondary">
                     {navigation.trash.length}
                   </span>
                 )}
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          </SidebarMenu>
+              </Dropdown.Item>
+            </DropdownContent>
+          </Dropdown>
+          <Button
+            isIconOnly
+            className="ml-auto size-7 text-text-secondary"
+            aria-label="Settings"
+            title="Settings"
+            onClick={() => setSettings(true)}
+          >
+            <Settings />
+          </Button>
         </SidebarFooter>
-        <SidebarRail />
       </SidebarPrimitive>
-      <CommandDialog
+      {renaming && (
+        <EditProjectDialog
+          name={renaming.name}
+          busy={busy}
+          error={error}
+          onNameChange={(name) => setRenaming({ ...renaming, name })}
+          onSave={() => void rename()}
+          onClose={() => {
+            if (!saving.current) {
+              setRenaming(null);
+              setError("");
+            }
+          }}
+          onRemove={() => {
+            const id = renaming.id;
+            setRenaming(null);
+            setError("");
+            void moveToTrash("project", id);
+          }}
+        />
+      )}
+      <Dialog open={archivedOpen} onOpenChange={setArchivedOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Archived chats</DialogTitle>
+            <DialogDescription>
+              Archived chats are hidden from this device’s sidebar. Their
+              history and running work are preserved.
+            </DialogDescription>
+          </DialogHeader>
+          <ul className="m-0 max-h-80 list-none overflow-y-auto p-0">
+            {activeSessions
+              .filter((s) => archivedIds.includes(s.sessionId))
+              .map((s) => (
+                <li key={s.sessionId} className="flex h-10 items-center gap-3">
+                  <span className="min-w-0 flex-1 truncate">
+                    {title(s.sessionId)}
+                  </span>
+                  <Button
+                    aria-label={`Restore ${title(s.sessionId)}`}
+                    onClick={() => setSessionArchived(s.sessionId, false)}
+                  >
+                    <ArchiveRestore />
+                    Restore
+                  </Button>
+                  <Button
+                    isIconOnly
+                    aria-label={`Move ${title(s.sessionId)} to Trash`}
+                    onClick={() => void moveToTrash("session", s.sessionId)}
+                  >
+                    <Trash2 />
+                  </Button>
+                </li>
+              ))}
+            {!activeSessions.some((s) => archivedIds.includes(s.sessionId)) && (
+              <li className="py-4 text-text-disabled">No archived chats</li>
+            )}
+          </ul>
+        </DialogContent>
+      </Dialog>
+      <SearchDialog
         open={search}
         onOpenChange={setSearch}
-        title="Search"
-        description="Find a project, session, or note by name."
-      >
-        <CommandInput placeholder="Search projects, sessions, notes…" />
-        <CommandList>
-          <CommandEmpty>No matches.</CommandEmpty>
-          <CommandGroup heading="Projects">
-            {activeProjects.map((p) => (
-              <CommandItem
-                key={p.id}
-                value={`project ${p.id} ${projectName(p)}`}
-                onSelect={() => {
-                  selectProject(p.id);
+        groups={[
+          {
+            label: "Navigation",
+            items: [
+              {
+                id: "new-chat",
+                search: "New chat",
+                content: (
+                  <>
+                    <EditIcon />
+                    <span>New chat</span>
+                    <Kbd className="ml-auto">
+                      {navigator.platform.startsWith("Mac") ? "⌘N" : "Ctrl N"}
+                    </Kbd>
+                  </>
+                ),
+                onSelect: () => {
                   setSearch(false);
-                }}
-              >
-                <Folder />
-                {projectName(p)}
-              </CommandItem>
-            ))}
-          </CommandGroup>
-          <CommandGroup heading="Sessions">
-            {activeSessions.map((s) => (
-              <CommandItem
-                key={s.sessionId}
-                value={`session ${s.sessionId} ${title(s.sessionId)} ${activeProjects.find((p) => p.id === s.projectId)?.name ?? ""}`}
-                onSelect={() => {
-                  selectSession(s.sessionId);
+                  startNewChat();
+                },
+              },
+              {
+                id: "notepad",
+                search: "Notepad notes",
+                content: (
+                  <>
+                    <NotesIcon />
+                    <span>Notepad</span>
+                  </>
+                ),
+                onSelect: () => {
                   setSearch(false);
-                }}
-              >
-                <FileText />
-                <span className="truncate">{title(s.sessionId)}</span>
-              </CommandItem>
-            ))}
-          </CommandGroup>
-          <CommandGroup heading="Notes">
-            {data.notes
+                  openNotepad();
+                },
+              },
+              {
+                id: "settings",
+                search: "Settings",
+                content: (
+                  <>
+                    <Settings />
+                    <span>Settings</span>
+                  </>
+                ),
+                onSelect: () => {
+                  setSearch(false);
+                  setSettings(true);
+                },
+              },
+            ],
+          },
+          {
+            label: "Projects",
+            items: activeProjects.map((p) => ({
+              id: `project:${p.id}`,
+              search: `${p.id} ${projectName(p)}`,
+              content: (
+                <>
+                  <FolderIcon />
+                  {projectName(p)}
+                </>
+              ),
+              onSelect: () => {
+                selectProject(p.id);
+                setSearch(false);
+              },
+            })),
+          },
+          {
+            label: "Sessions",
+            items: activeSessions.map((s) => ({
+              id: `session:${s.sessionId}`,
+              search: `${s.sessionId} ${title(s.sessionId)} ${activeProjects.find((p) => p.id === s.projectId)?.name ?? ""}`,
+              content: (
+                <>
+                  <EditIcon />
+                  <span className="truncate">{title(s.sessionId)}</span>
+                </>
+              ),
+              onSelect: () => {
+                selectSession(s.sessionId);
+                setSearch(false);
+              },
+            })),
+          },
+          {
+            label: "Notes",
+            items: data.notes
               .filter((n) => !isTrashed(navigation, "note", n.id))
-              .map((n) => (
-                <CommandItem
-                  key={n.id}
-                  value={`note ${n.id} ${n.title}`}
-                  onSelect={() => {
-                    setNoteId(n.id);
-                    setNotes(true);
-                    setSearch(false);
-                  }}
-                >
-                  <FileText />
-                  {n.title}
-                </CommandItem>
-              ))}
-          </CommandGroup>
-        </CommandList>
-      </CommandDialog>
+              .map((n) => ({
+                id: `note:${n.id}`,
+                search: `${n.id} ${n.title}`,
+                content: (
+                  <>
+                    <NotesIcon />
+                    {n.title}
+                  </>
+                ),
+                onSelect: () => {
+                  openNotepad(n.id);
+                  setSearch(false);
+                },
+              })),
+          },
+        ]}
+      />
+
       <Dialog
         open={addPath !== null}
         onOpenChange={(open) => {
@@ -892,7 +1208,7 @@ export function Sidebar(props: SidebarProps) {
               disabled={busy}
             />
             {error && (
-              <p role="alert" className="text-sm text-destructive">
+              <p role="alert" className="text-sm text-error">
                 {error}
               </p>
             )}
@@ -912,15 +1228,22 @@ export function Sidebar(props: SidebarProps) {
           onClose={() => setSettings(false)}
         />
       )}
-      {notes && (
-        <NotesLibrary
-          data={data}
-          navigation={navigation}
-          initialId={noteId}
-          onData={changed}
-          onClose={() => setNotes(false)}
-        />
-      )}
+      {notes &&
+        (() => {
+          const page = (
+            <NotesLibrary
+              ref={notepad}
+              data={data}
+              navigation={navigation}
+              initialId={noteId}
+              initialNew={newNote}
+              onData={changed}
+            />
+          );
+          return props.notepadHost
+            ? createPortal(page, props.notepadHost)
+            : page;
+        })()}
       {trash && (
         <TrashLibrary data={navigation} onClose={() => setTrash(false)} />
       )}

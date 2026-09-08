@@ -41,14 +41,16 @@ describe("chat controls", () => {
         searchable
       />,
     );
-    await user.click(screen.getByRole("button", { name: "Model" }));
+    await user.click(screen.getByRole("button", { name: /Model$/ }));
     await user.type(
-      screen.getByRole("textbox", { name: "Search model" }),
+      screen.getByRole("searchbox", { name: "Search model" }),
       "bet{Enter}",
     );
     expect(onChange).toHaveBeenCalledWith("b");
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Model" })).toHaveFocus();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /Model$/ })).toHaveFocus(),
+    );
   });
   it("retains a failed prompt, isolates project drafts, and clears after acceptance", async () => {
     const user = userEvent.setup();

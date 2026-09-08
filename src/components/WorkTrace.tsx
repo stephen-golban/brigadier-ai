@@ -1,15 +1,17 @@
+import { SearchIcon } from "./SearchIcon";
+import { ToolCall } from "./assistant-ui/elements/tool-call";
+import { Details, DetailsSummary } from "./controls/details";
 import {
-  ChainOfThoughtStep,
-  ChainOfThoughtTrigger,
-  ChainOfThoughtContent,
-} from "./prompt-kit/chain-of-thought";
-import { CircularLoader } from "./prompt-kit/loader";
-import { Button } from "./ui/button";
+  ReasoningRoot,
+  ReasoningTrigger,
+  ReasoningContent,
+} from "./assistant-ui/elements/reasoning";
+import { Spinner } from "./controls/status";
+import { Button } from "./controls/button";
 import { useState } from "react";
 import {
   TerminalIcon,
   BookOpenIcon,
-  MagnifyingGlassIcon,
   BrainIcon,
   PencilSimpleIcon,
   WrenchIcon,
@@ -48,37 +50,51 @@ export function WorkTrace({
         : seconds >= 60
           ? `${Math.floor(seconds / 60)}m ${seconds % 60}s`
           : `${seconds}s`;
+  const unfinished: TraceNode[] = [];
+  const inspect = (nodes: TraceNode[]) => {
+    for (const node of nodes) {
+      if (node.item.kind.type === "tool-call" && !node.result)
+        unfinished.push(node);
+      inspect(node.children);
+    }
+  };
+  if (row.running) inspect(row.nodes);
+  const currentAction = unfinished.sort((a, b) => a.item.at - b.item.at)[
+    unfinished.length - 1
+  ];
   const label = row.running
     ? "Working…"
     : duration
       ? `Worked for ${duration}`
       : "Worked";
   return (
-    <ChainOfThoughtStep
+    <ReasoningRoot
       open={open}
       onOpenChange={() => toggle(row.running ? `closed:${row.id}` : row.id)}
-      isLast
     >
-      <ChainOfThoughtTrigger
+      <ReasoningTrigger
         className="py-2"
-        leftIcon={row.running ? <CircularLoader size="sm" /> : undefined}
+        leftIcon={row.running ? <Spinner size="sm" /> : undefined}
       >
-        <span>{label}</span>{" "}
-        {row.failures > 0 && (
-          <span className="text-destructive text-xs">
-            {row.failures} failed
+        <span>{label}</span>
+        {currentAction && (
+          <span className="min-w-0 truncate text-xs text-text-secondary">
+            {conciseAction(currentAction.item)}
           </span>
+        )}{" "}
+        {row.failures > 0 && (
+          <span className="text-error text-xs">{row.failures} failed</span>
         )}
-      </ChainOfThoughtTrigger>
-      <ChainOfThoughtContent>
+      </ReasoningTrigger>
+      <ReasoningContent>
         <TraceList
           nodes={row.nodes}
           expanded={expanded}
           toggle={toggle}
           onFile={onFile}
         />
-      </ChainOfThoughtContent>
-    </ChainOfThoughtStep>
+      </ReasoningContent>
+    </ReasoningRoot>
   );
 }
 function TraceList({
@@ -126,29 +142,24 @@ function TraceList({
         const id = `batch:${first.item.id}`;
         const open = expanded.has(id);
         return (
-          <ChainOfThoughtStep
-            key={id}
-            open={open}
-            onOpenChange={() => toggle(id)}
-            isLast
-          >
-            <ChainOfThoughtTrigger className="py-1">
+          <ReasoningRoot key={id} open={open} onOpenChange={() => toggle(id)}>
+            <ReasoningTrigger className="py-1">
               <span>
                 {[...new Set(group.map((n) => traceLabel(n.item)))].join(", ")}
               </span>
               {group.some(traceFailed) && (
-                <span className="text-destructive text-xs">Failed</span>
+                <span className="text-error text-xs">Failed</span>
               )}
-            </ChainOfThoughtTrigger>
-            <ChainOfThoughtContent>
+            </ReasoningTrigger>
+            <ReasoningContent>
               <TraceBatch
                 nodes={group}
                 expanded={expanded}
                 toggle={toggle}
                 onFile={onFile}
               />
-            </ChainOfThoughtContent>
-          </ChainOfThoughtStep>
+            </ReasoningContent>
+          </ReasoningRoot>
         );
       })}
       {groups.length > limit && (
@@ -226,7 +237,7 @@ function TraceEntry({
           : category === "Edit files"
             ? PencilSimpleIcon
             : category.includes("earch")
-              ? MagnifyingGlassIcon
+              ? SearchIcon
               : WrenchIcon;
   if (item.kind.type === "assistant-text" && !children.length)
     return (
@@ -235,39 +246,54 @@ function TraceEntry({
         <CopyButton text={item.body} />
       </div>
     );
+  if (
+    item.kind.type === "tool-call" &&
+    !agent &&
+    !children.length &&
+    !updates.length
+  )
+    return (
+      <ToolCall
+        id={item.id}
+        label={label}
+        request={item.body}
+        result={result?.body}
+        failed={failed}
+        open={open}
+        onOpenChange={() => toggle(item.id)}
+        actions={<CopyButton text={result?.body ?? item.body} />}
+      />
+    );
   const textOnly =
     item.kind.type === "thinking" || item.kind.type === "assistant-text";
   return (
-    <ChainOfThoughtStep
+    <ReasoningRoot
       open={open}
       onOpenChange={() => toggle(item.id)}
-      isLast
       data-trace-id={item.id}
     >
-      <ChainOfThoughtTrigger
+      <ReasoningTrigger
         className="w-full py-1 [&>div]:min-w-0 [&>div>span:last-child]:truncate"
         leftIcon={<Icon size={15} />}
       >
         <span title={label}>{label}</span>{" "}
-        {failed ? (
-          <span className="text-destructive text-xs">Failed</span>
-        ) : null}{" "}
+        {failed ? <span className="text-error text-xs">Failed</span> : null}{" "}
         {agent && updates.length > 0 && (
-          <span className="text-xs text-muted-foreground">
+          <span className="text-xs text-text-secondary">
             {updates.length} updates
           </span>
         )}
-      </ChainOfThoughtTrigger>
-      <ChainOfThoughtContent>
+      </ReasoningTrigger>
+      <ReasoningContent>
         {textOnly ? (
           <Markdown text={item.body} onFile={onFile} />
         ) : agent ? (
-          <details className="rounded-lg border border-border bg-card p-3 text-xs [&_pre]:max-h-80 [&_pre]:overflow-auto [&_pre]:whitespace-pre-wrap [&_pre]:break-words">
-            <summary>Task details</summary>
+          <Details className="rounded-lg border border-hairline bg-elevated p-3 text-xs [&_pre]:max-h-80 [&_pre]:overflow-auto [&_pre]:whitespace-pre-wrap [&_pre]:break-words">
+            <DetailsSummary>Task details</DetailsSummary>
             <pre>{item.body}</pre>
-          </details>
+          </Details>
         ) : (
-          <div className="rounded-lg border border-border bg-card p-3 text-xs [&_pre]:max-h-80 [&_pre]:overflow-auto [&_pre]:whitespace-pre-wrap [&_pre]:break-words">
+          <div className="rounded-lg border border-hairline bg-elevated p-3 text-xs [&_pre]:max-h-80 [&_pre]:overflow-auto [&_pre]:whitespace-pre-wrap [&_pre]:break-words">
             <pre>{item.body}</pre>
           </div>
         )}
@@ -287,14 +313,14 @@ function TraceEntry({
           />
         )}
         {result && (
-          <div className="rounded-lg border border-border bg-card p-3 text-xs [&_pre]:max-h-80 [&_pre]:overflow-auto [&_pre]:whitespace-pre-wrap [&_pre]:break-words">
+          <div className="rounded-lg border border-hairline bg-elevated p-3 text-xs [&_pre]:max-h-80 [&_pre]:overflow-auto [&_pre]:whitespace-pre-wrap [&_pre]:break-words">
             <span>{failed ? "Error" : "Output"}</span>
             <pre>{result.body}</pre>
             <CopyButton text={result.body} />
           </div>
         )}
-      </ChainOfThoughtContent>
-    </ChainOfThoughtStep>
+      </ReasoningContent>
+    </ReasoningRoot>
   );
 }
 

@@ -456,6 +456,8 @@ pub struct Resumed {
 pub struct ResumeSession {
     /// Provider resume token, from `SessionStarted.resume_token`.
     pub token: String,
+    /// Branch the provider conversation into a new provider session.
+    pub fork: bool,
     /// The harness row this resume continues. `None` mints a fresh session id and starts the
     /// envelope numbering at zero, which is what a caller with no store behind it wants.
     pub resumed: Option<Resumed>,
@@ -487,6 +489,7 @@ impl ResumeSession {
         let base = StartSession::new(cwd);
         Self {
             token: token.into(),
+            fork: false,
             resumed: None,
             cwd: base.cwd,
             prompt: base.prompt,

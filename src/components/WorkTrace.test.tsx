@@ -17,9 +17,15 @@ const item = (
   body: string,
   parent_id: string | null = null,
 ): ChatItem => ({ id, kind, body, parent_id, session_id: "s", seq: 0, at: 0 });
-function Harness({ items }: { items: ChatItem[] }) {
+function Harness({
+  items,
+  running = false,
+}: {
+  items: ChatItem[];
+  running?: boolean;
+}) {
   const [expanded, setExpanded] = useState(new Set<string>());
-  const row = projectThread(items, false)[0] as Extract<
+  const row = projectThread(items, running)[0] as Extract<
     ThreadRow,
     { type: "work" }
   >;
@@ -133,4 +139,37 @@ describe("work disclosure", () => {
       screen.getAllByRole("button", { name: /^Ran command \d+/ }),
     ).toHaveLength(80);
   });
+});
+
+it("keeps the current action visible when live activity is collapsed", async () => {
+  const user = userEvent.setup();
+  const call = item(
+    "live",
+    { type: "tool-call", name: "Bash" },
+    "npm run build",
+  );
+  const view = render(<Harness items={[call]} running />);
+  const header = screen.getByRole("button", {
+    name: /Working.*Ran npm run build/,
+  });
+  expect(header).toHaveAttribute("aria-expanded", "true");
+  await user.click(header);
+  expect(header).toHaveAttribute("aria-expanded", "false");
+  expect(header).toHaveTextContent("Ran npm run build");
+  view.rerender(
+    <Harness
+      items={[
+        call,
+        item(
+          "done",
+          { type: "tool-result", tool_call_id: "live", is_error: false },
+          "Built successfully",
+        ),
+      ]}
+    />,
+  );
+  expect(screen.getByRole("button", { name: "Worked" })).toHaveAttribute(
+    "aria-expanded",
+    "false",
+  );
 });

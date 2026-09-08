@@ -33,7 +33,12 @@ import type { IntentSettlement, IntentView, PhaseView, RunView } from "./wire";
 /* --------------------------------------------------------------- fixtures */
 
 const h = vi.hoisted(() => ({
-  projects: [] as Array<{ id: string; name: string; root_path: string; created_at_ms: number }>,
+  projects: [] as Array<{
+    id: string;
+    name: string;
+    root_path: string;
+    created_at_ms: number;
+  }>,
   /** What `current_run` answers, per project id. */
   runs: {} as Record<string, unknown>,
   intents: [] as unknown[],
@@ -122,7 +127,8 @@ vi.mock("./bridge", async (importOriginal) => {
       h.stopped.push(planId);
       for (const [id, r] of Object.entries(h.runs)) {
         const view = r as RunView;
-        if (view.plan_id === planId) h.runs[id] = { ...view, status: "abandoned" };
+        if (view.plan_id === planId)
+          h.runs[id] = { ...view, status: "abandoned" };
       }
     },
     async unsettledIntents() {
@@ -130,7 +136,9 @@ vi.mock("./bridge", async (importOriginal) => {
     },
     async settleIntent(intentId: string, state: IntentSettlement) {
       h.settled.push({ intentId, state });
-      h.intents = h.intents.filter((i) => (i as IntentView).intent_id !== intentId);
+      h.intents = h.intents.filter(
+        (i) => (i as IntentView).intent_id !== intentId,
+      );
     },
     async reportPaint() {},
     async recordFrameStats() {},
@@ -140,7 +148,12 @@ vi.mock("./bridge", async (importOriginal) => {
 });
 
 function project(id: string, name: string) {
-  return { id, name, root_path: `/repos/${name}`, created_at_ms: 1_700_000_000_000 };
+  return {
+    id,
+    name,
+    root_path: `/repos/${name}`,
+    created_at_ms: 1_700_000_000_000,
+  };
 }
 
 function phase(over: Partial<PhaseView> = {}): PhaseView {
@@ -219,8 +232,10 @@ describe("automation history stays out of chat", () => {
     h.runs["p-live"] = run({ status: "abandoned" });
     await mountApp();
     const history = await screen.findByText("Automation history");
-    expect(history.closest("details")).not.toHaveAttribute("open");
-    expect(screen.getByRole("region", { name: "the run" })).not.toBeVisible();
+    expect(history.closest("button")).toHaveAttribute("aria-expanded", "false");
+    expect(
+      screen.queryByRole("region", { name: "the run" }),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText("Stop automation")).not.toBeInTheDocument();
     await userEvent.click(history);
     expect(screen.getByRole("region", { name: "the run" })).toBeVisible();
@@ -229,9 +244,13 @@ describe("automation history stays out of chat", () => {
   it("keeps a stop action for a real live automation without replacing chat", async () => {
     h.runs["p-live"] = run();
     await mountApp();
-    await userEvent.click(await screen.findByRole("button", { name: "Stop automation" }));
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Stop automation" }),
+    );
     expect(h.stopped).toEqual(["pl-1"]);
-    await userEvent.click(screen.getAllByRole("button", { name: "New session" })[0]!);
+    await userEvent.click(
+      screen.getAllByRole("button", { name: "New session" })[0]!,
+    );
     expect(screen.getByRole("button", { name: "Start" })).toBeInTheDocument();
   });
   it("shows no automation history for a new project", async () => {

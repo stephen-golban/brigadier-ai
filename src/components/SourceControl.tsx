@@ -1,3 +1,6 @@
+import { MoreIcon } from "./NavigationIcons";
+import { Checkbox } from "./controls/checkbox";
+import { DropdownContent } from "./controls/menu";
 import { useEffect, useId, useState, type ReactNode } from "react";
 import {
   CaretDownIcon,
@@ -9,7 +12,6 @@ import {
   ArrowCounterClockwiseIcon,
   SparkleIcon,
   CheckIcon,
-  DotsThreeIcon,
   FileIcon,
   GitBranchIcon,
   ArrowClockwiseIcon,
@@ -30,40 +32,29 @@ import {
 import type { ModelInfo } from "../wire";
 import { SelectMenu } from "./SelectMenu";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
-import { Button } from "./ui/button";
-import { ButtonGroup } from "./ui/button-group";
-import { Input } from "./ui/input";
+import { Button } from "./controls/button";
+import { ButtonGroup } from "./controls/button-group";
+import { Input } from "./controls/input";
 import {
   InputGroup,
   InputGroupAddon,
   InputGroupButton,
   InputGroupTextarea,
-} from "./ui/input-group";
-import { Item, ItemActions, ItemGroup } from "./ui/item";
+} from "./controls/input-group";
+import { Item, ItemActions, ItemGroup } from "./controls/item";
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
-} from "./ui/collapsible";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
-  DropdownMenuTrigger,
-} from "./ui/dropdown-menu";
+} from "./controls/collapsible";
+import { Dropdown, Header, Separator } from "./controls/overlay";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogHeader,
   DialogTitle,
-} from "./ui/dialog";
-import "./SourceControl.css";
+} from "./controls/dialog";
 export function CommitPreferences({
   data,
   projectId,
@@ -87,30 +78,28 @@ export function CommitPreferences({
       .then(changed)
       .catch((e) => setError(errorMessage(e)));
   return (
-    <div className="commit-preferences">
+    <div className="commit-preferences flex flex-col gap-3 [&_label]:flex [&_label]:flex-col [&_label]:gap-2">
       <div className="segmented">
-        <button
+        <Button
           aria-pressed={scope === "global"}
           onClick={() => setScope("global")}
         >
           Global defaults
-        </button>
-        <button
+        </Button>
+        <Button
           aria-pressed={scope === "project"}
           onClick={() => setScope("project")}
         >
           This project
-        </button>
+        </Button>
       </div>
       {scope === "project" && (
-        <label>
-          <input
-            type="checkbox"
-            checked={!override}
-            onChange={(e) => save(e.target.checked ? null : { ...data.global })}
-          />
+        <Checkbox
+          checked={!override}
+          onCheckedChange={(e) => save(e ? null : { ...data.global })}
+        >
           Use global defaults
-        </label>
+        </Checkbox>
       )}
       <fieldset disabled={scope === "project" && !override}>
         <SelectMenu
@@ -128,43 +117,39 @@ export function CommitPreferences({
           ]}
           onChange={(model) => save({ ...settings, model })}
         />
-        <label>
-          <input
-            type="checkbox"
-            checked={settings.coAuthor}
-            onChange={(e) => save({ ...settings, coAuthor: e.target.checked })}
-          />
+        <Checkbox
+          checked={settings.coAuthor}
+          onCheckedChange={(e) => save({ ...settings, coAuthor: e })}
+        >
           Include “Co-authored-by”
-        </label>
-        <label>
-          <input
-            type="checkbox"
-            checked={settings.smartCommit}
-            onChange={(e) =>
-              save({ ...settings, smartCommit: e.target.checked })
-            }
-          />
+        </Checkbox>
+        <Checkbox
+          checked={settings.smartCommit}
+          onCheckedChange={(e) => save({ ...settings, smartCommit: e })}
+        >
           Smart commit when nothing is staged
-        </label>
+        </Checkbox>
         <label>
           Untracked files
-          <select
+          <SelectMenu
+            label="Untracked files"
             value={settings.untracked}
-            onChange={(e) =>
+            onChange={(value) =>
               save({
                 ...settings,
-                untracked: e.target.value as CommitSettings["untracked"],
+                untracked: value as CommitSettings["untracked"],
               })
             }
-          >
-            <option value="mixed">With Changes</option>
-            <option value="separate">Separate group</option>
-            <option value="hidden">Hidden</option>
-          </select>
+            options={[
+              { value: "mixed", label: "With Changes" },
+              { value: "separate", label: "Separate group" },
+              { value: "hidden", label: "Hidden" },
+            ]}
+          />
         </label>
       </fieldset>
       {error && (
-        <p role="alert" className="inline-error">
+        <p role="alert" className="inline-error my-2 text-[13px] text-error">
           {error}
         </p>
       )}
@@ -294,16 +279,14 @@ export function SourceControl({
         body: (
           <>
             <p>Stage all changes and commit them?</p>
-            <label>
-              <input
-                type="checkbox"
-                onChange={(e) => {
-                  always = e.target.checked;
-                }}
-              />
+            <Checkbox
+              onCheckedChange={(e) => {
+                always = e;
+              }}
+            >
               Always stage changes when nothing is staged
-            </label>
-            <button
+            </Checkbox>
+            <Button
               className="act"
               onClick={() => {
                 void workbenchApi
@@ -316,7 +299,7 @@ export function SourceControl({
               }}
             >
               Never ask again
-            </button>
+            </Button>
           </>
         ),
         confirmLabel: "Yes, commit all",
@@ -364,12 +347,15 @@ export function SourceControl({
       : []),
   ];
   return (
-    <section className="source-control scm-panel" aria-label="Source Control">
-      <header className="scm-header">
+    <section
+      className="source-control scm-panel flex min-h-0 flex-1 flex-col bg-canvas text-text"
+      aria-label="Source Control"
+    >
+      <header className="scm-header flex h-9 shrink-0 items-center gap-1 px-2">
         <Button
           variant="ghost"
           size="sm"
-          className="scm-branch"
+          className="scm-branch min-w-0 flex-1 justify-start text-text-secondary"
           title={status?.branch ?? "Repository"}
           onClick={() => setGitDialog("branch")}
         >
@@ -388,91 +374,86 @@ export function SourceControl({
         <Button
           variant="ghost"
           size="icon"
-          className="scm-icon"
+          className="scm-icon size-8 p-0 text-text-secondary"
           title="Refresh"
           aria-label="Refresh"
           onClick={refresh}
         >
           <ArrowClockwiseIcon />
         </Button>
-        <DropdownMenu open={menu} onOpenChange={setMenu}>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="scm-icon"
-              aria-label="Git actions"
-              title="Git actions"
-            >
-              <DotsThreeIcon />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="scm-menu">
-            <DropdownMenuLabel>Repository</DropdownMenuLabel>
+        <Dropdown isOpen={menu} onOpenChange={setMenu}>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="scm-icon size-8 p-0 text-text-secondary"
+            aria-label="Git actions"
+            title="Git actions"
+          >
+            <MoreIcon />
+          </Button>
+
+          <DropdownContent align="end" className="scm-menu">
+            <Dropdown.Section>
+              <Header>Repository</Header>
+            </Dropdown.Section>
             {(["fetch", "pull", "push", "sync"] as const).map((action) => (
-              <DropdownMenuItem
+              <Dropdown.Item
                 key={action}
-                disabled={busy}
-                onSelect={() => void run({ action })}
+                isDisabled={busy}
+                onAction={() => void run({ action })}
               >
                 {action[0]!.toUpperCase() + action.slice(1)}
-              </DropdownMenuItem>
+              </Dropdown.Item>
             ))}
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger disabled={busy}>
-                Publish branch
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent className="scm-menu">
+            <Dropdown.SubmenuTrigger>
+              <Dropdown.Item isDisabled={busy}>Publish branch</Dropdown.Item>
+              <DropdownContent className="scm-menu">
                 {(details?.remotes.length ? details.remotes : ["origin"]).map(
                   (remote) => (
-                    <DropdownMenuItem
+                    <Dropdown.Item
                       key={remote}
-                      onSelect={() =>
+                      onAction={() =>
                         void run({ action: "publish", reference: remote })
                       }
                     >
                       {remote}
-                    </DropdownMenuItem>
+                    </Dropdown.Item>
                   ),
                 )}
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={() => setGitDialog("branch")}>
+              </DropdownContent>
+            </Dropdown.SubmenuTrigger>
+            <Separator />
+            <Dropdown.Item onAction={() => setGitDialog("branch")}>
               <GitBranchIcon />
               Branches and references…
-            </DropdownMenuItem>
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger disabled={busy}>
-                Stashes
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent className="scm-menu">
-                <DropdownMenuItem
-                  onSelect={() => void run({ action: "stash" })}
-                >
+            </Dropdown.Item>
+            <Dropdown.SubmenuTrigger>
+              <Dropdown.Item isDisabled={busy}>Stashes</Dropdown.Item>
+              <DropdownContent className="scm-menu">
+                <Dropdown.Item onAction={() => void run({ action: "stash" })}>
                   Stash changes
-                </DropdownMenuItem>
-                {!!details?.stashes.length && <DropdownMenuSeparator />}
+                </Dropdown.Item>
+                {!!details?.stashes.length && <Separator />}
                 {details?.stashes.map((stash) => (
-                  <DropdownMenuSub key={stash}>
-                    <DropdownMenuSubTrigger
+                  <Dropdown.SubmenuTrigger key={stash}>
+                    <Dropdown.Item
                       className="scm-stash-label"
-                      title={stash}
+                      textValue={stash}
                     >
                       {stash}
-                    </DropdownMenuSubTrigger>
-                    <DropdownMenuSubContent className="scm-menu">
+                    </Dropdown.Item>
+                    <DropdownContent className="scm-menu">
                       {[
                         ["stash_apply", "Apply"],
                         ["stash_pop", "Pop"],
                         ["stash_drop", "Drop"],
                       ].map(([action, label]) => (
-                        <DropdownMenuItem
+                        <Dropdown.Item
                           key={action}
                           variant={
-                            action === "stash_drop" ? "destructive" : "default"
+                            action === "stash_drop" ? "danger" : "default"
                           }
-                          onSelect={() =>
+                          onAction={() =>
                             action === "stash_drop"
                               ? ask("Drop stash", `Remove ${stash}?`, {
                                   action,
@@ -485,20 +466,20 @@ export function SourceControl({
                           }
                         >
                           {label}
-                        </DropdownMenuItem>
+                        </Dropdown.Item>
                       ))}
-                    </DropdownMenuSubContent>
-                  </DropdownMenuSub>
+                    </DropdownContent>
+                  </Dropdown.SubmenuTrigger>
                 ))}
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-            <DropdownMenuItem onSelect={() => setGitDialog("history")}>
+              </DropdownContent>
+            </Dropdown.SubmenuTrigger>
+            <Dropdown.Item onAction={() => setGitDialog("history")}>
               <ClockCounterClockwiseIcon />
               Source Control history
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              disabled={busy}
-              onSelect={() =>
+            </Dropdown.Item>
+            <Dropdown.Item
+              isDisabled={busy}
+              onAction={() =>
                 ask(
                   "Undo last commit",
                   "Keep the last commit’s changes staged and remove that commit from this branch?",
@@ -508,23 +489,26 @@ export function SourceControl({
             >
               <ArrowCounterClockwiseIcon />
               Undo Last Commit
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={() => setPrefs(true)}>
+            </Dropdown.Item>
+            <Separator />
+            <Dropdown.Item onAction={() => setPrefs(true)}>
               <GearSixIcon />
               Commit settings
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+            </Dropdown.Item>
+          </DropdownContent>
+        </Dropdown>
       </header>
 
-      <div className="scm-scroll" aria-label="Changed files">
+      <div
+        className="scm-scroll min-h-0 flex-1 overflow-y-auto p-2"
+        aria-label="Changed files"
+      >
         {status === null ? (
-          <div className="scm-empty" role="status">
+          <div className="scm-empty p-3 text-text-disabled" role="status">
             Loading changes…
           </div>
         ) : status.changes.length === 0 ? (
-          <div className="scm-empty">
+          <div className="scm-empty p-3 text-text-disabled">
             <CheckIcon size={24} />
             <strong>No pending changes</strong>
             <span>Your working tree is clean.</span>
@@ -558,19 +542,21 @@ export function SourceControl({
                 }
               }}
             >
-              <div className="scm-group-heading">
+              <div className="scm-group-heading flex items-center gap-1">
                 <CollapsibleTrigger
-                  className="scm-group-toggle"
+                  className="scm-group-toggle min-w-0 flex-1 justify-start text-text-secondary"
                   aria-label={group.name}
                 >
                   <CaretRightIcon className="scm-disclosure" />
                   <span>{group.name}</span>
-                  <span className="scm-count">{group.changes.length}</span>
+                  <span className="scm-count ml-auto text-xs text-text-tertiary">
+                    {group.changes.length}
+                  </span>
                 </CollapsibleTrigger>
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="scm-icon"
+                  className="scm-icon size-8 p-0 text-text-secondary"
                   disabled={busy || !group.changes.length}
                   aria-label={
                     group.staged ? "Unstage all changes" : "Stage all changes"
@@ -602,7 +588,7 @@ export function SourceControl({
                         key={change.path}
                         role="listitem"
                         size="sm"
-                        className="scm-file-row"
+                        className="scm-file-row flex min-w-0 items-center gap-1 rounded-md"
                         draggable={!busy}
                         onDragStart={(e) =>
                           e.dataTransfer.setData(
@@ -614,8 +600,8 @@ export function SourceControl({
                           )
                         }
                       >
-                        <button
-                          className="scm-file-open"
+                        <Button
+                          className="scm-file-open min-w-0 flex-1 justify-start"
                           title={change.path}
                           onClick={() =>
                             onOpen(change.path, "diff", group.staged)
@@ -626,15 +612,17 @@ export function SourceControl({
                           }}
                         >
                           <FileIcon className="scm-file-icon" />
-                          <span className="scm-file-name">
+                          <span className="scm-file-name min-w-0 truncate">
                             {change.path.split("/").pop()}
                           </span>
                           {directory && (
-                            <span className="scm-file-path">{directory}</span>
+                            <span className="scm-file-path min-w-0 truncate text-xs text-text-tertiary">
+                              {directory}
+                            </span>
                           )}
-                        </button>
+                        </Button>
                         <span
-                          className="scm-file-status"
+                          className="scm-file-status text-xs text-text-secondary"
                           data-status={code}
                           title={statusLabel(code)}
                         >
@@ -644,7 +632,7 @@ export function SourceControl({
                           <Button
                             variant="ghost"
                             size="icon"
-                            className="scm-icon"
+                            className="scm-icon size-8 p-0 text-text-secondary"
                             disabled={busy}
                             aria-label={`${group.staged ? "Unstage" : "Stage"} ${change.path}`}
                             title={group.staged ? "Unstage" : "Stage"}
@@ -661,7 +649,7 @@ export function SourceControl({
                             <Button
                               variant="ghost"
                               size="icon"
-                              className="scm-icon"
+                              className="scm-icon size-8 p-0 text-text-secondary"
                               disabled={busy}
                               aria-label={`Discard ${change.path}`}
                               title="Discard changes"
@@ -682,7 +670,7 @@ export function SourceControl({
                   })}
                 </ItemGroup>
                 {!group.changes.length && (
-                  <p className="scm-group-empty">
+                  <p className="scm-group-empty p-3 text-text-disabled">
                     {group.staged
                       ? "No staged changes"
                       : "No changes in this group"}
@@ -695,18 +683,18 @@ export function SourceControl({
         {children}
       </div>
 
-      <footer className="scm-composer">
+      <footer className="scm-composer shrink-0 bg-input-shell p-3">
         {error && (
-          <p className="scm-error" role="alert">
+          <p className="scm-error my-2 text-error" role="alert">
             {error}
           </p>
         )}
-        <div className="scm-composer-heading">
+        <div className="scm-composer-heading mb-2 flex items-center justify-between text-text-secondary">
           <label htmlFor={messageId}>Commit message</label>
           <Button
             variant="ghost"
             size="icon"
-            className="scm-icon"
+            className="scm-icon size-8 p-0 text-text-secondary"
             aria-label="Commit settings"
             title="Commit settings"
             onClick={() => setPrefs(true)}
@@ -721,7 +709,7 @@ export function SourceControl({
             placeholder="Describe your changes…"
             value={message}
             rows={3}
-            className="scm-message"
+            className="scm-message w-full resize-y"
             onChange={(e) => setMessage(e.target.value)}
             onKeyDown={(e) => {
               if (
@@ -736,7 +724,10 @@ export function SourceControl({
               }
             }}
           />
-          <InputGroupAddon align="block-end" className="scm-message-toolbar">
+          <InputGroupAddon
+            align="block-end"
+            className="scm-message-toolbar justify-between text-text-secondary"
+          >
             <InputGroupButton
               disabled={busy || !staged.length}
               aria-label="Generate commit message"
@@ -761,41 +752,43 @@ export function SourceControl({
             <span className="scm-staged-count">{staged.length} staged</span>
           </InputGroupAddon>
         </InputGroup>
-        <ButtonGroup className="scm-commit-buttons" aria-label="Commit actions">
+        <ButtonGroup
+          className="scm-commit-buttons mt-2 flex w-full"
+          aria-label="Commit actions"
+        >
           <Button
-            className="scm-commit"
+            className="scm-commit flex-1 bg-selected"
             disabled={busy || !message.trim() || !status?.changes.length}
             onClick={() => commit()}
           >
             <CheckIcon />
             {busy ? "Working…" : "Commit"}
           </Button>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                className="scm-commit-options"
-                size="icon"
-                aria-label="Commit options"
-                disabled={busy || !message.trim()}
-              >
-                <CaretDownIcon />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent side="top" align="end" className="scm-menu">
-              <DropdownMenuItem
-                disabled={!message.trim() || !status?.changes.length}
-                onSelect={() => commit("commit_all")}
+          <Dropdown>
+            <Button
+              className="scm-commit-options"
+              size="icon"
+              aria-label="Commit options"
+              disabled={busy || !message.trim()}
+            >
+              <CaretDownIcon />
+            </Button>
+
+            <DropdownContent side="top" align="end" className="scm-menu">
+              <Dropdown.Item
+                isDisabled={!message.trim() || !status?.changes.length}
+                onAction={() => commit("commit_all")}
               >
                 Commit All
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                disabled={!message.trim()}
-                onSelect={() => commit("amend")}
+              </Dropdown.Item>
+              <Dropdown.Item
+                isDisabled={!message.trim()}
+                onAction={() => commit("amend")}
               >
                 Commit (Amend)
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+              </Dropdown.Item>
+            </DropdownContent>
+          </Dropdown>
         </ButtonGroup>
       </footer>
 
@@ -835,12 +828,12 @@ export function SourceControl({
             </DialogDescription>
           </DialogHeader>
           {gitDialog === "history" ? (
-            <pre className="scm-history">
+            <pre className="scm-history max-h-96 overflow-auto whitespace-pre-wrap text-text-secondary">
               {details?.history ||
                 (details ? "No commits yet" : "Loading history…")}
             </pre>
           ) : (
-            <div className="scm-branch-controls">
+            <div className="scm-branch-controls flex flex-col gap-3">
               <label htmlFor={referenceId}>Branch / reference</label>
               <Input
                 id={referenceId}
@@ -854,7 +847,7 @@ export function SourceControl({
                   <option key={branch} value={branch} />
                 ))}
               </datalist>
-              <div className="scm-branch-actions">
+              <div className="scm-branch-actions flex flex-wrap gap-2">
                 {[
                   ["checkout", "Checkout"],
                   ["branch", "Create branch"],
@@ -875,7 +868,7 @@ export function SourceControl({
                   </Button>
                 ))}
               </div>
-              <div className="scm-branch-actions">
+              <div className="scm-branch-actions flex flex-wrap gap-2">
                 {[
                   ["merge_abort", "Abort merge"],
                   ["rebase_abort", "Abort rebase"],
@@ -895,7 +888,7 @@ export function SourceControl({
             </div>
           )}
           {error && (
-            <p className="scm-error" role="alert">
+            <p className="scm-error my-2 text-error" role="alert">
               {error}
             </p>
           )}

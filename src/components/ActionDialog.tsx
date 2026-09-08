@@ -6,8 +6,8 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "./ui/dialog";
-import { Button } from "./ui/button";
+} from "./controls/dialog";
+import { Button } from "./controls/button";
 import { errorMessage } from "../workspaceApi";
 export interface PendingAction {
   title: string;
@@ -45,7 +45,7 @@ export function ActionDialog({
           </DialogDescription>
         </DialogHeader>
         {error && (
-          <p role="alert" className="text-sm text-destructive">
+          <p role="alert" className="text-sm text-error">
             {error}
           </p>
         )}

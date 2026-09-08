@@ -1,3 +1,7 @@
+import { ApprovalCard as ApprovalElement } from "./assistant-ui/elements/approval-card";
+import { Checkbox } from "./controls/checkbox";
+import { Input } from "./controls/input";
+import { Button } from "./controls/button";
 /**
  * The approval prompts.
  *
@@ -15,11 +19,8 @@
  * that does not decode. Such a row cannot be shown and must not be allowed blind, so it renders
  * read-only with Deny as the only answer.
  *
- * The panel is **never filtered by the selected project**. A webview reload resets the selection
- * to the first project, so filtering here hid a still-answerable prompt that belonged to another
- * project and made a live approval look like data loss (`docs/research/approvals.md` §7 gap 7).
- * Each card names its own project instead, an approval outside the current selection is marked,
- * and clicking one jumps the window to it.
+ * App places the selected session's requests inside its assistant-ui thread. Other sessions
+ * retain their attention dots until their requests are answered.
  */
 import { useState } from "react";
 import type { MouseEvent } from "react";
@@ -47,17 +48,26 @@ export interface ApprovalRow {
 
 export interface ApprovalsProps {
   approvals: ApprovalRow[];
-  onRespond: (sessionId: SessionId, requestId: RequestId, decision: Decision) => void;
+  onRespond: (
+    sessionId: SessionId,
+    requestId: RequestId,
+    decision: Decision,
+  ) => void;
   onDismiss: (requestId: RequestId) => void;
   /** Select the approval's session (and its project). Omitted, cards are not clickable. */
   onFocus?: (projectId: ProjectId | null, sessionId: SessionId) => void;
 }
 
-export function Approvals({ approvals, onRespond, onDismiss, onFocus }: ApprovalsProps) {
+export function Approvals({
+  approvals,
+  onRespond,
+  onDismiss,
+  onFocus,
+}: ApprovalsProps) {
   const elsewhere = approvals.filter((r) => r.elsewhere).length;
   return (
-    <section className="approvals" hidden={approvals.length === 0}>
-      <div className="approvals-head">
+    <section className="approvals mx-auto my-3 w-full max-w-[780px]" hidden={approvals.length === 0}>
+      <div className="approvals-head text-[13px] text-warn">
         <span>
           Waiting on you · {approvals.length} open
           {elsewhere > 0 ? ` · ${elsewhere} in other projects` : ""}
@@ -80,7 +90,11 @@ export function Approvals({ approvals, onRespond, onDismiss, onFocus }: Approval
 
 interface CardProps {
   row: ApprovalRow;
-  onRespond: (sessionId: SessionId, requestId: RequestId, decision: Decision) => void;
+  onRespond: (
+    sessionId: SessionId,
+    requestId: RequestId,
+    decision: Decision,
+  ) => void;
   onDismiss: (requestId: RequestId) => void;
   onFocus?: (projectId: ProjectId | null, sessionId: SessionId) => void;
 }
@@ -110,7 +124,9 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
       type: "allow",
       updated_input: null,
       // Echoed back verbatim; the harness never interprets a provider suggestion.
-      updated_permissions: [...applied].sort((a, b) => a - b).map((i) => suggestions[i]),
+      updated_permissions: [...applied]
+        .sort((a, b) => a - b)
+        .map((i) => suggestions[i]),
     });
   };
 
@@ -131,33 +147,41 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
   const focus = (e: MouseEvent<HTMLElement>) => {
     if (onFocus === undefined) return;
     const t = e.target;
-    if (t instanceof Element && t.closest("button, input, textarea, label") !== null) return;
+    if (
+      t instanceof Element &&
+      t.closest("button, input, textarea, label") !== null
+    )
+      return;
     onFocus(row.projectId, approval.sessionId);
   };
 
   return (
-    <article
+    <ApprovalElement
       className={`approval${readOnly ? " expired" : ""}${row.elsewhere ? " elsewhere" : ""}`}
       onClick={focus}
+      heading={
+        <div className="approval-head flex flex-wrap gap-2">
+          <strong>
+            {kind === null
+              ? "unreadable request"
+              : kind.type === "tool-permission"
+                ? kind.tool_name
+                : "question"}
+          </strong>
+          <span className="dim text-text-tertiary">
+            {row.projectName ?? "project unknown"} ·{" "}
+            {shortSessionId(approval.sessionId)} ·{" "}
+            {new Date(approval.openedAtMs).toLocaleTimeString()}
+          </span>
+          {row.elsewhere ? <span className="chip">other project</span> : null}
+          {readOnly ? (
+            <span className="chip plain">
+              expired: no longer answerable (app restarted or session ended)
+            </span>
+          ) : null}
+        </div>
+      }
     >
-      <div className="approval-head">
-        <strong>
-          {kind === null
-            ? "unreadable request"
-            : kind.type === "tool-permission"
-              ? kind.tool_name
-              : "question"}
-        </strong>
-        <span className="dim">
-          {row.projectName ?? "project unknown"} · {shortSessionId(approval.sessionId)} ·{" "}
-          {new Date(approval.openedAtMs).toLocaleTimeString()}
-        </span>
-        {row.elsewhere ? <span className="chip">other project</span> : null}
-        {readOnly ? (
-          <span className="chip plain">expired: no longer answerable (app restarted or session ended)</span>
-        ) : null}
-      </div>
-
       {/*
         R2, 2026-09-05. **The detail scrolls; the decision does not.**
         `docs/STATUS.md` §5 defect 3 predicted that Allow and Deny fall below the fold and could
@@ -168,9 +192,9 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
         the excerpt and the suggestions are the only thing that yields. A card squeezed to the
         window's 800x500 minimum therefore loses excerpt, never the decision.
       */}
-      <div className="approval-body">
+      <div className="approval-body max-h-64 overflow-auto">
         {kind === null ? (
-          <p className="dim">
+          <p className="dim text-text-tertiary">
             request too large to display · deny is the only safe answer
           </p>
         ) : kind.type === "tool-permission" ? (
@@ -180,15 +204,13 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
               <ul className="suggestions">
                 {kind.suggestions.map((s, i) => (
                   <li key={i}>
-                    <label>
-                      <input
-                        type="checkbox"
-                        checked={applied.has(i)}
-                        disabled={readOnly}
-                        onChange={() => toggle(i)}
-                      />
+                    <Checkbox
+                      checked={applied.has(i)}
+                      disabled={readOnly}
+                      onCheckedChange={() => toggle(i)}
+                    >
                       <span>apply</span>
-                    </label>
+                    </Checkbox>
                     <pre className="suggestion">{JSON.stringify(s)}</pre>
                   </li>
                 ))}
@@ -199,25 +221,29 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
           <>
             <pre className="excerpt">{kind.prompt}</pre>
             {kind.options.length > 0 ? (
-              <p className="dim">options: {kind.options.join(" · ")}</p>
+              <p className="dim text-text-tertiary">options: {kind.options.join(" · ")}</p>
             ) : null}
-            <p className="dim">
-              free-text answers are not wired this phase; allow/deny is the only decision the
-              contract carries.
+            <p className="dim text-text-tertiary">
+              free-text answers are not wired this phase; allow/deny is the only
+              decision the contract carries.
             </p>
           </>
         )}
       </div>
 
       {readOnly ? (
-        <div className="approval-actions">
-          <button type="button" className="act" onClick={() => onDismiss(approval.requestId)}>
+        <div className="approval-actions mt-3 flex flex-wrap items-center justify-end gap-2">
+          <Button
+            type="button"
+            className="act"
+            onClick={() => onDismiss(approval.requestId)}
+          >
             Dismiss
-          </button>
+          </Button>
         </div>
       ) : denying ? (
-        <div className="approval-actions">
-          <input
+        <div className="approval-actions mt-3 flex flex-wrap items-center justify-end gap-2">
+          <Input
             className="reason"
             value={reason}
             autoFocus
@@ -227,25 +253,33 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
               if (e.key === "Escape") setDenying(false);
             }}
           />
-          <button type="button" className="act danger" onClick={deny}>
+          <Button type="button" className="act danger text-warn" onClick={deny}>
             Confirm deny
-          </button>
-          <button type="button" className="act" onClick={() => setDenying(false)}>
+          </Button>
+          <Button
+            type="button"
+            className="act"
+            onClick={() => setDenying(false)}
+          >
             Cancel
-          </button>
+          </Button>
         </div>
       ) : (
-        <div className="approval-actions">
+        <div className="approval-actions mt-3 flex flex-wrap items-center justify-end gap-2">
           {kind === null ? null : (
-            <button type="button" className="send wide" onClick={allow}>
+            <Button type="button" className="send wide" onClick={allow}>
               Allow
-            </button>
+            </Button>
           )}
-          <button type="button" className="act danger" onClick={() => setDenying(true)}>
+          <Button
+            type="button"
+            className="act danger text-warn"
+            onClick={() => setDenying(true)}
+          >
             Deny
-          </button>
+          </Button>
         </div>
       )}
-    </article>
+    </ApprovalElement>
   );
 }

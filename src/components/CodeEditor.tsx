@@ -1,3 +1,4 @@
+import { editorColor } from "../lib/theme";
 import { useEffect, useRef } from "react";
 import * as monaco from "monaco-editor";
 import EditorWorker from "monaco-editor/editor/editor.worker?worker";
@@ -17,19 +18,87 @@ self.MonacoEnvironment = {
             ? new TsWorker()
             : new EditorWorker(),
 };
-monaco.editor.defineTheme("brigadier", {
-  base: "vs-dark",
-  inherit: true,
-  rules: [],
-  colors: {
-    "editor.background": "#181818",
-    "editor.lineHighlightBackground": "#222222",
-    "editorGutter.background": "#181818",
-    "editorLineNumber.foreground": "#666666",
-    "editor.selectionBackground": "#3e4a56",
-    "editorWidget.background": "#252525",
-  },
-});
+function installEditorTheme() {
+  const text = editorColor("text"),
+    secondary = editorColor("text-secondary"),
+    canvas = editorColor("canvas"),
+    elevated = editorColor("elevated"),
+    selected = editorColor("selected"),
+    line = editorColor("hairline");
+  monaco.editor.defineTheme("brigadier", {
+    base: "vs-dark",
+    inherit: false,
+    rules: [
+      { token: "", foreground: text.slice(1) },
+      {
+        token: "comment",
+        foreground: editorColor("text-tertiary").slice(1),
+        fontStyle: "italic",
+      },
+      { token: "string", foreground: secondary.slice(1) },
+    ],
+    colors: {
+      foreground: text,
+      focusBorder: secondary,
+      "editor.background": canvas,
+      "editor.foreground": text,
+      "editor.lineHighlightBackground": editorColor("hover"),
+      "editorGutter.background": canvas,
+      "editorLineNumber.foreground": editorColor("text-tertiary"),
+      "editorLineNumber.activeForeground": secondary,
+      "editor.selectionBackground": selected,
+      "editor.inactiveSelectionBackground": selected,
+      "editor.selectionHighlightBackground": selected,
+      "editor.wordHighlightBackground": selected,
+      "editor.wordHighlightStrongBackground": selected,
+      "editor.findMatchBackground": selected,
+      "editor.findMatchHighlightBackground": selected,
+      "editorCursor.foreground": text,
+      "editorWidget.background": elevated,
+      "editorWidget.foreground": text,
+      "editorWidget.border": line,
+      "editorSuggestWidget.background": elevated,
+      "editorSuggestWidget.foreground": text,
+      "editorSuggestWidget.selectedBackground": selected,
+      "editorSuggestWidget.highlightForeground": text,
+      "editorSuggestWidget.focusHighlightForeground": text,
+      "editorSuggestWidget.border": line,
+      "editorHoverWidget.background": elevated,
+      "editorHoverWidget.foreground": text,
+      "editorHoverWidget.border": line,
+      "editorHoverWidget.statusBarBackground": elevated,
+      "list.activeSelectionBackground": selected,
+      "list.activeSelectionForeground": text,
+      "list.inactiveSelectionBackground": selected,
+      "list.focusBackground": selected,
+      "list.hoverBackground": editorColor("hover"),
+      "list.highlightForeground": text,
+      "input.background": editorColor("input"),
+      "input.foreground": text,
+      "input.border": line,
+      "inputOption.activeBackground": selected,
+      "inputOption.activeBorder": secondary,
+      "button.background": selected,
+      "button.foreground": text,
+      "button.hoverBackground": editorColor("hover"),
+      "textLink.foreground": text,
+      "textLink.activeForeground": text,
+      "scrollbarSlider.background": selected,
+      "scrollbarSlider.hoverBackground": selected,
+      "scrollbarSlider.activeBackground": selected,
+      "editorError.foreground": editorColor("error"),
+      "editorWarning.foreground": editorColor("warn"),
+      "editorInfo.foreground": secondary,
+      "editorHint.foreground": secondary,
+      ...Object.fromEntries(
+        Array.from({ length: 6 }, (_, index) => [
+          `editorBracketHighlight.foreground${index + 1}`,
+          secondary,
+        ]),
+      ),
+    },
+  });
+}
 const views = new Map<string, monaco.editor.ICodeEditorViewState>();
 export const languages = [
   "plaintext",
@@ -93,6 +162,7 @@ export default function CodeEditor({
   callbacks.current = { onChange, onSave, onSelection };
   useEffect(() => {
     if (!host.current) return;
+    installEditorTheme();
     const model = monaco.editor.createModel(
       value,
       language,
@@ -102,6 +172,8 @@ export default function CodeEditor({
       model,
       editContext: false,
       theme: "brigadier",
+      cursorBlinking: "solid",
+      smoothScrolling: false,
       automaticLayout: true,
       fontSize: 13,
       fontFamily: "SFMono-Regular, Menlo, monospace",
@@ -152,5 +224,5 @@ export default function CodeEditor({
       editor.current.setPosition({ lineNumber: line, column: 1 });
     }
   }, [line, id]);
-  return <div ref={host} className="code-editor" />;
+  return <div ref={host} className="code-editor h-full min-h-0" />;
 }

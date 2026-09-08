@@ -1,3 +1,5 @@
+import { ArtifactCard } from "./assistant-ui/elements/artifact-card";
+import { Button } from "./controls/button";
 import { useEffect, useState } from "react";
 import { FileIcon, ArrowUUpLeftIcon } from "@phosphor-icons/react";
 import {
@@ -26,43 +28,44 @@ export function ChangedFilesCard({
       new CustomEvent("workbench-review", { detail: { sessionId, turn } }),
     );
   return (
-    <div className="edited-files-card">
-      <header>
-        <span className="edited-files-icon">
-          <FileIcon size={21} />
-        </span>
-        <div>
-          Edited {files.length} {files.length === 1 ? "file" : "files"}
-          <small>
-            <span className="added">
-              +{files.reduce((n, f) => n + f.added, 0)}
-            </span>{" "}
-            <span className="removed">
-              −{files.reduce((n, f) => n + f.deleted, 0)}
-            </span>
-          </small>
-        </div>
-        <span className="grow" />
-        <button
-          className="undo-files"
-          disabled={busy}
-          onClick={() => {
-            setBusy(true);
-            void desktopApi
-              .previewUndo(sessionId, turn)
-              .then(setPreview)
-              .catch((e) => notify(errorMessage(e), true))
-              .finally(() => setBusy(false));
-          }}
-        >
-          Undo <ArrowUUpLeftIcon />
-        </button>
-        <button className="act" onClick={review}>
-          Review
-        </button>
-      </header>
+    <ArtifactCard
+      className="edited-files-card"
+      heading={
+        <>
+          <div>
+            Edited {files.length} {files.length === 1 ? "file" : "files"}
+            <small>
+              <span className="added text-ok not-italic">
+                +{files.reduce((n, f) => n + f.added, 0)}
+              </span>{" "}
+              <span className="removed text-error not-italic">
+                −{files.reduce((n, f) => n + f.deleted, 0)}
+              </span>
+            </small>
+          </div>
+          <span className="grow" />
+          <Button
+            className="undo-files"
+            disabled={busy}
+            onClick={() => {
+              setBusy(true);
+              void desktopApi
+                .previewUndo(sessionId, turn)
+                .then(setPreview)
+                .catch((e) => notify(errorMessage(e), true))
+                .finally(() => setBusy(false));
+            }}
+          >
+            Undo <ArrowUUpLeftIcon />
+          </Button>
+          <Button className="act" onClick={review}>
+            Review
+          </Button>
+        </>
+      }
+    >
       {files.map((file) => (
-        <button
+        <Button
           className="edited-file"
           key={file.path}
           onClick={() =>
@@ -78,16 +81,16 @@ export function ChangedFilesCard({
             <small>Binary</small>
           ) : (
             <span>
-              <i className="added">+{file.added}</i>{" "}
-              <i className="removed">−{file.deleted}</i>
+              <i className="added text-ok not-italic">+{file.added}</i>{" "}
+              <i className="removed text-error not-italic">−{file.deleted}</i>
             </span>
           )}
-        </button>
+        </Button>
       ))}
       {preview && (
         <ApplyDialog preview={preview} undo onClose={() => setPreview(null)} />
       )}
-    </div>
+    </ArtifactCard>
   );
 }
 function ApplyDialog({
@@ -113,7 +116,7 @@ function ApplyDialog({
               : "These changes will be applied to the original project folder and left uncommitted."}
           </p>
           {conflicts.length ? (
-            <p className="inline-error">
+            <p className="inline-error my-2 text-[13px] text-error">
               Resolve these conflicts and refresh the preview:{" "}
               {conflicts.join(", ")}
             </p>
@@ -172,7 +175,7 @@ export function SessionReview({
     <section className="session-review">
       <header>
         <b>{turn ? "Turn changes" : "Session changes"}</b>
-        <button
+        <Button
           className="act"
           disabled={busy}
           onClick={() => {
@@ -185,21 +188,21 @@ export function SessionReview({
           }}
         >
           {busy ? "Preparing…" : "Apply to project"}
-        </button>
+        </Button>
       </header>
       {files.map((f) => (
-        <button key={f.path} onClick={() => onOpen(f.path)}>
+        <Button key={f.path} onClick={() => onOpen(f.path)}>
           <FileIcon />
           <span>{f.path}</span>
-          <i className="added">+{f.added}</i>
-          <i className="removed">−{f.deleted}</i>
-        </button>
+          <i className="added text-ok not-italic">+{f.added}</i>
+          <i className="removed text-error not-italic">−{f.deleted}</i>
+        </Button>
       ))}
       {!files.length && <p>No recorded file changes yet.</p>}
       {pending.map((op) => (
-        <div className="inline-error" key={op.id}>
+        <div className="inline-error my-2 text-[13px] text-error" key={op.id}>
           {op.error ?? "An apply was interrupted."}
-          <button onClick={() => setPreview(op)}>Review and retry</button>
+          <Button onClick={() => setPreview(op)}>Review and retry</Button>
         </div>
       ))}
       {preview && (

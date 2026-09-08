@@ -1,3 +1,5 @@
+import { Popover, Label, Description } from "./controls/overlay";
+import { ListBox } from "./controls/listbox";
 import {
   useContext,
   useCallback,
@@ -12,12 +14,12 @@ import { workbenchApi, type Note } from "../workbenchApi";
 import { PlusIcon } from "@phosphor-icons/react";
 
 import {
-  PromptInput as KitPromptInput,
-  PromptInputTextarea,
-  PromptInputActions,
-  PromptInputAction,
-} from "./prompt-kit/prompt-input";
-import { Button } from "./ui/button";
+  ComposerBar,
+  ComposerInput,
+  ComposerActions,
+} from "./assistant-ui/elements/composer";
+import { MessageAction } from "./assistant-ui/elements/tooltip-icon-button";
+import { Button } from "./controls/button";
 
 export function useDraft(key: string): [string, (value: string) => void] {
   const read = (k: string) => {
@@ -122,11 +124,8 @@ export function PromptInput(
     }
   };
   return (
-    <KitPromptInput
-      value={value}
-      onValueChange={onText}
-      disabled={props.disabled}
-      className="relative bg-secondary"
+    <ComposerBar
+      className="relative bg-input"
       data-slot="prompt-input"
       onDragOver={(e) => {
         if (!props.disabled) e.preventDefault();
@@ -137,10 +136,11 @@ export function PromptInput(
       }}
     >
       {header}
-      <PromptInputTextarea
+      <ComposerInput
         {...rest}
         ref={textarea}
         onChange={(e) => {
+          onText(e.target.value);
           if (e.target.value.endsWith("@")) {
             setNoteMenu(true);
             void workbenchApi
@@ -156,12 +156,12 @@ export function PromptInput(
           }
         }}
       />
-      <PromptInputActions
+      <ComposerActions
         className="relative flex-wrap justify-between px-1 pt-2"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-1">
-          <PromptInputAction tooltip="Attach text files or drop them in the composer">
+          <MessageAction tooltip="Attach text files or drop them in the composer">
             <Button
               type="button"
               variant="ghost"
@@ -173,8 +173,11 @@ export function PromptInput(
             >
               <PlusIcon size={18} />
             </Button>
-          </PromptInputAction>
-          <PromptInputAction tooltip="Mention a note">
+          </MessageAction>
+          <Popover
+            isOpen={noteMenu && !props.disabled}
+            onOpenChange={setNoteMenu}
+          >
             <Button
               type="button"
               variant="ghost"
@@ -198,30 +201,38 @@ export function PromptInput(
             >
               @ Note
             </Button>
-          </PromptInputAction>
+            <Popover.Content placement="top start">
+              <Popover.Dialog aria-label="Mention a note">
+                <ListBox
+                  aria-label="Notes"
+                  renderEmptyState={() => "No notes yet"}
+                  className="max-h-64 min-w-64 overflow-auto"
+                >
+                  {notes.map((note) => (
+                    <ListBox.Item
+                      id={note.id}
+                      textValue={note.title}
+                      key={note.id}
+                      onAction={() => {
+                        onText(
+                          `${value.endsWith("@") ? value.slice(0, -1) : value}${value && !value.endsWith("@") ? " " : ""}@[${note.title}](brigadier-note:${note.id}) `,
+                        );
+                        setNoteMenu(false);
+                        textarea.current?.focus();
+                      }}
+                    >
+                      <Label>{note.title}</Label>
+                      <Description>
+                        {note.projectId ? "Project" : "Global"}
+                      </Description>
+                    </ListBox.Item>
+                  ))}
+                </ListBox>
+              </Popover.Dialog>
+            </Popover.Content>
+          </Popover>
         </div>
         {children}
-        {noteMenu && !props.disabled && (
-          <div className="note-mention-menu">
-            {notes.map((note) => (
-              <button
-                type="button"
-                key={note.id}
-                onClick={() => {
-                  onText(
-                    `${value.endsWith("@") ? value.slice(0, -1) : value}${value && !value.endsWith("@") ? " " : ""}@[${note.title}](brigadier-note:${note.id}) `,
-                  );
-                  setNoteMenu(false);
-                  textarea.current?.focus();
-                }}
-              >
-                {note.title}
-                <small>{note.projectId ? "Project" : "Global"}</small>
-              </button>
-            ))}
-            {!notes.length && <span>No notes yet</span>}
-          </div>
-        )}
         <input
           ref={file}
           type="file"
@@ -233,13 +244,13 @@ export function PromptInput(
             e.target.value = "";
           }}
         />
-      </PromptInputActions>
+      </ComposerActions>
       {error ? (
-        <p className="inline-error" role="alert">
+        <p className="inline-error my-2 text-[13px] text-error" role="alert">
           {error}
         </p>
       ) : null}
-    </KitPromptInput>
+    </ComposerBar>
   );
 }
 

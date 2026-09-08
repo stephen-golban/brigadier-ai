@@ -116,7 +116,12 @@ describe("the collapsed line", () => {
           phases: [
             phase({ phase_id: "a", ordinal: 1, state: "green" }),
             phase({ phase_id: "b", ordinal: 2, state: "green" }),
-            phase({ phase_id: "c", ordinal: 3, state: "running", title: "Gate the run surface" }),
+            phase({
+              phase_id: "c",
+              ordinal: 3,
+              state: "running",
+              title: "Gate the run surface",
+            }),
             phase({ phase_id: "d", ordinal: 4, state: "pending" }),
           ],
         })}
@@ -125,9 +130,15 @@ describe("the collapsed line", () => {
       />,
     );
 
-    expect(screen.getByText("Make the store durable across a crash")).toBeInTheDocument();
-    expect(screen.getByText("2 green · 1 running · 1 pending")).toBeInTheDocument();
-    expect(screen.getByText("running · Gate the run surface")).toBeInTheDocument();
+    expect(
+      screen.getByText("Make the store durable across a crash"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("2 green · 1 running · 1 pending"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("running · Gate the run surface"),
+    ).toBeInTheDocument();
   });
 
   it("says a blocked run is blocked without being expanded", async () => {
@@ -137,7 +148,11 @@ describe("the collapsed line", () => {
         run={run({
           phases: [
             phase({ phase_id: "a", state: "green" }),
-            phase({ phase_id: "b", state: "blocked", title: "Collect the worktrees" }),
+            phase({
+              phase_id: "b",
+              state: "blocked",
+              title: "Collect the worktrees",
+            }),
           ],
         })}
         intents={[]}
@@ -146,7 +161,9 @@ describe("the collapsed line", () => {
     );
 
     await user.click(screen.getByRole("button", { name: "Collapse" }));
-    expect(screen.getByText("blocked · Collect the worktrees")).toBeInTheDocument();
+    expect(
+      screen.getByText("blocked · Collect the worktrees"),
+    ).toBeInTheDocument();
   });
 
   it("collapses to one line and expands back to the checklist", async () => {
@@ -164,7 +181,9 @@ describe("the collapsed line", () => {
     expect(expand).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByText("Pin the intent tables")).not.toBeInTheDocument();
     // The one line survives the collapse; that is the whole point of collapsing.
-    expect(screen.getByText("Make the store durable across a crash")).toBeInTheDocument();
+    expect(
+      screen.getByText("Make the store durable across a crash"),
+    ).toBeInTheDocument();
 
     await user.click(expand);
     expect(screen.getByText("Pin the intent tables")).toBeInTheDocument();
@@ -183,19 +202,25 @@ describe("the collapsed line", () => {
         onSettle={() => {}}
       />,
     );
-    expect(screen.getByText("stopped · no further orders go out")).toBeInTheDocument();
+    expect(
+      screen.getByText("stopped · no further orders go out"),
+    ).toBeInTheDocument();
   });
 
   it("draws nothing at all when there is no run and nothing unsettled", () => {
     render(<RunCard run={null} intents={[]} onSettle={() => {}} />);
-    expect(screen.queryByRole("region", { name: "the run" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("region", { name: "the run" }),
+    ).not.toBeInTheDocument();
   });
 
   it("still draws the unsettled intents when there is no run in this project", () => {
     // `unsettled_intents` is not scoped to a project. An intent nobody can see is an intent that
     // stays unaccounted for.
     render(<RunCard run={null} intents={[intent()]} onSettle={() => {}} />);
-    expect(screen.getByRole("button", { name: "Mark done" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Mark done" }),
+    ).toBeInTheDocument();
   });
 });
 
@@ -228,7 +253,9 @@ describe("a phase with no verify command", () => {
 
     // Exactly one command is printed, for the one phase that has one. `code` is a semantic
     // element, not a class name: what is asserted is "no second command was invented".
-    const commands = [...container.querySelectorAll("code")].map((c) => c.textContent);
+    const commands = [...container.querySelectorAll("code")].map(
+      (c) => c.textContent,
+    );
     expect(commands).toEqual(["npm test"]);
   });
 });
@@ -260,12 +287,18 @@ describe("a phase whose gate failed", () => {
   it("renders no log tail, even when one arrives in last_evidence", () => {
     // The wire carries no log tail and the Rust side bounds this field. The clamp here is the
     // second half of the same rule: the card cannot become a log viewer by accident.
-    const tail = ["FAILED src/run.test.tsx > start", "  expected 1 to be 0", "  at line 42"].join(
-      "\n",
-    );
+    const tail = [
+      "FAILED src/run.test.tsx > start",
+      "  expected 1 to be 0",
+      "  at line 42",
+    ].join("\n");
     render(
       <RunCard
-        run={run({ phases: [phase({ state: "blocked", last_exit_code: 1, last_evidence: tail })] })}
+        run={run({
+          phases: [
+            phase({ state: "blocked", last_exit_code: 1, last_evidence: tail }),
+          ],
+        })}
         intents={[]}
         onSettle={() => {}}
       />,
@@ -275,13 +308,19 @@ describe("a phase whose gate failed", () => {
     expect(text).toContain("exit 1");
     // Collapsed to one line: no newline from the field survives into the card.
     expect(text).not.toContain("\n  at line 42");
-    expect(screen.getByText(/FAILED src\/run\.test\.tsx > start/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/FAILED src\/run\.test\.tsx > start/),
+    ).toBeInTheDocument();
     // …and a long one is clamped rather than printed whole.
     const long = "x".repeat(400);
     cleanup();
     render(
       <RunCard
-        run={run({ phases: [phase({ state: "blocked", last_exit_code: 1, last_evidence: long })] })}
+        run={run({
+          phases: [
+            phase({ state: "blocked", last_exit_code: 1, last_evidence: long }),
+          ],
+        })}
         intents={[]}
         onSettle={() => {}}
       />,
@@ -302,7 +341,13 @@ describe("a work order the harness cannot account for", () => {
               last_exit_code: null,
               last_evidence: null,
               commit_sha: null,
-              orders: [order({ order_id: "or-x", state: "unknown", title: "Land the branches" })],
+              orders: [
+                order({
+                  order_id: "or-x",
+                  state: "unknown",
+                  title: "Land the branches",
+                }),
+              ],
             }),
           ],
         })}
@@ -319,14 +364,18 @@ describe("a work order the harness cannot account for", () => {
     const text = cardText();
     expect(text).not.toContain("dispatched");
     expect(text).not.toContain("in progress");
-    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("progressbar", { name: "Completed phases" }),
+    ).toHaveAttribute("aria-valuenow", "0");
   });
 
   it("still draws an ordinary dispatched order as dispatched", () => {
     // The guard above must not be passing because the word is unreachable.
     render(
       <RunCard
-        run={run({ phases: [phase({ orders: [order({ state: "dispatched" })] })] })}
+        run={run({
+          phases: [phase({ orders: [order({ state: "dispatched" })] })],
+        })}
         intents={[]}
         onSettle={() => {}}
       />,
@@ -359,8 +408,12 @@ describe("the unsettled intents", () => {
   it("is not the approvals dock: neither answer allows or denies anything", () => {
     render(<RunCard run={null} intents={[intent()]} onSettle={() => {}} />);
 
-    expect(screen.queryByRole("button", { name: /allow/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /deny/i })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /allow/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /deny/i }),
+    ).not.toBeInTheDocument();
     expect(screen.getByText(/not an approval/)).toBeInTheDocument();
   });
 
@@ -370,7 +423,13 @@ describe("the unsettled intents", () => {
     render(
       <RunCard
         run={null}
-        intents={[intent({ intent_id: "in-9", kind: "db_migrate", subject: "0002_intents.sql" })]}
+        intents={[
+          intent({
+            intent_id: "in-9",
+            kind: "db_migrate",
+            subject: "0002_intents.sql",
+          }),
+        ]}
         onSettle={() => {}}
       />,
     );
@@ -400,7 +459,12 @@ describe("what the card never says", () => {
         run={run({
           phases: [
             phase({ phase_id: "a", state: "green" }),
-            phase({ phase_id: "b", state: "blocked", last_exit_code: 1, orders: [order()] }),
+            phase({
+              phase_id: "b",
+              state: "blocked",
+              last_exit_code: 1,
+              orders: [order()],
+            }),
           ],
         })}
         intents={[intent()]}
@@ -417,7 +481,13 @@ describe("what the card never says", () => {
 
   it("does not blow up on a plan with no phases at all", () => {
     const spy = vi.spyOn(console, "error").mockImplementation(() => {});
-    render(<RunCard run={run({ phases: [], status: "draft" })} intents={[]} onSettle={() => {}} />);
+    render(
+      <RunCard
+        run={run({ phases: [], status: "draft" })}
+        intents={[]}
+        onSettle={() => {}}
+      />,
+    );
     expect(screen.getByText("no phases yet")).toBeInTheDocument();
     expect(screen.getByText("planning")).toBeInTheDocument();
     expect(spy).not.toHaveBeenCalled();
@@ -431,7 +501,12 @@ describe("the checklist", () => {
       <RunCard
         run={run({
           phases: [
-            phase({ phase_id: "a", ordinal: 1, title: "First", verify_command: "cargo check" }),
+            phase({
+              phase_id: "a",
+              ordinal: 1,
+              title: "First",
+              verify_command: "cargo check",
+            }),
             phase({
               phase_id: "b",
               ordinal: 2,

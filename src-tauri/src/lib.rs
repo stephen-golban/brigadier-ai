@@ -168,6 +168,7 @@ pub fn run() {
             workbench_data::peer_settings_save,
             commands::start_session,
             commands::resume_session,
+            commands::fork_session,
             commands::send_turn,
             commands::respond,
             commands::interrupt,

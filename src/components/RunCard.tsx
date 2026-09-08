@@ -1,3 +1,5 @@
+import { AgentPlan } from "./assistant-ui/elements/agent-plan";
+import { Button } from "./controls/button";
 /**
  * The pinned plan card.
  *
@@ -42,7 +44,13 @@
  */
 import { useState } from "react";
 
-import type { IntentSettlement, IntentView, PhaseView, RunView, WorkOrderView } from "../wire";
+import type {
+  IntentSettlement,
+  IntentView,
+  PhaseView,
+  RunView,
+  WorkOrderView,
+} from "../wire";
 
 export interface RunCardProps {
   /** The newest plan for the selected project, or null when there has never been one. */
@@ -69,7 +77,12 @@ function oneLine(text: string): string {
 
 /** `2 green · 1 running · 1 blocked · 1 pending`, zeros omitted. */
 function counts(phases: PhaseView[]): string {
-  const order: PhaseView["state"][] = ["green", "running", "blocked", "pending"];
+  const order: PhaseView["state"][] = [
+    "green",
+    "running",
+    "blocked",
+    "pending",
+  ];
   const parts = order
     .map((s) => [s, phases.filter((p) => p.state === s).length] as const)
     .filter(([, n]) => n > 0)
@@ -107,7 +120,9 @@ function nowLine(run: RunView): string {
 function gateLine(phase: PhaseView) {
   if (phase.verify_command === null) {
     return (
-      <span className="run-nogate">no gate — this phase cannot go green through one</span>
+      <span className="run-nogate">
+        no gate — this phase cannot go green through one
+      </span>
     );
   }
   return <code className="run-verify">{phase.verify_command}</code>;
@@ -124,9 +139,13 @@ function orderRow(o: WorkOrderView) {
   const unknown = o.state === "unknown";
   return (
     <li className="run-order" key={o.order_id}>
-      <span className={`run-state ${o.state}`}>{unknown ? "unknown · blocked" : o.state}</span>
+      <span className={`run-state ${o.state}`}>
+        {unknown ? "unknown · blocked" : o.state}
+      </span>
       <span className="run-order-title">{o.title}</span>
-      {o.branch !== null ? <span className="run-order-ref mono">{o.branch}</span> : null}
+      {o.branch !== null ? (
+        <span className="run-order-ref mono">{o.branch}</span>
+      ) : null}
       {o.owned_paths.length > 0 ? (
         <span className="run-paths mono" title={o.owned_paths.join("\n")}>
           {o.owned_paths.join(" ")}
@@ -134,19 +153,22 @@ function orderRow(o: WorkOrderView) {
       ) : null}
       {unknown ? (
         <span className="run-order-why">
-          something moved in this worktree and the harness cannot tell what, so the phase is
-          blocked and this order will not be repeated — settle it below
+          something moved in this worktree and the harness cannot tell what, so
+          the phase is blocked and this order will not be repeated — settle it
+          below
         </span>
       ) : null}
-      {o.report !== null ? <span className="run-order-why">{oneLine(o.report)}</span> : null}
+      {o.report !== null ? (
+        <span className="run-order-why">{oneLine(o.report)}</span>
+      ) : null}
     </li>
   );
 }
 
 function phaseRow(phase: PhaseView) {
   return (
-    <li className="run-phase" key={phase.phase_id}>
-      <div className="run-phase-head">
+    <div className="run-phase" key={phase.phase_id}>
+      <div className="run-phase-head flex items-center gap-2">
         <span className="run-ord">{phase.ordinal}</span>
         <span className="run-title">{phase.title}</span>
         <span className={`run-state ${phase.state}`}>{phase.state}</span>
@@ -158,7 +180,13 @@ function phaseRow(phase: PhaseView) {
         {gateLine(phase)}
         {/* The gate's answer, and the only number this card reads as a verdict. Never a tail. */}
         {phase.last_exit_code !== null ? (
-          <span className={phase.last_exit_code === 0 ? "run-exit ok-text" : "run-exit bad-text"}>
+          <span
+            className={
+              phase.last_exit_code === 0
+                ? "run-exit ok-text"
+                : "run-exit bad-text"
+            }
+          >
             exit {phase.last_exit_code}
           </span>
         ) : null}
@@ -173,7 +201,7 @@ function phaseRow(phase: PhaseView) {
       {phase.orders.length > 0 ? (
         <ul className="run-orders">{phase.orders.map(orderRow)}</ul>
       ) : null}
-    </li>
+    </div>
   );
 }
 
@@ -186,18 +214,18 @@ export function RunCard({ run, intents, onSettle }: RunCardProps) {
   if (run === null && intents.length === 0) return null;
 
   return (
-    <section className="run-card" aria-label="the run">
+    <section className="run-card mx-auto w-full max-w-[780px] rounded-md bg-elevated p-3" aria-label="the run">
       {run !== null ? (
         <>
           <div className="run-line">
-            <button
+            <Button
               type="button"
               className="run-toggle"
               aria-expanded={open}
               onClick={() => setOpen(!open)}
             >
               {open ? "Collapse" : "Expand"}
-            </button>
+            </Button>
             <span className="run-goal" title={run.goal}>
               {run.goal}
             </span>
@@ -205,15 +233,24 @@ export function RunCard({ run, intents, onSettle }: RunCardProps) {
             <span className="run-now">{nowLine(run)}</span>
           </div>
 
-          {open ? <ol className="run-phases">{run.phases.map(phaseRow)}</ol> : null}
+          {open ? (
+            <AgentPlan
+              steps={run.phases.map((phase) => ({
+                id: phase.phase_id,
+                state: phase.state,
+                content: phaseRow(phase),
+              }))}
+            />
+          ) : null}
         </>
       ) : null}
 
       {intents.length > 0 ? (
         <div className="run-intents">
           <p className="run-intents-head">
-            {intents.length} unsettled. The harness cannot tell whether these happened. This is not
-            an approval — neither answer allows or denies anything.
+            {intents.length} unsettled. The harness cannot tell whether these
+            happened. This is not an approval — neither answer allows or denies
+            anything.
           </p>
           <ul className="run-intent-list">
             {intents.map((i) => (
@@ -230,20 +267,20 @@ export function RunCard({ run, intents, onSettle }: RunCardProps) {
                   <span className="run-intent-why">{oneLine(i.evidence)}</span>
                 ) : null}
                 <span className="run-intent-actions">
-                  <button
+                  <Button
                     type="button"
                     className="act"
                     onClick={() => onSettle(i.intent_id, "done")}
                   >
                     Mark done
-                  </button>
-                  <button
+                  </Button>
+                  <Button
                     type="button"
                     className="act"
                     onClick={() => onSettle(i.intent_id, "not_done")}
                   >
                     Mark not done
-                  </button>
+                  </Button>
                 </span>
               </li>
             ))}

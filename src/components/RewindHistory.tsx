@@ -1,3 +1,4 @@
+import { Button } from "./controls/button";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -54,7 +55,7 @@ export function RewindHistory({
       )}
       {history?.records.map((r) => (
         <section key={r.id}>
-          <button
+          <Button
             className="act"
             aria-expanded={selected === r.id}
             onClick={() => setSelected(selected === r.id ? null : r.id)}
@@ -65,7 +66,7 @@ export function RewindHistory({
               : r.state === "applied"
                 ? "Rewound"
                 : "Refused"}
-          </button>
+          </Button>
           {selected === r.id && (
             <>
               <small>Recovery ID: {r.id}</small>
@@ -80,22 +81,77 @@ export function RewindHistory({
           )}
         </section>
       ))}
-      {history?.workspaceOperations?.map(op => <section key={op.id}>
-        <small>Workspace recovery: {op.id}</small>
-        <p>{op.phase === "complete" ? "Files restored and edited message sent" : op.phase === "rolled-back" ? "Original files restored" : op.phase === "rewound-unsent" ? "Conversation rewound; saved draft has not been sent" : "Workspace paused — recovery required"}</p>
-        {op.phase === "rewound-unsent" && <p>Copy the saved draft below, resume the session if needed, and send it as a new message.</p>}
-        {op.error && <p>{op.error}</p>}
-        <pre>{op.draft}</pre><CopyButton text={op.draft} />
-        {["prepared", "restoring", "native-refused", "rolled-back", "complete", "native-confirmed", "archived", "rewound-unsent"].includes(op.phase) && <button className="act" onClick={async () => {
-          try { await recoverWorkspaceRewind(sessionId,op.id);setHistory(await rewindHistory(sessionId));setError(""); }
-          catch(e) {setError(errorMessage(e));}
-        }}>{["complete", "rolled-back", "rewound-unsent"].includes(op.phase) ? "Release recovery lock" : ["native-confirmed", "archived"].includes(op.phase) ? "Finish recovery and keep saved draft" : "Restore original files"}</button>}
-        {!["prepared", "restoring", "native-refused", "rolled-back", "complete", "native-confirmed", "archived", "rewound-unsent"].includes(op.phase) && <p>The provider or send outcome needs reconciliation. The saved draft can be copied; the operation will not be repeated automatically.</p>}
-      </section>)}
+      {history?.workspaceOperations?.map((op) => (
+        <section key={op.id}>
+          <small>Workspace recovery: {op.id}</small>
+          <p>
+            {op.phase === "complete"
+              ? "Files restored and edited message sent"
+              : op.phase === "rolled-back"
+                ? "Original files restored"
+                : op.phase === "rewound-unsent"
+                  ? "Conversation rewound; saved draft has not been sent"
+                  : "Workspace paused — recovery required"}
+          </p>
+          {op.phase === "rewound-unsent" && (
+            <p>
+              Copy the saved draft below, resume the session if needed, and send
+              it as a new message.
+            </p>
+          )}
+          {op.error && <p>{op.error}</p>}
+          <pre>{op.draft}</pre>
+          <CopyButton text={op.draft} />
+          {[
+            "prepared",
+            "restoring",
+            "native-refused",
+            "rolled-back",
+            "complete",
+            "native-confirmed",
+            "archived",
+            "rewound-unsent",
+          ].includes(op.phase) && (
+            <Button
+              className="act"
+              onClick={async () => {
+                try {
+                  await recoverWorkspaceRewind(sessionId, op.id);
+                  setHistory(await rewindHistory(sessionId));
+                  setError("");
+                } catch (e) {
+                  setError(errorMessage(e));
+                }
+              }}
+            >
+              {["complete", "rolled-back", "rewound-unsent"].includes(op.phase)
+                ? "Release recovery lock"
+                : ["native-confirmed", "archived"].includes(op.phase)
+                  ? "Finish recovery and keep saved draft"
+                  : "Restore original files"}
+            </Button>
+          )}
+          {![
+            "prepared",
+            "restoring",
+            "native-refused",
+            "rolled-back",
+            "complete",
+            "native-confirmed",
+            "archived",
+            "rewound-unsent",
+          ].includes(op.phase) && (
+            <p>
+              The provider or send outcome needs reconciliation. The saved draft
+              can be copied; the operation will not be repeated automatically.
+            </p>
+          )}
+        </section>
+      ))}
       <footer>
-        <button className="act" onClick={onClose}>
+        <Button className="act" onClick={onClose}>
           Close
-        </button>
+        </Button>
       </footer>
     </dialog>,
     document.body,
@@ -156,9 +212,9 @@ function Archive({
         </article>
       ))}
       {more && (
-        <button className="act" disabled={busy} onClick={() => void load()}>
+        <Button className="act" disabled={busy} onClick={() => void load()}>
           Load more
-        </button>
+        </Button>
       )}
     </div>
   );

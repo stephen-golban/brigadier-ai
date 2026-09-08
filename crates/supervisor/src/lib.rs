@@ -22,6 +22,7 @@
 #![warn(missing_docs)]
 
 pub mod action;
+mod fork;
 pub mod batcher;
 pub mod error;
 pub mod loop_;

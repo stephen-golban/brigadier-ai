@@ -979,6 +979,15 @@ export const mockBridge: Bridge = {
    * null, and it **stays** `starting` until the first turn (`sendTurn` below is what announces
    * the child). No process is spawned and no model is called.
    */
+  async forkSession(sessionId) {
+    const parent = requireSession(sessionId);
+    if (!parent.view.provider_session_id) throw new AppError("not_resumable", "No saved conversation to fork");
+    const child = makeSession(parent.view.project_id!, parent.view.model ?? "claude-haiku-4-5", 0, null);
+    const items = conversations.get(sessionId) ?? [];
+    for (const item of items) appendChat(child.view.session_id, item.kind, item.body, item.id, item.parent_id);
+    return { ...child.view };
+  },
+
   async resumeSession(sessionId) {
     const s = requireSession(sessionId);
     if (s.view.provider_session_id === null) {

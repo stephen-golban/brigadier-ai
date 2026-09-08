@@ -29,15 +29,18 @@ export interface DockProps extends MessageEditProps {
     prompt: string;
     model: string | null;
     permissionMode: PermissionMode;
-  options?: AgentOptions;
-  isolated?: boolean;
+    options?: AgentOptions;
+    isolated?: boolean;
   }) => void | Promise<boolean>;
   onSend: (sessionId: SessionId, text: string) => void | Promise<boolean>;
   onInterrupt: (sessionId: SessionId) => void;
   onEnd: (sessionId: SessionId) => void;
   onKill: (sessionId: SessionId) => void;
   onResume: (sessionId: SessionId) => void;
-  onCleanup: (sessionId: SessionId, force: boolean) => Promise<WorktreeCleanup | null>;
+  onCleanup: (
+    sessionId: SessionId,
+    force: boolean,
+  ) => Promise<WorktreeCleanup | null>;
 }
 
 /** Last path segment, so a long cwd does not crowd the strip out. Full path stays in `title`. */
@@ -52,8 +55,11 @@ export function Dock(props: DockProps) {
   const cwd = session?.cwd ?? project?.root_path ?? null;
 
   return (
-    <section className={`dock ${session?"has-session":""}`} aria-label="the composer">
-      <div className="dock-context">
+    <section
+      className={`dock shrink-0 bg-input-shell px-5 pt-2 pb-4 [&>[data-slot=prompt-input]]:mx-auto [&>[data-slot=prompt-input]]:max-w-[780px] ${session ? "has-session" : ""}`}
+      aria-label="the composer"
+    >
+      <div className="dock-context mx-auto mb-2 flex max-w-[780px] items-center gap-2 text-xs text-text-secondary [&_svg]:size-4 [&>span]:inline-flex [&>span]:min-w-0 [&>span]:items-center [&>span]:gap-2">
         <span title={project?.root_path}>
           <span className="glyph">
             <ProjectIcon />
@@ -78,9 +84,19 @@ export function Dock(props: DockProps) {
         ) : null}
 
         <span className="grow" />
-        <SelectMenu label="Agent" value="claude" onChange={()=>{}} options={[{value:'claude',label:'Claude Code',description:'Connected local CLI. Uses your existing authentication.'}]}/>
-
-
+        <SelectMenu
+          label="Agent"
+          value="claude"
+          onChange={() => {}}
+          options={[
+            {
+              value: "claude",
+              label: "Claude Code",
+              description:
+                "Connected local CLI. Uses your existing authentication.",
+            },
+          ]}
+        />
       </div>
 
       {session === null ? (

@@ -1,3 +1,5 @@
+import { Checkbox } from "./controls/checkbox";
+import { Button } from "./controls/button";
 import { useState } from "react";
 import { ConfirmDialog } from "./ConfirmDialog";
 import {
@@ -46,33 +48,29 @@ export function SessionPreferences({
       onCancel={onClose}
       onConfirm={async () => onClose()}
       body={
-        <div className="commit-preferences">
+        <div className="commit-preferences flex flex-col gap-3 [&_label]:flex [&_label]:flex-col [&_label]:gap-2">
           <div className="segmented">
-            <button
+            <Button
               aria-pressed={scope === "global"}
               onClick={() => setScope("global")}
             >
               Global defaults
-            </button>
-            <button
+            </Button>
+            <Button
               aria-pressed={scope === "project"}
               onClick={() => setScope("project")}
             >
               This project
-            </button>
+            </Button>
           </div>
           {scope === "project" && (
-            <label>
-              <input
-                type="checkbox"
-                disabled={busy}
-                checked={!override}
-                onChange={(e) =>
-                  void save(e.target.checked ? null : { ...global })
-                }
-              />
+            <Checkbox
+              disabled={busy}
+              checked={!override}
+              onCheckedChange={(e) => void save(e ? null : { ...global })}
+            >
               Use global defaults
-            </label>
+            </Checkbox>
           )}
           <fieldset disabled={busy || (scope === "project" && !override)}>
             {(
@@ -85,16 +83,13 @@ export function SessionPreferences({
                 ],
               ] as const
             ).map(([key, label]) => (
-              <label key={key}>
-                <input
-                  type="checkbox"
-                  checked={settings[key]}
-                  onChange={(e) =>
-                    void save({ ...settings, [key]: e.target.checked })
-                  }
-                />
+              <Checkbox
+                key={key}
+                checked={settings[key]}
+                onCheckedChange={(e) => void save({ ...settings, [key]: e })}
+              >
                 {label}
-              </label>
+              </Checkbox>
             ))}
           </fieldset>
           <p>
@@ -102,7 +97,7 @@ export function SessionPreferences({
             off child management also requires confirmation for child sessions.
           </p>
           {error && (
-            <p className="inline-error" role="alert">
+            <p className="inline-error my-2 text-[13px] text-error" role="alert">
               {error}
             </p>
           )}
