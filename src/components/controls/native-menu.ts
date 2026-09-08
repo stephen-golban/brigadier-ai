@@ -3,7 +3,7 @@ import type { Image } from "@tauri-apps/api/image";
 import { nativeMenuImage } from "./native-menu-image";
 import { isTauri } from "@tauri-apps/api/core";
 import { LogicalPosition } from "@tauri-apps/api/dpi";
-import { Menu, type MenuOptions } from "@tauri-apps/api/menu";
+import { Menu, Submenu, type MenuOptions } from "@tauri-apps/api/menu";
 
 export type NativeMenuEntry =
   | { separator: true }
@@ -17,27 +17,47 @@ export type NativeMenuEntry =
       items?: NativeMenuEntry[];
     };
 
-function options(
+async function options(
   entries: NativeMenuEntry[],
   images: Map<ReactElement, Image>,
-): NonNullable<MenuOptions["items"]> {
-  return entries.map((entry) => {
-    if ("separator" in entry) return { item: "Separator" };
-    if (entry.items)
-      return {
+  submenus: Submenu[],
+): Promise<NonNullable<MenuOptions["items"]>> {
+  const result: NonNullable<MenuOptions["items"]> = [];
+  for (const entry of entries) {
+    if ("separator" in entry) {
+      result.push({ item: "Separator" });
+      continue;
+    }
+    if (entry.items) {
+      const opts = {
         text: entry.text,
         enabled: entry.enabled,
-        items: options(entry.items, images),
+        items: await options(entry.items, images, submenus),
       };
-    return {
+      if (!entry.icon) {
+        result.push(opts);
+        continue;
+      }
+      // Tauri's untagged item payload checks Icon before Submenu. Explicitly construct
+      // icon-bearing submenus, otherwise the backend silently drops their children.
+      const submenu = await Submenu.new({
+        ...opts,
+        icon: images.get(entry.icon),
+      });
+      submenus.push(submenu);
+      result.push(submenu);
+      continue;
+    }
+    result.push({
       text: entry.text,
       enabled: entry.enabled,
       ...(entry.checked === undefined ? {} : { checked: entry.checked }),
       ...(entry.icon ? { icon: images.get(entry.icon) } : {}),
       accelerator: entry.accelerator,
       action: entry.action,
-    };
-  });
+    });
+  }
+  return result;
 }
 
 /** Returns false when the caller should display its existing web menu. */
@@ -49,6 +69,7 @@ export async function showNativeMenu(
     return false;
   let menu: Menu | undefined;
   const images = new Map<ReactElement, Image>();
+  const submenus: Submenu[] = [];
   try {
     const prepare = async (items: NativeMenuEntry[]) => {
       for (const entry of items) {
@@ -64,7 +85,7 @@ export async function showNativeMenu(
       )
     )
       await prepare(entries);
-    menu = await Menu.new({ items: options(entries, images) });
+    menu = await Menu.new({ items: await options(entries, images, submenus) });
     if (!anchor.isConnected) return true;
     const rect = anchor.getBoundingClientRect();
     await menu.popup(new LogicalPosition(rect.left, rect.bottom + 4));
@@ -73,6 +94,7 @@ export async function showNativeMenu(
     return false;
   } finally {
     await menu?.close().catch(() => {});
+    for (const submenu of submenus) await submenu.close().catch(() => {});
     await Promise.all(
       [...images.values()].map((image) => image.close().catch(() => {})),
     );

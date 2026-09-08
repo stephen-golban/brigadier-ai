@@ -403,6 +403,7 @@ function nativeEntries(nodes: ReactNode): NativeMenuEntry[] | null {
       result.push({
         text: trigger.props.textValue ?? label(trigger.props.children),
         enabled: !(trigger.props.isDisabled || trigger.props.disabled),
+        icon: trigger.props.nativeIcon,
         items,
       });
     } else if (node.type === Item) {

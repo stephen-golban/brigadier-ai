@@ -1,17 +1,12 @@
 import { useSessionArchive } from "../sessionArchive";
 import { setSessionArchived } from "../sessionNavigation";
-import { Plus, Folders as FoldersIcon } from "lucide-react";
-import { EditIcon } from "./EditIcon";
+import { Folders as FoldersIcon, Terminal as TerminalIcon } from "lucide-react";
 import { SessionMenu } from "./SessionMenu";
 import { working } from "../attention";
-import { MoreIcon } from "./NavigationIcons";
-import { FolderIcon, SidebarIcon } from "./NavigationIcons";
+import { SidebarIcon } from "./NavigationIcons";
 import { SearchIcon } from "./SearchIcon";
 import { Tabs } from "./controls/tabs";
-import { DropdownContent } from "./controls/menu";
-import { Dropdown, Label, Separator } from "./controls/overlay";
 import { Input } from "./controls/input";
-import { Kbd } from "./controls/kbd";
 import { Button } from "./controls/button";
 import { isTrashed, type NavigationData } from "../navigationApi";
 import { hasSavedEdits } from "../workbenchState";
@@ -21,8 +16,6 @@ import { documentCommands } from "../documentCommands";
 import { documentKey } from "../workbenchState";
 import { ClockCounterClockwiseIcon } from "@phosphor-icons/react";
 import {
-  lazy,
-  Suspense,
   useCallback,
   useEffect,
   useRef,
@@ -32,7 +25,6 @@ import {
 } from "react";
 import {
   XIcon,
-  TerminalIcon,
   FileIcon,
   GitDiffIcon,
 } from "@phosphor-icons/react";
@@ -50,13 +42,16 @@ import {
 } from "../workbenchApi";
 import {
   useStoredState,
+  workspaceKey,
+  sessionLayoutsKey,
+  migrateSessionLayouts,
   type ProjectTab,
   type ProjectLayout,
 } from "../workbenchState";
 import { WorkspaceTools, type WorkspaceMode } from "./WorkspaceTools";
 import { DocumentTab } from "./DocumentTab";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
-const TerminalView = lazy(() => import("./TerminalView"));
+import { TerminalDock } from "./TerminalDock";
 const empty: ProjectLayout = { tabs: [], active: null };
 const initial: WorkbenchData = {
   notes: [],
@@ -86,7 +81,7 @@ export function ProjectWorkbench({
   sessions: Record<string, SessionRuntime>;
   selectedSessionId: string | null;
   onSelectSession: (id: SessionId | null) => void;
-  onForkSession?: (id: SessionId) => Promise<void>;
+  onForkSession?: (id: SessionId, newWorktree: boolean) => Promise<void>;
   workspaceOpen: boolean;
   setWorkspaceOpen: (open: boolean) => void;
   models: ModelInfo[];
@@ -106,9 +101,10 @@ export function ProjectWorkbench({
   );
   const [sessionPrefs, setSessionPrefs] = useState(false);
   const [dataLoaded, setDataLoaded] = useState(false);
+  const [legacyLayouts] = useState(migrateSessionLayouts);
   const [layouts, setLayouts] = useStoredState<Record<string, ProjectLayout>>(
-    "brigadier:project-tabs:v1",
-    {},
+    sessionLayoutsKey,
+    legacyLayouts,
   );
   // Sidebar deletion is separate from closing a tab. Retire persisted workspace tabs only
   // after deletion succeeds, so removed sessions cannot reopen through saved layouts.
@@ -127,7 +123,11 @@ export function ProjectWorkbench({
       setLayouts((old) =>
         Object.fromEntries(
           Object.entries(old)
-            .filter(([id]) => id !== projectId)
+            .filter(
+              ([, saved]) =>
+                !projectId ||
+                !saved.tabs.some((t) => t.context.projectId === projectId),
+            )
             .map(([id, layout]) => {
               for (const tab of layout.tabs)
                 if (
@@ -149,6 +149,7 @@ export function ProjectWorkbench({
               return [
                 id,
                 {
+                  ...layout,
                   tabs,
                   active: tabs.some((tab) => tab.id === layout.active)
                     ? layout.active
@@ -189,7 +190,7 @@ export function ProjectWorkbench({
     setPanelWidth(Math.max(240, Math.min(900, value)));
 
   const [, setDocumentRevision] = useState(0);
-  const closedTabs = useRef<ProjectTab[]>([]);
+  const closedTabs = useRef<(ProjectTab & { owner: string })[]>([]);
   const closeAfterSaveAs = useRef<string | null>(null);
   useEffect(() => {
     const cancel = () => {
@@ -205,9 +206,18 @@ export function ProjectWorkbench({
   const terminalIds = useRef(new Map<string, string>());
   const tabStrip = useRef<HTMLDivElement>(null);
   const focusAfterClose = useRef(false);
-  const layoutKey = project?.id ?? "__notes__";
+  const layoutKey = workspaceKey(project?.id ?? "__notes__", selectedSessionId);
+  useEffect(() => {
+    if (project)
+      setLayouts((old) =>
+        old[layoutKey]
+          ? old
+          : { ...old, [layoutKey]: { tabs: [], active: null } },
+      );
+  }, [layoutKey, project?.id]);
   const storedLayout = layouts[layoutKey] ?? empty;
   const visibleTabs = storedLayout.tabs
+    .filter((t) => t.kind !== "terminal")
     .filter((t) => !(t.kind === "session" && archive.entries[t.path]))
     .filter(
       (t) =>
@@ -225,9 +235,11 @@ export function ProjectWorkbench({
   const layout = {
     ...storedLayout,
     tabs: visibleTabs,
-    active: visibleTabs.some((t) => t.id === storedLayout.active)
-      ? storedLayout.active
-      : (visibleTabs[visibleTabs.length - 1]?.id ?? null),
+    active:
+      storedLayout.active === null ||
+      visibleTabs.some((t) => t.id === storedLayout.active)
+        ? storedLayout.active
+        : (visibleTabs[visibleTabs.length - 1]?.id ?? null),
   };
   useEffect(() => {
     if (focusAfterClose.current) {
@@ -238,7 +250,7 @@ export function ProjectWorkbench({
       (
         target ??
         tabStrip.current?.parentElement?.querySelector<HTMLElement>(
-          '[aria-label="New tab"]',
+          '[aria-label="Show conversation"]',
         )
       )?.focus();
     }
@@ -248,27 +260,9 @@ export function ProjectWorkbench({
     !!selected && !["session", "draft"].includes(selected.kind);
   const panelTab = resourceActive ? selected : undefined;
   useEffect(() => {
-    if (!project) return;
-    const saved = layouts[project.id];
-    const savedPanel = saved?.tabs.find(
-      (t) => t.id === saved.active && !["session", "draft"].includes(t.kind),
-    );
-    if (savedPanel) {
-      return;
-    }
-    const t = saved?.tabs.find(
-      (t) =>
-        t.id === saved.active &&
-        t.kind === "session" &&
-        !archive.entries[t.path],
-    );
-    if (!selectedSessionId && t?.kind === "session" && sessions[t.path])
-      onSelectSession(t.path);
-  }, [project?.id]);
-  useEffect(() => {
     if (selectedSessionId && archive.entries[selectedSessionId])
-      onSelectSession(selected?.kind === "session" ? selected.path : null);
-  }, [archive, selectedSessionId, selected?.id]);
+      onSelectSession(null);
+  }, [archive, selectedSessionId]);
   const activeSession =
     session &&
     session.projectId === project?.id &&
@@ -338,32 +332,40 @@ export function ProjectWorkbench({
       sessions[selectedSessionId]?.projectId !== project.id
     )
       return;
-    const s = sessions[selectedSessionId]!;
+    const current = sessions[selectedSessionId]!;
     setLayouts((old) => {
-      const l = old[project.id] ?? empty;
+      const l = old[layoutKey] ?? empty;
       const id = `session:${selectedSessionId}`;
+      if (l.tabs.some((t) => t.id === id)) return old;
       return {
         ...old,
-        [project.id]: {
-          tabs: l.tabs.some((t) => t.id === id)
-            ? l.tabs
-            : [
-                ...l.tabs.filter((t) => t.kind !== "draft"),
-                {
-                  id,
-                  kind: "session",
-                  path: selectedSessionId,
-                  context: {
-                    projectId: project.id,
-                    sessionId: selectedSessionId,
-                  },
-                  root: s.cwd ?? project.root_path,
-                },
-              ],
-          active: id,
+        [layoutKey]: {
+          ...l,
+          tabs: [
+            {
+              id,
+              kind: "session",
+              path: selectedSessionId,
+              context: { projectId: project.id, sessionId: selectedSessionId },
+              root: current.cwd ?? project.root_path,
+            },
+            ...l.tabs.filter((t) => t.kind !== "draft"),
+          ],
+          active: l.active ?? id,
         },
       };
     });
+    try {
+      const last = JSON.parse(
+        localStorage.getItem("brigadier:last-project-session") ?? "{}",
+      );
+      localStorage.setItem(
+        "brigadier:last-project-session",
+        JSON.stringify({ ...last, [project.id]: selectedSessionId }),
+      );
+    } catch {
+      /* selection is still available in memory */
+    }
   }, [selectedSessionId, project?.id]);
   // Keep the last status visible while refreshing the same workspace.
   useEffect(() => {
@@ -389,21 +391,6 @@ export function ProjectWorkbench({
     const timer = setInterval(refresh, 5000);
     return () => clearInterval(timer);
   }, [project?.id]);
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const id = (e as CustomEvent<string>).detail;
-      if (project && sessions[id]?.projectId === project.id)
-        setLayouts((old) => {
-          const l = old[project.id] ?? empty;
-          return l.tabs.some((t) => t.id === `session:${id}`)
-            ? { ...old, [project.id]: { ...l, active: `session:${id}` } }
-            : old;
-        });
-    };
-    window.addEventListener("workbench-select-session", handler);
-    return () =>
-      window.removeEventListener("workbench-select-session", handler);
-  }, [project?.id, sessions]);
   const open = useCallback(
     (
       path: string,
@@ -430,7 +417,7 @@ export function ProjectWorkbench({
         line: line ?? (suffix ? Number(suffix[1]) : undefined),
       };
       setLayouts((old) => {
-        const l = old[project.id] ?? empty;
+        const l = old[layoutKey] ?? empty;
         // A Files menu tab is a placeholder for its first document. Toolbar
         // panel toggles never create a placeholder or change the selected tab.
         const placeholder = l.tabs.find(
@@ -444,10 +431,10 @@ export function ProjectWorkbench({
           : placeholder
             ? l.tabs.map((t) => (t.id === placeholder.id ? tab : t))
             : [...l.tabs, tab];
-        return { ...old, [project.id]: { tabs, active: id } };
+        return { ...old, [layoutKey]: { ...l, tabs, active: id } };
       });
     },
-    [project?.id, context.sessionId, root, setLayouts],
+    [layoutKey, project?.id, context.sessionId, root, setLayouts],
   );
   useEffect(() => {
     const handler = (e: Event) => {
@@ -501,6 +488,7 @@ export function ProjectWorkbench({
       return {
         ...old,
         [layoutKey]: {
+          ...l,
           tabs: l.tabs.some((t) => t.id === tab.id) ? l.tabs : [...l.tabs, tab],
           active: tab.id,
         },
@@ -522,16 +510,19 @@ export function ProjectWorkbench({
     if (kind === "files") {
       setMode("files");
       setWorkspaceOpen(true);
+      return;
+    }
+    if (kind === "terminal") {
+      window.dispatchEvent(new Event("workbench-terminal-create"));
+      return;
     }
     if (kind === "session") {
       onSelectSession(null);
-      add({
-        id: `draft:${project.id}`,
-        kind: "draft",
-        path: "New session",
-        context: { projectId: project.id, sessionId: null },
-        root: project.root_path,
-      });
+      const key = workspaceKey(project.id, null);
+      setLayouts((old) => ({
+        ...old,
+        [key]: old[key] ?? { tabs: [], active: null },
+      }));
       setTimeout(
         () => window.dispatchEvent(new Event("brigadier-new-session")),
         0,
@@ -560,12 +551,7 @@ export function ProjectWorkbench({
     add({
       id: crypto.randomUUID(),
       kind,
-      path:
-        kind === "terminal"
-          ? `Terminal ${layout.tabs.filter((t) => t.kind === "terminal").length + 1}`
-          : kind === "files"
-            ? "Open file"
-            : "Untitled",
+      path: "Untitled",
       context,
       root,
     });
@@ -581,7 +567,11 @@ export function ProjectWorkbench({
     else if (t.kind === "draft") onSelectSession(null);
   };
   const remove = (tab: ProjectTab) => {
-    const id = tab.context.projectId || "__notes__";
+    const id = layouts[layoutKey]?.tabs.some((t) => t.id === tab.id)
+      ? layoutKey
+      : (Object.keys(layouts).find((key) =>
+          layouts[key].tabs.some((t) => t.id === tab.id),
+        ) ?? layoutKey);
     const l = layouts[id] ?? empty;
     focusAfterClose.current = !!tabStrip.current?.contains(
       document.activeElement,
@@ -594,33 +584,52 @@ export function ProjectWorkbench({
       if (next?.kind === "session") onSelectSession(next.path);
       else if (next?.kind === "draft" || !next) onSelectSession(null);
     }
-    setLayouts((old) => ({ ...old, [id]: { tabs, active } }));
+    setLayouts((old) => ({ ...old, [id]: { ...l, tabs, active } }));
   };
   const closing = useRef(false);
   const close = async (tab: ProjectTab) => {
     if (closing.current || confirm) return;
     if (tab.kind === "session") {
       const related = new Set([tab.path]);
-      for (let before = -1; before !== related.size; ) {
+      for (let before = -1; before !== related.size;) {
         before = related.size;
         for (const [child, parent] of Object.entries(peers.origins))
           if (related.has(parent)) related.add(child);
       }
       const archiveAndClose = async () => {
         await setSessionArchived(tab.path, true);
-        closedTabs.current = [
-          ...closedTabs.current.filter((t) => t.id !== tab.id),
-          tab,
-        ].slice(-20);
-        remove(tab);
+        if (selectedSessionId === tab.path) onSelectSession(null);
         setConfirm(null);
       };
-      if ([...related].some((id) => working(sessions[id]))) {
+      const ownedTerminals = Object.values(layouts)
+        .flatMap((l) => l.tabs)
+        .filter(
+          (t) =>
+            t.kind === "terminal" &&
+            !!t.context.sessionId &&
+            related.has(t.context.sessionId),
+        );
+      let terminalBusy = false;
+      try {
+        const info = await Promise.all(
+          ownedTerminals.map((t) => {
+            const id = terminalIds.current.get(t.id);
+            return id
+              ? workbenchApi.terminalInfo(id)
+              : Promise.resolve({ busy: false });
+          }),
+        );
+        terminalBusy = info.some((t) => t.busy);
+      } catch (e) {
+        setError(errorMessage(e));
+        return;
+      }
+      if (terminalBusy || [...related].some((id) => working(sessions[id]))) {
         setConfirm({
           native: true,
           title: "Stop and archive session?",
-          body: "Closing this tab will stop its AI work and child agents, then archive the conversation in History.",
-          confirmLabel: "Stop and close",
+          body: "Archiving stops this session’s AI work, child agents, and terminals. File tabs and drafts are kept in History.",
+          confirmLabel: "Stop and archive",
           onCancel: () => setConfirm(null),
           onConfirm: archiveAndClose,
         });
@@ -635,35 +644,6 @@ export function ProjectWorkbench({
         }
       }
       return;
-    }
-    if (tab.kind === "terminal") {
-      const id = terminalIds.current.get(tab.id);
-      if (id) {
-        try {
-          closing.current = true;
-          const info = await workbenchApi.terminalInfo(id);
-          if (info.busy) {
-            setConfirm({
-              native: true,
-              title: "Close running terminal?",
-              body: "Closing this terminal will stop its running command.",
-              confirmLabel: "Stop and close",
-              onCancel: () => setConfirm(null),
-              onConfirm: async () => {
-                await workspaceApi.closeTerminal(id);
-                remove(tab);
-                setConfirm(null);
-              },
-            });
-            return;
-          }
-        } catch (e) {
-          setError(errorMessage(e));
-          return;
-        } finally {
-          closing.current = false;
-        }
-      }
     }
     const dirty =
       documentCommands.get(tab.id)?.dirty ??
@@ -710,7 +690,7 @@ export function ProjectWorkbench({
     }
     closedTabs.current = [
       ...closedTabs.current.filter((t) => t.id !== tab.id),
-      tab,
+      { ...tab, owner: layoutKey },
     ].slice(-20);
     remove(tab);
   };
@@ -722,7 +702,11 @@ export function ProjectWorkbench({
       layout.tabs.find((t) => t.kind === "session") ??
       layout.tabs.find((t) => t.kind === "draft");
     if (threadTab) select(threadTab);
-    else create("session");
+    else
+      setLayouts((old) => ({
+        ...old,
+        [layoutKey]: { ...(old[layoutKey] ?? empty), active: null },
+      }));
   };
   const attach = (path: string, content: string) => {
     revealConversation();
@@ -776,6 +760,7 @@ export function ProjectWorkbench({
           return [
             id,
             {
+              ...l,
               tabs,
               active: tabs.some((t) => t.id === l.active)
                 ? l.active
@@ -803,6 +788,20 @@ export function ProjectWorkbench({
   };
   const [, setReviewTurn] = useState<string | null>(null);
   const showConversation = !resourceActive;
+  const navigationTabs: ProjectTab[] = layout.tabs.some(
+    (t) => t.kind === "session" || t.kind === "draft",
+  )
+    ? layout.tabs
+    : [
+        {
+          id: `conversation:${layoutKey}`,
+          kind: "draft",
+          path: "New session",
+          context,
+          root,
+        },
+        ...layout.tabs,
+      ];
   useEffect(() => {
     const modalOpen = () =>
       !!document.querySelector(
@@ -836,6 +835,7 @@ export function ProjectWorkbench({
             return [
               key,
               {
+                ...l,
                 tabs,
                 active: tabs.some((t) => t.id === l.active)
                   ? l.active
@@ -849,6 +849,12 @@ export function ProjectWorkbench({
     const documentState = () => setDocumentRevision((n) => n + 1);
     const key = (e: KeyboardEvent) => {
       if (e.isComposing) return;
+      if (
+        e.target instanceof HTMLElement &&
+        e.target.closest(".terminal-dock") &&
+        e.code !== "KeyW"
+      )
+        return;
       const consume = () => {
         e.preventDefault();
         e.stopPropagation();
@@ -884,10 +890,13 @@ export function ProjectWorkbench({
             : e.code === "BracketLeft" || e.key === "PageUp"
               ? -1
               : 1;
-        const at = layout.tabs.findIndex((t) => t.id === layout.active);
+        const at = Math.max(
+          0,
+          navigationTabs.findIndex((t) => t.id === layout.active),
+        );
         const next =
-          layout.tabs[
-            (at + direction + layout.tabs.length) % layout.tabs.length
+          navigationTabs[
+            (at + direction + navigationTabs.length) % navigationTabs.length
           ];
         if (next) select(next);
         return;
@@ -898,11 +907,15 @@ export function ProjectWorkbench({
         window.dispatchEvent(new Event("brigadier-settings"));
       } else if (e.key.toLowerCase() === "j" && !e.shiftKey) {
         consume();
-        create("terminal");
+        window.dispatchEvent(new Event("workbench-terminal-toggle"));
       } else if (e.key.toLowerCase() === "t") {
         consume();
         if (e.shiftKey) {
-          const previous = closedTabs.current.pop();
+          const index = closedTabs.current
+            .map((t) => t.owner)
+            .lastIndexOf(layoutKey);
+          const previous =
+            index >= 0 ? closedTabs.current.splice(index, 1)[0] : undefined;
           if (
             previous &&
             (!previous.context.sessionId ||
@@ -920,7 +933,8 @@ export function ProjectWorkbench({
         } else create("session");
       } else if (e.key.toLowerCase() === "w") {
         consume();
-        if (selected) void close(selected);
+        if (selected && !["session", "draft"].includes(selected.kind))
+          void close(selected);
       } else if (e.key.toLowerCase() === "o") {
         consume();
         setOpenPath("");
@@ -928,8 +942,8 @@ export function ProjectWorkbench({
         consume();
         const tab =
           e.key === "9"
-            ? layout.tabs[layout.tabs.length - 1]
-            : layout.tabs[Number(e.key) - 1];
+            ? navigationTabs[navigationTabs.length - 1]
+            : navigationTabs[Number(e.key) - 1];
         if (tab) select(tab);
       }
     };
@@ -938,7 +952,8 @@ export function ProjectWorkbench({
         !document.querySelector(
           'dialog[open], [role="dialog"], .settings-overlay',
         ) &&
-        selected
+        selected &&
+        !["session", "draft"].includes(selected.kind)
       )
         void close(selected);
     };
@@ -981,8 +996,7 @@ export function ProjectWorkbench({
   useEffect(() => {
     window.dispatchEvent(
       new CustomEvent("workbench-active-session", {
-        detail:
-          showConversation && activeSession ? activeSession.sessionId : null,
+        detail: activeSession ? activeSession.sessionId : null,
       }),
     );
   }, [showConversation, activeSession?.sessionId]);
@@ -1032,192 +1046,107 @@ export function ProjectWorkbench({
             <SidebarIcon size={19} />
           </Button>
         )}
-        {!layout.tabs.length && (
-          <span className="truncate text-sm text-text">
-            {project
-              ? (data.projectNames?.[project.id] ?? project.name)
-              : "Brigadier"}
-          </span>
+        <div className="session-heading flex min-w-0 shrink items-center gap-1">
+          <Button
+            aria-label="Show conversation"
+            title={
+              activeSession
+                ? peers.titles[activeSession.sessionId]
+                : "New session"
+            }
+            className={`session-title min-w-0 truncate text-sm ${showConversation ? "text-text" : "text-text-secondary"}`}
+            aria-pressed={showConversation}
+            onClick={revealConversation}
+          >
+            {activeSession
+              ? (peers.titles[activeSession.sessionId] ??
+                `Session ${activeSession.sessionId.slice(-6)}`)
+              : "New session"}
+          </Button>
+          {activeSession && (
+            <SessionMenu
+              key={activeSession.sessionId}
+              sessionId={activeSession.sessionId}
+              title={
+                peers.titles[activeSession.sessionId] ??
+                `Session ${activeSession.sessionId.slice(-6)}`
+              }
+              canFork={
+                !!activeSession.providerSessionId && !working(activeSession)
+              }
+              onFork={
+                onForkSession
+                  ? (newWorktree) =>
+                      onForkSession(activeSession.sessionId, newWorktree)
+                  : undefined
+              }
+              onArchive={() =>
+                void close({
+                  id: `session:${activeSession.sessionId}`,
+                  kind: "session",
+                  path: activeSession.sessionId,
+                  context: {
+                    projectId: project?.id ?? "",
+                    sessionId: activeSession.sessionId,
+                  },
+                  root,
+                })
+              }
+            />
+          )}
+        </div>
+        {layout.tabs.some((t) => !["session", "draft"].includes(t.kind)) && (
+          <div className="session-tab-divider h-5 w-px shrink-0 bg-hairline" />
         )}
         <Tabs.ListContainer
           ref={tabStrip}
           className="main-tab-strip flex min-w-0 items-center gap-1"
         >
-          <Tabs.List aria-label="Project tabs" className="shrink-0 gap-1">
-            {layout.tabs.map((t) => {
-              const title =
-                t.kind === "session"
-                  ? (peers.titles[t.path] ?? `Session ${t.path.slice(-6)}`)
-                  : t.kind === "draft"
-                    ? "New session"
-                    : t.kind === "note"
-                      ? (data.notes.find((n) => `note:${n.id}` === t.id)
-                          ?.title ?? t.path)
-                      : t.path.split("/").pop() || "Open file";
-              const Icon =
-                t.kind === "session" || t.kind === "draft"
-                  ? EditIcon
-                  : t.kind === "terminal"
-                    ? TerminalIcon
-                    : FileIcon;
-              return (
-                <Tabs.Tab
-                  key={t.id}
-                  id={t.id}
-                  aria-label={title}
-                  className="workbench-tab shrink-0"
-                  title={title}
-                >
-                  <Icon size={14} className="shrink-0" />
-                  <span className="max-w-[160px] truncate">{title}</span>
-                  {(documentCommands.get(t.id)?.dirty ?? hasSavedEdits(t)) && (
-                    <i
-                      className="size-1.5 shrink-0 rounded-full bg-text-secondary"
-                      aria-label="Unsaved changes"
-                    />
-                  )}
-                  <span
-                    className="tab-menu shrink-0"
-                    onClick={(event) => event.stopPropagation()}
+          <Tabs.List aria-label="Open files" className="shrink-0 gap-1">
+            {layout.tabs
+              .filter((t) => !["session", "draft"].includes(t.kind))
+              .map((t, index) => {
+                const title =
+                  t.kind === "note"
+                    ? (data.notes.find((n) => `note:${n.id}` === t.id)?.title ??
+                      t.path)
+                    : t.path.split("/").pop() || "Untitled";
+                return (
+                  <Tabs.Tab
+                    tabIndex={!resourceActive && index === 0 ? 0 : undefined}
+                    key={t.id}
+                    id={t.id}
+                    aria-label={title}
+                    title={t.path}
+                    className="workbench-tab shrink-0"
                   >
-                    {t.kind === "session" ? (
-                      <SessionMenu
-                        sessionId={t.path}
-                        title={title}
-                        canFork={
-                          !!sessions[t.path]?.providerSessionId &&
-                          !working(sessions[t.path])
-                        }
-                        onFork={
-                          onForkSession
-                            ? () => onForkSession(t.path)
-                            : undefined
-                        }
-                        onArchive={() => {
-                          void close(t);
-                        }}
-                        onHistory={
-                          archivedSessions.length
-                            ? () => {
-                                if (layout.active !== t.id) select(t);
-                                setHistory(true);
-                                setWorkspaceOpen(true);
-                              }
-                            : undefined
-                        }
-                      />
+                    {t.kind === "diff" ? (
+                      <GitDiffIcon size={14} />
                     ) : (
-                      <Dropdown native>
-                        <Button
-                          size="icon"
-                          aria-label={
-                            t.kind === "draft"
-                              ? "Workspace actions"
-                              : `Tab actions ${title}`
-                          }
-                          title="Tab actions"
-                        >
-                          <MoreIcon />
-                        </Button>
-                        <DropdownContent className="w-48">
-                          {t.kind === "draft" &&
-                            archivedSessions.length > 0 && (
-                              <>
-                                <Dropdown.Item
-                                  onAction={() => {
-                                    select(t);
-                                    setHistory(true);
-                                    setWorkspaceOpen(true);
-                                  }}
-                                >
-                                  <ClockCounterClockwiseIcon />
-                                  <Label>Session history</Label>
-                                </Dropdown.Item>
-                                <Separator />
-                              </>
-                            )}
-                          {["files", "file", "untitled"].includes(t.kind) && (
-                            <Dropdown.Item onAction={() => create("untitled")}>
-                              <Plus />
-                              <Label>New file</Label>
-                            </Dropdown.Item>
-                          )}
-                          <Dropdown.Item onAction={() => void close(t)}>
-                            <XIcon />
-                            <Label>Close tab</Label>
-                          </Dropdown.Item>
-                        </DropdownContent>
-                      </Dropdown>
+                      <FileIcon size={14} />
                     )}
-                  </span>
-                  <Button
-                    size="icon"
-                    aria-label={`Close ${title}`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void close(t);
-                    }}
-                  >
-                    <XIcon size={10} />
-                  </Button>
-                </Tabs.Tab>
-              );
-            })}
+                    <span className="max-w-[160px] truncate">{title}</span>
+                    {(documentCommands.get(t.id)?.dirty ??
+                      hasSavedEdits(t)) && (
+                      <i
+                        className="size-1.5 rounded-full bg-text-secondary"
+                        aria-label="Unsaved changes"
+                      />
+                    )}
+                    <Button
+                      size="icon"
+                      aria-label={`Close ${title}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void close(t);
+                      }}
+                    >
+                      <XIcon size={10} />
+                    </Button>
+                  </Tabs.Tab>
+                );
+              })}
           </Tabs.List>
-          <Dropdown native>
-            <Button
-              size="icon"
-              aria-label="New tab"
-              title="New tab (⌘T / Ctrl+T)"
-              disabled={!project}
-            >
-              <Plus />
-            </Button>
-            <DropdownContent className="w-52">
-              <Dropdown.Item
-                id="session"
-                textValue="Session"
-                aria-label="Session"
-                nativeIcon={<EditIcon />}
-                accelerator="CmdOrCtrl+T"
-                onAction={() => create("session")}
-              >
-                <EditIcon />
-                <Label>Session</Label>
-                <Kbd className="ml-auto text-[11px]">
-                  {navigator.platform.startsWith("Mac") ? "⌘T" : "Ctrl T"}
-                </Kbd>
-              </Dropdown.Item>
-              <Dropdown.Item
-                id="terminal"
-                textValue="Terminal"
-                aria-label="Terminal"
-                nativeIcon={<TerminalIcon />}
-                accelerator="CmdOrCtrl+J"
-                onAction={() => create("terminal")}
-              >
-                <TerminalIcon />
-                <Label>Terminal</Label>
-                <Kbd className="ml-auto text-[11px]">
-                  {navigator.platform.startsWith("Mac") ? "⌘J" : "Ctrl J"}
-                </Kbd>
-              </Dropdown.Item>
-              <Dropdown.Item
-                id="files"
-                textValue="Files"
-                aria-label="Files"
-                nativeIcon={<FolderIcon />}
-                accelerator="CmdOrCtrl+Alt+F"
-                onAction={() => create("files")}
-              >
-                <FolderIcon />
-                <Label>Files</Label>
-                <Kbd className="ml-auto text-[11px]">
-                  {navigator.platform.startsWith("Mac") ? "⌥⌘F" : "Ctrl Alt F"}
-                </Kbd>
-              </Dropdown.Item>
-            </DropdownContent>
-          </Dropdown>
         </Tabs.ListContainer>
 
         <span className="grow" />
@@ -1261,6 +1190,18 @@ export function ProjectWorkbench({
               )}
             </Button>
           ))}
+          <Button
+            size="icon"
+            aria-label="Terminal"
+            title="Toggle terminal (⌃` / ⌘J)"
+            disabled={!project}
+            aria-pressed={!!storedLayout.terminalOpen}
+            onClick={() =>
+              window.dispatchEvent(new Event("workbench-terminal-toggle"))
+            }
+          >
+            <TerminalIcon size={18} />
+          </Button>
           {archivedSessions.length > 0 && (
             <Button
               size="icon"
@@ -1339,8 +1280,9 @@ export function ProjectWorkbench({
           </span>
         </div>
       )}
-      <Tabs.Panel
-        id={layout.active ?? ""}
+      <div
+        role="region"
+        aria-label={resourceActive ? "Document" : "Conversation"}
         className={`workbench-body flex min-h-0 flex-1 overflow-hidden ${panelVisible ? "has-workspace" : ""}`}
       >
         <div
@@ -1414,40 +1356,6 @@ export function ProjectWorkbench({
           className="workbench-document flex min-h-0 min-w-0 flex-1 flex-col"
           hidden={!resourceActive}
         >
-          {Object.values(layouts)
-            .flatMap((l) => l.tabs)
-            .filter((t) => t.kind === "terminal")
-            .map((t) => (
-              <div
-                className="terminal-surface h-full min-h-0 overflow-hidden"
-                key={t.id}
-                hidden={
-                  !resourceActive ||
-                  selected?.id !== t.id ||
-                  t.context.projectId !== project?.id
-                }
-              >
-                <Suspense
-                  fallback={
-                    <p className="p-3 text-text-secondary">Loading terminal…</p>
-                  }
-                >
-                  <TerminalView
-                    context={t.context}
-                    visible={
-                      resourceActive &&
-                      selected?.id === t.id &&
-                      t.context.projectId === project?.id
-                    }
-                    tabId={t.id}
-                    onReady={(id) => {
-                      if (id) terminalIds.current.set(t.id, id);
-                      else terminalIds.current.delete(t.id);
-                    }}
-                  />
-                </Suspense>
-              </div>
-            ))}
           {selected?.kind === "files" && (
             <div className="open-file-empty flex flex-1 flex-col items-center justify-center gap-3 text-text-secondary">
               <FoldersIcon size={32} />
@@ -1574,7 +1482,32 @@ export function ProjectWorkbench({
             </div>
           </aside>
         )}
-      </Tabs.Panel>
+      </div>
+      {Object.entries(layouts).map(([key, saved]) => {
+        const [projectId, sessionId] = JSON.parse(key) as [
+          string,
+          string | null,
+        ];
+        return (
+          <TerminalDock
+            key={key}
+            active={key === layoutKey}
+            suspended={!!(sessionId && archive.entries[sessionId])}
+            context={{ projectId, sessionId }}
+            layout={saved}
+            onChange={(update) =>
+              setLayouts((old) => ({
+                ...old,
+                [key]: update(old[key] ?? empty),
+              }))
+            }
+            onReady={(tabId, id) => {
+              if (id) terminalIds.current.set(tabId, id);
+              else terminalIds.current.delete(tabId);
+            }}
+          />
+        );
+      })}
       {sessionPrefs && project && (
         <SessionPreferences
           projectId={project.id}

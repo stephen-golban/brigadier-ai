@@ -1,9 +1,10 @@
-import { useState } from "react";
-import { GitBranch, History } from "lucide-react";
+import { useEffect, useState } from "react";
+import { GitBranch, Laptop, ArrowUpRight } from "lucide-react";
 import { MoreIcon, PinIcon } from "./NavigationIcons";
 import { EditIcon } from "./EditIcon";
 import { ArchiveIcon } from "./ArchiveIcon";
 import { Button } from "./controls/button";
+import { Kbd } from "./controls/kbd";
 import { Input } from "./controls/input";
 import { Dropdown, Separator } from "./controls/overlay";
 import { DropdownContent } from "./controls/menu";
@@ -12,6 +13,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
 } from "./controls/dialog";
 import { useNavigationData, navigationApi } from "../navigationApi";
 import {
@@ -28,14 +30,12 @@ export function SessionMenu({
   canFork,
   onFork,
   onArchive,
-  onHistory,
 }: {
   sessionId: string;
   title: string;
   canFork: boolean;
-  onFork?: () => Promise<void>;
+  onFork?: (newWorktree: boolean) => Promise<void>;
   onArchive: () => void;
-  onHistory?: () => void;
 }) {
   const { data } = useNavigationData();
   const { archivedIds } = useSessionNavigation();
@@ -55,6 +55,68 @@ export function SessionMenu({
       setBusy(false);
     }
   };
+  const rename = () => {
+    setError("");
+    setName(title);
+  };
+  const pin = () =>
+    void run(() =>
+      navigationApi.customize("pin", sessionId, pinned ? null : "pinned"),
+    );
+  const archive = () =>
+    void run(() =>
+      archived ? setSessionArchived(sessionId, false) : onArchive(),
+    );
+  useEffect(() => {
+    const action = (name: string) => {
+      if (
+        document.querySelector(
+          'dialog[open], [role="dialog"], .settings-overlay',
+        )
+      )
+        return;
+      if (name === "rename") rename();
+      else if (name === "pin") pin();
+      else if (name === "archive") archive();
+    };
+    const native = (event: Event) =>
+      action((event as CustomEvent<string>).detail);
+    const key = (event: KeyboardEvent) => {
+      if (
+        event.isComposing ||
+        !(
+          event.metaKey ||
+          (!navigator.platform.startsWith("Mac") && event.ctrlKey)
+        )
+      )
+        return;
+      const name =
+        event.altKey && !event.shiftKey
+          ? ({ KeyR: "rename", KeyP: "pin" } as Record<string, string>)[
+              event.code
+            ]
+          : event.shiftKey && !event.altKey && event.code === "KeyA"
+            ? "archive"
+            : undefined;
+      if (
+        name &&
+        !document.querySelector(
+          'dialog[open], [role="dialog"], .settings-overlay',
+        )
+      ) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        action(name);
+      }
+    };
+    window.addEventListener("workbench-session-action", native);
+    window.addEventListener("keydown", key, true);
+    return () => {
+      window.removeEventListener("workbench-session-action", native);
+      window.removeEventListener("keydown", key, true);
+    };
+  }, [sessionId, title, pinned, archived, busy, onArchive]);
+  const mac = navigator.platform.startsWith("Mac");
   return (
     <>
       <Dropdown native>
@@ -63,60 +125,64 @@ export function SessionMenu({
         </Button>
         <DropdownContent className="w-56">
           <Dropdown.Item
+            aria-label="Rename"
+            textValue="Rename"
             nativeIcon={<EditIcon />}
-            onAction={() => {
-              setError("");
-              setName(title);
-            }}
+            accelerator="CmdOrCtrl+Alt+R"
+            onAction={rename}
           >
             <EditIcon />
-            Rename
+            Rename<Kbd className="ml-auto">{mac ? "⌥⌘R" : "Ctrl Alt R"}</Kbd>
           </Dropdown.Item>
           <Dropdown.Item
+            aria-label={pinned ? "Unpin" : "Pin"}
+            textValue={pinned ? "Unpin" : "Pin"}
             nativeIcon={<PinIcon filled={pinned} />}
-            onAction={() =>
-              void run(() =>
-                navigationApi.customize(
-                  "pin",
-                  sessionId,
-                  pinned ? null : "pinned",
-                ),
-              )
-            }
+            accelerator="CmdOrCtrl+Alt+P"
+            onAction={pin}
           >
             <PinIcon filled={pinned} />
             {pinned ? "Unpin" : "Pin"}
+            <Kbd className="ml-auto">{mac ? "⌥⌘P" : "Ctrl Alt P"}</Kbd>
           </Dropdown.Item>
           <Dropdown.Item
+            aria-label={archived ? "Unarchive" : "Archive"}
+            textValue={archived ? "Unarchive" : "Archive"}
             nativeIcon={<ArchiveIcon />}
-            onAction={() =>
-              void run(() => {
-                if (archived) return setSessionArchived(sessionId, false);
-                onArchive();
-              })
-            }
+            accelerator="CmdOrCtrl+Shift+A"
+            onAction={archive}
           >
             <ArchiveIcon />
             {archived ? "Unarchive" : "Archive"}
+            <Kbd className="ml-auto">{mac ? "⇧⌘A" : "Ctrl Shift A"}</Kbd>
           </Dropdown.Item>
           <Separator />
-          <Dropdown.Item
-            nativeIcon={<GitBranch />}
-            disabled={!canFork || !onFork}
-            onAction={() => void run(() => onFork?.())}
-          >
-            <GitBranch />
-            Fork
-          </Dropdown.Item>
-          {onHistory && (
-            <>
-              <Separator />
-              <Dropdown.Item nativeIcon={<History />} onAction={onHistory}>
-                <History />
-                Session history
+          <Dropdown.SubmenuTrigger>
+            <Dropdown.Item
+              textValue="Fork"
+              nativeIcon={<GitBranch />}
+              disabled={!canFork || !onFork}
+            >
+              <GitBranch />
+              Fork
+            </Dropdown.Item>
+            <DropdownContent side="right">
+              <Dropdown.Item
+                nativeIcon={<Laptop />}
+                onAction={() => void run(() => onFork?.(false))}
+              >
+                <Laptop />
+                Fork session
               </Dropdown.Item>
-            </>
-          )}
+              <Dropdown.Item
+                nativeIcon={<ArrowUpRight />}
+                onAction={() => void run(() => onFork?.(true))}
+              >
+                <ArrowUpRight />
+                Fork session in new worktree
+              </Dropdown.Item>
+            </DropdownContent>
+          </Dropdown.SubmenuTrigger>
         </DropdownContent>
       </Dropdown>
       <Dialog
@@ -125,9 +191,12 @@ export function SessionMenu({
           if (!open) setName(null);
         }}
       >
-        <DialogContent className="max-w-sm">
+        <DialogContent className="rename-session-dialog max-w-[500px]">
           <DialogHeader>
             <DialogTitle>Rename session</DialogTitle>
+            <DialogDescription className="rename-description">
+              Keep it short and recognizable
+            </DialogDescription>
           </DialogHeader>
           <form
             className="space-y-4"
@@ -146,6 +215,7 @@ export function SessionMenu({
               value={name ?? ""}
               onChange={(event) => setName(event.target.value)}
               maxLength={200}
+              onFocus={(event) => event.target.select()}
               autoFocus
             />
             {error && (
@@ -157,7 +227,7 @@ export function SessionMenu({
               <Button onClick={() => setName(null)}>Cancel</Button>
               <Button
                 type="submit"
-                variant="secondary"
+                className="rename-save"
                 disabled={!name?.trim()}
               >
                 Save

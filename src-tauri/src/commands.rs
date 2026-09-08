@@ -259,7 +259,7 @@ pub(crate) async fn resume_session(
 
 /// Branch provider history into a new, idle session and isolated Git workspace.
 #[tauri::command]
-pub(crate) async fn fork_session(session_id: String, state: State<'_, AppState>) -> Result<SessionView, AppError> {
+pub(crate) async fn fork_session(session_id: String, new_worktree: Option<bool>, state: State<'_, AppState>) -> Result<SessionView, AppError> {
     let _creation = crate::peers::CREATION.lock().await;
     let _lifecycle = crate::peers::LIFECYCLE.lock().await;
     let runtime = state.get()?;
@@ -267,7 +267,7 @@ pub(crate) async fn fork_session(session_id: String, state: State<'_, AppState>)
     state.claude_status()?;
     let mut request = StartSession::new(".");
     let token = crate::peers::prepare(&mut request)?;
-    let id = runtime.supervisor.fork_session(&SessionId::new(session_id.clone()), request.env_overrides).await?;
+    let id = runtime.supervisor.fork_session_in(&SessionId::new(session_id.clone()), request.env_overrides, new_worktree.unwrap_or(true)).await?;
     let title = crate::peers::snapshot()?.titles.get(&session_id).cloned().unwrap_or_else(|| "Session".into());
     crate::peers::bind(token, id.as_str(), Some(format!("Fork of {title}")))?;
     crate::peers::record_fork(id.as_str(), &session_id)?;

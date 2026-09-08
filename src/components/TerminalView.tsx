@@ -15,15 +15,25 @@ export default function TerminalView({
   visible,
   tabId = "legacy",
   onReady,
+  shell,
+  cwd,
+  focused = false,
+  focusRequest = 0,
 }: {
   context: WorkspaceContext;
   visible: boolean;
   tabId?: string;
+  shell?: string;
+  cwd?: string;
+  focused?: boolean;
+  focusRequest?: number;
   onReady?: (id: string | null) => void;
 }) {
   const terminalRef = useRef<Terminal | null>(null);
   const visibleRef = useRef(visible);
   visibleRef.current = visible;
+  const focusedRef = useRef(focused);
+  focusedRef.current = focused;
   const ready = useRef(onReady);
   ready.current = onReady;
   const host = useRef<HTMLDivElement>(null);
@@ -42,27 +52,28 @@ export default function TerminalView({
       cursor: foreground,
       cursorAccent: themeColor("canvas"),
       selectionBackground: themeColor("selected"),
-      black: secondary,
-      red: secondary,
-      green: secondary,
-      yellow: secondary,
-      blue: secondary,
-      magenta: secondary,
-      cyan: secondary,
-      white: foreground,
+      black: "#242424",
+      red: "#e06c75",
+      green: "#98c379",
+      yellow: "#e5c07b",
+      blue: "#61afef",
+      magenta: "#c678dd",
+      cyan: "#56b6c2",
+      white: "#dcdfe4",
       brightBlack: secondary,
-      brightRed: foreground,
-      brightGreen: foreground,
-      brightYellow: foreground,
-      brightBlue: foreground,
-      brightMagenta: foreground,
-      brightCyan: foreground,
-      brightWhite: foreground,
+      brightRed: "#f08080",
+      brightGreen: "#b5d99c",
+      brightYellow: "#f5d491",
+      brightBlue: "#85c1ff",
+      brightMagenta: "#d8a1ee",
+      brightCyan: "#80d4de",
+      brightWhite: "#ffffff",
     };
     const terminal = new Terminal({
       fontSize: 12,
       fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
       cursorBlink: false,
+      screenReaderMode: true,
       scrollback: 3000,
       theme: terminalTheme,
     });
@@ -151,7 +162,13 @@ export default function TerminalView({
     }, 3000);
     window.addEventListener("pagehide", persist);
     void workspaceApi
-      .openTerminal(context, terminal.cols, terminal.rows, snapshot.cwd)
+      .openTerminal(
+        context,
+        terminal.cols,
+        terminal.rows,
+        snapshot.cwd ?? cwd,
+        shell,
+      )
       .then(
         (created) => {
           if (disposed) {
@@ -161,7 +178,7 @@ export default function TerminalView({
           id = created;
           ready.current?.(created);
           resize();
-          if (visibleRef.current) terminal.focus();
+          if (visibleRef.current && focusedRef.current) terminal.focus();
           void read();
         },
         (e) => {
@@ -183,8 +200,15 @@ export default function TerminalView({
     };
   }, [context.projectId, context.sessionId, tabId]);
   useEffect(() => {
-    if (visible) fitRef.current();
+    if (visible) {
+      fitRef.current();
+      const terminal = terminalRef.current;
+      if (terminal) terminal.refresh(0, terminal.rows - 1);
+    }
   }, [visible]);
+  useEffect(() => {
+    if (focused) terminalRef.current?.focus();
+  }, [focused, focusRequest]);
   return (
     <>
       {error ? (

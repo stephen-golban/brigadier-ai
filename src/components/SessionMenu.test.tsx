@@ -33,7 +33,9 @@ describe("session header menu", () => {
     );
     await user.click(screen.getByRole("button", { name: "Session actions" }));
     expect(
-      screen.getAllByRole("menuitem").map((item) => item.textContent),
+      screen
+        .getAllByRole("menuitem")
+        .map((item) => item.getAttribute("aria-label") ?? item.textContent),
     ).toEqual(["Rename", "Pin", "Archive", "Fork"]);
     await user.click(screen.getByRole("menuitem", { name: "Rename" }));
     await user.clear(screen.getByLabelText("Session name"));
@@ -68,6 +70,14 @@ describe("session header menu", () => {
     expect(pin).toHaveBeenCalledWith("pin", "s", "pinned");
     await user.click(screen.getByRole("button", { name: "Session actions" }));
     await user.click(screen.getByRole("menuitem", { name: "Fork" }));
-    await waitFor(() => expect(fork).toHaveBeenCalledOnce());
+    expect(fork).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("menuitem", { name: "Fork session" }));
+    await waitFor(() => expect(fork).toHaveBeenCalledWith(false));
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Fork" }));
+    await user.click(
+      screen.getByRole("menuitem", { name: "Fork session in new worktree" }),
+    );
+    await waitFor(() => expect(fork).toHaveBeenLastCalledWith(true));
   });
 });

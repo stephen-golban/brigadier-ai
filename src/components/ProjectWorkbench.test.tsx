@@ -1,4 +1,4 @@
-import { archiveSession, readArchive } from "../sessionArchive";
+import { readArchive } from "../sessionArchive";
 import { useEffect, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -12,7 +12,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ProjectWorkbench } from "./ProjectWorkbench";
-import { desktopApi } from "../desktopApi";
+import { sessionLayoutsKey, workspaceKey } from "../workbenchState";
 import { workbenchApi, defaultSettings } from "../workbenchApi";
 import { workspaceApi, type GitStatus } from "../workspaceApi";
 import { ZERO_USAGE } from "../wire";
@@ -39,7 +39,6 @@ vi.mock("./SourceControl", () => ({
   SourceControl: vi.fn(() => <div data-testid="changes-panel" />),
 }));
 import { SourceControl } from "./SourceControl";
-import { VscodePanels } from "./VscodePanels";
 const panelBinding = () => {
   const calls = vi.mocked(SourceControl).mock.calls;
   return calls[calls.length - 1][0];
@@ -91,25 +90,29 @@ function Harness({ busy = false }: { busy?: boolean }) {
   const [selected, setSelected] = useState<string | null>("parent");
   const [panel, setPanel] = useState(false);
   return (
-    <ProjectWorkbench
-      project={project}
-      session={selected ? sessions[selected as keyof typeof sessions] : null}
-      sessions={sessions}
-      selectedSessionId={selected}
-      onSelectSession={setSelected}
-      workspaceOpen={panel}
-      setWorkspaceOpen={setPanel}
-      models={[]}
-      peers={{
-        origins: { child: "parent" },
-        titles: { parent: "Main task", child: "Research" },
-        closed: [],
-        messages: [],
-        requests: [],
-      }}
-    >
-      <div>Conversation {selected}</div>
-    </ProjectWorkbench>
+    <>
+      <button onClick={() => setSelected("parent")}>Select parent</button>
+      <button onClick={() => setSelected("child")}>Select child</button>
+      <ProjectWorkbench
+        project={project}
+        session={selected ? sessions[selected as keyof typeof sessions] : null}
+        sessions={sessions}
+        selectedSessionId={selected}
+        onSelectSession={setSelected}
+        workspaceOpen={panel}
+        setWorkspaceOpen={setPanel}
+        models={[]}
+        peers={{
+          origins: { child: "parent" },
+          titles: { parent: "Main task", child: "Research" },
+          closed: [],
+          messages: [],
+          requests: [],
+        }}
+      >
+        <div>Conversation {selected}</div>
+      </ProjectWorkbench>
+    </>
   );
 }
 beforeEach(() => {
@@ -187,7 +190,7 @@ describe("Git status refresh", () => {
       actions
         .getAllByRole("button")
         .map((button) => button.getAttribute("aria-label")),
-    ).toEqual(["Files", "Search", "Changes"]);
+    ).toEqual(["Files", "Search", "Changes", "Terminal"]);
     const changes = actions.getByRole("button", { name: "Changes" });
     expect(changes).toHaveTextContent("3");
     expect(changes).toHaveAttribute("title", "Changes (3)");
@@ -291,395 +294,255 @@ describe("Git status refresh", () => {
     },
   );
 });
-describe("project tabs", () => {
-  it("does not automatically open owned workhorses", async () => {
+const openFile = (path = "file.ts") =>
+  act(() =>
+    window.dispatchEvent(
+      new CustomEvent("workbench-open-file", { detail: { path } }),
+    ),
+  );
+const savedWorkspace = (id = "parent") =>
+  JSON.parse(localStorage.getItem(sessionLayoutsKey) ?? "{}")[
+    workspaceKey("p", id)
+  ];
+const archiveCurrent = async () => {
+  await userEvent.click(
+    screen.getByRole("button", { name: "Session actions" }),
+  );
+  await userEvent.click(screen.getByRole("menuitem", { name: "Archive" }));
+};
+describe("session workspaces", () => {
+  it("renders a title and one session menu without session tabs or a plus button", async () => {
     render(<Harness />);
     expect(await screen.findByText("Conversation parent")).toBeVisible();
     expect(
-      screen.queryByRole("tab", { name: "Research" }),
+      screen.getByRole("button", { name: "Show conversation" }),
+    ).toHaveTextContent("Main task");
+    expect(screen.queryByRole("tab")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "New tab" }),
     ).not.toBeInTheDocument();
-    await userEvent.click(
-      screen.getByRole("button", { name: "Environment and agents" }),
-    );
-    await userEvent.click(screen.getByRole("button", { name: /Research/ }));
-    expect(await screen.findByText("Conversation child")).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "Close Main task" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getAllByRole("button", { name: "Session actions" }),
+    ).toHaveLength(1);
+    expect(document.querySelector(".session-tab-divider")).toBeNull();
   });
-  it("opens the hovered session tab menu without switching away from the active tab", async () => {
+  it("keeps the session menu attached to the title while viewing a file", async () => {
     render(<Harness />);
+    openFile();
+    await screen.findByLabelText("File editor");
+    expect(document.querySelector(".session-tab-divider")).not.toBeNull();
     await userEvent.click(
-      await screen.findByRole("button", { name: "Environment and agents" }),
-    );
-    await userEvent.click(screen.getByRole("button", { name: /Research/ }));
-    const firstTab = screen.getByRole("tab", { name: "Main task" });
-    await userEvent.hover(firstTab);
-    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
-    await userEvent.click(
-      within(firstTab).getByRole("button", { name: "Session actions" }),
-    );
-    expect(screen.getByRole("tab", { name: "Research" })).toHaveAttribute(
-      "aria-selected",
-      "true",
+      screen.getByRole("button", { name: "Session actions" }),
     );
     await userEvent.click(screen.getByRole("menuitem", { name: "Rename" }));
-    expect(screen.getByRole("textbox", { name: "Session name" })).toHaveValue(
-      "Main task",
-    );
+    expect(screen.getByLabelText("Session name")).toHaveValue("Main task");
     await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(screen.getByText("Conversation child")).toBeVisible();
-  });
-  it("closes finished tabs into history and reopens them by keyboard", async () => {
-    const discard = vi.spyOn(desktopApi, "discard");
-    render(<Harness />);
-    await screen.findByText("Conversation parent");
-    key("w");
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    await waitFor(() =>
-      expect(screen.queryByRole("tab")).not.toBeInTheDocument(),
-    );
-    expect(screen.getByRole("button", { name: "History" })).toBeVisible();
-    expect(readArchive().entries.parent).toBeDefined();
-    expect(discard).not.toHaveBeenCalled();
-    key("T", { shiftKey: true });
-    await waitFor(() =>
-      expect(screen.getByText("Conversation parent")).toBeVisible(),
-    );
-    expect(readArchive().entries.parent).toBeUndefined();
-  });
-  it("confirms a working session close and keeps the tab on cancel", async () => {
-    render(<Harness busy />);
-    await screen.findByText("Conversation parent");
-    key("w");
-    expect(
-      screen.getByRole("dialog", { name: "Stop and archive session?" }),
-    ).toBeVisible();
-    expect(readArchive().entries.parent).toBeUndefined();
-    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(screen.getByRole("tab", { name: "Main task" })).toBeVisible();
-    await userEvent.click(
-      screen.getByRole("button", { name: "Close Main task" }),
-    );
-    await userEvent.click(
-      screen.getByRole("button", { name: "Stop and close" }),
-    );
-    await waitFor(() =>
-      expect(screen.queryByRole("tab")).not.toBeInTheDocument(),
-    );
-    expect(readArchive().entries.parent).toBeDefined();
-  });
-  it("native close only closes the tab and keeps the welcome page after the last tab", async () => {
-    render(<Harness />);
-    await screen.findByText("Conversation parent");
-    expect(
-      screen.queryByRole("button", { name: "History" }),
-    ).not.toBeInTheDocument();
-    act(() => window.dispatchEvent(new Event("workbench-close-tab")));
-    await waitFor(() =>
-      expect(screen.queryByRole("tab")).not.toBeInTheDocument(),
-    );
-    expect(screen.getByText("Conversation")).toBeVisible();
-    act(() => window.dispatchEvent(new Event("workbench-close-tab")));
-    expect(screen.getByRole("button", { name: "New tab" })).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "History" }));
-    expect(screen.getByLabelText("Search session history")).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "Main task" }));
-    await waitFor(() =>
-      expect(screen.getByRole("tab", { name: "Main task" })).toBeVisible(),
-    );
-    expect(
-      screen.queryByRole("button", { name: "History" }),
-    ).not.toBeInTheDocument();
-  });
-  it("confirms a busy terminal for native shortcuts and stops it only after confirmation", async () => {
-    const info = vi
-      .spyOn(workbenchApi, "terminalInfo")
-      .mockResolvedValue({ busy: true, cwd: "/repo" });
-    const stop = vi
-      .spyOn(workspaceApi, "closeTerminal")
-      .mockResolvedValue(undefined);
-    render(<Harness />);
-    await screen.findByText("Conversation parent");
-    await userEvent.click(screen.getByRole("button", { name: "New tab" }));
-    await userEvent.click(screen.getByRole("menuitem", { name: "Terminal" }));
-    await screen.findByText("Test terminal");
-    act(() => window.dispatchEvent(new Event("workbench-close-tab")));
-    await screen.findByRole("dialog", { name: "Close running terminal?" });
-    expect(info).toHaveBeenCalledWith("test-terminal");
-    expect(stop).not.toHaveBeenCalled();
-    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(screen.getByRole("tab", { name: "Terminal 1" })).toBeVisible();
-    await userEvent.click(
-      screen.getByRole("button", { name: "Close Terminal 1" }),
-    );
-    await userEvent.click(
-      await screen.findByRole("button", { name: "Stop and close" }),
-    );
-    await waitFor(() =>
-      expect(
-        screen.queryByRole("tab", { name: "Terminal 1" }),
-      ).not.toBeInTheDocument(),
-    );
-    expect(stop).toHaveBeenCalledWith("test-terminal");
-    expect(readArchive().entries).toEqual({});
-  });
-  it("opens files as main tabs and cycles back to the preserved conversation", async () => {
-    render(<Harness />);
-    await screen.findByText("Conversation parent");
-    act(() => {
-      window.dispatchEvent(
-        new CustomEvent("workbench-open-file", { detail: { path: "file.ts" } }),
-      );
-    });
-    expect(await screen.findByLabelText("File editor")).toHaveValue("before");
-    expect(screen.getByText("Conversation parent")).not.toBeVisible();
     expect(screen.getByRole("tab", { name: "file.ts" })).toHaveAttribute(
       "aria-selected",
       "true",
     );
-    fireEvent.change(screen.getByLabelText("File editor"), {
-      target: { value: "draft change" },
+    await userEvent.click(
+      screen.getByRole("button", { name: "Show conversation" }),
+    );
+    expect(screen.getByText("Conversation parent")).toBeVisible();
+  });
+  it("restores each sidebar session's documents, selected view, and unsaved buffer", async () => {
+    render(<Harness />);
+    openFile();
+    fireEvent.change(await screen.findByLabelText("File editor"), {
+      target: { value: "parent draft" },
     });
-    fireEvent.keyDown(window, { key: "Tab", ctrlKey: true });
-    expect(screen.getByRole("tab", { name: "Main task" })).toHaveAttribute(
+    await userEvent.click(screen.getByRole("button", { name: "Select child" }));
+    expect(
+      screen.queryByRole("tab", { name: "file.ts" }),
+    ).not.toBeInTheDocument();
+    openFile("child.ts");
+    await screen.findByLabelText("File editor");
+    await userEvent.click(
+      screen.getByRole("button", { name: "Select parent" }),
+    );
+    expect(await screen.findByLabelText("File editor")).toHaveValue(
+      "parent draft",
+    );
+    expect(
+      screen.queryByRole("tab", { name: "child.ts" }),
+    ).not.toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Show conversation" }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Select child" }));
+    expect(screen.getByRole("tab", { name: "child.ts" })).toHaveAttribute(
       "aria-selected",
       "true",
     );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Select parent" }),
+    );
+    expect(screen.getByText("Conversation parent")).toBeVisible();
+  });
+  it("does not archive or navigate away when Cmd+W or native close targets the conversation", async () => {
+    render(<Harness busy />);
+    await screen.findByText("Conversation parent");
+    key("w");
+    act(() => window.dispatchEvent(new Event("workbench-close-tab")));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(readArchive().entries).toEqual({});
+    expect(screen.getByText("Conversation parent")).toBeVisible();
+  });
+  it("archives explicitly and restores the saved document and draft from History", async () => {
+    render(<Harness />);
+    openFile();
+    fireEvent.change(await screen.findByLabelText("File editor"), {
+      target: { value: "kept draft" },
+    });
+    await archiveCurrent();
+    await waitFor(() => expect(readArchive().entries.parent).toBeDefined());
+    expect(
+      savedWorkspace().tabs.some((t: { path: string }) => t.path === "file.ts"),
+    ).toBe(true);
+    await userEvent.click(screen.getByRole("button", { name: "History" }));
+    await userEvent.click(screen.getByRole("button", { name: "Main task" }));
+    expect(await screen.findByLabelText("File editor")).toHaveValue(
+      "kept draft",
+    );
+    expect(readArchive().entries.parent).toBeUndefined();
+  });
+  it("asks once before stopping active AI work and preserves the workspace on cancel", async () => {
+    render(<Harness busy />);
+    await archiveCurrent();
+    expect(
+      await screen.findByRole("dialog", { name: "Stop and archive session?" }),
+    ).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(readArchive().entries.parent).toBeUndefined();
+    await archiveCurrent();
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Stop and archive" }),
+    );
+    await waitFor(() => expect(readArchive().entries.parent).toBeDefined());
+  });
+  it("opens Files without a placeholder, reuses files, and keeps panel toggles independent", async () => {
+    render(<Harness />);
+    await userEvent.click(screen.getByRole("button", { name: "Files" }));
+    expect(screen.queryByRole("tab")).not.toBeInTheDocument();
+    openFile();
+    await screen.findByLabelText("File editor");
+    openFile();
+    expect(screen.getAllByRole("tab")).toHaveLength(1);
+    for (const name of ["Files", "Search", "Changes"]) {
+      await userEvent.click(screen.getByRole("button", { name }));
+      expect(screen.getByRole("tab", { name: "file.ts" })).toHaveAttribute(
+        "aria-selected",
+        "true",
+      );
+    }
+  });
+  it("cycles between conversation and files and reopens a closed document", async () => {
+    render(<Harness />);
+    openFile();
+    await screen.findByLabelText("File editor");
+    fireEvent.keyDown(window, { key: "Tab", ctrlKey: true });
     expect(screen.getByText("Conversation parent")).toBeVisible();
     fireEvent.keyDown(window, { key: "Tab", ctrlKey: true, shiftKey: true });
     expect(screen.getByRole("tab", { name: "file.ts" })).toHaveAttribute(
       "aria-selected",
       "true",
     );
-    expect(await screen.findByLabelText("File editor")).toHaveValue(
-      "draft change",
-    );
-  });
-  it("offers only Session, Terminal, and Files and opens an empty file tab", async () => {
-    render(<Harness />);
-    await screen.findByText("Conversation parent");
-    await userEvent.click(screen.getByRole("button", { name: "New tab" }));
-    expect(
-      screen
-        .getAllByRole("menuitem")
-        .map((item) => item.getAttribute("aria-label")),
-    ).toEqual(["Session", "Terminal", "Files"]);
-    await userEvent.click(screen.getByRole("menuitem", { name: "Files" }));
-    expect(screen.getByRole("tab", { name: "Open file" })).toHaveAttribute(
-      "aria-selected",
-      "true",
-    );
-    expect(
-      screen.getByText("Select a file from the workspace tree"),
-    ).toBeVisible();
-    expect(screen.getByRole("button", { name: "Files" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
-    await userEvent.click(screen.getByRole("button", { name: "Files" }));
-    expect(screen.getByRole("button", { name: "Files" })).toHaveAttribute(
-      "aria-pressed",
-      "false",
-    );
-    await userEvent.click(
-      screen.getByRole("button", { name: "Close Open file" }),
-    );
-    expect(screen.getByText("Conversation parent")).toBeVisible();
-  });
-  it("opens Files from the toolbar without a tab, then creates a tab on file selection", async () => {
-    render(<Harness />);
-    await screen.findByText("Conversation parent");
-    const tabs = () => screen.getAllByRole("tab");
-    const files = screen.getByRole("button", { name: "Files" });
-    expect(files.closest("header")).toContainElement(
-      screen.getByRole("tablist"),
-    );
-    await userEvent.click(files);
-    expect(tabs()).toHaveLength(1);
-    expect(screen.getByText("Conversation parent")).toBeVisible();
-    expect(files).toHaveAttribute("aria-pressed", "true");
-    await userEvent.click(
-      await screen.findByRole("button", { name: "README.md" }),
-    );
-    expect(await screen.findByLabelText("File editor")).toBeVisible();
-    expect(tabs()).toHaveLength(2);
-    expect(
-      screen.queryByRole("tab", { name: "Open file" }),
-    ).not.toBeInTheDocument();
-    await userEvent.click(files);
-    expect(screen.getByLabelText("File editor")).toBeVisible();
-    expect(files).toHaveAttribute("aria-pressed", "false");
-    // Switching away and back must not reopen a hidden tree.
-    key("1");
-    key("2");
-    expect(files).toHaveAttribute("aria-pressed", "false");
-  });
-  it("fills the Files menu tab in place and reuses an existing file instead of duplicating it", async () => {
-    render(<Harness />);
-    await screen.findByText("Conversation parent");
-    const openFiles = async () => {
-      await userEvent.click(screen.getByRole("button", { name: "New tab" }));
-      await userEvent.click(screen.getByRole("menuitem", { name: "Files" }));
-    };
-    await openFiles();
-    expect(screen.getAllByRole("tab")).toHaveLength(2);
-    await userEvent.click(
-      await screen.findByRole("button", { name: "README.md" }),
-    );
-    expect(await screen.findByLabelText("File editor")).toBeVisible();
-    expect(screen.getAllByRole("tab")).toHaveLength(2);
-    expect(
-      screen.queryByRole("tab", { name: "Open file" }),
-    ).not.toBeInTheDocument();
-    await openFiles();
-    expect(screen.getAllByRole("tab")).toHaveLength(3);
-    await userEvent.click(screen.getByRole("button", { name: "README.md" }));
-    expect(screen.getAllByRole("tab")).toHaveLength(2);
-    expect(screen.getByRole("tab", { name: "README.md" })).toHaveAttribute(
+    key("w");
+    expect(screen.queryByRole("tab")).not.toBeInTheDocument();
+    key("T", { shiftKey: true });
+    expect(await screen.findByRole("tab", { name: "file.ts" })).toHaveAttribute(
       "aria-selected",
       "true",
     );
   });
-  it("toggles each right panel on both conversation and document tabs without changing tabs", async () => {
+  it("creates a new sidebar conversation from Cmd+T without a session tab", async () => {
     render(<Harness />);
-    await screen.findByText("Conversation parent");
-    for (const resource of [false, true]) {
-      if (resource)
-        act(() =>
-          window.dispatchEvent(
-            new CustomEvent("workbench-open-file", {
-              detail: { path: "file.ts" },
-            }),
-          ),
-        );
-      const active = screen.getByRole("tab", { selected: true });
-      const panel = document.getElementById("workspace-panel")!;
-      for (const name of ["Files", "Search", "Changes"]) {
-        const button = within(
-          screen.getByRole("group", { name: "Workspace panels" }),
-        ).getByRole("button", { name });
-        await userEvent.click(button);
-        expect(button).toHaveAttribute("aria-pressed", "true");
-        expect(panel).toHaveAttribute("data-open", "true");
-        expect(active).toHaveAttribute("aria-selected", "true");
-        await userEvent.click(button);
-        expect(button).toHaveAttribute("aria-pressed", "false");
-        expect(panel).toHaveAttribute("inert");
-        expect(panel).toHaveAttribute("data-open", "false");
-        expect(active).toHaveAttribute("aria-selected", "true");
-      }
-    }
-  });
-  it("switches panel content in the same pane and keeps Search open after selecting a result", async () => {
-    vi.spyOn(workbenchApi, "search").mockResolvedValue({
-      hits: [{ path: "file.ts", line: 2, column: 1, text: "example" }],
-      files: 1,
-      truncated: false,
-      replacements: [],
-    });
-    render(<Harness />);
-    await screen.findByText("Conversation parent");
-    await userEvent.click(screen.getByRole("button", { name: "Files" }));
-    const panel = screen.getByRole("complementary", { name: "Workspace" });
-    await userEvent.click(
-      within(screen.getByRole("group", { name: "Workspace panels" })).getByRole(
-        "button",
-        { name: "Search" },
-      ),
-    );
-    expect(screen.getByRole("complementary", { name: "Workspace" })).toBe(
-      panel,
-    );
-    expect(vi.mocked(VscodePanels).mock.lastCall![0].mode).toBe("search");
-    act(() => vi.mocked(VscodePanels).mock.lastCall![0].onOpen("file.ts", "file", false, 2));
-    expect(await screen.findByLabelText("File editor")).toBeVisible();
-    expect(vi.mocked(VscodePanels).mock.lastCall![0].mode).toBe("search");
-    expect(vi.mocked(VscodePanels).mock.lastCall![0].active).toBe(true);
-    expect(screen.getByRole("button", { name: "Files" })).toHaveAttribute(
-      "aria-pressed",
-      "false",
-    );
-  });
-  it("navigates tabs by arrows, Home/End, numbered shortcuts, and bracket/page cycling", async () => {
-    render(<Harness />);
-    await screen.findByText("Conversation parent");
-    act(() =>
-      window.dispatchEvent(
-        new CustomEvent("workbench-open-file", { detail: { path: "file.ts" } }),
-      ),
-    );
-    await screen.findByLabelText("File editor");
-    const task = screen.getByRole("tab", { name: "Main task" });
-    const file = screen.getByRole("tab", { name: "file.ts" });
-    await userEvent.click(file);
-    act(() => file.focus());
-    await userEvent.keyboard("{ArrowRight}");
-    expect(task).toHaveFocus();
-    await userEvent.keyboard("{End}");
-    expect(file).toHaveFocus();
-    await userEvent.keyboard("{Home}");
-    expect(task).toHaveFocus();
-    key("9");
-    expect(file).toHaveAttribute("aria-selected", "true");
-    key("{", { shiftKey: true, code: "BracketLeft" });
-    expect(task).toHaveAttribute("aria-selected", "true");
-    fireEvent.keyDown(window, { ctrlKey: true, key: "PageUp" });
-    expect(file).toHaveAttribute("aria-selected", "true");
-    fireEvent.keyDown(window, { ctrlKey: true, key: "PageDown" });
-    expect(task).toHaveAttribute("aria-selected", "true");
-    key("}", { shiftKey: true, code: "BracketRight" });
-    expect(file).toHaveAttribute("aria-selected", "true");
-  });
-  it("creates and closes tabs from an editor even if the editor stops keyboard bubbling", async () => {
-    render(<Harness />);
-    await screen.findByText("Conversation parent");
-    act(() =>
-      window.dispatchEvent(
-        new CustomEvent("workbench-open-file", { detail: { path: "file.ts" } }),
-      ),
-    );
+    openFile();
     const editor = await screen.findByLabelText("File editor");
     editor.addEventListener("keydown", (event) => event.stopPropagation());
     fireEvent.keyDown(editor, { key: "t", metaKey: true });
-    expect(screen.getByRole("tab", { name: "New session" })).toHaveAttribute(
-      "aria-selected",
-      "true",
-    );
-    key("w");
     expect(
-      screen.queryByRole("tab", { name: "New session" }),
-    ).not.toBeInTheDocument();
-    const restoredEditor = await screen.findByLabelText("File editor");
-    restoredEditor.addEventListener("keydown", (event) =>
-      event.stopPropagation(),
+      screen.getByRole("button", { name: "Show conversation" }),
+    ).toHaveTextContent("New session");
+    expect(screen.queryByRole("tab")).not.toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Select parent" }),
     );
-    fireEvent.keyDown(restoredEditor, { key: "w", ctrlKey: true });
-    expect(
-      screen.queryByRole("tab", { name: "file.ts" }),
-    ).not.toBeInTheDocument();
+    expect(await screen.findByLabelText("File editor")).toBeVisible();
   });
-  it("opens session history from an inactive session menu while a file is selected", async () => {
-    await archiveSession("child", true);
+  it("keeps terminals below documents and alive across session switching", async () => {
     render(<Harness />);
-    await screen.findByText("Conversation parent");
-    act(() =>
-      window.dispatchEvent(
-        new CustomEvent("workbench-open-file", { detail: { path: "file.ts" } }),
-      ),
-    );
+    await userEvent.click(screen.getByRole("button", { name: "Terminal" }));
+    const terminal = await screen.findByText("Test terminal");
+    expect(terminal).toBeVisible();
+    expect(screen.queryByRole("tab")).not.toBeInTheDocument();
+    openFile();
     await screen.findByLabelText("File editor");
+    expect(terminal).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Select child" }));
+    expect(terminal).not.toBeVisible();
+    expect(terminal).toBeInTheDocument();
     await userEvent.click(
-      within(screen.getByRole("tab", { name: "Main task" })).getByRole(
-        "button",
-        { name: "Session actions" },
-      ),
+      screen.getByRole("button", { name: "Select parent" }),
     );
-    await userEvent.click(
-      screen.getByRole("menuitem", { name: "Session history" }),
-    );
-    expect(screen.getByLabelText("Search session history")).toBeVisible();
-    expect(screen.getByRole("tab", { name: "Main task" })).toHaveAttribute(
+    expect(terminal).toBeVisible();
+    expect(screen.getByRole("tab", { name: "file.ts" })).toHaveAttribute(
       "aria-selected",
       "true",
     );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Hide terminal" }),
+    );
+    expect(terminal).not.toBeVisible();
+    expect(terminal).toBeInTheDocument();
+  });
+  it("confirms killing a busy terminal and does not archive the session", async () => {
+    vi.spyOn(workbenchApi, "terminalInfo").mockResolvedValue({
+      busy: true,
+      cwd: "/repo",
+    });
+    const close = vi.spyOn(workspaceApi, "closeTerminal").mockResolvedValue();
+    render(<Harness />);
+    await userEvent.click(screen.getByRole("button", { name: "Terminal" }));
+    await screen.findByText("Test terminal");
+    await userEvent.click(
+      screen.getByRole("button", { name: "Kill terminal" }),
+    );
+    expect(
+      await screen.findByRole("dialog", { name: "Kill running terminal?" }),
+    ).toBeVisible();
+    expect(close).not.toHaveBeenCalled();
+    await userEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: "Kill terminal",
+      }),
+    );
+    await waitFor(() => expect(close).toHaveBeenCalledWith("test-terminal"));
+    expect(readArchive().entries).toEqual({});
+  });
+  it("includes busy terminals in the archive confirmation and retains their layout", async () => {
+    vi.spyOn(workbenchApi, "terminalInfo").mockResolvedValue({
+      busy: true,
+      cwd: "/repo",
+    });
+    render(<Harness />);
+    await userEvent.click(screen.getByRole("button", { name: "Terminal" }));
+    await screen.findByText("Test terminal");
+    await archiveCurrent();
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Stop and archive" }),
+    );
+    await waitFor(() => expect(readArchive().entries.parent).toBeDefined());
+    expect(
+      savedWorkspace().tabs.some(
+        (t: { kind: string }) => t.kind === "terminal",
+      ),
+    ).toBe(true);
+    expect(screen.queryByText("Test terminal")).not.toBeInTheDocument();
   });
   it("keeps a dirty file on Cancel and awaits Save before closing", async () => {
     let finish!: () => void;
@@ -719,75 +582,3 @@ describe("project tabs", () => {
     ).not.toBeInTheDocument();
   });
 });
-
-it.each(["MacIntel", "Win32"])(
-  "creates each tab type by shortcut on %s",
-  async (platform) => {
-    vi.spyOn(navigator, "platform", "get").mockReturnValue(platform);
-    render(<Harness />);
-    await screen.findByText("Conversation parent");
-    const modifiers =
-      platform === "MacIntel" ? { metaKey: true } : { ctrlKey: true };
-    fireEvent.keyDown(window, { key: "t", code: "KeyT", ...modifiers });
-    expect(screen.getByRole("tab", { name: "New session" })).toHaveAttribute(
-      "aria-selected",
-      "true",
-    );
-    fireEvent.keyDown(window, { key: "j", code: "KeyJ", ...modifiers });
-    expect(
-      await screen.findByRole("tab", { name: "Terminal 1" }),
-    ).toHaveAttribute("aria-selected", "true");
-    fireEvent.keyDown(window, {
-      key: platform === "MacIntel" ? "ƒ" : "f",
-      code: "KeyF",
-      altKey: true,
-      ...modifiers,
-    });
-    expect(
-      await screen.findByRole("tab", { name: "Open file" }),
-    ).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("button", { name: "Files" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
-  },
-);
-it("routes native new-tab actions and ignores them while a close dialog is open", async () => {
-  render(<Harness busy />);
-  await screen.findByText("Conversation parent");
-  key("w");
-  act(() => window.dispatchEvent(new Event("workbench-new-terminal")));
-  expect(
-    screen.queryByRole("tab", { name: "Terminal 1" }),
-  ).not.toBeInTheDocument();
-  await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
-  act(() => window.dispatchEvent(new Event("workbench-new-terminal")));
-  expect(
-    await screen.findByRole("tab", { name: "Terminal 1" }),
-  ).toHaveAttribute("aria-selected", "true");
-  act(() => window.dispatchEvent(new Event("workbench-new-files")));
-  expect(await screen.findByRole("tab", { name: "Open file" })).toHaveAttribute(
-    "aria-selected",
-    "true",
-  );
-});
-it.each(["MacIntel", "Win32"])(
-  "shows icons and platform shortcuts in the new-tab menu on %s",
-  async (platform) => {
-    vi.spyOn(navigator, "platform", "get").mockReturnValue(platform);
-    render(<Harness />);
-    await screen.findByText("Conversation parent");
-    await userEvent.click(screen.getByRole("button", { name: "New tab" }));
-    for (const [name, mac, other] of [
-      ["Session", "⌘T", "Ctrl T"],
-      ["Terminal", "⌘J", "Ctrl J"],
-      ["Files", "⌥⌘F", "Ctrl Alt F"],
-    ]) {
-      const item = await screen.findByRole("menuitem", { name });
-      expect(item.querySelector("svg")).not.toBeNull();
-      expect(
-        within(item).getByText(platform === "MacIntel" ? mac : other).tagName,
-      ).toBe("KBD");
-    }
-  },
-);

@@ -21,12 +21,12 @@ pub(crate) fn install(app: &tauri::AppHandle) -> tauri::Result<()> {
                 "new-terminal-tab",
                 "New Terminal",
                 true,
-                Some("CmdOrCtrl+J"),
+                Some("Ctrl+Shift+`"),
             )?,
             &MenuItem::with_id(
                 app,
                 "new-files-tab",
-                "New Files Tab",
+                "Show Files",
                 true,
                 Some("CmdOrCtrl+Alt+F"),
             )?,
@@ -39,6 +39,62 @@ pub(crate) fn install(app: &tauri::AppHandle) -> tauri::Result<()> {
             )?,
             #[cfg(not(target_os = "macos"))]
             &Item::quit(app, None)?,
+        ],
+    )?;
+    let session = Submenu::with_items(
+        app,
+        "Session",
+        true,
+        &[
+            &MenuItem::with_id(
+                app,
+                "session-rename",
+                "Rename",
+                true,
+                Some("CmdOrCtrl+Alt+R"),
+            )?,
+            &MenuItem::with_id(
+                app,
+                "session-pin",
+                "Pin / Unpin",
+                true,
+                Some("CmdOrCtrl+Alt+P"),
+            )?,
+            &MenuItem::with_id(
+                app,
+                "session-archive",
+                "Archive",
+                true,
+                Some("CmdOrCtrl+Shift+A"),
+            )?,
+        ],
+    )?;
+    let terminal = Submenu::with_items(
+        app,
+        "Terminal",
+        true,
+        &[
+            &MenuItem::with_id(
+                app,
+                "toggle-terminal",
+                "Toggle Terminal",
+                true,
+                Some("Ctrl+`"),
+            )?,
+            &MenuItem::with_id(
+                app,
+                "toggle-terminal-panel",
+                "Toggle Panel",
+                true,
+                Some("CmdOrCtrl+J"),
+            )?,
+            &MenuItem::with_id(
+                app,
+                "split-terminal",
+                "Split Terminal",
+                true,
+                Some("CmdOrCtrl+Backslash"),
+            )?,
         ],
     )?;
     let edit = Submenu::with_items(
@@ -83,13 +139,21 @@ pub(crate) fn install(app: &tauri::AppHandle) -> tauri::Result<()> {
             )?,
             &file,
             &edit,
+            &session,
+            &terminal,
             &view,
             &window,
         ],
     )?;
     app.set_menu(menu)?;
     app.on_menu_event(|app, event| {
+        if let Some(action) = event.id().as_ref().strip_prefix("session-") {
+            let _ = app.emit("native-session-action", action);
+            return;
+        }
         let name = match event.id().as_ref() {
+            "toggle-terminal" | "toggle-terminal-panel" => "native-toggle-terminal",
+            "split-terminal" => "native-split-terminal",
             "close-active-tab" => "native-close-tab",
             "new-session-tab" => "native-new-session",
             "new-terminal-tab" => "native-new-terminal",

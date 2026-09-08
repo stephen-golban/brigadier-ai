@@ -129,6 +129,7 @@ pub(crate) async fn archive_set(
             .supervisor
             .stop_sessions_for_trash(&ids.iter().map(SessionId::new).collect::<Vec<_>>(), None)
             .await?;
+        crate::terminal::close_sessions(&ids);
         for id in ids {
             data.entries.entry(id).or_insert(Entry {
                 archived_at: now(),

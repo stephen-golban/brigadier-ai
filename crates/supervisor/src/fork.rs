@@ -8,6 +8,17 @@ impl Supervisor {
         source: &SessionId,
         env: BTreeMap<String, String>,
     ) -> Result<SessionId, SupervisorError> {
+        self.fork_session_in(source, env, true).await
+    }
+
+    /// Fork into either a new worktree or the parent's directory without taking ownership
+    /// of the parent's worktree (cleanup of a same-directory child must never remove it).
+    pub async fn fork_session_in(
+        &self,
+        source: &SessionId,
+        env: BTreeMap<String, String>,
+        new_worktree: bool,
+    ) -> Result<SessionId, SupervisorError> {
         let _lifecycle = self.inner.lifecycle.read().await;
         self.require_session_available(source)?;
         let record = self
@@ -59,7 +70,11 @@ impl Supervisor {
         } else {
             None
         };
-        let prepared = worktree::prepare_from(&project.root_path, base.as_deref()).await?;
+        let prepared = if new_worktree {
+            worktree::prepare_from(&project.root_path, base.as_deref()).await?
+        } else {
+            None
+        };
         if let Some(tree) = &prepared {
             if let Err(error) = self
                 .seed_worktree(source_dir.clone(), tree.path.clone())
@@ -70,7 +85,7 @@ impl Supervisor {
             }
         }
         // Keep the source stable while the CLI copies its transcript and we copy display history.
-        let _source_lease = match brigadier_core::checkpoint::WorkspaceLease::acquire(&source_dir) {
+        let _source_lease = match brigadier_core::checkpoint::WorkspaceLease::writer(&source_dir) {
             Ok(lease) => lease,
             Err(error) => {
                 if let Some(tree) = prepared {
@@ -279,6 +294,33 @@ mod tests {
             .await
             .unwrap();
         assert!(history.iter().any(|item| item.body == "Inherited context"));
+        assert_eq!(sup.session(&parent).await.unwrap().unwrap(), before);
+        sup.shutdown().await;
+    }
+    #[tokio::test]
+    async fn same_directory_fork_copies_history_without_owning_parent_worktree() {
+        let (_dir, store, sup, _project, parent, seen) = rig(false).await;
+        let before = sup.session(&parent).await.unwrap().unwrap();
+        let _terminal =
+            brigadier_core::checkpoint::WorkspaceLease::terminal(before.cwd.as_ref().unwrap())
+                .unwrap();
+        let child = sup
+            .fork_session_in(&parent, BTreeMap::new(), false)
+            .await
+            .unwrap();
+        let row = sup.session(&child).await.unwrap().unwrap();
+        assert_eq!(row.cwd, before.cwd);
+        assert!(row.worktree_path.is_none());
+        assert!(row.branch.is_none());
+        assert!(lock(&seen)[0].fork);
+        assert!(lock(&seen)[0].prompt.is_none());
+        assert!(store
+            .handle()
+            .chat_items(child.to_string(), 0)
+            .await
+            .unwrap()
+            .iter()
+            .any(|item| item.body == "Inherited context"));
         assert_eq!(sup.session(&parent).await.unwrap().unwrap(), before);
         sup.shutdown().await;
     }
