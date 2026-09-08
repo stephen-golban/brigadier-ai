@@ -356,7 +356,11 @@ function Transcript({
         ) : null}
         <ThreadPrimitive.Messages>
           {({ message }) => {
-            const row = message.metadata.custom.brigadier as ThreadRow;
+            const row = message.metadata.custom.brigadier as ThreadRow | undefined;
+            // The external runtime appends an optimistic assistant message while a turn is
+            // running, including before chat hydration. It has no saved Brigadier row; our
+            // loading/working indicators already cover that interval.
+            if (!row) return null;
             const index = message.metadata.custom.index as number;
             const turn = message.metadata.custom.turn as string | null;
             return (

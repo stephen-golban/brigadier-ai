@@ -246,7 +246,7 @@ export function NewSession({
             disabled={!ready || sending}
             onClick={submit}
           >
-            Start
+            {sending ? "Starting…" : "Start"}
           </Button>
         </PromptInputActions>
       </PromptInput>

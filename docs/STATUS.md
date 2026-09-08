@@ -1,5 +1,11 @@
 # STATUS — where the brigadier harness actually stands
 
+Submission fix: **2026-09-08**. ThreadView now handles assistant-ui optimistic messages without
+custom row metadata, fixing the reproduced startup render exception. React error recovery/local diagnostics and visible
+submission-pending states added. Peer-created worktrees now use committed HEAD to avoid parent
+checkout lock conflicts. See
+[evidence and limits](plans/submission-diagnostics-2026-09-08.md).
+
 Session coordination update: **2026-09-08**. Cross-project discovery, session reads, queued messages,
 creation, and bounded waits are implemented. See [behavior, verification, and limits](plans/session-coordination-implementation-2026-09-08.md).
 
@@ -689,4 +695,3 @@ every bundle format for the platform being built on. Leave it alone.
   directory, or expect to prune afterwards. **The rows are not deleted and deleting them is the
   owner's call, not made.** Any citation of a window count in `frame-stats.ndjson` must now say which
   slice it means.
-

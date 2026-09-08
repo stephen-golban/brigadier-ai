@@ -365,6 +365,7 @@ async fn dispatch(app: &tauri::AppHandle, v: Value) -> Result<Value, AppError> {
             None,
             v.get("isolated").and_then(Value::as_bool),
             None,
+            true,
             app.state(),
         )
         .await?;

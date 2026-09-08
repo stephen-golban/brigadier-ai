@@ -156,7 +156,7 @@ pub(crate) async fn start_session(
     state: State<'_, AppState>,
 ) -> Result<SessionView, AppError> {
     let _creation = crate::peers::CREATION.lock().await;
-    start_session_locked(project_id, prompt, model, permission_mode, options, isolated, base_branch, state).await
+    start_session_locked(project_id, prompt, model, permission_mode, options, isolated, base_branch, false, state).await
 }
 
 // Caller holds CREATION across validation and spawn (including agent-created sessions).
@@ -169,6 +169,7 @@ pub(crate) async fn start_session_locked(
     options: Option<AgentOptions>,
     isolated: Option<bool>,
     base_branch: Option<String>,
+    peer: bool,
     state: State<'_, AppState>,
 ) -> Result<SessionView, AppError> {
     crate::navigation::require_available(
@@ -206,7 +207,9 @@ pub(crate) async fn start_session_locked(
         .take(100)
         .collect();
     let peer_token = crate::peers::prepare(&mut req)?;
-    let session_id = supervisor
+    let session_id = if peer {
+        supervisor.start_peer_session(&project_id, &DriverKind::new(CLAUDE_CODE), req, isolated.unwrap_or(true)).await?
+    } else { supervisor
         .start_project_session_from(
             &project_id,
             &DriverKind::new(CLAUDE_CODE),
@@ -214,7 +217,7 @@ pub(crate) async fn start_session_locked(
             isolated.unwrap_or(true),
             base_branch,
         )
-        .await?;
+        .await? };
     crate::peers::bind(peer_token, session_id.as_str(), Some(title))?;
     session_view(state.inner(), &session_id).await
 }

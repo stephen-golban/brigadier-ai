@@ -817,6 +817,28 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn peer_worktree_can_start_while_a_sibling_holds_a_writer_lease() {
+        let rig = Rig::new(true);
+        let project = rig.project().await;
+        let parent = rig.sup.start_peer_session(&project, &rig.kind, StartSession::new(&rig.repo), true).await.unwrap();
+        let parent_path = rig.row(&parent).await.worktree_path.unwrap();
+        let lease = brigadier_core::checkpoint::WorkspaceLease::writer(&parent_path).unwrap();
+        std::fs::write(rig.repo.join("f.txt"), "uncommitted source").unwrap();
+        // User creation still refuses an unsafe copy of the live ancestor checkout.
+        assert!(rig.sup.start_project_session(&project, &rig.kind, StartSession::new(&rig.repo), true).await.is_err());
+        let child = rig.sup.start_peer_session(&project, &rig.kind, StartSession::new(&rig.repo), true).await.unwrap();
+        let child_path = rig.row(&child).await.worktree_path.unwrap();
+        assert_ne!(parent_path, child_path);
+        assert_eq!(std::fs::read_to_string(child_path.join("f.txt")).unwrap(), "hi\n");
+        let child_lease = brigadier_core::checkpoint::WorkspaceLease::writer(&child_path).unwrap();
+        drop(child_lease);
+        drop(lease);
+        rig.end_and_settle(&child).await;
+        rig.end_and_settle(&parent).await;
+        rig.store.close().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn session_base_branch_inherits_only_the_current_checkout() {
         let rig = Rig::new(true);
         let project = rig.project().await;

@@ -26,6 +26,7 @@ mod cleanup;
 mod session_archive;
 mod tab_menu;
 mod commands;
+mod diagnostics;
 mod commit_message;
 mod conversation;
 mod error;
@@ -131,6 +132,7 @@ pub fn run() {
         // save dialog is called anywhere in `src/`. `docs/research/tauri-dialog.md`.
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
+            diagnostics::report_frontend_error,
             commands::app_info,
             session_archive::archive_load,
             session_archive::archive_set,
