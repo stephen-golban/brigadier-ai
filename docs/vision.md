@@ -306,6 +306,8 @@ to the project, from any session.
 
 ## 9. What the user sees
 
+**2026-09-09 conversation update:** intermediate work now lives in an expandable parent. It stays open while running and folds preceding work into a Worked-duration row when the final answer is available. Interrupted work remains open. Durations come from recorded turn boundaries; older history omits them. See [mechanism, implementation, and limits](research/compact-work-blocks-2026-09-09.md). **[source]** `src/threadProjection.ts`, `src/components/WorkTrace.tsx`, `crates/store/src/chat.rs`.
+
 **The sidebar shows every project, with its sessions nested.** A collapsed project still carries a
 dot when something is running inside it, so work in a project you are not looking at is never
 invisible. Finished projects collapse to one line with a count. The window gauge is pinned at the

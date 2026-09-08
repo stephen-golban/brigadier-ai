@@ -94,6 +94,7 @@ pub(crate) enum Op {
         oneshot::Sender<Result<()>>,
     ),
     Chat(crate::chat::ChatItem),
+    ChatTurn(Box<brigadier_core::event::Envelope>),
     /// Insert or replace a project.
     UpsertProject(ProjectRow),
     /// Set one project's MCP policy. A missing project is a no-op here; the supervisor checks
@@ -320,10 +321,22 @@ impl StoreHandle {
         self.send(Op::Chat(item))
     }
 
+    /// Persist lifecycle evidence for compact conversation work summaries.
+    pub async fn chat_turn_event(&self, env: brigadier_core::event::Envelope) -> Result<()> {
+        self.send(Op::ChatTurn(Box::new(env)))
+    }
+
+    /// Bounded turn timing and outcomes for the selected conversation.
+    pub async fn chat_turns(&self, session: String) -> Result<Vec<crate::chat::ChatTurn>> {
+        self.query(move |conn| crate::chat::read_turns(conn, &session)).await
+    }
+
     /// Copy a stable prefix into a newly created session without changing the source.
     pub async fn fork_chat_history(&self, source: String, target: String, through: u64) -> Result<()> {
         self.query(move |conn| {
             conn.execute("INSERT INTO chat_items(session_id,id,seq,at,kind,body,parent_id,provider_uuid) SELECT ?2,id,seq,at,kind,body,parent_id,provider_uuid FROM chat_items WHERE session_id=?1 AND seq<=?3", (&source, &target, through))?;
+            // Only complete lifecycle spans inside the forked prefix retain their timing.
+            conn.execute("INSERT INTO chat_turns(session_id,id,start_seq,end_seq,started_at,ended_at,status) SELECT ?2,id,start_seq,end_seq,started_at,ended_at,status FROM chat_turns WHERE session_id=?1 AND end_seq<=?3", (&source, &target, through))?;
             Ok(())
         }).await
     }
@@ -1326,6 +1339,11 @@ fn apply_one(
     touched: &mut BTreeSet<String>,
 ) -> Result<()> {
     match op {
+        Op::ChatTurn(env) => {
+            ensure_session(tx, &env.session_id, touched)?;
+            crate::chat::write_turn(tx, &env)?;
+            tx.execute("UPDATE sessions SET last_event_seq=MAX(last_event_seq,?2) WHERE id=?1", (env.session_id.as_str(), env.seq))?;
+        }
         Op::Chat(item) => {
             ensure_session(tx, &SessionId::new(&item.session_id), touched)?;
             crate::chat::write(tx, &item)?;

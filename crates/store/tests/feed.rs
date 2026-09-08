@@ -513,3 +513,51 @@ async fn chat_body_survives_reopen_independently_of_terse_feed() {
     assert_eq!(reopened.handle().chat_items("s1".into(), 0).await.unwrap()[0].body, body);
     reopened.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn conversation_turn_timing_survives_reopen_and_terminal_replay() {
+    use std::time::{Duration, UNIX_EPOCH};
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let h = store.handle();
+    let mut start = env(1, Event::TurnStarted { turn_id: TurnId::new("timed") });
+    start.at = UNIX_EPOCH + Duration::from_millis(1000);
+    apply(&start, h).await;
+    let live = h.chat_turns("s1".into()).await.unwrap();
+    assert_eq!(live[0].started_at, 1000);
+    assert_eq!(live[0].status, "running");
+    assert_eq!(live[0].ended_at, None);
+    let mut end = env(9, Event::TurnCompleted { turn_id: TurnId::new("timed"), stop_reason: StopReason::EndTurn, usage: usage(), cost_usd_cumulative: 0.0 });
+    end.at = UNIX_EPOCH + Duration::from_millis(135000);
+    apply(&end, h).await;
+    apply(&start, h).await;
+    apply(&env(10, Event::SessionExited { reason: ExitReason::Graceful, exit_code: Some(0) }), h).await;
+    store.close().await.unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let rows = store.handle().chat_turns("s1".into()).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].start_seq, 1);
+    assert_eq!(rows[0].end_seq, Some(9));
+    assert_eq!(rows[0].ended_at, Some(135000));
+    assert_eq!(rows[0].status, "completed");
+    store.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn conversation_turn_outcomes_do_not_invent_missing_starts() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let h = store.handle();
+    apply(&env(1, Event::TurnAborted { turn_id: TurnId::new("missing"), reason: AbortReason::Interrupted }), h).await;
+    assert!(h.chat_turns("s1".into()).await.unwrap().is_empty());
+    for (index, reason, status) in [(0, AbortReason::Interrupted, "interrupted"), (1, AbortReason::Error("disconnected".into()), "failed")] {
+        let id = TurnId::new(format!("t{index}"));
+        apply(&env(2 + index * 2, Event::TurnStarted { turn_id: id.clone() }), h).await;
+        apply(&env(3 + index * 2, Event::TurnAborted { turn_id: id, reason }), h).await;
+        assert_eq!(h.chat_turns("s1".into()).await.unwrap()[0].status, status);
+    }
+    apply(&env(7, Event::TurnStarted { turn_id: TurnId::new("exit") }), h).await;
+    apply(&env(8, Event::SessionExited { reason: ExitReason::Graceful, exit_code: Some(0) }), h).await;
+    assert_eq!(h.chat_turns("s1".into()).await.unwrap()[0].status, "interrupted");
+    store.close().await.unwrap();
+}

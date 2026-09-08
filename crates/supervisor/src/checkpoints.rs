@@ -337,7 +337,7 @@ pub(crate) fn observe(inner: &Arc<Inner>, env: &Envelope, generation: u64) {
         }
         match &env.event {
             Event::TurnCompleted { .. } => {
-                let _ = sup.finish_epoch(id, env.seq).await;
+                sup.finish_observed_epoch(id, env.seq).await;
             }
             Event::TurnStarted { .. } => {
                 if let Some(epoch) = invalidated {
@@ -364,7 +364,7 @@ pub(crate) fn observe(inner: &Arc<Inner>, env: &Envelope, generation: u64) {
                         .save_workspace_epoch(id.to_string(), epoch)
                         .await;
                 }
-                let _ = sup.finish_epoch(id, env.seq).await;
+                sup.finish_observed_epoch(id, env.seq).await;
             }
             Event::SessionExited { .. } => {
                 let active = lock(&sup.inner.checkpoints.active).remove(id);
@@ -384,6 +384,24 @@ pub(crate) fn observe(inner: &Arc<Inner>, env: &Envelope, generation: u64) {
 }
 
 impl Supervisor {
+    // Trailing provider frames can invalidate a capture after turn completion.
+    // Retry the entire strict barrier/capture/release; never publish a rejected snapshot.
+    async fn finish_observed_epoch(&self, id: &SessionId, seq: u64) {
+        for attempt in 0..3 {
+            match self.finish_epoch(id, seq).await {
+                Ok(()) => return,
+                Err(SupervisorError::Command(brigadier_core::session::CommandError::Rejected(_)))
+                    if attempt < 2 => {
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    }
+                Err(error) => {
+                    tracing::warn!(session = %id, %error, "Completed turn checkpoint remains incomplete");
+                    return;
+                }
+            }
+        }
+    }
+
     /// Files first, native cut second, then one checkpointed edited send. Every uncertain step
     /// leaves a durable operation which blocks further workspace writers.
     pub async fn checkpoint_rewind_send(
@@ -672,6 +690,7 @@ mod tests {
     #[derive(Clone, Copy)]
     enum Reply {
         Success,
+        InvalidatedCapture,
         Refused,
         Unknown,
         SendUnknown,
@@ -722,11 +741,18 @@ mod tests {
             let db = store.handle().clone();
             let path = root.clone();
             let actor = tokio::spawn(async move {
+                let mut invalidated = false;
                 while let Some(command) = backend.commands.recv().await {
                     match command {
                         Command::Native { request, ack } => {
                             let response = match request {
                                 NativeControl::CheckpointBarrier => Ok(json!({"seq":10})),
+                                NativeControl::CheckpointRelease { turn_id: None, .. }
+                                    if matches!(reply, Reply::InvalidatedCapture) && !invalidated => {
+                                        invalidated = true;
+                                        std::fs::write(path.join("file"), b"after invalidation").unwrap();
+                                        Err(CommandError::Rejected("Provider advanced during workspace capture".into()))
+                                    }
                                 NativeControl::RewindConversation { target_uuid, .. } => {
                                     assert_eq!(
                                         std::fs::read(path.join("file")).unwrap(),
@@ -836,6 +862,24 @@ mod tests {
             }
         }
     }
+    #[tokio::test]
+    async fn terminal_capture_retries_with_a_fresh_snapshot_without_another_send() {
+        let r = Rig::new(Reply::InvalidatedCapture).await;
+        std::fs::write(r.root.join("file"), b"before").unwrap();
+        let id = SessionId::new("s");
+        let turn = r.sup.checkpoint_send(&id, TurnInput::text("edited")).await.unwrap();
+        std::fs::write(r.root.join("file"), b"first capture").unwrap();
+        let _serial = r.sup.inner.checkpoints.serial.lock().await;
+        r.sup.finish_observed_epoch(&id, 10).await;
+        let epochs = r.store.handle().workspace_epochs("s".into()).await.unwrap();
+        let epoch = epochs.iter().find(|e| e.turn_id == turn.as_str()).unwrap();
+        let post = epoch.post.as_ref().expect("completion must settle without another send");
+        let current = r.sup.capture_at(r.root.clone()).await.unwrap();
+        assert_eq!(post.tree, current.tree, "rejected capture must not be reused");
+        assert_eq!(std::fs::read(r.root.join("file")).unwrap(), b"after invalidation");
+        assert!(!lock(&r.sup.inner.checkpoints.active).contains_key(&id));
+    }
+
     #[tokio::test]
     async fn combined_success_orders_files_native_archive_and_checkpointed_send() {
         let r = Rig::new(Reply::Success).await;

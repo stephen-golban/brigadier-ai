@@ -36,6 +36,14 @@ export interface ChatItem {
   parent_id: string | null;
   provider_uuid?: string | null;
 }
+export interface ChatTurn {
+  id: string;
+  start_seq: number;
+  end_seq: number | null;
+  started_at: number;
+  ended_at: number | null;
+  status: "running" | "completed" | "failed" | "stopped" | "interrupted";
+}
 export const desktop = isTauri();
 const example = "# Brigadier\n\nA local workspace for your coding agents.\n";
 // Browser fixtures are visibly marked by the existing application-wide mock indicator.
@@ -93,6 +101,8 @@ export const workspaceApi = {
     desktop
       ? invoke("chat_items", { sessionId, after })
       : Promise.resolve(mockChatItems(sessionId, after)),
+  chatTurns: (sessionId: string): Promise<ChatTurn[]> =>
+    desktop ? invoke("chat_turns", { sessionId }) : Promise.resolve([]),
   openTerminal: (
     context: WorkspaceContext,
     cols: number,

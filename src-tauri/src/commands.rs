@@ -1119,6 +1119,15 @@ pub(crate) async fn chat_items(
     Ok(state.get()?.store().chat_items(session_id, after).await?)
 }
 
+/// Recorded lifecycle boundaries for the selected conversation.
+#[tauri::command]
+pub(crate) async fn chat_turns(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<brigadier_store::chat::ChatTurn>, AppError> {
+    Ok(state.get()?.store().chat_turns(session_id).await?)
+}
+
 /// Options accepted for a new Claude child. Unknown knobs fail instead of silently doing nothing.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]

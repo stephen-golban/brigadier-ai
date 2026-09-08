@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   flattenTrace,
+  activitySummary,
+  activeWorkLabel,
+  workDuration,
   projectThread,
   type ThreadRow,
 } from "./threadProjection";
@@ -32,7 +35,7 @@ function work(row: ThreadRow | undefined) {
 }
 
 describe("minimal thread projection", () => {
-  it("keeps progress and paired tool output in chronological order", () => {
+  it("folds progress and paired output beneath one parent, keeping the answer visible", () => {
     const rows = project([
       user,
       text("starting"),
@@ -41,16 +44,13 @@ describe("minimal thread projection", () => {
       text("first paragraph"),
       text("second paragraph"),
     ]);
-    expect(rows.map((r) => r.type)).toEqual([
-      "message",
-      "message",
-      "work",
-      "message",
+    expect(rows.map((r) => r.type)).toEqual(["message", "work", "message"]);
+    expect(work(rows[1]).nodes.map((n) => n.item.id)).toEqual([
+      "starting",
+      "cmd",
     ]);
-    expect(rows[1]).toMatchObject({ item: { body: "starting" } });
-    expect(work(rows[2]).nodes.map((n) => n.item.id)).toEqual(["cmd"]);
-    expect(work(rows[2]).nodes[0]?.result?.body).toBe("out");
-    expect(rows[3]).toMatchObject({
+    expect(work(rows[1]).nodes[1]?.result?.body).toBe("out");
+    expect(rows[2]).toMatchObject({
       final: true,
       item: { body: "first paragraph\n\nsecond paragraph" },
     });
@@ -150,16 +150,18 @@ describe("minimal thread projection", () => {
       "message",
       "message",
       "work",
-      "message",
     ]);
     expect(work(rows[1]).running).toBe(false);
     expect(work(rows[4]).running).toBe(true);
-    expect(work(rows[4]).nodes.map((n) => n.item.id)).toEqual(["next"]);
+    expect(work(rows[4]).nodes.map((n) => n.item.id)).toEqual([
+      "next",
+      "still working",
+    ]);
   });
-  it("keeps pre-tool progress visible after interruption", () => {
+  it("retains pre-tool progress inside interrupted work", () => {
     expect(
       project([user, text("starting"), call("unfinished")]).map((r) => r.type),
-    ).toEqual(["message", "message", "work"]);
+    ).toEqual(["message", "work"]);
   });
   it("can attach activity referring to a result before that result arrives", () => {
     const group = work(
@@ -188,21 +190,170 @@ it.each([false, true])(
       ],
       busy,
     );
-    expect(rows.map((r) => r.id)).toEqual([
-      "u",
-      "progress",
-      "work:reason",
-      "answer",
-    ]);
-    expect(work(rows[2]).nodes[0]?.item.body).toBe("Provider reasoning");
+    expect(rows.map((r) => r.id)).toEqual(
+      busy ? ["u", "work:u"] : ["u", "work:u", "answer"],
+    );
+    expect(work(rows[1]).nodes[1]?.item.body).toBe("Provider reasoning");
   },
 );
 it("keeps stable row identities across streaming, result arrival, and completion", () => {
   const items = [user, text("before"), call("cmd"), text("after")];
   const live = project(items, true);
   const done = project([...items, result("out", "cmd")]);
-  expect(done.map((r) => r.id)).toEqual(live.map((r) => r.id));
-  expect(work(done[2]).nodes[0]?.result?.id).toBe("out");
-  expect(done[3]).toMatchObject({ final: true });
-  expect(live[3]).not.toHaveProperty("final");
+  expect(work(done[1]).id).toEqual(work(live[1]).id);
+  expect(work(done[1]).nodes[1]?.result?.id).toBe("out");
+  expect(done[2]).toMatchObject({ final: true });
+  expect(work(live[1]).latestProgress?.id).toBe("after");
+});
+
+it("uses recorded turn timing and keeps idle time between turns out of durations", () => {
+  const items = [
+    user,
+    call("cmd"),
+    text("answer"),
+    item("u2", { type: "user-text" }),
+    call("cmd2"),
+  ].map((i, seq) => ({ ...i, seq: seq + 1 }));
+  const rows = projectThread(items, true, [
+    {
+      id: "t1",
+      start_seq: 1,
+      end_seq: 3,
+      started_at: 1000,
+      ended_at: 135000,
+      status: "completed",
+    },
+    {
+      id: "t2",
+      start_seq: 4,
+      end_seq: null,
+      started_at: 900000,
+      ended_at: null,
+      status: "running",
+    },
+  ]);
+  expect(work(rows[1])).toMatchObject({
+    durationMs: 134000,
+    running: false,
+    status: "completed",
+  });
+  expect(work(rows[4])).toMatchObject({ startedAt: 900000, running: true });
+  expect(work(rows[4]).durationMs).toBeUndefined();
+});
+it("retains recorded failure/interruption without promoting partial output to a final answer", () => {
+  for (const status of ["failed", "interrupted", "stopped"] as const) {
+    const rows = projectThread(
+      [user, { ...call("cmd"), seq: 2 }, { ...text("partial"), seq: 3 }],
+      false,
+      [
+        {
+          id: "t",
+          start_seq: 1,
+          end_seq: 4,
+          started_at: 1000,
+          ended_at: 4000,
+          status,
+        },
+      ],
+    );
+    expect(work(rows[1])).toMatchObject({ status, durationMs: 3000 });
+    expect(rows[2]).toMatchObject({ final: false, item: { body: "partial" } });
+  }
+});
+it("separates harness turns without a user echo, and omits missing or invalid timing", () => {
+  const items = [call("a"), text("one"), call("b"), text("two")].map(
+    (i, seq) => ({ ...i, seq: seq + 1 }),
+  );
+  const rows = projectThread(items, false, [
+    {
+      id: "a",
+      start_seq: 1,
+      end_seq: 2,
+      started_at: 4000,
+      ended_at: 1000,
+      status: "completed",
+    },
+    {
+      id: "b",
+      start_seq: 3,
+      end_seq: 4,
+      started_at: 5000,
+      ended_at: 6000,
+      status: "completed",
+    },
+  ]);
+  expect(rows.map((r) => r.id)).toEqual(["work:a", "one", "work:b", "two"]);
+  expect(work(rows[0]).durationMs).toBeUndefined();
+  expect(work(project([user, call("legacy")])[1]).durationMs).toBeUndefined();
+});
+it("keeps recovered unfinished turns inspectable without inventing a completion time", () => {
+  const rows = projectThread([{ ...call("cmd"), seq: 2 }], false, [
+    {
+      id: "t",
+      start_seq: 1,
+      end_seq: null,
+      started_at: 1000,
+      ended_at: null,
+      status: "running",
+    },
+  ]);
+  expect(work(rows[0])).toMatchObject({
+    status: "interrupted",
+    running: false,
+  });
+  expect(work(rows[0]).durationMs).toBeUndefined();
+});
+
+it("uses category summaries and current-item state independently of the turn timer", () => {
+  const group = work(
+    project([
+      call("read", null, "Read"),
+      result("read-out", "read"),
+      call("cmd"),
+      result("cmd-out", "cmd"),
+      call("web", null, "WebSearch"),
+      result("web-out", "web"),
+    ])[0],
+  );
+  expect(activitySummary(group.nodes)).toBe(
+    "Read files, ran a command, searched the web",
+  );
+  expect(activeWorkLabel(group.nodes)).toBe("Thinking");
+  expect(
+    activeWorkLabel(work(project([call("edit", null, "Edit")], true)[0]).nodes),
+  ).toBe("Editing files");
+});
+it("does not make interrupted work collapsible, and still gives prose-only recorded turns a timer", () => {
+  const stopped = work(
+    projectThread([user, call("cmd")], false, [], "interrupted")[1],
+  );
+  expect(stopped.canCollapse).toBe(false);
+  const rows = projectThread(
+    [
+      { ...user, seq: 1 },
+      { ...text("answer"), seq: 2 },
+    ],
+    false,
+    [
+      {
+        id: "t",
+        start_seq: 1,
+        end_seq: 3,
+        started_at: 1000,
+        ended_at: 18000,
+        status: "completed",
+      },
+    ],
+  );
+  expect(work(rows[1])).toMatchObject({
+    durationMs: 17000,
+    canCollapse: false,
+    nodes: [],
+  });
+  expect(rows[2]).toMatchObject({ final: true });
+});
+it("formats long elapsed times without dropping seconds or adding zero units", () => {
+  expect(workDuration(60000)).toBe("1m");
+  expect(workDuration(3661000)).toBe("1h 1m 1s");
+  expect(workDuration(90001000)).toBe("1d 1h 1s");
 });

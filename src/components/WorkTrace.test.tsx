@@ -25,10 +25,12 @@ function Harness({
   running?: boolean;
 }) {
   const [expanded, setExpanded] = useState(new Set<string>());
-  const row = projectThread(items, running)[0] as Extract<
-    ThreadRow,
-    { type: "work" }
-  >;
+  const row = projectThread(
+    running
+      ? items
+      : [...items, item("answer", { type: "assistant-text" }, "Final answer")],
+    running,
+  )[0] as Extract<ThreadRow, { type: "work" }>;
   return (
     <WorkTrace
       row={row}
@@ -61,13 +63,14 @@ describe("work disclosure", () => {
       />,
     );
     expect(screen.queryByText("npm test")).not.toBeInTheDocument();
-    const summary = screen.getByRole("button", {
-      name: /Ran npm test.*Failed/,
-    });
+    const summary = screen.getByRole("button", { name: /Worked.*1 failure/ });
     await user.tab();
     expect(summary).toHaveFocus();
     await user.keyboard("{Enter}");
     expect(summary).toHaveAttribute("aria-expanded", "true");
+    await user.click(
+      screen.getByRole("button", { name: /Ran npm test.*Failed/ }),
+    );
     expect(screen.getAllByText("npm test")).toHaveLength(1);
     expect(screen.getAllByText("A test failed")).toHaveLength(1);
     await user.click(summary);
@@ -103,6 +106,7 @@ describe("work disclosure", () => {
     expect(
       screen.queryByText("Found the relevant behavior."),
     ).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Worked/ }));
     await user.click(
       screen.getByRole("button", { name: "Workspace research" }),
     );
@@ -125,6 +129,7 @@ describe("work disclosure", () => {
     );
     render(<Harness items={items} />);
     expect(screen.queryByText("command 0")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Worked/ }));
     await user.click(screen.getByRole("button", { name: "Ran commands" }));
     expect(
       screen.getAllByRole("button", { name: /^Ran command \d+/ }),
@@ -136,7 +141,7 @@ describe("work disclosure", () => {
   });
 });
 
-it("keeps the current action visible when live activity is collapsed", async () => {
+it("separates the working timer from the current tool label", async () => {
   const user = userEvent.setup();
   const call = item(
     "live",
@@ -144,13 +149,11 @@ it("keeps the current action visible when live activity is collapsed", async () 
     "npm run build",
   );
   const view = render(<Harness items={[call]} running />);
-  const header = screen.getByRole("button", {
-    name: "Ran npm run build",
-  });
-  expect(header).toHaveAttribute("aria-expanded", "false");
-  await user.click(header);
-  expect(header).toHaveAttribute("aria-expanded", "true");
-  expect(header).toHaveTextContent("Ran npm run build");
+  expect(screen.getByText("Working")).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Working" })).toBeNull();
+  const tool = screen.getByRole("button", { name: "Running npm run build" });
+  expect(tool).toHaveAttribute("aria-expanded", "false");
+  await user.click(tool);
   view.rerender(
     <Harness
       items={[
@@ -163,9 +166,10 @@ it("keeps the current action visible when live activity is collapsed", async () 
       ]}
     />,
   );
-  expect(
-    screen.getByRole("button", { name: "Ran npm run build" }),
-  ).toHaveAttribute("aria-expanded", "true");
+  const parent = screen.getByRole("button", { name: "Worked" });
+  expect(parent).toHaveAttribute("aria-expanded", "false");
+  await user.click(parent);
+  expect(screen.getByText("Built successfully")).toBeVisible();
 });
 
 it("keeps unknown tool completion distinct from success", () => {
@@ -187,7 +191,54 @@ it("shows provider reasoning without empty disclosures or orphan copy actions", 
     />,
   );
   expect(screen.getAllByRole("button")).toHaveLength(1);
+  await user.click(screen.getByRole("button", { name: /Worked/ }));
   await user.click(screen.getByRole("button", { name: "Reasoning" }));
   expect(screen.getByText("Provider reasoning")).toBeVisible();
   expect(screen.queryByRole("button", { name: "Copy" })).toBeNull();
+});
+
+it("automatically folds an open live parent on completion and restores nested detail on demand", async () => {
+  const user = userEvent.setup();
+  const items = [
+    item("progress", { type: "assistant-text" }, "Checking the build."),
+    item("cmd", { type: "tool-call", name: "Bash" }, "npm run build"),
+  ];
+  const view = render(<Harness items={items} running />);
+  expect(screen.getByText("Checking the build.")).toBeVisible();
+  await user.click(
+    screen.getByRole("button", { name: "Running npm run build" }),
+  );
+  expect(screen.getByText("Request")).toBeVisible();
+  view.rerender(
+    <Harness
+      items={[
+        ...items,
+        item(
+          "result",
+          { type: "tool-result", tool_call_id: "cmd", is_error: false },
+          "Build passed",
+        ),
+      ]}
+    />,
+  );
+  expect(screen.queryByText("Checking the build.")).toBeNull();
+  expect(screen.queryByText("Build passed")).toBeNull();
+  const parent = screen.getByRole("button", { name: /Worked/ });
+  expect(parent).toHaveAttribute("aria-expanded", "false");
+  await user.click(parent);
+  expect(screen.getByText("Checking the build.")).toBeVisible();
+  expect(screen.getByText("Build passed")).toBeVisible();
+});
+
+it("shows recent progress in a long live turn, with earlier work available on demand", async () => {
+  const items = Array.from({ length: 60 }, (_, i) =>
+    item(`progress-${i}`, { type: "assistant-text" }, `Step ${i}`),
+  );
+  render(<Harness items={items} running />);
+  expect(screen.getByText("Step 59")).toBeVisible();
+  expect(screen.queryByText("Step 0")).toBeNull();
+  await userEvent.click(
+    screen.getByRole("button", { name: "Show earlier activity (20)" }),
+  );
+  expect(screen.getByText("Step 0")).toBeVisible();
 });

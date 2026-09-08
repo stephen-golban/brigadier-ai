@@ -35,7 +35,12 @@ import { BrandMark } from "./BrandMark";
 import { WorkTrace } from "./WorkTrace";
 import { ChangedFilesCard } from "./SessionReview";
 import { useSessionChanges } from "../desktopApi";
-import { workspaceApi, errorMessage, type ChatItem } from "../workspaceApi";
+import {
+  workspaceApi,
+  errorMessage,
+  type ChatItem,
+  type ChatTurn,
+} from "../workspaceApi";
 import { workbenchApi } from "../workbenchApi";
 import { bridge } from "../bridge";
 import * as store from "../feedStore";
@@ -184,6 +189,7 @@ function Transcript({
     [error, setError] = useState<string | null>(null),
     [loaded, setLoaded] = useState(false),
     [hydrated, setHydrated] = useState(false);
+  const [turnRecords, setTurnRecords] = useState<ChatTurn[]>([]);
   const state = useSyncExternalStore(store.subscribe, store.getState),
     session = state.sessions[sessionId],
     busy = session?.busy ?? false;
@@ -225,6 +231,7 @@ function Transcript({
   }, [expanded, sessionId]);
   useEffect(() => {
     setItems([]);
+    setTurnRecords([]);
     setLoaded(false);
     setHydrated(false);
     restored.current = false;
@@ -233,8 +240,27 @@ function Transcript({
       timer: ReturnType<typeof setTimeout>;
     const read = async () => {
       try {
-        const page = await workspaceApi.chat(sessionId, cursor);
+        const [page, recordedTurns] = await Promise.all([
+          workspaceApi.chat(sessionId, cursor),
+          workspaceApi.chatTurns(sessionId),
+        ]);
         if (cancelled) return;
+        setTurnRecords((old) =>
+          old.length === recordedTurns.length &&
+          old.every((t, i) => {
+            const next = recordedTurns[i]!;
+            return (
+              t.id === next.id &&
+              t.start_seq === next.start_seq &&
+              t.end_seq === next.end_seq &&
+              t.started_at === next.started_at &&
+              t.ended_at === next.ended_at &&
+              t.status === next.status
+            );
+          })
+            ? old
+            : recordedTurns,
+        );
         if (page.length) {
           cursor = Math.max(cursor, ...page.map((i) => i.seq));
           setItems((previous) => {
@@ -263,7 +289,10 @@ function Transcript({
       clearTimeout(timer);
     };
   }, [sessionId, revision]);
-  const rows = useMemo(() => projectThread(items, busy), [items, busy]);
+  const rows = useMemo(
+    () => projectThread(items, busy, turnRecords, session?.lastStop),
+    [items, busy, turnRecords, session?.lastStop],
+  );
   // The runtime owns only viewport behavior. Render saved rows directly with the
   // standalone Elements, so its synthetic startup message cannot enter our renderer.
   const messages = useMemo<ThreadMessageLike[]>(
@@ -457,7 +486,7 @@ function Transcript({
               </Disclosure.Content>
             </Disclosure>
           ))}
-        {busy && (
+        {busy && !rows.some((r) => r.type === "work" && r.running) && (
           <ThinkingIndicator label="Working…" role="status" className="py-2" />
         )}
         {!busy && session?.lastStop && session.lastStop !== "end-turn" && (

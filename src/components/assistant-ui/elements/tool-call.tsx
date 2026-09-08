@@ -2,7 +2,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { CircleAlertIcon, CheckIcon, ChevronRightIcon } from "lucide-react";
+import { CircleAlertIcon, ChevronRightIcon } from "lucide-react";
 import {
   Collapsible,
   CollapsibleContent,
@@ -19,6 +19,7 @@ import {
 
 export interface ToolCallProps {
   label: string;
+  icon?: ReactNode;
   activeLabel: string;
   query?: string;
   request?: string;
@@ -40,11 +41,12 @@ export function ToolCall({
   children,
   actions,
   label,
+  icon,
   activeLabel,
   query,
   request,
   result,
-  completed = result !== undefined,
+  completed: _completed,
   running,
   open,
   onOpenChange,
@@ -59,7 +61,7 @@ export function ToolCall({
       className={cn("w-full min-w-0", className)}
     >
       <CollapsibleTrigger className="group/trigger text-text/55 hover:text-text/90 flex max-w-full items-center gap-2 rounded-md py-1.5 text-left focus-visible:ring-1 focus-visible:ring-text/30 text-[13.5px] transition-colors outline-none">
-        <ChevronRightIcon className="size-3.5 shrink-0 opacity-60 transition-transform duration-200 ease-[cubic-bezier(0.32,0.72,0,1)] group-data-[state=open]/trigger:rotate-90 group-data-panel-open/trigger:rotate-90 motion-reduce:transition-none" />
+        {icon}
         <SwapLabel
           active={running ? 0 : 1}
           className="min-w-0 max-w-full text-start [&>span]:max-w-full [&>span]:truncate"
@@ -72,6 +74,7 @@ export function ToolCall({
           </ShimmerLabel>
           <>{label}</>
         </SwapLabel>
+        <ChevronRightIcon className="size-3.5 shrink-0 opacity-0 group-hover/trigger:opacity-60 group-focus-visible/trigger:opacity-60 group-data-[state=open]/trigger:opacity-60 transition-transform duration-200 group-data-[state=open]/trigger:rotate-90 motion-reduce:transition-none" />
         {query && (
           <span
             className={cn(
@@ -82,19 +85,12 @@ export function ToolCall({
             {query}
           </span>
         )}
-        <span className="ms-auto flex w-4 items-center justify-end">
-          {failed ? (
-            <CircleAlertIcon
-              aria-label="Failed"
-              className="size-3.5 text-error"
-            />
-          ) : (
-            !running &&
-            completed && (
-              <CheckIcon className="fade-in zoom-in-90 animate-in size-3.5 text-ok duration-200" />
-            )
-          )}
-        </span>
+        {failed && (
+          <CircleAlertIcon
+            aria-label="Failed"
+            className="size-3.5 text-error"
+          />
+        )}
       </CollapsibleTrigger>
       <CollapsibleContent className={cn(collapsePanel, "outline-none")}>
         {(request?.trim() || result !== undefined || actions) && (

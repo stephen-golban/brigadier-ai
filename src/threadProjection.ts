@@ -1,4 +1,4 @@
-import type { ChatItem } from "./workspaceApi";
+import type { ChatItem, ChatTurn } from "./workspaceApi";
 
 export interface TraceNode {
   item: ChatItem;
@@ -13,8 +13,12 @@ export type ThreadRow =
       id: string;
       nodes: TraceNode[];
       running: boolean;
+      canCollapse: boolean;
       failures: number;
       count: number;
+      status: ChatTurn["status"] | "unknown";
+      startedAt?: number;
+      latestProgress?: ChatItem;
       durationMs?: number;
     };
 
@@ -82,10 +86,17 @@ export function traceFailed(node: TraceNode): boolean {
 }
 
 /** Display projection only. Original bodies, including lifecycle updates, are preserved. */
-export function projectThread(items: ChatItem[], busy: boolean): ThreadRow[] {
+export function projectThread(
+  items: ChatItem[],
+  busy: boolean,
+  turns: ChatTurn[] = [],
+  lastStop?: string | null,
+): ThreadRow[] {
   const rows: ThreadRow[] = [];
   let turn: ChatItem[] = [];
-  const flush = (running: boolean) => {
+  let userId: string | undefined;
+  let evidence: ChatTurn | undefined;
+  const flush = (running: boolean, latest = false) => {
     if (!turn.length) return;
     const nodes = new Map<string, TraceNode>();
     const agents = new Map<string, TraceNode>();
@@ -143,8 +154,8 @@ export function projectThread(items: ChatItem[], busy: boolean): ThreadRow[] {
       if (parent && !cyclic) parent.children.push(node);
       else roots.push(node);
     }
-    // Pair against the whole turn before separating adjacent main-session prose and
-    // activity. Late results and child output stay attached to their owning call.
+    // Pair the whole turn before folding commentary. Late results and child output
+    // stay attached to their owning call even when delivered after the answer.
     const visible = (nodes: TraceNode[]): TraceNode[] =>
       nodes.flatMap((node) => {
         node.children = visible(node.children);
@@ -153,62 +164,160 @@ export function projectThread(items: ChatItem[], busy: boolean): ThreadRow[] {
         return [node];
       });
     const ordered = visible(roots);
-    let activity: TraceNode[] = [];
-    const flushActivity = () => {
-      if (!activity.length) return;
+    const prose = (node: TraceNode) =>
+      node.item.kind.type === "assistant-text" &&
+      !node.item.parent_id &&
+      !node.children.length;
+    const meaningful = ordered.filter((n) => !prose(n) || n.item.body.trim());
+    // Claude's current normalized items have no commentary/final channel. Only
+    // trailing main-session prose is a candidate answer; never infer one mid-run.
+    let answerStart = meaningful.length;
+    if (!running) {
+      while (answerStart > 0 && prose(meaningful[answerStart - 1]!))
+        answerStart--;
+    }
+    const activity = meaningful.slice(0, answerStart);
+    const answer = meaningful.slice(answerStart);
+    const fallback =
+      latest && lastStop && lastStop !== "end-turn"
+        ? lastStop === "interrupted"
+          ? "interrupted"
+          : "stopped"
+        : "unknown";
+    const status = running
+      ? "running"
+      : evidence?.status === "running"
+        ? "interrupted"
+        : (evidence?.status ?? fallback);
+    const interrupted =
+      status === "interrupted" || status === "failed" || status === "stopped";
+    if (activity.length || (evidence && answer.length)) {
       const all = flattenTrace(activity);
       rows.push({
         type: "work",
-        id: `work:${activity[0]!.item.id}`,
+        id: `work:${userId ?? meaningful[0]!.item.id}`,
         nodes: activity,
         running,
+        canCollapse: activity.length > 0 && answer.length > 0 && !interrupted,
+        status,
+        startedAt: evidence?.started_at,
+        durationMs:
+          evidence?.ended_at != null && evidence.ended_at >= evidence.started_at
+            ? evidence.ended_at - evidence.started_at
+            : undefined,
+        latestProgress: [...activity].reverse().find(prose)?.item,
         failures: all.filter(traceFailed).length,
         count: all.filter(
           (n) =>
             n.item.kind.type === "tool-call" || n.item.kind.type === "subagent",
         ).length,
       });
-      activity = [];
-    };
-    for (const node of ordered) {
-      const { item } = node;
-      if (
-        item.kind.type === "assistant-text" &&
-        !item.parent_id &&
-        !node.children.length
-      ) {
-        if (!item.body.trim()) continue;
-        flushActivity();
-        const previous = rows[rows.length - 1];
-        if (
-          previous?.type === "message" &&
-          previous.item.kind.type === "assistant-text"
-        ) {
-          previous.item = {
-            ...previous.item,
-            body: `${previous.item.body}\n\n${item.body}`,
-          };
-        } else {
-          rows.push({ type: "message", id: item.id, item });
-        }
-      } else activity.push(node);
     }
-    flushActivity();
-    const last = rows[rows.length - 1];
-    if (
-      !running &&
-      last?.type === "message" &&
-      last.item.kind.type === "assistant-text"
-    )
-      last.final = true;
+    if (answer.length) {
+      const item = {
+        ...answer[0]!.item,
+        body: answer.map((n) => n.item.body).join("\n\n"),
+      };
+      rows.push({ type: "message", id: item.id, item, final: !interrupted });
+    }
     turn = [];
   };
   for (const item of items) {
+    const owner = turns.find(
+      (t) =>
+        item.seq >= t.start_seq &&
+        (t.end_seq === null || item.seq <= t.end_seq),
+    );
     if (item.kind.type === "user-text" && !item.parent_id) {
       flush(false);
       rows.push({ type: "message", id: item.id, item });
-    } else turn.push(item);
+      userId = item.id;
+      evidence = owner;
+    } else {
+      if (owner && evidence && owner.id !== evidence.id) {
+        flush(false);
+        userId = undefined;
+      }
+      evidence = owner ?? evidence;
+      turn.push(item);
+    }
   }
-  flush(busy);
+  flush(busy && evidence?.ended_at == null, true);
   return rows;
+}
+
+export function workDuration(ms: number): string {
+  let seconds = Math.max(0, Math.floor(ms / 1000));
+  const parts: string[] = [];
+  for (const [unit, size] of [
+    ["d", 86400],
+    ["h", 3600],
+    ["m", 60],
+    ["s", 1],
+  ] as const) {
+    const amount = Math.floor(seconds / size);
+    if (amount) parts.push(`${amount}${unit}`);
+    seconds %= size;
+  }
+  return parts.join(" ") || "0s";
+}
+
+function activityCategory(item: ChatItem): string {
+  const label = traceLabel(item);
+  if (label !== "Ran commands") return label;
+  let command = item.body.trim();
+  try {
+    const input = JSON.parse(command.slice(command.indexOf("{")));
+    command = input.command ?? input.cmd ?? command;
+  } catch {
+    /* Plain shell commands are stored by older adapters. */
+  }
+  // Conservative presentation classification. Compound commands remain commands;
+  // these labels never authorize execution or infer its outcome.
+  if (typeof command !== "string" || /[;&|`\n]/.test(command)) return label;
+  if (/^(?:cat|head|tail)\s|^sed\s+-n\s/.test(command)) return "Read files";
+  if (/^(?:rg|grep|find|ls)\s/.test(command)) return "Searched files";
+  return label;
+}
+
+export function activitySummary(nodes: TraceNode[]): string {
+  const labels = new Set(nodes.map((n) => activityCategory(n.item)));
+  const categories = [
+    ["Edit files", "Edited files"],
+    ["Read files", "Read files"],
+    ["Searched files", "Read files"],
+    [
+      "Ran commands",
+      nodes.filter((n) => activityCategory(n.item) === "Ran commands")
+        .length === 1
+        ? "Ran a command"
+        : "Ran commands",
+    ],
+    ["Web research", "Searched the web"],
+  ];
+  const parts = [
+    ...new Set(
+      categories.filter(([key]) => labels.has(key!)).map(([, value]) => value!),
+    ),
+  ];
+  for (const label of labels)
+    if (!categories.some(([key]) => key === label)) parts.push(label);
+  return parts
+    .map((part, i) => (i ? part.charAt(0).toLowerCase() + part.slice(1) : part))
+    .join(", ");
+}
+
+export function activeWorkLabel(nodes: TraceNode[]): string {
+  const pending = flattenTrace(nodes).filter(
+    (n) => n.item.kind.type === "tool-call" && !n.result,
+  );
+  const latest = pending[pending.length - 1];
+  if (!latest) return "Thinking";
+  const label = activityCategory(latest.item);
+  if (label === "Web research") return "Searching the web";
+  if (label === "Searched files") return "Searching files";
+  if (label === "Read files") return "Reading files";
+  if (label === "Edit files") return "Editing files";
+  if (label === "Ran commands") return "Running command";
+  return "Working";
 }
