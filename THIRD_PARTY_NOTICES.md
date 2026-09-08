@@ -100,4 +100,12 @@ the text is an owner decision, deferred, not answered here.
 
 Source: [assistant-ui Elements and registry](https://github.com/assistant-ui/assistant-ui), retrieved 2026-09-07. Copyright (c) 2025 AgentbaseAI Inc. License: [assistant-ui-MIT.txt](licenses/assistant-ui-MIT.txt).
 
-Adapted components live in `src/components/assistant-ui/elements`: thread, composer, Markdown, reasoning, tool calls, approval cards, artifact cards, agent status and plans. Base controls use native HTML elements. Brigadier supplies existing backend state, safe file navigation, independent phase states and approval decisions. `src/hooks/use-copy-to-clipboard.ts` is from the same registry.
+Adapted components live in `src/components/assistant-ui/elements`: thread, composer, Markdown, reasoning, tool calls, approval cards, artifact cards, agent status and plans. The standalone Chat Panel, Message Actions, Reasoning Panel, Tool Call and Thinking Indicator were installed from the shadcn registry on 2026-09-09, together with surfaces, range and the Radix Collapsible dependency. These conversation disclosures use Radix; other controls retain their existing native implementations. Brigadier supplies existing backend state, safe file navigation, independent phase states and approval decisions. `src/hooks/use-copy-to-clipboard.ts` is from the same registry.
+
+## Radix UI — MIT
+
+The installed shadcn Collapsible uses `radix-ui` 1.6.7. Copyright (c) 2022 WorkOS. License: [radix-ui-MIT.txt](licenses/radix-ui-MIT.txt).
+
+## tw-shimmer — MIT
+
+The assistant-ui Elements surface helpers use `tw-shimmer` 0.4.12. Copyright (c) 2025 AgentbaseAI Inc. License: [tw-shimmer-MIT.txt](licenses/tw-shimmer-MIT.txt).

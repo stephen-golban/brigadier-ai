@@ -7,7 +7,7 @@ export interface TraceNode {
   children: TraceNode[];
 }
 export type ThreadRow =
-  | { type: "message"; id: string; item: ChatItem }
+  | { type: "message"; id: string; item: ChatItem; final?: boolean }
   | {
       type: "work";
       id: string;
@@ -63,9 +63,9 @@ export function traceLabel(item: ChatItem): string {
   const name = item.kind.name.toLowerCase();
   if (["bash", "shell", "exec_command", "write_stdin"].includes(name))
     return "Ran commands";
-  if (["read", "readfile", "read_file"].includes(name))
-    return "Read files";
-  if (["glob", "grep", "search", "ripgrep"].includes(name)) return "Searched files";
+  if (["read", "readfile", "read_file"].includes(name)) return "Read files";
+  if (["glob", "grep", "search", "ripgrep"].includes(name))
+    return "Searched files";
   if (["edit", "write", "multiedit", "apply_patch"].includes(name))
     return "Edit files";
   if (["websearch", "webfetch"].includes(name)) return "Web research";
@@ -85,7 +85,6 @@ export function traceFailed(node: TraceNode): boolean {
 export function projectThread(items: ChatItem[], busy: boolean): ThreadRow[] {
   const rows: ThreadRow[] = [];
   let turn: ChatItem[] = [];
-  let startedAt:number|null=null;
   const flush = (running: boolean) => {
     if (!turn.length) return;
     const nodes = new Map<string, TraceNode>();
@@ -144,51 +143,69 @@ export function projectThread(items: ChatItem[], busy: boolean): ThreadRow[] {
       if (parent && !cyclic) parent.children.push(node);
       else roots.push(node);
     }
-    // No channel metadata exists in the stored protocol. Only the trailing main-session
-    // prose after activity is presented as the answer; all earlier prose stays in work.
-    let answerStart = roots.length;
-    if (!running) {
-      while (answerStart > 0) {
-        const node = roots[answerStart - 1]!;
-        if (
-          node.item.kind.type !== "assistant-text" ||
-          node.item.parent_id ||
-          node.children.length
-        )
-          break;
-        answerStart--;
-      }
-    }
-    const work = roots.slice(0, answerStart);
-    if (work.length) {
-      const all = flattenTrace(work);
+    // Pair against the whole turn before separating adjacent main-session prose and
+    // activity. Late results and child output stay attached to their owning call.
+    const visible = (nodes: TraceNode[]): TraceNode[] =>
+      nodes.flatMap((node) => {
+        node.children = visible(node.children);
+        if (node.item.kind.type === "thinking" && !node.item.body.trim())
+          return node.children;
+        return [node];
+      });
+    const ordered = visible(roots);
+    let activity: TraceNode[] = [];
+    const flushActivity = () => {
+      if (!activity.length) return;
+      const all = flattenTrace(activity);
       rows.push({
         type: "work",
-        id: `work:${turn[0]!.id}`,
-        nodes: work,
+        id: `work:${activity[0]!.item.id}`,
+        nodes: activity,
         running,
         failures: all.filter(traceFailed).length,
-        durationMs: startedAt && turn[turn.length-1]!.at>=startedAt ? turn[turn.length-1]!.at-startedAt : undefined,
         count: all.filter(
           (n) =>
             n.item.kind.type === "tool-call" || n.item.kind.type === "subagent",
         ).length,
       });
+      activity = [];
+    };
+    for (const node of ordered) {
+      const { item } = node;
+      if (
+        item.kind.type === "assistant-text" &&
+        !item.parent_id &&
+        !node.children.length
+      ) {
+        if (!item.body.trim()) continue;
+        flushActivity();
+        const previous = rows[rows.length - 1];
+        if (
+          previous?.type === "message" &&
+          previous.item.kind.type === "assistant-text"
+        ) {
+          previous.item = {
+            ...previous.item,
+            body: `${previous.item.body}\n\n${item.body}`,
+          };
+        } else {
+          rows.push({ type: "message", id: item.id, item });
+        }
+      } else activity.push(node);
     }
-    const answers = roots.slice(answerStart);
-    if (answers.length) {
-      const item = {
-        ...answers[0]!.item,
-        body: answers.map((n) => n.item.body).join("\n\n"),
-      };
-      rows.push({ type: "message", id: item.id, item });
-    }
+    flushActivity();
+    const last = rows[rows.length - 1];
+    if (
+      !running &&
+      last?.type === "message" &&
+      last.item.kind.type === "assistant-text"
+    )
+      last.final = true;
     turn = [];
   };
   for (const item of items) {
     if (item.kind.type === "user-text" && !item.parent_id) {
       flush(false);
-      startedAt=item.at;
       rows.push({ type: "message", id: item.id, item });
     } else turn.push(item);
   }

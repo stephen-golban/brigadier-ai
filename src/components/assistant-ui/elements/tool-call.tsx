@@ -1,72 +1,129 @@
-// Adapted from assistant-ui Elements (MIT). Unknown completion remains unknown.
-import { CheckIcon, ChevronRightIcon, CircleAlertIcon } from "lucide-react";
+// Installed from assistant-ui Elements (MIT); Brigadier theme and integration extensions.
+"use client";
+
+import type { ReactNode } from "react";
+import { CircleAlertIcon, CheckIcon, ChevronRightIcon } from "lucide-react";
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
-} from "../../controls/collapsible";
-import type { ReactNode } from "react";
-export function ToolCall({
-  id,
-  label,
-  request,
-  result,
-  failed,
-  open,
-  onOpenChange,
-  actions,
-}: {
-  id: string;
+} from "@/components/ui/collapsible";
+import { cn } from "@/lib/utils";
+import {
+  collapsePanel,
+  field,
+  mono,
+  ShimmerLabel,
+  SwapLabel,
+} from "@/lib/surfaces";
+
+export interface ToolCallProps {
   label: string;
-  request: string;
+  activeLabel: string;
+  query?: string;
+  request?: string;
   result?: string;
-  failed: boolean;
+  id?: string;
+  failed?: boolean;
+  completed?: boolean;
+  children?: ReactNode;
+  actions?: ReactNode;
+  running: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  actions?: ReactNode;
-}) {
+  className?: string;
+}
+
+export function ToolCall({
+  id,
+  failed = false,
+  children,
+  actions,
+  label,
+  activeLabel,
+  query,
+  request,
+  result,
+  completed = result !== undefined,
+  running,
+  open,
+  onOpenChange,
+  className,
+}: ToolCallProps) {
   return (
     <Collapsible
-      data-trace-id={id}
       data-slot="tool-call"
+      data-trace-id={id}
       open={open}
       onOpenChange={onOpenChange}
-      className="w-full"
+      className={cn("w-full min-w-0", className)}
     >
-      <CollapsibleTrigger className="flex w-full items-center gap-2 py-2 text-left text-sm text-text-secondary">
-        <ChevronRightIcon
-          className={`size-3.5 shrink-0 ${open ? "rotate-90" : ""}`}
-        />
-        <span className="truncate" title={label}>
-          {label}
-        </span>
-        {failed ? (
-          <span className="ml-auto flex items-center gap-1 text-error">
-            <CircleAlertIcon className="size-3.5" />
-            Failed
+      <CollapsibleTrigger className="group/trigger text-text/55 hover:text-text/90 flex max-w-full items-center gap-2 rounded-md py-1.5 text-left focus-visible:ring-1 focus-visible:ring-text/30 text-[13.5px] transition-colors outline-none">
+        <ChevronRightIcon className="size-3.5 shrink-0 opacity-60 transition-transform duration-200 ease-[cubic-bezier(0.32,0.72,0,1)] group-data-[state=open]/trigger:rotate-90 group-data-panel-open/trigger:rotate-90 motion-reduce:transition-none" />
+        <SwapLabel
+          active={running ? 0 : 1}
+          className="min-w-0 max-w-full text-start [&>span]:max-w-full [&>span]:truncate"
+        >
+          <ShimmerLabel
+            active={running}
+            className="relative inline-block leading-none"
+          >
+            {activeLabel}
+          </ShimmerLabel>
+          <>{label}</>
+        </SwapLabel>
+        {query && (
+          <span
+            className={cn(
+              mono,
+              "bg-text/[0.06] text-text/70 rounded-md px-1.5 py-0.5",
+            )}
+          >
+            {query}
           </span>
-        ) : result !== undefined ? (
-          <CheckIcon className="ml-auto size-3.5 shrink-0" />
-        ) : null}
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        <div className="my-2 overflow-hidden rounded-lg bg-elevated p-3 text-xs">
-          <p className="mb-1 text-text-secondary">Request</p>
-          <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words">
-            {request}
-          </pre>
-          {result !== undefined && (
-            <>
-              <p className="mt-3 mb-1 text-text-secondary">
-                {failed ? "Error" : "Output"}
-              </p>
-              <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words">
-                {result}
-              </pre>
-            </>
+        )}
+        <span className="ms-auto flex w-4 items-center justify-end">
+          {failed ? (
+            <CircleAlertIcon
+              aria-label="Failed"
+              className="size-3.5 text-error"
+            />
+          ) : (
+            !running &&
+            completed && (
+              <CheckIcon className="fade-in zoom-in-90 animate-in size-3.5 text-ok duration-200" />
+            )
           )}
-          {actions}
-        </div>
+        </span>
+      </CollapsibleTrigger>
+      <CollapsibleContent className={cn(collapsePanel, "outline-none")}>
+        {(request?.trim() || result !== undefined || actions) && (
+          <div className={cn(field, "mt-2 overflow-hidden rounded-lg text-xs")}>
+            {request?.trim() && (
+              <div className="px-3.5 pt-2.5 pb-2">
+                <p className={cn(mono, "text-text/35 mb-1")}>Request</p>
+                <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words text-text/55 font-mono">
+                  {request}
+                </pre>
+              </div>
+            )}
+            {result !== undefined && (
+              <>
+                <div className="bg-text/[0.06] mx-3.5 h-px" />
+                <div className="px-3.5 pt-2 pb-2.5">
+                  <p className={cn(mono, "text-text/35 mb-1")}>
+                    {failed ? "Error" : "Result"}
+                  </p>
+                  <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words text-text/90">
+                    {result}
+                  </pre>
+                </div>
+              </>
+            )}
+            {actions && <div className="px-3.5 pb-2.5">{actions}</div>}
+          </div>
+        )}
+        {children}
       </CollapsibleContent>
     </Collapsible>
   );

@@ -62,15 +62,12 @@ describe("work disclosure", () => {
     );
     expect(screen.queryByText("npm test")).not.toBeInTheDocument();
     const summary = screen.getByRole("button", {
-      name: "Worked 1 failed",
+      name: /Ran npm test.*Failed/,
     });
     await user.tab();
     expect(summary).toHaveFocus();
     await user.keyboard("{Enter}");
     expect(summary).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByText("Ran npm test")).toBeVisible();
-    await user.tab();
-    await user.keyboard(" ");
     expect(screen.getAllByText("npm test")).toHaveLength(1);
     expect(screen.getAllByText("A test failed")).toHaveLength(1);
     await user.click(summary);
@@ -103,7 +100,6 @@ describe("work disclosure", () => {
         ]}
       />,
     );
-    await user.click(screen.getByRole("button", { name: /Worked/ }));
     expect(
       screen.queryByText("Found the relevant behavior."),
     ).not.toBeInTheDocument();
@@ -128,7 +124,6 @@ describe("work disclosure", () => {
       item(`cmd-${n}`, { type: "tool-call", name: "Bash" }, `command ${n}`),
     );
     render(<Harness items={items} />);
-    await user.click(screen.getByRole("button", { name: /Worked/ }));
     expect(screen.queryByText("command 0")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Ran commands" }));
     expect(
@@ -150,11 +145,11 @@ it("keeps the current action visible when live activity is collapsed", async () 
   );
   const view = render(<Harness items={[call]} running />);
   const header = screen.getByRole("button", {
-    name: /Working.*Ran npm run build/,
+    name: "Ran npm run build",
   });
-  expect(header).toHaveAttribute("aria-expanded", "true");
-  await user.click(header);
   expect(header).toHaveAttribute("aria-expanded", "false");
+  await user.click(header);
+  expect(header).toHaveAttribute("aria-expanded", "true");
   expect(header).toHaveTextContent("Ran npm run build");
   view.rerender(
     <Harness
@@ -168,8 +163,31 @@ it("keeps the current action visible when live activity is collapsed", async () 
       ]}
     />,
   );
-  expect(screen.getByRole("button", { name: "Worked" })).toHaveAttribute(
-    "aria-expanded",
-    "false",
+  expect(
+    screen.getByRole("button", { name: "Ran npm run build" }),
+  ).toHaveAttribute("aria-expanded", "true");
+});
+
+it("keeps unknown tool completion distinct from success", () => {
+  const { container } = render(
+    <Harness
+      items={[item("cmd", { type: "tool-call", name: "Bash" }, "npm test")]}
+    />,
   );
+  expect(container.querySelector(".lucide-check")).toBeNull();
+});
+it("shows provider reasoning without empty disclosures or orphan copy actions", async () => {
+  const user = userEvent.setup();
+  render(
+    <Harness
+      items={[
+        item("empty", { type: "thinking" }, ""),
+        item("real", { type: "thinking" }, "Provider reasoning"),
+      ]}
+    />,
+  );
+  expect(screen.getAllByRole("button")).toHaveLength(1);
+  await user.click(screen.getByRole("button", { name: "Reasoning" }));
+  expect(screen.getByText("Provider reasoning")).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Copy" })).toBeNull();
 });

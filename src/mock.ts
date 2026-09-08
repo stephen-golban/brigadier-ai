@@ -87,17 +87,20 @@ export function mockChatItems(sessionId:string,after:number):ChatItem[] {
 }
 function seedConversation(sessionId:string) {
   appendChat(sessionId,{type:'user-text'},'Review the workspace and suggest the next change.');
+  appendChat(sessionId,{type:'thinking'},'');
   appendChat(sessionId,{type:'assistant-text'},'I’ll check the workspace and group the findings.');
   appendChat(sessionId,{type:'tool-call',name:'Agent'},'Agent: {"description":"Workspace research","prompt":"Inspect the editor and source control conventions."}','preview-agent');
   appendChat(sessionId,{type:'tool-call',name:'Read'},'README.md','preview-read','preview-agent');
   appendChat(sessionId,{type:'tool-result',tool_call_id:'preview-read',is_error:false},'# Brigadier\nA local workspace for coding agents.');
   appendChat(sessionId,{type:'assistant-text'},'Editor and source control conventions reviewed.','preview-progress','preview-agent');
+  appendChat(sessionId,{type:'assistant-text'},'The workspace review is complete. I’m checking the current changes before choosing the next step.');
+  appendChat(sessionId,{type:'thinking'},'The editor and source control share navigation state. I’ll check the pending diff before recommending a change.','preview-reasoning');
   appendChat(sessionId,{type:'tool-call',name:'Bash'},'git status --short','preview-status');
   appendChat(sessionId,{type:'tool-result',tool_call_id:'preview-status',is_error:false},' M src/components/ThreadView.tsx');
   appendChat(sessionId,{type:'tool-call',name:'Bash'},'git diff --stat','preview-diff');
   appendChat(sessionId,{type:'tool-result',tool_call_id:'preview-diff',is_error:false},'src/components/ThreadView.tsx | 24 +++++++++---');
   appendChat(sessionId,{type:'tool-result',tool_call_id:'preview-agent',is_error:false},'Keep the final answer visible; put routine work inside an expandable row.');
-  appendChat(sessionId,{type:'assistant-text'},'Next: simplify the thread into one expandable work row, with nested agent activity.\n\nOpen [README.md](README.md) to explore the workspace.\n\n*Browser preview — simulated activity; no agent was called.*');
+  appendChat(sessionId,{type:'assistant-text'},'The conversation now keeps progress readable between compact activity rows. Nested agent details remain available when you expand them.\n\nOpen [README.md](README.md) to explore the workspace.\n\n*Browser preview — simulated activity; no agent was called.*');
 }
 
 
