@@ -1,3 +1,6 @@
+import { pasteComposer, replaceComposer } from "../test/composer";
+import { composerApi, emptyComposer } from "../composerApi";
+import { peerApi } from "../peerApi";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -125,18 +128,18 @@ describe("dock rewind", () => {
   });
   it("edits in the only composer input and restores the unsent draft on cancellation", async () => {
     const user = userEvent.setup();
-    localStorage.setItem("draft:turn:s", "Unsent next turn");
+    vi.spyOn(composerApi, "state").mockResolvedValue({ ...emptyComposer("s"), draft: { text: "Unsent next turn", attachmentIds: [] } });
     const check = vi.spyOn(sessionApi, "preview").mockResolvedValue(preview());
     const rewind = vi.spyOn(sessionApi, "rewind");
     const close = vi.fn();
     render(<EditHarness onClose={close} />);
     expect(screen.getAllByRole("textbox", { hidden: true })).toHaveLength(1);
-    expect(screen.getByRole("textbox")).toHaveValue("Original text");
-    expect(screen.getByRole("textbox")).toHaveFocus();
+    expect(screen.getByRole("textbox")).toHaveTextContent("Original text");
+    await waitFor(() => expect(screen.getByRole("textbox")).toHaveFocus());
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(check).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Cancel edit" }));
-    expect(screen.getByRole("textbox")).toHaveValue("Unsent next turn");
+    await waitFor(() => expect(screen.getByRole("textbox")).toHaveTextContent("Unsent next turn"));
     expect(close).toHaveBeenCalledOnce();
     expect(rewind).not.toHaveBeenCalled();
     expect(sendTurn).not.toHaveBeenCalled();
@@ -152,6 +155,7 @@ describe("dock rewind", () => {
     });
     const close = vi.fn();
     render(<EditHarness onClose={close} />);
+    await waitFor(() => expect(screen.getByRole("textbox")).toHaveFocus());
     await user.keyboard("{Enter}");
     await waitFor(() => expect(close).toHaveBeenCalledOnce());
     expect(rewind).toHaveBeenCalledWith(
@@ -186,7 +190,7 @@ describe("dock rewind", () => {
     expect(screen.getAllByRole("textbox", { hidden: true })).toHaveLength(1);
     expect(rewind).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(screen.getByRole("textbox")).toHaveValue("Original text");
+    expect(screen.getByRole("textbox")).toHaveTextContent("Original text");
     expect(rewind).not.toHaveBeenCalled();
     await user.click(
       screen.getByRole("button", { name: "Send edited message" }),
@@ -262,15 +266,14 @@ describe("dock rewind", () => {
         screen.getByRole("button", { name: "Send edited message" }),
       ).toBeEnabled(),
     );
-    await user.clear(screen.getByRole("textbox"));
-    await user.type(screen.getByRole("textbox"), "Edited draft");
+    await replaceComposer(screen.getByRole("textbox"), "Edited draft");
     await user.click(
       screen.getByRole("button", { name: "Send edited message" }),
     );
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "unseen later turn",
     );
-    expect(screen.getByRole("textbox")).toHaveValue("Edited draft");
+    expect(screen.getByRole("textbox")).toHaveTextContent("Edited draft");
     expect(changed).not.toHaveBeenCalled();
     expect(sendTurn).not.toHaveBeenCalled();
   });
@@ -316,7 +319,7 @@ describe("dock rewind", () => {
       screen.getByRole("button", { name: "Send edited message" }),
     );
     await screen.findByText("Outcome requires reconciliation");
-    expect(screen.getByRole("textbox")).toHaveValue("Original text");
+    expect(screen.getByRole("textbox")).toHaveTextContent("Original text");
     expect(
       screen.getByRole("button", { name: "Send edited message" }),
     ).toBeDisabled();
@@ -349,13 +352,16 @@ describe("dock rewind", () => {
 });
 
 it("passes retained attachments on an existing session turn and clears them only after acceptance", async () => {
-  localStorage.setItem("draft:attachments:turn:s", JSON.stringify([{id:"file",projectId:"p",name:"Reference.png",mediaType:"image/png",size:3,createdAt:0}]));
+  const metadata = {id:"file",projectId:"p",name:"Reference.png",mediaType:"image/png",size:3,createdAt:0};
+  vi.spyOn(composerApi, "state").mockResolvedValue({ ...emptyComposer("s"), draft: { text: "", attachmentIds: ["file"] } });
+  vi.spyOn(peerApi, "attachment").mockResolvedValue({ metadata, base64: "cG5n" });
   const send = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
   const user = userEvent.setup();
   render(<Dock session={session} project={null} models={[]} busy={false} blocked={false}
     onSend={send} onStartSession={vi.fn()} onInterrupt={vi.fn()} onEnd={vi.fn()} onKill={vi.fn()}
     onResume={vi.fn()} onCleanup={vi.fn()} />);
-  await user.type(screen.getByRole("textbox"), "Share the reference with a peer");
+  await waitFor(() => expect(screen.getByRole("textbox")).toHaveAttribute("contenteditable", "true"));
+  await pasteComposer(screen.getByRole("textbox"), "Share the reference with a peer");
   await user.keyboard("{Enter}");
   expect(send).toHaveBeenCalledWith("s", "Share the reference with a peer", ["file"]);
   expect(screen.getByRole("button", {name:"Remove attachment Reference.png"})).toBeVisible();

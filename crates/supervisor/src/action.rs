@@ -36,9 +36,8 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// Fewest phases a plan may have. One phase is a task, not a plan, and this loop's whole shape —
-/// gate, commit, next phase — buys nothing from it.
-pub const MIN_PHASES: usize = 2;
+/// Small jobs can use one phase; larger jobs may decompose further.
+pub const MIN_PHASES: usize = 1;
 /// Most phases a plan may have. **asserted**, a bound on scope rather than a measurement
 /// (`docs/plans/w1b-loop-order.md` §1 D1).
 pub const MAX_PHASES: usize = 8;
@@ -57,8 +56,15 @@ pub const MAX_TEXT_CHARS: usize = 1_000;
 pub const MAX_INSTRUCTIONS_CHARS: usize = 20_000;
 
 /// The closed action set. Anything outside it is [`ActionError::UnknownAction`].
-pub const ACTION_SLUGS: &[&str] =
-    &["plan", "dispatch", "review", "verify", "merge", "replan", "ask_owner"];
+pub const ACTION_SLUGS: &[&str] = &[
+    "plan",
+    "dispatch",
+    "review",
+    "verify",
+    "merge",
+    "replan",
+    "ask_owner",
+];
 
 // ---------------------------------------------------------------------------------------------
 // The action set
@@ -301,6 +307,15 @@ pub struct Order {
     pub owns: Vec<String>,
     /// What this order is worth.
     pub model_tier: ModelTier,
+    /// Exact independent provider, limited to registered adapters.
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// Exact worker model; legacy plans may use model_tier instead.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Independent worker reasoning effort.
+    #[serde(default)]
+    pub effort: Option<String>,
 }
 
 /// `{"action":"dispatch", …}`.
@@ -705,11 +720,16 @@ pub fn parse_report(text: &str) -> Result<Report, ActionError> {
         if e.is_syntax() || e.is_eof() {
             ActionError::NotJson(e.to_string())
         } else {
-            ActionError::Schema { action: "report".to_owned(), detail: e.to_string() }
+            ActionError::Schema {
+                action: "report".to_owned(),
+                detail: e.to_string(),
+            }
         }
     })?;
     if report.order_id.trim().is_empty() {
-        return Err(ActionError::Bound("a report's `order_id` is empty".to_owned()));
+        return Err(ActionError::Bound(
+            "a report's `order_id` is empty".to_owned(),
+        ));
     }
     let chars = report.summary.chars().count();
     if chars > MAX_SUMMARY_CHARS {
@@ -773,7 +793,11 @@ fn check_bounds(action: &Action) -> Result<(), ActionError> {
                 ));
             }
             for (i, u) in p.unknowns.iter().enumerate() {
-                text(&format!("unknowns[{i}].question"), &u.question, MAX_TEXT_CHARS)?;
+                text(
+                    &format!("unknowns[{i}].question"),
+                    &u.question,
+                    MAX_TEXT_CHARS,
+                )?;
             }
         }
         Action::Dispatch(d) => {
@@ -810,7 +834,9 @@ fn check_bounds(action: &Action) -> Result<(), ActionError> {
         Action::Review(r) => {
             text("focus", &r.focus, MAX_INSTRUCTIONS_CHARS)?;
             if r.orders.is_empty() {
-                return bound("a review names no orders; there would be no diff to read".to_owned());
+                return bound(
+                    "a review names no orders; there would be no diff to read".to_owned(),
+                );
             }
         }
         Action::Verify(v) => text("phase_id", &v.phase_id, MAX_TEXT_CHARS)?,
@@ -823,7 +849,11 @@ fn check_bounds(action: &Action) -> Result<(), ActionError> {
                 );
             }
             for (i, a) in r.add.iter().enumerate() {
-                text(&format!("add[{i}].reason"), &a.reason, MAX_INSTRUCTIONS_CHARS)?;
+                text(
+                    &format!("add[{i}].reason"),
+                    &a.reason,
+                    MAX_INSTRUCTIONS_CHARS,
+                )?;
                 text(&format!("add[{i}].title"), &a.title, MAX_TEXT_CHARS)?;
                 if a.verify_command.trim().is_empty() {
                     return bound(format!("add[{i}] has an empty `verify_command`"));
@@ -831,11 +861,19 @@ fn check_bounds(action: &Action) -> Result<(), ActionError> {
             }
             for (i, e) in r.edit.iter().enumerate() {
                 text(&format!("edit[{i}].phase_id"), &e.phase_id, MAX_TEXT_CHARS)?;
-                text(&format!("edit[{i}].reason"), &e.reason, MAX_INSTRUCTIONS_CHARS)?;
+                text(
+                    &format!("edit[{i}].reason"),
+                    &e.reason,
+                    MAX_INSTRUCTIONS_CHARS,
+                )?;
             }
             for (i, d) in r.drop.iter().enumerate() {
                 text(&format!("drop[{i}].phase_id"), &d.phase_id, MAX_TEXT_CHARS)?;
-                text(&format!("drop[{i}].reason"), &d.reason, MAX_INSTRUCTIONS_CHARS)?;
+                text(
+                    &format!("drop[{i}].reason"),
+                    &d.reason,
+                    MAX_INSTRUCTIONS_CHARS,
+                )?;
             }
         }
         Action::AskOwner(a) => {
@@ -906,7 +944,9 @@ pub fn validate(action: &Action, world: &World<'_>) -> Result<(), ActionError> {
             same_phase(&m.phase_id, world)?;
             for branch in &m.branches {
                 if !world.order_branches.iter().any(|b| b == branch) {
-                    return Err(ActionError::UnknownBranch { branch: branch.clone() });
+                    return Err(ActionError::UnknownBranch {
+                        branch: branch.clone(),
+                    });
                 }
             }
             Ok(())
@@ -1058,7 +1098,10 @@ mod tests {
         assert_eq!(ModelTier::Haiku.min(ModelTier::Sonnet), ModelTier::Haiku);
         // Declaration order is Opus, Sonnet, Haiku — strongest first — so a derived `Ord` would
         // answer the opposite of every assertion above.
-        assert_eq!(ModelTier::ALL, [ModelTier::Haiku, ModelTier::Sonnet, ModelTier::Opus]);
+        assert_eq!(
+            ModelTier::ALL,
+            [ModelTier::Haiku, ModelTier::Sonnet, ModelTier::Opus]
+        );
         let mut ranks: Vec<u8> = ModelTier::ALL.iter().map(|t| t.rank()).collect();
         ranks.dedup();
         assert_eq!(ranks, vec![0, 1, 2], "ranks are distinct and ascending");
@@ -1072,8 +1115,16 @@ mod tests {
         for tier in ModelTier::ALL {
             assert_eq!(ModelTier::from_slug(tier.as_slug()), Some(tier));
         }
-        assert_eq!(ModelTier::from_slug("fable"), None, "not a tier the planner may ask for");
-        assert_eq!(ModelTier::from_slug("Opus"), None, "slugs are read strictly");
+        assert_eq!(
+            ModelTier::from_slug("fable"),
+            None,
+            "not a tier the planner may ask for"
+        );
+        assert_eq!(
+            ModelTier::from_slug("Opus"),
+            None,
+            "slugs are read strictly"
+        );
     }
 
     /// Every id the run dock offers (`src-tauri/src/views.rs`, `models()`), plus the two
@@ -1106,7 +1157,15 @@ mod tests {
 
     #[test]
     fn an_id_this_build_does_not_know_maps_to_no_tier() {
-        for id in ["", "  ", "gpt-5", "claude-9", "gemini-3-pro", "claude-", "opusish"] {
+        for id in [
+            "",
+            "  ",
+            "gpt-5",
+            "claude-9",
+            "gemini-3-pro",
+            "claude-",
+            "opusish",
+        ] {
             assert_eq!(ModelTier::for_model_id(id), None, "{id:?}");
         }
     }
@@ -1116,7 +1175,9 @@ mod tests {
     }
 
     fn dispatch_json(orders: &str) -> String {
-        fenced(&format!(r#"{{ "action": "dispatch", "orders": [{orders}] }}"#))
+        fenced(&format!(
+            r#"{{ "action": "dispatch", "orders": [{orders}] }}"#
+        ))
     }
 
     fn order_json(id: &str, owns: &[&str]) -> String {
@@ -1139,7 +1200,10 @@ mod tests {
                 ),
             })
             .collect();
-        fenced(&format!(r#"{{ "action": "plan", "phases": [{}] }}"#, phases.join(", ")))
+        fenced(&format!(
+            r#"{{ "action": "plan", "phases": [{}] }}"#,
+            phases.join(", ")
+        ))
     }
 
     // ---- gate 1: exactly one fenced json block ----
@@ -1147,7 +1211,10 @@ mod tests {
     /// A child that ends its turn with prose and no block is malformed #1, not a special case.
     #[test]
     fn zero_json_blocks_is_malformed() {
-        assert_eq!(parse_action("I have finished the phase.").unwrap_err(), ActionError::NoJsonBlock);
+        assert_eq!(
+            parse_action("I have finished the phase.").unwrap_err(),
+            ActionError::NoJsonBlock
+        );
         // A fenced block of some other language is still zero json blocks.
         let other = "```sh\ncargo test\n```\n";
         assert_eq!(parse_action(other).unwrap_err(), ActionError::NoJsonBlock);
@@ -1160,7 +1227,10 @@ mod tests {
             fenced(r#"{"action":"ask_owner","question":"q","why_blocked":"w"}"#),
             fenced(r#"{"action":"ask_owner","question":"q2","why_blocked":"w"}"#)
         );
-        assert_eq!(parse_action(&text).unwrap_err(), ActionError::MultipleJsonBlocks(2));
+        assert_eq!(
+            parse_action(&text).unwrap_err(),
+            ActionError::MultipleJsonBlocks(2)
+        );
     }
 
     /// A `json` fence line inside a plain fenced block is text, not an opening fence.
@@ -1192,7 +1262,10 @@ mod tests {
     #[test]
     fn a_block_that_is_not_json_is_refused() {
         let text = fenced("not json at all");
-        assert!(matches!(parse_action(&text).unwrap_err(), ActionError::NotJson(_)));
+        assert!(matches!(
+            parse_action(&text).unwrap_err(),
+            ActionError::NotJson(_)
+        ));
     }
 
     // ---- gate 3: schema, unknown fields, bounds ----
@@ -1201,13 +1274,16 @@ mod tests {
     /// decision the model thinks it made.
     #[test]
     fn an_unknown_field_is_an_error_and_names_itself() {
-        let text = fenced(
-            r#"{"action":"verify","phase_id":"p1","force":true}"#,
-        );
+        let text = fenced(r#"{"action":"verify","phase_id":"p1","force":true}"#);
         let err = parse_action(&text).unwrap_err();
-        let ActionError::Schema { action, detail } = &err else { panic!("{err:?}") };
+        let ActionError::Schema { action, detail } = &err else {
+            panic!("{err:?}")
+        };
         assert_eq!(action, "verify");
-        assert!(detail.contains("force"), "the message must name the field: {detail}");
+        assert!(
+            detail.contains("force"),
+            "the message must name the field: {detail}"
+        );
     }
 
     #[test]
@@ -1216,12 +1292,15 @@ mod tests {
             r#"{ "id": "o1", "title": "t", "instructions": "i", "owns": ["src/a.rs"],
                  "model_tier": "gpt" }"#,
         );
-        assert!(matches!(parse_action(&text).unwrap_err(), ActionError::Schema { .. }));
+        assert!(matches!(
+            parse_action(&text).unwrap_err(),
+            ActionError::Schema { .. }
+        ));
     }
 
     #[test]
-    fn a_plan_with_one_phase_and_with_nine_are_both_refused() {
-        for n in [0usize, 1, 9, 20] {
+    fn empty_and_oversized_plans_are_refused() {
+        for n in [0usize, 9, 20] {
             let err = parse_action(&plan_json(n, Some("cargo test"))).unwrap_err();
             assert!(
                 matches!(err, ActionError::Bound(_)),
@@ -1238,7 +1317,9 @@ mod tests {
     #[test]
     fn a_plan_phase_with_no_verify_command_is_refused() {
         let err = parse_action(&plan_json(3, None)).unwrap_err();
-        let ActionError::Bound(msg) = &err else { panic!("{err:?}") };
+        let ActionError::Bound(msg) = &err else {
+            panic!("{err:?}")
+        };
         // The message goes into the retry's prompt, so it says what a verify command is *for*
         // rather than naming a field that is blank.
         assert!(msg.contains("verify_command"), "{msg}");
@@ -1250,7 +1331,10 @@ mod tests {
                  {"title":"a","definition_of_done":"d"},
                  {"title":"b","definition_of_done":"d","verify_command":"cargo test"}]}"#,
         );
-        assert!(matches!(parse_action(&text).unwrap_err(), ActionError::Schema { .. }));
+        assert!(matches!(
+            parse_action(&text).unwrap_err(),
+            ActionError::Schema { .. }
+        ));
     }
 
     // ---- D2: the unknowns the planner lists ----
@@ -1274,7 +1358,9 @@ mod tests {
                 "unknowns":[{"question":"which database?","bin":"owner"},
                             {"question":"does tauri v2 support X?","bin":"research"}]}"#,
         );
-        let Action::Plan(p) = parse_action(&text).expect("valid") else { panic!("expected a plan") };
+        let Action::Plan(p) = parse_action(&text).expect("valid") else {
+            panic!("expected a plan")
+        };
         assert_eq!(p.unknowns.len(), 2);
         assert_eq!(p.unknowns[0].bin, UnknownBin::Owner);
         assert_eq!(p.unknowns[1].bin.as_slug(), "research");
@@ -1290,8 +1376,13 @@ mod tests {
                 "unknowns":[{"question":"q","bin":"the_internet"}]}"#,
         );
         let err = parse_action(&text).unwrap_err();
-        let ActionError::Schema { detail, .. } = &err else { panic!("{err:?}") };
-        assert!(detail.contains("the_internet") || detail.contains("variant"), "{detail}");
+        let ActionError::Schema { detail, .. } = &err else {
+            panic!("{err:?}")
+        };
+        assert!(
+            detail.contains("the_internet") || detail.contains("variant"),
+            "{detail}"
+        );
     }
 
     #[test]
@@ -1307,7 +1398,9 @@ mod tests {
             items.join(", ")
         ));
         let err = parse_action(&text).unwrap_err();
-        let ActionError::Bound(msg) = &err else { panic!("{err:?}") };
+        let ActionError::Bound(msg) = &err else {
+            panic!("{err:?}")
+        };
         assert!(msg.contains("unknowns"), "{msg}");
     }
 
@@ -1338,7 +1431,9 @@ mod tests {
         let root = Root::new();
         let text = dispatch_json(&order_json("o1", &["/etc/passwd"]));
         let err = validated(&text, &root.world()).unwrap_err();
-        let ActionError::PathShape { why, .. } = &err else { panic!("{err:?}") };
+        let ActionError::PathShape { why, .. } = &err else {
+            panic!("{err:?}")
+        };
         assert_eq!(why, "it is absolute");
     }
 
@@ -1347,7 +1442,9 @@ mod tests {
         let root = Root::new();
         let text = dispatch_json(&order_json("o1", &["../../etc/passwd"]));
         let err = validated(&text, &root.world()).unwrap_err();
-        let ActionError::PathShape { why, .. } = &err else { panic!("{err:?}") };
+        let ActionError::PathShape { why, .. } = &err else {
+            panic!("{err:?}")
+        };
         assert_eq!(why, "it contains `..`");
 
         // And one that would land back inside, which is still refused: `..` never appears in an
@@ -1370,10 +1467,16 @@ mod tests {
 
         let text = dispatch_json(&order_json("o1", &["src/elsewhere/a.rs"]));
         let err = validated(&text, &root.world()).unwrap_err();
-        assert!(matches!(err, ActionError::PathEscapesRoot { .. }), "{err:?}");
+        assert!(
+            matches!(err, ActionError::PathEscapesRoot { .. }),
+            "{err:?}"
+        );
 
         // A dangling symlink is refused too: where it would resolve to is unknowable.
-        symlink(Path::new("/nowhere-at-all-xyz"), &root.path().join("src/dangling"));
+        symlink(
+            Path::new("/nowhere-at-all-xyz"),
+            &root.path().join("src/dangling"),
+        );
         let text = dispatch_json(&order_json("o1", &["src/dangling/a.rs"]));
         assert!(matches!(
             validated(&text, &root.world()).unwrap_err(),
@@ -1407,12 +1510,23 @@ mod tests {
             order_json("ui", &["src/c.rs", "src/b.rs"])
         ));
         let err = validated(&text, &root.world()).unwrap_err();
-        let ActionError::OverlappingOwns { a, a_path, b, b_path } = &err else { panic!("{err:?}") };
+        let ActionError::OverlappingOwns {
+            a,
+            a_path,
+            b,
+            b_path,
+        } = &err
+        else {
+            panic!("{err:?}")
+        };
         assert_eq!((a.as_str(), a_path.as_str()), ("api", "src/b.rs"));
         assert_eq!((b.as_str(), b_path.as_str()), ("ui", "src/b.rs"));
         // The sentence that goes into the retry's prompt.
         let msg = err.to_string();
-        assert!(msg.contains("`api`") && msg.contains("`ui`") && msg.contains("src/b.rs"), "{msg}");
+        assert!(
+            msg.contains("`api`") && msg.contains("`ui`") && msg.contains("src/b.rs"),
+            "{msg}"
+        );
         assert!(msg.contains("refused, never repaired"), "{msg}");
     }
 
@@ -1446,7 +1560,10 @@ mod tests {
         validated(&text, &root.world()).expect("`src/a` and `src/ab` are disjoint");
         // The string test that would have failed, spelled out so a future simplification back to
         // it fails here first.
-        assert!("src/ab".starts_with("src/a"), "this is the trap being avoided");
+        assert!(
+            "src/ab".starts_with("src/a"),
+            "this is the trap being avoided"
+        );
         assert!(!is_component_prefix(
             &["src".to_owned(), "a".to_owned()],
             &["src".to_owned(), "ab".to_owned()]
@@ -1469,7 +1586,10 @@ mod tests {
             order_json("same", &["a.rs"]),
             order_json("same", &["b.rs"])
         ));
-        assert!(matches!(validated(&text, &root.world()).unwrap_err(), ActionError::Bound(_)));
+        assert!(matches!(
+            validated(&text, &root.world()).unwrap_err(),
+            ActionError::Bound(_)
+        ));
     }
 
     // ---- gate 4: phases, verify commands and branches ----
@@ -1482,7 +1602,10 @@ mod tests {
         let text = fenced(r#"{"action":"verify","phase_id":"p1"}"#);
         assert_eq!(
             validated(&text, &world).unwrap_err(),
-            ActionError::PhaseNotCurrent { named: "p1".to_owned(), current: "p2".to_owned() }
+            ActionError::PhaseNotCurrent {
+                named: "p1".to_owned(),
+                current: "p2".to_owned()
+            }
         );
     }
 
@@ -1511,7 +1634,9 @@ mod tests {
         // Naming one where none is stored is the same failure.
         world.verify_command = None;
         let err = validated(&exact, &world).unwrap_err();
-        let ActionError::VerifyCommandInvented { stored, .. } = &err else { panic!("{err:?}") };
+        let ActionError::VerifyCommandInvented { stored, .. } = &err else {
+            panic!("{err:?}")
+        };
         assert!(stored.is_none());
         assert!(err.to_string().contains("may not invent"), "{err}");
 
@@ -1537,7 +1662,9 @@ mod tests {
             fenced(r#"{"action":"merge","phase_id":"p1","branches":["brigadier/aaa","main"]}"#);
         assert_eq!(
             validated(&bad, &world).unwrap_err(),
-            ActionError::UnknownBranch { branch: "main".to_owned() }
+            ActionError::UnknownBranch {
+                branch: "main".to_owned()
+            }
         );
     }
 
@@ -1547,21 +1674,32 @@ mod tests {
     fn review_replan_and_ask_owner_round_trip() {
         let root = Root::new();
         let review = fenced(r#"{"action":"review","focus":"concurrency","orders":["o1","o2"]}"#);
-        assert_eq!(validated(&review, &root.world()).expect("review").slug(), "review");
-
-        let replan = fenced(
-            r#"{"action":"replan","drop":[{"phase_id":"p3","reason":"subsumed by p2"}]}"#,
+        assert_eq!(
+            validated(&review, &root.world()).expect("review").slug(),
+            "review"
         );
-        assert_eq!(validated(&replan, &root.world()).expect("replan").slug(), "replan");
+
+        let replan =
+            fenced(r#"{"action":"replan","drop":[{"phase_id":"p3","reason":"subsumed by p2"}]}"#);
+        assert_eq!(
+            validated(&replan, &root.world()).expect("replan").slug(),
+            "replan"
+        );
 
         // A replan that changes nothing is not a replan.
         let empty = fenced(r#"{"action":"replan"}"#);
-        assert!(matches!(parse_action(&empty).unwrap_err(), ActionError::Bound(_)));
+        assert!(matches!(
+            parse_action(&empty).unwrap_err(),
+            ActionError::Bound(_)
+        ));
 
         let ask = fenced(
             r#"{"action":"ask_owner","question":"postgres or sqlite?","why_blocked":"phase 2"}"#,
         );
-        assert_eq!(validated(&ask, &root.world()).expect("ask_owner").slug(), "ask_owner");
+        assert_eq!(
+            validated(&ask, &root.world()).expect("ask_owner").slug(),
+            "ask_owner"
+        );
     }
 
     // ---- the report ----
@@ -1588,26 +1726,35 @@ mod tests {
             r#"{{"order_id":"o1","status":"partial","summary":"{long}"}}"#
         ));
         let err = parse_report(&text).unwrap_err();
-        let ActionError::Bound(msg) = &err else { panic!("{err:?}") };
+        let ActionError::Bound(msg) = &err else {
+            panic!("{err:?}")
+        };
         assert!(msg.contains("summary"), "{msg}");
     }
 
     #[test]
     fn a_report_with_an_unknown_status_or_field_is_refused() {
-        let bad_status =
-            fenced(r#"{"order_id":"o1","status":"mostly","summary":"s"}"#);
-        assert!(matches!(parse_report(&bad_status).unwrap_err(), ActionError::Schema { .. }));
+        let bad_status = fenced(r#"{"order_id":"o1","status":"mostly","summary":"s"}"#);
+        assert!(matches!(
+            parse_report(&bad_status).unwrap_err(),
+            ActionError::Schema { .. }
+        ));
 
         let bad_field =
             fenced(r#"{"order_id":"o1","status":"done","summary":"s","confidence":0.9}"#);
         let err = parse_report(&bad_field).unwrap_err();
-        let ActionError::Schema { detail, .. } = &err else { panic!("{err:?}") };
+        let ActionError::Schema { detail, .. } = &err else {
+            panic!("{err:?}")
+        };
         assert!(detail.contains("confidence"), "{detail}");
     }
 
     #[test]
     fn a_report_needs_exactly_one_block_too() {
-        assert_eq!(parse_report("all done!").unwrap_err(), ActionError::NoJsonBlock);
+        assert_eq!(
+            parse_report("all done!").unwrap_err(),
+            ActionError::NoJsonBlock
+        );
     }
 
     #[cfg(unix)]

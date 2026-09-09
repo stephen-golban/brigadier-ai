@@ -55,3 +55,7 @@ Object.defineProperty(HTMLDialogElement.prototype, "close", {
   configurable: true,
   value: function () { this.removeAttribute("open"); },
 });
+
+// Lexical reads selection geometry; jsdom intentionally provides no layout engine.
+Range.prototype.getBoundingClientRect = function () { return new DOMRect(); };
+Range.prototype.getClientRects = function () { return Object.assign([], { item: () => null }); };

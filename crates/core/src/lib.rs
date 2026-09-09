@@ -8,10 +8,15 @@
 #![warn(missing_docs)]
 
 pub mod approval;
+mod binary;
 pub mod checkpoint;
 pub mod claude;
+pub mod codex;
 pub mod driver;
 pub mod event;
 pub mod session;
 pub mod wall;
 pub mod worktree;
+
+/// Durable provider-observed account allowance.
+pub mod allowance;

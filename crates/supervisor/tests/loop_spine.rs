@@ -87,7 +87,14 @@ impl Rig {
             run_git(&git, &root, &["commit", "-q", "-m", "one"]);
         }
         let project_id = sup.add_project(root.clone()).await.ok()?.id;
-        Some(Rig { dir, store, sup, git, project_id, root })
+        Some(Rig {
+            dir,
+            store,
+            sup,
+            git,
+            project_id,
+            root,
+        })
     }
 
     fn head(&self) -> String {
@@ -98,7 +105,12 @@ impl Rig {
 
     fn branches(&self) -> Vec<String> {
         String::from_utf8_lossy(
-            &run_git(&self.git, &self.root, &["branch", "--format=%(refname:short)"]).stdout,
+            &run_git(
+                &self.git,
+                &self.root,
+                &["branch", "--format=%(refname:short)"],
+            )
+            .stdout,
         )
         .lines()
         .map(str::to_owned)
@@ -117,8 +129,9 @@ impl Rig {
                 project_id: self.project_id.clone(),
                 goal: "ship the thing".to_owned(),
                 model: None,
+                effort: None,
                 permission_mode: Default::default(),
-                driver: DriverKind::new(REPLAY),
+                driver: DriverKind::new("claude-code"),
                 barrier,
                 limits,
                 call: Some(fake),
@@ -130,7 +143,8 @@ impl Rig {
     }
 
     async fn run(&self, fake: Arc<Fake>) -> Run {
-        self.run_with(fake, resolved(ReconcileOutcome::clean()), Limits::default()).await
+        self.run_with(fake, resolved(ReconcileOutcome::clean()), Limits::default())
+            .await
     }
 
     /// A run started with the owner's model pick, which is a **ceiling** over every child
@@ -141,8 +155,9 @@ impl Rig {
                 project_id: self.project_id.clone(),
                 goal: "ship the thing".to_owned(),
                 model: model.map(str::to_owned),
+                effort: None,
                 permission_mode: Default::default(),
-                driver: DriverKind::new(REPLAY),
+                driver: DriverKind::new("claude-code"),
                 barrier: resolved(ReconcileOutcome::clean()),
                 limits: Limits::default(),
                 call: Some(fake),
@@ -160,8 +175,9 @@ impl Rig {
                 project_id: self.project_id.clone(),
                 goal: "ship the thing".to_owned(),
                 model: None,
+                effort: None,
                 permission_mode: Default::default(),
-                driver: DriverKind::new(REPLAY),
+                driver: DriverKind::new("claude-code"),
                 barrier,
                 limits: Limits::default(),
                 call: Some(fake),
@@ -224,7 +240,12 @@ impl Fake {
     }
 
     fn say(self: &Arc<Self>, label: &'static str, text: impl Into<String>) -> Arc<Self> {
-        self.answers.lock().expect("lock").entry(label).or_default().push_back(text.into());
+        self.answers
+            .lock()
+            .expect("lock")
+            .entry(label)
+            .or_default()
+            .push_back(text.into());
         Arc::clone(self)
     }
 
@@ -240,7 +261,12 @@ impl Fake {
     }
 
     fn count(&self, label: &str) -> usize {
-        self.calls.lock().expect("lock").iter().filter(|(l, _)| *l == label).count()
+        self.calls
+            .lock()
+            .expect("lock")
+            .iter()
+            .filter(|(l, _)| *l == label)
+            .count()
     }
 
     fn total(&self) -> usize {
@@ -261,11 +287,6 @@ impl Fake {
             .map(|(_, m)| m.clone())
             .collect()
     }
-
-    /// Every model this run asked for, whatever the label.
-    fn all_models(&self) -> Vec<Option<String>> {
-        self.models.lock().expect("lock").iter().map(|(_, m)| m.clone()).collect()
-    }
 }
 
 /// The order id the harness put in a worker's prompt, so a fake can name its file after it.
@@ -282,8 +303,9 @@ impl ModelCall for Fake {
     fn call<'a>(
         &'a self,
         req: CallRequest,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<CallOutcome, LoopError>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<CallOutcome, LoopError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             let delay = *self.delay.lock().expect("lock");
             {
@@ -295,20 +317,22 @@ impl ModelCall for Fake {
                         CallCwd::Worktree { dir, .. } => dir.clone(),
                     },
                 ));
-                self.models.lock().expect("lock").push((req.label, req.model.clone()));
+                self.models
+                    .lock()
+                    .expect("lock")
+                    .push((req.label, req.model.clone()));
             }
             let live = self.live.fetch_add(1, Ordering::Relaxed) + 1;
             self.peak.fetch_max(live, Ordering::Relaxed);
 
-            if let (CallCwd::Worktree { dir, .. }, Some(work)) =
-                (&req.cwd, self.work.lock().expect("lock").get(req.label).cloned())
-            {
+            if let (CallCwd::Worktree { dir, .. }, Some(work)) = (
+                &req.cwd,
+                self.work.lock().expect("lock").get(req.label).cloned(),
+            ) {
                 let git = self.git.lock().expect("lock").clone().expect("a git path");
                 let name = match &work {
                     Work::Nothing => None,
-                    Work::Under(base) => {
-                        Some(format!("{base}/{}.txt", order_id_of(&req.prompt)))
-                    }
+                    Work::Under(base) => Some(format!("{base}/{}.txt", order_id_of(&req.prompt))),
                     Work::File(name) => Some((*name).to_owned()),
                 };
                 if let Some(name) = name {
@@ -318,7 +342,11 @@ impl ModelCall for Fake {
                     }
                     std::fs::write(&path, "work\n").expect("write");
                     run_git(&git, dir, &["add", "-A"]);
-                    run_git(&git, dir, &["commit", "-q", "-m", &format!("brigadier: {name}")]);
+                    run_git(
+                        &git,
+                        dir,
+                        &["commit", "-q", "-m", &format!("brigadier: {name}")],
+                    );
                 }
             }
 
@@ -338,9 +366,12 @@ impl ModelCall for Fake {
                 })
             };
             Ok(match queued {
-                Some(text) => {
-                    CallOutcome { session_id: None, text, end: CallEnd::Answered, parked: false }
-                }
+                Some(text) => CallOutcome {
+                    session_id: None,
+                    text,
+                    end: CallEnd::Answered,
+                    parked: false,
+                },
                 None => CallOutcome {
                     session_id: None,
                     text: String::new(),
@@ -382,7 +413,10 @@ fn dispatch_tiered(orders: &[(&str, &str)], tier: &str) -> String {
             )
         })
         .collect();
-    format!("```json\n{{\"action\":\"dispatch\",\"orders\":[{}]}}\n```\n", body.join(","))
+    format!(
+        "```json\n{{\"action\":\"dispatch\",\"orders\":[{}]}}\n```\n",
+        body.join(",")
+    )
 }
 
 fn report_of(order_id: &str) -> String {
@@ -402,14 +436,27 @@ async fn a_barrier_that_never_resolves_dispatches_nothing() {
     let Some(rig) = Rig::new().await else { return };
     let fake = Fake::new().say("planner", plan_of(&[("a", "true"), ("b", "true")]));
     let (_tx, never) = barrier();
-    let limits = Limits { barrier_timeout: Duration::from_millis(20), ..Limits::default() };
+    let limits = Limits {
+        barrier_timeout: Duration::from_millis(20),
+        ..Limits::default()
+    };
     let mut run = rig.run_with(Arc::clone(&fake), never, limits).await;
 
-    assert_eq!(run.tick().await, Tick::Blocked("still_reconciling".to_owned()));
+    assert_eq!(
+        run.tick().await,
+        Tick::Blocked("still_reconciling".to_owned())
+    );
     assert_eq!(fake.total(), 0, "not one child, not even the planner");
-    assert_eq!(rig.branches(), vec!["main".to_owned()], "and no worktree branch was cut");
+    assert_eq!(
+        rig.branches(),
+        vec!["main".to_owned()],
+        "and no worktree branch was cut"
+    );
     // It stays refused; there is no laxer second reading.
-    assert_eq!(run.tick().await, Tick::Blocked("still_reconciling".to_owned()));
+    assert_eq!(
+        run.tick().await,
+        Tick::Blocked("still_reconciling".to_owned())
+    );
     assert_eq!(fake.total(), 0);
 }
 
@@ -420,9 +467,14 @@ async fn a_closed_barrier_channel_blocks_rather_than_proceeding() {
     let fake = Fake::new().say("planner", plan_of(&[("a", "true"), ("b", "true")]));
     let (tx, closed) = barrier();
     drop(tx);
-    let mut run = rig.run_with(Arc::clone(&fake), closed, Limits::default()).await;
+    let mut run = rig
+        .run_with(Arc::clone(&fake), closed, Limits::default())
+        .await;
 
-    assert_eq!(run.tick().await, Tick::Blocked("reconcile_failed".to_owned()));
+    assert_eq!(
+        run.tick().await,
+        Tick::Blocked("reconcile_failed".to_owned())
+    );
     assert_eq!(fake.total(), 0);
 }
 
@@ -436,7 +488,9 @@ async fn a_project_whose_repair_failed_gets_no_dispatch() {
         repair_failed: [rig.project_id.clone()].into_iter().collect(),
         ..ReconcileOutcome::clean()
     };
-    let mut run = rig.run_with(Arc::clone(&fake), resolved(outcome), Limits::default()).await;
+    let mut run = rig
+        .run_with(Arc::clone(&fake), resolved(outcome), Limits::default())
+        .await;
 
     assert_eq!(run.tick().await, Tick::Blocked("repair_failed".to_owned()));
     assert_eq!(fake.total(), 0);
@@ -453,7 +507,11 @@ async fn an_unknown_intent_blocks_its_phase_and_dispatches_nothing_for_it() {
     let plan_id = run.plan_id().to_owned();
 
     let phases = rig.store.handle().phases(&plan_id).await.expect("phases");
-    let first = phases.iter().min_by_key(|p| p.ordinal).expect("a phase").clone();
+    let first = phases
+        .iter()
+        .min_by_key(|p| p.ordinal)
+        .expect("a phase")
+        .clone();
 
     // A restart whose reconciler found an `unknown` attached to that phase.
     let after = Fake::new()
@@ -464,17 +522,25 @@ async fn an_unknown_intent_blocks_its_phase_and_dispatches_nothing_for_it() {
         unknown_phases: [first.id.clone()].into_iter().collect(),
         ..ReconcileOutcome::clean()
     };
-    let mut restarted =
-        rig.restart(Arc::clone(&after), &plan_id, resolved(outcome)).await;
+    let mut restarted = rig
+        .restart(Arc::clone(&after), &plan_id, resolved(outcome))
+        .await;
 
     let tick = restarted.tick().await;
     assert!(
         matches!(tick, Tick::Blocked(ref why) if why.contains("unknown_intent")),
         "{tick:?}"
     );
-    assert_eq!(after.total(), 0, "no lead call, no worker: the phase is never retried");
+    assert_eq!(
+        after.total(),
+        0,
+        "no lead call, no worker: the phase is never retried"
+    );
     let settled = rig.store.handle().phases(&plan_id).await.expect("phases");
-    let row = settled.iter().find(|p| p.id == first.id).expect("the phase");
+    let row = settled
+        .iter()
+        .find(|p| p.id == first.id)
+        .expect("the phase");
     assert_eq!(row.state, PhaseState::Blocked);
 }
 
@@ -492,10 +558,18 @@ async fn the_same_restart_without_an_unknown_dispatches_normally() {
         .say("worker", report_of("o1"))
         .does("worker", Work::Under("src"), &rig.git);
     let mut restarted = rig
-        .restart(Arc::clone(&after), &plan_id, resolved(ReconcileOutcome::clean()))
+        .restart(
+            Arc::clone(&after),
+            &plan_id,
+            resolved(ReconcileOutcome::clean()),
+        )
         .await;
     assert_eq!(restarted.tick().await, Tick::Continue);
-    assert_eq!(after.count("worker"), 1, "the restart continued the same plan");
+    assert_eq!(
+        after.count("worker"),
+        1,
+        "the restart continued the same plan"
+    );
     // And it really is the same plan, not a second one written beside it.
     assert_eq!(restarted.plan_id(), plan_id);
 }
@@ -513,7 +587,10 @@ async fn two_malformed_plans_block_the_run_and_spawn_no_third_child() {
     let mut run = rig.run(Arc::clone(&fake)).await;
 
     let tick = run.tick().await;
-    assert!(matches!(tick, Tick::Blocked(ref why) if why.contains("malformed_action")), "{tick:?}");
+    assert!(
+        matches!(tick, Tick::Blocked(ref why) if why.contains("malformed_action")),
+        "{tick:?}"
+    );
     assert_eq!(fake.count("planner"), 2, "exactly two windows, then stop");
 }
 
@@ -531,7 +608,12 @@ async fn the_second_window_is_told_what_was_wrong_with_the_first() {
     // What this proves is that a corrected second answer is accepted rather than the phase being
     // blocked; the retry prompt's own shape is asserted in the unit tests.
     assert_eq!(fake.total(), 2);
-    let phases = rig.store.handle().phases(run.plan_id()).await.expect("phases");
+    let phases = rig
+        .store
+        .handle()
+        .phases(run.plan_id())
+        .await
+        .expect("phases");
     assert_eq!(phases.len(), 2);
 }
 
@@ -557,35 +639,62 @@ async fn a_goal_becomes_a_plan_a_worktree_a_green_gate_and_a_phase_commit() {
     assert_eq!(run.tick().await, Tick::Continue, "dispatch");
     assert_eq!(run.tick().await, Tick::Continue, "integrate + commit");
 
-    let phases = rig.store.handle().phases(run.plan_id()).await.expect("phases");
+    let phases = rig
+        .store
+        .handle()
+        .phases(run.plan_id())
+        .await
+        .expect("phases");
     let first = phases.iter().min_by_key(|p| p.ordinal).expect("a phase");
     assert_eq!(first.state, PhaseState::Green);
-    assert_eq!(first.last_exit_code, Some(0), "only the exit code settled it");
-    assert_eq!(first.base_sha.as_deref(), Some(base.as_str()), "the base was stored, once");
+    assert_eq!(
+        first.last_exit_code,
+        Some(0),
+        "only the exit code settled it"
+    );
+    assert_eq!(
+        first.base_sha.as_deref(),
+        Some(base.as_str()),
+        "the base was stored, once"
+    );
     let commit = first.commit_sha.clone().expect("a phase commit");
 
     // The postcondition, against real git: the **first** parent is the baseline. `%P` is not.
-    let first_parent =
-        String::from_utf8_lossy(&run_git(&rig.git, &rig.root, &["rev-parse", &format!("{commit}^1")]).stdout)
-            .trim()
-            .to_owned();
+    let first_parent = String::from_utf8_lossy(
+        &run_git(&rig.git, &rig.root, &["rev-parse", &format!("{commit}^1")]).stdout,
+    )
+    .trim()
+    .to_owned();
     assert_eq!(first_parent, base);
-    let all_parents =
-        String::from_utf8_lossy(&run_git(&rig.git, &rig.root, &["log", "-1", "--format=%P", &commit]).stdout)
-            .trim()
-            .to_owned();
+    let all_parents = String::from_utf8_lossy(
+        &run_git(&rig.git, &rig.root, &["log", "-1", "--format=%P", &commit]).stdout,
+    )
+    .trim()
+    .to_owned();
     assert_ne!(all_parents, base, "a --no-ff merge has two parents");
-    assert!(rig.root.join("src/o1.txt").exists(), "the worker's file is in the project now");
+    assert!(
+        rig.root.join("src/o1.txt").exists(),
+        "the worker's file is in the project now"
+    );
 
     // The worker's own claim was stored, and settled nothing.
-    let orders = rig.store.handle().work_orders(&first.id).await.expect("orders");
+    let orders = rig
+        .store
+        .handle()
+        .work_orders(&first.id)
+        .await
+        .expect("orders");
     assert_eq!(orders.len(), 1);
     assert_eq!(orders[0].state, WorkOrderState::Reported);
 
     // §13.1 item 14, in its positive form: a branch whose `rev-list --count` is zero is really
     // gone, checkout and branch alike. A grep for a string cannot show this.
     let branches = rig.branches();
-    assert_eq!(branches, vec!["main".to_owned()], "every brigadier branch was retired: {branches:?}");
+    assert_eq!(
+        branches,
+        vec!["main".to_owned()],
+        "every brigadier branch was retired: {branches:?}"
+    );
     assert!(
         !rig.root.join(".brigadier/worktrees").exists()
             || std::fs::read_dir(rig.root.join(".brigadier/worktrees"))
@@ -608,12 +717,23 @@ async fn a_two_phase_plan_runs_to_finished() {
     let mut run = rig.run(Arc::clone(&fake)).await;
     assert_eq!(run.drive().await, Tick::Finished);
 
-    let phases = rig.store.handle().phases(run.plan_id()).await.expect("phases");
+    let phases = rig
+        .store
+        .handle()
+        .phases(run.plan_id())
+        .await
+        .expect("phases");
     assert_eq!(phases.len(), 2);
     assert!(phases.iter().all(|p| p.state == PhaseState::Green));
     // The plan row stays `approved`: the store has no op that moves a plan to `done`, and the
     // loop does not invent a second write path for a column `upsert_plan` deliberately guards.
-    let plan = rig.store.handle().plan(run.plan_id()).await.expect("plan").expect("row");
+    let plan = rig
+        .store
+        .handle()
+        .plan(run.plan_id())
+        .await
+        .expect("plan")
+        .expect("row");
     assert_eq!(plan.status, brigadier_store::PlanStatus::Approved);
     assert_eq!(fake.count("fixer"), 0, "a green run climbs no rung");
 }
@@ -627,7 +747,12 @@ async fn the_planners_unknowns_are_recorded_as_waved_off() {
     let mut run = rig.run(Arc::clone(&fake)).await;
     assert_eq!(run.tick().await, Tick::Continue);
 
-    let unknowns = rig.store.handle().unknowns(run.plan_id()).await.expect("unknowns");
+    let unknowns = rig
+        .store
+        .handle()
+        .unknowns(run.plan_id())
+        .await
+        .expect("unknowns");
     assert_eq!(unknowns.len(), 1);
     assert_eq!(unknowns[0].question, "which database?");
     assert_eq!(unknowns[0].state, brigadier_store::UnknownState::Skipped);
@@ -655,11 +780,24 @@ async fn an_order_that_writes_outside_its_owns_blocks_the_phase() {
         matches!(tick, Tick::Blocked(ref why) if why.contains("ownership_violation")),
         "{tick:?}"
     );
-    let phases = rig.store.handle().phases(run.plan_id()).await.expect("phases");
+    let phases = rig
+        .store
+        .handle()
+        .phases(run.plan_id())
+        .await
+        .expect("phases");
     let first = phases.iter().min_by_key(|p| p.ordinal).expect("a phase");
     assert_eq!(first.state, PhaseState::Blocked);
-    assert!(first.last_evidence.as_deref().unwrap_or_default().contains("elsewhere/o1.txt"));
-    assert_eq!(fake.count("fixer"), 0, "the gate never ran, so no rung was climbed");
+    assert!(first
+        .last_evidence
+        .as_deref()
+        .unwrap_or_default()
+        .contains("elsewhere/o1.txt"));
+    assert_eq!(
+        fake.count("fixer"),
+        0,
+        "the gate never ran, so no rung was climbed"
+    );
 }
 
 /// The mirror: writing inside the set does not block. A subset check that passes proves only that
@@ -674,7 +812,11 @@ async fn an_order_that_stays_inside_its_owns_does_not_block() {
         .does("worker", Work::Under("src"), &rig.git);
     let mut run = rig.run(Arc::clone(&fake)).await;
     assert_eq!(run.tick().await, Tick::Continue);
-    assert_eq!(run.tick().await, Tick::Continue, "the phase was not blocked");
+    assert_eq!(
+        run.tick().await,
+        Tick::Continue,
+        "the phase was not blocked"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -696,16 +838,31 @@ async fn a_workers_claim_of_done_does_not_survive_a_red_gate() {
     assert_eq!(run.tick().await, Tick::Continue, "dispatch");
     assert!(matches!(run.tick().await, Tick::Blocked(_)));
 
-    let phases = rig.store.handle().phases(run.plan_id()).await.expect("phases");
+    let phases = rig
+        .store
+        .handle()
+        .phases(run.plan_id())
+        .await
+        .expect("phases");
     let first = phases.iter().min_by_key(|p| p.ordinal).expect("a phase");
     assert_eq!(first.state, PhaseState::Blocked);
     assert_eq!(first.last_exit_code, Some(3));
     assert!(first.commit_sha.is_none(), "nothing was committed");
 
     // The ladder is rung 1 then rung 3. Exactly one fixer, never two arms.
-    assert_eq!(fake.count("fixer"), 1, "rung 1 runs once; rung 2 does not exist");
+    assert_eq!(
+        fake.count("fixer"),
+        1,
+        "rung 1 runs once; rung 2 does not exist"
+    );
     assert_eq!(fake.count("worker"), 1);
-    assert_eq!(fake.total(), 4, "N + 1 children plus the planner and lead calls");
+    assert_eq!(fake.count("repair-alternative-a"), 1);
+    assert_eq!(fake.count("repair-alternative-b"), 1);
+    assert_eq!(
+        fake.total(),
+        6,
+        "one fixer then at most two isolated alternatives"
+    );
 }
 
 /// Rung 1 works **in the integration worktree**, so a fix re-gates in place with nothing to
@@ -714,7 +871,10 @@ async fn a_workers_claim_of_done_does_not_survive_a_red_gate() {
 async fn rung_one_fixes_in_place_and_the_gate_goes_green() {
     let Some(rig) = Rig::new().await else { return };
     let fake = Fake::new()
-        .say("planner", plan_of(&[("a", "test -f fixed.txt"), ("b", "true")]))
+        .say(
+            "planner",
+            plan_of(&[("a", "test -f fixed.txt"), ("b", "true")]),
+        )
         .say("lead", dispatch_of(&[("o1", "src")]))
         .say("worker", report_of("o1"))
         .say("fixer", "fixed it")
@@ -725,7 +885,12 @@ async fn rung_one_fixes_in_place_and_the_gate_goes_green() {
     assert_eq!(run.tick().await, Tick::Continue, "dispatch");
     assert_eq!(run.tick().await, Tick::Continue, "rung 1 then a green gate");
 
-    let phases = rig.store.handle().phases(run.plan_id()).await.expect("phases");
+    let phases = rig
+        .store
+        .handle()
+        .phases(run.plan_id())
+        .await
+        .expect("phases");
     let first = phases.iter().min_by_key(|p| p.ordinal).expect("a phase");
     assert_eq!(first.state, PhaseState::Green);
     assert_eq!(fake.count("fixer"), 1);
@@ -733,13 +898,26 @@ async fn rung_one_fixes_in_place_and_the_gate_goes_green() {
     // The fixer ran in the integration worktree, not in the worker's.
     let (fixer_cwd, worker_cwd) = {
         let calls = fake.calls.lock().expect("lock");
-        let fixer = calls.iter().find(|(l, _)| *l == "fixer").expect("a fixer call").1.clone();
-        let worker = calls.iter().find(|(l, _)| *l == "worker").expect("a worker call").1.clone();
+        let fixer = calls
+            .iter()
+            .find(|(l, _)| *l == "fixer")
+            .expect("a fixer call")
+            .1
+            .clone();
+        let worker = calls
+            .iter()
+            .find(|(l, _)| *l == "worker")
+            .expect("a worker call")
+            .1
+            .clone();
         (fixer, worker)
     };
     assert_ne!(fixer_cwd, worker_cwd);
     // And it was handed the log as a file, in its own tree, before its baseline was taken.
-    assert!(rig.root.join("src/o1.txt").exists(), "the merge really happened first");
+    assert!(
+        rig.root.join("src/o1.txt").exists(),
+        "the merge really happened first"
+    );
 }
 
 /// **§13.1 item 6.** The gate prints megabytes; the store keeps one harness-derived line and the
@@ -761,22 +939,42 @@ async fn the_gates_output_reaches_the_log_file_and_never_the_phase_row() {
 
     // Rewrite the phase's verify command to the noisy one. (The planner's own answer is bounded
     // by the action schema, which is a separate and healthy constraint.)
-    let mut phases = rig.store.handle().phases(run.plan_id()).await.expect("phases");
+    let mut phases = rig
+        .store
+        .handle()
+        .phases(run.plan_id())
+        .await
+        .expect("phases");
     phases.sort_by_key(|p| p.ordinal);
     let mut first = phases[0].clone();
     first.verify_command = Some(noisy.to_owned());
-    rig.store.handle().upsert_phase(first.clone()).await.expect("upsert");
+    rig.store
+        .handle()
+        .upsert_phase(first.clone())
+        .await
+        .expect("upsert");
     rig.store.handle().flush().await.expect("flush");
 
     assert_eq!(run.tick().await, Tick::Continue, "dispatch");
     assert!(matches!(run.tick().await, Tick::Blocked(_)));
 
-    let after = rig.store.handle().phases(run.plan_id()).await.expect("phases");
+    let after = rig
+        .store
+        .handle()
+        .phases(run.plan_id())
+        .await
+        .expect("phases");
     let settled = after.iter().find(|p| p.id == first.id).expect("the phase");
     let evidence = settled.last_evidence.clone().unwrap_or_default();
     assert_eq!(settled.last_exit_code, Some(5));
-    assert!(!evidence.contains("OUTPUTONLY"), "no output may reach the store: {evidence}");
-    assert!(evidence.len() < 1_000, "the evidence is one bounded line, not a tail");
+    assert!(
+        !evidence.contains("OUTPUTONLY"),
+        "no output may reach the store: {evidence}"
+    );
+    assert!(
+        evidence.len() < 1_000,
+        "the evidence is one bounded line, not a tail"
+    );
 
     // And the log file has all of it.
     let logs = rig.dir.path().join("gates").join(&first.id);
@@ -785,7 +983,10 @@ async fn the_gates_output_reaches_the_log_file_and_never_the_phase_row() {
         .flatten()
         .map(|e| e.metadata().expect("stat").len())
         .sum();
-    assert!(total > 1_000_000, "the whole output went to the file, {total} bytes");
+    assert!(
+        total > 1_000_000,
+        "the whole output went to the file, {total} bytes"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -804,8 +1005,17 @@ async fn a_cap_of_two_runs_two_workers_at_a_time_and_still_runs_all_four() {
         .say("worker", report_of("o1"))
         .does("worker", Work::Nothing, &rig.git)
         .slow(Duration::from_millis(120));
-    let limits = Limits { concurrency: 2, ..Limits::default() };
-    let mut run = rig.run_with(Arc::clone(&fake), resolved(ReconcileOutcome::clean()), limits).await;
+    let limits = Limits {
+        concurrency: 2,
+        ..Limits::default()
+    };
+    let mut run = rig
+        .run_with(
+            Arc::clone(&fake),
+            resolved(ReconcileOutcome::clean()),
+            limits,
+        )
+        .await;
 
     assert_eq!(run.tick().await, Tick::Continue, "plan");
     assert_eq!(run.tick().await, Tick::Continue, "dispatch");
@@ -837,12 +1047,21 @@ async fn a_crash_with_an_order_in_flight_blocks_its_phase_and_spawns_nothing() {
     // before it was collected. A fresh row is used rather than rewriting the collected one,
     // because `upsert_work_order` deliberately refuses to move a finished order back
     // (`crates/store/src/writer.rs`) — which is itself the store defending the same invariant.
-    let mut phases = rig.store.handle().phases(run.plan_id()).await.expect("phases");
+    let mut phases = rig
+        .store
+        .handle()
+        .phases(run.plan_id())
+        .await
+        .expect("phases");
     phases.sort_by_key(|p| p.ordinal);
     let mut stranded =
         brigadier_store::WorkOrderRow::new("stranded", phases[0].id.clone(), "an order in flight");
     stranded.state = WorkOrderState::Dispatched;
-    rig.store.handle().upsert_work_order(stranded).await.expect("upsert");
+    rig.store
+        .handle()
+        .upsert_work_order(stranded)
+        .await
+        .expect("upsert");
     rig.store.handle().flush().await.expect("flush");
 
     let before = fake.total();
@@ -851,9 +1070,21 @@ async fn a_crash_with_an_order_in_flight_blocks_its_phase_and_spawns_nothing() {
         matches!(tick, Tick::Blocked(ref why) if why.contains("orders_in_flight")),
         "{tick:?}"
     );
-    assert_eq!(fake.total(), before, "nothing was re-dispatched and nothing was spawned");
-    let after = rig.store.handle().phases(run.plan_id()).await.expect("phases");
-    let settled = after.iter().find(|p| p.id == phases[0].id).expect("the phase");
+    assert_eq!(
+        fake.total(),
+        before,
+        "nothing was re-dispatched and nothing was spawned"
+    );
+    let after = rig
+        .store
+        .handle()
+        .phases(run.plan_id())
+        .await
+        .expect("phases");
+    let settled = after
+        .iter()
+        .find(|p| p.id == phases[0].id)
+        .expect("the phase");
     assert_eq!(settled.state, PhaseState::Blocked);
     assert!(settled
         .last_evidence
@@ -869,7 +1100,9 @@ async fn a_crash_with_an_order_in_flight_blocks_its_phase_and_spawns_nothing() {
 /// The refusal that stops an unattended worker being handed the owner's own checkout.
 #[tokio::test]
 async fn a_project_that_is_not_a_repository_refuses_to_dispatch() {
-    let Some(rig) = Rig::without_repo().await else { return };
+    let Some(rig) = Rig::without_repo().await else {
+        return;
+    };
     let fake = Fake::new()
         .say("planner", plan_of(&[("a", "true"), ("b", "true")]))
         .say("lead", dispatch_of(&[("o1", "src")]))
@@ -878,7 +1111,10 @@ async fn a_project_that_is_not_a_repository_refuses_to_dispatch() {
     assert_eq!(run.tick().await, Tick::Continue, "plan");
 
     let tick = run.tick().await;
-    assert!(matches!(tick, Tick::Blocked(ref why) if why.contains("no_worktree")), "{tick:?}");
+    assert!(
+        matches!(tick, Tick::Blocked(ref why) if why.contains("no_worktree")),
+        "{tick:?}"
+    );
     assert_eq!(fake.count("worker"), 0, "no child ran in the project root");
 }
 
@@ -896,13 +1132,17 @@ async fn stopping_a_run_dispatches_nothing_further() {
             project_id: rig.project_id.clone(),
             goal: "ship it".to_owned(),
             model: None,
+            effort: None,
             permission_mode: Default::default(),
             driver: DriverKind::new(REPLAY),
             barrier: {
                 let (_tx, never) = barrier();
                 never
             },
-            limits: Limits { barrier_timeout: Duration::from_millis(10), ..Limits::default() },
+            limits: Limits {
+                barrier_timeout: Duration::from_millis(10),
+                ..Limits::default()
+            },
             call: Some(Arc::clone(&fake) as Arc<dyn ModelCall>),
             gate: Some(rig.gate().await),
             plan_id: None,
@@ -938,7 +1178,9 @@ async fn a_parked_order_does_not_have_its_deadlines_fire() {
         .map(|i| {
             Event::item_completed(
                 ItemId::new(format!("i{i}")),
-                ItemKind::ToolCall { name: "Bash".into() },
+                ItemKind::ToolCall {
+                    name: "Bash".into(),
+                },
                 "ls",
                 None,
             )
@@ -949,7 +1191,12 @@ async fn a_parked_order_does_not_have_its_deadlines_fire() {
             .with_rate(40.0)
             .with_approval(ApprovalPlan {
                 after: Duration::from_millis(40),
-                kind: RequestKind::tool_permission("Bash", "{\"command\":\"git push\"}", vec![], None),
+                kind: RequestKind::tool_permission(
+                    "Bash",
+                    "{\"command\":\"git push\"}",
+                    vec![],
+                    None,
+                ),
                 timeout: None,
             }),
     );
@@ -965,20 +1212,31 @@ async fn a_parked_order_does_not_have_its_deadlines_fire() {
         quiet_deadline: Duration::from_secs(30),
         thinking: brigadier_core::driver::ThinkingPolicy::Off,
         model: None,
+        effort: None,
+        provider: None,
         permission_mode: Default::default(),
     };
     let task = tokio::spawn(async move { call.call(req).await });
 
     // Well past the turn deadline. Without the suspension this would have returned by now.
     tokio::time::sleep(Duration::from_millis(700)).await;
-    assert!(!task.is_finished(), "the harness killed a worker the owner was about to unblock");
+    assert!(
+        !task.is_finished(),
+        "the harness killed a worker the owner was about to unblock"
+    );
 
     // A sibling of sorts: the supervisor is still serving other work while the order is parked.
     assert_eq!(rig.sup.live_sessions().len(), 1);
-    let raised = driver.raised_approval().expect("the request was really parked");
+    let raised = driver
+        .raised_approval()
+        .expect("the request was really parked");
     let session = rig.sup.live_sessions()[0].clone();
     rig.sup
-        .respond(&session, raised.request_id, brigadier_core::session::Decision::allow())
+        .respond(
+            &session,
+            raised.request_id,
+            brigadier_core::session::Decision::allow(),
+        )
         .await
         .expect("answered");
 
@@ -1004,7 +1262,9 @@ async fn a_parked_lead_call_does_not_have_its_deadlines_fire() {
         .map(|i| {
             Event::item_completed(
                 ItemId::new(format!("i{i}")),
-                ItemKind::ToolCall { name: "Bash".into() },
+                ItemKind::ToolCall {
+                    name: "Bash".into(),
+                },
                 "ls",
                 None,
             )
@@ -1031,6 +1291,8 @@ async fn a_parked_lead_call_does_not_have_its_deadlines_fire() {
         quiet_deadline: Duration::from_millis(250),
         thinking: brigadier_core::driver::ThinkingPolicy::Off,
         model: None,
+        effort: None,
+        provider: None,
         permission_mode: PermissionMode::Default,
     };
     let task = tokio::spawn(async move { call.call(req).await });
@@ -1041,10 +1303,16 @@ async fn a_parked_lead_call_does_not_have_its_deadlines_fire() {
         "the harness killed the lead call the owner was in the middle of unblocking"
     );
 
-    let raised = driver.raised_approval().expect("the request was really parked");
+    let raised = driver
+        .raised_approval()
+        .expect("the request was really parked");
     let session = rig.sup.live_sessions()[0].clone();
     rig.sup
-        .respond(&session, raised.request_id, brigadier_core::session::Decision::allow())
+        .respond(
+            &session,
+            raised.request_id,
+            brigadier_core::session::Decision::allow(),
+        )
         .await
         .expect("answered");
 
@@ -1062,11 +1330,7 @@ async fn a_parked_lead_call_does_not_have_its_deadlines_fire() {
 
 /// Prepare a run over `script` with the owner's picks, and take the two ticks that spawn the
 /// planner, the lead and the phase's workers.
-async fn run_picks(
-    rig: &Rig,
-    model: Option<String>,
-    mode: PermissionMode,
-) -> Vec<CallRequest> {
+async fn run_picks(rig: &Rig, model: Option<String>, mode: PermissionMode) -> Vec<CallRequest> {
     let script = Arc::new(
         ScriptedCall::new()
             .answering("planner", plan_of(&[("a", "true"), ("b", "true")]))
@@ -1075,7 +1339,7 @@ async fn run_picks(
     let mut spec = RunSpec::new(
         rig.project_id.clone(),
         "ship it",
-        DriverKind::new(REPLAY),
+        DriverKind::new("claude-code"),
         resolved(ReconcileOutcome::clean()),
     )
     .with_model(model)
@@ -1102,16 +1366,27 @@ async fn run_picks(
 #[tokio::test]
 async fn the_owners_model_and_mode_reach_every_child_of_the_run() {
     let Some(rig) = Rig::new().await else { return };
-    let calls =
-        run_picks(&rig, Some("haiku".to_owned()), PermissionMode::BypassPermissions).await;
+    let calls = run_picks(
+        &rig,
+        Some("haiku".to_owned()),
+        PermissionMode::BypassPermissions,
+    )
+    .await;
 
-    assert!(calls.iter().any(|c| c.label == "planner"), "the planner ran");
+    assert!(
+        calls.iter().any(|c| c.label == "planner"),
+        "the planner ran"
+    );
     assert!(calls.iter().any(|c| c.label == "lead"), "the lead ran");
     for call in &calls {
         assert_eq!(
             call.model.as_deref(),
-            Some("haiku"),
-            "the {} call ignored the owner's model",
+            Some(if call.label == "worker" {
+                "sonnet"
+            } else {
+                "haiku"
+            }),
+            "the {} call ignored its selected model",
             call.label
         );
         assert_eq!(
@@ -1129,17 +1404,27 @@ async fn the_owners_model_and_mode_reach_every_child_of_the_run() {
 ///
 /// **Correction, 2026-09-05:** *"takes the tier the lead assigned it"* holds only up to mid-tier.
 /// The tier below is `sonnet`, which is mid-tier, so it survives untouched; an `opus` order does
-/// not — see `no_pick_leaves_judgement_strong_and_caps_a_work_order_at_mid_tier`.
+/// not — see `auto_uses_orchestrator_default_without_worker_ceiling`.
 #[tokio::test]
 async fn with_no_pick_a_work_order_takes_its_tier_up_to_mid_tier_and_judgement_takes_the_default() {
     let Some(rig) = Rig::new().await else { return };
     let calls = run_picks(&rig, None, PermissionMode::Default).await;
 
-    for judgement in calls.iter().filter(|c| c.label == "planner" || c.label == "lead") {
-        assert_eq!(judgement.model, None, "{} must take the provider default", judgement.label);
+    for judgement in calls
+        .iter()
+        .filter(|c| c.label == "planner" || c.label == "lead")
+    {
+        assert_eq!(
+            judgement.model, None,
+            "{} must take the provider default",
+            judgement.label
+        );
     }
     // `dispatch_of` asks for `model_tier: "sonnet"`.
-    let worker = calls.iter().find(|c| c.label == "worker").expect("an order was dispatched");
+    let worker = calls
+        .iter()
+        .find(|c| c.label == "worker")
+        .expect("an order was dispatched");
     assert_eq!(worker.model.as_deref(), Some("sonnet"));
 }
 
@@ -1159,7 +1444,10 @@ async fn a_judgement_call_gets_a_quiet_deadline_shorter_than_its_turn_deadline()
     );
 
     let calls = run_picks(&rig, None, PermissionMode::Default).await;
-    let planner = calls.iter().find(|c| c.label == "planner").expect("the planner ran");
+    let planner = calls
+        .iter()
+        .find(|c| c.label == "planner")
+        .expect("the planner ran");
     assert_eq!(planner.turn_deadline, limits.lead_deadline);
     assert_eq!(planner.quiet_deadline, limits.lead_quiet_deadline);
 }
@@ -1183,14 +1471,26 @@ fn a_limit_override_is_read_from_the_environment_and_a_bad_one_is_ignored() {
     assert_eq!(Limits::from_env().lead_deadline, Duration::from_secs(1800));
 
     std::env::set_var(key, "0");
-    assert_eq!(Limits::from_env().lead_deadline, Limits::default().lead_deadline);
+    assert_eq!(
+        Limits::from_env().lead_deadline,
+        Limits::default().lead_deadline
+    );
     std::env::set_var(key, "not a number");
-    assert_eq!(Limits::from_env().lead_deadline, Limits::default().lead_deadline);
+    assert_eq!(
+        Limits::from_env().lead_deadline,
+        Limits::default().lead_deadline
+    );
 
     std::env::remove_var(key);
     std::env::set_var(quiet, "42");
-    assert_eq!(Limits::from_env().lead_quiet_deadline, Duration::from_secs(42));
-    assert_eq!(Limits::from_env().lead_deadline, Limits::default().lead_deadline);
+    assert_eq!(
+        Limits::from_env().lead_quiet_deadline,
+        Duration::from_secs(42)
+    );
+    assert_eq!(
+        Limits::from_env().lead_deadline,
+        Limits::default().lead_deadline
+    );
 
     restore(key, was);
     restore(quiet, was_quiet);
@@ -1208,13 +1508,16 @@ async fn a_call_killed_on_its_deadline_leaves_a_warning_on_the_feed() {
         .map(|i| {
             Event::item_completed(
                 ItemId::new(format!("i{i}")),
-                ItemKind::ToolCall { name: "Bash".into() },
+                ItemKind::ToolCall {
+                    name: "Bash".into(),
+                },
                 "ls",
                 None,
             )
         })
         .collect();
-    rig.sup.register_driver(Arc::new(ReplayDriver::new(script).with_rate(60.0)));
+    rig.sup
+        .register_driver(Arc::new(ReplayDriver::new(script).with_rate(60.0)));
 
     let call = SupervisedCall::new(rig.sup.clone(), DriverKind::new(REPLAY), rig.root.clone());
     let outcome = call
@@ -1227,6 +1530,8 @@ async fn a_call_killed_on_its_deadline_leaves_a_warning_on_the_feed() {
             quiet_deadline: Duration::from_secs(30),
             thinking: brigadier_core::driver::ThinkingPolicy::Off,
             model: None,
+            effort: None,
+            provider: None,
             permission_mode: PermissionMode::Default,
         })
         .await
@@ -1246,7 +1551,10 @@ async fn a_call_killed_on_its_deadline_leaves_a_warning_on_the_feed() {
         rows.iter().all(|r| r.q <= warning.q),
         "the warning must be numbered past the session's last event"
     );
-    assert!(rows.len() > 1, "the session's own rows survived alongside it");
+    assert!(
+        rows.len() > 1,
+        "the session's own rows survived alongside it"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1261,48 +1569,36 @@ async fn a_call_killed_on_its_deadline_leaves_a_warning_on_the_feed() {
 /// The owner's sentence: *"picking Haiku means nothing in the run exceeds Haiku."* The planner
 /// tiers the order `opus`; every child still runs on the pick.
 #[tokio::test]
-async fn a_haiku_pick_clamps_an_opus_order_and_records_the_clamp() {
+async fn a_haiku_orchestrator_pick_preserves_independent_opus_worker() {
     let Some(rig) = Rig::new().await else { return };
     let fake = Fake::new()
         .say("planner", plan_of(&[("routes", "true"), ("docs", "true")]))
         .say("lead", dispatch_tiered(&[("o1", "src")], "opus"))
         .say("worker", report_of("o1"))
         .does("worker", Work::Under("src"), &rig.git);
-    let mut run = rig.run_picking(Arc::clone(&fake), Some("claude-haiku-4-5")).await;
+    let mut run = rig
+        .run_picking(Arc::clone(&fake), Some("claude-haiku-4-5"))
+        .await;
 
     assert_eq!(run.tick().await, Tick::Continue, "plan");
     assert_eq!(run.tick().await, Tick::Continue, "dispatch");
 
-    let asked = fake.all_models();
-    assert!(!asked.is_empty(), "no call was made");
-    for model in &asked {
-        assert_eq!(
-            model.as_deref(),
-            Some("claude-haiku-4-5"),
-            "a child escaped the ceiling: {asked:?}"
-        );
-    }
-    // Named lanes, so a future refactor that drops one of them fails here rather than silently.
-    assert_eq!(fake.models("planner"), vec![Some("claude-haiku-4-5".to_owned())]);
-    assert_eq!(fake.models("lead"), vec![Some("claude-haiku-4-5".to_owned())]);
-    assert_eq!(fake.models("worker"), vec![Some("claude-haiku-4-5".to_owned())]);
-
-    // And the clamp is written down, not silent: the plan card's own column says the run was
-    // capped.
-    let phases = rig.store.handle().phases(run.plan_id()).await.expect("phases");
-    let first = phases.iter().min_by_key(|p| p.ordinal).expect("a phase");
-    let orders = rig.store.handle().work_orders(&first.id).await.expect("orders");
-    let report = orders[0].report.clone().expect("a report");
-    assert!(report.contains("opus"), "the tier that was capped is named: {report}");
-    assert!(report.contains("claude-haiku-4-5"), "the ceiling is named: {report}");
-    assert!(report.starts_with("model:"), "the clamp leads the report: {report}");
+    assert_eq!(
+        fake.models("planner"),
+        vec![Some("claude-haiku-4-5".to_owned())]
+    );
+    assert_eq!(
+        fake.models("lead"),
+        vec![Some("claude-haiku-4-5".to_owned())]
+    );
+    assert_eq!(fake.models("worker"), vec![Some("opus".to_owned())]);
 }
 
 /// With no pick, §6's role-based routing survives — and the work-order lane is capped at
 /// mid-tier, which is the half that did not exist. Before 2026-09-05 the worker below was
 /// started on `--model opus` because the planner said so.
 #[tokio::test]
-async fn no_pick_leaves_judgement_strong_and_caps_a_work_order_at_mid_tier() {
+async fn auto_uses_orchestrator_default_without_worker_ceiling() {
     let Some(rig) = Rig::new().await else { return };
     let fake = Fake::new()
         .say("planner", plan_of(&[("routes", "true"), ("docs", "true")]))
@@ -1315,16 +1611,17 @@ async fn no_pick_leaves_judgement_strong_and_caps_a_work_order_at_mid_tier() {
     assert_eq!(run.tick().await, Tick::Continue, "dispatch");
 
     // Judgement: the provider default, which is the owner's own strong model.
-    assert_eq!(fake.models("planner"), vec![None], "judgement keeps the strong model");
-    assert_eq!(fake.models("lead"), vec![None], "judgement keeps the strong model");
-    // The work order: mid-tier, not the top tier the planner asked for.
-    assert_eq!(fake.models("worker"), vec![Some("sonnet".to_owned())]);
-
-    let phases = rig.store.handle().phases(run.plan_id()).await.expect("phases");
-    let first = phases.iter().min_by_key(|p| p.ordinal).expect("a phase");
-    let orders = rig.store.handle().work_orders(&first.id).await.expect("orders");
-    let report = orders[0].report.clone().expect("a report");
-    assert!(report.contains("mid-tier"), "the cap is recorded: {report}");
+    assert_eq!(
+        fake.models("planner"),
+        vec![None],
+        "judgement keeps the strong model"
+    );
+    assert_eq!(
+        fake.models("lead"),
+        vec![None],
+        "judgement keeps the strong model"
+    );
+    assert_eq!(fake.models("worker"), vec![Some("opus".to_owned())]);
 }
 
 /// The control for the test above: an order the planner tiered at or below mid-tier is not
@@ -1343,11 +1640,24 @@ async fn no_pick_leaves_a_haiku_order_on_haiku() {
     assert_eq!(run.tick().await, Tick::Continue, "dispatch");
     assert_eq!(fake.models("worker"), vec![Some("haiku".to_owned())]);
 
-    let phases = rig.store.handle().phases(run.plan_id()).await.expect("phases");
+    let phases = rig
+        .store
+        .handle()
+        .phases(run.plan_id())
+        .await
+        .expect("phases");
     let first = phases.iter().min_by_key(|p| p.ordinal).expect("a phase");
-    let orders = rig.store.handle().work_orders(&first.id).await.expect("orders");
+    let orders = rig
+        .store
+        .handle()
+        .work_orders(&first.id)
+        .await
+        .expect("orders");
     let report = orders[0].report.clone().expect("a report");
-    assert!(!report.starts_with("model:"), "nothing was capped, so nothing is claimed: {report}");
+    assert!(
+        !report.starts_with("model:"),
+        "nothing was capped, so nothing is claimed: {report}"
+    );
 }
 
 /// A ceiling is not a floor. An `opus` pick leaves a cheap order cheap, which is the difference
@@ -1360,48 +1670,309 @@ async fn an_opus_pick_still_lets_a_haiku_order_run_on_haiku() {
         .say("lead", dispatch_tiered(&[("o1", "src")], "haiku"))
         .say("worker", report_of("o1"))
         .does("worker", Work::Under("src"), &rig.git);
-    let mut run = rig.run_picking(Arc::clone(&fake), Some("claude-opus-5")).await;
+    let mut run = rig
+        .run_picking(Arc::clone(&fake), Some("claude-opus-5"))
+        .await;
 
     assert_eq!(run.tick().await, Tick::Continue, "plan");
     assert_eq!(run.tick().await, Tick::Continue, "dispatch");
-    assert_eq!(fake.models("planner"), vec![Some("claude-opus-5".to_owned())]);
-    assert_eq!(fake.models("worker"), vec![Some("haiku".to_owned())], "under the ceiling");
+    assert_eq!(
+        fake.models("planner"),
+        vec![Some("claude-opus-5".to_owned())]
+    );
+    assert_eq!(
+        fake.models("worker"),
+        vec![Some("haiku".to_owned())],
+        "under the ceiling"
+    );
 }
 
 /// A model id this build does not recognise must **not** silently become "no ceiling". It binds
 /// at the bottom instead, so every child runs on exactly the id the owner typed and the
 /// planner's tier reaches nothing.
 #[tokio::test]
-async fn an_unrecognised_model_id_does_not_widen_the_ceiling() {
+async fn unknown_orchestrator_model_remains_exact_and_worker_independent() {
     let Some(rig) = Rig::new().await else { return };
     let fake = Fake::new()
         .say("planner", plan_of(&[("routes", "true"), ("docs", "true")]))
         .say("lead", dispatch_tiered(&[("o1", "src")], "opus"))
         .say("worker", report_of("o1"))
         .does("worker", Work::Under("src"), &rig.git);
-    let mut run = rig.run_picking(Arc::clone(&fake), Some("claude-quokka-9")).await;
+    let mut run = rig
+        .run_picking(Arc::clone(&fake), Some("claude-quokka-9"))
+        .await;
 
     assert_eq!(run.tick().await, Tick::Continue, "plan");
     assert_eq!(run.tick().await, Tick::Continue, "dispatch");
 
-    for model in fake.all_models() {
-        assert_eq!(
-            model.as_deref(),
-            Some("claude-quokka-9"),
-            "an unrecognised pick bound nothing"
-        );
-    }
-    // And specifically: it did **not** fall through to the no-pick lane, where the planner's
-    // `opus` would have become `--model sonnet` — a model the owner never named.
-    assert_ne!(fake.models("worker"), vec![Some("sonnet".to_owned())]);
-    assert_ne!(fake.models("worker"), vec![Some("opus".to_owned())]);
-
-    let phases = rig.store.handle().phases(run.plan_id()).await.expect("phases");
-    let first = phases.iter().min_by_key(|p| p.ordinal).expect("a phase");
-    let orders = rig.store.handle().work_orders(&first.id).await.expect("orders");
-    let report = orders[0].report.clone().expect("a report");
-    assert!(
-        report.contains("not a model this build recognises"),
-        "an unrecognised pick is visible, not silent: {report}"
+    assert_eq!(
+        fake.models("planner"),
+        vec![Some("claude-quokka-9".to_owned())]
     );
+    assert_eq!(
+        fake.models("lead"),
+        vec![Some("claude-quokka-9".to_owned())]
+    );
+    assert_eq!(fake.models("worker"), vec![Some("opus".to_owned())]);
+}
+
+#[tokio::test]
+async fn consequential_review_rejection_repairs_once_and_reruns_review() {
+    let Some(rig) = Rig::new().await else { return };
+    let fake = Fake::new()
+        .say("planner", plan_of(&[("a", "test -f src/session.rs")]))
+        .say("lead", dispatch_of(&[("o1", "src")]))
+        .say("worker", report_of("o1"))
+        .does("worker", Work::File("src/session.rs"), &rig.git)
+        .say("reviewer", "Check missing recovery behavior")
+        .say(
+            "review-judge",
+            r#"{"accepted":false,"findings":["missing repair.txt recovery evidence"]}"#,
+        )
+        .say("review-judge", r#"{"accepted":true,"findings":[]}"#)
+        .say("fixer", "repaired")
+        .does("fixer", Work::File("repair.txt"), &rig.git);
+    let mut run = rig.run(Arc::clone(&fake)).await;
+    assert_eq!(run.tick().await, Tick::Continue);
+    assert_eq!(run.tick().await, Tick::Continue);
+    assert_eq!(run.tick().await, Tick::Continue);
+    assert!(rig.root.join("repair.txt").exists());
+    assert_eq!(fake.count("fixer"), 1);
+    assert_eq!(fake.count("review-judge"), 2);
+    assert_eq!(fake.count("reviewer"), 4);
+    assert_eq!(fake.count("repair-alternative-a"), 0);
+}
+
+#[tokio::test]
+async fn failed_ordinary_fix_selects_one_fully_verified_isolated_alternative() {
+    let Some(rig) = Rig::new().await else { return };
+    let fake = Fake::new()
+        .say("planner", plan_of(&[("a", "test -f fixed.txt && test ! -f wrong.txt")]))
+        .say("lead", dispatch_of(&[("o1", "src")]))
+        .say("worker", report_of("o1"))
+        .does("worker", Work::Under("src"), &rig.git)
+        .say("fixer", "wrong fix")
+        .does("fixer", Work::File("wrong.txt"), &rig.git)
+        .say("repair-alternative-a", "complete repair")
+        .does("repair-alternative-a", Work::File("fixed.txt"), &rig.git)
+        .say("repair-alternative-b", "bad alternative")
+        .does("repair-alternative-b", Work::File("wrong.txt"), &rig.git)
+        .say("reviewer", "All acceptance checks inspected")
+        .say("review-judge", r#"{"accepted":true,"findings":[]}"#)
+        .say("repair-judge", r#"{"winner":0,"reason":"A passes the full command and independent criteria review; B fails"}"#);
+    let mut run = rig.run(Arc::clone(&fake)).await;
+    assert_eq!(run.tick().await, Tick::Continue);
+    assert_eq!(run.tick().await, Tick::Continue);
+    assert_eq!(run.tick().await, Tick::Continue);
+    assert!(rig.root.join("fixed.txt").exists());
+    assert!(
+        !rig.root.join("wrong.txt").exists(),
+        "neither the failed ordinary fix nor losing diff is merged"
+    );
+    assert_eq!(fake.count("fixer"), 1);
+    assert_eq!(fake.count("repair-alternative-a"), 1);
+    assert_eq!(fake.count("repair-alternative-b"), 1);
+    assert_eq!(
+        fake.count("review-judge"),
+        1,
+        "failed gate is never eligible for review acceptance"
+    );
+    let calls = fake.calls.lock().unwrap();
+    let a = &calls
+        .iter()
+        .find(|(l, _)| *l == "repair-alternative-a")
+        .unwrap()
+        .1;
+    let b = &calls
+        .iter()
+        .find(|(l, _)| *l == "repair-alternative-b")
+        .unwrap()
+        .1;
+    assert_ne!(a, b);
+    assert!(
+        b.join("wrong.txt").exists(),
+        "losing evidence remains recoverable"
+    );
+}
+
+#[tokio::test]
+async fn stopped_run_remains_stopped_after_restart_until_explicit_continue() {
+    let Some(rig) = Rig::new().await else { return };
+    let mut spec = RunSpec::new(
+        rig.project_id.clone(),
+        "goal",
+        DriverKind::new(REPLAY),
+        resolved(ReconcileOutcome::clean()),
+    );
+    spec.driver = DriverKind::new(REPLAY);
+    spec.call = Some(Arc::new(ScriptedCall::new()));
+    let handle = rig.sup.start_run(spec).await.unwrap();
+    handle.stop();
+    let plan = handle.plan_id().to_owned();
+    handle.join().await;
+    let fake = Fake::new().say("planner", plan_of(&[("a", "true")]));
+    let mut restarted = rig
+        .restart(fake.clone(), &plan, resolved(ReconcileOutcome::clean()))
+        .await;
+    assert_eq!(restarted.tick().await, Tick::Stopped);
+    assert_eq!(fake.total(), 0);
+    rig.sup.clear_run_stop(&plan).unwrap();
+    let mut continued = rig
+        .restart(fake.clone(), &plan, resolved(ReconcileOutcome::clean()))
+        .await;
+    assert_eq!(continued.tick().await, Tick::Continue);
+    assert_eq!(fake.count("planner"), 1);
+}
+
+#[tokio::test]
+async fn passing_checks_over_uncommitted_changes_do_not_merge_an_unverified_branch() {
+    let Some(rig) = Rig::new().await else { return };
+    let fake = Fake::new()
+        .say("planner", plan_of(&[("a", "touch gate-created.txt; true")]))
+        .say("lead", dispatch_of(&[("o1", "src")]))
+        .say("worker", report_of("o1"))
+        .does("worker", Work::Under("src"), &rig.git);
+    let original = rig.head();
+    let mut run = rig.run(fake).await;
+    assert_eq!(run.tick().await, Tick::Continue);
+    assert_eq!(run.tick().await, Tick::Continue);
+    assert!(matches!(run.tick().await, Tick::Blocked(reason) if reason.contains("uncommitted")));
+    assert_eq!(rig.head(), original);
+}
+
+#[tokio::test]
+async fn stop_during_provider_startup_never_sends_the_goal() {
+    use brigadier_core::driver::{
+        BoxFuture, DriverError, DriverInfo, ProviderDriver, ResumeSession, StartSession,
+    };
+    use brigadier_core::event::InstanceId;
+    use brigadier_core::session::SessionHandle;
+    use std::sync::atomic::AtomicBool;
+    struct SlowStart {
+        replay: ReplayDriver,
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+        prompt_sent: Arc<AtomicBool>,
+    }
+    impl ProviderDriver for SlowStart {
+        fn kind(&self) -> DriverKind {
+            self.replay.kind()
+        }
+        fn instance_id(&self) -> &InstanceId {
+            self.replay.instance_id()
+        }
+        fn describe(&self) -> DriverInfo {
+            self.replay.describe()
+        }
+        fn start_session(
+            &self,
+            req: StartSession,
+        ) -> BoxFuture<'_, Result<SessionHandle, DriverError>> {
+            Box::pin(async move {
+                self.prompt_sent
+                    .store(req.prompt.is_some(), Ordering::Release);
+                self.entered.notify_one();
+                self.release.notified().await;
+                self.replay.start_session(req).await
+            })
+        }
+        fn resume_session(
+            &self,
+            req: ResumeSession,
+        ) -> BoxFuture<'_, Result<SessionHandle, DriverError>> {
+            self.replay.resume_session(req)
+        }
+    }
+    let Some(rig) = Rig::new().await else { return };
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let prompt_sent = Arc::new(AtomicBool::new(false));
+    let replay = ReplayDriver::new(vec![Event::RuntimeWarning {
+        message: "idle".into(),
+    }]);
+    rig.sup.register_driver(Arc::new(SlowStart {
+        replay,
+        entered: entered.clone(),
+        release: release.clone(),
+        prompt_sent: prompt_sent.clone(),
+    }));
+    let stop = Arc::new(AtomicBool::new(false));
+    let call = SupervisedCall::new(rig.sup.clone(), DriverKind::new(REPLAY), rig.root.clone())
+        .with_stop(stop.clone());
+    let req = CallRequest {
+        project_id: rig.project_id.clone(),
+        label: "worker",
+        cwd: CallCwd::ProjectRoot,
+        prompt: "Do work".into(),
+        turn_deadline: Duration::from_secs(2),
+        quiet_deadline: Duration::from_secs(2),
+        thinking: Default::default(),
+        model: None,
+        effort: None,
+        provider: None,
+        permission_mode: PermissionMode::Default,
+    };
+    let task = tokio::spawn(async move { call.call(req).await });
+    entered.notified().await;
+    stop.store(true, Ordering::Release);
+    release.notify_one();
+    let outcome = tokio::time::timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(outcome.end, CallEnd::Aborted);
+    assert!(
+        !prompt_sent.load(Ordering::Acquire),
+        "startup was idle while cancellation raced"
+    );
+    let id = outcome.session_id.unwrap();
+    for _ in 0..50 {
+        if !rig.sup.is_live(&id) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("cancelled startup child still live");
+}
+
+#[tokio::test]
+async fn codex_default_worker_does_not_receive_a_claude_model_alias() {
+    let Some(rig) = Rig::new().await else { return };
+    let fake = Fake::new()
+        .say("planner", plan_of(&[("a", "true")]))
+        .say("lead", dispatch_of(&[("o1", "src")]))
+        .say("worker", report_of("o1"))
+        .does("worker", Work::Under("src"), &rig.git);
+    let mut spec = RunSpec::new(
+        rig.project_id.clone(),
+        "goal",
+        DriverKind::new("codex"),
+        resolved(ReconcileOutcome::clean()),
+    );
+    spec.model = Some("gpt-exact".into());
+    spec.call = Some(fake.clone());
+    let mut run = rig.sup.prepare_run(spec).await.unwrap();
+    assert_eq!(run.tick().await, Tick::Continue);
+    assert_eq!(run.tick().await, Tick::Continue);
+    assert_eq!(fake.models("worker"), vec![None]);
+    assert_eq!(fake.models("planner"), vec![Some("gpt-exact".into())]);
+}
+
+#[tokio::test]
+async fn independently_selected_codex_worker_can_use_its_provider_default() {
+    let Some(rig) = Rig::new().await else { return };
+    let dispatch = dispatch_of(&[("o1", "src")]).replace(
+        "\"model_tier\":\"sonnet\"",
+        "\"model_tier\":\"sonnet\",\"provider\":\"codex\"",
+    );
+    let fake = Fake::new()
+        .say("planner", plan_of(&[("a", "true")]))
+        .say("lead", dispatch)
+        .say("worker", report_of("o1"))
+        .does("worker", Work::Under("src"), &rig.git);
+    let mut run = rig.run(fake.clone()).await;
+    assert_eq!(run.tick().await, Tick::Continue);
+    assert_eq!(run.tick().await, Tick::Continue);
+    assert_eq!(fake.models("worker"), vec![None]);
 }

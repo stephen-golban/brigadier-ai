@@ -54,6 +54,7 @@ impl ChannelSink {
 
 impl FeedSink for ChannelSink {
     fn send(&self, batch: FeedBatch) -> Result<(), SinkError> {
+        crate::peers::observe_signals(&batch.signals);
         crate::peer_sessions::notify();
         // Clone out of the guard before sending: `Channel::send` reaches into the event loop and
         // must not run with this mutex held.

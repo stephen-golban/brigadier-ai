@@ -62,7 +62,14 @@ pub(super) async fn make_plan(run: &mut Run) -> Result<(), LoopError> {
 pub(super) async fn lead_call(run: &mut Run, phase: &PhaseRow) -> Result<Action, LoopError> {
     let phases = run.sup.inner.store.phases(&run.plan_id).await?;
     let unknowns = run.sup.inner.store.unknowns(&run.plan_id).await?;
-    let prompt = lead_prompt(&run.goal, &phases, phase, &unknowns);
+    let mut prompt = lead_prompt(&run.goal, &phases, phase, &unknowns);
+    let providers: Vec<String> = run
+        .sup
+        .registered_drivers()
+        .iter()
+        .map(|d| d.kind().to_string())
+        .collect();
+    prompt.push_str(&format!("\nWorker selection is independent of the orchestrator. Registered providers: {}. Set provider/model/effort on each order when useful. Never invent a provider or claim tools unsupported by its adapter.\n", providers.join(", ")));
     let root = run.project.root_path.clone();
     let phase_id = phase.id.clone();
     let verify = phase.verify_command.clone();
@@ -126,9 +133,10 @@ where
                 // (`crates/core/src/driver.rs`).
                 thinking: ThinkingPolicy::Inherit,
                 // `None` is the provider default, which is `docs/vision.md` §6's *judgement gets
-                // the strong model*. An explicit pick is the ceiling, and for a judgement call the
-                // ceiling *is* the model (`loop_/routing.rs`).
+                // the strong model*. An explicit orchestrator pick is always honored exactly.
                 model: run.ceiling.judgement(),
+                effort: run.effort.clone(),
+                provider: None,
                 permission_mode: run.permission_mode.clone(),
             })
             .await?;
@@ -136,7 +144,10 @@ where
             // Not a parse failure and not retried as one: a deadline or a dead child is a
             // different fact from a bad answer, and blocking on it beats spending a second window
             // on the same silence.
-            return Err(LoopError::NoAnswer { label, end: outcome.end.slug().to_owned() });
+            return Err(LoopError::NoAnswer {
+                label,
+                end: outcome.end.slug().to_owned(),
+            });
         }
         match parse(&outcome.text) {
             Ok(value) => return Ok(value),
@@ -277,18 +288,26 @@ pub fn lead_prompt(
             phase.state.as_slug(),
             phase.title,
             phase.definition_of_done,
-            phase.verify_command.as_deref().unwrap_or("(none: this phase cannot go green)"),
+            phase
+                .verify_command
+                .as_deref()
+                .unwrap_or("(none: this phase cannot go green)"),
         ));
     }
-    let done: Vec<&PhaseRow> =
-        phases.iter().filter(|p| p.state == PhaseState::Green).collect();
+    let done: Vec<&PhaseRow> = phases
+        .iter()
+        .filter(|p| p.state == PhaseState::Green)
+        .collect();
     if !done.is_empty() {
         out.push_str("\nAlready committed:\n");
         for phase in done {
             out.push_str(&format!(
                 "  {} — {}\n",
                 phase.title,
-                phase.commit_sha.as_deref().unwrap_or("(no commit recorded)")
+                phase
+                    .commit_sha
+                    .as_deref()
+                    .unwrap_or("(no commit recorded)")
             ));
         }
     }
@@ -309,8 +328,11 @@ pub fn lead_prompt(
         current.definition_of_done,
         current.verify_command.as_deref().unwrap_or("(none)"),
     ));
-    if let (Some(code), Some(evidence)) = (current.last_exit_code, &current.last_evidence) {
-        out.push_str(&format!("\nThe last gate on this phase exited {code}: {evidence}\n"));
+    if let Some(evidence) = &current.last_evidence {
+        out.push_str(&format!(
+            "\nLatest phase evidence (exit {:?}): {evidence}\n",
+            current.last_exit_code
+        ));
     }
     out.push_str(
         "\nDispatch the work as parallel orders with disjoint write ownership. Every order needs\n\
@@ -364,7 +386,10 @@ mod tests {
         let prompt = lead_prompt("ship it", std::slice::from_ref(&current), &current, &[]);
         assert!(prompt.contains("exited 101"));
         assert!(prompt.contains("cargo test --workspace exited 101"));
-        assert!(!prompt.contains("panicked at"), "no output may reach the lead window");
+        assert!(
+            !prompt.contains("panicked at"),
+            "no output may reach the lead window"
+        );
     }
 
     #[test]
@@ -378,14 +403,29 @@ mod tests {
     #[test]
     fn waved_off_questions_reach_the_lead_and_answered_ones_do_not() {
         let current = phase(0, "a", PhaseState::Running);
-        let mut waved = UnknownRow::new("u1", "plan", StoreBin::Owner, "which database?", SystemTime::UNIX_EPOCH);
+        let mut waved = UnknownRow::new(
+            "u1",
+            "plan",
+            StoreBin::Owner,
+            "which database?",
+            SystemTime::UNIX_EPOCH,
+        );
         waved.state = UnknownState::Skipped;
         waved.skipped_for_just_go = true;
-        let mut answered =
-            UnknownRow::new("u2", "plan", StoreBin::Owner, "which port?", SystemTime::UNIX_EPOCH);
+        let mut answered = UnknownRow::new(
+            "u2",
+            "plan",
+            StoreBin::Owner,
+            "which port?",
+            SystemTime::UNIX_EPOCH,
+        );
         answered.state = UnknownState::Answered;
-        let prompt =
-            lead_prompt("g", std::slice::from_ref(&current), &current, &[waved, answered]);
+        let prompt = lead_prompt(
+            "g",
+            std::slice::from_ref(&current),
+            &current,
+            &[waved, answered],
+        );
         assert!(prompt.contains("which database?"));
         assert!(!prompt.contains("which port?"));
     }
@@ -395,8 +435,7 @@ mod tests {
         let mut green = phase(0, "scaffolding", PhaseState::Green);
         green.commit_sha = Some("abc123".to_owned());
         let current = phase(1, "routes", PhaseState::Running);
-        let prompt =
-            lead_prompt("g", &[green, current.clone()], &current, &[]);
+        let prompt = lead_prompt("g", &[green, current.clone()], &current, &[]);
         assert!(prompt.contains("scaffolding — abc123"));
     }
 }

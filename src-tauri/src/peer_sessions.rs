@@ -14,6 +14,9 @@ static CHANGES: OnceLock<tokio::sync::watch::Sender<u64>> = OnceLock::new();
 fn changes() -> &'static tokio::sync::watch::Sender<u64> {
     CHANGES.get_or_init(|| tokio::sync::watch::channel(0).0)
 }
+pub(crate) fn subscribe() -> tokio::sync::watch::Receiver<u64> {
+    changes().subscribe()
+}
 pub(crate) fn notify() {
     changes().send_modify(|v| *v = v.wrapping_add(1));
 }
@@ -261,11 +264,122 @@ async fn wait(ready: &Ready, caller: &str, v: &Value) -> Result<Value, AppError>
     let mut errors = Vec::new();
     for target in &targets {
         match summary(ready, target, true).await {
-            Ok(s) => sessions.push(s),
+            Ok(s) => {
+                peers::observed_result(caller, &s)?;
+                retire_reported_worker(ready, caller, &target.session_id).await;
+                sessions.push(s)
+            }
             Err(e) => errors.push(json!({"sessionId":target.session_id,"error":e})),
         }
     }
     Ok(json!({"reason":reason,"sessions":sessions,"errors":errors}))
+}
+
+/// Results have been persisted and included in a parent read. Release disposable resources;
+/// dirty/unintegrated files remain in place and the retained branch/history are never deleted.
+async fn retire_reported_worker(ready: &Ready, caller: &str, target: &str) {
+    let _guard = peers::LIFECYCLE.lock().await;
+    retire_reported_worker_locked(ready, caller, target).await;
+}
+
+pub(crate) async fn retire_reported_worker_locked(ready: &Ready, caller: &str, target: &str) {
+    let Ok(data) = peers::snapshot() else {
+        return;
+    };
+    if data.origins.get(target).map(String::as_str) != Some(caller) {
+        return;
+    }
+    if data
+        .messages
+        .iter()
+        .any(|m| m.to == target && m.work && !m.delivered && m.error.is_none())
+    {
+        return;
+    }
+    if crate::composer::has_pending(target) {
+        return;
+    }
+    let id = SessionId::new(target);
+    let Ok(turns) = ready.store().chat_turns(target.into()).await else {
+        return;
+    };
+    let Some(turn) = turns.first().filter(|t| t.status == "completed") else {
+        return;
+    };
+    if data
+        .retired
+        .get(target)
+        .is_some_and(|receipt| retirement_settled(receipt, &turn.id))
+    {
+        return;
+    }
+    // A worker waiting on active descendants is still responsible for their integration.
+    if crate::cleanup::descendants([target.to_owned()].into(), &data.origins)
+        .iter()
+        .any(|child| child != target && ready.supervisor.is_live(&SessionId::new(child)))
+    {
+        return;
+    }
+    let Ok(Some(row)) = ready.supervisor.session(&id).await else {
+        return;
+    };
+    if ready.supervisor.is_live(&id) {
+        let Ok(activity) = ready
+            .supervisor
+            .native_control(&id, NativeControl::Activity)
+            .await
+        else {
+            return;
+        };
+        if activity["status"] != "Idle" {
+            return;
+        }
+        if ready.supervisor.kill(&id).await.is_err() {
+            return;
+        }
+    }
+    // Kill acknowledges process-stop intent before the consumer persists its exit and
+    // leaves the live registry. Never race workspace cleanup against that consumer.
+    if tokio::time::timeout(Duration::from_secs(5), async {
+        while ready.supervisor.is_live(&id) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .is_err()
+    {
+        return; // No final receipt: a subsequent read/close can retry safely.
+    }
+    let (removed, reason) = if row.worktree_path.is_some() {
+        match ready.supervisor.cleanup_worktree(&id, false).await {
+            Ok(result) => (
+                result.removed,
+                if result.removed {
+                    None
+                } else {
+                    Some("Uncommitted work retained in its workspace".into())
+                },
+            ),
+            Err(e) => (false, Some(e.to_string())),
+        }
+    } else {
+        (false, Some("Shared project workspace retained".into()))
+    };
+    if let Err(e) = peers::record_retired(target, &turn.id, removed, reason) {
+        tracing::warn!("Worker retirement receipt: {}", e.message);
+    }
+}
+
+fn retirement_settled(receipt: &Value, turn: &str) -> bool {
+    receipt["turnId"] == turn
+        && (receipt["workspaceRemoved"] == true
+            || matches!(
+                receipt["reason"].as_str(),
+                Some(
+                    "Uncommitted work retained in its workspace"
+                        | "Shared project workspace retained"
+                )
+            ))
 }
 
 pub(crate) async fn dispatch(ready: &Ready, caller: &str, v: &Value) -> Result<Value, AppError> {
@@ -289,7 +403,7 @@ pub(crate) async fn dispatch(ready: &Ready, caller: &str, v: &Value) -> Result<V
             let id = v["sessionId"]
                 .as_str()
                 .ok_or_else(|| AppError::invalid_argument("Specify sessionId"))?;
-            summary(
+            let result = summary(
                 ready,
                 &Target {
                     session_id: id.into(),
@@ -300,7 +414,10 @@ pub(crate) async fn dispatch(ready: &Ready, caller: &str, v: &Value) -> Result<V
                 },
                 true,
             )
-            .await
+            .await?;
+            peers::observed_result(caller, &result)?;
+            retire_reported_worker(ready, caller, id).await;
+            Ok(result)
         }
         Some("wait") => wait(ready, caller, v).await,
         _ => Err(AppError::invalid_argument("Unknown session action")),
@@ -311,6 +428,26 @@ pub(crate) async fn dispatch(ready: &Ready, caller: &str, v: &Value) -> Result<V
 mod tests {
     use super::*;
 
+    #[test]
+    fn transient_retirement_failures_retry_but_dirty_workspaces_remain_retained() {
+        assert!(!retirement_settled(
+            &json!({"turnId":"t","workspaceRemoved":false,"reason":"session is still live"}),
+            "t"
+        ));
+        assert!(retirement_settled(
+            &json!({"turnId":"t","workspaceRemoved":false,"reason":"Uncommitted work retained in its workspace"}),
+            "t"
+        ));
+        assert!(retirement_settled(
+            &json!({"turnId":"t","workspaceRemoved":true}),
+            "t"
+        ));
+        assert!(!retirement_settled(
+            &json!({"turnId":"old","workspaceRemoved":true}),
+            "t"
+        ));
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn cross_project_reads_and_waits_use_real_store_and_supervisor_without_model_calls() {
         use brigadier_core::{
@@ -320,7 +457,11 @@ mod tests {
         use brigadier_supervisor::ReplayDriver;
         use std::sync::Arc;
         let dir = tempfile::tempdir().unwrap();
-        let ready = crate::state::build(dir.path().join("data")).await.unwrap();
+        let state = crate::state::AppState::pending();
+        state.initialize(Ok(crate::state::build(dir.path().join("data"))
+            .await
+            .unwrap()));
+        let ready = state.get().unwrap();
         // The production singleton is also reached by archive tests running in parallel.
         // Keep its independent directory alive for the test process, beyond this fixture.
         peers::test_service(tempfile::tempdir().unwrap().keep());
@@ -355,12 +496,12 @@ mod tests {
             .start_session(&b.id, &kind, StartSession::new(&b.root_path))
             .await
             .unwrap();
-        let listing = dispatch(&ready, caller.as_str(), &json!({"action":"list"}))
+        let listing = dispatch(ready, caller.as_str(), &json!({"action":"list"}))
             .await
             .unwrap();
         assert_eq!(listing["sessions"].as_array().unwrap().len(), 2);
         let filtered = dispatch(
-            &ready,
+            ready,
             caller.as_str(),
             &json!({"action":"list","projectId":b.id}),
         )
@@ -368,7 +509,7 @@ mod tests {
         .unwrap();
         assert_eq!(filtered["sessions"].as_array().unwrap().len(), 1);
         let request = json!({"targets":[{"sessionId":target}],"timeoutMs":2000});
-        let (result, ()) = tokio::join!(wait(&ready, caller.as_str(), &request), async {
+        let (result, ()) = tokio::join!(wait(ready, caller.as_str(), &request), async {
             tokio::time::sleep(Duration::from_millis(40)).await;
             ready.supervisor.end_session(&target).await.unwrap();
         });
@@ -382,7 +523,7 @@ mod tests {
             .any(|m| m["text"] == "Finished review"));
         let after = result["sessions"][0]["cursor"].clone();
         let repeated = wait(
-            &ready,
+            ready,
             caller.as_str(),
             &json!({"targets":[{"sessionId":target,"afterCursor":after}],"timeoutMs":0}),
         )
@@ -394,7 +535,7 @@ mod tests {
             .unwrap()
             .is_empty());
         let missing = wait(
-            &ready,
+            ready,
             caller.as_str(),
             &json!({"targets":[{"sessionId":"missing"}],"timeoutMs":0}),
         )
@@ -404,14 +545,14 @@ mod tests {
         assert!(!waits().lock().unwrap().0.contains_key(caller.as_str()));
         let request =
             json!({"targets":[{"sessionId":target,"afterCursor":after}],"timeoutMs":2000});
-        let (inbox, ()) = tokio::join!(wait(&ready, caller.as_str(), &request), async {
+        let (inbox, ()) = tokio::join!(wait(ready, caller.as_str(), &request), async {
             tokio::time::sleep(Duration::from_millis(30)).await;
             peers::test_message(target.as_str(), caller.as_str(), false);
         });
         assert_eq!(inbox.unwrap()["reason"], "message");
         peers::test_message(caller.as_str(), target.as_str(), true);
         let queued = wait(
-            &ready,
+            ready,
             caller.as_str(),
             &json!({"targets":[{"sessionId":target}],"timeoutMs":0}),
         )
@@ -420,11 +561,12 @@ mod tests {
         assert_eq!(queued["reason"], "timeout");
         assert_eq!(queued["sessions"][0]["status"], "queued");
         peers::cancel_pending(target.as_str()).unwrap();
-        let (cancelled, ()) = tokio::join!(wait(&ready, caller.as_str(), &request), async {
+        let (cancelled, ()) = tokio::join!(wait(ready, caller.as_str(), &request), async {
             tokio::time::sleep(Duration::from_millis(30)).await;
             ready.supervisor.end_session(&caller).await.unwrap();
         });
         assert_eq!(cancelled.unwrap()["reason"], "interrupted");
+        peers::test_delivery(&state, &a.id, &a.root_path).await;
         ready.supervisor.shutdown().await;
     }
     #[test]

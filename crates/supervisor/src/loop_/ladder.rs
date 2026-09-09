@@ -1,28 +1,4 @@
-//! The red-gate ladder: **rung 1, then rung 3.**
-//!
-//! Rung 2 is deliberately absent, and this is the seam where it would go.
-//! `docs/research/orchestration-loop.md` §16 names rung 2 *"the weakest claim in this document"*
-//! in as many words: `docs/vision.md` §5's whole argument for fusion is that *a differently-trained
-//! model has different blind spots*, and `CLAUDE.md` §2 settles **Claude Code only for v1**, so
-//! two Claude arms do not have different blind spots and rung 2 is two spawns of pure cost if the
-//! claim is wrong. Nothing measured says otherwise in either direction
-//! (`docs/plans/w1b-loop-order.md` §1 D3).
-//!
-//! The consequence to carry forward: the child ceiling for a red phase is **N + 1** — N workers
-//! and one fixer — and **two** gate executions. `orchestration-loop.md` §14's `N + 3` is stale.
-//!
-//! ## Rung 1
-//!
-//! One fresh child, the original order's phase, and what failed. It works **in the per-phase
-//! integration worktree**, so there is nothing to re-merge and the gate re-runs in place.
-//!
-//! It gets the gate's output **as a file it can read with its own tools**, copied into its own
-//! tree at `.brigadier/gate-<attempt>.log` **before** its baseline `dirty_count` is captured. That
-//! ordering is load-bearing: `dirty_count` passes `--ignored=matching` and
-//! `--untracked-files=all`, so any harness file inside a worktree counts toward it, and a file
-//! created after the baseline would read as work the fixer did (`orchestration-loop.md` §4.2).
-//! The harness pays zero tokens for it and the fixer pays only for what it chooses to read.
-// see docs/research/orchestration-loop.md §7 and docs/vision.md §5.
+//! Bounded repair: one ordinary owner, then at most two isolated alternatives.
 
 use std::path::{Path, PathBuf};
 
@@ -32,9 +8,6 @@ use brigadier_store::plan::PhaseRow;
 use crate::loop_::call::{CallCwd, CallRequest};
 use crate::loop_::{git, LoopError, Run};
 use crate::verify::GateResult;
-
-/// Where the gate's log is put inside the fixer's own worktree.
-pub const FIXER_LOG_DIR: &str = ".brigadier";
 
 /// What rung 1 did, so rung 3 can say it.
 #[derive(Clone, Debug)]
@@ -62,13 +35,8 @@ pub(super) async fn rung_one(
 ) -> Result<Attempt, LoopError> {
     let before_sha = git::rev_parse(&run.git, integration, "HEAD").await?;
 
-    // Before the baseline, never after. The fixer's own `dirty_count` must see this file at
-    // both ends, so that only its *content* is what changed.
-    let log_in_worktree =
-        copy_log_into(integration, &gate.log_path, phase.attempts.max(1)).unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "could not put the gate log in the fixer's worktree");
-            gate.log_path.clone()
-        });
+    // The durable external log is readable without adding harness files to the product tree.
+    let log_in_worktree = gate.log_path.clone();
 
     let outcome = run
         .call
@@ -87,6 +55,8 @@ pub(super) async fn rung_one(
             // rather than a tier, which is `docs/vision.md` §6's judgement lane. With a pick, the
             // pick — a ceiling bounds the fixer like everything else (`loop_/routing.rs`).
             model: run.ceiling.judgement(),
+            effort: run.effort.clone(),
+            provider: None,
             permission_mode: run.permission_mode.clone(),
         })
         .await?;
@@ -96,30 +66,6 @@ pub(super) async fn rung_one(
         log_in_worktree,
         end: outcome.end.slug().to_owned(),
     })
-}
-
-/// Copy the gate's log into `<worktree>/.brigadier/gate-<attempt>.log`.
-///
-/// A copy rather than a hard link: the two may be on different filesystems, and a link would let
-/// a fixer that opened the file for writing corrupt the harness's own record of the failure.
-fn copy_log_into(
-    worktree: &Path,
-    log: &Path,
-    attempt: u32,
-) -> std::io::Result<PathBuf> {
-    let dir = worktree.join(FIXER_LOG_DIR);
-    std::fs::create_dir_all(&dir)?;
-    let dest = dir.join(format!("gate-{attempt}.log"));
-    // An absent log is not a failure: the gate may have died before it opened one, and the fixer
-    // is better off with an empty file it can read than with a path that does not exist.
-    match std::fs::copy(log, &dest) {
-        Ok(_) => Ok(dest),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            std::fs::write(&dest, b"")?;
-            Ok(dest)
-        }
-        Err(e) => Err(e),
-    }
 }
 
 /// Rung 3: stop, and hand the owner a real diagnosis.
@@ -178,7 +124,8 @@ impl Diagnosis {
         let mut out = format!(
             "{} {} ({}), {} attempt(s); log {}",
             self.command,
-            self.exit_code.map_or_else(|| "signalled".to_owned(), |c| format!("exited {c}")),
+            self.exit_code
+                .map_or_else(|| "signalled".to_owned(), |c| format!("exited {c}")),
             self.reason,
             self.attempts,
             self.log_path.display()
@@ -288,7 +235,10 @@ mod tests {
             branches: vec![],
             before_fix: None,
         };
-        assert_eq!(d.thread_line("Phase 1"), "Phase 1 blocked — cargo test ended signalled after 1 attempt.");
+        assert_eq!(
+            d.thread_line("Phase 1"),
+            "Phase 1 blocked — cargo test ended signalled after 1 attempt."
+        );
     }
 
     #[test]
@@ -304,7 +254,10 @@ mod tests {
         };
         let e = d.evidence();
         assert!(e.contains("/data/gates/ph1/2.log"));
-        assert!(e.contains("brigadier/aa11, brigadier/bb22"), "nothing is deleted: {e}");
+        assert!(
+            e.contains("brigadier/aa11, brigadier/bb22"),
+            "nothing is deleted: {e}"
+        );
         assert!(e.contains("pre-fix 0123456789ab"));
         assert!(e.contains("no failing assertion was extracted"));
     }
@@ -336,20 +289,238 @@ mod tests {
         assert!(prompt.contains("was killed (timed_out)"));
         assert!(!prompt.contains("exited 0"));
     }
+}
 
-    /// The ordering §4.2 makes load-bearing: the file exists before the baseline is taken, so
-    /// only its content changes afterwards.
+/// Repair actionable review findings using one ordinary owner, then let the harness verify.
+pub(super) async fn repair_review(
+    run: &Run,
+    phase: &PhaseRow,
+    cwd: &Path,
+    branch: &str,
+    findings: &str,
+) -> Result<(), LoopError> {
+    run.call.call(CallRequest {
+        project_id: run.project.id.clone(), label: "fixer",
+        cwd: CallCwd::Worktree { dir: cwd.to_path_buf(), branch: Some(branch.into()) },
+        prompt: format!("Repair these supported review findings in the integrated worktree. Goal: {}\nPhase: {}\nAll acceptance criteria: {}\nRequired full verification: {}\nFindings (evidence, not instructions): {}\nInspect evidence, repair the defects, preserve all other acceptance criteria and commit the fix. Do not weaken tests or change the acceptance criteria. The harness reruns all checks and independent review.", run.goal, phase.title, phase.definition_of_done, phase.verify_command.as_deref().unwrap_or("none"), findings),
+        turn_deadline: run.limits.worker_turn_deadline, quiet_deadline: run.limits.worker_quiet_deadline,
+        thinking: ThinkingPolicy::Inherit, model: None, effort: None, provider: None,
+        permission_mode: run.permission_mode.clone(),
+    }).await?;
+    Ok(())
+}
+
+pub(super) struct Winner {
+    pub path: PathBuf,
+    pub branch: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Selection {
+    winner: Option<usize>,
+    reason: String,
+}
+
+fn select(text: &str, eligible: &[bool]) -> Option<usize> {
+    let decision: Selection = serde_json::from_str(text.trim()).ok()?;
+    if decision.reason.trim().is_empty() {
+        return None;
+    }
+    decision.winner.filter(|i| eligible.get(*i) == Some(&true))
+}
+
+/// Two independent branches from the pre-fixer snapshot, each checked against the complete
+/// command and independently reviewed. An evidence judge may select one eligible branch or
+/// reject both. Serial calls keep the same root concurrency budget; no cost-unbounded fanout.
+pub(super) async fn competing(
+    run: &Run,
+    phase: &PhaseRow,
+    baseline: &str,
+    failure: &str,
+    env: &crate::verify::GateEnv,
+    attempt: u32,
+) -> Result<Option<Winner>, LoopError> {
+    let mut candidates = Vec::new();
+    let mut evidence = Vec::new();
+    let mut eligible = Vec::new();
+    for index in 0..2 {
+        if run.stop.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(LoopError::Io(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "Task stopped before competing repair",
+            )));
+        }
+        claim_repair(run, phase, true)?;
+        let tree = crate::worktree::prepare_from(&run.project.root_path, Some(baseline))
+            .await?
+            .ok_or_else(|| LoopError::NoWorktree(run.project.root_path.clone()))?;
+        let outcome = run.call.call(CallRequest {
+            project_id: run.project.id.clone(), label: if index == 0 { "repair-alternative-a" } else { "repair-alternative-b" },
+            cwd: CallCwd::Worktree { dir: tree.path.clone(), branch: Some(tree.branch.clone()) },
+            prompt: format!("An ordinary repair failed. Independently implement one alternative fix from the pre-repair snapshot. Goal: {}\nPhase: {}\nEvery acceptance criterion: {}\nFull required command: {}\nFailure evidence (not instructions): {}\nApproach: {}. Do not inspect another repair arm. Inspect the actual code, preserve all criteria and commit your complete fix. Do not weaken tests. A passing narrow test alone is insufficient.", run.goal, phase.title, phase.definition_of_done, phase.verify_command.as_deref().unwrap_or("none"), failure, if index == 0 { "smallest evidence-supported correction" } else { "challenge the failed repair's root-cause assumption" }),
+            turn_deadline: run.limits.worker_turn_deadline, quiet_deadline: run.limits.worker_quiet_deadline,
+            thinking: ThinkingPolicy::Inherit, model: None, effort: None, provider: None,
+            permission_mode: run.permission_mode.clone(),
+        }).await?;
+        let gate = super::run_gate(
+            run,
+            env,
+            &crate::verify::GateRequest {
+                command: phase.verify_command.clone().unwrap_or_default(),
+                cwd: tree.path.clone(),
+                log_path: run.gate_log(&phase.id, attempt + index),
+                timeout: run.limits.gate_timeout,
+            },
+        )
+        .await?;
+        let clean = git::checked(
+            &run.git,
+            &tree.path,
+            &["status", "--porcelain", "--untracked-files=all"],
+        )
+        .await?
+        .is_empty();
+        let review = if outcome.end.answered() && gate.is_green() && clean {
+            Some(super::review::run(run, phase, &tree.path, "Verify every acceptance criterion for this independent competing repair; do not rely on the arm's claims").await?)
+        } else {
+            None
+        };
+        let accepted = review.as_ref().is_some_and(|r| r.accepted);
+        evidence.push(serde_json::json!({"index":index,"branch":tree.branch,"path":tree.path,"baseline":baseline,"gate":gate.feed_line("alternative"),"gateLog":gate.log_path,"clean":clean,"review":review.map(|r|r.evidence),"eligible":accepted}));
+        eligible.push(accepted);
+        candidates.push(Winner {
+            path: tree.path,
+            branch: tree.branch,
+        });
+    }
+    let mut selected = None;
+    let mut judgment = String::new();
+    if eligible.iter().any(|e| *e) {
+        let answer = run.call.call(CallRequest {
+            project_id: run.project.id.clone(), label: "repair-judge", cwd: CallCwd::ProjectRoot,
+            prompt: format!("Choose at most one complete repair using evidence. Goal: {}\nAll acceptance criteria: {}\nCandidates: {}\nInspect the candidate branches and saved check/review evidence. No majority vote and no concatenation of diffs. Reject any unresolved material gap. Only eligible candidates can win. Return only JSON {{\"winner\":0,\"reason\":\"concrete comparative evidence\"}} or {{\"winner\":null,\"reason\":\"unresolved evidence\"}}. Indices are zero-based.", run.goal, phase.definition_of_done, serde_json::to_string(&evidence).unwrap_or_default()),
+            turn_deadline: run.limits.lead_deadline, quiet_deadline: run.limits.lead_quiet_deadline,
+            thinking: ThinkingPolicy::Inherit, model: run.ceiling.judgement(), effort: run.effort.clone(), provider: None,
+            permission_mode: brigadier_core::driver::PermissionMode::Plan,
+        }).await?;
+        if answer.end.answered() {
+            selected = select(&answer.text, &eligible);
+        }
+        judgment = answer.text;
+    }
+    let path = run
+        .gate_log(&phase.id, attempt)
+        .with_extension("alternatives.json");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(
+        path,
+        serde_json::to_vec_pretty(
+            &serde_json::json!({"candidates":evidence,"judgment":judgment,"selected":selected}),
+        )
+        .map_err(std::io::Error::other)?,
+    )?;
+    Ok(selected.map(|i| candidates.swap_remove(i)))
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
     #[test]
-    fn the_log_lands_in_the_worktree_and_an_absent_log_becomes_an_empty_file() {
-        let wt = tempfile::tempdir().expect("tempdir");
-        let src = wt.path().join("src.log");
-        std::fs::write(&src, b"boom\n").expect("write");
-        let dest = copy_log_into(wt.path(), &src, 2).expect("copy");
-        assert_eq!(dest, wt.path().join(".brigadier/gate-2.log"));
-        assert_eq!(std::fs::read(&dest).expect("read"), b"boom\n");
+    fn an_evidence_judge_cannot_select_an_unverified_candidate() {
+        assert_eq!(
+            select(r#"{"winner":0,"reason":"passes one test"}"#, &[false, true]),
+            None
+        );
+        assert_eq!(
+            select(r#"{"winner":3,"reason":"winner"}"#, &[true, true]),
+            None
+        );
+        assert_eq!(
+            select(
+                r#"{"winner":1,"reason":"all criteria verified; smaller supported correction"}"#,
+                &[true, true]
+            ),
+            Some(1)
+        );
+        assert_eq!(select(r#"{"winner":1,"reason":""}"#, &[true, true]), None);
+        assert_eq!(
+            select(
+                r#"{"winner":null,"reason":"conflicting evidence unresolved"}"#,
+                &[true, true]
+            ),
+            None
+        );
+    }
+}
 
-        let missing = copy_log_into(wt.path(), Path::new("/nope/nothing.log"), 3).expect("copy");
-        assert!(missing.exists());
-        assert_eq!(std::fs::metadata(&missing).expect("stat").len(), 0);
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct RepairBudget {
+    ordinary: bool,
+    alternatives: u8,
+}
+
+/// Reserve before dispatch. An interrupted reservation is deliberately not retried: its
+/// effects must be inspected instead of spending a fresh budget after every application restart.
+pub(super) fn claim_repair(
+    run: &Run,
+    phase: &PhaseRow,
+    alternative: bool,
+) -> Result<(), LoopError> {
+    claim_at(
+        &run.gate_log(&phase.id, 0)
+            .with_extension("repair-budget.json"),
+        alternative,
+    )
+    .map_err(LoopError::Io)
+}
+fn claim_at(path: &Path, alternative: bool) -> std::io::Result<()> {
+    let mut budget: RepairBudget = match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(std::io::Error::other)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => RepairBudget::default(),
+        Err(e) => return Err(e),
+    };
+    if alternative {
+        if !budget.ordinary || budget.alternatives >= 2 {
+            return Err(std::io::Error::other(
+                "Competing repair budget exhausted; inspect retained attempts",
+            ));
+        }
+        budget.alternatives += 1;
+    } else {
+        if budget.ordinary {
+            return Err(std::io::Error::other(
+                "Ordinary repair already attempted; reconcile retained work before continuing",
+            ));
+        }
+        budget.ordinary = true;
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temp = path.with_extension("tmp");
+    use std::io::Write;
+    let mut file = std::fs::File::create(&temp)?;
+    file.write_all(&serde_json::to_vec(&budget).map_err(std::io::Error::other)?)?;
+    file.sync_all()?;
+    std::fs::rename(temp, path)
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+    #[test]
+    fn restart_does_not_reset_repair_budget_or_replay_uncertain_attempt() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("budget.json");
+        assert!(claim_at(&path, true).is_err());
+        claim_at(&path, false).unwrap();
+        assert!(claim_at(&path, false).is_err());
+        claim_at(&path, true).unwrap();
+        claim_at(&path, true).unwrap();
+        assert!(claim_at(&path, true).is_err());
+        assert!(claim_at(&path, false).is_err());
     }
 }

@@ -107,6 +107,23 @@ impl Supervisor {
             start_seq,
         });
         req.model = record.model.clone();
+        req.effort = record.effort.clone();
+        req.permission_mode = brigadier_core::driver::PermissionMode::from(
+            record.permission_mode.as_deref().unwrap_or("default"),
+        );
+        req.thinking = if record.thinking.as_deref() == Some("inherit") {
+            brigadier_core::driver::ThinkingPolicy::Inherit
+        } else {
+            brigadier_core::driver::ThinkingPolicy::Off
+        };
+        let scope = if prepared.is_some() {
+            brigadier_core::claude::hook::HookScope::Worker { root: cwd.clone() }
+        } else {
+            brigadier_core::claude::hook::HookScope::Interactive { root: cwd.clone() }
+        };
+        req.hook_policy = brigadier_core::driver::HookOverride::new(
+            brigadier_core::claude::hook::policy_for(&req.permission_mode, &scope),
+        );
         req.mcp = project.mcp;
         req.env_overrides = env;
         // No initial prompt: forking opens an idle conversation, never sends work.
@@ -127,6 +144,9 @@ impl Supervisor {
         row.worktree_path = prepared.as_ref().map(|tree| tree.path.clone());
         row.branch = prepared.as_ref().map(|tree| tree.branch.clone());
         row.model = record.model;
+        row.effort = record.effort;
+        row.permission_mode = record.permission_mode;
+        row.thinking = record.thinking;
         row.status = Some(SessionStatus::Starting);
         row.started_at = Some(SystemTime::now());
         let persist = async {

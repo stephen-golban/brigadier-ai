@@ -100,7 +100,12 @@ impl ClaudeDriver {
     /// [`DriverError::Protocol`] when `--version` fails or prints nothing.
     pub async fn probe(config: ClaudeDriverConfig) -> Result<ClaudeDriver, DriverError> {
         let (binary, version) = probe_binary(config.binary.as_deref(), &config.min_version).await?;
-        Ok(ClaudeDriver { config, binary, version, hook_policy: ask_gated_tools() })
+        Ok(ClaudeDriver {
+            config,
+            binary,
+            version,
+            hook_policy: ask_gated_tools(),
+        })
     }
 
     /// Builds a driver from an already-known binary and version, without spawning anything.
@@ -164,7 +169,10 @@ impl ClaudeDriver {
         hooks: &HookOverride,
     ) -> Result<SessionHandle, DriverError> {
         let (session_id, start_seq) = match resumed {
-            Some(Resumed { session_id, start_seq }) => (session_id, start_seq),
+            Some(Resumed {
+                session_id,
+                start_seq,
+            }) => (session_id, start_seq),
             None => (SessionId::new(uuid::Uuid::new_v4().to_string()), 0),
         };
         let child = spawn(&spec)?;
@@ -218,6 +226,13 @@ impl ProviderDriver for ClaudeDriver {
         mut req: StartSession,
     ) -> BoxFuture<'_, Result<SessionHandle, DriverError>> {
         Box::pin(async move {
+            crate::claude::capabilities::validate_effort(
+                req.model.as_deref(),
+                req.effort.as_deref(),
+            )?;
+            if req.effort.is_some() {
+                req.thinking = crate::driver::ThinkingPolicy::Inherit;
+            }
             if req.env_overrides.contains_key("BRIGADIER_PEER_TOKEN") {
                 req.hook_policy = crate::driver::HookOverride::new(std::sync::Arc::new(
                     crate::claude::hook::PeerTools(req.hook_policy.resolve(&self.hook_policy)),
@@ -227,6 +242,7 @@ impl ProviderDriver for ClaudeDriver {
                 binary: self.binary.clone(),
                 cwd: req.cwd,
                 model: req.model.or_else(|| self.config.default_model.clone()),
+                effort: req.effort,
                 permission_mode: req.permission_mode,
                 resume: None,
                 fork: false,
@@ -235,7 +251,8 @@ impl ProviderDriver for ClaudeDriver {
                 thinking: req.thinking,
                 env_overrides: req.env_overrides,
             };
-            self.open(spec, req.prompt, req.event_buffer, None, &req.hook_policy).await
+            self.open(spec, req.prompt, req.event_buffer, None, &req.hook_policy)
+                .await
         })
     }
 
@@ -248,6 +265,13 @@ impl ProviderDriver for ClaudeDriver {
         mut req: ResumeSession,
     ) -> BoxFuture<'_, Result<SessionHandle, DriverError>> {
         Box::pin(async move {
+            crate::claude::capabilities::validate_effort(
+                req.model.as_deref(),
+                req.effort.as_deref(),
+            )?;
+            if req.effort.is_some() {
+                req.thinking = crate::driver::ThinkingPolicy::Inherit;
+            }
             if req.env_overrides.contains_key("BRIGADIER_PEER_TOKEN") {
                 req.hook_policy = crate::driver::HookOverride::new(std::sync::Arc::new(
                     crate::claude::hook::PeerTools(req.hook_policy.resolve(&self.hook_policy)),
@@ -257,6 +281,7 @@ impl ProviderDriver for ClaudeDriver {
                 binary: self.binary.clone(),
                 cwd: req.cwd,
                 model: req.model.or_else(|| self.config.default_model.clone()),
+                effort: req.effort,
                 permission_mode: req.permission_mode,
                 resume: Some(req.token),
                 fork: req.fork,
@@ -269,7 +294,14 @@ impl ProviderDriver for ClaudeDriver {
                 thinking: req.thinking,
                 env_overrides: req.env_overrides,
             };
-            self.open(spec, req.prompt, req.event_buffer, req.resumed, &req.hook_policy).await
+            self.open(
+                spec,
+                req.prompt,
+                req.event_buffer,
+                req.resumed,
+                &req.hook_policy,
+            )
+            .await
         })
     }
 }
@@ -294,8 +326,14 @@ mod tests {
         assert_ne!(a.describe(), b.describe());
         assert_eq!(a.describe().account_label.as_deref(), Some(".claude-work"));
         assert_eq!(b.describe().account_label.as_deref(), Some("default"));
-        assert_eq!(a.describe().binary_path, Some(PathBuf::from("/opt/a/claude")));
-        assert_eq!(a.describe().version.as_deref(), Some("2.1.257 (Claude Code)"));
+        assert_eq!(
+            a.describe().binary_path,
+            Some(PathBuf::from("/opt/a/claude"))
+        );
+        assert_eq!(
+            a.describe().version.as_deref(),
+            Some("2.1.257 (Claude Code)")
+        );
         assert_eq!(a.describe().display_name, "Claude Code (work)");
     }
 
@@ -309,14 +347,20 @@ mod tests {
             "/opt/claude",
             "2.1.258 (Claude Code)",
         );
-        let out = driver.hook_policy.pre_tool_use(Some("Bash"), &serde_json::Value::Null);
+        let out = driver
+            .hook_policy
+            .pre_tool_use(Some("Bash"), &serde_json::Value::Null);
         let json = serde_json::to_value(&out).expect("ser");
         assert_eq!(json["hookSpecificOutput"]["permissionDecision"], "ask");
-        let read = driver.hook_policy.pre_tool_use(Some("Read"), &serde_json::Value::Null);
+        let read = driver
+            .hook_policy
+            .pre_tool_use(Some("Read"), &serde_json::Value::Null);
         assert_eq!(serde_json::to_string(&read).expect("ser"), "{}");
 
         let opted_out = driver.with_hook_policy(crate::claude::hook::allow_all());
-        let out = opted_out.hook_policy.pre_tool_use(Some("Bash"), &serde_json::Value::Null);
+        let out = opted_out
+            .hook_policy
+            .pre_tool_use(Some("Bash"), &serde_json::Value::Null);
         assert_eq!(serde_json::to_string(&out).expect("ser"), "{}");
     }
 

@@ -1813,7 +1813,6 @@ fn prepared_image(id: &str) -> TurnAttachment {
     }
 }
 
-
 #[tokio::test]
 async fn prepared_attachments_reach_stdin_and_keep_send_uuid_and_history_ids() {
     let mut rig = Rig::start("s1-handshake-and-turn.ndjson", 64).await;
@@ -1975,5 +1974,33 @@ async fn invalid_attachments_are_rejected_before_any_turn_or_stdin_message() {
             ))
             .count(),
         1
+    );
+}
+
+#[tokio::test]
+async fn partial_text_uses_one_stable_item_and_rate_limit_is_retained() {
+    let mut rig = Rig::start("s1-handshake-and-turn.ndjson", 64).await;
+    rig.feed_raw(
+        r#"{"type":"stream_event","event":{"type":"message_start"},"parent_tool_use_id":null}"#,
+    )
+    .await;
+    rig.feed_raw(r#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}},"parent_tool_use_id":null}"#).await;
+    let started = rig.next_event().await;
+    let id = match started {
+        Event::ItemStarted { item_id, .. } => item_id,
+        other => panic!("{other:?}"),
+    };
+    rig.feed_raw(r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}},"parent_tool_use_id":null}"#).await;
+    assert!(
+        matches!(rig.next_event().await, Event::ContentDelta { item_id, text } if item_id == id && text == "hello")
+    );
+    rig.feed_raw(r#"{"type":"assistant","uuid":"final-message","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]},"parent_tool_use_id":null}"#).await;
+    assert!(matches!(rig.next_event().await, Event::ItemStarted { item_id, .. } if item_id == id));
+    assert!(
+        matches!(rig.next_event().await, Event::ItemCompleted { item_id, .. } if item_id == id)
+    );
+    rig.feed_raw(r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1900000000}}"#).await;
+    assert!(
+        matches!(rig.next_event().await, Event::RuntimeWarning { message } if message.contains("rejected") && message.contains("1900000000"))
     );
 }

@@ -1,3 +1,6 @@
+import { useProviderCatalog } from "../providerCatalog";
+import type { ModelInfo } from "../wire";
+const noModels: ModelInfo[] = [];
 import { Checkbox } from "./controls/checkbox";
 import { Button } from "./controls/button";
 import { useState } from "react";
@@ -20,6 +23,7 @@ export function SessionPreferences({
   onData: (d: WorkbenchData) => void;
   onClose: () => void;
 }) {
+  const {providers} = useProviderCatalog(noModels);
   const [scope, setScope] = useState<"global" | "project">("global");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -91,6 +95,11 @@ export function SessionPreferences({
                 {label}
               </Checkbox>
             ))}
+            <h3 className="mt-4 text-sm">Worker provider exclusions</h3>
+            {providers.map(provider=><Checkbox key={provider.id} checked={!(settings.excludedProviders ?? []).includes(provider.id)} onCheckedChange={enabled=>void save({...settings,excludedProviders:enabled?(settings.excludedProviders ?? []).filter(id=>id!==provider.id):[...(settings.excludedProviders ?? []),provider.id]})}>{provider.label}</Checkbox>)}
+            <label className="mt-3 text-xs">Excluded worker model IDs (one per line)
+              <textarea key={`${scope}:${JSON.stringify(settings.excludedModels)}`} defaultValue={(settings.excludedModels ?? []).join('\n')} onBlur={e=>{const values=[...new Set(e.target.value.split('\n').map(v=>v.trim()).filter(Boolean))];if(JSON.stringify(values)!==JSON.stringify(settings.excludedModels ?? []))void save({...settings,excludedModels:values});}} className="min-h-16 rounded border border-hairline bg-canvas p-2" />
+            </label>
           </fieldset>
           <p>
             Sessions can discover and read other project sessions. Creating sessions and

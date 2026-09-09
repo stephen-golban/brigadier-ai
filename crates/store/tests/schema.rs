@@ -14,7 +14,10 @@ async fn open_migrates_and_sets_the_pragmas_that_cannot_be_retrofitted() {
     // switches every existing project to `off`), migration 3 (`intents`, 2026-09-04),
     // migration 4 (the plan tables, 2026-09-04) and migration 5 (`phases.base_sha`, 2026-09-04).
     // Migration 6 adds durable chat items; migration 7 preserves the installed rewind schema.
-    assert_eq!(h.pragma_i64("user_version").await.expect("user_version"), 12);
+    assert_eq!(
+        h.pragma_i64("user_version").await.expect("user_version"),
+        13
+    );
     // 2 == INCREMENTAL. Set as the first statement of migration 0, before any CREATE TABLE,
     // because sqlite.org says it "is not possible to enable or disable auto-vacuum after a
     // table has been created" and the VACUUM escape hatch does not exist in WAL mode.
@@ -42,14 +45,14 @@ async fn reopening_is_idempotent_and_mints_a_new_run_id() {
     let run_a = first.run_id().to_owned();
     assert_eq!(
         first.handle().pragma_i64("user_version").await.expect("v"),
-        12
+        13
     );
     first.close().await.expect("close");
 
     let second = Store::open_with(dir.path(), StoreConfig::default()).expect("reopen");
     assert_eq!(
         second.handle().pragma_i64("user_version").await.expect("v"),
-        12
+        13
     );
     assert_eq!(
         second.handle().pragma_i64("auto_vacuum").await.expect("av"),

@@ -442,7 +442,11 @@ INSERT INTO session_attachment_inputs(session_id,ids_json)
  WHERE p.kind='attachments' AND json_type(p.payload_json,'$.data.ids')='array'
  AND p.item_id=(SELECT id FROM chat_items c WHERE c.session_id=p.session_id AND json_extract(c.kind,'$.type')='user-text' ORDER BY seq DESC,id DESC LIMIT 1);
 "#,
-
+    r#"
+ALTER TABLE sessions ADD COLUMN effort TEXT;
+ALTER TABLE sessions ADD COLUMN permission_mode TEXT;
+ALTER TABLE sessions ADD COLUMN thinking TEXT;
+"#,
 ];
 
 /// Where a session is in its life.
@@ -528,6 +532,12 @@ pub struct SessionRow {
     pub branch: Option<String>,
     /// Model slug in effect.
     pub model: Option<String>,
+    /// Requested effort, retained across provider resume.
+    pub effort: Option<String>,
+    /// Effective permission mode at spawn.
+    pub permission_mode: Option<String>,
+    /// Effective thinking policy at spawn.
+    pub thinking: Option<String>,
     /// Lifecycle state.
     pub status: Option<SessionStatus>,
     /// Pointer to the provider's own transcript; a cache that may be swept away.
@@ -554,6 +564,9 @@ impl SessionRow {
             worktree_path: None,
             branch: None,
             model: None,
+            effort: None,
+            permission_mode: None,
+            thinking: None,
             status: None,
             transcript_path: None,
             resume_token: None,
@@ -584,6 +597,12 @@ pub struct SessionRecord {
     pub branch: Option<String>,
     /// Model slug in effect.
     pub model: Option<String>,
+    /// Requested effort, retained across provider resume.
+    pub effort: Option<String>,
+    /// Effective permission mode at spawn.
+    pub permission_mode: Option<String>,
+    /// Effective thinking policy at spawn.
+    pub thinking: Option<String>,
     /// Lifecycle state.
     pub status: SessionStatus,
     /// Pointer to the provider's own transcript.
@@ -723,7 +742,7 @@ pub(crate) const SESSION_COLUMNS: &str = "id, project_id, instance_id, driver_ki
      provider_session_id, cwd, worktree_path, branch, model, status, transcript_path, \
      resume_token, started_at, ended_at, exit_code, last_event_seq, cost_usd_cumulative, \
      input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, context_window, \
-     summary_json";
+     summary_json, effort, permission_mode, thinking";
 
 pub(crate) fn session_from_row(row: &Row<'_>) -> rusqlite::Result<SessionRecord> {
     Ok(SessionRecord {
@@ -740,6 +759,9 @@ pub(crate) fn session_from_row(row: &Row<'_>) -> rusqlite::Result<SessionRecord>
         worktree_path: path_of(row, "worktree_path")?,
         branch: row.get("branch")?,
         model: row.get("model")?,
+        effort: row.get("effort")?,
+        permission_mode: row.get("permission_mode")?,
+        thinking: row.get("thinking")?,
         status: SessionStatus::from_str_lossy(&row.get::<_, String>("status")?),
         transcript_path: path_of(row, "transcript_path")?,
         resume_token: row.get("resume_token")?,
@@ -1011,7 +1033,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .expect("version");
         assert_eq!(version, MIGRATIONS.len() as i64);
-        assert_eq!(version, 12, "conversation lifecycle schema is the top rung");
+        assert_eq!(version, 13, "conversation lifecycle schema is the top rung");
         let sql = format!("SELECT {PROJECT_COLUMNS} FROM projects WHERE id = 'p1'");
         let row = conn.query_row(&sql, [], project_from_row).expect("read");
         assert_eq!(
@@ -1061,7 +1083,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .expect("version");
         assert_eq!(version, MIGRATIONS.len() as i64);
-        assert_eq!(version, 12, "conversation lifecycle schema is the top rung");
+        assert_eq!(version, 13, "conversation lifecycle schema is the top rung");
 
         let has = |kind: &str, name: &str| -> bool {
             conn.query_row(
@@ -1306,7 +1328,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .expect("version");
         assert_eq!(version, MIGRATIONS.len() as i64);
-        assert_eq!(version, 12, "conversation lifecycle schema is the top rung");
+        assert_eq!(version, 13, "conversation lifecycle schema is the top rung");
 
         let sql = format!(
             "SELECT {} FROM phases WHERE id = 'ph1'",
@@ -1336,7 +1358,7 @@ mod tests {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .expect("version");
-        assert_eq!(version, 12);
+        assert_eq!(version, 13);
         let has_column: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('phases') WHERE name = 'base_sha'",
@@ -1414,7 +1436,7 @@ mod tests {
         assert_eq!(
             conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            12
+            13
         );
         assert_eq!(
             conn.query_row("SELECT provider_uuid FROM chat_items", [], |row| row
@@ -1441,7 +1463,8 @@ mod tests {
             let conn = Connection::open(&path).unwrap();
             for (index, migration) in MIGRATIONS.iter().take(11).enumerate() {
                 conn.execute_batch(migration).unwrap();
-                conn.pragma_update(None, "user_version", index as i64 + 1).unwrap();
+                conn.pragma_update(None, "user_version", index as i64 + 1)
+                    .unwrap();
             }
             conn.execute_batch(r#"
                 INSERT INTO projects(id,name,root_path,created_at,mcp) VALUES ('p','Project','/p',1,'off');
@@ -1456,10 +1479,34 @@ mod tests {
             "#).unwrap();
         }
         let conn = open_connection(&path).unwrap();
-        assert_eq!(conn.pragma_query_value(None,"user_version",|r|r.get::<_,i64>(0)).unwrap(),12);
-        assert_eq!(conn.query_row("SELECT ids_json FROM session_attachment_inputs WHERE session_id='s'",[],|r|r.get::<_,String>(0)).unwrap(),r#"["a"]"#);
-        assert_eq!(conn.query_row("SELECT bytes FROM conversation_attachments WHERE id='a'",[],|r|r.get::<_,Vec<u8>>(0)).unwrap(),b"test");
-        assert_eq!(conn.query_row("SELECT COUNT(*) FROM conversation_payloads",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+        assert_eq!(
+            conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            13
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT ids_json FROM session_attachment_inputs WHERE session_id='s'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            r#"["a"]"#
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT bytes FROM conversation_attachments WHERE id='a'",
+                [],
+                |r| r.get::<_, Vec<u8>>(0)
+            )
+            .unwrap(),
+            b"test"
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM conversation_payloads", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
     }
-
 }

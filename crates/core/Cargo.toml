@@ -12,6 +12,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
+base64 = "0.22"
 
 # `killpg` on a process group, without `unsafe`: this crate is `#![deny(unsafe_code)]` and
 # `libc::killpg` is an unsafe extern fn. 0.31.3 is the current release on crates.io (2026-09-02);

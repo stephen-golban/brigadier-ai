@@ -253,6 +253,154 @@ pub(crate) async fn prepare(project_root: &Path) -> Result<Option<Prepared>, Sup
     prepare_from(project_root, None).await
 }
 
+/// Capture a peer's actual input without acquiring its active writer lease. The checkpoint
+/// scanner reads twice and refuses concurrent changes. Only the new, unstarted checkout's
+/// index/ref is changed; the source branch, index and working files remain untouched.
+pub(crate) async fn prepare_from_source(
+    project_root: &Path,
+    source: &Path,
+    snapshot_dir: &Path,
+) -> Result<Option<Prepared>, SupervisorError> {
+    use brigadier_core::checkpoint::{Coverage, Limits, SnapshotStore};
+    let Some(git) = resolve_git() else {
+        return prepare(project_root).await;
+    };
+    if !is_repo(&git, project_root).await {
+        return prepare(project_root).await;
+    }
+    let project_common = input_git(
+        &git,
+        project_root,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        None,
+    )
+    .await?;
+    let source_common = input_git(
+        &git,
+        source,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        None,
+    )
+    .await?;
+    if !same_path(
+        Path::new(project_common.trim()),
+        Path::new(source_common.trim()),
+    ) {
+        return Err(SupervisorError::InvalidArgument(
+            "Worker input must belong to its project repository".into(),
+        ));
+    }
+    let snapshots = SnapshotStore::open(snapshot_dir.to_owned(), git.clone(), Limits::default())
+        .map_err(|e| SupervisorError::InvalidArgument(e.to_string()))?;
+    let source = source.to_owned();
+    let snapshot_store = snapshots.clone();
+    let original =
+        tokio::task::spawn_blocking(move || snapshot_store.capture(&source, Coverage::default()))
+            .await
+            .map_err(|e| SupervisorError::InvalidArgument(e.to_string()))?
+            .map_err(|e| SupervisorError::InvalidArgument(e.to_string()))?;
+    // GitState includes symbolic HEAD followed by its full object name.
+    let head = original
+        .git
+        .head
+        .lines()
+        .last()
+        .ok_or_else(|| SupervisorError::InvalidArgument("Worker source has no HEAD".into()))?;
+    let Some(mut made) = prepare_from(project_root, Some(head)).await? else {
+        return Ok(None);
+    };
+    let result = async {
+        let target = made.path.clone();
+        let original_files = original.files.clone();
+        let current_files = tokio::task::spawn_blocking(move || {
+            let current = snapshots.capture(&target, Coverage::default())?;
+            let current_files = current.files.clone();
+            let plan = brigadier_core::checkpoint::plan_apply(&current_files, &original_files, current)?;
+            snapshots.validate_restore(&plan)?;
+            for change in &plan.changes {
+                snapshots.apply_change(&plan.current.root, &plan.current.identity, change)?;
+            }
+            Ok::<_, brigadier_core::checkpoint::Error>(current_files)
+        }).await.map_err(|e| SupervisorError::InvalidArgument(e.to_string()))?
+          .map_err(|e| SupervisorError::InvalidArgument(e.to_string()))?;
+        // Import raw checkpoint objects. Do not run user clean filters over inherited bytes.
+        let object_store = snapshot_dir.join("objects.git");
+        input_git(&git, &made.path, &["fetch", "--no-tags", "--no-write-fetch-head", object_store.to_str().ok_or_else(|| SupervisorError::InvalidArgument("Invalid snapshot path".into()))?, &format!("refs/checkpoints/{}", original.id)], None).await?;
+        let mut entries = Vec::new();
+        for path in current_files.keys().filter(|path| !original.files.contains_key(*path)) {
+            entries.extend_from_slice(format!("0 {}\t{}\0", "0".repeat(40), path).as_bytes());
+        }
+        for (path, file) in &original.files {
+            entries.extend_from_slice(format!("{} {}\t{}\0", file.mode, file.oid, path).as_bytes());
+        }
+        input_git(&git, &made.path, &["update-index", "-z", "--index-info"], Some(entries)).await?;
+        let tree = input_git(&git, &made.path, &["write-tree"], None).await?;
+        let previous_tree = input_git(&git, &made.path, &["rev-parse", "HEAD^{tree}"], None).await?;
+        if tree.trim() != previous_tree.trim() {
+            let baseline = input_git(&git, &made.path, &["-c", "user.name=Brigadier", "-c", "user.email=brigadier@localhost", "commit-tree", tree.trim(), "-p", head, "-m", "Capture worker input state"], None).await?;
+            input_git(&git, &made.path, &["update-ref", "HEAD", baseline.trim(), head], None).await?;
+            made.base_sha = baseline.trim().to_owned();
+        }
+        // Persist provenance separately from provider state; branch retains the captured bytes.
+        std::fs::write(snapshot_dir.join(format!("{}.json", original.id)), serde_json::to_vec(&serde_json::json!({"snapshot": original, "workerBranch": made.branch, "baseline": made.base_sha})).map_err(|e| SupervisorError::InvalidArgument(e.to_string()))?)?;
+        Ok::<_, SupervisorError>(())
+    }.await;
+    if let Err(error) = result {
+        made.roll_back().await;
+        return Err(error);
+    }
+    Ok(Some(made))
+}
+
+async fn input_git(
+    git: &Path,
+    repo: &Path,
+    args: &[&str],
+    input: Option<Vec<u8>>,
+) -> Result<String, SupervisorError> {
+    use tokio::io::AsyncWriteExt;
+    let mut command = tokio::process::Command::new(git);
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("GIT_") {
+            command.env_remove(key);
+        }
+    }
+    command
+        .current_dir(repo)
+        .args([
+            "-c",
+            "core.hooksPath=",
+            "-c",
+            "gc.auto=0",
+            "-c",
+            "maintenance.auto=false",
+        ])
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
+        .stdin(if input.is_some() {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::null()
+        })
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = command.spawn()?;
+    if let Some(input) = input {
+        child.stdin.take().expect("piped").write_all(&input).await?;
+    }
+    let result = child.wait_with_output().await?;
+    if !result.status.success() {
+        return Err(SupervisorError::from(WorktreeError::Git {
+            args: args.iter().map(|s| (*s).to_owned()).collect(),
+            code: result.status.code(),
+            stderr: String::from_utf8_lossy(&result.stderr).trim().to_owned(),
+        }));
+    }
+    Ok(String::from_utf8_lossy(&result.stdout).into_owned())
+}
+
 /// [`prepare`] with the branch point named.
 ///
 /// `None` is today's behaviour, [`BASE`]: branch from whatever `HEAD` is at this instant, which
@@ -692,14 +840,34 @@ pub(crate) async fn cleanup(
 }
 
 /// Only local branch names are accepted. Inherit edits only from the checked-out branch.
-pub(crate) async fn session_base(root: &Path, branch: &str) -> Result<(Option<String>, bool), SupervisorError> {
-    let git = resolve_git().ok_or_else(|| SupervisorError::InvalidArgument("Git is unavailable".into()))?;
+pub(crate) async fn session_base(
+    root: &Path,
+    branch: &str,
+) -> Result<(Option<String>, bool), SupervisorError> {
+    let git = resolve_git()
+        .ok_or_else(|| SupervisorError::InvalidArgument("Git is unavailable".into()))?;
     let reference = format!("refs/heads/{branch}");
-    let valid = tokio::process::Command::new(&git).args(["check-ref-format", &reference]).output().await?;
-    let exists = tokio::process::Command::new(&git).current_dir(root).args(["show-ref", "--verify", "--quiet", &reference]).output().await?;
-    if !valid.status.success() || !exists.status.success() { return Err(SupervisorError::InvalidArgument("Choose an existing local branch".into())); }
-    let current = tokio::process::Command::new(&git).current_dir(root).args(["symbolic-ref", "--quiet", "HEAD"]).output().await?;
-    let inherit = current.status.success() && String::from_utf8_lossy(&current.stdout).trim() == reference;
+    let valid = tokio::process::Command::new(&git)
+        .args(["check-ref-format", &reference])
+        .output()
+        .await?;
+    let exists = tokio::process::Command::new(&git)
+        .current_dir(root)
+        .args(["show-ref", "--verify", "--quiet", &reference])
+        .output()
+        .await?;
+    if !valid.status.success() || !exists.status.success() {
+        return Err(SupervisorError::InvalidArgument(
+            "Choose an existing local branch".into(),
+        ));
+    }
+    let current = tokio::process::Command::new(&git)
+        .current_dir(root)
+        .args(["symbolic-ref", "--quiet", "HEAD"])
+        .output()
+        .await?;
+    let inherit =
+        current.status.success() && String::from_utf8_lossy(&current.stdout).trim() == reference;
     Ok((Some(reference), inherit))
 }
 
@@ -820,16 +988,31 @@ mod tests {
     async fn peer_worktree_can_start_while_a_sibling_holds_a_writer_lease() {
         let rig = Rig::new(true);
         let project = rig.project().await;
-        let parent = rig.sup.start_peer_session(&project, &rig.kind, StartSession::new(&rig.repo), true).await.unwrap();
+        let parent = rig
+            .sup
+            .start_peer_session(&project, &rig.kind, StartSession::new(&rig.repo), true)
+            .await
+            .unwrap();
         let parent_path = rig.row(&parent).await.worktree_path.unwrap();
         let lease = brigadier_core::checkpoint::WorkspaceLease::writer(&parent_path).unwrap();
         std::fs::write(rig.repo.join("f.txt"), "uncommitted source").unwrap();
         // User creation still refuses an unsafe copy of the live ancestor checkout.
-        assert!(rig.sup.start_project_session(&project, &rig.kind, StartSession::new(&rig.repo), true).await.is_err());
-        let child = rig.sup.start_peer_session(&project, &rig.kind, StartSession::new(&rig.repo), true).await.unwrap();
+        assert!(rig
+            .sup
+            .start_project_session(&project, &rig.kind, StartSession::new(&rig.repo), true)
+            .await
+            .is_err());
+        let child = rig
+            .sup
+            .start_peer_session(&project, &rig.kind, StartSession::new(&rig.repo), true)
+            .await
+            .unwrap();
         let child_path = rig.row(&child).await.worktree_path.unwrap();
         assert_ne!(parent_path, child_path);
-        assert_eq!(std::fs::read_to_string(child_path.join("f.txt")).unwrap(), "hi\n");
+        assert_eq!(
+            std::fs::read_to_string(child_path.join("f.txt")).unwrap(),
+            "hi\n"
+        );
         let child_lease = brigadier_core::checkpoint::WorkspaceLease::writer(&child_path).unwrap();
         drop(child_lease);
         drop(lease);
@@ -848,16 +1031,38 @@ mod tests {
         git_run(&rig.git, &rig.repo, &["commit", "-am", "main changes"]);
         std::fs::write(rig.repo.join("f.txt"), "uncommitted main").unwrap();
         std::fs::write(rig.repo.join("new.txt"), "untracked").unwrap();
-        for (branch, expected, untracked) in [("alternate", "hi\n", false), ("main", "uncommitted main", true)] {
-            let id = rig.sup.start_project_session_from(&project, &rig.kind, StartSession::new(&rig.repo), true, Some(branch.into())).await.unwrap();
+        for (branch, expected, untracked) in [
+            ("alternate", "hi\n", false),
+            ("main", "uncommitted main", true),
+        ] {
+            let id = rig
+                .sup
+                .start_project_session_from(
+                    &project,
+                    &rig.kind,
+                    StartSession::new(&rig.repo),
+                    true,
+                    Some(branch.into()),
+                )
+                .await
+                .unwrap();
             let row = rig.row(&id).await;
             let path = row.worktree_path.unwrap();
-            assert_eq!(std::fs::read_to_string(path.join("f.txt")).unwrap(), expected);
+            assert_eq!(
+                std::fs::read_to_string(path.join("f.txt")).unwrap(),
+                expected
+            );
             assert_eq!(path.join("new.txt").exists(), untracked);
             rig.end_and_settle(&id).await;
         }
-        assert_eq!(git_run(&rig.git, &rig.repo, &["branch", "--show-current"]).trim(), "main");
-        assert_eq!(std::fs::read_to_string(rig.repo.join("f.txt")).unwrap(), "uncommitted main");
+        assert_eq!(
+            git_run(&rig.git, &rig.repo, &["branch", "--show-current"]).trim(),
+            "main"
+        );
+        assert_eq!(
+            std::fs::read_to_string(rig.repo.join("f.txt")).unwrap(),
+            "uncommitted main"
+        );
         assert!(session_base(&rig.repo, "--detach").await.is_err());
         assert!(session_base(&rig.repo, "missing").await.is_err());
         rig.store.close().await.unwrap();
@@ -2011,5 +2216,71 @@ mod tests {
             prepared.base_sha
         );
         rig.store.close().await.expect("store closes");
+    }
+    #[tokio::test]
+    async fn peer_snapshot_preserves_parent_branch_dirty_files_and_index() {
+        let rig = Rig::new(true);
+        let parent = prepare(&rig.repo).await.unwrap().unwrap();
+        std::fs::write(parent.path.join("committed.txt"), "parent commit\n").unwrap();
+        git_run(&rig.git, &parent.path, &["add", "committed.txt"]);
+        git_run(&rig.git, &parent.path, &["commit", "-qm", "parent only"]);
+        std::fs::write(parent.path.join("f.txt"), "staged\n").unwrap();
+        git_run(&rig.git, &parent.path, &["add", "f.txt"]);
+        std::fs::write(parent.path.join("f.txt"), "unstaged exact\r\n").unwrap();
+        std::fs::write(parent.path.join("new file.txt"), "new\n").unwrap();
+        let before_status = git_run(&rig.git, &parent.path, &["status", "--porcelain"]);
+        let before_index = git_run(&rig.git, &parent.path, &["diff", "--cached"]);
+        let before_head = git_run(&rig.git, &parent.path, &["rev-parse", "HEAD"]);
+        let child = prepare_from_source(&rig.repo, &parent.path, &rig.dir.path().join("inputs"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            std::fs::read(child.path.join("f.txt")).unwrap(),
+            b"unstaged exact\r\n"
+        );
+        assert_eq!(
+            std::fs::read(child.path.join("new file.txt")).unwrap(),
+            b"new\n"
+        );
+        assert!(child.path.join("committed.txt").exists());
+        assert_eq!(
+            git_run(&rig.git, &child.path, &["show", "HEAD:f.txt"]),
+            "unstaged exact\r\n"
+        );
+        assert_eq!(
+            git_run(&rig.git, &parent.path, &["status", "--porcelain"]),
+            before_status
+        );
+        assert_eq!(
+            git_run(&rig.git, &parent.path, &["diff", "--cached"]),
+            before_index
+        );
+        assert_eq!(
+            git_run(&rig.git, &parent.path, &["rev-parse", "HEAD"]),
+            before_head
+        );
+        assert_ne!(child.base_sha, before_head.trim());
+        rig.store.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn peer_snapshot_captures_deletions_and_refuses_another_repository() {
+        let rig = Rig::new(true);
+        let parent = prepare(&rig.repo).await.unwrap().unwrap();
+        std::fs::remove_file(parent.path.join("f.txt")).unwrap();
+        let child = prepare_from_source(&rig.repo, &parent.path, &rig.dir.path().join("inputs"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!child.path.join("f.txt").exists());
+        assert!(git_run(&rig.git, &child.path, &["ls-tree", "-r", "HEAD"]).is_empty());
+        let other = Rig::new(true);
+        let error = prepare_from_source(&rig.repo, &other.repo, &rig.dir.path().join("inputs"))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("project repository"));
+        rig.store.close().await.unwrap();
+        other.store.close().await.unwrap();
     }
 }

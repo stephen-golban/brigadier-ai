@@ -22,11 +22,15 @@ export interface PeerSettings {
   createSessions: boolean;
   messages: boolean;
   manageChildren: boolean;
+  excludedProviders?: string[];
+  excludedModels?: string[];
 }
 export const defaultPeerSettings: PeerSettings = {
   createSessions: true,
   messages: true,
   manageChildren: true,
+  excludedProviders: [],
+  excludedModels: [],
 };
 export interface WorkbenchData {
   peers?: PeerSettings;

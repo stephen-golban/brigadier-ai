@@ -47,6 +47,8 @@ export interface SessionRuntime {
   projectId: ProjectId | null;
   status: SessionStatus;
   model: string | null;
+  effort?: string | null;
+  permissionMode?: string | null;
   instanceId?: string | null;
   cwd: string | null;
   /** The provider's own conversation id; non-null is what makes a settled session resumable. */
@@ -56,8 +58,7 @@ export interface SessionRuntime {
   branch: string | null;
   /** `cleanup_worktree` came back `removed: true`: the checkout is gone, so resume would fail. */
   worktreeRemoved: boolean;
-  /** This session was continued by `resume_session` in this window; the CLI came back in
-   *  `default` permission mode whatever it was running in before (contract §resume_session). */
+  /** This session was continued in this window; effective settings are restored by the backend. */
   resumed: boolean;
   /** A turn is open (started, not yet completed or aborted). */
   busy: boolean;
@@ -240,7 +241,7 @@ function applySignal(env: Envelope, projectId: ProjectId | null): void {
       });
       break;
     case "turn-started":
-      patch(id, projectId, { busy: true, lastTurnId: e.turn_id, lastEventSeq: env.seq });
+      patch(id, projectId, { busy: true, lastTurnId: e.turn_id, lastStop: null, lastEventSeq: env.seq });
       break;
     case "turn-completed":
       patch(id, projectId, {
@@ -254,7 +255,7 @@ function applySignal(env: Envelope, projectId: ProjectId | null): void {
       });
       break;
     case "turn-aborted":
-      patch(id, projectId, { busy: false, lastEventSeq: env.seq });
+      patch(id, projectId, { busy: false, lastStop: null, lastEventSeq: env.seq });
       break;
     case "request-opened":
       approvals.set(e.request_id, {
@@ -502,6 +503,8 @@ export function seedSessions(views: SessionView[]): void {
       projectId: v.project_id ?? prev.projectId,
       status: v.status,
       model: v.model ?? prev.model,
+      effort: v.effort ?? prev.effort,
+      permissionMode: v.permission_mode ?? prev.permissionMode,
       cwd: v.cwd ?? prev.cwd,
       instanceId: v.instance_id ?? prev.instanceId,
       providerSessionId: v.provider_session_id ?? prev.providerSessionId,
@@ -519,10 +522,7 @@ export function seedSessions(views: SessionView[]): void {
   notify();
 }
 
-/**
- * `resume_session` succeeded on this session. Only the window that pressed Resume knows — no
- * wire field records it — and it drives the "back in default permission mode" note.
- */
+/** A local presentation flag; effective permissions are restored by the backend. */
 export function noteResumed(sessionId: SessionId): void {
   const prev = sessions.get(sessionId);
   if (prev === undefined || prev.resumed) return;
