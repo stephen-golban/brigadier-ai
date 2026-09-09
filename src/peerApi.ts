@@ -1,3 +1,4 @@
+import { listen } from "@tauri-apps/api/event";
 import { useSessionNavigation } from "./sessionNavigation";
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -29,6 +30,7 @@ export interface PeerRequest {
 }
 export interface PeerData {
   origins: Record<string, string>;
+  retired?: Record<string, {turnId:string;workspaceRemoved:boolean;reason:string}>;
   titles: Record<string, string>;
   closed: string[];
   messages: PeerMessage[];
@@ -78,10 +80,14 @@ export function usePeers() {
         .finally(() => { fetching = false; });
     };
     fetch();
-    const timer = setInterval(fetch, 1500);
+    const stop = listen("peer-state-changed", fetch);
+    window.addEventListener("focus", fetch);
+    const timer = setInterval(fetch, 30000);
     return () => {
       live = false;
       clearInterval(timer);
+      window.removeEventListener("focus", fetch);
+      void stop.then(unlisten=>unlisten());
     };
   }, []);
   return { ...data, titles: { ...data.titles, ...titles } };

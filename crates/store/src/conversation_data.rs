@@ -150,7 +150,11 @@ impl StoreHandle {
     }
 
     /// Replace the current incoming request attachment set, retaining its bytes atomically.
-    pub async fn set_session_attachment_ids(&self, session_id: String, ids: Vec<String>) -> Result<()> {
+    pub async fn set_session_attachment_ids(
+        &self,
+        session_id: String,
+        ids: Vec<String>,
+    ) -> Result<()> {
         self.durable(move |conn| {
             for id in &ids {
                 let owned:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM conversation_attachments a JOIN sessions s ON s.project_id=a.project_id WHERE a.id=?1 AND s.id=?2)",(id,&session_id),|r|r.get(0))?;
@@ -161,12 +165,34 @@ impl StoreHandle {
             Ok(())
         }).await
     }
+    /// Metadata for every source retained by a conversation, including earlier owner turns
+    /// and queued peer inputs. Does not load attachment bytes or confuse current input with history.
+    pub async fn session_sources(&self, session_id: String) -> Result<Vec<AttachmentMetadata>> {
+        self.query(move |conn| {
+            let mut statement = conn.prepare_cached("SELECT a.id,a.project_id,a.name,a.media_type,a.size,a.created_at FROM conversation_attachment_refs r JOIN sessions s ON s.id=r.session_id JOIN conversation_attachments a ON a.id=r.attachment_id AND a.project_id=s.project_id WHERE r.session_id=?1 ORDER BY a.created_at,a.id")?;
+            let rows = statement.query_map([session_id], |row| Ok(AttachmentMetadata {
+                id:row.get(0)?, project_id:row.get(1)?, name:row.get(2)?, media_type:row.get(3)?, size:row.get(4)?, created_at:row.get(5)?,
+            }))?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        }).await
+    }
+
     /// Only attachments belonging to the current request, never the full session history.
     pub async fn session_attachment_ids(&self, session_id: String) -> Result<Vec<String>> {
         self.query(move |conn| {
-            let json:Option<String>=conn.query_row("SELECT ids_json FROM session_attachment_inputs WHERE session_id=?1",[session_id],|r|r.get(0)).optional()?;
-            Ok(json.map(|s|serde_json::from_str(&s)).transpose()?.unwrap_or_default())
-        }).await
+            let json: Option<String> = conn
+                .query_row(
+                    "SELECT ids_json FROM session_attachment_inputs WHERE session_id=?1",
+                    [session_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            Ok(json
+                .map(|s| serde_json::from_str(&s))
+                .transpose()?
+                .unwrap_or_default())
+        })
+        .await
     }
 }
 
@@ -176,7 +202,7 @@ fn validate_attachment(media_type: &str, bytes: &[u8]) -> Result<()> {
         MAX_TEXT_ATTACHMENT_BYTES
     } else if matches!(
         media_type,
-        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "application/octet-stream"
     ) {
         MAX_ATTACHMENT_BYTES
     } else {
@@ -195,4 +221,3 @@ fn read_attachment(conn: &Connection, project: &str, id: &str) -> Result<Option<
         metadata: AttachmentMetadata {id:r.get(0)?,project_id:r.get(1)?,name:r.get(2)?,media_type:r.get(3)?,size:r.get(4)?,created_at:r.get(5)?}, bytes:r.get(6)?,
     })).optional()?)
 }
-

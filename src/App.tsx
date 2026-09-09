@@ -1,3 +1,4 @@
+import { workerTree } from "./workerTree";
 import { syncArchive, readArchive } from "./sessionArchive";
 import { listen } from "@tauri-apps/api/event";
 import { renameSession } from "./sessionNavigation";
@@ -1070,7 +1071,10 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
                 />
               }
               peers={peers}
-              onSelectSession={selectSession}
+              onSelectSession={id => {
+                if(selectedSessionId && workerTree(selectedSessionId,peers,state.sessions).some(row=>row.id===id)) window.dispatchEvent(new CustomEvent("workbench-open-worker",{detail:{rootId:selectedSessionId,id}}));
+                else selectSession(id);
+              }}
               onEdit={setEditingMessage}
               editing={editingMessage !== null}
               revision={conversationRevision}

@@ -1,7 +1,7 @@
 //! Locating the `claude` binary and checking its version.
 //!
 //! `CLAUDE.md` §2: the `claude` binary is never bundled. The driver drives *the user's* install,
-//! taking an explicit path plus a minimum version and falling back to a `PATH` walk. There is no
+//! taking an explicit path plus a minimum version and falling back to shared local discovery. There is no
 //! bundled binary and no download; when it is missing the UI says so.
 
 use std::path::{Path, PathBuf};
@@ -21,47 +21,7 @@ pub const MIN_VERSION: &str = "2.1.257";
 
 /// Prefer PATH, then standard install locations that Finder launches may omit.
 pub fn resolve_claude() -> Option<PathBuf> {
-    resolve_in(std::env::var_os("PATH").as_deref(), std::env::var_os("HOME").as_deref())
-}
-
-fn resolve_in(path: Option<&std::ffi::OsStr>, home: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
-    let mut candidates: Vec<PathBuf> = path.into_iter().flat_map(std::env::split_paths)
-        .filter(|dir| !dir.as_os_str().is_empty()).map(|dir| dir.join(CLAUDE_BIN)).collect();
-    if let Some(home) = home {
-        candidates.push(PathBuf::from(home).join(".local/bin/claude"));
-    }
-    #[cfg(target_os = "macos")]
-    candidates.extend([PathBuf::from("/opt/homebrew/bin/claude"), PathBuf::from("/usr/local/bin/claude")]);
-    candidates.into_iter().find(|candidate| is_executable(candidate))
-}
-
-#[cfg(all(test, unix))]
-#[test]
-fn finder_path_finds_native_install_but_explicit_path_wins() {
-    use std::os::unix::fs::PermissionsExt;
-    let dir = tempfile::tempdir().unwrap();
-    let native = dir.path().join(".local/bin/claude");
-    std::fs::create_dir_all(native.parent().unwrap()).unwrap();
-    std::fs::write(&native, "#!/bin/sh\n").unwrap();
-    std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o755)).unwrap();
-    assert_eq!(resolve_in(Some(std::ffi::OsStr::new("/usr/bin:/bin")), Some(dir.path().as_os_str())), Some(native));
-    let explicit = dir.path().join("claude");
-    std::fs::write(&explicit, "#!/bin/sh\n").unwrap();
-    std::fs::set_permissions(&explicit, std::fs::Permissions::from_mode(0o755)).unwrap();
-    assert_eq!(resolve_in(Some(dir.path().as_os_str()), Some(dir.path().as_os_str())), Some(explicit));
-}
-
-#[cfg(unix)]
-fn is_executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path)
-        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
-}
-
-#[cfg(not(unix))]
-fn is_executable(path: &Path) -> bool {
-    path.is_file()
+    crate::binary::resolve(CLAUDE_BIN, None)
 }
 
 /// Runs `claude --version` and returns the trimmed first line.
@@ -114,7 +74,10 @@ fn parse_triple(token: &str) -> Option<(u64, u64, u64)> {
     let minor = parts.next()?.parse().ok()?;
     // Tolerate a pre-release suffix on the patch (`257-rc1`) by taking the leading digits.
     let patch_token = parts.next()?;
-    let digits: String = patch_token.chars().take_while(char::is_ascii_digit).collect();
+    let digits: String = patch_token
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
     let patch = digits.parse().ok()?;
     Some((major, minor, patch))
 }
@@ -142,7 +105,9 @@ pub async fn probe_binary(
     let binary = match configured {
         Some(p) => p.to_path_buf(),
         None => resolve_claude().ok_or_else(|| {
-            DriverError::BinaryNotFound(format!("`{CLAUDE_BIN}` is not on PATH"))
+            DriverError::BinaryNotFound(format!(
+                "`{CLAUDE_BIN}` was not found on PATH or in standard install locations"
+            ))
         })?,
     };
     let version = claude_version(&binary).await?;
@@ -163,7 +128,10 @@ mod tests {
     fn parses_the_measured_version_line() {
         assert_eq!(parse_version("2.1.257 (Claude Code)"), Some((2, 1, 257)));
         assert_eq!(parse_version("2.1.257"), Some((2, 1, 257)));
-        assert_eq!(parse_version("2.1.257-rc1 (Claude Code)"), Some((2, 1, 257)));
+        assert_eq!(
+            parse_version("2.1.257-rc1 (Claude Code)"),
+            Some((2, 1, 257))
+        );
         assert_eq!(parse_version("Claude Code"), None);
         assert_eq!(parse_version(""), None);
     }
@@ -173,7 +141,10 @@ mod tests {
         assert!(version_at_least("2.1.257 (Claude Code)", MIN_VERSION));
         assert!(version_at_least("2.1.300 (Claude Code)", MIN_VERSION));
         assert!(version_at_least("2.2.0 (Claude Code)", MIN_VERSION));
-        assert!(!version_at_least("2.1.99 (Claude Code)", MIN_VERSION), "99 < 257 numerically");
+        assert!(
+            !version_at_least("2.1.99 (Claude Code)", MIN_VERSION),
+            "99 < 257 numerically"
+        );
         assert!(!version_at_least("2.0.999", MIN_VERSION));
         // Unparseable is permissive on purpose: the version string is not a contract.
         assert!(version_at_least("wat", MIN_VERSION));

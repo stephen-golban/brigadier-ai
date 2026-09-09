@@ -12,7 +12,7 @@
 //!                                                                 │
 //!                            green ─▶ --no-ff phase commit ─▶ cleanup ─▶ next phase
 //!                              red ─▶ rung 1 (one fixer, in place) ─▶ gate
-//!                                                                 └▶ rung 3: block, diagnose
+//!                                                                 └▶ two verified isolated alternatives, then select or diagnose
 //! ```
 //!
 //! ## Five things this loop must never do, and where each is enforced
@@ -34,16 +34,8 @@
 //!
 //! ## What is deliberately not here
 //!
-//! - **Rung 2 of the red-gate ladder.** `orchestration-loop.md` §16 names it the weakest claim in
-//!   that document: `docs/vision.md` §5's argument for fusion is that *a differently-trained
-//!   model has different blind spots*, and with Claude Code only for v1 there is no such model.
-//!   The ladder is rung 1 → rung 3 (`docs/plans/w1b-loop-order.md` §1 D3), so the child ceiling
-//!   for a red phase is **N + 1**, not the `N + 3` the stale line in `orchestration-loop.md` §14
-//!   still gives.
-//! - **Cross-phase concurrency.** Phases run in order; see [`state::current`].
-//! - **`review` and `replan`.** Both are in [`crate::action`]'s validated set and neither is
-//!   executed here; a lead call that returns one blocks its phase with a named slug rather than
-//!   being quietly ignored.
+//! - Cross-phase concurrency: phases remain sequential.
+//! - Replan remains an explicit unsupported action; Review is executed and evidence retained.
 // see docs/research/orchestration-loop.md (the design), docs/plans/w1b-loop-order.md (the eight
 // decisions taken on top of it), and docs/plans/ipc-contract.md "The run" (the wire shapes).
 
@@ -54,6 +46,7 @@ pub mod git;
 pub mod green;
 pub mod ladder;
 pub mod plan;
+mod review;
 pub mod routing;
 pub mod state;
 
@@ -330,26 +323,10 @@ pub struct RunSpec {
     pub goal: String,
     /// The driver every child is started on.
     pub driver: DriverKind,
-    /// The model the owner picked for this run, or `None` for role-based routing.
-    ///
-    /// **`Some` is a ceiling, not a default.** Nothing the run starts — planner, lead, worker,
-    /// fixer, reviewer — exceeds it, and a planner asking for a stronger tier is clamped rather
-    /// than refused. With no pick, judgement takes the provider default (the owner's own strong
-    /// model) and a work order takes its own tier **capped at mid-tier**, per `docs/vision.md` §6
-    /// (*"judgement (lead, grill, review, judge) gets the strong model; work orders get
-    /// mid-tier"*). Owner decision, 2026-09-05.
-    ///
-    /// This field says only what the owner picked; every question of *what a given child is
-    /// started on* is answered by [`Ceiling`], including what an
-    /// id this build does not recognise does. Read that module before changing anything here.
-    ///
-    /// **Correction, 2026-09-05.** Up to `bf036d6` this doc said `Some` was *"honoured literally,
-    /// by every child"*, and explicitly rejected the ceiling reading on the grounds that a picker
-    /// governing only some children would be a lie. That is superseded: the pick governs every
-    /// child either way — what changed is that it now also *bounds* the planner, which literal
-    /// honouring did not. A picker that cannot stop the run spending above it was the larger lie,
-    /// and it cost 3× on one measured run (`crates/supervisor/src/loop_/routing.rs`).
+    /// Exact orchestrator model. Workers choose independently. None uses configured defaults.
     pub model: Option<String>,
+    /// Exact orchestrator effort; workers do not inherit it.
+    pub effort: Option<String>,
     /// The permission mode the owner picked. Reaches the `--permission-mode` flag **and** the
     /// `PreToolUse` policy of every child; see
     /// [`policy_for`](brigadier_core::claude::hook::policy_for).
@@ -387,6 +364,7 @@ impl RunSpec {
             goal: goal.into(),
             driver,
             model: None,
+            effort: None,
             permission_mode: brigadier_core::driver::PermissionMode::Default,
             barrier,
             limits: Limits::default(),
@@ -403,7 +381,7 @@ impl RunSpec {
         self
     }
 
-    /// Cap every child at `model`. `None` leaves role-based routing in charge; see
+    /// Pin the orchestrator to `model`; workers retain independent choices. See
     /// [`RunSpec::model`].
     #[must_use]
     pub fn with_model(mut self, model: Option<String>) -> Self {
@@ -413,10 +391,7 @@ impl RunSpec {
 
     /// Run every child under `mode`, at the flag **and** at the hook.
     #[must_use]
-    pub fn with_permission_mode(
-        mut self,
-        mode: brigadier_core::driver::PermissionMode,
-    ) -> Self {
+    pub fn with_permission_mode(mut self, mode: brigadier_core::driver::PermissionMode) -> Self {
         self.permission_mode = mode;
         self
     }
@@ -429,6 +404,7 @@ impl RunSpec {
 pub struct RunHandle {
     plan_id: String,
     stop: Arc<AtomicBool>,
+    stop_path: PathBuf,
     task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
@@ -439,14 +415,16 @@ impl RunHandle {
         &self.plan_id
     }
 
-    /// Stop dispatching.
-    ///
-    /// **It does not kill anything.** A worker killed mid-order leaves a worktree whose
-    /// `work_order` intent reconciles to `unknown`, which blocks its phase permanently — so the
-    /// cheap-looking implementation of "stop" is the one that poisons the plan
-    /// (`docs/plans/ipc-contract.md`, "The run"). In-flight orders are allowed to finish and are
-    /// collected; nothing new is dispatched after the current step.
+    /// Stop new dispatch and cancel active owned calls. Partial work remains recoverable.
     pub fn stop(&self) {
+        // Persist intent before returning to the UI. A reset/restart never clears this marker.
+        if let Some(parent) = self.stop_path.parent() {
+            if let Err(error) = std::fs::create_dir_all(parent)
+                .and_then(|_| std::fs::write(&self.stop_path, b"stopped\n"))
+            {
+                tracing::error!(%error, "could not persist run Stop intent");
+            }
+        }
         self.stop.store(true, Ordering::Release);
     }
 
@@ -462,6 +440,10 @@ impl RunHandle {
         self.stop();
         let task = lock(&self.task).take();
         if let Some(task) = task {
+            // Destructive callers hold the supervisor lifecycle write lock: any spawn has
+            // finished registration, or has not entered its read-locked startup yet. They stop
+            // registered sessions themselves. Awaiting cooperatively here would deadlock a
+            // pending spawn against that write lock.
             task.abort();
             let _ = task.await;
         }
@@ -470,7 +452,10 @@ impl RunHandle {
     /// Whether this launch still has an executing orchestration task.
     #[must_use]
     pub fn active(&self) -> bool {
-        !self.stopping() && lock(&self.task).as_ref().is_some_and(|task| !task.is_finished())
+        !self.stopping()
+            && lock(&self.task)
+                .as_ref()
+                .is_some_and(|task| !task.is_finished())
     }
 
     /// Wait for the run's task to finish. Returns immediately if it has already been awaited.
@@ -491,10 +476,12 @@ pub struct Run {
     project: ProjectRow,
     plan_id: String,
     goal: String,
-    /// The owner's model pick, read as a ceiling. The only thing that decides what any child of
-    /// this run is started on. See [`RunSpec::model`] and [`Ceiling`].
+    /// Default provider used by calls without an explicit independent selection.
+    driver: DriverKind,
+    /// Exact orchestrator model selection.
     ceiling: Ceiling,
     /// The owner's permission mode. Reaches every child's flag and every child's hook policy.
+    effort: Option<String>,
     permission_mode: brigadier_core::driver::PermissionMode,
     call: SharedCall,
     limits: Limits,
@@ -546,9 +533,28 @@ impl Run {
     /// `git worktree repair`ed is the failure `intent-records.md` §4.2 calls *"the single largest
     /// correctness landmine in the reconciler"*.
     pub async fn tick(&mut self) -> Tick {
-        if let Some(blocked) = self.await_barrier().await {
+        if self.stop.load(Ordering::Acquire) {
+            self.state = RunState::Stopped;
+            return Tick::Stopped;
+        }
+        let stop = self.stop.clone();
+        let blocked = {
+            let waiting = self.await_barrier();
+            tokio::pin!(waiting);
+            let blocked = loop {
+                tokio::select! {
+                    result = &mut waiting => break result,
+                    _ = tokio::time::sleep(Duration::from_millis(50)) => {
+                        if stop.load(Ordering::Acquire) { break Some(Tick::Stopped); }
+                    }
+                }
+            };
+            blocked
+        };
+        if let Some(blocked) = blocked {
             self.state = match &blocked {
                 Tick::Blocked(why) => RunState::Blocked(why.clone()),
+                Tick::Stopped => RunState::Stopped,
                 _ => self.state.clone(),
             };
             return blocked;
@@ -567,6 +573,10 @@ impl Run {
                     Tick::Continue => {}
                 }
                 tick
+            }
+            Err(_) if self.stop.load(Ordering::Acquire) => {
+                self.state = RunState::Stopped;
+                Tick::Stopped
             }
             Err(e) => {
                 let why = format!("{}: {e}", e.slug());
@@ -651,7 +661,11 @@ impl Run {
             PhaseStage::Done => unreachable!("`current` skips every done phase"),
             PhaseStage::Blocked(why) => {
                 self.record_block(&phase, why).await?;
-                Ok(Tick::Blocked(format!("phase {}: {}", phase.ordinal, why.slug())))
+                Ok(Tick::Blocked(format!(
+                    "phase {}: {}",
+                    phase.ordinal,
+                    why.slug()
+                )))
             }
             PhaseStage::Ready => self.begin_phase(phase).await,
             PhaseStage::Collected => self.integrate(phase).await,
@@ -683,9 +697,17 @@ impl Run {
         phase.base_sha = Some(base_sha.clone());
         phase.state = PhaseState::Running;
         store.upsert_phase(phase.clone()).await?;
-        store.phase_attempt_started(phase.id.clone(), SystemTime::now()).await?;
+        store
+            .phase_attempt_started(phase.id.clone(), SystemTime::now())
+            .await?;
 
-        let action = plan::lead_call(self, &phase).await?;
+        let mut action = plan::lead_call(self, &phase).await?;
+        if let Action::Review(request) = &action {
+            let report = review::run(self, &phase, &self.project.root_path, &request.focus).await?;
+            phase.last_evidence = Some(report.evidence);
+            self.sup.inner.store.upsert_phase(phase.clone()).await?;
+            action = plan::lead_call(self, &phase).await?;
+        }
         match action {
             Action::Dispatch(action) => {
                 let out = dispatch::run(self, &phase, &base_sha, action.orders).await?;
@@ -704,7 +726,14 @@ impl Run {
                 // records nothing derives `Ready` again on the next tick, so without this the
                 // loop re-dispatches the same orders forever, spending a lead call and N workers
                 // per revolution. A dispatch that left no trace is a defect, not a state.
-                if self.sup.inner.store.work_orders(&phase.id).await?.is_empty() {
+                if self
+                    .sup
+                    .inner
+                    .store
+                    .work_orders(&phase.id)
+                    .await?
+                    .is_empty()
+                {
                     let why = BlockReason::Recorded(Some(
                         "the dispatch recorded no work orders for this phase; refusing to \
                          re-dispatch the same action forever"
@@ -724,7 +753,10 @@ impl Run {
                     "the lead asked to gate a phase that has dispatched nothing".to_owned(),
                 ));
                 self.record_block(&phase, &why).await?;
-                Ok(Tick::Blocked(format!("phase {}: nothing_to_gate", phase.ordinal)))
+                Ok(Tick::Blocked(format!(
+                    "phase {}: nothing_to_gate",
+                    phase.ordinal
+                )))
             }
             Action::AskOwner(ask) => {
                 let why = BlockReason::Recorded(Some(format!(
@@ -739,7 +771,11 @@ impl Run {
                 label: "lead",
                 source: ActionError::UnknownAction("plan".to_owned()),
             }),
-            Action::Review(_) => Err(LoopError::NotImplemented("review")),
+            Action::Review(_) => {
+                let why = BlockReason::Recorded(Some("A review was completed; repeated review without new evidence requires a concrete next action".into()));
+                self.record_block(&phase, &why).await?;
+                Ok(Tick::Blocked("repeated_review".into()))
+            }
             Action::Replan(_) => Err(LoopError::NotImplemented("replan")),
         }
     }
@@ -748,7 +784,10 @@ impl Run {
     async fn integrate(&mut self, phase: PhaseRow) -> Result<Tick, LoopError> {
         let outcome = green::integrate(self, &phase).await?;
         match outcome {
-            green::Outcome::Green { commit_sha, evidence } => {
+            green::Outcome::Green {
+                commit_sha,
+                evidence,
+            } => {
                 self.sup
                     .inner
                     .store
@@ -763,7 +802,10 @@ impl Run {
                     .await?;
                 Ok(Tick::Continue)
             }
-            green::Outcome::Red { exit_code, evidence } => {
+            green::Outcome::Red {
+                exit_code,
+                evidence,
+            } => {
                 self.sup
                     .inner
                     .store
@@ -776,7 +818,10 @@ impl Run {
                         SystemTime::now(),
                     )
                     .await?;
-                Ok(Tick::Blocked(format!("phase {}: {evidence}", phase.ordinal)))
+                Ok(Tick::Blocked(format!(
+                    "phase {}: {evidence}",
+                    phase.ordinal
+                )))
             }
         }
     }
@@ -838,7 +883,11 @@ impl Run {
 
     /// Where a phase's gate logs go: `<data_dir>/gates/<phase_id>/<attempt>.log`.
     fn gate_log(&self, phase_id: &str, attempt: u32) -> PathBuf {
-        self.sup.data_dir().join("gates").join(phase_id).join(format!("{attempt}.log"))
+        self.sup
+            .data_dir()
+            .join("gates")
+            .join(phase_id)
+            .join(format!("{attempt}.log"))
     }
 }
 
@@ -864,6 +913,11 @@ impl Supervisor {
         let handle = RunHandle {
             plan_id: run.plan_id.clone(),
             stop: Arc::clone(&run.stop),
+            stop_path: self
+                .data_dir()
+                .join("runs")
+                .join(&run.plan_id)
+                .join("stopped"),
             task: Arc::new(Mutex::new(None)),
         };
         // The entry is removed when the task ends, not left behind: `prepare_run` refuses a
@@ -891,10 +945,14 @@ impl Supervisor {
     /// As [`Supervisor::start_run`].
     pub async fn prepare_run(&self, spec: RunSpec) -> Result<Run, SupervisorError> {
         if spec.goal.trim().is_empty() {
-            return Err(SupervisorError::InvalidArgument("a run needs a goal".to_owned()));
+            return Err(SupervisorError::InvalidArgument(
+                "a run needs a goal".to_owned(),
+            ));
         }
-        let project =
-            self.project(&spec.project_id).await?.ok_or(SupervisorError::NoSuchProject)?;
+        let project = self
+            .project(&spec.project_id)
+            .await?
+            .ok_or(SupervisorError::NoSuchProject)?;
         if lock(&self.inner.runs).values().any(|r| !r.stopping()) {
             // One run at a time, per `ipc-contract.md`'s `run_already_live`.
             let live = lock(&self.inner.runs)
@@ -902,7 +960,9 @@ impl Supervisor {
                 .find(|r| !r.stopping())
                 .map(|r| r.plan_id.clone())
                 .unwrap_or_default();
-            return Err(SupervisorError::SessionLive(format!("run {live} is already live")));
+            return Err(SupervisorError::SessionLive(format!(
+                "run {live} is already live"
+            )));
         }
         let git = brigadier_core::worktree::resolve_git().ok_or_else(|| {
             SupervisorError::InvalidArgument("no git on PATH; a run cannot isolate a worker".into())
@@ -914,17 +974,14 @@ impl Supervisor {
             // already on disk, and re-approving or rewriting any of them would be a second
             // source of truth for a run that is already under way.
             Some(existing) => {
-                self.inner
-                    .store
-                    .plan(&existing)
-                    .await?
-                    .ok_or_else(|| SupervisorError::InvalidArgument(format!("no plan {existing}")))?;
+                self.inner.store.plan(&existing).await?.ok_or_else(|| {
+                    SupervisorError::InvalidArgument(format!("no plan {existing}"))
+                })?;
                 existing
             }
             None => {
                 let plan_id = uuid::Uuid::new_v4().to_string();
-                let row =
-                    PlanRow::new(plan_id.clone(), project.id.clone(), spec.goal.trim(), now);
+                let row = PlanRow::new(plan_id.clone(), project.id.clone(), spec.goal.trim(), now);
                 self.inner.store.upsert_plan(row).await?;
                 // The owner started the run, which is the approval `docs/vision.md` §4 step 6
                 // describes: one envelope, covering the whole run. Nothing inside it is approved
@@ -934,19 +991,27 @@ impl Supervisor {
             }
         };
 
+        let stop = Arc::new(AtomicBool::new(
+            self.data_dir()
+                .join("runs")
+                .join(&plan_id)
+                .join("stopped")
+                .exists(),
+        ));
         let call: SharedCall = spec.call.unwrap_or_else(|| {
-            Arc::new(SupervisedCall::new(
-                self.clone(),
-                spec.driver.clone(),
-                project.root_path.clone(),
-            ))
+            Arc::new(
+                SupervisedCall::new(self.clone(), spec.driver.clone(), project.root_path.clone())
+                    .with_stop(Arc::clone(&stop)),
+            )
         });
         Ok(Run {
             sup: self.clone(),
             project,
             plan_id,
             goal: spec.goal.trim().to_owned(),
+            driver: spec.driver,
             ceiling: Ceiling::new(spec.model),
+            effort: spec.effort,
             permission_mode: spec.permission_mode,
             call,
             limits: spec.limits,
@@ -954,14 +1019,28 @@ impl Supervisor {
             reconciled: None,
             gate: spec.gate,
             git,
-            stop: Arc::new(AtomicBool::new(false)),
+            stop,
             state: RunState::AwaitingReconcile,
         })
     }
 
+    /// Clear durable Stop only in response to an explicit user Continue action.
+    pub fn clear_run_stop(&self, plan_id: &str) -> std::io::Result<()> {
+        if plan_id.is_empty() || plan_id.contains(['/', '\\']) || plan_id == ".." {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid plan id",
+            ));
+        }
+        match std::fs::remove_file(self.data_dir().join("runs").join(plan_id).join("stopped")) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            result => result,
+        }
+    }
+
     /// Stop a live run's dispatching. `false` when no run by that plan id is known.
     ///
-    /// **Never kills a worker mid-order.** See [`RunHandle::stop`].
+    /// Active owned calls observe the shared cancellation flag.
     pub fn stop_run(&self, plan_id: &str) -> bool {
         match lock(&self.inner.runs).get(plan_id) {
             Some(handle) => {
@@ -982,5 +1061,27 @@ impl Supervisor {
     #[must_use]
     pub fn runs(&self) -> Vec<RunHandle> {
         lock(&self.inner.runs).values().cloned().collect()
+    }
+}
+
+/// Dropping the verify future sends its owned process group a cancellation signal.
+async fn run_gate(
+    run: &Run,
+    env: &crate::verify::GateEnv,
+    req: &crate::verify::GateRequest,
+) -> std::io::Result<crate::verify::GateResult> {
+    let work = crate::verify::run(env, req);
+    tokio::pin!(work);
+    loop {
+        if run.stop.load(Ordering::Acquire) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "Task stopped during verification",
+            ));
+        }
+        tokio::select! {
+            result = &mut work => return result,
+            _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+        }
     }
 }

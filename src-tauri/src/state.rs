@@ -221,25 +221,49 @@ impl Ready {
 
     /// Take the reconciler's sender. `None` on every call after the first.
     pub(crate) fn take_reconcile_sender(&self) -> Option<ReconcileSender> {
-        self.reconcile_tx.lock().unwrap_or_else(PoisonError::into_inner).take()
-    }
-
-    /// Remember that the owner stopped this plan. Idempotent.
-    pub(crate) fn mark_stopped(&self, plan_id: &str) {
-        self.stopped_runs
+        self.reconcile_tx
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(plan_id.to_owned());
+            .take()
     }
 
-    /// Forget a stop, because the owner started that plan again.
-    pub(crate) fn clear_stopped(&self, plan_id: &str) {
-        self.stopped_runs.lock().unwrap_or_else(PoisonError::into_inner).remove(plan_id);
+    /// Persist Stop before acknowledging it, including across application restarts.
+    pub(crate) fn mark_stopped(&self, plan_id: &str) -> Result<(), AppError> {
+        let mut stopped = self
+            .stopped_runs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut next = stopped.clone();
+        next.insert(plan_id.to_owned());
+        crate::note_files::atomic_write(
+            &self.data_dir.join("stopped-runs.json"),
+            &serde_json::to_vec(&next).map_err(|e| AppError::io(e.to_string()))?,
+        )?;
+        *stopped = next;
+        Ok(())
+    }
+    /// Clear the durable stop only after an explicit owner continuation.
+    pub(crate) fn clear_stopped(&self, plan_id: &str) -> Result<(), AppError> {
+        let mut stopped = self
+            .stopped_runs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut next = stopped.clone();
+        next.remove(plan_id);
+        crate::note_files::atomic_write(
+            &self.data_dir.join("stopped-runs.json"),
+            &serde_json::to_vec(&next).map_err(|e| AppError::io(e.to_string()))?,
+        )?;
+        *stopped = next;
+        Ok(())
     }
 
     /// Whether the owner stopped this plan in this launch.
     pub(crate) fn is_stopped(&self, plan_id: &str) -> bool {
-        self.stopped_runs.lock().unwrap_or_else(PoisonError::into_inner).contains(plan_id)
+        self.stopped_runs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(plan_id)
     }
 }
 
@@ -282,7 +306,11 @@ pub(crate) async fn build(data_dir: PathBuf) -> Result<Ready, AppError> {
     // see docs/research/data-dir-lock.md.
     let store = Store::open(&data_dir).map_err(|e| {
         let mut err = AppError::from(e);
-        err.message = format!("could not open the store in {}: {}", data_dir.display(), err.message);
+        err.message = format!(
+            "could not open the store in {}: {}",
+            data_dir.display(),
+            err.message
+        );
         err
     })?;
     // `Store::open` is the flock, the migrations and the pragmas in one call
@@ -302,15 +330,27 @@ pub(crate) async fn build(data_dir: PathBuf) -> Result<Ready, AppError> {
     if let Some(tracker) = tracker.clone() {
         config.tracker = Arc::new(TrackerAdapter::new(tracker));
     }
+    brigadier_core::allowance::configure(&data_dir)
+        .map_err(|e| AppError::io(format!("Could not load provider allowance: {e}")))?;
     let supervisor = Supervisor::new(config);
     crate::trace::stage("supervisor_new");
 
     let claude = probe(&supervisor).await;
+    let mut codex_config = brigadier_core::codex::CodexDriverConfig::new("codex:default");
+    codex_config.attachment_dir = Some(data_dir.join("provider-attachments").join("codex"));
+    match brigadier_core::codex::CodexDriver::probe(codex_config).await {
+        Ok(driver) => supervisor.register_driver(Arc::new(driver)),
+        Err(error) => tracing::info!(%error, "Codex provider unavailable"),
+    }
     // The `claude --version` child. One of two per launch — the frontend's mount-time
     // `probeClaude()` spawns the other (`perceived-performance.md` §1.4). No session, no API call.
     crate::trace::stage_with(
         "claude_probe",
-        if claude.is_ok() { "outcome=ok" } else { "outcome=failed" },
+        if claude.is_ok() {
+            "outcome=ok"
+        } else {
+            "outcome=failed"
+        },
     );
 
     // Unresolved on purpose: the run barrier is published by the reconciler task `crate::run`
@@ -319,6 +359,11 @@ pub(crate) async fn build(data_dir: PathBuf) -> Result<Ready, AppError> {
     let (reconcile_tx, barrier) = barrier::barrier();
 
     crate::trace::stage("state_build_end");
+    let stopped_runs: HashSet<String> = match std::fs::read(data_dir.join("stopped-runs.json")) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| AppError::io(e.to_string()))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => HashSet::new(),
+        Err(e) => return Err(e.into()),
+    };
     Ok(Ready {
         supervisor,
         store,
@@ -329,7 +374,7 @@ pub(crate) async fn build(data_dir: PathBuf) -> Result<Ready, AppError> {
         data_dir,
         barrier,
         reconcile_tx: Mutex::new(Some(reconcile_tx)),
-        stopped_runs: Mutex::new(HashSet::new()),
+        stopped_runs: Mutex::new(stopped_runs),
     })
 }
 

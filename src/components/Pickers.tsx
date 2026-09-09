@@ -24,6 +24,7 @@ import type { ModelInfo, PermissionMode } from "../wire";
 
 export interface PickersProps {
   models: ModelInfo[];
+  provider?: string;
   /** The selected model id. `""` is "no pick", and is only reachable when `noPickLabel` is set. */
   model: string;
   onModel: (id: string) => void;
@@ -41,6 +42,7 @@ export interface PickersProps {
 
 export function Pickers({
   models,
+  provider,
   model,
   onModel,
   mode,
@@ -56,7 +58,7 @@ export function Pickers({
         value={mode}
         onChange={(value) => onMode(value as PermissionMode)}
         disabled={disabled}
-        options={OFFERED_PERMISSION_MODES.map((m) => ({
+        options={OFFERED_PERMISSION_MODES.filter(m=>provider!=="codex" || m.mode!=="auto").map((m) => ({
           value: m.mode,
           label: m.label.split(" — ")[0]!,
           description: m.note,

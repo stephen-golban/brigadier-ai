@@ -22,9 +22,9 @@
 #![warn(missing_docs)]
 
 pub mod action;
-mod fork;
 pub mod batcher;
 pub mod error;
+mod fork;
 pub mod loop_;
 pub mod removal;
 pub mod replay;
@@ -304,7 +304,11 @@ struct Install {
 pub(crate) enum SpawnIn {
     /// Cut a new `brigadier/<id>` worktree off `HEAD` and run there. Today's behaviour, and the
     /// only one [`Supervisor::start_session`] uses.
-    FreshWorktree { inherit: bool, base: Option<String> },
+    FreshWorktree {
+        inherit: bool,
+        base: Option<String>,
+        source: Option<PathBuf>,
+    },
     /// Run in a directory that already exists. Nothing is created and nothing is rolled back;
     /// the caller owns the checkout and its lifetime.
     Prepared {
@@ -516,6 +520,11 @@ impl Supervisor {
         lock(&self.inner.drivers).get(kind).map(Arc::clone)
     }
 
+    /// All currently registered provider instances. Unregistered providers are not selectable.
+    pub fn registered_drivers(&self) -> Vec<Arc<dyn ProviderDriver>> {
+        lock(&self.inner.drivers).values().cloned().collect()
+    }
+
     // ---- projects ------------------------------------------------------------------------
 
     /// Record a project rooted at `path`.
@@ -637,7 +646,11 @@ impl Supervisor {
             project_id,
             kind,
             req,
-            SpawnIn::FreshWorktree { inherit: false, base: None },
+            SpawnIn::FreshWorktree {
+                inherit: false,
+                base: None,
+                source: None,
+            },
             false,
         )
         .await
@@ -647,52 +660,130 @@ impl Supervisor {
     /// Interactive project sessions share the registered checkout unless isolation is requested.
     /// Prepared orchestration worktrees keep their existing ownership and cleanup policy.
     pub async fn start_project_session(
-        &self, project_id: &str, kind: &DriverKind, req: StartSession, isolated: bool,
+        &self,
+        project_id: &str,
+        kind: &DriverKind,
+        req: StartSession,
+        isolated: bool,
     ) -> Result<SessionId, SupervisorError> {
-        self.start_project_session_from(project_id, kind, req, isolated, None).await
+        self.start_project_session_from(project_id, kind, req, isolated, None)
+            .await
     }
 
     /// Select a local base branch without changing the project's checkout.
     pub async fn start_project_session_from(
-        &self, project_id: &str, kind: &DriverKind, req: StartSession, isolated: bool,
+        &self,
+        project_id: &str,
+        kind: &DriverKind,
+        req: StartSession,
+        isolated: bool,
         base_branch: Option<String>,
     ) -> Result<SessionId, SupervisorError> {
         let (base, inherit) = if let Some(branch) = base_branch {
-            if !isolated { return Err(SupervisorError::InvalidArgument("A base branch requires an isolated worktree".into())); }
-            let project = self.project(project_id).await?.ok_or(SupervisorError::NoSuchProject)?;
+            if !isolated {
+                return Err(SupervisorError::InvalidArgument(
+                    "A base branch requires an isolated worktree".into(),
+                ));
+            }
+            let project = self
+                .project(project_id)
+                .await?
+                .ok_or(SupervisorError::NoSuchProject)?;
             worktree::session_base(&project.root_path, &branch).await?
-        } else { (None, true) };
-        self.start_project_session_prepared(project_id, kind, req, isolated, base, inherit).await
+        } else {
+            (None, true)
+        };
+        self.start_project_session_prepared(
+            project_id,
+            kind,
+            req,
+            isolated.then_some(SpawnIn::FreshWorktree {
+                base,
+                inherit,
+                source: None,
+            }),
+        )
+        .await
     }
 
     /// Peer work starts from committed HEAD. Copying the parent checkout would require a
     /// writer lease on an ancestor of the calling session's running worktree.
     pub async fn start_peer_session(
-        &self, project_id: &str, kind: &DriverKind, req: StartSession, isolated: bool,
+        &self,
+        project_id: &str,
+        kind: &DriverKind,
+        req: StartSession,
+        isolated: bool,
     ) -> Result<SessionId, SupervisorError> {
-        self.start_project_session_prepared(project_id, kind, req, isolated, None, false).await
+        self.start_project_session_prepared(
+            project_id,
+            kind,
+            req,
+            isolated.then_some(SpawnIn::FreshWorktree {
+                base: None,
+                inherit: false,
+                source: None,
+            }),
+        )
+        .await
+    }
+
+    /// Create a peer from its caller's exact workspace input while keeping source files untouched.
+    pub async fn start_peer_session_from(
+        &self,
+        project_id: &str,
+        kind: &DriverKind,
+        req: StartSession,
+        isolated: bool,
+        source: PathBuf,
+    ) -> Result<SessionId, SupervisorError> {
+        self.start_project_session_prepared(
+            project_id,
+            kind,
+            req,
+            isolated.then_some(SpawnIn::FreshWorktree {
+                base: None,
+                inherit: false,
+                source: Some(source),
+            }),
+        )
+        .await
     }
 
     async fn start_project_session_prepared(
-        &self, project_id: &str, kind: &DriverKind, mut req: StartSession, isolated: bool,
-        base: Option<String>, inherit: bool,
+        &self,
+        project_id: &str,
+        kind: &DriverKind,
+        mut req: StartSession,
+        workspace: Option<SpawnIn>,
     ) -> Result<SessionId, SupervisorError> {
         let prompt = req.prompt.take();
         let display_prompt = req.display_prompt.take();
         let attachments = std::mem::take(&mut req.attachments);
-        if isolated {
+        if let Some(workspace) = workspace {
             let id = self
                 .spawn(
                     project_id,
                     kind,
                     req,
-                    SpawnIn::FreshWorktree { inherit, base },
+                    workspace,
                     false,
                 )
                 .await?
                 .session_id;
             if let Some(prompt) = prompt {
-                if let Err(e) = self.send_input(&id, TurnInput { text: prompt, display_text: display_prompt.clone(), attachments: attachments.clone(), ..Default::default() }).await {
+                if let Err(e) = self
+                    .send_input(
+                        &id,
+                        TurnInput {
+                            text: prompt,
+                            display_text: display_prompt.clone(),
+                            attachments: attachments.clone(),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                {
                     let _ = self.kill(&id).await;
                     return Err(e);
                 }
@@ -721,7 +812,18 @@ impl Supervisor {
             .await?
             .session_id;
         if let Some(prompt) = prompt {
-            if let Err(e) = self.send_input(&id, TurnInput { text: prompt, display_text: display_prompt.clone(), attachments: attachments.clone(), ..Default::default() }).await {
+            if let Err(e) = self
+                .send_input(
+                    &id,
+                    TurnInput {
+                        text: prompt,
+                        display_text: display_prompt.clone(),
+                        attachments: attachments.clone(),
+                        ..Default::default()
+                    },
+                )
+                .await
+            {
                 let _ = self.kill(&id).await;
                 return Err(e);
             }
@@ -796,8 +898,23 @@ impl Supervisor {
         req.mcp = project.mcp;
         let wheref_was_fresh = matches!(wheref, SpawnIn::FreshWorktree { .. });
         let (prepared, mut branch) = match wheref {
-            SpawnIn::FreshWorktree { inherit, base } => {
-                let prepared = if let Some(base) = base { worktree::prepare_from(&project.root_path, Some(&base)).await? } else { worktree::prepare(&project.root_path).await? };
+            SpawnIn::FreshWorktree {
+                inherit,
+                base,
+                source,
+            } => {
+                let prepared = if let Some(source) = source {
+                    worktree::prepare_from_source(
+                        &project.root_path,
+                        &source,
+                        &self.inner.data_dir.join("worker-inputs"),
+                    )
+                    .await?
+                } else if let Some(base) = base {
+                    worktree::prepare_from(&project.root_path, Some(&base)).await?
+                } else {
+                    worktree::prepare(&project.root_path).await?
+                };
                 if inherit {
                     if let Some(made) = &prepared {
                         if let Err(error) = self
@@ -864,6 +981,15 @@ impl Supervisor {
         } else {
             None
         };
+        let effort = req.effort.clone();
+        let permission_mode = req.permission_mode.to_string();
+        let thinking = if req.effort.is_some()
+            || req.thinking == brigadier_core::driver::ThinkingPolicy::Inherit
+        {
+            "inherit"
+        } else {
+            "off"
+        };
         let handle = match driver.start_session(req).await {
             Ok(handle) => handle,
             Err(e) => {
@@ -886,6 +1012,9 @@ impl Supervisor {
         row.worktree_path = worktree_path;
         row.branch = branch;
         row.model = model;
+        row.effort = effort;
+        row.permission_mode = Some(permission_mode);
+        row.thinking = Some(thinking.to_owned());
         row.status = Some(SessionStatus::Starting);
         row.started_at = Some(SystemTime::now());
         self.inner.store.upsert_session(row).await?;
@@ -1011,6 +1140,32 @@ impl Supervisor {
         // A pruned worktree, a deleted checkout: the spawn would fail as `driver`, which the
         // contract tells the UI to read as "the provider swept the conversation". Name the real
         // cause instead. see docs/plans/ipc-contract.md "### resume_session".
+        if !cwd.exists() {
+            if let (Some(path), Some(branch)) = (&record.worktree_path, &record.branch) {
+                let expected = project.root_path.join(worktree::WORKTREES_SUBDIR);
+                if path == &cwd
+                    && path.parent() == Some(expected.as_path())
+                    && branch.starts_with(worktree::BRANCH_PREFIX)
+                {
+                    // Recreate only app-owned disposable workspaces from their retained branch.
+                    // No force: Git refuses a missing or already checked-out branch.
+                    let git = brigadier_core::worktree::resolve_git().ok_or_else(|| {
+                        SupervisorError::NotResumable("Git is unavailable".into())
+                    })?;
+                    loop_::git::checked(
+                        &git,
+                        &project.root_path,
+                        &["worktree", "add", &cwd.to_string_lossy(), branch],
+                    )
+                    .await
+                    .map_err(|e| {
+                        SupervisorError::NotResumable(format!(
+                            "Cannot restore retained worker workspace: {e}"
+                        ))
+                    })?;
+                }
+            }
+        }
         if !cwd.is_dir() {
             return Err(SupervisorError::NotResumable(format!(
                 "the working directory {} is gone",
@@ -1021,7 +1176,22 @@ impl Supervisor {
         let mut req = ResumeSession::new(token, cwd.clone());
         req.env_overrides = env;
         req.model = record.model.clone();
-        req.permission_mode = PermissionMode::Default;
+        req.effort = record.effort.clone();
+        req.permission_mode =
+            PermissionMode::from(record.permission_mode.as_deref().unwrap_or("default"));
+        req.thinking = if record.thinking.as_deref() == Some("inherit") {
+            brigadier_core::driver::ThinkingPolicy::Inherit
+        } else {
+            brigadier_core::driver::ThinkingPolicy::Off
+        };
+        let scope = if record.worktree_path.is_some() {
+            brigadier_core::claude::hook::HookScope::Worker { root: cwd.clone() }
+        } else {
+            brigadier_core::claude::hook::HookScope::Interactive { root: cwd.clone() }
+        };
+        req.hook_policy = brigadier_core::driver::HookOverride::new(
+            brigadier_core::claude::hook::policy_for(&req.permission_mode, &scope),
+        );
         req.mcp = project.mcp;
         req.resumed = Some(Resumed {
             session_id: session_id.clone(),
@@ -1237,7 +1407,11 @@ impl Supervisor {
     }
 
     /// Send imported attachments through the same checkpoint and reservation barriers as text.
-    pub async fn send_input(&self, session_id: &SessionId, input: TurnInput) -> Result<TurnId, SupervisorError> {
+    pub async fn send_input(
+        &self,
+        session_id: &SessionId,
+        input: TurnInput,
+    ) -> Result<TurnId, SupervisorError> {
         self.require_session_available(session_id)?;
         if self
             .inner
@@ -1275,16 +1449,38 @@ impl Supervisor {
     }
 
     // Called under the checkpoint reservation for Claude, immediately before provider dispatch.
-    async fn dispatch_input(&self, id: &SessionId, input: TurnInput, reserved: Option<TurnId>) -> Result<TurnId, SupervisorError> {
+    async fn dispatch_input(
+        &self,
+        id: &SessionId,
+        input: TurnInput,
+        reserved: Option<TurnId>,
+    ) -> Result<TurnId, SupervisorError> {
         let commands = self.commands(id)?;
-        let previous = self.inner.store.session_attachment_ids(id.to_string()).await?;
-        self.inner.store.set_session_attachment_ids(id.to_string(), input.attachments.iter().map(|a|a.id.clone()).collect()).await?;
+        let previous = self
+            .inner
+            .store
+            .session_attachment_ids(id.to_string())
+            .await?;
+        self.inner
+            .store
+            .set_session_attachment_ids(
+                id.to_string(),
+                input.attachments.iter().map(|a| a.id.clone()).collect(),
+            )
+            .await?;
         let result = match reserved {
             Some(turn) => commands.send_reserved_turn(turn, input).await,
             None => commands.send_turn(input).await,
         };
-        if matches!(&result, Err(brigadier_core::session::CommandError::NotDispatched(_) | brigadier_core::session::CommandError::Rejected(_))) {
-            self.inner.store.set_session_attachment_ids(id.to_string(), previous).await?;
+        if matches!(
+            &result,
+            Err(brigadier_core::session::CommandError::NotDispatched(_)
+                | brigadier_core::session::CommandError::Rejected(_))
+        ) {
+            self.inner
+                .store
+                .set_session_attachment_ids(id.to_string(), previous)
+                .await?;
         }
         result.map_err(error::from_command)
     }
@@ -1359,7 +1555,7 @@ impl Supervisor {
 
     /// Remove one ended session's worktree, keeping its branch.
     ///
-    /// Explicit, never automatic. `force = false` is the question — a dirty worktree comes back
+    /// With `force = false`, a dirty worktree comes back
     /// as `removed: false` with the entry count and nothing touched — and `force = true` is the
     /// answer. Either way the branch survives: the checkout is reconstructible, the branch is the
     /// only copy of whatever the agent committed, and `git worktree remove` on a clean tree with
@@ -1367,8 +1563,7 @@ impl Supervisor {
     ///
     /// A checkout already gone from disk is pruned out of git's registry and reported removed.
     ///
-    /// After this the session's `cwd` names a directory that no longer exists, so resuming it
-    /// will fail; clean up a session only when you are finished with it.
+    /// Resume reconstructs an app-owned retired workspace from its preserved branch.
     ///
     /// The row keeps its `worktree_path` and `branch`: `upsert_session` COALESCEs every column it
     /// names, so there is no op that can clear them, and inventing one to erase the only record
