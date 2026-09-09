@@ -249,7 +249,7 @@ describe("App run: automation history stays out of chat", () => {
     );
     expect(h.stopped).toEqual(["pl-1"]);
     await userEvent.click(screen.getByRole("button", { name: "New chat" }));
-    expect(screen.getByRole("button", { name: "Start" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();
   });
   it("shows no automation history for a new project", async () => {
     await mountApp();

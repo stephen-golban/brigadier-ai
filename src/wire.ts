@@ -269,6 +269,8 @@ export interface SessionView {
   /** `brigadier/<8 hex>`, or null with no worktree. Rendered instead of the path. */
   branch: string | null;
   model: string | null;
+  effort?: string | null;
+  permission_mode?: string | null;
   status: SessionStatus;
   started_at_ms: number | null;
   ended_at_ms: number | null;

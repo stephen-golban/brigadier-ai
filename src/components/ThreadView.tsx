@@ -1,3 +1,6 @@
+import { TaskProgress } from "./TaskProgress";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { useConversationHistory } from "../hooks/useConversationHistory";
 import { Telescope as TelescopeIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import {
@@ -36,10 +39,7 @@ import { WorkTrace } from "./WorkTrace";
 import { ChangedFilesCard } from "./SessionReview";
 import { useSessionChanges } from "../desktopApi";
 import {
-  workspaceApi,
-  errorMessage,
   type ChatItem,
-  type ChatTurn,
 } from "../workspaceApi";
 import { workbenchApi } from "../workbenchApi";
 import { bridge } from "../bridge";
@@ -49,7 +49,8 @@ import { PeerTaskCardScope } from "./peer/PeerTaskCardScope";
 import { PeerIncomingMessage, PeerMessages } from "./peer/PeerMessages";
 import { PeerAttachmentPreviews } from "./peer/PeerAttachmentPreviews";
 import { peerMessageContent } from "../peerPresentation";
-import type { PeerData } from "../peerApi";
+import { peerApi, type PeerAttachment, type PeerData } from "../peerApi";
+import {AttachmentPreview} from "./composer/AttachmentPreview";
 export function ThreadView({
   requests,
   sessionId,
@@ -98,6 +99,7 @@ export function ThreadView({
           requests={requests}
           key={sessionId}
           sessionId={sessionId}
+          projectId={projectId}
           onFile={onFile}
           revision={revision}
           onEdit={onEdit}
@@ -171,6 +173,7 @@ export function ThreadView({
 function Transcript({
   requests,
   sessionId,
+  projectId,
   onFile,
   peers,
   onSelectSession,
@@ -180,6 +183,7 @@ function Transcript({
 }: {
   requests?: ReactNode;
   sessionId: string;
+  projectId: string | null;
   onFile: (path: string) => void;
   peers?: PeerData;
   onSelectSession?: (id: string) => void;
@@ -188,11 +192,8 @@ function Transcript({
   editing: boolean;
 }) {
   const changes = useSessionChanges(sessionId);
-  const [items, setItems] = useState<ChatItem[]>([]),
-    [error, setError] = useState<string | null>(null),
-    [loaded, setLoaded] = useState(false),
-    [hydrated, setHydrated] = useState(false);
-  const [turnRecords, setTurnRecords] = useState<ChatTurn[]>([]);
+  const {items, turns: turnRecords, loaded, error, hasOlder, paging, historical, older, latest} = useConversationHistory(sessionId, revision);
+  const hydrated = loaded;
   const state = useSyncExternalStore(store.subscribe, store.getState),
     session = state.sessions[sessionId],
     busy = session?.busy ?? false;
@@ -232,70 +233,14 @@ function Transcript({
       /* Keep in-memory state. */
     }
   }, [expanded, sessionId]);
-  useEffect(() => {
-    setItems([]);
-    setTurnRecords([]);
-    setLoaded(false);
-    setHydrated(false);
-    restored.current = false;
-    let cancelled = false,
-      cursor = 0,
-      timer: ReturnType<typeof setTimeout>;
-    const read = async () => {
-      try {
-        const [page, recordedTurns] = await Promise.all([
-          workspaceApi.chat(sessionId, cursor),
-          workspaceApi.chatTurns(sessionId),
-        ]);
-        if (cancelled) return;
-        setTurnRecords((old) =>
-          old.length === recordedTurns.length &&
-          old.every((t, i) => {
-            const next = recordedTurns[i]!;
-            return (
-              t.id === next.id &&
-              t.start_seq === next.start_seq &&
-              t.end_seq === next.end_seq &&
-              t.started_at === next.started_at &&
-              t.ended_at === next.ended_at &&
-              t.status === next.status
-            );
-          })
-            ? old
-            : recordedTurns,
-        );
-        if (page.length) {
-          cursor = Math.max(cursor, ...page.map((i) => i.seq));
-          setItems((previous) => {
-            const merged = new Map(previous.map((i) => [i.id, i]));
-            page.forEach((i) => merged.set(i.id, i));
-            return [...merged.values()]
-              .sort((a, b) => a.seq - b.seq)
-              .slice(-2000);
-          });
-        }
-        setLoaded(true);
-        setError(null);
-        if (page.length < 20) setHydrated(true);
-        timer = setTimeout(() => void read(), page.length === 20 ? 0 : 700);
-      } catch (e) {
-        if (!cancelled) {
-          setError(errorMessage(e));
-          setLoaded(true);
-          timer = setTimeout(() => void read(), 2500);
-        }
-      }
-    };
-    void read();
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [sessionId, revision]);
   const rows = useMemo(
     () => projectThread(items, busy, turnRecords, session?.lastStop),
     [items, busy, turnRecords, session?.lastStop],
   );
+  const virtual = useVirtualizer({ count: rows.length, getScrollElement: () => scroll.current,
+    estimateSize: () => 140, overscan: 6, getItemKey: index => rows[index]!.id,
+    enabled: rows.length > 60, initialRect: {width: 800, height: 800} });
+  const visibleRows = rows.length > 60 ? virtual.getVirtualItems().map(item => ({row: rows[item.index]!, index: item.index, virtual: item})) : rows.map((row,index)=>({row,index,virtual: null}));
   // The runtime owns only viewport behavior. Render saved rows directly with the
   // standalone Elements, so its synthetic startup message cannot enter our renderer.
   const messages = useMemo<ThreadMessageLike[]>(
@@ -372,6 +317,7 @@ function Transcript({
           }
         }}
       >
+        <TaskProgress sessionId={sessionId} />
         {error && (
           <p role="alert" className="inline-error my-2 text-[13px] text-error">
             {error}
@@ -388,12 +334,18 @@ function Transcript({
               : "No saved message bodies in this session."}
           </p>
         ) : null}
-        {rows.map((row, index) => {
+        {hasOlder && <Button className="mx-auto mb-4" disabled={paging} onClick={() => void older()}>{paging ? 'Loading…' : 'Load earlier messages'}</Button>}
+        {historical && <Button className="mx-auto mb-4" onClick={() => void latest()}>Return to latest messages</Button>}
+        <div style={rows.length > 60 ? {height: virtual.getTotalSize(), position: 'relative'} : undefined}>
+        {visibleRows.map(({row, index, virtual: position}) => {
           const turn = turns[index];
           return (
             <div
               key={row.id}
               data-message-id={row.id}
+              data-index={index}
+              ref={position ? virtual.measureElement : undefined}
+              style={position ? {position: 'absolute', width: '100%', top: 0, left: 0, transform: `translateY(${position.start}px)`} : undefined}
               className={`aui-message group/message ${row.type === "work" ? "aui-activity" : row.item.kind.type}`}
             >
               {row.type === "work" ? (
@@ -414,6 +366,8 @@ function Transcript({
                   )}
                   <UserMessage
                     item={row.item}
+                    projectId={projectId ?? session?.projectId ?? null}
+                    onFile={onFile}
                     peers={peers}
                     initial={index === 0}
                     busy={busy}
@@ -443,6 +397,7 @@ function Transcript({
             </div>
           );
         })}
+        </div>
         <PeerMessages sessionId={sessionId} peers={peers} onSelectSession={onSelectSession}
           renderAttachments={message => <PeerAttachmentPreviews message={message} />} />
         {peers?.requests
@@ -493,6 +448,8 @@ function dateLabel(at: number) {
 }
 function UserMessage({
   item,
+  projectId,
+  onFile,
   peers,
   initial,
   busy,
@@ -501,6 +458,8 @@ function UserMessage({
   onSelectSession,
 }: {
   item: ChatItem;
+  projectId: string | null;
+  onFile: (path: string) => void;
   peers?: PeerData;
   initial: boolean;
   busy: boolean;
@@ -509,6 +468,13 @@ function UserMessage({
   onSelectSession?: (id: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [attachment, setAttachment] = useState<PeerAttachment | null>(null);
+  const [sourceError, setSourceError] = useState('');
+  const openReference = (path: string) => {
+    if (!path.startsWith('brigadier-attachment:')) { onFile(path); return; }
+    if (!projectId) {setSourceError('Attachment project is unavailable.');return;}
+    void peerApi.attachment(projectId, path.slice('brigadier-attachment:'.length)).then(file=>setAttachment(file.metadata), error=>setSourceError(String(error)));
+  };
   const { source, text } = peerMessageContent(item, peers, initial);
   if (source) return <PeerIncomingMessage item={item} peers={peers} onSelectSession={onSelectSession} />;
   const long =
@@ -521,8 +487,10 @@ function UserMessage({
             long && !expanded ? "line-clamp-5" : ""
           }
         >
-          {text}
+          <Markdown text={text} onFile={openReference} />
         </div>
+        {attachment && <AttachmentPreview attachment={attachment}/>}
+        {sourceError && <p role="alert">{sourceError}</p>}
         {long && (
           <Button
             variant="link"

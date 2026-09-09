@@ -1,35 +1,14 @@
+import { useDurableComposer } from "./composer/useDurableComposer";
+import { useProviderCatalog } from "../providerCatalog";
 import { workbenchApi } from "../workbenchApi";
 import { workspaceApi } from "../workspaceApi";
 import { ComposerActions as PromptInputActions } from "./assistant-ui/elements/composer";
 import { Button } from "./controls/button";
 import { SelectMenu } from "./SelectMenu";
-import { effortLevels, type Effort } from "../agentOptions";
+import { type Effort } from "../agentOptions";
 import type { AgentOptions } from "../agentOptions";
-import { PromptInput, useDraft, useAttachmentDraft } from "./PromptInput";
-/**
- * Start a session: the dock's **Session** mode.
- *
- * Until 2026-09-05 this was "the composer the window shows when no session is selected", which is
- * how the owner ended up looking at two text fields with nothing saying which was which. It is now
- * one of three bodies `src/components/Dock.tsx` swaps between, chosen explicitly, and it draws
- * only the box — the frame and the context strip are the dock's.
- *
- * The Model and Permissions controls are `src/components/Pickers.tsx`, shared with the dock's Run
- * mode since R4 so the two cannot offer different vocabularies for the same wire field. The
- * permission menu now carries **every** mode the CLI accepts, `bypass-permissions` included: the
- * mode alone never could stop a prompt (brigadier's `PreToolUse` hook runs first), so leaving it
- * out was a gate on a value that changed nothing. `OFFERED_PERMISSION_MODES` in `src/wire.ts`
- * carries the reasoning and `docs/research/permission-modes.md` §3–§5 the measurements.
- *
- * **The model menu here has no "no pick" entry**, and that is unchanged: starting one session has
- * always pre-selected the default model, and the field shows which one. The run's picker offers
- * the empty choice, because for a run "no pick" means the per-role routing stays in charge.
- *
- * The `claude` binary is never bundled (CLAUDE.md §2): if `probe_claude` errors with
- * `claude_not_installed` or `claude_too_old`, the sidebar's bottom row says so and start is
- * blocked here.
- */
-import { useEffect, useState } from "react";
+import { PromptInput } from "./PromptInput";
+import { useEffect, useRef, useState } from "react";
 
 import { Pickers } from "./Pickers";
 import { isSubmitKey } from "../keys";
@@ -48,6 +27,8 @@ export interface NewSessionProps {
     projectId: ProjectId;
     prompt: string;
     model: string | null;
+    provider?: string;
+    requestId?: string;
     permissionMode: PermissionMode;
     options?: AgentOptions;
     isolated?: boolean;
@@ -59,15 +40,21 @@ export interface NewSessionProps {
 export function NewSession({
   project,
   models,
-  disabled,
+  disabled: claudeUnavailable,
   onStart,
 }: NewSessionProps) {
-  const [prompt, setPrompt] = useDraft(`session:${project?.id ?? "none"}`);
-  const [attachments, setAttachments] = useAttachmentDraft(`session:${project?.id ?? "none"}`);
+  const currentProject = useRef(project?.id); currentProject.current = project?.id;
+  const durable = useDurableComposer(project ? `project:${project.id}` : null, project?.id ?? null);
+  const prompt = durable.draft.text, setPrompt = durable.setText;
+  const attachments = durable.attachments, setAttachments = durable.setFiles;
   const [uploading, setUploading] = useState(false);
+  const {providers, error: providerError} = useProviderCatalog(models);
+  const [providerId, setProviderId] = useState("");
+  const provider = providers.find(p => p.id === providerId) ?? providers[0];
+  const disabled = claudeUnavailable && (!provider || provider.id === "claude-code");
   const [model, setModel] = useState<string>("");
   const [effort, setEffort] = useState<Effort>("auto");
-  const [isolated, setIsolated] = useState(true);
+  const isolated = true;
   const [branches, setBranches] = useState<string[]>([]);
   const [branch, setBranch] = useState("");
   const [currentBranch, setCurrentBranch] = useState("");
@@ -111,27 +98,42 @@ export function NewSession({
   const [mode, setMode] = useState<PermissionMode>("default");
 
   const defaultModel = models.find((m) => m.default)?.id ?? models[0]?.id ?? "";
-  const chosen = model === "" ? defaultModel : model;
-  const ready = project !== null && prompt.trim() !== "" && !disabled && !uploading;
+  const chosen = model;
+  const availableEfforts = provider?.models.find(m => m.id === (model || defaultModel))?.efforts ?? provider?.efforts ?? [];
+  const ready = project !== null && (prompt.trim() !== "" || attachments.length > 0) && !disabled && !uploading;
 
   const [sending, setSending] = useState(false);
   const submit = async () => {
-    if (project === null || prompt.trim() === "" || disabled || sending || uploading) return;
+    if (project === null || (prompt.trim() === "" && attachments.length === 0) || disabled || sending || uploading) return;
     setSending(true);
     try {
+      const fingerprint = JSON.stringify({prompt,model:chosen,provider:provider?.id,mode,effort,isolated,branch,attachments:attachments.map(a=>a.id)});
+      const key = `brigadier:initial-send:${project.id}`;
+      let receipt: {id:string;fingerprint:string}|null = null;
+      try {receipt=JSON.parse(localStorage.getItem(key) ?? 'null');} catch { /* recover with a new logical submission */ }
+      if(!receipt || receipt.fingerprint!==fingerprint) receipt={id:crypto.randomUUID(),fingerprint};
+      localStorage.setItem(key,JSON.stringify(receipt));
       const accepted = await onStart({
+        requestId: receipt.id,
         projectId: project.id,
-        prompt: prompt.trim(),
+        prompt,
         model: chosen === "" ? null : chosen,
+        provider: provider?.id,
         permissionMode: mode,
         isolated,
         ...(attachments.length ? {attachmentIds: attachments.map(a => a.id)} : {}),
         ...(isolated && branch ? { baseBranch: branch } : {}),
-        ...(effort !== "auto" && effortLevels(chosen).includes(effort)
+        ...(effort !== "auto" && availableEfforts.includes(effort)
           ? { options: { effort } }
           : {}),
       });
-      if (accepted !== false) { setPrompt(""); setAttachments([]); }
+      if (accepted !== false) {
+        const sent = {text: prompt, attachmentIds: attachments.map(a => a.id)};
+        if (currentProject.current === project.id) durable.clearAccepted(sent);
+        const pendingKey = `composer-pending:project:${project.id}`;
+        if (localStorage.getItem(pendingKey) === JSON.stringify(sent)) localStorage.removeItem(pendingKey);
+        localStorage.removeItem(key);
+      }
     } finally {
       setSending(false);
     }
@@ -146,6 +148,7 @@ export function NewSession({
   return (
     <>
       {branches.length > 0 && (
+        <details className="mx-auto mb-2 max-w-[780px] text-xs text-text-secondary"><summary>Workspace · automatic</summary>
         <div className="mx-auto mb-2 flex max-w-[780px] items-center gap-2 text-xs text-text-secondary">
           <SelectMenu
             searchable
@@ -170,7 +173,10 @@ export function NewSession({
               : "Project checkout"}
           </span>
         </div>
+        </details>
       )}
+      {durable.error && <p role="alert" className="text-error">{durable.error}</p>}
+      {providerError && <p role="alert" className="text-error">{providerError}</p>}
       <PromptInput
         attachmentProjectId={project?.id}
         attachments={attachments}
@@ -182,9 +188,9 @@ export function NewSession({
         placeholder={
           project === null
             ? "Add a project first"
-            : `What should we run in ${project.name}? Return to start, Shift+Return for a new line.`
+            : `Do anything in ${project.name}`
         }
-        disabled={disabled || sending || project === null}
+        disabled={disabled || sending || project === null || !durable.loaded}
         onText={setPrompt}
         onKeyDown={(e) => {
           if (isSubmitKey(e)) {
@@ -194,56 +200,43 @@ export function NewSession({
         }}
       >
         <PromptInputActions className="flex-1 flex-wrap justify-end">
+          {provider && <SelectMenu label="Provider" value={provider.id} onChange={value => {setProviderId(value);setModel("");setEffort("auto");if(value==="codex"&&mode==="auto")setMode("default");}} options={providers.map(p => ({value:p.id,label:p.label,description:p.version ?? 'Connected local provider'}))} />}
           <Pickers
-            models={models}
+            provider={provider?.id}
+            models={provider?.modelCatalogKnown ? provider.models.map(m=>({id:m.id,label:m.label,default:false})) : provider?.id === "claude-code" || !provider ? models : []}
             model={chosen}
             onModel={setModel}
             mode={mode}
             onMode={setMode}
             disabled={disabled}
-            noPickLabel={null}
+            noPickLabel="Auto"
+            modelHint="Use the default orchestrator model. An explicit selection pins this exact model; workers choose independently."
           />
 
-          {effortLevels(chosen).length ? (
+          {provider && !provider.modelCatalogKnown && <input aria-label="Exact model ID" placeholder="Exact model ID (optional)" value={model} onChange={e=>setModel(e.target.value)} className="bg-transparent text-xs max-w-40" />}
+          {availableEfforts.length ? (
             <SelectMenu
               label="Effort"
               value={effort}
               onChange={(value) => setEffort(value as Effort)}
               disabled={disabled}
-              options={effortLevels(chosen).map((value) => ({
+              options={["auto", ...availableEfforts].map((value) => ({
                 value,
                 label:
                   value === "auto"
                     ? "Default effort"
                     : `${value[0]!.toUpperCase()}${value.slice(1)}`,
-                description: {
-                  auto: "Let Claude choose",
+                description: ({
+                  auto: "Use provider default",
                   low: "Quick responses for simple tasks",
                   medium: "Balance speed and depth",
                   high: "More time for complex work",
                   xhigh: "Extra reasoning for difficult problems",
                   max: "The highest effort supported by this model",
-                }[value],
+                } as Record<string,string>)[value],
               }))}
             />
           ) : null}
-          <SelectMenu
-            label="Working folder"
-            value={isolated ? "isolated" : "shared"}
-            onChange={(v) => setIsolated(v === "isolated")}
-            options={[
-              {
-                value: "shared",
-                label: "Project folder",
-                description: "Share the project checkout",
-              },
-              {
-                value: "isolated",
-                label: "Isolated worktree",
-                description: "Create a separate branch and working folder",
-              },
-            ]}
-          />
           {/* Secondary action slot, matching the turn composer's. */}
           <span className="grow" />
 
@@ -254,7 +247,7 @@ export function NewSession({
             disabled={!ready || sending}
             onClick={submit}
           >
-            {sending ? "Starting…" : "Start"}
+            {sending ? "Starting…" : "Send"}
           </Button>
         </PromptInputActions>
       </PromptInput>

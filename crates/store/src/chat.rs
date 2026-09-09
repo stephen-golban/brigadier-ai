@@ -28,22 +28,34 @@ pub(crate) fn write_turn(conn: &Connection, env: &Envelope) -> Result<()> {
     if let Event::TurnStarted { turn_id } = &env.event {
         conn.execute("INSERT OR IGNORE INTO chat_turns(session_id,id,start_seq,started_at,status) VALUES (?1,?2,?3,?4,'running')",
             (session, turn_id.as_str(), env.seq, at))?;
-        conn.execute("DELETE FROM chat_turns WHERE session_id=?1 AND id IN (SELECT id FROM chat_turns WHERE session_id=?1 ORDER BY start_seq DESC LIMIT -1 OFFSET 2000)", [session])?;
     } else {
         let (id, status) = match &env.event {
-            Event::TurnCompleted { turn_id, stop_reason, .. } => (Some(turn_id.as_str()), match stop_reason {
-                StopReason::EndTurn => "completed",
-                StopReason::Error(_) => "failed",
-                _ => "stopped",
-            }),
-            Event::TurnAborted { turn_id, reason } => (Some(turn_id.as_str()), match reason {
-                AbortReason::Error(_) => "failed",
-                _ => "interrupted",
-            }),
-            Event::SessionExited { reason, .. } => (None, match reason {
-                ExitReason::Crashed | ExitReason::Error(_) => "failed",
-                _ => "interrupted",
-            }),
+            Event::TurnCompleted {
+                turn_id,
+                stop_reason,
+                ..
+            } => (
+                Some(turn_id.as_str()),
+                match stop_reason {
+                    StopReason::EndTurn => "completed",
+                    StopReason::Error(_) => "failed",
+                    _ => "stopped",
+                },
+            ),
+            Event::TurnAborted { turn_id, reason } => (
+                Some(turn_id.as_str()),
+                match reason {
+                    AbortReason::Error(_) => "failed",
+                    _ => "interrupted",
+                },
+            ),
+            Event::SessionExited { reason, .. } => (
+                None,
+                match reason {
+                    ExitReason::Crashed | ExitReason::Error(_) => "failed",
+                    _ => "interrupted",
+                },
+            ),
             _ => return Ok(()),
         };
         // Replays cannot overwrite a recorded terminal outcome; a process exit closes
@@ -56,10 +68,44 @@ pub(crate) fn write_turn(conn: &Connection, env: &Envelope) -> Result<()> {
 
 pub(crate) fn read_turns(conn: &Connection, session: &str) -> Result<Vec<ChatTurn>> {
     let mut statement = conn.prepare_cached("SELECT id,start_seq,end_seq,started_at,ended_at,status FROM chat_turns WHERE session_id=?1 ORDER BY start_seq DESC LIMIT 2000")?;
-    let rows = statement.query_map([session], |r| Ok(ChatTurn {
-        id: r.get(0)?, start_seq: r.get(1)?, end_seq: r.get(2)?,
-        started_at: r.get(3)?, ended_at: r.get(4)?, status: r.get(5)?,
-    }))?;
+    let rows = statement.query_map([session], |r| {
+        Ok(ChatTurn {
+            id: r.get(0)?,
+            start_seq: r.get(1)?,
+            end_seq: r.get(2)?,
+            started_at: r.get(3)?,
+            ended_at: r.get(4)?,
+            status: r.get(5)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// Lifecycle spans overlapping the mounted history window, regardless of their age.
+pub(crate) fn read_turns_in_range(
+    conn: &Connection,
+    session: &str,
+    start: u64,
+    end: u64,
+) -> Result<Vec<ChatTurn>> {
+    let mut statement = conn.prepare_cached("SELECT id,start_seq,end_seq,started_at,ended_at,status FROM chat_turns WHERE session_id=?1 AND start_seq<=?3 AND (end_seq IS NULL OR end_seq>=?2) ORDER BY start_seq DESC LIMIT 600")?;
+    let rows = statement.query_map(
+        (
+            session,
+            start.min(i64::MAX as u64) as i64,
+            end.min(i64::MAX as u64) as i64,
+        ),
+        |row| {
+            Ok(ChatTurn {
+                id: row.get(0)?,
+                start_seq: row.get(1)?,
+                end_seq: row.get(2)?,
+                started_at: row.get(3)?,
+                ended_at: row.get(4)?,
+                status: row.get(5)?,
+            })
+        },
+    )?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
@@ -87,8 +133,26 @@ pub struct ChatItem {
 
 /// Only completed items have authoritative content in the current Claude adapter.
 pub fn project(env: &Envelope) -> Option<ChatItem> {
-    let Event::ItemCompleted { item_id, kind, summary, parent_item_id } = &env.event else {
-        return None;
+    let (item_id, kind, summary, parent_item_id) = match &env.event {
+        Event::ItemStarted {
+            item_id,
+            kind,
+            summary,
+            parent_item_id,
+        }
+        | Event::ItemUpdated {
+            item_id,
+            kind,
+            summary,
+            parent_item_id,
+        }
+        | Event::ItemCompleted {
+            item_id,
+            kind,
+            summary,
+            parent_item_id,
+        } => (item_id, kind, summary, parent_item_id),
+        _ => return None,
     };
     Some(ChatItem {
         provider_uuid: env
@@ -115,7 +179,11 @@ pub(crate) fn write(conn: &Connection, item: &ChatItem) -> Result<()> {
     if let Some(id) = rewind {
         conn.execute(
             "INSERT INTO chat_archive(rewind_id,session_id,item_json) VALUES (?1,?2,?3)",
-            (id, &item.session_id, serde_json::to_string(item).expect("chat item")),
+            (
+                id,
+                &item.session_id,
+                serde_json::to_string(item).expect("chat item"),
+            ),
         )?;
         return Ok(());
     }
@@ -123,11 +191,25 @@ pub(crate) fn write(conn: &Connection, item: &ChatItem) -> Result<()> {
         ON CONFLICT(session_id,id) DO UPDATE SET seq=excluded.seq,kind=excluded.kind,body=excluded.body,parent_id=excluded.parent_id,provider_uuid=excluded.provider_uuid
         WHERE excluded.seq > chat_items.seq",
         (&item.session_id, &item.id, item.seq as i64, item.at, serde_json::to_string(&item.kind).expect("item kind"), bounded(&item.body, 128 * 1024), &item.parent_id, &item.provider_uuid))?;
-    conn.execute(
-        "DELETE FROM chat_items WHERE session_id=?1 AND id IN
-        (SELECT id FROM chat_items WHERE session_id=?1 ORDER BY seq DESC LIMIT -1 OFFSET 2000)",
-        [&item.session_id],
-    )?;
+    Ok(())
+}
+
+pub(crate) fn append_delta(conn: &Connection, env: &Envelope) -> Result<()> {
+    let Event::ContentDelta { item_id, text } = &env.event else {
+        return Ok(());
+    };
+    let existing: Option<(String,u64)> = conn.query_row("SELECT body,seq FROM chat_items WHERE session_id=?1 AND id=?2 AND seq<?3 AND NOT EXISTS(SELECT 1 FROM chat_rewinds WHERE session_id=?1 AND state='applied' AND ?3 BETWEEN target_seq AND through_seq)", (env.session_id.as_str(),item_id.as_str(),env.seq), |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
+    if let Some((body, _)) = existing {
+        let next = bounded(&format!("{body}{text}"), 128 * 1024);
+        conn.execute(
+            "UPDATE chat_items SET body=?4,seq=?3 WHERE session_id=?1 AND id=?2",
+            (env.session_id.as_str(), item_id.as_str(), env.seq, next),
+        )?;
+        conn.execute(
+            "UPDATE sessions SET last_event_seq=MAX(last_event_seq,?2) WHERE id=?1",
+            (env.session_id.as_str(), env.seq),
+        )?;
+    }
     Ok(())
 }
 
@@ -135,13 +217,24 @@ pub(crate) fn read(conn: &Connection, session_id: &str, after: u64) -> Result<Ve
     read_page(conn, session_id, after, false)
 }
 
-pub(crate) fn recent(conn: &Connection, session_id: &str, after: Option<u64>) -> Result<Vec<ChatItem>> {
+pub(crate) fn recent(
+    conn: &Connection,
+    session_id: &str,
+    after: Option<u64>,
+) -> Result<Vec<ChatItem>> {
     let mut items = read_page(conn, session_id, after.unwrap_or(0), after.is_none())?;
-    if after.is_none() { items.reverse(); }
+    if after.is_none() {
+        items.reverse();
+    }
     Ok(items)
 }
 
-fn read_page(conn: &Connection, session_id: &str, after: u64, newest: bool) -> Result<Vec<ChatItem>> {
+fn read_page(
+    conn: &Connection,
+    session_id: &str,
+    after: u64,
+    newest: bool,
+) -> Result<Vec<ChatItem>> {
     let sql = if newest {
         "SELECT id,seq,at,kind,body,parent_id,provider_uuid FROM chat_items WHERE session_id=?1 AND seq>?2 ORDER BY seq DESC LIMIT 20"
     } else {
@@ -168,6 +261,72 @@ fn read_page(conn: &Connection, session_id: &str, after: u64, newest: bool) -> R
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// Latest page, a backwards page, or incremental updates after an acknowledged cursor.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryPage {
+    /// Ascending display order; item IDs are stable across updates.
+    pub items: Vec<ChatItem>,
+    /// Last returned sequence for incremental paging.
+    pub next_after: u64,
+    /// Oldest returned sequence for backwards paging.
+    pub next_before: Option<u64>,
+    /// Another page exists in the requested direction.
+    pub has_more: bool,
+}
+pub(crate) fn history_page(
+    conn: &Connection,
+    session: &str,
+    before: Option<u64>,
+    after: Option<u64>,
+    limit: usize,
+) -> Result<HistoryPage> {
+    let limit = limit.clamp(1, 100);
+    let forward = after.is_some();
+    let sql = if forward {
+        "SELECT id,seq,at,kind,body,parent_id,provider_uuid FROM chat_items WHERE session_id=?1 AND seq>?2 ORDER BY seq LIMIT ?3"
+    } else {
+        "SELECT id,seq,at,kind,body,parent_id,provider_uuid FROM chat_items WHERE session_id=?1 AND seq<?2 ORDER BY seq DESC LIMIT ?3"
+    };
+    let cursor = if forward {
+        after.unwrap_or(0).min(i64::MAX as u64)
+    } else {
+        before.unwrap_or(i64::MAX as u64).min(i64::MAX as u64)
+    };
+    let mut stmt = conn.prepare_cached(sql)?;
+    let rows = stmt.query_map((session, cursor as i64, (limit + 1) as i64), |r| {
+        let kind: String = r.get(3)?;
+        Ok(ChatItem {
+            session_id: session.into(),
+            id: r.get(0)?,
+            seq: r.get(1)?,
+            at: r.get(2)?,
+            kind: serde_json::from_str(&kind).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    3,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?,
+            body: r.get(4)?,
+            parent_id: r.get(5)?,
+            provider_uuid: r.get(6)?,
+        })
+    })?;
+    let mut items = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    let has_more = items.len() > limit;
+    items.truncate(limit);
+    if !forward {
+        items.reverse();
+    }
+    Ok(HistoryPage {
+        next_after: items.last().map_or(after.unwrap_or(0), |i| i.seq),
+        next_before: items.first().map(|i| i.seq),
+        items,
+        has_more,
+    })
 }
 
 #[cfg(test)]
@@ -206,18 +365,27 @@ mod tests {
             write(&conn, &item).unwrap();
         }
         assert_eq!(
-            conn.query_row("SELECT count(*) FROM chat_items", [], |r| r.get::<_, i64>(0)).unwrap(),
-            2000
+            conn.query_row("SELECT count(*) FROM chat_items", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            2003
         );
         let page = read(&conn, "s", 0).unwrap();
         assert_eq!(page.len(), 20);
-        assert_eq!(page[0].seq, 5);
+        assert_eq!(page[0].seq, 2);
         let tail = recent(&conn, "s", None).unwrap();
         assert_eq!(tail.len(), 20);
         assert_eq!(tail.first().unwrap().seq, 1985);
         assert_eq!(tail.last().unwrap().seq, 2004);
         assert!(recent(&conn, "s", Some(2004)).unwrap().is_empty());
-        assert_eq!(recent(&conn, "s", Some(1999)).unwrap().iter().map(|i| i.seq).collect::<Vec<_>>(), vec![2000, 2001, 2002, 2003, 2004]);
+        assert_eq!(
+            recent(&conn, "s", Some(1999))
+                .unwrap()
+                .iter()
+                .map(|i| i.seq)
+                .collect::<Vec<_>>(),
+            vec![2000, 2001, 2002, 2003, 2004]
+        );
         conn.execute("DELETE FROM sessions", []).unwrap();
         assert!(read(&conn, "s", 0).unwrap().is_empty());
     }

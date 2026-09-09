@@ -10,6 +10,8 @@ import { Input } from "./controls/input";
 import { Button } from "./controls/button";
 import { isTrashed, type NavigationData } from "../navigationApi";
 import { hasSavedEdits } from "../workbenchState";
+import { SubagentsPanel } from "./SubagentsPanel";
+import { UsersThreeIcon } from "@phosphor-icons/react";
 import { SessionCard } from "./SessionCard";
 import { ProjectHistory } from "./ProjectHistory";
 import { documentCommands } from "../documentCommands";
@@ -181,6 +183,14 @@ export function ProjectWorkbench({
   const [openPath, setOpenPath] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<Confirmation | null>(null);
   const [history, setHistory] = useState(false);
+  const [subagents, setSubagents] = useStoredState("brigadier:subagents-panel", false);
+  const [requestedWorker, setRequestedWorker] = useState<string|null>(null);
+  useEffect(()=>{
+    const openWorker=(event:Event)=>{const detail=(event as CustomEvent<{rootId:string;id:string}>).detail;if(detail.rootId!==selectedSessionId)return;setRequestedWorker(detail.id);setSubagents(true);setHistory(false);setWorkspaceOpen(true);};
+    window.addEventListener("workbench-open-worker",openWorker);
+    return ()=>window.removeEventListener("workbench-open-worker",openWorker);
+  },[selectedSessionId]);
+
   const [panelWidth, setPanelWidth] = useStoredState(
     "brigadier:workspace-width",
     280,
@@ -397,22 +407,25 @@ export function ProjectWorkbench({
       kind: "file" | "diff" = "file",
       staged = false,
       line?: number,
+      source?: SessionRuntime,
     ) => {
+      const fileRoot = source?.cwd ?? root;
+      const fileContext = source?.projectId ? {projectId: source.projectId, sessionId: source.sessionId} : context;
       if (!project) return;
       const suffix = path.match(/(?:#L|:)(\d+)(?::\d+)?$/);
       const cleaned = path
         .replace(/#L\d+(?:-L\d+)?$/, "")
         .replace(/:\d+(?::\d+)?$/, "");
-      const relative = cleaned.startsWith(root + "/")
-        ? cleaned.slice(root.length + 1)
+      const relative = cleaned.startsWith(fileRoot + "/")
+        ? cleaned.slice(fileRoot.length + 1)
         : cleaned.replace(/^\.\//, "");
-      const id = `${kind}:${context.sessionId ?? "root"}:${staged}:${relative}`;
+      const id = `${kind}:${fileContext.sessionId ?? "root"}:${staged}:${relative}`;
       const tab: ProjectTab = {
         id,
         kind,
         path: relative,
-        context,
-        root,
+        context: fileContext,
+        root: fileRoot,
         staged,
         line: line ?? (suffix ? Number(suffix[1]) : undefined),
       };
@@ -1004,9 +1017,10 @@ export function ProjectWorkbench({
     workspaceOpen && (!history || archivedSessions.length > 0);
   const togglePanel = (next: WorkspaceMode) => {
     setReviewTurn(null);
+    setSubagents(false);
     setMode(next);
     setHistory(false);
-    setWorkspaceOpen(!panelVisible || history || mode !== next);
+    setWorkspaceOpen(!panelVisible || history || subagents || mode !== next);
   };
   const handledRequest = useRef<number | null>(null);
   useEffect(() => {
@@ -1178,7 +1192,7 @@ export function ProjectWorkbench({
                   : undefined
               }
               aria-controls="workspace-panel"
-              aria-pressed={panelVisible && !history && mode === value}
+              aria-pressed={panelVisible && !history && !subagents && mode === value}
               onClick={() => togglePanel(value)}
               disabled={!project}
             >
@@ -1190,6 +1204,7 @@ export function ProjectWorkbench({
               )}
             </Button>
           ))}
+          <Button size="icon" aria-label="Subagents" title="Subagents" aria-controls="workspace-panel" aria-pressed={panelVisible && subagents} disabled={!selectedSessionId} onClick={() => { setHistory(false); setSubagents(true); setWorkspaceOpen(!panelVisible || !subagents); }}><UsersThreeIcon size={18}/></Button>
           <Button
             size="icon"
             aria-label="Terminal"
@@ -1212,6 +1227,7 @@ export function ProjectWorkbench({
               onClick={() => {
                 if (history && workspaceOpen) setWorkspaceOpen(false);
                 else {
+                  setSubagents(false);
                   setHistory(true);
                   setWorkspaceOpen(true);
                 }
@@ -1289,6 +1305,10 @@ export function ProjectWorkbench({
           className="workbench-main flex min-h-0 min-w-0 flex-1 flex-col"
           hidden={resourceActive}
         >
+          <div
+            className="conversation-surface flex min-h-0 min-w-0 flex-1 flex-col"
+            hidden={!showConversation}
+          >
           {showConversation && activeSession && (
             <SessionCard
               session={activeSession}
@@ -1296,17 +1316,17 @@ export function ProjectWorkbench({
               peers={peers}
               onSelect={onSelectSession}
               onChanges={() => {
+                setHistory(false);
+                setSubagents(false);
                 setReviewTurn(null);
                 setMode("changes");
                 setWorkspaceOpen(true);
               }}
+              onSubagents={() => { setHistory(false); setSubagents(true); setWorkspaceOpen(true); }}
+              onFiles={() => { setHistory(false); setSubagents(false); setMode("files"); setWorkspaceOpen(true); }}
               onSettings={() => setSessionPrefs(true)}
             />
           )}
-          <div
-            className="conversation-surface flex min-h-0 min-w-0 flex-1 flex-col"
-            hidden={!showConversation}
-          >
             <NoteScope.Provider value={project?.id ?? null}>
               {historyContent}
               {children}
@@ -1436,7 +1456,7 @@ export function ProjectWorkbench({
               onLostPointerCapture={() => setResizingPanel(false)}
             />
             <div className="workbench-side-content flex min-h-0 flex-1 flex-col">
-              {history ? (
+              {subagents ? <SubagentsPanel requestedId={requestedWorker} key={selectedSessionId ?? "none"} rootId={selectedSessionId} projectId={project.id} peers={peers} sessions={sessions} onFile={(path, worker) => { if(path.startsWith("brigadier-note:")) {const note=data.notes.find(note=>note.id===path.slice(15));if(note)openNote(note);}else open(path, "file", false, undefined, worker);}} /> : history ? (
                 <ProjectHistory
                   projectName={data.projectNames?.[project.id] ?? project.name}
                   sessions={archivedSessions}

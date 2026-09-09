@@ -36,6 +36,7 @@ export interface ChatItem {
   parent_id: string | null;
   provider_uuid?: string | null;
 }
+export interface HistoryPage { items: ChatItem[]; nextAfter: number; nextBefore: number | null; hasMore: boolean }
 export interface ChatTurn {
   id: string;
   start_seq: number;
@@ -101,8 +102,16 @@ export const workspaceApi = {
     desktop
       ? invoke("chat_items", { sessionId, after })
       : Promise.resolve(mockChatItems(sessionId, after)),
-  chatTurns: (sessionId: string): Promise<ChatTurn[]> =>
-    desktop ? invoke("chat_turns", { sessionId }) : Promise.resolve([]),
+  historyPage: async (sessionId: string, options: { before?: number; after?: number; limit?: number } = {}): Promise<HistoryPage> => {
+    if (desktop) return invoke("conversation_history_page", { sessionId, ...options });
+    const all = mockChatItems(sessionId, 0);
+    const matching = all.filter(item => (options.before === undefined || item.seq < options.before) && (options.after === undefined || item.seq > options.after));
+    const limit = options.limit ?? 60;
+    const items = options.after === undefined ? matching.slice(-limit) : matching.slice(0,limit);
+    return {items, nextAfter: Math.max(options.after ?? 0,...items.map(i=>i.seq)), nextBefore: items[0]?.seq ?? null, hasMore: matching.length > items.length};
+  },
+  chatTurns: (sessionId: string, range: {start?: number; end?: number} = {}): Promise<ChatTurn[]> =>
+    desktop ? invoke("chat_turns", { sessionId, ...range }) : Promise.resolve([]),
   openTerminal: (
     context: WorkspaceContext,
     cols: number,

@@ -101,30 +101,45 @@ pub(super) async fn run(
             turn_deadline: run.limits.worker_turn_deadline,
             quiet_deadline: run.limits.worker_quiet_deadline,
             ceiling: run.ceiling.clone(),
+            default_provider: run.driver.clone(),
             permission_mode: run.permission_mode.clone(),
+            stop: run.stop.clone(),
         };
         let permits = Arc::clone(&permits);
         set.spawn(async move {
             // A closed semaphore is impossible here: it is dropped with this scope.
-            let _permit = permits.acquire_owned().await.expect("the semaphore outlives the set");
+            let _permit = permits
+                .acquire_owned()
+                .await
+                .expect("the semaphore outlives the set");
             one(ctx, order).await
         });
     }
 
     let mut out = Dispatched::default();
+    let mut failure = None;
     while let Some(joined) = set.join_next().await {
         match joined {
             Ok(Ok((collected, violations))) => {
                 out.collected.push(collected);
                 out.violations.extend(violations);
             }
-            Ok(Err(e)) => return Err(e),
+            Ok(Err(e)) => {
+                if failure.is_none() {
+                    failure = Some(e);
+                }
+            }
             Err(e) => {
-                return Err(LoopError::Io(std::io::Error::other(format!(
-                    "a work order's task did not finish: {e}"
-                ))))
+                if failure.is_none() {
+                    failure = Some(LoopError::Io(std::io::Error::other(format!(
+                        "a work order's task did not finish: {e}"
+                    ))));
+                }
             }
         }
+    }
+    if let Some(error) = failure {
+        return Err(error);
     }
     out.collected.sort_by(|a, b| a.order_id.cmp(&b.order_id));
     out.violations.sort();
@@ -145,23 +160,45 @@ struct OrderCtx {
     base_sha: String,
     turn_deadline: std::time::Duration,
     quiet_deadline: std::time::Duration,
-    /// The run's model ceiling. Decides what this order's child is started on, and whether the
-    /// tier the lead assigned survived it (`crates/supervisor/src/loop_/routing.rs`).
+    /// Exact orchestrator selection; legacy worker tiers remain independent.
     ceiling: Ceiling,
+    default_provider: brigadier_core::driver::DriverKind,
     /// The run's permission mode, which for a worker reaches the flag but **not** the hook: a
     /// worker is always behind `WorkerWall`, whatever the mode
     /// (`docs/research/permission-modes.md` §5).
     permission_mode: brigadier_core::driver::PermissionMode,
+    stop: Arc<std::sync::atomic::AtomicBool>,
 }
 
 async fn one(ctx: OrderCtx, order: Order) -> Result<(Collected, Vec<String>), LoopError> {
     let store = &ctx.sup.inner.store;
+    if order.provider.as_ref().is_some_and(|p| p.trim().is_empty())
+        || order.model.as_ref().is_some_and(|m| m.trim().is_empty())
+    {
+        return Err(LoopError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Worker provider and model must be non-empty",
+        )));
+    }
 
+    if ctx.stop.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(LoopError::Io(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "Task stopped before dispatch",
+        )));
+    }
     // The isolation, and the refusal. `Ok(None)` is a project with no repository, which for a
     // *loop-dispatched* child is a refusal and not a fallback.
     let prepared = prepare_from(&ctx.project_root, Some(&ctx.base_sha))
         .await?
         .ok_or_else(|| LoopError::NoWorktree(ctx.project_root.clone()))?;
+    if ctx.stop.load(std::sync::atomic::Ordering::Acquire) {
+        prepared.roll_back().await;
+        return Err(LoopError::Io(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "Task stopped during workspace preparation",
+        )));
+    }
     let worktree = prepared.path.clone();
     let branch = prepared.branch.clone();
     // D7's payoff: the branch point git actually used, resolved before the `add`, not a second
@@ -174,8 +211,11 @@ async fn one(ctx: OrderCtx, order: Order) -> Result<(Collected, Vec<String>), Lo
     let baseline_dirt = dirty_count(&ctx.git, &worktree).await.unwrap_or(0);
 
     let intent_id = uuid::Uuid::new_v4().to_string();
-    let mut intent =
-        IntentRow::new(intent_id.clone(), KnownIntentKind::WorkOrder, SystemTime::now());
+    let mut intent = IntentRow::new(
+        intent_id.clone(),
+        KnownIntentKind::WorkOrder,
+        SystemTime::now(),
+    );
     intent.project_id = Some(ctx.project_id.clone());
     intent.subject = Some(worktree.display().to_string());
     intent.baseline = Some(format!("{base_sha} {baseline_dirt}"));
@@ -206,25 +246,37 @@ async fn one(ctx: OrderCtx, order: Order) -> Result<(Collected, Vec<String>), Lo
     row.dispatched_at = Some(SystemTime::now());
     store.upsert_work_order(row).await?;
 
-    // **The ceiling, and it is the whole of the model decision.** The lead's tier is an input to
-    // it and never reaches the CLI on its own: a run started with no pick used to let the planner
-    // put a work order on `--model opus`, which billed 3× for identical work across two live runs
-    // one day apart (`crates/supervisor/src/loop_/routing.rs`). `opus`, `sonnet` and `haiku` are
-    // the CLI's own aliases (`docs/research/permission-modes.md` §2).
-    let routed = ctx.ceiling.worker(order.model_tier);
+    // Exact worker choices override legacy tiers, independently of the orchestrator.
+    let provider = order
+        .provider
+        .as_deref()
+        .unwrap_or(ctx.default_provider.as_str());
+    let routed = ctx.ceiling.worker_for_provider(order.model_tier, provider);
     let outcome = ctx
         .call
         .call(CallRequest {
             project_id: ctx.project_id.clone(),
             label: "worker",
-            cwd: CallCwd::Worktree { dir: worktree.clone(), branch: Some(branch.clone()) },
+            cwd: CallCwd::Worktree {
+                dir: worktree.clone(),
+                branch: Some(branch.clone()),
+            },
             prompt: worker_prompt(&ctx, &order),
             turn_deadline: ctx.turn_deadline,
             quiet_deadline: ctx.quiet_deadline,
             // The **effective** tier, not the one the lead asked for: an order clamped down to
             // Haiku must not keep an Opus order's deliberation budget.
-            thinking: tier_thinking(routed.tier),
-            model: routed.model.clone(),
+            thinking: if provider == "claude-code" {
+                tier_thinking(routed.tier)
+            } else {
+                ThinkingPolicy::Inherit
+            },
+            model: order.model.clone().or_else(|| routed.model.clone()),
+            effort: order.effort.clone(),
+            provider: order
+                .provider
+                .clone()
+                .map(brigadier_core::driver::DriverKind::new),
             permission_mode: ctx.permission_mode.clone(),
         })
         .await?;
@@ -234,8 +286,12 @@ async fn one(ctx: OrderCtx, order: Order) -> Result<(Collected, Vec<String>), Lo
     // may be about to be removed.
     let commits = git::commits(&ctx.git, &ctx.project_root, &base_sha, &branch).await?;
     let changed = git::changed_paths(&ctx.git, &ctx.project_root, &base_sha, &branch).await?;
-    let dirt = dirty_count(&ctx.git, &worktree).await.unwrap_or(baseline_dirt);
-    let claim = crate::action::parse_report(&outcome.text).ok().map(|r| r.status);
+    let dirt = dirty_count(&ctx.git, &worktree)
+        .await
+        .unwrap_or(baseline_dirt);
+    let claim = crate::action::parse_report(&outcome.text)
+        .ok()
+        .map(|r| r.status);
 
     // §3.2: ownership is advisory going in and enforced coming out. A path outside the set
     // **blocks the merge**; a set that passes proves only that this particular failure did not
@@ -264,7 +320,9 @@ async fn one(ctx: OrderCtx, order: Order) -> Result<(Collected, Vec<String>), Lo
     // to. Best-effort: `warn` needs a session, and a spawn that failed has none.
     if let (Some(clamp), Some(session_id)) = (routed.clamp.as_deref(), outcome.session_id.as_ref())
     {
-        ctx.sup.warn(&ctx.project_id, session_id, clamp.to_owned()).await;
+        ctx.sup
+            .warn(&ctx.project_id, session_id, clamp.to_owned())
+            .await;
     }
 
     // The close. `work_order` can settle only `unknown`; `Acked` is what distinguishes this from
@@ -397,7 +455,10 @@ mod tests {
         let owns = vec!["src/a".to_owned()];
         assert!(owns_covers(&owns, "src/a"));
         assert!(owns_covers(&owns, "src/a/deep/file.rs"));
-        assert!(!owns_covers(&owns, "src/ab/file.rs"), "src/ab is not inside src/a");
+        assert!(
+            !owns_covers(&owns, "src/ab/file.rs"),
+            "src/ab is not inside src/a"
+        );
         assert!(!owns_covers(&owns, "src/abc"));
         assert!(!owns_covers(&owns, "src"));
         assert!(!owns_covers(&owns, "other/a"));
@@ -422,7 +483,10 @@ mod tests {
             "```json\n{{\"order_id\":\"o1\",\"status\":\"done\",\"summary\":\"{}\"}}\n```",
             "x".repeat(300)
         );
-        let commits = vec![git::Commit { sha: "abc".into(), subject: "s".into() }];
+        let commits = vec![git::Commit {
+            sha: "abc".into(),
+            subject: "s".into(),
+        }];
         let out = summarise(None, &text, &commits, &["src/a.rs".to_owned()]);
         assert!(out.starts_with("1 commit(s), 1 path(s) changed."));
         assert!(out.len() <= crate::action::MAX_SUMMARY_CHARS * 2);

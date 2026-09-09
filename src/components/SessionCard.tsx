@@ -1,182 +1,62 @@
-import { FolderIcon } from "./NavigationIcons";
-import { Popover } from "./controls/overlay";
-import { Spinner } from "./controls/status";
-import { Details, DetailsSummary } from "./controls/details";
-import { Button } from "./controls/button";
-import { readActivity, type AgentActivity } from "../sessionApi";
-import { RewindHistory } from "./RewindHistory";
-import { useEffect, useState } from "react";
-import {
-  GitBranchIcon,
-  GitDiffIcon,
-  SlidersHorizontalIcon,
-  UsersThreeIcon,
-  ArrowSquareOutIcon,
-  GearSixIcon,
-} from "@phosphor-icons/react";
-import type { SessionRuntime } from "../feedStore";
-import type { PeerData } from "../peerApi";
-import { useSessionChanges } from "../desktopApi";
-import { working } from "../attention";
-export function SessionCard({
-  session,
-  sessions,
-  peers,
-  onSelect,
-  onChanges,
-  onSettings,
-}: {
-  session: SessionRuntime;
-  sessions: Record<string, SessionRuntime>;
-  peers: PeerData;
-  onSelect: (id: string) => void;
-  onChanges: () => void;
-  onSettings: () => void;
+import { useEffect, useState } from 'react';
+import { GitBranchIcon, GitDiffIcon, SlidersHorizontalIcon, UsersThreeIcon, FolderIcon, GearSixIcon, FileIcon, ArrowSquareOutIcon } from '@phosphor-icons/react';
+import { Button } from './controls/button';
+import type { SessionRuntime } from '../feedStore';
+import { peerApi, type PeerData } from '../peerApi';
+import { useSessionChanges } from '../desktopApi';
+import { workerTree } from '../workerTree';
+import './thread-context.css';
+import { invoke } from '@tauri-apps/api/core';
+import { desktop } from '../workspaceApi';
+import type { PeerAttachment } from '../peerApi';
+
+export function SessionCard({ session, sessions, peers, onSelect, onChanges, onSettings, onSubagents, onFiles }: {
+  session: SessionRuntime; sessions: Record<string, SessionRuntime>; peers: PeerData;
+  onSelect: (id: string) => void; onChanges: () => void; onSettings: () => void;
+  onSubagents: () => void; onFiles: () => void;
 }) {
-  const [savedHistory, setSavedHistory] = useState(false);
-  const [native, setNative] = useState<AgentActivity | null>(null);
-  useEffect(() => {
-    setNative(null);
-    let live = true;
-    let timer: ReturnType<typeof setTimeout>;
-    const read = async () => {
-      try {
-        const next = await readActivity(session.sessionId);
-        if (live) setNative(next);
-      } catch {
-      } finally {
-        if (live) timer = setTimeout(read, 3000);
-      }
-    };
-    void read();
-    return () => {
-      live = false;
-      clearTimeout(timer);
-    };
-  }, [session.sessionId]);
-  const [open, setOpen] = useState(false);
   const changes = useSessionChanges(session.sessionId);
-  const ids = new Set([session.sessionId]);
-  let previous = 0;
-  while (previous !== ids.size) {
-    previous = ids.size;
-    for (const [id, parent] of Object.entries(peers.origins))
-      if (ids.has(parent)) ids.add(id);
-  }
-  ids.delete(session.sessionId);
-  const agents = [...ids].map((id) => sessions[id]).filter(Boolean);
-  const added = changes.files.reduce((n, f) => n + f.added, 0),
-    deleted = changes.files.reduce((n, f) => n + f.deleted, 0);
-  return (
-    <>
-      <Popover isOpen={open} onOpenChange={setOpen}>
-        <Button
-          isIconOnly
-          className="icon-button environment-trigger size-8 p-0 self-end m-2 text-text-secondary"
-          aria-label="Environment and agents"
-          aria-expanded={open}
-          onClick={() => setOpen(!open)}
-        >
-          <SlidersHorizontalIcon size={19} />
-        </Button>
-        <Popover.Content placement="bottom start">
-          <Popover.Dialog
-            className="session-card flex w-[304px] max-h-[65dvh] flex-col gap-3 overflow-auto p-3 text-[13px] text-text-secondary [&_svg]:size-4"
-            aria-label="Session environment"
-          >
-            <h3>Environment</h3>
-            <Button onClick={onChanges}>
-              <GitDiffIcon />
-              <span>Changes</span>
-              <span className="change-count">
-                <i className="added text-ok not-italic">
-                  +{added.toLocaleString()}
-                </i>{" "}
-                <i className="removed text-error not-italic">
-                  −{deleted.toLocaleString()}
-                </i>
-              </span>
-            </Button>
-            <div title={session.cwd ?? undefined}>
-              <FolderIcon />
-              <span>
-                {session.worktreePath ? "Worktree" : "Project folder"}
-              </span>
-            </div>
-            <div title={session.branch ?? undefined}>
-              <GitBranchIcon />
-              <span>{session.branch ?? "No Git branch"}</span>
-            </div>
-            <Button onClick={onSettings}>
-              <GearSixIcon />
-              <span>Session settings</span>
-            </Button>
-            <Button onClick={() => setSavedHistory(true)}>
-              <ArrowSquareOutIcon />
-              <span>Saved history</span>
-            </Button>
-            <section>
-              <h3>Agents</h3>
-              {native?.agents.map((agent) => (
-                <Details key={agent.id}>
-                  <DetailsSummary>
-                    {agent.description || agent.id}
-                    <small>{agent.status}</small>
-                  </DetailsSummary>
-                  <p>{agent.action || "No action reported"}</p>
-                  {agent.model && <small>{agent.model}</small>}
-                </Details>
-              ))}
-              {agents.length
-                ? agents.map((agent) => (
-                    <Button
-                      key={agent.sessionId}
-                      onClick={() => onSelect(agent.sessionId)}
-                    >
-                      <UsersThreeIcon />
-                      <span>
-                        {peers.titles[agent.sessionId] ??
-                          `Session ${agent.sessionId.slice(-6)}`}
-                      </span>
-                      {working(agent) ? (
-                        <Spinner size="sm" aria-label="Working" />
-                      ) : (
-                        <small>
-                          {agent.status === "failed"
-                            ? "Interrupted"
-                            : agent.status === "exited"
-                              ? "Done"
-                              : "Idle"}
-                        </small>
-                      )}
-                    </Button>
-                  ))
-                : !native?.agents.length && <p>No workhorses yet</p>}
-            </section>
-            <section>
-              <h3>Sources</h3>
-              <div title={session.cwd ?? undefined}>
-                <FolderIcon />
-                <span>{session.cwd?.split("/").pop() ?? "Project files"}</span>
-              </div>
-              {peers.origins[session.sessionId] && (
-                <Button
-                  onClick={() => onSelect(peers.origins[session.sessionId]!)}
-                >
-                  <ArrowSquareOutIcon />
-                  <span>Source session</span>
-                </Button>
-              )}
-            </section>
-          </Popover.Dialog>
-        </Popover.Content>
-      </Popover>
-      {savedHistory && (
-        <RewindHistory
-          sessionId={session.sessionId}
-          onClose={() => setSavedHistory(false)}
-        />
-      )}
-    </>
-  );
+  const [open, setOpen] = useState(() => window.innerWidth >= 1500);
+  const navigate = (action: () => void) => {setOpen(false);action();};
+  const rows = workerTree(session.sessionId, peers, sessions);
+  const [error, setError] = useState('');
+  const [savedSources, setSavedSources] = useState<PeerAttachment[]>([]);
+  useEffect(() => {
+    let live = true;
+    setSavedSources([]);
+    if (desktop) void invoke<PeerAttachment[]>('session_sources', {sessionId: session.sessionId}).then(files => { if(live)setSavedSources(files); }, error => { if(live)setError(String(error)); });
+    return () => { live = false; };
+  }, [session.sessionId, session.busy, session.lastTurnId]);
+  const files = new Map([...peers.messages, ...(peers.inputs ?? [])]
+    .filter(m => m.to === session.sessionId)
+    .flatMap(m => m.attachments ?? []).concat(savedSources).map(a => [a.id, a]));
+  const viewAttachment = async (id: string) => {
+    if (!session.projectId) return;
+    try {
+      const attachment = await peerApi.attachment(session.projectId, id);
+      const bytes = Uint8Array.from(atob(attachment.base64), c => c.charCodeAt(0));
+      const url = URL.createObjectURL(new Blob([bytes], {type: attachment.metadata.mediaType}));
+      const link = document.createElement('a'); link.href = url; link.download = attachment.metadata.name; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch(e) { setError(String(e)); }
+  };
+  return <details className="thread-context-wrap" open={open} onToggle={e=>setOpen(e.currentTarget.open)}>
+    <summary className="thread-context-summary" aria-label="Environment and subagents"><SlidersHorizontalIcon size={18}/><span>Context</span></summary>
+    <aside className="thread-context" aria-label="Session environment">
+      <section><h3>Environment</h3>
+        <Button className="context-row" onClick={()=>navigate(onChanges)}><GitDiffIcon/><span>Changes</span><span className="change-count"><i className="text-ok not-italic">+{changes.files.reduce((n,f) => n+f.added,0)}</i> <i className="text-error not-italic">−{changes.files.reduce((n,f) => n+f.deleted,0)}</i></span></Button>
+        <Button className="context-row" onClick={()=>navigate(onFiles)} title={session.cwd ?? undefined}><FolderIcon/><span>{session.worktreePath ? 'Worktree' : 'Local'} · {session.cwd?.split('/').pop() ?? 'Workspace'}</span></Button>
+        <div className="context-row" title={session.branch ?? undefined}><GitBranchIcon/><span>{session.branch ?? 'No Git branch'}</span></div>
+        {session.branch && <Button className="context-row" onClick={()=>navigate(onChanges)}><GitDiffIcon/><span>Commit, push or compare</span><ArrowSquareOutIcon/></Button>}
+        <Button className="context-row" onClick={onSettings}><GearSixIcon/><span>Session settings</span></Button>
+      </section>
+      <section><h3>Subagents</h3><Button className="context-row" onClick={()=>navigate(onSubagents)}><UsersThreeIcon/><span>{rows.filter(r => !r.done).length} active · {rows.filter(r => r.done).length} done</span></Button></section>
+      <section><h3>Sources</h3>
+        <Button className="context-row" onClick={()=>navigate(onFiles)}><FolderIcon/><span>Project files</span></Button>
+        {[...files.values()].map(a => <Button key={a.id} className="context-row" onClick={() => void viewAttachment(a.id)} title={a.name}><FileIcon/><span>{a.name}</span></Button>)}
+        {peers.origins[session.sessionId] && <Button className="context-row" onClick={() => onSelect(peers.origins[session.sessionId]!)}><ArrowSquareOutIcon/><span>Parent conversation</span></Button>}
+        {error && <p role="alert" className="text-error">{error}</p>}
+      </section>
+    </aside>
+  </details>;
 }

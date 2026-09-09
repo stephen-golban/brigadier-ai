@@ -50,6 +50,8 @@ export interface StartSessionArgs {
   projectId: ProjectId;
   prompt: string;
   model: string | null;
+  provider?: string;
+  requestId?: string;
   permissionMode: PermissionMode;
   options?: AgentOptions;
   isolated?: boolean;
@@ -260,6 +262,8 @@ const tauriBridge: Bridge = {
     projectId,
     prompt,
     model,
+    provider,
+    requestId,
     permissionMode,
     options,
     isolated,
@@ -270,6 +274,8 @@ const tauriBridge: Bridge = {
       projectId,
       prompt,
       model,
+      provider,
+      requestId,
       permissionMode,
       options,
       isolated,

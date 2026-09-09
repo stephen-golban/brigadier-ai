@@ -1,3 +1,4 @@
+import { pasteComposer } from "../test/composer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   cleanup,
@@ -57,18 +58,20 @@ describe("prompt input", () => {
     const start = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
     const props = { project, models: [], disabled: false, onStart: start };
     const view = render(<NewSession {...props} />);
-    await user.type(screen.getByRole("textbox"), "Keep this draft");
-    await user.click(screen.getByRole("button", { name: "Start" }));
-    expect(screen.getByRole("textbox")).toHaveValue("Keep this draft");
+    await waitFor(() => expect(screen.getByRole("textbox")).toHaveAttribute("contenteditable", "true"));
+    await pasteComposer(screen.getByRole("textbox"), "Keep this draft");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(screen.getByRole("textbox")).toHaveTextContent("Keep this draft");
     view.rerender(
       <NewSession {...props} project={{ ...project, id: "other" }} />,
     );
-    expect(screen.getByRole("textbox")).toHaveValue("");
-    await user.type(screen.getByRole("textbox"), "Other project");
+    expect(screen.getByRole("textbox")).toHaveTextContent("");
+    await waitFor(() => expect(screen.getByRole("textbox")).toHaveAttribute("contenteditable", "true"));
+    await pasteComposer(screen.getByRole("textbox"), "Other project");
     view.rerender(<NewSession {...props} />);
-    expect(screen.getByRole("textbox")).toHaveValue("Keep this draft");
-    await user.click(screen.getByRole("button", { name: "Start" }));
-    expect(screen.getByRole("textbox")).toHaveValue("");
+    await waitFor(() => expect(screen.getByRole("textbox")).toHaveTextContent("Keep this draft"));
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(screen.getByRole("textbox")).toHaveTextContent("");
   });
   it("routes file links and never renders executable message HTML", async () => {
     const open = vi.fn();
@@ -100,16 +103,17 @@ describe("prompt input", () => {
       />,
     );
     const input = screen.getByRole("textbox");
-    await user.type(input, "First line");
+    await pasteComposer(input, "First line");
     expect(fireEvent.keyDown(input, { key: "Enter", isComposing: true })).toBe(
       true,
     );
     expect(start).not.toHaveBeenCalled();
-    await user.keyboard("{Shift>}{Enter}{/Shift}Second line");
-    expect(input).toHaveValue("First line\nSecond line");
+    fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
+    await pasteComposer(input, "Second line");
+    expect(input).toHaveTextContent("First lineSecond line");
     await user.keyboard("{Enter}");
     await waitFor(() => expect(start).toHaveBeenCalledOnce());
-    expect(input).toHaveValue("");
+    expect(input).toHaveTextContent("");
   });
 
   it("forwards focus to the textarea and rejects attachments and mentions while disabled", async () => {
@@ -126,15 +130,15 @@ describe("prompt input", () => {
     }
     const view = render(<Harness />);
     const input = screen.getByRole("textbox");
-    expect(input).toHaveFocus();
+    await waitFor(() => expect(input).toHaveFocus());
     fireEvent(
       window,
       new CustomEvent("brigadier-attach", {
         detail: { path: "src/example.ts", content: "const n = 1;" },
       }),
     );
-    expect((input as HTMLTextAreaElement).value).toContain("const n = 1;");
-    const previous = (input as HTMLTextAreaElement).value;
+    await waitFor(() => expect(input.textContent!).toContain("const n = 1;"));
+    const previous = input.textContent!;
     view.rerender(<Harness disabled />);
     fireEvent(
       window,
@@ -148,12 +152,12 @@ describe("prompt input", () => {
         detail: { title: "Blocked note", id: "blocked" },
       }),
     );
-    expect(input).toHaveValue(previous);
+    expect(input.textContent).toBe(previous);
     expect(
-      screen.getByRole("button", { name: "Attach text files" }),
+      screen.getByRole("button", { name: "Attach files" }),
     ).toBeDisabled();
     expect(
-      screen.getByRole("button", { name: "Mention a note" }),
+      screen.getByRole("button", { name: "Mention a file or note" }),
     ).toBeDisabled();
   });
 
@@ -195,13 +199,28 @@ it("imports picked files for peer forwarding and retains IDs until the new sessi
   const start = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
   const user = userEvent.setup();
   const view = render(<NewSession project={project} models={[]} disabled={false} onStart={start} />);
-  await user.type(screen.getByRole("textbox"), "Pass this reference to the review task");
+  await waitFor(() => expect(screen.getByRole("textbox")).toHaveAttribute("contenteditable", "true"));
+    await pasteComposer(screen.getByRole("textbox"), "Pass this reference to the review task");
   fireEvent.change(view.container.querySelector('input[type="file"]')!, {target:{files:[new File(["png"], "Reference.png", {type:"image/png"})]}});
   await screen.findByRole("button", {name:"Remove attachment Reference.png"});
   expect(imported).toHaveBeenCalledWith("p", "Reference.png", "cG5n");
-  await user.click(screen.getByRole("button", {name:"Start"}));
+  await user.click(screen.getByRole("button", {name:"Send"}));
   expect(start).toHaveBeenLastCalledWith(expect.objectContaining({attachmentIds:["attachment"]}));
   expect(screen.getByRole("button", {name:"Remove attachment Reference.png"})).toBeVisible();
-  await user.click(screen.getByRole("button", {name:"Start"}));
+  await user.click(screen.getByRole("button", {name:"Send"}));
   expect(screen.queryByRole("button", {name:"Remove attachment Reference.png"})).toBeNull();
+});
+
+it("sends a huge paste staged from an empty new-conversation draft", async () => {
+  const {peerApi} = await import('../peerApi');
+  const source = 'large exact request\r\n'.repeat(1000);
+  const imported = vi.spyOn(peerApi,'importAttachment').mockResolvedValue({id:'huge',projectId:'p',name:'pasted.txt',mediaType:'text/plain',size:source.length,createdAt:0});
+  const start = vi.fn().mockResolvedValue(true);
+  render(<NewSession project={project} models={[]} disabled={false} onStart={start}/>);
+  await waitFor(()=>expect(screen.getByRole('textbox')).toHaveAttribute('contenteditable','true'));
+  fireEvent.paste(screen.getByRole('textbox'),{clipboardData:{files:[],getData:(type:string)=>type==='text/plain'?source:''}});
+  await screen.findByRole('button',{name:'Remove attachment pasted.txt'});
+  expect(atob(imported.mock.calls[0]![2])).toBe(source);
+  await userEvent.click(screen.getByRole('button',{name:'Send'}));
+  expect(start).toHaveBeenCalledWith(expect.objectContaining({prompt:'',attachmentIds:['huge']}));
 });

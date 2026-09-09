@@ -363,7 +363,11 @@ impl HookOverride {
 impl std::fmt::Debug for HookOverride {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // The policy itself is a closure-shaped trait object with nothing printable on it.
-        f.write_str(if self.0.is_some() { "HookOverride(set)" } else { "HookOverride(inherit)" })
+        f.write_str(if self.0.is_some() {
+            "HookOverride(set)"
+        } else {
+            "HookOverride(inherit)"
+        })
     }
 }
 
@@ -392,6 +396,8 @@ pub struct StartSession {
     pub attachments: Vec<crate::session::TurnAttachment>,
     /// Model slug; `None` takes the provider default.
     pub model: Option<String>,
+    /// Exact reasoning effort; None leaves the provider default.
+    pub effort: Option<String>,
     /// Initial permission mode.
     pub permission_mode: PermissionMode,
     /// Env vars layered onto the inherited environment, as values, never via `set_var`.
@@ -421,6 +427,7 @@ impl StartSession {
             display_prompt: None,
             attachments: Vec::new(),
             model: None,
+            effort: None,
             permission_mode: PermissionMode::Default,
             env_overrides: BTreeMap::new(),
             mcp: McpPolicy::default(),
@@ -469,6 +476,8 @@ pub struct ResumeSession {
     pub prompt: Option<String>,
     /// Model slug; `None` takes the provider default.
     pub model: Option<String>,
+    /// Exact reasoning effort; None leaves the provider default.
+    pub effort: Option<String>,
     /// Initial permission mode.
     pub permission_mode: PermissionMode,
     /// Env vars layered onto the inherited environment.
@@ -496,6 +505,7 @@ impl ResumeSession {
             cwd: base.cwd,
             prompt: base.prompt,
             model: base.model,
+            effort: base.effort,
             permission_mode: base.permission_mode,
             env_overrides: base.env_overrides,
             mcp: base.mcp,
@@ -554,7 +564,8 @@ pub trait ProviderDriver: Send + Sync + 'static {
     fn describe(&self) -> DriverInfo;
 
     /// Open a new session.
-    fn start_session(&self, req: StartSession) -> BoxFuture<'_, Result<SessionHandle, DriverError>>;
+    fn start_session(&self, req: StartSession)
+        -> BoxFuture<'_, Result<SessionHandle, DriverError>>;
 
     /// Reopen an existing provider session.
     fn resume_session(
@@ -598,8 +609,14 @@ mod tests {
             serde_json::to_string(&PermissionMode::DontAsk).expect("ser"),
             r#""dont-ask""#
         );
-        assert_eq!(serde_json::to_string(&PermissionMode::Auto).expect("ser"), r#""auto""#);
-        assert_eq!(serde_json::to_string(&PermissionMode::Manual).expect("ser"), r#""manual""#);
+        assert_eq!(
+            serde_json::to_string(&PermissionMode::Auto).expect("ser"),
+            r#""auto""#
+        );
+        assert_eq!(
+            serde_json::to_string(&PermissionMode::Manual).expect("ser"),
+            r#""manual""#
+        );
         // `Other` is a bare string on the wire, not an externally tagged object.
         assert_eq!(
             serde_json::to_string(&PermissionMode::Other("someFutureMode".into())).expect("ser"),
@@ -644,8 +661,14 @@ mod tests {
         assert_eq!(PermissionMode::Plan.as_cli_flag(), "plan");
         assert_eq!(PermissionMode::Auto.as_cli_flag(), "auto");
         assert_eq!(PermissionMode::DontAsk.as_cli_flag(), "dontAsk");
-        assert_eq!(PermissionMode::BypassPermissions.as_cli_flag(), "bypassPermissions");
-        assert_eq!(PermissionMode::Other("someFutureMode".into()).as_cli_flag(), "someFutureMode");
+        assert_eq!(
+            PermissionMode::BypassPermissions.as_cli_flag(),
+            "bypassPermissions"
+        );
+        assert_eq!(
+            PermissionMode::Other("someFutureMode".into()).as_cli_flag(),
+            "someFutureMode"
+        );
         assert_eq!(PermissionMode::AcceptEdits.to_string(), "accept-edits");
         // Kebab on our wire, camel on the flag — the one pair where they differ.
         assert_eq!(PermissionMode::DontAsk.as_wire_str(), "dont-ask");
@@ -671,8 +694,14 @@ mod tests {
     fn the_thinking_default_is_off_on_both_request_shapes() {
         assert_eq!(ThinkingPolicy::default(), ThinkingPolicy::Off);
         assert_eq!(StartSession::new("/w").thinking, ThinkingPolicy::Off);
-        assert_eq!(ResumeSession::new("tok", "/w").thinking, ThinkingPolicy::Off);
-        assert_eq!(ThinkingPolicy::Off.env_entry(), Some(("MAX_THINKING_TOKENS", "0")));
+        assert_eq!(
+            ResumeSession::new("tok", "/w").thinking,
+            ThinkingPolicy::Off
+        );
+        assert_eq!(
+            ThinkingPolicy::Off.env_entry(),
+            Some(("MAX_THINKING_TOKENS", "0"))
+        );
         assert_eq!(ThinkingPolicy::Inherit.env_entry(), None);
     }
 
@@ -693,7 +722,10 @@ mod tests {
     /// policy is a protocol error rather than a silent downgrade.
     #[test]
     fn an_mcp_policy_is_a_bare_string_on_the_wire() {
-        assert_eq!(serde_json::to_string(&McpPolicy::Off).expect("ser"), r#""off""#);
+        assert_eq!(
+            serde_json::to_string(&McpPolicy::Off).expect("ser"),
+            r#""off""#
+        );
         assert_eq!(
             serde_json::from_str::<McpPolicy>(r#""inherit""#).expect("de"),
             McpPolicy::Inherit
@@ -722,7 +754,10 @@ mod tests {
     #[test]
     fn a_resumed_session_carries_the_row_and_the_seq_together() {
         let mut r = ResumeSession::new("tok", "/w");
-        r.resumed = Some(Resumed { session_id: SessionId::new("s1"), start_seq: 42 });
+        r.resumed = Some(Resumed {
+            session_id: SessionId::new("s1"),
+            start_seq: 42,
+        });
         let resumed = r.resumed.expect("set above");
         assert_eq!(resumed.session_id.as_str(), "s1");
         assert_eq!(resumed.start_seq, 42);
@@ -730,8 +765,14 @@ mod tests {
 
     #[test]
     fn driver_error_messages_name_the_remedy() {
-        let e = DriverError::VersionTooOld { found: "2.1.1".into(), required: "2.1.257".into() };
-        assert_eq!(e.to_string(), "provider version 2.1.1 is older than the required 2.1.257");
+        let e = DriverError::VersionTooOld {
+            found: "2.1.1".into(),
+            required: "2.1.257".into(),
+        };
+        assert_eq!(
+            e.to_string(),
+            "provider version 2.1.1 is older than the required 2.1.257"
+        );
     }
 
     /// A request with no override resolves to the driver's own policy, which is what keeps every
@@ -762,10 +803,20 @@ mod tests {
 
         assert!(Arc::ptr_eq(&a.hook_policy.resolve(&driver), &one));
         assert!(Arc::ptr_eq(&b.hook_policy.resolve(&driver), &two));
-        assert_ne!(a.hook_policy, b.hook_policy, "two overrides are two identities");
-        assert_eq!(a.hook_policy, HookOverride::new(one), "and the same Arc is the same override");
+        assert_ne!(
+            a.hook_policy, b.hook_policy,
+            "two overrides are two identities"
+        );
+        assert_eq!(
+            a.hook_policy,
+            HookOverride::new(one),
+            "and the same Arc is the same override"
+        );
         // The driver's own policy is untouched by either.
-        assert!(Arc::ptr_eq(&HookOverride::inherit().resolve(&driver), &driver));
+        assert!(Arc::ptr_eq(
+            &HookOverride::inherit().resolve(&driver),
+            &driver
+        ));
     }
 
     /// A resume carries the same seam a start does.
@@ -775,8 +826,14 @@ mod tests {
         let mut request = ResumeSession::new("tok", "/w");
         assert_eq!(request.hook_policy, HookOverride::inherit());
         request.hook_policy = HookOverride::new(Arc::clone(&wall));
-        assert!(Arc::ptr_eq(request.hook_policy.policy().expect("set"), &wall));
+        assert!(Arc::ptr_eq(
+            request.hook_policy.policy().expect("set"),
+            &wall
+        ));
         assert_eq!(format!("{:?}", request.hook_policy), "HookOverride(set)");
-        assert_eq!(format!("{:?}", HookOverride::inherit()), "HookOverride(inherit)");
+        assert_eq!(
+            format!("{:?}", HookOverride::inherit()),
+            "HookOverride(inherit)"
+        );
     }
 }

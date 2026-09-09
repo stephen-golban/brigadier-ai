@@ -107,6 +107,13 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
 
   const kind = approval.kind;
   const readOnly = approval.expired;
+  let mcp: {message: string; description?: string; arguments?: unknown} | null = null;
+  if (kind?.type === "tool-permission" && kind.tool_name.startsWith("MCP · ")) {
+    try {
+      const details = JSON.parse(kind.input_excerpt);
+      if (typeof details.message === "string") mcp = details;
+    } catch { /* A truncated excerpt remains visible without guessing its structure. */ }
+  }
 
   const toggle = (i: number) => {
     setApplied((prev) => {
@@ -199,7 +206,11 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
           </p>
         ) : kind.type === "tool-permission" ? (
           <>
-            <pre className="excerpt">{kind.input_excerpt}</pre>
+            {mcp ? <>
+              <p className="mb-2">{mcp.message}</p>
+              {typeof mcp.description === "string" && <p className="mb-2 text-text-secondary">{mcp.description}</p>}
+              {mcp.arguments !== undefined && <pre className="excerpt">{JSON.stringify(mcp.arguments, null, 2)}</pre>}
+            </> : <pre className="excerpt">{kind.input_excerpt}</pre>}
             {kind.suggestions.length > 0 ? (
               <ul className="suggestions">
                 {kind.suggestions.map((s, i) => (

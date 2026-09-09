@@ -60,6 +60,8 @@ pub struct SpawnSpec {
     pub cwd: PathBuf,
     /// Model slug, when the caller pins one.
     pub model: Option<String>,
+    /// Validated reasoning effort, forwarded without substitution.
+    pub effort: Option<String>,
     /// Permission mode. **Always** passed as `--permission-mode`, never omitted.
     pub permission_mode: PermissionMode,
     /// Provider session id to reopen, for a resume.
@@ -131,18 +133,29 @@ pub fn build_argv(spec: &SpawnSpec) -> Vec<String> {
         argv.push("--model".to_owned());
         argv.push(model.clone());
     }
+    if let Some(effort) = &spec.effort {
+        argv.extend(["--effort".to_owned(), effort.clone()]);
+    }
+    argv.push("--include-partial-messages".to_owned());
     argv.push("--permission-prompt-tool".to_owned());
     argv.push("stdio".to_owned());
     if let Some(token) = &spec.resume {
         // One argument with `=`, the 0.3.257 shape, not the two-argument 0.3.159 shape.
         // see docs/research/claude-direct-spike.md "Exact argv".
         argv.push(format!("--resume={token}"));
-        if spec.fork { argv.push("--fork-session".to_owned()); }
+        if spec.fork {
+            argv.push("--fork-session".to_owned());
+        }
     }
     // Before `--permission-mode`, which is where the SDK emits it too.
     // see docs/research/cli-protocol.md §1 for the conditional-flag order.
     if spec.mcp == McpPolicy::Off {
         argv.push("--strict-mcp-config".to_owned());
+    }
+    // Native Agent/Task sessions bypass Brigadier ownership, Stop and shared limits.
+    // The installed CLI accepts comma-separated deny names (`claude --help`).
+    if spec.env_overrides.contains_key("BRIGADIER_PEER_TOKEN") {
+        argv.extend(["--disallowedTools".to_owned(), "Agent,Task".to_owned()]);
     }
     if let Some(executable) = spec.env_overrides.get("BRIGADIER_EXECUTABLE") {
         if spec.env_overrides.contains_key("BRIGADIER_PEER_TOKEN") {
@@ -290,7 +303,13 @@ pub fn spawn(spec: &SpawnSpec) -> Result<Spawned, DriverError> {
         let _ = exit_tx.send(ExitInfo { code });
     });
 
-    Ok(Spawned { stdin, stdout, exit, kill, pid })
+    Ok(Spawned {
+        stdin,
+        stdout,
+        exit,
+        kill,
+        pid,
+    })
 }
 
 /// `SIGTERM` the group, then `SIGKILL` it after [`KILL_GRACE`].
@@ -307,7 +326,10 @@ async fn terminate(child: &mut tokio::process::Child, pid: Option<u32>) {
         if tokio::time::timeout(KILL_GRACE, child.wait()).await.is_ok() {
             return;
         }
-        tracing::warn!(pgid = pid, "process group survived SIGTERM; escalating to SIGKILL");
+        tracing::warn!(
+            pgid = pid,
+            "process group survived SIGTERM; escalating to SIGKILL"
+        );
         if let Err(e) = killpg(group, Signal::SIGKILL) {
             tracing::debug!(pgid = pid, error = %e, "killpg SIGKILL failed");
         }
@@ -356,6 +378,7 @@ mod tests {
             binary: PathBuf::from("/usr/local/bin/claude"),
             cwd: PathBuf::from("/w"),
             model: None,
+            effort: None,
             permission_mode: PermissionMode::Default,
             resume: None,
             fork: false,
@@ -375,7 +398,10 @@ mod tests {
         cmd.as_std()
             .get_envs()
             .map(|(k, v)| {
-                (k.to_string_lossy().into_owned(), v.map(|v| v.to_string_lossy().into_owned()))
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
             })
             .collect()
     }
@@ -390,20 +416,37 @@ mod tests {
     #[test]
     fn native_peer_server_is_explicit_without_exposing_credentials_in_argv() {
         let mut request = spec();
-        request
-            .env_overrides
-            .insert("BRIGADIER_EXECUTABLE".into(), "/Applications/Brigadier App/brigadier".into());
-        request.env_overrides.insert("BRIGADIER_PEER_TOKEN".into(), "private-session-token".into());
+        request.env_overrides.insert(
+            "BRIGADIER_EXECUTABLE".into(),
+            "/Applications/Brigadier App/brigadier".into(),
+        );
+        request.env_overrides.insert(
+            "BRIGADIER_PEER_TOKEN".into(),
+            "private-session-token".into(),
+        );
         let argv = build_argv(&request);
         assert!(argv.iter().any(|a| a == "--strict-mcp-config"));
         let index = argv.iter().position(|a| a == "--mcp-config").unwrap();
         let config: serde_json::Value = serde_json::from_str(&argv[index + 1]).unwrap();
-        assert_eq!(config["mcpServers"]["brigadier"]["args"], serde_json::json!(["--peer-mcp"]));
+        assert_eq!(
+            config["mcpServers"]["brigadier"]["args"],
+            serde_json::json!(["--peer-mcp"])
+        );
         assert!(!argv.join(" ").contains("private-session-token"));
+        assert!(argv
+            .windows(2)
+            .any(|pair| pair == ["--disallowedTools", "Agent,Task"]));
+        assert!(!build_argv(&spec())
+            .iter()
+            .any(|arg| arg == "--disallowedTools"));
     }
     #[test]
     fn the_default_child_is_spawned_with_thinking_off() {
-        assert_eq!(ThinkingPolicy::default(), ThinkingPolicy::Off, "off is the default policy");
+        assert_eq!(
+            ThinkingPolicy::default(),
+            ThinkingPolicy::Off,
+            "off is the default policy"
+        );
         let env = env_of(&spec());
         assert_eq!(
             env.get(ThinkingPolicy::ENV_VAR),
@@ -419,7 +462,10 @@ mod tests {
     /// `MAX_THINKING_TOKENS=` is a third state this policy does not express and must not emit.
     #[test]
     fn an_opted_in_child_sets_no_thinking_variable_at_all() {
-        let env = env_of(&SpawnSpec { thinking: ThinkingPolicy::Inherit, ..spec() });
+        let env = env_of(&SpawnSpec {
+            thinking: ThinkingPolicy::Inherit,
+            ..spec()
+        });
         assert!(
             !env.contains_key(ThinkingPolicy::ENV_VAR),
             "inherit touches the variable in no way: {env:?}"
@@ -438,7 +484,10 @@ mod tests {
             ("DEBUG".to_owned(), "brigadier".to_owned()),
             (ThinkingPolicy::ENV_VAR.to_owned(), "4096".to_owned()),
         ]);
-        let env = env_of(&SpawnSpec { env_overrides: overrides, ..spec() });
+        let env = env_of(&SpawnSpec {
+            env_overrides: overrides,
+            ..spec()
+        });
         assert_eq!(
             env.get("DEBUG"),
             Some(&Some("brigadier".to_owned())),
@@ -460,7 +509,10 @@ mod tests {
     #[test]
     fn the_thinking_policy_never_reaches_the_argv() {
         let off = build_argv(&spec());
-        let inherit = build_argv(&SpawnSpec { thinking: ThinkingPolicy::Inherit, ..spec() });
+        let inherit = build_argv(&SpawnSpec {
+            thinking: ThinkingPolicy::Inherit,
+            ..spec()
+        });
         assert_eq!(off, inherit);
         assert_eq!(
             off,
@@ -470,6 +522,7 @@ mod tests {
                 "--verbose",
                 "--input-format",
                 "stream-json",
+                "--include-partial-messages",
                 "--permission-prompt-tool",
                 "stdio",
                 "--strict-mcp-config",
@@ -477,7 +530,9 @@ mod tests {
                 "default",
             ]
         );
-        assert!(!off.iter().any(|a| a == "--effort" || a.contains(ThinkingPolicy::ENV_VAR)));
+        assert!(!off
+            .iter()
+            .any(|a| a == "--effort" || a.contains(ThinkingPolicy::ENV_VAR)));
     }
 
     /// The default shape, pinned whole. `--strict-mcp-config` is in it because
@@ -494,6 +549,7 @@ mod tests {
                 "--verbose",
                 "--input-format",
                 "stream-json",
+                "--include-partial-messages",
                 "--permission-prompt-tool",
                 "stdio",
                 "--strict-mcp-config",
@@ -511,7 +567,10 @@ mod tests {
     /// shape is the one flag.
     #[test]
     fn argv_under_inherit_passes_neither_mcp_flag() {
-        let argv = build_argv(&SpawnSpec { mcp: McpPolicy::Inherit, ..spec() });
+        let argv = build_argv(&SpawnSpec {
+            mcp: McpPolicy::Inherit,
+            ..spec()
+        });
         assert_eq!(
             argv,
             [
@@ -520,38 +579,68 @@ mod tests {
                 "--verbose",
                 "--input-format",
                 "stream-json",
+                "--include-partial-messages",
                 "--permission-prompt-tool",
                 "stdio",
                 "--permission-mode",
                 "default",
             ]
         );
-        assert!(!argv.iter().any(|a| a == "--strict-mcp-config" || a == "--mcp-config"));
+        assert!(!argv
+            .iter()
+            .any(|a| a == "--strict-mcp-config" || a == "--mcp-config"));
     }
 
     /// A resumed child is gated the same way a fresh one is: the flag lands after `--resume=`
     /// and before `--permission-mode`, the SDK's own order.
     #[test]
     fn fork_uses_a_new_provider_id_only_with_an_explicit_resume() {
-        let argv = build_argv(&SpawnSpec { resume: Some("source-id".into()), fork: true, ..spec() });
+        let argv = build_argv(&SpawnSpec {
+            resume: Some("source-id".into()),
+            fork: true,
+            ..spec()
+        });
         assert!(argv.iter().any(|arg| arg == "--resume=source-id"));
         assert!(argv.iter().any(|arg| arg == "--fork-session"));
-        assert!(!build_argv(&SpawnSpec { fork: true, ..spec() }).iter().any(|arg| arg == "--fork-session"));
-        assert!(!build_argv(&SpawnSpec { resume: Some("source-id".into()), ..spec() }).iter().any(|arg| arg == "--fork-session"));
+        assert!(!build_argv(&SpawnSpec {
+            fork: true,
+            ..spec()
+        })
+        .iter()
+        .any(|arg| arg == "--fork-session"));
+        assert!(!build_argv(&SpawnSpec {
+            resume: Some("source-id".into()),
+            ..spec()
+        })
+        .iter()
+        .any(|arg| arg == "--fork-session"));
     }
 
     #[test]
     fn a_resumed_child_is_gated_by_the_same_policy() {
-        let argv = build_argv(&SpawnSpec { resume: Some("8380cdea".into()), ..spec() });
-        let strict = argv.iter().position(|a| a == "--strict-mcp-config").expect("off is default");
-        let resume = argv.iter().position(|a| a == "--resume=8380cdea").expect("resume is passed");
-        let mode = argv.iter().position(|a| a == "--permission-mode").expect("mode is pinned");
+        let argv = build_argv(&SpawnSpec {
+            resume: Some("8380cdea".into()),
+            ..spec()
+        });
+        let strict = argv
+            .iter()
+            .position(|a| a == "--strict-mcp-config")
+            .expect("off is default");
+        let resume = argv
+            .iter()
+            .position(|a| a == "--resume=8380cdea")
+            .expect("resume is passed");
+        let mode = argv
+            .iter()
+            .position(|a| a == "--permission-mode")
+            .expect("mode is pinned");
         assert!(resume < strict && strict < mode, "{argv:?}");
     }
 
     #[test]
     fn argv_pins_the_mode_in_the_cli_spelling_and_carries_model_and_resume() {
         let argv = build_argv(&SpawnSpec {
+            effort: None,
             model: Some("claude-haiku-4-5".into()),
             permission_mode: PermissionMode::AcceptEdits,
             resume: Some("8380cdea".into()),
@@ -560,7 +649,10 @@ mod tests {
         assert_eq!(argv[5..7], ["--model", "claude-haiku-4-5"]);
         // One argument with `=`, the 0.3.257 shape.
         assert!(argv.contains(&"--resume=8380cdea".to_owned()));
-        let mode = argv.iter().position(|a| a == "--permission-mode").expect("mode is pinned");
+        let mode = argv
+            .iter()
+            .position(|a| a == "--permission-mode")
+            .expect("mode is pinned");
         assert_eq!(argv[mode + 1], "acceptEdits");
         // No ask rules are injected; the PreToolUse hook is the gate. And the user's settings
         // are still loaded — see the note above `build_argv`.
@@ -574,13 +666,18 @@ mod tests {
             permission_mode: PermissionMode::Other("someFutureMode".into()),
             ..spec()
         });
-        assert!(argv.windows(2).any(|w| w == ["--permission-mode", "someFutureMode"]));
+        assert!(argv
+            .windows(2)
+            .any(|w| w == ["--permission-mode", "someFutureMode"]));
     }
 
     #[test]
     fn account_label_is_the_config_dir_basename() {
         assert_eq!(account_label(None), "default");
-        assert_eq!(account_label(Some(Path::new("/home/me/.claude-work"))), ".claude-work");
+        assert_eq!(
+            account_label(Some(Path::new("/home/me/.claude-work"))),
+            ".claude-work"
+        );
         assert_eq!(account_label(Some(Path::new("work"))), "work");
     }
 
@@ -609,9 +706,14 @@ mod tests {
             ..spec()
         })
         .expect("yes spawns");
-        assert!(child.pid.is_some(), "the child reports a pid, which is also its pgid");
         assert!(
-            tokio::time::timeout(Duration::from_millis(100), &mut child.exit).await.is_err(),
+            child.pid.is_some(),
+            "the child reports a pid, which is also its pgid"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut child.exit)
+                .await
+                .is_err(),
             "`yes` does not exit on its own"
         );
 
@@ -626,7 +728,13 @@ mod tests {
 
     #[test]
     fn stripped_vars_cover_the_sdk_deletions_and_the_harness_injections() {
-        for key in ["NODE_OPTIONS", "DEBUG", "CLAUDECODE", "AI_AGENT", "CLAUDE_CODE_SESSION_ID"] {
+        for key in [
+            "NODE_OPTIONS",
+            "DEBUG",
+            "CLAUDECODE",
+            "AI_AGENT",
+            "CLAUDE_CODE_SESSION_ID",
+        ] {
             assert!(STRIPPED_VARS.contains(&key), "{key} must be stripped");
         }
         // HOME is the account boundary we must never touch (decision 4).

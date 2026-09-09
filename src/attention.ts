@@ -1,5 +1,16 @@
 import { useEffect, useState } from "react";
 import type { SessionRuntime } from "./feedStore";
+const readKey = "brigadier:read-sessions";
+function storedReads(): Record<string, number> {
+  try { return JSON.parse(localStorage.getItem(readKey) ?? "{}"); } catch { return {}; }
+}
+/** Reading a worker pane acknowledges that worker only. */
+export function markSessionRead(sessionId: string, seq: number) {
+  const reads = storedReads();
+  if ((reads[sessionId] ?? -1) >= seq) return;
+  localStorage.setItem(readKey, JSON.stringify({...reads, [sessionId]: seq}));
+  window.dispatchEvent(new Event("brigadier-session-read"));
+}
 export function working(session: SessionRuntime | undefined) {
   return !!session && (session.busy || session.status === "starting");
 }
@@ -8,24 +19,17 @@ export function useAttention(
   selected: string | null,
   pending: string[],
 ) {
-  const [reads, setReads] = useState<Record<string, number>>(() => {
-    try {
-      return JSON.parse(
-        localStorage.getItem("brigadier:read-sessions") ?? "{}",
-      );
-    } catch {
-      return {};
-    }
-  });
+  const [reads, setReads] = useState<Record<string, number>>(storedReads);
+  useEffect(() => {
+    const refresh = () => setReads(storedReads());
+    window.addEventListener("brigadier-session-read", refresh);
+    refresh();
+    return () => window.removeEventListener("brigadier-session-read", refresh);
+  }, []);
   useEffect(() => {
     if (!selected || !sessions[selected]) return;
     const seq = sessions[selected].lastEventSeq;
-    setReads((old) => {
-      if (old[selected] === seq) return old;
-      const next = { ...old, [selected]: seq };
-      localStorage.setItem("brigadier:read-sessions", JSON.stringify(next));
-      return next;
-    });
+    markSessionRead(selected, seq);
   }, [selected, sessions[selected ?? ""]?.lastEventSeq]);
   return Object.fromEntries(
     Object.values(sessions).map((s) => [

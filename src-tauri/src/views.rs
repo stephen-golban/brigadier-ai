@@ -108,6 +108,9 @@ pub(crate) struct SessionView {
     pub branch: Option<String>,
     /// Model slug, when one was pinned or reported.
     pub model: Option<String>,
+    /// Effective persisted execution settings.
+    pub effort: Option<String>,
+    pub permission_mode: Option<String>,
     /// `starting` | `running` | `exited` | `failed`.
     pub status: &'static str,
     /// When the session was started.
@@ -135,6 +138,8 @@ impl From<&SessionRecord> for SessionView {
             worktree_path: r.worktree_path.as_deref().map(path_string),
             branch: r.branch.clone(),
             model: r.model.clone(),
+            effort: r.effort.clone(),
+            permission_mode: r.permission_mode.clone(),
             status: r.status.as_str(),
             started_at_ms: r.started_at.map(to_millis),
             ended_at_ms: r.ended_at.map(to_millis),
@@ -563,8 +568,13 @@ mod tests {
             json,
             r#"{"id":"p1","name":"brigadier","root_path":"/repo","created_at_ms":1700000000000,"mcp":"inherit"}"#
         );
-        let off = ProjectView::from(&ProjectRow { mcp: McpPolicy::Off, ..row });
-        assert!(serde_json::to_string(&off).expect("ser").ends_with(r#""mcp":"off"}"#));
+        let off = ProjectView::from(&ProjectRow {
+            mcp: McpPolicy::Off,
+            ..row
+        });
+        assert!(serde_json::to_string(&off)
+            .expect("ser")
+            .ends_with(r#""mcp":"off"}"#));
     }
 
     #[test]
@@ -576,10 +586,15 @@ mod tests {
 
     #[test]
     fn an_fcp_report_round_trips_tagged_on_kind() {
-        let report = PaintReport::Fcp { epoch_ms: 1_788_355_265_312.0 };
+        let report = PaintReport::Fcp {
+            epoch_ms: 1_788_355_265_312.0,
+        };
         let json = serde_json::to_string(&report).expect("ser");
         assert_eq!(json, r#"{"kind":"fcp","epoch_ms":1788355265312.0}"#);
-        assert_eq!(serde_json::from_str::<PaintReport>(&json).expect("de"), report);
+        assert_eq!(
+            serde_json::from_str::<PaintReport>(&json).expect("de"),
+            report
+        );
     }
 
     #[test]
@@ -590,8 +605,14 @@ mod tests {
             duration_ms: 42.5,
         };
         let json = serde_json::to_string(&report).expect("ser");
-        assert!(json.starts_with(r#"{"kind":"interaction","label":"session_switch""#), "{json}");
-        assert_eq!(serde_json::from_str::<PaintReport>(&json).expect("de"), report);
+        assert!(
+            json.starts_with(r#"{"kind":"interaction","label":"session_switch""#),
+            "{json}"
+        );
+        assert_eq!(
+            serde_json::from_str::<PaintReport>(&json).expect("de"),
+            report
+        );
     }
 
     /// Every number field is `f64`, so a value that arrived as a `performance.now()` derivation
@@ -613,10 +634,15 @@ mod tests {
         let line = PaintLine {
             process_start_epoch_ms: 1_788_355_265_000.0,
             main_to_fcp_ms: Some(312.0),
-            report: PaintReport::Fcp { epoch_ms: 1_788_355_265_312.0 },
+            report: PaintReport::Fcp {
+                epoch_ms: 1_788_355_265_312.0,
+            },
         };
         let json = serde_json::to_string(&line).expect("ser");
-        assert!(json.contains(r#""process_start_epoch_ms":1788355265000.0"#), "{json}");
+        assert!(
+            json.contains(r#""process_start_epoch_ms":1788355265000.0"#),
+            "{json}"
+        );
         assert!(json.contains(r#""main_to_fcp_ms":312.0"#), "{json}");
         assert!(json.contains(r#""kind":"fcp""#), "{json}");
         assert!(json.contains(r#""epoch_ms":1788355265312.0"#), "{json}");
@@ -647,13 +673,19 @@ mod tests {
     /// for good.
     #[test]
     fn every_phase_green_is_what_makes_a_run_done() {
-        let phases = [phase("ph1", 0, PhaseState::Green), phase("ph2", 1, PhaseState::Green)];
+        let phases = [
+            phase("ph1", 0, PhaseState::Green),
+            phase("ph2", 1, PhaseState::Green),
+        ];
         assert_eq!(run_status(&plan(), &phases, false), "done");
     }
 
     #[test]
     fn one_phase_short_of_green_is_still_the_stored_status() {
-        let phases = [phase("ph1", 0, PhaseState::Green), phase("ph2", 1, PhaseState::Blocked)];
+        let phases = [
+            phase("ph1", 0, PhaseState::Green),
+            phase("ph2", 1, PhaseState::Blocked),
+        ];
         assert_eq!(run_status(&plan(), &phases, false), "approved");
         // A plan with no phases yet is not finished either: the planner call has not landed.
         assert_eq!(run_status(&plan(), &[], false), "approved");
@@ -684,7 +716,9 @@ mod tests {
         let mut order = WorkOrderRow::new("ph1/o1", "ph1", "write the thing");
         order.owned_paths_json = r#"["src/a.rs","src/b.rs"]"#.to_owned();
         order.branch = Some("brigadier/abcd1234".to_owned());
-        order.worktree_path = Some(std::path::PathBuf::from("/repo/.brigadier/worktrees/abcd1234"));
+        order.worktree_path = Some(std::path::PathBuf::from(
+            "/repo/.brigadier/worktrees/abcd1234",
+        ));
         order.report = Some("done".to_owned());
 
         let unknown = UnknownRow::new(
@@ -739,7 +773,10 @@ mod tests {
         );
         let json = serde_json::to_string(&view).expect("ser");
         for word in ["cost", "usd", "dollar", "price", "spend"] {
-            assert!(!json.to_lowercase().contains(word), "{word} appears in {json}");
+            assert!(
+                !json.to_lowercase().contains(word),
+                "{word} appears in {json}"
+            );
         }
     }
 

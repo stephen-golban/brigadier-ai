@@ -1,3 +1,4 @@
+import { pasteComposer } from "../test/composer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -57,19 +58,20 @@ describe("archive settings", () => {
     await userEvent.click(
       screen.getByRole("button", { name: "Build a new feature, app, or tool" }),
     );
-    expect(screen.getByRole("textbox")).toHaveValue(
-      "Help me build a new feature: ",
+    expect(screen.getByRole("textbox")).toHaveTextContent(
+      "Help me build a new feature:",
     );
-    expect(screen.getByRole("textbox")).toHaveFocus();
+    await waitFor(()=>expect(screen.getByRole("textbox")).toHaveFocus());
     expect(start).not.toHaveBeenCalled();
-    await userEvent.type(screen.getByRole("textbox"), "a timer");
+    await pasteComposer(screen.getByRole("textbox"), "a timer");
+    await userEvent.click(screen.getByText("Workspace · automatic"));
     await userEvent.click(
       await screen.findByRole("button", { name: "Base branch" }),
     );
     expect(screen.queryByRole("option", { name: /origin/ })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("option", { name: /feature/ }));
     expect(screen.getByText("Clean branch contents")).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "Start" }));
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
     expect(start).toHaveBeenCalledWith(
       expect.objectContaining({
         prompt: "Help me build a new feature: a timer",

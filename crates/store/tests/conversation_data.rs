@@ -263,14 +263,188 @@ async fn peer_hops_reuse_project_lineage_even_after_the_original_is_collected() 
 
 #[tokio::test]
 async fn request_context_replaces_old_ids_and_refuses_foreign_ids_atomically() {
- let dir=tempfile::tempdir().unwrap(); let store=seed(dir.path()).await; let h=store.handle();
- for (project,id) in [("p","one"),("other","foreign")] {
- h.import_attachment(project.into(),id.into(),"note.txt".into(),"text/plain".into(),b"context".to_vec()).await.unwrap();
- }
- h.set_session_attachment_ids("s".into(),vec!["one".into()]).await.unwrap();
- assert!(h.set_session_attachment_ids("s".into(),vec!["foreign".into()]).await.is_err());
- assert_eq!(h.session_attachment_ids("s".into()).await.unwrap(),["one"]);
- h.set_session_attachment_ids("s".into(),vec![]).await.unwrap();
- assert!(h.session_attachment_ids("s".into()).await.unwrap().is_empty());
- assert!(h.attachment("p".into(),"one".into()).await.unwrap().is_some());
+    let dir = tempfile::tempdir().unwrap();
+    let store = seed(dir.path()).await;
+    let h = store.handle();
+    for (project, id) in [("p", "one"), ("other", "foreign")] {
+        h.import_attachment(
+            project.into(),
+            id.into(),
+            "note.txt".into(),
+            "text/plain".into(),
+            b"context".to_vec(),
+        )
+        .await
+        .unwrap();
+    }
+    h.set_session_attachment_ids("s".into(), vec!["one".into()])
+        .await
+        .unwrap();
+    assert!(h
+        .set_session_attachment_ids("s".into(), vec!["foreign".into()])
+        .await
+        .is_err());
+    assert_eq!(h.session_attachment_ids("s".into()).await.unwrap(), ["one"]);
+    h.set_session_attachment_ids("s".into(), vec![])
+        .await
+        .unwrap();
+    assert!(h
+        .session_attachment_ids("s".into())
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(h
+        .attachment("p".into(), "one".into())
+        .await
+        .unwrap()
+        .is_some());
+}
+
+#[tokio::test]
+async fn binary_files_preserve_original_bytes_across_forwarding_and_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = seed(dir.path()).await;
+    let bytes = vec![0, 255, 128, 42, 0, 13, 10];
+    store
+        .handle()
+        .import_attachment(
+            "p".into(),
+            "binary-file".into(),
+            "archive.bin".into(),
+            "application/octet-stream".into(),
+            bytes.clone(),
+        )
+        .await
+        .unwrap();
+    store
+        .handle()
+        .retain_attachments("s".into(), vec!["binary-file".into()])
+        .await
+        .unwrap();
+    let original = store
+        .handle()
+        .attachment("p".into(), "binary-file".into())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(original.bytes, bytes);
+    let forwarded = store
+        .handle()
+        .copy_attachments("p".into(), "other".into(), vec!["binary-file".into()])
+        .await
+        .unwrap();
+    let forwarded_id = forwarded[0].id.clone();
+    assert_eq!(
+        store
+            .handle()
+            .attachment("other".into(), forwarded_id.clone())
+            .await
+            .unwrap()
+            .unwrap()
+            .bytes,
+        bytes
+    );
+    store.close().await.unwrap();
+    let reopened = Store::open(dir.path()).unwrap();
+    assert_eq!(
+        reopened
+            .handle()
+            .attachment("p".into(), "binary-file".into())
+            .await
+            .unwrap()
+            .unwrap()
+            .bytes,
+        bytes
+    );
+    assert_eq!(
+        reopened
+            .handle()
+            .attachment("other".into(), forwarded_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .bytes,
+        bytes
+    );
+    reopened.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn sources_include_owner_history_and_queued_refs_without_cross_session_leaks() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = seed(dir.path()).await;
+    for (project, id) in [
+        ("p", "first"),
+        ("p", "followup"),
+        ("p", "queued"),
+        ("p", "unrelated"),
+        ("other", "foreign-file"),
+    ] {
+        store
+            .handle()
+            .import_attachment(
+                project.into(),
+                id.into(),
+                format!("{id}.txt"),
+                "text/plain".into(),
+                format!("bytes:{id}").into_bytes(),
+            )
+            .await
+            .unwrap();
+    }
+    store
+        .handle()
+        .set_session_attachment_ids("s".into(), vec!["first".into()])
+        .await
+        .unwrap();
+    store
+        .handle()
+        .set_session_attachment_ids("s".into(), vec!["followup".into()])
+        .await
+        .unwrap();
+    store
+        .handle()
+        .retain_attachments("s".into(), vec!["queued".into()])
+        .await
+        .unwrap();
+    store
+        .handle()
+        .retain_attachments("fork".into(), vec!["unrelated".into()])
+        .await
+        .unwrap();
+    store
+        .handle()
+        .retain_attachments("foreign".into(), vec!["foreign-file".into()])
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .handle()
+            .session_attachment_ids("s".into())
+            .await
+            .unwrap(),
+        vec!["followup"]
+    );
+    store.close().await.unwrap();
+    let reopened = Store::open(dir.path()).unwrap();
+    let sources = reopened.handle().session_sources("s".into()).await.unwrap();
+    let ids: std::collections::BTreeSet<_> = sources.iter().map(|a| a.id.as_str()).collect();
+    assert_eq!(ids, ["first", "followup", "queued"].into());
+    assert!(sources.iter().all(|a| a.project_id == "p" && a.size > 0));
+    assert_eq!(
+        reopened
+            .handle()
+            .session_sources("fork".into())
+            .await
+            .unwrap()[0]
+            .id,
+        "unrelated"
+    );
+    assert!(reopened
+        .handle()
+        .session_sources("missing".into())
+        .await
+        .unwrap()
+        .is_empty());
+    reopened.close().await.unwrap();
 }

@@ -50,6 +50,8 @@ pub(crate) struct PeerSettings {
     pub create_sessions: bool,
     pub messages: bool,
     pub manage_children: bool,
+    pub excluded_providers: Vec<String>,
+    pub excluded_models: Vec<String>,
 }
 impl Default for PeerSettings {
     fn default() -> Self {
@@ -57,6 +59,8 @@ impl Default for PeerSettings {
             create_sessions: true,
             messages: true,
             manage_children: true,
+            excluded_providers: vec![],
+            excluded_models: vec![],
         }
     }
 }
@@ -105,7 +109,8 @@ fn load(path: &Path) -> Result<Data, AppError> {
 pub(crate) fn read(dir: &Path) -> Result<Data, AppError> {
     let mut data = update(dir, |d| Ok(d.clone()))?;
     let navigation = crate::navigation::read(dir)?;
-    data.notes.retain(|n| !navigation.hidden(&crate::navigation::Kind::Note, &n.id));
+    data.notes
+        .retain(|n| !navigation.hidden(&crate::navigation::Kind::Note, &n.id));
     Ok(data)
 }
 fn update<T>(dir: &Path, f: impl FnOnce(&mut Data) -> Result<T, AppError>) -> Result<T, AppError> {
@@ -144,11 +149,12 @@ pub(crate) async fn desktop_settings_save(
 pub(crate) fn validate_name(name: &str) -> Result<String, AppError> {
     static LATIN_NAME: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let allowed = LATIN_NAME.get_or_init(|| {
-        regex::Regex::new(r"^(?:[\p{Latin}&&\p{Letter}]| )+$")
-            .expect("valid Latin name pattern")
+        regex::Regex::new(r"^(?:[\p{Latin}&&\p{Letter}]| )+$").expect("valid Latin name pattern")
     });
     if !name.trim().is_empty() && !allowed.is_match(name) {
-        return Err(AppError::invalid_argument("Use only Latin letters and spaces"));
+        return Err(AppError::invalid_argument(
+            "Use only Latin letters and spaces",
+        ));
     }
     let name = name.trim();
     if name.is_empty() {
