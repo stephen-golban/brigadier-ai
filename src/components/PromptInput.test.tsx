@@ -25,7 +25,7 @@ const project: ProjectView = {
   root_path: "/example",
   created_at_ms: 0,
 };
-describe("chat controls", () => {
+describe("prompt input", () => {
   it("searches model choices and selects by keyboard", async () => {
     const onChange = vi.fn();
     const user = userEvent.setup();

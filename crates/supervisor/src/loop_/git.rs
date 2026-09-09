@@ -17,7 +17,7 @@
 //! proves nothing.*
 // see docs/research/orchestration-loop.md §§3.2, 4.1, 8 and §15 item 4.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Stdio;
 
 use tokio::process::Command;
@@ -292,25 +292,6 @@ pub async fn merge_no_ff(
     Ok(Merged::Conflict)
 }
 
-/// `git checkout -b <branch> <base>` in `cwd`.
-pub async fn checkout_new_branch(
-    git: &Path,
-    cwd: &Path,
-    branch: &str,
-    base: &str,
-) -> Result<(), GitError> {
-    checked(git, cwd, &["checkout", "-b", branch, base])
-        .await
-        .map(|_| ())
-}
-
-/// `git reset --hard <rev>`, the undo for a fixer that made things worse.
-pub async fn reset_hard(git: &Path, cwd: &Path, rev: &str) -> Result<(), GitError> {
-    checked(git, cwd, &["reset", "--hard", rev])
-        .await
-        .map(|_| ())
-}
-
 /// `git merge-base --is-ancestor <a> <b>`: whether `a` is contained in `b`.
 pub async fn is_ancestor(git: &Path, cwd: &Path, a: &str, b: &str) -> Result<bool, GitError> {
     Ok(run(git, cwd, &["merge-base", "--is-ancestor", a, b])
@@ -328,17 +309,10 @@ pub async fn current_branch(git: &Path, cwd: &Path) -> Result<Option<String>, Gi
     }
 }
 
-/// Where a repository keeps its worktrees, canonicalised the way git reports it.
-#[must_use]
-pub fn worktree_dir(project_root: &Path, id: &str) -> PathBuf {
-    project_root
-        .join(crate::worktree::WORKTREES_SUBDIR)
-        .join(id)
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     /// A throwaway repository with one commit, in the style of `crates/core/tests/worktree.rs`.
     pub(crate) struct Repo {

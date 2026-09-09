@@ -395,13 +395,6 @@ impl ScriptedCall {
         )
     }
 
-    /// Hold each call open for `delay`, so a concurrency cap can be observed.
-    #[must_use]
-    pub fn with_delay(mut self, delay: Duration) -> Self {
-        self.delay = delay;
-        self
-    }
-
     fn push(self, label: &'static str, outcome: CallOutcome) -> Self {
         self.state().answers.entry(label).or_default().push_back(outcome);
         self
@@ -423,11 +416,6 @@ impl ScriptedCall {
         self.state().calls.iter().filter(|c| c.label == label).count()
     }
 
-    /// The most calls that were ever in flight at once.
-    #[must_use]
-    pub fn peak_concurrency(&self) -> usize {
-        self.state().peak
-    }
 }
 
 impl ModelCall for ScriptedCall {

@@ -318,18 +318,6 @@ impl Store {
         self.lock.path()
     }
 
-    /// Total bytes of the database and its WAL sidecars.
-    pub fn size_on_disk(&self) -> u64 {
-        ["", "-wal", "-shm"]
-            .iter()
-            .filter_map(|suffix| {
-                let mut p = self.path.clone().into_os_string();
-                p.push(suffix);
-                std::fs::metadata(PathBuf::from(p)).ok().map(|m| m.len())
-            })
-            .sum()
-    }
-
     /// Flush, checkpoint, and join the writer thread.
     ///
     /// The join briefly blocks the calling task while the last transaction commits and the WAL

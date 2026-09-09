@@ -386,7 +386,7 @@ export function Feed({ sessionId, projectId, projectName }: FeedProps) {
                 title={`${clock(r.t)}  ${r.l}`}
               >
                 {/*
-                  Plain string literals, never a template with `${…}` in it: `index.css.test.ts`
+                  Plain string literals, never a template with `${…}` in it: `dependency-hygiene.test.ts`
                   blanks template interpolations, so a computed class name is invisible to the gate
                   that proves every class has a hand-written rule, and would ship unstyled with no
                   error. Same reason `lead` is a ternary on the row above.

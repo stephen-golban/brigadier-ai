@@ -94,7 +94,7 @@ function EditHarness({
     />
   );
 }
-describe("session tools", () => {
+describe("dock rewind", () => {
   it("calculates only a current provider reading, including compaction and unknown", async () => {
     expect(contextPercent(null)).toBeNull();
     expect(contextPercent({ available: true, used: 1, limit: 0 })).toBeNull();
