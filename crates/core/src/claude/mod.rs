@@ -56,3 +56,5 @@ pub use hook::{
 pub use process::{ExitInfo, KillHandle, SpawnSpec};
 
 pub mod capabilities;
+
+mod storage;

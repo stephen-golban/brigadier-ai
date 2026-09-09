@@ -1,305 +1,395 @@
-import { ArchiveSettings } from "./ArchiveSettings";
-import { FolderIcon } from "./NavigationIcons";
+import { createPortal } from "react-dom";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  Archive,
+  ArrowLeft,
+  Folder,
+  Palette,
+  Search,
+  Settings,
+  User,
+} from "lucide-react";
+import { open } from "@tauri-apps/plugin-dialog";
+import { ArchivedSessions } from "./ArchivedSessions";
 import { Checkbox } from "./controls/checkbox";
 import { Input } from "./controls/input";
 import { Button } from "./controls/button";
-import { navigationApi } from "../navigationApi";
-import { Modal } from "./controls/modal";
-import { useState } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
-import { XIcon, TrashIcon } from "@phosphor-icons/react";
 import type { SessionRuntime } from "../feedStore";
+import type { ProjectView } from "../wire";
 import { workbenchApi, type WorkbenchData } from "../workbenchApi";
 import { desktop, errorMessage } from "../workspaceApi";
 import { desktopApi, type CleanupJob } from "../desktopApi";
-import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
 import { launchApi } from "../launchApi";
 import { NameInput } from "./NameInput";
 import { ResetOnboardingButton } from "./ResetOnboardingButton";
+import { useStoredState } from "../workbenchState";
+import type { SettingsPage, SettingsRequest } from "../settingsNavigation";
+import "./settings.css";
+
+const pages = [
+  {
+    id: "general",
+    label: "General",
+    icon: Settings,
+    search: "welcome music notes folder",
+  },
+  {
+    id: "profile",
+    label: "Profile",
+    icon: User,
+    search: "display name account",
+  },
+  {
+    id: "appearance",
+    label: "Appearance",
+    icon: Palette,
+    search: "theme dark",
+  },
+  {
+    id: "archived",
+    label: "Archived chats",
+    icon: Archive,
+    search: "sessions history restore unarchive delete retention auto delete",
+  },
+] as const;
 export function DesktopSettings({
   data,
   onData,
   sessions,
   titles,
+  projects,
+  origins,
   jobs,
   onClose,
+  request,
 }: {
   data: WorkbenchData;
-  onData: (d: WorkbenchData) => void;
+  onData: (data: WorkbenchData) => void;
   sessions: Record<string, SessionRuntime>;
   titles: Record<string, string>;
+  projects: ProjectView[];
+  origins: Record<string, string>;
   jobs: CleanupJob[];
   onClose: () => void;
+  request?: SettingsRequest;
 }) {
+  const [savedPage, setPage] = useStoredState<SettingsPage>(
+    "brigadier:settings-page",
+    "general",
+  );
+  const page = pages.some((item) => item.id === savedPage)
+    ? savedPage
+    : "general";
+  const [search, setSearch] = useState("");
   const [name, setName] = useState(data.displayName ?? "");
   const [folder, setFolder] = useState(data.notesFolder ?? "");
-  const [confirm, setConfirm] = useState<Confirmation | null>(null);
   const [error, setError] = useState("");
-  const [query, setQuery] = useState("");
   const [savingName, setSavingName] = useState(false);
   const [savingMusic, setSavingMusic] = useState(false);
+  const back = useRef<HTMLButtonElement>(null);
+  const settingsSearch = useRef<HTMLInputElement>(null);
+  useLayoutEffect(() => {
+    if (request?.page) setPage(request.page);
+  }, [request, setPage]);
+  useLayoutEffect(() => {
+    // Keep the running workspace mounted, but remove it from layout and keyboard navigation.
+    const shell = document.querySelector<HTMLElement>(".app-shell");
+    const previous = document.activeElement as HTMLElement | null;
+    const wasHidden = shell?.hidden ?? false;
+    const wasInert = shell?.inert ?? false;
+    if (shell) {
+      shell.hidden = true;
+      shell.inert = true;
+    }
+    back.current?.focus();
+    return () => {
+      if (shell) {
+        shell.hidden = wasHidden;
+        shell.inert = wasInert;
+      }
+      if (previous?.isConnected) previous.focus();
+    };
+  }, []);
+  useEffect(() => {
+    const key = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        settingsSearch.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, []);
   const saveFolder = async (value: string) => {
     try {
       onData(await workbenchApi.setNotesFolder(value));
       setFolder(value);
       window.dispatchEvent(new Event("workbench-data-changed"));
       setError("");
-    } catch (e) {
-      setError(errorMessage(e));
+    } catch (error) {
+      setError(errorMessage(error));
     }
   };
-  const dispose = async (id?: string) => {
-    try {
-      const plans = await Promise.all(
-        (id ? [id] : Object.keys(sessions)).map((id) =>
-          navigationApi.preview("session", id),
-        ),
-      );
-      const running = [...new Set(plans.flatMap((p) => p.running))];
-      setConfirm({
-        title: running.length ? "Stop and move to Trash?" : "Move to Trash?",
-        body: (
-          <>
-            <p>
-              The selected sessions and their child agents can be restored from
-              Trash. Repository files and worktrees stay on disk.
-            </p>
-            {running.length > 0 && (
-              <p>
-                Running sessions to stop:{" "}
-                {running.map((id) => titles[id] ?? id).join(", ")}
-              </p>
-            )}
-          </>
-        ),
-        confirmLabel: "Move to Trash",
-        onCancel: () => setConfirm(null),
-        onConfirm: async () => {
-          for (const plan of plans) await navigationApi.move(plan);
-          setConfirm(null);
-        },
-      });
-    } catch (e) {
-      setError(errorMessage(e));
-    }
-  };
-  return (
-    <Modal.Backdrop
-      isOpen
-      isDismissable={false}
-      onOpenChange={(open) => {
-        if (!open && !confirm) onClose();
-      }}
-    >
-      <Modal.Container size="lg" scroll="inside">
-        <Modal.Dialog aria-label="Settings">
-          <section className="desktop-settings flex min-h-0 flex-col gap-4 [&_header]:flex [&_header]:items-center [&_header]:justify-between">
-            <header>
-              <h2>Settings</h2>
+  const visiblePages = pages.filter((item) =>
+    `${item.label} ${item.search}`
+      .toLowerCase()
+      .includes(search.toLowerCase().trim()),
+  );
+  return createPortal(
+    <div className="desktop-settings settings-overlay" aria-label="Settings">
+      <div
+        className="settings-drag-region"
+        data-tauri-drag-region="deep"
+        aria-hidden="true"
+      />
+      <aside className="settings-sidebar">
+        <Button ref={back} className="settings-back" onClick={onClose}>
+          <ArrowLeft />
+          Back to app
+        </Button>
+        <label className="settings-search settings-nav-search">
+          <Search size={16} />
+          <Input
+            ref={settingsSearch}
+            aria-label="Search settings"
+            placeholder="Search settings…"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+          />
+        </label>
+        <nav aria-label="Settings pages">
+          <span className="settings-section-label">Personal</span>
+          {visiblePages
+            .filter((item) => item.id !== "archived")
+            .map(({ id, label, icon: Icon }) => (
               <Button
-                isIconOnly
-                className="icon-button size-8 p-0"
-                aria-label="Close settings"
-                onClick={onClose}
-              >
-                <XIcon />
-              </Button>
-            </header>
-            <div className="settings-scroll flex min-h-0 flex-col gap-4 overflow-y-auto [&_h3]:text-text-secondary [&_form]:flex [&_form]:flex-col [&_form]:gap-2 [&_label]:flex [&_label]:flex-col [&_label]:gap-2">
-              <ArchiveSettings />
-              <h3>Appearance</h3>
-              <div className="theme-switch flex items-center justify-between">
-                <span>Theme</span>
-                <span className="text-text-secondary">Dark</span>
-              </div>
-              <h3>Profile</h3>
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  if (savingName) return;
-                  setSavingName(true);
-                  void workbenchApi
-                    .saveDesktopSettings(name, data.projectNames ?? {})
-                    .then((next) => {
-                      onData(next);
-                      setName(next.displayName ?? "");
-                      setError("");
-                    })
-                    .catch((e) => setError(errorMessage(e)))
-                    .finally(() => setSavingName(false));
-                }}
-              >
-                <label>
-                  Display name
-                  <NameInput
-                    autoFocus
-                    value={name}
-                    onValueChange={setName}
-                    maxLength={200}
-                    required
-                    disabled={savingName}
-                  />
-                </label>
-                <Button
-                  type="submit"
-                  className="act"
-                  disabled={savingName || !name.trim()}
-                >
-                  {savingName ? "Saving…" : "Save name"}
-                </Button>
-              </form>
-              <h3>Welcome</h3>
-              <Checkbox
-                className="intro-music-setting"
-                checked={data.launchMusic ?? true}
-                disabled={savingMusic}
-                onCheckedChange={(e) => {
-                  const enabled = e;
-                  setSavingMusic(true);
-                  void launchApi
-                    .music(enabled)
-                    .then(() => workbenchApi.load())
-                    .then(onData)
-                    .catch((e) => setError(errorMessage(e)))
-                    .finally(() => setSavingMusic(false));
-                }}
-              >
-                Intro music
-              </Checkbox>
-              <Button
-                className="act"
+                key={id}
+                className="settings-nav-item"
+                aria-current={page === id ? "page" : undefined}
                 onClick={() => {
-                  onClose();
-                  launchApi.replay();
+                  setPage(id);
+                  setError("");
                 }}
               >
-                Replay welcome
+                <Icon />
+                {label}
               </Button>
-              <ResetOnboardingButton onReset={onClose} />
-              <h3>Notes folder</h3>
-              <p>
-                Notes are Markdown files. Existing notes keep their references
-                when you choose a different folder.
-              </p>
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  void saveFolder(folder);
-                }}
-              >
-                <label>
-                  Folder
-                  <Input
-                    value={folder}
-                    placeholder="Default: app data / notes"
-                    onChange={(e) => setFolder(e.target.value)}
-                  />
-                </label>
-                <Button
-                  type="button"
-                  className="act"
-                  onClick={() => {
-                    if (desktop)
-                      void open({
-                        directory: true,
-                        multiple: false,
-                        title: "Choose notes folder",
-                      })
-                        .then((path) => {
-                          if (typeof path === "string") void saveFolder(path);
-                        })
-                        .catch((e) => setError(errorMessage(e)));
-                  }}
-                  disabled={!desktop}
-                >
-                  <FolderIcon />
-                  Choose folder
-                </Button>
-                <Button type="submit" className="act" disabled={!folder.trim()}>
-                  Use folder
-                </Button>
-              </form>
-              {data.notesError && (
-                <p className="inline-error my-2 text-[13px] text-error">
-                  {data.notesError}
-                </p>
-              )}
-              <h3>History and sessions</h3>
-              <Input
-                aria-label="Find a session in settings"
-                placeholder="Find a session…"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-              />
-              <div className="settings-sessions max-h-64 overflow-auto [&>div]:flex [&>div]:items-center [&>div]:justify-between [&_small]:block [&_small]:text-text-tertiary">
-                {Object.values(sessions)
-                  .filter((s) =>
-                    (titles[s.sessionId] ?? s.sessionId)
-                      .toLowerCase()
-                      .includes(query.toLowerCase()),
-                  )
-                  .map((s) => (
-                    <div key={s.sessionId}>
-                      <span>
-                        {titles[s.sessionId] ??
-                          `Session ${s.sessionId.slice(-6)}`}
-                        <small>{s.busy ? "Working" : s.status}</small>
-                      </span>
-                      <Button
-                        isIconOnly
-                        className="icon-button size-8 p-0"
-                        aria-label={`Delete ${titles[s.sessionId] ?? s.sessionId}`}
-                        onClick={() => dispose(s.sessionId)}
-                      >
-                        <TrashIcon />
-                      </Button>
-                    </div>
-                  ))}
-              </div>
+            ))}
+          {visiblePages.some((item) => item.id === "archived") && (
+            <>
+              <span className="settings-section-label settings-archived-label">
+                Archived
+              </span>
               <Button
-                className="act danger text-warn"
-                disabled={!Object.keys(sessions).length}
-                onClick={() => dispose()}
+                className="settings-nav-item"
+                aria-current={page === "archived" ? "page" : undefined}
+                onClick={() => {
+                  setPage("archived");
+                  setError("");
+                }}
               >
-                Clear all history and sessions
+                <Archive />
+                Archived chats
               </Button>
-              {jobs.length > 0 && (
-                <>
-                  <h3>Session cleanup</h3>
-                  {jobs.map((job) => (
-                    <div
-                      className="cleanup-job flex justify-between gap-2"
-                      key={job.id}
-                    >
-                      <span>{job.error ?? "Removing session files…"}</span>
-                      {job.error && (
+            </>
+          )}
+          {!visiblePages.length && (
+            <p className="settings-search-empty">No matching settings</p>
+          )}
+        </nav>
+      </aside>
+      <main
+        className="settings-main"
+        aria-label={pages.find((item) => item.id === page)?.label}
+      >
+        <div className="settings-content">
+          {page === "archived" ? (
+            <ArchivedSessions
+              sessions={sessions}
+              titles={titles}
+              projects={projects}
+              projectNames={data.projectNames ?? {}}
+              origins={origins}
+              highlightId={request?.sessionId}
+            />
+          ) : (
+            <>
+              <header className="settings-page-heading">
+                <h1>{pages.find((item) => item.id === page)?.label}</h1>
+              </header>
+              <div className="settings-sections">
+                {page === "general" && (
+                  <>
+                    <section className="settings-section">
+                      <h2>Welcome</h2>
+                      <Checkbox
+                        checked={data.launchMusic ?? true}
+                        disabled={savingMusic}
+                        onCheckedChange={(enabled) => {
+                          setSavingMusic(true);
+                          void launchApi
+                            .music(enabled)
+                            .then(() => workbenchApi.load())
+                            .then(onData)
+                            .catch((error) => setError(errorMessage(error)))
+                            .finally(() => setSavingMusic(false));
+                        }}
+                      >
+                        Intro music
+                      </Checkbox>
+                      <div className="settings-actions">
                         <Button
-                          onClick={() =>
-                            void desktopApi
-                              .retryCleanup(job.id)
-                              .catch((e) => setError(errorMessage(e)))
-                          }
+                          variant="secondary"
+                          onClick={() => {
+                            onClose();
+                            launchApi.replay();
+                          }}
                         >
-                          Retry
+                          Replay welcome
                         </Button>
-                      )}
+                        <ResetOnboardingButton onReset={onClose} />
+                      </div>
+                    </section>
+                    <section className="settings-section">
+                      <h2>Notes folder</h2>
+                      <p>
+                        Notes are Markdown files. Existing notes keep their
+                        references when you choose a different folder.
+                      </p>
+                      <form
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          void saveFolder(folder);
+                        }}
+                      >
+                        <label>
+                          Folder
+                          <Input
+                            value={folder}
+                            placeholder="Default: app data / notes"
+                            onChange={(event) => setFolder(event.target.value)}
+                          />
+                        </label>
+                        <div className="settings-actions">
+                          <Button
+                            variant="secondary"
+                            disabled={!desktop}
+                            onClick={() => {
+                              void open({
+                                directory: true,
+                                multiple: false,
+                                title: "Choose notes folder",
+                              })
+                                .then((path) => {
+                                  if (typeof path === "string")
+                                    void saveFolder(path);
+                                })
+                                .catch((error) =>
+                                  setError(errorMessage(error)),
+                                );
+                            }}
+                          >
+                            <Folder />
+                            Choose folder
+                          </Button>
+                          <Button
+                            variant="secondary"
+                            type="submit"
+                            disabled={!folder.trim()}
+                          >
+                            Use folder
+                          </Button>
+                        </div>
+                      </form>
+                      {data.notesError && <p role="alert">{data.notesError}</p>}
+                    </section>
+                    {jobs.length > 0 && (
+                      <section className="settings-section">
+                        <h2>Session cleanup</h2>
+                        {jobs.map((job) => (
+                          <div className="settings-actions" key={job.id}>
+                            <span>
+                              {job.error ?? "Removing session files…"}
+                            </span>
+                            {job.error && (
+                              <Button
+                                onClick={() =>
+                                  void desktopApi
+                                    .retryCleanup(job.id)
+                                    .catch((error) =>
+                                      setError(errorMessage(error)),
+                                    )
+                                }
+                              >
+                                Retry
+                              </Button>
+                            )}
+                          </div>
+                        ))}
+                      </section>
+                    )}
+                  </>
+                )}
+                {page === "profile" && (
+                  <section className="settings-section">
+                    <h2>Profile</h2>
+                    <form
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        if (savingName) return;
+                        setSavingName(true);
+                        void workbenchApi
+                          .saveDesktopSettings(name, data.projectNames ?? {})
+                          .then((next) => {
+                            onData(next);
+                            setName(next.displayName ?? "");
+                            setError("");
+                          })
+                          .catch((error) => setError(errorMessage(error)))
+                          .finally(() => setSavingName(false));
+                      }}
+                    >
+                      <label>
+                        Display name
+                        <NameInput
+                          value={name}
+                          onValueChange={setName}
+                          maxLength={200}
+                          required
+                          disabled={savingName}
+                        />
+                      </label>
+                      <Button
+                        variant="secondary"
+                        type="submit"
+                        disabled={savingName || !name.trim()}
+                      >
+                        {savingName ? "Saving…" : "Save name"}
+                      </Button>
+                    </form>
+                  </section>
+                )}
+                {page === "appearance" && (
+                  <section className="settings-section">
+                    <h2>Theme</h2>
+                    <div className="settings-theme">
+                      <Palette size={20} />
+                      <span>Dark</span>
+                      <span className="text-text-secondary">Active</span>
                     </div>
-                  ))}
-                </>
-              )}
-              {error && (
-                <p
-                  role="alert"
-                  className="inline-error my-2 text-[13px] text-error"
-                >
-                  {error}
-                </p>
-              )}
-            </div>
-          </section>
-          {confirm && <ConfirmDialog {...confirm} />}
-        </Modal.Dialog>
-      </Modal.Container>
-    </Modal.Backdrop>
+                  </section>
+                )}
+                {error && (
+                  <p role="alert" className="text-error">
+                    {error}
+                  </p>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      </main>
+    </div>,
+    document.body,
   );
 }

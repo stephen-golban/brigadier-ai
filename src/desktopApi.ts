@@ -1,3 +1,4 @@
+import { removeSessionLocalData } from "./sessionLocalData";
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import { desktop, errorMessage } from "./workspaceApi";
@@ -25,10 +26,28 @@ export interface CleanupJob {
   sessions: string[];
   error: string | null;
 }
-export function notify(message: string, error = false, retry?: () => void) {
+export interface ToastAction {
+  label: string;
+  primary?: boolean;
+  onClick: () => void | Promise<void>;
+}
+export interface ToastNotice {
+  id: string;
+  message: string;
+  error: boolean;
+  retry?: () => void;
+  icon?: "archive";
+  actions?: ToastAction[];
+}
+export function notify(
+  message: string,
+  error = false,
+  retry?: () => void,
+  options: Pick<ToastNotice, "icon" | "actions"> = {},
+) {
   window.dispatchEvent(
-    new CustomEvent("brigadier-toast", {
-      detail: { id: crypto.randomUUID(), message, error, retry },
+    new CustomEvent<ToastNotice>("brigadier-toast", {
+      detail: { id: crypto.randomUUID(), message, error, retry, ...options },
     }),
   );
 }
@@ -70,20 +89,7 @@ export const desktopApi = {
 };
 export function retireSession(sessionId: string) {
   store.dropSession(sessionId);
-  for (const key of [
-    `brigadier:scroll:${sessionId}`,
-    `brigadier:expanded:${sessionId}`,
-    `brigadier:read:${sessionId}`,
-    `draft:turn:${sessionId}`,
-  ])
-    localStorage.removeItem(key);
-  try {
-    const reads = JSON.parse(
-      localStorage.getItem("brigadier:read-sessions") ?? "{}",
-    );
-    delete reads[sessionId];
-    localStorage.setItem("brigadier:read-sessions", JSON.stringify(reads));
-  } catch {}
+  removeSessionLocalData(sessionId);
   window.dispatchEvent(
     new CustomEvent("workbench-history-deleted", { detail: { sessionId } }),
   );
