@@ -727,7 +727,6 @@ mod tests {
                 id,
                 LiveSession {
                     _writer_lease: None,
-                    project_id: "p".into(),
                     commands: handle.commands,
                     approvals: handle.approvals,
                     pid: None,

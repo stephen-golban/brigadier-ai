@@ -11,7 +11,7 @@
  * This module is the fold. It takes the ring exactly as the store holds it and returns the
  * **display lines** the feed draws: a head line per group, the members hidden under it, and the
  * members spliced back in when the operator opens one. Nothing here draws anything and nothing
- * here knows a class name — `Feed.tsx` owns the markup, `src/index.css.test.ts` gates it, and a
+ * here knows a class name — `Feed.tsx` owns the markup, `src/dependency-hygiene.test.ts` gates it, and a
  * class name computed in a `.ts` file would be invisible to that gate.
  *
  * ---------------------------------------------------------------------------------------------

@@ -208,7 +208,7 @@ vi.mock("./bridge", async (importOriginal) => {
       return [];
     },
     // The run surface. These tests are about the B4 span and the project selection, so the five
-    // commands answer "there has never been a run here": `src/run.test.tsx` is what exercises
+    // commands answer "there has never been a run here": `src/App.run.test.tsx` is what exercises
     // them. They are present rather than absent because the shell calls two of them on mount.
     async startRun() {
       throw new Error("not used");

@@ -227,7 +227,7 @@ afterEach(() => {
 
 /* ------------------------------------------------------------------ tests */
 
-describe("automation history stays out of chat", () => {
+describe("App run: automation history stays out of chat", () => {
   it("keeps pending phases collapsed until the user opens history", async () => {
     h.runs["p-live"] = run({ status: "abandoned" });
     await mountApp();

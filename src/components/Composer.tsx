@@ -130,7 +130,7 @@ export function RunControl({
    * R2, 2026-09-05: this renders **the dock's own box**, not a strip of its own. `src/components/
    * Dock.tsx` owns the frame, the context strip and the chooser that selects this mode; the two
    * text fields the owner counted are now one field whose meaning is named above it. The
-   * `aria-label` and the two button labels are unchanged, because `src/run.test.tsx` pins the
+   * `aria-label` and the two button labels are unchanged, because `src/App.run.test.tsx` pins the
    * seam between this control and `start_run` by name and that seam did not move.
    */
   if (live && run !== null) {

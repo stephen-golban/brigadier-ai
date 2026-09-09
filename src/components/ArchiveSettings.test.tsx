@@ -23,7 +23,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   localStorage.clear();
 });
-describe("welcome and archive settings", () => {
+describe("archive settings", () => {
   it("fills an editable starter and sends the selected base only when Start is clicked", async () => {
     vi.spyOn(workbenchApi, "gitDetails").mockResolvedValue({
       branches: ["main", "feature", "origin/main"],

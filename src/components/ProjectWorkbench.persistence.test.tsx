@@ -94,7 +94,7 @@ function mount() {
     ),
   };
 }
-describe("project workbench", () => {
+describe("project workbench persistence", () => {
   it("retires a deleted session's saved tabs without dropping notes or scratch buffers", async () => {
     const context = { projectId: project.id, sessionId: "deleted-session" };
     const tabs = [

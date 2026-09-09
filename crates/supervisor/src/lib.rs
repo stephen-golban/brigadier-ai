@@ -187,7 +187,6 @@ pub fn context_size(usage: &Usage) -> u64 {
 /// One live session: what it takes to command it and to account for it.
 struct LiveSession {
     _writer_lease: Option<brigadier_core::checkpoint::WorkspaceLease>,
-    project_id: String,
     commands: SessionCommands,
     approvals: ApprovalTable,
     pid: Option<u32>,
@@ -515,11 +514,6 @@ impl Supervisor {
     /// The driver registered for `kind`, if any.
     pub fn driver(&self, kind: &DriverKind) -> Option<Arc<dyn ProviderDriver>> {
         lock(&self.inner.drivers).get(kind).map(Arc::clone)
-    }
-
-    /// Every registered kind, sorted.
-    pub fn driver_kinds(&self) -> Vec<DriverKind> {
-        lock(&self.inner.drivers).keys().cloned().collect()
     }
 
     // ---- projects ------------------------------------------------------------------------
@@ -1137,7 +1131,6 @@ impl Supervisor {
                 session_id.clone(),
                 LiveSession {
                     _writer_lease: writer_lease,
-                    project_id: project_id.clone(),
                     commands,
                     approvals,
                     pid,
@@ -1199,13 +1192,6 @@ impl Supervisor {
     /// Whether this session is still being driven.
     pub fn is_live(&self, session_id: &SessionId) -> bool {
         lock(&self.inner.live).contains_key(session_id)
-    }
-
-    /// Which project a live session belongs to.
-    pub fn project_of(&self, session_id: &SessionId) -> Option<String> {
-        lock(&self.inner.live)
-            .get(session_id)
-            .map(|s| s.project_id.clone())
     }
 
     /// The child pid behind a live session, when it has one.

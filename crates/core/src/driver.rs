@@ -17,10 +17,6 @@ use crate::session::SessionHandle;
 /// A boxed, `Send` future. Hand-rolled so the crate needs no `async_trait` and no `futures`.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-/// The whole registry: a list of drivers the app happens to hold.
-// see docs/research/provider-driver.md §6 #1 — t3code's `BUILT_IN_DRIVERS` is a plain array too.
-pub type DriverRegistry = Vec<Arc<dyn ProviderDriver>>;
-
 /// An open slug naming a kind of provider, e.g. `claude-code`.
 ///
 /// Open, not a closed enum: an unknown kind must parse and degrade, never crash.

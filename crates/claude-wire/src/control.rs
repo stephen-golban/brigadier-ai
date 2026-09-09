@@ -403,21 +403,6 @@ pub struct InterruptRequest {
     pub extra: Extra,
 }
 
-/// The success payload of an `interrupt` (`sdk.d.ts:4021-4033`). `undefined` on CLIs that do not
-/// advertise `interrupt_receipt_v1`.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct InterruptResponse {
-    /// Queued commands that survived the interrupt.
-    #[serde(default)]
-    pub still_queued: Vec<String>,
-    /// Queued commands cancelled because `cancel_queued` was set.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cancelled: Option<Vec<String>>,
-    /// Unknown fields.
-    #[serde(flatten)]
-    pub extra: Extra,
-}
-
 /// `set_permission_mode` (`sdk.d.ts:4375-4386`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SetPermissionModeRequest {
