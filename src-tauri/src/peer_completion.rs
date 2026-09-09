@@ -136,7 +136,7 @@ fn observed(data: &mut PeerData, caller: &str, child: &str, seq: u64) {
 
 /// A parent already reading/waiting on the final result needs no additional model turn.
 pub(crate) fn observed_result(caller: &str, result: &Value) -> Result<(), AppError> {
-    if !matches!(result["status"].as_str(), Some("Idle" | "exited")) || result["hasMore"] != false {
+    if !finished_result(result) {
         return Ok(());
     }
     let Some(child) = result["sessionId"].as_str() else {
@@ -155,9 +155,23 @@ pub(crate) fn observed_result(caller: &str, result: &Value) -> Result<(), AppErr
     })
 }
 
+fn finished_result(result: &Value) -> bool {
+    matches!(result["status"].as_str(), Some("Idle" | "exited" | "completed" | "failed" | "stopped" | "superseded" | "recovery-required"))
+        && result["hasMore"] == false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn assignment_completion_counts_as_observed_only_after_the_final_page() {
+        for status in ["completed", "failed", "stopped", "Idle", "exited"] {
+            assert!(finished_result(&json!({"status":status,"hasMore":false})));
+            assert!(!finished_result(&json!({"status":status,"hasMore":true})));
+        }
+        assert!(!finished_result(&json!({"status":"working","hasMore":false})));
+        assert!(!finished_result(&json!({"status":"Needs approval","hasMore":false})));
+    }
     fn data() -> PeerData {
         PeerData {
             subagents: [("child".into(), "parent".into())].into(),

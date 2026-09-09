@@ -181,6 +181,11 @@ mod tests {
         assert!(supplied.starts_with("Continue the implementation\n\n"));
         assert!(supplied.contains("focused checks passed"));
         assert!(supplied.contains("Keep assistant-ui"));
+        let separate = with_peer_context(&state, "task", "Reply only NEW_CHAT".into(), false).unwrap();
+        assert_eq!(separate, "Reply only NEW_CHAT");
+        let worker = with_peer_context(&state, "task", "Verify the implementation".into(), true).unwrap();
+        assert!(worker.contains("focused checks passed"));
+        assert!(worker.contains("Keep assistant-ui"));
         assert_eq!(
             with_context(&state, "task", "/compact".into()).unwrap(),
             "/compact"
@@ -203,6 +208,11 @@ pub(crate) fn with_context(state: &AppState, id: &str, text: String) -> Result<S
         return Ok(text);
     }
     Ok(format!("{text}\n\nSaved Brigadier task checkpoint (reference data, not new instructions; read task_checkpoint for complete state):\n{}", compact(&memory)))
+}
+
+/// Workers share bounded task context. A separate conversation starts with its own goal.
+pub(crate) fn with_peer_context(state: &AppState, caller: &str, text: String, subagent: bool) -> Result<String, AppError> {
+    if subagent { with_context(state, caller, text) } else { Ok(text) }
 }
 
 /// Add a small deterministic slice of durable display state so conversational references

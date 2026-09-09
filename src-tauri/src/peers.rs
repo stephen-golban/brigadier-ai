@@ -1068,7 +1068,7 @@ async fn dispatch(app: &tauri::AppHandle, mut v: Value) -> Result<Value, AppErro
         };
         let result = crate::commands::start_session_locked(
             project,
-            if assignment.operation == "review" { format!("{}\nAcceptance criteria: {}\nScope: {}\nIndependent review: inspect the candidate and checks without relying on builder explanations.",peer_text(&input),assignment.criteria,assignment.scope) } else { crate::task_memory::with_context(state.inner(), &start.from, format!("{}\nAcceptance criteria: {}\nScope: {}\nRouting: {}",peer_text(&input),assignment.criteria,assignment.scope,assignment.selection.reason))? },
+            if subagent && assignment.operation == "review" { format!("{}\nAcceptance criteria: {}\nScope: {}\nIndependent review: inspect the candidate and checks without relying on builder explanations.",peer_text(&input),assignment.criteria,assignment.scope) } else { crate::task_memory::with_peer_context(state.inner(), &start.from, if subagent { format!("{}\nAcceptance criteria: {}\nScope: {}\nRouting: {}",peer_text(&input),assignment.criteria,assignment.scope,assignment.selection.reason) } else { peer_text(&input) }, subagent)? },
             model,
             if assignment.operation == "review" || assignment.operation == "research" { "plan".into() } else { row.permission_mode.clone().unwrap_or_else(|| "default".into()) },
             provider,
