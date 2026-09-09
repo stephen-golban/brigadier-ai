@@ -6,7 +6,7 @@
 
 **[proposal] Use a separate app-owned bare Git snapshot repository, outside the workspace, with raw file blobs, temporary indexes, trees and explicit retention refs. Capture before each human message and after its entire writing activity has settled. Keep conversation rewind provider-native.** Do not store checkpoint refs in the user's repository, copy their index as a workspace snapshot, or restore through `reset`, `clean`, `checkout` or provider file rewind.
 
-**[measured]** The primitives work on installed Git **2.50.1 (Apple Git-155)**. Raw capture preserves binary/CRLF bytes, empty files, symlink targets and executable modes. Alternate indexes preserve the original staged index and HEAD. Seven-path selective restoration preserved staged plus unstaged baseline content and an unrelated later manual file. Identical snapshots and write-then-undo sequences produced equal trees. Full reproducible results: [experiment script](git-checkpoint-experiments-2026-09-05.py), [JSON results](git-checkpoint-experiments-2026-09-05.json). Independent research: [primary-source report](git-checkpoint-primary-sources-2026-09-05.md).
+**[measured]** The primitives work on installed Git **2.50.1 (Apple Git-155)**. Raw capture preserves binary/CRLF bytes, empty files, symlink targets and executable modes. Alternate indexes preserve the original staged index and HEAD. Seven-path selective restoration preserved staged plus unstaged baseline content and an unrelated later manual file. Identical snapshots and write-then-undo sequences produced equal trees. Full reproducible results: [experiment script](git-checkpoint-experiments-2026-09-05.py), [JSON results](git-checkpoint-experiments-2026-09-05.json). Independent research: primary-source report `git-checkpoint-primary-sources-2026-09-05.md` (folded into this file, superseded, deleted 2026-09-09).
 
 **[proposal] Confirm this bounded v1 contract:** restore net changes in declared checkpoint coverage, preserve unrelated manual paths and pre-existing staged/unstaged work, and block on overlapping edits, incomplete history, uncertain writers, or source Git-state changes. Automatically rewind/resend when the verified final restore plan is empty, including unchanged message text. If the plan changes files, show its exact operations and retain a recovery checkpoint before applying it. A conflict is not an empty plan.
 
@@ -120,6 +120,57 @@ Everything in this section is **[proposal]**. Git, SQLite, filesystem writes and
 **[proposal]** Enforce per-file/checkpoint/store budgets before declaring completeness. Never silently truncate inventory, omit oversized LFS content or evict a live baseline. Mandatory capture failure retains the draft with a capability reason; choose limits from benchmarks.
 
 **[proposal]** Retain all checkpoints supporting currently editable messages and all unresolved recovery operations. Proposed resolved-history retention: 30 days, configurable; quota pressure first expires resolved archived spans, visibly removing their file-rewind capability. Never automatically evict unresolved recovery. Session/worktree deletion must not cascade-delete recovery metadata/refs before the user has a recovery path. Mark expired capability in SQLite, flush, then remove refs; serialize maintenance with capture/apply. Run GC only in the private store with conservative grace; never prune the owner repo. Ref deletion is not secure erasure: packed objects, reflogs and backups may retain bytes.
+
+## Safe-Rust filesystem primitives, and why `crates/core` keeps `#![deny(unsafe_code)]`
+
+Moved from `git-checkpoint-implementation-primitives-2026-09-05.md` on 2026-09-09
+(that file was deleted). Verified 2026-09-05 against sources under
+`~/.cargo/registry/src/index.crates.io-.../`. Every API below is a **safe** public Rust function —
+their dependency-internal unsafe implementations do not require unsafe in brigadier, so `crates/core`
+keeps `#![deny(unsafe_code)]` and needs no runtime shell or copy helper. Core's existing
+`nix=0.31.3` enabled only `signal`; the selected approach adds nix `fs`/`dir` and cached
+`rustix=1.1.4` with `fs` for descriptor xattrs.
+
+| Operation | Exact API and source | Status |
+|---|---|---|
+| Open anchored child | `nix::fcntl::openat(dirfd: impl AsFd, path, flags: OFlag, mode: Mode) -> Result<OwnedFd>`; `nix-0.31.3/src/fcntl.rs:274` | **[measured]** compiled and executed |
+| Open root | `nix::fcntl::open(path, flags, mode)`; `fcntl.rs:246` | **[measured]** |
+| Enumerate anchored directory | `nix::dir::Dir::from_fd(OwnedFd)` then `iter()`; `dir.rs:107`. Feature `dir` also enables `fs` | **[measured]**; avoid the deprecated unsafe `Dir::from` |
+| Inspect | `nix::sys::stat::{fstat, fstatat}` with `AtFlags::AT_SYMLINK_NOFOLLOW`; `sys/stat.rs:248` | **[measured]** symlink classified without following |
+| Rename within held parents | `nix::fcntl::renameat`; `fcntl.rs:425` | **[measured]**; it is in `fcntl`, not `unistd` |
+| No-clobber publication | `rustix::fs::renameat_with(…, RenameFlags::NOREPLACE)`; `rustix-1.1.4/src/fs/at.rs:296`, Apple flag mapping `backend/libc/fs/types.rs:527` | **[measured]**; nix `renameat2` is Linux-only |
+| Delete anchored entry | `nix::unistd::unlinkat(…, UnlinkatFlags::NoRemoveDir)`; `unistd.rs:1643` | **[measured]** |
+| Symlink bytes | `nix::fcntl::readlinkat`, `fcntl.rs:680`; `nix::unistd::symlinkat`, `unistd.rs:882` | **[measured]** read; **[source]** creation only |
+| Mode | `nix::sys::stat::fchmod`; `sys/stat.rs:275` | **[measured]** executable mode persisted |
+| Directory creation | `nix::sys::stat::mkdirat`; `sys/stat.rs:470` | **[source]**, not executed |
+| Descriptor xattrs | `rustix::fs::{flistxattr, fgetxattr, fsetxattr, fremovexattr}`; `rustix-1.1.4/src/fs/xattr.rs:90,154,211,254` | **[measured]** compiles under `#![deny(unsafe_code)]` |
+| Flush | `nix::unistd::fsync`; on macOS `nix::fcntl::fcntl(&fd, FcntlArg::F_FULLFSYNC)` | **[measured]** accepted on regular file and directory |
+
+**[proposal]** Open directories `O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC`, one validated
+component at a time — final-component no-follow does not protect intermediate components. Reject
+absolute paths, `.`/`..`, separators in leaf names and Git-admin components.
+
+**ACL gate.** The `/bin/ls -lde` gate is **rejected**: Apple's `ls` calls `acl_get_link_np` and
+treats a null result as "no ACL" without reporting getter failure, so exit 0 plus the expected line
+count cannot prove ACL absence. Replacement is `exacl = "0.13.0"` (macOS, `default-features = false`)
+via `exacl::getfacl(path, AclOption::SYMLINK_ACL)`, accepting only an empty vector. **[measured]** it
+compiles in a `#![deny(unsafe_code)]` crate; 0.13.0 has **no** `NUMERIC_ACL` flag. It is a
+path API, not descriptor-relative, so root/ancestor/leaf identity revalidation is still required.
+Also **[measured]**: newly created macOS files carry `com.apple.provenance`, so rejecting every
+xattr would reject ordinary files; a plain atomic replacement loses a custom xattr unless the saved
+map is applied before rename.
+
+**Locks.** Unix `File::try_lock` is `flock(LOCK_EX | LOCK_NB)`; a lock survives closing one
+descriptor while a fork-inherited duplicate remains, so **explicitly `unlock`** rather than relying
+on drop. **[measured]** across 8 threads × 100 acquire/exec/release iterations: close-only produced
+**219/800** transient `WouldBlock` (max wait 457 µs, 119 ms elapsed); explicit unlock produced
+**0/800** (117 ms). One stress sample, not a proof of any application's failure cause.
+
+**Git durability.** With `-c core.fsync=all -c core.fsyncMethod=fsync`, installed Git 2.50.1
+recorded trace2 hardware-flush counts of 1/1/1/2/1 for `hash-object -w`, `read-tree --empty`,
+`update-index`, `write-tree`, `update-ref`. That proves the flush path activated, **not** survival of
+a power-loss test; no power-loss test was performed. Rust 1.98's Apple `File::sync_all` already
+reaches `fcntl(F_FULLFSYNC)`, so a second nix `F_FULLFSYNC` after it is a duplicate request.
 
 ## Module boundaries and phased implementation
 

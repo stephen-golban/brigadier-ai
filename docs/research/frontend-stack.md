@@ -649,7 +649,7 @@ is the honest price.
   things to check first; Safari has supported both for years, but this repo's own history says not
   to assume someone else's runtime.
 - **No visual comparison.** Whether the shadcn token vocabulary can be mapped onto the measured
-  ChatGPT palette without losing the match `docs/plans/ui-restyle-notes.md` records is a design
+  ChatGPT palette without losing the match `ui-restyle-notes.md` (deleted; not in the repo) records is a design
   question, not a research one, and I did not attempt it.
 - **The 262.69 kB → 422.60 kB figure is one specific usage.** It imports all eight components from
   one module. A build that uses only `button` + `separator` + `switch` would cost far less; I did

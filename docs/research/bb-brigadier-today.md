@@ -190,6 +190,7 @@ release build passed". Not re-run here; treat green as claimed, not verified.
 
 ## In flight, not landed
 
-`docs/plans/assistant-ui-parallel-work-2026-09-09.md` — a six-task parallel migration to official
+`assistant-ui-parallel-work-2026-09-09.md` — a six-task parallel migration to official
 assistant-ui Elements (92 approved catalog entries, 51 deferrals), plus attachments across peer
-delegation. Planned only; 8 untracked docs in the tree.
+delegation. Planned only; 8 untracked docs in the tree. **Superseded 2026-09-09**: abandoned, and
+that file and its siblings were deleted at `036a219`.

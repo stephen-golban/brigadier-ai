@@ -1,3 +1,12 @@
+> **Status (2026-09-09): §1 and §2 are HISTORY, OVERRIDDEN by `CLAUDE.md` §3 "The sidecar is
+> dead".** There is no Node sidecar and none is planned; Rust speaks the Claude Code CLI's stdio
+> control protocol directly (`docs/research/claude-direct-spike.md`). Read the sidecar API notes
+> for history only — never as an instruction to add one; the bun recipe, if it is ever needed
+> again, is in `docs/research/sidecar-spike.md`.
+> **§3–§4 (Rust → webview streaming, the `@tauri-apps/api` frontend) are live and required
+> reading for the bb thread port** (`docs/plans/bb-thread-port-2026-09-09.md` §0.5 names §4), and
+> §6 (git worktrees) is live too. Only the sidecar half is dead. Do not reopen it.
+
 # Tauri v2 runtime: sidecar supervision, IPC streaming, worktrees
 
 Date: 2026-09-02. Scope: what the session supervisor needs from Tauri, tokio and git.

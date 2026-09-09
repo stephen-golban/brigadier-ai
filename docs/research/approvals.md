@@ -19,7 +19,7 @@ makes the CLI ask.** `crates/core/src/claude/process.rs:87-109` ships no ask rul
 `crates/core/src/claude/hook.rs:45-49` answers every `PreToolUse` with `{}` — no opinion. Claude Code
 runs a **non-configurable set of read-only Bash commands with no prompt in every mode**, `ls` and
 `echo` among them, so the approvals panel would stay empty for the exact prompt
-`docs/plans/next-session.md:72` suggests (``Run `ls` and report the count``).
+`next-session.md:72` (deleted; not in the repo) suggests (``Run `ls` and report the count``).
 
 Fix: make the `PreToolUse` hook return `permissionDecision: "ask"`. §6 gap 1.
 
@@ -312,7 +312,7 @@ Nothing needs to change in `approval.rs`, `adapter.rs`, `store/`, `commands.rs`,
 
 ## 8. A prompt that forces exactly one `Bash` call
 
-`docs/plans/next-session.md:72` suggests ``Run `ls` and report the count``. **`ls` is on the documented
+`next-session.md:72` (deleted; not in the repo) suggests ``Run `ls` and report the count``. **`ls` is on the documented
 read-only list and never prompts in any mode** — with today's code that run produces no prompt and
 reads as a broken harness rather than a missing gate. **[documented]**
 

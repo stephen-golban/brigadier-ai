@@ -456,6 +456,59 @@ covers *our* children. It does not cover the operator's editor, their shell, or 
 they started by hand, and nothing can. Editor artifacts are the visible symptom (§1.7); the
 unrecoverable case is a background build writing into the deleted tree.
 
+### 1.19 Three re-measurements that correct §1.4, §1.1 and §1.17 above
+
+Moved from `worktree-defects.md` on 2026-09-09; that file was then deleted and these were its
+only unique results. All **[measured]** on `git version 2.50.1 (Apple Git-155)`, macOS 26.5, APFS
+case-insensitive, in throwaway repositories with `GIT_CONFIG_GLOBAL=/dev/null
+GIT_CONFIG_SYSTEM=/dev/null LC_ALL=C GIT_TERMINAL_PROMPT=0`.
+
+**a. §1.4's exit-0 lie is spelling-dependent.** In the moved-project state, `git worktree remove`
+exits 0 and leaves every file on disk **only for a relative argument**. Same state, four spellings:
+
+| argument | cwd | result |
+| --- | --- | --- |
+| `.brigadier/worktrees/w1` (relative) | `-C <moved repo>` | **exit 0**, entry unregistered, `NOTES.md` and `f.txt` still on disk |
+| `.brigadier/worktrees/w1` (relative) | `cd <moved repo>` | **exit 0**, same |
+| `/private/…/repoJ2/.brigadier/worktrees/w1` (absolute, canonical) | `-C <moved repo>` | `fatal: '…' is not a working tree`, **exit 128**, nothing touched |
+| same absolute path | `cd <moved repo>` | same fatal, exit 128 |
+
+`crates/core/src/worktree.rs::remove` always passes an **absolute** path (git's own canonicalised
+`made.path`), so brigadier's own call shape does not reach the exit-0 lie by this route on 2.50.1.
+The `path.exists()` defence still ships, because the property is a git implementation detail and
+because (b) is a second route to the same disagreement. Related: a `/var/folders/…` path and the
+`/private/var/folders/…` path it symlinks to are **not** interchangeable — `worktree remove` answers
+`is not a working tree` for the uncanonicalised spelling of a healthy worktree.
+
+**b. §1.1's `remove -f -f` "exit 0 — the only escape" can be exit 255.** On a 300-directory /
+12,000-file repository, killing the `git worktree add` **process** (not the wrapping subshell) 80 ms
+in, `git worktree remove --force --force -- wt1` printed
+`error: failed to delete '…/repoF/wt1': Directory not empty` and **exit=255** — yet the registry
+entry was gone anyway and `git branch -D kill1` exited 0, while the files remained on disk. The
+escape is real but partial: registry entry and branch are freed, the directory is not. Callers must
+not read exit 0 as "the directory is gone" **or** a non-zero exit as "nothing happened". The earlier
+183 MB run presumably got a fully written index. **Not checked**: which of repository size, file
+count or timing decides it.
+
+**c. `--exclude=<ref>` for `rev-list --branches` takes the short name**, and the failure is silent
+and unsafe. On a worktree at `brigadier/aaaa1111` holding two commits nothing else reaches:
+
+```
+$ git rev-list --count HEAD --not --exclude=refs/heads/brigadier/aaaa1111 --branches --tags --remotes
+0            # WRONG — reads as "nothing to lose"
+$ git rev-list --count HEAD --not --exclude=brigadier/aaaa1111 --branches --tags --remotes
+2            # right
+$ git rev-list --count HEAD --not --exclude=refs/heads/brigadier/aaaa1111 --glob=refs/heads --glob=refs/tags --glob=refs/remotes
+2            # the full-refname form needs --glob
+```
+
+`--exclude` is matched against the name the *next* ref-listing option produces, so `--branches`
+wants `refs/heads/` stripped. `commits_only_here_counts_what_no_other_ref_keeps`
+(`crates/core/tests/worktree.rs`) pins both spellings. Related and **[measured]**: `--all` is the
+wrong ref set — it includes `refs/stash`, so an agent that ran `git stash` before stopping makes
+`--all` report **0** over work that exists only in a stash, where `--branches --tags --remotes`
+reports 2. This is §1.17 appearing a second time, in the commit count.
+
 ---
 
 ## 2. Deciding "this work is merged, so it is safe to delete"

@@ -6,7 +6,7 @@ Verified 2026-09-06 against installed source. Research only; no application sour
 
 **A single transparent main webview is a viable minimal implementation:** begin hidden, configure it borderless over the chosen monitor's work area, show the dim/orb animation, and resize/reposition the same native window to the animation's final application rectangle. Keep its webview transparent throughout and paint the final app with opaque CSS. This avoids a second webview's readiness, handoff and capabilities plumbing. This is an architectural inference from the APIs below, not a native rendering result. A separate overlay remains possible but is unnecessary for this approach.
 
-The earlier [feasibility note](desktop-intro-glass-feasibility-2026-09-06.md) has correct installed versions and transparency restrictions. Its separate-overlay proposal was a candidate, not a requirement. Its statement about `state::build` blocking setup remains true in the source inspected at the start of this research.
+The earlier feasibility note (`desktop-intro-glass-feasibility-2026-09-06.md`, superseded, deleted 2026-09-09) had correct installed versions and transparency restrictions. Its separate-overlay proposal was a candidate, not a requirement. Its statement about `state::build` blocking setup remains true in the source inspected at the start of this research.
 
 ## Exact native APIs
 

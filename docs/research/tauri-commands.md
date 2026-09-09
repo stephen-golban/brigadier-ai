@@ -746,7 +746,7 @@ pub(crate) async fn subscribe(
   `Manager::manage` at `src/lib.rs:688-693`. Both are correct in 2.11.5; §5 does not mention that
   `Manager::manage` returns `false` on a duplicate while `Builder::manage` **panics**. Noted here in
   §4. No contradiction.
-- **`docs/plans/next-session.md`** — no contradictions found. Its command list
+- **`next-session.md` (deleted; not in the repo)** — no contradictions found. Its command list
   (`list_projects`, `add_project`, `probe_claude`, `start_session`, `send_turn`, `respond`,
   `interrupt`, `end_session`, `kill`, `feed_tail`, `pending_approvals`) is implementable as written
   and needs no capability entries. Two additions it does not yet include: a **`subscribe(session_id,
@@ -864,7 +864,7 @@ flushed, because the consumer task was aborted rather than allowed to finish. **
   main thread.
 - Devtools: the ⌘⌥I hotkey, right-click Inspect, and `open_devtools()` were read in wry/Tauri
   source and the Tauri docs. **None was exercised** — `npm run tauri dev` has never been run in this
-  repo (`docs/plans/next-session.md` step 6). Whether Safari's Web Inspector gives a usable
+  repo (`next-session.md` (deleted; not in the repo) step 6). Whether Safari's Web Inspector gives a usable
   frame-rate instrument for a WKWebView was not tested.
 - `isTauri()` / `window.__TAURI_INTERNALS__` absence in a plain `vite dev` browser tab is reasoned
   from the init-script injection point, not observed.

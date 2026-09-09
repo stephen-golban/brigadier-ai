@@ -5,8 +5,8 @@ cite the file when you act). Then `docs/vision.md` (what we are building and why
 (what exists, what is broken, and the landmines). `docs/plans/ipc-contract.md` remains binding for
 anything crossing webview ↔ Rust.
 
-This plan replaces `phase-4-the-wall.md` and `next-session.md`, both written before the vision was
-settled on 2026-09-02. The wall as those files described it — refusing the host's reads and writes
+This plan replaces `phase-4-the-wall.md` and `next-session.md` (both deleted; not in the repo),
+both written before the vision was settled on 2026-09-02. The wall as those files described it — refusing the host's reads and writes
 through hooks — is not what we are building; see `docs/vision.md` §8.
 
 ## Definition of done for the phase

@@ -5,7 +5,7 @@ a script that was run, or by a `vite build` whose output is quoted verbatim. Not
 from memory and nothing was hand-converted.
 
 Implements W4-B. The palette itself is not this file's work — it was sampled pixel by pixel from
-the ChatGPT macOS app (26.825.51511) and is recorded in `docs/plans/ui-restyle-notes.md`. This
+the ChatGPT macOS app (26.825.51511) and is recorded in `ui-restyle-notes.md` (deleted; not in the repo). This
 file changes its **representation only**.
 
 ---
@@ -443,7 +443,7 @@ is a dated measurement kept because it is what was actually executed here.
   `input[type=checkbox]` carve-out at `:96`) which now sits **on top of** preflight rather than
   alone. Whether those two resets fight has not been established.
 - **Nothing was compared against the reference screenshot.** The conversion is arithmetic; that
-  the palette is still *right* rests entirely on `docs/plans/ui-restyle-notes.md`.
+  the palette is still *right* rests entirely on `ui-restyle-notes.md` (deleted; not in the repo).
 - **Perceptual equality beyond 8-bit sRGB.** Round-tripping proves the values are identical at
   8 bits per channel. On a wide-gamut or 10-bit display the browser interpolates oklch differently
   from hex, and that was not measured.

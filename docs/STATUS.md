@@ -1,5 +1,13 @@
 # STATUS — where the brigadier harness actually stands
 
+**2026-09-09: docs cleanup.** 43 superseded markdown files deleted (41 SUPERSEDED + 1 MISLEADING
+`heroui-assistant-ui-redesign.md` + `worktree-defects.md`, merged first);
+six measurements moved out of them before deletion — two rows into §4 (checkpoint capture
+primitives, sidebar geometry), the picker dead end into §7, the `set_decorations`/`set_resizable`
+ordering defect into the landmine list, the worktree re-measurements into §5 item 3 / §6 and
+`docs/research/worktree-cleanup.md` §1.19, and the safe-Rust primitives table into
+`docs/research/git-message-checkpoints-2026-09-05.md`. See git log.
+
 Submission fix: **2026-09-08**. ThreadView now handles assistant-ui optimistic messages without
 custom row metadata, fixing the reproduced startup render exception. React error recovery/local diagnostics and visible
 submission-pending states added. Peer-created worktrees now use committed HEAD to avoid parent
@@ -348,6 +356,8 @@ over** — a warm prefix saves cost but not the per-turn re-read.
 | whole-repo symbol map rebuild | 145 ms | same |
 | raw NDJSON on this machine | 66 MB / 23 sessions | `worktree-cleanup.md` |
 | provider transcripts on this machine | **3.0 GB** | same |
+| checkpoint capture write primitive, 1,000 tiny files (n=1 per mode, Git 2.50.1 Apple Git-155, 357,360 bytes total) | 1,000 individual blocking `hash-object -w --stdin --no-filters` **11,553.8 ms** cold / 6,161.4 ms repeat; one `hash-object --stdin-paths` **5,759.4 ms** cold / 73.9 ms repeat; `fsyncMethod=batch` 5,760.3 / 84.9 ms — no help; one raw blob-only `fast-import --quiet --done` **29.1 ms** cold. Batched `cat-file --batch` readback of all 1,000 blobs **70.6–76.4 ms**. The shipped implementation reported **16,555 ms first / 13,186 ms unchanged**. **Primitive timings, not application capture percentiles**; exclude file preparation and metadata scanning. This is the arithmetic behind `crates/core/src/checkpoint/git.rs` | moved from `checkpoint-integration-2026-09-06.md` on 2026-09-09 (file deleted) |
+| sidebar geometry, browser-measured 2026-09-08 | width **264 px**; navigation rows **32 px** high at **10 px** radius; type scale **13 px** navigation / **17 px** text-only wordmark / **14 px** workspace title; 16 px icons at x=12, project and session labels at x=36; **220 ms** sidebar-width transition, **200 ms** intrinsic folder-height transition, reduced-motion override; **24 px** backdrop blur. Later refinements in the same run moved rows to 28 px and the header to 46 px — read the source file's tail before quoting a single number as current. §4's `ROW_H` 28 is the **feed**, not the sidebar | moved from `sidebar-validation.md` on 2026-09-09 (file deleted) |
 
 **What qualifies the refresh-rate row, and it does not fit in a cell.** Measured at `1b18909`,
 recorded at `2657c71`, under a 10-session × 200 rows/s × 60 s burn with the feed scrolled
@@ -401,6 +411,11 @@ Fixed:
 3. **`removed: true` could be a lie** — `git worktree remove` exits 0 and leaves every file on disk
    in the moved-project state. Now set only after `path.exists()` says the directory is gone
    (`crates/supervisor/src/worktree.rs:545`).
+   **Correction, re-measured on git 2.50.1** (moved from `worktree-defects.md` on 2026-09-09,
+   now `docs/research/worktree-cleanup.md` §1.19): that exit-0 behaviour holds **only for a relative
+   argument**. The absolute path brigadier actually passes gets `fatal: '…' is not a working tree`,
+   **exit 128**, and touches nothing. The `path.exists()` defence still ships, because
+   `remove -f -f` on a killed `add` can exit **255** while having already unregistered the entry.
 4. **Unforced remove ignored commits** — a clean worktree with five unpushed commits removed with
    exit 0. Now counted as `commits`, against `live_branch`, and refused.
 5. **Safety decisions read `sessions.branch`** rather than the live checkout. Now read from
@@ -589,6 +604,13 @@ every bundle format for the platform being built on. Leave it alone.
   Corrected 2026-09-02; the conclusion survived, the mechanism did not.
 - `docs/research/agent-sdk.md` documents an SDK the harness does not use. Rust speaks the CLI's
   control protocol directly. Read it for wire shapes, never as an instruction to add a dependency.
+- `docs/research/worktree-cleanup.md` §1.4 and §5 item 3 above said `git worktree remove` exits 0
+  over files it left behind. **Spelling-dependent**: relative argument exits 0, absolute argument
+  exits **128** with `fatal: … is not a working tree`. §1.1's `remove -f -f` "exit 0 — the only
+  escape" can be **exit 255** with the entry unregistered anyway. `--exclude=` for
+  `rev-list --branches` takes the **short** name, and `--all` is the wrong ref set (a stash hides
+  unmerged work). All three moved from `worktree-defects.md` on 2026-09-09 into
+  `docs/research/worktree-cleanup.md` §1.19; that file was then deleted.
 
 ## 7. Dead ends — do not rebuild these
 
@@ -603,9 +625,29 @@ every bundle format for the platform being built on. Leave it alone.
   2026-09-02; recoverable at `2327bb9`.
 - **A Node sidecar.** Deleted 2026-09-02. The bun recipe survives in
   `docs/research/sidecar-spike.md` if it is ever needed again.
+- **Warming or preloading the native directory picker.** There is **no supported preload/warmup
+  API** in `tauri-plugin-dialog` **2.7.3**: the JS exports are `open`, `save`, `message`, `ask`,
+  `confirm`, and `open()` invokes the native dialog immediately; the Rust builder only stores
+  configuration fields and the desktop folder-pick schedules `rfd::AsyncFileDialog` on the main
+  thread, so constructing a builder is not evidence of warming the OS chooser. Closed 2026-09-06;
+  moved from `project-picker-responsiveness-2026-09-06.md` on 2026-09-09 (file
+  deleted). Make the Create project modal's first render independent of folder work instead, and do
+  not label background configuration as "warming the picker".
 
 ## Landmines already paid for (do not rediscover)
 
+- **`set_decorations` and `set_resizable` are order-dependent on macOS, and the wrong order fails
+  silently.** Tao builds the decorated style mask from its *shared* `resizable` state and then
+  **queues that mask asynchronously**; a following synchronous `set_resizable(true)` is subsequently
+  overwritten by the queued non-resizable mask, so restoring the titlebar silently loses edge
+  resizing, zoom and fullscreen. Call `set_resizable(true)` **before** `set_decorations(true)`.
+  `set_maximizable(true)` only enables an existing Zoom button and cannot repair the missing
+  Resizable bit. Verified against installed `tao-0.35.3/src/platform_impl/macos/window.rs:795–810,
+  1342–1376` (Tauri 2.11.5 / tauri-runtime-wry 2.11.4), 2026-09-07. Related: running these setters
+  inside `run_on_main_thread` does **not** make them synchronous — Tao's decoration, content-size
+  and frame-position helpers always enqueue main-dispatch-queue operations, so an immediate
+  titlebar measurement can observe the previous frame. Moved from
+  `intro-window-controls-2026-09-07.md` on 2026-09-09 (file deleted).
 - macOS Cmd-Q → `RunEvent::Exit` only; `ExitRequested` never fires. Shutdown runs in the `Exit` arm.
 - `#[tauri::command]` functions must be `pub(crate)` with crate-unique names.
 - A `Channel::send` after a webview reload is silently dropped; the front end re-subscribes.

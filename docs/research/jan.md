@@ -352,7 +352,7 @@ Structure, from `web-app/src/routes/__root.tsx` **[measured]**:
 - `:53-58` — a `SidebarProvider` from shadcn/ui wraps the app, holding `open`, `defaultWidth` and
   `onWidthChange`, driven by a `useLeftPanel` hook. **The sidebar is user-resizable and its width
   is persisted state**, which brigadier's fixed `--sidebar-w: 276px`
-  (`docs/plans/ui-restyle-notes.md` §2) is not.
+  (`ui-restyle-notes.md` (deleted; not in the repo) §2) is not.
 - `:64-71` — a `data-tauri-drag-region` strip, `fixed w-full h-12 z-20 top-0`, so the top of the
   window drags. Directly relevant: `ui-restyle-notes.md` §6 lists "the reference hides its title
   bar and runs the sidebar to the top" as an open item that needs a `src-tauri` change. **Jan
