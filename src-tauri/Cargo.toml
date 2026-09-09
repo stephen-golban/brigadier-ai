@@ -62,6 +62,7 @@ trash = "5"
 tempfile = "3.27"
 regex = "1"
 base64 = "0.22"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 ignore = "0.4"
 globset = "0.4"
 uuid = { workspace = true }

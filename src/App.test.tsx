@@ -119,11 +119,17 @@ vi.mock("./bridge", async (importOriginal) => {
     },
     async addProject(path: string) {
       h.added.push(path);
-      const p = project(
+      const existing = h.projects.find(p => p.root_path === path);
+      const p = existing ?? project(
         `p-${h.added.length}`,
         path.split("/").filter(Boolean).pop() ?? path,
       );
-      h.projects = [...h.projects, p];
+      if (!existing) h.projects = [...h.projects, p];
+      const nav = JSON.parse(localStorage.getItem("brigadier:navigation:v1") ?? "null");
+      if (nav) {
+        nav.trash = nav.trash.filter((t: {kind: string; id: string}) => !(t.kind === "project" && t.id === p.id));
+        localStorage.setItem("brigadier:navigation:v1", JSON.stringify(nav));
+      }
       return p;
     },
     async pickDirectory() {
@@ -554,6 +560,39 @@ describe("the shell's handlers", () => {
  * plugin gives them is read out of its own types, not observed.
  */
 describe("opening a project", () => {
+  it("selects an existing folder repeatedly without duplicating its sidebar entry", async () => {
+    const user = userEvent.setup();
+    h.isMock = false;
+    h.picked = "/repos/job-portal";
+    await mountApp();
+    for (let i = 0; i < 3; i++) await user.click(screen.getByRole("button", { name: "Add project" }));
+    const sidebar = screen.getByRole("navigation", { name: "Projects" });
+    expect(within(sidebar).getAllByText("job-portal")).toHaveLength(1);
+    expect(h.projects).toHaveLength(1);
+    expect(h.lastVisible()).toEqual(["p-live"]);
+  });
+
+  it("reopens a trashed project with its saved sessions and selects it after navigation reload", async () => {
+    const user = userEvent.setup();
+    h.isMock = false;
+    h.picked = "/repos/job-portal";
+    h.sessions = [view("aaaa1111", "p-live", "exited")];
+    localStorage.setItem("brigadier:navigation:v1", JSON.stringify({ projectColors: {}, pinnedSessions: [], trash: [
+      {kind: "project", id: "p-live", title: "job-portal", projectId: "p-live", sessionIds: ["aaaa1111"], trashedAt: 1},
+    ] }));
+    const { App } = await import("./App");
+    render(<App />);
+    expect(await screen.findByText("Add a project to get started.")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Add project" }));
+    expect(await screen.findByRole("button", { name: "Project actions job-portal" })).toBeVisible();
+    expect(h.lastVisible()).toEqual(["p-live"]);
+    expect(screen.getAllByRole("button", { name: /^Session aa1111/ }).length).toBeGreaterThan(0);
+    expect(h.projects).toHaveLength(1);
+    cleanup();
+    await mountApp();
+    expect(screen.getByRole("button", { name: "Project actions job-portal" })).toBeVisible();
+  });
+
   it("adds the folder the picker returned", async () => {
     const user = userEvent.setup();
     h.isMock = false;

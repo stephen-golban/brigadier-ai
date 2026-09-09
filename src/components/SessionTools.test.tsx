@@ -347,3 +347,19 @@ describe("session tools", () => {
     expect(providerIdentity("custom:work").cli).toBe("CLI unknown");
   });
 });
+
+it("passes retained attachments on an existing session turn and clears them only after acceptance", async () => {
+  localStorage.setItem("draft:attachments:turn:s", JSON.stringify([{id:"file",projectId:"p",name:"Reference.png",mediaType:"image/png",size:3,createdAt:0}]));
+  const send = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+  const user = userEvent.setup();
+  render(<Dock session={session} project={null} models={[]} busy={false} blocked={false}
+    onSend={send} onStartSession={vi.fn()} onInterrupt={vi.fn()} onEnd={vi.fn()} onKill={vi.fn()}
+    onResume={vi.fn()} onCleanup={vi.fn()} />);
+  await user.type(screen.getByRole("textbox"), "Share the reference with a peer");
+  await user.keyboard("{Enter}");
+  expect(send).toHaveBeenCalledWith("s", "Share the reference with a peer", ["file"]);
+  expect(screen.getByRole("button", {name:"Remove attachment Reference.png"})).toBeVisible();
+  await user.keyboard("{Enter}");
+  expect(screen.queryByRole("button", {name:"Remove attachment Reference.png"})).toBeNull();
+  expect(localStorage.getItem("draft:attachments:turn:s")).toBeNull();
+});

@@ -9,6 +9,7 @@ import {
   type TextareaHTMLAttributes,
   type ReactNode,
 } from "react";
+import { peerApi, type PeerAttachment } from "../peerApi";
 import { NoteScope } from "../noteScope";
 import { workbenchApi, type Note } from "../workbenchApi";
 import { PlusIcon } from "@phosphor-icons/react";
@@ -45,16 +46,29 @@ export function useDraft(key: string): [string, (value: string) => void] {
   );
   return [value, write];
 }
+export function useAttachmentDraft(key: string): [PeerAttachment[], (files: PeerAttachment[]) => void] {
+  const [saved, setSaved] = useDraft(`attachments:${key}`);
+  let files: PeerAttachment[] = [];
+  try { const parsed: unknown = JSON.parse(saved || "[]"); if (Array.isArray(parsed)) files = parsed.filter(a => a && typeof a.id === "string" && typeof a.projectId === "string" && typeof a.name === "string"); } catch { /* Ignore an invalid saved draft. */ }
+  const setFiles = useCallback((next: PeerAttachment[]) => setSaved(next.length ? JSON.stringify(next) : ""), [setSaved]);
+  return [files, setFiles];
+}
+
 export function PromptInput(
   props: TextareaHTMLAttributes<HTMLTextAreaElement> & {
     onText: (value: string) => void;
+    attachmentProjectId?: string | null;
+    attachments?: PeerAttachment[];
+    onAttachments?: (files: PeerAttachment[]) => void;
+    onUploadChange?: (uploading: boolean) => void;
     focusKey?: string;
     header?: ReactNode;
     children?: ReactNode;
   },
 ) {
   const projectId = useContext(NoteScope);
-  const { onText, focusKey, header, children, ...rest } = props;
+  const { onText, focusKey, header, children, attachmentProjectId, attachments = [], onAttachments, onUploadChange, ...rest } = props;
+  const durableAttach = useRef<((files: File[]) => void) | null>(null);
   const textarea = useRef<HTMLTextAreaElement>(null),
     file = useRef<HTMLInputElement>(null);
   useEffect(() => {
@@ -75,6 +89,10 @@ export function PromptInput(
       const { path, content } = (
         e as CustomEvent<{ path: string; content: string }>
       ).detail;
+      if (durableAttach.current) {
+        durableAttach.current([new File([content], path.split("/").pop() || "context.txt", {type: "text/plain"})]);
+        return;
+      }
       latest.current.onText(
         `${latest.current.value}${latest.current.value ? "\n\n" : ""}${fileContext(path, content)}`,
       );
@@ -100,8 +118,32 @@ export function PromptInput(
       window.removeEventListener("brigadier-insert-note", mention);
     };
   }, []);
-  const addFiles = async (files: FileList | null) => {
-    if (!files) return;
+  const [uploading, setUploading] = useState(false);
+  const attachmentState = useRef({ onAttachments, attachments });
+  attachmentState.current = { onAttachments, attachments };
+  const addFiles = async (files: FileList | File[] | null) => {
+    if (!files || uploading) return;
+    if (attachmentProjectId && onAttachments) {
+      const destination = onAttachments;
+      setUploading(true); onUploadChange?.(true); setError(null);
+      try {
+        for (const item of Array.from(files)) {
+          const base64 = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result).split(",")[1] ?? "");
+            reader.onerror = () => reject(new Error(`Could not read ${item.name}`));
+            reader.readAsDataURL(item);
+          });
+          const attachment = await peerApi.importAttachment(attachmentProjectId, item.name, base64);
+          if (attachmentState.current.onAttachments !== destination) return;
+          const next = [...attachmentState.current.attachments, attachment];
+          attachmentState.current.attachments = next;
+          destination(next);
+        }
+      } catch (failure) { setError(failure instanceof Error ? failure.message : String(failure)); }
+      finally { setUploading(false); onUploadChange?.(false); }
+      return;
+    }
     const destination = latest.current.onText;
     let content = "";
     try {
@@ -123,6 +165,7 @@ export function PromptInput(
       setError(e instanceof Error ? e.message : String(e));
     }
   };
+  durableAttach.current = attachmentProjectId && onAttachments ? files => { void addFiles(files); } : null;
   return (
     <ComposerBar
       className="relative bg-input"
@@ -136,6 +179,8 @@ export function PromptInput(
       }}
     >
       {header}
+      {attachments.length > 0 && <div className="flex flex-wrap gap-2 px-2 py-1 text-xs" aria-label="Attached files">{attachments.map(a => <span key={a.id}>{a.name} <Button type="button" disabled={props.disabled || uploading} aria-label={`Remove attachment ${a.name}`} onClick={() => onAttachments?.(attachments.filter(file => file.id !== a.id))}>×</Button></span>)}</div>}
+      {uploading && <p role="status" className="px-2 text-xs">Adding attachments…</p>}
       <ComposerInput
         {...rest}
         ref={textarea}
@@ -161,13 +206,13 @@ export function PromptInput(
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-1">
-          <MessageAction tooltip="Attach text files or drop them in the composer">
+          <MessageAction tooltip={onAttachments ? "Attach files or drop them in the composer" : "Attach text files or drop them in the composer"}>
             <Button
               type="button"
               variant="ghost"
               size="icon"
-              aria-label="Attach text files"
-              title="Attach text files or drop them in the composer"
+              aria-label={onAttachments ? "Attach files" : "Attach text files"}
+              title={onAttachments ? "Attach files or drop them in the composer" : "Attach text files or drop them in the composer"}
               disabled={props.disabled}
               onClick={() => file.current?.click()}
             >

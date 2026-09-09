@@ -54,6 +54,7 @@ export interface StartSessionArgs {
   options?: AgentOptions;
   isolated?: boolean;
   baseBranch?: string;
+  attachmentIds?: string[];
 }
 
 export interface BurnArgs {
@@ -102,7 +103,7 @@ export interface Bridge {
     sessionId: SessionId,
     newWorktree?: boolean,
   ): Promise<SessionView>;
-  sendTurn(sessionId: SessionId, text: string): Promise<{ turn_id: string }>;
+  sendTurn(sessionId: SessionId, text: string, attachmentIds?: string[]): Promise<{ turn_id: string }>;
   respond(
     sessionId: SessionId,
     requestId: RequestId,
@@ -263,6 +264,7 @@ const tauriBridge: Bridge = {
     options,
     isolated,
     baseBranch,
+    attachmentIds,
   }) =>
     call<SessionView>("start_session", {
       projectId,
@@ -272,13 +274,16 @@ const tauriBridge: Bridge = {
       options,
       isolated,
       baseBranch,
+      attachmentIds,
     }),
   resumeSession: (sessionId) =>
     call<SessionView>("resume_session", { sessionId }),
   forkSession: (sessionId, newWorktree = true) =>
     call<SessionView>("fork_session", { sessionId, newWorktree }),
-  sendTurn: (sessionId, text) =>
-    call<{ turn_id: string }>("send_turn", { sessionId, text }),
+  sendTurn: (sessionId, text, attachmentIds = []) =>
+    attachmentIds.length
+      ? call<{ turn_id: string }>("send_conversation_turn", { sessionId, text, attachmentIds })
+      : call<{ turn_id: string }>("send_turn", { sessionId, text }),
   respond: (sessionId, requestId, decision) =>
     call<void>("respond", { sessionId, requestId, decision }),
   interrupt: (sessionId) => call<void>("interrupt", { sessionId }),

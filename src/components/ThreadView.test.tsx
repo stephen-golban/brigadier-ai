@@ -162,7 +162,7 @@ it("keeps peer attribution short and navigable", async () => {
     select = vi.fn();
   const title =
     "A very long peer session title that contains an entire prompt and should not become a sentence above the bubble";
-  vi.spyOn(workspaceApi, "chat").mockResolvedValue([transcript[0]!]);
+  vi.spyOn(workspaceApi, "chat").mockResolvedValue([{ ...transcript[0]!, provider_uuid: "peer-turn" }]);
   render(
     <ThreadView
       sessionId="idle"
@@ -174,15 +174,15 @@ it("keeps peer attribution short and navigable", async () => {
         origins: { idle: "peer" },
         titles: { peer: title },
         closed: [],
-        messages: [],
+        messages: [{ id: "delivery", from: "peer", to: "idle", text: "Inspect the changes", work: true, delivered: true, error: null, turnId: "peer-turn" }],
         requests: [],
       }}
     />,
   );
   const attribution = await screen.findByRole("button", {
-    name: /^From A very long/,
+    name: /^Open source task: A very long/,
   });
-  expect(attribution.textContent!.length).toBeLessThan(50);
+  expect(screen.getByText("Sent by Brigadier from another task")).toBeVisible();
   expect(attribution).toHaveAttribute("title", title);
   await user.click(attribution);
   expect(select).toHaveBeenCalledWith("peer");

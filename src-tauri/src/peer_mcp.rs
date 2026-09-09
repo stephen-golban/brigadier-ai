@@ -24,7 +24,7 @@ pub(crate) fn forward(mut request: Value) -> Result<Value, String> {
     writeln!(socket, "{request}").map_err(|e| e.to_string())?;
     let mut response = String::new();
     std::io::BufReader::new(socket)
-        .take(2 * 1024 * 1024)
+        .take(128 * 1024)
         .read_line(&mut response)
         .map_err(|e| e.to_string())?;
     serde_json::from_str(&response).map_err(|e| e.to_string())
@@ -58,15 +58,21 @@ fn tools() -> Value {
         ),
         (
             "create_session",
-            "Create a visible session for a concrete task. Defaults to your project and an isolated worktree from committed HEAD; uncommitted files are not copied. Keep isolation enabled for parallel work. Use list_projects for another project ID.",
-            json!({"prompt":{"type":"string"},"title":{"type":"string"},"model":{"type":"string"},"isolated":{"type":"boolean","default":true},"projectId":{"type":"string"}}),
+            "Create a visible session and deliver prompt as its first message in this single call. When asked to create a chat and say/send something, put that exact requested message in prompt. Do not invent a placeholder or bootstrap prompt, and do not call send_message to repeat the initial message. Defaults to your project and an isolated worktree from committed HEAD; uncommitted files are not copied. Keep isolation enabled for parallel work. Use list_projects for another project ID. Omitted attachmentIds forwards current-request attachments; [] forwards none. Use list_attachments for handles. Supply a unique requestId and reuse it on retry: an uncertain result must be inspected, never blindly duplicated.",
+            json!({"prompt":{"type":"string","description":"The actual first message to deliver to the new chat. Use the requested message directly; creation already sends it."},"title":{"type":"string"},"model":{"type":"string"},"isolated":{"type":"boolean","default":true},"projectId":{"type":"string"},"attachmentIds":{"type":"array","maxItems":20,"items":{"type":"string"}},"requestId":{"type":"string","maxLength":200}}),
             vec!["prompt"],
         ),
         (
             "send_message",
-            "Send a follow-up and wake an idle session, or queue it while busy. Set work:false for passive information that requires no reply.",
-            json!({"sessionId":{"type":"string"},"text":{"type":"string"},"work":{"type":"boolean","default":true}}),
+            "Send a distinct follow-up to an existing session and wake it if idle, or queue it while busy. create_session already delivers its prompt as the first message; do not use this tool to repeat it. Set work:false for passive information that requires no reply; attachments arrive as context with the next turn. Omitted attachmentIds forwards current-request attachments; [] forwards none. Use list_attachments for handles. Supply a unique requestId and reuse it on retry. Queued/accepted does not mean delivered; inspect the returned status.",
+            json!({"sessionId":{"type":"string"},"text":{"type":"string"},"work":{"type":"boolean","default":true},"attachmentIds":{"type":"array","maxItems":20,"items":{"type":"string"}},"requestId":{"type":"string","maxLength":200}}),
             vec!["sessionId", "text"],
+        ),
+        (
+            "list_attachments",
+            "List durable attachment handles and metadata associated with your current incoming request. create_session and send_message inherit only these attachments by default. Pass attachmentIds:[] for none or select these handles explicitly. Handles from unrelated projects are rejected.",
+            json!({}),
+            vec![],
         ),
         (
             "read_inbox",
@@ -87,7 +93,8 @@ fn tools() -> Value {
             vec!["sessionId"],
         ),
     ];
-    json!({"tools": definitions.into_iter().map(|(name,description,properties,required)|json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}})).collect::<Vec<_>>()})
+    let tools = definitions.into_iter().map(|(name,description,properties,required)|json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}})).collect::<Vec<_>>();
+    json!({"tools":tools})
 }
 fn response(
     request: Value,
@@ -117,6 +124,7 @@ fn response(
                 "create_session" => "create",
                 "send_message" => "message",
                 "read_inbox" => "inbox",
+                "list_attachments" => "attachments",
                 "stop_session" => "stop",
                 "close_session" => "close",
                 _ => "",
@@ -136,7 +144,7 @@ fn response(
                         let error = v["ok"] != true;
                         (v, error)
                     }
-                    Err(e) => (json!({"error":e}), true),
+                    Err(e) => (json!({"error":e,"status":"unknown"}), true),
                 };
                 Ok(json!({"content":[{"type":"text","text":value.to_string()}],"isError":error}))
             }
@@ -162,6 +170,12 @@ pub(crate) fn run() {
             _ => {}
         }
         if bytes.len() >= 128 * 1024 {
+            let _ = writeln!(
+                output,
+                "{}",
+                json!({"jsonrpc":"2.0","id":null,"error":{"code":-32602,"message":"MCP request exceeds 128 KiB"}})
+            );
+            let _ = output.flush();
             break;
         }
         let reply = match serde_json::from_slice(&bytes) {
@@ -184,6 +198,35 @@ pub(crate) fn run() {
 mod tests {
     use super::*;
     #[test]
+    fn create_delivers_requested_first_message_in_one_call_with_retry_identity_and_attachments() {
+        let mut ready = true;
+        let mut calls = vec![];
+        let args = json!({"prompt":"Hi from first session","title":"First Chat Session","requestId":"greeting-creation","attachmentIds":["image-handle"]});
+        for id in [1, 2] {
+            let reply = response(
+                json!({"id":id,"method":"tools/call","params":{"name":"create_session","arguments":args}}),
+                &mut ready,
+                |request| {
+                    calls.push(request);
+                    Ok(json!({"ok":true,"result":{"sessionId":"child","initialMessage":{"messageId":"initial","status":"delivered"}}}))
+                },
+            ).unwrap();
+            let result: Value = serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+            assert_eq!(result["result"]["initialMessage"]["status"], "delivered");
+        }
+        // Each tool invocation forwards exactly once; a retry preserves the same
+        // logical creation identity, without synthesizing a bootstrap or send call.
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0], calls[1]);
+        assert_eq!(calls[0]["action"], "create");
+        assert_eq!(calls[0]["prompt"], "Hi from first session");
+        assert_eq!(calls[0]["requestId"], "greeting-creation");
+        assert_eq!(calls[0]["attachmentIds"], json!(["image-handle"]));
+        let definitions = tools();
+        let create = definitions["tools"].as_array().unwrap().iter().find(|t| t["name"] == "create_session").unwrap();
+        assert!(create["description"].as_str().unwrap().contains("deliver prompt as its first message"));
+    }
+    #[test]
     fn handshake_and_tool_dispatch() {
         let mut ready = false;
         let init = response(
@@ -205,7 +248,7 @@ mod tests {
             |_| panic!(),
         )
         .unwrap();
-        assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 9);
+        assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 10);
         let call=response(json!({"id":3,"method":"tools/call","params":{"name":"send_message","arguments":{"sessionId":"peer","text":"hello"}}}),&mut ready,|r|{assert_eq!(r["action"],"message");assert_eq!(r["sessionId"],"peer");Ok(json!({"ok":true}))}).unwrap();
         assert_eq!(call["result"]["isError"], false);
         let denied = response(

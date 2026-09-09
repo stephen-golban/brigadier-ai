@@ -45,6 +45,9 @@ import { workbenchApi } from "../workbenchApi";
 import { bridge } from "../bridge";
 import * as store from "../feedStore";
 import { projectThread } from "../threadProjection";
+import { PeerTaskCardScope } from "./peer/PeerTaskCardScope";
+import { PeerIncomingMessage, PeerMessages } from "./peer/PeerMessages";
+import { PeerAttachmentPreviews } from "./peer/PeerAttachmentPreviews";
 import { peerMessageContent } from "../peerPresentation";
 import type { PeerData } from "../peerApi";
 export function ThreadView({
@@ -348,6 +351,7 @@ function Transcript({
     });
   return (
     <AssistantRuntimeProvider runtime={runtime}>
+      <PeerTaskCardScope rows={rows} sessionTitles={peers?.titles} sessionId={sessionId} peers={peers}>
       <Thread
         viewportRef={scroll}
         scrollToBottomOnInitialize={saved.current.following}
@@ -439,37 +443,8 @@ function Transcript({
             </div>
           );
         })}
-        {peers?.messages
-          .filter((m) => m.to === sessionId && (!m.work || !m.delivered))
-          .map((m) => (
-            <Disclosure key={m.id}>
-              <Disclosure.Heading>
-                <Disclosure.Trigger>
-                  {m.work
-                    ? m.error
-                      ? "Message delivery failed"
-                      : "Message queued"
-                    : "Message"}{" "}
-                  from {peers.titles[m.from] ?? "another session"}
-                  <Disclosure.Indicator />
-                </Disclosure.Trigger>
-              </Disclosure.Heading>
-              <Disclosure.Content>
-                <Disclosure.Body>
-                  <Button onClick={() => onSelectSession?.(m.from)}>
-                    Open source session
-                  </Button>
-                  <Markdown text={m.text} onFile={onFile} />
-                  <CopyButton text={m.text} />
-                  {m.error && (
-                    <p className="inline-error my-2 text-[13px] text-error">
-                      {m.error}
-                    </p>
-                  )}
-                </Disclosure.Body>
-              </Disclosure.Content>
-            </Disclosure>
-          ))}
+        <PeerMessages sessionId={sessionId} peers={peers} onSelectSession={onSelectSession}
+          renderAttachments={message => <PeerAttachmentPreviews message={message} />} />
         {peers?.requests
           .filter((r) => r.to === sessionId && r.resolved)
           .map((r) => (
@@ -494,6 +469,7 @@ function Transcript({
         )}
         {requests}
       </Thread>
+      </PeerTaskCardScope>
     </AssistantRuntimeProvider>
   );
 }
@@ -534,23 +510,15 @@ function UserMessage({
 }) {
   const [expanded, setExpanded] = useState(false);
   const { source, text } = peerMessageContent(item, peers, initial);
+  if (source) return <PeerIncomingMessage item={item} peers={peers} onSelectSession={onSelectSession} />;
   const long =
-    text.length > (source ? 200 : 480) || text.split("\n").length > 8;
+    text.length > 480 || text.split("\n").length > 8;
   return (
     <div className="flex min-w-0 flex-col items-end gap-1">
-      {source && (
-        <Button
-          className="message-provenance max-w-full justify-end truncate text-xs text-text-secondary"
-          title={peers?.titles[source] ?? "Open source session"}
-          onClick={() => onSelectSession?.(source)}
-        >
-          From {shortSessionTitle(peers?.titles[source])}
-        </Button>
-      )}
       <ChatPanelUserMessage className="max-w-[85%] bg-elevated px-4 py-3 text-sm whitespace-pre-wrap sm:max-w-[75%]">
         <div
           className={
-            long && !expanded ? (source ? "line-clamp-2" : "line-clamp-5") : ""
+            long && !expanded ? "line-clamp-5" : ""
           }
         >
           {text}
@@ -602,12 +570,4 @@ function UserMessage({
       </div>
     </div>
   );
-}
-
-function shortSessionTitle(title?: string) {
-  if (!title) return "another session";
-  const singleLine = title.replace(/\s+/g, " ").trim();
-  return singleLine.length > 42
-    ? `${singleLine.slice(0, 41).trimEnd()}…`
-    : singleLine;
 }

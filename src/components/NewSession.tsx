@@ -5,7 +5,7 @@ import { Button } from "./controls/button";
 import { SelectMenu } from "./SelectMenu";
 import { effortLevels, type Effort } from "../agentOptions";
 import type { AgentOptions } from "../agentOptions";
-import { PromptInput, useDraft } from "./PromptInput";
+import { PromptInput, useDraft, useAttachmentDraft } from "./PromptInput";
 /**
  * Start a session: the dock's **Session** mode.
  *
@@ -52,6 +52,7 @@ export interface NewSessionProps {
     options?: AgentOptions;
     isolated?: boolean;
     baseBranch?: string;
+    attachmentIds?: string[];
   }) => void | Promise<boolean>;
 }
 
@@ -62,6 +63,8 @@ export function NewSession({
   onStart,
 }: NewSessionProps) {
   const [prompt, setPrompt] = useDraft(`session:${project?.id ?? "none"}`);
+  const [attachments, setAttachments] = useAttachmentDraft(`session:${project?.id ?? "none"}`);
+  const [uploading, setUploading] = useState(false);
   const [model, setModel] = useState<string>("");
   const [effort, setEffort] = useState<Effort>("auto");
   const [isolated, setIsolated] = useState(true);
@@ -109,11 +112,11 @@ export function NewSession({
 
   const defaultModel = models.find((m) => m.default)?.id ?? models[0]?.id ?? "";
   const chosen = model === "" ? defaultModel : model;
-  const ready = project !== null && prompt.trim() !== "" && !disabled;
+  const ready = project !== null && prompt.trim() !== "" && !disabled && !uploading;
 
   const [sending, setSending] = useState(false);
   const submit = async () => {
-    if (project === null || prompt.trim() === "" || disabled || sending) return;
+    if (project === null || prompt.trim() === "" || disabled || sending || uploading) return;
     setSending(true);
     try {
       const accepted = await onStart({
@@ -122,12 +125,13 @@ export function NewSession({
         model: chosen === "" ? null : chosen,
         permissionMode: mode,
         isolated,
+        ...(attachments.length ? {attachmentIds: attachments.map(a => a.id)} : {}),
         ...(isolated && branch ? { baseBranch: branch } : {}),
         ...(effort !== "auto" && effortLevels(chosen).includes(effort)
           ? { options: { effort } }
           : {}),
       });
-      if (accepted !== false) setPrompt("");
+      if (accepted !== false) { setPrompt(""); setAttachments([]); }
     } finally {
       setSending(false);
     }
@@ -168,6 +172,10 @@ export function NewSession({
         </div>
       )}
       <PromptInput
+        attachmentProjectId={project?.id}
+        attachments={attachments}
+        onAttachments={setAttachments}
+        onUploadChange={setUploading}
         focusKey={starterFocus}
         rows={2}
         value={prompt}

@@ -1509,15 +1509,58 @@ where
 
     async fn start_turn(&mut self, turn_id: TurnId, input: TurnInput) -> Result<(), CommandError> {
         if !input.attachment_paths.is_empty() {
-            self.emit(
-                Event::RuntimeWarning {
-                    message: format!(
-                        "{} attachment(s) dropped: the Claude driver sends text turns only",
-                        input.attachment_paths.len()
-                    ),
-                },
-                None,
-            );
+            return Err(CommandError::NotDispatched(
+                "Import attachments into durable project storage before sending".into(),
+            ));
+        }
+        if input.text.trim().is_empty() && input.attachments.is_empty() {
+            return Err(CommandError::NotDispatched(
+                "A message or image is required".into(),
+            ));
+        }
+        let mut frame = SdkUserMessage::text(input.text.clone());
+        if let MessageContent::Blocks(blocks) = &mut frame.message.content {
+            if input.text.is_empty() {
+                blocks.clear();
+            }
+            for image in &input.attachments {
+                if image.media_type == "text/plain" {
+                    let text = image
+                        .text
+                        .as_ref()
+                        .filter(|s| s.len() <= 1024 * 1024)
+                        .ok_or_else(|| {
+                            CommandError::NotDispatched("Invalid UTF-8 text attachment".into())
+                        })?;
+                    blocks.push(ContentBlock::Known(ContentBlockKnown::Text {
+                        text: format!(
+                            "Attached file {} (attachment ID {}):\n{}",
+                            image.name, image.id, text
+                        ),
+                        extra: Default::default(),
+                    }));
+                    continue;
+                }
+                if !["image/png", "image/jpeg", "image/gif", "image/webp"]
+                    .contains(&image.media_type.as_str())
+                    || image.base64.is_empty()
+                {
+                    return Err(CommandError::NotDispatched(
+                        "Unsupported or empty image attachment".into(),
+                    ));
+                }
+                blocks.push(ContentBlock::Unknown(serde_json::json!({"type":"image","source":{"type":"base64","media_type":image.media_type,"data":image.base64}})));
+            }
+        }
+        if !input.attachments.is_empty() {
+            if let MessageContent::Blocks(blocks) = &mut frame.message.content {
+                let refs = input
+                    .attachments
+                    .iter()
+                    .map(|a| serde_json::json!({"id":a.id,"name":a.name,"mediaType":a.media_type}))
+                    .collect::<Vec<_>>();
+                blocks.push(ContentBlock::Known(ContentBlockKnown::Text {text:format!("Attachments for this request (use these durable attachmentIds when delegating): {}",serde_json::to_string(&refs).expect("refs")),extra:Default::default()}));
+            }
         }
         // A new turn starts on an empty buffer. This is also what discards a pre-empted minted
         // turn's text: that turn never produced a `result` here, so nothing kept it.
@@ -1533,7 +1576,6 @@ where
             },
             None,
         );
-        let mut frame = SdkUserMessage::text(input.text.clone());
         frame.uuid = Some(turn_id.to_string());
         if let Err(e) = self.write_frame(&frame).await {
             self.emit(
@@ -1551,12 +1593,12 @@ where
                 },
                 None,
             );
-            return Err(CommandError::Rejected(e.to_string()));
+            return Err(CommandError::DeliveryUnknown(e.to_string()));
         }
         self.emit_item(
             ItemId::new(format!("{turn_id}:user")),
             ItemKind::UserText,
-            &input.text,
+            input.display_text.as_deref().unwrap_or(&input.text),
             None,
             &serde_json::json!({"type":"user","uuid":frame.uuid}).to_string(),
         );

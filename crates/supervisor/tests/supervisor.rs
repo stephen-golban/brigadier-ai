@@ -712,3 +712,26 @@ async fn a_closed_event_stream_ends_the_session() {
 
     h.store.close().await.expect("store closes");
 }
+
+#[tokio::test]
+async fn concurrent_adds_of_the_same_canonical_folder_return_one_project() {
+    let h = Harness::new();
+    let root = h.dir.path().join("project");
+    std::fs::create_dir(&root).unwrap();
+    let (a, b, c) = tokio::join!(
+        h.sup.add_project(root.clone()),
+        h.sup.add_project(root.join(".")),
+        h.sup.add_project(root.clone()),
+    );
+    let a = a.unwrap();
+    assert_eq!(a.id, b.unwrap().id);
+    assert_eq!(a.id, c.unwrap().id);
+    #[cfg(unix)]
+    {
+        let alias = h.dir.path().join("alias");
+        std::os::unix::fs::symlink(&root, &alias).unwrap();
+        assert_eq!(a.id, h.sup.add_project(alias).await.unwrap().id);
+    }
+    assert_eq!(h.sup.list_projects().await.unwrap().len(), 1);
+    h.sup.shutdown().await;
+}

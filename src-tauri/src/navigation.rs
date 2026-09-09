@@ -77,6 +77,23 @@ pub(crate) fn require_available(dir: &Path, kind: Kind, id: &str) -> Result<(), 
 pub(crate) async fn navigation_load(state: State<'_, AppState>) -> Result<Data, AppError> {
     read(&state.get()?.data_dir)
 }
+
+/// Opening a folder restores its saved project, including its history. Independently
+/// trashed sessions stay in Trash. Serialize with trash/purge so an add cannot be lost.
+pub(crate) async fn open_project(
+    path: std::path::PathBuf,
+    ready: &crate::state::Ready,
+) -> Result<brigadier_store::ProjectRow, AppError> {
+    let _mutation = MUTATION.lock().await;
+    let row = ready.supervisor.add_project(path).await?;
+    if read(&ready.data_dir)?.hidden(&Kind::Project, &row.id) {
+        update(&ready.data_dir, |d| {
+            d.trash.retain(|t| !(t.kind == Kind::Project && t.id == row.id));
+            Ok(())
+        })?;
+    }
+    Ok(row)
+}
 #[tauri::command]
 pub(crate) async fn navigation_customize(
     kind: String,
@@ -358,6 +375,49 @@ pub(crate) async fn trash_purge(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn opening_a_trashed_folder_restores_its_original_project_and_preserves_history() {
+        use brigadier_core::driver::{ProviderDriver, StartSession};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("keep.txt"), "saved work").unwrap();
+        let ready = crate::state::build(dir.path().join("data")).await.unwrap();
+        let original = open_project(root.clone(), &ready).await.unwrap();
+        let driver = brigadier_supervisor::ReplayDriver::new(vec![]);
+        let kind = driver.kind();
+        ready.supervisor.register_driver(std::sync::Arc::new(driver));
+        let session = ready.supervisor.start_session(&original.id, &kind, StartSession::new(&root)).await.unwrap();
+        update(&ready.data_dir, |data| {
+            data.trash.push(TrashEntry {
+                kind: Kind::Project, id: original.id.clone(), title: original.name.clone(),
+                project_id: Some(original.id.clone()), session_ids: vec![session.to_string()], trashed_at: 1,
+            });
+            data.trash.push(TrashEntry {
+                kind: Kind::Session, id: "separately-trashed".into(), title: "Separate task".into(),
+                project_id: Some(original.id.clone()), session_ids: vec!["separately-trashed".into()], trashed_at: 1,
+            });
+            data.trash.push(TrashEntry {
+                kind: Kind::Project, id: "other-project".into(), title: "Other project".into(),
+                project_id: Some("other-project".into()), session_ids: vec![], trashed_at: 1,
+            });
+            Ok(())
+        }).unwrap();
+        assert!(read(&ready.data_dir).unwrap().hidden(&Kind::Project, &original.id));
+        for _ in 0..3 {
+            let reopened = open_project(root.join("."), &ready).await.unwrap();
+            assert_eq!(reopened.id, original.id);
+        }
+        let restored = read(&ready.data_dir).unwrap();
+        assert!(!restored.hidden(&Kind::Project, &original.id));
+        assert!(!restored.hidden(&Kind::Session, session.as_str()));
+        assert!(restored.hidden(&Kind::Session, "separately-trashed"));
+        assert!(restored.hidden(&Kind::Project, "other-project"));
+        assert_eq!(ready.supervisor.list_projects().await.unwrap().len(), 1);
+        assert!(ready.supervisor.session(&session).await.unwrap().is_some());
+        assert_eq!(std::fs::read_to_string(root.join("keep.txt")).unwrap(), "saved work");
+        ready.supervisor.shutdown().await;
+    }
     #[test]
     fn tombstones_persist_and_project_restore_preserves_separately_trashed_sessions() {
         let tmp = tempfile::tempdir().unwrap();
