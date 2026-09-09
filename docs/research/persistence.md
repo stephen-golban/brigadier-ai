@@ -133,7 +133,7 @@ The requirement: after a reload, an unanswered permission prompt is still on scr
 - **[asserted]** On startup, one statement before the UI loads: `UPDATE pending_approvals SET status='expired' WHERE status='pending'`. Any row surviving a restart is expired by definition, so this is unconditional and needs no `run_id` comparison — `run_id` is then only for telling the user *why*, and for catching a Rust-side panic-and-restart that the user did not notice.
 - **[asserted]** Expired must be visibly different from pending: an expired prompt renders read-only with the tool and its arguments, plus the one honest action available — re-run the turn with `resume: <session_id>`, which replays to the same decision point. Silently showing an expired prompt as answerable is worse than showing nothing.
 - **[asserted]** On clean shutdown, cancel every pending approval before exit, the way t3code's teardown "fans cancellations to every pending approval". A cancelled row is a better story than an expired one because the agent saw the cancellation.
-- **[asserted]** Unresolved: `docs/measurements.md` M2-M4 in this repo recorded `canUseTool` never firing, which `t3code.md` contradicts. This whole section is moot if approvals arrive by a different mechanism. Re-measure before building against it.
+- **[asserted]** Unresolved: `measurements.md` M2-M4 in the **old** brigadier repo (that file is not in this repo; see CLAUDE.md §1) recorded `canUseTool` never firing, which `t3code.md` contradicts. This whole section is moot if approvals arrive by a different mechanism. Re-measure before building against it.
 
 ## Recommendation (mine)
 
@@ -155,4 +155,4 @@ The requirement: after a reload, an unanswered permission prompt is still on scr
 - Whether `tauri-plugin-sql`'s `DbPool` exposes its inner sqlx pool publicly — `DbInstances` is `app.manage`d, but `DbPool`'s definition was not read.
 - Whether Tauri's `app_*_dir()` helpers create the directory.
 - Nothing was run against the SDK: `sessionStore`, `persistSession`, and `mirror_error` are documentation only.
-- The `canUseTool` contradiction between this repo's `docs/measurements.md` and `t3code.md` is unresolved and gates section 6.
+- The `canUseTool` contradiction between the old repo's `measurements.md` and `t3code.md` is unresolved and gates section 6.

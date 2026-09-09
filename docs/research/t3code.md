@@ -46,7 +46,7 @@ Cursor:1086, Grok:1940, OpenCode:3125). Interface at `Services/ProviderAdapter.t
 Teardown fans cancellations to every pending approval (`ClaudeAdapter.ts:3716-3736`).
 Pending approvals are persisted (`projection_pending_approvals`) so a reload still shows the prompt.
 
-**This contradicts `docs/measurements.md` M2-M4 in brigadier-ai, which recorded canUseTool never
+**This contradicts `measurements.md` M2-M4 in the old brigadier repo (not in this one), which recorded canUseTool never
 firing. Re-measure before designing around the hooks callback instead.**
 
 ## State

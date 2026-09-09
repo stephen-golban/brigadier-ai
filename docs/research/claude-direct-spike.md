@@ -2,7 +2,7 @@
 
 Date: 2026-09-02. Status: **executed against a live account**. Every number below is
 **[measured]** unless marked otherwise. This is the gate for decision 1 of
-`docs/plans/provider-spi.md`.
+`provider-spi.md` (deleted; not in the repo).
 
 Spike code: `crates/claude-spike/` (`src/main.rs`, `src/session.rs`). No Node, no SDK, no
 `claude-wire`, no `crates/core` — `tokio::process::Command` plus `serde_json::Value`, 897 lines

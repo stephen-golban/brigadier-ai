@@ -182,7 +182,7 @@ Top widgets under `get-bb/bb:apps/app/src/components/thread/`, all **[measured]*
 
 - Desktop shell `get-bb/bb:apps/desktop` (v0.42.1, mac + linux only): Electron 41.7.0, packaged by electron-builder, updated by electron-updater (`src/desktop-auto-update.ts`), native menus in `src/menu.ts`, `safeStorage` credentials, and an embedded BrowserView browser driven over CDP (`desktop-browser-*.ts`). **[measured]**
 - Not found in that shell: no tray, no `setAsDefaultProtocolClient` / `open-url` deep links, no desktop notifications — web `Notification` lives in the app and push is a plugin. **[asserted]** — code search returned zero, no file-by-file read.
-- Against brigadier: bb owns a 2,291-line hand-rolled switch and carries no chat-kit dependency at all; brigadier's current bet runs the other way, migrating conversations onto assistant-ui Elements (`docs/plans/assistant-ui-conversation-migration-2026-09-09.md` plus three sibling plans, all uncommitted at `c4d9d29`). **[measured]**
+- Against brigadier: bb owns a 2,291-line hand-rolled switch and carries no chat-kit dependency at all; brigadier's current bet runs the other way, migrating conversations onto assistant-ui Elements (`assistant-ui-conversation-migration-2026-09-09.md` plus three sibling plans, all uncommitted at `c4d9d29`). **[measured]** **Superseded 2026-09-09**: that bet was abandoned and all five uncommitted assistant-ui plan docs were deleted at `036a219`; see `docs/plans/bb-thread-port-2026-09-09.md` decision 2.
 - That is a contrast, not a recommendation: neither approach was measured against the other, and nothing here says which is right for a harness whose row kinds are the harness's own.
 
 ## 4. Pillar table
