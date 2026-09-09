@@ -75,3 +75,35 @@ Final lifecycle build installed and signature verified: `/Applications/Brigadier
 Behavior-preserving Clippy cleanup removed redundant whitespace trimming and test borrows, and passed the existing SpawnIn workspace descriptor into the internal session helper. Fresh checks: Rust 747 passed / 0 failed / 10 ignored; frontend 461 passed across 58 files; Clippy with warnings denied, rustdoc, TypeScript, whitespace validation and release app build passed. The native burn and remaining lifecycle GUI checks could not run on the locked Mac.
 
 Replaced the installed app with this commit-preparation build; signature verified. Executable SHA256 `1f51ae1daf3de1680c8f359027cf0cda5182d345fc01af38d8aaf0cefc9291c0`. Earlier build retained as `pre-commit-cleanup.app` in the backup directory.
+
+## Unlocked desktop follow-up — source commit 85007f1
+
+The following checks used the installed executable above after the Mac was unlocked. No product source changed during this follow-up.
+
+### Automatic parent wake: passed
+
+The original Codex parent explicitly ended its turn with “Waiting for worker completion.” Claude worker `ecacc25c-0976-4573-8cba-105c8ef6cc58` was held at its `sleep 1` approval until the parent was idle. After approving that command, the worker returned `WAKE-WORKER-9042`. Without another user message, the parent automatically began a new turn, read the bounded result, saved `WAKE-PARENT-9042`, and closed the worker. Its transcript visibly confirms these actions.
+
+Read-only peer-store evidence: exactly one completion receipt for worker turn `5a3810a6-c9d6-4506-812f-ce780b1e99ce`, completion sequence 24, `delivered:true`, `attempted:true`, `error:null`. Viewing the worker cleared its sidebar attention. This verifies the live idle-parent path, not exactly-once delivery across a crash.
+
+That worker's workspace `e0249695` was retained without force. The receipt says “Uncommitted work retained in its workspace,” but independent `git status --porcelain=v1 --ignored` was empty and its HEAD was `1f8c5e3 Capture worker input state`. Inspection found the retirement wrapper uses that wording for every `removed:false` cleanup result, including non-dirty guards. Therefore this is evidence of conservative retention, **not evidence of uncommitted files**. The inherited snapshot commit is a likely guard; the exact native blocked reason was not exposed by this receipt. The implementation task was notified of the misleading wording.
+
+### Stop with an owned worker and restart: passed
+
+Worker `9cfaf61c-e727-4524-8d79-5296c8e70262` (“Stop verification”) was held at a `sleep 30` Bash approval while the parent was awaiting approval for `wait_sessions`. Pressed the parent Stop button. Both approval cards cleared; both conversations displayed Stopped and paused queues. The worker command was never approved.
+
+Quit and reopened `/Applications/Brigadier.app`, then reopened the parent and its worker side pane. Both remained stopped with paused queues, no stale approval controls and no automatic parent continuation. Read-only session rows showed both processes ended; the worker had no completion receipt. This tests cancellation before worker completion; the narrower completion-versus-Stop race remains covered by the production-loop automated tests, not this native sequence.
+
+### Clean worker retirement: passed
+
+Created a fresh parent from the untouched fixture checkout, avoiding inherited changes. Parent `fa1d20b7-4c9d-4fc2-865f-59418d91946c` used Claude's default `claude-opus-5[1m]`. Worker `c18d4032-8a8c-4cb4-9ca1-a1dbd46f030b` (“Clean retirement”) was asked only to return `CLEAN-WORKER-9042`, without tools or edits. Parent read and closed it through the app's peer tools.
+
+Read-only evidence: worker is closed; retirement receipt for turn `1df82c2b-3f49-428b-8436-8967b0fa5259` has `workspaceRemoved:true`, `reason:null`; directory `.brigadier/worktrees/89d54aeb` is absent and `git worktree list` omits it. Saved session history remains available. No forced cleanup was used.
+
+A preceding clean-root attempt paired explicit `gpt-6-astra` with the default Claude provider and was rejected before any worker ran. It is not counted as successful verification. On the new-session Provider selector after this restart, only Claude Code 2.1.266 was offered, despite the earlier Codex session being usable. This discovery/catalog observation was reported separately to the implementation task; it was not repaired or concealed by changing global PATH.
+
+### Native Finder drag: blocked / unverified
+
+Opened the fixture folder using Reveal in Finder, positioned Finder on the left and enlarged Brigadier to expose its composer. Native cross-window drag and coordinate selection attempts intermittently returned computer-use error `noWindowsAvailable` although Finder accessibility text and screenshots remained readable. One drag call returned without an error but produced no composer attachment. These attempts do **not** establish a passing drag test or isolate a product defect. No synthetic event was substituted for a native drag.
+
+File-picker attachment, Finder file copy/paste, image clipboard paste and exact attachment bytes were already verified above. Real Finder drag/drop still needs a manual check or functioning cross-window automation. No long-session soak or native render-burn performance result is claimed.
