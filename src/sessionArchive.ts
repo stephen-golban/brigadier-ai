@@ -68,8 +68,8 @@ export async function archiveSession(id: string, archived: boolean) {
     return publish(
       await invoke<ArchiveData>("archive_set", { sessionId: id, archived }),
     );
-  const { origins } = await peerApi.snapshot();
-  const ids = chatSessionIds(id, origins);
+  const { subagents = {} } = await peerApi.snapshot();
+  const ids = chatSessionIds(id, subagents);
   const data = readArchive();
   for (const member of ids) {
     if (archived)
@@ -91,7 +91,7 @@ export async function saveArchiveSettings(settings: ArchiveSettings) {
       : { ...readArchive(), settings },
   );
 }
-/** A chat is the root session and all of its descendants. */
+/** Archive ownership follows internal workers, never ordinary chat/fork provenance. */
 export function chatSessionIds(
   id: string,
   origins: Record<string, string>,
@@ -109,8 +109,8 @@ export function chatSessionIds(
 export async function deleteArchivedSession(sessionId: string) {
   if (desktop)
     return publish(await invoke<ArchiveData>("archive_delete", { sessionId }));
-  const { origins } = await peerApi.snapshot();
-  const ids = chatSessionIds(sessionId, origins);
+  const { subagents = {} } = await peerApi.snapshot();
+  const ids = chatSessionIds(sessionId, subagents);
   const data = readArchive();
   if (!data.entries[sessionId])
     throw new Error("Only archived chats can be deleted here.");

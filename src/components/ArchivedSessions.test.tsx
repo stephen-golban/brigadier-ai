@@ -68,6 +68,7 @@ beforeEach(async () => {
   localStorage.clear();
   vi.spyOn(peerApi, "snapshot").mockResolvedValue({
     origins,
+    subagents: origins,
     titles: {},
     closed: [],
     messages: [],
@@ -168,4 +169,13 @@ it("deletes a row immediately without a dialog and clears all session recovery b
 
 it("rejects standalone subagent archive actions", async () => {
   await expect(archiveSession("child", false)).rejects.toThrow("parent chat");
+});
+
+it("keeps an ordinary created chat independently archivable",async()=>{
+ vi.mocked(peerApi.snapshot).mockResolvedValue({origins:{chat:'alpha'},subagents:{},titles:{},closed:[],messages:[],requests:[]});
+ await archiveSession('chat',true);
+ expect(readArchive().entries.chat).toBeDefined();
+ await archiveSession('chat',false);
+ expect(readArchive().entries.chat).toBeUndefined();
+ expect(readArchive().entries.alpha).toBeDefined();
 });

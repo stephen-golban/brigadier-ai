@@ -8,14 +8,14 @@ mod delivery_tests;
 pub(crate) use delivery_tests::run as test_delivery;
 
 fn record(data: &mut PeerData, child: &str, turn: &str, seq: u64) -> Option<Message> {
-    let parent = data.origins.get(child)?.clone();
+    let parent = data.subagents.get(child)?.clone();
     let mut seen = std::collections::HashSet::from([child]);
     let mut ancestor = parent.as_str();
     loop {
         if !seen.insert(ancestor) {
             return None;
         }
-        match data.origins.get(ancestor) {
+        match data.subagents.get(ancestor) {
             Some(next) => ancestor = next,
             None => break,
         }
@@ -58,6 +58,27 @@ pub(crate) fn observe_signals(signals: &[Envelope]) {
         return;
     };
     for envelope in signals {
+        let state = match &envelope.event {
+            Event::TurnCompleted {
+                stop_reason: brigadier_core::event::StopReason::EndTurn,
+                ..
+            } => "completed",
+            Event::TurnCompleted { .. } => "failed",
+            Event::TurnAborted { .. } => "stopped",
+            _ => continue,
+        };
+        if let Err(error) = change(|d| {
+            let turn = match &envelope.event {
+                Event::TurnCompleted { turn_id, .. } | Event::TurnAborted { turn_id, .. } => {
+                    turn_id.as_str()
+                }
+                _ => "",
+            };
+            orchestration::terminal(d, envelope.session_id.as_str(), turn, state);
+            Ok(())
+        }) {
+            tracing::error!(message=%error.message,"Could not persist assignment outcome");
+        }
         let Event::TurnCompleted { turn_id, .. } = &envelope.event else {
             continue;
         };
@@ -97,7 +118,7 @@ pub(crate) fn observe_signals(signals: &[Envelope]) {
 }
 
 fn observed(data: &mut PeerData, caller: &str, child: &str, seq: u64) {
-    if data.origins.get(child).map(String::as_str) != Some(caller) {
+    if data.subagents.get(child).map(String::as_str) != Some(caller) {
         return;
     }
     let seen = data.observed_completions.entry(child.into()).or_default();
@@ -139,13 +160,14 @@ mod tests {
     use super::*;
     fn data() -> PeerData {
         PeerData {
-            origins: [("child".into(), "parent".into())].into(),
+            subagents: [("child".into(), "parent".into())].into(),
             ..Default::default()
         }
     }
     #[test]
     fn owned_completion_is_single_durable_work_receipt_and_never_requests_resume() {
         let mut d = data();
+        d.origins.insert("unowned".into(), "parent".into());
         assert!(record(&mut d, "unowned", "turn", 10).is_none());
         let m = record(&mut d, "child", "turn", 10).unwrap();
         assert!(m.work && !m.resume && !m.delivered);
@@ -205,7 +227,7 @@ mod tests {
     #[test]
     fn malformed_ownership_cycles_cannot_create_completion_reply_loops() {
         let mut d = data();
-        d.origins.insert("parent".into(), "child".into());
+        d.subagents.insert("parent".into(), "child".into());
         assert!(record(&mut d, "child", "turn", 10).is_none());
         assert!(d.messages.is_empty());
     }

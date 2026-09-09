@@ -53,6 +53,7 @@ for line in sys.stdin:
    if text=='mcp-missing-args':del params['_meta']['tool_params']
    if text=='mcp-stale':params['threadId']='other-thread'
    if text=='mcp-wrong-turn':params['turnId']='other-turn'
+   if text=='mcp-external':params['serverName']='external'
    mcp_ids.append(native_id)
    frame={'id':native_id,'method':'mcpServer/elicitation/request','params':params}
    if text=='mcp-write-failure':os.close(0)
@@ -667,6 +668,60 @@ async fn approval_opened(handle: &mut SessionHandle) -> brigadier_core::event::R
     }
 }
 #[tokio::test]
+async fn app_owned_mcp_coordination_approves_only_configured_server_and_current_turn() {
+    for (prompt, configured, expected) in [
+        ("mcp-allow", true, "accept"),
+        ("mcp-external", true, "decline"),
+        ("mcp-allow", false, "decline"),
+        ("mcp-stale", true, "cancel"),
+        ("mcp-wrong-turn", true, "cancel"),
+    ] {
+        let fixture = Fixture::new();
+        let mut request = fixture.request();
+        for (key, value) in [
+            ("BRIGADIER_EXECUTABLE", "/app/brigadier"),
+            ("BRIGADIER_PEER_ENDPOINT", "/app/peer.sock"),
+        ] {
+            request.env_overrides.insert(key.into(), value.into());
+        }
+        if configured {
+            request
+                .env_overrides
+                .insert("BRIGADIER_PEER_TOKEN".into(), "test-token".into());
+        }
+        let mut handle = fixture.driver.start_session(request).await.unwrap();
+        event(&mut handle).await;
+        handle
+            .commands
+            .send_turn(TurnInput::text(prompt))
+            .await
+            .unwrap();
+        let mut opened = false;
+        loop {
+            match event(&mut handle).await.event {
+                Event::RequestOpened { request_id, .. } => {
+                    assert_eq!(expected, "decline", "{prompt}");
+                    opened = true;
+                    handle
+                        .commands
+                        .respond(request_id, Decision::deny("Test external approval"))
+                        .await
+                        .unwrap();
+                }
+                Event::TurnCompleted { .. } => break,
+                _ => {}
+            }
+        }
+        assert_eq!(opened, expected == "decline");
+        assert!(fixture
+            .log()
+            .iter()
+            .any(|q| q["id"] == "mcp-native" && q["result"]["action"] == expected));
+        handle.commands.kill().await.unwrap();
+    }
+}
+
+#[tokio::test]
 async fn mcp_tool_approval_allow_and_deny_use_exact_native_identity_and_schema() {
     for (prompt, id, decision, action) in [
         (
@@ -1042,6 +1097,13 @@ async fn mcp_approval_preserves_scoped_policy_denial() {
     let fixture = Fixture::new();
     let mut req = fixture.request();
     req.hook_policy = brigadier_core::driver::HookOverride::new(std::sync::Arc::new(DenyMcp));
+    for (key, value) in [
+        ("BRIGADIER_EXECUTABLE", "/app/brigadier"),
+        ("BRIGADIER_PEER_ENDPOINT", "/app/peer.sock"),
+        ("BRIGADIER_PEER_TOKEN", "test-token"),
+    ] {
+        req.env_overrides.insert(key.into(), value.into());
+    }
     let mut handle = fixture.driver.start_session(req).await.unwrap();
     event(&mut handle).await;
     handle

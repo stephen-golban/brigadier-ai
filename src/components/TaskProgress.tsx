@@ -1,3 +1,4 @@
+import { TodoList } from './assistant-ui/elements/todo-list';
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -6,6 +7,7 @@ interface TaskMemory { sessionId:string; revision:number; goal:string; progress:
 export function TaskProgress({sessionId}:{sessionId:string}) {
  const [memory,setMemory]=useState<TaskMemory|null>(null);
  useEffect(()=>{
+  setMemory(null);
   if(!desktop)return;
   let live=true;
   const apply=(next:TaskMemory)=>{if(live&&next.sessionId===sessionId)setMemory(old=>old&&old.revision>next.revision?old:next);};
@@ -17,7 +19,7 @@ export function TaskProgress({sessionId}:{sessionId:string}) {
  const done=memory.progress.filter(s=>s.status==='done').length;
  return <details className="task-progress mx-auto max-w-[780px] text-xs text-text-secondary" open={memory.progress.some(s=>s.status==='in-progress')}>
   <summary>Progress · {done}/{memory.progress.length}{memory.unresolved.length ? ` · ${memory.unresolved.length} unresolved` : ''}</summary>
-  <ul>{memory.progress.map(step=><li key={step.id} className="flex gap-2 py-1"><span aria-label={step.status}>{step.status==='done'?'✓':step.status==='in-progress'?'◉':step.status==='blocked'?'!':'○'}</span><span>{step.text}</span></li>)}</ul>
+  <TodoList items={memory.progress}/>
   {memory.verification.length>0 && <details><summary>Verification</summary><ul>{memory.verification.map((entry,i)=><li key={i}>{entry}</li>)}</ul></details>}
   {memory.results.length>0 && <details><summary>Results</summary><ul>{memory.results.map((entry,i)=><li key={i}>{entry}</li>)}</ul></details>}
   {memory.unresolved.map((entry,i)=><p key={i} className="text-warn">{entry}</p>)}

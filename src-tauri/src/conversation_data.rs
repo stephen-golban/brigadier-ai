@@ -322,6 +322,7 @@ pub(crate) async fn send_locked_with_execution(
     attachment_ids: Vec<String>,
     execution: Option<crate::task_settings::ExecutionSelection>,
 ) -> Result<crate::views::TurnStarted, AppError> {
+    crate::peers::require_conversation(&session_id)?;
     crate::composer::require_running(&session_id)?;
     crate::session_archive::require_active(&state.get()?.data_dir, &session_id)?;
     crate::navigation::require_available(

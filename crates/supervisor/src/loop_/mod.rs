@@ -336,6 +336,8 @@ pub struct RunSpec {
     pub barrier: Barrier,
     /// The bounds.
     pub limits: Limits,
+    /// Shared worker policy, resolved from app/project settings.
+    pub orchestration: crate::orchestration::Policy,
     /// The model-call seam. `None` builds the real one.
     pub call: Option<SharedCall>,
     /// The resolved gate environment. `None` resolves one on first use, which can cost up to
@@ -368,6 +370,7 @@ impl RunSpec {
             permission_mode: brigadier_core::driver::PermissionMode::Default,
             barrier,
             limits: Limits::default(),
+            orchestration: Default::default(),
             call: None,
             gate: None,
             plan_id: None,
@@ -485,6 +488,7 @@ pub struct Run {
     permission_mode: brigadier_core::driver::PermissionMode,
     call: SharedCall,
     limits: Limits,
+    orchestration: crate::orchestration::Policy,
     barrier: Barrier,
     reconciled: Option<ReconcileOutcome>,
     gate: Option<Arc<GateEnv>>,
@@ -1001,7 +1005,8 @@ impl Supervisor {
         let call: SharedCall = spec.call.unwrap_or_else(|| {
             Arc::new(
                 SupervisedCall::new(self.clone(), spec.driver.clone(), project.root_path.clone())
-                    .with_stop(Arc::clone(&stop)),
+                    .with_stop(Arc::clone(&stop))
+                    .with_policy(spec.orchestration.clone(), plan_id.clone()),
             )
         });
         Ok(Run {
@@ -1015,6 +1020,7 @@ impl Supervisor {
             permission_mode: spec.permission_mode,
             call,
             limits: spec.limits,
+            orchestration: spec.orchestration,
             barrier: spec.barrier,
             reconciled: None,
             gate: spec.gate,

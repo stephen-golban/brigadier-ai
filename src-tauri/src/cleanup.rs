@@ -85,7 +85,7 @@ pub(crate) async fn session_discard(
     } else {
         ids
     };
-    let origins = crate::peers::snapshot().unwrap_or_default().origins;
+    let origins = crate::peers::snapshot().unwrap_or_default().subagents;
     let sessions = descendants(ids.into_iter().collect(), &origins);
     if sessions.is_empty() {
         return Err(AppError::invalid_argument("No sessions selected"));

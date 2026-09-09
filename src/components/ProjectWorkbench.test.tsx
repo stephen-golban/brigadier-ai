@@ -105,6 +105,7 @@ function Harness({ busy = false }: { busy?: boolean }) {
         models={[]}
         peers={{
           origins: { child: "parent" },
+          subagents: { child: "parent" },
           titles: { parent: "Main task", child: "Research" },
           closed: [],
           messages: [],
@@ -191,7 +192,7 @@ describe("Git status refresh", () => {
       actions
         .getAllByRole("button")
         .map((button) => button.getAttribute("aria-label")),
-    ).toEqual(["Files", "Search", "Changes", "Subagents", "Terminal"]);
+    ).toEqual(["Files", "Search", "Changes", "Terminal"]);
     const changes = actions.getByRole("button", { name: "Changes" });
     expect(changes).toHaveTextContent("3");
     expect(changes).toHaveAttribute("title", "Changes (3)");

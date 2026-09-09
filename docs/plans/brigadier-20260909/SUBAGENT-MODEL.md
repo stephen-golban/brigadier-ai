@@ -1,0 +1,25 @@
+# Subagents and conversations
+
+Implemented September 9, 2026. This supersedes the directly messageable worker design in USER-FLOW.md and the earlier native acceptance report.
+
+Users talk to the orchestrator. `delegate_task` creates an internal execution with an isolated workspace; `create_session` creates a separate user conversation for distinct work. The execution engine and transcript storage remain shared. Product identity and lifecycle ownership are stored explicitly in `peers.json`: `origins` records creation/fork provenance, `subagents` records internal ownership, and creation receipts record `subagent`. Request IDs cannot be reused across the two creation modes. `list_sessions` excludes internal workers; `list_subagents` lists the current root's workers.
+
+The versioned migration preserves existing execution IDs, transcripts, receipts and workspaces. Existing owned creations/initial deliveries become internal subagents. Fork provenance without a creation/initial-delivery receipt remains an independent conversation. The older model did not record whether a created chat was intended as a worker; its authenticated owned creations retain worker ownership during migration. No history is deleted or replayed.
+
+Subagents have no workspace-toolbar action. Their context-card section appears only after the task has delegated work; context-card and conversation links open their activity. An empty task never displays a restored subagent panel. The subagent panel shows activity, provider/model, file links, request status and Stop. It has no composer or Allow/Deny controls. Worker permissions appear in the root orchestrator conversation, including nested and cross-project workers. Decisions retain the exact worker session and request identity, and the backend verifies the root conversation supplied with the decision. Missing ownership metadata rejects input/approval operations instead of bypassing these checks. Existing provider permission modes and project restrictions remain enforced. Questions can be sent to the owner through authenticated agent messaging; the owner handles user interaction in its conversation.
+
+User input, draft/queue submission, direct resume, fork and transcript edits are rejected for internal workers. Old queued user input cannot drain into a worker. Only agents in the owning task can read, message or manage its internal targets. Ordinary chats remain available for cross-conversation consultation. The orchestrator can use `resume_subagent` after an explicit user request to resume a stopped worker, then send a distinct assignment; this resumes idle and never replays old queued user input. Provider limitations or removed workspaces can still prevent resuming a retired execution.
+
+Stop, archive, disposal, automatic completion wake and retirement traverse `subagents`, never creation/fork provenance. Separate conversations do not stop, retire or wake their creator merely because they share an origin. Existing completion deduplication, stopped-parent guards, integration checks and conservative workspace cleanup remain in place. Cross-project activity subscriptions include the selected root's workers. Sidebar/search/history and restored tabs exclude internal executions; stale worker navigation resolves to the root.
+
+Verification:
+
+- `cargo test --workspace --no-fail-fast`: 750 passed, 10 ignored; no failures. Final app-specific rerun after the metadata guard refinement: 128 passed.
+- `npm test`: 466 passed across 58 files. Includes root approval routing for nested cross-project workers, exact provider request identity, worker navigation exclusion, view-only activity with Stop, and migrated receipt navigation.
+- `cargo clippy --workspace --all-targets -- -D warnings`: passed.
+- Bundled executable MCP initialize/list smoke: passed; 15 tools, distinct delegation/conversation schemas. Binary SHA-256: `601c6e9f3d96fd9db71b7aadf14c08c642e272d98b980046afca99bff6c50dea`.
+- TypeScript, Vite production build and macOS release app bundling: passed. Existing large-chunk and bundle-identifier warnings remain.
+
+The automated tests exercise the real supervisor/store with controlled providers; this revision has not undergone a new live mixed-provider GUI acceptance run. Installed at the user's request on September 9, 2026 in `/Applications/Brigadier.app`. Local ad-hoc signature verification passed. The installed GUI opened with existing projects/history; ownership migration completed at version 1 with seven saved subagents. No model work was started for this installation check. Signed installed executable SHA-256: `598bca645d606c2c1258678d271b2c6004aea3f838226e0d3374cface0c66cbe`. Earlier native observations (Finder drag, retained-workspace reason, provider dropdown) remain unresolved.
+
+Toolbar refinement: removed the Subagents workspace action, hid empty context sections and empty restored subagent panels. The 50 focused UI tests, TypeScript/build, release bundle and signature checks passed. Installed without creating another backup; native accessibility verification confirms Files/Search/Changes/Terminal only in the toolbar.

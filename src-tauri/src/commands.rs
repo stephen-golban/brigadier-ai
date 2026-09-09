@@ -414,12 +414,19 @@ async fn start_session_attempt(
         .take(100)
         .collect();
     let peer_token = crate::peers::prepare(&mut req)?;
+    if let Some(worker) = peer.as_ref().filter(|p| p.subagent) {
+        req.prompt = Some(format!("{}\n\nThis execution is an internal subagent owned by {}. Execute the assignment; send missing decisions and results to that owner. You are not a user conversation. Never ask the user to message you directly or create separate conversations.", req.prompt.as_deref().unwrap_or(""), worker.from));
+    }
     // Bind authenticated provenance and attachment ownership before the initial input is sent.
     let initial_input = (
         req.prompt.take().unwrap_or_default(),
         std::mem::take(&mut req.attachments),
     );
-    let session_id = if peer.is_some() {
+    let session_id = if let Some(baseline) = peer.as_ref().and_then(|p| p.baseline.clone()) {
+        supervisor
+            .start_peer_session_at(&project_id, &DriverKind::new(&provider), req, baseline)
+            .await?
+    } else if peer.is_some() {
         supervisor
             .start_peer_session_from(
                 &project_id,
@@ -496,6 +503,7 @@ async fn start_session_attempt(
                     ),
                 )
             })?;
+        crate::peers::record_baseline(state.inner(), session_id.as_str()).await?;
         let title = peer
             .as_ref()
             .map(|peer| peer.title.clone())
@@ -580,6 +588,7 @@ pub(crate) async fn resume_session(
     session_id: String,
     state: State<'_, AppState>,
 ) -> Result<SessionView, AppError> {
+    crate::peers::require_conversation(&session_id)?;
     let _lifecycle = crate::peers::LIFECYCLE.lock().await;
     crate::session_archive::require_active(&state.get()?.data_dir, &session_id)?;
     crate::navigation::require_available(
@@ -601,6 +610,7 @@ pub(crate) async fn fork_session(
     new_worktree: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<SessionView, AppError> {
+    crate::peers::require_conversation(&session_id)?;
     let _creation = crate::peers::CREATION.lock().await;
     let _lifecycle = crate::peers::LIFECYCLE.lock().await;
     let runtime = state.get()?;
@@ -637,6 +647,7 @@ pub(crate) async fn send_turn(
     text: String,
     state: State<'_, AppState>,
 ) -> Result<TurnStarted, AppError> {
+    crate::peers::require_conversation(&session_id)?;
     let _lifecycle = crate::peers::LIFECYCLE.lock().await;
     crate::conversation_data::send_locked(state.inner(), session_id, text, vec![]).await
 }
@@ -647,8 +658,10 @@ pub(crate) async fn respond(
     session_id: String,
     request_id: String,
     decision: Decision,
+    conversation_id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<(), AppError> {
+    crate::peers::require_response_owner(&session_id, conversation_id.as_deref())?;
     state
         .get()?
         .supervisor
@@ -819,6 +832,8 @@ pub(crate) async fn start_run(
     goal: String,
     model: Option<String>,
     permission_mode: Option<String>,
+    provider: Option<String>,
+    effort: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<RunView, AppError> {
     let _creation = crate::peers::CREATION.lock().await;
@@ -830,7 +845,9 @@ pub(crate) async fn start_run(
     // Same reason `start_session` does it: without this the supervisor answers `NoDriver` →
     // `driver`, which tells the operator nothing about a missing install — and a run spawns
     // children on its own initiative, so the honest failure has to arrive at the button.
-    state.claude_status()?;
+    let provider = provider
+        .ok_or_else(|| AppError::invalid_argument("Choose the orchestrator provider explicitly"))?;
+    require_provider(state.inner(), &provider)?;
     let ready = state.get()?;
     let goal = goal.trim().to_owned();
     if goal.is_empty() {
@@ -858,7 +875,7 @@ pub(crate) async fn start_run(
     let mut spec = RunSpec::new(
         project_id.clone(),
         goal.clone(),
-        DriverKind::new(CLAUDE_CODE),
+        DriverKind::new(&provider),
         ready.barrier.clone(),
     )
     .with_model(model.filter(|m| !m.trim().is_empty()))
@@ -870,18 +887,23 @@ pub(crate) async fn start_run(
     // Every bound a run works inside is an assumption, and one of them has already killed a
     // planner that was working. `from_env` lets the person watching it fail change it without a
     // rebuild; with nothing set it is `Limits::default()`.
+    spec.effort = effort.filter(|e| e != "auto");
+    spec.orchestration =
+        crate::workbench_data::peer_settings(&ready.data_dir, &project_id)?.execution_policy();
     spec.limits = brigadier_supervisor::loop_::Limits::from_env();
+    spec.limits.concurrency = spec.limits.concurrency.min(spec.orchestration.concurrency);
     if let Some(plan_id) = resumable(ready, &project_id, &goal).await? {
         tracing::info!(
             plan_id,
             project_id,
             "continuing an unfinished plan rather than writing a new one"
         );
+        ready.clear_stopped(&plan_id)?;
+        ready.supervisor.clear_run_stop(&plan_id)?;
         spec = spec.resuming(plan_id);
     }
     let handle = ready.supervisor.start_run(spec).await.map_err(run_error)?;
-    // The owner started this plan again, so whatever a previous Stop recorded about it is over.
-    ready.clear_stopped(handle.plan_id())?;
+
     let plan_id = handle.plan_id().to_owned();
     run_view(ready, &plan_id).await?.ok_or_else(|| {
         AppError::store(format!(
@@ -930,6 +952,27 @@ pub(crate) async fn stop_run(plan_id: String, state: State<'_, AppState>) -> Res
     // recorded, so the surface stops offering to stop a run that is not running.
     ready.mark_stopped(&plan_id)?;
     let was_live = ready.supervisor.stop_run(&plan_id);
+    let _lifecycle = crate::peers::LIFECYCLE.lock().await;
+    let proposals = ready.data_dir.join("runs").join(&plan_id);
+    if proposals.is_dir() {
+        for entry in std::fs::read_dir(proposals)? {
+            let path = entry?.path();
+            if path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("competing-") && n.ends_with(".json"))
+            {
+                let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)
+                    .map_err(|e| AppError::io(e.to_string()))?;
+                v["approved"] = serde_json::Value::Null;
+                v["requestId"] = serde_json::json!(uuid::Uuid::new_v4().to_string());
+                crate::note_files::atomic_write(
+                    &path,
+                    &serde_json::to_vec(&v).map_err(|e| AppError::io(e.to_string()))?,
+                )?;
+            }
+        }
+    }
     tracing::info!(
         plan_id,
         was_live,
@@ -1569,4 +1612,112 @@ mod agent_option_tests {
         .is_err());
         assert!(serde_json::from_str::<AgentOptions>(r#"{"speed":"fast"}"#).is_err());
     }
+}
+
+/// User-only approval of the exact saved competing-work proposal. Does not resume a stopped run.
+#[tauri::command]
+pub(crate) async fn decide_run_competing(
+    plan_id: String,
+    phase_id: String,
+    request_id: String,
+    allow: bool,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
+    let _lifecycle = crate::peers::LIFECYCLE.lock().await;
+    for id in [&plan_id, &phase_id] {
+        if uuid::Uuid::parse_str(id).is_err() {
+            return Err(AppError::invalid_argument("Invalid plan or phase identity"));
+        }
+    }
+    let ready = state.get()?;
+    if ready.is_stopped(&plan_id) || ready.supervisor.run(&plan_id).is_some_and(|r| r.stopping()) {
+        return Err(AppError::invalid_argument(
+            "Task is stopped; continue explicitly before approving more work",
+        ));
+    }
+    let path = ready
+        .data_dir
+        .join("runs")
+        .join(&plan_id)
+        .join(format!("competing-{phase_id}.json"));
+    let mut v: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path)?).map_err(|e| AppError::io(e.to_string()))?;
+    if v["requestId"].as_str() != Some(request_id.as_str()) {
+        return Err(AppError::invalid_argument(
+            "This approval was cancelled or replaced; reload the current proposal",
+        ));
+    }
+    if v["approved"].as_bool().is_some_and(|old| old != allow) {
+        return Err(AppError::invalid_argument(
+            "This proposal was already resolved differently",
+        ));
+    }
+    let phase = ready
+        .store()
+        .phases(&plan_id)
+        .await?
+        .into_iter()
+        .find(|p| p.id == phase_id)
+        .ok_or_else(|| AppError::invalid_argument("Phase does not belong to this plan"))?;
+    if v["criteria"] != phase.definition_of_done
+        || v["verifyCommand"] != serde_json::json!(phase.verify_command)
+    {
+        return Err(AppError::invalid_argument(
+            "Requirements changed; continue to prepare a new proposal",
+        ));
+    }
+    if !phase
+        .last_evidence
+        .as_deref()
+        .is_some_and(|e| e.starts_with("Competing implementations require user approval"))
+        && v["approved"] != true
+    {
+        return Err(AppError::invalid_argument(
+            "This phase is not waiting for this approval",
+        ));
+    }
+    v["approved"] = serde_json::json!(allow);
+    crate::note_files::atomic_write(
+        &path,
+        &serde_json::to_vec(&v).map_err(|e| AppError::io(e.to_string()))?,
+    )?;
+    if allow && phase.state == brigadier_store::plan::PhaseState::Blocked {
+        if ready.is_stopped(&plan_id) {
+            return Err(AppError::invalid_argument(
+                "Task stopped before approval could take effect",
+            ));
+        }
+        ready
+            .store()
+            .phase_settled(
+                phase_id,
+                brigadier_store::plan::PhaseState::Running,
+                phase.last_exit_code,
+                Some("Competing proposal approved; continue explicitly".into()),
+                None,
+                std::time::SystemTime::now(),
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn read_run_competing(
+    plan_id: String,
+    phase_id: String,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, AppError> {
+    for id in [&plan_id, &phase_id] {
+        if uuid::Uuid::parse_str(id).is_err() {
+            return Err(AppError::invalid_argument("Invalid plan or phase identity"));
+        }
+    }
+    let path = state
+        .get()?
+        .data_dir
+        .join("runs")
+        .join(plan_id)
+        .join(format!("competing-{phase_id}.json"));
+    serde_json::from_slice(&std::fs::read(path)?).map_err(|e| AppError::io(e.to_string()))
 }

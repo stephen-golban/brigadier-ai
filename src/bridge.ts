@@ -114,6 +114,7 @@ export interface Bridge {
     sessionId: SessionId,
     requestId: RequestId,
     decision: Decision,
+    conversationId?: SessionId,
   ): Promise<void>;
   interrupt(sessionId: SessionId): Promise<void>;
   endSession(sessionId: SessionId): Promise<void>;
@@ -166,10 +167,9 @@ export interface Bridge {
    * (`Option<String>` in `src-tauri/src/commands.rs::start_run`), so omitting them is exactly the
    * behaviour this command had before they existed.
    *
-   *   - `model` — a chosen id applies to **every** child of the run: planner, lead, worker,
-   *     fixer. `null` is a real choice and the better default: it leaves the role-based routing
-   *     in charge, so judgement takes the provider's strong default and a work order takes its
-   *     per-order tier. Never send a sentinel string for "no pick".
+   *   - `provider`, `model`, `effort` — exact root selection for planning and judgments.
+   *     Workers route independently within the project policy. Provider must be explicit;
+   *     a null model keeps that provider's default. Never send a sentinel model id.
    *   - `permissionMode` — a bare string in the CLI's own vocabulary; an unmodelled value passes
    *     through verbatim. It reaches the `--permission-mode` flag **and** the `PreToolUse`
    *     policy, and in the project root it never removes the write gate
@@ -180,6 +180,8 @@ export interface Bridge {
     goal: string,
     model?: string | null,
     permissionMode?: PermissionMode | null,
+    provider?: string | null,
+    effort?: string | null,
   ): Promise<RunView>;
   /** The newest plan for this project, live or finished, or `null` when there has never been one. */
   currentRun(projectId: ProjectId): Promise<RunView | null>;
@@ -302,8 +304,8 @@ const tauriBridge: Bridge = {
     attachmentIds.length
       ? call<{ turn_id: string }>("send_conversation_turn", { sessionId, text, attachmentIds })
       : call<{ turn_id: string }>("send_turn", { sessionId, text }),
-  respond: (sessionId, requestId, decision) =>
-    call<void>("respond", { sessionId, requestId, decision }),
+  respond: (sessionId, requestId, decision, conversationId) =>
+    call<void>("respond", { sessionId, requestId, decision, conversationId }),
   interrupt: (sessionId) => call<void>("interrupt", { sessionId }),
   endSession: (sessionId) => call<void>("end_session", { sessionId }),
   kill: (sessionId) => call<void>("kill", { sessionId }),
@@ -320,8 +322,8 @@ const tauriBridge: Bridge = {
 
   // `model: null` and `permissionMode: null` are `None` on the Rust side, which is what "no pick"
   // has to send: a sentinel string would be handed to `--model` and refused by the CLI.
-  startRun: (projectId, goal, model = null, permissionMode = null) =>
-    call<RunView>("start_run", { projectId, goal, model, permissionMode }),
+  startRun: (projectId, goal, model = null, permissionMode = null, provider = null, effort = null) =>
+    call<RunView>("start_run", { projectId, goal, model, permissionMode, provider, effort }),
   currentRun: (projectId) => call<RunView | null>("current_run", { projectId }),
   stopRun: (planId) => call<void>("stop_run", { planId }),
   unsettledIntents: () => call<IntentView[]>("unsettled_intents"),

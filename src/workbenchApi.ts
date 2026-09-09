@@ -18,7 +18,14 @@ export interface CommitSettings {
   suggestSmartCommit: boolean;
   untracked: "mixed" | "separate" | "hidden";
 }
+export interface OrchestrationPolicy {
+  preset: 'quality' | 'balanced' | 'economy'; concurrency: number; maxDispatches: number;
+  profiles?: Record<string,{quality:number;usageWeight:number;contextTokens:number;vision:boolean}>;
+  review: 'risk-based' | 'always' | 'manual'; excludedProviders: string[]; excludedModels: string[];
+}
+export const defaultOrchestrationPolicy: OrchestrationPolicy = { preset:'quality',concurrency:4,maxDispatches:32,review:'risk-based',excludedProviders:[],excludedModels:[] };
 export interface PeerSettings {
+  orchestration?: OrchestrationPolicy;
   createSessions: boolean;
   messages: boolean;
   manageChildren: boolean;

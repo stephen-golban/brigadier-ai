@@ -1,5 +1,5 @@
 import { useId, useState } from "react";
-import { ChevronDownIcon, MessageCircleIcon } from "lucide-react";
+import { BotIcon, ChevronDownIcon, MessageCircleIcon } from "lucide-react";
 import { peerToolCards, type LinkedTask } from "../../peerPresentation";
 import type { PeerData } from "../../peerApi";
 import "./peer.css";
@@ -12,19 +12,20 @@ export function LinkedTaskCards({ tasks, onSelectSession }: {
   const id = useId();
   if (!tasks.length) return null;
   const visible = expanded ? tasks : tasks.slice(0, 3);
+  const noun = tasks.every(task => task.subagent) ? "subagents" : tasks.some(task => task.subagent) ? "tasks" : "chats";
   return <section className="peer-task-group" aria-label="Linked tasks">
     <div id={id}>
       {visible.map(task => <div className="peer-task-card" key={task.key} data-task-id={task.id}>
-        <MessageCircleIcon size={17} aria-hidden="true" />
+        {task.subagent ? <BotIcon size={17} aria-hidden="true" /> : <MessageCircleIcon size={17} aria-hidden="true" />}
         <div className="peer-task-label">
           <span title={task.title}>{task.title}</span>
           {task.state !== "ready" && <small role="status">{task.state === "pending" ? "Creating task…" : task.state === "failed" ? task.detail ?? "Creation failed" : task.detail ?? "Creation outcome unavailable"}</small>}
         </div>
-        {task.id && <button type="button" disabled={!onSelectSession} onClick={() => onSelectSession?.(task.id!)} aria-label={`Open chat: ${task.title}`}>Open chat</button>}
+        {task.id && <button type="button" disabled={!onSelectSession} onClick={() => onSelectSession?.(task.id!)} aria-label={`${task.subagent ? "View activity" : "Open chat"}: ${task.title}`}>{task.subagent ? "View activity" : "Open chat"}</button>}
       </div>)}
     </div>
     {tasks.length > 3 && <button type="button" className="peer-group-toggle" aria-expanded={expanded} aria-controls={id} onClick={() => setExpanded(!expanded)}>
-      {expanded ? "Show fewer chats" : `Show ${tasks.length - 3} more chats`} <ChevronDownIcon size={14} aria-hidden="true" style={{ transform: expanded ? "rotate(180deg)" : undefined }} />
+      {expanded ? `Show fewer ${noun}` : `Show ${tasks.length - 3} more ${noun}`} <ChevronDownIcon size={14} aria-hidden="true" style={{ transform: expanded ? "rotate(180deg)" : undefined }} />
     </button>}
   </section>;
 }

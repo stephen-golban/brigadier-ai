@@ -1,3 +1,6 @@
+import { AgentStatus } from './assistant-ui/elements/agent-status';
+import { WorkerSummary } from './WorkerSummary';
+import { BackgroundInbox } from './assistant-ui/elements/background-inbox';
 import { useEffect, useState } from 'react';
 import { useTaskExecutionSettings } from '../taskSettings';
 import { GitBranchIcon, GitDiffIcon, SlidersHorizontalIcon, UsersThreeIcon, FolderIcon, GearSixIcon, FileIcon, ArrowSquareOutIcon } from '@phosphor-icons/react';
@@ -43,9 +46,10 @@ export function SessionCard({ session, sessions, peers, onSelect, onChanges, onS
     } catch(e) { setError(String(e)); }
   };
   return <details className="thread-context-wrap" open={open} onToggle={e=>setOpen(e.currentTarget.open)}>
-    <summary className="thread-context-summary" aria-label="Environment and subagents"><SlidersHorizontalIcon size={18}/><span>Context</span></summary>
+    <summary className="thread-context-summary" aria-label="Session context"><SlidersHorizontalIcon size={18}/><span>Context</span></summary>
     <aside className="thread-context" aria-label="Session environment">
       <section><h3>Environment · locked for this task</h3>
+        <AgentStatus state={session.status==='failed'?'failed':session.busy?'working':session.status==='exited'?'idle':'waiting'} label={session.status==='failed'?'Execution failed':session.busy?'Working':session.status==='exited'?'Stopped':'Ready'}/>
         <Button className="context-row" onClick={()=>navigate(onChanges)}><GitDiffIcon/><span>Changes</span><span className="change-count"><i className="text-ok not-italic">+{changes.files.reduce((n,f) => n+f.added,0)}</i> <i className="text-error not-italic">−{changes.files.reduce((n,f) => n+f.deleted,0)}</i></span></Button>
         <Button className="context-row" onClick={()=>navigate(onFiles)} title={session.cwd ?? undefined}><FolderIcon/><span>{settings?.workspacePath ? 'Existing worktree' : session.worktreePath ? 'Worktree' : 'Local'} · {session.cwd?.split('/').pop() ?? 'Workspace'}</span></Button>
         <div className="context-row" title={session.branch ?? undefined}><GitBranchIcon/><span>{session.branch ?? 'No Git branch'}</span></div>
@@ -53,11 +57,12 @@ export function SessionCard({ session, sessions, peers, onSelect, onChanges, onS
         {session.branch && <Button className="context-row" onClick={()=>navigate(onChanges)}><GitDiffIcon/><span>Commit, push or compare</span><ArrowSquareOutIcon/></Button>}
         <Button className="context-row" onClick={onSettings}><GearSixIcon/><span>Session settings</span></Button>
       </section>
-      <section><h3>Subagents</h3><Button className="context-row" onClick={()=>navigate(onSubagents)}><UsersThreeIcon/><span>{rows.filter(r => !r.done).length} active · {rows.filter(r => r.done).length} done</span></Button></section>
+      {rows.length > 0 && <section><h3>Subagents</h3><Button className="context-row" onClick={()=>navigate(onSubagents)}><UsersThreeIcon/><WorkerSummary rows={rows}/></Button></section>}
+      <BackgroundInbox runs={Object.entries(peers.origins).filter(([id,owner])=>owner===session.sessionId&&!peers.subagents?.[id]&&!peers.closed.includes(id)&&sessions[id]&&(sessions[id]!.busy||sessions[id]!.status==='starting'||sessions[id]!.status==='failed'||(sessions[id]!.lastTurnId&&sessions[id]!.lastStop==='end-turn'))).map(([id])=>({id,title:peers.titles[id]??'Created chat',state:sessions[id]!.status==='failed'?'failed':(sessions[id]!.busy||sessions[id]!.status==='starting')?'running':'ready'}))} onCollect={id=>navigate(()=>onSelect(id))}/>
       <section><h3>Sources</h3>
         <Button className="context-row" onClick={()=>navigate(onFiles)}><FolderIcon/><span>Project files</span></Button>
         {[...files.values()].map(a => <Button key={a.id} className="context-row" onClick={() => void viewAttachment(a.id)} title={a.name}><FileIcon/><span>{a.name}</span></Button>)}
-        {peers.origins[session.sessionId] && <Button className="context-row" onClick={() => onSelect(peers.origins[session.sessionId]!)}><ArrowSquareOutIcon/><span>Parent conversation</span></Button>}
+        {peers.origins[session.sessionId] && <Button className="context-row" onClick={() => onSelect(peers.origins[session.sessionId]!)}><ArrowSquareOutIcon/><span>Source conversation</span></Button>}
         {error && <p role="alert" className="text-error">{error}</p>}
       </section>
     </aside>

@@ -39,6 +39,8 @@ function shortSessionId(id: SessionId): string {
 /** One approval plus the project context `App` resolved for it. */
 export interface ApprovalRow {
   approval: ApprovalItem;
+  conversationId?: string;
+  subagentTitle?: string;
   /** Null when the store has never seen this approval's session. */
   projectId: ProjectId | null;
   /** Null when the project is unknown or not in `list_projects`; the card then shows the id. */
@@ -168,7 +170,7 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
       t.closest("button, input, textarea, label") !== null
     )
       return;
-    onFocus(row.projectId, approval.sessionId);
+    onFocus(row.projectId, row.conversationId ?? approval.sessionId);
   };
 
   return (
@@ -212,6 +214,7 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
         the excerpt and the suggestions are the only thing that yields. A card squeezed to the
         window's 800x500 minimum therefore loses excerpt, never the decision.
       */}
+      {row.subagentTitle && <p className="px-3 text-text-secondary">Subagent request · {row.subagentTitle}</p>}
       <div className="approval-body max-h-64 overflow-auto">
         {kind === null ? (
           <p className="dim text-text-tertiary">

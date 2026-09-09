@@ -28,6 +28,11 @@ pub(crate) struct ProviderModel {
 pub(crate) async fn provider_catalog(
     state: State<'_, AppState>,
 ) -> Result<Vec<ProviderCatalogEntry>, AppError> {
+    if let Err(error) =
+        brigadier_supervisor::orchestration::discover(&state.get()?.supervisor).await
+    {
+        tracing::debug!(%error,"Connected model discovery incomplete; retaining observations");
+    }
     let mut catalog = Vec::new();
     for driver in state.get()?.supervisor.registered_drivers() {
         let info = driver.describe();

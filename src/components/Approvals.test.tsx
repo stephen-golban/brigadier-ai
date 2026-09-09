@@ -74,3 +74,12 @@ it('renders an expired receipt without inventing a denial or approval', async ()
   expect(screen.queryByText(/Denied/)).toBeNull();
   expect(screen.queryByText(/Approved/)).toBeNull();
 });
+
+it('routes a worker card to the orchestrator while preserving its exact provider request',()=>{
+ const respond=vi.fn(), focus=vi.fn();
+ render(<Approvals approvals={[{...row,conversationId:'root',subagentTitle:'Reviewer'}]} onRespond={respond} onDismiss={vi.fn()} onFocus={focus}/>);
+ fireEvent.click(screen.getByText('Subagent request · Reviewer'));
+ expect(focus).toHaveBeenCalledWith('project','root');
+ fireEvent.click(screen.getByRole('button',{name:'Allow'}));
+ expect(respond).toHaveBeenCalledExactlyOnceWith('codex-session','mcp-request',{type:'allow',updated_input:null,updated_permissions:[]});
+});

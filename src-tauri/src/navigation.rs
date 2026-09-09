@@ -88,7 +88,8 @@ pub(crate) async fn open_project(
     let row = ready.supervisor.add_project(path).await?;
     if read(&ready.data_dir)?.hidden(&Kind::Project, &row.id) {
         update(&ready.data_dir, |d| {
-            d.trash.retain(|t| !(t.kind == Kind::Project && t.id == row.id));
+            d.trash
+                .retain(|t| !(t.kind == Kind::Project && t.id == row.id));
             Ok(())
         })?;
     }
@@ -199,7 +200,7 @@ async fn preview(kind: Kind, id: String, ready: &crate::state::Ready) -> Result<
             (n.title.clone(), n.project_id.clone())
         }
     };
-    let origins = crate::peers::snapshot().unwrap_or_default().origins;
+    let origins = crate::peers::snapshot().unwrap_or_default().subagents;
     loop {
         let children: Vec<_> = origins
             .iter()
@@ -376,8 +377,11 @@ pub(crate) async fn trash_purge(
 pub(crate) fn forget_sessions(dir: &Path, ids: &[String]) -> Result<(), AppError> {
     update(dir, |data| {
         data.pinned_sessions.retain(|id| !ids.contains(id));
-        data.trash.retain(|entry| entry.kind != Kind::Session || !ids.contains(&entry.id));
-        for entry in &mut data.trash { entry.session_ids.retain(|id| !ids.contains(id)); }
+        data.trash
+            .retain(|entry| entry.kind != Kind::Session || !ids.contains(&entry.id));
+        for entry in &mut data.trash {
+            entry.session_ids.retain(|id| !ids.contains(id));
+        }
         Ok(())
     })?;
     Ok(())
@@ -397,24 +401,45 @@ mod tests {
         let original = open_project(root.clone(), &ready).await.unwrap();
         let driver = brigadier_supervisor::ReplayDriver::new(vec![]);
         let kind = driver.kind();
-        ready.supervisor.register_driver(std::sync::Arc::new(driver));
-        let session = ready.supervisor.start_session(&original.id, &kind, StartSession::new(&root)).await.unwrap();
+        ready
+            .supervisor
+            .register_driver(std::sync::Arc::new(driver));
+        let session = ready
+            .supervisor
+            .start_session(&original.id, &kind, StartSession::new(&root))
+            .await
+            .unwrap();
         update(&ready.data_dir, |data| {
             data.trash.push(TrashEntry {
-                kind: Kind::Project, id: original.id.clone(), title: original.name.clone(),
-                project_id: Some(original.id.clone()), session_ids: vec![session.to_string()], trashed_at: 1,
+                kind: Kind::Project,
+                id: original.id.clone(),
+                title: original.name.clone(),
+                project_id: Some(original.id.clone()),
+                session_ids: vec![session.to_string()],
+                trashed_at: 1,
             });
             data.trash.push(TrashEntry {
-                kind: Kind::Session, id: "separately-trashed".into(), title: "Separate task".into(),
-                project_id: Some(original.id.clone()), session_ids: vec!["separately-trashed".into()], trashed_at: 1,
+                kind: Kind::Session,
+                id: "separately-trashed".into(),
+                title: "Separate task".into(),
+                project_id: Some(original.id.clone()),
+                session_ids: vec!["separately-trashed".into()],
+                trashed_at: 1,
             });
             data.trash.push(TrashEntry {
-                kind: Kind::Project, id: "other-project".into(), title: "Other project".into(),
-                project_id: Some("other-project".into()), session_ids: vec![], trashed_at: 1,
+                kind: Kind::Project,
+                id: "other-project".into(),
+                title: "Other project".into(),
+                project_id: Some("other-project".into()),
+                session_ids: vec![],
+                trashed_at: 1,
             });
             Ok(())
-        }).unwrap();
-        assert!(read(&ready.data_dir).unwrap().hidden(&Kind::Project, &original.id));
+        })
+        .unwrap();
+        assert!(read(&ready.data_dir)
+            .unwrap()
+            .hidden(&Kind::Project, &original.id));
         for _ in 0..3 {
             let reopened = open_project(root.join("."), &ready).await.unwrap();
             assert_eq!(reopened.id, original.id);
@@ -426,7 +451,10 @@ mod tests {
         assert!(restored.hidden(&Kind::Project, "other-project"));
         assert_eq!(ready.supervisor.list_projects().await.unwrap().len(), 1);
         assert!(ready.supervisor.session(&session).await.unwrap().is_some());
-        assert_eq!(std::fs::read_to_string(root.join("keep.txt")).unwrap(), "saved work");
+        assert_eq!(
+            std::fs::read_to_string(root.join("keep.txt")).unwrap(),
+            "saved work"
+        );
         ready.supervisor.shutdown().await;
     }
     #[test]

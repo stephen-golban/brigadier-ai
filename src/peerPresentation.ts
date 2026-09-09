@@ -26,6 +26,7 @@ export function peerDeliveryState(message: import("./peerApi").PeerMessage) {
 }
 
 export interface LinkedTask {
+  subagent?: boolean;
   key: string;
   id?: string;
   title: string;
@@ -40,14 +41,14 @@ export function peerToolCards(name: string, input: string, output?: string, fail
   peers?: Pick<PeerData, "titles">, toolCallId = "peer-tool"): LinkedTask[] {
   if (!name.startsWith("mcp__brigadier__")) return [];
   const action = name.slice("mcp__brigadier__".length);
-  if (action !== "create_session") return [];
+  if (action !== "create_session" && action !== "delegate_task") return [];
   const args = parse(input);
   const envelope = unwrap(parse(output));
   const error = failed || envelope.ok === false || envelope.isError === true;
   const result = (envelope.result && typeof envelope.result === "object" ? envelope.result : envelope) as Record<string, unknown>;
   const id = typeof result.sessionId === "string" && result.sessionId ? result.sessionId : undefined;
   const title = typeof result.title === "string" && result.title.trim() ? result.title : typeof args.title === "string" && args.title.trim() ? args.title : typeof args.prompt === "string" ? args.prompt.split("\n")[0]!.slice(0, 100) : "Create task";
-  return [{ key: toolCallId, id, messageId: typeof result.id === "string" ? result.id : undefined, title: id ? peerTaskTitle(id, peers?.titles, title) : title,
+  return [{ subagent: action === "delegate_task", key: toolCallId, id, messageId: typeof result.id === "string" ? result.id : undefined, title: id ? peerTaskTitle(id, peers?.titles, title) : title,
     state: result.status === "unknown" ? "unknown" : error || result.status === "failed" ? "failed" : id ? "ready" : output === undefined || result.status === "pending" ? "pending" : "unknown",
     detail: error || result.status === "failed" || result.status === "unknown" ? (typeof result.error === "string" ? result.error : typeof envelope.error === "string" ? envelope.error : "Task creation failed") : undefined }];
 }

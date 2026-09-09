@@ -465,3 +465,11 @@ it("expands a collapsed ancestor so a nested pending approval is reachable", asy
   await waitFor(() => expect(screen.getByRole('button',{name:'Allow'})).toBeVisible());
   await waitFor(() => expect(document.querySelector('[data-trace-id="agent-call"] #approval-nested-approval')).toBeVisible());
 });
+
+it('renders the full worker transcript with read-only assistant-ui scope',async()=>{
+ vi.spyOn(workspaceApi,'chat').mockResolvedValue(transcript);
+ const peers={origins:{idle:'root'},subagents:{idle:'root'},titles:{},closed:[],messages:[],requests:[]};
+ render(<ThreadView sessionId="idle" projectId="p" projectName="Example" peers={peers} onFile={()=>{}}/>);
+ expect(await screen.findByText(/The command failed\. Open/)).toBeVisible();
+ expect(screen.queryByRole('button',{name:'Edit message'})).toBeNull();
+});

@@ -197,6 +197,7 @@ pub(crate) fn with_context(state: &AppState, id: &str, text: String) -> Result<S
     if crate::conversation_data::slash_invocation(&text) {
         return Ok(text);
     }
+    let text = crate::peers::role_context(id, text)?;
     let memory = read(state, id)?;
     if memory.goal.is_empty() && memory.revision == 0 {
         return Ok(text);

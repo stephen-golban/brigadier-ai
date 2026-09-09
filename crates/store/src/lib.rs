@@ -36,6 +36,7 @@ pub mod ndjson;
 pub mod plan;
 pub mod schema;
 mod writer;
+mod legacy_stream;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -240,6 +241,7 @@ impl Store {
         let lock = DataDirLock::acquire(root)?;
         let path = root.join(DB_FILENAME);
         let conn = schema::open_connection(&path)?;
+        legacy_stream::repair(&conn, root)?;
 
         // A launch stamp, so the UI can tell a *resumable* pending prompt (the Rust host
         // survived a webview reload) from one whose listener died with the process.

@@ -1,0 +1,44 @@
+import { afterEach, expect, it, vi } from 'vitest';
+import { cleanup, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { SessionCard } from './SessionCard';
+import { WorkerSummary } from './WorkerSummary';
+import { workerPresentation, type WorkerRow } from '../workerTree';
+import { RecommendationCard } from './assistant-ui/elements/recommendation-card';
+import type { SessionRuntime } from '../feedStore';
+vi.mock('../desktopApi',()=>({useSessionChanges:()=>({files:[]})}));
+afterEach(cleanup);
+it('only exposes background results backed by completion, while starting remains working',async()=>{
+ const session={sessionId:'root',status:'running',busy:false} as SessionRuntime;
+ const sessions={root:session,empty:{sessionId:'empty',status:'running',busy:false},stopped:{sessionId:'stopped',status:'exited',busy:false},starting:{sessionId:'starting',status:'starting',busy:false},ready:{sessionId:'ready',status:'running',busy:false,lastTurnId:'turn',lastStop:'end-turn'}} as unknown as Record<string,SessionRuntime>;
+ const onSelect=vi.fn();
+ render(<SessionCard session={session} sessions={sessions} peers={{origins:{empty:'root',stopped:'root',starting:'root',ready:'root'},titles:{empty:'Empty',stopped:'Stopped',starting:'Starting',ready:'Ready'},subagents:{},closed:[],messages:[],requests:[]}} onSelect={onSelect} onChanges={vi.fn()} onSettings={vi.fn()} onSubagents={vi.fn()} onFiles={vi.fn()}/>);
+ await userEvent.click(screen.getByLabelText('Session context'));
+ expect(screen.queryByLabelText('Open background result: Empty')).toBeNull();
+ expect(screen.queryByLabelText('Open background result: Stopped')).toBeNull();
+ expect(screen.getByText('1 ready')).toBeVisible();
+ await userEvent.click(screen.getByLabelText('Open background result: Ready'));
+ expect(onSelect).toHaveBeenCalledExactlyOnceWith('ready');
+});
+it('shares worker state and keeps failed/stopped executions out of done counts',()=>{
+ const rows=['starting','working','completed','failed','stopped','waiting'].map((state,i)=>({id:String(i),parent:'root',depth:0,state,done:['completed','failed','stopped'].includes(state),disposition:'pending',awaitingIntegration:false})) as WorkerRow[];
+ expect(workerPresentation(rows[0]!).state).toBe('working');
+ expect(workerPresentation(rows[0]!,true).state).toBe('waiting');
+ expect(workerPresentation(rows[5]!).state).toBe('waiting');
+ render(<WorkerSummary rows={rows}/>);
+ expect(screen.getByText('2 working')).toBeVisible();
+ expect(screen.getByText('1 done · 1 waiting · 2 stopped/failed')).toBeVisible();
+});
+it('does not optimistically confirm recommendations or send duplicate actions while pending',async()=>{
+ const onAccept=vi.fn(),onAlternatives=vi.fn();
+ const props={question:'Verify worker result?',onAccept,onAlternatives,children:'Recorded evidence'};
+ const view=render(<RecommendationCard {...props}/>);
+ await userEvent.click(screen.getByRole('button',{name:'Accept'}));
+ expect(onAccept).toHaveBeenCalledOnce();
+ expect(screen.getByRole('button',{name:'Accept'})).toBeVisible();
+ view.rerender(<RecommendationCard {...props} busy/>);
+ expect(screen.getByRole('button',{name:'Accept'})).toBeDisabled();
+ view.rerender(<RecommendationCard {...props} accepted="Verified outcome saved."/>);
+ expect(screen.getByRole('status')).toHaveTextContent('Verified outcome saved.');
+ expect(screen.queryByRole('button')).toBeNull();
+});

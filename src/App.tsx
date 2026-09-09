@@ -1,4 +1,4 @@
-import { workerTree } from "./workerTree";
+import { workerTree, conversationOwner, conversationSessions } from "./workerTree";
 import { syncArchive, readArchive } from "./sessionArchive";
 import { listen } from "@tauri-apps/api/event";
 import { renameSession } from "./sessionNavigation";
@@ -403,12 +403,19 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
     };
   }, [refreshProjects, say]);
 
-  // Visibility drives what the Rust side bothers to send rows for.
+  // Include cross-project worker activity; only resubscribe when the project set changes.
+  const visibleProjectKey = useMemo(() => {
+    const visible = new Set(selectedProjectId ? [selectedProjectId] : []);
+    if (selectedSessionId) for (const row of workerTree(selectedSessionId, peers, state.sessions)) {
+      if (row.session?.projectId) visible.add(row.session.projectId);
+    }
+    return JSON.stringify([...visible]);
+  }, [selectedProjectId, selectedSessionId, peers.subagents, state.sessions]);
   useEffect(() => {
     if (selectedProjectId === null) return;
     localStorage.setItem("brigadier:selected-project", selectedProjectId);
-    void bridge().setVisibleProjects([selectedProjectId]).catch(say);
-  }, [selectedProjectId, say]);
+    void bridge().setVisibleProjects(JSON.parse(visibleProjectKey)).catch(say);
+  }, [selectedProjectId, visibleProjectKey, say]);
 
   // A batch arrived for a project the sidebar has never listed (the dev `burn` command creates
   // one behind the UI's back). Re-read `list_projects` once per unknown id, coalesced, so the
@@ -532,6 +539,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
    * place leaves the project selection alone, exactly as `focusApproval` does.
    */
   const selectSession = useCallback((id: SessionId | null) => {
+    if (id) id = conversationOwner(id, peers);
     const prev = paintSpan.current;
     if (prev !== null) {
       prev.span.cancel();
@@ -547,7 +555,15 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
       window.dispatchEvent(
         new CustomEvent("workbench-select-session", { detail: id }),
       );
-  }, []);
+  }, [peers.subagents]);
+
+  // Recover stale selections without exposing a worker composer during metadata loading.
+  useEffect(() => {
+    if (selectedSessionId && peers.loaded !== false) {
+      const owner = conversationOwner(selectedSessionId, peers);
+      if (owner !== selectedSessionId) selectSession(owner);
+    }
+  }, [selectedSessionId, peers.subagents, peers.loaded, selectSession]);
 
   useEffect(() => {
     if (bridge().isMock) return;
@@ -559,9 +575,9 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
       .listModels()
       .then(setModels)
       .catch(() => {});
-  }, [peers.origins, selectedSessionId]);
+  }, [peers.origins, peers.subagents, selectedSessionId]);
   const selectedSession =
-    selectedSessionId === null
+    selectedSessionId === null || peers.loaded === false || !!peers.subagents?.[selectedSessionId]
       ? null
       : (state.sessions[selectedSessionId] ?? null);
   const openWorkspace = useCallback((path?: string) => {
@@ -598,9 +614,12 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
     const byId = new Map(projects.map((p) => [p.id, p]));
     return state.approvals.map((a) => {
       // session_id -> project_id via the store's session list; -> project via `list_projects`.
-      const projectId = state.sessions[a.sessionId]?.projectId ?? null;
+      const conversationId = conversationOwner(a.sessionId, peers);
+      const projectId = state.sessions[conversationId]?.projectId ?? null;
       return {
         approval: a,
+        conversationId,
+        subagentTitle: conversationId !== a.sessionId ? peers.titles[a.sessionId] ?? "Subagent" : undefined,
         projectId,
         projectName:
           projectId === null ? null : (byId.get(projectId)?.name ?? projectId),
@@ -610,7 +629,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
           projectId !== selectedProjectId,
       };
     });
-  }, [state.approvals, state.sessions, projects, selectedProjectId]);
+  }, [state.approvals, state.sessions, projects, selectedProjectId, peers.subagents, peers.titles]);
 
   /** Pending approvals per project, for the sidebar badge. */
   const pendingByProject = useMemo(() => {
@@ -626,9 +645,9 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
   const focusApproval = useCallback(
     (projectId: ProjectId | null, sessionId: SessionId) => {
       if (projectId !== null) setSelectedProjectId(projectId);
-      setSelectedSessionId(sessionId);
+      selectSession(sessionId);
     },
-    [],
+    [selectSession],
   );
 
   /**
@@ -774,9 +793,9 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
 
   const respond = useCallback(
     (sessionId: SessionId, requestId: RequestId, decision: Decision) => {
-      return bridge().respond(sessionId, requestId, decision);
+      return bridge().respond(sessionId, requestId, decision, conversationOwner(sessionId, peers));
     },
-    [],
+    [peers.subagents],
   );
 
   /* ------------------------------------------------------------------ the run */
@@ -912,8 +931,8 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
   const jobs = useCleanup();
   const [viewedSession, setViewedSession] = useState<string | null>(null);
   const attention = useAttention(state.sessions, viewedSession, [
-    ...approvalRows.map((r) => r.approval.sessionId),
-    ...peers.requests.filter((r) => !r.resolved).map((r) => r.to),
+    ...approvalRows.map((r) => r.conversationId ?? r.approval.sessionId),
+    ...peers.requests.filter((r) => !r.resolved).map((r) => conversationOwner(r.from, peers)),
   ]);
   useEffect(() => {
     const active = (e: Event) =>
@@ -969,8 +988,8 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
         jobs={jobs}
         projects={projects}
         titles={peers.titles}
-        origins={peers.origins}
-        sessions={state.sessions}
+        origins={peers.subagents ?? {}}
+        sessions={conversationSessions(state.sessions, peers)}
         order={state.order}
         selectedProjectId={selectedProjectId}
         selectedSessionId={selectedSessionId}
@@ -1069,7 +1088,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
               requests={
                 <Approvals
                   approvals={approvalRows.filter(
-                    (row) => row.approval.sessionId === selectedSessionId,
+                    (row) => row.conversationId === selectedSessionId,
                   )}
                   onRespond={respond}
                   onDismiss={store.dismissApproval}
@@ -1084,7 +1103,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
               onEdit={setEditingMessage}
               editing={editingMessage !== null}
               revision={conversationRevision}
-              sessionId={selectedSessionId}
+              sessionId={selectedSession?.sessionId ?? null}
               projectId={selectedProjectId}
               projectName={selectedProject?.name ?? null}
               onFile={openWorkspace}

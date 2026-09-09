@@ -1,3 +1,4 @@
+import { ApprovalCard } from "./assistant-ui/elements/approval-card";
 import { useSessionArchive } from "../sessionArchive";
 import { setSessionArchived } from "../sessionNavigation";
 import { Folders as FoldersIcon, Terminal as TerminalIcon } from "lucide-react";
@@ -10,8 +11,8 @@ import { Input } from "./controls/input";
 import { Button } from "./controls/button";
 import { isTrashed, type NavigationData } from "../navigationApi";
 import { hasSavedEdits } from "../workbenchState";
+import { conversationOwner } from "../workerTree";
 import { SubagentsPanel } from "./SubagentsPanel";
-import { UsersThreeIcon } from "@phosphor-icons/react";
 import { SessionCard } from "./SessionCard";
 import { documentCommands } from "../documentCommands";
 import { documentKey } from "../workbenchState";
@@ -24,6 +25,7 @@ import {
   type CSSProperties,
 } from "react";
 import {
+  UsersThreeIcon,
   XIcon,
   FileIcon,
   GitDiffIcon,
@@ -221,6 +223,7 @@ export function ProjectWorkbench({
   const storedLayout = layouts[layoutKey] ?? empty;
   const visibleTabs = storedLayout.tabs
     .filter((t) => t.kind !== "terminal")
+    .filter((t) => !(t.kind === "session" && peers.subagents?.[t.path]))
     .filter((t) => !(t.kind === "session" && archive.entries[t.path]))
     .filter(
       (t) =>
@@ -267,7 +270,7 @@ export function ProjectWorkbench({
       onSelectSession(null);
   }, [archive, selectedSessionId]);
   const activeSession =
-    session &&
+    session && !peers.subagents?.[session.sessionId] &&
     session.projectId === project?.id &&
     !archive.entries[session.sessionId]
       ? session
@@ -595,7 +598,7 @@ export function ProjectWorkbench({
       const related = new Set([tab.path]);
       for (let before = -1; before !== related.size;) {
         before = related.size;
-        for (const [child, parent] of Object.entries(peers.origins))
+        for (const [child, parent] of Object.entries(peers.subagents ?? {}))
           if (related.has(parent)) related.add(child);
       }
       const archiveAndClose = async () => {
@@ -774,14 +777,14 @@ export function ProjectWorkbench({
     );
   }, [peers.closed]);
   const pendingRequest = peers.requests.find(
-    (r) => !r.resolved && r.to === selectedSessionId,
+    (r) => !r.resolved && conversationOwner(r.from, peers) === selectedSessionId,
   );
   const [deciding, setDeciding] = useState(false);
   const decide = async (allow: boolean) => {
     if (!pendingRequest) return;
     setDeciding(true);
     try {
-      await peerApi.decide(pendingRequest.id, allow);
+      await peerApi.decide(pendingRequest.id, allow, selectedSessionId ?? undefined);
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -1064,7 +1067,7 @@ export function ProjectWorkbench({
                 `Session ${activeSession.sessionId.slice(-6)}`)
               : "New session"}
           </Button>
-          {activeSession && !peers.origins[activeSession.sessionId] && (
+          {activeSession && !peers.subagents?.[activeSession.sessionId] && (
             <SessionMenu
               key={activeSession.sessionId}
               sessionId={activeSession.sessionId}
@@ -1191,7 +1194,7 @@ export function ProjectWorkbench({
               )}
             </Button>
           ))}
-          <Button size="icon" aria-label="Subagents" title="Subagents" aria-controls="workspace-panel" aria-pressed={panelVisible && subagents} disabled={!selectedSessionId} onClick={() => { setSubagents(true); setWorkspaceOpen(!panelVisible || !subagents); }}><UsersThreeIcon size={18}/></Button>
+          {selectedSessionId && Object.values(peers.subagents ?? {}).includes(selectedSessionId) && <Button size="icon" aria-label="Subagents" title="Subagents" aria-controls="workspace-panel" aria-pressed={panelVisible && subagents} disabled={!selectedSessionId} onClick={() => { setSubagents(true); setWorkspaceOpen(!panelVisible || !subagents); }}><UsersThreeIcon size={18}/></Button>}
           <Button
             size="icon"
             aria-label="Terminal"
@@ -1298,7 +1301,7 @@ export function ProjectWorkbench({
               {historyContent}
               {children}
               {pendingRequest && (
-                <div className="peer-request">
+                <ApprovalCard className="peer-request" heading="Orchestrator approval">
                   <span>
                     <b>
                       {peers.titles[pendingRequest.from] ?? pendingRequest.from}
@@ -1319,22 +1322,11 @@ export function ProjectWorkbench({
                   <Button
                     className="act"
                     disabled={deciding}
-                    onClick={() =>
-                      setConfirm({
-                        title: `${pendingRequest.action === "close" ? "Stop and close" : "Stop"} session?`,
-                        body: "This request came from another session. Confirming stops the target agent.",
-                        confirmLabel: "Confirm",
-                        onCancel: () => setConfirm(null),
-                        onConfirm: async () => {
-                          await decide(true);
-                          setConfirm(null);
-                        },
-                      })
-                    }
+                    onClick={() => void decide(true)}
                   >
-                    Review
+                    Allow
                   </Button>
-                </div>
+                </ApprovalCard>
               )}
             </NoteScope.Provider>
           </div>

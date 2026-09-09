@@ -109,7 +109,7 @@ pub(crate) async fn archive_set(
     if ready.supervisor.session(&id).await?.is_none() {
         return Err(AppError::invalid_argument("Session no longer exists"));
     }
-    let origins = crate::peers::snapshot()?.origins;
+    let origins = crate::peers::snapshot()?.subagents;
     let ids = chat_ids(&session_id, &origins)?;
     let mut data = read(&ready.data_dir)?;
     if data.pending_deletions.contains_key(&session_id) {
@@ -139,6 +139,27 @@ pub(crate) async fn archive_set(
     save(&ready.data_dir, &data)?;
     Ok(data)
 }
+/// Agent lifecycle calls already hold LIFECYCLE and have stopped this execution tree.
+/// Ordinary created chats and user forks are not execution children.
+pub(crate) async fn archive_stopped(
+    ready: &crate::state::Ready,
+    target: &str,
+) -> Result<(), AppError> {
+    let _lock = LOCK.lock().await;
+    let mut data = read(&ready.data_dir)?;
+    let workers = crate::peers::snapshot()?.subagents;
+    for id in crate::cleanup::descendants([target.to_owned()].into(), &workers) {
+        if data.pending_deletions.contains_key(&id) {
+            return Err(AppError::invalid_argument("Chat deletion is in progress"));
+        }
+        data.entries.entry(id).or_insert(Entry {
+            archived_at: now(),
+            needs_review: None,
+        });
+    }
+    save(&ready.data_dir, &data)
+}
+
 #[tauri::command]
 pub(crate) async fn archive_settings(
     settings: Settings,
@@ -233,7 +254,7 @@ pub(crate) async fn archive_delete(
             "Only archived chats can be deleted here",
         ));
     }
-    let origins = crate::peers::snapshot()?.origins;
+    let origins = crate::peers::snapshot()?.subagents;
     delete_chat(
         &ready.supervisor,
         &ready.data_dir,
@@ -254,7 +275,7 @@ pub(crate) fn start(app: tauri::AppHandle) {
                 let state = app.state::<AppState>();
                 let ready = state.get()?;
                 let mut data = read(&ready.data_dir)?;
-                let origins = crate::peers::snapshot()?.origins;
+                let origins = crate::peers::snapshot()?.subagents;
                 let due: std::collections::BTreeSet<_> = data
                     .entries
                     .iter()

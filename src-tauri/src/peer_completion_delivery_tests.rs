@@ -145,7 +145,7 @@ pub(crate) async fn run(state: &AppState, project: &str, root: &Path) {
     let owner = actors.lock().unwrap()[parent.as_str()].clone();
     let worker = actors.lock().unwrap()[child.as_str()].clone();
     change(|d| {
-        d.origins.insert(child.to_string(), parent.to_string());
+        d.subagents.insert(child.to_string(), parent.to_string());
         Ok(())
     })
     .unwrap();

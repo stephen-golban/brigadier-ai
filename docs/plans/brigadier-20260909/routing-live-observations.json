@@ -1,0 +1,112 @@
+[
+  {
+    "accepted": false,
+    "elapsedMs": 10299,
+    "observedModel": "claude-haiku-4-5-20251001",
+    "observedProvider": "claude-code:routing-live",
+    "output": "```json\n{\"defect\": true, \"replacement\": \"used < limit\"}\n```",
+    "policy": "root-exact",
+    "selectedRootProvider": "claude-code",
+    "task": "Boundary review",
+    "usage": null,
+    "semanticAcceptance": true
+  },
+  {
+    "accepted": true,
+    "elapsedMs": 6267,
+    "observedModel": "gpt-6-astra",
+    "observedProvider": "codex:routing-live",
+    "output": "{\"defect\":true,\"replacement\":\"used < limit\"}",
+    "policy": "provider-default",
+    "selectedRootProvider": "codex",
+    "task": "Boundary review",
+    "usage": null,
+    "semanticAcceptance": true
+  },
+  {
+    "accepted": false,
+    "elapsedMs": 8883,
+    "observedModel": "claude-sonnet-5",
+    "observedProvider": "claude-code:routing-live",
+    "output": "```json\n{\"defect\": true, \"replacement\": \"used < limit\"}\n```",
+    "policy": "light-strong-heuristic",
+    "selectedRootProvider": "claude-code",
+    "task": "Boundary review",
+    "usage": null,
+    "semanticAcceptance": true
+  },
+  {
+    "accepted": false,
+    "elapsedMs": 4321,
+    "observedModel": "claude-opus-5[1m]",
+    "observedProvider": "claude-code:routing-live",
+    "output": "```json\n{\"defect\": true, \"replacement\": \"used < limit\"}\n```",
+    "policy": "adaptive",
+    "selectedRootProvider": "codex",
+    "task": "Boundary review",
+    "usage": null,
+    "semanticAcceptance": true
+  },
+  {
+    "accepted": true,
+    "elapsedMs": 15738,
+    "observedModel": "claude-haiku-4-5-20251001",
+    "observedProvider": "claude-code:routing-live",
+    "output": "{\"active\": 1, \"done\": 2}",
+    "policy": "root-exact",
+    "selectedRootProvider": "claude-code",
+    "task": "Independent data reasoning",
+    "usage": null,
+    "semanticAcceptance": true
+  },
+  {
+    "accepted": true,
+    "elapsedMs": 6016,
+    "observedModel": "gpt-6-astra",
+    "observedProvider": "codex:routing-live",
+    "output": "{\"active\":1,\"done\":2}",
+    "policy": "provider-default",
+    "selectedRootProvider": "codex",
+    "task": "Independent data reasoning",
+    "usage": null,
+    "semanticAcceptance": true
+  },
+  {
+    "accepted": true,
+    "elapsedMs": 17645,
+    "observedModel": "claude-sonnet-5",
+    "observedProvider": "claude-code:routing-live",
+    "output": "{\"active\": 1, \"done\": 2}",
+    "policy": "light-strong-heuristic",
+    "selectedRootProvider": "claude-code",
+    "task": "Independent data reasoning",
+    "usage": null,
+    "semanticAcceptance": true
+  },
+  {
+    "accepted": true,
+    "elapsedMs": 6778,
+    "observedModel": "claude-opus-5[1m]",
+    "observedProvider": "claude-code:routing-live",
+    "output": "{\"active\": 1, \"done\": 2}",
+    "policy": "adaptive",
+    "selectedRootProvider": "codex",
+    "task": "Independent data reasoning",
+    "usage": null,
+    "semanticAcceptance": true
+  },
+  {
+    "accepted": true,
+    "model": "gpt-6-astra",
+    "root": "claude-code",
+    "task": "cross-provider",
+    "worker": "codex:routing-live"
+  },
+  {
+    "accepted": true,
+    "model": "claude-opus-5[1m]",
+    "root": "codex",
+    "task": "cross-provider",
+    "worker": "claude-code:routing-live"
+  }
+]

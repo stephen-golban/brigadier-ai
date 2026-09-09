@@ -40,6 +40,9 @@ export function PeerTaskCardScope({ rows, sessionTitles, sessionId, peers, child
 }) {
   const cards = useMemo(() => {
     const byRow = projectPeerTaskCards(rows, sessionTitles);
+    for (const tasks of byRow.values()) for (const task of tasks) {
+      if (task.id && peers?.subagents?.[task.id]) task.subagent = true;
+    }
     const receipts = new Map<string, PeerMessage[]>();
     const taskIds = new Set<string>();
     const messageIds = new Set<string>();

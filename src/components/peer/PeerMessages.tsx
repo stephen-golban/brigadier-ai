@@ -77,6 +77,6 @@ export function PeerMessages({ sessionId, peers, onSelectSession, renderAttachme
       <PeerBubble key={`${sessionId}:${m.id}`} text={m.text} source={m.from} titles={peers.titles} onSelectSession={onSelectSession} status={deliveryLabel(m)}>{renderAttachments?.(m)}</PeerBubble>)}
     {outgoing.filter(m => !scope?.messageIds.has(m.id)).map(m =>
       <PeerDeliveryReceipt key={`${sessionId}:${m.id}`} message={m} destination={peerTaskTitle(m.to, peers.titles)}>{renderAttachments?.(m)}</PeerDeliveryReceipt>)}
-    <LinkedTaskCards tasks={targets.map(id => ({ key: id, id, title: peerTaskTitle(id, peers.titles), state: "ready" }))} onSelectSession={onSelectSession} />
+    <LinkedTaskCards tasks={targets.map(id => ({ key: id, id, subagent: !!peers.subagents?.[id], title: peerTaskTitle(id, peers.titles), state: "ready" }))} onSelectSession={onSelectSession} />
   </div>;
 }
