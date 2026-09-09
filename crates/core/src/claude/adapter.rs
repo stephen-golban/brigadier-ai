@@ -247,7 +247,10 @@ struct Adapter<W> {
     next_control_id: u64,
     next_approval: u64,
     next_anon_message: u64,
-    stream_blocks: HashMap<(String, usize), ItemId>,
+    stream_blocks: HashMap<(String, usize), (ItemId, ItemKind, Option<String>)>,
+    stream_messages: HashMap<String, String>,
+    seen_frames: HashSet<String>,
+    frame_order: VecDeque<String>,
     stream_generation: u64,
 
     open_turn: Option<OpenTurn>,
@@ -344,7 +347,10 @@ where
         next_approval: start_seq,
         next_anon_message: start_seq,
         stream_blocks: HashMap::new(),
-        stream_generation: start_seq,
+        stream_messages: HashMap::new(),
+        seen_frames: HashSet::new(),
+        frame_order: VecDeque::new(),
+        stream_generation: 0,
         open_turn: None,
         provider_session_id: None,
         session_started: false,
@@ -578,6 +584,26 @@ where
     }
 
     fn on_message(&mut self, message: KnownMessage, raw: &str) {
+        // Frame identity, never content equality: identical legitimate deltas still append.
+        if let Ok(v) = serde_json::from_str::<Value>(raw) {
+            if matches!(
+                v["type"].as_str(),
+                Some("assistant" | "user" | "result" | "stream_event")
+            ) {
+                if let Some(uuid) = v["uuid"].as_str() {
+                    let key = format!("{}:{}:{uuid}", v["type"], v["parent_tool_use_id"]);
+                    if !self.seen_frames.insert(key.clone()) {
+                        return;
+                    }
+                    self.frame_order.push_back(key);
+                    if self.frame_order.len() > 8192 {
+                        if let Some(old) = self.frame_order.pop_front() {
+                            self.seen_frames.remove(&old);
+                        }
+                    }
+                }
+            }
+        }
         match message {
             KnownMessage::System(system) => self.on_system(system, raw),
             KnownMessage::Assistant(assistant) => self.on_assistant(assistant, raw),
@@ -624,6 +650,11 @@ where
         match event.get("type").and_then(Value::as_str) {
             Some("message_start") => {
                 self.stream_generation += 1;
+                self.stream_blocks.retain(|(owner, _), _| owner != &parent);
+                self.stream_messages.remove(&parent);
+                if let Some(id) = event["message"]["id"].as_str() {
+                    self.stream_messages.insert(parent, id.into());
+                }
             }
             Some("content_block_start") => {
                 let block = &event["content_block"];
@@ -636,11 +667,17 @@ where
                     return;
                 }
                 let id = ItemId::new(format!(
-                    "{}:stream:{}:{parent}:{index}",
-                    self.config.session_id, self.stream_generation
+                    "{}:stream:{}:{}:{parent}:{index}",
+                    self.config.session_id, self.config.start_seq, self.stream_generation
                 ));
-                self.stream_blocks
-                    .insert((parent.clone(), index), id.clone());
+                self.stream_blocks.insert(
+                    (parent.clone(), index),
+                    (
+                        id.clone(),
+                        kind.clone(),
+                        self.stream_messages.get(&parent).cloned(),
+                    ),
+                );
                 self.emit(
                     Event::item_started(
                         id,
@@ -652,7 +689,7 @@ where
                 );
             }
             Some("content_block_delta") => {
-                if let Some(id) = self.stream_blocks.get(&(parent, index)).cloned() {
+                if let Some((id, _, _)) = self.stream_blocks.get(&(parent, index)).cloned() {
                     if let Some(text) = event["delta"]["text"]
                         .as_str()
                         .or_else(|| event["delta"]["thinking"].as_str())
@@ -676,9 +713,24 @@ where
         uuid: Option<&str>,
         index: usize,
         parent: Option<&ItemId>,
+        kind: ItemKind,
+        message_id: Option<&str>,
     ) -> ItemId {
-        self.stream_blocks
-            .remove(&(parent.map_or("", ItemId::as_str).to_owned(), index))
+        let owner = parent.map_or("", ItemId::as_str);
+        // Claude sends one completed block per assistant frame. Its array index resets
+        // to zero even when the stream index follows thinking/tool blocks. Correlate
+        // ordered blocks within the same message, parent and kind, not array offsets.
+        let key = self
+            .stream_blocks
+            .iter()
+            .filter(|((p, _), (_, k, m))| {
+                p == owner
+                    && *k == kind
+                    && (m.is_none() || message_id.is_none() || m.as_deref() == message_id)
+            })
+            .min_by_key(|((_, i), _)| *i)
+            .map(|(key, _)| key.clone());
+        key.and_then(|key| self.stream_blocks.remove(&key).map(|(id, _, _)| id))
             .unwrap_or_else(|| self.block_item_id(uuid, index))
     }
 
@@ -867,12 +919,25 @@ where
         match assistant.message.content {
             MessageContent::Text(text) => {
                 self.append_turn_text(&text, parent.is_some());
-                let item_id = self.completed_block_id(uuid.as_deref(), 0, parent.as_ref());
+                let item_id = self.completed_block_id(
+                    uuid.as_deref(),
+                    0,
+                    parent.as_ref(),
+                    ItemKind::AssistantText,
+                    assistant.message.id.as_deref(),
+                );
                 self.emit_item(item_id, ItemKind::AssistantText, &text, parent, raw);
             }
             MessageContent::Blocks(blocks) => {
                 for (index, block) in blocks.into_iter().enumerate() {
-                    self.on_assistant_block(block, uuid.as_deref(), index, parent.clone(), raw);
+                    self.on_assistant_block(
+                        block,
+                        uuid.as_deref(),
+                        index,
+                        parent.clone(),
+                        assistant.message.id.as_deref(),
+                        raw,
+                    );
                 }
             }
         }
@@ -884,6 +949,7 @@ where
         uuid: Option<&str>,
         index: usize,
         parent: Option<ItemId>,
+        message_id: Option<&str>,
         raw: &str,
     ) {
         let known = match block {
@@ -896,15 +962,33 @@ where
         match known {
             ContentBlockKnown::Text { text, .. } => {
                 self.append_turn_text(&text, parent.is_some());
-                let item_id = self.completed_block_id(uuid, index, parent.as_ref());
+                let item_id = self.completed_block_id(
+                    uuid,
+                    index,
+                    parent.as_ref(),
+                    ItemKind::AssistantText,
+                    message_id,
+                );
                 self.emit_item(item_id, ItemKind::AssistantText, &text, parent, raw);
             }
             ContentBlockKnown::Thinking { thinking, .. } => {
-                let item_id = self.completed_block_id(uuid, index, parent.as_ref());
+                let item_id = self.completed_block_id(
+                    uuid,
+                    index,
+                    parent.as_ref(),
+                    ItemKind::Thinking,
+                    message_id,
+                );
                 self.emit_item(item_id, ItemKind::Thinking, &thinking, parent, raw);
             }
             ContentBlockKnown::RedactedThinking { .. } => {
-                let item_id = self.completed_block_id(uuid, index, parent.as_ref());
+                let item_id = self.completed_block_id(
+                    uuid,
+                    index,
+                    parent.as_ref(),
+                    ItemKind::Thinking,
+                    message_id,
+                );
                 self.emit_item(
                     item_id,
                     ItemKind::Thinking,

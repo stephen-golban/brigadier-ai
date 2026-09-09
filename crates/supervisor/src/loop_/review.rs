@@ -38,24 +38,14 @@ fn judgment(text: &str) -> Result<Judgment, LoopError> {
 
 /// Review where a defect has meaningful impact; trivial isolated edits need no automatic panel.
 pub(super) async fn warranted(run: &Run, phase: &PhaseRow, cwd: &Path) -> Result<bool, LoopError> {
+    match run.orchestration.review {
+        crate::orchestration::ReviewIntensity::Always => return Ok(true),
+        crate::orchestration::ReviewIntensity::Manual => return Ok(false),
+        _ => {}
+    }
     let base = phase.base_sha.as_deref().unwrap_or("HEAD");
     let paths = git::checked(&run.git, cwd, &["diff", "--name-only", base]).await?;
-    let paths: Vec<&str> = paths.lines().collect();
-    Ok(paths.len() >= 5
-        || paths.iter().any(|p| {
-            [
-                "auth",
-                "permission",
-                "migration",
-                "schema",
-                "payment",
-                "cancel",
-                "session",
-                "security",
-            ]
-            .iter()
-            .any(|term| p.to_lowercase().contains(term))
-        }))
+    Ok(crate::orchestration::consequential(&paths))
 }
 
 pub(super) async fn run(
@@ -118,6 +108,13 @@ pub(super) async fn run(
         ),
         8192,
     );
+    crate::orchestration::verified_workspace(
+        &run.sup.data_dir().join("routing-journal.json"),
+        &run.plan_id,
+        &cwd.to_string_lossy(),
+        decision.accepted && decision.findings.is_empty(),
+        &evidence,
+    )?;
     Ok(Review {
         accepted: decision.accepted && decision.findings.is_empty(),
         evidence,

@@ -181,9 +181,15 @@ mod tests {
 
     #[test]
     fn every_order_settled_means_merge_and_gate() {
-        let orders =
-            [order("o1", WorkOrderState::Reported), order("o2", WorkOrderState::Failed)];
-        let stage = derive(&phase(PhaseState::Running), &orders, &ReconcileOutcome::clean());
+        let orders = [
+            order("o1", WorkOrderState::Reported),
+            order("o2", WorkOrderState::Failed),
+        ];
+        let stage = derive(
+            &phase(PhaseState::Running),
+            &orders,
+            &ReconcileOutcome::clean(),
+        );
         assert_eq!(stage, PhaseStage::Collected);
     }
 
@@ -191,18 +197,34 @@ mod tests {
     /// re-dispatch branch to take, because `work_order` can never settle `not_done`.
     #[test]
     fn a_dispatched_order_from_a_dead_launch_blocks_its_phase() {
-        let orders =
-            [order("o1", WorkOrderState::Reported), order("o2", WorkOrderState::Dispatched)];
-        let stage = derive(&phase(PhaseState::Running), &orders, &ReconcileOutcome::clean());
-        assert_eq!(stage, PhaseStage::Blocked(BlockReason::OrdersInFlight(vec!["o2".into()])));
+        let orders = [
+            order("o1", WorkOrderState::Reported),
+            order("o2", WorkOrderState::Dispatched),
+        ];
+        let stage = derive(
+            &phase(PhaseState::Running),
+            &orders,
+            &ReconcileOutcome::clean(),
+        );
+        assert_eq!(
+            stage,
+            PhaseStage::Blocked(BlockReason::OrdersInFlight(vec!["o2".into()]))
+        );
         assert!(!stage.is_open(), "nothing may be spawned for it");
     }
 
     #[test]
     fn an_order_at_unknown_blocks_rather_than_being_repeated() {
         let orders = [order("o1", WorkOrderState::Unknown)];
-        let stage = derive(&phase(PhaseState::Running), &orders, &ReconcileOutcome::clean());
-        assert_eq!(stage, PhaseStage::Blocked(BlockReason::OrdersInFlight(vec!["o1".into()])));
+        let stage = derive(
+            &phase(PhaseState::Running),
+            &orders,
+            &ReconcileOutcome::clean(),
+        );
+        assert_eq!(
+            stage,
+            PhaseStage::Blocked(BlockReason::OrdersInFlight(vec!["o1".into()]))
+        );
     }
 
     #[test]
@@ -239,7 +261,10 @@ mod tests {
         let mut row = phase(PhaseState::Green);
         row.ended_at = Some(SystemTime::now());
         let orders = [order("o1", WorkOrderState::Dispatched)];
-        assert_eq!(derive(&row, &orders, &ReconcileOutcome::clean()), PhaseStage::Done);
+        assert_eq!(
+            derive(&row, &orders, &ReconcileOutcome::clean()),
+            PhaseStage::Done
+        );
     }
 
     #[test]
@@ -269,8 +294,10 @@ mod tests {
         let phases: Vec<PhaseRow> = (0..2)
             .map(|i| PhaseRow::new(format!("ph{i}"), "plan1", i, "t"))
             .collect();
-        let stages =
-            vec![PhaseStage::Blocked(BlockReason::UnknownIntent), PhaseStage::Ready];
+        let stages = vec![
+            PhaseStage::Blocked(BlockReason::UnknownIntent),
+            PhaseStage::Ready,
+        ];
         assert_eq!(current(&phases, &stages), Some(0));
     }
 }

@@ -69,3 +69,13 @@ describe("peer receipt ownership", () => {
     expect(document.querySelectorAll('[data-task-id="target"]')).toHaveLength(1);
   });
 });
+
+
+it("opens migrated workers as activity and keeps ordinary creations as chats", () => {
+  const view = render(<Harness data={{...peers,subagents:{target:'source'}}}/>);
+  expect(screen.queryByRole('button',{name:'Open chat: First Chat Session'})).toBeNull();
+  fireEvent.click(screen.getByRole('button',{name:'View activity: First Chat Session'}));
+  expect(select).toHaveBeenCalledWith('target');
+  view.rerender(<Harness data={{...peers,subagents:{}}}/>);
+  expect(screen.getByRole('button',{name:'Open chat: First Chat Session'})).toBeVisible();
+});

@@ -7,6 +7,8 @@ import { useState } from "react";
 import { ConfirmDialog } from "./ConfirmDialog";
 import {
   defaultPeerSettings,
+  defaultOrchestrationPolicy,
+  type OrchestrationPolicy,
   workbenchApi,
   type WorkbenchData,
   type PeerSettings,
@@ -30,6 +32,8 @@ export function SessionPreferences({
   const global = data.peers ?? defaultPeerSettings;
   const override = data.projectPeers?.[projectId];
   const settings = scope === "global" ? global : (override ?? global);
+  const orchestration = settings.orchestration ?? defaultOrchestrationPolicy;
+  const savePolicy = (patch: Partial<OrchestrationPolicy>) => save({...settings,orchestration:{...orchestration,...patch}});
   const save = async (next: PeerSettings | null) => {
     setBusy(true);
     try {
@@ -95,6 +99,16 @@ export function SessionPreferences({
                 {label}
               </Checkbox>
             ))}
+            <h3 className="mt-4 text-sm">Orchestration</h3>
+            <label>Objective<select value={orchestration.preset} onChange={e=>void savePolicy({preset:e.target.value as OrchestrationPolicy['preset']})}>
+              <option value="quality">Quality · proportionate effort</option><option value="balanced">Balanced</option><option value="economy">Economy</option>
+            </select></label>
+            <label>Concurrent workers<input type="number" min={1} max={16} key={`${scope}:concurrency:${orchestration.concurrency}`} defaultValue={orchestration.concurrency} onBlur={e=>{if(e.target.checkValidity() && Number(e.target.value)!==orchestration.concurrency)void savePolicy({concurrency:Number(e.target.value)});}} /></label>
+            <label>Task dispatch allowance<input type="number" min={1} max={10000} key={`${scope}:allowance:${orchestration.maxDispatches}`} defaultValue={orchestration.maxDispatches} onBlur={e=>{if(e.target.checkValidity() && Number(e.target.value)!==orchestration.maxDispatches)void savePolicy({maxDispatches:Number(e.target.value)});}} /></label>
+            <p className="text-xs">Counts background model turns, including reviews and continuation. Pauses new work at the limit; increases require you. Provider token and cost measurements can be delayed or unavailable.</p>
+            <label>Independent review<select value={orchestration.review} onChange={e=>void savePolicy({review:e.target.value as OrchestrationPolicy['review']})}>
+              <option value="risk-based">Consequential or uncertain work</option><option value="always">Every contribution</option><option value="manual">On request</option>
+            </select></label>
             <h3 className="mt-4 text-sm">Worker provider exclusions</h3>
             {providers.map(provider=><Checkbox key={provider.id} checked={!(settings.excludedProviders ?? []).includes(provider.id)} onCheckedChange={enabled=>void save({...settings,excludedProviders:enabled?(settings.excludedProviders ?? []).filter(id=>id!==provider.id):[...(settings.excludedProviders ?? []),provider.id]})}>{provider.label}</Checkbox>)}
             <label className="mt-3 text-xs">Excluded worker model IDs (one per line)

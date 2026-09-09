@@ -29,6 +29,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import type { PeerData } from "./peerApi";
 import { ZERO_USAGE } from "./wire";
 import type { FeedRowWire, SessionStatus, SessionView } from "./wire";
 
@@ -36,6 +37,8 @@ import type { FeedRowWire, SessionStatus, SessionView } from "./wire";
 
 /** Shared with the hoisted `vi.mock` factories below; reset in `beforeEach`. */
 const h = vi.hoisted(() => ({
+  peers: {origins:{},subagents:{},titles:{},closed:[],requests:[],messages:[],loaded:true} as PeerData,
+  responses: [] as unknown[][],
   projects: [] as Array<{
     id: string;
     name: string;
@@ -75,6 +78,11 @@ const h = vi.hoisted(() => ({
     id: string;
     force: boolean;
   }>,
+}));
+
+vi.mock("./peerApi", async (importOriginal) => ({
+  ...await importOriginal<typeof import('./peerApi')>(),
+  usePeers: () => h.peers,
 }));
 
 vi.mock("./paint", () => ({
@@ -148,7 +156,7 @@ vi.mock("./bridge", async (importOriginal) => {
     async sendTurn() {
       return { turn_id: "t" };
     },
-    async respond() {},
+    async respond(...args: unknown[]) { h.responses.push(args); },
     async interrupt() {},
     async endSession() {},
     async kill() {},
@@ -303,6 +311,8 @@ beforeEach(() => {
   h.projects = [project("p-live", "job-portal")];
   h.visible = [];
   h.sessions = [];
+  h.responses = [];
+  h.peers = {origins:{},subagents:{},titles:{},closed:[],requests:[],messages:[],loaded:true};
   h.initialData = null;
   h.tailRows = {};
   h.hold = false;
@@ -712,4 +722,25 @@ describe("deleting", () => {
       ),
     ).not.toBeInTheDocument();
   });
+});
+
+
+it("keeps workers out of chat navigation and routes nested cross-project approval to the root", async () => {
+  const user = userEvent.setup();
+  h.projects = [project("p-live", "job-portal"), project("p-worker", "worker-project")];
+  h.sessions = [view("root1111", "p-live"),view("child2222", "p-worker"),view("nested3333", "p-worker"),view("chat4444", "p-live")];
+  h.peers.origins = {child2222:"root1111",nested3333:"child2222",chat4444:"root1111"};
+  h.peers.subagents = {child2222:"root1111",nested3333:"child2222"};
+  await mountApp();
+  await selectHistory(user,"root1111");
+  const navigation = within(screen.getByRole("navigation",{name:"Projects"}));
+  expect(navigation.queryByRole("button",{name:"Session ld2222"})).toBeNull();
+  expect(navigation.queryByRole("button",{name:"Session ed3333"})).toBeNull();
+  expect(navigation.getByRole("button",{name:"Session at4444"})).toBeVisible();
+  const store=await import('./feedStore');
+  await act(async()=>store.seedApprovals([{session_id:'nested3333',request_id:'permission',opened_at_ms:1,resolved:false,expired:false,kind:{type:'tool-permission',tool_name:'Bash',input_excerpt:'deploy preview',suggestions:[],tool_call_id:null}}]));
+  expect(await screen.findByText('Subagent request · Subagent')).toBeVisible();
+  expect(h.lastVisible()).toEqual(['p-live','p-worker']);
+  await user.click(screen.getByRole('button',{name:'Allow'}));
+  expect(h.responses).toEqual([['nested3333','permission',{type:'allow',updated_input:null,updated_permissions:[]},'root1111']]);
 });

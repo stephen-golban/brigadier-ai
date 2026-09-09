@@ -1,3 +1,5 @@
+import { invoke } from "@tauri-apps/api/core";
+import { ApprovalCard } from "./assistant-ui/elements/approval-card";
 import { AgentPlan } from "./assistant-ui/elements/agent-plan";
 import { Button } from "./controls/button";
 /**
@@ -42,7 +44,7 @@ import { Button } from "./controls/button";
  * break an older webview, and a card that hid an unrecognised kind would hide exactly the row the
  * owner most needs to see.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import type {
   IntentSettlement,
@@ -165,7 +167,7 @@ function orderRow(o: WorkOrderView) {
   );
 }
 
-function phaseRow(phase: PhaseView) {
+function phaseRow(phase: PhaseView, planId:string) {
   return (
     <div className="run-phase" key={phase.phase_id}>
       <div className="run-phase-head flex items-center gap-2">
@@ -198,6 +200,7 @@ function phaseRow(phase: PhaseView) {
       {phase.last_evidence !== null ? (
         <p className="run-evidence">{oneLine(phase.last_evidence)}</p>
       ) : null}
+      {phase.last_evidence?.includes("Competing implementations require user approval") && <CompetingApproval planId={planId} phaseId={phase.phase_id} />}
       {phase.orders.length > 0 ? (
         <ul className="run-orders">{phase.orders.map(orderRow)}</ul>
       ) : null}
@@ -238,7 +241,7 @@ export function RunCard({ run, intents, onSettle }: RunCardProps) {
               steps={run.phases.map((phase) => ({
                 id: phase.phase_id,
                 state: phase.state,
-                content: phaseRow(phase),
+                content: phaseRow(phase,run.plan_id),
               }))}
             />
           ) : null}
@@ -289,4 +292,12 @@ export function RunCard({ run, intents, onSettle }: RunCardProps) {
       ) : null}
     </section>
   );
+}
+
+function CompetingApproval({planId,phaseId}:{planId:string;phaseId:string}){
+ const [status,setStatus]=useState('');const [busy,setBusy]=useState(false);
+ const [proposal,setProposal]=useState<{requestId:string;baseline:string;criteria:string}|null>(null);
+ useEffect(()=>{let active=true;void invoke<{requestId:string;baseline:string;criteria:string}>('read_run_competing',{planId,phaseId}).then(p=>{if(active)setProposal(p);}).catch(e=>{if(active)setStatus(String(e));});return()=>{active=false;};},[planId,phaseId]);
+ const decide=async(allow:boolean)=>{if(!proposal)return;setBusy(true);try{await invoke('decide_run_competing',{planId,phaseId,requestId:proposal.requestId,allow});setStatus(allow?'Approved. Explicitly continue the task when ready.':'Declined. Existing work is retained.');}catch(e){setStatus(String(e));}finally{setBusy(false);}};
+ return <ApprovalCard heading="Try two isolated implementations from this baseline?">{proposal&&<p>{proposal.criteria} · Baseline {proposal.baseline.slice(0,12)}</p>}{status ? <p role="status">{status}</p>:<><Button disabled={busy||!proposal} onClick={()=>void decide(false)}>Decline</Button><Button disabled={busy||!proposal} onClick={()=>void decide(true)}>Allow competing implementations</Button></>}</ApprovalCard>;
 }

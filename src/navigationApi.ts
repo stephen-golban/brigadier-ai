@@ -98,7 +98,7 @@ async function previewSample(
   let added = true;
   while (added) {
     added = false;
-    for (const [child, parent] of Object.entries(peers.origins))
+    for (const [child, parent] of Object.entries(peers.subagents ?? {}))
       if (ids.has(parent) && !ids.has(child) && state.sessions[child]) {
         ids.add(child);
         added = true;

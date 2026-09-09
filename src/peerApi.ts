@@ -28,8 +28,19 @@ export interface PeerRequest {
   action: string;
   resolved: boolean;
 }
+export interface WorkerAssignment {
+  assignmentId?:string; generation?:number; baseline?:string|null; continuedFrom?:string|null;
+  history?:Array<{objective?:string;result?:string;evidence?:string;instruction?:string;applied?:boolean}>;
+  objective:string; criteria:string; scope:string; operation:string;
+  selection:{provider:string; model:string; effort?:string|null; reason:string; version:string; workload:string; pinned:boolean; alternatives:string[]};
+  state:string; disposition:string; revision:number; startedAt:number; completedAt?:number|null; result?:string|null; evidence?:string|null;
+}
 export interface PeerData {
+  assignments?: Record<string,WorkerAssignment>;
+  allowances?: Record<string,{receipts:string[];extra:number}>;
   origins: Record<string, string>;
+  /** Internal execution ownership; origins is provenance only. */
+  subagents?: Record<string, string>;
   retired?: Record<string, {turnId:string;workspaceRemoved:boolean;reason:string}>;
   titles: Record<string, string>;
   closed: string[];
@@ -41,6 +52,7 @@ export interface PeerData {
 }
 const empty: PeerData = {
   origins: {},
+  subagents: {},
   titles: {},
   closed: [],
   messages: [],
@@ -53,8 +65,8 @@ export const peerApi = {
     invoke("conversation_attachment", { projectId, id }),
   snapshot: (): Promise<PeerData> =>
     desktop ? invoke("peer_snapshot") : Promise.resolve(empty),
-  decide: (id: string, allow: boolean): Promise<void> =>
-    invoke("peer_decide", { id, allow }),
+  decide: (id: string, allow: boolean, conversationId?: string): Promise<void> =>
+    invoke("peer_decide", { id, allow, conversationId }),
 };
 export function usePeers() {
   const [data, setData] = useState<PeerData>({ ...empty, loaded: !desktop });

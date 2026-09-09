@@ -880,6 +880,29 @@ impl Actor {
                     .await;
             }
         }
+        // This server is injected by thread_config from the app-owned endpoint.
+        // Its tools enforce task ownership and action-specific approval themselves.
+        // Preserve native identity/schema checks and scoped policy denials above.
+        if method == "mcpServer/elicitation/request"
+            && params["serverName"] == "brigadier"
+            && [
+                "BRIGADIER_EXECUTABLE",
+                "BRIGADIER_PEER_TOKEN",
+                "BRIGADIER_PEER_ENDPOINT",
+            ]
+            .iter()
+            .all(|key| {
+                self.req
+                    .env_overrides
+                    .get(*key)
+                    .is_some_and(|v| !v.is_empty())
+            })
+        {
+            return self
+                .rpc
+                .write(&json!({"id":id,"result":approval_result(&method,&Decision::allow())}))
+                .await;
+        }
         let display = if method == "mcpServer/elicitation/request" {
             json!({"message":params["message"],"description":params["_meta"]["tool_description"],"arguments":params["_meta"]["tool_params"]})
         } else {

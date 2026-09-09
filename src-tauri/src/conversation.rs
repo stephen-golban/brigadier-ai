@@ -262,13 +262,16 @@ pub(crate) async fn apply_rewind(
         .ok_or_else(|| {
             AppError::invalid_argument("Press Send again to refresh the rewind preview")
         })?;
+    crate::peers::require_conversation(&plan.target.session_id)?;
     if plan.created.elapsed() > Duration::from_secs(300) {
         return Err(AppError::invalid_argument(
             "Press Send again to refresh the rewind preview",
         ));
     }
     if crate::peers::is_peer_input(state.inner(), &plan.target).await? {
-        return Err(AppError::invalid_argument("Peer-authored input cannot be edited as an owner message"));
+        return Err(AppError::invalid_argument(
+            "Peer-authored input cannot be edited as an owner message",
+        ));
     }
     let id = SessionId::new(&plan.session);
     let sup = &state.get()?.supervisor;

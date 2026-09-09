@@ -907,6 +907,22 @@ pub(crate) async fn session_base(
     Ok((Some(oid), inherit))
 }
 
+/// Freeze the exact eligible working tree for independent attempts. Its branch retains the input.
+pub async fn capture_baseline(
+    project_root: &Path,
+    source: &Path,
+    snapshots: &Path,
+) -> Result<String, SupervisorError> {
+    let made = prepare_from_source(project_root, source, snapshots)
+        .await?
+        .ok_or_else(|| {
+            SupervisorError::InvalidArgument(
+                "Competing implementations require a Git workspace".into(),
+            )
+        })?;
+    Ok(made.base_sha)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;

@@ -1,0 +1,17 @@
+{
+  "reviewedAt": "2026-09-09",
+  "note": "Provisional Brigadier workload/usage bands derived from provider positioning, not measured comparative competence or subscription billing. Only connected IDs are eligible. Unknown IDs require an explicit pin or maintained profile.",
+  "sources": ["https://platform.claude.com/docs/en/models/overview", "https://developers.openai.com/api/docs/models"],
+  "models": {
+    "claude-fable-5-1": {"quality":3,"usageWeight":1.0,"contextTokens":1000000,"vision":true},
+    "claude-opus-5": {"quality":3,"usageWeight":0.5,"contextTokens":1000000,"vision":true},
+    "claude-sonnet-5": {"quality":2,"usageWeight":0.2,"contextTokens":1000000,"vision":true},
+    "claude-haiku-4-5-20251001": {"quality":1,"usageWeight":0.1,"contextTokens":200000,"vision":true},
+    "claude-haiku-4-5": {"quality":1,"usageWeight":0.1,"contextTokens":200000,"vision":true},
+    "gpt-6-astra": {"quality":3,"usageWeight":1.0,"contextTokens":1050000,"vision":true},
+    "gpt-5.6-sol": {"quality":3,"usageWeight":0.4,"contextTokens":1050000,"vision":true},
+    "gpt-5.6": {"quality":3,"usageWeight":0.4,"contextTokens":1050000,"vision":true},
+    "gpt-5.6-terra": {"quality":2,"usageWeight":0.24,"contextTokens":1050000,"vision":true},
+    "gpt-5.6-luna": {"quality":1,"usageWeight":0.024,"contextTokens":1050000,"vision":true}
+  }
+}

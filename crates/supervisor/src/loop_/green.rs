@@ -151,48 +151,57 @@ pub(super) async fn integrate(run: &mut Run, phase: &PhaseRow) -> Result<Outcome
         review_evidence = report.evidence;
     }
     if !accepted {
-        ladder::claim_repair(run, phase, false)?;
-        let before_fix = git::rev_parse(&run.git, &integration, "HEAD").await?;
-        if review_evidence.is_empty() {
-            ladder::rung_one(run, phase, &integration, &integration_branch, &gate).await?;
-        } else {
-            ladder::repair_review(
+        let pending = ladder::pending_competition(run, phase)?;
+        let before_fix = match &pending {
+            Some(baseline) => baseline.clone(),
+            None => git::rev_parse(&run.git, &integration, "HEAD").await?,
+        };
+        if pending.is_none() {
+            ladder::claim_repair(run, phase, false)?;
+            if review_evidence.is_empty() {
+                ladder::rung_one(run, phase, &integration, &integration_branch, &gate).await?;
+            } else {
+                ladder::repair_review(
+                    run,
+                    phase,
+                    &integration,
+                    &integration_branch,
+                    &review_evidence,
+                )
+                .await?;
+            }
+            gate = super::run_gate(
                 run,
-                phase,
-                &integration,
-                &integration_branch,
-                &review_evidence,
+                &env,
+                &GateRequest {
+                    command: command.clone(),
+                    cwd: integration.clone(),
+                    log_path: run.gate_log(&phase.id, attempt + 1),
+                    timeout: run.limits.gate_timeout,
+                },
             )
             .await?;
-        }
-        gate = super::run_gate(
-            run,
-            &env,
-            &GateRequest {
-                command: command.clone(),
-                cwd: integration.clone(),
-                log_path: run.gate_log(&phase.id, attempt + 1),
-                timeout: run.limits.gate_timeout,
-            },
-        )
-        .await?;
-        accepted = gate.is_green();
-        if accepted
-            && (!review_evidence.is_empty()
-                || super::review::warranted(run, phase, &integration).await?)
-        {
-            let report = super::review::run(
-                run,
-                phase,
-                &integration,
-                "Verify ordinary repair against every criterion and prior findings",
-            )
-            .await?;
-            accepted = report.accepted;
-            review_evidence = report.evidence;
+            accepted = gate.is_green();
+            if accepted
+                && (!review_evidence.is_empty()
+                    || super::review::warranted(run, phase, &integration).await?)
+            {
+                let report = super::review::run(
+                    run,
+                    phase,
+                    &integration,
+                    "Verify ordinary repair against every criterion and prior findings",
+                )
+                .await?;
+                accepted = report.accepted;
+                review_evidence = report.evidence;
+            }
         }
         if !accepted {
             let failure = format!("{}; {}", gate.feed_line(&phase_label), review_evidence);
+            if !ladder::competing_approved(run, phase, &before_fix)? {
+                return Ok(Outcome::Red {exit_code:gate.exit_code,evidence:format!("Competing implementations require user approval. Baseline: {before_fix}. {failure}")});
+            }
             let alternatives =
                 ladder::competing(run, phase, &before_fix, &failure, &env, attempt + 2).await?;
             let Some(winner) = alternatives else {

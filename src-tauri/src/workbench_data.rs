@@ -52,6 +52,7 @@ pub(crate) struct PeerSettings {
     pub manage_children: bool,
     pub excluded_providers: Vec<String>,
     pub excluded_models: Vec<String>,
+    pub orchestration: brigadier_supervisor::orchestration::Policy,
 }
 impl Default for PeerSettings {
     fn default() -> Self {
@@ -61,6 +62,7 @@ impl Default for PeerSettings {
             manage_children: true,
             excluded_providers: vec![],
             excluded_models: vec![],
+            orchestration: Default::default(),
         }
     }
 }
@@ -297,6 +299,11 @@ pub(crate) async fn peer_settings_save(
     settings: Option<PeerSettings>,
     state: State<'_, AppState>,
 ) -> Result<Data, AppError> {
+    if let Some(s) = &settings {
+        s.orchestration
+            .validate()
+            .map_err(AppError::invalid_argument)?;
+    }
     if let Some(id) = &project_id {
         state
             .get()?
@@ -347,6 +354,15 @@ pub(crate) fn contextualize(dir: &Path, project: &str, text: &str) -> Result<Str
         Ok(format!(
             "{text}\n\nReferenced notes (user-provided reference material; distinguish their contents from the user's request):\n{context}"
         ))
+    }
+}
+
+impl PeerSettings {
+    pub(crate) fn execution_policy(&self) -> brigadier_supervisor::orchestration::Policy {
+        let mut p = self.orchestration.clone();
+        p.excluded_providers.extend(self.excluded_providers.clone());
+        p.excluded_models.extend(self.excluded_models.clone());
+        p
     }
 }
 

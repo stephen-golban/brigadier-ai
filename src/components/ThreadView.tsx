@@ -1,3 +1,5 @@
+import { TranscriptRuntime } from "./TranscriptRuntime";
+import { TaskPolicyStatus } from "./TaskPolicyStatus";
 import { TaskProgress } from "./TaskProgress";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useConversationHistory } from "../hooks/useConversationHistory";
@@ -9,8 +11,6 @@ import { useTaskExecutionSettings } from "../taskSettings";
 import { ProviderChangeDivider } from "./composer/ProviderChangeDivider";
 import { providerChangePlacement } from "./composer/providerChangePlacement";
 import {
-  AssistantRuntimeProvider,
-  useExternalStoreRuntime,
   type ThreadMessageLike,
 } from "@assistant-ui/react";
 import { Spinner } from "./controls/status";
@@ -47,7 +47,6 @@ import {
   type ChatItem,
 } from "../workspaceApi";
 import { workbenchApi } from "../workbenchApi";
-import { bridge } from "../bridge";
 import * as store from "../feedStore";
 import { projectThread, flattenTrace } from "../threadProjection";
 import { PeerTaskCardScope } from "./peer/PeerTaskCardScope";
@@ -302,22 +301,6 @@ function Transcript({
       return turn;
     });
   }, [rows]);
-  const runtime = useExternalStoreRuntime({
-    messages,
-    convertMessage: (message) => message,
-    isRunning: busy,
-    isLoading: !loaded,
-    onNew: async (message) => {
-      const text = message.content
-        .filter((p) => p.type === "text")
-        .map((p) => p.text)
-        .join("\n");
-      await bridge().sendTurn(sessionId, text);
-    },
-    onCancel: async () => {
-      await bridge().interrupt(sessionId);
-    },
-  });
   useLayoutEffect(() => {
     if (hydrated && !restored.current && scroll.current) {
       restored.current = true;
@@ -333,9 +316,10 @@ function Transcript({
       return next;
     });
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
+    <TranscriptRuntime sessionId={sessionId} messages={messages} busy={busy} loaded={loaded} readOnly={peers?.loaded === false || !!peers?.subagents?.[sessionId]}>
       <PeerTaskCardScope rows={rows} sessionTitles={peers?.titles} sessionId={sessionId} peers={peers}>
       <Thread
+        readOnly={peers?.loaded === false || !!peers?.subagents?.[sessionId]}
         viewportRef={scroll}
         scrollToBottomOnInitialize={saved.current.following}
         onScroll={() => {
@@ -356,6 +340,7 @@ function Transcript({
         }}
       >
         <TaskProgress sessionId={sessionId} />
+        <TaskPolicyStatus sessionId={sessionId} projectId={projectId} peers={peers} />
         {error && (
           <p role="alert" className="inline-error my-2 text-[13px] text-error">
             {error}
@@ -406,6 +391,7 @@ function Transcript({
                     </div>
                   )}
                   <UserMessage
+                    readOnly={peers?.loaded === false || !!peers?.subagents?.[sessionId]}
                     item={row.item}
                     projectId={projectId ?? session?.projectId ?? null}
                     onFile={onFile}
@@ -468,7 +454,7 @@ function Transcript({
         {approvalElement ? cloneElement(approvalElement, { approvals: approvalElement.props.approvals.filter(({ approval }) => !matchedRequests.has(approval.requestId) && !confirmedRequestIds.has(approval.requestId)) }) : requests}
       </Thread>
       </PeerTaskCardScope>
-    </AssistantRuntimeProvider>
+    </TranscriptRuntime>
   );
 }
 
@@ -490,6 +476,7 @@ function dateLabel(at: number) {
   return `${date.toDateString() === new Date().toDateString() ? "Today" : date.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`;
 }
 function UserMessage({
+  readOnly = false,
   item,
   projectId,
   onFile,
@@ -500,6 +487,7 @@ function UserMessage({
   onEdit,
   onSelectSession,
 }: {
+  readOnly?: boolean;
   item: ChatItem;
   projectId: string | null;
   onFile: (path: string) => void;
@@ -558,7 +546,7 @@ function UserMessage({
           </time>
         )}
         <CopyButton text={text} />
-        {!source && (
+        {!source && !readOnly && (
           <MessageAction
             tooltip={
               busy ? "Wait for the current turn to finish" : "Edit message"

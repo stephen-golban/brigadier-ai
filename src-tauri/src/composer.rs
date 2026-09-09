@@ -312,6 +312,11 @@ pub(crate) fn owner_instructions(id: &str) -> Result<Vec<String>, AppError> {
 }
 
 pub(crate) fn has_pending(id: &str) -> bool {
+    // Migrated direct-user queues never dispatch into internal executions and must not
+    // indefinitely block their completion wake or retirement. Their receipts stay on disk.
+    if crate::peers::snapshot().is_ok_and(|data| data.subagents.contains_key(id)) {
+        return false;
+    }
     SERVICE.get().is_some()
         && read(id)
             .map(|s| {
@@ -331,6 +336,7 @@ pub(crate) fn require_running(id: &str) -> Result<(), AppError> {
     Ok(())
 }
 async fn validate(state: &AppState, id: &str, text: &str, ids: &[String]) -> Result<(), AppError> {
+    crate::peers::require_conversation(id)?;
     if let Some(project) = id.strip_prefix("project:") {
         crate::navigation::require_available(
             &state.get()?.data_dir,
@@ -638,9 +644,6 @@ pub(crate) async fn steer_queued_turn(
         }
         Ok(())
     })?;
-    if let Ok(turn) = result {
-        crate::peers::owner_intervention(&session_id, &request_id, &item.text, &turn)?;
-    }
     read(&session_id)
 }
 
@@ -732,12 +735,40 @@ pub(crate) async fn resume_conversation_queue(
         continue_state(s, (settings.mode == "custom").then_some(settings.execution))
     })
 }
+/// Orchestrator-only recovery; the caller holds LIFECYCLE and validates ownership/settings.
+/// Old direct-user drafts and queued messages remain inspectable but never replay in a worker.
+pub(crate) async fn resume_subagent_locked(
+    state: &AppState,
+    session: &str,
+    expected_revision: u64,
+) -> Result<(), AppError> {
+    crate::session_archive::require_active(&state.get()?.data_dir, session)?;
+    let revision=read(session)?.revision;
+    if revision!=expected_revision{return Err(AppError::invalid_argument("Worker state changed after approval; inspect the current Stop state"));}
+    let id = SessionId::new(session);
+    if !state.get()?.supervisor.is_live(&id) {
+        state
+            .get()?
+            .supervisor
+            .resume_session_with_env(&id, crate::peers::resume_env(session)?)
+            .await?;
+    }
+    change(session, |s| {
+        if s.revision!=revision{return Err(AppError::invalid_argument("Worker state changed during resume; Stop remains authoritative"));}
+        s.stopped = false;
+        s.stopping = false;
+        s.paused = true;
+        Ok(())
+    })?;
+    Ok(())
+}
+
 /// Call only with LIFECYCLE held, so no child can be created after intent is recorded.
 pub(crate) async fn stop_locked(
     state: &AppState,
     session: &str,
 ) -> Result<ComposerState, AppError> {
-    let origins = crate::peers::snapshot()?.origins;
+    let origins = crate::peers::snapshot()?.subagents;
     let ids = crate::cleanup::descendants([session.to_owned()].into(), &origins);
     for id in &ids {
         change(id, |s| {
@@ -749,6 +780,7 @@ pub(crate) async fn stop_locked(
         crate::peers::cancel_pending(id)?;
     }
     let mut error = None;
+    crate::peers::stop_assignments(&ids)?;
     for id in &ids {
         let id = SessionId::new(id);
         if state.get()?.supervisor.is_live(&id) {
@@ -777,7 +809,7 @@ pub(crate) async fn stop_conversation_task(
     // after dispatch settles, rescan ownership to include a child that was being created.
     let ids = crate::cleanup::descendants(
         [session_id.clone()].into(),
-        &crate::peers::snapshot()?.origins,
+        &crate::peers::snapshot()?.subagents,
     );
     for id in &ids {
         change(id, |s| {
@@ -788,6 +820,7 @@ pub(crate) async fn stop_conversation_task(
         })?;
         crate::peers::cancel_pending(id)?;
     }
+    crate::peers::stop_assignments(&ids)?;
     for id in &ids {
         let id = SessionId::new(id);
         if state.get()?.supervisor.is_live(&id) {
@@ -807,6 +840,9 @@ async fn drain_one(app: &tauri::AppHandle, id: &str) -> Result<(), AppError> {
             .iter()
             .any(|q| matches!(q.status.as_str(), "sending" | "unknown" | "failed"))
     {
+        return Ok(());
+    }
+    if crate::peers::require_conversation(id).is_err() {
         return Ok(());
     }
     let Some(item) = current.queue.iter().find(|q| q.status == "queued").cloned() else {
@@ -899,9 +935,6 @@ async fn drain_one(app: &tauri::AppHandle, id: &str) -> Result<(), AppError> {
         }
         Ok(())
     })?;
-    if let Ok(turn) = result {
-        crate::peers::owner_intervention(id, &item.id, &item.text, &turn.turn_id)?;
-    }
     Ok(())
 }
 async fn command_catalog(state: &AppState, session_id: &str) -> Result<Vec<Value>, AppError> {

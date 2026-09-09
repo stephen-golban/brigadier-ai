@@ -26,6 +26,7 @@ pub mod batcher;
 pub mod error;
 mod fork;
 pub mod loop_;
+pub mod orchestration;
 pub mod removal;
 pub mod replay;
 pub mod sink;
@@ -846,6 +847,29 @@ impl Supervisor {
                 base: None,
                 inherit: false,
                 source: Some(source),
+                new_branch: None,
+                owner: false,
+            }),
+        )
+        .await
+    }
+
+    /// Start an isolated peer at a previously captured immutable baseline.
+    pub async fn start_peer_session_at(
+        &self,
+        project_id: &str,
+        kind: &DriverKind,
+        req: StartSession,
+        baseline: String,
+    ) -> Result<SessionId, SupervisorError> {
+        self.start_project_session_prepared(
+            project_id,
+            kind,
+            req,
+            Some(SpawnIn::FreshWorktree {
+                base: Some(baseline),
+                inherit: false,
+                source: None,
                 new_branch: None,
                 owner: false,
             }),

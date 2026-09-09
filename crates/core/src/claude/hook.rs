@@ -1407,12 +1407,24 @@ impl HookPolicy for PeerTools {
         if matches!(
             tool_name,
             Some(
-                "mcp__brigadier__list_sessions"
+                "mcp__brigadier__list_providers"
+                    | "mcp__brigadier__task_checkpoint"
+                    | "mcp__brigadier__list_sessions"
                     | "mcp__brigadier__list_projects"
                     | "mcp__brigadier__read_session"
                     | "mcp__brigadier__wait_sessions"
                     | "mcp__brigadier__create_session"
+                    | "mcp__brigadier__delegate_task"
+                    | "mcp__brigadier__redirect_subagent"
+                    | "mcp__brigadier__reassign_subagent"
+                    | "mcp__brigadier__assignment_result"
+                    | "mcp__brigadier__request_allowance"
+                    | "mcp__brigadier__resume_subagent"
+                    | "mcp__brigadier__list_subagents"
                     | "mcp__brigadier__send_message"
+                    | "mcp__brigadier__request_owner"
+                    | "mcp__brigadier__kill_session"
+                    | "mcp__brigadier__archive_session"
                     | "mcp__brigadier__read_inbox"
                     | "mcp__brigadier__stop_session"
                     | "mcp__brigadier__close_session"
@@ -1427,5 +1439,18 @@ impl HookPolicy for PeerTools {
         } else {
             self.0.pre_tool_use(tool_name, input)
         }
+    }
+}
+
+#[cfg(test)]
+mod peer_tool_tests {
+    use super::*;
+    #[test]
+    fn app_coordination_discovery_does_not_ask_for_a_second_permission(){
+        let policy=PeerTools(std::sync::Arc::new(ReadOnlyWall));
+        for name in ["mcp__brigadier__list_providers","mcp__brigadier__task_checkpoint"] {
+            assert_eq!(policy.pre_tool_use(Some(name),&json!({})).hook_specific_output.unwrap()["permissionDecision"],"allow");
+        }
+        assert_ne!(policy.pre_tool_use(Some("mcp__outside__write"),&json!({})).hook_specific_output.unwrap_or_default()["permissionDecision"],"allow");
     }
 }

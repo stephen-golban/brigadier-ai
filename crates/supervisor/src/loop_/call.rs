@@ -174,6 +174,7 @@ pub struct SupervisedCall {
     kind: DriverKind,
     project_root: PathBuf,
     stop: Arc<AtomicBool>,
+    policy: Option<(crate::orchestration::Policy, String)>,
 }
 
 impl SupervisedCall {
@@ -185,11 +186,17 @@ impl SupervisedCall {
             kind,
             project_root,
             stop: Arc::new(AtomicBool::new(false)),
+            policy: None,
         }
     }
 }
 
 impl SupervisedCall {
+    /// Apply the same worker policy and durable task allowance as conversational delegation.
+    pub fn with_policy(mut self, policy: crate::orchestration::Policy, task: String) -> Self {
+        self.policy = Some((policy, task));
+        self
+    }
     /// Share root cancellation with all owned calls.
     pub fn with_stop(mut self, stop: Arc<AtomicBool>) -> Self {
         self.stop = stop;
@@ -209,7 +216,7 @@ impl ModelCall for SupervisedCall {
 }
 
 impl SupervisedCall {
-    async fn run(&self, req: CallRequest) -> Result<CallOutcome, LoopError> {
+    async fn run(&self, mut req: CallRequest) -> Result<CallOutcome, LoopError> {
         // Two axes, not one: the mode says how much the owner wants gated, and the scope says
         // what a mistake would cost. A worker's worktree can be thrown away; the project root
         // cannot. `docs/research/permission-modes.md` §4.
@@ -222,6 +229,85 @@ impl SupervisedCall {
             ),
         };
 
+        if let Some((policy, task)) = &self.policy {
+            if self.stop.load(Ordering::Acquire) {
+                return Ok(CallOutcome {
+                    session_id: None,
+                    text: String::new(),
+                    end: CallEnd::Aborted,
+                    parked: false,
+                });
+            }
+            let path = self.sup.data_dir().join("routing-journal.json");
+            let worker = matches!(
+                req.label,
+                "worker"
+                    | "fixer"
+                    | "reviewer"
+                    | "ordinary-repair"
+                    | "repair-alternative-a"
+                    | "repair-alternative-b"
+            );
+            if let Err(error) = crate::orchestration::discover(&self.sup).await {
+                tracing::debug!(%error,"Worker discovery incomplete");
+            }
+            let journal = crate::orchestration::journal(&path)?;
+            let builder_provider = journal
+                .calls
+                .iter()
+                .rev()
+                .filter(|c| c.task == *task)
+                .filter_map(|c| c.selection.as_ref())
+                .find(|s| s.workload == "implementation")
+                .map(|s| s.provider.clone());
+            let selection = if worker {
+                let proposal = crate::orchestration::Proposal {
+                    minimum_quality: None,
+                    context_tokens: 0,
+                    needs_images: false,
+                    provider: req.provider.as_ref().map(ToString::to_string),
+                    model: req.model.clone(),
+                    effort: req.effort.clone(),
+                    pinned: false,
+                    workload: if req.label == "reviewer" {
+                        "review"
+                    } else {
+                        "implementation"
+                    }
+                    .into(),
+                    reason: format!("Automatic workflow {}", req.label),
+                    avoid_provider: (req.label == "reviewer")
+                        .then_some(builder_provider)
+                        .flatten(),
+                };
+                let s = crate::orchestration::select(
+                    policy,
+                    &crate::orchestration::candidates(&self.sup),
+                    &proposal,
+                    &journal.evidence,
+                    |p| brigadier_core::allowance::blocked_provider(p).is_some(),
+                    crate::orchestration::now(),
+                )
+                .map_err(|e| LoopError::Io(std::io::Error::other(e)))?;
+                req.provider = Some(DriverKind::new(&s.provider));
+                req.model = Some(s.model.clone());
+                req.effort = s.effort.clone();
+                req.thinking = ThinkingPolicy::Inherit;
+                Some(s)
+            } else {
+                None
+            };
+            crate::orchestration::reserve(
+                &path,
+                crate::orchestration::DispatchRecord {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    task: task.clone(),
+                    cwd: dir.to_string_lossy().into(),
+                    selection,
+                },
+                policy.max_dispatches,
+            )?;
+        }
         let provider = req.provider.as_ref().unwrap_or(&self.kind);
         while let Some(waiting) = brigadier_core::allowance::blocked_provider(provider.as_str()) {
             if self.stop.load(Ordering::Acquire) {

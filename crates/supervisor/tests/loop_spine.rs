@@ -126,6 +126,7 @@ impl Rig {
     async fn run_with(&self, fake: Arc<Fake>, barrier: Barrier, limits: Limits) -> Run {
         self.sup
             .prepare_run(RunSpec {
+                orchestration: Default::default(),
                 project_id: self.project_id.clone(),
                 goal: "ship the thing".to_owned(),
                 model: None,
@@ -152,6 +153,7 @@ impl Rig {
     async fn run_picking(&self, fake: Arc<Fake>, model: Option<&str>) -> Run {
         self.sup
             .prepare_run(RunSpec {
+                orchestration: Default::default(),
                 project_id: self.project_id.clone(),
                 goal: "ship the thing".to_owned(),
                 model: model.map(str::to_owned),
@@ -172,6 +174,7 @@ impl Rig {
     async fn restart(&self, fake: Arc<Fake>, plan_id: &str, barrier: Barrier) -> Run {
         self.sup
             .prepare_run(RunSpec {
+                orchestration: Default::default(),
                 project_id: self.project_id.clone(),
                 goal: "ship the thing".to_owned(),
                 model: None,
@@ -856,13 +859,53 @@ async fn a_workers_claim_of_done_does_not_survive_a_red_gate() {
         "rung 1 runs once; rung 2 does not exist"
     );
     assert_eq!(fake.count("worker"), 1);
-    assert_eq!(fake.count("repair-alternative-a"), 1);
-    assert_eq!(fake.count("repair-alternative-b"), 1);
+    assert_eq!(fake.count("repair-alternative-a"), 0);
+    assert_eq!(fake.count("repair-alternative-b"), 0);
     assert_eq!(
         fake.total(),
-        6,
-        "one fixer then at most two isolated alternatives"
+        4,
+        "one fixer then pause before unauthorized competing calls"
     );
+    // Reopening the saved approval continues at the competing step, without replaying ordinary repair.
+    let proposal_path = rig
+        .dir
+        .path()
+        .join("runs")
+        .join(run.plan_id())
+        .join(format!("competing-{}.json", first.id));
+    let mut proposal: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&proposal_path).unwrap()).unwrap();
+    assert!(proposal["requestId"].as_str().is_some());
+    assert_eq!(proposal["approved"], serde_json::Value::Null);
+    proposal["approved"] = serde_json::json!(true);
+    std::fs::write(&proposal_path, serde_json::to_vec(&proposal).unwrap()).unwrap();
+    rig.store
+        .handle()
+        .phase_settled(
+            first.id.clone(),
+            PhaseState::Running,
+            Some(3),
+            Some("Competing proposal approved; continue explicitly".into()),
+            None,
+            std::time::SystemTime::now(),
+        )
+        .await
+        .unwrap();
+    let mut resumed = rig
+        .restart(
+            Arc::clone(&fake),
+            run.plan_id(),
+            resolved(ReconcileOutcome::clean()),
+        )
+        .await;
+    assert!(matches!(resumed.tick().await, Tick::Blocked(_)));
+    assert_eq!(
+        fake.count("fixer"),
+        1,
+        "approval continuation cannot spend ordinary repair again"
+    );
+    assert_eq!(fake.count("repair-alternative-a"), 1);
+    assert_eq!(fake.count("repair-alternative-b"), 1);
 }
 
 /// Rung 1 works **in the integration worktree**, so a fix re-gates in place with nothing to
@@ -1129,6 +1172,7 @@ async fn stopping_a_run_dispatches_nothing_further() {
     let handle = rig
         .sup
         .start_run(RunSpec {
+            orchestration: Default::default(),
             project_id: rig.project_id.clone(),
             goal: "ship it".to_owned(),
             model: None,
@@ -1760,7 +1804,16 @@ async fn failed_ordinary_fix_selects_one_fully_verified_isolated_alternative() {
         .say("reviewer", "All acceptance checks inspected")
         .say("review-judge", r#"{"accepted":true,"findings":[]}"#)
         .say("repair-judge", r#"{"winner":0,"reason":"A passes the full command and independent criteria review; B fails"}"#);
-    let mut run = rig.run(Arc::clone(&fake)).await;
+    let mut spec = RunSpec::new(
+        &rig.project_id,
+        "ship the thing",
+        DriverKind::new("claude-code"),
+        resolved(ReconcileOutcome::clean()),
+    )
+    .with_permission_mode(PermissionMode::BypassPermissions);
+    spec.call = Some(fake.clone());
+    spec.gate = Some(rig.gate().await);
+    let mut run = rig.sup.prepare_run(spec).await.unwrap();
     assert_eq!(run.tick().await, Tick::Continue);
     assert_eq!(run.tick().await, Tick::Continue);
     assert_eq!(run.tick().await, Tick::Continue);

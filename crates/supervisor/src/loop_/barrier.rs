@@ -187,7 +187,10 @@ mod tests {
     async fn a_sender_dropped_without_publishing_is_a_failure_not_a_timeout() {
         let (tx, mut rx) = barrier();
         drop(tx);
-        assert_eq!(rx.wait(Duration::from_secs(30)).await, BarrierWait::SenderDropped);
+        assert_eq!(
+            rx.wait(Duration::from_secs(30)).await,
+            BarrierWait::SenderDropped
+        );
     }
 
     #[tokio::test]
@@ -205,7 +208,10 @@ mod tests {
         let task = tokio::spawn(async move { rx.wait(Duration::from_secs(5)).await });
         tokio::time::sleep(Duration::from_millis(10)).await;
         tx.publish(ReconcileOutcome::clean());
-        assert_eq!(task.await.expect("join"), BarrierWait::Ready(ReconcileOutcome::clean()));
+        assert_eq!(
+            task.await.expect("join"),
+            BarrierWait::Ready(ReconcileOutcome::clean())
+        );
     }
 
     #[tokio::test]

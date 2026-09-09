@@ -1308,6 +1308,8 @@ async fn live_pong() {
 
     let mut saw_started = false;
     let mut saw_completed = false;
+    let mut text_items = std::collections::HashMap::new();
+    let mut completed_text = std::collections::HashSet::new();
     while let Ok(Some(envelope)) =
         tokio::time::timeout(Duration::from_secs(120), handle.events.recv()).await
     {
@@ -1332,11 +1334,17 @@ async fn live_pong() {
                 saw_completed = true;
                 break;
             }
+            Event::ItemStarted {item_id,kind:ItemKind::AssistantText,..} => { text_items.entry(item_id.to_string()).or_insert(String::new()); }
+            Event::ContentDelta {item_id,text} => { if let Some(body)=text_items.get_mut(item_id.as_str()) {body.push_str(&text);} }
+            Event::ItemCompleted {item_id,kind:ItemKind::AssistantText,summary,..} => { completed_text.insert(item_id.to_string()); text_items.insert(item_id.to_string(), envelope.body.unwrap_or(summary)); }
             other => eprintln!("{}", label(&other)),
         }
     }
     assert!(saw_started, "a SessionStarted must arrive");
     assert!(saw_completed, "a TurnCompleted must arrive");
+    assert_eq!(text_items.len(),1,"one reply projects to one stable text item: {text_items:?}");
+    assert_eq!(completed_text.len(),1);
+    assert_eq!(text_items.values().next().unwrap().trim(),"pong");
     handle.commands.kill().await.expect("kill");
 }
 
@@ -2049,4 +2057,47 @@ async fn fresh_execution_never_reuses_an_old_approval_identity() {
         .unwrap();
     rig.feed_rest().await;
     rig.labels_until(is_turn_end).await;
+}
+
+#[tokio::test]
+async fn split_completion_after_thinking_reuses_stream_id_and_replays_once() {
+    let mut rig = Rig::start("s1-handshake-and-turn.ndjson", 64).await;
+    rig.feed_raw(r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg-main"}}}"#).await;
+    rig.feed_raw(r#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}}"#).await;
+    let thinking = match rig.next_event().await { Event::ItemStarted {item_id,..}=>item_id,e=>panic!("{e:?}") };
+    rig.feed_raw(r#"{"type":"assistant","uuid":"thinking","message":{"id":"msg-main","role":"assistant","content":[{"type":"thinking","thinking":"reason","signature":"s"}]}}"#).await;
+    assert!(matches!(rig.next_event().await,Event::ItemStarted {item_id,..} if item_id==thinking));
+    assert!(matches!(rig.next_event().await,Event::ItemCompleted {item_id,..} if item_id==thinking));
+    rig.feed_raw(r#"{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"text"}}}"#).await;
+    let text = match rig.next_event().await { Event::ItemStarted {item_id,..}=>item_id,e=>panic!("{e:?}") };
+    let delta=r#"{"type":"stream_event","uuid":"delta-1","event":{"type":"content_block_delta","index":1,"delta":{"text":"ha"}}}"#;
+    rig.feed_raw(delta).await;
+    assert!(matches!(rig.next_event().await,Event::ContentDelta {item_id,text:t} if item_id==text && t=="ha"));
+    rig.feed_raw(delta).await; // same frame does not append twice
+    rig.feed_raw(r#"{"type":"stream_event","uuid":"delta-2","event":{"type":"content_block_delta","index":1,"delta":{"text":"ha"}}}"#).await;
+    assert!(matches!(rig.next_event().await,Event::ContentDelta {text:t,..} if t=="ha"));
+    let completed=r#"{"type":"assistant","uuid":"text-final","message":{"id":"msg-main","role":"assistant","content":[{"type":"text","text":"haha"}]}}"#;
+    rig.feed_raw(completed).await;
+    assert!(matches!(rig.next_event().await,Event::ItemStarted {item_id,..} if item_id==text));
+    assert!(matches!(rig.next_event().await,Event::ItemCompleted {item_id,..} if item_id==text));
+    rig.feed_raw(completed).await; // replay must not consume another block or emit a fresh ID
+    rig.feed_raw(r#"{"type":"assistant","uuid":"legitimate-repeat","message":{"id":"msg-next","role":"assistant","content":[{"type":"text","text":"haha"}]}}"#).await;
+    assert!(matches!(rig.next_event().await,Event::ItemStarted {item_id,..} if item_id!=text));
+    assert!(matches!(rig.next_event().await,Event::ItemCompleted {summary,..} if summary=="haha"));
+}
+
+#[tokio::test]
+async fn interleaved_nested_streams_do_not_steal_parent_blocks() {
+    let mut rig = Rig::start("s1-handshake-and-turn.ndjson", 64).await;
+    let mut ids=Vec::new();
+    for (parent,message) in [(serde_json::Value::Null,"main"),(serde_json::json!("worker-tool"),"child")] {
+        rig.feed_raw(&serde_json::json!({"type":"stream_event","parent_tool_use_id":parent,"event":{"type":"message_start","message":{"id":message}}}).to_string()).await;
+        rig.feed_raw(&serde_json::json!({"type":"stream_event","parent_tool_use_id":parent,"event":{"type":"content_block_start","index":1,"content_block":{"type":"text"}}}).to_string()).await;
+        ids.push(match rig.next_event().await {Event::ItemStarted {item_id,..}=>item_id,e=>panic!("{e:?}")});
+    }
+    for (index,parent,message) in [(1,serde_json::json!("worker-tool"),"child"),(0,serde_json::Value::Null,"main")] {
+        rig.feed_raw(&serde_json::json!({"type":"assistant","uuid":message,"parent_tool_use_id":parent,"message":{"id":message,"role":"assistant","content":[{"type":"text","text":"same"}]}}).to_string()).await;
+        assert!(matches!(rig.next_event().await,Event::ItemStarted {item_id,..} if item_id==ids[index]));
+        assert!(matches!(rig.next_event().await,Event::ItemCompleted {item_id,..} if item_id==ids[index]));
+    }
 }

@@ -26,3 +26,6 @@
 .subagents-panel .aui-thread-content { padding:18px; }
 @media(min-width:1100px) { .workbench-body:not(.has-workspace) .conversation-surface:has(.thread-context-wrap[open]) > .conversation { padding-right:292px; } }
 @media(max-width:800px) { .thread-context-wrap { top:6px; right:10px; } .thread-context { width:250px; } }
+.worker-summary { display:flex; align-items:center; justify-content:space-between; flex:1; gap:12px; min-width:0; font-size:12px; color:var(--color-text-secondary); }
+.subagents-list > .worker-summary { padding:0 12px 12px; }
+.subagent-row [data-slot=agent-status] { max-width:40%; flex-shrink:0; font-size:11px; text-align:right; }

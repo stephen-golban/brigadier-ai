@@ -524,3 +524,63 @@ mod budget_tests {
         assert!(claim_at(&path, false).is_err());
     }
 }
+
+/// An exact candidate baseline is reviewable before any competing implementation starts.
+pub(super) fn competing_approved(
+    run: &Run,
+    phase: &PhaseRow,
+    baseline: &str,
+) -> Result<bool, LoopError> {
+    if run.permission_mode == brigadier_core::driver::PermissionMode::BypassPermissions {
+        return Ok(true);
+    }
+    let path = run
+        .sup
+        .data_dir()
+        .join("runs")
+        .join(&run.plan_id)
+        .join(format!("competing-{}.json", phase.id));
+    let prior = std::fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok());
+    if prior.as_ref().is_some_and(|v| {
+        v["baseline"] == baseline
+            && v["criteria"] == phase.definition_of_done
+            && v["verifyCommand"] == serde_json::json!(phase.verify_command)
+            && v["approved"] == true
+    }) {
+        return Ok(true);
+    }
+    if prior.as_ref().is_none_or(|v| {
+        v["baseline"] != baseline
+            || v["criteria"] != phase.definition_of_done
+            || v["verifyCommand"] != serde_json::json!(phase.verify_command)
+            || v["requestId"].as_str().is_none()
+    }) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path,serde_json::to_vec(&serde_json::json!({"requestId":uuid::Uuid::new_v4().to_string(),"baseline":baseline,"phase":phase.id,"criteria":phase.definition_of_done,"verifyCommand":phase.verify_command,"approved":null})).map_err(std::io::Error::other)?)?;
+    }
+    Ok(false)
+}
+
+pub(super) fn pending_competition(
+    run: &Run,
+    phase: &PhaseRow,
+) -> Result<Option<String>, LoopError> {
+    let path = run
+        .sup
+        .data_dir()
+        .join("runs")
+        .join(&run.plan_id)
+        .join(format!("competing-{}.json", phase.id));
+    match std::fs::read(path) {
+        Ok(b) => {
+            let v: serde_json::Value = serde_json::from_slice(&b).map_err(std::io::Error::other)?;
+            Ok(v["baseline"].as_str().map(str::to_owned))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}

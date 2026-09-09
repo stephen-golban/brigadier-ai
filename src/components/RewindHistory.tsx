@@ -1,3 +1,4 @@
+import { CheckpointHistory } from './assistant-ui/elements/checkpoint-history';
 import { Button } from "./controls/button";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -53,34 +54,7 @@ export function RewindHistory({
       {history?.records.length === 0 && (
         <p>No edited history in this session.</p>
       )}
-      {history?.records.map((r) => (
-        <section key={r.id}>
-          <Button
-            className="act"
-            aria-expanded={selected === r.id}
-            onClick={() => setSelected(selected === r.id ? null : r.id)}
-          >
-            {new Date(r.createdAt).toLocaleString()} ·{" "}
-            {r.state === "pending"
-              ? "Needs reconciliation"
-              : r.state === "applied"
-                ? "Rewound"
-                : "Refused"}
-          </Button>
-          {selected === r.id && (
-            <>
-              <small>Recovery ID: {r.id}</small>
-              {r.state === "pending" && (
-                <p>
-                  The native outcome is unconfirmed. Sending and resuming are
-                  paused to protect this history.
-                </p>
-              )}
-              <Archive key={r.id} sessionId={sessionId} rewindId={r.id} />
-            </>
-          )}
-        </section>
-      ))}
+      {history && <CheckpointHistory selectedId={selected} onSelect={id=>setSelected(selected===id?null:id)} checkpoints={history.records.map(r=>({id:r.id,label:r.state==='pending'?'Needs reconciliation':r.state==='applied'?'Rewound':'Refused',at:new Date(r.createdAt).toLocaleString(),detail:<><small>Recovery ID: {r.id}</small>{r.state==='pending'&&<p>The native outcome is unconfirmed. Sending and resuming are paused to protect this history.</p>}<Archive key={r.id} sessionId={sessionId} rewindId={r.id}/></>}))}/>}
       {history?.workspaceOperations?.map((op) => (
         <section key={op.id}>
           <small>Workspace recovery: {op.id}</small>

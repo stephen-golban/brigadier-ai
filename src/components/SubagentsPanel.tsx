@@ -1,18 +1,21 @@
+import { SubagentList } from './assistant-ui/elements/subagent-list';
+import { BackgroundInbox } from './assistant-ui/elements/background-inbox';
+import { AgentHandoff } from './assistant-ui/elements/agent-handoff';
+import { WorkerSummary } from './WorkerSummary';
+import { AgentStatus } from "./assistant-ui/elements/agent-status";
 import * as feed from "../feedStore";
-import { Approvals } from "./Approvals";
 import { ArrowLeftIcon, UsersThreeIcon } from '@phosphor-icons/react';
 import { useState, useEffect, useSyncExternalStore } from 'react';
 import type { SessionRuntime } from '../feedStore';
 import type { PeerData } from '../peerApi';
-import { workerTree } from '../workerTree';
+import { workerTree, workerPresentation } from '../workerTree';
 import { markSessionRead } from '../attention';
 import { useStoredState } from '../workbenchState';
-import { bridge } from '../bridge';
 import { errorMessage } from '../workspaceApi';
 import { providerIdentity } from './AgentsPanel';
 import { Button } from './controls/button';
 import { ThreadView } from './ThreadView';
-import { Composer } from './Composer';
+import { composerApi } from '../composerApi';
 import './thread-context.css';
 
 export function SubagentsPanel({ rootId, projectId, peers, sessions, onFile, requestedId }: {
@@ -31,6 +34,7 @@ export function SubagentsPanel({ rootId, projectId, peers, sessions, onFile, req
       markSessionRead(selected.id, selected.session.lastEventSeq);
     }
   }, [selected?.id, selected?.session?.lastEventSeq]);
+  const assignment = selected ? peers.assignments?.[selected.id] : undefined;
   const selectedProjectId = selected?.session?.projectId ?? projectId;
   const select = (id: string | null) => rootId && setSelection(old => ({...old, [rootId]: id}));
   const report = (e: unknown) => setError(errorMessage(e));
@@ -42,26 +46,34 @@ export function SubagentsPanel({ rootId, projectId, peers, sessions, onFile, req
     {error && <p role="alert" className="text-error px-3">{error}</p>}
     {selected ? <>
       <div className="worker-parent-note">From {peers.titles[selected.parent] ?? 'parent task'} · {selected.session ? providerIdentity(selected.session.instanceId).name : 'Provider unknown'} · {selected.session?.model ?? 'Model unknown'}</div>
-      <ThreadView requests={<Approvals approvals={feedState.approvals.filter(a=>a.sessionId===selected.id).map(approval=>({approval,projectId:selectedProjectId,projectName:null,elsewhere:false}))} onRespond={(id,request,decision)=>void bridge().respond(id,request,decision).catch(report)} onDismiss={feed.dismissApproval} />} sessionId={selected.id} projectId={selectedProjectId} projectName={null} peers={peers} onFile={path => onFile(path, selected.session)} onSelectSession={id => { if(rows.some(r => r.id === id)) select(id); }} />
-      {selected.session ? <div className="worker-composer"><Composer
-        key={selected.id} session={selected.session} busy={false}
-        onSend={async (id, text, attachments) => { try { await bridge().sendTurn(id, text, attachments); return true; } catch(e) { report(e); return false; } }}
-        onInterrupt={id => void bridge().interrupt(id).catch(report)}
-        onEnd={id => void bridge().endSession(id).catch(report)} onKill={id => void bridge().kill(id).catch(report)}
-        onResume={id => void bridge().resumeSession(id).catch(report)}
-        onCleanup={async (id, force) => { try { return await bridge().cleanupWorktree(id, force); } catch(e) { report(e); return null; } }}
-      /></div> : <p className="worker-parent-note">Saved conversation. Execution state is unavailable.</p>}
+      <div className="worker-parent-note"><AgentStatus {...workerPresentation(selected, feedState.approvals.some(a=>a.sessionId===selected.id&&!a.expired))}/></div>
+      {assignment?.continuedFrom && <AgentHandoff from={peers.titles[assignment.continuedFrom]??'Previous worker'} to={peers.titles[selected.id]??'Current worker'} reason={assignment.selection.reason} carried={[assignment.objective,assignment.criteria,assignment.scope]} settled={assignment.state!=='starting'}/>}
+      {assignment && <div className="worker-parent-note space-y-2">
+        <p>{assignment.objective}</p><p>Acceptance: {assignment.criteria}</p><p>Scope: {assignment.scope}</p>
+        <p>Requested: {assignment.selection.provider} / {assignment.selection.model}{assignment.selection.effort ? ` · ${assignment.selection.effort}` : ''}{assignment.selection.pinned ? ' · pinned' : ''}</p>
+        <p>{assignment.selection.reason}</p><p>Assignment: {assignment.state} · Contribution: {assignment.disposition}</p>
+        {assignment.baseline && <p>Workspace baseline: {assignment.baseline.slice(0,12)}</p>}
+        {assignment.result && <p>Result: {assignment.result}</p>}
+        {!!assignment.history?.length && <details><summary>Retained assignment history · {assignment.history.length}</summary>{assignment.history.map((h,i)=><p key={i}>{h.objective ?? h.instruction}{h.result ? ` · ${h.result}` : ''}{h.evidence ? ` · ${h.evidence}` : ''}{h.applied === false ? ' · not applied' : ''}</p>)}</details>}
+        {assignment.evidence && <p>Evidence: {assignment.evidence}</p>}
+        <BackgroundInbox runs={rows.filter(row=>row.awaitingIntegration).map(row=>({id:row.id,title:peers.titles[row.id]??'Worker result',state:'ready',summary:peers.assignments?.[row.id]?.result??undefined}))} onCollect={select}/>
+    </div>}
+      <div className="worker-parent-note">View-only activity. Send instructions and answer requests in the orchestrator conversation.</div>
+      {feedState.approvals.some(a => a.sessionId === selected.id && !a.expired) && <p role="status" className="worker-parent-note">Waiting for a response in the orchestrator conversation.</p>}
+      <ThreadView sessionId={selected.id} projectId={selectedProjectId} projectName={null} peers={peers} onFile={path => onFile(path, selected.session)} onSelectSession={id => { if(rows.some(r => r.id === id)) select(id); }} />
+      {selected.session && !selected.done && <Button onClick={() => void composerApi.stop(selected.id).catch(report)}>Stop subagent</Button>}
+      {!selected.session && <p className="worker-parent-note">Saved activity. Execution state is unavailable.</p>}
     </> : <div className="subagents-list">
+      {!!rows.length && <WorkerSummary rows={rows}/>}
       {(['Active', 'Done'] as const).map(group => {
         const members = rows.filter(row => row.done === (group === 'Done'));
         return <section key={group}><h3>{group} · {members.length}</h3>
           {!members.length && <p>{group === 'Active' ? 'No active subagents' : 'No completed subagents'}</p>}
-          {members.map(row => <Button key={row.id} className="subagent-row" style={{paddingLeft: 12 + Math.min(row.depth, 6) * 14}} onClick={() => select(row.id)}>
-            <UsersThreeIcon size={18}/><span className="subagent-name">{peers.titles[row.id] ?? `Worker ${row.id.slice(-6)}`}<small>{row.session ? providerIdentity(row.session.instanceId).name : 'Provider unknown'} · {row.session?.model ?? 'Model unknown'}{row.depth > 0 ? ` · from ${peers.titles[row.parent] ?? row.parent.slice(-6)}` : ''}</small></span>
-            <small>{row.done ? 'Done' : feedState.approvals.some(a => a.sessionId === row.id && !a.expired) ? 'Needs approval' : !row.session ? 'Unknown' : row.session.status === 'failed' ? 'Needs attention' : row.session.busy ? 'Working' : row.session.status === 'starting' ? 'Starting' : row.awaitingIntegration ? 'Awaiting integration' : 'Waiting'}</small>
-          </Button>)}
+          <SubagentList agents={members.map(row=>({id:row.id,name:peers.titles[row.id]??`Worker ${row.id.slice(-6)}`,model:`${row.session?providerIdentity(row.session.instanceId).name:'Provider unknown'} · ${row.session?.model??'Model unknown'}`,detail:peers.assignments?.[row.id]?.objective,icon:<UsersThreeIcon size={18}/>,...workerPresentation(row,feedState.approvals.some(a=>a.sessionId===row.id&&!a.expired))}))} onSelect={select}/>
+
         </section>;
       })}
+      <BackgroundInbox runs={rows.filter(row=>row.awaitingIntegration).map(row=>({id:row.id,title:peers.titles[row.id]??'Worker result',state:'ready',summary:peers.assignments?.[row.id]?.result??undefined}))} onCollect={select}/>
     </div>}
   </section>;
 }
