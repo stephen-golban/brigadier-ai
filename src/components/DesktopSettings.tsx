@@ -33,7 +33,7 @@ const pages = [
     id: "general",
     label: "General",
     icon: Settings,
-    search: "welcome music notes folder",
+    search: "welcome music notes folder awake sleep lock power",
   },
   {
     id: "profile",
@@ -83,6 +83,7 @@ function SettingsContents({ data, onData, sessions, titles, projects, origins, j
   const [error, setError] = useState("");
   const [savingName, setSavingName] = useState(false);
   const [savingMusic, setSavingMusic] = useState(false);
+  const [savingKeepAwake, setSavingKeepAwake] = useState(false);
   const back = useRef<HTMLButtonElement>(null);
   const settingsSearch = useRef<HTMLInputElement>(null);
   useLayoutEffect(() => {
@@ -246,6 +247,31 @@ function SettingsContents({ data, onData, sessions, titles, projects, origins, j
                         </Button>
                         <ResetOnboardingButton onReset={onClose} />
                       </div>
+                    </section>
+                    <section className="settings-section">
+                      <h2>Power</h2>
+                      <Checkbox
+                        role="switch"
+                        checked={data.keepAwake ?? false}
+                        disabled={!desktop || savingKeepAwake}
+                        onCheckedChange={(enabled) => {
+                          setSavingKeepAwake(true);
+                          void workbenchApi.setKeepAwake(enabled)
+                            .then((next) => {
+                              onData(next);
+                              setError("");
+                              window.dispatchEvent(new Event("workbench-data-changed"));
+                            })
+                            .catch((error) => setError(errorMessage(error)))
+                            .finally(() => setSavingKeepAwake(false));
+                        }}
+                      >
+                        Keep machine awake while working
+                      </Checkbox>
+                      <p>
+                        Prevent idle sleep and automatic screen locking while an agent
+                        is working. Normal behavior resumes when work stops. macOS only.
+                      </p>
                     </section>
                     <section className="settings-section">
                       <h2>Notes folder</h2>
