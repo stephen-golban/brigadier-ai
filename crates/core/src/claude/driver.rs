@@ -251,8 +251,14 @@ impl ProviderDriver for ClaudeDriver {
                 thinking: req.thinking,
                 env_overrides: req.env_overrides,
             };
-            self.open(spec, req.prompt, req.event_buffer, None, &req.hook_policy)
-                .await
+            self.open(
+                spec,
+                req.prompt,
+                req.event_buffer,
+                req.resumed,
+                &req.hook_policy,
+            )
+            .await
         })
     }
 

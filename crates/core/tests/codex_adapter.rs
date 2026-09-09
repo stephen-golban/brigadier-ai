@@ -72,6 +72,9 @@ for line in sys.stdin:
   note('item/completed',{'item':{'id':'answer','type':'agentMessage','text':'hello world'}})
   note('thread/tokenUsage/updated',{'tokenUsage':{'total':{'inputTokens':100,'cachedInputTokens':20,'outputTokens':5},'last':{'totalTokens':105},'modelContextWindow':1000}})
   note('turn/completed',{'turn':{'id':'native-turn','status':'completed'}});continue
+ elif m=='turn/steer':
+  if p.get('expectedTurnId')!='native-turn':out({'id':i,'error':{'code':-1,'message':'stale turn'}});continue
+  r={'turnId':'native-turn'}
  elif m=='turn/interrupt':
   out({'id':i,'result':{}});note('turn/completed',{'turn':{'id':'native-turn','status':'interrupted'}});continue
  else:out({'id':i,'error':{'code':-32601,'message':'unsupported'}});continue
@@ -1057,4 +1060,212 @@ async fn mcp_approval_preserves_scoped_policy_denial() {
         && q["result"]["action"] == "decline"
         && q["result"]["content"].is_null()));
     handle.commands.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn acknowledged_steering_keeps_active_turn_and_durable_message_id() {
+    let fixture = Fixture::new();
+    let mut req = fixture.request();
+    req.resumed = Some(Resumed {
+        session_id: "durable-task".into(),
+        start_seq: 800,
+    });
+    let mut handle = fixture.driver.start_session(req).await.unwrap();
+    assert_eq!(handle.session_id.as_str(), "durable-task");
+    assert!(event(&mut handle).await.seq > 800);
+    assert!(matches!(
+        handle
+            .commands
+            .steer_turn("too-early".into(), TurnInput::text("focus"))
+            .await,
+        Err(CommandError::NotDispatched(_))
+    ));
+    handle
+        .commands
+        .send_turn(TurnInput::text("busy"))
+        .await
+        .unwrap();
+    handle
+        .commands
+        .steer_turn("steer-identity".into(), TurnInput::text("Focus on tests"))
+        .await
+        .unwrap();
+    let log = fixture.log();
+    let start = log.iter().find(|v| v["method"] == "thread/start").unwrap();
+    assert!(start["params"]["threadId"].is_null());
+    let steer = log.iter().find(|v| v["method"] == "turn/steer").unwrap();
+    assert_eq!(steer["params"]["expectedTurnId"], "native-turn");
+    assert_eq!(steer["params"]["clientUserMessageId"], "steer-identity");
+    assert!(steer["params"]["model"].is_null());
+    assert!(steer["params"]["effort"].is_null());
+    handle.commands.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn brigadier_permission_policies_reach_native_enforcement() {
+    for (mode, approval, sandbox) in [
+        (PermissionMode::Ask, "untrusted", "read-only"),
+        (PermissionMode::Approve, "untrusted", "read-only"),
+        (PermissionMode::Full, "never", "danger-full-access"),
+    ] {
+        let fixture = Fixture::new();
+        let mut req = fixture.request();
+        req.permission_mode = mode;
+        let handle = fixture.driver.start_session(req).await.unwrap();
+        let log = fixture.log();
+        let start = log.iter().find(|v| v["method"] == "thread/start").unwrap();
+        assert_eq!(start["params"]["approvalPolicy"], approval);
+        assert_eq!(start["params"]["sandbox"], sandbox);
+        assert_eq!(start["params"]["approvalsReviewer"], "user");
+        handle.commands.kill().await.unwrap();
+    }
+}
+
+/// Opt-in live verification for the redesign: no user workspace and no tool actions.
+#[tokio::test]
+#[ignore = "live authenticated Codex; disposable steering and fresh-context verification"]
+async fn live_codex_steering_and_fresh_context() {
+    async fn finish(handle: &mut SessionHandle, turn: &TurnId) -> Result<u64, String> {
+        tokio::time::timeout(Duration::from_secs(55), async {
+            loop {
+                let envelope = handle.events.recv().await.ok_or("Provider disconnected")?;
+                match envelope.event {
+                    Event::TurnCompleted { turn_id, .. } if &turn_id == turn => {
+                        return Ok(envelope.seq)
+                    }
+                    Event::TurnAborted { reason, .. } => {
+                        return Err(format!("Turn aborted: {reason:?}"))
+                    }
+                    Event::RuntimeError {
+                        message,
+                        fatal: true,
+                    } => return Err(message),
+                    Event::RequestOpened { request_id, .. } => {
+                        let _ = handle
+                            .commands
+                            .respond(
+                                request_id,
+                                Decision::deny("Live smoke does not execute tools"),
+                            )
+                            .await;
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .map_err(|_| "Live turn exceeded 55 seconds".to_string())?
+    }
+    async fn kill_owned(handle: &mut SessionHandle) -> Result<u64, String> {
+        handle.commands.kill().await.map_err(|e| e.to_string())?;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let envelope = handle.events.recv().await.ok_or("Exit event missing")?;
+                if matches!(envelope.event, Event::SessionExited { .. }) {
+                    return Ok(envelope.seq);
+                }
+            }
+        })
+        .await
+        .map_err(|_| "Owned process did not report exit".to_string())?
+    }
+    let driver = tokio::time::timeout(
+        Duration::from_secs(25),
+        CodexDriver::probe(CodexDriverConfig::new("codex:live-composer-redesign")),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let mut request = StartSession::new(dir.path());
+    request.permission_mode = PermissionMode::Plan;
+    let mut first = driver.start_session(request).await.unwrap();
+    let durable = first.session_id.clone();
+    let native_before = match event(&mut first).await.event {
+        Event::SessionStarted {
+            provider_session_id,
+            ..
+        } => provider_session_id,
+        other => panic!("Unexpected start event: {other:?}"),
+    };
+    let steering = async {
+        let turn = first
+            .commands
+            .send_turn(TurnInput::text(
+                "Reply with exactly ORIGINAL_MARKER. Do not call tools.",
+            ))
+            .await
+            .map_err(|e| e.to_string())?;
+        first
+            .commands
+            .steer_turn(
+                TurnId::new("live-steer-redesign"),
+                TurnInput::text(
+                    "Correction: reply with exactly BRIGADIER_STEER_OK. Do not call tools.",
+                ),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        let seq = finish(&mut first, &turn).await?;
+        let output = first
+            .commands
+            .final_assistant_text(turn)
+            .await
+            .map_err(|e| e.to_string())?;
+        if !output.contains("BRIGADIER_STEER_OK") {
+            return Err(format!("Steered response omitted marker: {output}"));
+        }
+        Ok::<u64, String>(seq)
+    }
+    .await;
+    let exit_seq = kill_owned(&mut first)
+        .await
+        .expect("First owned execution exited");
+    let seq = steering.expect("Real active steering accepted and reflected in response");
+    assert!(exit_seq > seq);
+    let mut request = StartSession::new(dir.path());
+    request.permission_mode = PermissionMode::Plan;
+    request.resumed = Some(Resumed {
+        session_id: durable.clone(),
+        start_seq: exit_seq,
+    });
+    let mut second = driver.start_session(request).await.unwrap();
+    assert_eq!(second.session_id, durable);
+    let started = event(&mut second).await;
+    assert!(started.seq > exit_seq);
+    let native_after = match started.event {
+        Event::SessionStarted {
+            provider_session_id,
+            ..
+        } => provider_session_id,
+        other => panic!("Unexpected start event: {other:?}"),
+    };
+    let fresh = async {
+        let turn = second
+            .commands
+            .send_turn(TurnInput::text(
+                "Reply with exactly BRIGADIER_FRESH_OK. Do not call tools.",
+            ))
+            .await
+            .map_err(|e| e.to_string())?;
+        finish(&mut second, &turn).await?;
+        let output = second
+            .commands
+            .final_assistant_text(turn)
+            .await
+            .map_err(|e| e.to_string())?;
+        if !output.contains("BRIGADIER_FRESH_OK") {
+            return Err(format!("Fresh response omitted marker: {output}"));
+        }
+        Ok::<(), String>(())
+    }
+    .await;
+    kill_owned(&mut second)
+        .await
+        .expect("Second owned execution exited");
+    fresh.expect("Fresh provider execution returned the expected marker");
+    assert_ne!(
+        native_before, native_after,
+        "Fresh context must have a distinct native provider thread"
+    );
 }

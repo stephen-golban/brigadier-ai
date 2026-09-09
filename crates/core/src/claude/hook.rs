@@ -246,7 +246,9 @@ impl WorkerWall {
     /// leaves every path check an `ask`, which is the fail-toward-asking direction;
     /// [`WorkerWall::root`] reports it so a caller can say so out loud.
     pub fn new(worktree_root: impl AsRef<Path>) -> Self {
-        Self { root: worktree_root.as_ref().canonicalize().ok() }
+        Self {
+            root: worktree_root.as_ref().canonicalize().ok(),
+        }
     }
 
     /// The canonical worktree root, or `None` when it could not be resolved.
@@ -273,13 +275,16 @@ impl WorkerWall {
     }
 
     fn path_decision(&self, input: &Value) -> HookJsonOutput {
-        let target =
-            input.get("file_path").or_else(|| input.get("notebook_path")).and_then(Value::as_str);
+        let target = input
+            .get("file_path")
+            .or_else(|| input.get("notebook_path"))
+            .and_then(Value::as_str);
         match target {
             Some(target) if self.resolves_inside(target) => decision("allow", WALL_ALLOW_REASON),
-            Some(_) => {
-                decision("ask", "the target is outside the worker's worktree, or unresolvable")
-            }
+            Some(_) => decision(
+                "ask",
+                "the target is outside the worker's worktree, or unresolvable",
+            ),
             None => decision("ask", "the tool named no path to check"),
         }
     }
@@ -293,7 +298,10 @@ impl WorkerWall {
             .iter()
             .map(|segment| self.segment_verdict(segment))
             .max_by_key(|(rank, _)| *rank)
-            .unwrap_or((Rank::Ask, "the line ran no command the classifier could see"));
+            .unwrap_or((
+                Rank::Ask,
+                "the line ran no command the classifier could see",
+            ));
         match verdict {
             (Rank::NoOpinion, _) => HookJsonOutput::default(),
             (Rank::Allow, reason) => decision("allow", reason),
@@ -308,16 +316,25 @@ impl WorkerWall {
             return (Rank::Deny, WALL_NESTED_CLAUDE_REASON);
         }
         let Some((name, args)) = segment.command() else {
-            return (Rank::Ask, "the segment ran no command the classifier could see");
+            return (
+                Rank::Ask,
+                "the segment ran no command the classifier could see",
+            );
         };
         // Guard 1 — git told to work somewhere other than here.
         if name == "git" && args.iter().any(|a| is_git_elsewhere_flag(a)) {
-            return (Rank::Ask, "this git command names a directory outside the worktree");
+            return (
+                Rank::Ask,
+                "this git command names a directory outside the worktree",
+            );
         }
         // Guard 2 — an absolute or `~`-rooted word that does not land inside the worktree. This
         // is checked for every class, so `cat ~/.ssh/id_rsa` asks instead of falling through.
         if segment.words.iter().any(|w| self.escapes_worktree(w)) {
-            return (Rank::Ask, "a path on this line is outside the worker's worktree");
+            return (
+                Rank::Ask,
+                "a path on this line is outside the worker's worktree",
+            );
         }
 
         // The allowlist.
@@ -325,14 +342,20 @@ impl WorkerWall {
             // `cargo test`, `npm test`, `go build`: `package_manager_class` answers `Unknown`
             // ("a build or test run, contents unknown") for every non-mutating subcommand, so a
             // mutating one — `npm install`, `cargo fmt` — is `Mutate` and never reaches here.
-            return (Rank::Allow, "a build or test run inside the worker's worktree");
+            return (
+                Rank::Allow,
+                "a build or test run inside the worker's worktree",
+            );
         }
         if name == "git" {
             if let Some(sub) = git_subcommand(args) {
                 if tables::GIT_MUTATE_SUBCOMMANDS.contains(&sub)
                     && !tables::GIT_REMOTE_SUBCOMMANDS.contains(&sub)
                 {
-                    return (Rank::Allow, "a local git mutation inside the worker's worktree");
+                    return (
+                        Rank::Allow,
+                        "a local git mutation inside the worker's worktree",
+                    );
                 }
             }
         }
@@ -374,6 +397,47 @@ impl HookPolicy for WorkerWall {
     }
 }
 
+/// Brigadier policies gate unknown/external tools as well as built-in mutation tools.
+/// A provider allow-rule must not silently bypass the host authorization broker.
+#[derive(Clone, Debug)]
+struct BrigadierApproval;
+impl HookPolicy for BrigadierApproval {
+    fn pre_tool_use(&self, tool_name: Option<&str>, input: &Value) -> HookJsonOutput {
+        if nested_provider(tool_name, input) {
+            return decision("deny", WALL_NESTED_CLAUDE_REASON);
+        }
+        match tool_name {
+            Some(
+                "Read" | "Glob" | "Grep" | "WebSearch" | "WebFetch" | "TodoWrite" | "TaskList"
+                | "TaskGet",
+            ) => HookJsonOutput::default(),
+            _ => decision(
+                "ask",
+                "Brigadier must establish authorization for this action",
+            ),
+        }
+    }
+}
+
+/// Full access removes permission prompts, not the harness-owned delegation boundary.
+#[derive(Clone, Debug)]
+struct FullAccess;
+fn nested_provider(tool_name: Option<&str>, input: &Value) -> bool {
+    tool_name == Some("Bash")
+        && input["command"]
+            .as_str()
+            .is_some_and(|command| classify(command).contains(BashClass::NestedClaude))
+}
+impl HookPolicy for FullAccess {
+    fn pre_tool_use(&self, tool_name: Option<&str>, input: &Value) -> HookJsonOutput {
+        if nested_provider(tool_name, input) {
+            decision("deny", WALL_NESTED_CLAUDE_REASON)
+        } else {
+            HookJsonOutput::default()
+        }
+    }
+}
+
 /// How strict one segment's answer is. Declaration order **is** the strictness order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Rank {
@@ -391,7 +455,10 @@ enum Rank {
 fn path_candidates(word: &str) -> impl Iterator<Item = &str> {
     let rooted = |s: &str| s.starts_with('/') || s.starts_with('~');
     let whole = Some(word).filter(|w| rooted(w));
-    let after_eq = word.split_once('=').map(|(_, value)| value).filter(|v| rooted(v));
+    let after_eq = word
+        .split_once('=')
+        .map(|(_, value)| value)
+        .filter(|v| rooted(v));
     whole.into_iter().chain(after_eq)
 }
 
@@ -437,7 +504,9 @@ pub struct AcceptEditsInside {
 impl AcceptEditsInside {
     /// Pre-authorize edits below `root`, and nothing else.
     pub fn new(root: impl AsRef<Path>) -> Self {
-        Self { root: root.as_ref().canonicalize().ok() }
+        Self {
+            root: root.as_ref().canonicalize().ok(),
+        }
     }
 
     /// The canonical root, or `None` when it could not be resolved.
@@ -545,7 +614,10 @@ impl HookPolicy for ReadOnlyWall {
                         BashClass::Mutate | BashClass::Unknown => (Rank::Ask, READ_ONLY_ASK_REASON),
                     })
                     .max_by_key(|(rank, _)| *rank)
-                    .unwrap_or((Rank::Ask, "the line ran no command the classifier could see"));
+                    .unwrap_or((
+                        Rank::Ask,
+                        "the line ran no command the classifier could see",
+                    ));
                 match verdict {
                     (Rank::NoOpinion, _) => HookJsonOutput::default(),
                     (Rank::Deny, reason) => decision("deny", reason),
@@ -606,6 +678,8 @@ pub enum HookScope {
 ///
 /// | mode | [`HookScope::Interactive`] | [`HookScope::Worker`] | [`HookScope::Judgement`] |
 /// |---|---|---|---|
+/// | `ask`, `approve` | host approval gate | host approval gate | host approval gate |
+/// | `full` | no prompts, retain denials | no prompts, retain denials | [`ReadOnlyWall`] |
 /// | `default`, `manual` | [`AskGatedTools`] | [`WorkerWall`] | [`AskGatedTools`] |
 /// | `accept-edits` | [`AcceptEditsInside`] | [`WorkerWall`] | [`ReadOnlyWall`] |
 /// | `plan` | [`AllowAll`] | [`WorkerWall`] | [`ReadOnlyWall`] |
@@ -623,13 +697,20 @@ pub enum HookScope {
 pub fn policy_for(mode: &crate::driver::PermissionMode, scope: &HookScope) -> SharedHookPolicy {
     use crate::driver::PermissionMode as Mode;
     match scope {
+        HookScope::Worker { .. } if matches!(mode, Mode::Full) => Arc::new(FullAccess),
+        HookScope::Worker { .. } if matches!(mode, Mode::Ask | Mode::Approve) => {
+            Arc::new(BrigadierApproval)
+        }
         HookScope::Worker { root } => worker_wall(root),
         HookScope::Interactive { root } => match mode {
+            Mode::Full => Arc::new(FullAccess),
+            Mode::Ask | Mode::Approve => Arc::new(BrigadierApproval),
             Mode::Default | Mode::Manual => ask_gated_tools(),
             Mode::AcceptEdits => Arc::new(AcceptEditsInside::new(root)),
             _ => allow_all(),
         },
         HookScope::Judgement => match mode {
+            Mode::Ask | Mode::Approve => Arc::new(BrigadierApproval),
             Mode::Default | Mode::Manual => ask_gated_tools(),
             _ => Arc::new(ReadOnlyWall),
         },
@@ -651,7 +732,11 @@ fn git_subcommand(args: &[String]) -> Option<&str> {
         if !arg.starts_with('-') {
             return Some(arg.as_str());
         }
-        i += if tables::GIT_GLOBAL_FLAGS_WITH_ARG.contains(&arg.as_str()) { 2 } else { 1 };
+        i += if tables::GIT_GLOBAL_FLAGS_WITH_ARG.contains(&arg.as_str()) {
+            2
+        } else {
+            1
+        };
     }
     None
 }
@@ -734,6 +819,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn brigadier_policies_gate_external_tools_and_full_workers_do_not_prompt() {
+        let root = std::env::temp_dir();
+        for mode in [Mode::Ask, Mode::Approve] {
+            for scope in [
+                HookScope::Interactive { root: root.clone() },
+                HookScope::Worker { root: root.clone() },
+            ] {
+                let policy = policy_for(&mode, &scope);
+                for name in ["Bash", "Write", "mcp__mail__send", "FutureTool"] {
+                    assert_eq!(
+                        policy
+                            .pre_tool_use(Some(name), &Value::Null)
+                            .hook_specific_output
+                            .unwrap()["permissionDecision"],
+                        "ask"
+                    );
+                }
+            }
+        }
+        let full = policy_for(&Mode::Full, &HookScope::Worker { root });
+        assert!(full
+            .pre_tool_use(Some("Bash"), &json!({"command":"git push"}))
+            .hook_specific_output
+            .is_none());
+    }
+
+    #[test]
     fn allow_all_serializes_to_the_empty_object_the_cli_accepted() {
         let out = AllowAll.pre_tool_use(Some("Bash"), &serde_json::json!({"command": "echo hi"}));
         assert_eq!(serde_json::to_string(&out).expect("ser"), "{}");
@@ -757,10 +869,19 @@ mod tests {
     #[test]
     fn an_ungated_tool_and_an_unnamed_callback_both_fall_through() {
         let policy = AskGatedTools::default();
-        for name in [Some("Read"), Some("Glob"), Some("Grep"), Some("WebFetch"), Some("TodoWrite")]
-        {
+        for name in [
+            Some("Read"),
+            Some("Glob"),
+            Some("Grep"),
+            Some("WebFetch"),
+            Some("TodoWrite"),
+        ] {
             let out = policy.pre_tool_use(name, &Value::Null);
-            assert_eq!(serde_json::to_string(&out).expect("ser"), "{}", "{name:?} must not ask");
+            assert_eq!(
+                serde_json::to_string(&out).expect("ser"),
+                "{}",
+                "{name:?} must not ask"
+            );
         }
         // An absent name must not be treated as a match for anything.
         assert_eq!(
@@ -821,17 +942,26 @@ mod tests {
         );
         // A file that does not exist yet is the ordinary case for `Write`.
         assert_eq!(
-            write_to(&wall, &dir.path().join("src/new/deep.rs").display().to_string()),
+            write_to(
+                &wall,
+                &dir.path().join("src/new/deep.rs").display().to_string()
+            ),
             Some("allow".into())
         );
         // Relative paths resolve against the worktree root, which is the worker's cwd.
         assert_eq!(write_to(&wall, "src/main.rs"), Some("allow".into()));
 
         let above = dir.path().parent().expect("parent").join("escape.rs");
-        assert_eq!(write_to(&wall, &above.display().to_string()), Some("ask".into()));
+        assert_eq!(
+            write_to(&wall, &above.display().to_string()),
+            Some("ask".into())
+        );
         assert_eq!(write_to(&wall, "../escape.rs"), Some("ask".into()));
         // No path at all is a question, never an allow.
-        assert_eq!(verdict(&wall.pre_tool_use(Some("Write"), &json!({}))), Some("ask".into()));
+        assert_eq!(
+            verdict(&wall.pre_tool_use(Some("Write"), &json!({}))),
+            Some("ask".into())
+        );
         // `NotebookEdit` names its target differently.
         assert_eq!(
             verdict(&wall.pre_tool_use(
@@ -870,7 +1000,10 @@ mod tests {
     fn an_unresolvable_root_asks_for_everything_it_cannot_check() {
         let wall = WorkerWall::new("/no/such/worktree/anywhere");
         assert!(wall.root().is_none());
-        assert_eq!(write_to(&wall, "/no/such/worktree/anywhere/f.rs"), Some("ask".into()));
+        assert_eq!(
+            write_to(&wall, "/no/such/worktree/anywhere/f.rs"),
+            Some("ask".into())
+        );
     }
 
     /// The Bash table, row by row. Everything that is not on the allowlist parks.
@@ -943,10 +1076,16 @@ mod tests {
             assert_eq!(bash(&wall, command).as_deref(), Some("ask"), "{command:?}");
         }
         // An assignment that stays inside is not a reason to park.
-        let inside = format!("CARGO_TARGET_DIR={}/target cargo test", dir.path().display());
+        let inside = format!(
+            "CARGO_TARGET_DIR={}/target cargo test",
+            dir.path().display()
+        );
         assert_eq!(bash(&wall, &inside).as_deref(), Some("allow"), "{inside:?}");
         // And an assignment that names no path at all is left alone.
-        assert_eq!(bash(&wall, "RUST_LOG=debug cargo test").as_deref(), Some("allow"));
+        assert_eq!(
+            bash(&wall, "RUST_LOG=debug cargo test").as_deref(),
+            Some("allow")
+        );
     }
 
     /// A path attached to a flag with `=` begins with `-`, so the bare-word check never sees it.
@@ -979,15 +1118,25 @@ mod tests {
         // Seen, because the path is an argument.
         assert_eq!(bash(&wall, "cat /etc/passwd").as_deref(), Some("ask"));
         // Not seen, because the path is a redirection target.
-        assert_eq!(bash(&wall, "cat </etc/passwd"), None, "the documented blind spot");
+        assert_eq!(
+            bash(&wall, "cat </etc/passwd"),
+            None,
+            "the documented blind spot"
+        );
     }
 
     /// Everything that is not Bash and not a path tool falls through untouched.
     #[test]
     fn the_wall_has_no_opinion_about_tools_it_does_not_gate() {
         let (_dir, wall) = scratch();
-        for name in [Some("Read"), Some("Glob"), Some("Grep"), Some("WebFetch"), Some("Task"), None]
-        {
+        for name in [
+            Some("Read"),
+            Some("Glob"),
+            Some("Grep"),
+            Some("WebFetch"),
+            Some("Task"),
+            None,
+        ] {
             assert_eq!(
                 serde_json::to_string(&wall.pre_tool_use(name, &Value::Null)).expect("ser"),
                 "{}",
@@ -1003,7 +1152,10 @@ mod tests {
         assert!(!policy.gates(Some("Bash")));
         let out = policy.pre_tool_use(Some("Write"), &Value::Null);
         let json: Value = serde_json::to_value(&out).expect("ser");
-        assert_eq!(json["hookSpecificOutput"]["permissionDecisionReason"], "writes only");
+        assert_eq!(
+            json["hookSpecificOutput"]["permissionDecisionReason"],
+            "writes only"
+        );
     }
 
     // -------------------------------------------------------------------------------------
@@ -1035,7 +1187,9 @@ mod tests {
     #[test]
     fn every_mode_selects_its_policy_in_the_interactive_scope() {
         let dir = root();
-        let scope = HookScope::Interactive { root: dir.path().to_path_buf() };
+        let scope = HookScope::Interactive {
+            root: dir.path().to_path_buf(),
+        };
         let inside = dir.path().join("new.rs");
         let inside = inside.to_str().expect("utf-8");
 
@@ -1071,7 +1225,9 @@ mod tests {
     #[test]
     fn every_mode_leaves_a_worker_behind_the_worker_wall() {
         let dir = root();
-        let scope = HookScope::Worker { root: dir.path().to_path_buf() };
+        let scope = HookScope::Worker {
+            root: dir.path().to_path_buf(),
+        };
         let inside = dir.path().join("new.rs");
         let inside = inside.to_str().expect("utf-8");
 
@@ -1084,8 +1240,16 @@ mod tests {
         ] {
             let policy = policy_for(&mode, &scope);
             assert_eq!(write(&policy, inside).as_deref(), Some("allow"), "{mode}");
-            assert_eq!(write(&policy, "/etc/hosts").as_deref(), Some("ask"), "{mode}");
-            assert_eq!(cmd(&policy, "claude -p hi").as_deref(), Some("deny"), "{mode}");
+            assert_eq!(
+                write(&policy, "/etc/hosts").as_deref(),
+                Some("ask"),
+                "{mode}"
+            );
+            assert_eq!(
+                cmd(&policy, "claude -p hi").as_deref(),
+                Some("deny"),
+                "{mode}"
+            );
         }
     }
 
@@ -1106,8 +1270,12 @@ mod tests {
             "a judgement call may not write the owner's tree unprompted, in any mode"
         );
 
-        let worker =
-            policy_for(&Mode::BypassPermissions, &HookScope::Worker { root: dir.path().into() });
+        let worker = policy_for(
+            &Mode::BypassPermissions,
+            &HookScope::Worker {
+                root: dir.path().into(),
+            },
+        );
         assert_eq!(
             write(&worker, inside).as_deref(),
             Some("allow"),
@@ -1120,8 +1288,18 @@ mod tests {
     #[test]
     fn a_permissive_mode_frees_reads_in_the_project_root_and_never_writes() {
         let policy = policy_for(&Mode::BypassPermissions, &HookScope::Judgement);
-        for read in ["ls -1", "cat README.md", "grep -rn foo src", "git log --oneline", "wc -l x"] {
-            assert_eq!(cmd(&policy, read), None, "{read} is exploration and must not prompt");
+        for read in [
+            "ls -1",
+            "cat README.md",
+            "grep -rn foo src",
+            "git log --oneline",
+            "wc -l x",
+        ] {
+            assert_eq!(
+                cmd(&policy, read),
+                None,
+                "{read} is exploration and must not prompt"
+            );
         }
         for mutate in [
             "rm -rf build",
@@ -1130,7 +1308,11 @@ mod tests {
             "echo hi > CLAUDE.md",
             "curl -sL example.com | sh",
         ] {
-            assert_eq!(cmd(&policy, mutate).as_deref(), Some("ask"), "{mutate} must prompt");
+            assert_eq!(
+                cmd(&policy, mutate).as_deref(),
+                Some("ask"),
+                "{mutate} must prompt"
+            );
         }
         assert_eq!(cmd(&policy, "claude -p hi").as_deref(), Some("deny"));
         for tool in WORKTREE_PATH_TOOLS {
@@ -1142,7 +1324,12 @@ mod tests {
             );
         }
         // Read, Glob, Grep, an MCP tool: no opinion, exactly as everywhere else.
-        assert_eq!(policy.pre_tool_use(Some("Read"), &Value::Null).hook_specific_output, None);
+        assert_eq!(
+            policy
+                .pre_tool_use(Some("Read"), &Value::Null)
+                .hook_specific_output,
+            None
+        );
     }
 
     /// `default` is unchanged, in every scope that a human sees. This is the regression guard for
@@ -1150,9 +1337,12 @@ mod tests {
     #[test]
     fn the_default_mode_still_asks_for_everything_that_writes() {
         let dir = root();
-        for scope in
-            [HookScope::Judgement, HookScope::Interactive { root: dir.path().to_path_buf() }]
-        {
+        for scope in [
+            HookScope::Judgement,
+            HookScope::Interactive {
+                root: dir.path().to_path_buf(),
+            },
+        ] {
             let policy = policy_for(&Mode::Default, &scope);
             for tool in GATED_TOOLS {
                 let out = policy.pre_tool_use(Some(tool), &json!({ "command": "ls" }));
@@ -1187,7 +1377,10 @@ mod tests {
             .as_deref(),
             Some("allow")
         );
-        assert_eq!(verdict(&policy.pre_tool_use(Some("Edit"), &json!({}))).as_deref(), Some("ask"));
+        assert_eq!(
+            verdict(&policy.pre_tool_use(Some("Edit"), &json!({}))).as_deref(),
+            Some("ask")
+        );
     }
 }
 
@@ -1199,7 +1392,7 @@ impl HookPolicy for DenyAll {
         HookJsonOutput {
             hook_specific_output: Some(json!({
                 "hookEventName":"PreToolUse", "permissionDecision":"deny",
-                "permissionDecisionReason":"Commit message generation does not use tools"
+                "permissionDecisionReason":"This isolated judgment does not use tools"
             })),
             ..HookJsonOutput::default()
         }

@@ -969,11 +969,12 @@ export const mockBridge: Bridge = {
       .sort((a, b) => (b.started_at_ms ?? 0) - (a.started_at_ms ?? 0));
   },
 
-  async startSession({ projectId, prompt, model }: StartSessionArgs) {
+  async startSession({ projectId, prompt, model, provider, composerMode, composerPermission, options, isolated, baseBranch, workspacePath, newBranch }: StartSessionArgs) {
     if (!projects.some((p) => p.id === projectId)) {
       throw new AppError("no_such_project", `no such project: ${projectId}`);
     }
     const s = makeSession(projectId, model ?? "claude-sonnet-4-5", 12, null);
+    localStorage.setItem(`demo:task:${s.view.session_id}`, JSON.stringify({ sessionId: s.view.session_id, projectId, mode: composerMode ?? "auto", permission: composerPermission ?? "approve", execution: { provider: provider ?? "claude-code", model: s.view.model, effort: options?.effort ?? null }, isolated: isolated ?? true, baseBranch: baseBranch ?? null, workspacePath: workspacePath ?? null, newBranch: newBranch ?? null, changes: [] }));
     row(s, `user · ${prompt.slice(0, 120)}`, "user");
     appendChat(s.view.session_id,{type:"user-text"},prompt);
     appendChat(s.view.session_id,{type:"assistant-text"},"Browser preview: your message was received. Open the desktop app to run a real agent.");

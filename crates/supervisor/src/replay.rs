@@ -269,7 +269,7 @@ impl ProviderDriver for ReplayDriver {
     }
 
     fn start_session(&self, req: StartSession) -> BoxFuture<'_, Result<SessionHandle, DriverError>> {
-        let handle = self.open(req.event_buffer, None);
+        let handle = self.open(req.event_buffer, req.resumed);
         Box::pin(async move { Ok(handle) })
     }
 

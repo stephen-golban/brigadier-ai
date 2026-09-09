@@ -142,5 +142,5 @@ it("allows a connected Codex task when Claude is unavailable", async () => {
   await waitFor(() => expect(fields()[0]).toHaveAttribute("contenteditable", "true"));
   await pasteComposer(fields()[0]!, "use available provider");
   fireEvent.click(screen.getByRole("button", {name: "Send"}));
-  await waitFor(() => expect(spies.onStartSession).toHaveBeenCalledWith(expect.objectContaining({provider: "codex", prompt: "use available provider"})));
+  await waitFor(() => expect(spies.onStartSession).toHaveBeenCalledWith(expect.objectContaining({composerMode: "auto", prompt: "use available provider"})));
 });

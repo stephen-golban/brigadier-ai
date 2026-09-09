@@ -21,6 +21,7 @@ it('routes physical native file paths only to the composer under the drop point'
   await waitFor(()=>expect(native.listeners.size).toBe(2));
   await act(async()=>{for(const listener of native.listeners)listener({payload:{type:'drop',position:{x:80,y:280},paths:['/tmp/archive.bin']}});});
   await screen.findByRole('button',{name:'Remove attachment archive.bin'});
+  await waitFor(() => expect(screen.queryByLabelText('Pending attachments')).toBeNull());
   expect(native.invoke).toHaveBeenCalledExactlyOnceWith('import_conversation_attachment_path',{projectId:'project-worker',path:'/tmp/archive.bin'});
   expect(surfaces[0]).not.toHaveTextContent('archive.bin');
   expect(surfaces[1]).toHaveTextContent('archive.bin');
@@ -32,7 +33,23 @@ it('does not attach a late native import response to a newly selected conversati
   vi.spyOn(view.container.querySelector('.composer-surface')!, 'getBoundingClientRect').mockReturnValue({left:0,right:1000,top:0,bottom:1000} as DOMRect);
   await waitFor(()=>expect(native.listeners.size).toBe(1));
   await act(async()=>{for(const listener of native.listeners)listener({payload:{type:'drop',position:{x:10,y:10},paths:['/tmp/old.pdf']}});});
+  await waitFor(() => expect(native.invoke).toHaveBeenCalledTimes(1));
   view.rerender(<Input key="new" id="new"/>);
   await act(async()=>resolve({id:'old-file',projectId:'project-old',name:'old.pdf',mediaType:'application/octet-stream',size:4,createdAt:0}));
   expect(screen.queryByRole('button',{name:'Remove attachment old.pdf'})).toBeNull();
+});
+
+
+it('retains a failed native path for explicit retry through the same import command', async () => {
+  const {fireEvent} = await import('@testing-library/react');
+  native.invoke.mockRejectedValueOnce(new Error('File temporarily unavailable')).mockResolvedValue({id:'recovered',projectId:'project-worker',name:'retry.bin',mediaType:'application/octet-stream',size:4,createdAt:0});
+  const view = render(<Input id="worker" />);
+  vi.spyOn(view.container.querySelector('.composer-surface')!, 'getBoundingClientRect').mockReturnValue({left:0,right:1000,top:0,bottom:1000} as DOMRect);
+  await waitFor(() => expect(native.listeners.size).toBe(1));
+  await act(async () => {for (const listener of native.listeners) listener({payload:{type:'drop',position:{x:10,y:10},paths:['/tmp/retry.bin']}});});
+  await screen.findByText('File temporarily unavailable');
+  fireEvent.click(screen.getByRole('button',{name:'Retry attachment retry.bin'}));
+  await waitFor(() => expect(screen.queryByLabelText('Pending attachments')).toBeNull());
+  expect(native.invoke).toHaveBeenCalledTimes(2);
+  expect(native.invoke).toHaveBeenLastCalledWith('import_conversation_attachment_path',{projectId:'project-worker',path:'/tmp/retry.bin'});
 });

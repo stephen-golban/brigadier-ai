@@ -69,3 +69,44 @@ it("cancels stale mention results and inserts only after keyboard selection", as
   fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
   await waitFor(() => expect(changed).toHaveBeenLastCalledWith("@[Current](brigadier-attachment:current) "));
 });
+
+it("stages a slash command on the first Enter and submits editable arguments on the next Enter", async () => {
+  const submit = vi.fn();
+  const search = vi.fn().mockResolvedValue([{ id: "review", label: "review", kind: "command" }]);
+  const select = vi.fn().mockResolvedValue("/review ");
+  function Harness() { const [value, set] = useState(""); return <RichPromptEditor value={value} onText={set} search={search} select={select} onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); submit(value); } }} />; }
+  render(<Harness />);
+  await pasteComposer(screen.getByRole("textbox"), "/rev");
+  await screen.findByRole("option", { name: "/review" });
+  fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+  await waitFor(() => expect(screen.getByRole("textbox")).toHaveTextContent("/review"));
+  expect(submit).not.toHaveBeenCalled();
+  await pasteComposer(screen.getByRole("textbox"), "main");
+  fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+  expect(submit).toHaveBeenCalledExactlyOnceWith("/review main");
+});
+
+it("restores stable agent session references as inline chips", () => {
+  render(<RichPromptEditor value="Use @[Research](brigadier-session:session-uuid)" onText={vi.fn()} />);
+  expect(document.querySelector('[data-directive-id="session-uuid"]')).toHaveTextContent("Research");
+});
+
+it("continues filtering a file mention when its query contains path separators", async () => {
+  const search = vi.fn().mockResolvedValue([]);
+  function Harness() { const [value,set] = useState(""); return <RichPromptEditor value={value} onText={set} search={search} />; }
+  render(<Harness />);
+  await pasteComposer(screen.getByRole("textbox"), "@src/components/");
+  await waitFor(() => expect(search).toHaveBeenCalledWith("@", "src/components/"));
+});
+
+it("does not submit an unfinished slash query while command discovery is pending", async () => {
+  const submit = vi.fn(), search = vi.fn().mockImplementation(() => new Promise(() => {}));
+  function Harness() { const [value,set] = useState(""); return <RichPromptEditor value={value} onText={set} search={search} onKeyDown={submit} />; }
+  render(<Harness />);
+  await pasteComposer(screen.getByRole("textbox"), "/rev");
+  fireEvent.keyDown(screen.getByRole("textbox"),{key:"Enter"});
+  expect(submit).not.toHaveBeenCalled();
+  fireEvent.keyDown(screen.getByRole("textbox"),{key:"Escape"});
+  fireEvent.keyDown(screen.getByRole("textbox"),{key:"Enter"});
+  expect(submit).toHaveBeenCalledTimes(1);
+});

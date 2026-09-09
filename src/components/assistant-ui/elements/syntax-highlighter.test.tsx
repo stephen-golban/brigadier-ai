@@ -64,3 +64,16 @@ it("ignores late highlighting results after streamed code changes", async () => 
   await waitFor(() => expect(screen.getByText("new")).toBeVisible());
   expect(screen.queryByText("old")).not.toBeInTheDocument();
 });
+
+it("refreshes highlighted token colors after switching theme without changing the source", async () => {
+  const { act } = await import('@testing-library/react');
+  const { THEME_CHANGED_EVENT } = await import('../../../providers/ThemeProvider');
+  vi.mocked(codeToTokens).mockImplementation(async (_code,options) => ({tokens:[[{content:'const value = 1;',offset:0,color:'theme' in options && options.theme && typeof options.theme === 'object' && options.theme.type === 'light' ? '#242424' : '#e3e3e3'}]]}) as Awaited<ReturnType<typeof codeToTokens>>);
+  render(<SyntaxHighlighter code="const value = 1;" language="typescript" components={components} />);
+  await waitFor(()=>expect(codeToTokens).toHaveBeenCalledTimes(1));
+  await act(async()=>{document.documentElement.classList.add('light');window.dispatchEvent(new Event(THEME_CHANGED_EVENT));});
+  await waitFor(()=>expect(codeToTokens).toHaveBeenCalledTimes(2));
+  expect(codeToTokens).toHaveBeenLastCalledWith('const value = 1;',expect.objectContaining({theme:expect.objectContaining({type:'light'})}));
+  expect(screen.getByText('const value = 1;')).toHaveStyle({color:'#242424'});
+  document.documentElement.classList.remove('light');
+});

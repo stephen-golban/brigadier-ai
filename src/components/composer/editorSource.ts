@@ -41,12 +41,12 @@ function block(node: LexicalNode, depth = 0): string {
 }
 export function $editorSource(): string { return $getRoot().getChildren().map(node => block(node)).join("\n"); }
 
-export interface ReferenceToken { start: number; end: number; id: string; label: string; type: "attachment" | "note"; source: string }
+export interface ReferenceToken { start: number; end: number; id: string; label: string; type: "attachment" | "note" | "session"; source: string }
 export function referenceTokens(text: string): ReferenceToken[] {
-  return Array.from(text.matchAll(/@\[([^\]\n]*)\]\(brigadier-(attachment|note):([^\s)]+)\)/g), match => ({
-    start: match.index!, end: match.index! + match[0].length, label: match[1]!, type: match[2] as "attachment" | "note", id: match[3]!, source: match[0],
+  return Array.from(text.matchAll(/@\[([^\]\n]*)\]\(brigadier-(attachment|note|session):([^\s)]+)\)/g), match => ({
+    start: match.index!, end: match.index! + match[0].length, label: match[1]!, type: match[2] as "attachment" | "note" | "session", id: match[3]!, source: match[0],
   }));
 }
-export function referenceSource(label: string, id: string, type: "attachment" | "note"): string {
+export function referenceSource(label: string, id: string, type: "attachment" | "note" | "session"): string {
   return `@[${label.replace(/\]/g, "］").replace(/\n/g, " ")}](brigadier-${type}:${id})`;
 }

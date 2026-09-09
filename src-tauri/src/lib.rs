@@ -20,6 +20,9 @@
 
 #![deny(unsafe_code)]
 
+mod approval_history;
+mod approval_policy;
+mod session_references;
 #[cfg(any(debug_assertions, feature = "burn"))]
 mod burn;
 mod cleanup;
@@ -47,6 +50,8 @@ mod source_control;
 mod state;
 mod tab_menu;
 mod task_memory;
+mod task_settings;
+mod composer_workspaces;
 mod terminal;
 mod trace;
 mod tracker;
@@ -204,10 +209,16 @@ pub fn run() {
             commands::feed_tail,
             commands::chat_items,
             commands::conversation_history_page,
+            composer_workspaces::composer_workspace_options,
+            task_settings::project_composer_preferences,
+            task_settings::save_project_composer_preferences,
+            task_settings::task_execution_settings,
+            task_settings::update_task_execution_settings,
             composer::composer_state,
             composer::save_composer_draft,
             composer::enqueue_conversation_turn,
             composer::update_queued_turn,
+            composer::steer_queued_turn,
             composer::remove_queued_turn,
             composer::resume_conversation_queue,
             composer::resolve_queued_turn,
@@ -240,6 +251,7 @@ pub fn run() {
             terminal::terminal_resize,
             terminal::terminal_close,
             commands::pending_approvals,
+            approval_history::composer_approval_history,
             commands::start_run,
             commands::current_run,
             commands::stop_run,
@@ -316,6 +328,7 @@ pub fn run() {
                         if let Err(e) = composer::start(handle.clone()) {
                             tracing::error!("Conversation queue startup: {}", e.message);
                         }
+                        approval_policy::start(handle.clone());
                         if let Err(e) = cleanup::start(handle.clone()) {
                             tracing::error!("Session cleanup unavailable: {}", e.message);
                         }

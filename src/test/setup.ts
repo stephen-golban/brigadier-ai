@@ -11,6 +11,8 @@
  * `fps.readEnabled()` at module load, which is re-run by every `vi.resetModules()` import.
  */
 import "@testing-library/jest-dom/vitest";
+// Exercise the real durable upload repository in jsdom using the IndexedDB contract.
+import "fake-indexeddb/auto";
 
 localStorage.setItem("brigadier.fps", "off");
 

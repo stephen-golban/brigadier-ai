@@ -2,8 +2,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { desktop } from "./workspaceApi";
+import type { ExecutionSelection } from "./taskSettings";
 export interface ComposerDraft { text: string; attachmentIds: string[] }
 export interface QueuedTurn extends ComposerDraft {
+  execution?: ExecutionSelection | null;
   id: string;
   status: "queued" | "sending" | "sent" | "failed" | "unknown";
   turnId: string | null;
@@ -31,7 +33,8 @@ export const composerApi = {
   state: (sessionId: string): Promise<ComposerState> => desktop ? invoke("composer_state", { sessionId }) : Promise.resolve(emptyComposer(sessionId)),
   saveDraft: (sessionId: string, text: string, attachmentIds: string[]): Promise<ComposerState> => invoke("save_composer_draft", { sessionId, text, attachmentIds }),
   enqueue: (sessionId: string, requestId: string, text: string, attachmentIds: string[]): Promise<ComposerState> => invoke("enqueue_conversation_turn", { sessionId, requestId, text, attachmentIds }),
-  update: (sessionId: string, requestId: string, text: string, attachmentIds: string[]): Promise<ComposerState> => invoke("update_queued_turn", { sessionId, requestId, text, attachmentIds }),
+  update: (sessionId: string, requestId: string, text: string, attachmentIds: string[], execution?: ExecutionSelection): Promise<ComposerState> => invoke("update_queued_turn", { sessionId, requestId, text, attachmentIds, ...(execution ? { execution } : {}) }),
+  steer: (sessionId: string, requestId: string): Promise<ComposerState> => invoke("steer_queued_turn", { sessionId, requestId }),
   remove: (sessionId: string, requestId: string): Promise<ComposerState> => invoke("remove_queued_turn", { sessionId, requestId }),
   resolve: (sessionId: string, requestId: string, outcome: "delivered" | "not-delivered"): Promise<ComposerState> => invoke("resolve_queued_turn", { sessionId, requestId, outcome }),
   resume: (sessionId: string): Promise<ComposerState> => invoke("resume_conversation_queue", { sessionId }),

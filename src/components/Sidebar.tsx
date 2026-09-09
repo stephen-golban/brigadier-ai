@@ -947,6 +947,7 @@ export function Sidebar(props: SidebarProps) {
               )}
             </SidebarReveal>
           </SidebarGroup>
+          {props.dev}
         </SidebarContent>
         <SidebarFooter className="flex h-[46px] items-center gap-1 border-t border-hairline px-2 py-2">
           <Dropdown>

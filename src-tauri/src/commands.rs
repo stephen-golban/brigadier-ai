@@ -170,10 +170,50 @@ pub(crate) async fn start_session(
     base_branch: Option<String>,
     attachment_ids: Option<Vec<String>>,
     request_id: Option<String>,
+    composer_mode: Option<String>,
+    composer_permission: Option<String>,
+    new_branch: Option<String>,
+    workspace_path: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<SessionView, AppError> {
     let _creation = crate::peers::CREATION.lock().await;
-    let provider = provider.unwrap_or_else(|| CLAUDE_CODE.into());
+    let _lifecycle = crate::peers::LIFECYCLE.lock().await;
+    // Identity belongs to authored selections, never mutable automatic routing results.
+    let initial_request = serde_json::json!({"composerMode":composer_mode,"composerPermission":composer_permission,"prompt":prompt,"model":model,"permissionMode":permission_mode,"provider":provider,"effort":options.as_ref().and_then(|o|o.effort.as_deref()),"isolated":isolated,"baseBranch":base_branch,"newBranch":new_branch,"workspacePath":workspace_path,"attachmentIds":attachment_ids});
+    let mode = composer_mode.as_deref().unwrap_or("custom");
+    if !matches!(mode, "auto" | "custom") {
+        return Err(AppError::invalid_argument("Choose Auto or Custom"));
+    }
+    let policy = composer_permission.unwrap_or_else(|| {
+        match permission_mode.as_str() {
+            "auto" | "approve" => "approve",
+            "bypass-permissions" | "full" => "full",
+            _ => "ask",
+        }
+        .into()
+    });
+    let permission_mode = crate::task_settings::native_permission(&policy)?.to_string();
+    let selection = if mode == "auto" {
+        crate::task_settings::resolve_auto(state.inner(), None)?
+    } else {
+        crate::task_settings::ExecutionSelection {
+            provider: provider.unwrap_or_else(|| CLAUDE_CODE.into()),
+            model,
+            effort: options.and_then(|o| o.effort).filter(|e| e != "auto"),
+        }
+    };
+    crate::task_settings::validate_selection(state.inner(), &selection)?;
+    let provider = selection.provider;
+    let model = selection.model;
+    let options = Some(AgentOptions {
+        effort: selection.effort,
+    });
+    let isolated = if workspace_path.is_some() {
+        Some(false)
+    } else {
+        isolated
+    };
+    let remembered_branch = base_branch.clone();
     require_provider(state.inner(), &provider)?;
     if let Some(waiting) = brigadier_core::allowance::blocked_provider(&provider) {
         return Err(AppError::new(
@@ -185,8 +225,7 @@ pub(crate) async fn start_session(
         ));
     }
     if let Some(key) = request_id.as_deref() {
-        let request = serde_json::json!({"prompt":prompt,"model":model,"permissionMode":permission_mode,"provider":provider,"effort":options.as_ref().and_then(|o|o.effort.as_deref()),"isolated":isolated,"baseBranch":base_branch,"attachmentIds":attachment_ids});
-        if let Some(id) = crate::composer::begin_initial(&project_id, key, request)? {
+        if let Some(id) = crate::composer::begin_initial(&project_id, key, initial_request)? {
             return session_view(state.inner(), &SessionId::new(id)).await;
         }
     }
@@ -202,8 +241,15 @@ pub(crate) async fn start_session(
         isolated,
         base_branch,
         None,
+        Some(InitialComposer {
+            mode: mode.to_owned(),
+            permission: policy.clone(),
+            base_branch: remembered_branch,
+            new_branch,
+            workspace_path,
+        }),
         attachment_ids.unwrap_or_default(),
-        state,
+        state.clone(),
         &mut dispatch_started,
     )
     .await;
@@ -247,11 +293,20 @@ pub(crate) async fn start_session_locked(
         isolated,
         base_branch,
         peer,
+        None,
         attachment_ids,
         state,
         &mut dispatch_started,
     )
     .await
+}
+
+struct InitialComposer {
+    mode: String,
+    permission: String,
+    base_branch: Option<String>,
+    new_branch: Option<String>,
+    workspace_path: Option<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -265,6 +320,7 @@ async fn start_session_attempt(
     isolated: Option<bool>,
     base_branch: Option<String>,
     peer: Option<crate::peers::PeerStart>,
+    composer_configuration: Option<InitialComposer>,
     attachment_ids: Vec<String>,
     state: State<'_, AppState>,
     dispatch_started: &mut bool,
@@ -319,15 +375,30 @@ async fn start_session_attempt(
             "Send images with a prompt, not a slash command",
         ));
     }
+    let referenced = crate::session_references::contextualize(state.inner(), &prompt).await?;
     req.prompt = Some(crate::conversation_data::contextualize(
         state.inner(),
         &project_id,
-        &prompt,
+        &referenced,
     )?);
     req.model = model;
     // An unmodelled mode is passed through verbatim rather than rejected; the CLI owns the
     // vocabulary. see crates/core/src/driver.rs `PermissionMode`.
     req.permission_mode = PermissionMode::from(permission_mode.as_str());
+    // Brigadier's selected policy applies equally in a shared checkout and worktree.
+    // The supervisor's legacy fallback treats shared checkouts as a judgement lane.
+    if matches!(
+        req.permission_mode,
+        PermissionMode::Ask | PermissionMode::Approve | PermissionMode::Full
+    ) {
+        req.hook_policy =
+            brigadier_core::driver::HookOverride::new(brigadier_core::claude::hook::policy_for(
+                &req.permission_mode,
+                &brigadier_core::claude::hook::HookScope::Interactive {
+                    root: req.cwd.clone(),
+                },
+            ));
+    }
     if provider == CLAUDE_CODE {
         apply_agent_options(&mut req, options.as_ref())?;
     } else {
@@ -359,18 +430,59 @@ async fn start_session_attempt(
             )
             .await?
     } else {
+        let new_branch = composer_configuration
+            .as_ref()
+            .and_then(|c| c.new_branch.clone());
+        let workspace_path = composer_configuration
+            .as_ref()
+            .and_then(|c| c.workspace_path.as_deref());
+        let workspace = if isolated == Some(false) {
+            Some(
+                crate::composer_workspaces::prepare_checkout(
+                    state.inner(),
+                    &project_id,
+                    workspace_path,
+                    base_branch.as_deref(),
+                    new_branch.as_deref(),
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
         supervisor
-            .start_project_session_from(
+            .start_project_session_selected(
                 &project_id,
                 &DriverKind::new(&provider),
                 req,
                 isolated.unwrap_or(true),
                 base_branch,
+                new_branch,
+                workspace,
             )
             .await?
     };
     let result = async {
         crate::task_memory::initialize(state.inner(), session_id.as_str(), &prompt)?;
+        if let Some(InitialComposer {
+            mode,
+            permission,
+            base_branch: branch,
+            new_branch,
+            workspace_path,
+        }) = composer_configuration
+        {
+            crate::task_settings::initialize(
+                state.inner(),
+                session_id.as_str(),
+                &mode,
+                &permission,
+                branch,
+                new_branch,
+                workspace_path,
+            )
+            .await?;
+        }
         let receipt = peer
             .as_ref()
             .map(|peer| crate::peers::record_initial(peer, session_id.as_str()))
@@ -412,6 +524,7 @@ async fn start_session_attempt(
         // A failed attempt before it is safe to retry with the same logical request ID.
         let (text, attachments) = initial_input;
         let text = crate::task_memory::with_context(state.inner(), session_id.as_str(), text)?;
+        crate::composer::require_running(session_id.as_str())?;
         *dispatch_started = true;
         let result = supervisor
             .send_input(
@@ -477,13 +590,8 @@ pub(crate) async fn resume_session(
     // Same reason as `start_session`: the supervisor would answer `NoDriver` → `driver`, which
     // tells the operator nothing about a missing install.
 
-    let session_id = SessionId::new(session_id);
-    let session_id = state
-        .get()?
-        .supervisor
-        .resume_session_with_env(&session_id, crate::peers::resume_env(session_id.as_str())?)
-        .await?;
-    session_view(state.inner(), &session_id).await
+    crate::task_settings::prepare_dispatch(state.inner(), &session_id, None).await?;
+    session_view(state.inner(), &SessionId::new(session_id)).await
 }
 
 /// Branch provider history into a new, idle session and isolated Git workspace.
@@ -530,63 +638,7 @@ pub(crate) async fn send_turn(
     state: State<'_, AppState>,
 ) -> Result<TurnStarted, AppError> {
     let _lifecycle = crate::peers::LIFECYCLE.lock().await;
-    crate::session_archive::require_active(&state.get()?.data_dir, &session_id)?;
-    crate::navigation::require_available(
-        &state.get()?.data_dir,
-        crate::navigation::Kind::Session,
-        &session_id,
-    )?;
-    let id = SessionId::new(session_id);
-    let row = state
-        .get()?
-        .supervisor
-        .session(&id)
-        .await?
-        .ok_or_else(|| AppError::invalid_argument("Session no longer exists"))?;
-    let display_text = text.clone();
-    let (passive, message_ids) = crate::conversation_data::passive(id.as_str(), &text);
-    let attachment_ids = if crate::conversation_data::slash_invocation(&text) {
-        vec![]
-    } else {
-        crate::peers::passive_attachment_ids(id.as_str())?
-    };
-    let attachments = crate::conversation_data::attachments(
-        state.inner(),
-        row.project_id.as_deref().unwrap_or(""),
-        attachment_ids,
-    )
-    .await?;
-    let text = crate::conversation_data::contextualize(
-        state.inner(),
-        row.project_id.as_deref().unwrap_or(""),
-        &text,
-    )?;
-    let text = format!("{text}{passive}");
-    crate::peers::begin_passive_delivery(&message_ids)?;
-    let turn_id = state
-        .get()?
-        .supervisor
-        .send_input(
-            &id,
-            brigadier_core::session::TurnInput {
-                text,
-                display_text: Some(display_text),
-                attachments,
-                ..Default::default()
-            },
-        )
-        .await
-        .map_err(|e| {
-            let error = AppError::from(e);
-            let _ = crate::peers::fail_passive_delivery(&message_ids, &error);
-            error
-        })?;
-    if let Err(e) = crate::peers::acknowledge(&message_ids) {
-        tracing::warn!("Could not acknowledge peer messages: {}", e.message);
-    }
-    Ok(TurnStarted {
-        turn_id: turn_id.into_inner(),
-    })
+    crate::conversation_data::send_locked(state.inner(), session_id, text, vec![]).await
 }
 
 /// Answer a parked permission request.

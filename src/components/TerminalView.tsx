@@ -1,3 +1,4 @@
+import { THEME_CHANGED_EVENT } from "../providers/ThemeProvider";
 import { themeColor } from "../lib/theme";
 import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
@@ -44,30 +45,33 @@ export default function TerminalView({
     let disposed = false,
       id: string | null = null,
       timer: ReturnType<typeof setTimeout>;
+    const readTheme = () => {
+    const light = document.documentElement.classList.contains("light");
     const foreground = themeColor("text");
     const secondary = themeColor("text-secondary");
-    const terminalTheme = {
+    return {
       background: themeColor("canvas"),
       foreground,
       cursor: foreground,
       cursorAccent: themeColor("canvas"),
       selectionBackground: themeColor("selected"),
-      black: "#242424",
-      red: "#e06c75",
-      green: "#98c379",
-      yellow: "#e5c07b",
-      blue: "#61afef",
-      magenta: "#c678dd",
-      cyan: "#56b6c2",
-      white: "#dcdfe4",
+      black: light ? "#30302e" : "#242424",
+      red: light ? "#a83440" : "#e06c75",
+      green: light ? "#397128" : "#98c379",
+      yellow: light ? "#876b1d" : "#e5c07b",
+      blue: light ? "#2367a6" : "#61afef",
+      magenta: light ? "#8c429e" : "#c678dd",
+      cyan: light ? "#207879" : "#56b6c2",
+      white: light ? "#3a3a37" : "#dcdfe4",
       brightBlack: secondary,
-      brightRed: "#f08080",
-      brightGreen: "#b5d99c",
-      brightYellow: "#f5d491",
-      brightBlue: "#85c1ff",
-      brightMagenta: "#d8a1ee",
-      brightCyan: "#80d4de",
-      brightWhite: "#ffffff",
+      brightRed: light ? "#ba3f49" : "#f08080",
+      brightGreen: light ? "#4a7b32" : "#b5d99c",
+      brightYellow: light ? "#947324" : "#f5d491",
+      brightBlue: light ? "#3974ab" : "#85c1ff",
+      brightMagenta: light ? "#a052b0" : "#d8a1ee",
+      brightCyan: light ? "#32828b" : "#80d4de",
+      brightWhite: light ? "#242424" : "#ffffff",
+    };
     };
     const terminal = new Terminal({
       fontSize: 12,
@@ -75,9 +79,11 @@ export default function TerminalView({
       cursorBlink: false,
       screenReaderMode: true,
       scrollback: 3000,
-      theme: terminalTheme,
+      theme: readTheme(),
     });
     terminalRef.current = terminal;
+    const refreshTheme = () => { terminal.options.theme = readTheme(); terminal.refresh(0, terminal.rows - 1); };
+    window.addEventListener(THEME_CHANGED_EVENT, refreshTheme);
     const snapshotKey = `brigadier:terminal:${tabId}`;
     let snapshot: { output?: string; cwd?: string } = {};
     try {
@@ -193,6 +199,7 @@ export default function TerminalView({
       persist();
       clearInterval(recovery);
       window.removeEventListener("pagehide", persist);
+      window.removeEventListener(THEME_CHANGED_EVENT, refreshTheme);
       terminal.dispose();
       terminalRef.current = null;
       ready.current?.(null);

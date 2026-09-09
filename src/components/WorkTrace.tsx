@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import {
   ChevronRightIcon,
   BookOpenIcon,
@@ -35,6 +35,8 @@ import {
   type ThreadRow,
 } from "../threadProjection";
 
+const HasPendingApproval = createContext(false);
+const ActionRequests = createContext<ReadonlyMap<string, ReactNode>>(new Map());
 const SessionLinks = createContext<{
   titles: Record<string, string>;
   select?: (id: string) => void;
@@ -49,9 +51,13 @@ export function WorkTrace({
   row,
   sessionTitles = {},
   onSelectSession,
+  actionRequests = new Map(),
+  hasPendingApproval = false,
   ...props
 }: Omit<TraceProps, "running"> & {
   row: Extract<ThreadRow, { type: "work" }>;
+  hasPendingApproval?: boolean;
+  actionRequests?: ReadonlyMap<string, ReactNode>;
   sessionTitles?: Record<string, string>;
   onSelectSession?: (id: string) => void;
 }) {
@@ -65,7 +71,7 @@ export function WorkTrace({
     return () => clearInterval(timer);
   }, [row.running, row.startedAt]);
   // Only work preceding a final answer folds. An interrupted turn stays inspectable.
-  const open = !row.canCollapse || props.expanded.has(row.id);
+  const open = hasPendingApproval || !row.canCollapse || props.expanded.has(row.id);
   const elapsed =
     row.running && row.startedAt != null
       ? Math.max(0, now - row.startedAt)
@@ -105,7 +111,7 @@ export function WorkTrace({
       last.item.kind.type === "assistant-text" ||
       last.item.kind.type === "thinking");
   return (
-    <SessionLinks.Provider
+    <HasPendingApproval.Provider value={hasPendingApproval}><ActionRequests.Provider value={actionRequests}><SessionLinks.Provider
       value={{ titles: sessionTitles, select: onSelectSession }}
     >
       <Collapsible
@@ -141,12 +147,15 @@ export function WorkTrace({
       {receipts?.map(message => <PeerDeliveryReceipt key={message.id} message={message} destination={peerTaskTitle(message.to, sessionTitles)}>
         <PeerAttachmentPreviews message={message} />
       </PeerDeliveryReceipt>)}
-    </SessionLinks.Provider>
+    </SessionLinks.Provider></ActionRequests.Provider></HasPendingApproval.Provider>
   );
 }
 
 function TraceList({ nodes, ...props }: TraceProps & { nodes: TraceNode[] }) {
-  const [limit, setLimit] = useState(40);
+  const [storedLimit, setLimit] = useState(40);
+  const actionRequests = useContext(ActionRequests);
+  const pendingApproval = useContext(HasPendingApproval);
+  const limit = pendingApproval ? Number.MAX_SAFE_INTEGER : storedLimit;
   // Only adjacent independent calls collapse together. Prose remains in sequence,
   // and explicit parentage keeps each child inside its owning tool.
   const groups: TraceNode[][] = [];
@@ -155,7 +164,7 @@ function TraceList({ nodes, ...props }: TraceProps & { nodes: TraceNode[] }) {
     const batchable = (n: TraceNode) =>
       n.item.kind.type === "tool-call" &&
       !isAgent(n.item) &&
-      !n.children.length;
+      !n.children.length && !actionRequests.has(n.item.id);
     if (last && batchable(node) && batchable(last[0]!)) last.push(node);
     else groups.push([node]);
   }
@@ -209,7 +218,9 @@ function TraceList({ nodes, ...props }: TraceProps & { nodes: TraceNode[] }) {
   );
 }
 function TraceBatch({ nodes, ...props }: TraceProps & { nodes: TraceNode[] }) {
-  const [limit, setLimit] = useState(40);
+  const [storedLimit, setLimit] = useState(40);
+  const pendingApproval = useContext(HasPendingApproval);
+  const limit = pendingApproval ? Number.MAX_SAFE_INTEGER : storedLimit;
   const more = nodes.length > limit && (
     <Button variant="link" size="sm" onClick={() => setLimit((n) => n + 40)}>
       {props.running ? "Show earlier" : "Show more"} ({nodes.length - limit})
@@ -237,7 +248,9 @@ function TraceEntry({
 }: TraceProps & { node: TraceNode; current?: boolean }) {
   const { item, result, updates, children } = node;
   const links = useContext(SessionLinks);
-  const open = expanded.has(item.id);
+  const actionRequests = useContext(ActionRequests);
+  const pendingApproval = useContext(HasPendingApproval);
+  const open = expanded.has(item.id) || (pendingApproval && flattenTrace(children).some(child => actionRequests.has(child.item.id)));
   if (item.kind.type === "thinking") {
     if (!item.body.trim())
       return children.length ? (
@@ -288,6 +301,7 @@ function TraceEntry({
   const output = item.kind.type === "tool-result" ? item.body : result?.body;
   const request = item.kind.type === "tool-result" ? undefined : item.body;
   return (
+    <>
     <ToolCall
       id={item.id}
       icon={<ActivityIcon item={item} />}
@@ -348,6 +362,8 @@ function TraceEntry({
         </div>
       )}
     </ToolCall>
+    {actionRequests.get(item.id)}
+    </>
   );
 }
 

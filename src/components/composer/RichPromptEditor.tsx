@@ -1,5 +1,5 @@
 /** Isolates assistant-ui's pinned Lexical integration from durable composer state. */
-import { useEffect, useMemo, useRef, useState, useImperativeHandle, type Ref, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, useImperativeHandle, useId, Fragment, type Ref, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { LexicalComposer } from "@lexical/react/LexicalComposer";
 import { RichTextPlugin } from "@lexical/react/LexicalRichTextPlugin";
 import { ContentEditable } from "@lexical/react/LexicalContentEditable";
@@ -23,7 +23,7 @@ import { $createDirectiveNode, DirectiveNode, DirectiveChipProvider } from "@ass
 import { $editorSource, referenceTokens } from "./editorSource";
 import "./composer.css";
 
-export interface EditorSuggestion { id: string; label: string; description?: string; kind: "file" | "note" | "command" }
+export interface EditorSuggestion { id: string; label: string; description?: string; kind: "file" | "note" | "session" | "command" }
 export interface EditorHandle { focus(): void; insert(text: string): void; format(format: TextFormatType): void }
 export interface RichPromptEditorProps {
   value: string;
@@ -41,8 +41,8 @@ export interface RichPromptEditorProps {
 interface Trigger { key: string; start: number; end: number; source: string; kind: "@" | "/"; query: string }
 const referenceTransformer: TextMatchTransformer = {
   dependencies: [DirectiveNode], type: "text-match", trigger: ")",
-  importRegExp: /@\[([^\]\n]*)\]\(brigadier-(attachment|note):([^\s)]+)\)/,
-  regExp: /@\[([^\]\n]*)\]\(brigadier-(attachment|note):([^\s)]+)\)$/,
+  importRegExp: /@\[([^\]\n]*)\]\(brigadier-(attachment|note|session):([^\s)]+)\)/,
+  regExp: /@\[([^\]\n]*)\]\(brigadier-(attachment|note|session):([^\s)]+)\)$/,
   replace: (node, match) => { node.replace($createDirectiveNode({ id: match[3]!, type: match[2]!, label: match[1]! }, match[0])); },
 };
 const shortcuts = [referenceTransformer, ...TRANSFORMERS];
@@ -94,6 +94,7 @@ export function RichPromptEditor(props: RichPromptEditorProps) {
 }
 function Bridge(props: RichPromptEditorProps) {
   const [editor] = useLexicalComposerContext();
+  const menuId = useId();
   const latest = useRef(props); latest.current = props;
   const lastSource = useRef(props.value);
   const [trigger, setTrigger] = useState<Trigger | null>(null);
@@ -119,7 +120,15 @@ function Bridge(props: RichPromptEditorProps) {
   useEffect(() => { if (props.focusKey && !props.disabled) { editor.update(() => $getRoot().selectEnd(), { tag: "brigadier-focus" }); editor.focus(undefined, { defaultSelection: "rootEnd" }); editor.getRootElement()?.focus(); } }, [editor, props.focusKey, props.disabled]);
   useImperativeHandle(props.editorRef, () => ({
     focus: () => editor.focus(),
-    insert: text => { editor.update(() => { const selection = $getSelection(); if ($isRangeSelection(selection)) selection.insertText(text); else $getRoot().selectEnd().insertText(text); }, { tag: HISTORY_PUSH_TAG }); editor.focus(); },
+    insert: text => { editor.update(() => {
+      const current = $getSelection();
+      const selection = $isRangeSelection(current) ? current : $getRoot().selectEnd();
+      const tokens = referenceTokens(text.trim());
+      if (tokens.length === 1 && tokens[0]!.source === text.trim()) {
+        const token = tokens[0]!;
+        selection.insertNodes([$createDirectiveNode({ id: token.id, type: token.type, label: token.label }, token.source), $createTextNode(" ")]);
+      } else selection.insertText(text);
+    }, { tag: HISTORY_PUSH_TAG }); editor.focus(); },
     format: format => { editor.dispatchCommand(FORMAT_TEXT_COMMAND, format); editor.focus(); },
   }), [editor]);
   useEffect(() => editor.registerUpdateListener(({ editorState, tags }) => {
@@ -129,11 +138,12 @@ function Bridge(props: RichPromptEditorProps) {
         if (text !== lastSource.current) { lastSource.current = text; latest.current.onText(text); }
       }
       const selection = $getSelection();
+      if (!latest.current.search) { updateTrigger(null); return; }
       if (!$isRangeSelection(selection) || !selection.isCollapsed() || editor.isComposing()) { updateTrigger(null); return; }
       const node = selection.anchor.getNode();
       if (!$isTextNode(node) || node.hasFormat("code") || node.getParent()?.getType() === "code") { updateTrigger(null); return; }
       const before = node.getTextContent().slice(0, selection.anchor.offset);
-      const match = /(?:^|\s)([@/])([^\s@/]*)$/.exec(before);
+      const match = /(?:^|\s)(@)([^\s@]*)$/.exec(before) ?? /(?:^|\s)(\/)([^\s@/]*)$/.exec(before);
       if (!match || (match[1] === "/" && $editorSource().slice(0, selection.anchor.offset) !== before)) { updateTrigger(null); return; }
       const source = `${match[1]}${match[2]}`;
       updateTrigger({ key: node.getKey(), start: before.length - source.length, end: before.length, kind: match[1] as "@" | "/", query: match[2]!, source });
@@ -145,7 +155,7 @@ function Bridge(props: RichPromptEditorProps) {
     if (!trigger || !props.search) { setLoading(false); return; }
     setLoading(true);
     const timer = setTimeout(() => {
-      void props.search!(trigger.kind, trigger.query).then(result => { if (!cancelled) setItems(result.slice(0, 12)); }).catch(error => { if (!cancelled) latest.current.onError?.(String(error)); }).finally(() => { if (!cancelled) setLoading(false); });
+      void props.search!(trigger.kind, trigger.query).then(result => { if (!cancelled) setItems(result.slice(0, 24)); }).catch(error => { if (!cancelled) latest.current.onError?.(String(error)); }).finally(() => { if (!cancelled) setLoading(false); });
     }, 120);
     return () => { cancelled = true; clearTimeout(timer); };
   }, [trigger, props.search]);
@@ -177,7 +187,7 @@ function Bridge(props: RichPromptEditorProps) {
       editor.registerCommand(KEY_ENTER_COMMAND, event => {
         if (!event) return false;
         if (event.isComposing || editor.isComposing()) return true;
-        if (activeTrigger.current && menu.current.items.length && !event.shiftKey) { event.preventDefault(); void selectLatest.current(menu.current.items[menu.current.index]!); return true; }
+        if (activeTrigger.current && !event.shiftKey) { event.preventDefault(); if (menu.current.items.length) void selectLatest.current(menu.current.items[menu.current.index]!); return true; }
         const callback = latest.current.onKeyDown;
         if (!callback) return false;
         callback({ key: event.key, shiftKey: event.shiftKey, ctrlKey: event.ctrlKey, metaKey: event.metaKey, nativeEvent: event, preventDefault: () => event.preventDefault() } as ReactKeyboardEvent<HTMLElement>);
@@ -199,16 +209,19 @@ function Bridge(props: RichPromptEditorProps) {
     const element = editor.getRootElement();
     if (!element) return;
     element.setAttribute("aria-autocomplete", "list");
-    if (trigger) { element.setAttribute("aria-controls", "composer-suggestions"); element.setAttribute("aria-expanded", "true"); }
+    if (trigger) { element.setAttribute("aria-controls", menuId); element.setAttribute("aria-expanded", "true"); }
     else { element.removeAttribute("aria-controls"); element.setAttribute("aria-expanded", "false"); }
-    if (trigger && items[index]) element.setAttribute("aria-activedescendant", `composer-option-${index}`);
+    if (trigger && items[index]) {
+      element.setAttribute("aria-activedescendant", `${menuId}-option-${index}`);
+      document.getElementById(`${menuId}-option-${index}`)?.scrollIntoView({ block: "nearest" });
+    }
     else element.removeAttribute("aria-activedescendant");
-  }, [editor, trigger, items, index]);
+  }, [editor, trigger, items, index, menuId]);
   return trigger ? <div className="composer-suggestions" onMouseDown={event => event.preventDefault()}>
-    <div className="composer-suggestion-heading">{trigger.kind === "@" ? "Project files and notes" : "Supported commands · select to insert"}</div>
-    <div role="listbox" aria-label={trigger.kind === "@" ? "References" : "Commands"} id="composer-suggestions">
-      {items.map((item, itemIndex) => <button type="button" role="option" aria-selected={index === itemIndex} id={`composer-option-${itemIndex}`} key={`${item.kind}:${item.id}`} onClick={() => void choose(item)}><span>{item.kind === "command" ? "/" : "@"}{item.label}</span>{item.description && <small>{item.description}</small>}</button>)}
+    <div className="composer-suggestion-heading">{trigger.kind === "@" ? "Reference a file, note or agent session" : "Supported commands · select to insert"}</div>
+    <div role="listbox" aria-label={trigger.kind === "@" ? "References" : "Commands"} id={menuId}>
+      {items.map((item, itemIndex) => <Fragment key={`${item.kind}:${item.id}`}>{trigger.kind === "@" && (itemIndex === 0 || items[itemIndex - 1]?.kind !== item.kind) && <div className="composer-suggestion-heading" role="presentation">{item.kind === "file" ? "Files" : item.kind === "note" ? "Notes" : "Agent sessions"}</div>}<button type="button" role="option" aria-selected={index === itemIndex} id={`${menuId}-option-${itemIndex}`} key={`${item.kind}:${item.id}`} onClick={() => void choose(item)}><span>{item.kind === "command" ? "/" : "@"}{item.label}</span>{item.description && <small>{item.description}</small>}</button></Fragment>)}
     </div>
-    {!items.length && <p role="status">{loading ? "Searching…" : trigger.kind === "/" ? "No supported command matches" : "No matching files or notes"}</p>}
+    {!items.length && <p role="status">{loading ? "Searching…" : trigger.kind === "/" ? "No supported command matches" : "No matching files, notes or agent sessions"}</p>}
   </div> : null;
 }

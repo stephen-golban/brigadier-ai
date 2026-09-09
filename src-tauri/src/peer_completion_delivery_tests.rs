@@ -43,12 +43,19 @@ impl ProviderDriver for Driver {
         req: StartSession,
     ) -> BoxFuture<'_, Result<SessionHandle, DriverError>> {
         Box::pin(async move {
-            let id = SessionId::new(uuid::Uuid::new_v4().to_string());
-            let actor = Arc::new(Actor::default());
-            self.actors
+            // The harness starts a fresh native call using the same durable task identity.
+            let (id, start_seq) = req
+                .resumed
+                .as_ref()
+                .map(|r| (r.session_id.clone(), r.start_seq))
+                .unwrap_or_else(|| (SessionId::new(uuid::Uuid::new_v4().to_string()), 0));
+            let actor = self
+                .actors
                 .lock()
                 .unwrap()
-                .insert(id.to_string(), actor.clone());
+                .entry(id.to_string())
+                .or_insert_with(|| Arc::new(Actor::default()))
+                .clone();
             let (handle, mut backend) =
                 SessionHandle::channel(id.clone(), self.instance.clone(), 32);
             let instance = self.instance.clone();
@@ -56,7 +63,7 @@ impl ProviderDriver for Driver {
                 backend
                     .events
                     .send(Envelope::new(
-                        1,
+                        start_seq + 1,
                         instance.clone(),
                         id.clone(),
                         Event::SessionStarted {
@@ -92,7 +99,7 @@ impl ProviderDriver for Driver {
                             let _ = backend
                                 .events
                                 .send(Envelope::new(
-                                    2,
+                                    start_seq + 2,
                                     instance,
                                     id,
                                     Event::SessionExited {

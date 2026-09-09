@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useTaskExecutionSettings } from '../taskSettings';
 import { GitBranchIcon, GitDiffIcon, SlidersHorizontalIcon, UsersThreeIcon, FolderIcon, GearSixIcon, FileIcon, ArrowSquareOutIcon } from '@phosphor-icons/react';
 import { Button } from './controls/button';
 import type { SessionRuntime } from '../feedStore';
@@ -15,6 +16,7 @@ export function SessionCard({ session, sessions, peers, onSelect, onChanges, onS
   onSelect: (id: string) => void; onChanges: () => void; onSettings: () => void;
   onSubagents: () => void; onFiles: () => void;
 }) {
+  const {settings} = useTaskExecutionSettings(session.sessionId);
   const changes = useSessionChanges(session.sessionId);
   const [open, setOpen] = useState(() => window.innerWidth >= 1500);
   const navigate = (action: () => void) => {setOpen(false);action();};
@@ -43,10 +45,11 @@ export function SessionCard({ session, sessions, peers, onSelect, onChanges, onS
   return <details className="thread-context-wrap" open={open} onToggle={e=>setOpen(e.currentTarget.open)}>
     <summary className="thread-context-summary" aria-label="Environment and subagents"><SlidersHorizontalIcon size={18}/><span>Context</span></summary>
     <aside className="thread-context" aria-label="Session environment">
-      <section><h3>Environment</h3>
+      <section><h3>Environment · locked for this task</h3>
         <Button className="context-row" onClick={()=>navigate(onChanges)}><GitDiffIcon/><span>Changes</span><span className="change-count"><i className="text-ok not-italic">+{changes.files.reduce((n,f) => n+f.added,0)}</i> <i className="text-error not-italic">−{changes.files.reduce((n,f) => n+f.deleted,0)}</i></span></Button>
-        <Button className="context-row" onClick={()=>navigate(onFiles)} title={session.cwd ?? undefined}><FolderIcon/><span>{session.worktreePath ? 'Worktree' : 'Local'} · {session.cwd?.split('/').pop() ?? 'Workspace'}</span></Button>
+        <Button className="context-row" onClick={()=>navigate(onFiles)} title={session.cwd ?? undefined}><FolderIcon/><span>{settings?.workspacePath ? 'Existing worktree' : session.worktreePath ? 'Worktree' : 'Local'} · {session.cwd?.split('/').pop() ?? 'Workspace'}</span></Button>
         <div className="context-row" title={session.branch ?? undefined}><GitBranchIcon/><span>{session.branch ?? 'No Git branch'}</span></div>
+        {settings?.baseBranch && <div className="context-row" title={settings.baseBranch}><GitBranchIcon/><span>Started from {settings.baseBranch}</span></div>}
         {session.branch && <Button className="context-row" onClick={()=>navigate(onChanges)}><GitDiffIcon/><span>Commit, push or compare</span><ArrowSquareOutIcon/></Button>}
         <Button className="context-row" onClick={onSettings}><GearSixIcon/><span>Session settings</span></Button>
       </section>

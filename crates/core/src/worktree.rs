@@ -349,6 +349,15 @@ pub async fn add(git: &Path, spec: &WorktreeSpec) -> Result<Worktree, WorktreeEr
         .ok_or_else(|| WorktreeError::NotAWorktree(spec.path.clone()))
 }
 
+/// Run a setup operation without repository hooks, filters or fsmonitor programs.
+/// Arguments are passed directly to Git, without a shell; callers retain checkout safety checks.
+pub async fn setup_command(git: &Path, root: &Path, operation: &[&str]) -> Result<Vec<u8>, WorktreeError> {
+    let env = filter_neutralising_env(git, root).await?;
+    let mut args = vec![osarg("-C"), root.as_os_str().to_owned(), osarg("-c"), osarg("core.hooksPath=/dev/null"), osarg("-c"), osarg("core.fsmonitor=false")];
+    args.extend(operation.iter().map(osarg));
+    stdout_with(git, &args, &env).await
+}
+
 /// `git worktree list --porcelain -z`, parsed.
 pub async fn list(git: &Path, repo: &Path) -> Result<Vec<Worktree>, WorktreeError> {
     // see docs/research/tauri-runtime.md §6 — without `-z` a lock reason is quoted per

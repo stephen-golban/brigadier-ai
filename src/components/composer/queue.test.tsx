@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import * as providerCatalog from "../../providerCatalog";
+import userEvent from "@testing-library/user-event";
+import { taskSettingsApi } from "../../taskSettings";
 import { Composer } from "../Composer";
 import { composerApi, emptyComposer, type ComposerState, serializeComposerWrite } from "../../composerApi";
 import { ZERO_USAGE } from "../../wire";
@@ -11,6 +14,9 @@ const session: SessionRuntime = { sessionId: "s", projectId: "p", status: "runni
 let state: ComposerState;
 let emit: (state: ComposerState) => void;
 beforeEach(() => {
+  vi.spyOn(providerCatalog, "useProviderCatalog").mockReturnValue({ providers: [], error: "" });
+  vi.spyOn(taskSettingsApi, "read").mockImplementation(async sessionId => ({ sessionId, projectId: "p", mode: "custom", permission: "approve", execution: {provider: "claude-code", model: "exact-model", effort: null}, isolated: false, baseBranch: null, changes: [] }));
+  vi.spyOn(taskSettingsApi, "subscribe").mockResolvedValue(() => {});
   state = emptyComposer("s"); emit = () => {};
   vi.spyOn(composerApi, "state").mockImplementation(async () => structuredClone(state));
   vi.spyOn(composerApi, "subscribe").mockImplementation(async callback => { emit = callback; return () => {}; });
@@ -34,7 +40,7 @@ it("queues active-turn submissions, Stop pauses durably and only explicit Resume
   view.unmount(); mount({ status: "exited", busy: false });
   await screen.findByText("Queue paused because you stopped");
   expect(composerApi.resume).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("button", { name: /Resume/ }));
+  fireEvent.click(screen.getByRole("button", { name: /Continue/ }));
   await waitFor(() => expect(composerApi.resume).toHaveBeenCalledOnce());
 });
 it("keeps unknown receipts inspectable and never treats unsupported slash commands as prompts", async () => {
@@ -58,6 +64,7 @@ it("reuses the same persisted request identity after an ambiguous IPC response a
   const id = enqueue.mock.calls[0]![1];
   first.unmount(); mount();
   await waitFor(() => expect(screen.getByRole("textbox")).toHaveTextContent("do exactly once"));
+  await waitFor(() => expect(screen.getByRole("button", { name: "send this turn" })).toBeEnabled());
   fireEvent.click(screen.getByRole("button", { name: "send this turn" }));
   await waitFor(() => expect(enqueue).toHaveBeenCalledTimes(2));
   expect(enqueue.mock.calls[1]![1]).toBe(id);
@@ -110,4 +117,92 @@ it("preserves leading absolute file paths as ordinary prompt text", async () => 
   await pasteComposer(screen.getByRole("textbox"), "/Users/me/project/src/file.ts needs a fix");
   fireEvent.keyDown(screen.getByRole("textbox"), {key:"Enter"});
   await waitFor(() => expect(composerApi.enqueue).toHaveBeenCalledWith("s", expect.any(String), "/Users/me/project/src/file.ts needs a fix", []));
+});
+
+const catalog: providerCatalog.ProviderCatalogEntry[] = [
+  { id: "claude-code", label: "Claude Code", instanceId: "claude:test", version: null, modelCatalogKnown: true, efforts: [], models: [{ id: "exact-model", label: "Original model", efforts: ["low", "high"] }] },
+  { id: "codex", label: "Codex", instanceId: "codex:test", version: null, modelCatalogKnown: true, efforts: [], models: [{ id: "next-model", label: "Next model", efforts: ["minimal", "medium", "xhigh"] }] },
+];
+it("changes only subsequent execution settings while the current response remains active", async () => {
+  vi.mocked(providerCatalog.useProviderCatalog).mockReturnValue({providers:catalog,error:""});
+  const update = vi.spyOn(taskSettingsApi,"update").mockImplementation(async (_id,next) => next);
+  mount({busy:true});
+  await waitFor(() => expect(screen.getByRole("button",{name:"Execution settings"})).toBeEnabled());
+  await userEvent.click(screen.getByRole("button",{name:"Execution settings"}));
+  await userEvent.click(screen.getByRole("button",{name:/Codex/}));
+  await waitFor(() => expect(update).toHaveBeenCalledWith("s",expect.objectContaining({execution:{provider:"codex",model:null,effort:null}})));
+  await userEvent.click(screen.getByRole("option",{name:"Next model"}));
+  await waitFor(() => expect(screen.getByRole("slider")).toBeEnabled());
+  fireEvent.change(screen.getByRole("slider"),{target:{value:"2"}});
+  await waitFor(() => expect(update).toHaveBeenLastCalledWith("s",expect.objectContaining({execution:{provider:"codex",model:"next-model",effort:"xhigh"}})));
+  expect(screen.getByRole("button",{name:"Stop task"})).toBeEnabled();
+  expect(composerApi.stop).not.toHaveBeenCalled();
+  expect(composerApi.enqueue).not.toHaveBeenCalled();
+});
+
+it("edits a queued Custom execution snapshot without changing task execution settings", async () => {
+  vi.mocked(providerCatalog.useProviderCatalog).mockReturnValue({providers:catalog,error:""});
+  state.queue = [{id:"queued",text:"Review next",attachmentIds:["stable-file"],status:"queued",turnId:null,error:null,execution:{provider:"claude-code",model:"exact-model",effort:"high"}}];
+  const updateTask = vi.spyOn(taskSettingsApi,"update").mockImplementation(async (_id,next) => next);
+  const updateQueue = vi.spyOn(composerApi,"update").mockImplementation(async (_session,id,text,attachmentIds,execution) => {
+    state = {...state,revision:state.revision+1,queue:state.queue.map(item=>item.id===id ? {...item,text,attachmentIds,execution} : item)};
+    return state;
+  });
+  mount({busy:true});
+  await userEvent.click(await screen.findByRole("button",{name:"Edit queued message"}));
+  fireEvent.change(screen.getByRole("textbox",{name:"Edit queued message"}),{target:{value:"Review the changed scope"}});
+  await userEvent.click(screen.getAllByRole("button",{name:"Execution settings"})[0]!);
+  await userEvent.click(screen.getByRole("button",{name:/Codex/}));
+  await userEvent.click(screen.getByRole("option",{name:"Next model"}));
+  fireEvent.change(screen.getByRole("slider"),{target:{value:"1"}});
+  await userEvent.keyboard("{Escape}");
+  await userEvent.click(screen.getByRole("button",{name:"Save"}));
+  await waitFor(() => expect(updateQueue).toHaveBeenCalledWith("s","queued","Review the changed scope",["stable-file"],{provider:"codex",model:"next-model",effort:"medium"}));
+  expect(updateTask).not.toHaveBeenCalled();
+  expect(screen.getByRole("button",{name:"Execution settings"})).toHaveTextContent("Original model");
+});
+
+it("Steer now invokes active steering and Stop remains usable while that acknowledgement is pending", async () => {
+  state.queue = [{id:"steering",text:"Prioritize the bug",attachmentIds:[],status:"queued",turnId:null,error:null}];
+  let complete!: (state: ComposerState) => void;
+  const steer = vi.spyOn(composerApi,"steer").mockImplementation(() => new Promise(resolve=>{complete=resolve;}));
+  mount({busy:true});
+  await userEvent.click(await screen.findByRole("button",{name:"Steer now"}));
+  await waitFor(() => expect(steer).toHaveBeenCalledWith("s","steering"));
+  expect(composerApi.enqueue).not.toHaveBeenCalled();
+  expect(screen.getByRole("button",{name:"Stop task"})).toBeEnabled();
+  await userEvent.click(screen.getByRole("button",{name:"Stop task"}));
+  await waitFor(() => expect(composerApi.stop).toHaveBeenCalledOnce());
+  await act(async () => complete(state));
+  expect(screen.getByText("Queue paused because you stopped")).toBeVisible();
+});
+
+it("takes over Auto once using effective execution settings and removes the route back", async () => {
+  vi.mocked(providerCatalog.useProviderCatalog).mockReturnValue({providers:catalog,error:""});
+  vi.mocked(taskSettingsApi.read).mockResolvedValue({sessionId:"s",projectId:"p",mode:"auto",permission:"approve",execution:{provider:"codex",model:"next-model",effort:"xhigh"},isolated:true,baseBranch:"main",changes:[]});
+  const update = vi.spyOn(taskSettingsApi,"update").mockImplementation(async (_id,next)=>next);
+  mount({busy:true});
+  await userEvent.click(await screen.findByRole("button",{name:"Mode"}));
+  await userEvent.click(screen.getByRole("option",{name:/Custom/}));
+  await waitFor(() => expect(update).toHaveBeenCalledWith("s",expect.objectContaining({mode:"custom",execution:{provider:"codex",model:"next-model",effort:"xhigh"},isolated:true,baseBranch:"main"})));
+  await userEvent.click(screen.getByRole("button",{name:"Mode"}));
+  expect(screen.getByRole("option",{name:/Auto/})).toBeDisabled();
+  await userEvent.keyboard("{Escape}");
+  await userEvent.click(screen.getByRole("button",{name:"Execution settings"}));
+  expect(screen.getByRole("option",{name:"Next model"})).toHaveAttribute("aria-selected","true");
+  expect(screen.queryByRole("button",{name:"Branch"})).toBeNull();
+  expect(screen.queryByRole("button",{name:"Environment"})).toBeNull();
+});
+
+it("shows Stopping and prevents duplicate Stop requests until its acknowledgement arrives", async () => {
+  let complete!: (state:ComposerState)=>void;
+  vi.mocked(composerApi.stop).mockImplementationOnce(()=>new Promise(resolve=>{complete=resolve;}));
+  mount({busy:true});
+  await userEvent.click(await screen.findByRole("button",{name:"Stop task"}));
+  const stopping = screen.getByRole("button",{name:"Stopping task"});
+  expect(stopping).toBeDisabled();
+  fireEvent.click(stopping);
+  expect(composerApi.stop).toHaveBeenCalledTimes(1);
+  await act(async()=>complete({...state,revision:state.revision+1,stopped:true,paused:true}));
+  expect(screen.getByText("Queue paused because you stopped")).toBeVisible();
 });

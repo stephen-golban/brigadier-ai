@@ -2,7 +2,12 @@ import { TaskProgress } from "./TaskProgress";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useConversationHistory } from "../hooks/useConversationHistory";
 import { Telescope as TelescopeIcon } from "lucide-react";
-import type { ReactNode } from "react";
+import { isValidElement, cloneElement, type ReactNode } from "react";
+import { ApprovalResolution, type ApprovalsProps } from "./Approvals";
+import { useApprovalHistory } from "./approvalHistory";
+import { useTaskExecutionSettings } from "../taskSettings";
+import { ProviderChangeDivider } from "./composer/ProviderChangeDivider";
+import { providerChangePlacement } from "./composer/providerChangePlacement";
 import {
   AssistantRuntimeProvider,
   useExternalStoreRuntime,
@@ -44,7 +49,7 @@ import {
 import { workbenchApi } from "../workbenchApi";
 import { bridge } from "../bridge";
 import * as store from "../feedStore";
-import { projectThread } from "../threadProjection";
+import { projectThread, flattenTrace } from "../threadProjection";
 import { PeerTaskCardScope } from "./peer/PeerTaskCardScope";
 import { PeerIncomingMessage, PeerMessages } from "./peer/PeerMessages";
 import { PeerAttachmentPreviews } from "./peer/PeerAttachmentPreviews";
@@ -194,6 +199,8 @@ function Transcript({
   const changes = useSessionChanges(sessionId);
   const {items, turns: turnRecords, loaded, error, hasOlder, paging, historical, older, latest} = useConversationHistory(sessionId, revision);
   const hydrated = loaded;
+  const { settings: executionSettings } = useTaskExecutionSettings(sessionId);
+  const providerChanges = providerChangePlacement(executionSettings?.changes ?? [], items, historical);
   const state = useSyncExternalStore(store.subscribe, store.getState),
     session = state.sessions[sessionId],
     busy = session?.busy ?? false;
@@ -237,10 +244,41 @@ function Transcript({
     () => projectThread(items, busy, turnRecords, session?.lastStop),
     [items, busy, turnRecords, session?.lastStop],
   );
+  const approvalElement = isValidElement<ApprovalsProps>(requests) && Array.isArray(requests.props.approvals) ? requests : null;
+  const approvalHistory = useApprovalHistory(sessionId, (state.approvals ?? []).filter(item => item.sessionId === sessionId).map(item => item.requestId).join(":"));
+  const confirmedApprovals = approvalHistory.filter(item => {
+    if (!item.resolved) return false;
+    const first = items[0], last = items[items.length - 1];
+    if (first && first.seq > 1 && item.opened_at_ms < first.at) return false;
+    return !historical || !last || item.opened_at_ms <= last.at;
+  });
+  const confirmedRequestIds = new Set(confirmedApprovals.map(item => item.request_id));
+  const resolvedRequests = new Set<string>();
+  const pendingToolIds = new Set<string>();
+  const actionRequests = new Map<string, ReactNode>();
+  const matchedRequests = new Set<string>();
+  for (const row of rows) {
+    if (row.type !== "work") continue;
+    for (const node of flattenTrace(row.nodes)) {
+      const matched = (approvalElement?.props.approvals ?? []).filter(({ approval }) => !confirmedRequestIds.has(approval.requestId) && approval.kind?.type === "tool-permission" && approval.kind.tool_call_id === node.item.id);
+      const resolved = confirmedApprovals.filter(item => item.kind?.type === "tool-permission" && item.kind.tool_call_id === node.item.id);
+      const cards: ReactNode[] = resolved.map(item => <ApprovalResolution key={item.request_id} approval={item} />);
+      resolved.forEach(item => resolvedRequests.add(item.request_id));
+      if (matched.length && approvalElement) {
+        pendingToolIds.add(node.item.id);
+        cards.push(cloneElement(approvalElement, { key: `pending:${node.item.id}`, approvals: matched }));
+        matched.forEach(({ approval }) => matchedRequests.add(approval.requestId));
+      }
+      if (cards.length) actionRequests.set(node.item.id, cards);
+    }
+  }
+  const hasApprovals = (approvalElement?.props.approvals.length ?? 0) > 0;
+  // Pending decisions must remain mounted and directly reachable even in long transcripts.
+  const virtualized = rows.length > 60 && !hasApprovals;
   const virtual = useVirtualizer({ count: rows.length, getScrollElement: () => scroll.current,
     estimateSize: () => 140, overscan: 6, getItemKey: index => rows[index]!.id,
-    enabled: rows.length > 60, initialRect: {width: 800, height: 800} });
-  const visibleRows = rows.length > 60 ? virtual.getVirtualItems().map(item => ({row: rows[item.index]!, index: item.index, virtual: item})) : rows.map((row,index)=>({row,index,virtual: null}));
+    enabled: virtualized, initialRect: {width: 800, height: 800} });
+  const visibleRows = virtualized ? virtual.getVirtualItems().map(item => ({row: rows[item.index]!, index: item.index, virtual: item})) : rows.map((row,index)=>({row,index,virtual: null}));
   // The runtime owns only viewport behavior. Render saved rows directly with the
   // standalone Elements, so its synthetic startup message cannot enter our renderer.
   const messages = useMemo<ThreadMessageLike[]>(
@@ -336,7 +374,7 @@ function Transcript({
         ) : null}
         {hasOlder && <Button className="mx-auto mb-4" disabled={paging} onClick={() => void older()}>{paging ? 'Loading…' : 'Load earlier messages'}</Button>}
         {historical && <Button className="mx-auto mb-4" onClick={() => void latest()}>Return to latest messages</Button>}
-        <div style={rows.length > 60 ? {height: virtual.getTotalSize(), position: 'relative'} : undefined}>
+        <div style={virtualized ? {height: virtual.getTotalSize(), position: 'relative'} : undefined}>
         {visibleRows.map(({row, index, virtual: position}) => {
           const turn = turns[index];
           return (
@@ -351,6 +389,8 @@ function Transcript({
               {row.type === "work" ? (
                 <WorkTrace
                   row={row}
+                  hasPendingApproval={flattenTrace(row.nodes).some(node => pendingToolIds.has(node.item.id))}
+                  actionRequests={new Map(flattenTrace(row.nodes).filter(node => actionRequests.has(node.item.id)).map(node => [node.item.id, actionRequests.get(node.item.id)]))}
                   sessionTitles={peers?.titles}
                   onSelectSession={onSelectSession}
                   expanded={expanded}
@@ -359,6 +399,7 @@ function Transcript({
                 />
               ) : row.item.kind.type === "user-text" ? (
                 <>
+                  {providerChanges.before.get(row.item.id)?.map(change => <ProviderChangeDivider key={change.id} change={change} />)}
                   {row.item.at > 0 && (
                     <div className="message-separator mb-2 text-xs text-text-tertiary">
                       {dateLabel(row.item.at)}
@@ -398,6 +439,7 @@ function Transcript({
           );
         })}
         </div>
+        {providerChanges.after.map(change => <ProviderChangeDivider key={change.id} change={change} />)}
         <PeerMessages sessionId={sessionId} peers={peers} onSelectSession={onSelectSession}
           renderAttachments={message => <PeerAttachmentPreviews message={message} />} />
         {peers?.requests
@@ -422,7 +464,8 @@ function Transcript({
         {!busy && session?.lastStop && session.lastStop !== "end-turn" && (
           <div className="turn-state">{stopLabel(session.lastStop)}</div>
         )}
-        {requests}
+        {confirmedApprovals.filter(item => !resolvedRequests.has(item.request_id)).map(item => <ApprovalResolution key={item.request_id} approval={item} />)}
+        {approvalElement ? cloneElement(approvalElement, { approvals: approvalElement.props.approvals.filter(({ approval }) => !matchedRequests.has(approval.requestId) && !confirmedRequestIds.has(approval.requestId)) }) : requests}
       </Thread>
       </PeerTaskCardScope>
     </AssistantRuntimeProvider>
@@ -471,6 +514,7 @@ function UserMessage({
   const [attachment, setAttachment] = useState<PeerAttachment | null>(null);
   const [sourceError, setSourceError] = useState('');
   const openReference = (path: string) => {
+    if (path.startsWith('brigadier-session:')) { onSelectSession?.(path.slice('brigadier-session:'.length)); return; }
     if (!path.startsWith('brigadier-attachment:')) { onFile(path); return; }
     if (!projectId) {setSourceError('Attachment project is unavailable.');return;}
     void peerApi.attachment(projectId, path.slice('brigadier-attachment:'.length)).then(file=>setAttachment(file.metadata), error=>setSourceError(String(error)));
