@@ -269,16 +269,14 @@ pub(crate) async fn attachments(
 
 /// Slash invocations retain their exact argument text. CLI command/skill expansion owns it.
 pub(crate) fn slash_invocation(text: &str) -> bool {
-    text.split_whitespace()
-        .next()
-        .is_some_and(|first| {
-            first.strip_prefix('/').is_some_and(|command| {
-                !command.is_empty()
-                    && command
-                        .chars()
-                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':'))
-            })
+    text.split_whitespace().next().is_some_and(|first| {
+        first.strip_prefix('/').is_some_and(|command| {
+            !command.is_empty()
+                && command
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':'))
         })
+    })
 }
 pub(crate) fn contextualize(
     state: &AppState,
@@ -315,6 +313,15 @@ pub(crate) async fn send_locked(
     text: String,
     attachment_ids: Vec<String>,
 ) -> Result<crate::views::TurnStarted, AppError> {
+    send_locked_with_execution(state, session_id, text, attachment_ids, None).await
+}
+pub(crate) async fn send_locked_with_execution(
+    state: &AppState,
+    session_id: String,
+    text: String,
+    attachment_ids: Vec<String>,
+    execution: Option<crate::task_settings::ExecutionSelection>,
+) -> Result<crate::views::TurnStarted, AppError> {
     crate::composer::require_running(&session_id)?;
     crate::session_archive::require_active(&state.get()?.data_dir, &session_id)?;
     crate::navigation::require_available(
@@ -347,10 +354,17 @@ pub(crate) async fn send_locked(
             "Send images with a prompt, not a slash command",
         ));
     }
-    let contextual = contextualize(state, project, &text)?;
+    let referenced = crate::session_references::contextualize(state, &text).await?;
+    let contextual = contextualize(state, project, &referenced)?;
     let (passive, message_ids) = passive(id.as_str(), &text);
-    let provider_text =
-        crate::task_memory::with_context(state, id.as_str(), format!("{contextual}{passive}"))?;
+    crate::task_settings::prepare_dispatch(state, id.as_str(), execution).await?;
+    crate::composer::require_running(id.as_str())?;
+    let provider_text = crate::task_memory::with_execution_context(
+        state,
+        id.as_str(),
+        format!("{contextual}{passive}"),
+    )
+    .await?;
     crate::peers::begin_passive_delivery(&message_ids)?;
     let turn = state
         .get()?

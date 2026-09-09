@@ -25,6 +25,10 @@ pub(crate) struct QueuedTurn {
     pub status: String,
     pub turn_id: Option<String>,
     pub error: Option<String>,
+    #[serde(default)]
+    pub execution: Option<crate::task_settings::ExecutionSelection>,
+    #[serde(default)]
+    pub execution_mode: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -273,6 +277,40 @@ fn finish_initial_receipt(
     }
 }
 
+pub(crate) fn emit_execution_settings(settings: &crate::task_settings::TaskSettings) {
+    if let Some(service) = SERVICE.get() {
+        let _ = service.app.emit("task-execution-settings", settings);
+    }
+}
+
+/// Authenticated owner-authored task inputs for approval adjudication. Peer messages and
+/// model-authored checkpoints are deliberately excluded.
+pub(crate) fn owner_instructions(id: &str) -> Result<Vec<String>, AppError> {
+    let states = service()?.states.lock().unwrap_or_else(|e| e.into_inner());
+    let mut inputs = Vec::new();
+    for state in states.values() {
+        for receipt in state
+            .creations
+            .values()
+            .filter(|r| r.session_id.as_deref() == Some(id) && r.status == "sent")
+        {
+            if let Some(prompt) = receipt.request.get("prompt").and_then(Value::as_str) {
+                inputs.push(prompt.to_owned());
+            }
+        }
+    }
+    if let Some(state) = states.get(id) {
+        inputs.extend(
+            state
+                .queue
+                .iter()
+                .filter(|q| q.status == "sent")
+                .map(|q| q.text.clone()),
+        );
+    }
+    Ok(inputs)
+}
+
 pub(crate) fn has_pending(id: &str) -> bool {
     SERVICE.get().is_some()
         && read(id)
@@ -380,9 +418,31 @@ fn enqueue(
         status: "queued".into(),
         turn_id: None,
         error: None,
+        execution: None,
+        execution_mode: None,
     });
     Ok(())
 }
+fn enqueue_selected(
+    state: &mut ComposerState,
+    id: String,
+    text: String,
+    attachments: Vec<String>,
+    execution: Option<crate::task_settings::ExecutionSelection>,
+) -> Result<(), AppError> {
+    let existed = state.queue.iter().any(|q| q.id == id);
+    enqueue(state, id.clone(), text, attachments)?;
+    if !existed {
+        state
+            .queue
+            .iter_mut()
+            .find(|q| q.id == id)
+            .unwrap()
+            .execution = execution;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub(crate) async fn composer_state(session_id: String) -> Result<ComposerState, AppError> {
     read(&session_id)
@@ -433,8 +493,10 @@ pub(crate) async fn enqueue_conversation_turn(
             .await?;
     }
     validate_prompt_command(state.inner(), &session_id, &text, &attachment_ids).await?;
+    let settings = crate::task_settings::read(state.inner(), &session_id).await?;
+    let execution = (settings.mode == "custom").then_some(settings.execution);
     change(&session_id, |s| {
-        enqueue(s, request_id, text, attachment_ids)
+        enqueue_selected(s, request_id, text, attachment_ids, execution)
     })
 }
 #[tauri::command]
@@ -443,6 +505,7 @@ pub(crate) async fn update_queued_turn(
     request_id: String,
     text: String,
     attachment_ids: Vec<String>,
+    execution: Option<crate::task_settings::ExecutionSelection>,
     state: State<'_, AppState>,
 ) -> Result<ComposerState, AppError> {
     let _lock = crate::peers::LIFECYCLE.lock().await;
@@ -462,6 +525,9 @@ pub(crate) async fn update_queued_turn(
         ));
     }
     validate_prompt_command(state.inner(), &session_id, &text, &attachment_ids).await?;
+    if let Some(selection) = &execution {
+        crate::task_settings::validate_selection(state.inner(), selection)?;
+    }
     change(&session_id, |s| {
         let q = s
             .queue
@@ -470,11 +536,114 @@ pub(crate) async fn update_queued_turn(
             .ok_or_else(|| AppError::invalid_argument("Only unsent messages can be edited"))?;
         q.text = text;
         q.attachment_ids = attachment_ids;
+        if let Some(selection) = execution {
+            q.execution = Some(selection);
+            q.execution_mode = Some("custom".into());
+        }
         q.status = "queued".into();
         q.error = None;
         Ok(())
     })
 }
+/// Steering is acknowledged by the active Codex turn. Claude interrupts its current
+/// turn and immediately starts a fresh bounded execution with the steering input.
+#[tauri::command]
+pub(crate) async fn steer_queued_turn(
+    session_id: String,
+    request_id: String,
+    state: State<'_, AppState>,
+) -> Result<ComposerState, AppError> {
+    let _lock = crate::peers::LIFECYCLE.lock().await;
+    require_running(&session_id)?;
+    let item = read(&session_id)?
+        .queue
+        .into_iter()
+        .find(|q| q.id == request_id && q.status == "queued")
+        .ok_or_else(|| {
+            AppError::invalid_argument("Only an unsent queued message can steer active work")
+        })?;
+    validate(state.inner(), &session_id, &item.text, &item.attachment_ids).await?;
+    if crate::conversation_data::slash_invocation(&item.text) {
+        return Err(AppError::invalid_argument(
+            "Commands cannot steer an active response",
+        ));
+    }
+    let id = SessionId::new(&session_id);
+    let sup = &state.get()?.supervisor;
+    let row = sup
+        .session(&id)
+        .await?
+        .ok_or_else(|| AppError::invalid_argument("Task no longer exists"))?;
+    let activity = sup.native_control(&id, NativeControl::Activity).await?;
+    if activity["status"] == "Idle" {
+        return Err(AppError::invalid_argument(
+            "There is no active response to steer",
+        ));
+    }
+    let attachments = crate::conversation_data::attachments(
+        state.inner(),
+        row.project_id.as_deref().unwrap_or(""),
+        item.attachment_ids.clone(),
+    )
+    .await?;
+    let referenced = crate::session_references::contextualize(state.inner(), &item.text).await?;
+    let text = crate::conversation_data::contextualize(
+        state.inner(),
+        row.project_id.as_deref().unwrap_or(""),
+        &referenced,
+    )?;
+    change(&session_id, |s| {
+        s.queue
+            .iter_mut()
+            .find(|q| q.id == request_id)
+            .unwrap()
+            .status = "sending".into();
+        Ok(())
+    })?;
+    let result: Result<String,AppError> = match tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        if row.driver_kind.as_ref().is_some_and(|k|k.as_str()=="codex") {
+            sup.native_control(&id,NativeControl::Steer {message_id:brigadier_core::event::TurnId::new(&request_id),input:brigadier_core::session::TurnInput {text,display_text:Some(item.text.clone()),attachments,..Default::default()}}).await?;
+            Ok(request_id.clone())
+        } else {
+            sup.interrupt(&id).await?;
+            let deadline=tokio::time::Instant::now()+std::time::Duration::from_secs(10);
+            while sup.is_live(&id) && sup.native_control(&id,NativeControl::Activity).await?["status"] != "Idle" {
+                if tokio::time::Instant::now() >= deadline { return Err(AppError::new("send_not_dispatched","The active response has not acknowledged interruption; steering was not delivered")); }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            crate::conversation_data::send_locked_with_execution(state.inner(),session_id.clone(),item.text.clone(),item.attachment_ids.clone(),item.execution.clone()).await.map(|t|t.turn_id)
+        }
+    }).await { Ok(result) => result, Err(_) => Err(AppError::new("send_unconfirmed","Steering was not acknowledged within 20 seconds. Inspect active work before resolving this receipt.")) };
+    change(&session_id, |s| {
+        let q = s.queue.iter_mut().find(|q| q.id == request_id).unwrap();
+        match &result {
+            Ok(turn) => {
+                q.status = "sent".into();
+                q.turn_id = Some(turn.clone());
+                q.error = None;
+            }
+            Err(e) => {
+                q.status = if matches!(
+                    e.code.as_str(),
+                    "send_not_dispatched" | "invalid_argument" | "not_live"
+                ) {
+                    "failed"
+                } else {
+                    "unknown"
+                }
+                .into();
+                q.error = Some(e.message.clone());
+                s.paused = true;
+            }
+        }
+        Ok(())
+    })?;
+    if let Ok(turn) = result {
+        crate::peers::owner_intervention(&session_id, &request_id, &item.text, &turn)?;
+    }
+    read(&session_id)
+}
+
 #[tauri::command]
 pub(crate) async fn remove_queued_turn(
     session_id: String,
@@ -526,6 +695,21 @@ pub(crate) async fn resolve_queued_turn(
         Ok(())
     })
 }
+fn continue_state(
+    s: &mut ComposerState,
+    execution: Option<crate::task_settings::ExecutionSelection>,
+) -> Result<(), AppError> {
+    if s.stopped && !s.queue.iter().any(|q| q.status != "sent") {
+        let draft = s.draft.clone();
+        enqueue_selected(s,uuid::Uuid::new_v4().to_string(),"Continue the task from the saved progress. Preserve completed work and follow my existing instructions.".into(),vec![],execution)?;
+        s.draft = draft;
+    }
+    s.paused = false;
+    s.stopped = false;
+    s.stopping = false;
+    Ok(())
+}
+
 #[tauri::command]
 pub(crate) async fn resume_conversation_queue(
     session_id: String,
@@ -543,19 +727,9 @@ pub(crate) async fn resume_conversation_queue(
             "Inspect the conversation and resolve the unconfirmed receipt before resuming",
         ));
     }
-    let id = SessionId::new(&session_id);
-    if !state.get()?.supervisor.is_live(&id) {
-        state
-            .get()?
-            .supervisor
-            .resume_session_with_env(&id, crate::peers::resume_env(&session_id)?)
-            .await?;
-    }
+    let settings = crate::task_settings::read(state.inner(), &session_id).await?;
     change(&session_id, |s| {
-        s.paused = false;
-        s.stopped = false;
-        s.stopping = false;
-        Ok(())
+        continue_state(s, (settings.mode == "custom").then_some(settings.execution))
     })
 }
 /// Call only with LIFECYCLE held, so no child can be created after intent is recorded.
@@ -641,26 +815,23 @@ async fn drain_one(app: &tauri::AppHandle, id: &str) -> Result<(), AppError> {
     let state = app.state::<AppState>();
     let sup = &state.get()?.supervisor;
     let session = SessionId::new(id);
-    if !sup.is_live(&session) {
-        change(id, |s| {
-            s.paused = true;
-            Ok(())
-        })?;
-        return Ok(());
-    }
-    let row = sup
-        .session(&session)
-        .await?
-        .ok_or_else(|| AppError::invalid_argument("Session no longer exists"))?;
-    let provider = row
-        .instance_id
-        .as_ref()
-        .map(|i| i.as_str().split(':').next().unwrap_or(""));
-    let waiting = provider.and_then(|provider| {
-        row.instance_id
-            .as_ref()
-            .and_then(|instance| brigadier_core::allowance::blocked(provider, instance.as_str()))
-    });
+    let execution = match item.execution.clone() {
+        Some(selection) => Ok(selection),
+        None if item.execution_mode.as_deref() == Some("auto") => {
+            crate::task_settings::resolve_auto(state.inner(), None)
+        }
+        // Legacy queued messages predate mode snapshots; retain their task selection.
+        None => crate::task_settings::read(state.inner(), id)
+            .await
+            .map(|s| s.execution),
+    };
+    let waiting = match &execution {
+        Ok(selection) => brigadier_core::allowance::blocked_provider(&selection.provider),
+        Err(_) => sup
+            .registered_drivers()
+            .iter()
+            .find_map(|d| brigadier_core::allowance::blocked_provider(d.kind().as_str())),
+    };
     if waiting != current.waiting {
         change(id, |s| {
             s.waiting = waiting.clone();
@@ -670,23 +841,33 @@ async fn drain_one(app: &tauri::AppHandle, id: &str) -> Result<(), AppError> {
     if waiting.is_some() {
         return Ok(());
     }
-    let activity = sup
-        .native_control(&session, NativeControl::Activity)
-        .await?;
-    if activity["status"] != "Idle" {
-        return Ok(());
+    if sup.is_live(&session) {
+        let activity = sup
+            .native_control(&session, NativeControl::Activity)
+            .await?;
+        if activity["status"] != "Idle" {
+            return Ok(());
+        }
     }
     // Persist the attempt before any provider write. A lost acknowledgement never becomes a retry.
     change(id, |s| {
         s.queue.iter_mut().find(|q| q.id == item.id).unwrap().status = "sending".into();
         Ok(())
     })?;
-    let result = if let Err(error) =
-        validate_prompt_command(state.inner(), id, &item.text, &item.attachment_ids).await
+    let result = if let Err(error) = &execution {
+        Err(error.clone())
+    } else if let Err(error) = validate_dispatched_command(
+        state.inner(),
+        id,
+        &item.text,
+        &item.attachment_ids,
+        execution.as_ref().ok().map(|s| s.provider.as_str()),
+    )
+    .await
     {
         Err(error)
     } else {
-        match tokio::time::timeout(std::time::Duration::from_secs(20),crate::conversation_data::send_locked(state.inner(),id.to_owned(),item.text.clone(),item.attachment_ids.clone())).await {
+        match tokio::time::timeout(std::time::Duration::from_secs(20),crate::conversation_data::send_locked_with_execution(state.inner(),id.to_owned(),item.text.clone(),item.attachment_ids.clone(),Some(execution.unwrap()))).await {
         Ok(result)=>result, Err(_)=>Err(AppError::new("send_unconfirmed","Provider did not acknowledge delivery within 20 seconds. Inspect the conversation before resolving this request."))
     }
     };
@@ -705,6 +886,7 @@ async fn drain_one(app: &tauri::AppHandle, id: &str) -> Result<(), AppError> {
                         | "task_stopped"
                         | "not_live"
                         | "session_busy"
+                        | "usage_waiting"
                 ) {
                     "failed"
                 } else {
@@ -723,6 +905,23 @@ async fn drain_one(app: &tauri::AppHandle, id: &str) -> Result<(), AppError> {
     Ok(())
 }
 async fn command_catalog(state: &AppState, session_id: &str) -> Result<Vec<Value>, AppError> {
+    let provider = if session_id.starts_with("project:") {
+        None
+    } else {
+        Some(
+            crate::task_settings::read(state, session_id)
+                .await?
+                .execution
+                .provider,
+        )
+    };
+    command_catalog_for_provider(state, session_id, provider.as_deref()).await
+}
+async fn command_catalog_for_provider(
+    state: &AppState,
+    session_id: &str,
+    selection: Option<&str>,
+) -> Result<Vec<Value>, AppError> {
     if session_id.starts_with("project:") {
         return Ok(vec![]);
     }
@@ -732,18 +931,17 @@ async fn command_catalog(state: &AppState, session_id: &str) -> Result<Vec<Value
         .session(&SessionId::new(session_id))
         .await?
         .ok_or_else(|| AppError::invalid_argument("Session does not exist"))?;
-    let provider = row
-        .instance_id
-        .as_ref()
-        .map(|i| i.as_str().split(':').next().unwrap_or(""));
+    let provider = selection.or_else(|| {
+        row.instance_id
+            .as_ref()
+            .map(|i| i.as_str().split(':').next().unwrap_or(""))
+    });
     let mut rows = vec![
         json!({"name":"stop","description":"Stop this task and its owned workers","arguments":false,"execution":"control"}),
-        json!({"name":"context","description":"Read current provider context usage","arguments":false,"execution":"control"}),
+        json!({"name":"context","description":"Read durable task state","arguments":false,"execution":"control"}),
     ];
-    if provider == Some("codex") {
-        rows.push(json!({"name":"compact","description":"Compact the Codex conversation history","arguments":false,"execution":"control"}));
-    } else if provider == Some("claude-code") {
-        rows.extend(brigadier_core::claude::capabilities::commands(session_id).into_iter().filter(|c|!matches!(c.name.as_str(),"stop"|"context")).map(|c|json!({"name":c.name,"description":c.description,"arguments":!c.argument_hint.is_empty(),"argumentHint":c.argument_hint,"execution":"prompt"})));
+    if provider == Some("claude-code") {
+        rows.extend(brigadier_core::claude::capabilities::commands(session_id).into_iter().filter(|c|!matches!(c.name.as_str(),"stop"|"context"|"compact")).map(|c|json!({"name":c.name,"description":c.description,"arguments":!c.argument_hint.is_empty(),"argumentHint":c.argument_hint,"execution":"prompt"})));
     }
     Ok(rows)
 }
@@ -793,6 +991,22 @@ async fn validate_prompt_command(
         !attachments.is_empty(),
     )
 }
+async fn validate_dispatched_command(
+    state: &AppState,
+    id: &str,
+    text: &str,
+    attachments: &[String],
+    provider: Option<&str>,
+) -> Result<(), AppError> {
+    if !crate::conversation_data::slash_invocation(text) {
+        return Ok(());
+    }
+    validate_advertised_prompt(
+        &command_catalog_for_provider(state, id, provider).await?,
+        text,
+        !attachments.is_empty(),
+    )
+}
 #[tauri::command]
 pub(crate) async fn composer_commands(
     session_id: String,
@@ -826,29 +1040,8 @@ pub(crate) async fn execute_composer_command(
             serde_json::to_value(stop_conversation_task(session_id, state).await?)
                 .map_err(|e| AppError::io(e.to_string()))?,
         ),
-        "context" => state
-            .get()?
-            .supervisor
-            .native_control(&SessionId::new(session_id), NativeControl::ContextSummary)
-            .await
-            .map_err(AppError::from),
-        "compact" => {
-            let _lock = crate::peers::LIFECYCLE.lock().await;
-            require_running(&session_id)?;
-            if brigadier_core::allowance::blocked_provider("codex").is_some() {
-                return Err(AppError::new(
-                    "usage_waiting",
-                    "Codex usage is exhausted; compaction waits for a fresh allowance observation",
-                ));
-            }
-
-            state
-                .get()?
-                .supervisor
-                .native_control(&SessionId::new(session_id), NativeControl::Compact)
-                .await
-                .map_err(AppError::from)
-        }
+        "context" => serde_json::to_value(crate::task_memory::read(state.inner(), &session_id)?)
+            .map_err(|e| AppError::io(e.to_string())),
         _ => Err(AppError::invalid_argument(
             "Command is not supported by the connected adapter",
         )),
@@ -883,6 +1076,72 @@ mod tests {
         assert_eq!(s.draft.text, "next draft");
         assert!(enqueue(&mut s, "a".into(), "changed".into(), vec![]).is_err());
     }
+    #[test]
+    fn explicit_continue_resumes_unfinished_work_once_without_losing_draft_or_queue() {
+        let mut s = ComposerState {
+            stopped: true,
+            paused: true,
+            draft: Draft {
+                text: "unsent draft".into(),
+                attachment_ids: vec!["draft-file".into()],
+            },
+            ..Default::default()
+        };
+        continue_state(&mut s, None).unwrap();
+        assert_eq!(s.queue.len(), 1);
+        assert_eq!(s.queue[0].status, "queued");
+        assert_eq!(s.draft.text, "unsent draft");
+        assert!(!s.stopped && !s.paused);
+        continue_state(&mut s, None).unwrap();
+        assert_eq!(s.queue.len(), 1);
+        s.stopped = true;
+        s.paused = true;
+        continue_state(&mut s, None).unwrap();
+        assert_eq!(
+            s.queue.len(),
+            1,
+            "existing queued input is the continuation"
+        );
+    }
+
+    #[test]
+    fn queued_custom_selection_survives_retry_restart_and_future_setting_changes() {
+        let mut state = ComposerState::default();
+        let original = crate::task_settings::ExecutionSelection {
+            provider: "codex".into(),
+            model: Some("catalog-model".into()),
+            effort: Some("high".into()),
+        };
+        enqueue_selected(
+            &mut state,
+            "custom".into(),
+            "Do this".into(),
+            vec!["attachment".into()],
+            Some(original.clone()),
+        )
+        .unwrap();
+        enqueue_selected(
+            &mut state,
+            "custom".into(),
+            "Do this".into(),
+            vec!["attachment".into()],
+            Some(crate::task_settings::ExecutionSelection {
+                provider: "claude-code".into(),
+                model: None,
+                effort: None,
+            }),
+        )
+        .unwrap();
+        enqueue_selected(&mut state, "auto".into(), "And this".into(), vec![], None).unwrap();
+        let mut states: BTreeMap<String, ComposerState> =
+            serde_json::from_slice(&serde_json::to_vec(&BTreeMap::from([("s", state)])).unwrap())
+                .unwrap();
+        recover(&mut states);
+        assert_eq!(states["s"].queue[0].execution, Some(original));
+        assert!(states["s"].queue[1].execution.is_none());
+        assert!(states["s"].paused);
+    }
+
     #[test]
     fn crash_never_replays_attempted_send_or_resumes_stopped_task() {
         let mut s = ComposerState {

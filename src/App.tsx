@@ -773,9 +773,9 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
 
   const respond = useCallback(
     (sessionId: SessionId, requestId: RequestId, decision: Decision) => {
-      void bridge().respond(sessionId, requestId, decision).catch(say);
+      return bridge().respond(sessionId, requestId, decision);
     },
-    [say],
+    [],
   );
 
   /* ------------------------------------------------------------------ the run */
@@ -894,7 +894,11 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
       if (burnProject === undefined) return;
       // The visibility effect above pushes `set_visible_projects([burnProject.id])` off this.
       setSelectedProjectId(burnProject.id);
-      setSelectedSessionId(null);
+      const sessions = await bridge().listSessions();
+      store.seedSessions(sessions);
+      const newest = sessions.filter(session => session.project_id === burnProject.id)
+        .sort((a, b) => (b.started_at_ms ?? 0) - (a.started_at_ms ?? 0))[0];
+      setSelectedSessionId(newest?.session_id ?? null);
     },
     [refreshProjects],
   );
@@ -1096,6 +1100,8 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
                 )
               }
               onRewound={() => setConversationRevision((n) => n + 1)}
+              projects={projects}
+              onSelectProject={id => { setSelectedProjectId(id); setSelectedSessionId(null); }}
               project={selectedProject}
               session={selectedSession}
               models={models}

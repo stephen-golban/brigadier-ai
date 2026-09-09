@@ -1,5 +1,5 @@
 // Claude env-vars/model-config, verified 2026-09-05. Alias resolution remains the CLI's job.
-export type Effort = "auto" | "low" | "medium" | "high" | "xhigh" | "max";
+export type Effort = string;
 export interface AgentOptions {
   effort?: Effort;
 }

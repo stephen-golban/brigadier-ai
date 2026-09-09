@@ -180,8 +180,15 @@ fn a_kill_takes_down_the_whole_group() {
 
     let status = g.child.wait().expect("leader must be reapable");
     assert!(!status.success(), "leader exited cleanly instead of being signalled: {status:?}");
-    assert!(group_members(g.pgid).is_empty(), "group {} still has members", g.pgid);
     assert!(!group_alive(g.pgid));
+    // kill_group_sync excludes zombies; waiting for our leader cannot reap grandchildren
+    // adopted by launchd. Match Group::drop's bounded wait for kernel membership to drain.
+    assert!(
+        eventually(Duration::from_secs(2), || group_members(g.pgid).is_empty()),
+        "group {} still has members {:?}",
+        g.pgid,
+        group_members(g.pgid)
+    );
 }
 
 #[test]

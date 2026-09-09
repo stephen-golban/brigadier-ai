@@ -40,6 +40,44 @@ fn invalid(message: &str) -> Error {
 }
 
 impl StoreHandle {
+    /// Permanently preserve a checkout explicitly borrowed by a task, even after its history is deleted.
+    pub async fn protect_workspace(&self, path: String) -> Result<()> {
+        self.durable(move |conn| {
+            conn.execute(
+                "INSERT OR IGNORE INTO borrowed_workspaces(path) VALUES (?1)",
+                [&path],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+    /// Whether automatic cleanup must preserve this checkout.
+    pub async fn workspace_is_protected(&self, path: String) -> Result<bool> {
+        self.query(move |conn| {
+            Ok(conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM borrowed_workspaces WHERE path=?1)",
+                [&path],
+                |r| r.get(0),
+            )?)
+        })
+        .await
+    }
+
+    /// Replace execution settings exactly, including clearing a model or effort override.
+    /// Partial row merges intentionally cannot clear these fields.
+    pub async fn replace_execution_settings(
+        &self,
+        session_id: String,
+        model: Option<String>,
+        effort: Option<String>,
+        permission: String,
+    ) -> Result<()> {
+        self.durable(move |conn| {
+            conn.execute("UPDATE sessions SET model=?2, effort=?3, permission_mode=?4, provider_session_id=NULL, resume_token=NULL WHERE id=?1", (&session_id, &model, &effort, &permission))?;
+            Ok(())
+        }).await
+    }
+
     /// Commit attachment bytes before returning an import reference. IDs cannot be overwritten.
     pub async fn import_attachment(
         &self,

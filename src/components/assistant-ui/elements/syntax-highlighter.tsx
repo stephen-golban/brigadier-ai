@@ -1,4 +1,5 @@
 // assistant-ui Markdown's syntax-highlighter extension, backed by Shiki.
+import { THEME_CHANGED_EVENT } from "../../../providers/ThemeProvider";
 import { themeColor } from "../../../lib/theme";
 import { useEffect, useState } from "react";
 import type { SyntaxHighlighterProps } from "@assistant-ui/react-markdown";
@@ -9,10 +10,17 @@ export function SyntaxHighlighter({
   language,
   components: { Pre, Code },
 }: SyntaxHighlighterProps) {
+  const [light, setLight] = useState(() => document.documentElement.classList.contains("light"));
+  useEffect(() => {
+    const refresh = () => setLight(document.documentElement.classList.contains("light"));
+    window.addEventListener(THEME_CHANGED_EVENT, refresh);
+    return () => window.removeEventListener(THEME_CHANGED_EVENT, refresh);
+  }, []);
   const [highlight, setHighlight] = useState<{
     code: string;
     language: string;
     tokens: ThemedToken[][];
+    light: boolean;
   } | null>(null);
   useEffect(() => {
     let live = true;
@@ -25,7 +33,7 @@ export function SyntaxHighlighter({
               : "text",
           theme: {
             name: "brigadier",
-            type: "dark",
+            type: light ? "light" : "dark",
             fg: themeColor("text"),
             bg: themeColor("elevated"),
             settings: [
@@ -49,7 +57,7 @@ export function SyntaxHighlighter({
         }),
       )
       .then((result) => {
-        if (live) setHighlight({ code, language, tokens: result.tokens });
+        if (live) setHighlight({ code, language, tokens: result.tokens, light });
       })
       .catch(() => {
         if (live) setHighlight(null);
@@ -57,9 +65,9 @@ export function SyntaxHighlighter({
     return () => {
       live = false;
     };
-  }, [code, language]);
+  }, [code, language, light]);
   const tokens =
-    highlight?.code === code && highlight.language === language
+    highlight?.code === code && highlight.language === language && highlight.light === light
       ? highlight.tokens
       : null;
   return (

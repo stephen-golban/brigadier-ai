@@ -339,10 +339,12 @@ where
         shutdown: false,
         ending: false,
         next_control_id: 0,
-        next_approval: 0,
-        next_anon_message: 0,
+        // A fresh native execution may retain the durable Brigadier identity.
+        // Seed local identities from its persisted event cursor to avoid old approval/item IDs.
+        next_approval: start_seq,
+        next_anon_message: start_seq,
         stream_blocks: HashMap::new(),
-        stream_generation: 0,
+        stream_generation: start_seq,
         open_turn: None,
         provider_session_id: None,
         session_started: false,
@@ -1339,6 +1341,12 @@ where
     async fn on_command(&mut self, command: Command) {
         match command {
             Command::Native { request, ack } => {
+                if matches!(request, NativeControl::Steer { .. }) {
+                    let _ = ack.send(Err(CommandError::NotDispatched(
+                        "Claude steering requires interrupt-and-continue".into(),
+                    )));
+                    return;
+                }
                 if matches!(request, NativeControl::Compact) {
                     let _ = ack.send(Err(CommandError::Rejected(
                         "Native compaction control is not implemented by the Claude SDK adapter"
@@ -1480,7 +1488,8 @@ where
                     | NativeControl::Activity
                     | NativeControl::CheckpointBarrier
                     | NativeControl::CheckpointRelease { .. }
-                    | NativeControl::CheckpointVerify { .. } => unreachable!(),
+                    | NativeControl::CheckpointVerify { .. }
+                    | NativeControl::Steer { .. } => unreachable!(),
                 };
                 let request_id = self.mint_control_id();
                 let frame = serde_json::json!({"type":"control_request","request_id":request_id,"request":body});

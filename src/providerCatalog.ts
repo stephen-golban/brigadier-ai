@@ -4,7 +4,7 @@ import { desktop } from './workspaceApi';
 import type { ModelInfo } from './wire';
 export interface ProviderCatalogEntry {
  id:string; label:string; instanceId:string; version:string|null;
- models:{id:string;label:string;efforts:string[]}[]; efforts:string[]; modelCatalogKnown:boolean;
+ models:{id:string;label:string;efforts:string[];resolvedId?:string|null}[]; efforts:string[]; modelCatalogKnown:boolean;
 }
 export function useProviderCatalog(fallback: ModelInfo[]) {
  const [providers,setProviders]=useState<ProviderCatalogEntry[]>([]);

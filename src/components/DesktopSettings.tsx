@@ -1,3 +1,5 @@
+import { ThemeProvider, useTheme } from "../providers/ThemeProvider";
+import { SelectMenu } from "./SelectMenu";
 import { ArchiveSettings } from "./ArchiveSettings";
 import { FolderIcon } from "./NavigationIcons";
 import { Checkbox } from "./controls/checkbox";
@@ -16,21 +18,26 @@ import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
 import { launchApi } from "../launchApi";
 import { NameInput } from "./NameInput";
 import { ResetOnboardingButton } from "./ResetOnboardingButton";
-export function DesktopSettings({
-  data,
-  onData,
-  sessions,
-  titles,
-  jobs,
-  onClose,
-}: {
+export function DesktopSettings(props: DesktopSettingsProps) {
+  return <ThemeProvider><SettingsContents {...props} /></ThemeProvider>;
+}
+interface DesktopSettingsProps {
   data: WorkbenchData;
   onData: (d: WorkbenchData) => void;
   sessions: Record<string, SessionRuntime>;
   titles: Record<string, string>;
   jobs: CleanupJob[];
   onClose: () => void;
-}) {
+}
+function SettingsContents({
+  data,
+  onData,
+  sessions,
+  titles,
+  jobs,
+  onClose,
+}: DesktopSettingsProps) {
+  const { theme, setTheme, persistenceError } = useTheme();
   const [name, setName] = useState(data.displayName ?? "");
   const [folder, setFolder] = useState(data.notesFolder ?? "");
   const [confirm, setConfirm] = useState<Confirmation | null>(null);
@@ -110,8 +117,9 @@ export function DesktopSettings({
               <h3>Appearance</h3>
               <div className="theme-switch flex items-center justify-between">
                 <span>Theme</span>
-                <span className="text-text-secondary">Dark</span>
+                <SelectMenu label="Theme" value={theme} onChange={value => setTheme(value === "light" ? "light" : "dark")} options={[{ value: "dark", label: "Dark" }, { value: "light", label: "Light" }]} />
               </div>
+              {persistenceError && <p role="alert" className="text-error text-xs">{persistenceError}</p>}
               <h3>Profile</h3>
               <form
                 onSubmit={(e) => {

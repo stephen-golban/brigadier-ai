@@ -23,6 +23,7 @@ import { Button } from "./controls/button";
  * retain their attention dots until their requests are answered.
  */
 import { useState } from "react";
+import type { ApprovalHistoryItem } from "./approvalHistory";
 import type { MouseEvent } from "react";
 
 import type { ApprovalItem } from "../feedStore";
@@ -52,7 +53,7 @@ export interface ApprovalsProps {
     sessionId: SessionId,
     requestId: RequestId,
     decision: Decision,
-  ) => void;
+  ) => Promise<void> | void;
   onDismiss: (requestId: RequestId) => void;
   /** Select the approval's session (and its project). Omitted, cards are not clickable. */
   onFocus?: (projectId: ProjectId | null, sessionId: SessionId) => void;
@@ -94,7 +95,7 @@ interface CardProps {
     sessionId: SessionId,
     requestId: RequestId,
     decision: Decision,
-  ) => void;
+  ) => Promise<void> | void;
   onDismiss: (requestId: RequestId) => void;
   onFocus?: (projectId: ProjectId | null, sessionId: SessionId) => void;
 }
@@ -104,6 +105,14 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
   const [applied, setApplied] = useState<Set<number>>(new Set());
   const [denying, setDenying] = useState(false);
   const [reason, setReason] = useState(DEFAULT_DENY_REASON);
+  const [responding, setResponding] = useState(false);
+  const [responseError, setResponseError] = useState<string | null>(null);
+  const respond = async (decision: Decision) => {
+    if (responding) return;
+    setResponding(true); setResponseError(null);
+    try { await onRespond(approval.sessionId, approval.requestId, decision); window.dispatchEvent(new Event("brigadier-approval-response")); }
+    catch (error) { setResponseError(error instanceof Error ? error.message : String(error)); setResponding(false); }
+  };
 
   const kind = approval.kind;
   const readOnly = approval.expired;
@@ -127,7 +136,7 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
   const allow = () => {
     if (kind === null) return;
     const suggestions = kind.type === "tool-permission" ? kind.suggestions : [];
-    onRespond(approval.sessionId, approval.requestId, {
+    void respond({
       type: "allow",
       updated_input: null,
       // Echoed back verbatim; the harness never interprets a provider suggestion.
@@ -139,7 +148,7 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
 
   const deny = () => {
     const text = reason.trim() === "" ? DEFAULT_DENY_REASON : reason.trim();
-    onRespond(approval.sessionId, approval.requestId, {
+    void respond({
       type: "deny",
       reason: text,
       interrupt: false,
@@ -164,6 +173,10 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
 
   return (
     <ApprovalElement
+      id={`approval-${approval.requestId}`}
+      data-request-id={approval.requestId}
+      aria-busy={responding}
+      style={{ scrollMarginBlock: "24px" }}
       className={`approval${readOnly ? " expired" : ""}${row.elsewhere ? " elsewhere" : ""}`}
       onClick={focus}
       heading={
@@ -217,7 +230,7 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
                   <li key={i}>
                     <Checkbox
                       checked={applied.has(i)}
-                      disabled={readOnly}
+                      disabled={readOnly || responding}
                       onCheckedChange={() => toggle(i)}
                     >
                       <span>apply</span>
@@ -234,14 +247,12 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
             {kind.options.length > 0 ? (
               <p className="dim text-text-tertiary">options: {kind.options.join(" · ")}</p>
             ) : null}
-            <p className="dim text-text-tertiary">
-              free-text answers are not wired this phase; allow/deny is the only
-              decision the contract carries.
-            </p>
           </>
         )}
       </div>
 
+      {responseError && <p role="alert" className="text-error text-xs">{responseError} Your decision has not been confirmed; you can retry.</p>}
+      {responding && <p role="status" className="text-xs text-text-secondary">Sending decision…</p>}
       {readOnly ? (
         <div className="approval-actions mt-3 flex flex-wrap items-center justify-end gap-2">
           <Button
@@ -256,6 +267,7 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
         <div className="approval-actions mt-3 flex flex-wrap items-center justify-end gap-2">
           <Input
             className="reason"
+            disabled={responding}
             value={reason}
             autoFocus
             onChange={(e) => setReason(e.target.value)}
@@ -264,12 +276,13 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
               if (e.key === "Escape") setDenying(false);
             }}
           />
-          <Button type="button" className="act danger text-warn" onClick={deny}>
+          <Button type="button" disabled={responding} className="act danger text-warn" onClick={deny}>
             Confirm deny
           </Button>
           <Button
             type="button"
             className="act"
+            disabled={responding}
             onClick={() => setDenying(false)}
           >
             Cancel
@@ -278,13 +291,14 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
       ) : (
         <div className="approval-actions mt-3 flex flex-wrap items-center justify-end gap-2">
           {kind === null ? null : (
-            <Button type="button" className="send wide" onClick={allow}>
+            <Button type="button" disabled={responding} className="send wide" onClick={allow}>
               Allow
             </Button>
           )}
           <Button
             type="button"
             className="act danger text-warn"
+            disabled={responding}
             onClick={() => setDenying(true)}
           >
             Deny
@@ -293,4 +307,18 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
       )}
     </ApprovalElement>
   );
+}
+
+/** A confirmed decision is separate from the requested action's eventual execution result. */
+export function ApprovalResolution({ approval }: { approval: ApprovalHistoryItem }) {
+  if (!approval.resolved) return null;
+  const allowed = approval.decision?.type === "allow";
+  const expired = approval.decision === null;
+  const name = approval.kind?.type === "tool-permission" ? approval.kind.tool_name : "Request";
+  return <details id={`approval-${approval.request_id}`} data-slot="approval-resolution" className="my-2 text-xs text-text-secondary" style={{ scrollMarginBlock: "24px" }}>
+    <summary className="cursor-pointer">{expired ? "Expired" : allowed ? "Approved" : "Denied"} · {name}</summary>
+    <div className="mt-2 rounded-lg border border-hairline p-3">
+      <p>{expired ? "This request is no longer answerable. No approval decision was recorded." : allowed ? "Permission granted. See the action above for its execution result." : approval.decision?.type === "deny" ? approval.decision.reason : "Request denied."}</p>
+    </div>
+  </details>;
 }

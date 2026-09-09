@@ -102,6 +102,8 @@ Source: [assistant-ui Elements and registry](https://github.com/assistant-ui/ass
 
 Adapted components live in `src/components/assistant-ui/elements`: thread, composer, Markdown, reasoning, tool calls, approval cards, artifact cards, agent status and plans. The standalone Chat Panel, Message Actions, Reasoning Panel, Tool Call and Thinking Indicator were installed from the shadcn registry on 2026-09-09, together with surfaces, range and the Radix Collapsible dependency. These conversation disclosures use Radix; other controls retain their existing native implementations. Brigadier supplies existing backend state, safe file navigation, independent phase states and approval decisions. `src/hooks/use-copy-to-clipboard.ts` is from the same registry.
 
+The composer provider selector adapts the segmented button section of [Settings Panel](https://r.assistant-ui.com/elements-settings-panel.json) and the `field` token from [Elements surfaces](https://r.assistant-ui.com/elements-surfaces.json), retrieved 2026-09-09, under the same assistant-ui MIT license.
+
 ## Radix UI — MIT
 
 The installed shadcn Collapsible uses `radix-ui` 1.6.7. Copyright (c) 2022 WorkOS. License: [radix-ui-MIT.txt](licenses/radix-ui-MIT.txt).

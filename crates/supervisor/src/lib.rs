@@ -308,6 +308,8 @@ pub(crate) enum SpawnIn {
         inherit: bool,
         base: Option<String>,
         source: Option<PathBuf>,
+        new_branch: Option<String>,
+        owner: bool,
     },
     /// Run in a directory that already exists. Nothing is created and nothing is rolled back;
     /// the caller owns the checkout and its lifetime.
@@ -650,6 +652,8 @@ impl Supervisor {
                 inherit: false,
                 base: None,
                 source: None,
+                new_branch: None,
+                owner: false,
             },
             false,
         )
@@ -701,6 +705,101 @@ impl Supervisor {
                 base,
                 inherit,
                 source: None,
+                new_branch: None,
+                owner: false,
+            }),
+        )
+        .await
+    }
+
+    /// Start from validated setup selections. Borrowed paths never become app-owned resources.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn start_project_session_selected(
+        &self,
+        project_id: &str,
+        kind: &DriverKind,
+        mut req: StartSession,
+        isolated: bool,
+        base_branch: Option<String>,
+        new_branch: Option<String>,
+        workspace: Option<(PathBuf, Option<String>)>,
+    ) -> Result<SessionId, SupervisorError> {
+        req.hook_policy = Default::default();
+        if let Some((dir, branch)) = workspace {
+            let dir = dir.canonicalize()?;
+            let project = self
+                .project(project_id)
+                .await?
+                .ok_or(SupervisorError::NoSuchProject)?;
+            let git = brigadier_core::worktree::resolve_git()
+                .ok_or_else(|| SupervisorError::InvalidArgument("Git is unavailable".into()))?;
+            // The registered project root may be a plain directory; explicit alternate paths must be actual members.
+            if dir != project.root_path.canonicalize()? {
+                let members = brigadier_core::worktree::list(&git, &project.root_path).await?;
+                if !members
+                    .iter()
+                    .any(|w| w.path.canonicalize().ok().as_ref() == Some(&dir))
+                {
+                    return Err(SupervisorError::InvalidArgument(
+                        "Checkout does not belong to this project".into(),
+                    ));
+                }
+            }
+            if self.list_sessions().await?.iter().any(|s| {
+                self.inner.is_engaged(&s.session_id)
+                    && s.cwd
+                        .as_deref()
+                        .and_then(|p| p.canonicalize().ok())
+                        .as_ref()
+                        == Some(&dir)
+            }) {
+                return Err(SupervisorError::InvalidArgument(
+                    "Another active task owns this checkout".into(),
+                ));
+            }
+            self.workspace_writable(&dir).await?;
+            req.hook_policy = brigadier_core::driver::HookOverride::new(
+                brigadier_core::claude::hook::policy_for(
+                    &req.permission_mode,
+                    &brigadier_core::claude::hook::HookScope::Interactive { root: dir.clone() },
+                ),
+            );
+            self.inner
+                .store
+                .protect_workspace(dir.to_string_lossy().into_owned())
+                .await?;
+            return self
+                .start_project_session_prepared(
+                    project_id,
+                    kind,
+                    req,
+                    Some(SpawnIn::Prepared { dir, branch }),
+                )
+                .await;
+        }
+        if !isolated {
+            return self
+                .start_project_session_from(project_id, kind, req, false, None)
+                .await;
+        }
+        let project = self
+            .project(project_id)
+            .await?
+            .ok_or(SupervisorError::NoSuchProject)?;
+        let (base, inherit) = match base_branch {
+            Some(branch) => worktree::session_base(&project.root_path, &branch).await?,
+            None => (None, true),
+        };
+        self.start_project_session_prepared(
+            project_id,
+            kind,
+            req,
+            Some(SpawnIn::FreshWorktree {
+                inherit,
+                base,
+                source: None,
+                new_branch,
+                owner: true,
             }),
         )
         .await
@@ -723,6 +822,8 @@ impl Supervisor {
                 base: None,
                 inherit: false,
                 source: None,
+                new_branch: None,
+                owner: false,
             }),
         )
         .await
@@ -745,6 +846,8 @@ impl Supervisor {
                 base: None,
                 inherit: false,
                 source: Some(source),
+                new_branch: None,
+                owner: false,
             }),
         )
         .await
@@ -762,13 +865,7 @@ impl Supervisor {
         let attachments = std::mem::take(&mut req.attachments);
         if let Some(workspace) = workspace {
             let id = self
-                .spawn(
-                    project_id,
-                    kind,
-                    req,
-                    workspace,
-                    false,
-                )
+                .spawn(project_id, kind, req, workspace, false)
                 .await?
                 .session_id;
             if let Some(prompt) = prompt {
@@ -897,11 +994,14 @@ impl Supervisor {
         // see docs/research/spawn-split.md §6.
         req.mcp = project.mcp;
         let wheref_was_fresh = matches!(wheref, SpawnIn::FreshWorktree { .. });
+        let owner_workspace = matches!(wheref, SpawnIn::FreshWorktree { owner: true, .. });
         let (prepared, mut branch) = match wheref {
             SpawnIn::FreshWorktree {
                 inherit,
                 base,
                 source,
+                new_branch,
+                owner: _,
             } => {
                 let prepared = if let Some(source) = source {
                     worktree::prepare_from_source(
@@ -910,10 +1010,13 @@ impl Supervisor {
                         &self.inner.data_dir.join("worker-inputs"),
                     )
                     .await?
-                } else if let Some(base) = base {
-                    worktree::prepare_from(&project.root_path, Some(&base)).await?
                 } else {
-                    worktree::prepare(&project.root_path).await?
+                    worktree::prepare_named(
+                        &project.root_path,
+                        base.as_deref(),
+                        new_branch.as_deref(),
+                    )
+                    .await?
                 };
                 if inherit {
                     if let Some(made) = &prepared {
@@ -961,8 +1064,8 @@ impl Supervisor {
         // and is answered with the strictest scope rather than a guess; the loop's own calls
         // always set one explicitly (`loop_/call.rs`).
         // see docs/research/permission-modes.md §4-§5.
-        if req.hook_policy.policy().is_none() {
-            let scope = if wheref_was_fresh && prepared.is_some() {
+        if req.hook_policy.policy().is_none() || owner_workspace {
+            let scope = if owner_workspace || (wheref_was_fresh && prepared.is_some()) {
                 brigadier_core::claude::hook::HookScope::Interactive { root: cwd.clone() }
             } else {
                 brigadier_core::claude::hook::HookScope::Judgement
@@ -1242,6 +1345,166 @@ impl Supervisor {
                 tap: None,
             },
         )
+    }
+
+    /// Replace an idle provider execution with a fresh native session while retaining the
+    /// durable task identity, workspace, event sequence and accrued accounting. No native
+    /// transcript or resume token is passed to the provider.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn restart_execution(
+        &self,
+        session_id: &SessionId,
+        kind: &DriverKind,
+        model: Option<String>,
+        effort: Option<String>,
+        permission: PermissionMode,
+        env: std::collections::BTreeMap<String, String>,
+    ) -> Result<SessionId, SupervisorError> {
+        let _lifecycle = self.inner.lifecycle.read().await;
+        self.require_session_available(session_id)?;
+        if self.is_live(session_id) {
+            let activity = self
+                .native_control(session_id, brigadier_core::session::NativeControl::Activity)
+                .await?;
+            if activity["status"] != "Idle" {
+                return Err(SupervisorError::InvalidArgument(
+                    "Cannot replace a running response; settings apply to subsequent work".into(),
+                ));
+            }
+            self.kill(session_id).await?;
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+            while self.is_live(session_id) {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(SupervisorError::InvalidArgument(
+                        "Previous execution has not stopped; no new input was dispatched".into(),
+                    ));
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }
+        self.inner.reserve_resume(session_id)?;
+        let _guard = ResumeGuard {
+            inner: Arc::clone(&self.inner),
+            session_id: session_id.clone(),
+        };
+        let record = self
+            .session(session_id)
+            .await?
+            .ok_or(SupervisorError::NoSuchSession)?;
+        let project = self
+            .project(
+                record
+                    .project_id
+                    .as_deref()
+                    .ok_or(SupervisorError::NoSuchProject)?,
+            )
+            .await?
+            .ok_or(SupervisorError::NoSuchProject)?;
+        let driver = self
+            .driver(kind)
+            .ok_or_else(|| SupervisorError::NoDriver(kind.clone()))?;
+        let cwd = record
+            .cwd
+            .clone()
+            .unwrap_or_else(|| project.root_path.clone());
+        if self
+            .inner
+            .store
+            .workspace_is_protected(cwd.to_string_lossy().into_owned())
+            .await?
+            && self.list_sessions().await?.iter().any(|s| {
+                &s.session_id != session_id
+                    && self.inner.is_engaged(&s.session_id)
+                    && s.cwd.as_deref().and_then(|p| p.canonicalize().ok())
+                        == cwd.canonicalize().ok()
+            })
+        {
+            return Err(SupervisorError::InvalidArgument(
+                "Another active task owns this checkout. Stop it before continuing this task."
+                    .into(),
+            ));
+        }
+        self.workspace_writable(&cwd).await?;
+        if !cwd.is_dir() {
+            return Err(SupervisorError::NotResumable(format!(
+                "Task workspace {} is unavailable",
+                cwd.display()
+            )));
+        }
+        let scope = if record.worktree_path.is_some() {
+            brigadier_core::claude::hook::HookScope::Worker { root: cwd.clone() }
+        } else {
+            brigadier_core::claude::hook::HookScope::Interactive { root: cwd.clone() }
+        };
+        let mut req = StartSession::new(cwd.clone());
+        req.resumed = Some(Resumed {
+            session_id: session_id.clone(),
+            start_seq: record.last_event_seq,
+        });
+        req.model = model.clone();
+        req.effort = effort.clone();
+        req.permission_mode = permission.clone();
+        req.env_overrides = env;
+        req.mcp = project.mcp;
+        req.thinking = brigadier_core::driver::ThinkingPolicy::Inherit;
+        req.hook_policy = brigadier_core::driver::HookOverride::new(
+            brigadier_core::claude::hook::policy_for(&permission, &scope),
+        );
+        let handle = driver.start_session(req).await?;
+        // Cancellation or a failed durable write must not orphan a child that has not yet
+        // entered the tracked live map. Installing transfers teardown ownership to Supervisor.
+        struct Uninstalled(Option<SessionCommands>);
+        impl Drop for Uninstalled {
+            fn drop(&mut self) {
+                if let Some(commands) = self.0.take() {
+                    tokio::spawn(async move {
+                        let _ = commands.kill().await;
+                    });
+                }
+            }
+        }
+        let mut uninstalled = Uninstalled(Some(handle.commands.clone()));
+        self.inner
+            .store
+            .session_resumed(session_id.clone(), SystemTime::now())
+            .await?;
+        let mut row = SessionRow::new(session_id.clone());
+        row.instance_id = Some(handle.instance_id.clone());
+        row.driver_kind = Some(kind.clone());
+        self.inner
+            .store
+            .replace_execution_settings(
+                session_id.to_string(),
+                model.clone(),
+                effort.clone(),
+                permission.to_string(),
+            )
+            .await?;
+        row.model = model;
+        row.effort = effort;
+        row.permission_mode = Some(permission.to_string());
+        row.thinking = Some("inherit".into());
+        row.status = Some(SessionStatus::Starting);
+        self.inner.store.upsert_session(row).await?;
+        let installed = self.install(
+            &driver,
+            handle,
+            Install {
+                writer_lease: None,
+                project_id: project.id,
+                cwd,
+                start_seq: record.last_event_seq,
+                base: Accrued {
+                    cost_usd: record.cost_usd_cumulative,
+                    usage: record.usage,
+                },
+                tap: None,
+            },
+        );
+        if installed.is_ok() {
+            uninstalled.0 = None;
+        }
+        installed
     }
 
     /// Everything a started and a resumed session do identically: file the live entry, open the
@@ -1598,6 +1861,16 @@ impl Supervisor {
                 "session {session_id} has no worktree; it ran in its project root"
             ))
         })?;
+        if self
+            .inner
+            .store
+            .workspace_is_protected(path.to_string_lossy().into_owned())
+            .await?
+        {
+            return Err(SupervisorError::InvalidArgument(
+                "This checkout was borrowed and must be preserved".into(),
+            ));
+        }
         let branch = record.branch.clone().unwrap_or_default();
         // The repository, not the worktree: `git -C <removed path>` has nowhere to run.
         let repo = match record.project_id.as_deref() {
@@ -1709,18 +1982,22 @@ impl Supervisor {
                 .ok_or(SupervisorError::NoSuchProject)?
                 .root_path;
             let expected = repo.join(worktree::WORKTREES_SUBDIR);
-            if path.parent() != Some(expected.as_path())
-                || !branch.starts_with(worktree::BRANCH_PREFIX)
-            {
+            if path.parent() != Some(expected.as_path()) {
                 return Err(SupervisorError::InvalidArgument(
                     "Session worktree ownership changed; cleanup refused".into(),
                 ));
             }
             let others = self.list_sessions().await?;
-            let shared = others.iter().any(|s| {
-                &s.session_id != id
-                    && (s.worktree_path.as_ref() == Some(path) || s.cwd.as_ref() == Some(path))
-            });
+            let shared = self
+                .inner
+                .store
+                .workspace_is_protected(path.to_string_lossy().into_owned())
+                .await?
+                || !branch.starts_with(worktree::BRANCH_PREFIX)
+                || others.iter().any(|s| {
+                    &s.session_id != id
+                        && (s.worktree_path.as_ref() == Some(path) || s.cwd.as_ref() == Some(path))
+                });
             if !shared {
                 let _lease = if path.is_dir() {
                     Some(
@@ -2538,6 +2815,41 @@ mod tests {
     /// the caller's own request field does not get a vote. A new project is `Off`; after
     /// `set_project_mcp` it is `Inherit` on the next spawn of either shape.
     // see docs/research/spawn-split.md §6 (owner decision 2026-09-03).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fresh_execution_keeps_task_identity_and_feed_without_native_resume_token() {
+        let rig = Rig::new();
+        let project = rig.project().await;
+        let session = rig.run_and_end(&project, 30).await;
+        let before = rig.row(&session).await;
+        assert!(before.resume_token.is_none());
+        let fresh = rig
+            .sup
+            .restart_execution(
+                &session,
+                &rig.kind,
+                None,
+                None,
+                PermissionMode::Ask,
+                Default::default(),
+            )
+            .await
+            .expect("fresh call does not require native history");
+        assert_eq!(fresh, session);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        rig.sup.end_session(&session).await.unwrap();
+        assert!(
+            rig.until(Duration::from_secs(5), || !rig.sup.is_live(&session))
+                .await
+        );
+        let after = rig.row(&session).await;
+        assert!(after.last_event_seq > before.last_event_seq);
+        assert_eq!(after.project_id, before.project_id);
+        assert_eq!(after.cwd, before.cwd);
+        assert_eq!(after.permission_mode.as_deref(), Some("ask"));
+        assert!(after.usage.input_tokens >= before.usage.input_tokens);
+        rig.sup.shutdown().await;
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn the_project_mcp_policy_reaches_the_driver_on_start_and_on_resume() {
         let rig = Rig::new();

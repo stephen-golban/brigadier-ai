@@ -1,5 +1,4 @@
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { invoke } from "@tauri-apps/api/core";
 import { desktop } from "../workspaceApi";
 import { AttachmentPreview } from "./composer/AttachmentPreview";
 import { useContext, useCallback, useEffect, useRef, useState, type TextareaHTMLAttributes, type ReactNode, type KeyboardEvent } from "react";
@@ -13,6 +12,10 @@ import { ComposerBar, ComposerActions } from "./assistant-ui/elements/composer";
 import { Button } from "./controls/button";
 import { RichPromptEditor, type EditorHandle, type EditorSuggestion } from "./composer/RichPromptEditor";
 import { referenceSource } from "./composer/editorSource";
+import { useAttachmentImports } from "./composer/useAttachmentImports";
+import { bridge } from "../bridge";
+import { useSessionNavigation } from "../sessionNavigation";
+import "./composer/attachments.css";
 
 export function useDraft(key: string): [string, (value: string) => void] {
   const read = (k: string) => {
@@ -70,7 +73,6 @@ export function PromptInput(props: PromptInputProps) {
   const [uploading, setUploading] = useState(false);
   const uploadLock = useRef(false);
   const [dragging, setDragging] = useState(false);
-  const [failedFiles, setFailedFiles] = useState<File[]>([]);
   const [pasteNotice, setPasteNotice] = useState(false);
   const surface = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
@@ -90,24 +92,10 @@ export function PromptInput(props: PromptInputProps) {
     });
     return peerApi.importAttachment(projectId, item.name, base64);
   }, [projectId, onAttachments]);
-  const addFiles = useCallback(async (files: File[]) => {
-    if (!files.length || latest.current.disabled || uploadLock.current) return;
-    if (attachmentList.current.length + files.length > 20) { setError("A message can include up to 20 attachments."); return; }
-    const destination = scopeKey;
-    uploadLock.current = true; setUploading(true); onUploadChange?.(true); setError(null);
-    let remaining = files;
-    try {
-      setFailedFiles([]);
-      for (const item of files) {
-        const metadata = await importFile(item);
-        if (currentScope.current !== destination) return;
-        const next = [...attachmentList.current, metadata]; attachmentList.current = next;
-        latest.current.onAttachments?.(next);
-        remaining = remaining.slice(1);
-      }
-    } catch (failure) { if (currentScope.current === destination) { setError(errorMessage(failure)); setFailedFiles(remaining); } }
-    finally { uploadLock.current = false; setUploading(false); onUploadChange?.(false); }
-  }, [scopeKey, importFile, onUploadChange]);
+  const imports = useAttachmentImports({ scope: scopeKey, projectId, attachments, onAttachments, disabled: props.disabled, onError: setError });
+  const addFiles = imports.addFiles;
+  const addPaths = useRef(imports.addPaths); addPaths.current = imports.addPaths;
+  useEffect(() => { onUploadChange?.(uploading || imports.blocked); }, [uploading, imports.blocked, onUploadChange]);
   useEffect(() => {
     if (!desktop || !projectId || !onAttachments) return;
     let live = true; let unlisten: (() => void) | undefined;
@@ -116,23 +104,10 @@ export function PromptInput(props: PromptInputProps) {
       const payload = event.payload;
       if (payload.type === "leave") { setDragging(false); return; }
       const rect = surface.current?.getBoundingClientRect();
-      // Native coordinates are physical; restrict staging to this composer (worker and root can coexist).
       const scale = window.devicePixelRatio || 1;
       const over = rect && payload.position.x / scale >= rect.left && payload.position.x / scale <= rect.right && payload.position.y / scale >= rect.top && payload.position.y / scale <= rect.bottom;
       setDragging(!!over && payload.type !== "drop");
-      if (payload.type !== "drop" || !over || uploadLock.current) return;
-      const destination = scopeKey; uploadLock.current = true; setUploading(true); onUploadChange?.(true);
-      void (async () => {
-        try {
-          if (attachmentList.current.length + payload.paths.length > 20) throw new Error("A message can include up to 20 attachments.");
-          for (const path of payload.paths) {
-            const metadata = await invoke<PeerAttachment>("import_conversation_attachment_path", { projectId, path });
-            if (!live || currentScope.current !== destination) return;
-            const next = [...attachmentList.current, metadata]; attachmentList.current = next; latest.current.onAttachments?.(next);
-          }
-        } catch (failure) { if (live) setError(errorMessage(failure)); }
-        finally { uploadLock.current = false; if (live) { setUploading(false); onUploadChange?.(false); } }
-      })();
+      if (payload.type === "drop" && over) addPaths.current(payload.paths);
     }).then(dispose => { if (live) unlisten = dispose; else dispose(); }).catch(failure => { if (live) setError(errorMessage(failure)); });
     return () => { live = false; unlisten?.(); };
   }, [scopeKey, projectId, !!onAttachments]);
@@ -152,25 +127,30 @@ export function PromptInput(props: PromptInputProps) {
     window.addEventListener("brigadier-attach", attach); window.addEventListener("brigadier-insert-note", note);
     return () => { window.removeEventListener("brigadier-attach", attach); window.removeEventListener("brigadier-insert-note", note); };
   }, []);
+  const { titles } = useSessionNavigation();
   const search = useCallback(async (kind: "@" | "/", query: string): Promise<EditorSuggestion[]> => {
     if (kind === "/") return (latest.current.commands ?? []).filter(command => command.name.toLowerCase().includes(query.toLowerCase())).map(command => ({ id: command.name, label: command.name, description: command.argumentHint ? `${command.description} · ${command.argumentHint}` : command.description, kind: "command" }));
-    const [files, data] = await Promise.all([
+    const [files, data, sessions, peers] = await Promise.all([
       projectId ? workspaceApi.findFiles({ projectId, sessionId: props.sessionId ?? null }, query) : Promise.resolve({ paths: [] }),
       workbenchApi.load(),
+      bridge().listSessions(),
+      peerApi.snapshot(),
     ]);
     return [
-      ...files.paths.slice(0, 9).map(path => ({ id: path, label: path, description: "Attach a snapshot from this workspace", kind: "file" as const })),
-      ...data.notes.filter(note => (note.projectId === null || note.projectId === projectId) && note.title.toLowerCase().includes(query.toLowerCase())).slice(0, 3).map(note => ({ id: note.id, label: note.title, description: "Saved note", kind: "note" as const })),
+      ...files.paths.slice(0, 8).map(path => ({ id: path, label: path, description: "Attach a snapshot from this workspace", kind: "file" as const })),
+      ...data.notes.filter(note => (note.projectId === null || note.projectId === projectId) && note.title.toLowerCase().includes(query.toLowerCase())).sort((a, b) => Number(b.projectId === projectId) - Number(a.projectId === projectId)).slice(0, 6).map(note => ({ id: note.id, label: note.title, description: note.projectId ? "Project note" : "Global note", kind: "note" as const })),
+      ...sessions.filter(session => session.session_id !== props.sessionId && (session.project_id === projectId || session.project_id === null)).map(session => ({ id: session.session_id, label: titles[session.session_id] ?? peers.titles[session.session_id] ?? `Session ${session.session_id.slice(-6)}`, description: `${session.project_id ? "Current project" : "Global session"} · ${session.status}`, kind: "session" as const, projectId: session.project_id })).filter(session => `${session.label} ${session.id}`.toLowerCase().includes(query.toLowerCase())).sort((a, b) => Number(b.projectId === projectId) - Number(a.projectId === projectId)).slice(0, 6),
     ];
-  }, [projectId, props.sessionId]);
+  }, [projectId, props.sessionId, titles]);
   const select = useCallback(async (item: EditorSuggestion): Promise<string> => {
     if (item.kind === "command") return `/${item.id} `;
+    if (item.kind === "session") return referenceSource(item.label, item.id, "session") + " ";
     if (item.kind === "note") return referenceSource(item.label, item.id, "note") + " ";
     if (!projectId || !onAttachments) throw new Error("Select a project before mentioning a file.");
     if (uploadLock.current) throw new Error("Wait for the current attachment to finish.");
     if (attachmentList.current.length >= 20) throw new Error("A message can include up to 20 attachments.");
     const destination = scopeKey;
-    uploadLock.current = true; setUploading(true); onUploadChange?.(true);
+    uploadLock.current = true; setUploading(true);
     try {
       const preview = await workspaceApi.file({ projectId, sessionId: props.sessionId ?? null }, item.id);
       if (preview.truncated) throw new Error(`${item.label} is too large for a file mention. Attach the file directly instead.`);
@@ -178,7 +158,7 @@ export function PromptInput(props: PromptInputProps) {
       if (currentScope.current !== destination) throw new Error("The destination changed while attaching the file.");
       const next = [...attachmentList.current, metadata]; attachmentList.current = next; latest.current.onAttachments?.(next);
       return referenceSource(item.label, metadata.id, "attachment") + " ";
-    } finally { uploadLock.current = false; setUploading(false); onUploadChange?.(false); }
+    } finally { uploadLock.current = false; setUploading(false); }
   }, [projectId, onAttachments, scopeKey, onUploadChange, props.sessionId, importFile]);
 
   return <div ref={surface} className="composer-surface"><ComposerBar className="relative bg-input brigadier-composer" data-slot="prompt-input" dragActive={dragging}
@@ -190,27 +170,31 @@ export function PromptInput(props: PromptInputProps) {
       const pastedFiles = Array.from(event.clipboardData.files);
       const text = event.clipboardData.getData("text/plain");
       if (pastedFiles.length || (onAttachments && text.length > LARGE_PASTE_THRESHOLD)) {
-        setPasteNotice(!pastedFiles.length);
-        event.preventDefault(); event.stopPropagation();
-        void addFiles(pastedFiles.length ? pastedFiles : [new File([text], `pasted-text-${Date.now()}.txt`, { type: "text/plain" })]);
+        const retained = addFiles(pastedFiles.length ? pastedFiles : [new File([text], `pasted-text-${Date.now()}.txt`, { type: "text/plain" })]);
+        if (retained) { setPasteNotice(!pastedFiles.length); event.preventDefault(); event.stopPropagation(); }
+        // If capacity prevents staging, let the literal-text handler preserve a large paste inline.
       }
     }}>
     {header}
-    {attachments.length > 0 && <div className="composer-attachments" aria-label="Attached files">{attachments.map(attachment => <span key={attachment.id} className="composer-attachment" title={`${attachment.name} · ${attachment.mediaType} · ${attachment.size} bytes`}><span aria-hidden="true">{attachment.mediaType?.startsWith("image/") ? "▧" : "▤"}</span><AttachmentPreview attachment={attachment} /><Button type="button" disabled={props.disabled || uploading} aria-label={`Remove attachment ${attachment.name}`} onClick={() => onAttachments?.(attachments.filter(file => file.id !== attachment.id))}>×</Button></span>)}</div>}
+    {attachments.length > 0 && <div className="composer-attachments" aria-label="Attached files">{attachments.map(attachment => <span key={attachment.id} className="composer-attachment" title={`${attachment.name} · ${attachment.mediaType} · ${attachment.size} bytes`}><AttachmentPreview attachment={attachment} thumbnail /><Button type="button" disabled={props.disabled} aria-label={`Remove attachment ${attachment.name}`} onClick={() => onAttachments?.(attachments.filter(file => file.id !== attachment.id))}>×</Button></span>)}</div>}
+    {imports.recoveryError && <div role="alert" className="composer-error">Pending attachments could not be restored: {imports.recoveryError} <Button type="button" onClick={imports.retryRecovery}>Retry attachment recovery</Button></div>}
+    {imports.pending.length > 0 && <div className="composer-attachments" aria-label="Pending attachments">{imports.pending.map(item => <div key={item.id} className="composer-attachment composer-attachment-pending" data-status={item.status}>
+      <span className="attachment-import-name" title={item.name}>{item.name}</span>
+      {item.status === "failed" ? <><span role="alert" className="attachment-import-error">{item.error}</span><Button type="button" disabled={props.disabled} aria-label={`Retry attachment ${item.name}`} onClick={() => imports.retry(item.id)}>Retry</Button></> : <progress aria-label={`Importing ${item.name}`} value={item.progress} max={100} />}
+      <Button type="button" disabled={props.disabled} aria-label={`Remove attachment ${item.name}`} onClick={() => imports.remove(item.id)}>×</Button>
+    </div>)}</div>}
     <RichPromptEditor key={scopeKey} editorRef={editor} value={String(props.value ?? "")} onText={onText} disabled={props.disabled} label={props["aria-label"]} placeholder={props.placeholder} focusKey={props.focusKey} onKeyDown={props.onKeyDown} search={search} select={select} onError={setError} />
-    {pasteNotice && !uploading && !failedFiles.length && !error && <p role="status" className="composer-hint">Large paste staged as a text attachment; your message is unchanged.</p>}
+    {pasteNotice && !uploading && !imports.pending.length && !error && <p role="status" className="composer-hint">Large paste staged as a text attachment; your message is unchanged.</p>}
     {uploading && <p role="status" className="composer-hint">Adding attachments…</p>}
     {dragging && <div className="composer-drop-overlay">Drop files or images to attach</div>}
     <ComposerActions className="relative flex-wrap justify-between px-1 pt-2" onClick={event => event.stopPropagation()}>
       <div className="composer-tools">
-        <Button type="button" variant="ghost" size="icon" aria-label="Attach files" title="Attach files and images" disabled={props.disabled || uploading || !onAttachments} onClick={() => file.current?.click()}><PlusIcon size={18} /></Button>
-        <Button type="button" variant="ghost" size="icon" aria-label="Mention a file or note" title="Mention a project file or note" disabled={props.disabled} onClick={() => editor.current?.insert("@")}><span>@</span></Button>
-        <details className="composer-format-menu"><summary aria-label="Formatting" title="Formatting"><span>Aa</span></summary><div><Button type="button" aria-label="Bold" title="Bold" disabled={props.disabled} onMouseDown={event => event.preventDefault()} onClick={() => editor.current?.format("bold")}>Bold <kbd>⌘ B</kbd></Button><Button type="button" aria-label="Italic" title="Italic" disabled={props.disabled} onMouseDown={event => event.preventDefault()} onClick={() => editor.current?.format("italic")}>Italic <kbd>⌘ I</kbd></Button><Button type="button" aria-label="Code" title="Code" disabled={props.disabled} onMouseDown={event => event.preventDefault()} onClick={() => editor.current?.format("code")}>Code</Button><small>Markdown shortcuts format as you type.</small></div></details>
+        <Button type="button" variant="ghost" size="icon" aria-label="Attach files" title="Attach files and images" disabled={props.disabled || !onAttachments} onClick={() => file.current?.click()}><PlusIcon size={18} /></Button>
+
       </div>
       {children}
       <input ref={file} type="file" multiple disabled={props.disabled} hidden onChange={event => { void addFiles(Array.from(event.target.files ?? [])); event.target.value = ""; }} />
     </ComposerActions>
     {error && <p className="composer-error" role="alert">{error}</p>}
-    {failedFiles.length > 0 && <div className="composer-hint"><span>Paste retained for retry. </span><Button type="button" disabled={uploading} onClick={() => void addFiles(failedFiles)}>Retry attachment</Button></div>}
   </ComposerBar></div>;
 }

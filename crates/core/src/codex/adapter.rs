@@ -25,6 +25,12 @@ use tokio::sync::{mpsc, oneshot};
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 type Ack = oneshot::Sender<Result<(), CommandError>>;
 enum Pending {
+    Steer {
+        ack: oneshot::Sender<Result<Value, CommandError>>,
+        native: String,
+        message_id: TurnId,
+        display: String,
+    },
     Send {
         ack: Ack,
         turn: TurnId,
@@ -243,9 +249,9 @@ impl Actor {
         for (_, (_, pending)) in self.pending.drain() {
             let ack = match pending {
                 Pending::Send { ack, .. } | Pending::Control(ack) => ack,
-                Pending::Compact { ack, .. } => {
+                Pending::Compact { ack, .. } | Pending::Steer { ack, .. } => {
                     let _ = ack.send(Err(CommandError::DeliveryUnknown(
-                        "Compaction acknowledgement was lost".into(),
+                        "Provider control acknowledgement was lost".into(),
                     )));
                     continue;
                 }
@@ -325,19 +331,14 @@ impl Actor {
                     }
                 }
                 self.barrier = None;
-                if input
-                    .text
-                    .split_whitespace()
-                    .next()
-                    .is_some_and(|first| {
-                        first.strip_prefix('/').is_some_and(|command| {
-                            !command.is_empty()
-                                && command.chars().all(|c| {
-                                    c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ':'
-                                })
-                        })
+                if input.text.split_whitespace().next().is_some_and(|first| {
+                    first.strip_prefix('/').is_some_and(|command| {
+                        !command.is_empty()
+                            && command.chars().all(|c| {
+                                c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ':'
+                            })
                     })
-                {
+                }) {
                     let _ = ack.send(Err(CommandError::NotDispatched(
                         "Codex app-server does not execute TUI slash commands as prompt text"
                             .into(),
@@ -416,6 +417,27 @@ impl Actor {
                 )));
             }
             Command::Native { request, ack } => {
+                if let NativeControl::Steer { message_id, input } = request {
+                    let Some(native) = self
+                        .active
+                        .as_ref()
+                        .and_then(|active| active.native.clone())
+                    else {
+                        let _ = ack.send(Err(CommandError::NotDispatched(
+                            "No acknowledged active Codex turn to steer".into(),
+                        )));
+                        return Ok(());
+                    };
+                    let parts = match inputs(&input, &self.files).await {
+                        Ok(parts) => parts,
+                        Err(error) => {
+                            let _ = ack.send(Err(CommandError::NotDispatched(error.to_string())));
+                            return Ok(());
+                        }
+                    };
+                    self.request("turn/steer", json!({"threadId":self.thread,"expectedTurnId":native,"clientUserMessageId":message_id.as_str(),"input":parts}), Pending::Steer { ack, native, message_id, display: input.display_text.unwrap_or(input.text) }).await?;
+                    return Ok(());
+                }
                 let busy = self.active.is_some()
                     || !self.pending.is_empty()
                     || !self.backend.approvals.pending().is_empty();
@@ -506,6 +528,36 @@ impl Actor {
             if let Some((_, pending)) = self.pending.remove(&id) {
                 let response = super::rpc::result(msg);
                 match pending {
+                    Pending::Steer {
+                        ack,
+                        native,
+                        message_id,
+                        display,
+                    } => {
+                        match response {
+                            Ok(result) if result["turnId"].as_str() == Some(native.as_str()) => {
+                                self.emit(
+                                    Event::item_completed(
+                                        ItemId::new(format!("user:{message_id}")),
+                                        ItemKind::UserText,
+                                        &display,
+                                        None,
+                                    ),
+                                    Some(&display),
+                                    None,
+                                )
+                                .await;
+                                let _ = ack.send(Ok(result));
+                            }
+                            Ok(_) => {
+                                let _ = ack.send(Err(CommandError::DeliveryUnknown("Codex steer acknowledgement omitted or changed the active turn id".into())));
+                            }
+                            Err(error) => {
+                                let _ =
+                                    ack.send(Err(CommandError::NotDispatched(error.to_string())));
+                            }
+                        }
+                    }
                     Pending::Send { ack, turn, display } => match response {
                         Ok(result) => {
                             let Some(native) = result["turn"]["id"].as_str().map(str::to_owned)

@@ -18,6 +18,7 @@ export function SelectMenu({
   onChange,
   disabled = false,
   searchable = false,
+  placement = "bottom start",
 }: {
   label: string;
   value: string;
@@ -25,6 +26,7 @@ export function SelectMenu({
   onChange: (value: string) => void;
   disabled?: boolean;
   searchable?: boolean;
+  placement?: string;
 }) {
   const selected = options.find((option) => option.value === value);
   const [query, setQuery] = useState("");
@@ -57,7 +59,7 @@ export function SelectMenu({
         </span>
         <ChevronDownIcon className="size-4" />
       </Button>
-      <Popover.Content>
+      <Popover.Content placement={placement}>
         {searchable && (
           <Input
             type="search"

@@ -168,7 +168,8 @@ impl ProviderDriver for CodexDriver {
         &self,
         req: StartSession,
     ) -> BoxFuture<'_, Result<SessionHandle, DriverError>> {
-        Box::pin(self.open(req, None, None))
+        let identity = req.resumed.clone();
+        Box::pin(self.open(req, None, identity))
     }
     fn resume_session(
         &self,
@@ -194,11 +195,14 @@ pub(crate) fn permission(
     mode: &PermissionMode,
 ) -> Result<(&'static str, &'static str), DriverError> {
     Ok(match mode {
-        PermissionMode::Default | PermissionMode::Manual => ("untrusted", "read-only"),
+        PermissionMode::Ask
+        | PermissionMode::Approve
+        | PermissionMode::Default
+        | PermissionMode::Manual => ("untrusted", "read-only"),
         PermissionMode::AcceptEdits => ("on-request", "workspace-write"),
         PermissionMode::Plan => ("never", "read-only"),
         PermissionMode::DontAsk => ("never", "workspace-write"),
-        PermissionMode::BypassPermissions => ("never", "danger-full-access"),
+        PermissionMode::Full | PermissionMode::BypassPermissions => ("never", "danger-full-access"),
         _ => {
             return Err(protocol(format!(
                 "Permission mode {mode} has no supported Codex equivalent"

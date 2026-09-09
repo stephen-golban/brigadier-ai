@@ -19,6 +19,7 @@ pub(crate) struct ProviderCatalogEntry {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProviderModel {
     id: String,
+    resolved_id: Option<String>,
     label: String,
     efforts: Vec<String>,
 }
@@ -72,11 +73,13 @@ pub(crate) async fn provider_catalog(
                     efforts.clone()
                 },
                 id: m.id,
+                resolved_id: Some(m.resolved),
                 label: m.label,
             })
             .collect();
         models.extend(codex_rows.into_iter().map(|m| ProviderModel {
             id: m.id,
+            resolved_id: None,
             label: m.label,
             efforts: m.efforts,
         }));

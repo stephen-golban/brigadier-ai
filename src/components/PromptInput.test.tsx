@@ -156,9 +156,8 @@ describe("prompt input", () => {
     expect(
       screen.getByRole("button", { name: "Attach files" }),
     ).toBeDisabled();
-    expect(
-      screen.getByRole("button", { name: "Mention a file or note" }),
-    ).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Mention a file or note" })).toBeNull();
+    expect(screen.queryByLabelText("Formatting")).toBeNull();
   });
 
   it("preserves reference links and uses the current file callback after rerendering", async () => {
@@ -203,6 +202,7 @@ it("imports picked files for peer forwarding and retains IDs until the new sessi
     await pasteComposer(screen.getByRole("textbox"), "Pass this reference to the review task");
   fireEvent.change(view.container.querySelector('input[type="file"]')!, {target:{files:[new File(["png"], "Reference.png", {type:"image/png"})]}});
   await screen.findByRole("button", {name:"Remove attachment Reference.png"});
+  await waitFor(() => expect(screen.queryByLabelText("Pending attachments")).toBeNull());
   expect(imported).toHaveBeenCalledWith("p", "Reference.png", "cG5n");
   await user.click(screen.getByRole("button", {name:"Send"}));
   expect(start).toHaveBeenLastCalledWith(expect.objectContaining({attachmentIds:["attachment"]}));
@@ -220,6 +220,7 @@ it("sends a huge paste staged from an empty new-conversation draft", async () =>
   await waitFor(()=>expect(screen.getByRole('textbox')).toHaveAttribute('contenteditable','true'));
   fireEvent.paste(screen.getByRole('textbox'),{clipboardData:{files:[],getData:(type:string)=>type==='text/plain'?source:''}});
   await screen.findByRole('button',{name:'Remove attachment pasted.txt'});
+  await waitFor(() => expect(screen.queryByLabelText('Pending attachments')).toBeNull());
   expect(atob(imported.mock.calls[0]![2])).toBe(source);
   await userEvent.click(screen.getByRole('button',{name:'Send'}));
   expect(start).toHaveBeenCalledWith(expect.objectContaining({prompt:'',attachmentIds:['huge']}));

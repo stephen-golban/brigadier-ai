@@ -47,6 +47,8 @@ export { AppError, toAppError } from "./wire";
 /* -------------------------------------------------------------- interface */
 
 export interface StartSessionArgs {
+  composerMode?: import("./taskSettings").ComposerMode;
+  composerPermission?: import("./taskSettings").PermissionPolicy;
   projectId: ProjectId;
   prompt: string;
   model: string | null;
@@ -56,6 +58,8 @@ export interface StartSessionArgs {
   options?: AgentOptions;
   isolated?: boolean;
   baseBranch?: string;
+  workspacePath?: string;
+  newBranch?: string;
   attachmentIds?: string[];
 }
 
@@ -259,6 +263,8 @@ const tauriBridge: Bridge = {
 
   listSessions: () => call<SessionView[]>("list_sessions"),
   startSession: ({
+    composerMode,
+    composerPermission,
     projectId,
     prompt,
     model,
@@ -268,9 +274,13 @@ const tauriBridge: Bridge = {
     options,
     isolated,
     baseBranch,
+    workspacePath,
+    newBranch,
     attachmentIds,
   }) =>
     call<SessionView>("start_session", {
+      composerMode,
+      composerPermission,
       projectId,
       prompt,
       model,
@@ -280,6 +290,8 @@ const tauriBridge: Bridge = {
       options,
       isolated,
       baseBranch,
+      workspacePath,
+      newBranch,
       attachmentIds,
     }),
   resumeSession: (sessionId) =>

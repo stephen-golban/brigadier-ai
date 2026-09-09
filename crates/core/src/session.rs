@@ -202,6 +202,13 @@ impl FinalText {
 /// See docs/research/rewind-context-2026-09-05.md.
 #[derive(Clone, Debug)]
 pub enum NativeControl {
+    /// Append acknowledged user input to active work, using a durable message identity.
+    Steer {
+        /// Pre-journaled message identity.
+        message_id: TurnId,
+        /// User input and imported attachments.
+        input: TurnInput,
+    },
     /// Request native history compaction. Only adapters with a verified control implement it.
     Compact,
     /// Current context estimate; never cumulative billing usage.
@@ -339,7 +346,9 @@ impl SessionCommands {
         tokio::time::timeout(std::time::Duration::from_secs(20), rx)
             .await
             .map_err(|_| {
-                CommandError::Rejected("Provider control timed out; outcome is unconfirmed".into())
+                CommandError::DeliveryUnknown(
+                    "Provider control timed out; outcome is unconfirmed".into(),
+                )
             })?
             .map_err(|_| CommandError::Closed)?
     }
@@ -368,6 +377,17 @@ impl SessionCommands {
         )
         .await?;
         Ok(turn_id)
+    }
+
+    /// Deliver input to the active execution without changing its selected settings.
+    pub async fn steer_turn(
+        &self,
+        message_id: TurnId,
+        input: TurnInput,
+    ) -> Result<(), CommandError> {
+        self.native_control(NativeControl::Steer { message_id, input })
+            .await
+            .map(|_| ())
     }
 
     /// End the current turn gracefully.

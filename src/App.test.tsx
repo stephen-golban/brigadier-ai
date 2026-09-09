@@ -481,9 +481,7 @@ describe("the project a session belongs to", () => {
 
     // The mount effect selects the first project, and the session belongs to the second.
     const thread = screen.getByRole("main");
-    expect(within(thread).getAllByText("brigadier-ai").length).toBeGreaterThan(
-      0,
-    );
+    expect(within(thread).getByRole("heading", { name: "What should we build in brigadier-ai?" })).toBeVisible();
 
     await selectHistory(user, "bbbb2222");
 

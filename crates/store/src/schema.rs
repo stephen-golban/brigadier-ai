@@ -447,6 +447,7 @@ ALTER TABLE sessions ADD COLUMN effort TEXT;
 ALTER TABLE sessions ADD COLUMN permission_mode TEXT;
 ALTER TABLE sessions ADD COLUMN thinking TEXT;
 "#,
+    "CREATE TABLE borrowed_workspaces (path TEXT PRIMARY KEY NOT NULL);",
 ];
 
 /// Where a session is in its life.
@@ -1033,7 +1034,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .expect("version");
         assert_eq!(version, MIGRATIONS.len() as i64);
-        assert_eq!(version, 13, "conversation lifecycle schema is the top rung");
+        assert_eq!(version, 14, "borrowed workspace protection is the top rung");
         let sql = format!("SELECT {PROJECT_COLUMNS} FROM projects WHERE id = 'p1'");
         let row = conn.query_row(&sql, [], project_from_row).expect("read");
         assert_eq!(
@@ -1083,7 +1084,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .expect("version");
         assert_eq!(version, MIGRATIONS.len() as i64);
-        assert_eq!(version, 13, "conversation lifecycle schema is the top rung");
+        assert_eq!(version, 14, "borrowed workspace protection is the top rung");
 
         let has = |kind: &str, name: &str| -> bool {
             conn.query_row(
@@ -1328,7 +1329,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .expect("version");
         assert_eq!(version, MIGRATIONS.len() as i64);
-        assert_eq!(version, 13, "conversation lifecycle schema is the top rung");
+        assert_eq!(version, 14, "borrowed workspace protection is the top rung");
 
         let sql = format!(
             "SELECT {} FROM phases WHERE id = 'ph1'",
@@ -1358,7 +1359,7 @@ mod tests {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .expect("version");
-        assert_eq!(version, 13);
+        assert_eq!(version, 14);
         let has_column: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('phases') WHERE name = 'base_sha'",
@@ -1436,7 +1437,7 @@ mod tests {
         assert_eq!(
             conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            13
+            MIGRATIONS.len() as i64
         );
         assert_eq!(
             conn.query_row("SELECT provider_uuid FROM chat_items", [], |row| row
@@ -1482,7 +1483,7 @@ mod tests {
         assert_eq!(
             conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            13
+            MIGRATIONS.len() as i64
         );
         assert_eq!(
             conn.query_row(

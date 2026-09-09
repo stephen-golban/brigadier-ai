@@ -424,11 +424,29 @@ pub(crate) async fn prepare_from(
     project_root: &Path,
     base: Option<&str>,
 ) -> Result<Option<Prepared>, SupervisorError> {
+    prepare_named(project_root, base, None).await
+}
+
+pub(crate) async fn prepare_named(
+    project_root: &Path,
+    base: Option<&str>,
+    new_branch: Option<&str>,
+) -> Result<Option<Prepared>, SupervisorError> {
     let Some(git) = resolve_git() else {
+        if new_branch.is_some() {
+            return Err(SupervisorError::InvalidArgument(
+                "Git is required to create a branch".into(),
+            ));
+        }
         tracing::warn!("no git on PATH; the session will run in the project root");
         return Ok(None);
     };
     if !is_repo(&git, project_root).await {
+        if new_branch.is_some() {
+            return Err(SupervisorError::InvalidArgument(
+                "A Git repository is required to create a branch".into(),
+            ));
+        }
         tracing::debug!(
             root = %project_root.display(),
             "not a git repository; the session will run in the project root"
@@ -483,7 +501,9 @@ pub(crate) async fn prepare_from(
     }
 
     let id = short_id(&uuid::Uuid::new_v4().to_string());
-    let branch = format!("{BRANCH_PREFIX}{id}");
+    let branch = new_branch
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("{BRANCH_PREFIX}{id}"));
     let path = project_root.join(WORKTREES_SUBDIR).join(&id);
     // Cheap assertion, not a formality: it also catches the D/F conflict's cousin, a `branch`
     // that some future id scheme made ref-illegal. see docs/research/worktree-git.md §7.
@@ -846,21 +866,37 @@ pub(crate) async fn session_base(
 ) -> Result<(Option<String>, bool), SupervisorError> {
     let git = resolve_git()
         .ok_or_else(|| SupervisorError::InvalidArgument("Git is unavailable".into()))?;
-    let reference = format!("refs/heads/{branch}");
-    let valid = tokio::process::Command::new(&git)
-        .args(["check-ref-format", &reference])
-        .output()
-        .await?;
-    let exists = tokio::process::Command::new(&git)
-        .current_dir(root)
-        .args(["show-ref", "--verify", "--quiet", &reference])
-        .output()
-        .await?;
-    if !valid.status.success() || !exists.status.success() {
-        return Err(SupervisorError::InvalidArgument(
-            "Choose an existing local branch".into(),
-        ));
+    let candidates = if branch.starts_with("refs/heads/") || branch.starts_with("refs/remotes/") {
+        vec![branch.to_owned()]
+    } else {
+        vec![
+            format!("refs/heads/{branch}"),
+            format!("refs/remotes/{branch}"),
+        ]
+    };
+    let mut resolved = None;
+    for reference in candidates {
+        let output = tokio::process::Command::new(&git)
+            .current_dir(root)
+            .args([
+                "rev-parse",
+                "--verify",
+                "--end-of-options",
+                &format!("{reference}^{{commit}}"),
+            ])
+            .output()
+            .await?;
+        if output.status.success() {
+            resolved = Some((
+                reference,
+                String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+            ));
+            break;
+        }
     }
+    let (reference, oid) = resolved.ok_or_else(|| {
+        SupervisorError::InvalidArgument("Choose an existing local or remote branch".into())
+    })?;
     let current = tokio::process::Command::new(&git)
         .current_dir(root)
         .args(["symbolic-ref", "--quiet", "HEAD"])
@@ -868,7 +904,7 @@ pub(crate) async fn session_base(
         .await?;
     let inherit =
         current.status.success() && String::from_utf8_lossy(&current.stdout).trim() == reference;
-    Ok((Some(reference), inherit))
+    Ok((Some(oid), inherit))
 }
 
 #[cfg(test)]
@@ -1065,6 +1101,127 @@ mod tests {
         );
         assert!(session_base(&rig.repo, "--detach").await.is_err());
         assert!(session_base(&rig.repo, "missing").await.is_err());
+        rig.store.close().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn selected_workspace_is_exclusive_and_survives_all_task_cleanup() {
+        let rig = Rig::new(true);
+        let project = rig.project().await;
+        let original = rig.start(&project).await.unwrap();
+        let row = rig.row(&original).await;
+        let path = row.worktree_path.unwrap();
+        let branch = row.branch;
+        assert!(rig
+            .sup
+            .start_project_session_selected(
+                &project,
+                &rig.kind,
+                StartSession::new(&rig.repo),
+                false,
+                None,
+                None,
+                Some((path.clone(), branch.clone()))
+            )
+            .await
+            .is_err());
+        rig.end_and_settle(&original).await;
+        let borrowed = rig
+            .sup
+            .start_project_session_selected(
+                &project,
+                &rig.kind,
+                StartSession::new(&rig.repo),
+                false,
+                None,
+                None,
+                Some((path.clone(), branch)),
+            )
+            .await
+            .unwrap();
+        assert!(rig.row(&borrowed).await.worktree_path.is_none());
+        rig.end_and_settle(&borrowed).await;
+        assert!(rig.sup.cleanup_worktree(&original, true).await.is_err());
+        rig.sup.discard_session(&borrowed).await.unwrap();
+        rig.sup.discard_session(&original).await.unwrap();
+        assert!(path.join("f.txt").is_file());
+        let other = Rig::new(true);
+        assert!(rig
+            .sup
+            .start_project_session_selected(
+                &project,
+                &rig.kind,
+                StartSession::new(&rig.repo),
+                false,
+                None,
+                None,
+                Some((other.repo.clone(), Some("main".into())))
+            )
+            .await
+            .is_err());
+        other.store.close().await.unwrap();
+        rig.store.close().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn staged_named_worktree_copies_only_current_and_preserves_collisions() {
+        let rig = Rig::new(true);
+        let project = rig.project().await;
+        git_run(&rig.git, &rig.repo, &["branch", "alternate"]);
+        git_run(
+            &rig.git,
+            &rig.repo,
+            &["update-ref", "refs/remotes/origin/remote", "HEAD"],
+        );
+        std::fs::write(rig.repo.join("f.txt"), "dirty owner").unwrap();
+        for (source, name, expected) in [
+            ("main", "named-current", "dirty owner"),
+            ("alternate", "named-other", "hi\n"),
+            ("refs/remotes/origin/remote", "named-remote", "hi\n"),
+        ] {
+            let id = rig
+                .sup
+                .start_project_session_selected(
+                    &project,
+                    &rig.kind,
+                    StartSession::new(&rig.repo),
+                    true,
+                    Some(source.into()),
+                    Some(name.into()),
+                    None,
+                )
+                .await
+                .unwrap();
+            let row = rig.row(&id).await;
+            assert_eq!(row.branch.as_deref(), Some(name));
+            assert_eq!(
+                std::fs::read_to_string(row.cwd.unwrap().join("f.txt")).unwrap(),
+                expected
+            );
+            rig.end_and_settle(&id).await;
+        }
+        let before = git_run(&rig.git, &rig.repo, &["rev-parse", "named-current"]);
+        assert!(rig
+            .sup
+            .start_project_session_selected(
+                &project,
+                &rig.kind,
+                StartSession::new(&rig.repo),
+                true,
+                None,
+                Some("named-current".into()),
+                None
+            )
+            .await
+            .is_err());
+        assert_eq!(
+            git_run(&rig.git, &rig.repo, &["rev-parse", "named-current"]),
+            before
+        );
+        assert_eq!(
+            std::fs::read_to_string(rig.repo.join("f.txt")).unwrap(),
+            "dirty owner"
+        );
         rig.store.close().await.unwrap();
     }
 

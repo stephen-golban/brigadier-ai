@@ -193,8 +193,11 @@ function Content({
     const trigger = state.anchor.current
       ?.firstElementChild as HTMLElement | null;
     const previous = document.activeElement as HTMLElement | null;
+    const composer = trigger?.closest<HTMLElement>(".composer-surface, .composer-setup-rail, .composer-queue");
     const position = () => {
       if (!trigger) return;
+      const boundary = composer?.getBoundingClientRect();
+      if (boundary) panel.style.maxWidth = `${Math.max(120, boundary.width)}px`;
       const a = trigger.getBoundingClientRect(),
         p = panel.getBoundingClientRect();
       const [side, align] = placement.split(" ");
@@ -213,12 +216,16 @@ function Content({
         left = a.right - p.width;
       if (["left", "right"].includes(side) && align === "bottom")
         top = a.bottom - p.height;
-      panel.style.left = `${Math.max(8, Math.min(left, window.innerWidth - p.width - 8))}px`;
+      const minLeft = Math.max(8, boundary?.left ?? 8);
+      const maxRight = Math.min(window.innerWidth - 8, boundary?.right ?? window.innerWidth - 8);
+      panel.style.left = `${Math.max(minLeft, Math.min(left, maxRight - p.width))}px`;
       panel.style.top = `${Math.max(8, Math.min(top, window.innerHeight - p.height - 8))}px`;
     };
     position();
     const observer = new ResizeObserver(position);
     observer.observe(panel);
+    if (composer) observer.observe(composer);
+    if (trigger) observer.observe(trigger);
     (
       panel.querySelector<HTMLElement>(
         '[data-autofocus="true"], [autofocus]',
@@ -279,7 +286,7 @@ function Content({
           state.setOpen(false);
           (state.anchor.current?.firstElementChild as HTMLElement)?.focus();
         }
-        if (event.key === "Tab") {
+        if (event.key === "Tab" && !className?.includes("composer-popover")) {
           state.closeAll();
         }
       }}

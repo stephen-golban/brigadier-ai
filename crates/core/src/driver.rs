@@ -93,6 +93,12 @@ pub struct DriverInfo {
 /// reason picking a mode changes anything a human can see.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum PermissionMode {
+    /// Brigadier routes required decisions to the owner.
+    Ask,
+    /// Brigadier evaluates authorization through its host approval broker.
+    Approve,
+    /// No permission prompts, while explicit host restrictions remain binding.
+    Full,
     /// Ask per the provider's own rules. The documented starting mode for an SDK-driven session.
     #[default]
     Default,
@@ -119,6 +125,9 @@ impl PermissionMode {
     /// This crate's own wire spelling: kebab-case for the modelled modes, verbatim otherwise.
     pub fn as_wire_str(&self) -> &str {
         match self {
+            Self::Ask => "ask",
+            Self::Approve => "approve",
+            Self::Full => "full",
             Self::Default => "default",
             Self::Manual => "manual",
             Self::AcceptEdits => "accept-edits",
@@ -137,6 +146,8 @@ impl PermissionMode {
     // unmodelled mode has to travel verbatim or commander rejects it with the choice list.
     pub fn as_cli_flag(&self) -> &str {
         match self {
+            Self::Ask | Self::Approve => "default",
+            Self::Full => "bypassPermissions",
             Self::Default => "default",
             Self::Manual => "manual",
             Self::AcceptEdits => "acceptEdits",
@@ -158,6 +169,9 @@ impl std::fmt::Display for PermissionMode {
 impl From<&str> for PermissionMode {
     fn from(s: &str) -> Self {
         match s {
+            "ask" => Self::Ask,
+            "approve" => Self::Approve,
+            "full" => Self::Full,
             "default" => Self::Default,
             "manual" => Self::Manual,
             "accept-edits" => Self::AcceptEdits,
@@ -386,6 +400,8 @@ impl Eq for HookOverride {}
 /// Everything needed to open a new session.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StartSession {
+    /// Durable Brigadier identity for a fresh provider context; never a native resume token.
+    pub resumed: Option<Resumed>,
     /// Working directory for the child; never `chdir` the host.
     pub cwd: PathBuf,
     /// First user turn, sent as soon as the session is up.
@@ -423,6 +439,7 @@ impl StartSession {
     pub fn new(cwd: impl Into<PathBuf>) -> Self {
         Self {
             cwd: cwd.into(),
+            resumed: None,
             prompt: None,
             display_prompt: None,
             attachments: Vec::new(),

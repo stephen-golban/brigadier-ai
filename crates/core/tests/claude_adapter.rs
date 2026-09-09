@@ -67,6 +67,10 @@ impl Rig {
     /// Spawns the adapter over duplex pipes and completes the handshake using the fixture's
     /// first line, which in every capture is the `initialize` `control_response`.
     async fn start(fixture: &str, event_buffer: usize) -> Rig {
+        Self::start_at(fixture, event_buffer, 0).await
+    }
+
+    async fn start_at(fixture: &str, event_buffer: usize, start_seq: u64) -> Rig {
         let mut lines = fixture_lines(fixture);
         let (mut to_adapter, adapter_stdout) = tokio::io::duplex(PIPE);
         let (adapter_stdin, from_adapter) = tokio::io::duplex(PIPE);
@@ -92,7 +96,7 @@ impl Rig {
             approval_timeout: None,
             prompt: None,
             event_buffer,
-            start_seq: 0,
+            start_seq,
         };
         let connecting = tokio::spawn(connect(
             config,
@@ -1309,8 +1313,22 @@ async fn live_pong() {
     {
         match envelope.event {
             Event::SessionStarted { .. } => saw_started = true,
-            Event::TurnCompleted { stop_reason, .. } => {
+            Event::TurnCompleted {
+                turn_id,
+                stop_reason,
+                ..
+            } => {
                 assert_eq!(stop_reason, StopReason::EndTurn);
+                let text = handle
+                    .commands
+                    .final_assistant_text(turn_id)
+                    .await
+                    .expect("live final text");
+                assert_eq!(
+                    text.trim().to_ascii_lowercase(),
+                    "pong",
+                    "live provider response"
+                );
                 saw_completed = true;
                 break;
             }
@@ -2003,4 +2021,32 @@ async fn partial_text_uses_one_stable_item_and_rate_limit_is_retained() {
     assert!(
         matches!(rig.next_event().await, Event::RuntimeWarning { message } if message.contains("rejected") && message.contains("1900000000"))
     );
+}
+
+#[tokio::test]
+async fn fresh_execution_never_reuses_an_old_approval_identity() {
+    let mut rig = Rig::start_at("s2-can-use-tool-allow.ndjson", 64, 400).await;
+    rig.send_turn().await;
+    rig.feed(9).await;
+    rig.labels_until(is_request_opened).await;
+    let request = rig
+        .collected
+        .iter()
+        .find_map(|event| match event {
+            Event::RequestOpened { request_id, .. } => Some(request_id.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(request, approval_request_id(&rig.session, 401));
+    assert!(rig
+        .commands
+        .respond(approval_request_id(&rig.session, 1), Decision::allow())
+        .await
+        .is_err());
+    rig.commands
+        .respond(request, Decision::allow())
+        .await
+        .unwrap();
+    rig.feed_rest().await;
+    rig.labels_until(is_turn_end).await;
 }

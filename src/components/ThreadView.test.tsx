@@ -413,3 +413,55 @@ it("restores formatted file and note references in saved user history", async ()
   await userEvent.click(screen.getByTitle("Preview attachment"));
   expect(await screen.findByText("exact",{selector:"pre"})).toBeVisible();
 });
+
+it("keeps a pending approval beside its exact requested tool action", async () => {
+  const { Approvals } = await import('./Approvals');
+  vi.spyOn(workspaceApi, "chat").mockResolvedValue([
+    saved("user", {type:"user-text"}, "Inspect the workspace", 1),
+    saved("matching-call", {type:"tool-call",name:"Bash"}, '{"command":"pwd"}', 2),
+    saved("other-call", {type:"tool-call",name:"Read"}, '{"path":"README"}', 3),
+  ]);
+  const requests = <Approvals approvals={[{projectId:'p',projectName:'Example',elsewhere:false,approval:{requestId:'approval-1',sessionId:'s',openedAtMs:10,expired:false,kind:{type:'tool-permission',tool_name:'Bash',input_excerpt:'pwd',suggestions:[],tool_call_id:'matching-call'}}}]} onRespond={vi.fn()} onDismiss={vi.fn()} />;
+  const view = render(<ThreadView sessionId="s" projectId="p" projectName="Example" onFile={vi.fn()} requests={requests} />);
+  await screen.findByRole('button',{name:'Allow'});
+  const card = document.getElementById('approval-approval-1');
+  const call = view.container.querySelector('[data-trace-id="matching-call"]');
+  expect(card?.closest('.approvals')?.previousElementSibling).toBe(call);
+  expect(screen.getAllByRole('button',{name:'Allow'})).toHaveLength(1);
+});
+
+it("restores confirmed approval receipts beside action output after reload", async () => {
+  const { approvalHistoryApi } = await import('./approvalHistory');
+  vi.spyOn(approvalHistoryApi,'load').mockResolvedValue([{request_id:'resolved',session_id:'s',opened_at_ms:1,expired:false,resolved:true,decision:{type:'allow',updated_input:null,updated_permissions:[]},kind:{type:'tool-permission',tool_name:'Bash',input_excerpt:'exit 1',suggestions:[],tool_call_id:'approved-call'}}]);
+  vi.spyOn(workspaceApi, "chat").mockResolvedValue([
+    saved("user", {type:"user-text"}, "Run the check", 1),
+    saved("approved-call", {type:"tool-call",name:"Bash"}, '{"command":"exit 1"}', 2),
+    saved("failure", {type:"tool-result",tool_call_id:"approved-call",is_error:true}, 'Command exited with code 1', 3),
+  ]);
+  const view = render(<ThreadView sessionId="s" projectId="p" projectName="Example" onFile={vi.fn()} />);
+  await screen.findByText('Approved · Bash');
+  expect(document.getElementById('approval-resolved')?.previousElementSibling).toBe(view.container.querySelector('[data-trace-id="approved-call"]'));
+  expect(screen.queryByRole('button',{name:'Allow'})).toBeNull();
+});
+
+it("opens a saved agent-session reference without treating it as a file", async () => {
+  vi.spyOn(workspaceApi, "chat").mockResolvedValue([saved("user", {type:"user-text"}, "Read @[Research](brigadier-session:research-id)", 1)]);
+  const onFile = vi.fn(), onSelectSession = vi.fn();
+  render(<ThreadView sessionId="s" projectId="p" projectName="Example" onFile={onFile} onSelectSession={onSelectSession} />);
+  await userEvent.click(await screen.findByRole('button',{name:'Research'}));
+  expect(onSelectSession).toHaveBeenCalledWith('research-id');
+  expect(onFile).not.toHaveBeenCalled();
+});
+
+it("expands a collapsed ancestor so a nested pending approval is reachable", async () => {
+  const { Approvals } = await import('./Approvals');
+  vi.spyOn(workspaceApi, "chat").mockResolvedValue([
+    saved("user", {type:"user-text"}, "Delegate review", 1),
+    saved("agent-call", {type:"tool-call",name:"Agent"}, '{"description":"Review"}', 2),
+    {...saved("nested-call", {type:"tool-call",name:"Bash"}, '{"command":"pwd"}', 3),parent_id:'agent-call'},
+  ]);
+  const requests = <Approvals approvals={[{projectId:'p',projectName:'Example',elsewhere:false,approval:{requestId:'nested-approval',sessionId:'s',openedAtMs:10,expired:false,kind:{type:'tool-permission',tool_name:'Bash',input_excerpt:'pwd',suggestions:[],tool_call_id:'nested-call'}}}]} onRespond={vi.fn()} onDismiss={vi.fn()} />;
+  render(<ThreadView sessionId="s" projectId="p" projectName="Example" onFile={vi.fn()} requests={requests} />);
+  await waitFor(() => expect(screen.getByRole('button',{name:'Allow'})).toBeVisible());
+  await waitFor(() => expect(document.querySelector('[data-trace-id="agent-call"] #approval-nested-approval')).toBeVisible());
+});

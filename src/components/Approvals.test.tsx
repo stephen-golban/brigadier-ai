@@ -35,3 +35,42 @@ it('never allows a restored expired MCP approval',()=>{
   expect(screen.queryByRole('button',{name:'Allow'})).toBeNull();
   expect(screen.getByRole('button',{name:'Dismiss'})).toBeVisible();
 });
+
+it('keeps the card while a decision is pending and supports retry after a rejected response', async () => {
+  const { waitFor } = await import('@testing-library/react');
+  let reject!: (error: Error) => void;
+  const respond = vi.fn().mockImplementationOnce(() => new Promise<void>((_resolve, fail) => { reject = fail; })).mockResolvedValue(undefined);
+  render(<Approvals approvals={[row]} onRespond={respond} onDismiss={vi.fn()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+  expect(screen.getByRole('button', { name: 'Allow' })).toBeDisabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+  expect(respond).toHaveBeenCalledTimes(1);
+  reject(new Error('Provider disconnected'));
+  await screen.findByRole('alert');
+  expect(screen.getByRole('alert')).toHaveTextContent('Your decision has not been confirmed');
+  expect(screen.getByRole('button', { name: 'Allow' })).toBeEnabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+  await waitFor(() => expect(respond).toHaveBeenCalledTimes(2));
+  expect(document.getElementById('approval-mcp-request')).toBeInTheDocument();
+  expect(screen.queryByText('Approved')).toBeNull();
+});
+
+it('folds only persisted resolved decisions and keeps permission separate from execution success', async () => {
+  const { ApprovalResolution } = await import('./Approvals');
+  const history = {request_id:'confirmed',session_id:'codex-session',opened_at_ms:1,kind:row.approval.kind,expired:false,resolved:false,decision:{type:'allow' as const,updated_input:null,updated_permissions:[]}};
+  const view = render(<ApprovalResolution approval={history} />);
+  expect(screen.queryByText(/Approved/)).toBeNull();
+  view.rerender(<ApprovalResolution approval={{...history,resolved:true}} />);
+  fireEvent.click(screen.getByText('Approved · MCP · brigadier'));
+  expect(screen.getByText(/See the action above for its execution result/)).toBeVisible();
+  expect(screen.queryByText('Succeeded')).toBeNull();
+});
+
+it('renders an expired receipt without inventing a denial or approval', async () => {
+  const { ApprovalResolution } = await import('./Approvals');
+  render(<ApprovalResolution approval={{request_id:'expired',session_id:'s',opened_at_ms:1,kind:row.approval.kind,expired:true,resolved:true,decision:null}} />);
+  fireEvent.click(screen.getByText('Expired · MCP · brigadier'));
+  expect(screen.getByText(/No approval decision was recorded/)).toBeVisible();
+  expect(screen.queryByText(/Denied/)).toBeNull();
+  expect(screen.queryByText(/Approved/)).toBeNull();
+});

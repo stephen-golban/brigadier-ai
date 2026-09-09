@@ -1,10 +1,14 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { composerApi, serializeComposerWrite, type ComposerCommand, type ComposerState } from "../composerApi";
 import { useDurableComposer } from "./composer/useDurableComposer";
 import { desktop, errorMessage } from "../workspaceApi";
 import { ComposerActions as PromptInputActions } from "./assistant-ui/elements/composer";
 import { Button } from "./controls/button";
-import { SessionContext } from "./SessionContext";
+import { ExecutionControl, ModeControl, PermissionControl, providerLabel } from "./composer/ExecutionControls";
+import { useTaskExecutionSettings, type ExecutionSelection } from "../taskSettings";
+import { useProviderCatalog } from "../providerCatalog";
+import * as feedStore from "../feedStore";
+import type { ModelInfo } from "../wire";
 import { useMessageEdit, type MessageEditProps } from "./EditMessage";
 import { PromptInput } from "./PromptInput";
 import { SendIcon } from "./icons";
@@ -12,7 +16,9 @@ import { isSubmitKey } from "../keys";
 import type { SessionRuntime } from "../feedStore";
 import type { SessionId, WorktreeCleanup } from "../wire";
 
+const EMPTY_MODELS: ModelInfo[] = [];
 export interface ComposerProps extends MessageEditProps {
+  models?: ModelInfo[];
   session: SessionRuntime | null;
   /** An IPC call started by this dock is in flight; both secondary actions go inert. */
   busy: boolean;
@@ -29,20 +35,35 @@ export interface ComposerProps extends MessageEditProps {
 }
 
 /** A single Send/Stop control backed by a durable, serialized desktop queue. */
-export function Composer({ session, busy, onSend, onResume, editing, onCancelEdit, onRewound }: ComposerProps) {
+export function Composer({ session, models = EMPTY_MODELS, busy, onSend, onResume, editing, onCancelEdit, onRewound }: ComposerProps) {
   const sessionId = session?.sessionId ?? null;
   const durable = useDurableComposer(sessionId, session?.projectId ?? null);
+  const { providers, error: providerError } = useProviderCatalog(models);
+  const configuration = useTaskExecutionSettings(sessionId, session ? {
+    sessionId: session.sessionId, projectId: session.projectId ?? "", mode: session.model ? "custom" : "auto",
+    permission: session.permissionMode === "bypass-permissions" || session.permissionMode === "full" ? "full" : session.permissionMode === "ask" ? "ask" : "approve",
+    execution: { provider: session.instanceId?.startsWith("codex") ? "codex" : "claude-code", model: session.model, effort: session.effort ?? null },
+    isolated: !!session.worktreePath, baseBranch: session.branch, changes: [],
+  } : undefined);
+  const settings = configuration.settings;
+  const activeProvider = session?.instanceId?.startsWith("codex") ? "codex" : "claude-code";
+  const effectiveSelection = settings?.mode === "auto" && settings.execution.provider === activeProvider
+    ? { ...settings.execution, model: settings.execution.model ?? session?.model ?? null, effort: settings.execution.effort ?? session?.effort ?? null }
+    : settings?.execution;
+  const feed = useSyncExternalStore(feedStore.subscribe, feedStore.getState);
+  const approvals = feed.approvals.filter(item => item.sessionId === sessionId && !item.expired);
   const edit = useMessageEdit({ editing, onCancelEdit, onRewound });
   const [uploading, setUploading] = useState(false);
   const [sending, setSending] = useState(false);
+  const [stopPending, setStopPending] = useState(false);
   const [commands, setCommands] = useState<ComposerCommand[]>([]);
   const [commandResult, setCommandResult] = useState<string | null>(null);
-  const [queueEdit, setQueueEdit] = useState<{ id: string; text: string } | null>(null);
+  const [queueEdit, setQueueEdit] = useState<{ id: string; text: string; execution?: ExecutionSelection } | null>(null);
   const [queueBusy, setQueueBusy] = useState(false);
   const generation = useRef(0);
   const request = useRef<{ id: string; text: string; attachmentIds: string[] } | null>(null);
   useEffect(() => {
-    generation.current++; setSending(false); setQueueBusy(false);
+    generation.current++; setSending(false); setStopPending(false); setQueueBusy(false);
     setCommands([]); setCommandResult(null); setQueueEdit(null); request.current = null;
     try { request.current = JSON.parse(localStorage.getItem(`composer-request:${sessionId}`) ?? "null"); } catch { /* invalid local retry cache */ }
   }, [sessionId]);
@@ -56,7 +77,7 @@ export function Composer({ session, busy, onSend, onResume, editing, onCancelEdi
   const text = editing ? edit.text : durable.draft.text;
   const state = durable.state;
   const working = !!session?.busy && !state?.stopped;
-  const stopping = !!state?.stopping;
+  const stopping = !!state?.stopping || stopPending;
   const waiting = state?.waiting;
   const waitingLabel = waiting ? `Waiting for ${waiting.provider} usage${waiting.reset_at !== null ? ` · resets ${new Date(waiting.reset_at * 1000).toLocaleString()}` : " · reset time unknown"}` : null;
   const pending = state?.queue.filter(item => item.status !== "sent") ?? [];
@@ -64,12 +85,12 @@ export function Composer({ session, busy, onSend, onResume, editing, onCancelEdi
     if (!sessionId || queueBusy) return;
     const active = generation.current;
     setQueueBusy(true); durable.setError(null);
-    try { const next = await serializeComposerWrite(sessionId, action); if (generation.current === active) durable.accept(next); }
-    catch (error) { if (generation.current === active) durable.setError(errorMessage(error)); }
+    try { const next = await serializeComposerWrite(sessionId, action); if (generation.current === active) durable.accept(next); return true; }
+    catch (error) { if (generation.current === active) durable.setError(errorMessage(error)); return false; }
     finally { if (generation.current === active) setQueueBusy(false); }
   };
   const send = async () => {
-    if (!sessionId || !live || busy || sending || uploading || !durable.loaded || (!text.trim() && !durable.draft.attachmentIds.length)) return;
+    if (!sessionId || busy || sending || uploading || configuration.saving || (desktop && !settings) || !durable.loaded || (!text.trim() && !durable.draft.attachmentIds.length)) return;
     if (editing) { if (!session?.busy) await edit.submit(); return; }
     const active = generation.current;
     const current = () => generation.current === active;
@@ -113,44 +134,45 @@ export function Composer({ session, busy, onSend, onResume, editing, onCancelEdi
       if (current()) durable.setError(errorMessage(error));
     } finally { if (current()) setSending(false); }
   };
-  const stop = () => { if (sessionId) { const active = generation.current; setQueueBusy(true); void composerApi.stop(sessionId).then(next => { if (generation.current === active) durable.accept(next); }).catch(error => { if (generation.current === active) durable.setError(errorMessage(error)); }).finally(() => { if (generation.current === active) setQueueBusy(false); }); } };
+  const stop = () => { if (sessionId && !stopPending) { const active = generation.current; setStopPending(true); void composerApi.stop(sessionId).then(next => { if (generation.current === active) durable.accept(next); }).catch(error => { if (generation.current === active) durable.setError(errorMessage(error)); }).finally(() => { if (generation.current === active) setStopPending(false); }); } };
   const resume = async () => {
     if (!sessionId || queueBusy) return;
     if (!desktop && !live && session?.providerSessionId) await onResume(sessionId);
     await apply(() => composerApi.resume(sessionId));
   };
-  const canResume = !!session && (!!state?.paused || (!!session.providerSessionId && !live));
+  const canResume = !!session && (!!state?.paused || (session.worktreeRemoved && !live) || (!desktop && !!session.providerSessionId && !live));
   return <>
+    {approvals.length > 0 && <button type="button" className="composer-approval-strip" onClick={() => document.getElementById(`approval-${approvals[0]!.requestId}`)?.scrollIntoView({ block: "center", behavior: "smooth" })}>Approval needed{approvals.length > 1 ? ` · ${approvals.length}` : ""}<span>View action ↑</span></button>}
     {(pending.length > 0 || state?.paused || state?.stopping || waiting) && <div className="composer-queue" aria-label="Message queue">
-      <div className="composer-queue-header"><span>{stopping ? "Stopping task…" : state?.paused ? state.stopped ? "Queue paused because you stopped" : "Queue paused" : waitingLabel ?? `${pending.length} queued message${pending.length === 1 ? "" : "s"}`}</span>{canResume && <Button type="button" size="sm" disabled={queueBusy || stopping} onClick={() => void resume()}>▶ Resume</Button>}</div>
+      <div className="composer-queue-header"><span>{stopping ? "Stopping task…" : state?.paused ? state.stopped ? "Queue paused because you stopped" : "Queue paused" : waitingLabel ?? `${pending.length} queued message${pending.length === 1 ? "" : "s"}`}</span>{canResume && <Button type="button" size="sm" disabled={queueBusy || stopping} onClick={() => void resume()}>Continue</Button>}</div>
       {pending.map(item => <div className="composer-queue-row" key={item.id}>
         <span aria-hidden="true">↳</span>
         <div className="composer-queue-copy">
-          {queueEdit?.id === item.id ? <><textarea className="composer-queue-edit" aria-label="Edit queued message" value={queueEdit.text} onChange={event => setQueueEdit({ id: item.id, text: event.target.value })} /><Button type="button" disabled={queueBusy || (!queueEdit.text.trim() && !item.attachmentIds.length)} onClick={() => { const text = queueEdit.text; void apply(() => composerApi.update(sessionId!, item.id, text, item.attachmentIds)).then(() => setQueueEdit(null)); }}>Save</Button><Button type="button" onClick={() => setQueueEdit(null)}>Cancel</Button></> : <details><summary>{item.text || `${item.attachmentIds.length} attachment${item.attachmentIds.length === 1 ? "" : "s"}`}</summary><pre>{item.text}</pre>{item.attachmentIds.length > 0 && <small>{item.attachmentIds.length} saved attachment{item.attachmentIds.length === 1 ? "" : "s"}</small>}</details>}
+          {queueEdit?.id === item.id ? <><textarea className="composer-queue-edit" aria-label="Edit queued message" value={queueEdit.text} onChange={event => setQueueEdit({ ...queueEdit, text: event.target.value })} /><Button type="button" disabled={queueBusy || (!queueEdit.text.trim() && !item.attachmentIds.length)} onClick={() => { const edited = queueEdit; void apply(() => composerApi.update(sessionId!, item.id, edited.text, item.attachmentIds, edited.execution)).then(ok => { if (ok) setQueueEdit(null); }); }}>Save</Button><Button type="button" onClick={() => setQueueEdit(null)}>Cancel</Button>{queueEdit.execution && <ExecutionControl mode="custom" selection={queueEdit.execution} providers={providers} started onMode={() => {}} disabled={queueBusy} onChange={execution => setQueueEdit({ ...queueEdit, execution })} />}</> : <details><summary>{item.text || `${item.attachmentIds.length} attachment${item.attachmentIds.length === 1 ? "" : "s"}`}</summary><pre>{item.text}</pre>{item.attachmentIds.length > 0 && <small>{item.attachmentIds.length} saved attachment{item.attachmentIds.length === 1 ? "" : "s"}</small>}</details>}
+          {item.execution && queueEdit?.id !== item.id && <small>{providerLabel(item.execution.provider)} · {item.execution.model ?? "provider default"}{item.execution.effort ? ` · ${item.execution.effort}` : ""}</small>}
           {item.status !== "queued" && <small>{item.status === "unknown" ? "Delivery unconfirmed. Inspect the conversation before resolving." : item.status === "sending" ? "Sending…" : "Failed"}{item.error ? ` · ${item.error}` : ""}</small>}
           {item.status === "unknown" && <div className="composer-queue-actions"><Button type="button" disabled={queueBusy} onClick={() => void apply(() => composerApi.resolve(sessionId!, item.id, "delivered"))}>Verified delivered</Button><Button type="button" disabled={queueBusy} onClick={() => void apply(() => composerApi.resolve(sessionId!, item.id, "not-delivered"))}>Verified not delivered</Button></div>}
         </div>
-        {(item.status === "queued" || item.status === "failed") && <div className="composer-queue-actions"><Button type="button" disabled={queueBusy} aria-label="Edit queued message" onClick={() => setQueueEdit({ id: item.id, text: item.text })}>Edit</Button><Button type="button" disabled={queueBusy} aria-label="Remove queued message" onClick={() => void apply(() => composerApi.remove(sessionId!, item.id))}>×</Button></div>}
+        {(item.status === "queued" || item.status === "failed") && <div className="composer-queue-actions">{working && !stopping && <Button type="button" disabled={queueBusy} aria-label="Steer now" onClick={() => void apply(() => composerApi.steer(sessionId!, item.id))}>Steer now</Button>}<Button type="button" disabled={queueBusy} aria-label="Edit queued message" onClick={() => setQueueEdit({ id: item.id, text: item.text, execution: item.execution ?? undefined })}>Edit</Button><Button type="button" disabled={queueBusy} aria-label="Remove queued message" onClick={() => void apply(() => composerApi.remove(sessionId!, item.id))}>×</Button></div>}
       </div>)}
     </div>}
     <PromptInput sessionId={sessionId} attachmentProjectId={session?.projectId} attachments={editing ? [] : durable.attachments} onAttachments={editing ? undefined : durable.setFiles} onUploadChange={setUploading} commands={commands}
       header={<>{editing && <div className="composer-edit-banner"><span>{edit.rewound ? "Conversation rewound · ready to send" : "Editing message"}</span><Button type="button" disabled={edit.busy || Boolean(edit.confirmation)} onClick={onCancelEdit}>Cancel edit</Button></div>}{editing && edit.error && <p role="alert" className="composer-error">{edit.error}</p>}{editing && edit.confirmation}</>}
-      value={text} aria-label="Message" placeholder={durable.loaded ? live ? working ? "Add a follow-up to the queue" : "Do anything" : "Continue this task to send a message" : "Loading draft…"} focusKey={sessionId ?? undefined}
+      value={text} aria-label="Message" placeholder={durable.loaded ? state?.stopped ? "Task stopped · Continue when ready" : working ? "Add a follow-up to the queue" : "Do anything" : "Loading draft…"} focusKey={sessionId ?? undefined}
       disabled={!durable.loaded || busy || sending || (Boolean(editing) && edit.disabled)} onText={editing ? edit.setText : durable.setText}
       onKeyDown={event => { if (isSubmitKey(event)) { event.preventDefault(); void send(); } }}>
-      <PromptInputActions className="flex-1 flex-wrap justify-end">
-        <span className="status-chip text-text-secondary" role="status">{stopping ? "Stopping…" : state?.stopped ? "Stopped" : waitingLabel ? "Waiting for usage" : working ? "Working" : !durable.loaded ? "Loading" : !live ? session?.status : ""}</span>
+      <PromptInputActions className="composer-main-actions">
         {canResume && !state?.paused && <Button type="button" size="sm" disabled={queueBusy} onClick={() => void resume()}>Continue</Button>}
-        <span className="grow" />
-        {session?.permissionMode && <span className="text-xs text-text-secondary" title="Effective permissions">{session.permissionMode === "bypass-permissions" ? "Full access" : session.permissionMode === "default" ? "Default permissions" : session.permissionMode}</span>}
-        {session && <span className="session-model max-w-52 truncate text-xs text-text-secondary" title="Pinned orchestrator model">{session.model ?? "Auto"}{session.effort ? ` · ${session.effort}` : ""}</span>}
-        {session && <SessionContext sessionId={session.sessionId} revision={session.lastEventSeq} busy={session.busy} />}
-        <Button type="button" size="icon" className="rounded-full" variant="primary" aria-label={stopping ? "Stopping task" : working ? "Stop task" : sending ? "Preparing message" : editing ? "Send edited message" : "send this turn"}
+        {settings && <PermissionControl value={settings.permission} disabled={configuration.saving} onChange={permission => void configuration.update({ ...settings, permission })} />}
+        <span className="composer-control-spacer" />
+        {settings && effectiveSelection && <><ModeControl value={settings.mode} selection={effectiveSelection} providers={providers} started disabled={configuration.saving} onChange={mode => { if (mode !== settings.mode) void configuration.update({ ...settings, mode, execution: effectiveSelection }); }} />{settings.mode === "custom" && <ExecutionControl selection={effectiveSelection} providers={providers} disabled={configuration.saving} onChange={execution => void configuration.update({ ...settings, execution })} />}</>}
+        <Button type="button" size="icon" className="composer-send" aria-label={stopping ? "Stopping task" : working ? "Stop task" : sending ? "Preparing message" : editing ? "Send edited message" : "send this turn"}
           title={working ? "Stop task and pause the queue. Press Enter in the editor to queue a follow-up." : "Send · Enter"}
-          disabled={stopping || (working ? queueBusy : !live || !durable.loaded || busy || sending || uploading || (!text.trim() && !durable.draft.attachmentIds.length) || (Boolean(editing) && edit.disabled))}
-          onClick={working ? stop : () => void send()}>{working || stopping ? <span className="composer-stop-symbol" /> : sending ? <span role="status">…</span> : <SendIcon />}</Button>
+          disabled={stopping || (working ? false : !durable.loaded || busy || sending || uploading || configuration.saving || (desktop && !settings) || (!text.trim() && !durable.draft.attachmentIds.length) || (Boolean(editing) && edit.disabled))}
+          onClick={working ? stop : () => void send()}>{working || stopping ? <span className="composer-stop-symbol" /> : sending ? <span className="composer-spinner" /> : <SendIcon />}</Button>
       </PromptInputActions>
     </PromptInput>
+    {(configuration.error || providerError) && <p className="composer-error composer-feedback" role="alert">{configuration.error || providerError}</p>}
     {durable.error && <p className="composer-error mx-auto mt-2 max-w-[780px]" role="alert">{durable.error}</p>}
     {commandResult && <details className="mx-auto mt-2 max-w-[780px] text-xs" open><summary>Command result</summary><pre className="max-h-48 overflow-auto whitespace-pre-wrap">{commandResult}</pre></details>}
   </>;
