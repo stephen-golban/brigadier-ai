@@ -1,5 +1,4 @@
 import type { MessageEditProps } from "./EditMessage";
-import { SelectMenu } from "./SelectMenu";
 import type { AgentOptions } from "../agentOptions";
 /** One chat composer: start a session, or continue the selected conversation. */
 import { Composer } from "./Composer";
@@ -28,6 +27,8 @@ export interface DockProps extends MessageEditProps {
     projectId: ProjectId;
     prompt: string;
     model: string | null;
+    provider?: string;
+  requestId?: string;
     permissionMode: PermissionMode;
     options?: AgentOptions;
     isolated?: boolean;
@@ -86,19 +87,6 @@ export function Dock(props: DockProps) {
         ) : null}
 
         <span className="grow" />
-        <SelectMenu
-          label="Agent"
-          value="claude"
-          onChange={() => {}}
-          options={[
-            {
-              value: "claude",
-              label: "Claude Code",
-              description:
-                "Connected local CLI. Uses your existing authentication.",
-            },
-          ]}
-        />
       </div>
 
       {session === null ? (

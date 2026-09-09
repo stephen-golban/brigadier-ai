@@ -1,6 +1,7 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
+import { peerApi } from "../peerApi";
 import { ThreadView } from "./ThreadView";
 import { workspaceApi, type ChatItem } from "../workspaceApi";
 
@@ -21,6 +22,14 @@ vi.mock("../desktopApi", async (original) => ({
   ...(await original<typeof import("../desktopApi")>()),
   useSessionChanges: () => ({ turns: [], files: [] }),
 }));
+
+beforeEach(() => {
+  vi.spyOn(workspaceApi, "historyPage").mockImplementation(async (id, options) => {
+    let items = await workspaceApi.chat(id, options?.after ?? 0);
+    if (items.length === 20) items = [...items, ...await workspaceApi.chat(id, items[items.length - 1]!.seq)];
+    return {items, nextAfter: Math.max(0,...items.map(i=>i.seq)), nextBefore: items[0]?.seq ?? null, hasMore:false};
+  });
+});
 
 afterEach(() => {
   cleanup();
@@ -228,7 +237,7 @@ it.each([
   expect(screen.getByText(label!)).toBeVisible();
   expect(screen.queryByText("Working…")).toBeNull();
 });
-it("hydrates all history pages before resting", async () => {
+it("renders the hydrated latest page", async () => {
   const page = Array.from({ length: 23 }, (_, i) =>
     saved(`history-${i}`, { type: "user-text" }, `Saved turn ${i}`, i + 1),
   );
@@ -369,4 +378,38 @@ it("folds a full turn while preserving commentary boundaries and independent too
   expect(screen.getByText("Implemented compact work blocks.")).toBeVisible();
   await user.click(parent);
   expect(screen.getByText("Output 1-0")).toBeVisible();
+});
+
+
+it("loads latest history first, pages backward, and bounds mounted message rows", async () => {
+  const all = Array.from({length:200},(_,i)=>saved(`v-${i}`,{type:'user-text'},`History ${i}`,i+1));
+  const history = vi.spyOn(workspaceApi, 'historyPage').mockImplementation(async (_id, options) => {
+    const matching=all.filter(i=>options?.before===undefined || i.seq<options.before);
+    const items=matching.slice(-100);
+    return {items,nextAfter:items[items.length-1]?.seq ?? 0,nextBefore:items[0]?.seq ?? null,hasMore:matching.length>100};
+  });
+  const {container} = render(<ThreadView sessionId="long" projectId="p" projectName="Example" onFile={()=>{}} />);
+  const earlier = await screen.findByRole('button',{name:'Load earlier messages'});
+  expect(history).toHaveBeenCalledWith('long',{});
+  expect(container.querySelectorAll('[data-message-id]').length).toBeLessThan(40);
+  await userEvent.click(earlier);
+  expect(history).toHaveBeenCalledWith('long',{before:101});
+  expect(await screen.findByRole('button',{name:'Return to latest messages'})).toBeVisible();
+});
+
+it("restores formatted file and note references in saved user history", async () => {
+  vi.spyOn(workspaceApi, "chat").mockResolvedValue([saved("rich-user", {type:"user-text"}, "**Review** @[Source](brigadier-attachment:file-id) and @[Spec](brigadier-note:note-id)", 1)]);
+  const source = vi.spyOn(peerApi,"attachment").mockResolvedValue({metadata:{id:"file-id",projectId:"p",name:"source.ts",mediaType:"text/plain",size:5,createdAt:0},base64:btoa("exact")});
+  const onFile=vi.fn();
+  const props={sessionId:"idle",projectId:"p",projectName:"Example",onFile};
+  const view=render(<ThreadView {...props}/>);
+  expect((await screen.findByText("Review")).tagName).toBe("STRONG");
+  view.unmount();render(<ThreadView {...props}/>);
+  await userEvent.click(await screen.findByRole("button",{name:"Spec"}));
+  expect(onFile).toHaveBeenCalledWith("brigadier-note:note-id");
+  await userEvent.click(screen.getByRole("button",{name:"Source"}));
+  await screen.findByTitle("Preview attachment");
+  expect(source).toHaveBeenCalledWith("p","file-id");
+  await userEvent.click(screen.getByTitle("Preview attachment"));
+  expect(await screen.findByText("exact",{selector:"pre"})).toBeVisible();
 });

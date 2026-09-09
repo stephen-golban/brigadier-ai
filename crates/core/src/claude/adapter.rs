@@ -247,6 +247,8 @@ struct Adapter<W> {
     next_control_id: u64,
     next_approval: u64,
     next_anon_message: u64,
+    stream_blocks: HashMap<(String, usize), ItemId>,
+    stream_generation: u64,
 
     open_turn: Option<OpenTurn>,
     provider_session_id: Option<String>,
@@ -339,6 +341,8 @@ where
         next_control_id: 0,
         next_approval: 0,
         next_anon_message: 0,
+        stream_blocks: HashMap::new(),
+        stream_generation: 0,
         open_turn: None,
         provider_session_id: None,
         session_started: false,
@@ -434,6 +438,10 @@ where
                         ControlResponseBody::Success { .. } => {
                             if let Ok(value) = serde_json::to_value(&response.response) {
                                 if let Some(body) = value.get("response") {
+                                    crate::claude::capabilities::record_commands(
+                                        self.config.session_id.as_str(),
+                                        body,
+                                    );
                                     crate::claude::capabilities::record(
                                         self.config.instance_id.as_str(),
                                         body,
@@ -573,10 +581,26 @@ where
             KnownMessage::Assistant(assistant) => self.on_assistant(assistant, raw),
             KnownMessage::User(user) => self.on_user(user, raw),
             KnownMessage::Result(result) => self.on_result(&result, raw),
-            // `stream_event` only arrives with `includePartialMessages: true`, which is not set.
-            // TODO: enable it and map it onto `Event::ContentDelta` when the UI wants token
-            // streaming. see docs/research/agent-sdk.md §7, `includePartialMessages`.
-            KnownMessage::StreamEvent(_) => {}
+            KnownMessage::StreamEvent(stream) => self.on_stream(stream, raw),
+            KnownMessage::RateLimitEvent(rate) => {
+                if let Some(info) = rate.rate_limit_info {
+                    crate::claude::capabilities::record_usage(
+                        self.config.instance_id.as_str(),
+                        info.clone(),
+                    );
+                    if info.get("status").and_then(Value::as_str) == Some("rejected") {
+                        self.emit(
+                            Event::RuntimeWarning {
+                                message: format!(
+                                    "Provider usage limit: {}",
+                                    bounded(&info.to_string(), 2048)
+                                ),
+                            },
+                            Some(raw),
+                        );
+                    }
+                }
+            }
             // Informational frames, deliberately not events: `system/thinking_tokens` alone was
             // 40 of the 99 frames the spike captured, and a feed of those is noise.
             // see docs/research/claude-direct-spike.md "Frame-type census".
@@ -584,12 +608,76 @@ where
             | KnownMessage::ToolUseSummary(_)
             | KnownMessage::AuthStatus(_)
             | KnownMessage::PromptSuggestion(_)
-            | KnownMessage::RateLimitEvent(_)
             | KnownMessage::ConversationReset(_)
             | KnownMessage::ActiveGoal(_)
             | KnownMessage::KeepAlive(_)
             | KnownMessage::TranscriptMirror(_) => {}
         }
+    }
+
+    fn on_stream(&mut self, stream: claude_wire::message::StreamEventMessage, raw: &str) {
+        let event = stream.event;
+        let parent = stream.parent_tool_use_id.unwrap_or_default();
+        let index = event.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+        match event.get("type").and_then(Value::as_str) {
+            Some("message_start") => {
+                self.stream_generation += 1;
+            }
+            Some("content_block_start") => {
+                let block = &event["content_block"];
+                let kind = match block["type"].as_str() {
+                    Some("text") => ItemKind::AssistantText,
+                    Some("thinking") => ItemKind::Thinking,
+                    _ => return,
+                };
+                if self.stream_blocks.len() >= 256 {
+                    return;
+                }
+                let id = ItemId::new(format!(
+                    "{}:stream:{}:{parent}:{index}",
+                    self.config.session_id, self.stream_generation
+                ));
+                self.stream_blocks
+                    .insert((parent.clone(), index), id.clone());
+                self.emit(
+                    Event::item_started(
+                        id,
+                        kind,
+                        "",
+                        (!parent.is_empty()).then(|| ItemId::new(parent)),
+                    ),
+                    Some(raw),
+                );
+            }
+            Some("content_block_delta") => {
+                if let Some(id) = self.stream_blocks.get(&(parent, index)).cloned() {
+                    if let Some(text) = event["delta"]["text"]
+                        .as_str()
+                        .or_else(|| event["delta"]["thinking"].as_str())
+                    {
+                        self.emit(
+                            Event::ContentDelta {
+                                item_id: id,
+                                text: bounded(text, 128 * 1024),
+                            },
+                            Some(raw),
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn completed_block_id(
+        &mut self,
+        uuid: Option<&str>,
+        index: usize,
+        parent: Option<&ItemId>,
+    ) -> ItemId {
+        self.stream_blocks
+            .remove(&(parent.map_or("", ItemId::as_str).to_owned(), index))
+            .unwrap_or_else(|| self.block_item_id(uuid, index))
     }
 
     fn on_system(&mut self, system: SystemMessage, raw: &str) {
@@ -777,7 +865,7 @@ where
         match assistant.message.content {
             MessageContent::Text(text) => {
                 self.append_turn_text(&text, parent.is_some());
-                let item_id = self.block_item_id(uuid.as_deref(), 0);
+                let item_id = self.completed_block_id(uuid.as_deref(), 0, parent.as_ref());
                 self.emit_item(item_id, ItemKind::AssistantText, &text, parent, raw);
             }
             MessageContent::Blocks(blocks) => {
@@ -806,15 +894,15 @@ where
         match known {
             ContentBlockKnown::Text { text, .. } => {
                 self.append_turn_text(&text, parent.is_some());
-                let item_id = self.block_item_id(uuid, index);
+                let item_id = self.completed_block_id(uuid, index, parent.as_ref());
                 self.emit_item(item_id, ItemKind::AssistantText, &text, parent, raw);
             }
             ContentBlockKnown::Thinking { thinking, .. } => {
-                let item_id = self.block_item_id(uuid, index);
+                let item_id = self.completed_block_id(uuid, index, parent.as_ref());
                 self.emit_item(item_id, ItemKind::Thinking, &thinking, parent, raw);
             }
             ContentBlockKnown::RedactedThinking { .. } => {
-                let item_id = self.block_item_id(uuid, index);
+                let item_id = self.completed_block_id(uuid, index, parent.as_ref());
                 self.emit_item(
                     item_id,
                     ItemKind::Thinking,
@@ -1251,6 +1339,13 @@ where
     async fn on_command(&mut self, command: Command) {
         match command {
             Command::Native { request, ack } => {
+                if matches!(request, NativeControl::Compact) {
+                    let _ = ack.send(Err(CommandError::Rejected(
+                        "Native compaction control is not implemented by the Claude SDK adapter"
+                            .into(),
+                    )));
+                    return;
+                }
                 if matches!(request, NativeControl::Activity) {
                     let _ = ack.send(Ok(serde_json::json!({"provider":"Claude Code","cli":"claude","instance":self.config.instance_id,"model":self.observed_model,"status":if self.rewind_paused {"Rewinding"} else if !self.open_permissions.is_empty() {"Needs approval"} else if self.open_turn.is_some() {"Working"} else {"Idle"},"action":self.last_action,"agents":self.tasks})));
                     return;
@@ -1380,7 +1475,8 @@ where
                     } => {
                         serde_json::json!({"subtype":"rewind_conversation","target_message_uuid":target_uuid,"last_seen_user_message_uuid":last_seen_uuid,"interrupt_if_running":false})
                     }
-                    NativeControl::FinishRewind
+                    NativeControl::Compact
+                    | NativeControl::FinishRewind
                     | NativeControl::Activity
                     | NativeControl::CheckpointBarrier
                     | NativeControl::CheckpointRelease { .. }
@@ -1524,13 +1620,18 @@ where
                 blocks.clear();
             }
             for image in &input.attachments {
-                if image.media_type == "text/plain" {
+                if matches!(
+                    image.media_type.as_str(),
+                    "text/plain" | "application/octet-stream"
+                ) {
                     let text = image
                         .text
                         .as_ref()
                         .filter(|s| s.len() <= 1024 * 1024)
                         .ok_or_else(|| {
-                            CommandError::NotDispatched("Invalid UTF-8 text attachment".into())
+                            CommandError::NotDispatched(
+                                "Missing text or local file attachment reference".into(),
+                            )
                         })?;
                     blocks.push(ContentBlock::Known(ContentBlockKnown::Text {
                         text: format!(

@@ -650,3 +650,20 @@ describe("deleted history stays deleted", () => {
     expect(store.getProjectRows(PROJECT)).toEqual([]);
   });
 });
+
+it("removes stopped Codex MCP and Edit approvals from the live attention state", async () => {
+  const store = await load(); store.start();
+  const opened = (id:string,name:string): Event => ({type:'request-opened',request_id:id,turn_id:'turn',kind:{type:'tool-permission',tool_name:name,input_excerpt:'Native approval',suggestions:[],tool_call_id:null}});
+  store.pushBatch(batch({signals:[env('s1',opened('mcp','MCP · brigadier')),env('s1',opened('edit','Edit'))]}));
+  vi.advanceTimersByTime(FRAME_MS);
+  expect(store.getState().approvals).toHaveLength(2);
+  store.pushBatch(batch({signals:[
+    env('s1',{type:'request-resolved',request_id:'mcp',decision:{type:'deny',reason:'Codex session ended',interrupt:true}}),
+    env('s1',{type:'request-resolved',request_id:'edit',decision:{type:'deny',reason:'Codex session ended',interrupt:true}}),
+    env('s1',{type:'session-exited',reason:'killed',exit_code:null}),
+  ]}));
+  vi.advanceTimersByTime(FRAME_MS);
+  expect(store.getState().approvals).toEqual([]);
+  expect(store.getState().sessions.s1?.status).toBe('exited');
+  store.stop();
+});

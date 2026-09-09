@@ -163,7 +163,9 @@ pub fn terse_line(event: &Event) -> Option<String> {
         // number, so rendering it would be a lie in their favour.
         // see docs/vision.md §6 "Economics — usage windows, never dollars". `cost_usd_cumulative`
         // stays on the event and in `sessions.cost_usd_cumulative`; only the row drops it.
-        Event::TurnCompleted { stop_reason, usage, .. } => format!(
+        Event::TurnCompleted {
+            stop_reason, usage, ..
+        } => format!(
             "turn done · {} · {} in / {} out",
             stop_str(stop_reason),
             usage.input_tokens,
@@ -186,7 +188,10 @@ pub fn terse_line(event: &Event) -> Option<String> {
             Decision::Allow { .. } => "approval allowed".to_owned(),
             Decision::Deny { reason, .. } => join("approval denied", reason),
         },
-        Event::SessionCompacted { trigger, pre_tokens } => {
+        Event::SessionCompacted {
+            trigger,
+            pre_tokens,
+        } => {
             let trigger = match trigger {
                 brigadier_core::event::CompactTrigger::Manual => "manual",
                 brigadier_core::event::CompactTrigger::Auto => "auto",
@@ -218,12 +223,22 @@ fn item_label(kind: &ItemKind) -> String {
         ItemKind::AssistantText => "assistant".to_owned(),
         ItemKind::Thinking => "thinking".to_owned(),
         ItemKind::ToolCall { name } => format!("tool {name}"),
-        ItemKind::ToolResult { is_error, .. } => {
-            if *is_error { "tool failed" } else { "tool result" }.to_owned()
+        ItemKind::ToolResult { is_error, .. } => if *is_error {
+            "tool failed"
+        } else {
+            "tool result"
         }
+        .to_owned(),
         ItemKind::UserText => "user".to_owned(),
-        ItemKind::Subagent { task_id, subagent_type, .. } => {
-            format!("subagent {}", subagent_type.as_deref().unwrap_or(task_id.as_str()))
+        ItemKind::Subagent {
+            task_id,
+            subagent_type,
+            ..
+        } => {
+            format!(
+                "subagent {}",
+                subagent_type.as_deref().unwrap_or(task_id.as_str())
+            )
         }
     }
 }
@@ -267,14 +282,29 @@ fn stop_str(reason: &StopReason) -> String {
 // see docs/research/persistence.md §1 — the pointer needs the cwd recorded at spawn, and the
 // file is a cache the provider sweeps after `cleanupPeriodDays`.
 pub async fn apply(env: &Envelope, handle: &StoreHandle) {
-    if matches!(env.event, Event::TurnStarted { .. } | Event::TurnCompleted { .. } | Event::TurnAborted { .. } | Event::SessionExited { .. }) {
+    if matches!(
+        env.event,
+        Event::TurnStarted { .. }
+            | Event::TurnCompleted { .. }
+            | Event::TurnAborted { .. }
+            | Event::SessionExited { .. }
+    ) {
         let _ = handle.chat_turn_event(env.clone()).await;
+    }
+    if matches!(env.event, Event::ContentDelta { .. }) {
+        let _ = handle.chat_content_delta(env.clone()).await;
     }
     if let Some(item) = crate::chat::project(env) {
         let _ = handle.chat_item(item).await;
     }
     match &env.event {
-        Event::SessionStarted { provider_session_id, model, cwd, resume_token, .. } => {
+        Event::SessionStarted {
+            provider_session_id,
+            model,
+            cwd,
+            resume_token,
+            ..
+        } => {
             let mut row = SessionRow::new(env.session_id.clone());
             row.instance_id = Some(env.instance_id.clone());
             row.provider_session_id = Some(provider_session_id.clone());
@@ -285,7 +315,12 @@ pub async fn apply(env: &Envelope, handle: &StoreHandle) {
             row.started_at = Some(env.at);
             let _ = handle.upsert_session(row).await;
         }
-        Event::TurnCompleted { turn_id, stop_reason, usage, cost_usd_cumulative } => {
+        Event::TurnCompleted {
+            turn_id,
+            stop_reason,
+            usage,
+            cost_usd_cumulative,
+        } => {
             let _ = handle
                 .set_usage(env.session_id.clone(), *usage, *cost_usd_cumulative)
                 .await;
@@ -302,15 +337,22 @@ pub async fn apply(env: &Envelope, handle: &StoreHandle) {
             );
             let _ = handle.upsert_session(row).await;
         }
-        Event::RequestOpened { request_id, kind, .. } => {
+        Event::RequestOpened {
+            request_id, kind, ..
+        } => {
             let approval = brigadier_core::approval::PendingApproval {
                 request_id: request_id.clone(),
                 kind: kind.clone(),
                 opened_at: env.at,
             };
-            let _ = handle.approval_opened(env.session_id.clone(), approval).await;
+            let _ = handle
+                .approval_opened(env.session_id.clone(), approval)
+                .await;
         }
-        Event::RequestResolved { request_id, decision } => {
+        Event::RequestResolved {
+            request_id,
+            decision,
+        } => {
             let _ = handle
                 .approval_resolved(request_id.clone(), decision.clone(), env.at)
                 .await;
@@ -324,7 +366,13 @@ pub async fn apply(env: &Envelope, handle: &StoreHandle) {
     }
     if let Some(line) = terse_line(&env.event) {
         let _ = handle
-            .feed(env.session_id.clone(), env.seq, env.at, kind(&env.event), line)
+            .feed(
+                env.session_id.clone(),
+                env.seq,
+                env.at,
+                kind(&env.event),
+                line,
+            )
             .await;
     }
 }

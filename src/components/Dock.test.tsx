@@ -1,3 +1,4 @@
+import { pasteComposer } from "../test/composer";
 /**
  * The dock's one question: **there is one text field, and something on screen says what it does.**
  *
@@ -19,10 +20,11 @@
  * auto-cleanup needs a global `afterEach` this config denies it.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { Dock } from "./Dock";
+import * as providerCatalog from "../providerCatalog";
 import type { DockProps } from "./Dock";
 import { ZERO_USAGE } from "../wire";
 import type { SessionRuntime } from "../feedStore";
@@ -30,6 +32,7 @@ import type { ProjectId, ProjectView, SessionId } from "../wire";
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
 });
 
 const P1 = "project-one" as ProjectId;
@@ -106,25 +109,38 @@ describe("chat composer", () => {
     const { spies } = mount();
     expect(fields()).toHaveLength(1);
     for (const name of ["Run", "Session", "Turn"]) expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
-    await userEvent.type(fields()[0]!, "hello");
-    await userEvent.click(screen.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(fields()[0]).toHaveAttribute("contenteditable", "true"));
+    await pasteComposer(fields()[0]!, "hello");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
     expect(spies.onStartSession).toHaveBeenCalledWith(expect.objectContaining({ projectId: P1, prompt: "hello" }));
     expect(spies.onStartRun).not.toHaveBeenCalled();
   });
   it("sends to the selected session and returns to new chat when deselected", async () => {
     const { spies, props, view } = mount({ session: session() });
-    await userEvent.type(fields()[0]!, "next step{enter}");
+    await waitFor(() => expect(fields()[0]).toHaveAttribute("contenteditable", "true"));
+    await pasteComposer(fields()[0]!, "next step");
+    fireEvent.keyDown(fields()[0]!, { key: "Enter" });
+    await waitFor(() => expect(spies.onSend).toHaveBeenCalled());
     expect(spies.onSend).toHaveBeenCalledWith(S1, "next step");
     view.rerender(<Dock {...props} session={null} />);
-    expect(screen.getByRole("button", { name: "Start" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();
     expect(fields()).toHaveLength(1);
   });
   it("keeps chat available while an automation exists", () => {
     mount();
-    expect(screen.getByRole("button", { name: "Start" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();
   });
   it("disables starting when the provider is unavailable", () => {
     mount({ blocked: true });
-    expect(fields()[0]).toBeDisabled();
+    expect(fields()[0]).toHaveAttribute("contenteditable", "false");
   });
+});
+
+it("allows a connected Codex task when Claude is unavailable", async () => {
+  vi.spyOn(providerCatalog, "useProviderCatalog").mockReturnValue({providers: [{id: "codex", label: "Codex", instanceId: "codex:default", version: null, models: [{id: "exact-codex", label: "Exact Codex", efforts: ["high"]}], efforts: ["high"], modelCatalogKnown: true}], error: ""});
+  const {spies} = mount({blocked: true});
+  await waitFor(() => expect(fields()[0]).toHaveAttribute("contenteditable", "true"));
+  await pasteComposer(fields()[0]!, "use available provider");
+  fireEvent.click(screen.getByRole("button", {name: "Send"}));
+  await waitFor(() => expect(spies.onStartSession).toHaveBeenCalledWith(expect.objectContaining({provider: "codex", prompt: "use available provider"})));
 });

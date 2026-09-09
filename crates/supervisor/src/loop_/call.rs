@@ -16,7 +16,10 @@
 //! see [`CallEnd`].
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant};
 
 use brigadier_core::claude::hook::{policy_for, HookScope};
@@ -75,6 +78,10 @@ pub struct CallRequest {
     pub thinking: ThinkingPolicy,
     /// Model slug, or the provider default.
     pub model: Option<String>,
+    /// Exact effort for this call.
+    pub effort: Option<String>,
+    /// An independently selected registered provider, or the run default.
+    pub provider: Option<DriverKind>,
     /// The mode the owner chose for this run.
     ///
     /// It reaches two places, and the second is the one that was missing: the child's
@@ -155,7 +162,9 @@ pub trait ModelCall: Send + Sync + std::fmt::Debug {
     fn call<'a>(
         &'a self,
         req: CallRequest,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<CallOutcome, LoopError>> + Send + 'a>>;
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<CallOutcome, LoopError>> + Send + 'a>,
+    >;
 }
 
 /// The production [`ModelCall`]: a real supervised child, one turn, then killed.
@@ -164,13 +173,27 @@ pub struct SupervisedCall {
     sup: Supervisor,
     kind: DriverKind,
     project_root: PathBuf,
+    stop: Arc<AtomicBool>,
 }
 
 impl SupervisedCall {
     /// Calls into `project_root` on the driver registered for `kind`.
     #[must_use]
     pub fn new(sup: Supervisor, kind: DriverKind, project_root: PathBuf) -> Self {
-        Self { sup, kind, project_root }
+        Self {
+            sup,
+            kind,
+            project_root,
+            stop: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+impl SupervisedCall {
+    /// Share root cancellation with all owned calls.
+    pub fn with_stop(mut self, stop: Arc<AtomicBool>) -> Self {
+        self.stop = stop;
+        self
     }
 }
 
@@ -178,8 +201,9 @@ impl ModelCall for SupervisedCall {
     fn call<'a>(
         &'a self,
         req: CallRequest,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<CallOutcome, LoopError>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<CallOutcome, LoopError>> + Send + 'a>,
+    > {
         Box::pin(async move { self.run(req).await })
     }
 }
@@ -191,22 +215,104 @@ impl SupervisedCall {
         // cannot. `docs/research/permission-modes.md` §4.
         let (dir, branch, scope) = match &req.cwd {
             CallCwd::ProjectRoot => (self.project_root.clone(), None, HookScope::Judgement),
-            CallCwd::Worktree { dir, branch } => {
-                (dir.clone(), branch.clone(), HookScope::Worker { root: dir.clone() })
-            }
+            CallCwd::Worktree { dir, branch } => (
+                dir.clone(),
+                branch.clone(),
+                HookScope::Worker { root: dir.clone() },
+            ),
         };
 
+        let provider = req.provider.as_ref().unwrap_or(&self.kind);
+        while let Some(waiting) = brigadier_core::allowance::blocked_provider(provider.as_str()) {
+            if self.stop.load(Ordering::Acquire) {
+                return Ok(CallOutcome {
+                    session_id: None,
+                    text: String::new(),
+                    end: CallEnd::Aborted,
+                    parked: false,
+                });
+            }
+            // Waiting is backed by the durable account observation. No model substitution and
+            // no blind replay of an already-sent turn; this guard runs before spawn only.
+            tracing::debug!(provider = %provider, reset_at = ?waiting.reset_at, "waiting for observed allowance");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         let mut start = StartSession::new(dir.clone());
-        start.prompt = Some(req.prompt.clone());
+        // Initialize idle: a Stop arriving during provider startup must never dispatch the goal.
+        start.prompt = None;
+        if self.stop.load(Ordering::Acquire) {
+            return Ok(CallOutcome {
+                session_id: None,
+                text: String::new(),
+                end: CallEnd::Aborted,
+                parked: false,
+            });
+        }
         start.model = req.model.clone();
+        start.effort = req.effort.clone();
         start.thinking = req.thinking;
         start.permission_mode = req.permission_mode.clone();
+        let scope = if req.permission_mode == PermissionMode::Plan {
+            HookScope::Judgement
+        } else {
+            scope
+        };
         start.hook_policy = HookOverride::new(policy_for(&req.permission_mode, &scope));
 
         let started = Instant::now();
-        let spawned =
-            self.sup.spawn_in(&req.project_id, &self.kind, start, dir, branch).await?;
+        let spawned = self
+            .sup
+            .spawn_in(
+                &req.project_id,
+                req.provider.as_ref().unwrap_or(&self.kind),
+                start,
+                dir,
+                branch,
+            )
+            .await?;
         let session_id = spawned.session_id.clone();
+        if self.stop.load(Ordering::Acquire) {
+            let _ = self.sup.kill(&session_id).await;
+            return Ok(CallOutcome {
+                session_id: Some(session_id),
+                text: String::new(),
+                end: CallEnd::Aborted,
+                parked: false,
+            });
+        }
+        let sent = {
+            let sending = self.sup.send_input(
+                &session_id,
+                brigadier_core::session::TurnInput::text(req.prompt.clone()),
+            );
+            tokio::pin!(sending);
+            loop {
+                tokio::select! {
+                    result = &mut sending => break Some(result),
+                    _ = tokio::time::sleep(Duration::from_millis(50)) => {
+                        if self.stop.load(Ordering::Acquire) { break None; }
+                    }
+                }
+            }
+        };
+        match sent {
+            Some(Ok(_)) => {}
+            Some(Err(error)) => {
+                let _ = self.sup.kill(&session_id).await;
+                return Err(error.into());
+            }
+            None => {
+                // A checkpoint/send interrupted before acknowledgement remains uncertain in
+                // its durable journal. Stop kills the provider and never retries the input.
+                let _ = self.sup.kill(&session_id).await;
+                return Ok(CallOutcome {
+                    session_id: Some(session_id),
+                    text: String::new(),
+                    end: CallEnd::Aborted,
+                    parked: false,
+                });
+            }
+        }
         let outcome = self.watch(spawned, &req).await;
 
         // Always. A one-turn child that answered is finished with, and one that did not is worse:
@@ -239,7 +345,10 @@ impl SupervisedCall {
 
     /// Watch one call's stream, honouring both clocks and the parking suspension.
     async fn watch(&self, spawned: crate::Spawned, req: &CallRequest) -> CallOutcome {
-        let crate::Spawned { session_id, mut events } = spawned;
+        let crate::Spawned {
+            session_id,
+            mut events,
+        } = spawned;
         let mut turn: Option<TurnId> = None;
         let mut parked = false;
         let mut parks_open = 0usize;
@@ -254,63 +363,77 @@ impl SupervisedCall {
         // began after them, and one resolved approval would suspend the quiet deadline for good.
         let mut parked_before_last_seen = Duration::ZERO;
 
-        let end = loop {
-            let suspended = parks_open > 0;
-            let paused = parked_for + parked_since.map_or(Duration::ZERO, |t| t.elapsed());
-            let turn_left = req
-                .turn_deadline
-                .saturating_sub(started.elapsed().saturating_sub(paused));
-            let quiet_left = req.quiet_deadline.saturating_sub(
-                last_seen.elapsed().saturating_sub(paused - parked_before_last_seen),
-            );
-            let wait = turn_left.min(quiet_left);
+        let end =
+            loop {
+                let suspended = parks_open > 0;
+                let paused = parked_for + parked_since.map_or(Duration::ZERO, |t| t.elapsed());
+                let turn_left = req
+                    .turn_deadline
+                    .saturating_sub(started.elapsed().saturating_sub(paused));
+                let quiet_left = req.quiet_deadline.saturating_sub(
+                    last_seen
+                        .elapsed()
+                        .saturating_sub(paused - parked_before_last_seen),
+                );
+                let wait = if suspended {
+                    Duration::from_millis(50)
+                } else {
+                    turn_left.min(quiet_left)
+                };
 
-            let next = if suspended {
-                // No clock runs while the owner is being asked. §15 item 14.
-                events.recv().await
-            } else {
-                match tokio::time::timeout(wait, events.recv()).await {
-                    Ok(next) => next,
-                    Err(_) => {
-                        break if turn_left <= quiet_left {
-                            CallEnd::TurnDeadline
-                        } else {
-                            CallEnd::QuietDeadline
-                        };
-                    }
+                if self.stop.load(Ordering::Acquire) {
+                    break CallEnd::Aborted;
                 }
-            };
+                // A short cancellation tick remains active even during parked approvals.
+                let next =
+                    match tokio::time::timeout(wait.min(Duration::from_millis(50)), events.recv())
+                        .await
+                    {
+                        Ok(next) => next,
+                        Err(_) => {
+                            if !suspended && (turn_left.is_zero() || quiet_left.is_zero()) {
+                                break if turn_left <= quiet_left {
+                                    CallEnd::TurnDeadline
+                                } else {
+                                    CallEnd::QuietDeadline
+                                };
+                            }
+                            continue;
+                        }
+                    };
 
-            let Some(env) = next else { break CallEnd::Exited };
-            last_seen = Instant::now();
-            parked_before_last_seen =
-                parked_for + parked_since.map_or(Duration::ZERO, |t| t.elapsed());
-            match env.event {
-                Event::TurnStarted { turn_id } => turn = Some(turn_id),
-                Event::TurnCompleted { turn_id, .. } => {
-                    turn = Some(turn_id);
-                    break CallEnd::Answered;
-                }
-                Event::TurnAborted { .. } => break CallEnd::Aborted,
-                Event::SessionExited { .. } => break CallEnd::Exited,
-                Event::RequestOpened { .. } => {
-                    parked = true;
-                    parks_open += 1;
-                    if parked_since.is_none() {
-                        parked_since = Some(Instant::now());
+                let Some(env) = next else {
+                    break CallEnd::Exited;
+                };
+                last_seen = Instant::now();
+                parked_before_last_seen =
+                    parked_for + parked_since.map_or(Duration::ZERO, |t| t.elapsed());
+                match env.event {
+                    Event::TurnStarted { turn_id } => turn = Some(turn_id),
+                    Event::TurnCompleted { turn_id, .. } => {
+                        turn = Some(turn_id);
+                        break CallEnd::Answered;
                     }
-                }
-                Event::RequestResolved { .. } => {
-                    parks_open = parks_open.saturating_sub(1);
-                    if parks_open == 0 {
-                        if let Some(since) = parked_since.take() {
-                            parked_for += since.elapsed();
+                    Event::TurnAborted { .. } => break CallEnd::Aborted,
+                    Event::SessionExited { .. } => break CallEnd::Exited,
+                    Event::RequestOpened { .. } => {
+                        parked = true;
+                        parks_open += 1;
+                        if parked_since.is_none() {
+                            parked_since = Some(Instant::now());
                         }
                     }
+                    Event::RequestResolved { .. } => {
+                        parks_open = parks_open.saturating_sub(1);
+                        if parks_open == 0 {
+                            if let Some(since) = parked_since.take() {
+                                parked_for += since.elapsed();
+                            }
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
-            }
-        };
+            };
 
         let (end, text) = match (&end, &turn) {
             (CallEnd::Answered, Some(turn_id)) => match self.text(&session_id, turn_id).await {
@@ -320,7 +443,12 @@ impl SupervisedCall {
             _ => (end, String::new()),
         };
         drain(&mut events);
-        CallOutcome { session_id: Some(session_id), text, end, parked }
+        CallOutcome {
+            session_id: Some(session_id),
+            text,
+            end,
+            parked,
+        }
     }
 
     async fn text(
@@ -391,17 +519,28 @@ impl ScriptedCall {
     pub fn ending(self, label: &'static str, end: CallEnd) -> Self {
         self.push(
             label,
-            CallOutcome { session_id: None, text: String::new(), end, parked: false },
+            CallOutcome {
+                session_id: None,
+                text: String::new(),
+                end,
+                parked: false,
+            },
         )
     }
 
     fn push(self, label: &'static str, outcome: CallOutcome) -> Self {
-        self.state().answers.entry(label).or_default().push_back(outcome);
+        self.state()
+            .answers
+            .entry(label)
+            .or_default()
+            .push_back(outcome);
         self
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, ScriptState> {
-        self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// How many calls have been made, in order.
@@ -413,27 +552,34 @@ impl ScriptedCall {
     /// How many calls were made with `label`.
     #[must_use]
     pub fn count(&self, label: &str) -> usize {
-        self.state().calls.iter().filter(|c| c.label == label).count()
+        self.state()
+            .calls
+            .iter()
+            .filter(|c| c.label == label)
+            .count()
     }
-
 }
 
 impl ModelCall for ScriptedCall {
     fn call<'a>(
         &'a self,
         req: CallRequest,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<CallOutcome, LoopError>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<CallOutcome, LoopError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             let (outcome, delay) = {
                 let mut state = self.state();
                 state.calls.push(req.clone());
                 state.live += 1;
                 state.peak = state.peak.max(state.live);
-                let queued = state
-                    .answers
-                    .get_mut(req.label)
-                    .and_then(|q| if q.len() > 1 { q.pop_front() } else { q.front().cloned() });
+                let queued = state.answers.get_mut(req.label).and_then(|q| {
+                    if q.len() > 1 {
+                        q.pop_front()
+                    } else {
+                        q.front().cloned()
+                    }
+                });
                 (
                     queued.unwrap_or(CallOutcome {
                         session_id: None,
@@ -462,7 +608,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_scripted_call_answers_in_order_and_repeats_its_last() {
-        let script = ScriptedCall::new().answering("lead", "one").answering("lead", "two");
+        let script = ScriptedCall::new()
+            .answering("lead", "one")
+            .answering("lead", "two");
         let req = |label| CallRequest {
             project_id: "p".into(),
             label,
@@ -472,6 +620,8 @@ mod tests {
             quiet_deadline: Duration::from_secs(1),
             thinking: ThinkingPolicy::Off,
             model: None,
+            effort: None,
+            provider: None,
             permission_mode: PermissionMode::Default,
         };
         assert_eq!(script.call(req("lead")).await.expect("call").text, "one");
@@ -479,7 +629,10 @@ mod tests {
         assert_eq!(script.call(req("lead")).await.expect("call").text, "two");
         assert_eq!(script.count("lead"), 3);
         // An unscripted label is an ended session, never a silent empty answer.
-        assert_eq!(script.call(req("worker")).await.expect("call").end, CallEnd::Exited);
+        assert_eq!(
+            script.call(req("worker")).await.expect("call").end,
+            CallEnd::Exited
+        );
     }
 
     #[test]

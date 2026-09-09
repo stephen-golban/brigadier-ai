@@ -18,7 +18,7 @@ function MarkdownContent({
         urlTransform={(url) =>
           url.startsWith("/") ||
           url.startsWith("./") ||
-          /^brigadier-note:[a-zA-Z0-9_-]+$/.test(url)
+          /^brigadier-(?:note|attachment):[a-zA-Z0-9_-]+$/.test(url)
             ? url
             : defaultUrlTransform(url)
         }
@@ -27,7 +27,7 @@ function MarkdownContent({
             if (
               href &&
               (!/^[a-z][a-z0-9+.-]*:/i.test(href) ||
-                /^brigadier-note:[a-zA-Z0-9_-]+$/.test(href)) &&
+                /^brigadier-(?:note|attachment):[a-zA-Z0-9_-]+$/.test(href)) &&
               !href.startsWith("//") &&
               !href.startsWith("#")
             ) {

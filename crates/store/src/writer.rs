@@ -89,10 +89,7 @@ type DurableWrite = Box<dyn FnOnce(&Connection) -> Result<()> + Send>;
 /// One unit of work for the writer thread. Crate-private: the public surface is [`StoreHandle`].
 pub(crate) enum Op {
     /// Durability barrier: callback result is acknowledged only after FULL commit.
-    Durable(
-        DurableWrite,
-        oneshot::Sender<Result<()>>,
-    ),
+    Durable(DurableWrite, oneshot::Sender<Result<()>>),
     Chat(crate::chat::ChatItem),
     ChatTurn(Box<brigadier_core::event::Envelope>),
     /// Insert or replace a project.
@@ -328,11 +325,28 @@ impl StoreHandle {
 
     /// Bounded turn timing and outcomes for the selected conversation.
     pub async fn chat_turns(&self, session: String) -> Result<Vec<crate::chat::ChatTurn>> {
-        self.query(move |conn| crate::chat::read_turns(conn, &session)).await
+        self.query(move |conn| crate::chat::read_turns(conn, &session))
+            .await
+    }
+
+    /// At most 600 lifecycle spans overlapping a bounded visible history range.
+    pub async fn chat_turns_in_range(
+        &self,
+        session: String,
+        start: u64,
+        end: u64,
+    ) -> Result<Vec<crate::chat::ChatTurn>> {
+        self.query(move |conn| crate::chat::read_turns_in_range(conn, &session, start, end))
+            .await
     }
 
     /// Copy a stable prefix into a newly created session without changing the source.
-    pub async fn fork_chat_history(&self, source: String, target: String, through: u64) -> Result<()> {
+    pub async fn fork_chat_history(
+        &self,
+        source: String,
+        target: String,
+        through: u64,
+    ) -> Result<()> {
         self.query(move |conn| {
             conn.execute("INSERT INTO chat_items(session_id,id,seq,at,kind,body,parent_id,provider_uuid) SELECT ?2,id,seq,at,kind,body,parent_id,provider_uuid FROM chat_items WHERE session_id=?1 AND seq<=?3", (&source, &target, through))?;
             // Only complete lifecycle spans inside the forked prefix retain their timing.
@@ -351,9 +365,32 @@ impl StoreHandle {
             .await
     }
 
+    /// Persist a streaming append without replaying a duplicate sequence.
+    pub async fn chat_content_delta(&self, env: brigadier_core::event::Envelope) -> Result<()> {
+        self.query(move |conn| crate::chat::append_delta(conn, &env))
+            .await
+    }
+
+    /// Bounded latest, backwards, or incremental history using stable item IDs.
+    pub async fn conversation_history_page(
+        &self,
+        session: String,
+        before: Option<u64>,
+        after: Option<u64>,
+        limit: usize,
+    ) -> Result<crate::chat::HistoryPage> {
+        self.query(move |conn| crate::chat::history_page(conn, &session, before, after, limit))
+            .await
+    }
+
     /// Recent conversation, or the next bounded page after an already delivered cursor.
-    pub async fn recent_chat_items(&self, session_id: String, after: Option<u64>) -> Result<Vec<crate::chat::ChatItem>> {
-        self.query(move |conn| crate::chat::recent(conn, &session_id, after)).await
+    pub async fn recent_chat_items(
+        &self,
+        session_id: String,
+        after: Option<u64>,
+    ) -> Result<Vec<crate::chat::ChatItem>> {
+        self.query(move |conn| crate::chat::recent(conn, &session_id, after))
+            .await
     }
 
     /// Recent native rewind records, including incomplete operations needing reconciliation.
@@ -1342,7 +1379,10 @@ fn apply_one(
         Op::ChatTurn(env) => {
             ensure_session(tx, &env.session_id, touched)?;
             crate::chat::write_turn(tx, &env)?;
-            tx.execute("UPDATE sessions SET last_event_seq=MAX(last_event_seq,?2) WHERE id=?1", (env.session_id.as_str(), env.seq))?;
+            tx.execute(
+                "UPDATE sessions SET last_event_seq=MAX(last_event_seq,?2) WHERE id=?1",
+                (env.session_id.as_str(), env.seq),
+            )?;
         }
         Op::Chat(item) => {
             ensure_session(tx, &SessionId::new(&item.session_id), touched)?;
@@ -1860,10 +1900,10 @@ fn upsert_session(tx: &rusqlite::Transaction<'_>, row: SessionRow) -> Result<()>
     tx.prepare_cached(
         "INSERT INTO sessions (id, project_id, instance_id, driver_kind, provider_session_id,
              cwd, worktree_path, branch, model, status, transcript_path, resume_token,
-             started_at, summary_json)
+             started_at, summary_json, effort, permission_mode, thinking)
          VALUES (:id, :project_id, :instance_id, :driver_kind, :provider_session_id, :cwd,
              :worktree_path, :branch, :model, COALESCE(:status, 'starting'), :transcript_path,
-             :resume_token, :started_at, :summary_json)
+             :resume_token, :started_at, :summary_json, :effort, :permission_mode, :thinking)
          ON CONFLICT(id) DO UPDATE SET
              project_id          = COALESCE(:project_id, sessions.project_id),
              instance_id         = COALESCE(:instance_id, sessions.instance_id),
@@ -1872,6 +1912,9 @@ fn upsert_session(tx: &rusqlite::Transaction<'_>, row: SessionRow) -> Result<()>
              cwd                 = COALESCE(:cwd, sessions.cwd),
              worktree_path       = COALESCE(:worktree_path, sessions.worktree_path),
              branch              = COALESCE(:branch, sessions.branch),
+             effort              = COALESCE(:effort, sessions.effort),
+             permission_mode     = COALESCE(:permission_mode, sessions.permission_mode),
+             thinking            = COALESCE(:thinking, sessions.thinking),
              model               = COALESCE(:model, sessions.model),
              status              = COALESCE(:status, sessions.status),
              transcript_path     = COALESCE(:transcript_path, sessions.transcript_path),
@@ -1889,6 +1932,9 @@ fn upsert_session(tx: &rusqlite::Transaction<'_>, row: SessionRow) -> Result<()>
         ":worktree_path": path(row.worktree_path.as_ref()),
         ":branch": row.branch,
         ":model": row.model,
+        ":effort": row.effort,
+        ":permission_mode": row.permission_mode,
+        ":thinking": row.thinking,
         ":status": row.status.map(SessionStatus::as_str),
         ":transcript_path": path(row.transcript_path.as_ref()),
         ":resume_token": row.resume_token,

@@ -23,27 +23,30 @@
 #[cfg(any(debug_assertions, feature = "burn"))]
 mod burn;
 mod cleanup;
-mod session_archive;
-mod tab_menu;
 mod commands;
-mod diagnostics;
 mod commit_message;
+mod composer;
 mod conversation;
 mod conversation_data;
+mod diagnostics;
 mod error;
 mod launch;
-mod note_files;
 mod navigation;
-mod project_icon;
+mod note_files;
 mod peer_mcp;
 mod peer_sessions;
 mod peers;
+mod project_icon;
+mod provider_catalog;
 mod reconcile;
 mod search;
+mod session_archive;
 mod session_changes;
 mod sink;
 mod source_control;
 mod state;
+mod tab_menu;
+mod task_memory;
 mod terminal;
 mod trace;
 mod tracker;
@@ -150,6 +153,8 @@ pub fn run() {
             cleanup::session_cleanup_retry,
             commands::probe_claude,
             commands::list_models,
+            provider_catalog::provider_catalog,
+            task_memory::task_checkpoint,
             commands::list_projects,
             commands::add_project,
             commands::set_project_mcp,
@@ -198,9 +203,22 @@ pub fn run() {
             commands::delete_project,
             commands::feed_tail,
             commands::chat_items,
+            commands::conversation_history_page,
+            composer::composer_state,
+            composer::save_composer_draft,
+            composer::enqueue_conversation_turn,
+            composer::update_queued_turn,
+            composer::remove_queued_turn,
+            composer::resume_conversation_queue,
+            composer::resolve_queued_turn,
+            composer::stop_conversation_task,
+            composer::composer_commands,
+            composer::execute_composer_command,
             commands::chat_turns,
             conversation_data::import_conversation_attachment,
+            conversation_data::import_conversation_attachment_path,
             conversation_data::conversation_attachment,
+            conversation_data::session_sources,
             conversation_data::send_conversation_turn,
             conversation::session_context,
             conversation::session_activity,
@@ -295,6 +313,9 @@ pub fn run() {
                             tracing::error!("Peer communication unavailable: {}", e.message);
                         }
                         session_archive::start(handle.clone());
+                        if let Err(e) = composer::start(handle.clone()) {
+                            tracing::error!("Conversation queue startup: {}", e.message);
+                        }
                         if let Err(e) = cleanup::start(handle.clone()) {
                             tracing::error!("Session cleanup unavailable: {}", e.message);
                         }

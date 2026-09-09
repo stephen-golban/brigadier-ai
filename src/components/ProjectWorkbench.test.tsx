@@ -190,7 +190,7 @@ describe("Git status refresh", () => {
       actions
         .getAllByRole("button")
         .map((button) => button.getAttribute("aria-label")),
-    ).toEqual(["Files", "Search", "Changes", "Terminal"]);
+    ).toEqual(["Files", "Search", "Changes", "Subagents", "Terminal"]);
     const changes = actions.getByRole("button", { name: "Changes" });
     expect(changes).toHaveTextContent("3");
     expect(changes).toHaveAttribute("title", "Changes (3)");

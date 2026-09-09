@@ -76,17 +76,22 @@ pub(super) async fn integrate(run: &mut Run, phase: &PhaseRow) -> Result<Outcome
     // `derive` refuses a phase with no verify command before it ever reaches here; this is the
     // second lock on the same door, because fabricating a command is the one thing the nullable
     // column exists to prevent.
-    let Some(command) = phase.verify_command.clone().filter(|c| !c.trim().is_empty()) else {
+    let Some(command) = phase
+        .verify_command
+        .clone()
+        .filter(|c| !c.trim().is_empty())
+    else {
         return Ok(Outcome::Red {
             exit_code: None,
             evidence: "no verify command: this phase cannot go green through a gate".to_owned(),
         });
     };
 
-    let prepared =
-        prepare_from(&root, Some(&base_sha)).await?.ok_or_else(|| LoopError::NoWorktree(root.clone()))?;
-    let integration = prepared.path.clone();
-    let integration_branch = prepared.branch.clone();
+    let prepared = prepare_from(&root, Some(&base_sha))
+        .await?
+        .ok_or_else(|| LoopError::NoWorktree(root.clone()))?;
+    let mut integration = prepared.path.clone();
+    let mut integration_branch = prepared.branch.clone();
     let phase_label = format!("Phase {}", phase.ordinal + 1);
 
     // ---- merge every order into the combination -------------------------------------------
@@ -101,7 +106,10 @@ pub(super) async fn integrate(run: &mut Run, phase: &PhaseRow) -> Result<Outcome
                 );
                 tracing::warn!(phase_id = %phase.id, branch, "{evidence}");
                 prepared.roll_back().await;
-                return Ok(Outcome::Red { exit_code: None, evidence });
+                return Ok(Outcome::Red {
+                    exit_code: None,
+                    evidence,
+                });
             }
             Err(e) => {
                 prepared.roll_back().await;
@@ -113,7 +121,8 @@ pub(super) async fn integrate(run: &mut Run, phase: &PhaseRow) -> Result<Outcome
     // ---- the gate, and the only thing that settles a phase --------------------------------
     let attempt = phase.attempts.max(1);
     let env = run.gate_env().await;
-    let first = crate::verify::run(
+    let first = super::run_gate(
+        run,
         &env,
         &GateRequest {
             command: command.clone(),
@@ -125,15 +134,39 @@ pub(super) async fn integrate(run: &mut Run, phase: &PhaseRow) -> Result<Outcome
     .await?;
     tracing::info!("{}", first.feed_line(&phase_label));
 
-    let mut before_fix = None;
+    // One ordinary repair across both executable checks and consequential review. A later
+    // review rejection does not buy an unbounded second repair loop.
     let mut gate = first;
-    if !gate.is_green() {
-        // Rung 1: one fresh fixer, in place. Rung 2 is deliberately absent — see [`ladder`].
-        let fix =
+    let mut review_evidence = String::new();
+    let mut accepted = gate.is_green();
+    if accepted && super::review::warranted(run, phase, &integration).await? {
+        let report = super::review::run(
+            run,
+            phase,
+            &integration,
+            "Consequential changes before integration",
+        )
+        .await?;
+        accepted = report.accepted;
+        review_evidence = report.evidence;
+    }
+    if !accepted {
+        ladder::claim_repair(run, phase, false)?;
+        let before_fix = git::rev_parse(&run.git, &integration, "HEAD").await?;
+        if review_evidence.is_empty() {
             ladder::rung_one(run, phase, &integration, &integration_branch, &gate).await?;
-        before_fix = Some(fix.before_sha.clone());
-        let env = run.gate_env().await;
-        gate = crate::verify::run(
+        } else {
+            ladder::repair_review(
+                run,
+                phase,
+                &integration,
+                &integration_branch,
+                &review_evidence,
+            )
+            .await?;
+        }
+        gate = super::run_gate(
+            run,
             &env,
             &GateRequest {
                 command: command.clone(),
@@ -143,30 +176,85 @@ pub(super) async fn integrate(run: &mut Run, phase: &PhaseRow) -> Result<Outcome
             },
         )
         .await?;
-        tracing::info!("{}", gate.feed_line(&phase_label));
+        accepted = gate.is_green();
+        if accepted
+            && (!review_evidence.is_empty()
+                || super::review::warranted(run, phase, &integration).await?)
+        {
+            let report = super::review::run(
+                run,
+                phase,
+                &integration,
+                "Verify ordinary repair against every criterion and prior findings",
+            )
+            .await?;
+            accepted = report.accepted;
+            review_evidence = report.evidence;
+        }
+        if !accepted {
+            let failure = format!("{}; {}", gate.feed_line(&phase_label), review_evidence);
+            let alternatives =
+                ladder::competing(run, phase, &before_fix, &failure, &env, attempt + 2).await?;
+            let Some(winner) = alternatives else {
+                let diagnosis = ladder::Diagnosis {
+                    command,
+                    exit_code: gate.exit_code,
+                    reason: gate.reason.slug(),
+                    attempts: attempt + 3,
+                    log_path: gate.log_path.clone(),
+                    branches: branches
+                        .iter()
+                        .cloned()
+                        .chain(std::iter::once(integration_branch.clone()))
+                        .collect(),
+                    before_fix: Some(before_fix),
+                };
+                return Ok(Outcome::Red {
+                    exit_code: gate.exit_code,
+                    evidence: format!(
+                        "{}; {}; bounded alternatives report {}",
+                        diagnosis.evidence(),
+                        review_evidence,
+                        run.gate_log(&phase.id, attempt + 2)
+                            .with_extension("alternatives.json")
+                            .display()
+                    ),
+                });
+            };
+            // Choose one complete independently verified branch. Never concatenate alternatives
+            // or include the failed ordinary fix in the selected result.
+            integration = winner.path;
+            integration_branch = winner.branch;
+            gate = super::run_gate(
+                run,
+                &env,
+                &GateRequest {
+                    command: command.clone(),
+                    cwd: integration.clone(),
+                    log_path: run.gate_log(&phase.id, attempt + 4),
+                    timeout: run.limits.gate_timeout,
+                },
+            )
+            .await?;
+            if !gate.is_green() {
+                return Ok(Outcome::Red {
+                    exit_code: gate.exit_code,
+                    evidence:
+                        "Selected repair failed final full verification; all branches retained"
+                            .into(),
+                });
+            }
+        }
     }
-
-    if !gate.is_green() {
-        // Rung 3. Nothing is deleted: every branch that holds an attempt's work survives for the
-        // owner to look at, the integration branch included.
-        let diagnosis = ladder::Diagnosis {
-            command,
-            exit_code: gate.exit_code,
-            reason: gate.reason.slug(),
-            attempts: attempt + u32::from(before_fix.is_some()),
-            log_path: gate.log_path.clone(),
-            branches: branches
-                .iter()
-                .cloned()
-                .chain(std::iter::once(integration_branch.clone()))
-                .collect(),
-            before_fix,
-        };
-        tracing::warn!("{}", diagnosis.thread_line(&phase_label));
-        return Ok(Outcome::Red {
-            exit_code: gate.exit_code,
-            evidence: diagnosis.evidence(),
-        });
+    // A passing check over uncommitted edits is not evidence for the branch we will merge.
+    if uncommitted(&run.git, &integration).await? {
+        return Ok(Outcome::Red { exit_code: None, evidence: format!("Verified workspace has uncommitted changes; retained at {} rather than merging a different tree", integration.display()) });
+    }
+    if run.stop.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(LoopError::Io(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "Task stopped before integration",
+        )));
     }
 
     // ---- green: the phase commit ----------------------------------------------------------
@@ -174,25 +262,41 @@ pub(super) async fn integrate(run: &mut Run, phase: &PhaseRow) -> Result<Outcome
     let commit_sha = match commit {
         Committed::Landed(sha) => Some(sha),
         Committed::Refused(evidence) => {
-            return Ok(Outcome::Red { exit_code: gate.exit_code, evidence })
+            return Ok(Outcome::Red {
+                exit_code: gate.exit_code,
+                evidence,
+            })
         }
     };
 
     // ---- cleanup, and never before the merge landed ---------------------------------------
-    let base_branch = git::current_branch(&run.git, &root).await?.unwrap_or_else(|| "HEAD".into());
+    let base_branch = git::current_branch(&run.git, &root)
+        .await?
+        .unwrap_or_else(|| "HEAD".into());
     let mut removed = 0usize;
     for order in &orders {
         if let (Some(path), Some(branch)) = (&order.worktree_path, &order.branch) {
-            removed +=
-                usize::from(retire(run, path, branch, &base_branch).await.unwrap_or(false));
+            removed += usize::from(
+                retire(run, path, branch, &base_branch)
+                    .await
+                    .unwrap_or(false),
+            );
         }
     }
     removed += usize::from(
-        retire(run, &integration, &integration_branch, &base_branch).await.unwrap_or(false),
+        retire(run, &integration, &integration_branch, &base_branch)
+            .await
+            .unwrap_or(false),
     );
 
-    let evidence = format!("{} {removed} worktree(s) removed", gate.feed_line(&phase_label));
-    Ok(Outcome::Green { commit_sha, evidence })
+    let evidence = format!(
+        "{} {removed} worktree(s) removed",
+        gate.feed_line(&phase_label)
+    );
+    Ok(Outcome::Green {
+        commit_sha,
+        evidence,
+    })
 }
 
 /// What the merge into base did.
@@ -222,8 +326,11 @@ async fn commit_phase(
     let message = format!("{phase_label}: {}", phase.title);
 
     let intent_id = uuid::Uuid::new_v4().to_string();
-    let mut intent =
-        IntentRow::new(intent_id.clone(), KnownIntentKind::PhaseCommit, SystemTime::now());
+    let mut intent = IntentRow::new(
+        intent_id.clone(),
+        KnownIntentKind::PhaseCommit,
+        SystemTime::now(),
+    );
     intent.project_id = Some(run.project.id.clone());
     intent.subject = Some(base_branch.clone());
     // The sha the postcondition's **first-parent** comparison is measured against. The intended
@@ -238,6 +345,15 @@ async fn commit_phase(
     .to_string();
     run.sup.inner.store.intent_open(intent).await?;
 
+    if run.stop.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(LoopError::Io(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "Task stopped before phase merge",
+        )));
+    }
+    if uncommitted(&run.git, &root).await? {
+        return Ok(Committed::Refused("Project checkout has local changes; preserve them and integrate from the captured task workspace".into()));
+    }
     let merged = git::merge_no_ff(&run.git, &root, integration_branch, &message).await?;
     let (state, sha, evidence) = match merged {
         git::Merged::Commit => {
@@ -271,7 +387,10 @@ async fn commit_phase(
                 (
                     IntentState::Done,
                     Some(sha.clone()),
-                    format!("already in {base_branch} at {}; no merge commit was needed", short(&sha)),
+                    format!(
+                        "already in {base_branch} at {}; no merge commit was needed",
+                        short(&sha)
+                    ),
                 )
             } else {
                 (
@@ -334,8 +453,11 @@ async fn retire(
     }
 
     let intent_id = uuid::Uuid::new_v4().to_string();
-    let mut intent =
-        IntentRow::new(intent_id.clone(), KnownIntentKind::WorktreeRemove, SystemTime::now());
+    let mut intent = IntentRow::new(
+        intent_id.clone(),
+        KnownIntentKind::WorktreeRemove,
+        SystemTime::now(),
+    );
     intent.project_id = Some(run.project.id.clone());
     intent.subject = Some(worktree.display().to_string());
     intent.baseline = Some(branch.to_owned());
@@ -355,7 +477,11 @@ async fn retire(
         .store
         .intent_close(
             intent_id,
-            if gone { IntentState::Done } else { IntentState::NotDone },
+            if gone {
+                IntentState::Done
+            } else {
+                IntentState::NotDone
+            },
             IntentOutcome::Acked,
             Some(match &outcome {
                 Ok(()) => format!("rev-list --count {base_branch}..{branch} == 0; removed"),
@@ -399,9 +525,16 @@ pub async fn removable(
         )
         .await;
     }
+    if uncommitted(git_bin, worktree).await? {
+        return Ok(false);
+    }
     let count = git::rev_list_count(git_bin, repo, base_branch, branch).await?;
     if count != 0 {
-        tracing::info!(branch, count, "keeping the worktree: its branch still holds work");
+        tracing::info!(
+            branch,
+            count,
+            "keeping the worktree: its branch still holds work"
+        );
     }
     Ok(count == 0)
 }
@@ -412,8 +545,12 @@ pub async fn removable(
 /// "dirt" is a `target/` directory has nothing to commit, and `git commit` on nothing fails. This
 /// asks the narrower question the snapshot actually needs answered.
 async fn uncommitted(git_bin: &Path, worktree: &Path) -> Result<bool, git::GitError> {
-    let out =
-        git::run(git_bin, worktree, &["status", "--porcelain", "--untracked-files=all"]).await?;
+    let out = git::run(
+        git_bin,
+        worktree,
+        &["status", "--porcelain", "--untracked-files=all"],
+    )
+    .await?;
     Ok(!out.stdout.trim().is_empty())
 }
 
@@ -424,7 +561,10 @@ fn short(sha: &str) -> &str {
 /// Where a phase's gate logs live, for a caller that wants to name one without a [`Run`].
 #[must_use]
 pub fn gate_log_path(data_dir: &Path, phase_id: &str, attempt: u32) -> PathBuf {
-    data_dir.join("gates").join(phase_id).join(format!("{attempt}.log"))
+    data_dir
+        .join("gates")
+        .join(phase_id)
+        .join(format!("{attempt}.log"))
 }
 
 /// Whether a gate result may settle a phase green. One place, so nothing else has an opinion.
@@ -458,7 +598,10 @@ mod tests {
     fn only_exit_zero_settles_a_phase() {
         assert!(settles_green(&result(Some(0), GateReason::Passed)));
         assert!(!settles_green(&result(Some(101), GateReason::Failed)));
-        assert!(!settles_green(&result(Some(127), GateReason::CommandNotFound)));
+        assert!(!settles_green(&result(
+            Some(127),
+            GateReason::CommandNotFound
+        )));
         assert!(!settles_green(&result(None, GateReason::Signalled)));
         assert!(!settles_green(&result(None, GateReason::TimedOut)));
     }
@@ -484,7 +627,9 @@ mod tests {
     /// signals refuse there and it therefore separates nothing.
     #[tokio::test]
     async fn work_applied_upstream_and_then_reverted_is_kept_though_cherry_says_otherwise() {
-        let Some(repo) = git::tests::Repo::new().await else { return };
+        let Some(repo) = git::tests::Repo::new().await else {
+            return;
+        };
         repo.git(&["checkout", "-q", "-b", "side"]).await;
         repo.write("a.txt", "a\n");
         let side_commit = repo.commit("add a").await;
@@ -496,7 +641,10 @@ mod tests {
         repo.commit("add b").await;
         // Applied upstream as a different commit, then undone upstream.
         let picked = repo.git(&["cherry-pick", &side_commit]).await;
-        assert!(picked.ok(), "the patch must land upstream as a different commit: {picked:?}");
+        assert!(
+            picked.ok(),
+            "the patch must land upstream as a different commit: {picked:?}"
+        );
         let reverted = repo.git(&["revert", "--no-edit", "HEAD"]).await;
         assert!(reverted.ok(), "and then be undone upstream: {reverted:?}");
 
@@ -508,49 +656,69 @@ mod tests {
         );
 
         // The production decision. `a.txt` is not in main's tree; deleting `side` would lose it.
-        assert!(!repo.root().join("a.txt").exists(), "the revert removed it from main");
-        let removable =
-            removable(&repo.git, repo.root(), repo.root(), "side", "main").await.expect("ask");
-        assert!(!removable, "rev-list keeps the only remaining copy of that work");
+        assert!(
+            !repo.root().join("a.txt").exists(),
+            "the revert removed it from main"
+        );
+        let removable = removable(&repo.git, repo.root(), repo.root(), "side", "main")
+            .await
+            .expect("ask");
+        assert!(
+            !removable,
+            "rev-list keeps the only remaining copy of that work"
+        );
     }
 
     /// The positive half, which a grep for a string cannot give: a branch whose count really is
     /// zero really is removable.
     #[tokio::test]
     async fn a_branch_that_holds_nothing_is_removable() {
-        let Some(repo) = git::tests::Repo::new().await else { return };
+        let Some(repo) = git::tests::Repo::new().await else {
+            return;
+        };
         repo.git(&["checkout", "-q", "-b", "side"]).await;
         repo.write("a.txt", "a\n");
         repo.commit("add a").await;
         repo.git(&["checkout", "-q", "main"]).await;
-        repo.git(&["merge", "--no-ff", "--no-edit", "-m", "phase 1", "side"]).await;
-        assert!(removable(&repo.git, repo.root(), repo.root(), "side", "main")
-            .await
-            .expect("ask"));
+        repo.git(&["merge", "--no-ff", "--no-edit", "-m", "phase 1", "side"])
+            .await;
+        assert!(
+            removable(&repo.git, repo.root(), repo.root(), "side", "main")
+                .await
+                .expect("ask")
+        );
     }
 
     /// Snapshot **then** remove: a worktree with uncommitted work has it committed first, which
     /// turns the count non-zero and keeps the checkout. Nothing is ever deleted with work in it.
     #[tokio::test]
     async fn uncommitted_work_is_committed_first_and_then_keeps_its_worktree() {
-        let Some(repo) = git::tests::Repo::new().await else { return };
+        let Some(repo) = git::tests::Repo::new().await else {
+            return;
+        };
         repo.git(&["checkout", "-q", "-b", "side"]).await;
         repo.git(&["checkout", "-q", "main"]).await;
         // `side` is level with main: without the snapshot it would be removable.
-        assert!(removable(&repo.git, repo.root(), repo.root(), "side", "main")
-            .await
-            .expect("ask"));
+        assert!(
+            removable(&repo.git, repo.root(), repo.root(), "side", "main")
+                .await
+                .expect("ask")
+        );
 
         // Now put uncommitted work on `side` in its own checkout.
         let wt = repo.dir.path().join("wt");
-        repo.git(&["worktree", "add", "-q", wt.to_str().expect("utf8"), "side"]).await;
+        repo.git(&["worktree", "add", "-q", wt.to_str().expect("utf8"), "side"])
+            .await;
         std::fs::write(wt.join("new.txt"), "unsaved\n").expect("write");
         assert!(
-            !removable(&repo.git, repo.root(), &wt, "side", "main").await.expect("ask"),
+            !removable(&repo.git, repo.root(), &wt, "side", "main")
+                .await
+                .expect("ask"),
             "the snapshot put work on the branch, so it must not be removed"
         );
-        let count =
-            git::rev_list_count(&repo.git, repo.root(), "main", "side").await.expect("count");
+        let count = git::rev_list_count(&repo.git, repo.root(), "main", "side")
+            .await
+            .expect("count");
         assert_eq!(count, 1, "exactly the snapshot commit");
     }
 }

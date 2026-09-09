@@ -202,6 +202,8 @@ impl FinalText {
 /// See docs/research/rewind-context-2026-09-05.md.
 #[derive(Clone, Debug)]
 pub enum NativeControl {
+    /// Request native history compaction. Only adapters with a verified control implement it.
+    Compact,
     /// Current context estimate; never cumulative billing usage.
     ContextSummary,
     /// Observed main/child agent identity and lifecycle, without a provider round trip.

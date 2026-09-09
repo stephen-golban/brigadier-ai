@@ -26,7 +26,7 @@ fn save(dir: &Path, jobs: &[Job]) -> Result<(), AppError> {
         &serde_json::to_vec(jobs).map_err(|e| AppError::io(e.to_string()))?,
     )
 }
-fn descendants(
+pub(crate) fn descendants(
     mut ids: BTreeSet<String>,
     origins: &std::collections::BTreeMap<String, String>,
 ) -> Vec<String> {
