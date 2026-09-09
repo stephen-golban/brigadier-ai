@@ -29,6 +29,7 @@ mod commands;
 mod diagnostics;
 mod commit_message;
 mod conversation;
+mod conversation_data;
 mod error;
 mod launch;
 mod note_files;
@@ -198,6 +199,9 @@ pub fn run() {
             commands::feed_tail,
             commands::chat_items,
             commands::chat_turns,
+            conversation_data::import_conversation_attachment,
+            conversation_data::conversation_attachment,
+            conversation_data::send_conversation_turn,
             conversation::session_context,
             conversation::session_activity,
             conversation::rewind_history,

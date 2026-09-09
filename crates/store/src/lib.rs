@@ -28,6 +28,7 @@
 
 pub mod chat;
 pub mod checkpoint;
+pub mod conversation_data;
 pub mod delete;
 pub mod feed;
 pub mod intents;
@@ -69,6 +70,9 @@ pub const SIZE_WARN_BYTES: u64 = 200 * 1024 * 1024;
 /// Anything that can go wrong in this crate.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// Invalid durable attachment data.
+    #[error("{0}")]
+    ConversationData(String),
     /// SQLite said no.
     #[error("sqlite: {0}")]
     Sqlite(#[from] rusqlite::Error),

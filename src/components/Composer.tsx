@@ -4,7 +4,7 @@ import { ComposerActions as PromptInputActions } from "./assistant-ui/elements/c
 import { Button } from "./controls/button";
 import { SessionContext } from "./SessionContext";
 import { useMessageEdit, type MessageEditProps } from "./EditMessage";
-import { PromptInput, useDraft } from "./PromptInput";
+import { PromptInput, useDraft, useAttachmentDraft } from "./PromptInput";
 /**
  * Send a turn to the selected session, and the three ways to stop one.
  *
@@ -218,7 +218,7 @@ export interface ComposerProps extends MessageEditProps {
   session: SessionRuntime | null;
   /** An IPC call started by this dock is in flight; both secondary actions go inert. */
   busy: boolean;
-  onSend: (sessionId: SessionId, text: string) => void | Promise<boolean>;
+  onSend: (sessionId: SessionId, text: string, attachmentIds?: string[]) => void | Promise<boolean>;
   onInterrupt: (sessionId: SessionId) => void;
   onEnd: (sessionId: SessionId) => void;
   onKill: (sessionId: SessionId) => void;
@@ -244,6 +244,8 @@ export function Composer({
   onRewound,
 }: ComposerProps) {
   const [draft, setDraft] = useDraft(`turn:${session?.sessionId ?? "none"}`);
+  const [attachments, setAttachments] = useAttachmentDraft(`turn:${session?.sessionId ?? "none"}`);
+  const [uploading, setUploading] = useState(false);
   const edit = useMessageEdit({ editing, onCancelEdit, onRewound });
   const text = editing ? edit.text : draft;
   const setText = editing ? edit.setText : setDraft;
@@ -302,7 +304,7 @@ export function Composer({
 
   const [sending, setSending] = useState(false);
   const send = async () => {
-    if (session === null || !live || busy || sending || text.trim() === "")
+    if (session === null || !live || busy || sending || uploading || text.trim() === "")
       return;
     if (editing) {
       if (!session.busy) await edit.submit();
@@ -310,7 +312,10 @@ export function Composer({
     }
     setSending(true);
     try {
-      if ((await onSend(session.sessionId, text.trim())) !== false) setText("");
+      const accepted = attachments.length
+        ? await onSend(session.sessionId, text.trim(), attachments.map(a => a.id))
+        : await onSend(session.sessionId, text.trim());
+      if (accepted !== false) { setText(""); setAttachments([]); }
     } finally {
       setSending(false);
     }
@@ -524,6 +529,10 @@ export function Composer({
   return (
     <>
       <PromptInput
+        attachmentProjectId={session?.projectId}
+        attachments={editing ? [] : attachments}
+        onAttachments={editing ? undefined : setAttachments}
+        onUploadChange={setUploading}
         header={
           <>
             {editing && (
@@ -660,7 +669,7 @@ export function Composer({
               !live ||
               busy ||
               sending ||
-              text.trim() === "" ||
+              text.trim() === "" || uploading ||
               (Boolean(editing) && (edit.disabled || session?.busy))
             }
             onClick={send}

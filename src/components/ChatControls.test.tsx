@@ -187,3 +187,21 @@ describe("chat controls", () => {
     expect(container.querySelector("p div")).toBeNull();
   });
 });
+
+it("imports picked files for peer forwarding and retains IDs until the new session is accepted", async () => {
+  const { peerApi } = await import("../peerApi");
+  const metadata = {id:"attachment",projectId:"p",name:"Reference.png",mediaType:"image/png",size:3,createdAt:0};
+  const imported = vi.spyOn(peerApi, "importAttachment").mockResolvedValue(metadata);
+  const start = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+  const user = userEvent.setup();
+  const view = render(<NewSession project={project} models={[]} disabled={false} onStart={start} />);
+  await user.type(screen.getByRole("textbox"), "Pass this reference to the review task");
+  fireEvent.change(view.container.querySelector('input[type="file"]')!, {target:{files:[new File(["png"], "Reference.png", {type:"image/png"})]}});
+  await screen.findByRole("button", {name:"Remove attachment Reference.png"});
+  expect(imported).toHaveBeenCalledWith("p", "Reference.png", "cG5n");
+  await user.click(screen.getByRole("button", {name:"Start"}));
+  expect(start).toHaveBeenLastCalledWith(expect.objectContaining({attachmentIds:["attachment"]}));
+  expect(screen.getByRole("button", {name:"Remove attachment Reference.png"})).toBeVisible();
+  await user.click(screen.getByRole("button", {name:"Start"}));
+  expect(screen.queryByRole("button", {name:"Remove attachment Reference.png"})).toBeNull();
+});

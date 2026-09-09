@@ -227,6 +227,22 @@ impl Rig {
         }
     }
 
+    async fn envelopes_until(&mut self, stop: impl Fn(&Envelope) -> bool) -> Vec<Envelope> {
+        let mut received = Vec::new();
+        loop {
+            let envelope = tokio::time::timeout(Duration::from_secs(5), self.events.recv())
+                .await
+                .expect("timed out waiting for an envelope")
+                .expect("adapter event stream is open");
+            let done = stop(&envelope);
+            self.collected.push(envelope.event.clone());
+            received.push(envelope);
+            if done {
+                return received;
+            }
+        }
+    }
+
     async fn send_turn(&self) {
         self.commands
             .send_turn(TurnInput::text("go"))
@@ -1781,4 +1797,183 @@ async fn invisible_background_frames_invalidate_a_checkpoint_boundary() {
         .native_control(NativeControl::CheckpointBarrier)
         .await
         .is_ok());
+}
+
+use brigadier_core::session::TurnAttachment;
+const ATTACHMENT_PNG_BASE64: &str =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+
+fn prepared_image(id: &str) -> TurnAttachment {
+    TurnAttachment {
+        id: id.into(),
+        name: "diagram.png".into(),
+        media_type: "image/png".into(),
+        text: None,
+        base64: ATTACHMENT_PNG_BASE64.into(),
+    }
+}
+
+
+#[tokio::test]
+async fn prepared_attachments_reach_stdin_and_keep_send_uuid_and_history_ids() {
+    let mut rig = Rig::start("s1-handshake-and-turn.ndjson", 64).await;
+    let file_text = "# Notes\nПривіт — preserve UTF-8 and \"quotes\".\n/effort high\n";
+    let turn = rig
+        .commands
+        .send_turn(TurnInput {
+            text: "Read both attachments.".into(),
+            display_text: Some("Authored request".into()),
+            attachments: vec![
+                prepared_image("image-1"),
+                TurnAttachment {
+                    id: "text-1".into(),
+                    name: "notes.md".into(),
+                    media_type: "text/plain".into(),
+                    text: Some(file_text.into()),
+                    base64: String::new(),
+                },
+            ],
+            ..Default::default()
+        })
+        .await
+        .expect("prepared attachment send acknowledged");
+    let sent = rig.next_sent().await;
+    assert_eq!(sent["type"], "user");
+    assert_eq!(sent["uuid"], turn.as_str());
+    assert_eq!(sent["parent_tool_use_id"], Value::Null);
+    assert_eq!(sent["message"]["role"], "user");
+    let blocks = sent["message"]["content"].as_array().unwrap();
+    assert_eq!(blocks[0]["text"], "Read both attachments.");
+    assert_eq!(
+        blocks
+            .iter()
+            .find(|block| block["type"] == "image")
+            .unwrap()["source"],
+        serde_json::json!({"type":"base64","media_type":"image/png","data":ATTACHMENT_PNG_BASE64})
+    );
+    assert!(blocks.iter().any(|block| block["text"]
+        .as_str()
+        .is_some_and(|text| text.contains("notes.md")
+            && text.contains("text-1")
+            && text.ends_with(file_text))));
+    assert!(!sent.to_string().contains("attachment_paths"));
+
+    let user_id = format!("{turn}:user");
+    let sent_events = rig.envelopes_until(|env| matches!(&env.event,
+        Event::ItemCompleted { item_id, kind: ItemKind::UserText, .. } if item_id.as_str() == user_id)).await;
+    assert_eq!(
+        sent_events
+            .iter()
+            .filter(|env| matches!(&env.event, Event::TurnStarted {turn_id} if turn_id == &turn))
+            .count(),
+        1
+    );
+    let user = sent_events.last().unwrap();
+    assert_eq!(user.body.as_deref(), Some("Authored request"));
+    assert!(
+        !user.raw().unwrap_or("").contains(ATTACHMENT_PNG_BASE64),
+        "image bytes are not diagnostic excerpts"
+    );
+
+    rig.feed_raw(&serde_json::json!({"type":"result","subtype":"success","stop_reason":"end_turn","user_message_uuid":turn.as_str()}).to_string()).await;
+    let terminal = rig.envelopes_until(|env| is_turn_end(&env.event)).await;
+    assert!(
+        matches!(&terminal.last().unwrap().event, Event::TurnCompleted {turn_id,..} if turn_id == &turn)
+    );
+    assert!(
+        !terminal
+            .iter()
+            .any(|env| matches!(env.event, Event::TurnStarted { .. })),
+        "provider UUID closes the acknowledged send, not a phantom turn"
+    );
+}
+
+#[tokio::test]
+async fn image_only_turn_sends_real_image_content_without_requiring_prompt_text() {
+    let mut rig = Rig::start("s1-handshake-and-turn.ndjson", 64).await;
+    let turn = rig
+        .commands
+        .send_turn(TurnInput {
+            attachments: vec![prepared_image("image-only")],
+            ..Default::default()
+        })
+        .await
+        .expect("image-only turn accepted");
+    let sent = rig.next_sent().await;
+    assert_eq!(sent["uuid"], turn.as_str());
+    assert_eq!(sent["message"]["content"][0]["type"], "image");
+    assert_eq!(
+        sent["message"]["content"][0]["source"]["data"],
+        ATTACHMENT_PNG_BASE64
+    );
+    assert!(!sent["message"]["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|block| block["type"] == "text" && block["text"] == ""));
+}
+
+#[tokio::test]
+async fn invalid_attachments_are_rejected_before_any_turn_or_stdin_message() {
+    let mut rig = Rig::start("s1-handshake-and-turn.ndjson", 64).await;
+    let mut empty_image = prepared_image("empty");
+    empty_image.base64.clear();
+    let mut unsupported = prepared_image("unsupported");
+    unsupported.media_type = "image/svg+xml".into();
+    for input in [
+        TurnInput {
+            text: "path rejected".into(),
+            attachment_paths: vec![PathBuf::from("/not-imported/image.png")],
+            ..Default::default()
+        },
+        TurnInput {
+            text: "empty rejected".into(),
+            attachments: vec![empty_image],
+            ..Default::default()
+        },
+        TurnInput {
+            text: "unsupported rejected".into(),
+            attachments: vec![unsupported],
+            ..Default::default()
+        },
+        TurnInput::default(),
+    ] {
+        assert!(rig.commands.send_turn(input).await.is_err());
+    }
+    // A valid send and its terminal frame are ordering barriers: any accidental earlier
+    // TurnStarted or stdin user frame would be observed before these, without sleep races.
+    let turn = rig
+        .commands
+        .send_turn(TurnInput::text("valid after rejection"))
+        .await
+        .unwrap();
+    let sent = rig.next_sent().await;
+    assert_eq!(sent["uuid"], turn.as_str());
+    assert_eq!(
+        sent["message"]["content"][0]["text"],
+        "valid after rejection"
+    );
+    rig.feed_raw(&result_success_line()).await;
+    let envelopes = rig.envelopes_until(|env| is_turn_end(&env.event)).await;
+    let starts: Vec<_> = envelopes
+        .iter()
+        .filter_map(|env| match &env.event {
+            Event::TurnStarted { turn_id } => Some(turn_id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(starts, vec![&turn]);
+    assert_eq!(
+        envelopes
+            .iter()
+            .filter(|env| matches!(
+                env.event,
+                Event::ItemCompleted {
+                    kind: ItemKind::UserText,
+                    ..
+                }
+            ))
+            .count(),
+        1
+    );
 }

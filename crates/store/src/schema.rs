@@ -375,6 +375,74 @@ CREATE TABLE chat_turns (
 );
 CREATE INDEX chat_turns_cursor ON chat_turns(session_id,start_seq);
 "#,
+    // Preserve the schema already shipped in version 11; legacy payload tables remain dormant.
+    r#"
+ALTER TABLE chat_items ADD COLUMN streaming INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE conversation_attachments (
+ id TEXT PRIMARY KEY,
+ project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+ name TEXT NOT NULL, media_type TEXT NOT NULL,
+ size INTEGER NOT NULL CHECK(size > 0 AND size = length(bytes)),
+ created_at INTEGER NOT NULL, bytes BLOB NOT NULL,
+ lineage_id TEXT NOT NULL,
+ UNIQUE(project_id,lineage_id)
+);
+CREATE INDEX conversation_attachments_project ON conversation_attachments(project_id);
+CREATE TABLE conversation_attachment_copies (
+ source_id TEXT NOT NULL REFERENCES conversation_attachments(id) ON DELETE CASCADE,
+ destination_project TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+ id TEXT NOT NULL REFERENCES conversation_attachments(id) ON DELETE CASCADE,
+ PRIMARY KEY(source_id,destination_project)
+);
+CREATE TABLE conversation_attachment_refs (
+ session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+ attachment_id TEXT NOT NULL REFERENCES conversation_attachments(id) ON DELETE CASCADE,
+ PRIMARY KEY(session_id,attachment_id)
+);
+CREATE TABLE conversation_rewind_attachment_refs (
+ rewind_id TEXT NOT NULL REFERENCES workspace_rewinds(id) ON DELETE CASCADE,
+ attachment_id TEXT NOT NULL REFERENCES conversation_attachments(id) ON DELETE CASCADE,
+ PRIMARY KEY(rewind_id,attachment_id)
+);
+CREATE TRIGGER conversation_attachment_gc AFTER DELETE ON conversation_attachment_refs
+BEGIN
+ DELETE FROM conversation_attachments WHERE id=OLD.attachment_id AND NOT EXISTS(
+  SELECT 1 FROM conversation_attachment_refs WHERE attachment_id=OLD.attachment_id)
+  AND NOT EXISTS(SELECT 1 FROM conversation_rewind_attachment_refs WHERE attachment_id=OLD.attachment_id);
+END;
+CREATE TRIGGER conversation_rewind_attachment_gc AFTER DELETE ON conversation_rewind_attachment_refs
+BEGIN
+ DELETE FROM conversation_attachments WHERE id=OLD.attachment_id AND NOT EXISTS(
+  SELECT 1 FROM conversation_attachment_refs WHERE attachment_id=OLD.attachment_id)
+  AND NOT EXISTS(SELECT 1 FROM conversation_rewind_attachment_refs WHERE attachment_id=OLD.attachment_id);
+END;
+CREATE TABLE conversation_payloads (
+ session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+ item_id TEXT NOT NULL, kind TEXT NOT NULL, seq INTEGER NOT NULL,
+ payload_json TEXT NOT NULL,
+ PRIMARY KEY(session_id,item_id,kind)
+);
+CREATE INDEX conversation_payloads_cursor ON conversation_payloads(session_id,seq);
+CREATE TABLE conversation_payload_archive (
+ rewind_id TEXT NOT NULL REFERENCES chat_rewinds(id) ON DELETE CASCADE,
+ session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+ item_id TEXT NOT NULL, kind TEXT NOT NULL, seq INTEGER NOT NULL,
+ payload_json TEXT NOT NULL,
+ PRIMARY KEY(rewind_id,session_id,item_id,kind,seq)
+);
+"#,
+    // Peer attachment request context, compatible with databases from the removed UI migration.
+    r#"
+CREATE TABLE session_attachment_inputs (
+ session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+ ids_json TEXT NOT NULL
+);
+INSERT INTO session_attachment_inputs(session_id,ids_json)
+ SELECT p.session_id,json_extract(p.payload_json,'$.data.ids') FROM conversation_payloads p
+ WHERE p.kind='attachments' AND json_type(p.payload_json,'$.data.ids')='array'
+ AND p.item_id=(SELECT id FROM chat_items c WHERE c.session_id=p.session_id AND json_extract(c.kind,'$.type')='user-text' ORDER BY seq DESC,id DESC LIMIT 1);
+"#,
+
 ];
 
 /// Where a session is in its life.
@@ -943,7 +1011,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .expect("version");
         assert_eq!(version, MIGRATIONS.len() as i64);
-        assert_eq!(version, 10, "conversation lifecycle schema is the top rung");
+        assert_eq!(version, 12, "conversation lifecycle schema is the top rung");
         let sql = format!("SELECT {PROJECT_COLUMNS} FROM projects WHERE id = 'p1'");
         let row = conn.query_row(&sql, [], project_from_row).expect("read");
         assert_eq!(
@@ -993,7 +1061,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .expect("version");
         assert_eq!(version, MIGRATIONS.len() as i64);
-        assert_eq!(version, 10, "conversation lifecycle schema is the top rung");
+        assert_eq!(version, 12, "conversation lifecycle schema is the top rung");
 
         let has = |kind: &str, name: &str| -> bool {
             conn.query_row(
@@ -1238,7 +1306,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .expect("version");
         assert_eq!(version, MIGRATIONS.len() as i64);
-        assert_eq!(version, 10, "conversation lifecycle schema is the top rung");
+        assert_eq!(version, 12, "conversation lifecycle schema is the top rung");
 
         let sql = format!(
             "SELECT {} FROM phases WHERE id = 'ph1'",
@@ -1268,7 +1336,7 @@ mod tests {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .expect("version");
-        assert_eq!(version, 10);
+        assert_eq!(version, 12);
         let has_column: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('phases') WHERE name = 'base_sha'",
@@ -1346,7 +1414,7 @@ mod tests {
         assert_eq!(
             conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            10
+            12
         );
         assert_eq!(
             conn.query_row("SELECT provider_uuid FROM chat_items", [], |row| row
@@ -1365,4 +1433,33 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn installed_v11_attachments_upgrade_without_losing_bytes_or_request_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.sqlite");
+        {
+            let conn = Connection::open(&path).unwrap();
+            for (index, migration) in MIGRATIONS.iter().take(11).enumerate() {
+                conn.execute_batch(migration).unwrap();
+                conn.pragma_update(None, "user_version", index as i64 + 1).unwrap();
+            }
+            conn.execute_batch(r#"
+                INSERT INTO projects(id,name,root_path,created_at,mcp) VALUES ('p','Project','/p',1,'off');
+                INSERT INTO sessions(id,status) VALUES ('s','exited');
+                UPDATE sessions SET project_id='p' WHERE id='s';
+                INSERT INTO conversation_attachments(id,project_id,name,media_type,size,created_at,bytes,lineage_id)
+                VALUES ('a','p','note.txt','text/plain',4,1,x'74657374','a');
+                INSERT INTO conversation_attachment_refs(session_id,attachment_id) VALUES ('s','a');
+                INSERT INTO chat_items(session_id,id,seq,at,kind,body) VALUES ('s','u',2,1,'{"type":"user-text"}','Request');
+                INSERT INTO conversation_payloads(session_id,item_id,kind,seq,payload_json)
+                VALUES ('s','u','attachments',2,'{"version":1,"data":{"ids":["a"]}}');
+            "#).unwrap();
+        }
+        let conn = open_connection(&path).unwrap();
+        assert_eq!(conn.pragma_query_value(None,"user_version",|r|r.get::<_,i64>(0)).unwrap(),12);
+        assert_eq!(conn.query_row("SELECT ids_json FROM session_attachment_inputs WHERE session_id='s'",[],|r|r.get::<_,String>(0)).unwrap(),r#"["a"]"#);
+        assert_eq!(conn.query_row("SELECT bytes FROM conversation_attachments WHERE id='a'",[],|r|r.get::<_,Vec<u8>>(0)).unwrap(),b"test");
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM conversation_payloads",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+    }
+
 }

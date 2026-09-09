@@ -1,6 +1,6 @@
 import { retireSession } from "./desktopApi";
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { bridge } from "./bridge";
 import * as feed from "./feedStore";
 import { desktop } from "./workspaceApi";
@@ -264,34 +264,33 @@ export function useNavigationData() {
   const [data, setData] = useState<NavigationData>(emptyNavigation);
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
-  useEffect(() => {
-    let live = true;
-    let sequence = 0;
-    const refresh = () => {
-      const request = ++sequence;
-      void navigationApi.load().then(
-        (next) => {
-          if (live && request === sequence) {
-            setData(next);
-            setError(null);
-            setLoaded(true);
-          }
-        },
-        (e) => {
-          if (live && request === sequence) {
-            setError(e instanceof Error ? e.message : String(e?.message ?? e));
-          }
-        },
-      );
-    };
-    refresh();
-    window.addEventListener("brigadier-navigation-changed", refresh);
-    window.addEventListener("storage", refresh);
-    return () => {
-      live = false;
-      window.removeEventListener("brigadier-navigation-changed", refresh);
-      window.removeEventListener("storage", refresh);
-    };
+  const sequence = useRef(0);
+  const refresh = useCallback(async () => {
+    const request = ++sequence.current;
+    try {
+      const next = await navigationApi.load();
+      if (request === sequence.current) {
+        setData(next);
+        setError(null);
+        setLoaded(true);
+      }
+    } catch (e) {
+      if (request === sequence.current) {
+        setError(e instanceof Error ? e.message : String((e as { message?: string })?.message ?? e));
+      }
+      throw e;
+    }
   }, []);
-  return { data, error, loaded };
+  useEffect(() => {
+    const reload = () => { void refresh().catch(() => {}); };
+    reload();
+    window.addEventListener("brigadier-navigation-changed", reload);
+    window.addEventListener("storage", reload);
+    return () => {
+      ++sequence.current;
+      window.removeEventListener("brigadier-navigation-changed", reload);
+      window.removeEventListener("storage", reload);
+    };
+  }, [refresh]);
+  return { data, error, loaded, refresh };
 }

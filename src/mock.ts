@@ -935,14 +935,18 @@ export const mockBridge: Bridge = {
     if (trimmed === "" || !trimmed.startsWith("/")) {
       throw new AppError("invalid_argument", `not an absolute path: ${path}`);
     }
-    const p: ProjectView = {
+    const root = trimmed.replace(/\/+$/, "") || "/";
+    const existing = projects.find(project => project.root_path === root);
+    const p: ProjectView = existing ?? {
       id: `p-${nextId++}`,
       name: trimmed.split("/").filter(Boolean).pop() ?? trimmed,
-      root_path: trimmed,
+      root_path: root,
       created_at_ms: Date.now(),
     };
-    projects.push(p);
+    if (!existing) projects.push(p);
     visible.add(p.id);
+    const { navigationApi } = await import("./navigationApi");
+    await navigationApi.restore({ kind: "project", id: p.id, title: p.name, projectId: p.id, sessionIds: [], trashedAt: 0 });
     return { ...p };
   },
 

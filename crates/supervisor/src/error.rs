@@ -91,6 +91,8 @@ impl SupervisorError {
             Self::WorktreeBranchExists(_) => "worktree_branch_exists",
             Self::Worktree(_) => "worktree",
             Self::Driver(_) => "driver",
+            Self::Command(CommandError::NotDispatched(_)) => "send_not_dispatched",
+            Self::Command(CommandError::DeliveryUnknown(_)) => "send_unconfirmed",
             Self::Command(_) => "driver",
             Self::Respond(_) => "no_such_request",
             Self::Store(_) => "store",

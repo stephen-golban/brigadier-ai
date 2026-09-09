@@ -18,6 +18,10 @@ pub const COMMAND_BUFFER: usize = 32;
 pub struct TurnInput {
     /// The prompt text.
     pub text: String,
+    /// Authored text retained separately from native context.
+    pub display_text: Option<String>,
+    /// Immutable imported file content.
+    pub attachments: Vec<TurnAttachment>,
     /// Files to attach, by absolute path.
     pub attachment_paths: Vec<PathBuf>,
 }
@@ -28,8 +32,25 @@ impl TurnInput {
         Self {
             text: s.into(),
             attachment_paths: Vec::new(),
+            display_text: None,
+            attachments: Vec::new(),
         }
     }
+}
+
+/// One image prepared before opening a turn. The ID owns its durable bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TurnAttachment {
+    /// Project-scoped durable identity.
+    pub id: String,
+    /// Actual validated MIME type.
+    pub media_type: String,
+    /// Durable display filename.
+    pub name: String,
+    /// UTF-8 file context when this is a text attachment.
+    pub text: Option<String>,
+    /// Base64 encoding of immutable bytes.
+    pub base64: String,
 }
 
 /// How a parked request was answered.
@@ -80,6 +101,12 @@ impl Decision {
 /// Why a command could not be delivered.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum CommandError {
+    /// Refused before any provider write.
+    #[error("{0}")]
+    NotDispatched(String),
+    /// The provider may have received part of the request.
+    #[error("{0}")]
+    DeliveryUnknown(String),
     /// The adapter is gone; the session is over.
     #[error("session is closed")]
     Closed,

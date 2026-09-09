@@ -643,7 +643,11 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
     async (path: string): Promise<AppError | null> => {
       try {
         const p = await bridge().addProject(path);
-        setProjects((prev) => [...prev, p]);
+        window.dispatchEvent(new Event("brigadier-navigation-changed"));
+        // Native add also restores a trashed project. Load that visibility before
+        // selecting it, so the missing-project effect cannot discard the selection.
+        await navigation.refresh();
+        setProjects((prev) => [...new Map([...prev, p].map(project => [project.id, project])).values()]);
         store.noteProjects([p.id]);
         setSelectedProjectId(p.id);
         setSelectedSessionId(null);
@@ -653,7 +657,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
         return toAppError(e);
       }
     },
-    [say],
+    [say, navigation.refresh],
   );
 
   /**
@@ -1096,9 +1100,9 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
               onStartSession={startSession}
               onResume={resumeSession}
               onCleanup={cleanupWorktree}
-              onSend={(id, text) => {
+              onSend={(id, text, attachmentIds) => {
                 return bridge()
-                  .sendTurn(id, text)
+                  .sendTurn(id, text, attachmentIds)
                   .then(() => true)
                   .catch((e) => {
                     say(e);

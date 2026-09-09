@@ -18,7 +18,11 @@ import { ToolCall } from "./assistant-ui/elements/tool-call";
 import { ReasoningPanel } from "./assistant-ui/elements/reasoning-panel";
 import { Button } from "./controls/button";
 import { Markdown, CopyButton } from "./Markdown";
-import { peerToolSessions } from "../peerPresentation";
+import { usePeerTaskCards, usePeerReceiptScope } from "./peer/PeerTaskCardScope";
+import { PeerDeliveryReceipt } from "./peer/PeerMessages";
+import { PeerAttachmentPreviews } from "./peer/PeerAttachmentPreviews";
+import { LinkedTaskCards } from "./peer/LinkedTaskCards";
+import { peerTaskTitle, peerToolCards, peerToolSessions } from "../peerPresentation";
 import {
   flattenTrace,
   isAgent,
@@ -51,6 +55,8 @@ export function WorkTrace({
   sessionTitles?: Record<string, string>;
   onSelectSession?: (id: string) => void;
 }) {
+  const scopedCards = usePeerTaskCards(row.id);
+  const receipts = usePeerReceiptScope()?.receipts.get(row.id);
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     if (!row.running || row.startedAt == null) return;
@@ -129,6 +135,12 @@ export function WorkTrace({
           )}
         </CollapsibleContent>
       </Collapsible>
+      <LinkedTaskCards tasks={scopedCards ?? flattenTrace(row.nodes).flatMap(node => node.item.kind.type === "tool-call"
+        ? peerToolCards(node.item.kind.name, node.item.body, node.result?.body, traceFailed(node), {titles: sessionTitles}, node.item.id)
+        : [])} onSelectSession={onSelectSession} />
+      {receipts?.map(message => <PeerDeliveryReceipt key={message.id} message={message} destination={peerTaskTitle(message.to, sessionTitles)}>
+        <PeerAttachmentPreviews message={message} />
+      </PeerDeliveryReceipt>)}
     </SessionLinks.Provider>
   );
 }

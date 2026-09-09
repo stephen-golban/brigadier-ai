@@ -390,6 +390,10 @@ pub struct StartSession {
     pub cwd: PathBuf,
     /// First user turn, sent as soon as the session is up.
     pub prompt: Option<String>,
+    /// Authored initial text before native contextualization.
+    pub display_prompt: Option<String>,
+    /// Imported initial attachments.
+    pub attachments: Vec<crate::session::TurnAttachment>,
     /// Model slug; `None` takes the provider default.
     pub model: Option<String>,
     /// Initial permission mode.
@@ -418,6 +422,8 @@ impl StartSession {
         Self {
             cwd: cwd.into(),
             prompt: None,
+            display_prompt: None,
+            attachments: Vec::new(),
             model: None,
             permission_mode: PermissionMode::Default,
             env_overrides: BTreeMap::new(),

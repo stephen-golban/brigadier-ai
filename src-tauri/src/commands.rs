@@ -97,11 +97,7 @@ pub(crate) async fn add_project(
     path: String,
     state: State<'_, AppState>,
 ) -> Result<ProjectView, AppError> {
-    let row = state
-        .get()?
-        .supervisor
-        .add_project(PathBuf::from(path))
-        .await?;
+    let row = crate::navigation::open_project(PathBuf::from(path), state.get()?).await?;
     Ok(ProjectView::from(&row))
 }
 
@@ -153,10 +149,11 @@ pub(crate) async fn start_session(
     options: Option<AgentOptions>,
     isolated: Option<bool>,
     base_branch: Option<String>,
+    attachment_ids: Option<Vec<String>>,
     state: State<'_, AppState>,
 ) -> Result<SessionView, AppError> {
     let _creation = crate::peers::CREATION.lock().await;
-    start_session_locked(project_id, prompt, model, permission_mode, options, isolated, base_branch, false, state).await
+    start_session_locked(project_id, prompt, model, permission_mode, options, isolated, base_branch, None, attachment_ids.unwrap_or_default(), state).await
 }
 
 // Caller holds CREATION across validation and spawn (including agent-created sessions).
@@ -169,7 +166,8 @@ pub(crate) async fn start_session_locked(
     options: Option<AgentOptions>,
     isolated: Option<bool>,
     base_branch: Option<String>,
-    peer: bool,
+    peer: Option<crate::peers::PeerStart>,
+    attachment_ids: Vec<String>,
     state: State<'_, AppState>,
 ) -> Result<SessionView, AppError> {
     crate::navigation::require_available(
@@ -188,11 +186,11 @@ pub(crate) async fn start_session_locked(
         .ok_or_else(|| AppError::new("no_such_project", format!("no project {project_id}")))?;
 
     let mut req = StartSession::new(project.root_path);
-    req.prompt = Some(crate::workbench_data::contextualize(
-        &state.get()?.data_dir,
-        &project_id,
-        &prompt,
-    )?);
+    req.display_prompt = Some(peer.as_ref().map(|peer| peer.text.clone()).unwrap_or_else(|| prompt.clone()));
+    req.attachments = crate::conversation_data::attachments(state.inner(), &project_id, attachment_ids).await?;
+    if prompt.trim().is_empty() && req.attachments.is_empty() { return Err(AppError::invalid_argument("A message or image is required")); }
+    if crate::conversation_data::slash_invocation(&prompt) && !req.attachments.is_empty() { return Err(AppError::invalid_argument("Send images with a prompt, not a slash command")); }
+    req.prompt = Some(crate::conversation_data::contextualize(state.inner(), &project_id, &prompt)?);
     req.model = model;
     // An unmodelled mode is passed through verbatim rather than rejected; the CLI owns the
     // vocabulary. see crates/core/src/driver.rs `PermissionMode`.
@@ -207,7 +205,9 @@ pub(crate) async fn start_session_locked(
         .take(100)
         .collect();
     let peer_token = crate::peers::prepare(&mut req)?;
-    let session_id = if peer {
+    // Bind authenticated provenance and attachment ownership before the initial input is sent.
+    let initial_input = if peer.is_some() { Some((req.prompt.take().unwrap_or_default(), std::mem::take(&mut req.attachments))) } else { None };
+    let session_id = if peer.is_some() {
         supervisor.start_peer_session(&project_id, &DriverKind::new(CLAUDE_CODE), req, isolated.unwrap_or(true)).await?
     } else { supervisor
         .start_project_session_from(
@@ -218,7 +218,26 @@ pub(crate) async fn start_session_locked(
             base_branch,
         )
         .await? };
+    let receipt = peer.as_ref().map(|peer| crate::peers::record_initial(peer, session_id.as_str())).transpose()
+        .map_err(|e| AppError::new("peer_creation_unknown", format!("Task {} was created but provenance persistence failed: {}", session_id, e.message)))?;
+    let title = peer.as_ref().map(|peer| peer.title.clone()).unwrap_or(title);
     crate::peers::bind(peer_token, session_id.as_str(), Some(title))?;
+    if let (Some(peer), Some(receipt), Some((text, attachments))) = (peer, receipt, initial_input) {
+        state.get()?.store().retain_attachments(session_id.to_string(), peer.attachments.iter().map(|a|a.id.clone()).collect()).await?;
+        crate::peers::mark_delivery_attempt(&receipt.id)?;
+        let result = supervisor.send_input(&session_id, brigadier_core::session::TurnInput {
+            text, display_text: Some(receipt.text.clone()), attachments, ..Default::default()
+        }).await;
+        match result {
+            Ok(turn) => crate::peers::finish_initial(&receipt.id, Ok(turn.to_string()))?,
+            Err(e) => {
+                let error = AppError::from(e);
+                crate::peers::finish_initial(&receipt.id, Err(error.clone()))?;
+                let _ = supervisor.kill(&session_id).await;
+                return Err(error);
+            }
+        }
+    }
     session_view(state.inner(), &session_id).await
 }
 
@@ -295,14 +314,14 @@ pub(crate) async fn send_turn(
         .session(&id)
         .await?
         .ok_or_else(|| AppError::invalid_argument("Session no longer exists"))?;
-    let text = crate::workbench_data::contextualize(
-        &state.get()?.data_dir,
-        row.project_id.as_deref().unwrap_or(""),
-        &text,
-    )?;
-    let (passive, message_ids) = crate::peers::passive(id.as_str()).unwrap_or_default();
+    let display_text = text.clone();
+    let (passive, message_ids) = crate::conversation_data::passive(id.as_str(), &text);
+    let attachment_ids = if crate::conversation_data::slash_invocation(&text) { vec![] } else { crate::peers::passive_attachment_ids(id.as_str())? };
+    let attachments = crate::conversation_data::attachments(state.inner(), row.project_id.as_deref().unwrap_or(""), attachment_ids).await?;
+    let text = crate::conversation_data::contextualize(state.inner(), row.project_id.as_deref().unwrap_or(""), &text)?;
     let text = format!("{text}{passive}");
-    let turn_id = state.get()?.supervisor.send_turn(&id, text).await?;
+    crate::peers::begin_passive_delivery(&message_ids)?;
+    let turn_id = state.get()?.supervisor.send_input(&id, brigadier_core::session::TurnInput { text, display_text: Some(display_text), attachments, ..Default::default() }).await.map_err(|e| { let error = AppError::from(e); let _ = crate::peers::fail_passive_delivery(&message_ids, &error); error })?;
     if let Err(e) = crate::peers::acknowledge(&message_ids) {
         tracing::warn!("Could not acknowledge peer messages: {}", e.message);
     }

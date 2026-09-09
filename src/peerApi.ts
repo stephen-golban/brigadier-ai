@@ -2,6 +2,9 @@ import { useSessionNavigation } from "./sessionNavigation";
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { desktop } from "./workspaceApi";
+export interface PeerAttachment {
+  id: string; projectId: string; name: string; mediaType: string; size: number; createdAt: number;
+}
 export interface PeerMessage {
   id: string;
   from: string;
@@ -11,6 +14,11 @@ export interface PeerMessage {
   turnId?: string | null;
   delivered: boolean;
   error: string | null;
+  uncertain?: boolean;
+  attempted?: boolean;
+  initial?: boolean;
+  attachmentIds?: string[];
+  attachments?: PeerAttachment[];
 }
 export interface PeerRequest {
   id: string;
@@ -25,6 +33,9 @@ export interface PeerData {
   closed: string[];
   messages: PeerMessage[];
   requests: PeerRequest[];
+  /** Durable delivery attribution survives inbox retention and reload. */
+  inputs?: PeerMessage[];
+  loaded?: boolean;
 }
 const empty: PeerData = {
   origins: {},
@@ -34,29 +45,37 @@ const empty: PeerData = {
   requests: [],
 };
 export const peerApi = {
+  importAttachment: (projectId: string, name: string, base64: string): Promise<PeerAttachment> =>
+    invoke("import_conversation_attachment", { projectId, name, base64 }),
+  attachment: (projectId: string, id: string): Promise<{metadata: PeerAttachment; base64: string}> =>
+    invoke("conversation_attachment", { projectId, id }),
   snapshot: (): Promise<PeerData> =>
     desktop ? invoke("peer_snapshot") : Promise.resolve(empty),
   decide: (id: string, allow: boolean): Promise<void> =>
     invoke("peer_decide", { id, allow }),
 };
 export function usePeers() {
-  const [data, setData] = useState(empty);
+  const [data, setData] = useState<PeerData>({ ...empty, loaded: !desktop });
   const { titles } = useSessionNavigation();
   useEffect(() => {
     if (!desktop) return;
     let live = true;
     let last = "";
+    let fetching = false;
     const fetch = () => {
+      if (fetching) return;
+      fetching = true;
       void peerApi
         .snapshot()
         .then((next) => {
           const key = JSON.stringify(next);
           if (live && key !== last) {
             last = key;
-            setData(next);
+            setData({ ...next, loaded: true });
           }
         })
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => { fetching = false; });
     };
     fetch();
     const timer = setInterval(fetch, 1500);

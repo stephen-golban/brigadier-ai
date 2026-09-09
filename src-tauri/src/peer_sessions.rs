@@ -129,6 +129,7 @@ async fn activity(ready: &Ready, row: &SessionRecord) -> Value {
         _ => json!({"status":"unknown"}),
     }
 }
+// Checkpointing is a transient capture, not completion or a request for attention.
 fn terminal(status: &str) -> bool {
     matches!(
         status,
@@ -137,6 +138,9 @@ fn terminal(status: &str) -> bool {
 }
 fn changed(c: Option<&Cursor>, revision: u64, status: &str) -> bool {
     c.is_none_or(|c| c.revision != revision || c.status != status)
+}
+fn ready_for_wait(previous: Option<&Cursor>, revision: u64, status: &str) -> bool {
+    terminal(status) && changed(previous, revision, status)
 }
 async fn summary(ready: &Ready, target: &Target, include_content: bool) -> Result<Value, AppError> {
     let previous = cursor(target)?;
@@ -153,7 +157,7 @@ async fn summary(ready: &Ready, target: &Target, include_content: bool) -> Resul
     } else {
         active["status"].as_str().unwrap_or("unknown")
     };
-    let mut result = json!({"sessionId":row.session_id,"projectId":row.project_id,"title":data.titles.get(&target.session_id),"model":row.model,"status":status,"action":active["action"],"queuedMessages":queued,"ready":terminal(status) && changed(previous.as_ref(), row.last_event_seq, status)});
+    let mut result = json!({"sessionId":row.session_id,"projectId":row.project_id,"title":data.titles.get(&target.session_id),"model":row.model,"status":status,"action":active["action"],"queuedMessages":queued,"ready":ready_for_wait(previous.as_ref(), row.last_event_seq, status)});
     if include_content {
         let items = ready
             .store()
@@ -452,6 +456,27 @@ mod tests {
         assert!(!terminal("queued"));
         assert!(terminal("failed"));
     }
+    #[test]
+    fn completed_turn_waits_through_checkpoint_capture_but_true_rewind_stays_actionable() {
+        let mut previous = Cursor {
+            session_id: "s".into(),
+            seq: 12,
+            revision: 15,
+            status: "Working".into(),
+        };
+        // A final message advances the cursor before its post-turn snapshot is complete.
+        assert!(!ready_for_wait(Some(&previous), 16, "Checkpointing"));
+        assert!(!ready_for_wait(None, 16, "Checkpointing"));
+        previous.revision = 16;
+        previous.status = "Checkpointing".into();
+        assert!(!ready_for_wait(Some(&previous), 16, "Checkpointing"));
+        assert!(ready_for_wait(Some(&previous), 16, "Idle"));
+        // This transition requires no new chat event: release changes only activity status.
+        previous.status = "Idle".into();
+        assert!(!ready_for_wait(Some(&previous), 16, "Idle"));
+        assert!(ready_for_wait(Some(&previous), 16, "Rewinding"));
+    }
+
     #[test]
     fn wait_targets_are_bounded_and_cannot_include_self() {
         assert!(targets(&json!({"targets":[]}), "a").is_err());

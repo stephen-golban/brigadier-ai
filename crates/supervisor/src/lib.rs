@@ -343,6 +343,7 @@ pub mod checkpoints;
 
 struct Inner {
     checkpoints: checkpoints::Runtime,
+    project_registration: tokio::sync::Mutex<()>,
     deleting: Mutex<std::collections::HashSet<SessionId>>,
     // Serialize creation/resume with deletion so no child can recreate removed rows.
     lifecycle: tokio::sync::RwLock<()>,
@@ -457,6 +458,7 @@ impl Supervisor {
         Supervisor {
             inner: Arc::new(Inner {
                 checkpoints: checkpoints::Runtime::default(),
+                project_registration: tokio::sync::Mutex::new(()),
                 deleting: Mutex::new(Default::default()),
                 store: config.store,
                 run_id: config.run_id,
@@ -535,6 +537,9 @@ impl Supervisor {
     /// A project that is not a git repository skips it silently and is not an error.
     // see docs/research/worktree-git.md §1 and "Risks" 2 and 6.
     pub async fn add_project(&self, path: PathBuf) -> Result<ProjectRow, SupervisorError> {
+        // Canonical-path lookup and insertion are one registration, even when
+        // multiple windows choose the same folder concurrently.
+        let _registration = self.inner.project_registration.lock().await;
         if !path.is_dir() {
             return Err(SupervisorError::InvalidArgument(format!(
                 "{} is not an existing directory",
@@ -679,6 +684,8 @@ impl Supervisor {
         base: Option<String>, inherit: bool,
     ) -> Result<SessionId, SupervisorError> {
         let prompt = req.prompt.take();
+        let display_prompt = req.display_prompt.take();
+        let attachments = std::mem::take(&mut req.attachments);
         if isolated {
             let id = self
                 .spawn(
@@ -691,7 +698,7 @@ impl Supervisor {
                 .await?
                 .session_id;
             if let Some(prompt) = prompt {
-                if let Err(e) = self.send_turn(&id, prompt).await {
+                if let Err(e) = self.send_input(&id, TurnInput { text: prompt, display_text: display_prompt.clone(), attachments: attachments.clone(), ..Default::default() }).await {
                     let _ = self.kill(&id).await;
                     return Err(e);
                 }
@@ -720,7 +727,7 @@ impl Supervisor {
             .await?
             .session_id;
         if let Some(prompt) = prompt {
-            if let Err(e) = self.send_turn(&id, prompt).await {
+            if let Err(e) = self.send_input(&id, TurnInput { text: prompt, display_text: display_prompt.clone(), attachments: attachments.clone(), ..Default::default() }).await {
                 let _ = self.kill(&id).await;
                 return Err(e);
             }
@@ -1240,6 +1247,11 @@ impl Supervisor {
         session_id: &SessionId,
         text: impl Into<String>,
     ) -> Result<TurnId, SupervisorError> {
+        self.send_input(session_id, TurnInput::text(text)).await
+    }
+
+    /// Send imported attachments through the same checkpoint and reservation barriers as text.
+    pub async fn send_input(&self, session_id: &SessionId, input: TurnInput) -> Result<TurnId, SupervisorError> {
         self.require_session_available(session_id)?;
         if self
             .inner
@@ -1253,7 +1265,6 @@ impl Supervisor {
                 ),
             ));
         }
-        let input = TurnInput::text(text);
         let record = self
             .session(session_id)
             .await?
@@ -1273,11 +1284,23 @@ impl Supervisor {
                     ))
                 })?
         } else {
-            self.commands(session_id)?
-                .send_turn(input)
-                .await
-                .map_err(error::from_command)
+            self.dispatch_input(session_id, input, None).await
         }
+    }
+
+    // Called under the checkpoint reservation for Claude, immediately before provider dispatch.
+    async fn dispatch_input(&self, id: &SessionId, input: TurnInput, reserved: Option<TurnId>) -> Result<TurnId, SupervisorError> {
+        let commands = self.commands(id)?;
+        let previous = self.inner.store.session_attachment_ids(id.to_string()).await?;
+        self.inner.store.set_session_attachment_ids(id.to_string(), input.attachments.iter().map(|a|a.id.clone()).collect()).await?;
+        let result = match reserved {
+            Some(turn) => commands.send_reserved_turn(turn, input).await,
+            None => commands.send_turn(input).await,
+        };
+        if matches!(&result, Err(brigadier_core::session::CommandError::NotDispatched(_) | brigadier_core::session::CommandError::Rejected(_))) {
+            self.inner.store.set_session_attachment_ids(id.to_string(), previous).await?;
+        }
+        result.map_err(error::from_command)
     }
 
     /// What this session has accounted for, as telemetry. Nothing gates on it.

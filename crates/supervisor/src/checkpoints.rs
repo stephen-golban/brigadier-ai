@@ -200,10 +200,7 @@ impl Supervisor {
             );
 
             // Cancellation or transport failure leaves an incomplete epoch and its lease.
-            self.commands(id)?
-                .send_reserved_turn(turn_id, input)
-                .await
-                .map_err(error::from_command)
+            self.dispatch_input(id, input, Some(turn_id)).await
         }
         .await;
         if result.is_err() && !lock(&self.inner.checkpoints.active).contains_key(id) {
@@ -789,6 +786,9 @@ mod tests {
                                 .expect("pre-image must commit before send");
                             assert!(epoch.post.is_none());
                             assert_eq!(input.text, "edited");
+                            if !input.attachments.is_empty() {
+                                assert_eq!(db.session_attachment_ids("s".into()).await.unwrap(),input.attachments.iter().map(|a|a.id.clone()).collect::<Vec<_>>(),"peer tools must see request attachments before the provider acknowledges the send");
+                            }
                             let ops = db
                                 .workspace_rewinds(path.to_string_lossy().into_owned())
                                 .await
@@ -862,6 +862,22 @@ mod tests {
             }
         }
     }
+    #[tokio::test]
+    async fn attached_turn_context_is_durable_before_dispatch() {
+        let r=Rig::new(Reply::Success).await;
+        r.store.handle().upsert_project(brigadier_store::ProjectRow {
+            id:"p".into(),name:"Project".into(),root_path:r.root.clone(),created_at:SystemTime::now(),mcp:brigadier_core::driver::McpPolicy::Off,
+        }).await.unwrap();
+        let mut row=SessionRow::new(SessionId::new("s"));
+        row.project_id=Some("p".into());row.cwd=Some(r.root.clone());row.driver_kind=Some(DriverKind::new("claude-code"));
+        r.store.handle().upsert_session(row).await.unwrap();
+        r.store.handle().import_attachment("p".into(),"a".into(),"note.txt".into(),"text/plain".into(),b"context".to_vec()).await.unwrap();
+        r.sup.send_input(&SessionId::new("s"),TurnInput {
+            text:"edited".into(),attachments:vec![brigadier_core::session::TurnAttachment {id:"a".into(),name:"note.txt".into(),media_type:"text/plain".into(),text:Some("context".into()),base64:String::new()}],..Default::default()
+        }).await.unwrap();
+        assert_eq!(r.store.handle().session_attachment_ids("s".into()).await.unwrap(),["a"]);
+    }
+
     #[tokio::test]
     async fn terminal_capture_retries_with_a_fresh_snapshot_without_another_send() {
         let r = Rig::new(Reply::InvalidatedCapture).await;

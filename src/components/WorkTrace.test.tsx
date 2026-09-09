@@ -242,3 +242,17 @@ it("shows recent progress in a long live turn, with earlier work available on de
   );
   expect(screen.getByText("Step 0")).toBeVisible();
 });
+
+it("keeps created peer tasks navigable when the work disclosure is folded", async () => {
+  const select = vi.fn();
+  const items = [
+    item("create", {type:"tool-call",name:"mcp__brigadier__create_session"}, '{"title":"Review attachments"}'),
+    item("result", {type:"tool-result",tool_call_id:"create",is_error:false}, '{"ok":true,"result":{"sessionId":"peer","title":"Review attachments"}}'),
+    item("final", {type:"assistant-text"}, "Peer created"),
+  ];
+  const row = projectThread(items, false)[0] as Extract<ThreadRow,{type:"work"}>;
+  render(<WorkTrace row={row} expanded={new Set()} toggle={() => {}} onFile={() => {}} onSelectSession={select} />);
+  expect(screen.getByRole("button", {name:/Worked/})).toHaveAttribute("aria-expanded", "false");
+  await userEvent.setup().click(screen.getByRole("button", {name:"Open chat: Review attachments"}));
+  expect(select).toHaveBeenCalledWith("peer");
+});
