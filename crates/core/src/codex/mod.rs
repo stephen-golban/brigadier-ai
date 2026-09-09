@@ -228,7 +228,10 @@ fn thread_config(req: &StartSession, config: &Value) -> Value {
         .get("BRIGADIER_EXECUTABLE")
         .filter(|_| req.env_overrides.contains_key("BRIGADIER_PEER_TOKEN"))
     {
-        servers.insert("brigadier".into(), json!({"command":executable,"args":["--peer-mcp"],"env_vars":["BRIGADIER_PEER_TOKEN","BRIGADIER_PEER_ENDPOINT","BRIGADIER_EXECUTABLE"],"enabled":true,"required":true}));
+        // This injected server authenticates every call and enforces ownership itself.
+        // Read-only workers use approvalPolicy=never, so elicitation would be rejected
+        // before reaching our adapter. Scope native preapproval to this server only.
+        servers.insert("brigadier".into(), json!({"command":executable,"args":["--peer-mcp"],"env_vars":["BRIGADIER_PEER_TOKEN","BRIGADIER_PEER_ENDPOINT","BRIGADIER_EXECUTABLE"],"enabled":true,"required":true,"default_tools_approval_mode":"approve"}));
     }
     overrides["mcp_servers"] = without_nulls(Value::Object(servers));
     if let Some(effort) = &req.effort {
@@ -263,6 +266,18 @@ fn without_nulls(mut value: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_injected_peer_server_is_preapproved_for_read_only_workers() {
+        let mut req = StartSession::new("/tmp");
+        req.env_overrides.insert("BRIGADIER_EXECUTABLE".into(), "/app/brigadier".into());
+        req.env_overrides.insert("BRIGADIER_PEER_TOKEN".into(), "test-only".into());
+        let config = json!({"config":{"mcp_servers":{"outside":{"command":"other","default_tools_approval_mode":"prompt"}}}});
+        let overrides = thread_config(&req, &config);
+        assert_eq!(overrides["mcp_servers"]["brigadier"]["default_tools_approval_mode"], "approve");
+        assert_eq!(overrides["mcp_servers"]["outside"]["default_tools_approval_mode"], "prompt");
+        assert_eq!(overrides["mcp_servers"]["outside"]["enabled"], false);
+        assert_eq!(permission(&PermissionMode::Plan).unwrap(), ("never", "read-only"));
+    }
     #[test]
     fn mcp_off_handles_literal_names_and_null_optional_fields() {
         let req = StartSession::new("/tmp");

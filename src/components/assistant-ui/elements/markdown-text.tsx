@@ -60,6 +60,8 @@ const MarkdownTextImpl: FC<MarkdownTextProps> = ({
       urlTransform={urlTransform}
       className="aui-md text-[15px] leading-relaxed text-text wrap-anywhere"
       components={markdownComponents}
+      // Durable transcript updates must settle even when WKWebView pauses animation frames.
+      smooth={false}
       defer
     />
   );

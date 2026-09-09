@@ -1402,10 +1402,9 @@ impl HookPolicy for DenyAll {
 /// Internal peer tools enforce session ownership in the app, so their ordinary calls are autonomous.
 /// Provider/user tools retain the selected session policy.
 pub struct PeerTools(pub SharedHookPolicy);
-impl HookPolicy for PeerTools {
-    fn pre_tool_use(&self, tool_name: Option<&str>, input: &Value) -> HookJsonOutput {
-        if matches!(
-            tool_name,
+fn app_peer_tool(name: &str) -> bool {
+    matches!(
+            Some(name),
             Some(
                 "mcp__brigadier__list_providers"
                     | "mcp__brigadier__task_checkpoint"
@@ -1425,11 +1424,22 @@ impl HookPolicy for PeerTools {
                     | "mcp__brigadier__request_owner"
                     | "mcp__brigadier__kill_session"
                     | "mcp__brigadier__archive_session"
+                    | "mcp__brigadier__list_attachments"
                     | "mcp__brigadier__read_inbox"
                     | "mcp__brigadier__stop_session"
                     | "mcp__brigadier__close_session"
             )
-        ) {
+        )
+}
+impl HookPolicy for PeerTools {
+    fn pre_tool_use(&self, tool_name: Option<&str>, input: &Value) -> HookJsonOutput {
+        // Loading these schemas is read-only; execution still passes the backend ownership gate.
+        let discovery = tool_name == Some("ToolSearch") && input["query"].as_str().is_some_and(|query| {
+            query.strip_prefix("select:").is_some_and(|names| {
+                !names.is_empty() && names.split(',').all(|name| app_peer_tool(name.trim()))
+            })
+        });
+        if tool_name.is_some_and(app_peer_tool) || discovery {
             HookJsonOutput {
                 hook_specific_output: Some(
                     json!({"hookEventName":"PreToolUse", "permissionDecision":"allow"}),
@@ -1445,6 +1455,16 @@ impl HookPolicy for PeerTools {
 #[cfg(test)]
 mod peer_tool_tests {
     use super::*;
+    #[test]
+    fn schema_discovery_allows_only_exact_app_tools() {
+        let policy = PeerTools(std::sync::Arc::new(ReadOnlyWall));
+        for query in ["select:mcp__brigadier__delegate_task,mcp__brigadier__read_session", "select:mcp__brigadier__request_owner", "select:mcp__brigadier__list_attachments"] {
+            assert_eq!(policy.pre_tool_use(Some("ToolSearch"), &json!({"query":query})).hook_specific_output.unwrap()["permissionDecision"], "allow");
+        }
+        for query in ["select:", "brigadier", "select:mcp__brigadier__delegate_task,mcp__outside__write", "select:mcp__brigadier__unknown", "select:mcp__brigadier__read_session,"] {
+            assert_ne!(policy.pre_tool_use(Some("ToolSearch"), &json!({"query":query})).hook_specific_output.unwrap_or_default()["permissionDecision"], "allow");
+        }
+    }
     #[test]
     fn app_coordination_discovery_does_not_ask_for_a_second_permission(){
         let policy=PeerTools(std::sync::Arc::new(ReadOnlyWall));
