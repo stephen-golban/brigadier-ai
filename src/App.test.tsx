@@ -644,53 +644,51 @@ describe("opening a project", () => {
  * refusal draws are `src/components/Sidebar.test.tsx`'s.
  */
 describe("deleting", () => {
-  it("requires confirmation and removes only the chosen history", async () => {
-    const user = userEvent.setup();
-    h.sessions = [
-      view("aaaa1111", "p-live", "exited"),
-      view("bbbb2222", "p-live", "exited"),
-    ];
-    await mountApp();
-    await user.click(
-      screen.getByRole("button", { name: "Archive Session aa1111" }),
-    );
-    await user.click(await screen.findByRole("button", { name: "History" }));
-    await user.click(
-      screen.getByRole("button", { name: "Delete, keep files" }),
-    );
-    expect(h.deletes).toHaveLength(0);
-    await user.click(
-      within(screen.getByRole("dialog")).getByRole("button", {
-        name: "Delete",
-      }),
-    );
-    expect(h.deletes).toEqual([]);
-    expect(
-      JSON.parse(localStorage.getItem("brigadier:session-archive:v1")!).deleted,
-    ).toContain("aaaa1111");
-    expect(
-      screen.queryByRole("button", { name: /Session aa1111/ }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.getAllByRole("button", { name: /^Session bb2222/ })[0],
-    ).toBeVisible();
-  });
-  it("cancel leaves the history available", async () => {
+  it("unarchives in Settings and opens the chat only through the toast View action", async () => {
     const user = userEvent.setup();
     h.sessions = [view("aaaa1111", "p-live", "exited")];
     await mountApp();
-    await user.click(
-      screen.getByRole("button", { name: "Archive Session aa1111" }),
-    );
-    await user.click(await screen.findByRole("button", { name: "History" }));
-    await user.click(
-      screen.getByRole("button", { name: "Delete, keep files" }),
-    );
+    await user.click(screen.getByRole("button", { name: "Archive Session aa1111" }));
+    expect(screen.queryByRole("button", { name: "History" })).not.toBeInTheDocument();
+    // The archive toast opens Settings and locates this chat.
+    await user.click(within(screen.getByRole("status")).getByRole("button", { name: "View" }));
+    await user.click(await screen.findByRole("button", { name: "Unarchive Session aa1111" }));
+    expect(screen.getByRole("main", { name: "Archived chats" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Toggle sidebar" })).not.toBeInTheDocument();
+    const sidebarBefore = localStorage.getItem("brigadier:sidebar-open");
+    await user.keyboard("{Meta>}b{/Meta}");
+    expect(localStorage.getItem("brigadier:sidebar-open")).toBe(sidebarBefore);
+    expect(screen.getByRole("navigation", { name: "Settings pages" })).toBeVisible();
+    expect(JSON.parse(localStorage.getItem("brigadier:session-archive:v1")!).entries.aaaa1111).toBeUndefined();
+    await user.click(within(screen.getByRole("status")).getByRole("button", { name: "View" }));
+    expect(screen.queryByRole("main", { name: "Archived chats" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Archive Session aa1111" })).toBeVisible();
+  });
+  it("deletes a single archived chat immediately and preserves other chats", async () => {
+    const user = userEvent.setup();
+    h.sessions = [view("aaaa1111", "p-live", "exited"), view("bbbb2222", "p-live", "exited")];
+    await mountApp();
+    await user.click(screen.getByRole("button", { name: "Archive Session aa1111" }));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: "Archived chats" }));
+    await user.click(screen.getByRole("button", { name: "Delete Session aa1111" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem("brigadier:session-archive:v1")!).deleted).toContain("aaaa1111");
+    expect(screen.queryByText("Session aa1111")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Back to app" }));
+    expect(screen.getAllByRole("button", { name: /^Session bb2222/ })[0]).toBeVisible();
+  });
+  it("canceling Delete all leaves archived chats available", async () => {
+    const user = userEvent.setup();
+    h.sessions = [view("aaaa1111", "p-live", "exited")];
+    await mountApp();
+    await user.click(screen.getByRole("button", { name: "Archive Session aa1111" }));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: "Archived chats" }));
+    await user.click(screen.getByRole("button", { name: "Delete all" }));
     await user.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(h.deletes).toHaveLength(0);
-    expect(
-      screen.getByRole("button", { name: "Session aa1111" }),
-    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "Unarchive Session aa1111" })).toBeVisible();
+    expect(JSON.parse(localStorage.getItem("brigadier:session-archive:v1")!).deleted).toEqual([]);
   });
   it("removes a project after confirmation, preserving on-disk files", async () => {
     const user = userEvent.setup();

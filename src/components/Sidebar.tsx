@@ -1,3 +1,4 @@
+import type { SettingsRequest } from "../settingsNavigation";
 import { useSessionNavigation } from "../sessionNavigation";
 import { createPortal } from "react-dom";
 import { EditProjectDialog } from "./EditProjectDialog";
@@ -96,6 +97,7 @@ export interface SidebarHandle {
 export interface SidebarProps {
   ref?: Ref<SidebarHandle>;
   notepadHost?: HTMLElement | null;
+  origins?: Record<string, string>;
   onNotepadOpenChange?: (open: boolean) => void;
   titles?: Record<string, string>;
   attention?: Record<string, boolean>;
@@ -175,11 +177,13 @@ export function Sidebar(props: SidebarProps) {
     [],
   );
   const { archivedIds } = useSessionNavigation();
+  const [settingsRequest, setSettingsRequest] = useState<SettingsRequest>({});
   const [all, setAll] = useState<Set<string>>(new Set());
   const [settings, setSettings] = useState(false),
     [notes, setNotes] = useState(false),
     [trash, setTrash] = useState(false),
     [search, setSearch] = useState(false);
+  const showSettings = () => { setSettingsRequest({}); setSettings(true); };
   const notepad = useRef<NotesLibraryHandle>(null);
   useEffect(
     () => props.onNotepadOpenChange?.(notes),
@@ -194,6 +198,15 @@ export function Sidebar(props: SidebarProps) {
     if (notes) notepad.current?.leave(done);
     else done();
   };
+  useEffect(() => {
+    const view = (event: Event) => {
+      const id = (event as CustomEvent<string>).detail;
+      setSettings(false);
+      closeNotepad(() => props.onSelectSession(id));
+    };
+    window.addEventListener("brigadier-view-chat", view);
+    return () => window.removeEventListener("brigadier-view-chat", view);
+  });
   const openNotepad = (id?: string, create = false) => {
     if (notes) notepad.current?.open(id, create);
     else {
@@ -233,8 +246,9 @@ export function Sidebar(props: SidebarProps) {
     };
     refresh();
     const timer = setInterval(refresh, 2500);
-    const show = () => setSettings(true);
+    const show = (event: Event) => { setSettingsRequest((event as CustomEvent<SettingsRequest>).detail ?? {}); setSettings(true); };
     const key = (e: KeyboardEvent) => {
+      if (document.querySelector(".desktop-settings")) return;
       if (
         (e.metaKey || e.ctrlKey) &&
         !e.altKey &&
@@ -378,6 +392,7 @@ export function Sidebar(props: SidebarProps) {
     );
   const activeSessions = Object.values(props.sessions).filter(
     (s) =>
+      !props.origins?.[s.sessionId] &&
       !isTrashed(navigation, "session", s.sessionId) &&
       !isTrashed(navigation, "project", s.projectId),
   );
@@ -414,6 +429,7 @@ export function Sidebar(props: SidebarProps) {
   useEffect(() => {
     window.addEventListener("brigadier-new-chat", startNewChat);
     const key = (event: KeyboardEvent) => {
+      if (document.querySelector(".desktop-settings")) return;
       const command = navigator.platform.startsWith("Mac")
         ? event.metaKey
         : event.ctrlKey;
@@ -961,7 +977,7 @@ export function Sidebar(props: SidebarProps) {
               <span className="truncate">{accountName}</span>
             </button>
             <DropdownContent side="top" className="w-56">
-              <Dropdown.Item onAction={() => setSettings(true)}>
+              <Dropdown.Item onAction={showSettings}>
                 <Settings />
                 Settings
               </Dropdown.Item>
@@ -995,7 +1011,7 @@ export function Sidebar(props: SidebarProps) {
               aria-keyshortcuts={
                 navigator.platform.startsWith("Mac") ? "Meta+," : "Control+,"
               }
-              onClick={() => setSettings(true)}
+              onClick={showSettings}
             >
               <Settings />
             </Button>
@@ -1072,7 +1088,7 @@ export function Sidebar(props: SidebarProps) {
                 ),
                 onSelect: () => {
                   setSearch(false);
-                  setSettings(true);
+                  showSettings();
                 },
               },
             ],
@@ -1185,7 +1201,14 @@ export function Sidebar(props: SidebarProps) {
         <DesktopSettings
           data={data}
           onData={changed}
-          sessions={props.sessions}
+          sessions={Object.fromEntries(
+            Object.entries(props.sessions).filter(
+              ([id]) => !isTrashed(navigation, "session", id),
+            ),
+          )}
+          projects={props.projects}
+          origins={props.origins ?? {}}
+          request={settingsRequest}
           titles={props.titles ?? {}}
           jobs={props.jobs ?? []}
           onClose={() => setSettings(false)}

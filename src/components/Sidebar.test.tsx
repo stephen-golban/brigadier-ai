@@ -163,7 +163,7 @@ describe("sidebar navigation", () => {
       await user.keyboard("{Escape}");
       expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
       await user.click(settings);
-      expect(screen.getByRole("dialog", { name: "Settings" })).toBeVisible();
+      expect(screen.getByRole("navigation", { name: "Settings pages" })).toBeVisible();
       expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
     },
   );

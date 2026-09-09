@@ -1234,6 +1234,7 @@ pub(crate) fn forget_sessions(ids: &[String]) -> Result<(), AppError> {
         d.origins
             .retain(|child, parent| !ids.contains(child) && !ids.contains(parent));
         d.titles.retain(|id, _| !ids.contains(id));
+        d.retired.retain(|id, _| !ids.contains(id));
         d.observed_completions.retain(|id, _| !ids.contains(id));
         d.inputs.retain(|m| !ids.contains(&m.to));
         d.creations.retain(|c| {

@@ -2218,6 +2218,28 @@ mod tests {
         rig.store.close().await.expect("store closes");
     }
     #[tokio::test]
+    async fn disposing_worker_inputs_preserves_other_workers_snapshots() {
+        let rig = Rig::new(true);
+        let inputs = rig.dir.path().join("worker-inputs");
+        let first = prepare_from_source(&rig.repo, &rig.repo, &inputs).await.unwrap().unwrap();
+        let second = prepare_from_source(&rig.repo, &rig.repo, &inputs).await.unwrap().unwrap();
+        crate::removal::purge_worker_inputs(rig.dir.path(), &first.branch).unwrap();
+        let remaining: Vec<_> = std::fs::read_dir(&inputs).unwrap().map(|e| e.unwrap().path())
+            .filter(|path| path.extension().and_then(|s| s.to_str()) == Some("json")).collect();
+        assert_eq!(remaining.len(), 1);
+        let value: serde_json::Value = serde_json::from_slice(&std::fs::read(&remaining[0]).unwrap()).unwrap();
+        assert_eq!(value["workerBranch"], second.branch);
+        let refs = git_run(&rig.git, &inputs.join("objects.git"), &["for-each-ref", "--format=%(refname)", "refs/checkpoints/"]);
+        assert_eq!(refs.lines().count(), 1);
+        assert!(refs.contains(value["snapshot"]["id"].as_str().unwrap()));
+        crate::removal::purge_worker_inputs(rig.dir.path(), &second.branch).unwrap();
+        crate::removal::purge_worker_inputs(rig.dir.path(), &second.branch).unwrap();
+        assert!(git_run(&rig.git, &inputs.join("objects.git"), &["for-each-ref", "refs/checkpoints/"]).is_empty());
+        assert!(rig.repo.join("f.txt").exists());
+        rig.store.close().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn peer_snapshot_preserves_parent_branch_dirty_files_and_index() {
         let rig = Rig::new(true);
         let parent = prepare(&rig.repo).await.unwrap().unwrap();

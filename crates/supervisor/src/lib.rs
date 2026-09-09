@@ -1751,9 +1751,30 @@ impl Supervisor {
                 }
             }
         }
+        if let (Some(kind), Some(provider_id)) = (&record.driver_kind, &record.provider_session_id) {
+            // A fork normally has its own provider UUID. Legacy rows can share one;
+            // retain that transcript until its final owner is deleted.
+            let shared = self.list_sessions().await?.iter().any(|other|
+                &other.session_id != id && other.driver_kind.as_ref() == Some(kind)
+                && other.provider_session_id.as_ref() == Some(provider_id));
+            if !shared {
+                self.driver(kind).ok_or_else(|| SupervisorError::NoDriver(kind.clone()))?
+                    .delete_session_data(provider_id.clone()).await?;
+            }
+        }
+        if let Some(branch) = &record.branch {
+            let shared = self.list_sessions().await?.iter().any(|other|
+                &other.session_id != id && other.branch.as_ref() == Some(branch));
+            if !shared {
+                let data_dir = self.inner.data_dir.clone();
+                let branch = branch.clone();
+                tokio::task::spawn_blocking(move || removal::purge_worker_inputs(&data_dir, &branch))
+                    .await.map_err(|error| SupervisorError::InvalidArgument(error.to_string()))??;
+            }
+        }
+        removal::purge_logs(&self.inner.data_dir, id)?;
         self.inner.store.delete_session(id.clone()).await?;
         self.inner.tracker.untrack(id);
-        removal::remove_logs(&self.inner.data_dir, id);
         Ok(())
     }
 
