@@ -94,3 +94,57 @@ pub(crate) fn remove_gate_logs(data_dir: &Path, phase_id: &str) -> bool {
         }
     }
 }
+
+/// Complete disposal reports filesystem failures so the durable archive job can retry.
+pub(crate) fn purge_logs(data_dir: &Path, id: &SessionId) -> std::io::Result<()> {
+    for path in brigadier_store::ndjson::log_files(data_dir, id) {
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+/// Called under the lifecycle write lock, excluding concurrent worker snapshot capture.
+pub(crate) fn purge_worker_inputs(
+    data_dir: &Path,
+    branch: &str,
+) -> Result<(), crate::SupervisorError> {
+    use brigadier_core::checkpoint::{Limits, SnapshotStore};
+    let dir = data_dir.join("worker-inputs");
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    let mut keep = std::collections::BTreeSet::new();
+    let mut remove = Vec::new();
+    for entry in entries {
+        let path = entry?.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        let value: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)
+            .map_err(|error| crate::SupervisorError::InvalidArgument(error.to_string()))?;
+        if value["workerBranch"].as_str() == Some(branch) {
+            remove.push(path);
+        } else {
+            let id = value["snapshot"]["id"].as_str().ok_or_else(|| {
+                crate::SupervisorError::InvalidArgument("Invalid worker snapshot provenance".into())
+            })?;
+            keep.insert(id.to_owned());
+        }
+    }
+    let git = brigadier_core::worktree::resolve_git()
+        .ok_or_else(|| crate::SupervisorError::InvalidArgument("Git unavailable".into()))?;
+    let snapshots = SnapshotStore::open(dir, git, Limits::default())
+        .map_err(|error| crate::SupervisorError::InvalidArgument(error.to_string()))?;
+    for path in remove {
+        std::fs::remove_file(path)?;
+    }
+    snapshots
+        .retain(&keep)
+        .map_err(|error| crate::SupervisorError::InvalidArgument(error.to_string()))
+}

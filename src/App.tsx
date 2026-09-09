@@ -573,6 +573,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
   }, []);
   useEffect(() => {
     const toggle = (event: KeyboardEvent) => {
+      if (document.querySelector(".desktop-settings")) return;
       if (
         (event.metaKey || event.ctrlKey) &&
         event.altKey &&
@@ -917,7 +918,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
   useEffect(() => {
     const active = (e: Event) =>
       setViewedSession((e as CustomEvent<string | null>).detail);
-    const toggle = () => setSidebarOpen((v) => !v);
+    const toggle = () => { if (!document.querySelector(".desktop-settings")) setSidebarOpen((v) => !v); };
     window.addEventListener("workbench-active-session", active);
     window.addEventListener("brigadier-toggle-sidebar", toggle);
     return () => {
@@ -968,6 +969,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
         jobs={jobs}
         projects={projects}
         titles={peers.titles}
+        origins={peers.origins}
         sessions={state.sessions}
         order={state.order}
         selectedProjectId={selectedProjectId}

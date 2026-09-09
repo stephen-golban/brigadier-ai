@@ -372,6 +372,17 @@ pub(crate) async fn trash_purge(
     })
 }
 
+/// Archived chat disposal removes navigation references without touching project entries.
+pub(crate) fn forget_sessions(dir: &Path, ids: &[String]) -> Result<(), AppError> {
+    update(dir, |data| {
+        data.pinned_sessions.retain(|id| !ids.contains(id));
+        data.trash.retain(|entry| entry.kind != Kind::Session || !ids.contains(&entry.id));
+        for entry in &mut data.trash { entry.session_ids.retain(|id| !ids.contains(id)); }
+        Ok(())
+    })?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

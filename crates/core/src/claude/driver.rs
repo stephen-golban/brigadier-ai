@@ -221,6 +221,17 @@ impl ProviderDriver for ClaudeDriver {
         }
     }
 
+    fn delete_session_data(&self, provider_id: String) -> BoxFuture<'_, Result<(), DriverError>> {
+        Box::pin(async move {
+            let config = self.config.config_dir.clone()
+                .or_else(|| std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from))
+                .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude")))
+                .ok_or_else(|| DriverError::Protocol("Claude storage location is unavailable".into()))?;
+            tokio::task::spawn_blocking(move || super::storage::delete(&config, &provider_id))
+                .await.map_err(|error| DriverError::Protocol(error.to_string()))?
+        })
+    }
+
     fn start_session(
         &self,
         mut req: StartSession,

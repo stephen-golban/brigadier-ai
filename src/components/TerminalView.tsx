@@ -1,4 +1,5 @@
 import { THEME_CHANGED_EVENT } from "../providers/ThemeProvider";
+import { readArchive } from "../sessionArchive";
 import { themeColor } from "../lib/theme";
 import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
@@ -94,6 +95,7 @@ export default function TerminalView({
     const serialize = new SerializeAddon();
     terminal.loadAddon(serialize);
     const persist = () => {
+      if (context.sessionId && readArchive().deleted.includes(context.sessionId)) return;
       try {
         localStorage.setItem(
           snapshotKey,

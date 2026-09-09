@@ -1,3 +1,4 @@
+import { setSessionArchived } from "../sessionNavigation";
 import { readArchive } from "../sessionArchive";
 import { useEffect, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -392,7 +393,7 @@ describe("session workspaces", () => {
     expect(readArchive().entries).toEqual({});
     expect(screen.getByText("Conversation parent")).toBeVisible();
   });
-  it("archives explicitly and restores the saved document and draft from History", async () => {
+  it("preserves the saved document and draft when a session is archived and restored", async () => {
     render(<Harness />);
     openFile();
     fireEvent.change(await screen.findByLabelText("File editor"), {
@@ -403,8 +404,10 @@ describe("session workspaces", () => {
     expect(
       savedWorkspace().tabs.some((t: { path: string }) => t.path === "file.ts"),
     ).toBe(true);
-    await userEvent.click(screen.getByRole("button", { name: "History" }));
-    await userEvent.click(screen.getByRole("button", { name: "Main task" }));
+    expect(screen.queryByRole("button", { name: "History" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Archived sessions" })).not.toBeInTheDocument();
+    await act(() => setSessionArchived("parent", false));
+    await userEvent.click(screen.getByRole("button", { name: "Select parent" }));
     expect(await screen.findByLabelText("File editor")).toHaveValue(
       "kept draft",
     );

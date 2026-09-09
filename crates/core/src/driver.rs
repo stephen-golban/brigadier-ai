@@ -580,6 +580,12 @@ pub trait ProviderDriver: Send + Sync + 'static {
     /// What to show the operator about this instance.
     fn describe(&self) -> DriverInfo;
 
+    /// Remove provider-owned local persistence after the session process has stopped.
+    /// Stateless drivers have nothing to remove; persistent drivers must implement this.
+    fn delete_session_data(&self, _provider_id: String) -> BoxFuture<'_, Result<(), DriverError>> {
+        Box::pin(async { Ok(()) })
+    }
+
     /// Open a new session.
     fn start_session(&self, req: StartSession)
         -> BoxFuture<'_, Result<SessionHandle, DriverError>>;
