@@ -51,6 +51,7 @@ mod state;
 mod tab_menu;
 mod task_memory;
 mod task_settings;
+mod keep_awake;
 mod composer_workspaces;
 mod terminal;
 mod trace;
@@ -178,6 +179,7 @@ pub fn run() {
             workbench_data::workbench_load,
             workbench_data::notes_folder_save,
             workbench_data::desktop_settings_save,
+            workbench_data::keep_awake_save,
             launch::launch_preferences,
             launch::launch_status,
             launch::launch_seen,
@@ -300,6 +302,7 @@ pub fn run() {
                 }
             };
             app.manage(AppState::pending());
+            app.manage(keep_awake::KeepAwake::default());
             if let Err(err) = launch::setup(app.handle(), data_dir.clone()) {
                 tracing::error!(message = %err.message, "launch window setup failed");
                 if let Some(window) = app.get_webview_window("main") {
@@ -315,6 +318,12 @@ pub fn run() {
                 match handle.state::<AppState>().get() {
                     Ok(ready) => {
                         tracing::info!(?ready, "brigadier started");
+                        let keep_awake_enabled = workbench_data::keep_awake_enabled(&ready.data_dir)
+                            .unwrap_or_else(|error| {
+                                tracing::warn!(%error, "Could not load keep-awake preference");
+                                false
+                            });
+                        keep_awake::start(handle.clone(), keep_awake_enabled);
                         let supervisor = ready.supervisor.clone();
                         let store = ready.store().clone();
                         let sender = ready.take_reconcile_sender();
@@ -362,6 +371,7 @@ pub fn run() {
         // The last window closed, or `AppHandle::exit` was called. The window is still on
         // screen: end the sessions and signal their groups, bounded.
         RunEvent::ExitRequested { .. } => {
+            keep_awake::stop(handle);
             if let Some(state) = handle.try_state::<AppState>() {
                 state.shutdown_sync("ExitRequested", EXIT_GRACE);
             }
@@ -371,6 +381,7 @@ pub fn run() {
         // and then the backstop kill and the last store flush. Blocking here is legal and is
         // the point: nothing is on screen any more.
         RunEvent::Exit => {
+            keep_awake::stop(handle);
             if let Some(state) = handle.try_state::<AppState>() {
                 state.shutdown_sync("Exit", EXIT_GRACE);
                 state.final_sweep(EXIT_GRACE);

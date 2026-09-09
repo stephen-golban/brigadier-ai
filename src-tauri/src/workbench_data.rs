@@ -94,6 +94,8 @@ pub(crate) struct Data {
     #[serde(default)]
     pub launch_music: Option<bool>,
     #[serde(default)]
+    pub keep_awake: bool,
+    #[serde(default)]
     pub project_names: BTreeMap<String, String>,
     #[serde(default)]
     pub global: CommitSettings,
@@ -366,6 +368,30 @@ impl PeerSettings {
     }
 }
 
+pub(crate) fn keep_awake_enabled(dir: &Path) -> Result<bool, AppError> {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    Ok(load(&dir.join("workbench.json"))?.keep_awake && cfg!(target_os = "macos"))
+}
+
+#[tauri::command]
+pub(crate) async fn keep_awake_save(
+    enabled: bool,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Data, AppError> {
+    if enabled && !cfg!(target_os = "macos") {
+        return Err(AppError::invalid_argument(
+            "Keep awake is currently supported on macOS only",
+        ));
+    }
+    let data = update(&state.get()?.data_dir, |d| {
+        d.keep_awake = enabled;
+        Ok(d.clone())
+    })?;
+    crate::keep_awake::set_enabled(&app, enabled);
+    Ok(data)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -430,5 +456,35 @@ mod tests {
         .unwrap();
         assert!(peer_settings(dir.path(), "a").unwrap().create_sessions);
         assert!(!peer_settings(dir.path(), "b").unwrap().create_sessions);
+    }
+}
+
+#[cfg(test)]
+mod keep_awake_tests {
+    use super::*;
+
+    #[test]
+    fn preference_defaults_off_and_survives_unrelated_updates() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!load(&dir.path().join("workbench.json")).unwrap().keep_awake);
+        update(dir.path(), |d| {
+            d.keep_awake = true;
+            Ok(())
+        })
+        .unwrap();
+        update(dir.path(), |d| {
+            d.display_name = "Owner".into();
+            Ok(())
+        })
+        .unwrap();
+        let saved = load(&dir.path().join("workbench.json")).unwrap();
+        assert!(saved.keep_awake);
+        assert_eq!(saved.display_name, "Owner");
+        update(dir.path(), |d| {
+            d.keep_awake = false;
+            Ok(())
+        })
+        .unwrap();
+        assert!(!load(&dir.path().join("workbench.json")).unwrap().keep_awake);
     }
 }

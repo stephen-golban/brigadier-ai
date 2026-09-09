@@ -50,6 +50,7 @@ export interface WorkbenchData {
   welcomeCompleted?: boolean;
   introSeen?: boolean;
   launchMusic?: boolean | null;
+  keepAwake?: boolean;
   projectNames?: Record<string,string>;
   global: CommitSettings;
   projects: Record<string, CommitSettings>;
@@ -125,6 +126,8 @@ const desktopOnly = () =>
     ),
   );
 export const workbenchApi = {
+  setKeepAwake: (enabled: boolean): Promise<WorkbenchData> =>
+    desktop ? invoke("keep_awake_save", { enabled }) : desktopOnly(),
   renameProject: async (id: string, name: string): Promise<void> => {
     if (desktop) { await invoke("navigation_customize", {kind: "name", id, value: name}); return; }
     sample.projectNames ??= {}; sample.projectNames[id] = name; saveSample();
