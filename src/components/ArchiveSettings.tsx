@@ -28,7 +28,7 @@ export function ArchiveSettings() {
         }
       }}
     >
-      <h3>Archived sessions</h3>
+      <h3>Archive retention</h3>
       <Checkbox
         checked={value.autoDelete}
         disabled={saving}
@@ -52,19 +52,11 @@ export function ArchiveSettings() {
           }
         />
       </label>
-      <Checkbox
-        checked={value.deleteWorktrees}
-        disabled={saving}
-        onCheckedChange={(checked) =>
-          setValue((v) => ({ ...v, deleteWorktrees: checked }))
-        }
-      >
-        Delete isolated worktrees with expired sessions
-      </Checkbox>
       <p className="text-xs text-text-secondary">
-        Checked when Brigadier opens and while it is running. Worktrees with
-        unsaved changes or unique commits are kept for review. Project folders
-        are always kept.
+        Deleted chats and everything inside them are permanently removed, including
+        exclusively owned worktrees and uncommitted changes. Project repositories
+        and shared worktrees are kept. Cleanup runs while Brigadier is open and
+        catches up when you reopen it.
       </p>
       {error && (
         <p role="alert" className="text-error">

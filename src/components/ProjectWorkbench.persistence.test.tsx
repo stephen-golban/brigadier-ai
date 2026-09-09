@@ -1,3 +1,4 @@
+import { retireSession } from "../desktopApi";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import {
   act,
@@ -95,7 +96,7 @@ function mount() {
   };
 }
 describe("project workbench persistence", () => {
-  it("retires a deleted session's saved tabs without dropping notes or scratch buffers", async () => {
+  it("purges deleted chat workspaces and scratch buffers while retaining saved notes", async () => {
     const context = { projectId: project.id, sessionId: "deleted-session" };
     const tabs = [
       {
@@ -133,23 +134,15 @@ describe("project workbench persistence", () => {
         [project.id]: { tabs, active: null },
       }),
     );
+    localStorage.setItem("brigadier:buffer:note:saved", "saved note");
+    localStorage.setItem("brigadier:buffer:scratch:saved", "scratch draft");
     mount();
-    fireEvent(
-      window,
-      new CustomEvent("workbench-history-deleted", {
-        detail: { sessionId: "deleted-session" },
-      }),
-    );
+    act(() => retireSession("deleted-session"));
     await waitFor(() => {
       const saved = JSON.parse(localStorage.getItem(sessionLayoutsKey)!);
-      expect(
-        saved[workspaceKey(project.id, "deleted-session")].tabs.map(
-          (tab: { id: string }) => tab.id,
-        ),
-      ).toEqual(["note:saved", "scratch:saved"]);
-      expect(saved[workspaceKey(project.id, "deleted-session")].active).toBe(
-        "scratch:saved",
-      );
+      expect(saved[workspaceKey(project.id, "deleted-session")]).toBeUndefined();
+      expect(localStorage.getItem("brigadier:buffer:scratch:saved")).toBeNull();
+      expect(localStorage.getItem("brigadier:buffer:note:saved")).toBe("saved note");
     });
   });
   it("removes a deleted project's saved layout and unmounts its terminals", async () => {

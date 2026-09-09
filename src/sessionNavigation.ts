@@ -1,3 +1,5 @@
+import { notify } from "./desktopApi";
+import { openSettings, viewChat } from "./settingsNavigation";
 import { archiveSession } from "./sessionArchive";
 import { useMemo, useSyncExternalStore } from "react";
 
@@ -34,6 +36,22 @@ export function renameSession(id: string, name: string) {
 }
 export async function setSessionArchived(id: string, archived: boolean) {
   await archiveSession(id, archived);
+  notify(archived ? "Archived chat" : "Unarchived chat", false, undefined, {
+    icon: "archive",
+    actions: archived
+      ? [
+          {
+            label: "View",
+            onClick: () => openSettings({ page: "archived", sessionId: id }),
+          },
+          {
+            label: "Undo",
+            primary: true,
+            onClick: () => setSessionArchived(id, false),
+          },
+        ]
+      : [{ label: "View", primary: true, onClick: () => viewChat(id) }],
+  });
 }
 export function useSessionNavigation() {
   const titles = useSyncExternalStore(subscribe, () =>

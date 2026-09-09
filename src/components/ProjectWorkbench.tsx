@@ -13,10 +13,8 @@ import { hasSavedEdits } from "../workbenchState";
 import { SubagentsPanel } from "./SubagentsPanel";
 import { UsersThreeIcon } from "@phosphor-icons/react";
 import { SessionCard } from "./SessionCard";
-import { ProjectHistory } from "./ProjectHistory";
 import { documentCommands } from "../documentCommands";
 import { documentKey } from "../workbenchState";
-import { ClockCounterClockwiseIcon } from "@phosphor-icons/react";
 import {
   useCallback,
   useEffect,
@@ -95,12 +93,6 @@ export function ProjectWorkbench({
   navigation?: NavigationData;
 }) {
   const archive = useSessionArchive();
-  const archivedSessions = Object.values(sessions).filter(
-    (s) =>
-      s.projectId === project?.id &&
-      archive.entries[s.sessionId] &&
-      !(navigation && isTrashed(navigation, "session", s.sessionId)),
-  );
   const [sessionPrefs, setSessionPrefs] = useState(false);
   const [dataLoaded, setDataLoaded] = useState(false);
   const [legacyLayouts] = useState(migrateSessionLayouts);
@@ -122,6 +114,11 @@ export function ProjectWorkbench({
         closedTabs.current = closedTabs.current.filter(
           (t) => t.context.sessionId !== sessionId && t.path !== sessionId,
         );
+      if (sessionId) {
+        // retireSession has already removed durable buffers and workspace records.
+        setLayouts(JSON.parse(localStorage.getItem(sessionLayoutsKey) ?? "{}"));
+        return;
+      }
       setLayouts((old) =>
         Object.fromEntries(
           Object.entries(old)
@@ -182,11 +179,10 @@ export function ProjectWorkbench({
   const [error, setError] = useState("");
   const [openPath, setOpenPath] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<Confirmation | null>(null);
-  const [history, setHistory] = useState(false);
   const [subagents, setSubagents] = useStoredState("brigadier:subagents-panel", false);
   const [requestedWorker, setRequestedWorker] = useState<string|null>(null);
   useEffect(()=>{
-    const openWorker=(event:Event)=>{const detail=(event as CustomEvent<{rootId:string;id:string}>).detail;if(detail.rootId!==selectedSessionId)return;setRequestedWorker(detail.id);setSubagents(true);setHistory(false);setWorkspaceOpen(true);};
+    const openWorker=(event:Event)=>{const detail=(event as CustomEvent<{rootId:string;id:string}>).detail;if(detail.rootId!==selectedSessionId)return;setRequestedWorker(detail.id);setSubagents(true);setWorkspaceOpen(true);};
     window.addEventListener("workbench-open-worker",openWorker);
     return ()=>window.removeEventListener("workbench-open-worker",openWorker);
   },[selectedSessionId]);
@@ -210,9 +206,6 @@ export function ProjectWorkbench({
     return () =>
       window.removeEventListener("workbench-save-as-cancelled", cancel);
   }, []);
-  useEffect(() => {
-    setHistory(false);
-  }, [project?.id]);
   const terminalIds = useRef(new Map<string, string>());
   const tabStrip = useRef<HTMLDivElement>(null);
   const focusAfterClose = useRef(false);
@@ -494,8 +487,6 @@ export function ProjectWorkbench({
     };
   }, [sessions, project?.id]);
   const add = (tab: ProjectTab) => {
-    setHistory(false);
-
     setLayouts((old) => {
       const l = old[layoutKey] ?? empty;
       return {
@@ -570,8 +561,6 @@ export function ProjectWorkbench({
     });
   };
   const select = (t: ProjectTab) => {
-    setHistory(false);
-
     setLayouts((old) => ({
       ...old,
       [layoutKey]: { ...(old[layoutKey] ?? empty), active: t.id },
@@ -641,7 +630,7 @@ export function ProjectWorkbench({
         setConfirm({
           native: true,
           title: "Stop and archive session?",
-          body: "Archiving stops this session’s AI work, child agents, and terminals. File tabs and drafts are kept in History.",
+          body: "Archiving stops this session’s AI work, child agents, and terminals. File tabs and drafts are kept. Restore archived sessions in Settings.",
           confirmLabel: "Stop and archive",
           onCancel: () => setConfirm(null),
           onConfirm: archiveAndClose,
@@ -1013,14 +1002,12 @@ export function ProjectWorkbench({
       }),
     );
   }, [showConversation, activeSession?.sessionId]);
-  const panelVisible =
-    workspaceOpen && (!history || archivedSessions.length > 0);
+  const panelVisible = workspaceOpen;
   const togglePanel = (next: WorkspaceMode) => {
     setReviewTurn(null);
     setSubagents(false);
     setMode(next);
-    setHistory(false);
-    setWorkspaceOpen(!panelVisible || history || subagents || mode !== next);
+    setWorkspaceOpen(!panelVisible || subagents || mode !== next);
   };
   const handledRequest = useRef<number | null>(null);
   useEffect(() => {
@@ -1077,7 +1064,7 @@ export function ProjectWorkbench({
                 `Session ${activeSession.sessionId.slice(-6)}`)
               : "New session"}
           </Button>
-          {activeSession && (
+          {activeSession && !peers.origins[activeSession.sessionId] && (
             <SessionMenu
               key={activeSession.sessionId}
               sessionId={activeSession.sessionId}
@@ -1192,7 +1179,7 @@ export function ProjectWorkbench({
                   : undefined
               }
               aria-controls="workspace-panel"
-              aria-pressed={panelVisible && !history && !subagents && mode === value}
+              aria-pressed={panelVisible && !subagents && mode === value}
               onClick={() => togglePanel(value)}
               disabled={!project}
             >
@@ -1204,7 +1191,7 @@ export function ProjectWorkbench({
               )}
             </Button>
           ))}
-          <Button size="icon" aria-label="Subagents" title="Subagents" aria-controls="workspace-panel" aria-pressed={panelVisible && subagents} disabled={!selectedSessionId} onClick={() => { setHistory(false); setSubagents(true); setWorkspaceOpen(!panelVisible || !subagents); }}><UsersThreeIcon size={18}/></Button>
+          <Button size="icon" aria-label="Subagents" title="Subagents" aria-controls="workspace-panel" aria-pressed={panelVisible && subagents} disabled={!selectedSessionId} onClick={() => { setSubagents(true); setWorkspaceOpen(!panelVisible || !subagents); }}><UsersThreeIcon size={18}/></Button>
           <Button
             size="icon"
             aria-label="Terminal"
@@ -1217,25 +1204,6 @@ export function ProjectWorkbench({
           >
             <TerminalIcon size={18} />
           </Button>
-          {archivedSessions.length > 0 && (
-            <Button
-              size="icon"
-              aria-label="History"
-              title="History"
-              aria-controls="workspace-panel"
-              aria-pressed={panelVisible && history}
-              onClick={() => {
-                if (history && workspaceOpen) setWorkspaceOpen(false);
-                else {
-                  setSubagents(false);
-                  setHistory(true);
-                  setWorkspaceOpen(true);
-                }
-              }}
-            >
-              <ClockCounterClockwiseIcon />
-            </Button>
-          )}
         </div>
       </header>
       {error && (
@@ -1316,14 +1284,13 @@ export function ProjectWorkbench({
               peers={peers}
               onSelect={onSelectSession}
               onChanges={() => {
-                setHistory(false);
                 setSubagents(false);
                 setReviewTurn(null);
                 setMode("changes");
                 setWorkspaceOpen(true);
               }}
-              onSubagents={() => { setHistory(false); setSubagents(true); setWorkspaceOpen(true); }}
-              onFiles={() => { setHistory(false); setSubagents(false); setMode("files"); setWorkspaceOpen(true); }}
+              onSubagents={() => { setSubagents(true); setWorkspaceOpen(true); }}
+              onFiles={() => { setSubagents(false); setMode("files"); setWorkspaceOpen(true); }}
               onSettings={() => setSessionPrefs(true)}
             />
           )}
@@ -1456,23 +1423,7 @@ export function ProjectWorkbench({
               onLostPointerCapture={() => setResizingPanel(false)}
             />
             <div className="workbench-side-content flex min-h-0 flex-1 flex-col">
-              {subagents ? <SubagentsPanel requestedId={requestedWorker} key={selectedSessionId ?? "none"} rootId={selectedSessionId} projectId={project.id} peers={peers} sessions={sessions} onFile={(path, worker) => { if(path.startsWith("brigadier-note:")) {const note=data.notes.find(note=>note.id===path.slice(15));if(note)openNote(note);}else open(path, "file", false, undefined, worker);}} /> : history ? (
-                <ProjectHistory
-                  projectName={data.projectNames?.[project.id] ?? project.name}
-                  sessions={archivedSessions}
-                  titles={peers.titles}
-                  entries={archive.entries}
-                  settings={archive.settings}
-                  onSelect={async (id) => {
-                    try {
-                      await setSessionArchived(id, false);
-                      onSelectSession(id);
-                    } catch (e) {
-                      setError(errorMessage(e));
-                    }
-                  }}
-                />
-              ) : (
+              {subagents ? <SubagentsPanel requestedId={requestedWorker} key={selectedSessionId ?? "none"} rootId={selectedSessionId} projectId={project.id} peers={peers} sessions={sessions} onFile={(path, worker) => { if(path.startsWith("brigadier-note:")) {const note=data.notes.find(note=>note.id===path.slice(15));if(note)openNote(note);}else open(path, "file", false, undefined, worker);}} /> : (
                 <WorkspaceTools
                   visible={panelVisible}
                   openPaths={layout.tabs

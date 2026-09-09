@@ -106,6 +106,7 @@ export function SidebarProvider({
     };
   }, [peek]);
   const toggleSidebar = () => {
+    if (document.querySelector(".desktop-settings")) return;
     keepPreview();
     setPeek(false);
     if (isMobile) setOpenMobile(!openMobile);

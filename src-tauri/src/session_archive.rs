@@ -1,4 +1,4 @@
-//! Durable session archive and conservative, configurable expiry.
+//! Chat archive and complete, retryable disposal shared by manual deletion and expiry.
 use crate::{error::AppError, state::AppState};
 use brigadier_core::event::SessionId;
 use brigadier_supervisor::Supervisor;
@@ -12,14 +12,12 @@ const DAY: u64 = 86_400_000;
 pub(crate) struct Settings {
     pub auto_delete: bool,
     pub retention_days: u32,
-    pub delete_worktrees: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
         Self {
             auto_delete: true,
             retention_days: 7,
-            delete_worktrees: true,
         }
     }
 }
@@ -36,6 +34,7 @@ pub(crate) struct Data {
     pub entries: BTreeMap<String, Entry>,
     pub deleted: Vec<String>,
     migrated: bool,
+    pending_deletions: BTreeMap<String, Vec<String>>,
 }
 fn now() -> u64 {
     std::time::SystemTime::now()
@@ -59,7 +58,7 @@ fn save(dir: &Path, data: &Data) -> Result<(), AppError> {
 pub(crate) fn require_active(dir: &Path, id: &str) -> Result<(), AppError> {
     if read(dir)?.entries.contains_key(id) {
         return Err(AppError::invalid_argument(
-            "Reopen this archived session from History before continuing it",
+            "Unarchive this chat in Settings before continuing it",
         ));
     }
     Ok(())
@@ -110,34 +109,32 @@ pub(crate) async fn archive_set(
     if ready.supervisor.session(&id).await?.is_none() {
         return Err(AppError::invalid_argument("Session no longer exists"));
     }
+    let origins = crate::peers::snapshot()?.origins;
+    let ids = chat_ids(&session_id, &origins)?;
     let mut data = read(&ready.data_dir)?;
+    if data.pending_deletions.contains_key(&session_id) {
+        return Err(AppError::invalid_argument("Chat deletion is in progress"));
+    }
     if archived {
-        let origins = crate::peers::snapshot().unwrap_or_default().origins;
-        let mut ids = vec![session_id];
-        loop {
-            let children: Vec<_> = origins
-                .iter()
-                .filter(|(child, parent)| ids.contains(parent) && !ids.contains(child))
-                .map(|(id, _)| id.clone())
-                .collect();
-            if children.is_empty() {
-                break;
-            }
-            ids.extend(children);
-        }
         ready
             .supervisor
             .stop_sessions_for_trash(&ids.iter().map(SessionId::new).collect::<Vec<_>>(), None)
             .await?;
         crate::terminal::close_sessions(&ids);
+        let archived_at = data
+            .entries
+            .get(&session_id)
+            .map_or_else(now, |entry| entry.archived_at);
         for id in ids {
             data.entries.entry(id).or_insert(Entry {
-                archived_at: now(),
+                archived_at,
                 needs_review: None,
             });
         }
     } else {
-        data.entries.remove(&session_id);
+        for id in ids {
+            data.entries.remove(&id);
+        }
     }
     save(&ready.data_dir, &data)?;
     Ok(data)
@@ -155,50 +152,62 @@ pub(crate) async fn archive_settings(
     let _lock = LOCK.lock().await;
     let dir = &state.get()?.data_dir;
     let mut data = read(dir)?;
-    if data.settings.delete_worktrees != settings.delete_worktrees {
-        for entry in data.entries.values_mut() {
-            entry.needs_review = None;
-        }
-    }
     data.settings = settings;
     save(dir, &data)?;
     Ok(data)
 }
-async fn purge(
-    sup: &Supervisor,
-    id: &str,
-    delete_worktree: bool,
-    force: bool,
-) -> Result<(), AppError> {
-    let sid = SessionId::new(id);
-    let Some(record) = sup.session(&sid).await? else {
-        return Ok(());
-    };
-    if sup.is_live(&sid) {
-        return Err(AppError::invalid_argument("Session is still running"));
+fn chat_ids(id: &str, origins: &BTreeMap<String, String>) -> Result<Vec<String>, AppError> {
+    if origins.contains_key(id) {
+        return Err(AppError::invalid_argument(
+            "Manage subagents through their parent chat",
+        ));
     }
-    if delete_worktree {
-        if let Some(path) = &record.worktree_path {
-            if sup.list_sessions().await?.iter().any(|s| {
-                s.session_id != sid
-                    && (s.worktree_path.as_ref() == Some(path) || s.cwd.as_ref() == Some(path))
-            }) {
-                return Err(AppError::invalid_argument(
-                    "Another session still uses this worktree",
-                ));
+    Ok(crate::cleanup::descendants([id.to_owned()].into(), origins))
+}
+
+async fn purge(sup: &Supervisor, ids: &[String]) -> Result<(), AppError> {
+    sup.mark_deleting(&ids.iter().map(SessionId::new).collect::<Vec<_>>());
+    crate::terminal::close_sessions(ids);
+    for id in ids {
+        sup.discard_session(&SessionId::new(id)).await?;
+    }
+    crate::peers::forget_sessions(ids)?;
+    Ok(())
+}
+
+// Persist the whole chat before touching its first child. A crash or partial filesystem
+// failure must retain enough information to retry, even after child rows have gone.
+async fn delete_chat(
+    sup: &Supervisor,
+    dir: &Path,
+    data: &mut Data,
+    id: &str,
+    origins: &BTreeMap<String, String>,
+) -> Result<(), AppError> {
+    if !data.pending_deletions.contains_key(id) {
+        let ids = chat_ids(id, origins)?;
+        data.pending_deletions.insert(id.to_owned(), ids);
+        save(dir, data)?;
+    }
+    let ids = data.pending_deletions[id].clone();
+    match purge(sup, &ids).await {
+        Ok(()) => {
+            crate::navigation::forget_sessions(dir, &ids)?;
+            for member in ids {
+                retired(data, &member);
             }
-            let outcome = sup.cleanup_worktree(&sid, force).await?;
-            if !outcome.removed {
-                return Err(AppError::invalid_argument(format!(
-                    "Worktree needs review: {:?} ({} changed files, {} unique commits)",
-                    outcome.blocked, outcome.dirty_files, outcome.commits
-                )));
+            data.pending_deletions.remove(id);
+            save(dir, data)?;
+            Ok(())
+        }
+        Err(error) => {
+            if let Some(entry) = data.entries.get_mut(id) {
+                entry.needs_review = Some(error.message.clone());
             }
+            save(dir, data)?;
+            Err(error)
         }
     }
-    sup.delete_session(&sid, false).await?;
-    crate::peers::forget_sessions(&[id.to_owned()])?;
-    Ok(())
 }
 fn retired(data: &mut Data, id: &str) {
     data.entries.remove(id);
@@ -212,8 +221,6 @@ fn retired(data: &mut Data, id: &str) {
 #[tauri::command]
 pub(crate) async fn archive_delete(
     session_id: String,
-    delete_worktree: bool,
-    force: bool,
     state: State<'_, AppState>,
 ) -> Result<Data, AppError> {
     let _creation = crate::peers::CREATION.lock().await;
@@ -223,12 +230,18 @@ pub(crate) async fn archive_delete(
     let mut data = read(&ready.data_dir)?;
     if !data.entries.contains_key(&session_id) {
         return Err(AppError::invalid_argument(
-            "Only archived sessions can be deleted from History",
+            "Only archived chats can be deleted here",
         ));
     }
-    purge(&ready.supervisor, &session_id, delete_worktree, force).await?;
-    retired(&mut data, &session_id);
-    save(&ready.data_dir, &data)?;
+    let origins = crate::peers::snapshot()?.origins;
+    delete_chat(
+        &ready.supervisor,
+        &ready.data_dir,
+        &mut data,
+        &session_id,
+        &origins,
+    )
+    .await?;
     Ok(data)
 }
 pub(crate) fn start(app: tauri::AppHandle) {
@@ -241,32 +254,26 @@ pub(crate) fn start(app: tauri::AppHandle) {
                 let state = app.state::<AppState>();
                 let ready = state.get()?;
                 let mut data = read(&ready.data_dir)?;
-                let due: Vec<_> = data
+                let origins = crate::peers::snapshot()?.origins;
+                let due: std::collections::BTreeSet<_> = data
                     .entries
                     .iter()
-                    .filter(|(_, e)| e.needs_review.is_none() && expired(e, &data.settings, now()))
+                    .filter(|(id, entry)| {
+                        !origins.contains_key(*id) && expired(entry, &data.settings, now())
+                    })
                     .map(|(id, _)| id.clone())
+                    .chain(data.pending_deletions.keys().cloned())
                     .collect();
                 if due.is_empty() {
                     return Ok(());
                 }
                 for id in due {
-                    match purge(
-                        &ready.supervisor,
-                        &id,
-                        data.settings.delete_worktrees,
-                        false,
-                    )
-                    .await
+                    if let Err(error) =
+                        delete_chat(&ready.supervisor, &ready.data_dir, &mut data, &id, &origins)
+                            .await
                     {
-                        Ok(()) => retired(&mut data, &id),
-                        Err(e) => {
-                            if let Some(entry) = data.entries.get_mut(&id) {
-                                entry.needs_review = Some(e.message);
-                            }
-                        }
+                        tracing::warn!(chat = %id, "Archive cleanup: {}", error.message);
                     }
-                    save(&ready.data_dir, &data)?;
                 }
                 let _ = app.emit("archive-changed", ());
                 Ok(())
@@ -289,7 +296,6 @@ mod tests {
             needs_review: None,
         };
         let mut settings = Settings::default();
-        assert!(settings.delete_worktrees);
         assert!(!expired(&entry, &settings, 8 * DAY - 1));
         assert!(expired(&entry, &settings, 8 * DAY));
         settings.auto_delete = false;
@@ -318,7 +324,7 @@ mod tests {
     fn records_settings_and_review_reasons_survive_restart() {
         let dir = tempfile::tempdir().unwrap();
         let mut data = Data::default();
-        data.settings.delete_worktrees = false;
+        data.settings.auto_delete = false;
         data.entries.insert(
             "s".into(),
             Entry {
@@ -328,7 +334,7 @@ mod tests {
         );
         save(dir.path(), &data).unwrap();
         let mut loaded = read(dir.path()).unwrap();
-        assert!(!loaded.settings.delete_worktrees);
+        assert!(!loaded.settings.auto_delete);
         assert_eq!(loaded.entries["s"].archived_at, DAY);
         assert!(loaded.entries["s"].needs_review.is_some());
         retired(&mut loaded, "s");
@@ -356,12 +362,13 @@ mod tests {
         );
     }
     #[tokio::test(flavor = "multi_thread")]
-    async fn expiry_preserves_dirty_and_unique_work_and_respects_keep_worktrees() {
+    async fn disposal_removes_dirty_and_unique_worktrees_and_preserves_the_repository() {
         use brigadier_store::{SessionRow, Store};
         use brigadier_supervisor::{SupervisorConfig, VecSink};
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("repo");
         std::fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
         git(&root, &["init", "-q", "-b", "main"]);
         std::fs::write(root.join("file"), "original").unwrap();
         git(&root, &["add", "."]);
@@ -376,7 +383,7 @@ mod tests {
             std::sync::Arc::new(VecSink::new()),
         ));
         let project = sup.add_project(root.clone()).await.unwrap();
-        for name in ["clean", "dirty", "unique", "keep"] {
+        for name in ["clean", "dirty", "unique"] {
             let path = root.join(".brigadier/worktrees").join(name);
             git(
                 &root,
@@ -403,24 +410,220 @@ mod tests {
             if name == "unique" {
                 git(&path, &["commit", "-am", "unique work"]);
             }
-            let result = purge(&sup, name, name != "keep", false).await;
-            if name == "dirty" || name == "unique" {
-                assert!(result.is_err(), "unsafe cleanup succeeded: {name}");
-                assert!(sup.session(&sid).await.unwrap().is_some());
-                assert_eq!(
-                    std::fs::read_to_string(path.join("file")).unwrap(),
-                    "valuable changes"
-                );
-            } else {
-                result.unwrap();
-                assert!(sup.session(&sid).await.unwrap().is_none());
-                assert_eq!(path.exists(), name == "keep");
-            }
+            purge(&sup, &[name.to_string()]).await.unwrap();
+            assert!(sup.session(&sid).await.unwrap().is_none());
+            assert!(!path.exists());
+            let branch = std::process::Command::new("git")
+                .current_dir(&root)
+                .args([
+                    "show-ref",
+                    "--verify",
+                    &format!("refs/heads/brigadier/{name}"),
+                ])
+                .output()
+                .unwrap();
+            assert!(!branch.status.success());
         }
         assert_eq!(
             std::fs::read_to_string(root.join("file")).unwrap(),
             "original"
         );
+        store.close().await.unwrap();
+    }
+    #[test]
+    fn chat_operations_include_all_descendants_but_reject_independent_workers() {
+        let origins = [
+            ("child".into(), "root".into()),
+            ("grandchild".into(), "child".into()),
+        ]
+        .into();
+        assert_eq!(
+            chat_ids("root", &origins).unwrap(),
+            ["grandchild", "child", "root"]
+        );
+        assert!(chat_ids("child", &origins).is_err());
+    }
+
+    #[test]
+    fn old_worktree_retention_switch_cannot_disable_complete_deletion() {
+        let settings: Settings = serde_json::from_str(
+            r#"{"autoDelete":true,"retentionDays":7,"deleteWorktrees":false}"#,
+        )
+        .unwrap();
+        assert!(settings.auto_delete);
+        assert!(!serde_json::to_string(&settings)
+            .unwrap()
+            .contains("deleteWorktrees"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn chat_deletion_preserves_a_worktree_used_by_another_chat() {
+        use brigadier_store::{SessionRow, Store};
+        use brigadier_supervisor::{SupervisorConfig, VecSink};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        std::fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        git(&root, &["init", "-q", "-b", "main"]);
+        std::fs::write(root.join("file"), "original").unwrap();
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-qm", "initial"]);
+        let data_dir = dir.path().join("data");
+        let store = Store::open(&data_dir).unwrap();
+        let sup = Supervisor::new(SupervisorConfig::new(
+            store.handle().clone(),
+            store.run_id(),
+            &data_dir,
+            std::sync::Arc::new(VecSink::new()),
+        ));
+        let project = sup.add_project(root.clone()).await.unwrap();
+        let path = root.join(".brigadier/worktrees/shared");
+        git(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "brigadier/shared",
+                path.to_str().unwrap(),
+                "main",
+            ],
+        );
+        std::fs::write(path.join("file"), "shared edits").unwrap();
+        for name in ["parent", "child", "other"] {
+            let mut row = SessionRow::new(SessionId::new(name));
+            row.project_id = Some(project.id.clone());
+            row.cwd = Some(path.clone());
+            row.worktree_path = Some(path.clone());
+            row.branch = Some("brigadier/shared".into());
+            store.handle().upsert_session(row).await.unwrap();
+        }
+        store.handle().flush().await.unwrap();
+        let mut archive = Data::default();
+        for name in ["parent", "child"] {
+            archive.entries.insert(
+                name.into(),
+                Entry {
+                    archived_at: 1,
+                    needs_review: None,
+                },
+            );
+        }
+        let origins = [("child".into(), "parent".into())].into();
+        delete_chat(&sup, &data_dir, &mut archive, "parent", &origins)
+            .await
+            .unwrap();
+        assert!(archive.entries.is_empty());
+        assert!(archive.deleted.contains(&"child".to_string()));
+        assert!(sup
+            .session(&SessionId::new("parent"))
+            .await
+            .unwrap()
+            .is_none());
+        assert!(sup
+            .session(&SessionId::new("child"))
+            .await
+            .unwrap()
+            .is_none());
+        assert!(sup
+            .session(&SessionId::new("other"))
+            .await
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            std::fs::read_to_string(path.join("file")).unwrap(),
+            "shared edits"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("file")).unwrap(),
+            "original"
+        );
+        // Once its final owner goes, the exclusive checkout is removed too.
+        purge(&sup, &["other".into()]).await.unwrap();
+        assert!(!path.exists());
+        store.close().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn partial_deletion_persists_children_for_retry_and_never_deletes_the_repository() {
+        use brigadier_store::{SessionRow, Store};
+        use brigadier_supervisor::{SupervisorConfig, VecSink};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        std::fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        git(&root, &["init", "-q", "-b", "main"]);
+        std::fs::write(root.join("file"), "keep").unwrap();
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-qm", "initial"]);
+        let data_dir = dir.path().join("data");
+        let store = Store::open(&data_dir).unwrap();
+        let sup = Supervisor::new(SupervisorConfig::new(
+            store.handle().clone(),
+            store.run_id(),
+            &data_dir,
+            std::sync::Arc::new(VecSink::new()),
+        ));
+        let project = sup.add_project(root.clone()).await.unwrap();
+        let mut parent = SessionRow::new(SessionId::new("parent"));
+        parent.project_id = Some(project.id.clone());
+        parent.cwd = Some(root.clone());
+        parent.worktree_path = Some(root.clone()); // invalid ownership must fail closed
+        parent.branch = Some("brigadier/parent".into());
+        store.handle().upsert_session(parent.clone()).await.unwrap();
+        store
+            .handle()
+            .upsert_session(SessionRow::new(SessionId::new("child")))
+            .await
+            .unwrap();
+        store.handle().flush().await.unwrap();
+        let mut data = Data::default();
+        for name in ["parent", "child"] {
+            data.entries.insert(
+                name.into(),
+                Entry {
+                    archived_at: 1,
+                    needs_review: None,
+                },
+            );
+        }
+        let origins = [("child".into(), "parent".into())].into();
+        assert!(delete_chat(&sup, &data_dir, &mut data, "parent", &origins)
+            .await
+            .is_err());
+        assert!(sup
+            .session(&SessionId::new("child"))
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(std::fs::read_to_string(root.join("file")).unwrap(), "keep");
+        let mut recovered = read(&data_dir).unwrap();
+        assert_eq!(recovered.pending_deletions["parent"], ["child", "parent"]);
+        assert!(recovered.entries["parent"].needs_review.is_some());
+        let path = root.join(".brigadier/worktrees/parent");
+        git(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "brigadier/parent",
+                path.to_str().unwrap(),
+                "main",
+            ],
+        );
+        parent.cwd = Some(path.clone());
+        parent.worktree_path = Some(path.clone());
+        store.handle().upsert_session(parent).await.unwrap();
+        store.handle().flush().await.unwrap();
+        delete_chat(&sup, &data_dir, &mut recovered, "parent", &origins)
+            .await
+            .unwrap();
+        assert!(recovered.pending_deletions.is_empty());
+        assert!(recovered.entries.is_empty());
+        assert_eq!(recovered.deleted, ["child", "parent"]);
+        assert!(!path.exists());
+        assert!(root.join("file").exists());
         store.close().await.unwrap();
     }
 }

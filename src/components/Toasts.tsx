@@ -1,32 +1,34 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { Archive, X } from "lucide-react";
+import { notify, type ToastNotice } from "../desktopApi";
+import { errorMessage } from "../workspaceApi";
 import { Button } from "./controls/button";
-interface Notice {
-  id: string;
-  message: string;
-  error: boolean;
-  retry?: () => void;
-}
+import "./settings.css";
+
 export function Toasts() {
-  const [notices, setNotices] = useState<Notice[]>([]);
+  const [notices, setNotices] = useState<ToastNotice[]>([]);
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const dismiss = (id: string) => {
     clearTimeout(timers.current.get(id));
     timers.current.delete(id);
-    setNotices((notices) => notices.filter((notice) => notice.id !== id));
+    setNotices((items) => items.filter((notice) => notice.id !== id));
+  };
+  const schedule = (notice: ToastNotice) => {
+    clearTimeout(timers.current.get(notice.id));
+    if (!notice.error)
+      timers.current.set(
+        notice.id,
+        setTimeout(() => dismiss(notice.id), 6000),
+      );
   };
   useEffect(() => {
     const show = (event: Event) => {
-      const notice = (event as CustomEvent<Notice>).detail;
-      setNotices((notices) => [
-        ...notices.filter((item) => item.id !== notice.id),
-        notice,
-      ]);
-      clearTimeout(timers.current.get(notice.id));
-      if (!notice.error)
-        timers.current.set(
-          notice.id,
-          setTimeout(() => dismiss(notice.id), 4000),
-        );
+      const notice = (event as CustomEvent<ToastNotice>).detail;
+      setNotices((items) =>
+        [...items.filter((item) => item.id !== notice.id), notice].slice(-4),
+      );
+      schedule(notice);
     };
     const activeTimers = timers.current;
     window.addEventListener("brigadier-toast", show);
@@ -36,35 +38,50 @@ export function Toasts() {
       activeTimers.clear();
     };
   }, []);
-  return (
-    <div
-      className="fixed right-4 bottom-4 z-50 flex max-w-sm flex-col gap-2"
-      aria-label="Notifications"
-    >
-      {notices.slice(-4).map((notice) => (
+  return createPortal(
+    <div className="app-toasts" aria-label="Notifications">
+      {notices.map((notice) => (
         <div
           key={notice.id}
           role={notice.error ? "alert" : "status"}
-          className="rounded-md bg-elevated p-3 text-[13px] shadow-overlay"
+          className={`app-toast${notice.error ? " app-toast-error" : ""}`}
+          onMouseEnter={() => clearTimeout(timers.current.get(notice.id))}
+          onMouseLeave={() => schedule(notice)}
+          onFocus={() => clearTimeout(timers.current.get(notice.id))}
+          onBlur={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget))
+              schedule(notice);
+          }}
         >
-          <p
-            className={
-              notice.error ? "text-error" : "text-text"
-            }
-          >
-            {notice.message}
-          </p>
-          <div className="mt-2 flex justify-end gap-1">
-            {notice.retry && <Button onClick={notice.retry}>Retry</Button>}
+          {notice.icon === "archive" && (
+            <Archive size={16} aria-hidden="true" />
+          )}
+          <span>{notice.message}</span>
+          {notice.actions?.map((action) => (
             <Button
-              aria-label="Dismiss notification"
-              onClick={() => dismiss(notice.id)}
+              key={action.label}
+              className={action.primary ? "toast-primary" : "toast-action"}
+              onClick={() => {
+                dismiss(notice.id);
+                void Promise.resolve()
+                  .then(action.onClick)
+                  .catch((error) => notify(errorMessage(error), true));
+              }}
             >
-              Dismiss
+              {action.label}
             </Button>
-          </div>
+          ))}
+          {notice.retry && <Button onClick={notice.retry}>Retry</Button>}
+          <Button
+            size="icon-xs"
+            aria-label="Dismiss notification"
+            onClick={() => dismiss(notice.id)}
+          >
+            <X size={14} />
+          </Button>
         </div>
       ))}
-    </div>
+    </div>,
+    document.body,
   );
 }

@@ -60,3 +60,11 @@ The latest isolated native launch wrote `main_to_fcp_ms = 4228.675` to `paint.nd
 ## Execution and policy boundaries
 
 Fresh per-turn contexts and bounded checkpoint/recent retrieval do not add a hard tool-step/token ceiling inside an individual provider turn. Interactive orchestration uses real peer tools and durable checkpoints, with prompt guidance for decomposition/review/fusion; the separate supervisor loop has additional enforced repair/review limits. The host authorization broker actually performs independent judgments, but interpretation of arbitrary natural-language restrictions remains fallible. Codex native sandbox/approval interception and Claude tool hooks have different coverage. Full access does not guarantee every requested action succeeds. Mixed-provider host dispatch, all native attachment gestures and the complete live approval-fusion interaction were not exhaustively exercised.
+
+## Main integration and local delivery
+
+The owner authorized commit, merge, cleanup and local app replacement without backups. Composer commit `42c5144` was reconciled with main `7823ace`, preserving its dedicated Settings/Archived chats flow, full session disposal, and the composer’s live theme controls. Terminal initialization keeps both archive-state checks and theme updates. The archive navigation helper was moved before its test module to satisfy Clippy without changing behavior.
+
+Measured on the reconciled source: `cargo test --workspace` passed **774 tests**, with **11 ignored** across **42 suites**; `npm test` passed **537 tests** in **65 files**. TypeScript, Clippy with warnings denied, Rust documentation, `git diff --check`, and the release Tauri macOS app/DMG build all exited **0**. The previously reported native render-performance failure remains open; it was not relabeled as passing during integration.
+
+The verified release bundle is used for the authorized replacement of `/Applications/Brigadier.app` after the merge. Temporary test applications, disposable fixture worktrees and this session’s detached worktree are removed during delivery; unrelated worktrees and local reference/research files are preserved.

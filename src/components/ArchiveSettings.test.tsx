@@ -82,16 +82,11 @@ describe("archive settings", () => {
       }),
     );
   });
-  it("defaults to seven days and independently saves expiry and worktree preferences", async () => {
+  it("defaults to seven days and allows changing or disabling expiry", async () => {
     render(<ArchiveSettings />);
     expect(screen.getByRole("spinbutton")).toHaveValue(7);
     await userEvent.clear(screen.getByRole("spinbutton"));
     await userEvent.type(screen.getByRole("spinbutton"), "30");
-    await userEvent.click(
-      screen.getByRole("checkbox", {
-        name: "Delete isolated worktrees with expired sessions",
-      }),
-    );
     await userEvent.click(
       screen.getByRole("button", { name: "Save retention settings" }),
     );
@@ -99,7 +94,6 @@ describe("archive settings", () => {
       expect(readArchive().settings).toEqual({
         autoDelete: true,
         retentionDays: 30,
-        deleteWorktrees: false,
       }),
     );
     await userEvent.click(
@@ -124,7 +118,6 @@ describe("archive settings", () => {
     await saveArchiveSettings({
       autoDelete: false,
       retentionDays: 30,
-      deleteWorktrees: false,
     });
     expect(readArchive().entries.s.archivedAt).toBe(9000);
   });
