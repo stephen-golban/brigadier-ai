@@ -1,16 +1,17 @@
 /** One vector master supplies the intro, sidebar and generated platform icons. */
 export function BrandMark({
-  className = "brand-mark size-8 shrink-0",
+  className = "brand-mark size-8 shrink-0 fill-current",
 }: {
   className?: string;
 }) {
   return (
-    <img
+    <svg
       className={className}
-      src="/brand/spark.svg"
-      alt="Brigadier"
-      width={32}
-      height={32}
-    />
+      viewBox="0 0 256 256"
+      role="img"
+      aria-label="Brigadier"
+    >
+      <use href="/brand/fold.svg#mark" />
+    </svg>
   );
 }

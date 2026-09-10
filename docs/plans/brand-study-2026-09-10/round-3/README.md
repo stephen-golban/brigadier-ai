@@ -1,4 +1,12 @@
+## Current decision — restored original intro
+
+Restored the original Fold logo, platform icons, cosmic background, typography and animation from `61e8576`. Arrival remains the only intro change. The app stays dark-only. This preview now renders the restored production intro directly; earlier studies below are archived alternatives.
+
 # Current intro, new appearance
+
+## Light terminal variant
+
+The user requested a variant with a light chevron and underscore. The preview defaults to `spark-light.svg`, using soft white `#f4f6ff` for the terminal glyphs. The builder derives both glyphs and the silhouette from the production compound path so geometry and gradient stay identical. A side-by-side comparison and an intro toolbar switch between transparent and light glyphs. This is a preview variant; the installed mark remains unchanged. The build passed and both marks were visually inspected in the browser.
 
 ## Reference gradient selected
 

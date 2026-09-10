@@ -1,20 +1,13 @@
-/* Onboarding keeps its own layout and motion while sharing the workspace palette. */
+/* Animated onboarding is independent of workspace styling and fills the webview. */
 .launch {
-  --welcome-font: clamp(40px, 6.2vw, 76px);
-  --welcome-space: 38px;
-  --mark-size: 128px;
-  --mark-gap: 36px;
-  /* Center the complete mark, two-line headline and 36px action as one group. */
-  --mark-lift: calc(var(--welcome-font) * 1.22 + var(--welcome-space) / 2 + 18px + var(--mark-gap) / 2);
-  --welcome-shift: calc((var(--mark-size) + var(--mark-gap)) / 2);
   position: fixed;
   inset: 0;
   z-index: 50;
-  color: var(--color-text);
-  font-family: var(--font-sans);
+  color: #f2f5ff;
+  font-family: ui-rounded, "SF Pro Rounded", system-ui, sans-serif;
   overflow: hidden;
   isolation: isolate;
-  background: var(--color-canvas);
+  background: #030716;
 }
 .launch[data-stage="loading"] {
   background: var(--color-canvas, #181818);
@@ -39,8 +32,8 @@
 }
 .cosmic-fallback {
   background:
-    radial-gradient(ellipse at 15% 65%, var(--color-selected), transparent 50%),
-    radial-gradient(ellipse at 80% 55%, var(--color-hover), transparent 52%), var(--color-canvas);
+    radial-gradient(ellipse at 15% 65%, #164ca777, transparent 50%),
+    radial-gradient(ellipse at 80% 55%, #5439be77, transparent 52%), #030716;
 }
 .cosmic-fallback canvas {
   display: none;
@@ -50,13 +43,13 @@
   inset: 0;
   display: grid;
   place-items: center;
-  animation: brand-rise 1.1s cubic-bezier(.22, 1, .36, 1) 5.35s both;
+  animation: brand-resolve 6.3s both;
   pointer-events: none;
 }
 .launch-mark .brand-mark {
-  width: var(--mark-size);
-  height: var(--mark-size);
-  animation: brand-appear .756s ease 4.032s both;
+  width: 128px;
+  height: 128px;
+  color: #f0f4ff;
 }
 .launch-welcome,
 .welcome-name,
@@ -67,15 +60,14 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: var(--welcome-space);
-  transform: translateY(var(--welcome-shift));
+  gap: 38px;
   text-align: center;
 }
 .welcome-headline {
-  font-size: var(--welcome-font);
+  font-size: clamp(40px, 6.2vw, 76px);
   font-weight: 600;
-  letter-spacing: -0.02em;
-  line-height: 1.22;
+  letter-spacing: -0.035em;
+  line-height: 1.08;
   margin: 0;
   outline: none;
 }
@@ -111,12 +103,12 @@
 }
 .welcome-next:hover,
 .welcome-continue:hover {
-  background: color-mix(in srgb, var(--color-text) 90%, var(--color-canvas));
+  background: #fff;
 }
 .welcome-next:focus-visible,
 .welcome-continue:focus-visible,
 .launch-restart:focus-visible {
-  outline: 2px solid var(--color-accent);
+  outline: 2px solid #bbccff;
   outline-offset: 5px;
 }
 .welcome-name {
@@ -136,8 +128,7 @@
   opacity: 1;
 }
 @keyframes welcome-exit {
-  from { opacity: 1; transform: translateY(var(--welcome-shift)); }
-  to { opacity: 0; transform: translateY(calc(var(--welcome-shift) - 8px)); }
+  to { opacity: 0; transform: translateY(-8px); }
 }
 @keyframes name-enter {
   from { opacity: 0; transform: translateY(8px); }
@@ -162,7 +153,7 @@
 .welcome-greeting > p {
   font-size: 17px;
   line-height: 1.5;
-  color: var(--color-text-secondary);
+  color: #c6cde2;
   margin: 18px 0 38px;
 }
 .welcome-name input {
@@ -170,21 +161,21 @@
   margin-top: 32px;
   height: 48px;
   padding: 0 18px;
-  border: 1px solid var(--color-text-tertiary);
+  border: 1px solid #7c8aaa;
   border-radius: 16px;
-  background: var(--color-input);
-  color: var(--color-text);
+  background: #080c1960;
+  color: #f2f6ff;
   font: inherit;
   font-size: 18px;
   box-shadow: none;
 }
 .welcome-name input::placeholder {
-  color: var(--color-text-tertiary);
+  color: #bec6dc;
 }
 .welcome-name input:focus {
   outline: none;
-  border-color: var(--color-accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 15%, transparent);
+  border-color: #c8d4ff;
+  box-shadow: 0 0 0 3px #a8bcff24;
 }
 .welcome-continue {
   display: inline-flex;
@@ -193,8 +184,8 @@
   gap: 10px;
   min-height: 36px;
   padding: 9px 18px;
-  background: var(--color-text);
-  color: var(--color-canvas);
+  background: #e6edff;
+  color: #202943;
   border: 0;
   border-radius: 7px;
   font-size: 14px;
@@ -206,14 +197,14 @@
 }
 .welcome-continue [data-slot="kbd"] {
   color: inherit;
-  background: color-mix(in srgb, currentColor 8%, transparent);
+  background: rgb(32 41 67 / 8%);
 }
 .welcome-continue:disabled {
   opacity: 0.4;
   cursor: default;
 }
 .welcome-name .welcome-error {
-  color: var(--color-error);
+  color: #ffd0cc;
   font-size: 14px;
   margin: 14px 0 0;
 }
@@ -229,8 +220,8 @@
   place-content: center;
   justify-items: center;
   gap: 12px;
-  background: var(--color-canvas);
-  color: var(--color-text-secondary);
+  background: #18181b;
+  color: #bdc5d9;
   font-size: 14px;
 }
 .launch-error {
@@ -241,9 +232,9 @@
   width: min(460px, calc(100% - 40px));
   padding: 30px;
   border-radius: 16px;
-  background: var(--color-elevated);
-  color: var(--color-text);
-  box-shadow: 0 25px 100px var(--color-shadow);
+  background: #171b29;
+  color: #f2f5ff;
+  box-shadow: 0 25px 100px #0008;
 }
 .launch-error h2 {
   font-size: 22px;
@@ -254,12 +245,12 @@
   line-height: 1.5;
   overflow-wrap: anywhere;
   margin-bottom: 24px;
-  color: var(--color-text-secondary);
+  color: #cad1e5;
 }
 .launch-restart {
   border: 0;
   background: var(--color-canvas, #181818);
-  color: var(--color-text-secondary);
+  color: #c8d4ff;
   padding: 10px 15px;
   cursor: pointer;
 }
@@ -267,7 +258,7 @@
   position: absolute;
   right: 24px;
   bottom: 20px;
-  color: var(--color-text-secondary);
+  color: #c8d4ff;
   font-family: system-ui, sans-serif;
   font-size: 13px;
 }
@@ -275,17 +266,24 @@
   animation: workspace-reveal 0.5s ease-out both;
   pointer-events: none;
 }
-@keyframes brand-appear {
-  from { opacity: 0; filter: blur(16px); transform: scale(.92); }
-  to { opacity: 1; filter: blur(0); transform: scale(1); }
-}
-@keyframes brand-rise {
-  from { transform: translateY(0); }
-  to { transform: translateY(calc(-1 * var(--mark-lift))); }
-}
-@keyframes brand-exit {
-  from { opacity: 1; transform: translateY(calc(-1 * var(--mark-lift))); }
-  to { opacity: 0; transform: translateY(calc(-1 * var(--mark-lift) - 8px)); }
+@keyframes brand-resolve {
+  0%,
+  64% {
+    opacity: 0;
+    filter: blur(16px);
+    transform: scale(0.92);
+  }
+  76%,
+  88% {
+    opacity: 1;
+    filter: blur(0);
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    filter: blur(12px);
+    transform: scale(1.03);
+  }
 }
 @keyframes welcome-button-reveal {
   from {
@@ -352,25 +350,4 @@
   .welcome-name .welcome-continue {
     margin-top: 18px;
   }
-}
-
-/* Keep Spark docked after the welcome becomes interactive, including replay exit. */
-.launch[data-stage="welcome"] .launch-mark,
-.launch[data-stage="revealing"] .launch-mark {
-  animation: none;
-  transform: translateY(calc(-1 * var(--mark-lift)));
-}
-.launch[data-stage="welcome"] .launch-mark .brand-mark,
-.launch[data-stage="revealing"] .launch-mark .brand-mark {
-  animation: none;
-}
-.launch[data-stage="entering-name"] .launch-mark {
-  animation: brand-exit .2s ease-out both;
-}
-.launch-reduced { --welcome-shift: 0px; }
-@media (max-height: 560px) {
-  .launch { --mark-size: 80px; --mark-gap: 28px; }
-}
-@media (max-height: 400px) {
-  .launch { --mark-size: 72px; --mark-gap: 16px; --welcome-space: 24px; --welcome-font: clamp(32px, 5vw, 44px); }
 }
