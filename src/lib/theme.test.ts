@@ -6,7 +6,6 @@ const fs = (await import(/* @vite-ignore */ "node:" + "fs")) as {
 const css = fs.readFileSync("src/index.css", "utf8");
 const tokens = (section: string) => [...section.matchAll(/--color-([\w-]+):\s*([^;]+);/g)];
 const colors = tokens(css.match(/@theme static \{([\s\S]*?)\n\}/)![1]);
-const lightColors = tokens(css.match(/:root\.light \{([\s\S]*?)\n\}/)![1]);
 beforeEach(() => {
   for (const [, name, value] of colors)
     document.documentElement.style.setProperty(`--color-${name}`, value);
@@ -33,13 +32,4 @@ it("follows the CSS value instead of maintaining a second editor palette", () =>
 it("reports missing tokens rather than silently using a hardcoded fallback", () => {
   document.documentElement.style.removeProperty("--color-canvas");
   expect(() => themeColor("canvas")).toThrow("Missing theme token: canvas");
-});
-
-it("provides matching light semantic tokens for composer surfaces and canvas renderers", () => {
-  for (const [,name,value] of lightColors) document.documentElement.style.setProperty(`--color-${name}`,value);
-  expect(themeColor("canvas")).toBe("#f7f7f5");
-  expect(themeColor("input")).toBe("#f0f0ee");
-  expect(themeColor("text")).toBe("#242424");
-  expect(editorColor("selected")).toBe("#00000014");
-  expect(new Set(lightColors.map(([,name])=>name))).toEqual(new Set(colors.map(([,name])=>name)));
 });

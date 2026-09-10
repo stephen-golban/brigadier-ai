@@ -1,4 +1,3 @@
-import { THEME_CHANGED_EVENT } from "../providers/ThemeProvider";
 import { editorColor } from "../lib/theme";
 import { useEffect, useRef } from "react";
 import * as monaco from "monaco-editor";
@@ -27,7 +26,7 @@ function installEditorTheme() {
     selected = editorColor("selected"),
     line = editorColor("hairline");
   monaco.editor.defineTheme("brigadier", {
-    base: document.documentElement.classList.contains("light") ? "vs" : "vs-dark",
+    base: "vs-dark",
     inherit: false,
     rules: [
       { token: "", foreground: text.slice(1) },
@@ -163,9 +162,9 @@ export default function CodeEditor({
   callbacks.current = { onChange, onSave, onSelection };
   useEffect(() => {
     if (!host.current) return;
+    // Stays inside the effect rather than at module scope: `editorColor` reads computed custom
+    // properties off the document, so the call has to happen after the stylesheet is applied.
     installEditorTheme();
-    const refreshTheme = () => { installEditorTheme(); monaco.editor.setTheme("brigadier"); };
-    window.addEventListener(THEME_CHANGED_EVENT, refreshTheme);
     const model = monaco.editor.createModel(
       value,
       language,
@@ -204,7 +203,6 @@ export default function CodeEditor({
       callbacks.current.onSave?.(),
     );
     return () => {
-      window.removeEventListener(THEME_CHANGED_EVENT, refreshTheme);
       const state = instance.saveViewState();
       if (state) views.set(id, state);
       changed.dispose();

@@ -1,12 +1,9 @@
-import { ThemeProvider, useTheme } from "../providers/ThemeProvider";
-import { SelectMenu } from "./SelectMenu";
 import { createPortal } from "react-dom";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   Archive,
   ArrowLeft,
   Folder,
-  Palette,
   Search,
   Settings,
   User,
@@ -42,12 +39,6 @@ const pages = [
     search: "display name account",
   },
   {
-    id: "appearance",
-    label: "Appearance",
-    icon: Palette,
-    search: "theme dark light",
-  },
-  {
     id: "archived",
     label: "Archived chats",
     icon: Archive,
@@ -65,11 +56,7 @@ interface DesktopSettingsProps {
   onClose: () => void;
   request?: SettingsRequest;
 }
-export function DesktopSettings(props: DesktopSettingsProps) {
-  return <ThemeProvider><SettingsContents {...props} /></ThemeProvider>;
-}
-function SettingsContents({ data, onData, sessions, titles, projects, origins, jobs, onClose, request }: DesktopSettingsProps) {
-  const { theme, setTheme, persistenceError } = useTheme();
+export function DesktopSettings({ data, onData, sessions, titles, projects, origins, jobs, onClose, request }: DesktopSettingsProps) {
   const [savedPage, setPage] = useStoredState<SettingsPage>(
     "brigadier:settings-page",
     "general",
@@ -390,16 +377,6 @@ function SettingsContents({ data, onData, sessions, titles, projects, origins, j
                         {savingName ? "Saving…" : "Save name"}
                       </Button>
                     </form>
-                  </section>
-                )}
-                {page === "appearance" && (
-                  <section className="settings-section">
-                    <h2>Theme</h2>
-                    <div className="settings-theme">
-                      <Palette size={20} />
-                      <SelectMenu label="Theme" value={theme} onChange={value => setTheme(value === "light" ? "light" : "dark")} options={[{ value: "dark", label: "Dark" }, { value: "light", label: "Light" }]} />
-                    </div>
-                    {persistenceError && <p role="alert" className="text-error">{persistenceError}</p>}
                   </section>
                 )}
                 {error && (

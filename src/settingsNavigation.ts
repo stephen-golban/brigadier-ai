@@ -1,4 +1,4 @@
-export type SettingsPage = "general" | "profile" | "appearance" | "archived";
+export type SettingsPage = "general" | "profile" | "archived";
 export interface SettingsRequest {
   page?: SettingsPage;
   sessionId?: string;

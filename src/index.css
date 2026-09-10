@@ -46,37 +46,6 @@
   --shadow-overlay: 0 8px 24px var(--color-shadow);
 }
 
-/* Shared semantic tokens keep composers, popovers and workspaces consistent in light mode. */
-:root.light {
-  color-scheme: light;
-  --color-canvas: #f7f7f5;
-  --color-sidebar: #ededeb;
-  --color-elevated: #ffffff;
-  --color-input: #f0f0ee;
-  --color-input-shell: #e7e7e4;
-  --color-hairline: rgba(0, 0, 0, 0.09);
-  --color-hover: rgba(0, 0, 0, 0.05);
-  --color-selected: rgba(0, 0, 0, 0.08);
-  --color-pressed: rgba(0, 0, 0, 0.12);
-  --color-text: #242424;
-  --color-text-secondary: #5d5d5a;
-  --color-text-tertiary: #747470;
-  --color-text-disabled: #92928d;
-  --color-attention: #286dcc;
-  --color-accent: #286dcc;
-  --color-warn: #a5481d;
-  --color-ok: #3c7650;
-  --color-error: #b54646;
-  --color-backdrop: rgba(0, 0, 0, 0.3);
-  --color-menu-glass: rgba(255, 255, 255, 0.88);
-  --color-glass-edge: rgba(255, 255, 255, 0.8);
-  --color-sidebar-tint: rgba(237, 237, 235, 0.32);
-  --color-sidebar-glass: rgba(237, 237, 235, 0.65);
-  --color-sidebar-blue: #d5e4ea;
-  --color-sidebar-teal: #dce8e4;
-  --color-shadow: rgba(0, 0, 0, 0.12);
-}
-
 @layer base {
   :root {
     color-scheme: dark;

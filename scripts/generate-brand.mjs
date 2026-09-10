@@ -9,11 +9,17 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-const source = readFileSync("public/brand/fold.svg", "utf8");
+const source = readFileSync("public/brand/spark.svg", "utf8");
 const mark = source.slice(source.indexOf("  <g"), source.lastIndexOf("</svg>"));
+const theme = readFileSync("src/index.css", "utf8");
+const color = (name) => {
+  const value = theme.match(new RegExp(`--color-${name}: (#[0-9a-f]{6});`))?.[1];
+  if (!value) throw Error(`Missing icon color: ${name}`);
+  return value;
+};
 writeFileSync(
   "public/brand/app-icon.svg",
-  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024"><defs><linearGradient id="bg" x2="1" y2="1"><stop stop-color="#17213f"/><stop offset="1" stop-color="#080c1b"/></linearGradient><radialGradient id="light"><stop stop-color="#535fe9" stop-opacity=".45"/><stop offset="1" stop-color="#535fe9" stop-opacity="0"/></radialGradient><clipPath id="icon"><rect x="16" y="16" width="992" height="992" rx="218"/></clipPath></defs><g clip-path="url(#icon)"><rect width="1024" height="1024" fill="url(#bg)"/><ellipse cx="330" cy="775" rx="650" ry="400" fill="url(#light)"/></g><g transform="translate(184 167) scale(2.55)" color="#f2f5ff">${mark}</g></svg>`,
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024"><defs><linearGradient id="bg" x2="0" y2="1"><stop stop-color="${color("elevated")}"/><stop offset="1" stop-color="${color("canvas")}"/></linearGradient></defs><rect x="16" y="16" width="992" height="992" rx="218" fill="url(#bg)"/><g transform="translate(184 184) scale(2.5625)" color="${color("text")}">${mark}</g></svg>`,
 );
 const output = mkdtempSync(join(tmpdir(), "brigadier-icons-"));
 execFileSync(
@@ -25,4 +31,4 @@ execFileSync(
 for (const name of readdirSync("src-tauri/icons"))
   if (existsSync(join(output, name)))
     copyFileSync(join(output, name), join("src-tauri/icons", name));
-console.log("Generated platform icons from public/brand/fold.svg");
+console.log("Generated platform icons from public/brand/spark.svg and the app palette");
