@@ -5,7 +5,6 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 const { api } = vi.hoisted(() => ({
   api: {
     isMock: false,
-    listProjects: vi.fn(),
     pickDirectory: vi.fn(),
     addProject: vi.fn(),
   },
@@ -16,7 +15,6 @@ import { WelcomeScreen } from "./WelcomeScreen";
 
 beforeEach(() => {
   api.isMock = false;
-  api.listProjects.mockResolvedValue([]);
   api.pickDirectory.mockResolvedValue("/repos/example");
   api.addProject.mockResolvedValue({ id: "p1", name: "example" });
 });
@@ -28,16 +26,15 @@ afterEach(() => {
 
 const row = (name: string) => screen.getByRole("button", { name: new RegExp(name) });
 
-it("shows the brand mark and the three action rows with no project selected", async () => {
+it("shows the chat heading and useful actions with no project selected", async () => {
   render(<WelcomeScreen />);
   expect(screen.getByRole("img", { name: "Brigadier" })).toBeVisible();
   expect(row("New project")).toBeVisible();
   expect(screen.getByText("Create one from a local folder")).toBeVisible();
-  expect(row("New chat")).toBeVisible();
+  expect(screen.getByRole("heading", { name: "Chat with Brigadier" })).toBeVisible();
+  expect(screen.queryByRole("button", { name: /New chat/ })).toBeNull();
   expect(row("Notepad")).toBeVisible();
   expect(screen.getByText("Keep notes alongside your work")).toBeVisible();
-  // No card, no border: the row is the hit target and the fill is the whole affordance.
-  expect(row("Notepad").className).toContain("rounded-[var(--radius-row)]");
 });
 
 it("takes the folder picker and add_project path for New project", async () => {
@@ -69,26 +66,6 @@ it("says where to go instead of silently failing in a browser", async () => {
   await userEvent.click(row("New project"));
   expect(api.pickDirectory).not.toHaveBeenCalled();
   expect(await screen.findByRole("alert")).toHaveTextContent("Add project in the sidebar");
-});
-
-it("disables New chat until a project exists", async () => {
-  render(<WelcomeScreen />);
-  expect(await screen.findByText("Add a project first")).toBeVisible();
-  expect(row("New chat")).toBeDisabled();
-});
-
-it("dispatches the sidebar's own new-chat event once a project exists", async () => {
-  api.listProjects.mockResolvedValue([{ id: "p1", name: "example" }]);
-  render(<WelcomeScreen />);
-  expect(await screen.findByText("Start a conversation in a project")).toBeVisible();
-  const started = vi.fn();
-  window.addEventListener("brigadier-new-chat", started);
-  try {
-    await userEvent.click(row("New chat"));
-    expect(started).toHaveBeenCalledTimes(1);
-  } finally {
-    window.removeEventListener("brigadier-new-chat", started);
-  }
 });
 
 it("opens the notepad through the event the sidebar listens for", async () => {

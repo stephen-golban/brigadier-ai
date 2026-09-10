@@ -56,7 +56,6 @@ export interface DockProps extends MessageEditProps {
 export function Dock(props: DockProps) {
   const { project, session, models, busy, blocked } = props;
 
-
   return (
     <section
       className={`dock composer-dock shrink-0 bg-input-shell ${session ? "has-session" : ""}`}

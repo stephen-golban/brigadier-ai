@@ -57,8 +57,10 @@ export function NewSession({ project, projects, onSelectProject, onNewProject, o
       const detail = (event as CustomEvent<{ projectId: string; prompt: string }>).detail;
       if (detail.projectId === project?.id) { durable.setText(detail.prompt); setStarterFocus(crypto.randomUUID()); }
     };
+    const focus = () => setStarterFocus(crypto.randomUUID());
+    window.addEventListener("brigadier-focus-composer", focus);
     window.addEventListener("workbench-starter", starter);
-    return () => { live = false; clearInterval(refreshTimer); window.removeEventListener("focus", refresh); window.removeEventListener("workbench-starter", starter); };
+    return () => { window.removeEventListener("brigadier-focus-composer", focus); live = false; clearInterval(refreshTimer); window.removeEventListener("focus", refresh); window.removeEventListener("workbench-starter", starter); };
   }, [project?.id]);
   const unavailableModel = picks.mode === "custom" && !!selection.model && !!provider?.modelCatalogKnown && !provider.models.some(m => m.id === selection.model || (!!selection.model && m.resolvedId === selection.model));
   const unavailableEffort = picks.mode === "custom" && !!provider && !!selection.effort && !supportedExecutionEfforts(provider, selection.model).includes(selection.effort);
@@ -114,7 +116,7 @@ export function NewSession({ project, projects, onSelectProject, onNewProject, o
   return <>
     <TaskSetupRail key={project?.id} project={project} projects={projects} picks={picks} options={workspace} disabled={sending || !preferences.loaded && !!project} onChange={preferences.save} onSelectProject={onSelectProject} onNewProject={onNewProject} onProjectless={onProjectless} />
     <PromptInput attachmentProjectId={project?.id} attachments={durable.attachments} onAttachments={durable.setFiles} onUploadChange={setUploading}
-      focusKey={starterFocus} rows={2} value={durable.draft.text} aria-label="Message" placeholder={project?.projectless ? "Ask anything" : project ? `Do anything in ${project.name}` : projects?.length ? "Choose a project to start" : "Choose a project or work without one"}
+      focusKey={starterFocus} rows={2} value={durable.draft.text} aria-label="Message" placeholder={project?.projectless ? "Ask anything" : project ? `Do anything in ${project.name}` : "Ask anything"}
       disabled={sending || !project || !durable.loaded} onText={durable.setText} onKeyDown={event => { if (isSubmitKey(event)) { event.preventDefault(); void submit(); } }}>
       <ComposerActions className="composer-main-actions">
         <PermissionControl value={picks.permission as PermissionPolicy} onChange={permission => preferences.save({ ...picks, permission })} disabled={controlDisabled} />

@@ -33,7 +33,9 @@ import {
   render,
   screen,
   within,
+  waitFor,
 } from "@testing-library/react";
+import { pasteComposer } from "./test/composer";
 import userEvent from "@testing-library/user-event";
 
 import type { PeerData } from "./peerApi";
@@ -52,6 +54,7 @@ const h = vi.hoisted(() => ({
     name: string;
     root_path: string;
     created_at_ms: number;
+    projectless?: boolean;
   }>,
   sessions: [] as unknown[],
   initialData: null as Promise<void> | null,
@@ -154,6 +157,13 @@ vi.mock("./bridge", async (importOriginal) => {
     async revealPath() {},
     async listSessions() {
       return h.sessions;
+    },
+    async projectlessWorkspace() {
+      const existing = h.projects.find(project => project.projectless);
+      if (existing) return existing;
+      const scratch = { id: "tasks", name: "Tasks", root_path: "/tmp/chats", created_at_ms: 1, projectless: true };
+      h.projects.push(scratch);
+      return scratch;
     },
     startSession: (...args: unknown[]) => h.start(...args),
     async resumeSession() {
@@ -597,12 +607,12 @@ describe("opening a project", () => {
     ] }));
     const { App } = await import("./App");
     render(<App />);
-    expect(await screen.findByText("Add a project to get started.")).toBeVisible();
+    expect(await screen.findByText("No projects imported.")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Add project" }));
     expect(await screen.findByRole("button", { name: "Project actions job-portal" })).toBeVisible();
-    expect(h.lastVisible()).toEqual(["p-live"]);
+    expect(h.lastVisible()).toEqual(["tasks", "p-live"]);
     expect(screen.getAllByRole("button", { name: /^Session aa1111/ }).length).toBeGreaterThan(0);
-    expect(h.projects).toHaveLength(1);
+    expect(h.projects.filter(project => !project.projectless)).toHaveLength(1);
     cleanup();
     await mountApp();
     expect(screen.getByRole("button", { name: "Project actions job-portal" })).toBeVisible();
@@ -849,7 +859,7 @@ describe("resizing the sidebar", () => {
 });
 
 /*
- * A **global** new chat — the sidebar button, ⌘N, or the welcome screen's own row, all of which
+ * A **global** new chat — the sidebar button or ⌘N, both of which
  * arrive as `brigadier-new-chat` — starts with no project picked. Only the shell can pin this:
  * the state is `App`'s, and what makes it hard to hold is the missing-project effect, which
  * exists precisely to force `selectedProjectId` back to `projects[0]`.
@@ -857,9 +867,9 @@ describe("resizing the sidebar", () => {
 describe("a global new chat", () => {
   const navigation = () =>
     within(screen.getByRole("navigation", { name: "Projects" }));
-  const welcomeRow = () =>
-    screen.findByRole("button", {
-      name: /Start a conversation in a project/,
+  const welcomeHeading = () =>
+    screen.findByRole("heading", {
+      name: "Chat with Brigadier",
     });
 
   beforeEach(() => {
@@ -882,12 +892,12 @@ describe("a global new chat", () => {
     });
 
     // The welcome screen, not the project greeting; and `projects[0]` was NOT re-selected.
-    expect(await welcomeRow()).toBeVisible();
+    expect(await welcomeHeading()).toBeVisible();
     expect(
       navigation().getByRole("button", { name: "job-portal" }),
     ).not.toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("button", { name: "Project" })).toHaveTextContent(
-      "Choose a project",
+      "Choose project",
     );
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
 
@@ -895,23 +905,22 @@ describe("a global new chat", () => {
     await user.click(await screen.findByRole("option", { name: "design-system" }));
 
     expect(
-      screen.queryByText("Start a conversation in a project"),
+      screen.queryByText("Chat with Brigadier"),
     ).toBeNull();
     expect(
       navigation().getByRole("button", { name: "design-system" }),
     ).toHaveAttribute("aria-current", "page");
   });
 
-  it("opens the composer's project picker rather than doing nothing when asked twice", async () => {
+  it("focuses the composer when asked twice", async () => {
     const user = userEvent.setup();
     await mountApp();
     await act(async () => {
       window.dispatchEvent(new Event("brigadier-new-chat"));
     });
-    await user.click(await welcomeRow());
-    expect(
-      await screen.findByRole("listbox", { name: "Project" }),
-    ).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "New chat" }));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).toHaveFocus());
+    expect(screen.queryByRole("listbox", { name: "Project" })).toBeNull();
   });
 
   it("keeps the project-scoped new chat on its own project", async () => {
@@ -920,15 +929,41 @@ describe("a global new chat", () => {
     await act(async () => {
       window.dispatchEvent(new Event("brigadier-new-chat"));
     });
-    expect(await welcomeRow()).toBeVisible();
+    expect(await welcomeHeading()).toBeVisible();
     await user.click(
       navigation().getByRole("button", { name: "New session in design-system" }),
     );
     expect(
-      screen.queryByText("Start a conversation in a project"),
+      screen.queryByText("Chat with Brigadier"),
     ).toBeNull();
     expect(
       navigation().getByRole("button", { name: "design-system" }),
     ).toHaveAttribute("aria-current", "page");
+  });
+});
+
+
+describe("projectless chat creation", () => {
+  it("starts a chat with no imported projects and lists it under Chats without a setup rail", async () => {
+    h.projects = [];
+    h.start.mockResolvedValue({ ...view("chat-one", "tasks"), cwd: "/tmp/chats/chat-one", worktree_path: null, branch: null });
+    const { App } = await import("./App");
+    render(<App />);
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).toHaveAttribute("contenteditable", "true"));
+    const input = screen.getByRole("textbox", { name: "Message" });
+    expect(screen.getByRole("button", { name: "Project" })).toHaveTextContent("Choose project");
+    expect(screen.queryByRole("button", { name: "Environment" })).toBeNull();
+    await pasteComposer(input, "Help me think through an idea");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(h.start).toHaveBeenCalledWith(expect.objectContaining({ projectId: "tasks", prompt: "Help me think through an idea", isolated: false }), expect.any(Function)));
+    const args = h.start.mock.calls[0][0];
+    expect(args.baseBranch).toBeUndefined();
+    expect(args.newBranch).toBeUndefined();
+    expect(args.workspacePath).toBeUndefined();
+    const chats = await screen.findByRole("navigation", { name: "Chats" });
+    expect(within(chats).getByRole("button", { name: "Help me think through an idea" })).toBeVisible();
+    expect(within(screen.getByRole("navigation", { name: "Projects" })).queryByRole("button", { name: "Tasks" })).toBeNull();
+    expect(screen.queryByLabelText("Task workspace")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Project" })).toBeNull();
   });
 });

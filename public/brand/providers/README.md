@@ -1,0 +1,1 @@
+Provider marks from [Simple Icons v14.15.0](https://github.com/simple-icons/simple-icons/tree/14.15.0/icons), distributed under [CC0-1.0](https://github.com/simple-icons/simple-icons/blob/14.15.0/LICENSE.md): `openai.svg` and `claude.svg`.

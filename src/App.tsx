@@ -229,8 +229,8 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
   );
   /**
    * A **global** "New chat" — the sidebar button, ⌘N, or the welcome screen's own row — starts
-   * with no project picked, so the main pane shows `WelcomeScreen` and the composer's project
-   * picker shows "Choose a project" instead of whichever repository happened to be selected.
+   * with no project picked. The composer uses an internal projectless workspace for drafts,
+   * settings, and attachments while its picker shows "Choose project".
    *
    * `selectedProjectId` is `null` for that state, exactly as it is when there are no projects at
    * all; this flag is the third bit that tells the two apart. Its only job is to stop the
@@ -355,7 +355,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
               (p) =>
                 p.id === localStorage.getItem("brigadier:selected-project"),
             )?.id ??
-            projectList[0]!.id,
+            projectList.find(p => !p.projectless)?.id ?? null,
         );
     })();
 
@@ -448,7 +448,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
       return;
     }
     if (!projects.some((p) => p.id === selectedProjectId)) {
-      setSelectedProjectId(projects[0]?.id ?? null);
+      setSelectedProjectId(projects.find(p => !p.projectless)?.id ?? null);
       setSelectedSessionId(null);
     } else if (selectedSessionId && !state.sessions[selectedSessionId] && !startups[selectedSessionId])
       setSelectedSessionId(null);
@@ -469,14 +469,14 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
     /**
      * "Start a new chat". `detail` is the project to start it in, or `null` for the global path
      * (sidebar button, ⌘N, welcome row), which picks no project at all. Pressing it again while
-     * already unpicked opens the setup rail's project picker rather than doing nothing.
+     * already unpicked focuses the composer.
      */
     const create = (event: Event) => {
       const projectId = (event as CustomEvent<string | null>).detail ?? null;
       setSelectedSessionId(null);
       if (projectId === null) {
         if (projectUnpicked) {
-          window.dispatchEvent(new Event("brigadier-pick-project"));
+          window.dispatchEvent(new Event("brigadier-focus-composer"));
           return;
         }
         setProjectUnpicked(true);
@@ -496,15 +496,15 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
 
   // Include cross-project worker activity; only resubscribe when the project set changes.
   const visibleProjectKey = useMemo(() => {
-    const visible = new Set(selectedProjectId ? [selectedProjectId] : []);
+    const visible = new Set(projects.filter(p => p.projectless).map(p => p.id));
+    if (selectedProjectId) visible.add(selectedProjectId);
     if (selectedSessionId) for (const row of workerTree(selectedSessionId, peers, state.sessions)) {
       if (row.session?.projectId) visible.add(row.session.projectId);
     }
     return JSON.stringify([...visible]);
-  }, [selectedProjectId, selectedSessionId, peers.subagents, state.sessions]);
+  }, [selectedProjectId, selectedSessionId, peers.subagents, state.sessions, projects]);
   useEffect(() => {
-    if (selectedProjectId === null) return;
-    localStorage.setItem("brigadier:selected-project", selectedProjectId);
+    if (selectedProjectId !== null) localStorage.setItem("brigadier:selected-project", selectedProjectId);
     void bridge().setVisibleProjects(JSON.parse(visibleProjectKey)).catch(say);
   }, [selectedProjectId, visibleProjectKey, say]);
 
@@ -813,7 +813,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
     const record = newStartup(args);
     // Open the authored task before any filesystem or provider work crosses IPC.
     setStartups(previous => ({ ...previous, [record.id]: record }));
-    setSelectedProjectId(args.projectId);
+    chooseProject(args.projectId);
     setSelectedSessionId(record.id);
     try {
       const view = await bridge().startSession(args, progress => {
@@ -850,7 +850,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
       setStartups(previous => ({ ...previous, [record.id]: { ...record } }));
       return false;
     } finally { startingRequests.current.delete(args.requestId); }
-  }, []);
+  }, [chooseProject]);
 
   /**
    * Continue an ended session in place. The success path is `startSession`'s, deliberately: the
@@ -1054,6 +1054,28 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
     selectedProjectId === null
       ? null
       : (projects.find((p) => p.id === selectedProjectId) ?? null);
+  // The storage workspace stays internal; an unpicked draft is a usable projectless chat.
+  const projectlessWorkspace = projects.find(project => project.projectless) ?? null;
+  useEffect(() => {
+    if (!projectsLoaded || !navigation.loaded || selectedProjectId !== null || projectlessWorkspace) return;
+    let live = true;
+    let pending = false;
+    const prepare = async () => {
+      if (pending) return;
+      pending = true;
+      try {
+        const project = await bridge().projectlessWorkspace();
+        await navigation.refresh();
+        if (!live) return;
+        setProjects(previous => [...previous.filter(item => item.id !== project.id), project]);
+        store.noteProjects([project.id]);
+      } catch (error) { if (live) say(error); }
+      finally { pending = false; }
+    };
+    void prepare();
+    window.addEventListener("focus", prepare);
+    return () => { live = false; window.removeEventListener("focus", prepare); };
+  }, [projectsLoaded, navigation.loaded, navigation.refresh, selectedProjectId, projectlessWorkspace, say]);
   const pendingTotal = approvalRows.length;
   const jobs = useCleanup();
   const [viewedSession, setViewedSession] = useState<string | null>(null);
@@ -1258,13 +1280,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
 
             <Dock
               onNewProject={() => sidebar.current?.addProject()}
-              onProjectless={() => { void bridge().projectlessWorkspace().then(project => {
-                setProjects(previous => [...previous.filter(item => item.id !== project.id), project]);
-                store.noteProjects([project.id]);
-                // A projectless workspace *is* a pick: leave the unpicked state with it.
-                chooseProject(project.id); setSelectedSessionId(null);
-                void navigation.refresh();
-              }).catch(say); }}
+              onProjectless={() => { setProjectUnpicked(true); setSelectedProjectId(null); setSelectedSessionId(null); }}
               startup={pendingStartup}
               editing={
                 editingMessage?.session_id === selectedSessionId
@@ -1279,7 +1295,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
               onRewound={() => setConversationRevision((n) => n + 1)}
               projects={projects}
               onSelectProject={id => { chooseProject(id); setSelectedSessionId(null); }}
-              project={selectedProject}
+              project={selectedProject ?? (selectedSessionId === null ? projectlessWorkspace : null)}
               session={selectedSession}
               models={models}
               busy={commandBusy}

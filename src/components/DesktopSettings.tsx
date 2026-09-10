@@ -1,7 +1,8 @@
 import { createPortal } from "react-dom";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Archive, ArrowLeft, Folder, Search, Settings, User } from "../icons";
+import { Archive, ArrowDown, ArrowLeft, Folder, Search, Settings, Trash, User } from "../icons";
 import { open } from "@tauri-apps/plugin-dialog";
+import { SoftwareUpdates } from "./SoftwareUpdates";
 import { ArchivedSessions } from "./ArchivedSessions";
 import { Checkbox } from "./controls/checkbox";
 import { Input } from "./controls/input";
@@ -31,6 +32,7 @@ const pages = [
     icon: User,
     search: "display name account",
   },
+  { id: "updates", label: "Updates", icon: ArrowDown, search: "CLI providers versions releases software app" },
   {
     id: "archived",
     label: "Archived chats",
@@ -47,9 +49,10 @@ interface DesktopSettingsProps {
   origins: Record<string, string>;
   jobs: CleanupJob[];
   onClose: () => void;
+  onOpenTrash?: () => void;
   request?: SettingsRequest;
 }
-export function DesktopSettings({ data, onData, sessions, titles, projects, origins, jobs, onClose, request }: DesktopSettingsProps) {
+export function DesktopSettings({ data, onData, sessions, titles, projects, origins, jobs, onClose, onOpenTrash, request }: DesktopSettingsProps) {
   const [savedPage, setPage] = useStoredState<SettingsPage>(
     "brigadier:settings-page",
     "general",
@@ -171,6 +174,7 @@ export function DesktopSettings({ data, onData, sessions, titles, projects, orig
               </Button>
             </>
           )}
+          {onOpenTrash && (!search || "trash".includes(search.toLowerCase().trim())) && <Button className="settings-nav-item" onClick={onOpenTrash}><Trash />Trash</Button>}
           {!visiblePages.length && (
             <p className="settings-search-empty">No matching settings</p>
           )}
@@ -196,6 +200,7 @@ export function DesktopSettings({ data, onData, sessions, titles, projects, orig
                 <h1>{pages.find((item) => item.id === page)?.label}</h1>
               </header>
               <div className="settings-sections">
+                {page === "updates" && <SoftwareUpdates />}
                 {page === "general" && (
                   <>
                     <section className="settings-section">

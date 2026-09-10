@@ -48,7 +48,7 @@ export function ArchivedSessions({
   const title = (id: string) => titles[id] ?? `Session ${id.slice(-6)}`;
   const projectName = (id: string | null) =>
     id
-      ? (projectNames[id] ??
+      ? (projects.find(item => item.id === id)?.projectless ? "Chats" : projectNames[id] ??
         projects.find((item) => item.id === id)?.name ??
         "Unavailable project")
       : "No project";

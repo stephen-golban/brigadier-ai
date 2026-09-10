@@ -166,7 +166,7 @@ it("offers project creation and a projectless mode that hides Git setup", async 
   await userEvent.click(screen.getByRole("option", {name:"Don't work in a project"}));
   expect(onProjectless).toHaveBeenCalledTimes(1);
   view.rerender(<TaskSetupRail {...props} project={{...project,projectless:true}}/>);
-  expect(screen.getByRole("button", {name:"Project"})).toHaveTextContent("Work in a project");
+  expect(screen.getByRole("button", {name:"Project"})).toHaveTextContent(PROJECT_PLACEHOLDER);
   expect(screen.queryByRole("button", {name:"Environment"})).toBeNull();
   expect(screen.queryByRole("button", {name:"Branch"})).toBeNull();
   await userEvent.click(screen.getByRole("button", {name:"Project"}));
@@ -190,17 +190,17 @@ it("sends projectless prompts without inherited Git selections", async () => {
  * and it has to stay usable while every other control is inert.
  */
 const otherProject = {id:"other-project",name:"Other project",root_path:"/other",created_at_ms:0};
-it("asks for a project, keeps its own picker live and leaves the rest of the rail inert", async () => {
+it("asks for a project, keeps its own picker live and hides workspace menus", async () => {
   const onSelectProject = vi.fn();
   render(<NewSession project={null} projects={[project,otherProject]} onSelectProject={onSelectProject} models={[]} disabled={false} onStart={vi.fn()} />);
   const trigger = screen.getByRole("button", {name:"Project"});
   expect(trigger).toHaveTextContent(PROJECT_PLACEHOLDER);
   expect(trigger).toBeEnabled();
   // No worktree or branch may be staged against a project that has not been chosen.
-  expect(screen.getByRole("button", {name:"Environment"})).toBeDisabled();
-  expect(screen.getByRole("button", {name:"Branch"})).toBeDisabled();
+  expect(screen.queryByRole("button", {name:"Environment"})).toBeNull();
+  expect(screen.queryByRole("button", {name:"Branch"})).toBeNull();
   expect(screen.getByRole("button", {name:"Send"})).toBeDisabled();
-  expect(screen.getByText("Choose a project to start")).toBeVisible();
+  expect(screen.getByText("Ask anything")).toBeVisible();
   // The unpicked state is not an execution-settings failure; it must not raise that alarm.
   expect(screen.queryByRole("alert")).toBeNull();
   await userEvent.click(trigger);

@@ -16,7 +16,7 @@ import { ProjectWorkbench } from "./ProjectWorkbench";
 import { sessionLayoutsKey, workspaceKey } from "../workbenchState";
 import { workbenchApi, defaultSettings } from "../workbenchApi";
 import { workspaceApi, type GitStatus } from "../workspaceApi";
-import { ZERO_USAGE } from "../wire";
+import { ZERO_USAGE, type ProjectView } from "../wire";
 import type { SessionRuntime } from "../feedStore";
 vi.mock("./CodeEditor", () => ({
   default: ({
@@ -144,7 +144,7 @@ describe("Git status refresh", () => {
     changes: [{ path, index: " ", worktree: "M" }],
   });
   const workbench = (
-    currentProject = project,
+    currentProject: ProjectView = project,
     currentSession = parent,
     workspaceOpen = true,
   ) => (
@@ -172,6 +172,19 @@ describe("Git status refresh", () => {
     vi.useFakeTimers();
     localStorage.setItem("brigadier:workspace-mode", JSON.stringify("changes"));
     vi.spyOn(workspaceApi, "entries").mockResolvedValue([]);
+  });
+  it("does not poll Git in projectless sessions or retain another workspace's Git error", async () => {
+    const git = vi.spyOn(workspaceApi, "git").mockRejectedValue(new Error("fatal: not a git repository"));
+    const view = render(workbench());
+    await act(async () => {});
+    expect(screen.getByText("fatal: not a git repository")).toBeVisible();
+    git.mockClear();
+    view.rerender(workbench({ ...project, id: "tasks", projectless: true }, { ...parent, projectId: "tasks" }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(git).not.toHaveBeenCalled();
+    expect(screen.queryByText("fatal: not a git repository")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Changes" })).toBeNull();
+    expect(screen.queryByTestId("changes-panel")).toBeNull();
   });
   it("orders Files, Search, Changes and refreshes the count with the panel hidden", async () => {
     const git = vi.spyOn(workspaceApi, "git").mockResolvedValue({

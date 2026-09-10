@@ -1,0 +1,44 @@
+.software-provider-icon {
+  display: block;
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
+  background: currentColor;
+  mask: var(--provider-mark) center / contain no-repeat;
+}
+.software-provider-icon.codex { --provider-mark: url("/brand/providers/openai.svg"); }
+.software-provider-icon.claude-code { --provider-mark: url("/brand/providers/claude.svg"); }
+.button.software-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 4px 8px;
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-full);
+}
+.software-updates-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+.software-update-list {
+  margin-top: 20px;
+  padding: 0 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+.software-update-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 66px;
+  padding: 14px 4px;
+}
+.software-update-row + .software-update-row { border-top: 1px solid var(--border); }
+.software-update-description { flex: 1; min-width: 0; }
+.software-update-description > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; }
+.software-update-description span, .software-checked-at { color: var(--text-secondary); font-size: 12px; }
+.software-update-description p { margin: 5px 0 0; }
