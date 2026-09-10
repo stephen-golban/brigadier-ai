@@ -28,6 +28,7 @@ Copied 2026-09-10 in two passes (the 1a foundation, then the leaf controls).
 | `button.tsx` | kit `base/button.tsx` | `1a5da0f` | none — byte-identical |
 | `checkbox.tsx` | shadcn `https://ui.shadcn.com/r/styles/base-nova/checkbox.json` | `shadcn@4.21.0` | `from "cn"` → `@/lib/utils`; `CheckIcon` from `lucide-react` → `Check` from `src/icons`; the CLI's `<CheckIcon\n  />` line break collapsed. |
 | `collapsible.tsx` | kit `base/collapsible.tsx` | `1a5da0f` | none — byte-identical. **Overwrote** the pre-port `radix-ui` file of the same name; export names `Collapsible` / `CollapsibleTrigger` / `CollapsibleContent` are unchanged, so its four importers compile untouched. Its state attributes changed with it — see Rules below. |
+| `combobox.tsx` | kit `base/combobox.tsx` | `1a5da0f` | two. (1) `import { CheckIcon, ChevronDownIcon, XIcon } from "lucide-react"` → `Check` / `ChevronDown` / `X` from `@/icons`. (2) `ComboboxContent`'s `Pick` of positioner props is widened with `collisionPadding` / `collisionAvoidance`, exactly as `popover.tsx`'s was and for the same reason — `SelectMenu.tsx` passes the 8px window margin and `fallbackAxisSide: 'none'` so a composer popover can never swing out to the perpendicular axis. Copied 2026-09-11. It is **not** in the shadcn registry, so `npx shadcn add` cannot fetch it; the raw-GitHub URL at the SHA is the only pin (`docs/research/assistant-ui-composer.md`, Landmine C). Wired: `SelectMenu.tsx` uses `Combobox`, `ComboboxContent`, `ComboboxInput`, `ComboboxList`, `ComboboxItem`, `ComboboxGroup`, `ComboboxLabel`, `ComboboxCollection`, `ComboboxEmpty`; `ComboboxValue`, `ComboboxTrigger`, `ComboboxClear` and `ComboboxSeparator` have no call site — the kit's `ComboboxTrigger` is the 24px chevron box that lives *inside* an input, and this app's trigger is the composer pill, so `SelectMenu` renders `ComboboxPrimitive.Trigger` through the kit `Button` at the retired adapter's old defaults (`variant="ghost" size="sm"`, `SelectMenu.tsx:171-189`) instead. |
 | `command.tsx` | kit `base/command.tsx` | `1a5da0f` | heavy, and hand-authored rather than copied. `cmdk` removed (see Not taken), `CommandDialog` removed (upstream's needs `@/components/ui/dialog`), `data-[selected=true]:bg-accent` → `aria-selected:bg-selected`. Geometry, spacing, ink and every `data-slot` name are upstream's. |
 | `dialog.tsx` | kit `base/dialog.tsx` | `1a5da0f` | two: `import { XIcon } from "lucide-react"` → `import { X as XIcon } from "@/icons"`, and the built-in close button gained `aria-label="Close"` (upstream names it with an `sr-only` span; `src/index.css`'s `.rename-session-dialog > button[aria-label="Close"]` positions it by that attribute). |
 | `dropdown-menu.tsx` | kit `base/dropdown-menu.tsx` | `1a5da0f` | two, both icons: `import { CheckIcon, ChevronRightIcon, CircleIcon } from "lucide-react"` → `import { Check as CheckIcon, ChevronRight as ChevronRightIcon } from "@/icons"`, and `DropdownMenuRadioItem`'s `<CircleIcon className="size-2 fill-current" />` → `<span className="size-2 rounded-full bg-current" />` because `src/icons/` has no circle glyph. `DropdownMenuRadioItem` has no call site. |
@@ -74,8 +75,10 @@ removed 2026-09-10 with the last Radix import; nothing under `src/` imports it.
 
 ## Wired in
 
-`button.tsx` (`controls/button.tsx`, plus four `assistant-ui/elements/` files), `checkbox.tsx` +
-`field.tsx` (`controls/checkbox.tsx`), `collapsible.tsx` (`controls/collapsible.tsx`,
+`button.tsx` (imported directly by 57 files across `src/`; the `controls/button.tsx` adapter that used to
+stand in front of it was deleted 2026-09-11 — `docs/plans/button-codemod-2026-09-11.md`, and its
+brigadier-specific class recipes now live in `src/lib/surfaces.tsx`), `checkbox.tsx` +
+`field.tsx` (`controls/checkbox.tsx`), `combobox.tsx` (`SelectMenu.tsx`), `collapsible.tsx` (`controls/collapsible.tsx`,
 `controls/disclosure.tsx`, `elements/tool-call.tsx`, `elements/reasoning-panel.tsx`), `command.tsx`
 (`controls/command.tsx`), `dialog.tsx` (`controls/modal.tsx`, and through it `controls/dialog.tsx`),
 `dropdown-menu.tsx` + `popover.tsx` (`controls/overlay.tsx`, `controls/menu.tsx`), `input.tsx`
@@ -110,9 +113,9 @@ Two facts about these files that bit during the port, both measured:
 
 ## Not copied, and why
 
-`combobox`, `accordion`, `breadcrumb`, `code-block`, `command-tabs`,
+`accordion`, `breadcrumb`, `code-block`, `command-tabs`,
 `navigation-menu`, `table`, `steps`, `callout`, `definition-list`, `diff-viewer`, `dot-matrix`,
-`number-roll`. (`sheet` and `sidebar` were on this list until 2026-09-10; both are copied now.) `alert-dialog` does not exist in the base twin at all
+`number-roll`. (`sheet` and `sidebar` were on this list until 2026-09-10 and `combobox` until 2026-09-11; all three are copied now.) `alert-dialog` does not exist in the base twin at all
 (`docs/research/assistant-ui-design.md`, "Does not exist in the base twin"); nothing needs one —
 `controls/dialog.tsx` takes `role="alertdialog"` as a prop and no call site passes it.
 
@@ -122,11 +125,13 @@ Two facts about these files that bit during the port, both measured:
   `react-primitive`, `react-compose-refs`), which `CLAUDE.md` §5 forbids. `ui/command.tsx` is the
   kit's command with plain elements underneath; `controls/search-dialog.tsx` keeps driving the
   active row through `aria-activedescendant`, unchanged.
-- **`select.tsx` is copied but not wired.** See `controls/listbox.tsx` and `SelectMenu.tsx`: the
-  contract those hold is a `role="button"` trigger plus a `role="searchbox"` filter, asserted in
-  `src/components/PromptInput.test.tsx:44-51`. Base UI `Select` renders its trigger as
-  `role="combobox"` and has no filter input at all; Base UI `Combobox` replaces the
-  searchbox/listbox pair with its own `role="combobox"` input. Either breaks those two queries.
+- **`select.tsx` is copied but not wired.** `SelectMenu.tsx` went to `combobox.tsx` instead, on
+  2026-09-11: Base UI `Select` has no filter input at all, and three of `SelectMenu`'s eight
+  call sites pass `searchable` (Pickers' model, CommitPreferences' commit-message model,
+  TaskSetupRail's starting point). The `role="button"` trigger plus `role="searchbox"` filter
+  this bullet used to defend is gone with `controls/listbox.tsx`; both queries in
+  `src/components/PromptInput.test.tsx` were rewritten to the roles Base UI actually emits, which
+  `src/components/SelectMenu.test.tsx` measures.
 - **`button-group`.** `controls/button-group.tsx` is ten lines and its one consumer
   (`SourceControl.tsx:503`) already hand-joins the segments with `!gap-0` + `rounded-r-none`.
   shadcn's version applies its own radius/border joining through `in-data-[slot=button-group]`

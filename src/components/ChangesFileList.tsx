@@ -1,5 +1,7 @@
 import { ArrowRotateCcw, ChevronSmallRight, ExternalLink, File, Folder, Minus, Plus } from "../icons";
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import { iconButton, labelledButtonIcons } from "@/lib/surfaces";
 import {
   Collapsible,
   CollapsibleContent,
@@ -48,7 +50,11 @@ export function ChangesFileList(props: Props) {
       >
         <Button
           variant="ghost"
-          className="h-8 min-w-0 flex-1 justify-start gap-2 px-2"
+          size="sm"
+          className={cn(
+            labelledButtonIcons,
+            "h-8 min-w-0 flex-1 justify-start gap-2 px-2",
+          )}
           title={change.path}
           aria-label={`Open changes in ${change.path}`}
           data-scm-file
@@ -70,7 +76,7 @@ export function ChangesFileList(props: Props) {
           <Button
             variant="ghost"
             size="icon"
-            className="size-6"
+            className={cn(iconButton, "size-6")}
             title="Open file"
             aria-label={`Open file ${change.path}`}
             onClick={() => props.onOpen(change.path, "file")}
@@ -81,7 +87,7 @@ export function ChangesFileList(props: Props) {
             <Button
               variant="ghost"
               size="icon"
-              className="size-6"
+              className={cn(iconButton, "size-6")}
               disabled={props.busy}
               title="Discard changes"
               aria-label={`Discard ${change.path}`}
@@ -93,7 +99,7 @@ export function ChangesFileList(props: Props) {
           <Button
             variant="ghost"
             size="icon"
-            className="size-6"
+            className={cn(iconButton, "size-6")}
             disabled={props.busy}
             title={props.staged ? "Unstage" : "Stage"}
             aria-label={`${props.staged ? "Unstage" : "Stage"} ${change.path}`}

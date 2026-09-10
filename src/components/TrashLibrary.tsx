@@ -8,7 +8,8 @@ import {
   DialogTitle,
 } from "./controls/dialog";
 import { Input } from "./controls/input";
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
+import { iconButton, labelledButtonIcons } from "@/lib/surfaces";
 import { ActionDialog, type PendingAction } from "./ActionDialog";
 import {
   navigationApi,
@@ -86,6 +87,7 @@ export function TrashLibrary({
                   <Button
                     size="sm"
                     variant="outline"
+                    className={labelledButtonIcons}
                     disabled={!!busy}
                     onClick={() => void restore(entry)}
                   >
@@ -95,6 +97,7 @@ export function TrashLibrary({
                   <Button
                     size="icon"
                     variant="ghost"
+                    className={iconButton}
                     disabled={!!busy}
                     aria-label={`Delete permanently ${entry.title}`}
                     onClick={() =>

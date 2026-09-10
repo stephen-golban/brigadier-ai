@@ -137,7 +137,7 @@ describe("chat composer", () => {
 });
 
 it("allows a connected Codex task when Claude is unavailable", async () => {
-  vi.spyOn(providerCatalog, "useProviderCatalog").mockReturnValue({providers: [{id: "codex", label: "Codex", instanceId: "codex:default", version: null, models: [{id: "exact-codex", label: "Exact Codex", efforts: ["high"]}], efforts: ["high"], modelCatalogKnown: true}], error: ""});
+  vi.spyOn(providerCatalog, "useProviderCatalog").mockReturnValue({providers: [{id: "codex", label: "Codex", instanceId: "codex:default", version: null, models: [{id: "exact-codex", label: "Exact Codex", efforts: ["high"]}], efforts: ["high"], modelCatalogKnown: true}], error: "", loaded: true});
   const {spies} = mount({blocked: true});
   await waitFor(() => expect(fields()[0]).toHaveAttribute("contenteditable", "true"));
   await pasteComposer(fields()[0]!, "use available provider");

@@ -1,5 +1,7 @@
 import { Folder, X } from "../icons";
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import { iconButton } from "@/lib/surfaces";
 import {
   Dialog,
   DialogContent,
@@ -44,8 +46,9 @@ export function EditProjectDialog({
         onEscapeKeyDown={busy ? (event) => event.preventDefault() : undefined}
       >
         <Button
-          isIconOnly
-          className="absolute top-[18px] right-[18px]"
+          variant="ghost"
+          size="icon"
+          className={cn(iconButton, "absolute top-[18px] right-[18px]")}
           aria-label="Close"
           disabled={busy}
           onClick={onClose}
@@ -82,6 +85,8 @@ export function EditProjectDialog({
           )}
           <div className="mt-[18px] flex flex-wrap items-center justify-end gap-2">
             <Button
+              variant="ghost"
+              size="sm"
               className="mr-auto bg-error/10 px-3 text-error hover:bg-error/20"
               disabled={busy}
               onClick={onRemove}
@@ -90,6 +95,8 @@ export function EditProjectDialog({
               Remove local project
             </Button>
             <Button
+              variant="ghost"
+              size="sm"
               disabled={busy}
               onClick={onClose}
               className="text-text-secondary"
@@ -98,6 +105,8 @@ export function EditProjectDialog({
             </Button>
             <Button
               type="submit"
+              variant="ghost"
+              size="sm"
               disabled={busy || !name.trim()}
               className="bg-text px-4 text-canvas hover:bg-text-secondary"
             >

@@ -6,7 +6,7 @@ import {
 } from "../sessionArchive";
 import { Checkbox } from "./controls/checkbox";
 import { Input } from "./controls/input";
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
 import { errorMessage } from "../workspaceApi";
 export function ArchiveSettings() {
   const { settings } = useSessionArchive();
@@ -63,7 +63,7 @@ export function ArchiveSettings() {
           {error}
         </p>
       )}
-      <Button type="submit" disabled={saving}>
+      <Button type="submit" variant="ghost" size="sm" disabled={saving}>
         {saving ? "Saving…" : "Save retention settings"}
       </Button>
     </form>

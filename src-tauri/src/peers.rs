@@ -745,7 +745,7 @@ async fn dispatch(app: &tauri::AppHandle, mut v: Value) -> Result<Value, AppErro
             .filter(|(id, _)| data.conversation_owner(id).ok() == Some(root))
             .collect();
         return Ok(
-            json!({"providers":crate::provider_catalog::provider_catalog(app.state()).await?,"excludedProviders":policy.excluded_providers,"excludedModels":policy.excluded_models,"policy":policy,"assignments":assignments,"workerCandidates":brigadier_supervisor::orchestration::candidates(sup)}),
+            json!({"providers":crate::provider_catalog::provider_catalog(app.state(), (*app).clone()).await?,"excludedProviders":policy.excluded_providers,"excludedModels":policy.excluded_models,"policy":policy,"assignments":assignments,"workerCandidates":brigadier_supervisor::orchestration::candidates(sup)}),
         );
     }
     if action == "request-allowance" {

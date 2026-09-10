@@ -61,6 +61,11 @@ pub(crate) struct ModelInfo {
 /// A project the operator has opened.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct ProjectView {
+    /// Whether this is the managed "Tasks" workspace opened for a session that skipped project
+    /// selection, rather than a project the operator picked. Absent on the wire for every
+    /// ordinary project (`src/wire.ts`'s `ProjectView.projectless` is optional and every reader
+    /// treats a missing value as `false`), present and `true` only for that one workspace.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub projectless: bool,
     /// Stable project id.
     pub id: String,
@@ -577,6 +582,32 @@ mod tests {
         assert!(serde_json::to_string(&off)
             .expect("ser")
             .ends_with(r#""mcp":"off"}"#));
+    }
+
+    /// `projectless` is noise on every ordinary project, so it stays off the wire entirely
+    /// there; only the managed "Tasks" workspace (`commands::projectless_workspace`) sets it and
+    /// earns the byte. `src/wire.ts`'s `ProjectView.projectless` is optional for exactly this
+    /// reason, and every reader treats a missing value the same as `false`.
+    #[test]
+    fn projectless_is_absent_unless_true() {
+        let row = ProjectRow {
+            id: "p1".to_owned(),
+            name: "Tasks".to_owned(),
+            root_path: "/scratch".into(),
+            created_at: UNIX_EPOCH,
+            mcp: McpPolicy::Inherit,
+        };
+        let mut view = ProjectView::from(&row);
+        assert!(
+            !serde_json::to_string(&view)
+                .expect("ser")
+                .contains("projectless"),
+            "false must not appear on the wire"
+        );
+        view.projectless = true;
+        assert!(serde_json::to_string(&view)
+            .expect("ser")
+            .contains(r#""projectless":true"#));
     }
 
     #[test]

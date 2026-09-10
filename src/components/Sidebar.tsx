@@ -61,7 +61,9 @@ import { DesktopSettings } from "./DesktopSettings";
 import { NotesLibrary, type NotesLibraryHandle } from "./NotesLibrary";
 import { TrashLibrary } from "./TrashLibrary";
 import { ActionDialog, type PendingAction } from "./ActionDialog";
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
+import { iconButton, toggleButton } from "@/lib/surfaces";
+import { cn } from "@/lib/utils";
 import { Input } from "./controls/input";
 import {
   Dialog,
@@ -581,14 +583,15 @@ export function Sidebar(props: SidebarProps) {
                 }
               >
                 <Button
-                  isIconOnly
+                  variant="ghost"
+                  size="icon"
                   aria-label="Search"
                   aria-keyshortcuts={
                     navigator.platform.startsWith("Mac")
                       ? "Meta+K"
                       : "Control+K"
                   }
-                  className="navigation-icon-button"
+                  className={cn(iconButton, "navigation-icon-button")}
                   onClick={() => setSearch(true)}
                 >
                   <Search />
@@ -596,9 +599,10 @@ export function Sidebar(props: SidebarProps) {
               </Tooltip>
               <Dropdown>
                 <Button
-                  isIconOnly
+                  variant="ghost"
+                  size="icon"
                   aria-label="Notifications"
-                  className="navigation-icon-button relative"
+                  className={cn(iconButton, "navigation-icon-button relative")}
                 >
                   <Bell />
                   {(props.pendingTotal > 0 ||
@@ -980,8 +984,9 @@ export function Sidebar(props: SidebarProps) {
             }
           >
             <Button
-              isIconOnly
-              className="navigation-icon-button"
+              variant="ghost"
+              size="icon"
+              className={cn(iconButton, "navigation-icon-button")}
               aria-label="Settings"
               aria-keyshortcuts={
                 navigator.platform.startsWith("Mac") ? "Meta+," : "Control+,"
@@ -992,7 +997,7 @@ export function Sidebar(props: SidebarProps) {
             </Button>
           </Tooltip>
           <Tooltip content="Notepad">
-            <Button isIconOnly className="navigation-icon-button text-text" aria-label="Notepad" aria-pressed={notes} onClick={() => openNotepad()}>
+            <Button variant="ghost" size="icon" className={cn(iconButton, toggleButton, "navigation-icon-button text-text")} aria-label="Notepad" aria-pressed={notes} onClick={() => openNotepad()}>
               <Notepad />
             </Button>
           </Tooltip>
@@ -1172,7 +1177,7 @@ export function Sidebar(props: SidebarProps) {
                 {error}
               </p>
             )}
-            <Button disabled={busy || !addPath?.trim()} type="submit">
+            <Button variant="ghost" size="sm" disabled={busy || !addPath?.trim()} type="submit">
               {busy ? "Adding…" : "Add"}
             </Button>
           </form>

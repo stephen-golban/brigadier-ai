@@ -1,5 +1,7 @@
 import { Input } from "./controls/input";
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
+import { labelledButtonIcons } from "@/lib/surfaces";
+import { cn } from "@/lib/utils";
 import { VscodePanels } from "./VscodePanels";
 import { SourceControl } from "./SourceControl";
 import { useEffect, useState } from "react";
@@ -118,7 +120,12 @@ export function WorkspaceTools({
                 )
                 .map((n) => (
                   <Button
-                    className="tree-row flex h-8 w-full items-center gap-2 rounded-md text-text-secondary hover:bg-hover [&_svg]:size-4"
+                    variant="ghost"
+                    size="sm"
+                    className={cn(
+                      labelledButtonIcons,
+                      "tree-row flex h-8 w-full items-center gap-2 rounded-md text-text-secondary hover:bg-hover [&_svg]:size-4",
+                    )}
                     key={n.id}
                     onClick={() => onNote(n)}
                   >
@@ -391,7 +398,12 @@ function FilesTree({
       return (
         <div key={entry.path}>
           <Button
-            className={`tree-row flex h-7 w-full justify-start gap-1.5 rounded-[var(--radius-row)] border-0 pr-3 text-left text-[13px] shadow-none hover:bg-hover [&_svg]:size-4 ${selected ? "bg-selected text-text" : "bg-transparent text-text-secondary"}`}
+            variant="ghost"
+            size="sm"
+            className={cn(
+              labelledButtonIcons,
+              `tree-row flex h-7 w-full justify-start gap-1.5 rounded-[var(--radius-row)] border-0 pr-3 text-left text-[13px] shadow-none hover:bg-hover [&_svg]:size-4 ${selected ? "bg-selected text-text" : "bg-transparent text-text-secondary"}`,
+            )}
             style={{ paddingLeft: 6 + depth * 14 }}
             aria-label={entry.name}
             aria-expanded={entry.directory ? open : undefined}

@@ -25,7 +25,7 @@
   padding: 48px 8px 24px;
   overflow-y: auto;
 }
-.settings-back.button {
+.settings-back[data-slot="button"] {
   justify-content: flex-start;
   padding: 0 8px;
   width: 100%;
@@ -68,7 +68,7 @@
 .settings-archived-label {
   margin-top: 28px;
 }
-.settings-nav-item.button {
+.settings-nav-item[data-slot="button"] {
   width: 100%;
   justify-content: flex-start;
   padding: 0 8px;
@@ -80,8 +80,8 @@
 .settings-nav-item[aria-current="page"] {
   background: var(--settings-nav-current);
 }
-.settings-nav-item.button svg,
-.settings-back.button svg {
+.settings-nav-item[data-slot="button"] svg,
+.settings-back[data-slot="button"] svg {
   color: var(--settings-sidebar-ink);
 }
 .settings-search-empty {
@@ -109,7 +109,7 @@
   font-weight: 500;
   letter-spacing: -0.4px;
 }
-.archive-delete-all.button {
+.archive-delete-all[data-slot="button"] {
   color: var(--settings-danger);
   background: var(--settings-danger-surface);
   padding: 0 10px;
@@ -118,7 +118,7 @@
   font-size: 14px;
   gap: 5px;
 }
-.archive-delete-all.button svg {
+.archive-delete-all[data-slot="button"] svg {
   color: inherit;
 }
 .archive-filters {
@@ -168,7 +168,7 @@
   background: var(--settings-search);
   border: 1px solid var(--settings-search-border);
 }
-.archive-filter.button {
+.archive-filter[data-slot="button"] {
   height: 30px;
   min-width: 140px;
   max-width: 200px;
@@ -178,12 +178,12 @@
   font-size: 14px;
   gap: 8px;
 }
-.archive-filter.button span {
+.archive-filter[data-slot="button"] span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.archive-filter.button svg:last-child {
+.archive-filter[data-slot="button"] svg:last-child {
   margin-left: auto;
 }
 .archive-groups {
@@ -206,7 +206,7 @@
   font-size: 13px;
   color: var(--color-text-secondary);
 }
-.archive-group-heading .button {
+.archive-group-heading [data-slot="button"] {
   width: 22px;
   height: 22px;
 }
@@ -245,23 +245,23 @@
   font-size: 12px;
   line-height: 19px;
 }
-.archive-row-delete.button {
+.archive-row-delete[data-slot="button"] {
   height: 28px;
   width: 28px;
   color: var(--color-text-tertiary);
 }
-.archive-row-delete.button:hover,
-.archive-row-delete.button:hover svg {
+.archive-row-delete[data-slot="button"]:hover,
+.archive-row-delete[data-slot="button"]:hover svg {
   color: var(--settings-danger);
 }
-.archive-unarchive.button {
+.archive-unarchive[data-slot="button"] {
   background: var(--settings-button);
   font-size: 14px;
   height: 29px;
   padding: 0 10px;
   border-radius: var(--radius-control);
 }
-.archive-unarchive.button:hover {
+.archive-unarchive[data-slot="button"]:hover {
   background: var(--settings-button-hover);
 }
 .archive-row-highlight {
@@ -349,7 +349,7 @@
   .settings-content {
     width: calc(100% - 48px);
   }
-  .archive-filter.button {
+  .archive-filter[data-slot="button"] {
     min-width: 120px;
   }
 }
@@ -373,7 +373,7 @@
   .archive-rows {
     padding: 0 10px;
   }
-  .archive-unarchive.button {
+  .archive-unarchive[data-slot="button"] {
     padding: 0 6px;
     font-size: 12px;
   }

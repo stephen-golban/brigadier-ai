@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Checkbox } from "./controls/checkbox";
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
 import { SelectMenu } from "./SelectMenu";
 import { errorMessage } from "../workspaceApi";
 import {
@@ -36,12 +36,16 @@ export function CommitPreferences({
     <div className="commit-preferences flex flex-col gap-3 [&_label]:flex [&_label]:flex-col [&_label]:gap-2">
       <div className="segmented">
         <Button
+          variant="ghost"
+          size="sm"
           aria-pressed={scope === "global"}
           onClick={() => setScope("global")}
         >
           Global defaults
         </Button>
         <Button
+          variant="ghost"
+          size="sm"
           aria-pressed={scope === "project"}
           onClick={() => setScope("project")}
         >

@@ -9,7 +9,8 @@ import { workspaceApi, errorMessage } from "../workspaceApi";
 import type { ComposerCommand } from "../composerApi";
 import { Plus, X } from "../icons";
 import { ComposerBar, ComposerActions } from "./assistant-ui/elements/composer";
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
+import { iconButton, labelledButtonIcons } from "@/lib/surfaces";
 import { RichPromptEditor, type EditorHandle, type EditorSuggestion } from "./composer/RichPromptEditor";
 import { referenceSource } from "./composer/editorSource";
 import { useAttachmentImports } from "./composer/useAttachmentImports";
@@ -176,12 +177,12 @@ export function PromptInput(props: PromptInputProps) {
       }
     }}>
     {header}
-    {attachments.length > 0 && <div className="composer-attachments" aria-label="Attached files">{attachments.map(attachment => <span key={attachment.id} className="composer-attachment" title={`${attachment.name} · ${attachment.mediaType} · ${attachment.size} bytes`}><AttachmentPreview attachment={attachment} thumbnail /><Button type="button" disabled={props.disabled} aria-label={`Remove attachment ${attachment.name}`} onClick={() => onAttachments?.(attachments.filter(file => file.id !== attachment.id))}><X className="size-3.5" /></Button></span>)}</div>}
-    {imports.recoveryError && <div role="alert" className="composer-error">Pending attachments could not be restored: {imports.recoveryError} <Button type="button" onClick={imports.retryRecovery}>Retry attachment recovery</Button></div>}
+    {attachments.length > 0 && <div className="composer-attachments" aria-label="Attached files">{attachments.map(attachment => <span key={attachment.id} className="composer-attachment" title={`${attachment.name} · ${attachment.mediaType} · ${attachment.size} bytes`}><AttachmentPreview attachment={attachment} thumbnail /><Button type="button" variant="ghost" size="sm" className={labelledButtonIcons} disabled={props.disabled} aria-label={`Remove attachment ${attachment.name}`} onClick={() => onAttachments?.(attachments.filter(file => file.id !== attachment.id))}><X className="size-3.5" /></Button></span>)}</div>}
+    {imports.recoveryError && <div role="alert" className="composer-error">Pending attachments could not be restored: {imports.recoveryError} <Button type="button" variant="ghost" size="sm" onClick={imports.retryRecovery}>Retry attachment recovery</Button></div>}
     {imports.pending.length > 0 && <div className="composer-attachments" aria-label="Pending attachments">{imports.pending.map(item => <div key={item.id} className="composer-attachment composer-attachment-pending" data-status={item.status}>
       <span className="attachment-import-name" title={item.name}>{item.name}</span>
-      {item.status === "failed" ? <><span role="alert" className="attachment-import-error">{item.error}</span><Button type="button" disabled={props.disabled} aria-label={`Retry attachment ${item.name}`} onClick={() => imports.retry(item.id)}>Retry</Button></> : <progress aria-label={`Importing ${item.name}`} value={item.progress} max={100} />}
-      <Button type="button" disabled={props.disabled} aria-label={`Remove attachment ${item.name}`} onClick={() => imports.remove(item.id)}><X className="size-3.5" /></Button>
+      {item.status === "failed" ? <><span role="alert" className="attachment-import-error">{item.error}</span><Button type="button" variant="ghost" size="sm" disabled={props.disabled} aria-label={`Retry attachment ${item.name}`} onClick={() => imports.retry(item.id)}>Retry</Button></> : <progress aria-label={`Importing ${item.name}`} value={item.progress} max={100} />}
+      <Button type="button" variant="ghost" size="sm" className={labelledButtonIcons} disabled={props.disabled} aria-label={`Remove attachment ${item.name}`} onClick={() => imports.remove(item.id)}><X className="size-3.5" /></Button>
     </div>)}</div>}
     <RichPromptEditor key={scopeKey} editorRef={editor} value={String(props.value ?? "")} onText={onText} disabled={props.disabled} label={props["aria-label"]} placeholder={props.placeholder} focusKey={props.focusKey} onKeyDown={props.onKeyDown} search={search} select={select} onError={setError} />
     {pasteNotice && !uploading && !imports.pending.length && !error && <p role="status" className="composer-hint">Large paste staged as a text attachment; your message is unchanged.</p>}
@@ -189,7 +190,7 @@ export function PromptInput(props: PromptInputProps) {
     {dragging && <div className="composer-drop-overlay">Drop files or images to attach</div>}
     <ComposerActions className="relative flex-wrap justify-between px-1 pt-2" onClick={event => event.stopPropagation()}>
       <div className="composer-tools">
-        <Button type="button" variant="ghost" size="icon" aria-label="Attach files" title="Attach files and images" disabled={props.disabled || !onAttachments} onClick={() => file.current?.click()}><Plus width={18} height={18} /></Button>
+        <Button type="button" variant="ghost" size="icon" className={iconButton} aria-label="Attach files" title="Attach files and images" disabled={props.disabled || !onAttachments} onClick={() => file.current?.click()}><Plus width={18} height={18} /></Button>
 
       </div>
       {children}

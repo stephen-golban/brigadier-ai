@@ -542,7 +542,11 @@ it("swaps the greeting for the welcome screen when no project is selected", asyn
   const props = { projectId: null, projectName: null, onFile: vi.fn() };
   render(<ThreadView {...props} sessionId={null} />);
   expect(screen.getByRole("img", { name: "Brigadier" })).toBeVisible();
-  for (const title of ["New project", "New chat", "Notepad"])
+  // `WelcomeScreen` dropped its "New chat" row and gained a heading on 2026-09-11 (projectless
+  // chats): the global new chat is the sidebar button and ⌘N, and the welcome screen offers only
+  // the two actions that are not a chat. Kept in step with `WelcomeScreen.test.tsx`.
+  for (const title of ["New project", "Notepad"])
     expect(screen.getByRole("button", { name: new RegExp(title) })).toBeVisible();
-  expect(screen.queryByRole("heading")).toBeNull();
+  expect(screen.queryByRole("button", { name: /New chat/ })).toBeNull();
+  expect(screen.getByRole("heading", { name: "Chat with Brigadier" })).toBeVisible();
 });

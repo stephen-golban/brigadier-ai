@@ -372,10 +372,12 @@
   --radius-control: var(--radius-md);
   /* the oversized onboarding field and any 44px+ control */
   --radius-control-lg: var(--radius-lg);
-  /* the 24px standard icon box (`STANDARD_ICON_BUTTON`) — 8px before 2026-09-11; 6px is the
-     nearest step on the monotonic scale */
+  /* the 24px standard icon box (the `iconButton` recipe in `src/lib/surfaces.tsx`, which
+     replaced `controls/button.tsx`'s `STANDARD_ICON_BUTTON` on 2026-09-11) — 8px before
+     2026-09-11; 6px is the nearest step on the monotonic scale */
   --radius-icon-button: var(--radius-sm);
-  /* the kit's `icon-xs` box (`XS_ICON_BUTTON_RADIUS`) — 10px before 2026-09-11 */
+  /* the kit's `icon-xs` box (the `iconButtonXs` recipe in `src/lib/surfaces.tsx`, formerly
+     `XS_ICON_BUTTON_RADIUS`) — 10px before 2026-09-11 */
   --radius-icon-button-xs: var(--radius-sm);
   /* sidebar rows, sidebar/header toolbar buttons, menu rows, settings nav rows */
   --radius-row: var(--radius-md);
@@ -569,12 +571,10 @@
   padding-left: calc(var(--chrome-collapsed-width) + 8px);
 }
 /* The collapsed chrome now carries the session title (§4.10), and `ProjectWorkbench.tsx`'s own
-   header carries it too. Two copies of the same string, side by side, is worse than either; the
-   workbench's is hidden while the sidebar is collapsed. Its `⋯` session menu is a sibling of
-   the title inside `.session-heading` and deliberately stays. */
-.app-shell[data-sidebar-open="false"] .project-topbar .session-title {
-  display: none;
-}
+   header carries it too — the owner wants both copies visible (2026-09-11), not the workbench's
+   hidden. `.project-topbar`'s `padding-left` above already reserves the entire fixed-width
+   collapsed chrome (`--chrome-collapsed-width`) plus 8px, so the workbench title starts 8px clear
+   of the chrome's title and the two never collide regardless of either string's length. */
 .app-shell[data-sidebar-peek="true"] .workspace-chrome {
   border-top-right-radius: var(--radius-lg);
   width: var(--sidebar-width, 275px);
@@ -725,13 +725,15 @@
 /* A project group is one `.navigation-item`: the project row plus its collapsible session list
    (`src/components/Sidebar.tsx`, the `SidebarMenuItem` per project). Only the Projects list gets
    the extra break — the header menu and the other sections are flat row lists, where the row gap
-   is the whole story. Separation between two groups is therefore the row gap plus this margin. */
+   is the whole story. `.navigation-rows`'s own `gap: var(--sidebar-row-gap)` already sits between
+   every pair of rows, so this margin adds only the difference, making the total separation between
+   two project groups exactly `--sidebar-group-gap` (8px), not the row gap plus the group gap. */
 .app-navigation
   [aria-label="Projects"]
   .navigation-rows
   > .navigation-item
   + .navigation-item {
-  margin-top: var(--sidebar-group-gap);
+  margin-top: calc(var(--sidebar-group-gap) - var(--sidebar-row-gap));
 }
 .app-navigation .navigation-item {
   position: relative;
@@ -1054,7 +1056,7 @@
   .session-status-spinner svg {
     animation: none;
   }
-  .button[data-icon-button="standard"] {
+  .icon-button[data-slot="button"] {
     transition: none;
   }
   .workspace-chrome,
@@ -1104,14 +1106,14 @@
 .main-tab-strip { scrollbar-width: none; }
 .main-tab-strip::-webkit-scrollbar { display: none; }
 .workbench-tab { font-size: 12px; height: 26px; gap: 4px; border-radius: var(--radius-tab); padding: 0 4px 0 8px; }
-.workbench-tab .button[data-icon-button="standard"] {
+.workbench-tab .icon-button[data-slot="button"] {
   width: 16px;
   height: 16px;
   min-width: 16px;
   padding: 3px;
   border-radius: 50%;
 }
-.workbench-tab .button[data-icon-button="standard"] svg { width: 10px; height: 10px; }
+.workbench-tab .icon-button[data-slot="button"] svg { width: 10px; height: 10px; }
 .workbench-tab > button { opacity: 0; }
 .workbench-tab:hover > button, .workbench-tab:focus-within > button, .workbench-tab[aria-selected="true"] > button { opacity: 1; }
 .note-title-input:focus-visible { outline: none; border-radius: 0; }
@@ -1122,8 +1124,8 @@
 
 /* Keep workspace tools at the right edge while the active page gives up space. */
 .workbench-panel-actions { margin-right: -8px; }
-.workbench-panel-actions > .button { display: grid; place-items: center; }
-.workbench-panel-actions > .button > svg { display: block; }
+.workbench-panel-actions > [data-slot="button"] { display: grid; place-items: center; }
+.workbench-panel-actions > [data-slot="button"] > svg { display: block; }
 .workbench-change-count {
   position: absolute;
   bottom: 0;
@@ -1171,10 +1173,10 @@
 }
 
 .welcome-starters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; width: 100%; max-width: 680px; margin-top: 16px; }
-.welcome-starter.button { height: 108px; padding: 14px; display: flex; flex-direction: column; align-items: flex-start; justify-content: space-between; border: 1px solid var(--color-hairline); border-radius: var(--radius-card); white-space: normal; text-align: left; font-size: 12px; font-weight: 400; }
+.welcome-starter[data-slot="button"] { height: 108px; padding: 14px; display: flex; flex-direction: column; align-items: flex-start; justify-content: space-between; border: 1px solid var(--color-hairline); border-radius: var(--radius-card); white-space: normal; text-align: left; font-size: 12px; font-weight: 400; }
 .new-conversation h1,
 .welcome-screen h1 { font-size: 24px; font-weight: 400; color: var(--color-text); text-align: center; }
-@media (max-width: 950px) { .welcome-starters { grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: 430px; } .welcome-starter.button { height: 88px; } }
+@media (max-width: 950px) { .welcome-starters { grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: 430px; } .welcome-starter[data-slot="button"] { height: 88px; } }
 .welcome-actions {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr));
@@ -1183,7 +1185,7 @@
   max-width: 560px;
   margin-top: 32px;
 }
-.welcome-shortcut.button {
+.welcome-shortcut[data-slot="button"] {
   height: auto;
   min-height: 68px;
   padding: 12px 16px;
@@ -1199,9 +1201,9 @@
 
 /* Session title is a navigation anchor; only documents use the tab treatment. */
 .session-heading { max-width: min(38%, 380px); flex-shrink: 0; }
-.session-title.button { background: transparent; justify-content: flex-start; padding-inline: 4px; font-weight: 500; }
-.session-title.button[aria-pressed="true"] { background: transparent; }
-.session-title.button:hover { background: var(--color-hover); }
+.session-title[data-slot="button"] { background: transparent; justify-content: flex-start; padding-inline: 4px; font-weight: 500; }
+.session-title[data-slot="button"][aria-pressed="true"] { background: transparent; }
+.session-title[data-slot="button"]:hover { background: var(--color-hover); }
 .session-heading + .session-tab-divider { margin-inline: 2px; }
 /* The kit's dialog backdrop is `bg-black/10` plus a blur; brigadier's scrim is darker and flat.
    Unlayered, so it beats the utility inside `@layer utilities`. */
@@ -1239,7 +1241,7 @@
 .rename-session-dialog input.input { width: 100%; height: 42px; border: 1px solid var(--color-hairline); border-radius: var(--radius-control); font-size: 14px; background: transparent; }
 .rename-session-dialog form > div:last-child { margin-top: 28px; }
 .rename-session-dialog form > div:last-child > button { min-height: 36px; font-size: 14px; padding-inline: 18px; border: 1px solid var(--color-hairline); border-radius: var(--radius-control); }
-.session-title.button { flex-shrink: 1; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-title[data-slot="button"] { flex-shrink: 1; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* phase 2B */
 /* ---------------------------------------------------------------------------------------

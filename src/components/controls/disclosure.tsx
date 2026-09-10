@@ -7,7 +7,8 @@ import {
 } from "@/components/ui/collapsible";
 import { ChevronDown } from "@/icons";
 import { cn } from "@/lib/utils";
-import { Button } from "./button";
+import { Button } from "@/components/ui/button";
+import { labelledButtonIcons } from "@/lib/surfaces";
 
 /**
  * Adapter over the kit's Base UI Collapsible, wearing the old `Disclosure` compound API.
@@ -17,8 +18,8 @@ import { Button } from "./button";
  * manual toggle are Base UI's now. `isExpanded` / `defaultExpanded` / `onExpandedChange` are still
  * accepted and map onto `open` / `defaultOpen` / `onOpenChange`.
  *
- * The trigger is still `controls/button.tsx`, composed through Base UI's `render`, so the `.button`
- * ink and geometry that `ThreadView` renders bare are unchanged.
+ * The trigger is the kit Button, composed through Base UI's `render`, with `labelledButtonIcons`
+ * (`@/lib/surfaces`) keeping the ink and geometry that `ThreadView` renders bare unchanged.
  */
 function Root({
   isExpanded,
@@ -51,7 +52,7 @@ function Trigger({
 }: ComponentProps<typeof KitCollapsibleTrigger>) {
   return (
     <KitCollapsibleTrigger
-      render={<Button />}
+      render={<Button variant="ghost" size="sm" className={labelledButtonIcons} />}
       {...props}
       className={cn("disclosure__trigger", className)}
     />

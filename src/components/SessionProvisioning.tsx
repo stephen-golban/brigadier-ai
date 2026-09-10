@@ -1,7 +1,7 @@
 import { ChevronSmallDown, Terminal } from "../icons";
 import type { SessionStartup } from "../sessionStartup";
 import { ChatPanelUserMessage } from "./assistant-ui/elements/chat-panel";
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
 import "./session-provisioning.css";
 
 export function SessionProvisioning({ startup, onRetry }: { startup: SessionStartup; onRetry?: () => void }) {
@@ -11,7 +11,7 @@ export function SessionProvisioning({ startup, onRetry }: { startup: SessionStar
       <summary><Terminal width={14} height={14}/><span role="status">{startup.error ? "Task setup failed" : ready ? "Provisioned task" : "Setting up your task…"}</span>{!ready && !startup.error && <span className="composer-spinner"/>}<ChevronSmallDown width={12} height={12}/></summary>
       <pre>{startup.progress.map(item => item.detail).join("\n")}</pre>
     </details>
-    {startup.error && <div role="alert" className="provisioning-error"><p>{startup.error}</p>{onRetry && <Button onClick={onRetry}>Retry setup</Button>}</div>}
+    {startup.error && <div role="alert" className="provisioning-error"><p>{startup.error}</p>{onRetry && <Button variant="ghost" size="sm" onClick={onRetry}>Retry setup</Button>}</div>}
   </div>;
 }
 export function StartupMessage({ startup }: { startup: SessionStartup }) {

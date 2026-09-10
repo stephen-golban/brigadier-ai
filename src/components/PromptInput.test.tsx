@@ -42,16 +42,23 @@ describe("prompt input", () => {
         searchable
       />,
     );
-    await user.click(screen.getByRole("button", { name: /Model$/ }));
-    await user.type(
-      screen.getByRole("searchbox", { name: "Search model" }),
-      "bet{Enter}",
-    );
+    // Both queries changed with the Base UI Combobox port (2026-09-11). The trigger is a
+    // `combobox`, not a `button`, and the filter is a second `combobox` rather than the
+    // `searchbox` the hand-rolled `type="search"` input used to render — measured in
+    // `SelectMenu.test.tsx`, which also owns the roles, the arrows and the empty state. What this
+    // test still covers is the behaviour: type, Enter, the value changes, the list closes and
+    // focus comes back to the trigger.
+    const model = () => screen.getByRole("combobox", { name: "Model" });
+    await user.click(model());
+    const search = await screen.findByRole("combobox", { name: "Search model" });
+    // Focus reaches the filter a tick after it mounts; typing sooner hits the trigger's typeahead.
+    await waitFor(() => expect(search).toHaveFocus());
+    await user.type(search, "bet{Enter}");
     expect(onChange).toHaveBeenCalledWith("b");
-    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: /Model$/ })).toHaveFocus(),
+      expect(screen.queryByRole("listbox")).not.toBeInTheDocument(),
     );
+    await waitFor(() => expect(model()).toHaveFocus());
   });
   it("retains a failed prompt, isolates project drafts, and clears after acceptance", async () => {
     const user = userEvent.setup();

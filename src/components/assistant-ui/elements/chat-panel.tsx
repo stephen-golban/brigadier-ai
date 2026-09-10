@@ -116,6 +116,7 @@ export function ChatPanelComposer({
     >
       <span className="text-text/35 text-[13px]">{placeholder}</span>
       <Button
+        variant="default"
         size="icon-sm"
         aria-label="Send"
         onClick={onSend}

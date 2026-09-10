@@ -1,7 +1,7 @@
 import { ApprovalCard as ApprovalElement } from "./assistant-ui/elements/approval-card";
 import { Checkbox } from "./controls/checkbox";
 import { Input } from "./controls/input";
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
 /**
  * The approval prompts.
  *
@@ -260,6 +260,8 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
         <div className="approval-actions mt-3 flex flex-wrap items-center justify-end gap-2">
           <Button
             type="button"
+            variant="ghost"
+            size="sm"
             className="act"
             onClick={() => onDismiss(approval.requestId)}
           >
@@ -279,11 +281,13 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
               if (e.key === "Escape") setDenying(false);
             }}
           />
-          <Button type="button" disabled={responding} className="act danger text-warn" onClick={deny}>
+          <Button type="button" variant="ghost" size="sm" disabled={responding} className="act danger text-warn" onClick={deny}>
             Confirm deny
           </Button>
           <Button
             type="button"
+            variant="ghost"
+            size="sm"
             className="act"
             disabled={responding}
             onClick={() => setDenying(false)}
@@ -294,12 +298,14 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
       ) : (
         <div className="approval-actions mt-3 flex flex-wrap items-center justify-end gap-2">
           {kind === null ? null : (
-            <Button type="button" disabled={responding} className="send wide" onClick={allow}>
+            <Button type="button" variant="ghost" size="sm" disabled={responding} className="send wide" onClick={allow}>
               Allow
             </Button>
           )}
           <Button
             type="button"
+            variant="ghost"
+            size="sm"
             className="act danger text-warn"
             disabled={responding}
             onClick={() => setDenying(true)}

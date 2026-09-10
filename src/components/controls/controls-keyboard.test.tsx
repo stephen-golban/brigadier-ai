@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
-import { Button } from "./button";
+import { Button } from "@/components/ui/button";
 import { Input } from "./input";
 import { Dropdown, Popover } from "./overlay";
 import { Modal } from "./modal";
@@ -14,7 +14,7 @@ it("skips disabled menu actions with arrows and restores trigger focus on Escape
   const user = userEvent.setup();
   render(
     <Dropdown>
-      <Button>Actions</Button>
+      <Button variant="ghost" size="sm">Actions</Button>
       <Dropdown.Popover>
         <Dropdown.Menu aria-label="Actions">
           <Dropdown.Item>Rename</Dropdown.Item>
@@ -40,7 +40,7 @@ it("opens a submenu by keyboard, returns to its trigger, and closes the whole me
   const action = vi.fn();
   render(
     <Dropdown>
-      <Button>Repository</Button>
+      <Button variant="ghost" size="sm">Repository</Button>
       <Dropdown.Popover>
         <Dropdown.Menu aria-label="Repository">
           <Dropdown.SubmenuTrigger>
@@ -88,7 +88,7 @@ it("keeps a pending confirmation open on Escape and restores focus when dismisse
     const [busy, setBusy] = useState(true);
     return (
       <>
-        <Button onClick={() => setOpen(true)}>Open confirmation</Button>
+        <Button variant="ghost" size="sm" onClick={() => setOpen(true)}>Open confirmation</Button>
         <Modal.Backdrop
           isOpen={open}
           isKeyboardDismissDisabled={busy}
@@ -96,8 +96,8 @@ it("keeps a pending confirmation open on Escape and restores focus when dismisse
         >
           <Modal.Dialog>
             <Modal.Heading>Confirmation</Modal.Heading>
-            <Button onClick={() => setBusy(false)}>Finish work</Button>
-            <Button onClick={() => setOpen(false)}>Cancel</Button>
+            <Button variant="ghost" size="sm" onClick={() => setBusy(false)}>Finish work</Button>
+            <Button variant="ghost" size="sm" onClick={() => setOpen(false)}>Cancel</Button>
           </Modal.Dialog>
         </Modal.Backdrop>
       </>
@@ -130,6 +130,8 @@ it("moves between tabs with arrow keys without selecting a tab when its close bu
           <Tabs.Tab id="note">
             Note
             <Button
+              variant="ghost"
+              size="sm"
               aria-label="Close note"
               onClick={(event) => {
                 event.stopPropagation();
@@ -187,7 +189,7 @@ it("puts the composer popover classes on the role=dialog popup, with no kit geom
   render(
     <div className="composer-surface">
       <Popover>
-        <Button className="composer-permission composer-control">
+        <Button variant="ghost" size="sm" className="composer-permission composer-control">
           Full access
         </Button>
         <Popover.Content

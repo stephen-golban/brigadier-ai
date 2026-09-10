@@ -1,4 +1,6 @@
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import { labelledButtonIcons } from "@/lib/surfaces";
 import { memo, useRef } from "react";
 import { defaultUrlTransform } from "react-markdown";
 import { TextMessagePartProvider } from "@assistant-ui/react";
@@ -33,7 +35,12 @@ function MarkdownContent({
             ) {
               return (
                 <Button
-                  className="file-link inline h-auto p-0 text-text underline underline-offset-2"
+                  variant="ghost"
+                  size="sm"
+                  className={cn(
+                    labelledButtonIcons,
+                    "file-link inline h-auto p-0 text-text underline underline-offset-2",
+                  )}
                   onClick={() => {
                     let path = href.replace(/^\.\//, "");
                     try {

@@ -4,7 +4,9 @@ import { toast } from "sonner";
 import { Archive, X } from "../icons";
 import { notify, type ToastNotice } from "../desktopApi";
 import { errorMessage } from "../workspaceApi";
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
+import { iconButtonXs } from "@/lib/surfaces";
+import { cn } from "@/lib/utils";
 import { Toaster } from "./ui/sonner";
 
 /**
@@ -77,7 +79,8 @@ function Notice({ notice }: { notice: ToastNotice }) {
       {notice.actions?.map((action) => (
         <Button
           key={action.label}
-          variant={action.primary ? "primary" : "secondary"}
+          variant={action.primary ? "default" : "secondary"}
+          size="sm"
           className="ms-auto h-6 shrink-0 px-2 text-xs"
           onClick={() => {
             close();
@@ -92,6 +95,7 @@ function Notice({ notice }: { notice: ToastNotice }) {
       {notice.retry && (
         <Button
           variant="secondary"
+          size="sm"
           className="h-6 shrink-0 px-2 text-xs"
           onClick={notice.retry}
         >
@@ -99,9 +103,10 @@ function Notice({ notice }: { notice: ToastNotice }) {
         </Button>
       )}
       <Button
+        variant="ghost"
         size="icon-xs"
         aria-label="Dismiss notification"
-        className="shrink-0"
+        className={cn(iconButtonXs, "shrink-0")}
         onClick={close}
       >
         <X width={14} height={14} />

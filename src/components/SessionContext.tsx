@@ -1,5 +1,5 @@
 import { Popover } from "./controls/overlay";
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
 import { useEffect, useState } from "react";
 import { sessionApi, type ContextReading } from "../sessionApi";
 import { errorMessage } from "../workspaceApi";
@@ -48,6 +48,7 @@ export function SessionContext({
     <Popover>
       <Button
         variant="ghost"
+        size="sm"
         className="gap-1 px-2"
         aria-label={
           percent === null

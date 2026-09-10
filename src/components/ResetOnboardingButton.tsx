@@ -2,7 +2,8 @@ import { useState } from "react";
 import { ArrowRotateCcw } from "../icons";
 import { launchApi } from "../launchApi";
 import { errorMessage } from "../workspaceApi";
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
+import { labelledButtonIcons } from "@/lib/surfaces";
 
 export function ResetOnboardingButton({
   className,
@@ -18,6 +19,8 @@ export function ResetOnboardingButton({
       <Button
         type="button"
         variant="ghost"
+        size="sm"
+        className={labelledButtonIcons}
         disabled={busy}
         title="Start the intro and name setup again. Projects and notes are kept."
         onClick={async () => {

@@ -1,5 +1,5 @@
 import { CheckpointHistory } from './assistant-ui/elements/checkpoint-history';
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -87,6 +87,8 @@ export function RewindHistory({
             "rewound-unsent",
           ].includes(op.phase) && (
             <Button
+              variant="ghost"
+              size="sm"
               className="act"
               onClick={async () => {
                 try {
@@ -123,7 +125,7 @@ export function RewindHistory({
         </section>
       ))}
       <footer>
-        <Button className="act" onClick={onClose}>
+        <Button variant="ghost" size="sm" className="act" onClick={onClose}>
           Close
         </Button>
       </footer>
@@ -186,7 +188,7 @@ function Archive({
         </article>
       ))}
       {more && (
-        <Button className="act" disabled={busy} onClick={() => void load()}>
+        <Button variant="ghost" size="sm" className="act" disabled={busy} onClick={() => void load()}>
           Load more
         </Button>
       )}

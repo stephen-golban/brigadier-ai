@@ -1,6 +1,8 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { ArrowRotateCw, Branch, Check, ChevronDown, ChevronSmallDown, ChevronSmallRight, DotsHorizontal, Minus, Plus, SettingsCog, Sparkle } from "../icons";
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
+import { iconButton, labelledButtonIcons } from "@/lib/surfaces";
+import { cn } from "@/lib/utils";
 import { ButtonGroup } from "./controls/button-group";
 import { Input } from "./controls/input";
 import { Textarea } from "./controls/textarea";
@@ -249,7 +251,7 @@ function RepositoryChanges({
         <Button
           variant="ghost"
           size="icon"
-          className="size-7 text-text-tertiary"
+          className={cn(iconButton, "size-7 text-text-tertiary")}
           title="Refresh"
           aria-label="Refresh changes"
           disabled={busy}
@@ -261,7 +263,7 @@ function RepositoryChanges({
           <Button
             variant="ghost"
             size="icon"
-            className="size-7 text-text-tertiary"
+            className={cn(iconButton, "size-7 text-text-tertiary")}
             title="Git actions"
             aria-label="Git actions"
           >
@@ -437,7 +439,10 @@ function RepositoryChanges({
           <Button
             variant="ghost"
             size="sm"
-            className="h-7 min-w-0 justify-start gap-1.5 px-1 text-xs text-text-tertiary"
+            className={cn(
+              labelledButtonIcons,
+              "h-7 min-w-0 justify-start gap-1.5 px-1 text-xs text-text-tertiary",
+            )}
             disabled={busy || status === null}
             onClick={() => setBranchPicker(true)}
             title="Checkout branch"
@@ -490,7 +495,10 @@ function RepositoryChanges({
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-6 gap-1.5 px-1.5 text-xs text-text-secondary"
+                className={cn(
+                  labelledButtonIcons,
+                  "h-6 gap-1.5 px-1.5 text-xs text-text-secondary",
+                )}
                 aria-label="Generate commit message"
                 title={
                   staged.length
@@ -510,7 +518,12 @@ function RepositoryChanges({
             aria-label="Commit actions"
           >
             <Button
-              className="h-8 flex-1 rounded-r-none text-[13px]"
+              variant="ghost"
+              size="sm"
+              className={cn(
+                labelledButtonIcons,
+                "h-8 flex-1 rounded-r-none text-[13px]",
+              )}
               disabled={busy || !message.trim() || !status?.changes.length}
               onClick={() => commit()}
             >
@@ -519,8 +532,12 @@ function RepositoryChanges({
             </Button>
             <Dropdown>
               <Button
-                className="h-8 w-8 rounded-l-none border-l border-hairline px-0"
+                variant="ghost"
                 size="sm"
+                className={cn(
+                  labelledButtonIcons,
+                  "h-8 w-8 rounded-l-none border-l border-hairline px-0",
+                )}
                 aria-label="Commit options"
                 disabled={busy}
               >
@@ -583,7 +600,7 @@ function RepositoryChanges({
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="size-6 text-text-tertiary"
+                    className={cn(iconButton, "size-6 text-text-tertiary")}
                     disabled={busy}
                     aria-label={`${group.staged ? "Unstage" : "Stage"} all ${group.name.toLowerCase()}`}
                     title={group.staged ? "Unstage all" : "Stage all"}
@@ -683,7 +700,8 @@ function RepositoryChanges({
                   <Button
                     key={branch}
                     variant="ghost"
-                    className="w-full justify-start"
+                    size="sm"
+                    className={cn(labelledButtonIcons, "w-full justify-start")}
                     disabled={busy || branch === status?.branch}
                     onClick={() => {
                       setBranchPicker(false);

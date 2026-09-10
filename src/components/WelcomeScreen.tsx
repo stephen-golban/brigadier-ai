@@ -2,7 +2,9 @@ import { useState, type ReactNode, type SVGProps } from "react";
 import { bridge } from "../bridge";
 import { errorMessage } from "../workspaceApi";
 import { BrandMark } from "./BrandMark";
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import { labelledButtonIcons } from "@/lib/surfaces";
 import { FolderPlusAdd, Notepad } from "../icons";
 
 /** Welcome actions are available with or without an imported project. */
@@ -83,9 +85,11 @@ function WelcomeAction({
   return (
     <Button
       type="button"
+      variant="ghost"
+      size="sm"
       disabled={disabled}
       onClick={onClick}
-      className="welcome-shortcut"
+      className={cn(labelledButtonIcons, "welcome-shortcut")}
     >
       <Icon className="size-5 shrink-0 text-text-secondary" />
       <span className="flex min-w-0 flex-col gap-0.5">

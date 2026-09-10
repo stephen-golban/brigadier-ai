@@ -1,7 +1,9 @@
 import { Checkbox } from "./controls/checkbox";
 import { useState, useImperativeHandle, type Ref } from "react";
 import { Notepad, Plus, Search, Trash, X } from "../icons";
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
+import { iconButton, labelledButtonIcons } from "@/lib/surfaces";
+import { cn } from "@/lib/utils";
 import { Input } from "./controls/input";
 import { Textarea } from "./controls/textarea";
 import { ActionDialog, type PendingAction } from "./ActionDialog";
@@ -151,8 +153,12 @@ export function NotesLibrary({
               data-tauri-drag-region="deep"
             >
               <Button
-                variant="primary"
-                className="bg-text text-canvas hover:bg-text/90 [&_svg]:text-current"
+                variant="default"
+                size="sm"
+                className={cn(
+                  labelledButtonIcons,
+                  "bg-text text-canvas hover:bg-text/90 [&_svg]:text-current",
+                )}
                 onClick={create}
                 disabled={busy}
               >
@@ -187,7 +193,12 @@ export function NotesLibrary({
                   {filtered.map((item) => (
                     <Button
                       key={item.id}
-                      className={`h-auto w-full items-start justify-start gap-3 rounded-lg px-2 py-3 text-left ${paneOpen && note?.id === item.id ? "bg-selected" : ""}`}
+                      variant="ghost"
+                      size="sm"
+                      className={cn(
+                        labelledButtonIcons,
+                        `h-auto w-full items-start justify-start gap-3 rounded-lg px-2 py-3 text-left ${paneOpen && note?.id === item.id ? "bg-selected" : ""}`,
+                      )}
                       onClick={() =>
                         leave(() => {
                           choose(item);
@@ -234,7 +245,9 @@ export function NotesLibrary({
                 <header className="flex h-[46px] shrink-0 items-center justify-between px-6 text-sm text-text-secondary">
                   <span>{saved ? "Edit note" : "New note"}</span>
                   <Button
+                    variant="ghost"
                     size="icon"
+                    className={iconButton}
                     aria-label="Close note editor"
                     title="Close note editor"
                     disabled={busy}
@@ -259,7 +272,11 @@ export function NotesLibrary({
                   <div className="flex min-h-[220px] flex-1 flex-col gap-2">
                     <div className="flex items-center justify-between text-sm text-text-secondary">
                       <span>Content</span>
-                      <Button size="sm" onClick={() => setPreview(!preview)}>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setPreview(!preview)}
+                      >
                         {preview ? "Edit" : "Preview"}
                       </Button>
                     </div>
@@ -306,7 +323,9 @@ export function NotesLibrary({
                 <footer className="flex min-h-[58px] shrink-0 items-center gap-3 border-t border-hairline px-6 py-3">
                   {saved && (
                     <Button
+                      variant="ghost"
                       size="icon"
+                      className={iconButton}
                       aria-label="Move note to Trash"
                       title="Move note to Trash"
                       disabled={busy}
@@ -337,7 +356,8 @@ export function NotesLibrary({
                     {dirty ? "Unsaved changes · ⌘S to save" : "Saved"}
                   </span>
                   <Button
-                    variant="primary"
+                    variant="default"
+                    size="sm"
                     className="bg-text text-canvas hover:bg-text/90"
                     disabled={busy || !dirty || !note.title.trim()}
                     onClick={() => void save()}

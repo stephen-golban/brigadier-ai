@@ -5,7 +5,7 @@ import { syncArchive, readArchive } from "./sessionArchive";
 import { listen } from "@tauri-apps/api/event";
 import { renameSession } from "./sessionNavigation";
 import { NavigationHistoryControls } from "./components/NavigationHistoryControls";
-import { Button } from "./components/controls/button";
+import { Button } from "@/components/ui/button";
 import { Details, DetailsSummary } from "./components/controls/details";
 import { useNavigationData, isTrashed } from "./navigationApi";
 import { SidebarProvider, SidebarInset } from "./components/controls/sidebar";
@@ -1227,6 +1227,8 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
                   <div className="run-dock-status" role="status">
                     Automation running: {run.goal}
                     <Button
+                      variant="ghost"
+                      size="sm"
                       className="act"
                       onClick={() => stopRun(run.plan_id)}
                     >

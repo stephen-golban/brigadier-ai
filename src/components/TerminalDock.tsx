@@ -7,7 +7,9 @@ import {
   type RefObject,
 } from "react";
 import { ChevronDown, CollapseSmall, Expand, Plus, SidebarRight, TerminalLg, Trash, X } from "../icons";
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
+import { iconButton, labelledButtonIcons } from "@/lib/surfaces";
+import { cn } from "@/lib/utils";
 import { Dropdown, Separator } from "./controls/overlay";
 import { DropdownContent } from "./controls/menu";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
@@ -358,7 +360,9 @@ export function TerminalDock({
             TERMINAL
           </span>
           <Button
+            variant="ghost"
             size="icon"
+            className={iconButton}
             aria-label="New terminal"
             title="New terminal (⌃⇧`)"
             onClick={(e) => void create(e.altKey)}
@@ -366,7 +370,7 @@ export function TerminalDock({
             <Plus width={16} height={16} />
           </Button>
           <Dropdown native>
-            <Button size="icon" aria-label="Terminal profiles">
+            <Button variant="ghost" size="icon" className={iconButton} aria-label="Terminal profiles">
               <ChevronDown width={14} height={14} />
             </Button>
             <DropdownContent align="end">
@@ -387,7 +391,9 @@ export function TerminalDock({
             </DropdownContent>
           </Dropdown>
           <Button
+            variant="ghost"
             size="icon"
+            className={iconButton}
             aria-label="Split terminal"
             title="Split terminal (⌘\\)"
             disabled={!selected}
@@ -396,7 +402,9 @@ export function TerminalDock({
             <SidebarRight width={16} height={16} />
           </Button>
           <Button
+            variant="ghost"
             size="icon"
+            className={iconButton}
             aria-label="Kill terminal"
             disabled={!selected}
             onClick={() => void kill()}
@@ -404,7 +412,9 @@ export function TerminalDock({
             <Trash width={16} height={16} />
           </Button>
           <Button
+            variant="ghost"
             size="icon"
+            className={iconButton}
             aria-label={
               maximized ? "Restore terminal size" : "Maximize terminal"
             }
@@ -419,7 +429,7 @@ export function TerminalDock({
             */}
             {maximized ? <CollapseSmall width={16} height={16} /> : <Expand width={16} height={16} />}
           </Button>
-          <Button size="icon" aria-label="Hide terminal" onClick={toggle}>
+          <Button variant="ghost" size="icon" className={iconButton} aria-label="Hide terminal" onClick={toggle}>
             <X width={16} height={16} />
           </Button>
         </div>
@@ -501,9 +511,14 @@ export function TerminalDock({
                   }}
                 >
                   <Button
+                    variant="ghost"
+                    size="sm"
                     role="option"
                     aria-selected={selected?.id === tab.id}
-                    className={`min-w-0 flex-1 justify-start text-xs ${selected?.id === tab.id ? "bg-selected" : ""}`}
+                    className={cn(
+                      labelledButtonIcons,
+                      `min-w-0 flex-1 justify-start text-xs ${selected?.id === tab.id ? "bg-selected" : ""}`,
+                    )}
                     onClick={(e) =>
                       e.altKey
                         ? void create(true, undefined, tab)
@@ -516,7 +531,7 @@ export function TerminalDock({
                     </span>
                   </Button>
                   <Dropdown native>
-                    <Button size="icon" aria-label={`Actions for ${tab.path}`}>
+                    <Button variant="ghost" size="icon" className={iconButton} aria-label={`Actions for ${tab.path}`}>
                       <ChevronDown width={12} height={12} />
                     </Button>
                     <DropdownContent align="end">
