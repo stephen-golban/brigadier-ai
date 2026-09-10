@@ -35,10 +35,10 @@
 .composer-model-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .composer-effort-label { color: var(--color-text-tertiary); white-space: nowrap; }
 .is-full, .is-full svg { color: var(--color-warn) !important; }
-.brigadier-composer .composer-send.button { flex: 0 0 34px; width: 34px; height: 34px; border-radius: 50%; background: var(--color-text); color: var(--color-input); padding: 0; opacity: 1; }
-.brigadier-composer .composer-send.button svg { color: inherit; width: 18px; height: 18px; }
-.brigadier-composer .composer-send.button:hover:not(:disabled) { background: color-mix(in srgb, var(--color-text) 86%, var(--color-input)); }
-.brigadier-composer .composer-send.button:disabled { opacity: .35; color: var(--color-input); }
+.brigadier-composer .composer-send[data-slot="button"] { flex: 0 0 34px; width: 34px; height: 34px; border-radius: 50%; background: var(--color-text); color: var(--color-input); padding: 0; opacity: 1; }
+.brigadier-composer .composer-send[data-slot="button"] svg { color: inherit; width: 18px; height: 18px; }
+.brigadier-composer .composer-send[data-slot="button"]:hover:not(:disabled) { background: color-mix(in srgb, var(--color-text) 86%, var(--color-input)); }
+.brigadier-composer .composer-send[data-slot="button"]:disabled { opacity: .35; color: var(--color-input); }
 .composer-spinner { width: 15px; height: 15px; border: 2px solid currentColor; border-top-color: transparent; border-radius: 50%; animation: composer-spin .8s linear infinite; }
 @keyframes composer-spin { to { transform: rotate(360deg); } }
 .composer-setup-rail { display: flex; flex-wrap: wrap; gap: 4px 12px; max-width: 754px; margin: 0 auto -12px; padding: 5px 10px 17px; border-radius: var(--radius-xl) var(--radius-xl) 0 0; background: color-mix(in srgb, var(--color-input) 44%, var(--color-input-shell)); }

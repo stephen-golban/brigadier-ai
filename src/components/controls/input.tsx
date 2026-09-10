@@ -5,7 +5,8 @@ import { cn } from "@/lib/utils";
 
 /**
  * Thin adapter over the design kit's Input (`src/components/ui/input.tsx`, Base UI `Input`),
- * shaped like `controls/button.tsx`: the 16 files that import from here compile unchanged.
+ * shaped the way `controls/button.tsx` used to be: the 16 files that import from here compile
+ * unchanged.
  *
  * What the adapter still owns:
  *  - the `input` class, which `src/index.css:686-687` keys off for the rename dialog's field.

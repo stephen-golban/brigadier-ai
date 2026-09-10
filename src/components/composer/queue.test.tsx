@@ -14,7 +14,7 @@ const session: SessionRuntime = { sessionId: "s", projectId: "p", status: "runni
 let state: ComposerState;
 let emit: (state: ComposerState) => void;
 beforeEach(() => {
-  vi.spyOn(providerCatalog, "useProviderCatalog").mockReturnValue({ providers: [], error: "" });
+  vi.spyOn(providerCatalog, "useProviderCatalog").mockReturnValue({ providers: [], error: "", loaded: true});
   vi.spyOn(taskSettingsApi, "read").mockImplementation(async sessionId => ({ sessionId, projectId: "p", mode: "custom", permission: "approve", execution: {provider: "claude-code", model: "exact-model", effort: null}, isolated: false, baseBranch: null, changes: [] }));
   vi.spyOn(taskSettingsApi, "subscribe").mockResolvedValue(() => {});
   state = emptyComposer("s"); emit = () => {};
@@ -124,7 +124,7 @@ const catalog: providerCatalog.ProviderCatalogEntry[] = [
   { id: "codex", label: "Codex", instanceId: "codex:test", version: null, modelCatalogKnown: true, efforts: [], models: [{ id: "next-model", label: "Next model", efforts: ["minimal", "medium", "xhigh"] }] },
 ];
 it("changes only subsequent execution settings while the current response remains active", async () => {
-  vi.mocked(providerCatalog.useProviderCatalog).mockReturnValue({providers:catalog,error:""});
+  vi.mocked(providerCatalog.useProviderCatalog).mockReturnValue({providers:catalog, error: "", loaded: true});
   const update = vi.spyOn(taskSettingsApi,"update").mockImplementation(async (_id,next) => next);
   mount({busy:true});
   await waitFor(() => expect(screen.getByRole("button",{name:"Execution settings"})).toBeEnabled());
@@ -141,7 +141,7 @@ it("changes only subsequent execution settings while the current response remain
 });
 
 it("edits a queued Custom execution snapshot without changing task execution settings", async () => {
-  vi.mocked(providerCatalog.useProviderCatalog).mockReturnValue({providers:catalog,error:""});
+  vi.mocked(providerCatalog.useProviderCatalog).mockReturnValue({providers:catalog, error: "", loaded: true});
   state.queue = [{id:"queued",text:"Review next",attachmentIds:["stable-file"],status:"queued",turnId:null,error:null,execution:{provider:"claude-code",model:"exact-model",effort:"high"}}];
   const updateTask = vi.spyOn(taskSettingsApi,"update").mockImplementation(async (_id,next) => next);
   const updateQueue = vi.spyOn(composerApi,"update").mockImplementation(async (_session,id,text,attachmentIds,execution) => {
@@ -178,7 +178,7 @@ it("Steer now invokes active steering and Stop remains usable while that acknowl
 });
 
 it("takes over Auto once using effective execution settings and removes the route back", async () => {
-  vi.mocked(providerCatalog.useProviderCatalog).mockReturnValue({providers:catalog,error:""});
+  vi.mocked(providerCatalog.useProviderCatalog).mockReturnValue({providers:catalog, error: "", loaded: true});
   vi.mocked(taskSettingsApi.read).mockResolvedValue({sessionId:"s",projectId:"p",mode:"auto",permission:"approve",execution:{provider:"codex",model:"next-model",effort:"xhigh"},isolated:true,baseBranch:"main",changes:[]});
   const update = vi.spyOn(taskSettingsApi,"update").mockImplementation(async (_id,next)=>next);
   mount({busy:true});

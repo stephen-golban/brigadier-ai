@@ -10,7 +10,8 @@ import {
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { DialogContent } from "@/components/ui/dialog";
 import { X } from "../../icons";
-import { Button } from "./button";
+import { Button } from "@/components/ui/button";
+import { iconButton } from "@/lib/surfaces";
 import { cn } from "../../lib/utils";
 
 /**
@@ -204,10 +205,17 @@ function Footer(props: ComponentProps<"div">) {
     />
   );
 }
-function CloseTrigger(props: ComponentProps<typeof Button>) {
+function CloseTrigger({ className, ...props }: ComponentProps<typeof Button>) {
   const { close } = useContext(State);
   return (
-    <Button aria-label="Close" {...props} size="icon" onClick={close}>
+    <Button
+      aria-label="Close"
+      variant="ghost"
+      {...props}
+      size="icon"
+      className={cn(iconButton, className)}
+      onClick={close}
+    >
       <X className="size-4" />
     </Button>
   );

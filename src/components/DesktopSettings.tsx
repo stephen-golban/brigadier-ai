@@ -6,7 +6,9 @@ import { SoftwareUpdates } from "./SoftwareUpdates";
 import { ArchivedSessions } from "./ArchivedSessions";
 import { Checkbox } from "./controls/checkbox";
 import { Input } from "./controls/input";
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import { labelledButtonIcons } from "@/lib/surfaces";
 import type { SessionRuntime } from "../feedStore";
 import type { ProjectView } from "../wire";
 import { workbenchApi, type WorkbenchData } from "../workbenchApi";
@@ -124,7 +126,13 @@ export function DesktopSettings({ data, onData, sessions, titles, projects, orig
         aria-hidden="true"
       />
       <aside className="settings-sidebar">
-        <Button ref={back} className="settings-back" onClick={onClose}>
+        <Button
+          ref={back}
+          variant="ghost"
+          size="sm"
+          className={cn(labelledButtonIcons, "settings-back")}
+          onClick={onClose}
+        >
           <ArrowLeft />
           Back to app
         </Button>
@@ -145,7 +153,9 @@ export function DesktopSettings({ data, onData, sessions, titles, projects, orig
             .map(({ id, label, icon: Icon }) => (
               <Button
                 key={id}
-                className="settings-nav-item"
+                variant="ghost"
+                size="sm"
+                className={cn(labelledButtonIcons, "settings-nav-item")}
                 aria-current={page === id ? "page" : undefined}
                 onClick={() => {
                   setPage(id);
@@ -162,7 +172,9 @@ export function DesktopSettings({ data, onData, sessions, titles, projects, orig
                 Archived
               </span>
               <Button
-                className="settings-nav-item"
+                variant="ghost"
+                size="sm"
+                className={cn(labelledButtonIcons, "settings-nav-item")}
                 aria-current={page === "archived" ? "page" : undefined}
                 onClick={() => {
                   setPage("archived");
@@ -174,7 +186,7 @@ export function DesktopSettings({ data, onData, sessions, titles, projects, orig
               </Button>
             </>
           )}
-          {onOpenTrash && (!search || "trash".includes(search.toLowerCase().trim())) && <Button className="settings-nav-item" onClick={onOpenTrash}><Trash />Trash</Button>}
+          {onOpenTrash && (!search || "trash".includes(search.toLowerCase().trim())) && <Button variant="ghost" size="sm" className={cn(labelledButtonIcons, "settings-nav-item")} onClick={onOpenTrash}><Trash />Trash</Button>}
           {!visiblePages.length && (
             <p className="settings-search-empty">No matching settings</p>
           )}
@@ -223,6 +235,7 @@ export function DesktopSettings({ data, onData, sessions, titles, projects, orig
                       <div className="settings-actions">
                         <Button
                           variant="secondary"
+                          size="sm"
                           onClick={() => {
                             onClose();
                             launchApi.replay();
@@ -281,6 +294,8 @@ export function DesktopSettings({ data, onData, sessions, titles, projects, orig
                         <div className="settings-actions">
                           <Button
                             variant="secondary"
+                            size="sm"
+                            className={labelledButtonIcons}
                             disabled={!desktop}
                             onClick={() => {
                               void open({
@@ -302,6 +317,7 @@ export function DesktopSettings({ data, onData, sessions, titles, projects, orig
                           </Button>
                           <Button
                             variant="secondary"
+                            size="sm"
                             type="submit"
                             disabled={!folder.trim()}
                           >
@@ -321,6 +337,8 @@ export function DesktopSettings({ data, onData, sessions, titles, projects, orig
                             </span>
                             {job.error && (
                               <Button
+                                variant="ghost"
+                                size="sm"
                                 onClick={() =>
                                   void desktopApi
                                     .retryCleanup(job.id)
@@ -369,6 +387,7 @@ export function DesktopSettings({ data, onData, sessions, titles, projects, orig
                       </label>
                       <Button
                         variant="secondary"
+                        size="sm"
                         type="submit"
                         disabled={savingName || !name.trim()}
                       >

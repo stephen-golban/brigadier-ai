@@ -1107,3 +1107,26 @@ wrong — `var(--color-elevated, #292929)` when `--color-elevated` is `#2b2b2b`.
 No visual pass in the built app. The evidence is the four gates below, the emitted stylesheet, and
 the greps — nothing was looked at. The scale re-order moves five `rounded-sm` call sites and four
 `rounded-xl` call sites that no work order named; a screenshot pass is the missing half.
+
+## Applied 2026-09-11 (2) — the Button adapter is deleted
+
+The "Button / IconButton API" table above was written to justify a shim; the shim is gone.
+`src/components/controls/button.tsx` is deleted and all 202 `<Button>` call sites outside
+`src/components/ui/` now import the kit Button (`@/components/ui/button`) directly, per
+`docs/plans/button-codemod-2026-09-11.md`. The six things the adapter owned were relocated rather
+than dropped: the variant alias map (`primary`→`default`, `danger`→`destructive`) is spelled at the
+call site; the brigadier icon-box geometry and ink are class recipes in `src/lib/surfaces.tsx`
+(`iconButton`, `iconButtonXs`, `iconButtonInk`, `labelledButtonIcons`, `toggleButton`), byte-identical
+to the strings the adapter emitted and always `cn()`-composed *before* the site's own `className` so
+tailwind-merge still resolves a deliberate override in the site's favour; `isDisabled` / `onPress` /
+`isIconOnly` / `iconStyle` became `disabled` / `onClick` / `size="icon"` / nothing; the `.button`
+class and the `data-icon-button` / `data-variant` markers became `[data-slot="button"]` (emitted at
+`src/components/ui/button.tsx:51`) plus the `icon-button` class the box recipes carry, converted
+selector for selector at identical specificity across four stylesheets; and `data-autofocus` is now
+set by the one Button that needs it. The section's own §"Props **[M]**" measurement stands — what
+changed is the conclusion drawn from it. **The live hazard this leaves behind** is the default flip:
+the adapter defaulted `variant="ghost" size="sm"`, the kit defaults to `variant="default"`
+(filled primary) at `size="default"` (32px), and a `<Button>` that omits either prop compiles
+cleanly while rendering as a large filled button. Every call site is explicit today, checked by
+parsing all 202 opening tags rather than by grep (multi-line tags defeat `grep '<Button>'`); keep it
+that way. Not checked: no visual pass and no burn run, so the paint budget is unverified here.

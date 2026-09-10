@@ -1,7 +1,7 @@
 import { SelectMenu } from "./SelectMenu";
 import { Checkbox } from "./controls/checkbox";
 import { Input } from "./controls/input";
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
 import { documentCommands } from "../documentCommands";
 import { desktopApi } from "../desktopApi";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
@@ -354,19 +354,28 @@ export function DocumentTab({
               }))}
             />
             <Button
+              variant="ghost"
+              size="sm"
               className="act"
               disabled={saving}
               onClick={() => void save()}
             >
               {saving ? "Saving…" : tab.kind === "note" ? "Save note" : "Save"}
             </Button>
-            <Button className="act" onClick={() => setSaveAs(!saveAs)}>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="act"
+              onClick={() => setSaveAs(!saveAs)}
+            >
               Save As
             </Button>
           </>
         )}
         {buffer && (
           <Button
+            variant="ghost"
+            size="sm"
             className="act"
             onClick={() => onAttach(tab.path, buffer.content)}
           >
@@ -375,6 +384,8 @@ export function DocumentTab({
         )}
         {buffer?.language === "markdown" && (
           <Button
+            variant="ghost"
+            size="sm"
             className="act"
             aria-pressed={rendered}
             onClick={() => setRendered(!rendered)}
@@ -403,6 +414,8 @@ export function DocumentTab({
           </label>
           <Button
             type="submit"
+            variant="ghost"
+            size="sm"
             className="primary-action"
             disabled={saving || !path.trim()}
           >
@@ -410,6 +423,8 @@ export function DocumentTab({
           </Button>
           <Button
             type="button"
+            variant="ghost"
+            size="sm"
             className="act"
             onClick={() => {
               setSaveAs(false);
@@ -451,6 +466,8 @@ export function DocumentTab({
             Always include
           </Checkbox>
           <Button
+            variant="ghost"
+            size="sm"
             className="act"
             onClick={() =>
               window.dispatchEvent(
@@ -465,6 +482,8 @@ export function DocumentTab({
       )}
       {noteConflict.current && note && (
         <Button
+          variant="ghost"
+          size="sm"
           className="act"
           onClick={() => {
             noteConflict.current = false;
@@ -488,6 +507,8 @@ export function DocumentTab({
       {tab.kind === "diff" && !tab.recorded && buffer && hunks.length > 0 && (
         <div className="diff-actions flex items-center gap-2 p-2">
           <Button
+            variant="ghost"
+            size="sm"
             className="act"
             disabled={saving}
             onClick={() =>
@@ -511,6 +532,8 @@ export function DocumentTab({
             }))}
           />
           <Button
+            variant="ghost"
+            size="sm"
             className="act"
             disabled={saving}
             onClick={() => {

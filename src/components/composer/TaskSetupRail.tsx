@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { ArrowLeft, Branch, BranchAlt, Check, ChevronSmallDown, Desktop, Folder, Plus } from "../../icons";
 import { Popover, navigateItems } from "../controls/overlay";
-import { Button } from "../controls/button";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import { labelledButtonIcons } from "@/lib/surfaces";
 import { SelectMenu } from "../SelectMenu";
 import type { ProjectComposerPreferences } from "../../taskSettings";
 import type { ComposerWorkspaceOptions } from "../../composerWorkspaceApi";
@@ -64,14 +66,14 @@ export function TaskSetupRail({ project, projects, picks, options, disabled, onC
         busy/loading flag, and with no project every one of its reasons *is* "no project". */}
     <div className="setup-picker">
       <Popover isOpen={projectOpen && !disabled} onOpenChange={setProjectOpen}>
-        <Button className="composer-select" aria-label="Project" disabled={(disabled && !!project) || (!onSelectProject && !onProjectless)}><Folder width={17} height={17}/><span>{project && !project.projectless ? project.name : PROJECT_PLACEHOLDER}</span><ChevronSmallDown width={14} height={14}/></Button>
+        <Button variant="ghost" size="sm" className={cn(labelledButtonIcons, "composer-select")} aria-label="Project" disabled={(disabled && !!project) || (!onSelectProject && !onProjectless)}><Folder width={17} height={17}/><span>{project && !project.projectless ? project.name : PROJECT_PLACEHOLDER}</span><ChevronSmallDown width={14} height={14}/></Button>
         <Popover.Content placement="top start" className="composer-popover setup-popover">
           <Popover.Dialog aria-label="Project">
             <p className="composer-popover-heading">Project</p>
             <div role="listbox" aria-label="Project" onKeyDown={navigateItems}>
               {(projects ?? (project ? [project] : [])).filter(item => !item.projectless).map(item => <button key={item.id} type="button" role="option" aria-selected={project?.id === item.id} className="setup-menu-option" onClick={() => { onSelectProject?.(item.id); setProjectOpen(false); }}><Folder/><span>{item.name}</span>{project?.id === item.id && <Check/>}</button>)}
             </div>
-            {onNewProject && <Button className="setup-menu-option" onClick={() => {setProjectOpen(false); onNewProject();}}><Plus/><span>New project</span></Button>}
+            {onNewProject && <Button variant="ghost" size="sm" className={cn(labelledButtonIcons, "setup-menu-option")} onClick={() => {setProjectOpen(false); onNewProject();}}><Plus/><span>New project</span></Button>}
             {onProjectless && <button type="button" role="option" aria-selected={!!project?.projectless} className="setup-menu-option" onClick={() => {setProjectOpen(false); onProjectless();}}><Folder/><span>Don't work in a project</span>{project?.projectless && <Check/>}</button>}
           </Popover.Dialog>
         </Popover.Content>
@@ -81,11 +83,11 @@ export function TaskSetupRail({ project, projects, picks, options, disabled, onC
 
     <div className="setup-picker">
       <Popover isOpen={environmentOpen && !disabled} onOpenChange={open => { setEnvironmentOpen(open); setExisting(false); setQuery(""); }}>
-        <Button className="composer-select" aria-label="Environment" title={picks.workspacePath ?? environmentLabel} disabled={disabled || !options}>{picks.isolated || picks.workspacePath ? <BranchAlt width={17} height={17}/> : <Desktop width={17} height={17}/>}<span>{environmentLabel}</span><ChevronSmallDown width={14} height={14} /></Button>
+        <Button variant="ghost" size="sm" className={cn(labelledButtonIcons, "composer-select")} aria-label="Environment" title={picks.workspacePath ?? environmentLabel} disabled={disabled || !options}>{picks.isolated || picks.workspacePath ? <BranchAlt width={17} height={17}/> : <Desktop width={17} height={17}/>}<span>{environmentLabel}</span><ChevronSmallDown width={14} height={14} /></Button>
         <Popover.Content placement="top start" className="composer-popover setup-popover">
           <Popover.Dialog aria-label="Task environment">
             {existing ? <>
-              <Button className="setup-menu-back" onClick={() => setExisting(false)}><ArrowLeft />Environment</Button>
+              <Button variant="ghost" size="sm" className={cn(labelledButtonIcons, "setup-menu-back")} onClick={() => setExisting(false)}><ArrowLeft />Environment</Button>
               <input type="search" data-autofocus="true" aria-label="Search worktrees" placeholder="Find a worktree…" value={query} onChange={event => setQuery(event.target.value)} />
               <div role="listbox" aria-label="Existing worktree" onKeyDown={navigateItems}>
                 {options?.worktrees.filter(tree => `${tree.path} ${tree.branch ?? ""} ${tree.activeTaskTitle ?? ""}`.toLowerCase().includes(query.toLowerCase())).map(tree => <button key={tree.path} type="button" role="option" aria-label={`${tree.branch ?? "Detached HEAD"} ${tree.path}${tree.activeTaskTitle ? ` In use by ${tree.activeTaskTitle}` : tree.reason ? ` ${tree.reason}` : ""}`} disabled={!tree.available} aria-selected={picks.workspacePath === tree.path} className="setup-menu-option" onClick={() => chooseEnvironment(false, tree.path)}>
@@ -104,7 +106,7 @@ export function TaskSetupRail({ project, projects, picks, options, disabled, onC
     </div>
     <div className="setup-picker">
       <Popover isOpen={branchOpen && !disabled} onOpenChange={open => {setBranchOpen(open); setBranchView("menu"); setQuery("");}}>
-        <Button className="composer-select" aria-label="Branch" title={branchLabel} disabled={disabled || !options?.isGit}><Branch width={17} height={17}/><span>{branchLabel}</span><ChevronSmallDown width={14} height={14}/></Button>
+        <Button variant="ghost" size="sm" className={cn(labelledButtonIcons, "composer-select")} aria-label="Branch" title={branchLabel} disabled={disabled || !options?.isGit}><Branch width={17} height={17}/><span>{branchLabel}</span><ChevronSmallDown width={14} height={14}/></Button>
         <Popover.Content placement="top start" className="composer-popover setup-popover">
           <Popover.Dialog aria-label="Starting branch">
             {branchView === "menu" && picks.isolated ? <>
@@ -122,13 +124,13 @@ export function TaskSetupRail({ project, projects, picks, options, disabled, onC
               <button type="button" role="option" aria-selected={!!picks.newBranch} className="setup-menu-option" onClick={() => {setName(picks.newBranch ?? "");setStart(picks.baseBranch ?? "");setBranchView("new");}}><Plus /><span>New branch<small>{" "}Name a branch and choose its starting point.</small></span></button>
               <button type="button" role="option" aria-selected={!!picks.baseBranch && !picks.newBranch} className="setup-menu-option" onClick={() => setBranchView("checkout")}><Branch /><span>Checkout<small>{" "}Select an existing branch.</small></span></button>
             </div> : <>
-              <Button className="setup-menu-back" onClick={() => setBranchView("menu")}><ArrowLeft />Start from</Button>
+              <Button variant="ghost" size="sm" className={cn(labelledButtonIcons, "setup-menu-back")} onClick={() => setBranchView("menu")}><ArrowLeft />Start from</Button>
               {branchView === "new" ? <form className="setup-branch-form" onSubmit={event => {event.preventDefault(); if (!invalidBranchName(name) && !nameError) chooseBranch(start || null, name);}}>
                 <label>Branch name<input autoFocus aria-label="New branch name" value={name} placeholder="feature/my-change" onChange={event => setName(event.target.value)} /></label>
                 <label>Starting point<SelectMenu label="Starting point" value={start} onChange={setStart} searchable options={[{value:"",label:`Current (${current ?? "HEAD"})`}, ...branches.map(branch => ({value:branch.name,label:branchLabelFor(branch.name),description:branch.remote ? "Remote branch" : "Local branch"}))]}/></label>
                 {nameError && <p role="alert" className="composer-error">{nameError}</p>}
                 <p className="composer-popover-heading">Created when you send.</p>
-                <Button type="submit" disabled={invalidBranchName(name) || !!nameError}>Use new branch</Button>
+                <Button variant="ghost" size="sm" type="submit" disabled={invalidBranchName(name) || !!nameError}>Use new branch</Button>
               </form> : <>
                 <input type="search" data-autofocus="true" aria-label="Search branches" placeholder="Find a branch…" value={query} onChange={event => setQuery(event.target.value)} />
                 <div role="listbox" aria-label="Checkout branch" onKeyDown={navigateItems}>{branches.filter(branch => branch.name.toLowerCase().includes(query.toLowerCase())).map(branch => <button key={branch.name} type="button" role="option" aria-label={`${branchLabelFor(branch.name)} ${branch.remote ? "Remote branch" : "Local branch"}`} aria-selected={picks.baseBranch === branch.name && !picks.newBranch} className="setup-menu-option" onClick={() => chooseBranch(branch.name)}><Branch /><span>{branchLabelFor(branch.name)}<small>{" "}{branch.remote ? "Remote branch" : "Local branch"}</small></span>{picks.baseBranch === branch.name && !picks.newBranch && <Check />}</button>)}</div>

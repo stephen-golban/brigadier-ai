@@ -8,7 +8,7 @@ import {
 import { ShimmerLabel } from "../lib/surfaces";
 import { ToolCall } from "./assistant-ui/elements/tool-call";
 import { ReasoningPanel } from "./assistant-ui/elements/reasoning-panel";
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
 import { Markdown, CopyButton } from "./Markdown";
 import { usePeerTaskCards, usePeerReceiptScope } from "./peer/PeerTaskCardScope";
 import { PeerDeliveryReceipt } from "./peer/PeerMessages";

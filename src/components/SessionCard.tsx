@@ -4,7 +4,9 @@ import { BackgroundInbox } from './assistant-ui/elements/background-inbox';
 import { useEffect, useState } from 'react';
 import { useTaskExecutionSettings } from '../taskSettings';
 import { BranchAlt, Branch, Compare, ExternalLink, File, Folder, SettingsCog, SettingsSlider, Users } from "../icons";
-import { Button } from './controls/button';
+import { Button } from "@/components/ui/button";
+import { labelledButtonIcons } from "@/lib/surfaces";
+import { cn } from "@/lib/utils";
 import type { SessionRuntime } from '../feedStore';
 import { peerApi, type PeerData } from '../peerApi';
 import { useSessionChanges } from '../desktopApi';
@@ -50,19 +52,19 @@ export function SessionCard({ session, sessions, peers, onSelect, onChanges, onS
     <aside className="thread-context" aria-label="Session environment">
       <section><h3>Environment · locked for this task</h3>
         <AgentStatus state={session.status==='failed'?'failed':session.busy?'working':session.status==='exited'?'idle':'waiting'} label={session.status==='failed'?'Execution failed':session.busy?'Working':session.status==='exited'?'Stopped':'Ready'}/>
-        <Button className="context-row" onClick={()=>navigate(onChanges)}><Compare/><span>Changes</span><span className="change-count"><i className="text-ok not-italic">+{changes.files.reduce((n,f) => n+f.added,0)}</i> <i className="text-error not-italic">−{changes.files.reduce((n,f) => n+f.deleted,0)}</i></span></Button>
-        <Button className="context-row" onClick={()=>navigate(onFiles)} title={session.cwd ?? undefined}>{settings?.workspacePath || session.worktreePath ? <BranchAlt/> : <Folder/>}<span>{settings?.workspacePath ? 'Existing worktree' : session.worktreePath ? 'Worktree' : 'Local'} · {session.cwd?.split('/').pop() ?? 'Workspace'}</span></Button>
+        <Button variant="ghost" size="sm" className={cn(labelledButtonIcons, "context-row")} onClick={()=>navigate(onChanges)}><Compare/><span>Changes</span><span className="change-count"><i className="text-ok not-italic">+{changes.files.reduce((n,f) => n+f.added,0)}</i> <i className="text-error not-italic">−{changes.files.reduce((n,f) => n+f.deleted,0)}</i></span></Button>
+        <Button variant="ghost" size="sm" className={cn(labelledButtonIcons, "context-row")} onClick={()=>navigate(onFiles)} title={session.cwd ?? undefined}>{settings?.workspacePath || session.worktreePath ? <BranchAlt/> : <Folder/>}<span>{settings?.workspacePath ? 'Existing worktree' : session.worktreePath ? 'Worktree' : 'Local'} · {session.cwd?.split('/').pop() ?? 'Workspace'}</span></Button>
         <div className="context-row" title={session.branch ?? undefined}><Branch/><span>{session.branch ?? 'No Git branch'}</span></div>
         {settings?.baseBranch && <div className="context-row" title={settings.baseBranch}><Branch/><span>Started from {settings.baseBranch}</span></div>}
-        {session.branch && <Button className="context-row" onClick={()=>navigate(onChanges)}><Compare/><span>Commit, push or compare</span><ExternalLink/></Button>}
-        <Button className="context-row" onClick={onSettings}><SettingsCog/><span>Session settings</span></Button>
+        {session.branch && <Button variant="ghost" size="sm" className={cn(labelledButtonIcons, "context-row")} onClick={()=>navigate(onChanges)}><Compare/><span>Commit, push or compare</span><ExternalLink/></Button>}
+        <Button variant="ghost" size="sm" className={cn(labelledButtonIcons, "context-row")} onClick={onSettings}><SettingsCog/><span>Session settings</span></Button>
       </section>
-      {rows.length > 0 && <section><h3>Subagents</h3><Button className="context-row" onClick={()=>navigate(onSubagents)}><Users/><WorkerSummary rows={rows}/></Button></section>}
+      {rows.length > 0 && <section><h3>Subagents</h3><Button variant="ghost" size="sm" className={cn(labelledButtonIcons, "context-row")} onClick={()=>navigate(onSubagents)}><Users/><WorkerSummary rows={rows}/></Button></section>}
       <BackgroundInbox runs={Object.entries(peers.origins).filter(([id,owner])=>owner===session.sessionId&&!peers.subagents?.[id]&&!peers.closed.includes(id)&&sessions[id]&&(sessions[id]!.busy||sessions[id]!.status==='starting'||sessions[id]!.status==='failed'||(sessions[id]!.lastTurnId&&sessions[id]!.lastStop==='end-turn'))).map(([id])=>({id,title:peers.titles[id]??'Created chat',state:sessions[id]!.status==='failed'?'failed':(sessions[id]!.busy||sessions[id]!.status==='starting')?'running':'ready'}))} onCollect={id=>navigate(()=>onSelect(id))}/>
       <section><h3>Sources</h3>
-        <Button className="context-row" onClick={()=>navigate(onFiles)}><Folder/><span>Project files</span></Button>
-        {[...files.values()].map(a => <Button key={a.id} className="context-row" onClick={() => void viewAttachment(a.id)} title={a.name}><File/><span>{a.name}</span></Button>)}
-        {peers.origins[session.sessionId] && <Button className="context-row" onClick={() => onSelect(peers.origins[session.sessionId]!)}><ExternalLink/><span>Source conversation</span></Button>}
+        <Button variant="ghost" size="sm" className={cn(labelledButtonIcons, "context-row")} onClick={()=>navigate(onFiles)}><Folder/><span>Project files</span></Button>
+        {[...files.values()].map(a => <Button key={a.id} variant="ghost" size="sm" className={cn(labelledButtonIcons, "context-row")} onClick={() => void viewAttachment(a.id)} title={a.name}><File/><span>{a.name}</span></Button>)}
+        {peers.origins[session.sessionId] && <Button variant="ghost" size="sm" className={cn(labelledButtonIcons, "context-row")} onClick={() => onSelect(peers.origins[session.sessionId]!)}><ExternalLink/><span>Source conversation</span></Button>}
         {error && <p role="alert" className="text-error">{error}</p>}
       </section>
     </aside>

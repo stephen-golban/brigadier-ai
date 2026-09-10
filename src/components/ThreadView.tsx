@@ -27,7 +27,9 @@ import {
   useSyncExternalStore,
 } from "react";
 import { Bug, Loop, Pencil, Telescope, Tools } from "../icons";
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
+import { iconButton, labelledButtonIcons } from "@/lib/surfaces";
+import { cn } from "@/lib/utils";
 import { MessageAction } from "./assistant-ui/elements/tooltip-icon-button";
 import { Thread } from "./assistant-ui/elements/thread";
 import {
@@ -175,7 +177,9 @@ function NewConversation({
           ].map(({ title, prompt, Icon, color }) => (
             <Button
               key={title}
-              className="welcome-starter"
+              variant="ghost"
+              size="sm"
+              className={cn(labelledButtonIcons, "welcome-starter")}
               onClick={() =>
                 window.dispatchEvent(
                   new CustomEvent("workbench-starter", {
@@ -393,8 +397,8 @@ function Transcript({
               : "No saved message bodies in this session."}
           </p>
         ) : null}
-        {hasOlder && <Button className="mx-auto mb-4" disabled={paging} onClick={() => void older()}>{paging ? 'Loading…' : 'Load earlier messages'}</Button>}
-        {historical && <Button className="mx-auto mb-4" onClick={() => void latest()}>Return to latest messages</Button>}
+        {hasOlder && <Button variant="ghost" size="sm" className="mx-auto mb-4" disabled={paging} onClick={() => void older()}>{paging ? 'Loading…' : 'Load earlier messages'}</Button>}
+        {historical && <Button variant="ghost" size="sm" className="mx-auto mb-4" onClick={() => void latest()}>Return to latest messages</Button>}
         <div style={virtualized ? {height: virtual.getTotalSize(), position: 'relative'} : undefined}>
         {visibleRows.map(({row, index, virtual: position}) => {
           const turn = turns[index];
@@ -592,7 +596,7 @@ function UserMessage({
             <Button
               variant="ghost"
               size="icon"
-              className="size-7"
+              className={cn(iconButton, "size-7")}
               aria-label="Edit message"
               title={
                 busy ? "Wait for the current turn to finish" : "Edit message"

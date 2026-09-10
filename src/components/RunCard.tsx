@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ApprovalCard } from "./assistant-ui/elements/approval-card";
 import { AgentPlan } from "./assistant-ui/elements/agent-plan";
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
 /**
  * The pinned plan card.
  *
@@ -223,6 +223,8 @@ export function RunCard({ run, intents, onSettle }: RunCardProps) {
           <div className="run-line">
             <Button
               type="button"
+              variant="ghost"
+              size="sm"
               className="run-toggle"
               aria-expanded={open}
               onClick={() => setOpen(!open)}
@@ -272,6 +274,8 @@ export function RunCard({ run, intents, onSettle }: RunCardProps) {
                 <span className="run-intent-actions">
                   <Button
                     type="button"
+                    variant="ghost"
+                    size="sm"
                     className="act"
                     onClick={() => onSettle(i.intent_id, "done")}
                   >
@@ -279,6 +283,8 @@ export function RunCard({ run, intents, onSettle }: RunCardProps) {
                   </Button>
                   <Button
                     type="button"
+                    variant="ghost"
+                    size="sm"
                     className="act"
                     onClick={() => onSettle(i.intent_id, "not_done")}
                   >
@@ -299,5 +305,5 @@ function CompetingApproval({planId,phaseId}:{planId:string;phaseId:string}){
  const [proposal,setProposal]=useState<{requestId:string;baseline:string;criteria:string}|null>(null);
  useEffect(()=>{let active=true;void invoke<{requestId:string;baseline:string;criteria:string}>('read_run_competing',{planId,phaseId}).then(p=>{if(active)setProposal(p);}).catch(e=>{if(active)setStatus(String(e));});return()=>{active=false;};},[planId,phaseId]);
  const decide=async(allow:boolean)=>{if(!proposal)return;setBusy(true);try{await invoke('decide_run_competing',{planId,phaseId,requestId:proposal.requestId,allow});setStatus(allow?'Approved. Explicitly continue the task when ready.':'Declined. Existing work is retained.');}catch(e){setStatus(String(e));}finally{setBusy(false);}};
- return <ApprovalCard heading="Try two isolated implementations from this baseline?">{proposal&&<p>{proposal.criteria} · Baseline {proposal.baseline.slice(0,12)}</p>}{status ? <p role="status">{status}</p>:<><Button disabled={busy||!proposal} onClick={()=>void decide(false)}>Decline</Button><Button disabled={busy||!proposal} onClick={()=>void decide(true)}>Allow competing implementations</Button></>}</ApprovalCard>;
+ return <ApprovalCard heading="Try two isolated implementations from this baseline?">{proposal&&<p>{proposal.criteria} · Baseline {proposal.baseline.slice(0,12)}</p>}{status ? <p role="status">{status}</p>:<><Button variant="ghost" size="sm" disabled={busy||!proposal} onClick={()=>void decide(false)}>Decline</Button><Button variant="ghost" size="sm" disabled={busy||!proposal} onClick={()=>void decide(true)}>Allow competing implementations</Button></>}</ApprovalCard>;
 }

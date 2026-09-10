@@ -13,7 +13,8 @@ import { acknowledgeSessionRead, flushSessionReads } from '../attention';
 import { useStoredState } from '../workbenchState';
 import { errorMessage } from '../workspaceApi';
 import { providerIdentity } from './AgentsPanel';
-import { Button } from './controls/button';
+import { Button } from "@/components/ui/button";
+import { iconButton } from "@/lib/surfaces";
 import { ThreadView } from './ThreadView';
 import { composerApi } from '../composerApi';
 import './thread-context.css';
@@ -53,7 +54,7 @@ export function SubagentsPanel({ rootId, projectId, peers, sessions, onFile, req
   const report = (e: unknown) => setError(errorMessage(e));
   return <section className="subagents-panel" aria-label="Subagents">
     <header className="subagents-heading">
-      {selected ? <Button size="icon" aria-label="Back to subagents" onClick={() => select(null)}><ArrowLeft /></Button> : <Users width={18} height={18} />}
+      {selected ? <Button variant="ghost" size="icon" className={iconButton} aria-label="Back to subagents" onClick={() => select(null)}><ArrowLeft /></Button> : <Users width={18} height={18} />}
       <span>{selected ? peers.titles[selected.id] ?? `Worker ${selected.id.slice(-6)}` : 'Subagents'}</span>
     </header>
     {error && <p role="alert" className="text-error px-3">{error}</p>}
@@ -74,7 +75,7 @@ export function SubagentsPanel({ rootId, projectId, peers, sessions, onFile, req
       <div className="worker-parent-note">View-only activity. Send instructions and answer requests in the orchestrator conversation.</div>
       {feedState.approvals.some(a => a.sessionId === selected.id && !a.expired) && <p role="status" className="worker-parent-note">Waiting for a response in the orchestrator conversation.</p>}
       <ThreadView sessionId={selected.id} projectId={selectedProjectId} projectName={null} peers={peers} onFile={path => onFile(path, selected.session)} onSelectSession={id => { if(rows.some(r => r.id === id)) select(id); }} />
-      {selected.session && !selected.done && <Button onClick={() => void composerApi.stop(selected.id).catch(report)}>Stop subagent</Button>}
+      {selected.session && !selected.done && <Button variant="ghost" size="sm" onClick={() => void composerApi.stop(selected.id).catch(report)}>Stop subagent</Button>}
       {!selected.session && <p className="worker-parent-note">Saved activity. Execution state is unavailable.</p>}
     </> : <div className="subagents-list">
       {!!rows.length && <WorkerSummary rows={rows}/>}

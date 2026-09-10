@@ -9,7 +9,8 @@ import {
   Pin,
   PinFilled,
 } from "../icons";
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
+import { iconButton } from "@/lib/surfaces";
 import { Kbd } from "./controls/kbd";
 import { Input } from "./controls/input";
 import { Dropdown, Separator } from "./controls/overlay";
@@ -128,7 +129,7 @@ export function SessionMenu({
   return (
     <>
       <Dropdown native>
-        <Button size="icon" aria-label="Session actions" disabled={busy}>
+        <Button variant="ghost" size="icon" className={iconButton} aria-label="Session actions" disabled={busy}>
           <DotsHorizontal className="size-4" />
         </Button>
         <DropdownContent className="w-56">
@@ -232,9 +233,11 @@ export function SessionMenu({
               </p>
             )}
             <div className="flex justify-end gap-2">
-              <Button onClick={() => setName(null)}>Cancel</Button>
+              <Button variant="ghost" size="sm" onClick={() => setName(null)}>Cancel</Button>
               <Button
                 type="submit"
+                variant="ghost"
+                size="sm"
                 className="rename-save"
                 disabled={!name?.trim()}
               >

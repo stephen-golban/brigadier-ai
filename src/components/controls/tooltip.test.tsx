@@ -2,7 +2,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 import { Tooltip } from "./tooltip";
-import { Button } from "./button";
+import { Button } from "@/components/ui/button";
 import { Kbd } from "./kbd";
 afterEach(cleanup);
 it("shows the shortcut on focus, dismisses with Escape, and preserves activation", async () => {
@@ -16,7 +16,7 @@ it("shows the shortcut on focus, dismisses with Escape, and preserves activation
         </>
       }
     >
-      <Button aria-label="Search" onClick={search}>
+      <Button variant="ghost" size="sm" aria-label="Search" onClick={search}>
         Icon
       </Button>
     </Tooltip>,
@@ -37,7 +37,7 @@ it("allows the pointer to enter the tooltip and dismisses when it leaves", async
   const user = userEvent.setup();
   render(
     <Tooltip content="Search">
-      <Button aria-label="Search">Icon</Button>
+      <Button variant="ghost" size="sm" aria-label="Search">Icon</Button>
     </Tooltip>,
   );
   await user.hover(screen.getByRole("button", { name: "Search" }));
@@ -58,7 +58,7 @@ it("shows full text only when its visible label is truncated, including keyboard
       onlyWhenTruncated=".label"
       placement="right"
     >
-      <Button>
+      <Button variant="ghost" size="sm">
         <span className="label">Full session title</span>
       </Button>
     </Tooltip>,

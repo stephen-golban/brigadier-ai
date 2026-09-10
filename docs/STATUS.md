@@ -1091,3 +1091,156 @@ every bundle format for the platform being built on. Leave it alone.
   `brigadier-navigation-changed` (the two calls `App`'s own `pickProject` makes),
   `brigadier-new-chat`, and `brigadier-open-notes`. There is no recent-repos importer and no tour
   to link to, so no row was invented for one.
+
+<!-- sidebar judgment calls -->
+- **Collapsed-chrome title and workbench title now show side by side (2026-09-11, `ui/followups`).**
+  Deleted `.app-shell[data-sidebar-open="false"] .project-topbar .session-title { display: none }`
+  per owner decision — both copies stay. No `padding-left` change was needed: `.project-topbar`'s
+  existing `padding-left: calc(var(--chrome-collapsed-width) + 8px)` (`src/index.css`) already
+  reserves the entire fixed-width collapsed chrome plus an 8px gap, independent of either title
+  string's length (`--chrome-collapsed-width` is fixed-width by design, not content-sized, per the
+  comment at `.app-shell { … }` above it), so the workbench title starts 8px clear of the chrome's
+  and the two do not collide. Verified by Tailwind-compiling `src/index.css` and reading the
+  emitted rule, not by a rendered screenshot — the app was not run.
+- **Project group gap corrected to 8px total (2026-09-11, `ui/followups`).** The margin rule was
+  stacking the group gap on top of the row gap that `.navigation-rows`'s own `gap` already puts
+  between every pair of rows, so consecutive project groups sat 11px apart instead of the intended
+  8px. `margin-top: var(--sidebar-group-gap)` is now `margin-top: calc(var(--sidebar-group-gap) -
+  var(--sidebar-row-gap))`, making the total exactly `--sidebar-group-gap`.
+
+<!-- banner race -->
+- **2026-09-11, the launch-time "execution settings are unavailable" banner was a race, not a
+  setting.** `provider_catalog` awaited `orchestration::discover` before answering, and on a cold
+  in-memory capability cache (`crates/core/src/claude/capabilities.rs:17`) that means a full
+  `claude` handshake — spawn → `initialize` **719 ms** measured, §4 — while preferences resolve in
+  milliseconds. `useProviderCatalog` had no loaded flag, so "no providers" and "not asked yet" were
+  the same empty array and `src/components/NewSession.tsx` blamed the user's saved settings at every
+  launch, in auto mode, where nothing is saved. Fixed three ways: the command answers from the
+  caches and refreshes behind the response (one refresh at a time, `AtomicBool` + `Drop` guard); the
+  hook returns `loaded`, meaning *settled*, with a bounded front-loaded retry (300/900/1500/1500 ms,
+  4.2 s of budget) while the catalogue is empty or incomplete; the auto-mode wording now names the
+  real condition ("No provider CLI is connected…"). **Corrected 2026-09-11 after the blind review —
+  the budget alone settled wrongly:** see the `<!-- followups review -->` entry below. Trace,
+  arithmetic and what was not measured: `docs/research/execution-settings-banner.md`.
+  **Nothing was watched in a running window** — no launch, no stopwatch on the new path. Two knock-ons
+  stated there rather than hidden: Codex usage lands one read late, and `src-tauri/src/peers.rs:748`
+  no longer awaits discovery either.
+
+<!-- model picker -->
+- **2026-09-11, `SelectMenu` moved onto Base UI's `Combobox` and the two role queries it held are
+  gone.** The control was a `Popover` wrapping a hand-rolled `ListBox` of `Button`s plus a
+  `type="search"` `Input`; filtering, the empty state and the Enter/ArrowDown hand-off were written
+  in the file. `docs/research/assistant-ui-composer.md` recommendation C replaces that with the
+  kit's Base UI `Combobox`, vendored at the pinned SHA `1a5da0f` as `src/components/ui/combobox.tsx`
+  (row and deviations in `src/components/ui/UPSTREAM.md`; two deviations — `lucide-react` icons →
+  `src/icons`, and `ComboboxContent`'s positioner `Pick` widened with `collisionPadding` /
+  `collisionAvoidance` exactly as `popover.tsx`'s was). `src/components/controls/listbox.tsx` is
+  deleted; nothing imported it. **Roles measured, not asserted** (`src/components/SelectMenu.test.tsx`,
+  which is new): the trigger is `role="combobox"` `aria-haspopup="dialog"`, **not** `button`; the
+  filter is a *second* `role="combobox"` `aria-haspopup="listbox"`, **not** the `searchbox` the old
+  `type="search"` input rendered — so two comboboxes sit in the tree while the popup is open, told
+  apart by their accessible names ("Model" and "Search model"). List is `listbox`, options are
+  `option`, groups `group`, the empty state `status`. `docs/research/assistant-ui-composer.md` had
+  Base UI's combobox roles down as *asserted*; this is the measurement. Three existing test files
+  were rewritten to the new roles: `PromptInput.test.tsx` (every behavioural assertion kept),
+  `ProjectWorkbench.persistence.test.tsx` and `composer/TaskSetupRail.test.tsx` (one query each).
+  The `SelectMenu` public API is unchanged, so its eight call sites compile untouched; `MenuOption`
+  gains optional `group` and `badge` from Elements' `ModelOption`, unused so far because
+  `ModelInfo` (`src/wire.ts:245`) carries no provider. **Landmine for tests:** Base UI moves focus
+  into the filter a tick *after* the popup mounts, and only the first test in a file is slow enough
+  to miss it — a keystroke that lands early goes to the trigger's typeahead and filters nothing.
+  Wait on `toHaveFocus` before typing. Not checked: no visual pass, no burn run, no `tauri build`
+  (that gate belongs to another worker in this worktree).
+
+<!-- button codemod -->
+- **2026-09-11, `src/components/controls/button.tsx` is deleted; every call site imports the kit
+  Button directly.** The adapter was a thin shim over `src/components/ui/button.tsx` (verbatim
+  upstream) that owned a variant alias map, two defaults, four non-kit props and two DOM markers.
+  The recipe and the per-prop table are `docs/plans/button-codemod-2026-09-11.md`. What moved where:
+  - **Recipes, not a component.** `iconButtonInk`, `iconButtonBox`, `iconButton`, `iconButtonXs`,
+    `labelledButtonIcons` and `toggleButton` are class strings in `src/lib/surfaces.tsx`. They are
+    always passed to `cn()` **before** a call site's own `className`, exactly as the adapter ordered
+    them, so a deliberate override still wins through tailwind-merge.
+    `XS_ICON_BUTTON_RADIUS` → `iconButtonXs`; neither old name survives anywhere in `src/`.
+    **`STANDARD_ICON_BUTTON` split into two recipes, and the pair is what "byte-identical" means
+    here** (corrected 2026-09-11 after the blind review): `iconButtonBox` is byte-identical to the
+    old constant — geometry only, `size-6 min-w-6 p-1 rounded-[var(--radius-icon-button)]
+    [&_svg:not([class*='size-'])]:size-4` — and `iconButton` is that string plus the `icon-button`
+    marker plus `iconButtonInk`, which together are byte-identical to what the **adapter** emitted
+    for an icon-only button. Sites that went through the adapter take `iconButton`. The one file
+    that never did, `src/components/assistant-ui/elements/tooltip-icon-button.tsx`, imported
+    `STANDARD_ICON_BUTTON` directly and takes `iconButtonBox`: `iconButton` there would repaint the
+    markdown code-block Copy button and pull it into the `.icon-button[data-slot="button"]`
+    reduced-motion rule at `src/index.css:1054`. Not checked: no visual pass on that button.
+  - **`[data-slot="button"]` is the CSS hook.** Emitted by `src/components/ui/button.tsx:51`, and
+    `src/focus-reset.css:121` already keyed on it, so this is the established marker. The adapter's
+    `.button` class and its `data-icon-button` / `data-variant` attributes are gone from the DOM and
+    from every stylesheet — `src/index.css`, `src/components/settings.css`,
+    `src/components/composer/composer.css` and `src/components/composer/setup-rail.css` were
+    converted selector for selector at identical specificity (table in the plan, §4). The box recipes
+    also carry a plain `icon-button` class, which is what `src/index.css:1054` and `:1104` size and
+    de-animate; `data-variant` still appears under `src/components/ui/` only, where it belongs to
+    upstream `tabs` / `field` / `toggle-group` / `sidebar` / `dropdown-menu` and has nothing to do
+    with the adapter.
+  - **The default-flip rule — the one that bites.** The adapter defaulted `variant="ghost"
+    size="sm"`; the kit defaults to `variant="default"` (filled primary) and `size="default"` (32px).
+    A `<Button>` that omits either prop therefore renders as a large filled button, silently and
+    without a type error. **Every `<Button>` outside `src/components/ui/` must pass an explicit
+    `variant` and an explicit `size`.** Audited by parsing all 202 opening tags in `src/**/*.tsx`
+    (JSX-brace- and quote-aware, comments stripped): 0 are missing either prop. Re-run that audit
+    after any batch of button edits; a grep for `<Button>` will not find the multi-line tags.
+  - **Non-kit props are gone from Buttons.** `isDisabled` → `disabled`, `onPress` → `onClick`,
+    `isIconOnly` → `size="icon"` plus `iconButton`, `iconStyle` dropped (no call site). The
+    `isDisabled` / `isIconOnly` / `iconStyle` names that remain in `src/` all belong to
+    `Dropdown.Item` in `src/components/controls/overlay.tsx:400-435` and its call sites
+    (`SourceControl.tsx`, `ArchivedSessions.tsx`) — a different prop surface, deliberately left alone.
+  - `autoFocus` no longer implies `data-autofocus`: `controls/modal.tsx` and `controls/overlay.tsx`
+    find the initial focus target by `'[data-autofocus="true"], [autofocus]'` and React does not
+    render `autofocus` on the client, so the one Button that needs it
+    (`src/components/ConfirmDialog.tsx`) sets `data-autofocus="true"` itself. `controls/input.tsx`
+    keeps emitting the marker for fields.
+  - Not checked: no visual pass and **no burn run** on the converted render path — the paint budget
+    (exec → FCP ≤ 295 ms p50) is unverified against this change.
+
+<!-- followups review -->
+- **2026-09-11, blind-review corrections on `ui/followups`. Three items; all three are behaviour,
+  not polish.**
+  - **The catalogue could settle wrongly, and at launch it usually would.** After the first read
+    plus its retries, `useProviderCatalog` flipped `loaded` true with `providers: []` and nothing
+    re-read it until a window `focus` event — **which a launch never fires, because the window
+    already has focus**. Closed on both sides. Rust: `src-tauri/src/provider_catalog.rs` emits
+    **`provider-catalog-refreshed`** from the `AppHandle` when the background refresh task ends,
+    success or failure, through an `EmitOnDrop` guard declared *before* the `RefreshGuard` so it
+    drops after it — the flag is clear and the cooldown stamped before the client is told to look.
+    The command now takes `app: tauri::AppHandle` alongside its `State`; the one non-command caller,
+    `src-tauri/src/peers.rs:748`, passes the handle it already holds. Client: the hook subscribes
+    with `listen()` and re-reads **regardless of the retry budget**, unlistening on unmount, plus a
+    15 s poll that runs only while unsettled. `loaded` still means *settled*.
+  - **The event opens a feedback loop; a cooldown closes it.** Every read asks for a refresh and
+    every finished refresh emits — unbounded, and each turn re-spawns the `codex` binary and the
+    Claude handshake. `claim_refresh` now refuses a claim for **2 s** after one finishes
+    (`REFRESH_COOLDOWN`, `LAST_REFRESH`): the event-driven re-read lands inside it and starts
+    nothing, a focus seconds later still refreshes. `claim_refresh_after(Duration)` is the seam the
+    two unit tests use; they share process-global statics and hold a `SERIAL` mutex.
+  - **Time-to-ready.** The retry schedule is front-loaded — **300, 900, 1500, 1500 ms, four
+    retries, 4.2 s total** — so a cache that fills quickly is seen quickly and the first retry lands
+    at 300 ms, sooner than the ~750 ms blocking read the change replaced. **[asserted]**, arithmetic
+    against the 719 ms handshake, not a stopwatch.
+  - **`tooltip-icon-button.tsx` ink drift, reverted.** The button codemod gave
+    `src/components/assistant-ui/elements/tooltip-icon-button.tsx` the full `iconButton` recipe,
+    but that file never went through the adapter — it imported `STANDARD_ICON_BUTTON`, geometry
+    only. `iconButton` added `iconButtonInk` and the `icon-button` marker, repainting the markdown
+    code-block Copy button and pulling it into `src/index.css:1054`'s reduced-motion rule.
+    `src/lib/surfaces.tsx` now exports **`iconButtonBox`** (the old constant's string, byte for
+    byte) and composes `iconButton = "icon-button " + iconButtonBox + " " + iconButtonInk`; the
+    tooltip button takes `iconButtonBox`. Plan doc §2 carries the two-recipe rule.
+  - `src/components/SelectMenu.tsx`'s `matches` docblock said "the pre-port filter"; it also matches
+    `description` now. Comment only.
+  - Gates, exit codes read off the command: `cargo test -p brigadier provider_catalog::` **0**
+    (2 passed), `cargo clippy -p brigadier --all-targets -- -D warnings` **0**, `npx tsc --noEmit`
+    **0**, `npm test` **0** — **79 files / 678 tests**, up from 674 because
+    `src/providerCatalog.test.ts` went 7 cases → 11. **Not run here:** `cargo test --workspace`,
+    `cargo doc`, `npm run tauri build`, and the burn — `src/lib/surfaces.tsx` and
+    `src/providerCatalog.ts` are both on the render path and the paint budget is unverified against
+    this change. **Nothing was watched in a running window**: that the event fires and the hook
+    settles on it is **[read]**, not measured.

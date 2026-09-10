@@ -207,7 +207,8 @@ const itemSelector =
   '[role="menuitem"]:not(:disabled), [role="option"]:not(:disabled), [role="tab"]:not(:disabled)';
 /**
  * Roving focus for the hand-written listboxes and tab strips that are not Base UI components
- * (`controls/listbox.tsx`, `controls/tabs.tsx`, the composer rails). Menus no longer use it.
+ * (`controls/tabs.tsx` and the composer rails; `controls/listbox.tsx` was deleted 2026-09-11 when
+ * `SelectMenu.tsx` moved to the kit Combobox). Menus no longer use it.
  */
 export function navigateItems(event: KeyboardEvent<HTMLElement>) {
   if (event.nativeEvent.isComposing) return;

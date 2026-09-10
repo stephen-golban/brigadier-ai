@@ -19,7 +19,7 @@ const options: ComposerWorkspaceOptions = {
 beforeEach(() => {
   localStorage.clear();
   vi.spyOn(composerWorkspaceApi,"options").mockResolvedValue(options);
-  vi.spyOn(providerCatalog,"useProviderCatalog").mockReturnValue({providers:[{id:"codex",instanceId:"codex:test",label:"Codex",version:null,models:[],modelCatalogKnown:false,efforts:[]}],error:""});
+  vi.spyOn(providerCatalog,"useProviderCatalog").mockReturnValue({providers:[{id:"codex",instanceId:"codex:test",label:"Codex",version:null,models:[],modelCatalogKnown:false,efforts:[]}], error: "", loaded: true});
 });
 afterEach(() => {cleanup();vi.restoreAllMocks();localStorage.clear();});
 async function mount() {
@@ -47,8 +47,11 @@ it("stages a named branch with an explicit start ref until Send",async()=>{
   await userEvent.click(screen.getByRole("button",{name:"Branch"}));
   await userEvent.click(screen.getByRole("option",{name:/New branch/}));
   await userEvent.type(screen.getByRole("textbox",{name:"New branch name"}),"feature/rail");
-  await userEvent.click(screen.getByRole("button",{name:"Starting point"}));
-  await userEvent.click(screen.getByRole("option",{name:/origin\/release/}));
+  // "Starting point" is a `SelectMenu`, whose trigger is a `combobox` since the Base UI port
+  // (2026-09-11; roles measured in `src/components/SelectMenu.test.tsx`). The sibling "Branch",
+  // "Environment" and "Project" triggers above are this file's own Popover buttons and are not.
+  await userEvent.click(screen.getByRole("combobox",{name:"Starting point"}));
+  await userEvent.click(await screen.findByRole("option",{name:/origin\/release/}));
   await userEvent.click(screen.getByRole("button",{name:"Use new branch"}));
   expect(screen.getByRole("button",{name:"Branch"})).toHaveTextContent("New: feature/rail");
   expect(start).not.toHaveBeenCalled();

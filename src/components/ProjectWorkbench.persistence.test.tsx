@@ -186,15 +186,17 @@ describe("project workbench persistence", () => {
       await screen.findByRole("textbox", { name: "File editor" }),
       "temporary scratch",
     );
-    await user.click(screen.getByRole("button", { name: /Language mode$/ }));
-    await user.click(screen.getByRole("option", { name: "typescript" }));
+    // `SelectMenu`'s trigger is a `combobox`, not a `button`, since the Base UI port
+    // (2026-09-11; roles measured in `src/components/SelectMenu.test.tsx`).
+    await user.click(screen.getByRole("combobox", { name: /Language mode$/ }));
+    await user.click(await screen.findByRole("option", { name: "typescript" }));
     view.unmount();
     view = mount();
     expect(
       await screen.findByRole("textbox", { name: "File editor" }),
     ).toHaveValue("temporary scratch");
     expect(
-      screen.getByRole("button", { name: /Language mode$/ }),
+      screen.getByRole("combobox", { name: /Language mode$/ }),
     ).toHaveTextContent("typescript");
   });
   it.each([false, true])(

@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { ArrowRotateCcw, Bolt, Check, ChevronSmallDown, HandRaised, SettingsSlider, Sparkle, Terminal, Warning, type IconComponent } from "../../icons";
-import { Button } from "../controls/button";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import { iconButton, labelledButtonIcons } from "@/lib/surfaces";
 import { Popover, navigateItems } from "../controls/overlay";
 import type { ProviderCatalogEntry } from "../../providerCatalog";
 import type { ComposerMode, ExecutionSelection, PermissionPolicy } from "../../taskSettings";
@@ -19,7 +21,7 @@ export function PermissionControl({ value, onChange, disabled }: { value: Permis
   const [open, setOpen] = useState(false);
   const selected = permissions.find(p => p.id === value)!;
   return <Popover isOpen={open} onOpenChange={setOpen}>
-    <Button className={`composer-permission composer-control ${value === "full" ? "is-full" : ""}`} disabled={disabled} aria-label="Permissions" title={selected.label}>
+    <Button variant="ghost" size="sm" className={cn(labelledButtonIcons, `composer-permission composer-control ${value === "full" ? "is-full" : ""}`)} disabled={disabled} aria-label="Permissions" title={selected.label}>
       <selected.Icon width={17} height={17} /><span className="composer-permission-label">{selected.label}</span><ChevronSmallDown className="composer-control-chevron" width={12} height={12} />
     </Button>
     <Popover.Content placement="top start" className="composer-popover permission-popover">
@@ -56,7 +58,7 @@ export function ModeControl({ value, onChange, started = false, disabled = false
   const Icon = value === "auto" ? Bolt : SettingsSlider;
   const model = providers.find(p => p.id === selection?.provider)?.models.find(m => m.id === selection?.model || (!!selection?.model && m.resolvedId === selection.model));
   return <Popover isOpen={open} onOpenChange={setOpen}>
-    <Button className="composer-mode composer-control" disabled={disabled} aria-label="Mode" title={capitalize(value)}>
+    <Button variant="ghost" size="sm" className={cn(labelledButtonIcons, "composer-mode composer-control")} disabled={disabled} aria-label="Mode" title={capitalize(value)}>
       <Icon width={17} height={17} /><span>{capitalize(value)}</span><ChevronSmallDown className="composer-control-chevron" width={12} height={12} />
     </Button>
     <Popover.Content placement="top end" className="composer-popover permission-popover mode-popover">
@@ -89,7 +91,7 @@ export function ExecutionControl({ selection, providers, onChange, disabled = fa
   const effortIndex = efforts.indexOf(selection.effort ?? "");
   const label = model?.label ?? selection.model ?? "Provider default";
   return <Popover isOpen={open} onOpenChange={setOpen}>
-    <Button className="composer-execution composer-control" aria-label="Execution settings" title={`${providerLabel(selection.provider)} · ${label} · ${selection.effort ?? "default effort"}`} disabled={disabled}>
+    <Button variant="ghost" size="sm" className={cn(labelledButtonIcons, "composer-execution composer-control")} aria-label="Execution settings" title={`${providerLabel(selection.provider)} · ${label} · ${selection.effort ?? "default effort"}`} disabled={disabled}>
       <ProviderIcon provider={selection.provider} /><span className="composer-model-label">{label}</span>
       <span className="composer-effort-label">{selection.effort ? capitalize(selection.effort) : "Default"}</span><ChevronSmallDown className="composer-control-chevron" width={13} height={13} />
     </Button>
@@ -110,7 +112,7 @@ export function ExecutionControl({ selection, providers, onChange, disabled = fa
           {provider.modelCatalogKnown && selection.model && !model && <p role="alert" className="composer-error">Saved model “{selection.model}” is unavailable. Choose a listed model.</p>}
           <div className="execution-effort">
             {unavailableEffort && <p role="alert" className="composer-error">Saved effort “{selection.effort}” is unavailable for this model. Choose a supported effort or reset to default.</p>}
-            <div className="execution-effort-heading"><Bolt width={19} height={19} /><span><strong>{selection.effort ? capitalize(selection.effort) : "Default"}</strong><small>{label}</small></span><Button size="icon" disabled={disabled || !selection.effort} aria-label="Reset effort to default" title="Use the model or provider default" onClick={() => onChange({ ...selection, effort: null })}><ArrowRotateCcw width={17} height={17} /></Button></div>
+            <div className="execution-effort-heading"><Bolt width={19} height={19} /><span><strong>{selection.effort ? capitalize(selection.effort) : "Default"}</strong><small>{label}</small></span><Button variant="ghost" size="icon" className={iconButton} disabled={disabled || !selection.effort} aria-label="Reset effort to default" title="Use the model or provider default" onClick={() => onChange({ ...selection, effort: null })}><ArrowRotateCcw width={17} height={17} /></Button></div>
             {efforts.length > 0 ? <>
               <div className={`effort-track ${effortIndex < 0 ? "is-default" : ""}`}>
                 <input type="range" aria-label="Reasoning effort" min={0} max={Math.max(0, efforts.length - 1)} step={1} value={Math.max(0, effortIndex)} aria-valuetext={unavailableEffort ? `Unavailable saved effort: ${selection.effort}` : selection.effort ?? "Provider default"} aria-invalid={unavailableEffort || undefined} disabled={disabled} style={{ "--effort-fill": `${effortIndex < 0 ? 0 : efforts.length < 2 ? 100 : effortIndex / (efforts.length - 1) * 100}%` } as React.CSSProperties} onKeyDown={event => { if (effortIndex < 0 && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) { event.preventDefault(); onChange({ ...selection, effort: efforts[event.key === "End" ? efforts.length - 1 : 0]! }); } }} onChange={e => onChange({ ...selection, effort: efforts[Number(e.target.value)]! })} />

@@ -5,7 +5,9 @@ import { SessionMenu } from "./SessionMenu";
 import { working } from "../attention";
 import { Tabs } from "./controls/tabs";
 import { Input } from "./controls/input";
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
+import { iconButton, toggleButton } from "@/lib/surfaces";
+import { cn } from "@/lib/utils";
 import { isTrashed, type NavigationData } from "../navigationApi";
 import { hasSavedEdits } from "../workbenchState";
 import { conversationOwner } from "../workerTree";
@@ -1047,8 +1049,9 @@ export function ProjectWorkbench({
           sidebarToggle
         ) : (
           <Button
-            isIconOnly
-            className="icon-button size-8 p-0"
+            variant="ghost"
+            size="icon"
+            className={cn(iconButton, "size-8 p-0")}
             aria-label="Toggle sidebar"
             onClick={() =>
               window.dispatchEvent(new Event("brigadier-toggle-sidebar"))
@@ -1059,6 +1062,8 @@ export function ProjectWorkbench({
         )}
         <div className="session-heading flex min-w-0 shrink items-center gap-1">
           <Button
+            variant="ghost"
+            size="sm"
             aria-label="Show conversation"
             title={
               activeSession
@@ -1146,7 +1151,9 @@ export function ProjectWorkbench({
                       />
                     )}
                     <Button
+                      variant="ghost"
                       size="icon"
+                      className={iconButton}
                       aria-label={`Close ${title}`}
                       onClick={(e) => {
                         e.stopPropagation();
@@ -1176,6 +1183,7 @@ export function ProjectWorkbench({
           ).filter(([value]) => value !== "changes" || !projectlessContext).map(([value, label, Icon]) => (
             <Button
               key={value}
+              variant="ghost"
               size="icon"
               aria-label={label}
               title={
@@ -1183,7 +1191,7 @@ export function ProjectWorkbench({
                   ? `Changes (${status.changes.length})`
                   : label
               }
-              className="relative"
+              className={cn(iconButton, toggleButton, "relative")}
               aria-description={
                 value === "changes" && status
                   ? `${status.changes.length} changed ${status.changes.length === 1 ? "file" : "files"}`
@@ -1202,9 +1210,11 @@ export function ProjectWorkbench({
               )}
             </Button>
           ))}
-          {selectedSessionId && Object.values(peers.subagents ?? {}).includes(selectedSessionId) && <Button size="icon" aria-label="Subagents" title="Subagents" aria-controls="workspace-panel" aria-pressed={panelVisible && subagents} disabled={!selectedSessionId} onClick={() => { setSubagents(true); setWorkspaceOpen(!panelVisible || !subagents); }}><Users width={18} height={18}/></Button>}
+          {selectedSessionId && Object.values(peers.subagents ?? {}).includes(selectedSessionId) && <Button variant="ghost" size="icon" className={cn(iconButton, toggleButton)} aria-label="Subagents" title="Subagents" aria-controls="workspace-panel" aria-pressed={panelVisible && subagents} disabled={!selectedSessionId} onClick={() => { setSubagents(true); setWorkspaceOpen(!panelVisible || !subagents); }}><Users width={18} height={18}/></Button>}
           <Button
+            variant="ghost"
             size="icon"
+            className={cn(iconButton, toggleButton)}
             aria-label="Terminal"
             title="Toggle terminal (⌃` / ⌘J)"
             disabled={!project}
@@ -1224,8 +1234,9 @@ export function ProjectWorkbench({
         >
           <span>{error}</span>
           <Button
-            isIconOnly
-            className="icon-button size-8 p-0"
+            variant="ghost"
+            size="icon"
+            className={cn(iconButton, "size-8 p-0")}
             aria-label="Dismiss workspace error"
             onClick={() => setError("")}
           >
@@ -1251,11 +1262,13 @@ export function ProjectWorkbench({
             value={openPath}
             onChange={(e) => setOpenPath(e.target.value)}
           />
-          <Button type="submit" className="act">
+          <Button type="submit" variant="ghost" size="sm" className="act">
             Open
           </Button>
           <Button
             type="button"
+            variant="ghost"
+            size="sm"
             className="act"
             onClick={() => setOpenPath(null)}
           >
@@ -1321,6 +1334,8 @@ export function ProjectWorkbench({
                     .
                   </span>
                   <Button
+                    variant="ghost"
+                    size="sm"
                     className="act"
                     disabled={deciding}
                     onClick={() => void decide(false)}
@@ -1328,6 +1343,8 @@ export function ProjectWorkbench({
                     Cancel
                   </Button>
                   <Button
+                    variant="ghost"
+                    size="sm"
                     className="act"
                     disabled={deciding}
                     onClick={() => void decide(true)}

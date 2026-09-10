@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { Archive, ChevronDown, DotsHorizontal, Filter, Folder, Search, Trash } from "../icons";
 import { Input } from "./controls/input";
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import { iconButtonXs, labelledButtonIcons } from "@/lib/surfaces";
 import { Dropdown } from "./controls/overlay";
 import { DropdownContent } from "./controls/menu";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
@@ -124,7 +126,9 @@ export function ArchivedSessions({
       <header className="settings-page-heading">
         <h1>Archived chats</h1>
         <Button
-          className="archive-delete-all"
+          variant="ghost"
+          size="sm"
+          className={cn(labelledButtonIcons, "archive-delete-all")}
           disabled={!filtered.length || busy.size > 0}
           onClick={() =>
             confirmDelete(
@@ -162,7 +166,12 @@ export function ArchivedSessions({
           />
         </label>
         <Dropdown>
-          <Button className="archive-filter" aria-label="Filter chats">
+          <Button
+            variant="ghost"
+            size="sm"
+            className={cn(labelledButtonIcons, "archive-filter")}
+            aria-label="Filter chats"
+          >
             <Filter />
             {kinds[kind]}
             <ChevronDown />
@@ -176,7 +185,12 @@ export function ArchivedSessions({
           </DropdownContent>
         </Dropdown>
         <Dropdown>
-          <Button className="archive-filter" aria-label="Filter projects">
+          <Button
+            variant="ghost"
+            size="sm"
+            className={cn(labelledButtonIcons, "archive-filter")}
+            aria-label="Filter projects"
+          >
             <Folder />
             <span>
               {project === "all"
@@ -226,7 +240,9 @@ export function ArchivedSessions({
               </span>
               <Dropdown>
                 <Button
+                  variant="ghost"
                   size="icon-xs"
+                  className={iconButtonXs}
                   aria-label={`Actions for ${projectName(projectId)}`}
                 >
                   <DotsHorizontal />
@@ -295,8 +311,9 @@ export function ArchivedSessions({
                       )}
                     </div>
                     <Button
+                      variant="ghost"
                       size="icon-xs"
-                      className="archive-row-delete"
+                      className={cn(iconButtonXs, "archive-row-delete")}
                       aria-label={`Delete ${title(id)}`}
                       title="Permanently delete chat"
                       disabled={busy.has(id)}
@@ -305,6 +322,8 @@ export function ArchivedSessions({
                       <Trash />
                     </Button>
                     <Button
+                      variant="ghost"
+                      size="sm"
                       className="archive-unarchive"
                       aria-label={`Unarchive ${title(id)}`}
                       disabled={busy.has(id)}

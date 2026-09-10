@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
+import { labelledButtonIcons } from "@/lib/surfaces";
 import { X } from "../icons";
 import { errorMessage } from "../workspaceApi";
 import type { PanelBinding } from "../vscode-panels/types";
@@ -71,7 +72,13 @@ export function VscodePanels(props: Props) {
           className="flex items-start gap-2 px-3 py-2 text-xs text-error"
         >
           <span className="flex-1">{error}</span>
-          <Button aria-label="Dismiss error" onClick={() => setError("")}>
+          <Button
+            variant="ghost"
+            size="sm"
+            className={labelledButtonIcons}
+            aria-label="Dismiss error"
+            onClick={() => setError("")}
+          >
             <X className="size-3.5" />
           </Button>
         </div>

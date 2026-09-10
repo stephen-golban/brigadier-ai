@@ -1,5 +1,7 @@
 import { ArtifactCard } from "./assistant-ui/elements/artifact-card";
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
+import { labelledButtonIcons } from "@/lib/surfaces";
+import { cn } from "@/lib/utils";
 import { useEffect, useState } from "react";
 import { File, Undo } from "../icons";
 import {
@@ -45,7 +47,9 @@ export function ChangedFilesCard({
           </div>
           <span className="grow" />
           <Button
-            className="undo-files"
+            variant="ghost"
+            size="sm"
+            className={cn(labelledButtonIcons, "undo-files")}
             disabled={busy}
             onClick={() => {
               setBusy(true);
@@ -58,7 +62,7 @@ export function ChangedFilesCard({
           >
             Undo <Undo />
           </Button>
-          <Button className="act" onClick={review}>
+          <Button variant="ghost" size="sm" className="act" onClick={review}>
             Review
           </Button>
         </>
@@ -66,6 +70,8 @@ export function ChangedFilesCard({
     >
       {files.map((file) => (
         <Button
+          variant="ghost"
+          size="sm"
           className="edited-file"
           key={file.path}
           onClick={() =>
@@ -176,6 +182,8 @@ export function SessionReview({
       <header>
         <b>{turn ? "Turn changes" : "Session changes"}</b>
         <Button
+          variant="ghost"
+          size="sm"
           className="act"
           disabled={busy}
           onClick={() => {
@@ -191,7 +199,13 @@ export function SessionReview({
         </Button>
       </header>
       {files.map((f) => (
-        <Button key={f.path} onClick={() => onOpen(f.path)}>
+        <Button
+          key={f.path}
+          variant="ghost"
+          size="sm"
+          className={labelledButtonIcons}
+          onClick={() => onOpen(f.path)}
+        >
           <File />
           <span>{f.path}</span>
           <i className="added text-ok not-italic">+{f.added}</i>
@@ -202,7 +216,9 @@ export function SessionReview({
       {pending.map((op) => (
         <div className="inline-error my-2 text-[13px] text-error" key={op.id}>
           {op.error ?? "An apply was interrupted."}
-          <Button onClick={() => setPreview(op)}>Review and retry</Button>
+          <Button variant="ghost" size="sm" onClick={() => setPreview(op)}>
+            Review and retry
+          </Button>
         </div>
       ))}
       {preview && (

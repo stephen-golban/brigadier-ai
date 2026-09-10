@@ -1,6 +1,8 @@
 import { Popover } from "./controls/overlay";
 import { AgentStatus } from "./assistant-ui/elements/agent-status";
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import { labelledButtonIcons } from "@/lib/surfaces";
 import { useEffect, useState } from "react";
 import { ChevronSmallDown, Robot } from "../icons";
 import type { SessionRuntime } from "../feedStore";
@@ -73,7 +75,9 @@ export function AgentsPanel({
   return (
     <Popover isOpen={open} onOpenChange={setOpen}>
       <Button
-        className="agents-trigger"
+        variant="ghost"
+        size="sm"
+        className={cn(labelledButtonIcons, "agents-trigger")}
         aria-label="Agents"
         aria-expanded={open}
         onClick={() => setOpen(!open)}
@@ -107,6 +111,9 @@ export function AgentsPanel({
               return (
                 <div className="agent-entry" key={s.sessionId}>
                   <Button
+                    variant="ghost"
+                    size="sm"
+                    className={labelledButtonIcons}
                     aria-current={
                       s.sessionId === selectedId ? "true" : undefined
                     }
@@ -151,7 +158,9 @@ export function AgentsPanel({
                   </Button>
                   {a?.agents.map((child) => (
                     <Button
-                      className="child-agent"
+                      variant="ghost"
+                      size="sm"
+                      className={cn(labelledButtonIcons, "child-agent")}
                       key={child.id}
                       onClick={() => {
                         onSelect(s.sessionId);

@@ -19,7 +19,7 @@ const project = { id: "p", name: "Project", root_path: "/repo", created_at_ms: 0
 const models: [] = [];
 beforeEach(() => {
   localStorage.clear();
-  vi.spyOn(providerCatalog, "useProviderCatalog").mockReturnValue({ providers, error: "" });
+  vi.spyOn(providerCatalog, "useProviderCatalog").mockReturnValue({ providers, error: "", loaded: true });
   vi.spyOn(workbenchApi, "gitDetails").mockResolvedValue({ branches: ["main", "feature"], localBranches: ["main", "feature"], remotes: [], stashes: [], history: "" });
   vi.spyOn(workspaceApi, "git").mockResolvedValue({ branch: "main", changes: [] });
 });
@@ -178,7 +178,7 @@ it("keeps a removed saved effort visible and blocks Send until the owner chooses
 });
 
 it("does not offer provider-wide efforts for a model that explicitly supports none", async () => {
-  vi.mocked(providerCatalog.useProviderCatalog).mockReturnValue({providers:[{...providers[1]!,efforts:["low","high"],models:[{id:"no-effort",label:"No effort model",efforts:[]}]}],error:""});
+  vi.mocked(providerCatalog.useProviderCatalog).mockReturnValue({providers:[{...providers[1]!,efforts:["low","high"],models:[{id:"no-effort",label:"No effort model",efforts:[]}]}], error: "", loaded: true});
   await taskSettingsApi.savePreferences("p",{mode:"custom",permission:"approve",manual:{provider:"codex",model:"no-effort",effort:"high"},isolated:true,baseBranch:null});
   const start=vi.fn();
   render(<NewSession project={project} models={models} disabled={false} onStart={start} />);
@@ -211,7 +211,7 @@ it("Auto retains an unavailable saved manual effort without using or blocking on
 
 it("recognizes the resolved native model inherited from Auto as a catalog alias", async () => {
   const entries = [{ ...providers[0]!, models: [{ id: "opus", resolvedId: "claude-opus-5[1m]", label: "Opus", efforts: ["low", "high"] }] }];
-  vi.mocked(providerCatalog.useProviderCatalog).mockReturnValue({providers:entries,error:""});
+  vi.mocked(providerCatalog.useProviderCatalog).mockReturnValue({providers:entries, error: "", loaded: true});
   await taskSettingsApi.savePreferences("p", {mode:"custom",permission:"approve",manual:{provider:"claude-code",model:"claude-opus-5[1m]",effort:"high"},isolated:true,baseBranch:null});
   render(<NewSession project={project} models={models} disabled={false} onStart={vi.fn()} />);
   await waitFor(() => expect(screen.getByRole("button", {name:"Execution settings"})).toBeEnabled());

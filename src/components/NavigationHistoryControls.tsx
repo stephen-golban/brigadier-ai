@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { ArrowLeft, ArrowRight } from "../icons";
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
+import { iconButton } from "@/lib/surfaces";
+import { cn } from "@/lib/utils";
 
 type Location = {
   projectId: string | null;
@@ -61,22 +63,24 @@ export function NavigationHistoryControls({
   return (
     <>
       <Button
-        isIconOnly
+        variant="ghost"
+        size="icon"
         aria-label="Go back"
         title="Go back"
         disabled={find(-1) < 0}
         onClick={() => move(find(-1))}
-        className="chrome-button"
+        className={cn(iconButton, "chrome-button")}
       >
         <ArrowLeft />
       </Button>
       <Button
-        isIconOnly
+        variant="ghost"
+        size="icon"
         aria-label="Go forward"
         title="Go forward"
         disabled={find(1) < 0}
         onClick={() => move(find(1))}
-        className="chrome-button"
+        className={cn(iconButton, "chrome-button")}
       >
         <ArrowRight />
       </Button>

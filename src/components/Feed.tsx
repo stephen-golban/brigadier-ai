@@ -1,4 +1,6 @@
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import { labelledButtonIcons } from "@/lib/surfaces";
 import { ChevronDown, Menu } from "../icons";
 /**
  * The virtualized feed: one line per event, read as a column rather than scanned as a table.
@@ -285,6 +287,8 @@ export function Feed({ sessionId, projectId, projectName }: FeedProps) {
       <div className="feed-band flex shrink-0 items-center justify-end gap-2 px-3 text-xs text-text-tertiary">
         <Button
           type="button"
+          variant="ghost"
+          size="sm"
           className="feed-verbose"
           aria-pressed={verbose}
           title={verbose ? "hide model prose" : "show model prose"}
@@ -364,7 +368,9 @@ export function Feed({ sessionId, projectId, projectName }: FeedProps) {
                 {line.folded > 0 ? (
                   <Button
                     type="button"
-                    className="feed-fold"
+                    variant="ghost"
+                    size="sm"
+                    className={cn(labelledButtonIcons, "feed-fold")}
                     aria-expanded={line.open}
                     aria-label={
                       line.open
@@ -426,7 +432,13 @@ export function Feed({ sessionId, projectId, projectName }: FeedProps) {
         </div>
       ) : null}
       {atEnd ? null : (
-        <Button type="button" className="jump-pill" onClick={jump}>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className={cn(labelledButtonIcons, "jump-pill")}
+          onClick={jump}
+        >
           Jump to latest
           <ChevronDown />
         </Button>

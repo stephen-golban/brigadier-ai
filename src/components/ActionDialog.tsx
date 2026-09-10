@@ -7,7 +7,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "./controls/dialog";
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
 import { errorMessage } from "../workspaceApi";
 export interface PendingAction {
   title: string;
@@ -50,11 +50,17 @@ export function ActionDialog({
           </p>
         )}
         <DialogFooter>
-          <Button variant="outline" disabled={busy} onClick={onClose}>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={busy}
+            onClick={onClose}
+          >
             Cancel
           </Button>
           <Button
-            variant={action.destructive ? "danger" : "primary"}
+            variant={action.destructive ? "destructive" : "default"}
+            size="sm"
             disabled={busy}
             onClick={() => {
               setBusy(true);

@@ -2,7 +2,7 @@ import { desktop } from "../workspaceApi";
 import { confirm as nativeConfirm } from "@tauri-apps/plugin-dialog";
 import { useState, useEffect, useRef, type ReactNode } from "react";
 import { Modal } from "./controls/modal";
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
 export interface Confirmation {
   native?: boolean;
   title: string;
@@ -76,24 +76,29 @@ export function ConfirmDialog({
           <Modal.Footer>
             <Button
               autoFocus
+              data-autofocus="true"
               variant="secondary"
-              isDisabled={busy}
-              onPress={onCancel}
+              size="sm"
+              disabled={busy}
+              onClick={onCancel}
             >
               Cancel
             </Button>
             {secondaryLabel && (
               <Button
                 variant="secondary"
-                isDisabled={busy}
-                onPress={onSecondary}
+                size="sm"
+                disabled={busy}
+                onClick={onSecondary}
               >
                 {secondaryLabel}
               </Button>
             )}
             <Button
-              isDisabled={busy}
-              onPress={() => {
+              variant="ghost"
+              size="sm"
+              disabled={busy}
+              onClick={() => {
                 setBusy(true);
                 setError("");
                 void Promise.resolve()

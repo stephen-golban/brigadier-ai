@@ -766,7 +766,7 @@ async function sendInitialPrompt(prompt = "Instant setup check") {
   const { composerWorkspaceApi } = await import("./composerWorkspaceApi");
   vi.spyOn(composerWorkspaceApi, "options").mockResolvedValue({isGit:true,currentBranch:"main",branches:[{name:"main",remote:false}],worktrees:[]});
   const catalog = await import("./providerCatalog");
-  vi.spyOn(catalog, "useProviderCatalog").mockReturnValue({providers:[{id:"codex",instanceId:"codex:test",label:"Codex",version:null,models:[],modelCatalogKnown:false,efforts:[]}],error:""});
+  vi.spyOn(catalog, "useProviderCatalog").mockReturnValue({providers:[{id:"codex",instanceId:"codex:test",label:"Codex",version:null,models:[],modelCatalogKnown:false,efforts:[]}], error: "", loaded: true});
   await mountApp();
   const { pasteComposer } = await import("./test/composer");
   await pasteComposer(await screen.findByRole("textbox", {name:"Message"}), prompt);

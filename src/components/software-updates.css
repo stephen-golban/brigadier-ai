@@ -8,7 +8,7 @@
 }
 .software-provider-icon.codex { --provider-mark: url("/brand/providers/openai.svg"); }
 .software-provider-icon.claude-code { --provider-mark: url("/brand/providers/claude.svg"); }
-.button.software-status {
+[data-slot="button"].software-status {
   display: flex;
   align-items: center;
   gap: 6px;

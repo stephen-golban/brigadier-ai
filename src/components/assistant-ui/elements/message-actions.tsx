@@ -36,7 +36,7 @@ export interface MessageActionsProps extends Omit<
  */
 const action = "rounded-full text-text/45";
 
-/** The kit's `aria-pressed` fill lives in `controls/button`, which these rows do not use. */
+/** The kit's `aria-pressed` fill is `toggleButton` in `@/lib/surfaces`, which these rows do not use. */
 const pressed = "bg-text/[0.09] text-text/90";
 
 export function MessageActions({

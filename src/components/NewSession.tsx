@@ -7,7 +7,9 @@ import { composerWorkspaceApi, type ComposerWorkspaceOptions } from "../composer
 import { TaskSetupRail, invalidBranchName } from "./composer/TaskSetupRail";
 import { errorMessage } from "../workspaceApi";
 import { ComposerActions } from "./assistant-ui/elements/composer";
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
+import { iconButton } from "@/lib/surfaces";
+import { cn } from "@/lib/utils";
 import { PromptInput } from "./PromptInput";
 import { ArrowUp } from "../icons";
 import { isSubmitKey } from "../keys";
@@ -29,7 +31,7 @@ export function NewSession({ project, projects, onSelectProject, onNewProject, o
   const durable = useDurableComposer(project ? `project:${project.id}` : null, project?.id ?? null);
   const preferences = useProjectComposerPreferences(project?.id ?? null);
   const picks = project?.projectless ? {...preferences.value,isolated:false,baseBranch:null,newBranch:null,workspacePath:null} : preferences.value;
-  const { providers, error: providerError } = useProviderCatalog(models);
+  const { providers, error: providerError, loaded: catalogLoaded } = useProviderCatalog(models);
   const selection = picks.manual.provider ? picks.manual : { ...picks.manual, provider: providers[0]?.id ?? "" };
   const provider = providers.find(p => p.id === selection.provider);
   const [uploading, setUploading] = useState(false);
@@ -76,6 +78,13 @@ export function NewSession({ project, projects, onSelectProject, onNewProject, o
   // saved picks are the defaults, not the user's. Saying so would be a second false alarm beside
   // the one `docs/STATUS.md` §7 already lists, and Send is disabled by `!!project` regardless.
   const unavailable = !project ? false : picks.mode === "custom" ? !provider || unavailableModel || (claudeUnavailable && provider.id === "claude-code") : !providers.some(p => p.id !== "claude-code" || !claudeUnavailable);
+  // An empty catalogue is "not known yet" until the hook says it settled: the first read of a
+  // launch lands before discovery does (`docs/research/execution-settings-banner.md`), and the
+  // old copy blamed the user's saved settings for it. Auto mode has no saved provider to blame.
+  const unavailableMessage = !unavailable || !preferences.loaded || !catalogLoaded ? null
+    : picks.mode === "custom" ? "The selected execution settings are unavailable. Open execution settings to choose a connected provider and model."
+    : providers.length === 0 ? "No provider CLI is connected. Install Claude Code or Codex and reopen."
+    : "The connected provider is unavailable. Check its CLI, or open execution settings to choose another provider.";
   const ready = !!project && preferences.loaded && durable.loaded && !unavailable && !unavailableEffort && !!workspace && !setupError && !workspaceError && !branchError && !missingBranch && !uploading && !sending && (!!durable.draft.text.trim() || durable.attachments.length > 0);
   const changeMode = (mode: ComposerMode) => preferences.save({ ...picks, mode, ...(mode === "custom" && !picks.manual.provider ? { manual: selection } : {}) });
   const submit = async () => {
@@ -123,10 +132,10 @@ export function NewSession({ project, projects, onSelectProject, onNewProject, o
         <span className="composer-control-spacer" />
         <ModeControl value={picks.mode} onChange={changeMode} disabled={controlDisabled} />
         {picks.mode === "custom" && <ExecutionControl selection={selection} providers={providers} onChange={manual => preferences.save({ ...picks, manual })} disabled={controlDisabled} />}
-        <Button type="button" size="icon" className="composer-send" aria-label={sending ? "Preparing task" : "Send"} disabled={!ready} onClick={() => void submit()}>{sending ? <span className="composer-spinner" /> : <ArrowUp />}</Button>
+        <Button type="button" variant="ghost" size="icon" className={cn(iconButton, "composer-send")} aria-label={sending ? "Preparing task" : "Send"} disabled={!ready} onClick={() => void submit()}>{sending ? <span className="composer-spinner" /> : <ArrowUp />}</Button>
       </ComposerActions>
     </PromptInput>
     {sending && <p role="status" className="composer-feedback">Preparing task…</p>}
-    {[durable.error, preferences.error, providerError, sendError, setupError, workspaceError, branchError, unavailableEffort ? `Saved effort “${selection.effort}” is unavailable for this model. Open execution settings to choose a supported effort or reset to default.` : null, missingBranch ? `Saved branch “${picks.baseBranch}” is unavailable. Choose a branch.` : null, unavailable && preferences.loaded ? "The selected execution settings are unavailable. Open execution settings to choose a connected provider and model." : null].filter(Boolean).map((message, i) => <p key={i} role="alert" className="composer-error composer-feedback">{message}</p>)}
+    {[durable.error, preferences.error, providerError, sendError, setupError, workspaceError, branchError, unavailableEffort ? `Saved effort “${selection.effort}” is unavailable for this model. Open execution settings to choose a supported effort or reset to default.` : null, missingBranch ? `Saved branch “${picks.baseBranch}” is unavailable. Choose a branch.` : null, unavailableMessage].filter(Boolean).map((message, i) => <p key={i} role="alert" className="composer-error composer-feedback">{message}</p>)}
   </>;
 }

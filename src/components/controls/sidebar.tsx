@@ -15,7 +15,8 @@ import {
   type ReactNode,
 } from "react";
 import { useIsMobile } from "../../hooks/use-mobile";
-import { Button } from "./button";
+import { Button } from "@/components/ui/button";
+import { iconButton } from "@/lib/surfaces";
 import { cn } from "../../lib/utils";
 import {
   Sidebar as KitSidebar,
@@ -235,10 +236,11 @@ export function SidebarProvider({
                   }
                 >
                   <Button
-                    isIconOnly
+                    variant="ghost"
+                    size="icon"
                     aria-label="New chat"
                     aria-keyshortcuts={mac() ? "Meta+N" : "Control+N"}
-                    className="chrome-button"
+                    className={cn(iconButton, "chrome-button")}
                     onClick={() =>
                       window.dispatchEvent(new Event("brigadier-new-chat"))
                     }

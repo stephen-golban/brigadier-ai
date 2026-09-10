@@ -2,7 +2,7 @@ import { resetDiagnostics, getDiagnostics } from "../perfDiagnostics";
 import * as store from "../feedStore";
 import { getHistoryDelivery } from "../hooks/useConversationHistory";
 import { Details, DetailsSummary } from "./controls/details";
-import { Button } from "./controls/button";
+import { Button } from "@/components/ui/button";
 import { Input } from "./controls/input";
 /**
  * Dev-only burn panel: run N synthetic sessions at a rate through the real feed path and report
@@ -125,7 +125,13 @@ export function Burn({ onBurn }: BurnProps) {
           fixture
           <Input value={fixture} onChange={(e) => setFixture(e.target.value)} />
         </label>
-        <Button type="button" disabled={busy} onClick={() => void run()}>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          disabled={busy}
+          onClick={() => void run()}
+        >
           burn
         </Button>
       </div>

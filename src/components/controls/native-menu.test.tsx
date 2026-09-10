@@ -19,7 +19,7 @@ vi.mock("@tauri-apps/api/menu", () => ({
 vi.mock("./native-menu-image", () => ({ nativeMenuImage: host.image }));
 import { Dropdown, Label, Separator } from "./overlay";
 import { DropdownContent } from "./menu";
-import { Button } from "./button";
+import { Button } from "@/components/ui/button";
 import { SidebarMenuAction } from "./sidebar";
 import { Tooltip } from "./tooltip";
 
@@ -45,7 +45,7 @@ afterEach(() => {
 function Example({ action = () => {} }: { action?: () => void }) {
   return (
     <Dropdown native>
-      <Button aria-label="Actions">•••</Button>
+      <Button variant="ghost" size="sm" aria-label="Actions">•••</Button>
       <DropdownContent>
         <Dropdown.Item nativeIcon={<svg />} onAction={action}>
           <Label>Rename</Label>
@@ -142,7 +142,7 @@ it("falls back and releases earlier icons if a later icon cannot render", async 
     .mockRejectedValueOnce(new Error("Icon failed"));
   render(
     <Dropdown native>
-      <Button>Actions</Button>
+      <Button variant="ghost" size="sm">Actions</Button>
       <DropdownContent>
         <Dropdown.Item nativeIcon={<svg />}>Pin</Dropdown.Item>
         <Dropdown.Item nativeIcon={<svg />}>Edit</Dropdown.Item>
@@ -158,7 +158,7 @@ it("falls back and releases earlier icons if a later icon cannot render", async 
 it("passes shortcut accelerators alongside icons without adding key labels to native titles", async () => {
   render(
     <Dropdown native>
-      <Button>New tab</Button>
+      <Button variant="ghost" size="sm">New tab</Button>
       <DropdownContent>
         <Dropdown.Item
           textValue="Terminal"
@@ -184,7 +184,7 @@ it("passes shortcut accelerators alongside icons without adding key labels to na
 it("preserves submenu icons and accelerators in native options", async () => {
   render(
     <Dropdown native>
-      <Button>Session actions</Button>
+      <Button variant="ghost" size="sm">Session actions</Button>
       <DropdownContent>
         <Dropdown.Item
           textValue="Rename"
@@ -232,7 +232,7 @@ it("preserves submenu icons and accelerators in native options", async () => {
  * that a shape regression fails here rather than in a hand test on macOS.
  *
  * The Sidebar case reproduces its trigger too. `SidebarMenuAction` is a plain (non-forwardRef)
- * component that spreads its props onto `controls/button`, and a `<Button>` stand-in would not
+ * component that spreads its props onto the kit Button, and a `<Button>` stand-in would not
  * catch a bridge that starts requiring the trigger to be the button itself. It also carries the
  * two child shapes `Children.toArray` has to survive: an item behind a `&&` (`Sidebar.tsx:~841`)
  * and a `.map()` of items (`Sidebar.tsx:~858`).
@@ -300,7 +300,7 @@ const shapes = {
   ),
   "SessionMenu session actions": (
     <Dropdown native>
-      <Button aria-label="Session actions">•••</Button>
+      <Button variant="ghost" size="sm" aria-label="Session actions">•••</Button>
       <DropdownContent className="w-56">
         <Dropdown.Item
           aria-label="Rename"
@@ -327,7 +327,7 @@ const shapes = {
   ),
   "TerminalDock profiles": (
     <Dropdown native>
-      <Button aria-label="Terminal profiles">▾</Button>
+      <Button variant="ghost" size="sm" aria-label="Terminal profiles">▾</Button>
       <DropdownContent align="end">
         {[
           { path: "/bin/zsh", name: "zsh", default: true },
@@ -343,7 +343,7 @@ const shapes = {
   ),
   "TerminalDock tab actions": (
     <Dropdown native>
-      <Button aria-label="Actions for /repo">▾</Button>
+      <Button variant="ghost" size="sm" aria-label="Actions for /repo">▾</Button>
       <DropdownContent align="end">
         <Dropdown.Item onAction={() => {}}>Split</Dropdown.Item>
         <Dropdown.Item onAction={() => {}}>Move to new group</Dropdown.Item>
@@ -400,7 +400,7 @@ it.each(Object.keys(shapes) as (keyof typeof shapes)[])(
 it("bails to the web menu when an item uses onClick instead of onAction", async () => {
   render(
     <Dropdown native>
-      <Button aria-label="Imperative">•••</Button>
+      <Button variant="ghost" size="sm" aria-label="Imperative">•••</Button>
       <DropdownContent>
         <Dropdown.Item onClick={() => {}}>Rename</Dropdown.Item>
       </DropdownContent>
