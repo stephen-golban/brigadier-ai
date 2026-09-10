@@ -123,6 +123,17 @@ it('flushes a pending read marker when the document hides or the page goes away'
   expect(stored().leaving).toBe(3);
 });
 
+// The one lifecycle trigger measured to fire in the app's WKWebView (see `attention.ts`, the block
+// on `listening`): losing focus is the ordinary precursor to switching away or quitting.
+it('flushes a pending read marker when the window loses focus', () => {
+  vi.useFakeTimers();
+  markSessionRead('blurring', 1);
+  markSessionRead('blurring', 2);
+  expect(stored().blurring).toBe(1); // the first marker is durable at once; the advance trails
+  window.dispatchEvent(new Event('blur'));
+  expect(stored().blurring).toBe(2);
+});
+
 it('returns an Object.is-equal snapshot until a badge outcome changes', () => {
   const sessions = Object.fromEntries(['snap-a', 'snap-b'].map(sessionId => [sessionId,
     {sessionId, busy:false, status:'running', lastTurnId:'done', lastEventSeq:3} as SessionRuntime]));

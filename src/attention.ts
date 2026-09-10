@@ -18,20 +18,38 @@ const readKey = "brigadier:read-sessions";
 const flushDelayMs = 250;
 
 /**
- * Which page-lifecycle events actually fire is a fact about the platform, not a memory:
- * **[asserted, read 2026-09-10]** MDN's Document: visibilitychange event page states that the
- * event "fires with a `visibilityState` of `hidden` when a user navigates to a new page, switches
- * tabs, closes the tab, minimizes or closes the browser", and that "Transitioning to `hidden` is
- * the last event that's reliably observable by the page", pointing developers at it explicitly
- * "not `beforeunload`/`unload`"
- * (https://developer.mozilla.org/en-US/docs/Web/API/Document/visibilitychange_event).
- * `pagehide` is kept as the second trigger — MDN's Window: pagehide event page notes it is "not
- * reliably fired by browsers, especially on mobile", which is why it is a backstop and not the
- * primary one. `beforeunload` and `unload` are deliberately not used: `beforeunload` disqualifies
- * the page from the back/forward cache and Chrome is deprecating `unload` outright
- * (https://developer.chrome.com/docs/web-platform/deprecating-unload). Not checked: whether the
- * Tauri/WKWebView window emits `visibilitychange` on macOS app quit — the `pagehide` listener and
- * the selection-change flush are what cover that case, and neither has been measured in the app.
+ * The page-lifecycle flushes, and what they do **not** cover.
+ *
+ * MDN calls the transition to `hidden` "the last event that's reliably observable by the page"
+ * **[asserted, read 2026-09-10,
+ * https://developer.mozilla.org/en-US/docs/Web/API/Document/visibilitychange_event]**. In this
+ * WKWebView, on a macOS app quit, it is not observable at all. 31 controlled runs against the real
+ * isolated app, killed mid-workload with the read marker advancing every ~5 ms, put a graceful
+ * Apple-Event quit (the Cmd-Q path, 11 reps: median 100 ms of read-marker progress lost, worst
+ * 240 ms) level with a bare SIGTERM, which runs no handler whatsoever (6 reps: median 140 ms,
+ * worst 255 ms). Loss repeatedly reaches this file's `flushDelayMs` ceiling, which it could not do
+ * if a listener flushed at teardown, and the control run — quit ≥6 s after advances stopped — lost
+ * exactly 0 twice, so the method sees a flush when there is one **[measured, 2026-09-10,
+ * docs/research/read-marker-durability-2026-09-10.md]**. `visibilitychange→hidden` and `pagehide`
+ * therefore contribute nothing on quit. They are kept because they cost nothing and may still fire
+ * in other lifecycle transitions (display sleep, a hidden window) — not as quit coverage.
+ *
+ * What does fire in this webview is `blur` **[measured, same file]**, so that is the third trigger:
+ * losing focus is the ordinary precursor to switching away or quitting, and it is user-paced rather
+ * than 60 Hz, so it costs nothing on the hot path this coalescing exists to keep clear. The
+ * selection-change flush in `useAttention` was measured to work as well.
+ *
+ * Residual exposure, stated plainly: up to `flushDelayMs` of read-marker progress, lost when the
+ * app is quit while it still has keyboard focus and the selected session is advancing. What the
+ * user sees is an unread dot back on the conversation they were looking at, cleared for good by
+ * re-selecting it. Closing that gap needs a synchronous flush driven from Rust on the window's
+ * close/exit path; it is written up as the follow-up in the research file above.
+ *
+ * `beforeunload` and `unload` are deliberately not used: `beforeunload` disqualifies the page from
+ * the back/forward cache and Chrome is deprecating `unload` outright
+ * (https://developer.chrome.com/docs/web-platform/deprecating-unload). Shortening `flushDelayMs`
+ * is not the remedy either — it trades back the ~45 durable writes/s that the 2,815→224 measured
+ * reduction removed.
  */
 let listening = false;
 
@@ -117,6 +135,9 @@ function listen() {
     if (document.visibilityState === "hidden") flushSessionReads();
   });
   window.addEventListener("pagehide", flushSessionReads);
+  // The one trigger above that was measured to fire in this WKWebView. See the block on
+  // `listening`: on a macOS quit the other two are indistinguishable from no listener at all.
+  window.addEventListener("blur", flushSessionReads);
 }
 
 function readMap(): Record<string, number> {
@@ -132,7 +153,7 @@ export function readSequence(sessionId: string): number {
 /**
  * Persist the in-memory map now. Merges against storage so the stored value only ever advances,
  * and drops an entry another writer (`sessionLocalData`) deleted while we had nothing newer for it.
- * Nothing here throws: this runs as a `setTimeout` callback and as a `pagehide` /
+ * Nothing here throws: this runs as a `setTimeout` callback and as a `blur` / `pagehide` /
  * `visibilitychange` listener, where an escaping error is an unhandled window error rather than a
  * React one.
  */
@@ -163,7 +184,7 @@ export function flushSessionReads() {
     writable = true; // a store that took this write is one the eager flushes may use again
   } catch {
     // Quota, private mode, an unwritable store. The advance stays owed, so the next advance,
-    // session switch, hide or `pagehide` retries it. No timer is re-armed here on purpose: a
+    // session switch, blur, hide or `pagehide` retries it. No timer is re-armed here on purpose: a
     // permanently unwritable store would otherwise retry every 250 ms forever with no user
     // activity at all. `writable` stops the *eager* flushes in `markSessionRead` instead, which
     // is what keeps a per-advance attempt from taking that timer's place.
