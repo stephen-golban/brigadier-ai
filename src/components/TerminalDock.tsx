@@ -1,4 +1,11 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useRef,
+  useState,
+  type RefObject,
+} from "react";
 import { ChevronDown, CollapseSmall, Expand, Plus, SidebarRight, TerminalLg, Trash, X } from "../icons";
 import { Button } from "./controls/button";
 import { Dropdown, Separator } from "./controls/overlay";
@@ -10,9 +17,68 @@ import {
   type WorkspaceContext,
 } from "../workspaceApi";
 import { workbenchApi } from "../workbenchApi";
+import { LayoutResizer } from "./LayoutResizer";
 import type { ProjectLayout, ProjectTab } from "../workbenchState";
 const TerminalView = lazy(() => import("./TerminalView"));
 const groupOf = (t: ProjectTab) => t.terminalGroup ?? t.id;
+
+/**
+ * The divider between two panes of one split. Panes are weighted, not sized, so the drag
+ * scale is `sum / measured pane width` and is read once per drag.
+ */
+function SplitResizer({
+  dock,
+  siblings,
+  tab,
+  onChange,
+}: {
+  dock: RefObject<HTMLElement | null>;
+  siblings: ProjectTab[];
+  tab: ProjectTab;
+  onChange: (update: (old: ProjectLayout) => ProjectLayout) => void;
+}) {
+  const index = siblings.indexOf(tab);
+  const previous = siblings[index - 1];
+  const before = previous.terminalWeight ?? 1;
+  const sum = before + (tab.terminalWeight ?? 1);
+  const setWeight = (next: number) => {
+    const weight = Math.max(sum * 0.1, Math.min(sum * 0.9, next));
+    onChange((old) => ({
+      ...old,
+      tabs: old.tabs.map((t) =>
+        t.id === previous.id
+          ? { ...t, terminalWeight: weight }
+          : t.id === tab.id
+            ? { ...t, terminalWeight: sum - weight }
+            : t,
+      ),
+    }));
+  };
+  return (
+    <LayoutResizer
+      orientation="vertical"
+      label="Resize terminal split"
+      className="absolute inset-y-0 left-0"
+      // A full-width grab strip here would swallow the left edge of the terminal beside it.
+      hitSize={8}
+      value={before}
+      min={sum * 0.1}
+      max={sum * 0.9}
+      step={0.15}
+      perPixel={() => {
+        const panes = [
+          ...(dock.current?.querySelectorAll<HTMLElement>(
+            ".terminal-split:not([hidden])",
+          ) ?? []),
+        ];
+        const width =
+          (panes[index - 1]?.clientWidth ?? 0) + (panes[index]?.clientWidth ?? 0);
+        return width ? sum / width : 0;
+      }}
+      onChange={setWeight}
+    />
+  );
+}
 
 /** Docks remain mounted across sidebar navigation; hiding a pane never kills its PTY. */
 export function TerminalDock({
@@ -271,40 +337,21 @@ export function TerminalDock({
       }}
     >
       <div className="terminal-dock-content flex h-full min-h-0 flex-col border-t border-hairline">
-        <div
-          role="separator"
-          aria-label="Resize terminal"
-          aria-orientation="horizontal"
-          aria-valuemin={120}
-          aria-valuemax={Math.round(window.innerHeight * 0.75)}
-          aria-valuenow={height}
-          tabIndex={0}
-          className="layout-resizer absolute top-0 left-0 z-10 h-1 w-full cursor-row-resize touch-none"
-          onKeyDown={(e) => {
-            if (["ArrowUp", "ArrowDown"].includes(e.key)) {
-              e.preventDefault();
-              resize(height + (e.key === "ArrowUp" ? 24 : -24));
-            }
-          }}
-          onPointerDown={(e) => {
-            e.currentTarget.setPointerCapture(e.pointerId);
-            e.currentTarget.dataset.y = String(e.clientY);
-            e.currentTarget.dataset.height = String(height);
+        <LayoutResizer
+          orientation="horizontal"
+          label="Resize terminal"
+          className="absolute top-0 left-0 w-full"
+          value={height}
+          min={120}
+          max={Math.round(window.innerHeight * 0.75)}
+          /* The dock is anchored to the bottom, so it grows as the pointer moves up. */
+          invert
+          onChange={resize}
+          onResizeStart={() => {
             setMaximized(false);
             setResizing(true);
           }}
-          onPointerMove={(e) => {
-            if (e.currentTarget.hasPointerCapture(e.pointerId))
-              resize(
-                Number(e.currentTarget.dataset.height) +
-                  Number(e.currentTarget.dataset.y) -
-                  e.clientY,
-              );
-          }}
-          onPointerUp={(e) =>
-            e.currentTarget.releasePointerCapture(e.pointerId)
-          }
-          onLostPointerCapture={() => setResizing(false)}
+          onResizeEnd={() => setResizing(false)}
         />
         <div className="flex h-9 shrink-0 items-center gap-1 px-3 text-text-secondary">
           <span className="mr-auto border-b border-text pb-1 text-[11px] font-medium tracking-wide text-text">
@@ -397,91 +444,11 @@ export function TerminalDock({
                   }}
                 >
                   {siblings.indexOf(tab) > 0 && (
-                    <div
-                      role="separator"
-                      aria-label="Resize terminal split"
-                      aria-orientation="vertical"
-                      tabIndex={0}
-                      className="layout-resizer absolute inset-y-0 left-0 z-10 w-1 cursor-col-resize touch-none"
-                      onKeyDown={(e) => {
-                        if (!["ArrowLeft", "ArrowRight"].includes(e.key))
-                          return;
-                        e.preventDefault();
-                        const previous = siblings[siblings.indexOf(tab) - 1];
-                        const delta = e.key === "ArrowLeft" ? -0.15 : 0.15;
-                        onChange((old) => ({
-                          ...old,
-                          tabs: old.tabs.map((t) =>
-                            t.id === previous.id
-                              ? {
-                                  ...t,
-                                  terminalWeight: Math.max(
-                                    0.2,
-                                    (t.terminalWeight ?? 1) + delta,
-                                  ),
-                                }
-                              : t.id === tab.id
-                                ? {
-                                    ...t,
-                                    terminalWeight: Math.max(
-                                      0.2,
-                                      (t.terminalWeight ?? 1) - delta,
-                                    ),
-                                  }
-                                : t,
-                          ),
-                        }));
-                      }}
-                      onPointerDown={(e) => {
-                        e.currentTarget.setPointerCapture(e.pointerId);
-                        const previous = siblings[siblings.indexOf(tab) - 1];
-                        const panes = [
-                          ...(dock.current?.querySelectorAll<HTMLElement>(
-                            ".terminal-split:not([hidden])",
-                          ) ?? []),
-                        ];
-                        e.currentTarget.dataset.start = String(e.clientX);
-                        e.currentTarget.dataset.width = String(
-                          panes[siblings.indexOf(tab) - 1].clientWidth +
-                            panes[siblings.indexOf(tab)].clientWidth,
-                        );
-                        e.currentTarget.dataset.before = String(
-                          previous.terminalWeight ?? 1,
-                        );
-                        e.currentTarget.dataset.after = String(
-                          tab.terminalWeight ?? 1,
-                        );
-                      }}
-                      onPointerMove={(e) => {
-                        if (!e.currentTarget.hasPointerCapture(e.pointerId))
-                          return;
-                        const previous = siblings[siblings.indexOf(tab) - 1];
-                        const { start, width, before, after } =
-                          e.currentTarget.dataset;
-                        const sum = Number(before) + Number(after);
-                        const weight = Math.max(
-                          sum * 0.1,
-                          Math.min(
-                            sum * 0.9,
-                            Number(before) +
-                              ((e.clientX - Number(start)) / Number(width)) *
-                                sum,
-                          ),
-                        );
-                        onChange((old) => ({
-                          ...old,
-                          tabs: old.tabs.map((t) =>
-                            t.id === previous.id
-                              ? { ...t, terminalWeight: weight }
-                              : t.id === tab.id
-                                ? { ...t, terminalWeight: sum - weight }
-                                : t,
-                          ),
-                        }));
-                      }}
-                      onPointerUp={(e) =>
-                        e.currentTarget.releasePointerCapture(e.pointerId)
-                      }
+                    <SplitResizer
+                      dock={dock}
+                      siblings={siblings}
+                      tab={tab}
+                      onChange={onChange}
                     />
                   )}
                   <Suspense

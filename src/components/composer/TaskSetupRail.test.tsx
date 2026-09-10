@@ -6,7 +6,7 @@ import { composerWorkspaceApi, type ComposerWorkspaceOptions } from "../../compo
 import * as providerCatalog from "../../providerCatalog";
 import { taskSettingsApi } from "../../taskSettings";
 import { pasteComposer } from "../../test/composer";
-import { invalidBranchName, TaskSetupRail } from "./TaskSetupRail";
+import { invalidBranchName, PROJECT_PLACEHOLDER, TaskSetupRail } from "./TaskSetupRail";
 
 const project = {id:"rail-project",name:"Rail project",root_path:"/repo",created_at_ms:0};
 const options: ComposerWorkspaceOptions = {
@@ -182,4 +182,36 @@ it("sends projectless prompts without inherited Git selections", async () => {
   expect(start).toHaveBeenCalledWith(expect.objectContaining({projectId:project.id,isolated:false,prompt:"A task without a repository"}));
   expect(start.mock.calls[0]![0]).not.toHaveProperty("baseBranch");
   expect(start.mock.calls[0]![0]).not.toHaveProperty("workspacePath");
+});
+
+/*
+ * A global "New chat" arrives here with `project` null and the project list in hand
+ * (`src/App.tsx`'s `projectUnpicked`). The rail has to ask for a project rather than name one,
+ * and it has to stay usable while every other control is inert.
+ */
+const otherProject = {id:"other-project",name:"Other project",root_path:"/other",created_at_ms:0};
+it("asks for a project, keeps its own picker live and leaves the rest of the rail inert", async () => {
+  const onSelectProject = vi.fn();
+  render(<NewSession project={null} projects={[project,otherProject]} onSelectProject={onSelectProject} models={[]} disabled={false} onStart={vi.fn()} />);
+  const trigger = screen.getByRole("button", {name:"Project"});
+  expect(trigger).toHaveTextContent(PROJECT_PLACEHOLDER);
+  expect(trigger).toBeEnabled();
+  // No worktree or branch may be staged against a project that has not been chosen.
+  expect(screen.getByRole("button", {name:"Environment"})).toBeDisabled();
+  expect(screen.getByRole("button", {name:"Branch"})).toBeDisabled();
+  expect(screen.getByRole("button", {name:"Send"})).toBeDisabled();
+  expect(screen.getByText("Choose a project to start")).toBeVisible();
+  // The unpicked state is not an execution-settings failure; it must not raise that alarm.
+  expect(screen.queryByRole("alert")).toBeNull();
+  await userEvent.click(trigger);
+  await userEvent.click(screen.getByRole("option", {name:"Other project"}));
+  expect(onSelectProject).toHaveBeenCalledWith("other-project");
+});
+
+it("opens its project list when the welcome screen asks for one", async () => {
+  render(<NewSession project={null} projects={[project,otherProject]} onSelectProject={vi.fn()} models={[]} disabled={false} onStart={vi.fn()} />);
+  expect(screen.queryByRole("listbox", {name:"Project"})).toBeNull();
+  await act(async () => {window.dispatchEvent(new Event("brigadier-pick-project"));});
+  expect(await screen.findByRole("listbox", {name:"Project"})).toBeVisible();
+  expect(screen.getByRole("option", {name:"Rail project"})).toBeVisible();
 });

@@ -89,7 +89,7 @@ describe("WorkspaceTools Files", () => {
     const files = screen.getByRole("region", { name: "Files" });
     expect(within(files).getByPlaceholderText("Filter files…")).toBeVisible();
     expect(within(files).getByLabelText("Filter files")).toHaveClass(
-      "rounded-[12px]",
+      "rounded-[var(--radius-control)]",
     );
     expect(view.container.querySelector(".workspace-tool-body")).toHaveClass(
       "bg-canvas",
@@ -108,7 +108,7 @@ describe("WorkspaceTools Files", () => {
     expect(src).toHaveAttribute("aria-expanded", "false");
     const readme = screen.getByRole("button", { name: "README.md" });
     expect(readme).toHaveAttribute("aria-current", "page");
-    expect(readme).toHaveClass("rounded-[8px]", "bg-selected");
+    expect(readme).toHaveClass("rounded-[var(--radius-row)]", "bg-selected");
     expect(readme.querySelector("svg")?.style.color).not.toBe(
       screen.getByRole("button", { name: "package.json" }).querySelector("svg")
         ?.style.color,

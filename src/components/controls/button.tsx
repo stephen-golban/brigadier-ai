@@ -55,27 +55,32 @@ const VARIANTS = {
 } as const;
 
 /**
- * brigadier's standard icon button is a 24px box with 4px padding, a 10px corner and a 16px
- * glyph — the metrics `.button[data-icon-button="standard"]` held in `src/index.css` before the
- * port, with the corner raised 8px → 10px by the owner's 2026-09-10 +2px radius decision. The kit's `icon` size is a 32px box (`size-8`), so every `size="icon"` call site grew by
- * a third. These classes put it back. They are appended after the kit's variant string and a
- * call site's own `className` is appended after them, so a deliberately larger button still wins.
- * Exported because `assistant-ui/elements/tooltip-icon-button.tsx` reaches for the kit's Button
- * directly and must not drift from this.
+ * brigadier's standard icon button is a 24px box with 4px padding and a 16px glyph — the
+ * metrics `.button[data-icon-button="standard"]` held in `src/index.css` before the port. The
+ * corner is no longer a number here: it is `--radius-icon-button`, the semantic layer's name for
+ * this box (`src/index.css`). It was pinned at 8px until 2026-09-11, when the owner made the
+ * theme the only source of a corner; 8px is not a step on the monotonic scale, so the token
+ * points at `--radius-sm` (6px), the nearest one. The kit's `icon` size is a 32px box
+ * (`size-8`), so every `size="icon"` call site grew by a third. These classes put it back. They
+ * are appended after the kit's variant string and a call site's own `className` is appended
+ * after them, so a deliberately larger button still wins. Exported because
+ * `assistant-ui/elements/tooltip-icon-button.tsx` reaches for the kit's Button directly and must
+ * not drift from this.
  */
 export const STANDARD_ICON_BUTTON =
-  "size-6 min-w-6 p-1 rounded-[10px] [&_svg:not([class*='size-'])]:size-4";
+  "size-6 min-w-6 p-1 rounded-[var(--radius-icon-button)] [&_svg:not([class*='size-'])]:size-4";
 
 /**
  * The kit's `icon-xs` box pins its corner with `rounded-[min(var(--radius-md),10px)]`
- * (`src/components/ui/button.tsx:30`) — a clamp that caps at 10px. `--radius-md` is 12px since
- * the owner's 2026-09-10 +2px raise, so the clamp bites and `icon-xs` would be the one control
- * left behind at the old radius. Overriding it here rather than in the copied kit file keeps
- * `src/components/ui/` a verbatim upstream copy (`src/components/ui/UPSTREAM.md`). `cn`'s
- * tailwind-merge resolves the two `rounded-` classes in favour of this one, which is appended
- * after the kit's variant string.
+ * (`src/components/ui/button.tsx:30`) — a clamp that caps at 10px. It is overridden here so
+ * `icon-xs` moves with the semantic layer rather than with the clamp, and so
+ * `src/components/ui/` stays a verbatim upstream copy (`src/components/ui/UPSTREAM.md`). The
+ * literal 10px it carried until 2026-09-11 is now `--radius-icon-button-xs`, which points at
+ * `--radius-sm` (6px) — the smaller box takes the same step as the standard one.
+ * `cn`'s tailwind-merge resolves the two `rounded-` classes in favour of this one, which is
+ * appended after the kit's variant string.
  */
-export const XS_ICON_BUTTON_RADIUS = "rounded-[12px]";
+export const XS_ICON_BUTTON_RADIUS = "rounded-[var(--radius-icon-button-xs)]";
 
 /** `isIconOnly` on a text size resolves to the kit's square box of the same weight. */
 const ICON_SIZES = {

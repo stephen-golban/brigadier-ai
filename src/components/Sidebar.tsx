@@ -159,7 +159,7 @@ const projectTags = [
 ];
 export function Sidebar(props: SidebarProps) {
   const { data: navigation, error: navigationError } = useNavigationData();
-  const { isMobile, setOpenMobile } = useSidebar();
+  const { isMobile, setOpenMobile, setCurrentSession } = useSidebar();
   const [data, setData] = useState<WorkbenchData>({
     notes: [],
     global: defaultSettings,
@@ -403,6 +403,18 @@ export function Sidebar(props: SidebarProps) {
       !isTrashed(navigation, "project", s.projectId),
   );
   const title = (id: string) => props.titles?.[id] ?? `Session ${id.slice(-6)}`;
+  /**
+   * The collapsed workspace chrome shows the current session's title beside a folder glyph
+   * (`docs/research/codex-sidebar.md` §4.10). `SidebarProvider` owns that bar and has no access
+   * to session data, so the label is published up to it from here — using the same lookup
+   * `ProjectWorkbench.tsx` makes around lines 1064-1071 (`peers.titles[id]`, which arrives here
+   * as `props.titles`, with a `Session <last6>` fallback), so the two can never disagree.
+   */
+  useEffect(() => {
+    setCurrentSession(
+      props.selectedSessionId ? title(props.selectedSessionId) : null,
+    );
+  }, [props.selectedSessionId, props.titles, setCurrentSession]);
   const projectName = (p: ProjectView) => data.projectNames?.[p.id] ?? p.name;
   const pinSession = (id: string) =>
     customize(
@@ -425,12 +437,24 @@ export function Sidebar(props: SidebarProps) {
       );
       closeMobile();
     });
+  /**
+   * The **global** new chat: the sidebar's own button, ⌘N and the welcome screen's row. It starts
+   * with no project picked — `detail: null` on the same event a project row's ⋯ menu and hover
+   * pencil dispatch with an id — so `App` shows the welcome screen and the composer's project
+   * picker asks for one. With no projects at all there is nothing to pick and adding one is the
+   * only useful move, so that path is unchanged.
+   */
   const startNewChat = () => {
-    const project =
-      activeProjects.find((p) => p.id === props.selectedProjectId) ??
-      activeProjects[0];
-    if (project) newSession(project.id);
-    else void addProject();
+    if (!activeProjects.length) {
+      void addProject();
+      return;
+    }
+    closeNotepad(() => {
+      window.dispatchEvent(
+        new CustomEvent("brigadier-new-project-session", { detail: null }),
+      );
+      closeMobile();
+    });
   };
   useEffect(() => {
     window.addEventListener("brigadier-new-chat", startNewChat);
@@ -489,10 +513,10 @@ export function Sidebar(props: SidebarProps) {
         >
           <SidebarMenuSubButton
             isActive={!notes && props.selectedSessionId === s.sessionId}
-            className="session-row pr-8"
+            className="session-row"
             onClick={() => selectSession(s.sessionId)}
           >
-            <span className="session-label min-w-0 flex-1 truncate text-left text-text">
+            <span className="session-label text-fade-truncate min-w-0 flex-1 text-left text-text">
               {title(s.sessionId)}
             </span>
             <span className="session-indicator absolute top-0 right-1 flex h-7 w-6 items-center justify-center">
@@ -552,11 +576,11 @@ export function Sidebar(props: SidebarProps) {
       <SidebarPrimitive collapsible="offcanvas" aria-label="Main navigation">
         <SidebarHeader>
           <div
-            className="mb-5 flex h-8 items-center gap-2 px-4 text-[17px] font-semibold"
+            className="navigation-title mb-2 flex h-8 items-center gap-2 text-[17px] font-semibold"
             data-tauri-drag-region="deep"
           >
             <span>Brigadier</span>
-            <div className="-mr-2 ml-auto flex items-center gap-1">
+            <div className="ml-auto flex items-center gap-1">
               <Tooltip
                 content={
                   <>
@@ -575,19 +599,19 @@ export function Sidebar(props: SidebarProps) {
                       ? "Meta+K"
                       : "Control+K"
                   }
-                  className="size-8 text-text-secondary"
+                  className="navigation-icon-button"
                   onClick={() => setSearch(true)}
                 >
-                  <Search className="size-4" />
+                  <Search />
                 </Button>
               </Tooltip>
               <Dropdown>
                 <Button
                   isIconOnly
                   aria-label="Notifications"
-                  className="relative size-8 text-text-secondary"
+                  className="navigation-icon-button relative"
                 >
-                  <Bell className="size-4" />
+                  <Bell />
                   {(props.pendingTotal > 0 ||
                     Object.values(props.attention ?? {}).some(Boolean)) && (
                     <span className="absolute top-1 right-1 size-1.5 rounded-full bg-attention" />
@@ -662,10 +686,10 @@ export function Sidebar(props: SidebarProps) {
                 <Button
                   isIconOnly
                   aria-label="New note"
-                  className="size-8 shrink-0 text-text-tertiary hover:text-text"
+                  className="navigation-icon-button shrink-0"
                   onClick={() => openNotepad(undefined, true)}
                 >
-                  <Plus width={16} height={16} />
+                  <Plus />
                 </Button>
               </Tooltip>
             </SidebarMenuItem>
@@ -673,7 +697,7 @@ export function Sidebar(props: SidebarProps) {
         </SidebarHeader>
         <SidebarContent>
           {navigationError && (
-            <p role="alert" className="px-3 text-error">
+            <p role="alert" className="navigation-notice text-error">
               {navigationError}
             </p>
           )}
@@ -719,7 +743,7 @@ export function Sidebar(props: SidebarProps) {
             </div>
             <SidebarReveal open={projectsOpen} id="sidebar-projects">
               <SidebarGroupContent role="navigation" aria-label="Projects">
-                <SidebarMenu className="gap-3">
+                <SidebarMenu>
                   {activeProjects.map((project) => {
                     const sessions = visibleSessions
                       .filter((s) => s.projectId === project.id)
@@ -739,7 +763,7 @@ export function Sidebar(props: SidebarProps) {
                             isActive={
                               !notes && selected && !props.selectedSessionId
                             }
-                            className="project-row pr-2"
+                            className="project-row"
                             title={project.root_path}
                             aria-expanded={open}
                             aria-controls={`project-sessions-${project.id}`}
@@ -750,7 +774,7 @@ export function Sidebar(props: SidebarProps) {
                             }}
                           >
                             <span className="size-4 shrink-0" />
-                            <span className="project-label min-w-0 flex-1 truncate text-left text-text">
+                            <span className="project-label text-fade-truncate min-w-0 flex-1 text-left text-text">
                               {projectName(project)}
                             </span>
                             {navigation.projectColors[project.id] && (
@@ -946,9 +970,7 @@ export function Sidebar(props: SidebarProps) {
                               </SidebarMenuSubItem>
                             )}
                             {!sessions.length && (
-                              <li className="flex h-8 items-center pl-8 text-text-disabled">
-                                No chats
-                              </li>
+                              <li className="navigation-empty">No chats</li>
                             )}
                           </SidebarMenuSub>
                         </SidebarReveal>
@@ -958,12 +980,10 @@ export function Sidebar(props: SidebarProps) {
                 </SidebarMenu>
               </SidebarGroupContent>
               {!activeProjects.length && (
-                <p className="px-3 py-2 text-text-disabled">
-                  Add a project to get started.
-                </p>
+                <p className="navigation-empty">Add a project to get started.</p>
               )}
               {error && addPath === null && !renaming && (
-                <p role="alert" className="px-3 text-error">
+                <p role="alert" className="navigation-notice text-error">
                   {error}
                 </p>
               )}
@@ -971,11 +991,11 @@ export function Sidebar(props: SidebarProps) {
           </SidebarGroup>
           {props.dev}
         </SidebarContent>
-        <SidebarFooter className="flex h-[46px] items-center gap-1 border-t border-hairline px-2 py-2">
+        <SidebarFooter>
           <Dropdown>
             <button
               type="button"
-              className="flex h-[30px] min-w-0 items-center gap-2 rounded-md px-2 text-[14px] text-text hover:bg-selected"
+              className="navigation-row min-w-0 flex-1"
               aria-label={`Account: ${accountName}`}
             >
               <span className="flex size-[18px] shrink-0 items-center justify-center rounded-full bg-text-tertiary text-[9px] text-text">
@@ -1013,7 +1033,7 @@ export function Sidebar(props: SidebarProps) {
           >
             <Button
               isIconOnly
-              className="size-7 text-text-secondary"
+              className="navigation-icon-button"
               aria-label="Settings"
               aria-keyshortcuts={
                 navigator.platform.startsWith("Mac") ? "Meta+," : "Control+,"

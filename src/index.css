@@ -2,6 +2,7 @@
 /* `animate-in` / `fade-in-0` / `zoom-in-95` / `slide-in-from-*` come from here, not from
    Tailwind core (docs/research/assistant-ui-design.md, Landmine 4). */
 @import "tw-animate-css";
+@import "./focus-reset.css";
 /* `source(none)` is load-bearing: without it Tailwind scans node_modules and every
    dependency's class strings land in the bundle. The two @source lines are the whole scan
    surface, and the `not` line keeps test-only classes out of the build. */
@@ -30,10 +31,11 @@
   /* Upstream ships `0.5rem` here and derives `--radius-lg` from it. `:root { font-size: 14px }`
      below makes every `rem` in this app 12.5% short of upstream's intent, so both are pinned in
      px and agree. The port's value was 16px (brigadier's pre-port large corner); the owner
-     raised every named step by 2px on 2026-09-10, so it is 18px. Nothing else in this tree
-     reads `var(--radius)`; it is kept so a future `var(--radius)` consumer matches
-     `--radius-lg`. */
-  --radius: 18px;
+     raised every named step by 2px on 2026-09-10 and reversed that raise on 2026-09-11, so it
+     is 16px again. Nothing else in this tree reads `var(--radius)`; it is kept so a future
+     `var(--radius)` consumer matches `--radius-lg`, which it now does by reference rather than
+     by a second literal. */
+  --radius: var(--radius-lg);
   /* Upstream derives every neutral from this oklch hue. brigadier's neutrals are hex, so
      --tint is live only for the chart ramp below. */
   --tint: 106;
@@ -62,14 +64,124 @@
   --chart-3: oklch(0.56 0.09 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: #202020;
-  --sidebar-foreground: #e3e3e3;
+  /* ------------------------------------------------------------------------------------
+     The sidebar's six kit-named roles, carrying Codex desktop's measured dark values
+     (`docs/research/codex-sidebar.md` §2a/§2b/§6; every one is marked **M** there, read out
+     of the shipping ChatGPT.app bundle). They are the kit's names, so `bg-sidebar`,
+     `text-sidebar-foreground`, `bg-sidebar-accent` and friends inside
+     `src/components/ui/sidebar.tsx` resolve to them without a second vocabulary.
+     ------------------------------------------------------------------------------------ */
+  /* `--color-surface-tertiary` → `--color-background-editor-opaque`. The *painted* surface is
+     70% of this over the macOS `menu` vibrancy; this is the flat colour behind it and the one
+     the sidebar wears whole when the window is unfocused or transparency is off. */
+  --sidebar: rgb(40, 40, 40);
+  /* `text-emphasis` / `--color-text-foreground` = `--gray-150`. The *active* row label. */
+  --sidebar-foreground: #dfdfdf;
   --sidebar-primary: #3b82f6;
   --sidebar-primary-foreground: #181818;
-  --sidebar-accent: rgba(255, 255, 255, 0.08);
-  --sidebar-accent-foreground: #e3e3e3;
-  --sidebar-border: rgba(255, 255, 255, 0.08);
-  --sidebar-ring: #3b82f6;
+  /* `--color-background-button-secondary-hover`. Hover and selected are the same fill in
+     Codex — the label brightening is what carries the active state (§6, behaviour 1). */
+  --sidebar-accent: rgba(255, 255, 255, 0.078);
+  --sidebar-accent-foreground: #dfdfdf;
+  --sidebar-border: rgba(255, 255, 255, 0.084);
+  /* `--color-border-focus`. Inert here — focus indicators are disabled app-wide (see below) —
+     but the token is the kit's and is kept truthful. */
+  --sidebar-ring: rgba(131, 195, 255, 0.76);
+
+  /* brigadier-specific extras: the Codex numbers that have no kit token to live in. */
+  --sidebar-width: 275px;
+  --sidebar-width-min: 240px;
+  --sidebar-row-height: 30px;
+  /* Codex measures 12.5px for a row (`docs/research/codex-sidebar.md` §4.4). It is no longer
+     a literal: the row wears `--radius-row` and the Codex match is now "nearest scale step"
+     (10px), the owner's 2026-09-11 decision that one theme edit drives every corner. */
+  --sidebar-row-radius: var(--radius-row);
+  --sidebar-row-padding-x: 8px;
+  /* Codex measures 1px (`gap-px`) between rows and between a project and its first session.
+     The owner asked for more air on 2026-09-11: 3px between every row, and one project group
+     held off the next by `--sidebar-group-gap`. The 16px section gap is unchanged. */
+  --sidebar-row-gap: 3px;
+  --sidebar-group-gap: 8px;
+  --sidebar-section-gap: 16px;
+  --sidebar-indent: 28px;
+  --sidebar-icon-size: 16px;
+  /* The nav dims its own ink to 85%: `._Navigation_1ej6d_2 { --color-text: color-mix(in oklab,
+     var(--color-background-primary-solid) 85%, transparent) }`. This is the *idle* row label. */
+  --sidebar-text-idle: rgba(223, 223, 223, 0.85);
+  /* `--color-text-foreground-tertiary` — section headers, placeholders, chrome ink. */
+  --sidebar-text-muted: rgba(255, 255, 255, 0.498);
+  /* `--color-icon-primary`, the icon on an active row. */
+  --sidebar-icon-active: rgba(255, 255, 255, 0.904);
+  --sidebar-font-size: 14px;
+  /* A variable-font weight between Regular and Medium; `--vscode-font-weight: 430` in the
+     Electron build. The system UI face on macOS (SF) is variable, so 430 renders. */
+  --sidebar-font-weight: 430;
+  --sidebar-line-height: 1.5;
+
+  /* ------------------------------------------------------------------------------------
+     Tooltip. Codex measures the pill at `rgb(45,45,45)` (`docs/research/codex-sidebar.md`
+     §4.9) and `--popover` is `#2b2b2b` = `rgb(43,43,43)`; the two are two units apart, so the
+     tooltip is unified onto the popover surface rather than carrying a fourth near-identical
+     grey. The measured 1px `rgba(255,255,255,.084)` edge unifies onto `--border`
+     (`rgba(255,255,255,.08)`) for the same reason. Both are owner-directed, 2026-09-11.
+     ------------------------------------------------------------------------------------ */
+  --tooltip: var(--popover);
+  --tooltip-foreground: var(--sidebar-foreground);
+  --tooltip-border: var(--border);
+
+  /* ------------------------------------------------------------------------------------
+     Settings. The settings shell is its own surface family (a desaturated teal chrome) and had
+     no tokens at all until 2026-09-11 — every value below was a literal in
+     `src/components/settings.css`. Values are carried over unchanged except the archive search
+     field, whose `#2b2b2b` is `--popover` exactly and now says so.
+     ------------------------------------------------------------------------------------ */
+  --settings-sidebar: #27363b;
+  --settings-sidebar-ink: #d6dfe0;
+  --settings-label: #839093;
+  --settings-field: rgba(255, 255, 255, 0.06);
+  --settings-nav-current: rgba(255, 255, 255, 0.09);
+  --settings-danger: #f26767;
+  --settings-danger-surface: rgba(218, 73, 73, 0.11);
+  --settings-search: var(--popover);
+  --settings-search-border: #484848;
+  --settings-filter: #202020;
+  --settings-filter-border: #333333;
+  --settings-panel: #232323;
+  --settings-panel-border: #343434;
+  --settings-panel-divider: #2d2d2d;
+  --settings-button: #2e2e2e;
+  --settings-button-hover: #3a3a3a;
+  --settings-row-highlight: rgba(255, 255, 255, 0.07);
+
+  /* ------------------------------------------------------------------------------------
+     Shadow inks. Every drop shadow in the app was writing its own `#0001`-family literal.
+     These are the four alphas that were in use, named by weight.
+     ------------------------------------------------------------------------------------ */
+  --shadow-ink-weak: #00000008;
+  --shadow-ink-soft: #00000011;
+  --shadow-ink: #00000022;
+  --shadow-ink-strong: #00000033;
+
+  /* ------------------------------------------------------------------------------------
+     The xterm ANSI palette. `src/components/TerminalView.tsx` read sixteen hex literals until
+     2026-09-11; it now reads these. The eight base and eight bright slots are the One Dark
+     family the terminal already shipped, values unchanged.
+     ------------------------------------------------------------------------------------ */
+  --ansi-black: #242424;
+  --ansi-red: #e06c75;
+  --ansi-green: #98c379;
+  --ansi-yellow: #e5c07b;
+  --ansi-blue: #61afef;
+  --ansi-magenta: #c678dd;
+  --ansi-cyan: #56b6c2;
+  --ansi-white: #dcdfe4;
+  --ansi-bright-red: #f08080;
+  --ansi-bright-green: #b5d99c;
+  --ansi-bright-yellow: #f5d491;
+  --ansi-bright-blue: #85c1ff;
+  --ansi-bright-magenta: #d8a1ee;
+  --ansi-bright-cyan: #80d4de;
+  --ansi-bright-white: #ffffff;
 }
 
 /* Upstream's `@theme inline` bridge, verbatim apart from the four notes below. Without it
@@ -86,27 +198,11 @@
   --tracking-section: -0.01em;
   --font-weight-hero: 500;
 
-  /* Every rem here is 14px (`:root { font-size: 14px }` in @layer base), so the kit's rem
-     scale lands 12.5% under upstream's intent. The five steps a live utility reaches for are
-     therefore pinned in px. Their port values were 4 / 10 / 16 (brigadier's pre-port steps)
-     and 10 / 12 (the kit's intent for `--radius-surface` 0.625rem and `--radius-xl` 0.75rem
-     measured at a 16px root); the owner raised each by 2px on 2026-09-10, which is the +2 in
-     the numbers below. The steps with no call site keep upstream's rem literal; pin them —
-     and raise them by the same 2px — when one appears. */
-  --radius-none: 0;
-  --radius-page: 0;
-  --radius-document: var(--radius-sm);
-  --radius-sm: 6px;
-  --radius-md: 12px;
-  --radius-control: 0.5rem;
-  --radius-lg: 18px;
-  --radius-surface: 12px;
-  --radius-xl: 14px;
-  --radius-2xl: 1rem;
-  --radius-thread: 1rem;
-  --radius-3xl: 1.5rem;
-  --radius-capsule: 9999px;
-  --radius-pill: 9999px;
+  /* The radius scale and the semantic layer above it moved to the `@theme static` block below
+     on 2026-09-11 (owner: one theme edit must drive the whole app). `static` is the reason:
+     `inline` prunes a theme variable no utility mentions, and the semantic tokens are read as
+     `var(--radius-row)` from hand-written CSS and from `rounded-[var(--radius-…)]` arbitrary
+     values, neither of which counts as a mention. Nothing radius-shaped lives here any more. */
 
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -209,15 +305,104 @@
   /* legacy aliases — retire; the glass/vibrancy set has no kit counterpart, literals kept */
   --color-menu-glass: rgba(32, 32, 32, 0.78);
   --color-glass-edge: rgba(255, 255, 255, 0.24);
-  --color-sidebar-tint: rgba(32, 32, 32, 0.18);
-  --color-sidebar-glass: rgba(32, 32, 32, 0.42);
-  --color-sidebar-blue: #294858;
-  --color-sidebar-teal: #234644;
+  /* `--color-sidebar-tint`, `--color-sidebar-glass`, `--color-sidebar-blue` and
+     `--color-sidebar-teal` stood here until 2026-09-10. The two gradients were the browser
+     fallback the owner replaced with one flat colour; the two greys were the pre-Codex tint,
+     now `color-mix(in srgb, var(--sidebar) 70%, transparent)` in the sidebar section below. */
   --color-shadow: rgba(0, 0, 0, 0.25);
 
-  /* legacy alias — retire; the kit's counterpart is --radius-thread (1rem), which is not
-     brigadier's composer geometry, so the literal stays. */
-  --radius-composer: 28px;
+  /* Ink or fill that must stay pure white on a coloured or dark ground: the change-count badge
+     and the effort slider's knob. `--primary-foreground` is the dark ink and cannot serve. */
+  --color-on-accent: #ffffff;
+
+  /* ------------------------------------------------------------------------------------
+     File-type ink. `src/components/WorkspaceTools.tsx` carried these nine hex literals in a
+     table until 2026-09-11; the table now names a token per family and the values live here.
+     A language is coloured, never a glyph (`docs/research/apps-sdk-ui-icons.md`).
+     ------------------------------------------------------------------------------------ */
+  --color-file-ts: #6cb6ff;
+  --color-file-js: #e5c07b;
+  --color-file-style: #c49bea;
+  --color-file-markup: #e99572;
+  --color-file-doc: #81b9a0;
+  --color-file-rust: #dfa180;
+  --color-file-media: #b49cdb;
+  --color-file-text: var(--muted-foreground);
+  --color-file-unknown: var(--color-text-tertiary);
+
+  /* The four welcome-starter accents in `src/components/ThreadView.tsx`, one per intent. */
+  --color-starter-explore: #5795ed;
+  --color-starter-build: #a77ddd;
+  --color-starter-review: #62a781;
+  --color-starter-fix: #d88a55;
+
+  /* ------------------------------------------------------------------------------------
+     RADIUS — the app's only source of a corner. Two layers, both here rather than in the
+     `@theme inline` bridge because `inline` prunes a theme variable no utility mentions and
+     these are read from hand-written CSS and from `rounded-[var(--radius-…)]`. `static` emits
+     every name. Both layers still land on `:root` in the emitted stylesheet.
+
+     Layer 1, the scale. Monotonic as of 2026-09-11: the pre-2026-09-11 scale had
+     `--radius-xl` (12px) *below* `--radius-lg` (16px), which is not a scale. Every rem in this
+     app is 14px (`:root { font-size: 14px }` in @layer base), so every step is pinned in px.
+     ------------------------------------------------------------------------------------ */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --radius-2xl: 28px;
+  --radius-3xl: 36px;
+  --radius-full: 9999px;
+  /* Kit-named steps, kept so the copied components in `src/components/ui/` resolve. */
+  --radius-none: 0;
+  --radius-page: 0;
+  --radius-document: var(--radius-sm);
+  --radius-surface: var(--radius-md);
+  --radius-thread: var(--radius-lg);
+  --radius-capsule: var(--radius-full);
+  --radius-pill: var(--radius-full);
+
+  /* ------------------------------------------------------------------------------------
+     Layer 2, the semantic layer. Every entry is a `var()` of the scale — never a px literal —
+     so a surface is retuned by pointing its name at a different step, and the step is retuned
+     for every surface at once above. A call site names the surface, never the number.
+     ------------------------------------------------------------------------------------ */
+  /* buttons, inputs, keycap-free controls */
+  --radius-control: var(--radius-md);
+  /* the oversized onboarding field and any 44px+ control */
+  --radius-control-lg: var(--radius-lg);
+  /* the 24px standard icon box (`STANDARD_ICON_BUTTON`) — 8px before 2026-09-11; 6px is the
+     nearest step on the monotonic scale */
+  --radius-icon-button: var(--radius-sm);
+  /* the kit's `icon-xs` box (`XS_ICON_BUTTON_RADIUS`) — 10px before 2026-09-11 */
+  --radius-icon-button-xs: var(--radius-sm);
+  /* sidebar rows, sidebar/header toolbar buttons, menu rows, settings nav rows */
+  --radius-row: var(--radius-md);
+  /* the 20px hover action inside a sidebar row */
+  --radius-row-action: var(--radius-xs);
+  /* popovers, dropdowns, selects — the kit reads `--radius-surface` for the same job */
+  --radius-popover: var(--radius-md);
+  --radius-dialog: var(--radius-lg);
+  --radius-tooltip: var(--radius-xl);
+  --radius-keycap: var(--radius-sm);
+  --radius-composer: var(--radius-2xl);
+  /* cards, grouped-row panels, error panels, welcome starters */
+  --radius-card: var(--radius-lg);
+  /* workbench tabs */
+  --radius-tab: var(--radius-sm);
+  /* inline code, directive chips, effort ticks */
+  --radius-chip: var(--radius-xs);
+  /* attachment thumbnails and other small media */
+  --radius-thumbnail: var(--radius-sm);
+  /* the peer chat bubble */
+  --radius-bubble: var(--radius-xl);
+  /* count badges and segmented pills */
+  --radius-badge: var(--radius-full);
+  /* a rendered glyph rather than a surface — the composer's 12px stop square. Derived from
+     the scale so it still moves with it. */
+  --radius-glyph: calc(var(--radius-xs) / 2);
+
   --shadow-overlay: 0 8px 24px var(--color-shadow);
 }
 
@@ -309,77 +494,16 @@
 }
 
 /* ---------------------------------------------------------------------------------------
-   No visible focus indicator, anywhere. Owner decision 2026-09-10; recorded in
-   `docs/STATUS.md` §7 and `docs/research/assistant-ui-design.md` "Applied 2026-09-10".
-   Keyboard focus is deliberately invisible app-wide: this is an accessibility regression the
-   owner asked for, not an oversight. There are no skip links; the two `.sr-only` labels
-   (`src/Launch.tsx:378`, `src/components/Sidebar.tsx:751`) label inputs and never take focus,
-   so nothing here needs an outline escape hatch.
+   Sidebar, workspace chrome, navigation rows and tooltips — Codex's dark desktop treatment.
+   Every number below is cited to `docs/research/codex-sidebar.md`, which read them out of the
+   shipping ChatGPT.app bundle; the section numbers in the comments are that file's.
 
-   This block is UNLAYERED on purpose. Tailwind's utilities live in `@layer utilities`, and an
-   unlayered author rule beats any layered one whatever the specificity, so none of the kit's
-   `focus-visible:` classes need deleting from the copied files in `src/components/ui/`.
-
-   Three things draw focus in this tree and all three are killed below.
+   These rules are UNLAYERED on purpose, like the focus block above. Tailwind's utilities live
+   in `@layer utilities`, so an unlayered declaration beats them whatever their specificity —
+   which is what lets the kit's own `sidebar.tsx` classes (`h-8`, `rounded-md`, `text-xs`,
+   `[&_svg]:size-4`, the variant-prefixed `peer-data-[size=default]/menu-button:top-1.5`) stand
+   in the copied file untouched while brigadier renders Codex's geometry.
    --------------------------------------------------------------------------------------- */
-
-/* 1. Outlines. The `*` sweep covers editor widgets and the opening screen, which are not
-      Tailwind's; the `:focus` / `:focus-visible` pair states the intent for elements. */
-*, *::before, *::after { outline: none !important; }
-:focus, :focus-visible, [data-focus-visible] { outline: none; }
-
-/* 2. Ring shadows. Measured at tailwindcss 4.3.3: `focus-visible:ring-[3px]` emits
-      `--tw-ring-shadow: var(--tw-ring-inset,) 0 0 0 calc(3px + var(--tw-ring-offset-width))
-      var(--tw-ring-color, currentcolor)` plus the five-part `box-shadow` composite, and
-      `focus-visible:ring-ring/50` emits only `--tw-ring-color: color-mix(in oklab,
-      var(--ring) 50%, transparent)`. Overwriting both variables leaves the composite in
-      place — so a real `shadow-*` on a focused element survives — with the ring itself gone.
-      `aria-invalid` rings are validation, not focus, and are excluded: they set the same two
-      variables from `[aria-invalid="true"]`, which is why the `:not()` is here.
-
-      The `[class*="focus-visible:ring"]` gate is load-bearing, not decoration. Every ring on
-      an element shares one `--tw-ring-shadow` slot, and five kit surfaces draw a decorative
-      hairline with a NON-focus `ring-1 ring-foreground/10` — `popover-content`,
-      `dialog-content`, `select-content`, the sonner toast body, and `avatar` with `ring-2
-      ring-background`. Base UI focuses a popup when it opens, so an ungated rule erased those
-      hairlines the moment the dialog took focus. Checked 2026-09-10: no element in this tree
-      carries both a static ring and a `focus-visible:ring`, so gating on the literal class
-      string separates them exactly. A future focus ring written as `focus:ring-*` rather than
-      `focus-visible:ring-*` would slip past this gate; add it to the selector if one appears. */
-[class*="focus-visible:ring"]:focus-visible:not([aria-invalid="true"]),
-[class*="focus-visible:ring"][data-focus-visible]:not([aria-invalid="true"]) {
-  --tw-ring-color: transparent;
-  --tw-ring-shadow: 0 0 #0000;
-}
-
-/* 3. `focus-visible:border-ring` — `border-color: var(--ring)`, a 1px blue edge that is a
-      focus indicator by any other name. It cannot be neutralised generically, because the
-      value to restore is whatever the component's resting border was, so the nine kit
-      components that carry the class are named by their own `data-slot`. Seven of them rest
-      at `border-transparent`; `:where()` keeps that selector at the same weight as the rest. */
-:where(
-  [data-slot="button"],
-  [data-slot="badge"],
-  [data-slot="input"],
-  [data-slot="textarea"],
-  [data-slot="select-trigger"],
-  [data-slot="tabs-trigger"]
-):focus-visible:not([aria-invalid="true"]) {
-  border-color: transparent;
-}
-/* The other three rest on a real border; each is put back to the value its own resting
-   utility sets (`border-input`, `data-checked:border-primary`, `data-unchecked:border-foreground/20`). */
-[data-slot="checkbox"]:focus-visible:not([aria-invalid="true"]),
-[data-slot="toggle"]:focus-visible:not([aria-invalid="true"]) {
-  border-color: var(--color-input);
-}
-[data-slot="checkbox"][data-checked]:focus-visible:not([aria-invalid="true"]),
-[data-slot="switch"][data-checked]:focus-visible:not([aria-invalid="true"]) {
-  border-color: var(--primary);
-}
-[data-slot="switch"][data-unchecked]:focus-visible:not([aria-invalid="true"]) {
-  border-color: color-mix(in oklab, var(--foreground) 20%, transparent);
-}
 
 /* The sidebar alone reveals the native macOS material; the thread stays opaque. */
 :root[data-sidebar-vibrancy="true"],
@@ -387,77 +511,90 @@
 :root[data-sidebar-vibrancy="true"] .launch-app {
   background: transparent;
 }
-:root[data-sidebar-vibrancy="true"] .app-navigation {
-  background: var(--color-sidebar-tint);
+/* §1: "the sidebar is a 70% tint of `--color-surface-tertiary` painted over the macOS `menu`
+   vibrancy material". The rendered grey is not predictable from the tint alone — macOS applies
+   its own blend — so the token is the tint, not a sampled colour. */
+:root[data-sidebar-vibrancy="true"] .app-navigation,
+:root[data-sidebar-vibrancy="true"] .workspace-chrome {
+  background: color-mix(in srgb, var(--sidebar) 70%, transparent);
+}
+/* §1, "What happens when the window loses focus": Codex calls `setVibrancy(null)` and paints an
+   opaque backdrop. Tauri has no per-event equivalent, so `use-sidebar-vibrancy.ts` writes
+   `data-window-focused="false"` off `onFocusChanged` and the flat colour is painted here.
+   Text colours are unchanged, per the owner's 2026-09-10 decision. */
+:root[data-window-focused="false"] .app-navigation,
+:root[data-window-focused="false"] .workspace-chrome,
+:root[data-window-focused="false"][data-sidebar-vibrancy="true"] .app-navigation,
+:root[data-window-focused="false"][data-sidebar-vibrancy="true"] .workspace-chrome {
+  background: var(--sidebar);
 }
 .app-shell {
   --window-controls-inset: 14px;
   --chrome-height: 46px;
+  /* Traffic lights, then toggle · pencil · divider · folder · title (§4.10). Fixed rather than
+     content-sized so `.project-topbar` can reserve exactly this much and never overlap it. */
+  --chrome-collapsed-width: calc(var(--window-controls-inset) + 244px);
   position: relative;
-  /* Browser-only backdrop: native vibrancy overrides this with real window material. */
-  background:
-    radial-gradient(
-      ellipse 320px 600px at 0 0,
-      var(--color-sidebar-blue),
-      transparent
-    ),
-    radial-gradient(
-      ellipse 300px 700px at 0 100%,
-      var(--color-sidebar-teal),
-      transparent
-    ),
-    var(--color-sidebar);
+  /* One flat colour. The blue/teal radial gradients that stood here until 2026-09-10 were a
+     browser-only backdrop; the owner replaced them with the surface itself. */
+  background: var(--background);
 }
 .workspace-chrome {
   position: absolute;
   inset: 0 auto auto 0;
   z-index: 40;
   height: var(--chrome-height);
-  gap: 8px;
-  width: 264px;
+  /* §4.10: the collapsed content row is `gap-1.5` = 6px. */
+  gap: 6px;
+  width: var(--sidebar-width, 275px);
   padding-left: var(--window-controls-inset);
-  border-right: 1px solid var(--color-hairline);
+  padding-right: var(--sidebar-row-padding-x);
+  border-right: 1px solid var(--sidebar-border);
   border-bottom: 1px solid transparent;
-  background: var(--color-sidebar);
+  background: var(--sidebar);
   transition: width 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
-:root[data-sidebar-vibrancy="true"] .workspace-chrome {
-  background: var(--color-sidebar-tint);
-}
 .app-shell[data-sidebar-open="false"] .workspace-chrome {
-  width: calc(var(--window-controls-inset) + 68px);
+  width: var(--chrome-collapsed-width);
   border-right: 0;
-  border-bottom: 1px solid var(--color-hairline);
-  background: var(--color-canvas);
-}
-.app-shell[data-sidebar-open="false"] .workspace-chrome::after {
-  content: "";
-  position: absolute;
-  inset: 12px 0 12px auto;
-  width: 1px;
-  background: var(--color-hairline);
+  border-bottom: 1px solid var(--sidebar-border);
+  background: var(--background);
 }
 .project-topbar {
   height: var(--chrome-height, 46px);
   transition: padding-left 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 .app-shell[data-sidebar-open="false"] .project-topbar {
-  padding-left: calc(var(--window-controls-inset) + 84px);
+  padding-left: calc(var(--chrome-collapsed-width) + 8px);
+}
+/* The collapsed chrome now carries the session title (§4.10), and `ProjectWorkbench.tsx`'s own
+   header carries it too. Two copies of the same string, side by side, is worse than either; the
+   workbench's is hidden while the sidebar is collapsed. Its `⋯` session menu is a sibling of
+   the title inside `.session-heading` and deliberately stays. */
+.app-shell[data-sidebar-open="false"] .project-topbar .session-title {
+  display: none;
 }
 .app-shell[data-sidebar-peek="true"] .workspace-chrome {
   border-top-right-radius: var(--radius-lg);
-  width: 264px;
+  width: var(--sidebar-width, 275px);
   border-bottom-color: transparent;
-  border-right: 1px solid var(--color-hairline);
+  border-right: 1px solid var(--sidebar-border);
+  background: var(--sidebar);
 }
-.app-shell[data-sidebar-peek="true"] .workspace-chrome::after {
-  display: none;
-}
-.app-shell[data-sidebar-peek="true"] .collapsed-new-chat {
+.app-shell[data-sidebar-peek="true"] .collapsed-chrome {
   visibility: hidden;
 }
+/* `App.tsx` stamps `data-resizing` on `.app-shell` for the duration of a sidebar drag; a 220ms
+   width transition would lag the pointer by a fifth of a second. */
+.app-shell[data-resizing="true"] .workspace-chrome,
+.app-shell[data-resizing="true"] .project-topbar,
+.app-shell[data-resizing="true"] .sidebar-shell,
+.app-shell[data-resizing="true"] .sidebar-shell .app-navigation {
+  transition: none;
+}
 .sidebar-shell {
-  width: 264px;
+  width: var(--sidebar-width, 275px);
+  min-width: 0;
   flex: 0 0 auto;
   transition: width 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
@@ -469,6 +606,7 @@
   position: fixed;
   inset: var(--chrome-height) auto 0 0;
   z-index: 30;
+  width: var(--sidebar-width, 275px);
   height: calc(100dvh - var(--chrome-height));
   clip-path: inset(0 0 0 0);
   transition: clip-path 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
@@ -480,32 +618,294 @@
   border-bottom-right-radius: var(--radius-lg);
   clip-path: inset(0 0 0 0);
   box-shadow: var(--shadow-overlay);
-  background: var(--color-canvas);
+  background: var(--sidebar);
 }
 :root[data-sidebar-vibrancy="true"]
   .sidebar-shell[data-peek="true"]
   .app-navigation {
-  background: var(--color-canvas);
+  background: var(--sidebar);
 }
 
-/* Compact rows retain their text/icon alignment and wrapper-free row actions. */
+/* --- collapsed chrome (§4.10): toggle · pencil · 1px divider · folder · session title ---- */
+.collapsed-chrome {
+  gap: 6px;
+}
+/* §4.2: a 28 × 28 ghost toolbar button, radius-lg = 12.5px, idle ink `text-tertiary`. */
+.workspace-chrome .chrome-button {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: var(--sidebar-row-radius);
+  color: var(--sidebar-text-muted);
+}
+.workspace-chrome .chrome-button:hover:not(:disabled) {
+  background: var(--sidebar-accent);
+  color: var(--sidebar-foreground);
+}
+.workspace-chrome .chrome-button svg {
+  width: var(--sidebar-icon-size);
+  height: var(--sidebar-icon-size);
+  color: currentColor;
+}
+.chrome-divider {
+  flex: none;
+  width: 1px;
+  height: 12px;
+  background: var(--sidebar-border);
+}
+.chrome-session {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+.chrome-session-icon {
+  flex: none;
+  width: var(--sidebar-icon-size);
+  height: var(--sidebar-icon-size);
+  color: var(--sidebar-text-muted);
+}
+.chrome-session-title {
+  min-width: 0;
+  font-size: var(--sidebar-font-size);
+  font-weight: var(--sidebar-font-weight);
+  line-height: var(--sidebar-line-height);
+  color: var(--sidebar-text-idle);
+}
+
+/* ---------------------------------- the panel itself ----------------------------------- */
+/* §2c: the system UI face at 14px / weight 430 / line-height 1.5. 430 is a variable-font weight
+   between Regular and Medium; SF on macOS is variable, so it renders as its own step rather
+   than snapping to 400. §2b: the nav dims its ink to 85% and the active row goes back to 100%. */
+.app-navigation {
+  font-size: var(--sidebar-font-size);
+  font-weight: var(--sidebar-font-weight);
+  line-height: var(--sidebar-line-height);
+  color: var(--sidebar-text-idle);
+}
+.navigation-header {
+  padding: 0 var(--sidebar-row-padding-x) var(--sidebar-row-padding-x);
+}
+/* §4.1: `gap-4` between sections = 16px, `pb-row-x` = 8px at the bottom. */
+.navigation-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sidebar-section-gap);
+  padding-bottom: var(--sidebar-row-padding-x);
+}
+/* §4.5: the section wrapper is `relative px-row-x` — the 8px side inset lives on the section,
+   not on each row, so the hover pill is the full width minus 8px on each side (§7). */
+.navigation-section {
+  position: relative;
+  padding-inline: var(--sidebar-row-padding-x);
+}
+.app-navigation .navigation-section-title {
+  display: flex;
+  align-items: center;
+  height: auto;
+  min-height: 24px;
+  padding-block: 0;
+  padding-inline-start: var(--sidebar-row-padding-x);
+  border-radius: 0;
+  font-size: var(--sidebar-font-size);
+  font-weight: 500;
+  line-height: var(--sidebar-line-height);
+  /* §4.5: `text-tertiary opacity-75`. */
+  color: var(--sidebar-text-muted);
+  opacity: 0.75;
+}
+/* §4.4: `flex flex-col gap-px` — 1px between rows in Codex, `--sidebar-row-gap` here. */
+.app-navigation .navigation-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sidebar-row-gap);
+}
+/* A project group is one `.navigation-item`: the project row plus its collapsible session list
+   (`src/components/Sidebar.tsx`, the `SidebarMenuItem` per project). Only the Projects list gets
+   the extra break — the header menu and the other sections are flat row lists, where the row gap
+   is the whole story. Separation between two groups is therefore the row gap plus this margin. */
+.app-navigation
+  [aria-label="Projects"]
+  .navigation-rows
+  > .navigation-item
+  + .navigation-item {
+  margin-top: var(--sidebar-group-gap);
+}
+.app-navigation .navigation-item {
+  position: relative;
+}
+
+/* §4.4 verbatim: 30px tall, 8px side padding, 8px icon↔label gap, radius-lg = 12.5px squircle,
+   hover AND active both `rgba(255,255,255,0.078)`, and `--cursor-interaction: default` — Codex
+   puts no pointer cursor on a nav row. */
 .app-navigation .navigation-row {
-  height: 28px;
-  padding-block: 2px;
-  border-radius: 8px;
+  display: flex;
+  width: 100%;
+  height: var(--sidebar-row-height);
+  align-items: center;
+  gap: var(--sidebar-row-padding-x);
+  padding-block: 0;
+  padding-inline: var(--sidebar-row-padding-x);
+  border-radius: var(--sidebar-row-radius);
+  font-size: var(--sidebar-font-size);
+  font-weight: var(--sidebar-font-weight);
+  line-height: var(--sidebar-line-height);
+  color: var(--sidebar-text-idle);
+  text-align: left;
+  cursor: default;
 }
-/* `.navigation-action` was in this rule until 2026-09-10. It is not any more: the row action is a
-   20px box (`SidebarMenuAction` in `src/components/controls/sidebar.tsx`) centred in the 28px row
-   by `inset-y-0 my-auto`, and an unlayered `height: 28px` here would beat that `size-5` utility
-   and stretch the hover fill back to full row height. `.folder-toggle` is still a full-height
-   invisible hit target and keeps it. */
-.app-navigation .folder-toggle {
-  height: 28px;
+.app-navigation .navigation-row:hover,
+.app-navigation .navigation-row[data-active]:not([data-active="false"]) {
+  background: var(--sidebar-accent);
+}
+/* §6, behaviour 1: the label, not the fill, carries the active state. */
+.app-navigation .navigation-row[data-active]:not([data-active="false"]) {
+  color: var(--sidebar-accent-foreground);
+}
+.app-navigation .navigation-row[data-active]:not([data-active="false"]) svg {
+  color: var(--sidebar-icon-active);
+}
+/* The row labels carry `text-text` at their call sites, which is the app's primary ink and not
+   Codex's; `inherit` hands them back to the row, where the idle/active pair above governs.
+   `Sidebar.test.tsx` still asserts the class, and it still means "primary, not secondary". */
+.app-navigation .project-label,
+.app-navigation .session-label {
+  color: inherit;
+}
+.app-navigation .navigation-row svg {
+  width: var(--sidebar-icon-size);
+  height: var(--sidebar-icon-size);
+  color: inherit;
+}
+/* The status dot/spinner is not a row icon and keeps its own 11px box. */
+.app-navigation .navigation-row .session-indicator svg,
+.app-navigation .navigation-row .project-indicator svg {
+  width: 11px;
+  height: 11px;
+}
+/* §4.6: nested thread rows sit 8px (section) + 28px (one indent level) = 36px from the edge. */
+.app-navigation .navigation-sessions .navigation-row {
+  padding-inline-start: calc(
+    var(--sidebar-row-padding-x) + var(--sidebar-indent)
+  );
+}
+.app-navigation .navigation-sessions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sidebar-row-gap);
+  padding-top: var(--sidebar-row-gap);
+}
+/* §4.7: the empty placeholder is `text-codex-description opacity-50`, 14px, aligned with the
+   nested titles. */
+.app-navigation .navigation-empty {
+  display: flex;
+  align-items: center;
+  min-height: var(--sidebar-row-height);
+  padding-inline: calc(var(--sidebar-row-padding-x) + var(--sidebar-indent))
+    var(--sidebar-row-padding-x);
+  color: var(--sidebar-text-muted);
+  opacity: 0.5;
+}
+.app-navigation .navigation-notice {
+  padding-inline: var(--sidebar-row-padding-x);
+  color: var(--sidebar-text-muted);
+}
+/* §4.8: a 46px footer row, 8px side padding, 8px gap, over a hairline. */
+.navigation-footer {
+  display: flex;
+  height: 46px;
+  align-items: center;
+  gap: var(--sidebar-row-padding-x);
+  padding-inline: var(--sidebar-row-padding-x);
+  border-top: 1px solid var(--sidebar-border);
 }
 
-.group\/session .navigation-action svg {
+/* The header's own controls (search, notifications, new note) and the footer's settings gear.
+   §4.3: Codex's `compact` toolbar button — 24 × 24, radius-md = 10px, `text-tertiary`, the same
+   `rgba(255,255,255,0.078)` hover fill as a row. The measured radius-md is 10px, which is
+   `--radius-row` on brigadier's scale. */
+.app-navigation .navigation-icon-button {
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  padding: 4px;
+  border-radius: var(--radius-row);
+  color: var(--sidebar-text-muted);
+}
+.app-navigation .navigation-icon-button:hover:not(:disabled) {
+  background: var(--sidebar-accent);
+  color: var(--sidebar-foreground);
+}
+.app-navigation .navigation-icon-button svg {
+  width: var(--sidebar-icon-size);
+  height: var(--sidebar-icon-size);
+  color: currentColor;
+}
+/* §4.3: the app-name row is 17px / 24px in the emphasis ink. Codex sets it in OpenAI Sans;
+   brigadier has one face, so only the size and weight carry over. */
+.app-navigation .navigation-title {
+  color: var(--sidebar-foreground);
+  line-height: 24px;
+}
+.app-navigation .session-indicator {
+  inset-block: 0;
+  height: auto;
+}
+
+/* A 20px row action centred in the 30px row. Everything here — position, box, radius, ink —
+   overrides the kit's `absolute end-1 top-1.5 … w-5 rounded-md` and its
+   `peer-data-[size=default]/menu-button:top-1.5`, which would pin the box to the row's top. */
+.app-navigation .navigation-action,
+.app-navigation .section-action {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: 4px;
+  display: flex;
+  width: 20px;
+  min-width: 20px;
+  height: 20px;
+  margin-block: auto;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: var(--radius-row-action);
+  color: var(--sidebar-text-muted);
+}
+.app-navigation .navigation-action:hover:not(:disabled),
+.app-navigation .section-action:hover:not(:disabled) {
+  background: var(--sidebar-accent);
+  color: var(--sidebar-foreground);
+}
+.app-navigation .navigation-action svg,
+.app-navigation .section-action svg {
   width: 14px;
   height: 14px;
+  color: currentColor;
+}
+.app-navigation .folder-toggle {
+  height: var(--sidebar-row-height);
+  color: var(--sidebar-text-idle);
+}
+.app-navigation .folder-toggle:hover {
+  color: var(--sidebar-foreground);
+}
+
+/* §6, behaviour 2: long row labels fade under a 1rem gradient mask; they do not ellipsise.
+   Codex's rem is 16px, so the stop is written in px rather than inherited from this app's
+   14px root. The footer e-mail is the documented exception and keeps `truncate`. */
+.text-fade-truncate {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: clip;
+  /* A mask reads alpha only, so the stop colour is opacity, not a theme decision; the CSS
+     keyword keeps it out of the palette. */
+  mask-image: linear-gradient(to right, black calc(100% - 16px), transparent);
+  -webkit-mask-image: linear-gradient(
+    to right,
+    black calc(100% - 16px),
+    transparent
+  );
 }
 
 .sidebar-reveal {
@@ -522,14 +922,18 @@
     grid-template-rows 200ms cubic-bezier(0.2, 0.8, 0.2, 1),
     visibility 200ms step-end;
 }
+/* §4.5: the disclosure chevron is hidden at rest and permanently visible once the section is
+   collapsed, which is why "Recents ›" shows one and "Projects" does not. */
 .projects-chevron {
   opacity: 0;
+  color: var(--sidebar-text-muted);
   transition:
     opacity 120ms ease,
     transform 200ms ease;
 }
 .group\/section:hover .projects-chevron,
-.group\/section:focus-within .projects-chevron {
+.group\/section:focus-within .projects-chevron,
+.navigation-section-title [aria-expanded="false"] .projects-chevron {
   opacity: 1;
 }
 .row-action,
@@ -548,10 +952,10 @@
 }
 .group\/project:hover .project-row,
 .group\/project:has(.row-action[aria-expanded="true"]) .project-row {
-  background: var(--color-hover);
+  background: var(--sidebar-accent);
 }
-.group\/project .project-row[data-active="true"] {
-  background: var(--color-selected);
+.group\/project .project-row[data-active]:not([data-active="false"]) {
+  background: var(--sidebar-accent);
 }
 .group\/project:hover .project-label,
 .group\/project:focus-within .project-label {
@@ -559,7 +963,7 @@
 }
 .group\/session:hover .session-row,
 .group\/session:focus-within .session-row {
-  padding-right: 56px;
+  padding-inline-end: 56px;
 }
 .session-status-spinner svg {
   width: 11px;
@@ -576,15 +980,50 @@
 .group\/project:hover .project-indicator {
   display: none;
 }
+
+/* ------------------------------------- tooltips ---------------------------------------- */
+/* §4.9 measures the pill at `rgb(45,45,45)`, radius-2xl = 20px, a 1px `--color-border` edge,
+   13px `#dfdfdf`, 8px inline × 6px block padding, and 8px between the label and its keycap.
+   Every one of those is a token as of 2026-09-11 — `--tooltip` (unified onto `--popover`, two
+   units away), `--radius-tooltip`, `--tooltip-border`, `--tooltip-foreground`. This is the app's only
+   tooltip treatment — the owner's 2026-09-10 decision restyles all of them.
+   `glass-surface` stays on the element (`Sidebar.test.tsx:165` asserts it); the pill class is
+   two selectors deep, so it wins over the `@supports` and reduced-transparency rules for
+   `.glass-surface` below whatever their order. */
+[data-slot="tooltip-content"].tooltip-pill {
+  gap: 8px;
+  border: 1px solid var(--tooltip-border);
+  border-radius: var(--radius-tooltip);
+  background: var(--tooltip);
+  padding: 6px 8px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--tooltip-foreground);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+/* §4.9: the keycap is `!bg-current/10 !rounded-md !text-xs !text-current` — it tracks the
+   tooltip's own ink rather than a fixed grey. This beats the kit `Kbd`'s own
+   `[[data-slot=tooltip-content]_&]:bg-background/20` because that rule is in `@layer utilities`
+   and this one is unlayered; `src/components/ui/kbd.tsx` stays a verbatim copy. */
+[data-slot="tooltip-content"] kbd {
+  height: auto;
+  min-width: 0;
+  border: 0;
+  border-radius: var(--radius-keycap);
+  background: color-mix(in srgb, currentColor 10%, transparent);
+  padding: 2px 6px;
+  font-size: 12px;
+  line-height: 1;
+  color: currentColor;
+}
+
 @supports (
   (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))
 ) {
-  .app-navigation,
-  .workspace-chrome {
-    background: var(--color-sidebar-glass);
-    backdrop-filter: blur(28px) saturate(1.15);
-    -webkit-backdrop-filter: blur(28px) saturate(1.15);
-  }
+  /* `.app-navigation` / `.workspace-chrome` were in this rule until 2026-09-10. They are not
+     any more: outside Tauri the sidebar is one flat colour, per the owner's decision. Inside
+     Tauri the real `menu` material does the work. */
   .blur-menu.overlay-surface,
   .glass-surface {
     background: var(--color-menu-glass);
@@ -626,11 +1065,11 @@
 }
 @media (prefers-reduced-transparency: reduce) {
   .app-shell {
-    background: var(--color-canvas);
+    background: var(--background);
   }
   .app-navigation,
   .workspace-chrome {
-    background: var(--color-sidebar);
+    background: var(--sidebar);
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }
@@ -661,7 +1100,7 @@
 }
 .main-tab-strip { scrollbar-width: none; }
 .main-tab-strip::-webkit-scrollbar { display: none; }
-.workbench-tab { font-size: 12px; height: 26px; gap: 4px; border-radius: 7px; padding: 0 4px 0 8px; }
+.workbench-tab { font-size: 12px; height: 26px; gap: 4px; border-radius: var(--radius-tab); padding: 0 4px 0 8px; }
 .workbench-tab .button[data-icon-button="standard"] {
   width: 16px;
   height: 16px;
@@ -672,7 +1111,7 @@
 .workbench-tab .button[data-icon-button="standard"] svg { width: 10px; height: 10px; }
 .workbench-tab > button { opacity: 0; }
 .workbench-tab:hover > button, .workbench-tab:focus-within > button, .workbench-tab[aria-selected="true"] > button { opacity: 1; }
-.note-title-input:focus-visible { outline: none; border-bottom: 1px solid var(--color-text-tertiary); border-radius: 0; }
+.note-title-input:focus-visible { outline: none; border-radius: 0; }
 .workbench-tab .tab-menu { opacity: 0; pointer-events: none; }
 .workbench-tab:hover .tab-menu,
 .workbench-tab:focus-within .tab-menu,
@@ -689,9 +1128,9 @@
   min-width: 12px;
   height: 12px;
   padding: 0 2px;
-  border-radius: 999px;
+  border-radius: var(--radius-badge);
   background: var(--color-attention);
-  color: #fff;
+  color: var(--color-on-accent);
   font-size: 8px;
   font-weight: 600;
   line-height: 12px;
@@ -729,7 +1168,7 @@
 }
 
 .welcome-starters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; width: 100%; max-width: 680px; margin-top: 16px; }
-.welcome-starter.button { height: 108px; padding: 14px; display: flex; flex-direction: column; align-items: flex-start; justify-content: space-between; border: 1px solid var(--color-hairline); border-radius: 14px; white-space: normal; text-align: left; font-size: 12px; font-weight: 400; }
+.welcome-starter.button { height: 108px; padding: 14px; display: flex; flex-direction: column; align-items: flex-start; justify-content: space-between; border: 1px solid var(--color-hairline); border-radius: var(--radius-card); white-space: normal; text-align: left; font-size: 12px; font-weight: 400; }
 .new-conversation h1 { font-size: 24px; font-weight: 400; color: var(--color-text); text-align: center; }
 @media (max-width: 950px) { .welcome-starters { grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: 430px; } .welcome-starter.button { height: 88px; } }
 
@@ -746,7 +1185,7 @@
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }
-.rename-session-dialog { width: min(500px, calc(100vw - 40px)); padding: 24px; border-radius: 22px; }
+.rename-session-dialog { width: min(500px, calc(100vw - 40px)); padding: 24px; border-radius: var(--radius-dialog); }
 .rename-session-dialog .rename-save { background: var(--color-text); color: var(--color-canvas); padding-inline: 20px; }
 .terminal-dock {
   overflow: hidden;
@@ -772,8 +1211,76 @@
 .rename-session-dialog > button[aria-label="Close"] { position: absolute; top: 16px; right: 16px; }
 .rename-session-dialog h2 { font-size: 22px; line-height: 1.3; margin-right: 28px; }
 .rename-session-dialog .rename-description { font-size: 14px; }
-.rename-session-dialog input.input { width: 100%; height: 42px; border: 1px solid var(--color-hairline); border-radius: 9px; font-size: 14px; background: transparent; }
-.rename-session-dialog input.input:focus { border-color: #578cdd; outline: 1px solid #578cdd; outline-offset: -1px; }
+.rename-session-dialog input.input { width: 100%; height: 42px; border: 1px solid var(--color-hairline); border-radius: var(--radius-control); font-size: 14px; background: transparent; }
 .rename-session-dialog form > div:last-child { margin-top: 28px; }
-.rename-session-dialog form > div:last-child > button { min-height: 36px; font-size: 14px; padding-inline: 18px; border: 1px solid var(--color-hairline); border-radius: 10px; }
+.rename-session-dialog form > div:last-child > button { min-height: 36px; font-size: 14px; padding-inline: 18px; border: 1px solid var(--color-hairline); border-radius: var(--radius-control); }
 .session-title.button { flex-shrink: 1; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* phase 2B */
+/* ---------------------------------------------------------------------------------------
+   Owned by worker 2B. Everything above this marker belongs to worker 2A.
+   --------------------------------------------------------------------------------------- */
+
+/* In macOS fullscreen the traffic lights withdraw, so the gutter reserved for them is dead
+   space. `src/window-chrome.css` sets `--window-controls-inset: 90px` from
+   `:root:has(.window-drag-region) .app-shell`, which is specificity (0,3,0); the drag layer
+   is only `display: none`d while the workspace is mounted, so it still matches `:has()` and
+   that rule is live. `:root:root[…]` repeats a selector this element already matches purely
+   to reach (0,4,0), which beats it whichever file the bundler emits last. */
+:root:root[data-fullscreen="true"] .app-shell {
+  --window-controls-inset: 8px;
+}
+
+/* The shared splitter (`src/components/LayoutResizer.tsx`). The element itself is an
+   invisible grab strip; the 1px line is a pseudo-element on its leading edge, so widening
+   the target does not widen the rule. */
+/* No `position` here: Tailwind's `absolute` lives in `@layer utilities`, and an unlayered
+   declaration would beat it. Every call site positions the strip itself, which is also what
+   gives `::after` its containing block. */
+.layout-resizer {
+  background: transparent;
+}
+.layout-resizer::after {
+  content: "";
+  position: absolute;
+  background: transparent;
+  transition: background 120ms ease;
+}
+.layout-resizer[data-orientation="vertical"]::after {
+  inset: 0 auto 0 0;
+  width: 1px;
+}
+.layout-resizer[data-orientation="horizontal"]::after {
+  inset: 0 0 auto 0;
+  height: 1px;
+}
+.layout-resizer:hover::after {
+  background: var(--color-text-tertiary);
+}
+/* Supersedes the pre-2B rule that filled the whole strip; a 16px block of `--color-hover`
+   is a bar, not a splitter. Same specificity, later in the file. */
+.workbench-side .layout-resizer:hover,
+.workbench-side .layout-resizer:focus-visible {
+  background: transparent;
+}
+@media (prefers-reduced-motion: reduce) {
+  .layout-resizer::after {
+    transition: none;
+  }
+}
+
+/* The sidebar's own splitter is a sibling of the sidebar rather than a child of it: the
+   sidebar shell is worker 2A's file, and `.app-shell` is the nearest positioned ancestor.
+   `--sidebar-width` is set inline on `.app-shell` by `src/App.tsx`. */
+.sidebar-resizer {
+  position: absolute;
+  top: var(--chrome-height, 46px);
+  bottom: 0;
+  left: var(--sidebar-width, 275px);
+  z-index: 45;
+  transform: translateX(-50%);
+}
+.app-shell[data-sidebar-open="false"] .sidebar-resizer,
+.app-shell[data-sidebar-peek="true"] .sidebar-resizer {
+  display: none;
+}

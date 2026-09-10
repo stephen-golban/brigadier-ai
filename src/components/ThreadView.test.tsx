@@ -537,3 +537,12 @@ it("greets by display name only while no session is open", async () => {
   view.rerender(<ThreadView {...props} sessionId={null} />);
   expect(await screen.findByRole("heading", { name: "What will you build, Ada?" })).toBeVisible();
 });
+
+it("swaps the greeting for the welcome screen when no project is selected", async () => {
+  const props = { projectId: null, projectName: null, onFile: vi.fn() };
+  render(<ThreadView {...props} sessionId={null} />);
+  expect(screen.getByRole("img", { name: "Brigadier" })).toBeVisible();
+  for (const title of ["New project", "New chat", "Notepad"])
+    expect(screen.getByRole("button", { name: new RegExp(title) })).toBeVisible();
+  expect(screen.queryByRole("heading")).toBeNull();
+});

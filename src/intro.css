@@ -1,8 +1,8 @@
 /* Striped-disc introduction: gather, resolve, settle. The onboarding state machine
    owns readiness; only the action's completed animation unlocks Continue. */
 .launch {
-  --intro-ink: var(--color-text, #ededed);
-  --intro-muted: var(--color-text-secondary, #a3a3a3);
+  --intro-ink: var(--color-text);
+  --intro-muted: var(--color-text-secondary);
   --disc-size: 152px;
   --disc-travel: 120px;
   position: fixed;
@@ -12,7 +12,7 @@
   font-family: var(--font-sans, system-ui, sans-serif);
   overflow: hidden;
   isolation: isolate;
-  background: var(--color-canvas, #181818);
+  background: var(--color-canvas);
 }
 .launch-window { position: absolute; inset: 0; display: grid; place-items: center; padding: 32px 24px; }
 .signal-field { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
@@ -67,7 +67,7 @@
 }
 .welcome-hint {
   min-height: 42px; padding: 11px 16px;
-  border: 0; border-radius: 4px; background: transparent;
+  border: 0; border-radius: var(--radius-xs); background: transparent;
   color: var(--intro-muted); font: inherit; font-size: 13px;
   letter-spacing: .015em; cursor: pointer;
   transition: color .15s ease;
@@ -89,12 +89,12 @@
 .welcome-continue {
   display: inline-flex; align-items: center; justify-content: center; gap: 18px;
   min-height: 42px; padding: 11px 19px;
-  border: 1px solid transparent; border-radius: 8px;
-  background: var(--intro-ink); color: var(--color-canvas, #181818);
+  border: 1px solid transparent; border-radius: var(--radius-control);
+  background: var(--intro-ink); color: var(--color-canvas);
   font: inherit; font-size: 14px; font-weight: 500; cursor: pointer;
   transition: background-color .15s ease, border-color .15s ease;
 }
-.welcome-continue:hover { background: #fff; }
+.welcome-continue:hover { background: white; }
 .welcome-continue:focus-visible, .launch-restart:focus-visible {
   outline: 2px solid var(--intro-ink); outline-offset: 5px;
 }
@@ -119,25 +119,27 @@
 }
 .welcome-name input {
   width: min(340px, 100%); margin-top: 32px; height: 52px;
-  padding: 0 16px; border: 1px solid var(--color-hairline, #414141); border-radius: 8px;
-  background: var(--color-input, #202020); color: var(--intro-ink);
+  padding: 0 16px; border: 1px solid var(--color-hairline); border-radius: var(--radius-control);
+  background: var(--color-input); color: var(--intro-ink);
   font: inherit; font-size: 17px; box-shadow: none;
 }
 .welcome-name input::placeholder { color: var(--intro-muted); }
-.welcome-name input:focus { outline: 2px solid var(--intro-ink); outline-offset: 3px; }
+/* No visible focus indicator anywhere (owner, 2026-09-11); `src/focus-reset.css` sweeps
+   this selector by name, and the rule below is what it sweeps. */
+.welcome-name input:focus { outline: none; }
 .welcome-name .welcome-continue { margin-top: 24px; }
-.welcome-name .welcome-error { color: var(--color-danger, #ffb4ab); font-size: 14px; margin: 14px 0 0; }
+.welcome-name .welcome-error { color: var(--color-error); font-size: 14px; margin: 14px 0 0; }
 .welcome-greeting { text-align: center; max-width: 90%; animation: welcome-resolve .7s both; }
 .launch-loading {
   position: absolute; inset: 0; display: grid; place-content: center; justify-items: center;
-  gap: 12px; background: var(--color-canvas, #181818); color: var(--intro-muted); font-size: 14px;
+  gap: 12px; background: var(--color-canvas); color: var(--intro-muted); font-size: 14px;
 }
 .launch-error {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
   width: min(460px, calc(100% - 40px)); padding: 30px;
-  border: 1px solid var(--color-hairline, #414141); border-radius: 12px;
-  background: var(--color-canvas, #181818); color: var(--intro-ink);
-  box-shadow: 0 25px 100px #0008;
+  border: 1px solid var(--color-hairline); border-radius: var(--radius-card);
+  background: var(--color-canvas); color: var(--intro-ink);
+  box-shadow: 0 25px 100px var(--color-shadow);
 }
 .launch-error h2 { font-size: 22px; margin: 0 0 12px; }
 .launch-error p { font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; margin-bottom: 24px; color: var(--intro-muted); }

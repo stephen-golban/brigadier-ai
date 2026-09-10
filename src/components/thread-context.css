@@ -1,26 +1,26 @@
 .thread-context-wrap { position: absolute; top: 12px; right: 18px; z-index: 12; }
-.thread-context { width: 274px; padding: 18px; background: var(--color-elevated, #292929); border: 1px solid var(--color-hairline, #393939); border-radius: 20px; color: var(--color-text-secondary, #aaa); font-size: 13px; box-shadow: 0 8px 24px #0001; }
-.thread-context h3 { font-size: 12px; font-weight: 400; margin: 0 0 10px; color: var(--color-text-tertiary, #888); }
-.thread-context section + section { border-top: 1px solid var(--color-hairline, #393939); padding-top: 15px; margin-top: 15px; }
-.thread-context .context-row { display:flex; align-items:center; gap:10px; width:100%; min-height:32px; padding:4px 0; font-weight:400; justify-content:flex-start; color:var(--color-text, #eee); background:none; border:0; box-shadow:none; }
+.thread-context { width: 274px; padding: 18px; background: var(--color-elevated); border: 1px solid var(--color-hairline); border-radius: var(--radius-xl); color: var(--color-text-secondary); font-size: 13px; box-shadow: 0 8px 24px var(--shadow-ink-soft); }
+.thread-context h3 { font-size: 12px; font-weight: 400; margin: 0 0 10px; color: var(--color-text-tertiary); }
+.thread-context section + section { border-top: 1px solid var(--color-hairline); padding-top: 15px; margin-top: 15px; }
+.thread-context .context-row { display:flex; align-items:center; gap:10px; width:100%; min-height:32px; padding:4px 0; font-weight:400; justify-content:flex-start; color:var(--color-text); background:none; border:0; box-shadow:none; }
 .thread-context .context-row > span:first-of-type { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .thread-context .context-row svg { flex-shrink:0; width:16px; height:16px; }
 .thread-context .change-count { margin-left:auto; white-space:nowrap; }
-.thread-context-summary { display:flex; gap:8px; align-items:center; justify-content:flex-end; font-size:12px; cursor:pointer; list-style:none; color:var(--color-text-secondary, #aaa); }
+.thread-context-summary { display:flex; gap:8px; align-items:center; justify-content:flex-end; font-size:12px; cursor:pointer; list-style:none; color:var(--color-text-secondary); }
 .thread-context-summary::-webkit-details-marker { display:none; }
 .thread-context-wrap[open] .thread-context-summary { margin-bottom:8px; }
 .conversation-surface { position:relative; }
 .subagents-panel { display:flex; flex-direction:column; flex:1; min-height:0; min-width:0; }
-.subagents-heading { display:flex; align-items:center; gap:10px; min-height:44px; padding:6px 14px; border-bottom:1px solid var(--color-hairline, #393939); font-size:13px; }
+.subagents-heading { display:flex; align-items:center; gap:10px; min-height:44px; padding:6px 14px; border-bottom:1px solid var(--color-hairline); font-size:13px; }
 .subagents-heading span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .subagents-list { overflow:auto; padding:16px 8px; }
-.subagents-list h3 { margin:12px 12px 16px; font-size:12px; font-weight:400; color:var(--color-text-secondary, #aaa); }
-.subagents-list p { margin:16px 12px 28px; font-size:13px; color:var(--color-text-tertiary, #888); }
+.subagents-list h3 { margin:12px 12px 16px; font-size:12px; font-weight:400; color:var(--color-text-secondary); }
+.subagents-list p { margin:16px 12px 28px; font-size:13px; color:var(--color-text-tertiary); }
 .subagents-list .subagent-row { display:flex; width:100%; gap:10px; align-items:center; padding:12px; background:none; border:0; box-shadow:none; text-align:left; height:auto; }
 .subagent-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; font-weight:400; }
-.subagent-name small { display:block; color:var(--color-text-tertiary, #888); font-size:11px; overflow:hidden; text-overflow:ellipsis; }
-.subagent-row > small { font-size:11px; color:var(--color-text-secondary, #aaa); }
-.worker-parent-note { padding:10px 16px; font-size:11px; color:var(--color-text-tertiary, #888); }
+.subagent-name small { display:block; color:var(--color-text-tertiary); font-size:11px; overflow:hidden; text-overflow:ellipsis; }
+.subagent-row > small { font-size:11px; color:var(--color-text-secondary); }
+.worker-parent-note { padding:10px 16px; font-size:11px; color:var(--color-text-tertiary); }
 .worker-composer { flex-shrink:0; padding:10px; }
 .worker-composer .dock-usage { display:none; }
 .subagents-panel .aui-thread-content { padding:18px; }

@@ -21,7 +21,7 @@
   z-index: 1;
 }
 .settings-sidebar {
-  background: #27363b;
+  background: var(--settings-sidebar);
   padding: 48px 8px 24px;
   overflow-y: auto;
 }
@@ -56,13 +56,13 @@
 .settings-nav-search {
   height: 32px;
   padding: 0 10px;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.06);
+  border-radius: var(--radius-control);
+  background: var(--settings-field);
 }
 .settings-section-label {
   display: block;
   margin: 18px 8px 6px;
-  color: #839093;
+  color: var(--settings-label);
   font-size: 14px;
 }
 .settings-archived-label {
@@ -75,14 +75,14 @@
   height: 32px;
   gap: 10px;
   font-size: 14px;
-  border-radius: 8px;
+  border-radius: var(--radius-row);
 }
 .settings-nav-item[aria-current="page"] {
-  background: rgba(255, 255, 255, 0.09);
+  background: var(--settings-nav-current);
 }
 .settings-nav-item.button svg,
 .settings-back.button svg {
-  color: #d6dfe0;
+  color: var(--settings-sidebar-ink);
 }
 .settings-search-empty {
   padding: 12px 8px;
@@ -110,11 +110,11 @@
   letter-spacing: -0.4px;
 }
 .archive-delete-all.button {
-  color: #f26767;
-  background: rgba(218, 73, 73, 0.11);
+  color: var(--settings-danger);
+  background: var(--settings-danger-surface);
   padding: 0 10px;
   height: 29px;
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   font-size: 14px;
   gap: 5px;
 }
@@ -164,17 +164,17 @@
   flex: 1;
   height: 34px;
   padding: 0 12px;
-  border-radius: 20px;
-  background: #2b2b2b;
-  border: 1px solid #484848;
+  border-radius: var(--radius-xl);
+  background: var(--settings-search);
+  border: 1px solid var(--settings-search-border);
 }
 .archive-filter.button {
   height: 30px;
   min-width: 140px;
   max-width: 200px;
   padding: 0 10px;
-  border: 1px solid #333;
-  background: #202020;
+  border: 1px solid var(--settings-filter-border);
+  background: var(--settings-filter);
   font-size: 14px;
   gap: 8px;
 }
@@ -211,9 +211,9 @@
   height: 22px;
 }
 .archive-rows {
-  background: #232323;
-  border: 1px solid #343434;
-  border-radius: 16px;
+  background: var(--settings-panel);
+  border: 1px solid var(--settings-panel-border);
+  border-radius: var(--radius-card);
   padding: 0 16px;
   overflow: hidden;
 }
@@ -223,7 +223,7 @@
   gap: 12px;
   min-height: 60px;
   padding: 12px 0;
-  border-bottom: 1px solid #2d2d2d;
+  border-bottom: 1px solid var(--settings-panel-divider);
 }
 .archive-row:last-child {
   border-bottom: 0;
@@ -252,20 +252,20 @@
 }
 .archive-row-delete.button:hover,
 .archive-row-delete.button:hover svg {
-  color: #f26767;
+  color: var(--settings-danger);
 }
 .archive-unarchive.button {
-  background: #2e2e2e;
+  background: var(--settings-button);
   font-size: 14px;
   height: 29px;
   padding: 0 10px;
-  border-radius: 10px;
+  border-radius: var(--radius-control);
 }
 .archive-unarchive.button:hover {
-  background: #3a3a3a;
+  background: var(--settings-button-hover);
 }
 .archive-row-highlight {
-  background: rgba(255, 255, 255, 0.07);
+  background: var(--settings-row-highlight);
   margin: 0 -16px;
   padding-left: 16px;
   padding-right: 16px;

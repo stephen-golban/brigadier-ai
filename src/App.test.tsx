@@ -26,7 +26,14 @@
  * `performance.mark` to the surface area.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, render, screen, within } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import type { PeerData } from "./peerApi";
@@ -794,4 +801,134 @@ it("does not navigate back when startup completes after the user selected anothe
   await userEvent.click(screen.getByRole("button", {name:"Session isting"}));
   await act(async () => resolve(view("created", "p-live")));
   expect(screen.getByRole("button", {name:"Show conversation"})).toHaveTextContent("Session isting");
+});
+
+/*
+ * The sidebar's own splitter — `LayoutResizer` mounted from `App.tsx` as a sibling of the
+ * sidebar, because the shell element belongs to `components/controls/sidebar.tsx`.
+ * `src/components/LayoutResizer.test.tsx` pins the gesture; what only the shell can pin is
+ * where the width lands and what a drag past the minimum does. `localStorage` is not cleared
+ * between tests in this file, so both keys are set explicitly.
+ */
+describe("resizing the sidebar", () => {
+  const shellWidth = () =>
+    document
+      .querySelector<HTMLElement>(".app-shell")
+      ?.style.getPropertyValue("--sidebar-width");
+  beforeEach(() => {
+    localStorage.removeItem("brigadier:sidebar-width");
+    localStorage.setItem("brigadier:sidebar-open", "true");
+  });
+
+  it("publishes the width on the shell and stores a nudge", async () => {
+    await mountApp();
+    const handle = screen.getByRole("separator", { name: "Resize sidebar" });
+    expect(handle).toHaveAttribute("aria-valuemin", "240");
+    expect(handle).toHaveAttribute("aria-valuenow", "275");
+    expect(shellWidth()).toBe("275px");
+    await act(async () => {
+      fireEvent.keyDown(handle, { key: "ArrowRight" });
+    });
+    expect(localStorage.getItem("brigadier:sidebar-width")).toBe("299");
+    expect(shellWidth()).toBe("299px");
+  });
+
+  it("collapses rather than clamping when a nudge crosses the minimum", async () => {
+    localStorage.setItem("brigadier:sidebar-width", "245");
+    await mountApp();
+    await act(async () => {
+      fireEvent.keyDown(
+        screen.getByRole("separator", { name: "Resize sidebar" }),
+        { key: "ArrowLeft" },
+      );
+    });
+    expect(localStorage.getItem("brigadier:sidebar-open")).toBe("false");
+    // The stored width goes back to the default, so reopening is not a 1px sliver.
+    expect(localStorage.getItem("brigadier:sidebar-width")).toBe("275");
+  });
+});
+
+/*
+ * A **global** new chat — the sidebar button, ⌘N, or the welcome screen's own row, all of which
+ * arrive as `brigadier-new-chat` — starts with no project picked. Only the shell can pin this:
+ * the state is `App`'s, and what makes it hard to hold is the missing-project effect, which
+ * exists precisely to force `selectedProjectId` back to `projects[0]`.
+ */
+describe("a global new chat", () => {
+  const navigation = () =>
+    within(screen.getByRole("navigation", { name: "Projects" }));
+  const welcomeRow = () =>
+    screen.findByRole("button", {
+      name: /Start a conversation in a project/,
+    });
+
+  beforeEach(() => {
+    h.projects = [
+      project("p-live", "job-portal"),
+      project("p-two", "design-system"),
+    ];
+  });
+
+  it("picks no project, and the first pick leaves the state", async () => {
+    const user = userEvent.setup();
+    await mountApp();
+    expect(navigation().getByRole("button", { name: "job-portal" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+
+    await act(async () => {
+      window.dispatchEvent(new Event("brigadier-new-chat"));
+    });
+
+    // The welcome screen, not the project greeting; and `projects[0]` was NOT re-selected.
+    expect(await welcomeRow()).toBeVisible();
+    expect(
+      navigation().getByRole("button", { name: "job-portal" }),
+    ).not.toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("button", { name: "Project" })).toHaveTextContent(
+      "Choose a project",
+    );
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Project" }));
+    await user.click(await screen.findByRole("option", { name: "design-system" }));
+
+    expect(
+      screen.queryByText("Start a conversation in a project"),
+    ).toBeNull();
+    expect(
+      navigation().getByRole("button", { name: "design-system" }),
+    ).toHaveAttribute("aria-current", "page");
+  });
+
+  it("opens the composer's project picker rather than doing nothing when asked twice", async () => {
+    const user = userEvent.setup();
+    await mountApp();
+    await act(async () => {
+      window.dispatchEvent(new Event("brigadier-new-chat"));
+    });
+    await user.click(await welcomeRow());
+    expect(
+      await screen.findByRole("listbox", { name: "Project" }),
+    ).toBeVisible();
+  });
+
+  it("keeps the project-scoped new chat on its own project", async () => {
+    const user = userEvent.setup();
+    await mountApp();
+    await act(async () => {
+      window.dispatchEvent(new Event("brigadier-new-chat"));
+    });
+    expect(await welcomeRow()).toBeVisible();
+    await user.click(
+      navigation().getByRole("button", { name: "New session in design-system" }),
+    );
+    expect(
+      screen.queryByText("Start a conversation in a project"),
+    ).toBeNull();
+    expect(
+      navigation().getByRole("button", { name: "design-system" }),
+    ).toHaveAttribute("aria-current", "page");
+  });
 });

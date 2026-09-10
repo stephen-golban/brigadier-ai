@@ -1,0 +1,221 @@
+/* ---------------------------------------------------------------------------------------
+   No visible focus indicator, anywhere. Owner decision 2026-09-10, restated 2026-09-11.
+   Recorded in `docs/STATUS.md` §7.
+
+   Keyboard focus is deliberately invisible app-wide. This is an accessibility regression the
+   owner asked for, not an oversight. There are no skip links; the two `.sr-only` labels
+   (`src/Launch.tsx`, `src/components/Sidebar.tsx`) label inputs and never take focus, so
+   nothing here needs an escape hatch.
+
+   Four things can draw focus and all four are killed here: an `outline`, a Tailwind `ring`
+   (a `box-shadow`), a `border-color` change, and a hand-written `box-shadow` glow.
+
+   WHY EVERY RULE IS `!important`, AND WHY THIS FILE IS UNLAYERED
+   This file is imported from `src/index.css` immediately after `@import "tw-animate-css"`,
+   so its rules are emitted BEFORE the rest of `index.css` and before the six component
+   stylesheets Vite pulls in from their own modules (`intro.css`, `composer.css`,
+   `settings.css`, `peer.css`, `elements.css`, `panels.css`). Those files are unlayered too,
+   so source order would beat this file on equal specificity. `!important` makes the outcome
+   independent of emission order. Nothing else in `src/` sets `!important` on a focus
+   property except `index.css`'s own `* { outline: none !important }`, which agrees with
+   rule 1 below.
+
+   WHY SO MANY SELECTORS CARRY A REDUNDANT `:root `
+   Measured 2026-09-11 on `npm run build`: esbuild's CSS minifier drops an earlier rule when a
+   LATER rule has a byte-identical selector and sets the same properties — and it does that
+   without regard for `!important`. Three rules in an earlier draft of this file
+   (`.layout-resizer:focus-visible::after` and its two orientation siblings) vanished from
+   `dist/assets/*.css` for exactly that reason, silently restoring the blue focus bar in the
+   production bundle while the dev server looked correct. Every selector here that also exists
+   verbatim in `src/index.css` or `src/intro.css` is therefore prefixed with `:root `, which
+   matches the same elements, raises specificity harmlessly, and is textually distinct so the
+   dedup cannot fire. Do not "tidy" these away.
+
+   WHAT IS DELIBERATELY LEFT ALONE
+   - `background` / `opacity` changes on `:focus-visible` (`.permission-option`,
+     `.effort-levels > button`, `.setup-menu-option`, `.execution-models > button`,
+     `focus-within:bg-hover`, `group-focus-within/*:opacity-100`). These mirror `:hover`
+     and are what makes a keyboard-driven menu usable at all. They are not outlines, rings,
+     border colours or glows.
+   - `aria-invalid` rings. Validation is not focus; it sets the same two ring variables, so
+     every ring rule below carries `:not([aria-invalid="true"])`.
+   --------------------------------------------------------------------------------------- */
+
+/* 1. Outlines. The `*` sweep covers the VS Code workbench, Monaco widgets and the opening
+      screen, none of which are Tailwind's. `outline: none` as a shorthand carries the
+      `!important` down to `outline-style`, so the kit's `focus-visible:outline-1` /
+      `focus-visible:outline-ring` (`tabs.tsx`, `scroll-area.tsx`, `WorkTrace.tsx`) and the
+      hand-written `outline: 2px solid` in `intro.css` and `peer.css` are all inert. */
+*,
+*::before,
+*::after,
+:focus,
+:focus-visible,
+:focus-within,
+[data-focus-visible],
+[data-focus] {
+  outline: none !important;
+}
+::-moz-focus-inner {
+  border: 0 !important;
+}
+
+/* 2. Ring shadows, UNGATED.
+      Measured at tailwindcss 4.3.3: `focus-visible:ring-1` emits
+      `--tw-ring-shadow: var(--tw-ring-inset,) 0 0 0 calc(1px + var(--tw-ring-offset-width))
+      var(--tw-ring-color, currentcolor)` plus the five-part `box-shadow` composite, and
+      `focus-visible:ring-ring/50` emits only `--tw-ring-color`. Overwriting the variables
+      rather than `box-shadow` leaves the composite intact, so a real `shadow-*` on a focused
+      element survives with the ring itself gone.
+
+      The old `[class*="focus-visible:ring"]` gate in `index.css` is replaced by this rule.
+      That gate missed two live cases:
+        - `ui/field.tsx` FieldLabel writes the ring as
+          `has-[>[data-slot=field]]:has-[:focus-visible]:ring-3` — the literal substring is
+          `focus-visible]:ring`, not `focus-visible:ring`, and the compiled selector is
+          `:has(:focus-visible)`, not `:focus-visible`. It slipped the gate twice over.
+        - a future `focus:ring-*` (rather than `focus-visible:ring-*`) would slip it too.
+
+      The gate existed to protect five kit surfaces that draw a DECORATIVE, non-focus
+      hairline with `ring-1 ring-foreground/10` (or `ring-2 ring-background` on avatars).
+      Base UI focuses a popup the moment it opens, so an ungated rule erased those hairlines.
+      They are excluded by `data-slot` below instead of being re-expressed as `box-shadow`,
+      which is what the work order proposed. Re-expressing them would be WRONG here:
+      `controls/overlay.tsx` and `controls/modal.tsx` wrap the kit's popover, dropdown and
+      dialog and pass `ring-0` (plus their own `border border-hairline shadow-overlay`), so a
+      re-expressed 1px hairline would ADD a line that this app does not currently draw. The
+      exclusion keeps whatever each surface actually resolves to — `ring-0` included — and
+      keeps `shadow-overlay` and sonner's `shadow-[0_8px_24px_-12px_...]` intact for free.
+      None of the excluded slots carries a `focus*:ring-*` class, so nothing focus-drawn
+      hides behind the exclusion. Verified 2026-09-11 against the emitted stylesheet. */
+:is(
+  :focus,
+  :focus-visible,
+  :focus-within,
+  [data-focus-visible],
+  [data-focus]
+):not([aria-invalid="true"]):not(
+  [data-slot="popover-content"],
+  [data-slot="dialog-content"],
+  [data-slot="select-content"],
+  [data-slot="dropdown-menu-content"],
+  [data-slot="dropdown-menu-sub-content"],
+  [data-slot="avatar"],
+  [data-slot="avatar-badge"],
+  [data-slot="avatar-group"],
+  [data-slot="avatar-group-count"],
+  [data-slot="sidebar-inner"],
+  [data-sonner-toast]
+) {
+  --tw-ring-color: transparent !important;
+  --tw-ring-shadow: 0 0 #0000 !important;
+  --tw-ring-offset-shadow: 0 0 #0000 !important;
+}
+
+/* 3. `focus-visible:border-ring` — `border-color: var(--ring)`, a 1px blue edge that is a
+      focus indicator by any other name. It cannot be neutralised generically, because the
+      value to restore is whatever the component's resting border was, so each kit component
+      that carries the class is named by its own `data-slot`. Nine of them do:
+      button, badge, input, textarea, select-trigger, tabs-trigger, checkbox, toggle, switch.
+      The first six rest at `border-transparent`. */
+:root [data-slot="button"]:focus-visible:not([aria-invalid="true"]),
+:root [data-slot="badge"]:focus-visible:not([aria-invalid="true"]),
+:root [data-slot="input"]:focus-visible:not([aria-invalid="true"]),
+:root [data-slot="textarea"]:focus-visible:not([aria-invalid="true"]),
+:root [data-slot="select-trigger"]:focus-visible:not([aria-invalid="true"]),
+:root [data-slot="tabs-trigger"]:focus-visible:not([aria-invalid="true"]) {
+  border-color: transparent !important;
+}
+/* The other three rest on a real border; each goes back to the value its own resting utility
+   sets (`border-input`, `data-checked:border-primary`,
+   `data-unchecked:border-foreground/20`). */
+:root [data-slot="checkbox"]:focus-visible:not([aria-invalid="true"]),
+:root [data-slot="toggle"]:focus-visible:not([aria-invalid="true"]) {
+  border-color: var(--color-input) !important;
+}
+:root [data-slot="checkbox"][data-checked]:focus-visible:not([aria-invalid="true"]),
+:root [data-slot="switch"][data-checked]:focus-visible:not([aria-invalid="true"]) {
+  border-color: var(--primary) !important;
+}
+:root [data-slot="switch"][data-unchecked]:focus-visible:not([aria-invalid="true"]) {
+  border-color: color-mix(in oklab, var(--foreground) 20%, transparent) !important;
+}
+
+/* 3b. `ui/field.tsx` FieldLabel draws the ring AND the border for a nested field from
+       `:has(:focus-visible)` on the label, not from the control. The ring is already gone
+       (rule 2 matches the label through `:focus-within`); this puts the border back.
+       Resting is the `*` base `--color-hairline`, or `has-data-checked:border-primary/30`
+       when the label wraps a checked control. */
+:root [data-slot="field-label"]:has(> [data-slot="field"]):has(:focus-visible) {
+  border-color: var(--color-hairline) !important;
+}
+:root [data-slot="field-label"]:has(> [data-slot="field"]):has(:focus-visible):has([data-checked]) {
+  border-color: color-mix(in oklab, var(--primary) 30%, transparent) !important;
+}
+
+/* 3c. `focus-within:border-text-tertiary` on the project-name row in
+       `src/components/EditProjectDialog.tsx`. Its resting border is `border-hairline`.
+       Written as an attribute selector so no class escaping is involved. */
+[class~="focus-within:border-text-tertiary"]:focus-within {
+  border-color: var(--color-hairline) !important;
+}
+
+/* 3d. `src/index.css`: `.rename-session-dialog input.input:focus` paints a `#578cdd` border
+       plus a `#578cdd` outline. The outline dies to rule 1; the border did not, and a solid
+       blue edge on the rename field is the most likely thing the owner is still seeing.
+       Resting is `border: 1px solid var(--color-hairline)`. */
+:root .rename-session-dialog input.input:focus {
+  border-color: var(--color-hairline) !important;
+}
+
+/* 3e. `src/index.css`: `.note-title-input:focus-visible` swaps in a
+       `1px solid var(--color-text-tertiary)` bottom rule. Resting is
+       `border-color: transparent`. `border-radius` is left to whoever owns the radius
+       tokens — with a transparent border and a transparent background it draws nothing. */
+:root .note-title-input:focus-visible {
+  border-bottom-color: transparent !important;
+}
+
+/* 4. Hand-written `box-shadow` glows. Only one exists: the opening screen's name field
+      (`src/intro.css`, `.welcome-name input:focus`), a 3px accent halo. Resting is
+      `box-shadow: none`, so the focus state is put back to that and nothing else. The
+      matching `border-color: var(--color-accent)` on the same rule goes back to the resting
+      `var(--color-text-tertiary)`. */
+:root .welcome-name input:focus {
+  box-shadow: none !important;
+  border-color: var(--color-text-tertiary) !important;
+}
+
+/* 5. The splitter (`src/components/LayoutResizer.tsx`). Its focus line lives in `index.css`
+      as `.layout-resizer:focus-visible::after { background: var(--ring) }` — a 2px blue bar,
+      which is a focus indicator. The hover line stays: hover is not focus, and a splitter
+      with no hover affordance is not findable with a mouse. The second rule re-asserts hover
+      because `:hover::after` and `:focus-visible::after` are the same specificity and the
+      focus rule wins on order in `index.css`.
+      Remove the four `:focus-visible::after` rules from `index.css` when that block's owner
+      next touches it; this file only neutralises them. */
+:root .layout-resizer:focus-visible::after {
+  background: transparent !important;
+}
+:root .layout-resizer:hover::after,
+:root .layout-resizer:hover:focus-visible::after {
+  background: var(--color-text-tertiary) !important;
+}
+:root .layout-resizer[data-orientation="vertical"]:focus-visible::after {
+  width: 1px !important;
+}
+:root .layout-resizer[data-orientation="horizontal"]:focus-visible::after {
+  height: 1px !important;
+}
+
+/* 6. xterm. `@xterm/xterm/css/xterm.css` already sets `outline: none` on `.xterm.focus` and
+      `.xterm:focus` and draws no focus box-shadow (checked at the installed version); these
+      are belt-and-braces so a future xterm release cannot reintroduce one. The cursor is not
+      a focus indicator and is untouched. */
+.xterm.focus,
+.xterm:focus,
+.xterm.focus .xterm-screen,
+.xterm:focus .xterm-screen {
+  outline: none !important;
+  box-shadow: none !important;
+}

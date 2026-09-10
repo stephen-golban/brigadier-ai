@@ -40,6 +40,8 @@ Copied 2026-09-10 in two passes (the 1a foundation, then the leaf controls).
 | `select.tsx` | kit `base/select.tsx` | `1a5da0f` | `lucide-react`'s `CheckIcon` / `ChevronDownIcon` / `ChevronUpIcon` → `Check` / `ChevronDown` / `ChevronUp` from `src/icons`. Nothing else. Not wired in — see Not taken. |
 | `separator.tsx` | kit `base/separator.tsx` | `1a5da0f` | none. Same `shadcn add field` overwrite and restore as `label.tsx`. |
 | `skeleton.tsx` | kit `base/skeleton.tsx` | `1a5da0f` | none — byte-identical |
+| `sheet.tsx` | kit `base/sheet.tsx` | `1a5da0f` | one: `import { XIcon } from "lucide-react"` → `import { X as XIcon } from "@/icons"`. Nothing else. Copied 2026-09-10 only because the kit's `sidebar.tsx` imports it for its mobile branch; brigadier never renders that branch — `controls/sidebar.tsx`'s `Sidebar` substitutes its own `Modal` on mobile — so this file is dead weight kept so `sidebar.tsx` can stay a verbatim copy. Delete both together if the sidebar ever stops being a copy. |
+| `sidebar.tsx` | kit `base/sidebar.tsx` | `1a5da0f` | one: `import { PanelLeftIcon } from "lucide-react"` → `import { Sidebar as PanelLeftIcon } from "@/icons"`. Nothing else — verified by reversing the substitution and diffing against the raw fetch. Copied 2026-09-10. Only parts of it are wired: `SidebarProvider` (controlled, for its context and its single ⌘B), `Sidebar` in its `collapsible="none"` form, `SidebarTrigger`, `SidebarInset`, `SidebarHeader`/`Content`/`Footer`, `SidebarGroup`/`GroupLabel`/`GroupContent`, `SidebarMenu`/`MenuItem`/`MenuButton`/`MenuAction`/`MenuSub`. Unused: `SidebarInput`, `SidebarSeparator`, `SidebarGroupAction`, `SidebarMenuBadge`, `SidebarMenuSkeleton`, `SidebarRail` (brigadier's export of that name returns `null`; resizing is `LayoutResizer`), `SidebarMenuSubButton` (an `<a>`; brigadier's rows are `<button>`s). |
 | `sonner.tsx` | kit `base/sonner.tsx` | `1a5da0f` | two forced. (1) `next-themes` dropped; brigadier is dark-only (`index.html` and `src/main.tsx` stamp a static `dark` class), so `theme="dark"` is a literal. (2) the `icons={{…}}` override dropped — all five glyphs were `lucide-react`; sonner's own inline SVGs stand in. The `toastOptions.classNames` block is upstream's, verbatim. Not wired in. |
 | `spinner.tsx` | shadcn `https://ui.shadcn.com/r/styles/base-nova/spinner.json` | `shadcn@4.21.0` | rewritten. Upstream is one `<Loader2Icon className="size-4 animate-spin">`; there is no lucide here and the vendored `@openai/apps-sdk-ui` set has no circular loader, so the 3/4 ring is drawn in the file as one inline `<path>` (lucide's `loader-circle` geometry). `data-slot`, `role="status"`, `aria-label="Loading"` and the `cn("size-4 animate-spin", …)` call are upstream's. `React.ComponentProps` → an imported `ComponentProps`. |
 | `switch.tsx` | kit `base/switch.tsx` | `1a5da0f` | none — byte-identical |
@@ -79,11 +81,12 @@ removed 2026-09-10 with the last Radix import; nothing under `src/` imports it.
 `dropdown-menu.tsx` + `popover.tsx` (`controls/overlay.tsx`, `controls/menu.tsx`), `input.tsx`
 (`controls/input.tsx`), `kbd.tsx` (`controls/kbd.tsx`), `spinner.tsx` (`controls/status.tsx`),
 `tabs.tsx` (`controls/tabs.tsx`), `textarea.tsx` (`controls/textarea.tsx`), `tooltip.tsx`
-(`controls/tooltip.tsx`, `elements/tooltip-icon-button.tsx`). Each `controls/` file is a thin
+(`controls/tooltip.tsx`, `elements/tooltip-icon-button.tsx`), `sidebar.tsx`
+(`controls/sidebar.tsx`). Each `controls/` file is a thin
 adapter that keeps the export names and props its call sites already use.
 
-Not wired in: `avatar`, `badge`, `label`, `scroll-area`, `select`, `separator`, `skeleton`,
-`sonner`, `switch`, `toggle`, `toggle-group`.
+Not wired in: `avatar`, `badge`, `label`, `scroll-area`, `select`, `separator`, `sheet`,
+`skeleton`, `sonner`, `switch`, `toggle`, `toggle-group`.
 
 Two facts about these files that bit during the port, both measured:
 
@@ -94,14 +97,22 @@ Two facts about these files that bit during the port, both measured:
   exception** — it was rewritten here as a `forwardRef` and does reach the popup — but
   `controls/overlay.tsx` shares one lookup across the dialog and menu paths, so it uses the marker
   regardless.
+- **`SidebarProvider` hard-codes `--sidebar-width: 16rem` inline** on the wrapper div, which is
+  224px against this app's 14px root and beats any `:root` default. `controls/sidebar.tsx` merges
+  Codex's 275px in ahead of a caller's own `style`, which is how `App.tsx`'s resized width still
+  wins.
+- **`useRender`'s `state` becomes `data-*`.** `SidebarMenuButton`'s `active: isActive` emits a
+  bare `data-active` when true and *omits the attribute* when false — not `data-active="false"`.
+  `src/index.css` selects it as `[data-active]:not([data-active="false"])` so either spelling
+  works, and `controls/sidebar.test.tsx` pins which one is emitted.
 - **`w-(--anchor-width)` on `DropdownMenuContent`** sizes the menu to its trigger, which is wrong
   for an icon-button trigger. `controls/overlay.tsx` overrides it with `w-auto`.
 
 ## Not copied, and why
 
-`sheet`, `combobox`, `accordion`, `breadcrumb`, `sidebar`, `code-block`, `command-tabs`,
+`combobox`, `accordion`, `breadcrumb`, `code-block`, `command-tabs`,
 `navigation-menu`, `table`, `steps`, `callout`, `definition-list`, `diff-viewer`, `dot-matrix`,
-`number-roll`. `alert-dialog` does not exist in the base twin at all
+`number-roll`. (`sheet` and `sidebar` were on this list until 2026-09-10; both are copied now.) `alert-dialog` does not exist in the base twin at all
 (`docs/research/assistant-ui-design.md`, "Does not exist in the base twin"); nothing needs one —
 `controls/dialog.tsx` takes `role="alertdialog"` as a prop and no call site passes it.
 
