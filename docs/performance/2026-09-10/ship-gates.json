@@ -1,0 +1,13 @@
+{
+  "cargo_test": 0,
+  "cargo_clippy": 0,
+  "cargo_doc": 0,
+  "npm_test": 0,
+  "tsc": 0,
+  "tauri_build": 0,
+  "acceptance_build": 0,
+  "acceptance_clean": 0,
+  "profile_build": 0,
+  "debug_build": 0,
+  "all_green": 1
+}

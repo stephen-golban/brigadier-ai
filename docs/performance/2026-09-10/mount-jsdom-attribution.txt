@@ -1,0 +1,4 @@
+spinner alone (the placeholder's whole cost): mount_median=0.054 ms (n=32)
+TaskProgress + TaskPolicyStatus alone: mount_median=0.007 ms (n=32)
+TranscriptRuntime + PeerTaskCardScope + Thread + spinner: mount_median=0.865 ms (n=32)
+full loading scaffolding (with both panels): mount_median=0.655 ms (n=32)

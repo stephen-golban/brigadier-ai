@@ -1,0 +1,16 @@
+{
+  "before": {
+    "2979": " 2979     1 /System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent"
+  },
+  "after": {
+    "2979": " 2979     1 /System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent",
+    "99396": "99396     1 /System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent"
+  },
+  "fresh": [
+    99396
+  ],
+  "sampleStartElapsedS": 22.199766334,
+  "sampledTarget": "webcontent",
+  "sampledPid": 99396,
+  "sampleExit": 0
+}
