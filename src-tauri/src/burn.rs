@@ -58,9 +58,17 @@ pub(crate) async fn run(
 
     let kind = DriverKind::new(REPLAY);
     let mut started = Vec::with_capacity(sessions);
+    // Monotonic start stamp per session, off the same `started_at` origin as `elapsedMs`, taken
+    // after `start_session` returns, so the recorded lifetime understates at this end.
+    // Preparation is sequential, so session 0 outlives session 9 by however long nine starts took;
+    // that spread stays in the report instead of being smoothed to one number.
+    let mut start_elapsed_ms = Vec::with_capacity(sessions);
     for _ in 0..sessions {
         match supervisor.start_session(&project.id, &kind, StartSession::new(&root)).await {
-            Ok(id) => started.push(id),
+            Ok(id) => {
+                started.push(id);
+                start_elapsed_ms.push(started_at.elapsed().as_millis());
+            }
             Err(e) => {
                 // Kill what did start rather than leaving half a burn running.
                 for id in &started {
@@ -81,26 +89,77 @@ pub(crate) async fn run(
 
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(duration).await;
-        for id in &started {
+        let mut lifetimes = Vec::with_capacity(started.len());
+        for (id, &started_elapsed_ms) in started.iter().zip(start_elapsed_ms.iter()) {
+            // Stamped *before* the kill, not after. `kill` is awaited one session at a time, so a
+            // stamp taken after the call carries the kill latency of every session killed earlier
+            // in this loop and reports a longer lifetime than the session had. Before the call the
+            // session is still alive, so this understates at this end too.
+            let killed_elapsed_ms = started_at.elapsed().as_millis();
             if let Err(e) = supervisor.kill(id).await {
                 tracing::warn!(session_id = id.as_str(), error = %e, "burn session would not die");
             }
+            lifetimes.push(SessionLifetime {
+                session_id: id.as_str().to_string(),
+                started_elapsed_ms,
+                killed_elapsed_ms,
+            });
         }
         // The driver was registered for this burn alone. Leaving it filed would accumulate one
         // dead `ReplayDriver` per burn under the same key; the next burn registers its own
         // before it starts anything, so nothing depends on this one still being there.
         supervisor.unregister_driver(&kind);
-        let delivery = serde_json::json!({
-            "sessionIds": started.iter().map(|id| id.as_str()).collect::<Vec<_>>(),
-            "emitted": driver.emitted(), "elapsedMs": started_at.elapsed().as_millis(),
-            "rowsPerSec": rows_per_sec, "durationS": duration.as_secs_f64(), "scriptLen": script_len,
-        });
+        let delivery = delivery_report(
+            &lifetimes, driver.emitted(), started_at.elapsed().as_millis(),
+            rows_per_sec, duration.as_secs_f64(), script_len,
+        );
         if let Err(error) = std::fs::write(&delivery_path, delivery.to_string()) {
             tracing::error!(%error, "burn delivery report failed");
         }
         tracing::info!(sessions = started.len(), "burn finished");
     });
     Ok(())
+}
+
+/// One session's lifetime on the monotonic clock, both stamps off the `Instant` that also
+/// produces `elapsedMs`.
+///
+/// Both stamps are lower bounds on the interval the session was alive: `startedElapsedMs` is taken
+/// after `start_session` returns, `killedElapsedMs` before `kill` is awaited. Neither says anything
+/// about what the app *delivered*. Every start stamp is pushed before the spawned task's
+/// `sleep(duration)` begins and every kill stamp after it ends, so `lifetimeMs >= duration` holds
+/// for every session by construction, whatever the run did — this is the harness reporting its own
+/// timers. `scripts/measure-native-burn.py` reads it as exactly that, a configuration check, and
+/// proves delivery from the durable stream's per-second bins instead.
+struct SessionLifetime {
+    session_id: String,
+    started_elapsed_ms: u128,
+    killed_elapsed_ms: u128,
+}
+
+/// Build the `<data-dir>/burn-delivery.json` body. Pure, so a test can hand it synthetic timings.
+///
+/// Every field that existed before `sessionLifetimes` keeps its name and meaning:
+/// `scripts/measure-native-burn.py` and the recorded evidence under `docs/` read them.
+fn delivery_report(
+    lifetimes: &[SessionLifetime],
+    emitted: u64,
+    elapsed_ms: u128,
+    rows_per_sec: f64,
+    duration_s: f64,
+    script_len: usize,
+) -> serde_json::Value {
+    serde_json::json!({
+        "sessionIds": lifetimes.iter().map(|l| l.session_id.as_str()).collect::<Vec<_>>(),
+        "emitted": emitted, "elapsedMs": elapsed_ms,
+        "rowsPerSec": rows_per_sec, "durationS": duration_s, "scriptLen": script_len,
+        "sessionLifetimes": lifetimes.iter().map(|l| serde_json::json!({
+            "sessionId": l.session_id,
+            "startedElapsedMs": l.started_elapsed_ms,
+            "killedElapsedMs": l.killed_elapsed_ms,
+            "lifetimeMs": l.killed_elapsed_ms.saturating_sub(l.started_elapsed_ms),
+        })).collect::<Vec<_>>(),
+    })
 }
 
 /// A valid disposable repository avoids exercising an unrelated workspace-error path.
@@ -242,6 +301,42 @@ mod tests {
         assert_eq!(
             validate(1, 50.0, 1.0).expect("valid").as_secs_f64(),
             1.0
+        );
+    }
+
+    #[test]
+    fn the_delivery_report_carries_a_monotonic_lifetime_per_session() {
+        // The harness's own timers, per session: a lower bound on each lifetime, and the number
+        // scripts/measure-native-burn.py checks the burn's configuration against. It is not
+        // evidence of delivery; that comes from the durable stream's per-second bins.
+        let lifetimes = vec![
+            SessionLifetime {
+                session_id: "s0".into(), started_elapsed_ms: 12, killed_elapsed_ms: 60_412,
+            },
+            SessionLifetime {
+                session_id: "s9".into(), started_elapsed_ms: 340, killed_elapsed_ms: 60_431,
+            },
+        ];
+        let report = delivery_report(&lifetimes, 24_002, 60_500, 200.0, 60.0, 137);
+        // The six pre-existing fields the Python audit and the recorded evidence read.
+        assert_eq!(report["sessionIds"], serde_json::json!(["s0", "s9"]));
+        assert_eq!(report["emitted"], 24_002);
+        assert_eq!(report["elapsedMs"], 60_500);
+        assert_eq!(report["rowsPerSec"], 200.0);
+        assert_eq!(report["durationS"], 60.0);
+        assert_eq!(report["scriptLen"], 137);
+        let per_session = report["sessionLifetimes"].as_array().expect("array");
+        assert_eq!(per_session.len(), 2);
+        assert_eq!(per_session[0]["sessionId"], "s0");
+        assert_eq!(per_session[0]["startedElapsedMs"], 12);
+        assert_eq!(per_session[0]["killedElapsedMs"], 60_412);
+        assert_eq!(per_session[0]["lifetimeMs"], 60_400);
+        assert_eq!(per_session[1]["lifetimeMs"], 60_091);
+        // Sequential preparation: session 0 legitimately outlives session 9, and the report keeps
+        // that visible rather than reporting one averaged lifetime.
+        assert!(
+            per_session[0]["lifetimeMs"].as_u64().unwrap()
+                > per_session[1]["lifetimeMs"].as_u64().unwrap()
         );
     }
 

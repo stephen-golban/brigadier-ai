@@ -563,6 +563,251 @@ describe("reference stability", () => {
   });
 });
 
+/**
+ * The rings are lazy: an append only pushes onto a mutable buffer and drops the cached snapshot,
+ * and `getSessionRows` / `getProjectRows` materialise the trimmed array. These pin the identity
+ * contract that makes that safe — it is the part a future edit breaks silently, because a pane
+ * that re-renders every frame still *looks* right.
+ */
+describe("lazy ring snapshots", () => {
+  it("hands out a new reference after an append and the identical one without", async () => {
+    const store = await load();
+    store.start();
+    pushRows(store, "s1", [1]);
+
+    const first = store.getSessionRows("s1");
+    expect(store.getSessionRows("s1")).toBe(first); // no append between the two reads
+    expect(store.getSessionRows("s1")).toBe(first); // and still none
+
+    pushRows(store, "s1", [2]);
+    const second = store.getSessionRows("s1");
+    expect(second).not.toBe(first);
+    expect(second.map((r) => r.q)).toEqual([1, 2]);
+    expect(store.getSessionRows("s1")).toBe(second);
+    store.stop();
+  });
+
+  it("gives the project ring the same reference contract", async () => {
+    const store = await load();
+    store.start();
+    pushRows(store, "s1", [1]);
+    const first = store.getProjectRows(PROJECT);
+    expect(store.getProjectRows(PROJECT)).toBe(first);
+
+    pushRows(store, "s2", [2]);
+    expect(store.getProjectRows(PROJECT)).not.toBe(first);
+    expect(store.getProjectRows(PROJECT).map((r) => r.q)).toEqual([1, 2]);
+    store.stop();
+  });
+
+  it("keeps the newest ROW_CAP rows in order well past the buffer's slack margin", async () => {
+    const store = await load();
+    store.start();
+
+    // 12,000 rows in 24 frames: six times `ROW_CAP`, so the amortised head trim runs repeatedly
+    // rather than once. A buffer that never trimmed would still pass a single-overflow test.
+    let q = 0;
+    for (let frame = 0; frame < 24; frame++) {
+      const qs = Array.from({ length: 500 }, () => q++);
+      store.pushBatch(batch({ rows: rows("s1", qs) }));
+      vi.advanceTimersByTime(FRAME_MS);
+    }
+    expect(q).toBe(12_000);
+
+    const ring = store.getSessionRows("s1");
+    expect(ring).toHaveLength(store.ROW_CAP);
+    expect(ring[0]!.q).toBe(10_000); // 12000 - 2000
+    expect(ring[ring.length - 1]!.q).toBe(11_999);
+    expect(ring.map((r) => r.q)).toEqual(
+      Array.from({ length: store.ROW_CAP }, (_, i) => 10_000 + i),
+    );
+
+    const project = store.getProjectRows(PROJECT);
+    expect(project).toHaveLength(store.ROW_CAP);
+    expect(project[0]!.q).toBe(10_000);
+    store.stop();
+  });
+
+  it("never mutates a snapshot a reader is still holding", async () => {
+    const store = await load();
+    store.start();
+    pushRows(store, "s1", [1, 2, 3]);
+
+    const held = store.getSessionRows("s1");
+    const heldObjects = [...held];
+
+    // Enough appends to cross `ROW_CAP` and force the buffer's head trim under the held snapshot.
+    let q = 4;
+    for (let frame = 0; frame < 12; frame++) {
+      const qs = Array.from({ length: 400 }, () => q++);
+      store.pushBatch(batch({ rows: rows("s1", qs) }));
+      vi.advanceTimersByTime(FRAME_MS);
+    }
+
+    expect(held).toHaveLength(3);
+    expect(held.map((r) => r.q)).toEqual([1, 2, 3]);
+    expect([...held]).toEqual(heldObjects);
+    expect(store.getSessionRows("s1")).toHaveLength(store.ROW_CAP);
+    store.stop();
+  });
+
+  it("holds a seeded snapshot steady across later live appends", async () => {
+    const store = await load();
+    store.start();
+    store.seedRows("s1", rows("s1", [1, 2]));
+    const held = store.getSessionRows("s1");
+
+    pushRows(store, "s1", [3]);
+    pushRows(store, "s1", [4]);
+
+    expect(held.map((r) => r.q)).toEqual([1, 2]);
+    expect(store.getSessionRows("s1").map((r) => r.q)).toEqual([1, 2, 3, 4]);
+    store.stop();
+  });
+
+  it("returns the shared empty array for a ring nothing ever wrote", async () => {
+    const store = await load();
+    store.start();
+    pushRows(store, "s1", [1]);
+
+    const empty = store.getSessionRows("never-written");
+    expect(empty).toHaveLength(0);
+    expect(store.getSessionRows("never-written")).toBe(empty);
+    expect(store.getProjectRows("no-such-project")).toBe(empty);
+    expect(store.getSessionRows(null)).toBe(empty);
+    store.stop();
+  });
+
+  it("drops a deleted session's ring and the project snapshot that still held its rows", async () => {
+    const store = await load();
+    store.start();
+    store.pushBatch(batch({ rows: [row("s1", 1), row("s2", 2), row("s1", 3)] }));
+    vi.advanceTimersByTime(FRAME_MS);
+
+    const projectBefore = store.getProjectRows(PROJECT); // materialised, and now cached
+    expect(projectBefore.map((r) => r.s)).toEqual(["s1", "s2", "s1"]);
+    expect(store.getSessionRows("s1")).toHaveLength(2);
+
+    store.dropSession("s1");
+
+    expect(store.getSessionRows("s1")).toHaveLength(0);
+    const projectAfter = store.getProjectRows(PROJECT);
+    expect(projectAfter).not.toBe(projectBefore);
+    expect(projectAfter.map((r) => r.s)).toEqual(["s2"]);
+    expect(projectBefore.map((r) => r.s)).toEqual(["s1", "s2", "s1"]); // the held one is intact
+    store.stop();
+  });
+
+  it("does not resurrect rows already evicted past ROW_CAP when a session is dropped", async () => {
+    const store = await load();
+    store.start();
+
+    // 3,600 rows, two sessions interleaved. The project buffer runs into its slack, so 1,600 rows
+    // have already fallen off the head before the drop; filtering `buf` in place would take the
+    // length back under `ROW_CAP` and hand every one of them back out.
+    let q = 0;
+    for (let frame = 0; frame < 12; frame++) {
+      const wire: FeedRowWire[] = [];
+      for (let i = 0; i < 300; i++) {
+        wire.push(row(q % 2 === 0 ? "s1" : "s2", q));
+        q++;
+      }
+      store.pushBatch(batch({ rows: wire }));
+      vi.advanceTimersByTime(FRAME_MS);
+    }
+    expect(q).toBe(3_600);
+
+    const before = store.getProjectRows(PROJECT);
+    expect(before).toHaveLength(store.ROW_CAP);
+    expect(before[0]!.q).toBe(1_600);
+    const survivors = before.filter((r) => r.s !== "s2").map((r) => r.q);
+
+    store.dropSession("s2");
+
+    const after = store.getProjectRows(PROJECT);
+    // The surviving rows are a suffix of what was logically visible: nothing older comes back.
+    expect(after[0]!.q).toBeGreaterThanOrEqual(before[0]!.q);
+    expect(after.map((r) => r.q)).toEqual(survivors);
+    expect(after).toHaveLength(1_000);
+    store.stop();
+  });
+
+  it("drops a deleted project's ring and its cached snapshot", async () => {
+    const store = await load();
+    store.start();
+    pushRows(store, "s1", [1, 2]);
+    const before = store.getProjectRows(PROJECT);
+    expect(before).toHaveLength(2);
+
+    store.dropProject(PROJECT);
+
+    expect(store.getProjectRows(PROJECT)).toHaveLength(0);
+    expect(store.getProjectRows(PROJECT)).toBe(store.getSessionRows(null));
+    expect(store.getSessionRows("s1")).toHaveLength(0);
+    expect(before).toHaveLength(2); // the reader's copy, untouched
+    store.stop();
+  });
+
+  it("counts a session's visible rows without building the snapshot", async () => {
+    const store = await load();
+    store.start();
+    expect(store.getSessionRowCount(null)).toBe(0);
+    expect(store.getSessionRowCount("never-written")).toBe(0);
+
+    pushRows(store, "s1", [1, 2, 3]);
+    expect(store.getSessionRowCount("s1")).toBe(3);
+    expect(store.getSessionRowCount("s1")).toBe(store.getSessionRows("s1").length);
+
+    // Past `ROW_CAP` and into the buffer's slack: the count is the logically visible one.
+    let q = 4;
+    for (let frame = 0; frame < 8; frame++) {
+      const qs = Array.from({ length: 400 }, () => q++);
+      store.pushBatch(batch({ rows: rows("s1", qs) }));
+      vi.advanceTimersByTime(FRAME_MS);
+    }
+    expect(q).toBe(3_204); // buffer carrying slack: 3,203 rows held, 2,000 of them visible
+    expect(store.getSessionRowCount("s1")).toBe(store.ROW_CAP);
+    expect(store.getSessionRowCount("s1")).toBe(store.getSessionRows("s1").length);
+
+    store.dropSession("s1");
+    expect(store.getSessionRowCount("s1")).toBe(0);
+    expect(store.getSessionRowCount("s1")).toBe(store.getSessionRows("s1").length);
+    store.stop();
+  });
+
+  it("still counts every ingested row, whether or not anyone reads a ring", async () => {
+    const store = await load();
+    store.start();
+    for (let frame = 0; frame < 10; frame++) {
+      store.pushBatch(batch({ rows: rows("s1", [frame * 2, frame * 2 + 1]) }));
+      vi.advanceTimersByTime(FRAME_MS);
+    }
+    expect(store.getIngest()).toEqual({ rowsIn: 20, batches: 10 });
+    store.stop();
+  });
+
+  it("notifies on the frame rows changed even when nothing reads the ring", async () => {
+    const store = await load();
+    let notifies = 0;
+    store.subscribe(() => {
+      notifies += 1;
+    });
+    store.start();
+
+    store.pushBatch(batch({ rows: rows("s1", [1]) }));
+    vi.advanceTimersByTime(FRAME_MS);
+    expect(notifies).toBe(1);
+
+    store.pushBatch(batch({ rows: rows("s1", [2]) }));
+    vi.advanceTimersByTime(FRAME_MS);
+    expect(notifies).toBe(2);
+
+    vi.advanceTimersByTime(FRAME_MS * 5);
+    expect(notifies).toBe(2);
+    store.stop();
+  });
+});
+
 describe("unknown projects", () => {
   it("records an unlisted project once and keeps the list reference stable", async () => {
     const store = await load();
@@ -666,4 +911,168 @@ it("removes stopped Codex MCP and Edit approvals from the live attention state",
   expect(store.getState().approvals).toEqual([]);
   expect(store.getState().sessions.s1?.status).toBe('exited');
   store.stop();
+});
+
+/**
+ * The snapshot identity contract, added 2026-09-10 with the `patch` diff / cursor split in
+ * `src/feedStore.ts`. Everything here is about *which frames rebuild `state`*, never about what a
+ * value ends up being — the value assertions live in the describes above and are unchanged.
+ */
+describe("snapshot identity", () => {
+  /** A `session-started` whose every field repeats: the per-turn `system/init` announcement. */
+  function started(): Event {
+    return {
+      type: "session-started",
+      provider_session_id: "prov-1",
+      model: "model-a",
+      cwd: "/repo",
+      capabilities: [],
+      resume_token: null,
+    };
+  }
+
+  it("holds `getState()` identical across a burst that moves only `lastEventSeq`", async () => {
+    const store = await load();
+    store.start();
+    // First announcement: a new session, a new status, a start stamp — a rendered change.
+    store.pushBatch(batch({ signals: [env("s1", started())] }));
+    vi.advanceTimersByTime(FRAME_MS);
+    const settled = store.getState();
+    expect(settled.sessions["s1"]!.status).toBe("running");
+    const seqAtSettle = settled.sessions["s1"]!.lastEventSeq;
+
+    // `system/init` arrives once per turn (`docs/STATUS.md` §7): 20 more announcements, one per
+    // frame, each carrying the same model/cwd/status and a new `seq`. None may rebuild. The
+    // envelope time is held at the first announcement's on purpose — `session-started` still
+    // re-stamps `startedAtMs` from it and that is a rendered change, left alone deliberately
+    // (see the `session-started` case in `src/feedStore.ts`).
+    for (let i = 0; i < 20; i++) {
+      store.pushBatch(batch({ signals: [env("s1", started())] }));
+      vi.advanceTimersByTime(FRAME_MS);
+      expect(store.getState()).toBe(settled);
+    }
+    // 20 frames is 340 ms, inside COUNTER_FLUSH_MS, so the snapshot still carries the old cursor
+    // while the live one has moved 20 times.
+    expect(store.getState().sessions["s1"]!.lastEventSeq).toBe(seqAtSettle);
+    expect(store.getSessionCursor("s1")).toBe(`0:${seqAtSettle + 20}:false`);
+    store.stop();
+  });
+
+  it("rebuilds on the frame a status, busy, model or order change arrives", async () => {
+    const store = await load();
+    store.start();
+    store.pushBatch(batch({ signals: [env("s1", started())] }));
+    vi.advanceTimersByTime(FRAME_MS);
+
+    const beforeBusy = store.getState();
+    store.pushBatch(batch({ signals: [env("s1", { type: "turn-started", turn_id: "t1" })] }));
+    vi.advanceTimersByTime(FRAME_MS);
+    const busy = store.getState();
+    expect(busy).not.toBe(beforeBusy);
+    expect(busy.sessions["s1"]!.busy).toBe(true);
+
+    store.pushBatch(batch({ signals: [env("s1", turnCompleted("t1", 0.01))] }));
+    vi.advanceTimersByTime(FRAME_MS);
+    const idle = store.getState();
+    expect(idle).not.toBe(busy);
+    expect(idle.sessions["s1"]!.busy).toBe(false);
+
+    // A different model on the same session is a rendered change even though nothing else moved.
+    store.pushBatch(batch({ signals: [env("s1", { ...started(), model: "model-b" } as Event)] }));
+    vi.advanceTimersByTime(FRAME_MS);
+    const remodelled = store.getState();
+    expect(remodelled).not.toBe(idle);
+    expect(remodelled.sessions["s1"]!.model).toBe("model-b");
+
+    // A second session starting is a new `order`, so it is a rendered change too.
+    store.pushBatch(batch({ signals: [env("s2", started(), 9_000)] }));
+    vi.advanceTimersByTime(FRAME_MS);
+    const two = store.getState();
+    expect(two).not.toBe(remodelled);
+    expect(two.order).toEqual(["s2", "s1"]);
+
+    // A fatal `runtime-error` is a status change; a second identical warning is an edge on
+    // `runtimeWarnings`, which lives outside the runtimes and must still reach React.
+    store.pushBatch(batch({ signals: [env("s1", { type: "runtime-warning", message: "same" })] }));
+    vi.advanceTimersByTime(FRAME_MS);
+    const warned = store.getState();
+    store.pushBatch(batch({ signals: [env("s1", { type: "runtime-warning", message: "same" })] }));
+    vi.advanceTimersByTime(FRAME_MS);
+    expect(store.getState()).not.toBe(warned);
+    expect(store.getState().runtimeWarnings).toBe(warned.runtimeWarnings + 1);
+    store.stop();
+  });
+
+  it("commits `request-opened` and `request-resolved` on the frame they arrive", async () => {
+    const store = await load();
+    store.start();
+    const opened: Event = {
+      type: "request-opened",
+      request_id: "r1",
+      turn_id: "t1",
+      kind: { type: "tool-permission", tool_name: "Edit", input_excerpt: "x", suggestions: [], tool_call_id: null },
+    };
+    store.pushBatch(batch({ signals: [env("s1", started())] }));
+    vi.advanceTimersByTime(FRAME_MS);
+    const quiet = store.getState();
+
+    // Approvals are never optimistic (`docs/vision.md` §9): the card may not wait for a flush.
+    store.pushBatch(batch({ signals: [env("s1", opened)] }));
+    vi.advanceTimersByTime(FRAME_MS);
+    const withCard = store.getState();
+    expect(withCard).not.toBe(quiet);
+    expect(withCard.approvals.map((a) => a.requestId)).toEqual(["r1"]);
+
+    store.pushBatch(batch({ signals: [env("s1", { type: "request-resolved", request_id: "r1", decision: { type: "allow", updated_input: null, updated_permissions: [] } })] }));
+    vi.advanceTimersByTime(FRAME_MS);
+    const cleared = store.getState();
+    expect(cleared).not.toBe(withCard);
+    expect(cleared.approvals).toEqual([]);
+    store.stop();
+  });
+
+  it("moves the live cursor once per signal while the snapshot holds still", async () => {
+    const store = await load();
+    store.start();
+    store.pushBatch(batch({ signals: [env("s1", started())] }));
+    vi.advanceTimersByTime(FRAME_MS);
+
+    // One cursor-only signal per frame for 24 frames (408 ms, inside COUNTER_FLUSH_MS). The
+    // conversation-history token is this string: it must move on every one of them.
+    let cursor = store.getSessionCursor("s1");
+    let cursorChanges = 0;
+    let snapshot = store.getState();
+    let rebuilds = 0;
+    for (let i = 0; i < 24; i++) {
+      store.pushBatch(batch({ signals: [env("s1", started())] }));
+      vi.advanceTimersByTime(FRAME_MS);
+      const nextCursor = store.getSessionCursor("s1");
+      if (nextCursor !== cursor) { cursor = nextCursor; cursorChanges += 1; }
+      if (store.getState() !== snapshot) { snapshot = store.getState(); rebuilds += 1; }
+    }
+    expect(cursorChanges).toBe(24);
+    expect(rebuilds).toBe(0);
+    store.stop();
+  });
+
+  it("folds a cursor-only advance into the snapshot within COUNTER_FLUSH_MS", async () => {
+    const store = await load();
+    store.start();
+    store.pushBatch(batch({ signals: [env("s1", started()), env("s1", { type: "turn-started", turn_id: "t1" }), env("s1", turnCompleted("t1", 0))] }));
+    vi.advanceTimersByTime(FRAME_MS);
+    const settled = store.getState();
+    const seqAtSettle = settled.sessions["s1"]!.lastEventSeq;
+
+    store.pushBatch(batch({ signals: [env("s1", started())] }));
+    vi.advanceTimersByTime(FRAME_MS);
+    expect(store.getState()).toBe(settled);
+
+    // This is the bound `useAttention`'s badge inherits: `(reads[id] ?? -1) < lastEventSeq` reads
+    // the snapshot, so a background session's new activity shows up a flush late, never never.
+    vi.advanceTimersByTime(600);
+    const folded = store.getState();
+    expect(folded).not.toBe(settled);
+    expect(folded.sessions["s1"]!.lastEventSeq).toBe(seqAtSettle + 1);
+    store.stop();
+  });
 });

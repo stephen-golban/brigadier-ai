@@ -17,6 +17,7 @@ import {
 import { Spinner } from "./controls/status";
 import { Disclosure } from "./controls/disclosure";
 import {
+  memo,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -79,6 +80,38 @@ export function ThreadView({
   peers?: PeerData;
   onSelectSession?: (id: string) => void;
 }) {
+  return (
+    <section className="conversation flex min-h-0 min-w-0 flex-1 flex-col">
+      {sessionId ? (
+        <Transcript
+          requests={requests}
+          key={sessionId}
+          sessionId={sessionId}
+          projectId={projectId}
+          onFile={onFile}
+          revision={revision}
+          onEdit={onEdit}
+          editing={editing}
+          peers={peers}
+          onSelectSession={onSelectSession}
+        />
+      ) : (
+        <NewConversation projectName={projectName} projectId={projectId} />
+      )}
+    </section>
+  );
+}
+
+// The greeting is only ever read by this branch. Holding its state — and its `workbench_load`
+// round trip and `workbench-data-changed` listener — in `ThreadView` re-rendered the whole
+// mounted transcript for a string no open session displays.
+function NewConversation({
+  projectName,
+  projectId,
+}: {
+  projectName: string | null;
+  projectId: string | null;
+}) {
   const [greetingName, setGreetingName] = useState("");
   useEffect(() => {
     let live = true;
@@ -98,82 +131,70 @@ export function ThreadView({
     };
   }, []);
   return (
-    <section className="conversation flex min-h-0 min-w-0 flex-1 flex-col">
-      {sessionId ? (
-        <Transcript
-          requests={requests}
-          key={sessionId}
-          sessionId={sessionId}
-          projectId={projectId}
-          onFile={onFile}
-          revision={revision}
-          onEdit={onEdit}
-          editing={editing}
-          peers={peers}
-          onSelectSession={onSelectSession}
-        />
-      ) : (
-        <div className="new-conversation flex min-h-0 flex-1 flex-col items-center justify-center gap-4 px-6 text-text-secondary">
-          <BrandMark />
-          <h1>
-            {projectName
-              ? `What should we build in ${projectName}?`
-              : greetingName
-                ? `What will you build, ${greetingName}?`
-                : "What should we build?"}
-          </h1>
-          {projectId && (
-            <div className="welcome-starters">
-              {[
-                {
-                  title: "Explore and understand code",
-                  prompt:
-                    "Explore this project and explain its architecture and main flows.",
-                  Icon: TelescopeIcon,
-                  color: "#5795ed",
-                },
-                {
-                  title: "Build a new feature, app, or tool",
-                  prompt: "Help me build a new feature: ",
-                  Icon: HammerIcon,
-                  color: "#a77ddd",
-                },
-                {
-                  title: "Review code and suggest changes",
-                  prompt:
-                    "Review the current changes and suggest improvements. Focus on bugs and regressions.",
-                  Icon: ArrowsClockwiseIcon,
-                  color: "#62a781",
-                },
-                {
-                  title: "Fix issues and failures",
-                  prompt: "Help me investigate and fix this issue: ",
-                  Icon: BugIcon,
-                  color: "#d88a55",
-                },
-              ].map(({ title, prompt, Icon, color }) => (
-                <Button
-                  key={title}
-                  className="welcome-starter"
-                  onClick={() =>
-                    window.dispatchEvent(
-                      new CustomEvent("workbench-starter", {
-                        detail: { projectId, prompt },
-                      }),
-                    )
-                  }
-                >
-                  <Icon size={18} style={{ color }} />
-                  <span>{title}</span>
-                </Button>
-              ))}
-            </div>
-          )}
+    <div className="new-conversation flex min-h-0 flex-1 flex-col items-center justify-center gap-4 px-6 text-text-secondary">
+      <BrandMark />
+      <h1>
+        {projectName
+          ? `What should we build in ${projectName}?`
+          : greetingName
+            ? `What will you build, ${greetingName}?`
+            : "What should we build?"}
+      </h1>
+      {projectId && (
+        <div className="welcome-starters">
+          {[
+            {
+              title: "Explore and understand code",
+              prompt:
+                "Explore this project and explain its architecture and main flows.",
+              Icon: TelescopeIcon,
+              color: "#5795ed",
+            },
+            {
+              title: "Build a new feature, app, or tool",
+              prompt: "Help me build a new feature: ",
+              Icon: HammerIcon,
+              color: "#a77ddd",
+            },
+            {
+              title: "Review code and suggest changes",
+              prompt:
+                "Review the current changes and suggest improvements. Focus on bugs and regressions.",
+              Icon: ArrowsClockwiseIcon,
+              color: "#62a781",
+            },
+            {
+              title: "Fix issues and failures",
+              prompt: "Help me investigate and fix this issue: ",
+              Icon: BugIcon,
+              color: "#d88a55",
+            },
+          ].map(({ title, prompt, Icon, color }) => (
+            <Button
+              key={title}
+              className="welcome-starter"
+              onClick={() =>
+                window.dispatchEvent(
+                  new CustomEvent("workbench-starter", {
+                    detail: { projectId, prompt },
+                  }),
+                )
+              }
+            >
+              <Icon size={18} style={{ color }} />
+              <span>{title}</span>
+            </Button>
+          ))}
         </div>
       )}
-    </section>
+    </div>
   );
 }
+
+// Neither panel reads a transcript row, so neither has to re-render when one arrives.
+const SessionProgress = memo(TaskProgress);
+const SessionPolicyStatus = memo(TaskPolicyStatus);
+const noActions: ReadonlyMap<string, ReactNode> = new Map();
 
 function Transcript({
   requests,
@@ -200,7 +221,11 @@ function Transcript({
   const {items, turns: turnRecords, loaded, error, hasOlder, paging, historical, older, latest} = useConversationHistory(sessionId, revision);
   const hydrated = loaded;
   const { settings: executionSettings } = useTaskExecutionSettings(sessionId);
-  const providerChanges = providerChangePlacement(executionSettings?.changes ?? [], items, historical);
+  const executionChanges = executionSettings?.changes;
+  const providerChanges = useMemo(
+    () => providerChangePlacement(executionChanges ?? [], items, historical),
+    [executionChanges, items, historical],
+  );
   const state = useSyncExternalStore(store.subscribe, store.getState),
     session = state.sessions[sessionId],
     busy = session?.busy ?? false;
@@ -255,23 +280,27 @@ function Transcript({
   });
   const confirmedRequestIds = new Set(confirmedApprovals.map(item => item.request_id));
   const resolvedRequests = new Set<string>();
-  const pendingToolIds = new Set<string>();
-  const actionRequests = new Map<string, ReactNode>();
   const matchedRequests = new Set<string>();
+  // One `flattenTrace` pass per work row, keeping each row's cards with the row. The row list
+  // below used to re-flatten the same trace twice more per row on every render to rebuild this.
+  const rowApprovals = new Map<string, { pending: boolean; actions: ReadonlyMap<string, ReactNode> }>();
   for (const row of rows) {
     if (row.type !== "work") continue;
+    let pending = false;
+    const actions = new Map<string, ReactNode>();
     for (const node of flattenTrace(row.nodes)) {
       const matched = (approvalElement?.props.approvals ?? []).filter(({ approval }) => !confirmedRequestIds.has(approval.requestId) && approval.kind?.type === "tool-permission" && approval.kind.tool_call_id === node.item.id);
       const resolved = confirmedApprovals.filter(item => item.kind?.type === "tool-permission" && item.kind.tool_call_id === node.item.id);
       const cards: ReactNode[] = resolved.map(item => <ApprovalResolution key={item.request_id} approval={item} />);
       resolved.forEach(item => resolvedRequests.add(item.request_id));
       if (matched.length && approvalElement) {
-        pendingToolIds.add(node.item.id);
+        pending = true;
         cards.push(cloneElement(approvalElement, { key: `pending:${node.item.id}`, approvals: matched }));
         matched.forEach(({ approval }) => matchedRequests.add(approval.requestId));
       }
-      if (cards.length) actionRequests.set(node.item.id, cards);
+      if (cards.length) actions.set(node.item.id, cards);
     }
+    rowApprovals.set(row.id, { pending, actions });
   }
   const hasApprovals = (approvalElement?.props.approvals.length ?? 0) > 0;
   // Pending decisions must remain mounted and directly reachable even in long transcripts.
@@ -341,8 +370,8 @@ function Transcript({
           }
         }}
       >
-        <TaskProgress sessionId={sessionId} />
-        <TaskPolicyStatus sessionId={sessionId} projectId={projectId} peers={peers} />
+        <SessionProgress sessionId={sessionId} />
+        <SessionPolicyStatus sessionId={sessionId} projectId={projectId} peers={peers} />
         {error && (
           <p role="alert" className="inline-error my-2 text-[13px] text-error">
             {error}
@@ -376,8 +405,8 @@ function Transcript({
               {row.type === "work" ? (
                 <WorkTrace
                   row={row}
-                  hasPendingApproval={flattenTrace(row.nodes).some(node => pendingToolIds.has(node.item.id))}
-                  actionRequests={new Map(flattenTrace(row.nodes).filter(node => actionRequests.has(node.item.id)).map(node => [node.item.id, actionRequests.get(node.item.id)]))}
+                  hasPendingApproval={rowApprovals.get(row.id)?.pending ?? false}
+                  actionRequests={rowApprovals.get(row.id)?.actions ?? noActions}
                   sessionTitles={peers?.titles}
                   onSelectSession={onSelectSession}
                   expanded={expanded}

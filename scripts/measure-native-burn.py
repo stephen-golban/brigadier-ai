@@ -18,11 +18,33 @@ def locked():
     return bool(plistlib.loads(data).get("IOConsoleLocked", True))
 
 
+# The audited workload, pinned by `main`'s `expected` against `capture["workload"]`: 60 s at
+# 200 rows/s. The delivery clause below is stated in these terms rather than read out of the
+# producer report, so a producer that misreports its own configuration cannot relax it.
+WORKLOAD_SECONDS = 60
+# Per-second floor over those 60 seconds. Nominal is 200 events/s, and every one of the 600 audited
+# seconds in the recorded passing run (docs/performance/2026-09-10/live-history-release-burn-1.json)
+# carries 199-201. Half the nominal rate is a 2x margin against a scheduling hiccup shifting events
+# across a bin boundary, and still fails a session that front-loads its events and then trickles
+# just enough to keep a bin non-empty.
+MIN_EVENTS_PER_SECOND = 100
+
+
 def verify_delivery(data_dir, producer, capture):
     """Audit producer → durable envelopes → terminal UI counters, after capture."""
     errors, sessions = [], []
     ids = (producer or {}).get("sessionIds", [])
     frontend = {s["id"]: s for s in (capture or {}).get("delivery", {}).get("sessions", [])}
+    # Harness configuration check, not delivery evidence. `src-tauri/src/burn.rs` stamps
+    # `startedElapsedMs` before its sleep-then-kill task and `killedElapsedMs` after that task's
+    # `sleep(duration)`, so `lifetimeMs >= durationS * 1000` holds for every session by
+    # construction, whatever the app did. It can catch a mistyped `durationS` or a producer report
+    # that lost its entry; it can never catch a session that stalled or died early. What the app
+    # actually delivered is proven by the per-second bins below, off the durable stream.
+    # A missing or self-inconsistent entry is a failed audit, never a silent pass.
+    lifetimes = {entry.get("sessionId"): entry
+                 for entry in (producer or {}).get("sessionLifetimes", []) or []
+                 if isinstance(entry, dict)}
     if len(ids) != 10 or len(set(ids)) != 10:
         errors.append("Expected ten distinct producer sessions")
     for session_id in ids:
@@ -46,14 +68,39 @@ def verify_delivery(data_dir, producer, capture):
         first, last = events[0]["at"], events[-1]["at"]
         per_second = Counter((e["at"] - first) // 1000 for e in events if e["event"]["type"] != "session-exited")
         last_item_seq = max((e["seq"] for e in events if e["event"]["type"] in {"item-started", "item-updated", "item-completed"}), default=0)
+        life = lifetimes.get(session_id) or {}
+        stamps = [life.get(field) for field in ("startedElapsedMs", "killedElapsedMs", "lifetimeMs")]
         entry = {"lastItemSeq": last_item_seq, "session": session_id, "events": len(events), "rows": rows,
                  "first": first, "last": last, "spanMs": last - first,
+                 "startedElapsedMs": stamps[0], "killedElapsedMs": stamps[1], "lifetimeMs": stamps[2],
                  "contiguous": contiguous, "kinds": dict(kinds), "perSecond": dict(sorted(per_second.items()))}
         sessions.append(entry)
         if not contiguous or kinds.get("session-exited") != 1 or events[-1]["event"]["type"] != "session-exited":
             errors.append(f"{session_id}: incomplete durable event stream")
-        if len(events) - 1 < 12000 or last - first < 60000:
-            errors.append(f"{session_id}: less than 12,000 workload events over 60 seconds")
+        if len(events) - 1 < 12000:
+            errors.append(f"{session_id}: less than 12,000 workload events")
+        # The delivery clause. Nothing in the harness can manufacture these bins: each one exists
+        # only because a durable envelope carried an `at` inside it, so a 60th bin requires an
+        # envelope at >= 59,000 ms past the first. That makes it immune to the 1 ms quantization
+        # that failed a real run at spanMs 59,999 — that run's bins are 0..59, all 199-201 — while
+        # still failing any session that went quiet mid-run.
+        covered = sorted(per_second)
+        if set(range(WORKLOAD_SECONDS)) - set(covered) or covered != list(range(len(covered))):
+            gaps = [b for b in range(max(covered, default=-1) + 1) if b not in per_second]
+            errors.append(f"{session_id}: durable stream does not cover {WORKLOAD_SECONDS} one-second bins contiguous from its first envelope "
+                          f"(bins {len(covered)}, last {max(covered, default=None)}, empty {gaps[:8]})")
+        starved = [(b, per_second[b]) for b in range(WORKLOAD_SECONDS) if 0 < per_second.get(b, 0) < MIN_EVENTS_PER_SECOND]
+        if starved:
+            errors.append(f"{session_id}: durable stream fell under {MIN_EVENTS_PER_SECOND} events in a second it was supposed to be delivering 200 "
+                          f"(second, events: {starved[:8]})")
+        if any(not isinstance(v, int) or isinstance(v, bool) for v in stamps):
+            errors.append(f"{session_id}: harness check: producer report carries no monotonic sessionLifetimes entry")
+        else:
+            started_ms, killed_ms, lifetime_ms = stamps
+            if killed_ms - started_ms != lifetime_ms:
+                errors.append(f"{session_id}: harness check: sessionLifetimes stamps disagree with lifetimeMs")
+            if lifetime_ms < 60000:
+                errors.append(f"{session_id}: harness check: the burn's own timers ran {lifetime_ms} ms, under the 60-second configuration; this is the harness clock, not delivery evidence")
         if ui.get("status") != "exited" or ui.get("lastEventSeq") != events[-1]["seq"]:
             errors.append(f"{session_id}: frontend has not received the terminal sequence")
         if ui.get("rowsDropped") != 0 or ui.get("rowsTotal") != rows:

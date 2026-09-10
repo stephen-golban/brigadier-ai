@@ -1,4 +1,4 @@
-import { countDiagnostic } from "./perfDiagnostics";
+import { countDiagnostic, markRenderUpdate, profiling, traceEvent } from "./perfDiagnostics";
 /**
  * Feed ingestion: Channel -> module buffer -> one rAF drain -> one commit per frame.
  *
@@ -15,6 +15,53 @@ import { countDiagnostic } from "./perfDiagnostics";
  *     rows did not change this frame keeps the identical array, so its pane does not re-render.
  *   - No `flushSync`, and the feed is never read inside `startTransition`: a store mutated 60
  *     times a second restarts every transition it is read in.
+ *
+ * **Ring snapshots are lazy** (2026-09-10). Each ring is a mutable `Ring.buf` in arrival order plus
+ * a cached `Ring.snap`; an append pushes onto `buf` and sets `snap = null`, and only a *reader*
+ * materialises the trimmed array. The array a reader gets is always a copy, so a later append never
+ * mutates a snapshot a pane is still holding.
+ *
+ * Why: the old `appendRing` rebuilt every touched ring on every drain, `concat` then `slice`, two
+ * full copies each. **[measured]** In the 60 Hz native benchmark (10 sessions x 200 rows/sec x 60 s)
+ * that is 1,707 rows/sec, ~28 rows per frame, and all 11 rings (ten sessions + the project)
+ * saturate `ROW_CAP` ~1.2 s in and stay saturated: ~44,000 element copies and ~344 KiB of
+ * short-lived array **per frame**, ~21 MB/s. A 40 s main-thread sample of the WebContent renderer
+ * at 10 ms found **360 ms of synchronous JSC GC** (`EdenGCActivityCallback::doCollection` /
+ * `FullGCActivityCallback::doCollection` through `Heap::collectInMutatorThread` ->
+ * `stopThePeriphery`), landing as isolated 26-33 ms frames. **[measured]** Nothing read those
+ * arrays: `src/components/Feed.tsx` is the only real consumer and has no non-test importer, and the
+ * one live reader was the `getSessionRows(id).length > 0` check in `src/App.tsx`'s paint-span
+ * effect — which wanted a count, not an array, and now calls `getSessionRowCount` instead.
+ *
+ * The identity contract the panes rely on is unchanged: a read after the ring changed returns a new
+ * array, a read with no intervening change returns the identical one, and the contents are the last
+ * `ROW_CAP` rows in arrival order. `rowsChanged`/`notify()` are untouched — subscribers are still
+ * woken on the frame their rows changed, whether or not anyone reads.
+ *
+ * **`getState` honours that same contract** (2026-09-10). It did not: every signal ran through
+ * `patch`, every `patch` set `stateDirty`, so `rebuildState` ran once a frame and both
+ * `useSyncExternalStore(subscribe, getState)` call sites re-rendered their whole subtree sixty
+ * times a second. **[measured]** in the 60 Hz native benchmark (10 sessions x 200 rows/s x 60 s,
+ * `docs/performance/2026-09-10/peer-noop-after.json`) `stateRebuild` fired **3,655 times in 63 s**
+ * and `App` rendered **6,628 times** for 7.2 s of render. Two things changed:
+ *
+ *   - `patch` diffs. A delta that moves nothing replaces no object and dirties nothing.
+ *   - `lastEventSeq` is a **cursor**, not a rendered field. A delta that moves only a cursor is
+ *     folded into the snapshot on the `COUNTER_FLUSH_MS` tick that already carries the row
+ *     counters, so the snapshot lags the event stream by at most 500 ms and no frame rebuilds for
+ *     it. Everything that needs per-event resolution reads `getSessionCursor` off the live map.
+ *
+ * `session-started` was **not** changed and is still a rendered change on every turn: it re-stamps
+ * `startedAtMs` with the envelope time, which moves `StoreState.order`. See that case.
+ *
+ * What did **not** change: `request-opened`/`request-resolved`, `status`, `busy`, `model`, `order`,
+ * `unknownProjects`, `runtimeWarnings` and the approvals list all still reach React on the frame
+ * they move. **[measured]** that leaves `turn-started`/`turn-completed` — 1,334 and 1,333 per
+ * session per 60 s in `docs/performance/2026-09-10/peer-noop-after-raw-delivery.json`, i.e. ~44
+ * genuine `busy` flips a second per session against 60 frames — as a per-frame rebuild driver this
+ * change cannot remove without deferring `busy`, which `docs/vision.md` §9 forbids. **This change
+ * is therefore expected to be neutral on that fixture.** Its win is a real workload, where a turn
+ * lasts seconds, rows never dirty the snapshot, and counters fold twice a second.
  */
 import * as fps from "./fps";
 import { ZERO_USAGE } from "./wire";
@@ -34,9 +81,45 @@ import type {
 /** Rows kept in memory per session, and per project. Older rows fall off the head. */
 export const ROW_CAP = 2000;
 
+/**
+ * How far a ring's buffer is allowed to run past `ROW_CAP` before one `splice` trims it back.
+ *
+ * What is bought is allocation **rate**, which is what drives the JSC eden collections this change
+ * targets: at `ROW_CAP` the trim moves 2,000 element slots per 2,000 rows ingested — one slot per
+ * row, amortised — against the old path's two full 2,000-element copies per ring per *frame*,
+ * ~344 KiB/frame of short-lived array across the benchmark's 11 saturated rings **[measured]**,
+ * against ~0 B/frame now **[asserted: arithmetic from the trim schedule, not re-profiled]**.
+ *
+ * What is paid is retention, and it is **objects**, not references. A saturated ring holds up to
+ * `ROW_CAP + RING_SLACK` = 4,000 rows instead of `ROW_CAP` = 2,000, so the benchmark's 11 rings
+ * keep up to ~22,000 extra `FeedRowWire` objects alive — each with its own `l` text, not an 8-byte
+ * slot. The reference slots alone are ~352 KiB against ~176 KiB, but that is the small half of the
+ * number and is not the cost that matters. Both figures here are **[asserted]**: arithmetic from
+ * the constants. **No heap delta has been measured**, so the retained bytes are unknown.
+ *
+ * The tradeoff is taken on the allocation-rate side, where the 360 ms of GC in the header's sample
+ * was measured. Halve `RING_SLACK` if a heap measurement ever contradicts that.
+ */
+const RING_SLACK = ROW_CAP;
+
 /** Counters move every frame; folding them into the snapshot that often would re-render the
  *  sidebar 60 times a second for numbers nobody can read. Signals commit immediately. */
 const COUNTER_FLUSH_MS = 500;
+
+/**
+ * Fields that record **where the event stream got to**, not anything a React consumer draws.
+ *
+ * A delta that moves only these is applied to the live map at once and folded into the React
+ * snapshot on the next `COUNTER_FLUSH_MS` tick, so it costs no rebuild and no render. Nothing in
+ * `src/` renders `lastEventSeq`: grep gives `src/attention.ts:224` (a badge predicate),
+ * `src/hooks/useConversationHistory.ts` (a change token), `src/components/SubagentsPanel.tsx:34`
+ * (an acknowledgement) and `src/components/Burn.tsx:67` (the delivery audit) — four readers, no
+ * pixels. The two that need per-event resolution get it from `getSessionCursor`.
+ *
+ * `rowsTotal`/`rowsDropped` are cursors too and have been throttled since before this change; they
+ * arrive on the counters path rather than through `patch`, so they are not listed here.
+ */
+const CURSOR_FIELDS: ReadonlySet<string> = new Set(["lastEventSeq"]);
 
 const EMPTY_ROWS: readonly FeedRowWire[] = Object.freeze([]);
 const EMPTY_PROJECT_IDS: readonly ProjectId[] = Object.freeze([]);
@@ -112,9 +195,19 @@ export interface StoreState {
   runtimeWarnings: number;
 }
 
+/**
+ * One ring. `buf` is every row still held, in arrival order, up to `ROW_CAP + RING_SLACK`; `snap`
+ * is the trimmed array the last reader was handed, or `null` when `buf` changed since. `snap` is
+ * never an alias of `buf`, so an append cannot mutate an array a pane is still holding.
+ */
+interface Ring {
+  buf: FeedRowWire[];
+  snap: readonly FeedRowWire[] | null;
+}
+
 let buffer: FeedBatch[] = [];
-const sessionRows = new Map<SessionId, FeedRowWire[]>();
-const projectRows = new Map<ProjectId, FeedRowWire[]>();
+const sessionRows = new Map<SessionId, Ring>();
+const projectRows = new Map<ProjectId, Ring>();
 const sessions = new Map<SessionId, SessionRuntime>();
 const approvals = new Map<string, ApprovalItem>();
 const listeners = new Set<() => void>();
@@ -135,8 +228,16 @@ let state: StoreState = {
   unknownProjects: unknownList,
   runtimeWarnings: 0,
 };
+/** A field a React consumer renders moved: rebuild the snapshot on this frame. */
 let stateDirty = false;
+/** Only `rowsTotal`/`rowsDropped` moved: fold in on the `COUNTER_FLUSH_MS` tick. */
 let countersDirty = false;
+/** Only a `CURSOR_FIELDS` value moved: same tick, same reason. */
+let cursorsDirty = false;
+/** A signal was applied this frame. Wakes `subscribe` callbacks that read the live map
+ *  (`getSessionCursor`) without claiming the snapshot moved. Counters deliberately do **not** set
+ *  it — `src/feedStore.test.ts` "are throttled to COUNTER_FLUSH_MS" pins a held counter as silent. */
+let signalsDirty = false;
 let lastCounterFlush = 0;
 
 /** Ingestion counters, for the meter overlay. Not part of the React snapshot. */
@@ -154,9 +255,43 @@ export function pushBatch(batch: FeedBatch): void {
 
 /* ----------------------------------------------------------------- rings */
 
-function appendRing<T>(prev: readonly T[] | undefined, add: readonly T[]): T[] {
-  const next = prev === undefined || prev.length === 0 ? add.slice() : prev.concat(add);
-  return next.length > ROW_CAP ? next.slice(next.length - ROW_CAP) : next;
+function ringFor<K>(map: Map<K, Ring>, key: K): Ring {
+  let ring = map.get(key);
+  if (ring === undefined) {
+    ring = { buf: [], snap: null };
+    map.set(key, ring);
+  }
+  return ring;
+}
+
+/**
+ * Append `add[from, to)` to a ring. No array is built here: the rows go straight onto `buf`, the
+ * cached snapshot is dropped, and the head is trimmed only once `buf` has run `RING_SLACK` past
+ * `ROW_CAP`. `splice` moves the survivors in place rather than allocating a replacement.
+ */
+function appendRows(ring: Ring, add: readonly FeedRowWire[], from: number, to: number): void {
+  const buf = ring.buf;
+  for (let i = from; i < to; i++) buf.push(add[i]!);
+  ring.snap = null;
+  if (buf.length > ROW_CAP + RING_SLACK) buf.splice(0, buf.length - ROW_CAP);
+}
+
+/**
+ * The only place a ring array is built. Returns the identical reference until the next append,
+ * a new one on the first read after it, and `EMPTY_ROWS` for a ring that holds nothing.
+ */
+function readRing(ring: Ring | undefined): readonly FeedRowWire[] {
+  if (ring === undefined) return EMPTY_ROWS;
+  if (ring.snap !== null) return ring.snap;
+  const buf = ring.buf;
+  const snap =
+    buf.length === 0
+      ? EMPTY_ROWS
+      : buf.length > ROW_CAP
+        ? buf.slice(buf.length - ROW_CAP)
+        : buf.slice();
+  ring.snap = snap;
+  return snap;
 }
 
 /* ------------------------------------------------------------- runtimes */
@@ -205,10 +340,28 @@ function runtime(sessionId: SessionId, projectId: ProjectId | null): SessionRunt
   return created;
 }
 
+/**
+ * Apply a delta to one session's runtime, and classify what it moved.
+ *
+ * Three outcomes, in order of how often they fire under the benchmark: nothing moved (the object
+ * and the snapshot both keep their identity), only a cursor moved (`cursorsDirty`), a rendered
+ * field moved (`stateDirty`, and the snapshot is rebuilt on this frame). `Object.is` is the
+ * comparison, so `usage` — a fresh object on every `turn-completed` — always counts as moved; it
+ * rides with a `busy` flip that already counts, so nothing is gained by comparing it deeper.
+ */
 function patch(sessionId: SessionId, projectId: ProjectId | null, delta: Partial<SessionRuntime>) {
   const prev = runtime(sessionId, projectId);
+  let moved = false;
+  let rendered = false;
+  for (const key of Object.keys(delta) as (keyof SessionRuntime)[]) {
+    if (Object.is(delta[key], prev[key])) continue;
+    moved = true;
+    if (!CURSOR_FIELDS.has(key)) { rendered = true; break; }
+  }
+  if (!moved) return;
   sessions.set(sessionId, { ...prev, ...delta });
-  stateDirty = true;
+  if (rendered) stateDirty = true;
+  else cursorsDirty = true;
 }
 
 /* ---------------------------------------------------------------- signals */
@@ -216,8 +369,17 @@ function patch(sessionId: SessionId, projectId: ProjectId | null, delta: Partial
 function applySignal(env: Envelope, projectId: ProjectId | null): void {
   const id = env.session_id;
   const e = env.event;
+  // Every envelope in `batch.signals` is a signal, and every signal advances `lastEventSeq`, so
+  // this is the frame's "the event stream moved" edge — what wakes a `subscribe` callback reading
+  // `getSessionCursor`. It is not a claim that the snapshot moved; `notify` on it is a no-op for a
+  // `useSyncExternalStore` consumer whose snapshot came back `Object.is`-equal.
+  signalsDirty = true;
   switch (e.type) {
     case "session-started":
+      // Open, deliberately left alone (2026-09-10): `system/init` arrives **once per turn**
+      // (`docs/STATUS.md` §7), so `startedAtMs` is re-stamped every turn and `StoreState.order`
+      // therefore means "whoever spoke last", not the "newest start first" it documents — a
+      // user-visible sidebar ordering question, not a performance one, so it is not changed here.
       patch(id, projectId, {
         status: "running",
         model: e.model,
@@ -280,7 +442,11 @@ function applySignal(env: Envelope, projectId: ProjectId | null): void {
       break;
     case "runtime-warning":
       // The edge the plan card refetches `current_run` on; see `StoreState.runtimeWarnings`.
+      // `runtimeWarnings` lives outside the session runtimes, so `patch` cannot see it move: a
+      // second warning with the identical text would otherwise be classed cursor-only and the
+      // plan card would miss its edge until the next flush.
       runtimeWarnings += 1;
+      stateDirty = true;
       patch(id, projectId, { lastMessage: `warning: ${e.message}`, lastEventSeq: env.seq });
       break;
     case "runtime-error": {
@@ -329,16 +495,17 @@ function applyBatch(batch: FeedBatch): void {
     rowsChanged = true;
     ingest.rowsIn += batch.rows.length;
     ingest.rowsInWindow += batch.rows.length;
-    projectRows.set(projectId, appendRing(projectRows.get(projectId), batch.rows));
+    appendRows(ringFor(projectRows, projectId), batch.rows, 0, batch.rows.length);
 
-    // Group by session so each touched session gets exactly one new array reference.
+    // Group by session so each touched session's snapshot is invalidated exactly once. The run is
+    // copied into the ring by index; the `batch.rows.slice(runStart, i)` this used to build was
+    // one more short-lived array per run per frame.
     let runStart = 0;
     for (let i = 1; i <= batch.rows.length; i++) {
       const boundary = i === batch.rows.length || batch.rows[i]!.s !== batch.rows[runStart]!.s;
       if (!boundary) continue;
       const id = batch.rows[runStart]!.s;
-      const slice = batch.rows.slice(runStart, i);
-      sessionRows.set(id, appendRing(sessionRows.get(id), slice));
+      appendRows(ringFor(sessionRows, id), batch.rows, runStart, i);
       runtime(id, projectId);
       runStart = i;
     }
@@ -359,6 +526,22 @@ function applyBatch(batch: FeedBatch): void {
   }
 }
 
+/** Element-wise identity compare. Both arrays are short: sessions in a window, open approvals. */
+function same<T>(a: readonly T[], b: readonly T[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/**
+ * Rebuild the React snapshot from the live map.
+ *
+ * `order` and `approvals` keep the previous array when the rebuild produced the same elements in
+ * the same sequence — the same rule `getSessionRows`/`getProjectRows` already follow, so a
+ * consumer that memoises on `state.order` is not invalidated by a rebuild that was about one
+ * session's `busy`. `sessions` is a fresh record every time: a rebuild only happens because some
+ * runtime in it was replaced.
+ */
 function rebuildState(): void {
   countDiagnostic("stateRebuild");
   const record: Record<SessionId, SessionRuntime> = {};
@@ -366,11 +549,12 @@ function rebuildState(): void {
   const order = [...sessions.values()]
     .sort((a, b) => (b.startedAtMs ?? 0) - (a.startedAtMs ?? 0))
     .map((r) => r.sessionId);
+  const open = [...approvals.values()].sort((a, b) => a.openedAtMs - b.openedAtMs);
   state = {
     version: state.version + 1,
     sessions: record,
-    order,
-    approvals: [...approvals.values()].sort((a, b) => a.openedAtMs - b.openedAtMs),
+    order: same(order, state.order) ? state.order : order,
+    approvals: same(open, state.approvals) ? state.approvals : open,
     unknownProjects: unknownList,
     runtimeWarnings,
   };
@@ -399,20 +583,33 @@ function drain(timestamp?: number): void {
     buffer = [];
     ingest.batches += batches.length;
     ingest.batchesInWindow += batches.length;
+    // Traced before the work, so this entry's `t` is where the drain starts and the next entry
+    // bounds it. `d` is rows delivered; `applyBatch` still drops rows for a deleted session.
+    if (profiling) traceEvent("drain", batches.reduce((n, b) => n + b.rows.length, 0));
     for (const b of batches) applyBatch(b);
-  }
+  } else if (profiling) traceEvent("drain", 0);
 
   const now = performance.now();
   if (ingest.windowStart === 0) ingest.windowStart = now;
-  if (stateDirty || (countersDirty && now - lastCounterFlush >= COUNTER_FLUSH_MS)) {
-    if (countersDirty) lastCounterFlush = now;
+  // Cursors ride the counters' clock: both are per-event numbers, neither is drawn, and folding
+  // them on the same tick bounds how far `state.sessions[id].lastEventSeq` may trail the stream at
+  // `COUNTER_FLUSH_MS`. That bound is what `useAttention`'s badge and `SubagentsPanel`'s
+  // acknowledgement inherit; `scripts/measure-native-burn.py:104` reads the terminal sequence off
+  // the snapshot too, and `session-exited` is a status change, so it rebuilds on its own frame.
+  const foldCursors = (countersDirty || cursorsDirty) && now - lastCounterFlush >= COUNTER_FLUSH_MS;
+  if (stateDirty || foldCursors) {
+    if (countersDirty || cursorsDirty) lastCounterFlush = now;
     stateDirty = false;
     countersDirty = false;
+    cursorsDirty = false;
     rebuildState();
+    if (profiling) traceEvent("notify", listeners.size);
     notify();
-  } else if (rowsChanged) {
+  } else if (signalsDirty || rowsChanged) {
+    if (profiling) traceEvent("notify", listeners.size);
     notify();
   }
+  signalsDirty = false;
   rowsChanged = false;
 
   if (now - ingest.windowStart >= 1000) {
@@ -422,7 +619,12 @@ function drain(timestamp?: number): void {
   }
 
   if (PROFILE_DRAIN) fps.recordDrain(performance.now() - workStarted);
-  if (timestamp !== undefined) fps.sampleFrame(timestamp);
+  if (timestamp !== undefined) {
+    fps.sampleFrame(timestamp);
+    // rAF only: the 250 ms fallback is an ordinary timer, so its reply would not straddle a
+    // rendering update. Posted last, so the delta covers everything after this callback returns.
+    if (profiling) markRenderUpdate();
+  }
 }
 
 function scheduleDrain(): void {
@@ -458,18 +660,61 @@ export function subscribe(cb: () => void): () => void {
   return () => listeners.delete(cb);
 }
 
+/**
+ * The React snapshot. Identity-stable across a frame in which nothing a consumer renders moved —
+ * see the header — so `useSyncExternalStore(subscribe, getState)` schedules nothing on such a
+ * frame even though `subscribe` was notified. A `CURSOR_FIELDS` value inside it may trail the
+ * live event stream by up to `COUNTER_FLUSH_MS`; read `getSessionCursor` when that matters.
+ */
 export function getState(): StoreState {
   return state;
 }
 
+/**
+ * A change token for one session at the resolution of the **event stream**, not of the snapshot:
+ * `${rowsTotal}:${lastEventSeq}:${busy}` read straight off the live map the drain writes, so it
+ * moves on the frame an event lands whether or not that event rebuilt `state`.
+ *
+ * `src/hooks/useConversationHistory.ts` is the caller, from inside its `store.subscribe` callback.
+ * **[measured]** the 60 Hz native benchmark records 534-544 history responses in 63 s
+ * (`docs/performance/2026-09-10/live-history-release-burn-1.json`) and
+ * `scripts/measure-native-burn.py:119` fails a run under 60; that count is a property of this
+ * token's resolution, which is why it is read live. It is strictly finer than the snapshot it
+ * replaced — `rowsTotal` reaches the live map on the frame the counter arrives and the snapshot
+ * only every `COUNTER_FLUSH_MS`.
+ *
+ * **Never call this during a render.** It returns a string, so it carries no identity React can
+ * render on, and the map it reads is mutated by the drain outside React's knowledge.
+ */
+export function getSessionCursor(sessionId: SessionId): string {
+  const s = sessions.get(sessionId);
+  return s === undefined ? "" : `${s.rowsTotal}:${s.lastEventSeq}:${s.busy}`;
+}
+
 export function getSessionRows(sessionId: SessionId | null): readonly FeedRowWire[] {
   if (sessionId === null) return EMPTY_ROWS;
-  return sessionRows.get(sessionId) ?? EMPTY_ROWS;
+  return readRing(sessionRows.get(sessionId));
 }
 
 export function getProjectRows(projectId: ProjectId | null): readonly FeedRowWire[] {
   if (projectId === null) return EMPTY_ROWS;
-  return projectRows.get(projectId) ?? EMPTY_ROWS;
+  return readRing(projectRows.get(projectId));
+}
+
+/**
+ * How many rows a session's ring would hand out, without handing them out. `buf` is clamped to
+ * `ROW_CAP` because it may be carrying up to `RING_SLACK` rows that have already fallen off the
+ * head, so this is the *logically visible* count and always equals `getSessionRows(id).length`.
+ *
+ * It exists for `src/App.tsx`'s paint-span check, which asks a yes/no question and would otherwise
+ * materialise a 2,000-element snapshot to answer it. Not a substitute for `getSessionRows` in a
+ * React read: it returns a number, so it cannot carry the identity the panes re-render on.
+ */
+export function getSessionRowCount(sessionId: SessionId | null): number {
+  if (sessionId === null) return 0;
+  const ring = sessionRows.get(sessionId);
+  if (ring === undefined) return 0;
+  return ring.buf.length > ROW_CAP ? ROW_CAP : ring.buf.length;
 }
 
 export function getIngest(): { rowsIn: number; batches: number } {
@@ -561,9 +806,17 @@ export function noteWorktreeRemoved(sessionId: SessionId): void {
  */
 export function dropSession(sessionId: SessionId): boolean {
   deletedSessions.add(sessionId);
-  for (const [id, rows] of projectRows) {
-    const kept = rows.filter(row => row.s !== sessionId);
-    if (kept.length !== rows.length) projectRows.set(id, kept);
+  for (const ring of projectRows.values()) {
+    // Filter the ring's **logical** rows, never `buf`: `buf` may be carrying up to `RING_SLACK`
+    // rows that already fell off the head, and a filter that took `buf.length` back under
+    // `ROW_CAP` would hand every one of them back to the next reader — the project feed jumping
+    // backwards in time on a delete.
+    const visible = ring.buf.length > ROW_CAP ? ring.buf.slice(ring.buf.length - ROW_CAP) : ring.buf;
+    const kept = visible.filter(row => row.s !== sessionId);
+    if (kept.length === visible.length) continue;
+    // The cached snapshot still holds the deleted session's rows; it goes with the buffer.
+    ring.buf = kept;
+    ring.snap = null;
   }
   const had = sessions.delete(sessionId);
   sessionRows.delete(sessionId);
@@ -658,7 +911,7 @@ export function dismissApproval(requestId: string): void {
  * across a resume (`docs/plans/ipc-contract.md` §resume_session). `Feed.tsx:70` already keys React
  * rows on `${s}#${q}` and so already assumes exactly this. Both inputs are ascending in `q` —
  * `feed_tail` returns oldest first (ipc-contract §Commands) and the batcher delivers rows "in seq
- * order per session" (§Feed channel), appended in arrival order by `appendRing` — so a two-pointer
+ * order per session" (§Feed channel), appended in arrival order by `appendRows` — so a two-pointer
  * merge reproduces the order the live path produces rather than inventing one. Ties keep the live
  * row: same `(session_id, seq)` is the same row, and keeping the live copy leaves the ring's
  * existing objects untouched.
@@ -666,14 +919,16 @@ export function dismissApproval(requestId: string): void {
  * Consequences worth naming: re-seeding is now idempotent, so StrictMode's double-mounted effect
  * and the re-select after `resume_session` no longer duplicate anything; a seed that adds nothing
  * keeps the array reference and skips `notify`, so the pane does not re-render; and the union is
- * trimmed to the newest `ROW_CAP` from the head, exactly as `appendRing` trims.
+ * trimmed to the newest `ROW_CAP` from the head, exactly as `readRing` trims.
  *
  * The project ring is deliberately **not** seeded: interleaving several sessions' tails by `t`
  * would produce an ordering the live path never produces.
  */
 export function seedRows(sessionId: SessionId, rows: FeedRowWire[]): void {
   if (deletedSessions.has(sessionId)) return;
-  const existing = sessionRows.get(sessionId) ?? EMPTY_ROWS;
+  // The merge is against the ring's *logical* rows, so it reads the trimmed snapshot rather than
+  // `buf`, which may still be carrying up to `RING_SLACK` rows that have already fallen off.
+  const existing = readRing(sessionRows.get(sessionId));
 
   const merged: FeedRowWire[] = [];
   let seed = 0;
@@ -704,9 +959,8 @@ export function seedRows(sessionId: SessionId, rows: FeedRowWire[]): void {
   // Nothing the ring did not already hold: keep its identity so the pane does not re-render.
   if (inserted === 0) return;
 
-  sessionRows.set(
-    sessionId,
-    merged.length > ROW_CAP ? merged.slice(merged.length - ROW_CAP) : merged,
-  );
+  const ring = ringFor(sessionRows, sessionId);
+  ring.buf = merged.length > ROW_CAP ? merged.slice(merged.length - ROW_CAP) : merged;
+  ring.snap = null;
   notify();
 }

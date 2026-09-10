@@ -1,9 +1,17 @@
-import { countDiagnostic } from "../perfDiagnostics";
+import { countDiagnostic, profiling, traceEvent } from "../perfDiagnostics";
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { workspaceApi, desktop, errorMessage, type ChatItem, type ChatTurn } from '../workspaceApi';
 import * as store from '../feedStore';
 import { mergeHistory } from '../conversationHistory';
+
+// One shared empty window, so the reset below can be a real no-op. The effect re-runs on every
+// `[sessionId, revision]` change and must clear the previous conversation; on a first mount it has
+// nothing to clear, and a fresh `[]` literal defeats React's `Object.is` bail-out — costing an
+// extra render *and* commit of the whole mounted transcript inside the first-mount window the
+// native 60 Hz burn is measured over. Neither array is ever mutated; the read path only maps.
+const EMPTY_ITEMS: ChatItem[] = [];
+const EMPTY_TURNS: ChatTurn[] = [];
 
 // The explicitly enabled native burn audits the mounted transcript, not only IPC rows.
 const historyDelivery = new Map<string, {responses: number; lastItemSeq: number}>();
@@ -12,8 +20,8 @@ export function getHistoryDelivery() {
 }
 
 export function useConversationHistory(sessionId: string, revision: number) {
-  const [items,setItems] = useState<ChatItem[]>([]);
-  const [turns,setTurns] = useState<ChatTurn[]>([]);
+  const [items,setItems] = useState<ChatItem[]>(EMPTY_ITEMS);
+  const [turns,setTurns] = useState<ChatTurn[]>(EMPTY_TURNS);
   const [loaded,setLoaded] = useState(false);
   const [error,setError] = useState<string|null>(null);
   const [hasOlder,setHasOlder] = useState(false);
@@ -24,7 +32,7 @@ export function useConversationHistory(sessionId: string, revision: number) {
     let live=true, fetching=false, dirty=false, cursor=0, before:number|null=null, browsing=false;
     let windowItems: ChatItem[] = [];
     let timer:ReturnType<typeof setTimeout>|undefined;
-    setItems([]); setTurns([]); setLoaded(false); setHistorical(false); setError(null);
+    setItems(EMPTY_ITEMS); setTurns(EMPTY_TURNS); setLoaded(false); setHistorical(false); setError(null);
     const schedule = (delay = 100) => {
       if (timer !== undefined) return;
       timer = setTimeout(() => { timer = undefined; void read('updates'); }, delay);
@@ -36,11 +44,18 @@ export function useConversationHistory(sessionId: string, revision: number) {
       fetching=true;
       if(mode==='older') setPaging(true);
       try {
+        // Diagnostic only, both sides of each awaited invoke: a long frame gap with no React span
+        // is either an IPC response landing on the main thread or it is not, and this says which.
+        if (profiling) traceEvent("history-request");
         const page = await workspaceApi.historyPage(sessionId, mode==='older' && before!==null ? {before} : mode==='updates' ? {after:cursor} : {});
         countDiagnostic("historyResponse");
+        if (profiling) traceEvent("history-response", page.items.length);
         if (!page.items.length) countDiagnostic("emptyHistoryResponse");
         const merged = mode === 'latest' ? page.items : mergeHistory(windowItems, page.items, mode === 'older' ? 'older' : 'latest');
+        // `d` on the request is the window size asked about; 0 means no invoke was made at all.
+        if (profiling) traceEvent("turns-request", merged.length);
         const recorded = merged.length ? await workspaceApi.chatTurns(sessionId, {start: Math.min(...merged.map(item => item.seq)), end: Math.max(...merged.map(item => item.seq))}) : [];
+        if (profiling) traceEvent("turns-response", recorded.length);
         if(!live) return;
         if(mode!=='updates') {
           browsing=mode==='older'; setHistorical(browsing);
@@ -70,10 +85,15 @@ export function useConversationHistory(sessionId: string, revision: number) {
     control.current={older:()=>read('older'),latest:()=>read('latest')};
     const changed = () => { if(!live || browsing) return; if(fetching){dirty=true;return;} schedule(); };
     // Feed carries bounded activity notifications; full bodies are fetched only for touched sessions.
+    // The token comes off `getSessionCursor`, the live map, not off `getState()`: the React
+    // snapshot folds `lastEventSeq` and `rowsTotal` in on a 500 ms tick so the shell does not
+    // re-render for a number nobody draws (`src/feedStore.ts` header), and a token at that
+    // resolution would stop the mounted transcript following a live conversation.
+    // **[measured]** 534-544 history responses in 63 s of the 60 Hz benchmark; under 60 fails the
+    // run at `scripts/measure-native-burn.py:119`.
     let token = '';
     const unsubscribe = store.subscribe(()=>{
-      const session=store.getState().sessions[sessionId];
-      const next = session ? `${session.rowsTotal}:${session.lastEventSeq}:${session.busy}` : '';
+      const next = store.getSessionCursor(sessionId);
       if(next!==token){token=next;changed();}
     });
     const unlisten = desktop ? listen<{sessionId:string}>('conversation-state-changed', e=>{if(e.payload.sessionId===sessionId)changed();}) : Promise.resolve(()=>{});

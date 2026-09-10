@@ -1,4 +1,5 @@
 import { MessageActions } from "./assistant-ui/elements/message-actions";
+import { profiling, traceEvent } from "../perfDiagnostics";
 import { useEffect, useState, lazy, Suspense } from "react";
 
 export function CopyButton({ text }: { text: string }) {
@@ -32,7 +33,16 @@ export function CopyButton({ text }: { text: string }) {
     />
   );
 }
-const MarkdownContent = lazy(() => import("./MarkdownContent"));
+/**
+ * `./MarkdownContent` is a 286 KB built chunk; its fetch, parse and evaluation is a candidate for
+ * the stall on the first transcript mount. The profiling build stamps the moment it resolves; the
+ * ordinary build gets the bare loader it always had, with no extra `.then` on the import.
+ */
+const MarkdownContent = lazy(
+  profiling
+    ? () => import("./MarkdownContent").then(module => { traceEvent("markdown-module"); return module; })
+    : () => import("./MarkdownContent"),
+);
 export function Markdown(props: {
   text: string;
   onFile?: (path: string) => void;
