@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   Archive,
-  ArrowUpRight,
+  BranchAlt,
   Branch,
   Desktop,
   DotsHorizontal,
@@ -181,10 +181,10 @@ export function SessionMenu({
                 Fork session
               </Dropdown.Item>
               <Dropdown.Item
-                nativeIcon={<ArrowUpRight />}
+                nativeIcon={<BranchAlt />}
                 onAction={() => void run(() => onFork?.(true))}
               >
-                <ArrowUpRight />
+                <BranchAlt />
                 Fork session in new worktree
               </Dropdown.Item>
             </DropdownContent>
