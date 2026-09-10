@@ -632,3 +632,7 @@ within a single file.
 
 Keyboard glyphs (`⌘K`, `⌥⌘R`, …) were left alone, as were the CSS-drawn `.composer-spinner` /
 `.composer-stop-symbol` and `SessionStatus`'s inline progress circle — the set has no spinner (§6).
+
+### Worktree glyph follow-up — 2026-09-11
+
+**[source]** The installed `@openai/apps-sdk-ui` 0.2.2 includes `dist/es/components/Icon/svg/BranchAlt.js`. Added `BranchAlt` to the manifest and generated it with `npm run vendor:icons`, as above. Per the owner’s request, it represents worktrees in the setup rail, existing-worktree options, resolved task rail, session context, and the fork-in-new-worktree action (web and native menu icons). Ordinary branch selectors retain `Branch`.

@@ -3,7 +3,7 @@ import { WorkerSummary } from './WorkerSummary';
 import { BackgroundInbox } from './assistant-ui/elements/background-inbox';
 import { useEffect, useState } from 'react';
 import { useTaskExecutionSettings } from '../taskSettings';
-import { Branch, Compare, ExternalLink, File, Folder, SettingsCog, SettingsSlider, Users } from "../icons";
+import { BranchAlt, Branch, Compare, ExternalLink, File, Folder, SettingsCog, SettingsSlider, Users } from "../icons";
 import { Button } from './controls/button';
 import type { SessionRuntime } from '../feedStore';
 import { peerApi, type PeerData } from '../peerApi';
@@ -51,7 +51,7 @@ export function SessionCard({ session, sessions, peers, onSelect, onChanges, onS
       <section><h3>Environment · locked for this task</h3>
         <AgentStatus state={session.status==='failed'?'failed':session.busy?'working':session.status==='exited'?'idle':'waiting'} label={session.status==='failed'?'Execution failed':session.busy?'Working':session.status==='exited'?'Stopped':'Ready'}/>
         <Button className="context-row" onClick={()=>navigate(onChanges)}><Compare/><span>Changes</span><span className="change-count"><i className="text-ok not-italic">+{changes.files.reduce((n,f) => n+f.added,0)}</i> <i className="text-error not-italic">−{changes.files.reduce((n,f) => n+f.deleted,0)}</i></span></Button>
-        <Button className="context-row" onClick={()=>navigate(onFiles)} title={session.cwd ?? undefined}><Folder/><span>{settings?.workspacePath ? 'Existing worktree' : session.worktreePath ? 'Worktree' : 'Local'} · {session.cwd?.split('/').pop() ?? 'Workspace'}</span></Button>
+        <Button className="context-row" onClick={()=>navigate(onFiles)} title={session.cwd ?? undefined}>{settings?.workspacePath || session.worktreePath ? <BranchAlt/> : <Folder/>}<span>{settings?.workspacePath ? 'Existing worktree' : session.worktreePath ? 'Worktree' : 'Local'} · {session.cwd?.split('/').pop() ?? 'Workspace'}</span></Button>
         <div className="context-row" title={session.branch ?? undefined}><Branch/><span>{session.branch ?? 'No Git branch'}</span></div>
         {settings?.baseBranch && <div className="context-row" title={settings.baseBranch}><Branch/><span>Started from {settings.baseBranch}</span></div>}
         {session.branch && <Button className="context-row" onClick={()=>navigate(onChanges)}><Compare/><span>Commit, push or compare</span><ExternalLink/></Button>}
