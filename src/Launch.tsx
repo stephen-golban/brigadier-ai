@@ -59,7 +59,7 @@ export function Launch() {
   const active = stage !== "done" && stage !== "loading";
   const transitioning = stage === "revealing";
   const track = active && !transitioning
-    ? `/audio/welcome.m4a?replay=${start}`
+    ? `/audio/arrival.m4a?replay=${start}`
     : null;
   useMusic(track, !!prefs?.music && !error);
 

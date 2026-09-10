@@ -328,21 +328,11 @@
 .settings-section form input[type="number"] {
   width: 100px;
 }
-.settings-actions,
-.settings-theme {
+.settings-actions {
   display: flex;
   gap: 12px;
   align-items: center;
   flex-wrap: wrap;
-}
-.settings-theme {
-  padding: 18px;
-  border: 1px solid var(--color-hairline);
-  border-radius: 12px;
-  background: #232323;
-}
-.settings-theme > span:last-child {
-  margin-left: auto;
 }
 .app-toasts {
   position: fixed;

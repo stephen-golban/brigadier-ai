@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Brigadier / A new beginning</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#111110;color:#eeeae2;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}button,input,select{font:inherit}button,select{cursor:pointer}button{white-space:nowrap}button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid #cda879;outline-offset:4px}button:active{transform:scale(.98)}button:disabled{cursor:wait;opacity:.5}a{color:inherit}header,main,footer{max-width:1376px;margin:auto;padding:0 48px}header{height:100px;display:flex;align-items:center;justify-content:space-between}header strong{font-size:20px;font-weight:550;letter-spacing:-.7px}header span,footer{color:#aaa79f;font-size:12px}h1{font-size:clamp(30px,4vw,48px);line-height:1.1;font-weight:500;letter-spacing:-1.8px;margin:18px 0 14px}p{color:#aaa79f}main>p{max-width:540px;font-size:16px;margin:0 0 36px}.experience{display:grid;grid-template-columns:minmax(0,1fr) 255px;gap:28px;align-items:start}.experience>*{min-width:0}.preview{width:100%;min-width:0;position:relative;overflow:hidden;border-radius:16px;border:1px solid #ffffff12;background:#181818;aspect-ratio:1.55;min-height:430px;color:#eeeae2;--ground:#181818}.preview.light{background:#f7f7f5;--ground:#f7f7f5;color:#242424}.window-label{position:absolute;left:24px;top:20px;font-size:12px;opacity:.5}.theme{position:absolute;right:18px;top:15px;border:0;background:transparent;color:inherit;opacity:.7;padding:6px 8px;font-size:12px}.halo{position:absolute;width:90%;height:80%;left:5%;top:10%;background:radial-gradient(ellipse,#b7987033,transparent 62%);opacity:0;pointer-events:none}.scene{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column}.hero-mark{width:130px;height:130px;flex-shrink:0}.hero-mark svg{width:100%;height:100%}.wordmark{font-size:22px;letter-spacing:-.65px;font-weight:550;margin-top:18px}.invitation{font-size:clamp(21px,2.9vw,34px);font-weight:450;letter-spacing:-1px;margin:30px 18px 23px;text-align:center}.begin{background:#e9e5dd;color:#24221e;border:0;border-radius:8px;padding:10px 20px;font-size:13px;font-weight:500}.light .begin{background:#242424;color:#f7f7f5}.form{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:20px;text-align:center;padding:24px}.form[hidden],.scene[hidden]{display:none}.form h2{font-size:30px;font-weight:450;letter-spacing:-1px;margin:0}.form label{font-size:13px;opacity:.7}.form input{display:block;margin:10px auto 0;background:transparent;color:inherit;border:1px solid #9b968b;border-radius:8px;padding:10px 14px;width:min(270px,100%);font-size:16px}.under-preview{display:flex;gap:16px;align-items:center;margin:15px 0 0;color:#aaa79f;font-size:12px;flex-wrap:wrap}.track{height:2px;background:#ffffff18;flex:1;min-width:60px;overflow:hidden}.track span{display:block;width:0;height:100%;background:#c6b294}aside{padding-top:6px}aside h2{font-size:18px;font-weight:500;letter-spacing:-.5px;margin:0 0 8px}aside p{font-size:13px;margin:0 0 25px}.sound-label{display:block;color:#aaa79f;font-size:12px;margin:0 0 8px}select{width:100%;border:1px solid #48443d;border-radius:8px;padding:11px;background:#1b1a18;color:#eeeae2}.sound-note{min-height:55px;margin:12px 0 24px;font-size:12px;color:#aaa79f}.play{width:100%;background:#e9e5dd;border:0;border-radius:8px;color:#24221e;padding:12px;font-weight:500}.checks{display:flex;flex-direction:column;gap:12px;margin-top:20px;color:#bcb8ae;font-size:12px}.checks label{display:flex;align-items:center;gap:8px}.checks input{accent-color:#cbb18c}.status{min-height:35px;font-size:12px;color:#cabca7;margin-top:14px}.marks{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;margin-top:50px}.choice{appearance:none;text-align:left;color:inherit;background:transparent;border:0;border-top:1px solid #444038;padding:22px 0 0;white-space:normal;border-radius:0}.choice[aria-pressed=true]{border-color:#d4ba91}.choice .sample{height:138px;background:#1b1b1a;border-radius:12px;display:flex;align-items:center;justify-content:center;gap:25px}.choice svg{width:88px;height:88px;--ground:#1b1b1a}.choice .tiny{width:20px;height:20px;opacity:.85}.choice strong{display:block;font-size:15px;font-weight:500;margin:16px 0 5px}.choice p{font-size:13px;margin:0;color:#aaa79f}.choice[aria-pressed=true] strong:after{content:"Selected";margin-left:12px;font-size:11px;color:#cbb18c;font-weight:400}.rationale{margin:44px 0 0;display:grid;grid-template-columns:1fr 1fr;gap:48px;border-top:1px solid #ffffff14;padding-top:28px}.rationale h2{font-size:15px;font-weight:500;margin:0}.rationale p{font-size:13px;max-width:480px;margin:8px 0}.rationale a{color:#c6b294}footer{padding-top:36px;padding-bottom:36px;font-size:11px}@media(max-width:800px){header,main,footer{padding-left:24px;padding-right:24px}.experience{grid-template-columns:1fr}aside{display:grid;grid-template-columns:1fr 1fr;gap:0 24px}aside .explanation{grid-column:1/-1}aside .sound-note{margin-bottom:0}.controls{grid-column:2;grid-row:2/5}.checks{gap:10px}.status{margin:10px 0}.preview{aspect-ratio:1.45}.hero-mark{width:100px;height:100px}.marks{gap:16px;margin-top:35px}.choice .sample{height:112px;gap:12px}.choice svg{width:70px;height:70px}.choice .tiny{width:16px;height:16px}.choice strong:after{display:none}.rationale{gap:24px}}@media(max-width:480px){header{height:75px}header span{max-width:120px;text-align:right}main>p{font-size:14px}.preview{aspect-ratio:.94}.marks{grid-template-columns:1fr;gap:24px}.choice{display:grid;grid-template-columns:110px 1fr;gap:0 16px}.choice .sample{grid-row:1/3;height:100px}.choice .tiny{display:none}.choice strong{margin-top:12px}.choice p{grid-column:2}aside{display:block}.sound-note{min-height:40px}.controls{margin-top:10px}.rationale{grid-template-columns:1fr;gap:20px}.invitation{font-size:26px}}
+</style>
+<header><strong>brigadier</strong><span>Brand & opening study</span></header>
+<main>
+<h1>Many threads. One intention.</h1>
+<p>A warmer identity for the place where your ideas become work. Start with Weave and First Light.</p>
+<div class="experience">
+<div>
+<section class="preview" aria-label="Interactive introduction concept">
+<span class="window-label">brigadier</span><button class="theme" type="button">Light appearance</button>
+<div class="halo"></div>
+<div class="scene"><div class="hero-mark"></div><div class="wordmark">brigadier</div><h2 class="invitation">Your ideas. In good company.</h2><button class="begin" type="button">Let’s begin</button></div>
+<form class="form" hidden><h2>Let’s make this yours.</h2><label>Your name<input name="name" autocomplete="given-name" maxlength="50" required></label><button class="begin" type="submit">Continue</button></form>
+</section>
+<div class="under-preview"><span id="beat">Ready to preview</span><div class="track"><span></span></div><span id="time">8.6 seconds</span></div>
+</div>
+<aside>
+<div class="explanation"><h2 id="direction">Weave</h2><p id="direction-note">Independent threads held together. A four-lobed, interlaced mark with room at its center.</p></div>
+<label class="sound-label" for="sound">Original sound sketch</label>
+<select id="sound"><option value="first-light">First Light / warm & luminous</option><option value="open-water">Open Water / spacious & glassy</option><option value="homecoming">Homecoming / soft & familiar</option></select>
+<p class="sound-note">Felt-like notes, a soft breath, and an open chord. My recommended starting point.</p>
+<div class="controls"><button class="play" type="button">Play introduction</button><div class="checks"><label><input id="sound-on" type="checkbox" checked>Sound on</label><label><input id="reduce" type="checkbox">Reduce motion</label></div><p class="status" role="status"></p></div>
+</aside>
+</div>
+<section class="marks" aria-label="Choose a brand mark">
+<button class="choice" data-mark="weave" aria-pressed="true"><span class="sample"></span><strong>Weave</strong><p>Shared direction. The most distinctive silhouette of the three.</p></button>
+<button class="choice" data-mark="continuum" aria-pressed="false"><span class="sample"></span><strong>Continuum</strong><p>A continuous connection. Softer, simpler, more understated.</p></button>
+<button class="choice" data-mark="relay" aria-pressed="false"><span class="sample"></span><strong>Relay</strong><p>A looped B. More directly tied to the Brigadier name.</p></button>
+</section>
+<section class="rationale"><div><h2>The opening</h2><p>Two threads arrive, interlace, and settle as the chord resolves. The name appears, followed by a personal invitation. Charcoal, warm ivory, and the app’s own system typography.</p><p>Full ceremony on first use. Immediate, silent entry thereafter, with replay available in settings.</p></div><div><h2>The sound</h2><p>Three original synthesis sketches to audition. A feeling of anticipation, space, and arrival, prompted by your Arc reference. Final timbre and mix still need your listening judgment.</p><p>Download: <a href="first-light.wav">First Light</a>, <a href="open-water.wav">Open Water</a>, <a href="homecoming.wav">Homecoming</a>.</p></div></section>
+</main>
+<footer>Exploratory concepts. The current app identity and onboarding are unchanged.</footer>
+<script>
+// Research: ../../research/brand-intro-2026-09-10.md. Native vectors are original logo studies.
+let serial=0;
+function mark(kind, tiny=false){
+ const id='mark-'+(++serial), cls=tiny?'tiny':'';
+ const open=`<svg class="${cls}" viewBox="0 0 256 256" role="img" aria-label="${kind} brand mark"><g fill="none" stroke="currentColor" stroke-width="19" stroke-linecap="round" stroke-linejoin="round">`;
+ if(kind==='weave') return open+`<defs><clipPath id="${id}"><circle cx="128" cy="66" r="23"/><circle cx="128" cy="190" r="23"/></clipPath></defs><g class="strand strand-a"><rect x="37" y="82" width="182" height="92" rx="46" transform="rotate(-45 128 128)"/></g><g class="strand strand-b"><rect x="37" y="82" width="182" height="92" rx="46" transform="rotate(45 128 128)"/></g><g class="crossing" clip-path="url(#${id})"><rect x="37" y="82" width="182" height="92" rx="46" transform="rotate(-45 128 128)" stroke="var(--ground,#181818)" stroke-width="33"/><rect x="37" y="82" width="182" height="92" rx="46" transform="rotate(-45 128 128)"/></g></g></svg>`;
+ if(kind==='continuum') return open+`<g transform="rotate(-32 128 128)"><g class="strand strand-a"><rect x="24" y="75" width="139" height="106" rx="53"/></g><g class="strand strand-b"><rect x="93" y="75" width="139" height="106" rx="53"/></g><path class="crossing" d="M135 78 Q161 92 163 119" stroke="var(--ground,#181818)" stroke-width="33"/><path class="crossing" d="M135 78 Q161 92 163 119"/></g></g></svg>`;
+ return open+`<g transform="rotate(-12 128 128)"><path class="strand strand-a" d="M76 204V52h51c67 0 67 76 0 76H76"/><path class="strand strand-b" d="M76 128h67c67 0 67 76 0 76H76"/><path class="crossing" d="M103 128h32" stroke="var(--ground,#181818)" stroke-width="33"/><path class="crossing" d="M103 128h32"/></g></g></svg>`;
+}
+const $=s=>document.querySelector(s);
+let selected='weave', ctx, source, gain, raf, token=0, playing=false;
+const buffers=new Map();
+const descriptions={weave:['Weave','Independent threads held together. A four-lobed, interlaced mark with room at its center.'],continuum:['Continuum','Two connected loops. A quieter symbol for continuity from one session to the next.'],relay:['Relay','A continuous B built from two shared loops. A direct, legible connection to the name.']};
+const soundNotes={'first-light':'Felt-like notes, a soft breath, and an open chord. My recommended starting point.','open-water':'Slower, rounded glass tones and a suspended chord. More spacious and contemplative.','homecoming':'A softer, closer melody with a grounded low note. More intimate and familiar.'};
+function mount(){ $('.hero-mark').innerHTML=mark(selected); }
+document.querySelectorAll('.choice').forEach(b=>{b.querySelector('.sample').innerHTML=mark(b.dataset.mark)+mark(b.dataset.mark,true);b.onclick=()=>{stop();selected=b.dataset.mark;document.querySelectorAll('.choice').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));$('#direction').textContent=descriptions[selected][0];$('#direction-note').textContent=descriptions[selected][1];mount();frame(8.6);};});
+function smooth(a,b,t){const x=Math.max(0,Math.min(1,(t-a)/(b-a)));return x*x*(3-2*x);}
+function frame(t){
+ const reduced=$('#reduce').checked;
+ const draw=smooth(.5,3.15,t), arrival=smooth(3.1,3.75,t);
+ document.querySelectorAll('.hero-mark .strand').forEach((el,i)=>{el.style.opacity=reduced?String(t>.15):String(smooth(.25+i*.4,1.1+i*.4,t));el.style.transform=reduced?'none':`translate(${(1-draw)*(i?42:-42)}px,${(1-draw)*(i?-32:32)}px)`;});
+ document.querySelectorAll('.hero-mark .crossing').forEach(el=>el.style.opacity=reduced?'1':String(smooth(2.8,3.15,t)));
+ $('.hero-mark').style.transform=reduced?'none':`scale(${1.28-.28*draw})`;
+ $('.wordmark').style.opacity=reduced?'1':String(arrival);
+ $('.invitation').style.opacity=reduced?'1':String(smooth(4.1,5.2,t));
+ $('.scene>.begin').style.opacity=reduced?'1':String(smooth(5.3,6.2,t));
+ $('.scene>.begin').disabled=!reduced&&t<6.2;
+ $('.halo').style.opacity=reduced?'0':String(Math.sin(Math.PI*Math.min(1,t/6))*.9);
+ $('.track span').style.width=`${Math.min(100,t/8.6*100)}%`;
+ $('#time').textContent=t>=8.6?'8.6 seconds':`${t.toFixed(1)} / 8.6 s`;
+ $('#beat').textContent=t<1?'A breath':t<3.15?'Threads come together':t<4.2?'The mark settles':t<6.2?'An invitation':'Ready to begin';
+}
+function stop(){token++;cancelAnimationFrame(raf);if(source){source.onended=null;try{source.stop();}catch{}source.disconnect();source=null;}gain?.disconnect();gain=null;playing=false;$('.play').textContent='Play introduction';$('.play').disabled=false;}
+$('.play').onclick=async()=>{
+ if(playing){stop();frame(8.6);return;}
+ stop(); const mine=token;
+ $('.form').hidden=true;$('.scene').hidden=false;$('.status').textContent='';$('.play').disabled=true;
+ try{
+  let start,now;
+  if($('#sound-on').checked){
+   ctx??=new AudioContext();await ctx.resume();
+   if(ctx.state!=='running')throw Error('Audio is paused by the browser. Try again, or turn sound off.');
+   const name=$('#sound').value;
+   if(!buffers.has(name)){
+    $('.status').textContent='Preparing sound…';
+    const response=await fetch(name+'.wav');if(!response.ok)throw Error('The sound could not load. Turn sound off to preview the motion.');
+    buffers.set(name,await ctx.decodeAudioData(await response.arrayBuffer()));
+   }
+   if(mine!==token)return;
+   source=ctx.createBufferSource();source.buffer=buffers.get(name);gain=ctx.createGain();gain.gain.value=.65;source.connect(gain);gain.connect(ctx.destination);
+   start=ctx.currentTime+.08;source.start(start);now=()=>ctx.currentTime-start;
+  }else{start=performance.now()+80;now=()=>(performance.now()-start)/1000;}
+  if(mine!==token)return;
+  playing=true;$('.play').disabled=false;$('.play').textContent='Stop introduction';$('.status').textContent='';frame(0);
+  const tick=()=>{if(mine!==token)return;const t=Math.max(0,now());frame(Math.min(t,8.6));if(t<8.6)raf=requestAnimationFrame(tick);else{stop();$('.play').textContent='Replay introduction';}};raf=requestAnimationFrame(tick);
+ }catch(e){if(mine!==token)return;stop();frame(8.6);$('.status').textContent=e.message;}
+};
+$('#sound').onchange=()=>{stop();frame(8.6);$('.sound-note').textContent=soundNotes[$('#sound').value];};
+$('#sound-on').onchange=()=>{if(gain&&ctx)gain.gain.setTargetAtTime($('#sound-on').checked?.65:0,ctx.currentTime,.04);};
+const motion=matchMedia('(prefers-reduced-motion: reduce)');$('#reduce').checked=motion.matches;motion.addEventListener('change',e=>$('#reduce').checked=e.matches);
+$('#reduce').onchange=()=>{if(!playing)frame(8.6);};
+$('.theme').onclick=()=>{$('.preview').classList.toggle('light');$('.theme').textContent=$('.preview').classList.contains('light')?'Dark appearance':'Light appearance';};
+$('.scene>.begin').onclick=()=>{stop();$('.scene').hidden=true;$('.form').hidden=false;$('.form input').focus();$('#beat').textContent='A personal welcome';};
+$('.form').onsubmit=e=>{e.preventDefault();const name=$('.form input').value.trim();if(!name)return;$('.form').hidden=true;$('.scene').hidden=false;frame(8.6);$('.invitation').textContent=`Welcome, ${name}.`;$('.scene>.begin').hidden=true;$('.status').textContent='End of concept. Replay to start again.';};
+$('.play').addEventListener('click',()=>{$('.invitation').textContent='Your ideas. In good company.';$('.scene>.begin').hidden=false;});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&playing){stop();frame(8.6);}});
+document.addEventListener('visibilitychange',()=>{if(document.hidden&&playing){stop();frame(8.6);}});
+window.addEventListener('pagehide',()=>{stop();void ctx?.close();});
+mount();frame(8.6);$('#beat').textContent='Ready to preview';$('.track span').style.width='0';
+</script>
+</html>

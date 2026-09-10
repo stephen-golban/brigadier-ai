@@ -11,7 +11,7 @@ export function BrandMark({
       role="img"
       aria-label="Brigadier"
     >
-      <use href="/brand/fold.svg#mark" />
+      <use href="/brand/spark.svg#mark" />
     </svg>
   );
 }

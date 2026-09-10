@@ -1,0 +1,30 @@
+# Brigadier brand and intro references — 2026-09-10
+
+> Superseded reference assumption: the user rejected the first-round marks and supplied a solid blue Codex badge with a terminal cutout, plus the Arc MP3. The intended logo reference is that badge, not the interlaced Blossom discussed below. See [round-two notes](../plans/brand-study-2026-09-10/round-2/README.md) for measured audio dynamics and revised work. The original research below records what was known before the attachments arrived.
+
+Research for an isolated concept lab: original mark explorations, an introductory sequence, and original synthesized audio demos. This note separates documented reference facts from design proposals. No Arc recording was auditioned, extracted, or licensed during this research; no production implementation was inspected or validated here.
+
+## Reference facts
+
+**OpenAI Blossom.** OpenAI describes circles as conveying human warmth and fluidity, and right angles as conveying technological precision and structure. Its guidance also emphasizes clear space. These are useful abstract design principles for a compact symbol. OpenAI's guidelines specifically say not to incorporate its logo into another brand or design a similar logo. [OpenAI design guidelines](https://openai.com/brand/)
+
+**Brigadier implication — design judgment:** combine approachable curves with deliberate structure, but develop an independently recognizable silhouette, internal topology, and story. A changed petal count or rotated knot would be a weak identity direction. Test the resulting original symbol in monochrome and at small app-icon sizes; do not depend on animation or glow to make it recognizable.
+
+**Arc's broader product philosophy.** The Browser Company's own June 2022 essay argues for software with humanity and feeling, handcrafted details, inspiration beyond software, and individual agency. This supports treating the opening as an emotional product experience, but does not establish the musical composition or authorship of Arc's intro. [The Browser Company, “Optimizing For Feelings”](https://browsercompany.substack.com/p/optimizing-for-feelings)
+
+**Arc audio attribution remains unverified.** Bounded searches for an official onboarding sound credit did not locate a reliable first-party credit or an authorized standalone intro recording. A sound-mixer credit for an Arc commercial is not evidence of authorship of the app's onboarding sound. Do not name a composer, describe exact notes/instruments, or claim an auditory comparison based on these results. The user's stated affection for Arc's sound is the current reference brief.
+
+**Brigadier implication — design judgment:** aim for anticipation, a clear arrival, and a warm decay that gives the interface room to settle. Treat “once in a lifetime” as a memorable first-run moment. Offer replay, immediate skip, and a quiet alternative; the routine application launch should remain quick. Original synthesis can make the sonic direction concrete now, but the demos still need listening feedback on speakers and headphones before a final sound is selected.
+
+## Browser implementation evidence
+
+| Concern | Documented behavior | Implication for the concept lab |
+| --- | --- | --- |
+| User gesture | Chrome documents that an audio context created before interaction can be suspended and needs `resume()` after a gesture. `resume()` returns a promise that resolves when the context resumes. [Chrome autoplay policy](https://developer.chrome.com/blog/autoplay/), [MDN resume](https://developer.mozilla.org/en-US/docs/Web/API/AudioContext/resume) | Make Play or Begin the explicit audio entry point; resume in its gesture handler and await success before scheduling. Handle failure with a visible retry or silent continuation. |
+| Decode first | `decodeAudioData()` asynchronously decodes a complete file's `ArrayBuffer` into an `AudioBuffer`, resampled to the context's sample rate. [MDN decodeAudioData](https://developer.mozilla.org/en-US/docs/Web/API/BaseAudioContext/decodeAudioData) | Finish fetch/decode before choosing the common sound and animation start time. Cache the decoded short WAV. |
+| Scheduled playback | `AudioBufferSourceNode.start(when)` schedules in the audio context's time coordinate system. A past time plays immediately. Each source can start only once. [MDN start](https://developer.mozilla.org/en-US/docs/Web/API/AudioBufferSourceNode/start) | Create a new source per replay, reuse its buffer, and schedule slightly ahead of `currentTime`. |
+| Shared timeline | `currentTime` is the audio timeline in seconds. It advances in audio rendering blocks and stops when the context is suspended; it is separate from the system clock. [MDN currentTime](https://developer.mozilla.org/en-US/docs/Web/API/BaseAudioContext/currentTime) | Design proposal: derive visible sequence progress from `audioContext.currentTime - scheduledStart` during animation frames. Do not promise sample-perfect visual alignment or use independent chained timers as the sequence clock. |
+| Output latency | `getOutputTimestamp()` relates an output sample's context time to an estimated `performance.now()` time. [MDN getOutputTimestamp](https://developer.mozilla.org/en-US/docs/Web/API/AudioContext/getOutputTimestamp) | If listening reveals material display/audio offset, use this mapping to compensate and verify on the actual device. Raw `currentTime` alone is not a speaker-output timestamp. |
+| Reduced motion | `prefers-reduced-motion: reduce` signals a device preference to remove, reduce, or replace nonessential motion. [MDN prefers-reduced-motion](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/At-rules/%40media/prefers-reduced-motion) | Provide a static or restrained dissolve version. Avoid large scaling, sweeping travel, or rapid light effects in that mode. |
+
+The last column is an implementation recommendation inferred from the cited APIs, not evidence that the prototype has already implemented or passed these checks. Sound-off, stop, replay, audio-loading failure, and reduced-motion behavior should be exercised in the actual browser before delivery.
