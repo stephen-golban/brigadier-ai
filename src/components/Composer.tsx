@@ -12,7 +12,7 @@ import * as feedStore from "../feedStore";
 import type { ProjectView, ModelInfo } from "../wire";
 import { useMessageEdit, type MessageEditProps } from "./EditMessage";
 import { PromptInput } from "./PromptInput";
-import { SendIcon } from "./icons";
+import { ArrowUp, X } from "../icons";
 import { isSubmitKey } from "../keys";
 import type { SessionRuntime } from "../feedStore";
 import type { SessionId, WorktreeCleanup } from "../wire";
@@ -156,7 +156,7 @@ export function Composer({ project = null, session, models = EMPTY_MODELS, busy,
           {item.status !== "queued" && <small>{item.status === "unknown" ? "Delivery unconfirmed. Inspect the conversation before resolving." : item.status === "sending" ? "Sending…" : "Failed"}{item.error ? ` · ${item.error}` : ""}</small>}
           {item.status === "unknown" && <div className="composer-queue-actions"><Button type="button" disabled={queueBusy} onClick={() => void apply(() => composerApi.resolve(sessionId!, item.id, "delivered"))}>Verified delivered</Button><Button type="button" disabled={queueBusy} onClick={() => void apply(() => composerApi.resolve(sessionId!, item.id, "not-delivered"))}>Verified not delivered</Button></div>}
         </div>
-        {(item.status === "queued" || item.status === "failed") && <div className="composer-queue-actions">{working && !stopping && <Button type="button" disabled={queueBusy} aria-label="Steer now" onClick={() => void apply(() => composerApi.steer(sessionId!, item.id))}>Steer now</Button>}<Button type="button" disabled={queueBusy} aria-label="Edit queued message" onClick={() => setQueueEdit({ id: item.id, text: item.text, execution: item.execution ?? undefined })}>Edit</Button><Button type="button" disabled={queueBusy} aria-label="Remove queued message" onClick={() => void apply(() => composerApi.remove(sessionId!, item.id))}>×</Button></div>}
+        {(item.status === "queued" || item.status === "failed") && <div className="composer-queue-actions">{working && !stopping && <Button type="button" disabled={queueBusy} aria-label="Steer now" onClick={() => void apply(() => composerApi.steer(sessionId!, item.id))}>Steer now</Button>}<Button type="button" disabled={queueBusy} aria-label="Edit queued message" onClick={() => setQueueEdit({ id: item.id, text: item.text, execution: item.execution ?? undefined })}>Edit</Button><Button type="button" disabled={queueBusy} aria-label="Remove queued message" onClick={() => void apply(() => composerApi.remove(sessionId!, item.id))}><X className="size-3.5" /></Button></div>}
       </div>)}
     </div>}
     <PromptInput sessionId={sessionId} attachmentProjectId={session?.projectId} attachments={editing ? [] : durable.attachments} onAttachments={editing ? undefined : durable.setFiles} onUploadChange={setUploading} commands={commands}
@@ -172,7 +172,7 @@ export function Composer({ project = null, session, models = EMPTY_MODELS, busy,
         <Button type="button" size="icon" className="composer-send" aria-label={stopping ? "Stopping task" : working ? "Stop task" : sending ? "Preparing message" : editing ? "Send edited message" : "send this turn"}
           title={working ? "Stop task and pause the queue. Press Enter in the editor to queue a follow-up." : "Send · Enter"}
           disabled={stopping || (working ? false : !durable.loaded || busy || sending || uploading || configuration.saving || (desktop && !settings) || (!text.trim() && !durable.draft.attachmentIds.length) || (Boolean(editing) && edit.disabled))}
-          onClick={working ? stop : () => void send()}>{working || stopping ? <span className="composer-stop-symbol" /> : sending ? <span className="composer-spinner" /> : <SendIcon />}</Button>
+          onClick={working ? stop : () => void send()}>{working || stopping ? <span className="composer-stop-symbol" /> : sending ? <span className="composer-spinner" /> : <ArrowUp />}</Button>
       </PromptInputActions>
     </PromptInput>
     {(configuration.error || providerError) && <p className="composer-error composer-feedback" role="alert">{configuration.error || providerError}</p>}

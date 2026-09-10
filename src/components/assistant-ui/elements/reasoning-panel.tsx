@@ -2,7 +2,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDown } from "../../../icons";
 import {
   Collapsible,
   CollapsibleContent,
@@ -64,7 +64,7 @@ export function ReasoningPanel({
           </>
           <>{restingLabel}</>
         </SwapLabel>
-        <ChevronDownIcon className="size-3.5 shrink-0 opacity-60 transition-transform duration-200 ease-[cubic-bezier(0.32,0.72,0,1)] group-data-[state=open]/trigger:rotate-180 group-data-panel-open/trigger:rotate-180 motion-reduce:transition-none" />
+        <ChevronDown className="size-3.5 shrink-0 opacity-60 transition-transform duration-200 ease-[cubic-bezier(0.32,0.72,0,1)] group-data-[state=open]/trigger:rotate-180 group-data-panel-open/trigger:rotate-180 motion-reduce:transition-none" />
       </CollapsibleTrigger>
       <CollapsibleContent className={cn(collapsePanel, "outline-none")}>
         <ol className="flex flex-col gap-4 pt-3 pb-1">

@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
-import { XIcon } from "lucide-react";
+import { X } from "../../icons";
 import { Button } from "./button";
 const State = createContext({
   close: () => {},
@@ -174,7 +174,7 @@ function CloseTrigger(props: ComponentProps<typeof Button>) {
   const { close } = useContext(State);
   return (
     <Button aria-label="Close" {...props} size="icon" onClick={close}>
-      <XIcon className="size-4" />
+      <X className="size-4" />
     </Button>
   );
 }

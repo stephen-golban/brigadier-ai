@@ -1,14 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
-import {
-  Plus,
-  ChevronDown,
-  Columns2,
-  Trash2,
-  Maximize2,
-  Minimize2,
-  X,
-  TerminalSquare,
-} from "lucide-react";
+import { ChevronDown, CollapseSmall, Expand, Plus, SidebarRight, TerminalLg, Trash, X } from "../icons";
 import { Button } from "./controls/button";
 import { Dropdown, Separator } from "./controls/overlay";
 import { DropdownContent } from "./controls/menu";
@@ -325,11 +316,11 @@ export function TerminalDock({
             title="New terminal (⌃⇧`)"
             onClick={(e) => void create(e.altKey)}
           >
-            <Plus size={16} />
+            <Plus width={16} height={16} />
           </Button>
           <Dropdown native>
             <Button size="icon" aria-label="Terminal profiles">
-              <ChevronDown size={14} />
+              <ChevronDown width={14} height={14} />
             </Button>
             <DropdownContent align="end">
               {profiles.map((profile) => (
@@ -355,7 +346,7 @@ export function TerminalDock({
             disabled={!selected}
             onClick={() => void create(true)}
           >
-            <Columns2 size={16} />
+            <SidebarRight width={16} height={16} />
           </Button>
           <Button
             size="icon"
@@ -363,7 +354,7 @@ export function TerminalDock({
             disabled={!selected}
             onClick={() => void kill()}
           >
-            <Trash2 size={16} />
+            <Trash width={16} height={16} />
           </Button>
           <Button
             size="icon"
@@ -372,10 +363,17 @@ export function TerminalDock({
             }
             onClick={() => setMaximized(!maximized)}
           >
-            {maximized ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+            {/*
+              `Collapse` is not `Expand`'s mirror upstream: `Expand` is two corner brackets,
+              `Collapse` two opposing chevrons. `CollapseSmall`'s path is the true mirror —
+              the same brackets moved to the outer corners, pointing in — and `Expand`'s path
+              is byte-identical to `ExpandSmall`'s, so this is upstream's own pair reached
+              under the shorter alias. [measured, path data in node_modules]
+            */}
+            {maximized ? <CollapseSmall width={16} height={16} /> : <Expand width={16} height={16} />}
           </Button>
           <Button size="icon" aria-label="Hide terminal" onClick={toggle}>
-            <X size={16} />
+            <X width={16} height={16} />
           </Button>
         </div>
         {error && (
@@ -545,14 +543,14 @@ export function TerminalDock({
                         : activate(tab.id)
                     }
                   >
-                    <TerminalSquare size={14} />
+                    <TerminalLg width={14} height={14} />
                     <span className="truncate">
                       {groups.indexOf(groupOf(tab)) + 1}: {tab.path}
                     </span>
                   </Button>
                   <Dropdown native>
                     <Button size="icon" aria-label={`Actions for ${tab.path}`}>
-                      <ChevronDown size={12} />
+                      <ChevronDown width={12} height={12} />
                     </Button>
                     <DropdownContent align="end">
                       <Dropdown.Item

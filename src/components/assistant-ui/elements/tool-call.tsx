@@ -2,7 +2,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { CircleAlertIcon, ChevronRightIcon } from "lucide-react";
+import { ChevronRight, ExclamationMarkCircle } from "../../../icons";
 import {
   Collapsible,
   CollapsibleContent,
@@ -74,7 +74,7 @@ export function ToolCall({
           </ShimmerLabel>
           <>{label}</>
         </SwapLabel>
-        <ChevronRightIcon className="size-3.5 shrink-0 opacity-0 group-hover/trigger:opacity-60 group-focus-visible/trigger:opacity-60 group-data-[state=open]/trigger:opacity-60 transition-transform duration-200 group-data-[state=open]/trigger:rotate-90 motion-reduce:transition-none" />
+        <ChevronRight className="size-3.5 shrink-0 opacity-0 group-hover/trigger:opacity-60 group-focus-visible/trigger:opacity-60 group-data-[state=open]/trigger:opacity-60 transition-transform duration-200 group-data-[state=open]/trigger:rotate-90 motion-reduce:transition-none" />
         {query && (
           <span
             className={cn(
@@ -86,7 +86,9 @@ export function ToolCall({
           </span>
         )}
         {failed && (
-          <CircleAlertIcon
+          <ExclamationMarkCircle
+            aria-hidden={false}
+            role="img"
             aria-label="Failed"
             className="size-3.5 text-error"
           />

@@ -1,5 +1,5 @@
 import { forwardRef, type ComponentProps, type ReactNode } from "react";
-import { SearchIcon } from "../SearchIcon";
+import { Search } from "../../icons";
 import { cn } from "../../lib/utils";
 import { Modal } from "./modal";
 
@@ -39,7 +39,7 @@ export const CommandInput = forwardRef<
 >(function CommandInput(props, ref) {
   return (
     <div className="flex h-12 shrink-0 items-center gap-2 border-b border-hairline px-3 text-text-secondary">
-      <SearchIcon className="shrink-0" />
+      <Search className="size-4 shrink-0" />
       <input
         {...props}
         ref={ref}

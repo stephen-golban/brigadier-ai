@@ -1,10 +1,8 @@
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, Edit, Sidebar as SidebarGlyph } from "../../icons";
 import { useSidebarVibrancy } from "../../hooks/use-sidebar-vibrancy";
 import { Tooltip } from "./tooltip";
 import { Kbd } from "./kbd";
-import { EditIcon } from "../EditIcon";
 import { Modal } from "./modal";
-import { SidebarIcon } from "../NavigationIcons";
 import {
   createContext,
   useContext,
@@ -186,7 +184,7 @@ export function SidebarProvider({
                     window.dispatchEvent(new Event("brigadier-new-chat"))
                   }
                 >
-                  <EditIcon />
+                  <Edit className="size-3.5" />
                 </Button>
               </Tooltip>
             </span>
@@ -285,7 +283,7 @@ export function SidebarTrigger() {
           aria-expanded={expanded}
           onPress={toggleSidebar}
         >
-          <SidebarIcon size={16} />
+          <SidebarGlyph className="size-4" />
           {!expanded && attention && (
             <span
               role="img"

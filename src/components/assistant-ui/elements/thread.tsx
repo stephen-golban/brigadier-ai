@@ -2,7 +2,7 @@
 import { ChatPanel, ChatPanelMessages } from "./chat-panel";
 import { ThreadPrimitive } from "@assistant-ui/react";
 import { Button } from "../../controls/button";
-import { ArrowDownIcon } from "lucide-react";
+import { ArrowDown } from "../../../icons";
 import {useRef,useLayoutEffect,type ComponentProps,type ReactNode} from "react";
 export function Thread({
   children,
@@ -41,7 +41,7 @@ export function Thread({
                   aria-label="Jump to latest"
                   className="rounded-full shadow-overlay"
                 >
-                  <ArrowDownIcon size={18} />
+                  <ArrowDown width={18} height={18} />
                 </Button>
               </ThreadPrimitive.ScrollToBottom>
             </ThreadPrimitive.ViewportFooter>

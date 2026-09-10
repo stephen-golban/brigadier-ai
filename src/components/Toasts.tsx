@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Archive, X } from "lucide-react";
+import { Archive, X } from "../icons";
 import { notify, type ToastNotice } from "../desktopApi";
 import { errorMessage } from "../workspaceApi";
 import { Button } from "./controls/button";
@@ -54,7 +54,7 @@ export function Toasts() {
           }}
         >
           {notice.icon === "archive" && (
-            <Archive size={16} aria-hidden="true" />
+            <Archive width={16} height={16} aria-hidden="true" />
           )}
           <span>{notice.message}</span>
           {notice.actions?.map((action) => (
@@ -77,7 +77,7 @@ export function Toasts() {
             aria-label="Dismiss notification"
             onClick={() => dismiss(notice.id)}
           >
-            <X size={14} />
+            <X width={14} height={14} />
           </Button>
         </div>
       ))}

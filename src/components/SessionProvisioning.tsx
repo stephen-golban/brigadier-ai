@@ -1,4 +1,4 @@
-import { TerminalIcon, CaretDownIcon } from "@phosphor-icons/react";
+import { CaretDown, Terminal } from "../icons";
 import type { SessionStartup } from "../sessionStartup";
 import { ChatPanelUserMessage } from "./assistant-ui/elements/chat-panel";
 import { Button } from "./controls/button";
@@ -8,7 +8,7 @@ export function SessionProvisioning({ startup, onRetry }: { startup: SessionStar
   const ready = !!startup.sessionId;
   return <div className="session-provisioning" aria-label="Task provisioning">
     <details>
-      <summary><TerminalIcon size={14}/><span role="status">{startup.error ? "Task setup failed" : ready ? "Provisioned task" : "Setting up your task…"}</span>{!ready && !startup.error && <span className="composer-spinner"/>}<CaretDownIcon size={12}/></summary>
+      <summary><Terminal width={14} height={14}/><span role="status">{startup.error ? "Task setup failed" : ready ? "Provisioned task" : "Setting up your task…"}</span>{!ready && !startup.error && <span className="composer-spinner"/>}<CaretDown width={12} height={12}/></summary>
       <pre>{startup.progress.map(item => item.detail).join("\n")}</pre>
     </details>
     {startup.error && <div role="alert" className="provisioning-error"><p>{startup.error}</p>{onRetry && <Button onClick={onRetry}>Retry setup</Button>}</div>}

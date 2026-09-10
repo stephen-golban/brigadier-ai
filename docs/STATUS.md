@@ -140,7 +140,8 @@ only one where brigadier started the work itself**. `crates/proc/tests/`,
 `crates/core/tests/claude_adapter.rs` and the **ten** front-end suites under `src/` — `App`,
 `components/Feed`, `components/RunCard`, `components/Sidebar`, `feedStore`, `index.css`, `mock`,
 `paint`, `providers/ThemeProvider`, `run`, counted 2026-09-04, up from seven — are test suites in
-this tree, not live runs. `docs/research/persistence.md` and `feed-rendering.md` are research
+this tree, not live runs. (`providers/ThemeProvider` was deleted 2026-09-10 with the light theme;
+the 2026-09-04 count is left as counted.) `docs/research/persistence.md` and `feed-rendering.md` are research
 documents — a document, not a run. `7f03eb5` cites nothing at all. **No row is a live-`claude`-child
 proof unless its evidence says so, and exactly four rows say so.**
 
@@ -219,7 +220,7 @@ captured on the command itself and not through a pipe. Every line **[measured]**
 cargo test --workspace                                exit 0  515 passed, 0 failed, 7 ignored
 cargo clippy --workspace --all-targets -- -D warnings exit 0
 cargo doc --workspace --no-deps                       exit 0
-npm test                                              exit 0  191 passed, 10 files
+npm test                                              exit 0  598 passed, 71 files (2026-09-10, ui/design-system 1f57e08)
 npx tsc --noEmit                                      exit 0
 npm run tauri build                                   exit 0  .app + .dmg
 ```
@@ -229,8 +230,9 @@ against the source: `paint.test.ts` 38, `components/Sidebar.test.tsx` 27, `feedS
 `components/Feed.test.tsx` 20, `components/RunCard.test.tsx` 18, `mock.test.ts` 17,
 `providers/ThemeProvider.test.tsx` 15, `App.test.tsx` 13, `run.test.tsx` 8, `index.css.test.ts` 8 —
 **191 across 10 files**, counted by grepping `it(`/`test(` **[source]**, which is a source count and
-not a per-suite run. Three suites are new (`RunCard`, `mock`, `run`), `App` grew 10 → 13 and
-`Sidebar` 19 → 27, and the other five are unchanged. **The per-suite Rust breakdown was not
+not a per-suite run. (`providers/ThemeProvider.test.tsx`'s 15 went with the light theme on
+2026-09-10; the 2026-09-04 reconciliation is left as counted.) Three suites are new (`RunCard`,
+`mock`, `run`), `App` grew 10 → 13 and `Sidebar` 19 → 27, and the other five are unchanged. **The per-suite Rust breakdown was not
 re-derived** — the previous "sum of 31 `test result:` lines" figure has no successor here.
 
 **One number in `docs/plans/report-2026-09-04.md` does not reconcile with this file and is not
@@ -703,7 +705,11 @@ every bundle format for the platform being built on. Leave it alone.
 - **jsdom 30.0.1 has no `PerformanceObserver`**, and what stands in for it under Vitest is Node's
   `perf_hooks` observer, whose `observe({type:"paint"})` **does not throw and never fires** — a test
   written against it passes vacuously. `src/paint.test.ts` stubs its own. jsdom also has no
-  `window.matchMedia` at all. `src/paint.test.ts:10-18`, `src/providers/ThemeProvider.test.tsx:16`.
+  `window.matchMedia` at all, so any consumer of it needs a stub —
+  `src/test/setup.ts:32` installs the global one, and `src/hooks/use-sidebar-vibrancy.test.tsx:55`
+  overrides it per test. `src/paint.test.ts:10-18`, `src/hooks/use-sidebar-vibrancy.ts:9`,
+  `src/Launch.tsx:32`. (The former citation, `src/providers/ThemeProvider.test.tsx:16`, was deleted
+  with the light theme on 2026-09-10.)
 - **A contrast ratio is a property of a *pair*, not of a colour.** `--color-bad`'s comment certifies
   5.84:1 — its ratio on `--color-thread-bg`. A new rule used that same token at 11 px on
   `--color-sidebar-bg` and shipped **3.699:1**. Sweeping all 48 pairs against the ground each rule

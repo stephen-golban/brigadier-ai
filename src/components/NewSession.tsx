@@ -9,7 +9,7 @@ import { errorMessage } from "../workspaceApi";
 import { ComposerActions } from "./assistant-ui/elements/composer";
 import { Button } from "./controls/button";
 import { PromptInput } from "./PromptInput";
-import { SendIcon } from "./icons";
+import { ArrowUp } from "../icons";
 import { isSubmitKey } from "../keys";
 import type { StartSessionArgs } from "../bridge";
 import type { ModelInfo, ProjectView } from "../wire";
@@ -118,7 +118,7 @@ export function NewSession({ project, projects, onSelectProject, onNewProject, o
         <span className="composer-control-spacer" />
         <ModeControl value={picks.mode} onChange={changeMode} disabled={controlDisabled} />
         {picks.mode === "custom" && <ExecutionControl selection={selection} providers={providers} onChange={manual => preferences.save({ ...picks, manual })} disabled={controlDisabled} />}
-        <Button type="button" size="icon" className="composer-send" aria-label={sending ? "Preparing task" : "Send"} disabled={!ready} onClick={() => void submit()}>{sending ? <span className="composer-spinner" /> : <SendIcon />}</Button>
+        <Button type="button" size="icon" className="composer-send" aria-label={sending ? "Preparing task" : "Send"} disabled={!ready} onClick={() => void submit()}>{sending ? <span className="composer-spinner" /> : <ArrowUp />}</Button>
       </ComposerActions>
     </PromptInput>
     {sending && <p role="status" className="composer-feedback">Preparing task…</p>}

@@ -1,13 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  Archive,
-  ChevronDown,
-  Folder,
-  ListFilter,
-  MoreHorizontal,
-  Search,
-  Trash2,
-} from "lucide-react";
+import { Archive, ChevronDown, DotsHorizontal, Filter, Folder, Search, Trash } from "../icons";
 import { Input } from "./controls/input";
 import { Button } from "./controls/button";
 import { Dropdown } from "./controls/overlay";
@@ -141,7 +133,7 @@ export function ArchivedSessions({
             )
           }
         >
-          <Trash2 />
+          <Trash />
           Delete all
         </Button>
       </header>
@@ -153,7 +145,7 @@ export function ArchivedSessions({
               ? `Auto-delete after ${settings.retentionDays} ${settings.retentionDays === 1 ? "day" : "days"}`
               : "Automatic deletion off"}
           </span>
-          <ChevronDown size={16} aria-hidden="true" />
+          <ChevronDown width={16} height={16} aria-hidden="true" />
         </summary>
         <div className="settings-section">
           <ArchiveSettings />
@@ -161,7 +153,7 @@ export function ArchivedSessions({
       </details>
       <div className="archive-filters">
         <label className="settings-search archive-search">
-          <Search size={17} />
+          <Search width={17} height={17} />
           <Input
             aria-label="Search archived chats"
             placeholder="Search archived chats"
@@ -171,7 +163,7 @@ export function ArchivedSessions({
         </label>
         <Dropdown>
           <Button className="archive-filter" aria-label="Filter chats">
-            <ListFilter />
+            <Filter />
             {kinds[kind]}
             <ChevronDown />
           </Button>
@@ -210,7 +202,7 @@ export function ArchivedSessions({
       </div>
       {!filtered.length && (
         <div className="archive-empty">
-          <Archive size={28} />
+          <Archive width={28} height={28} />
           <h2>{archived.length ? "No matching chats" : "No archived chats"}</h2>
           <p>
             {archived.length
@@ -227,7 +219,7 @@ export function ArchivedSessions({
             aria-label={projectName(projectId)}
           >
             <header className="archive-group-heading">
-              <Folder size={17} />
+              <Folder width={17} height={17} />
               <h2>{projectName(projectId)}</h2>
               <span>
                 {items.length} {items.length === 1 ? "chat" : "chats"}
@@ -237,7 +229,7 @@ export function ArchivedSessions({
                   size="icon-xs"
                   aria-label={`Actions for ${projectName(projectId)}`}
                 >
-                  <MoreHorizontal />
+                  <DotsHorizontal />
                 </Button>
                 <DropdownContent>
                   <Dropdown.Item
@@ -310,7 +302,7 @@ export function ArchivedSessions({
                       disabled={busy.has(id)}
                       onClick={() => void run([id], deleteArchivedSession)}
                     >
-                      <Trash2 />
+                      <Trash />
                     </Button>
                     <Button
                       className="archive-unarchive"

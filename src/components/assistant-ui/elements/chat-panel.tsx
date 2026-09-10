@@ -2,7 +2,7 @@
 "use client";
 
 import type { ComponentProps } from "react";
-import { ArrowUpIcon } from "lucide-react";
+import { ArrowUp } from "../../../icons";
 import { cn } from "@/lib/utils";
 import { field, inkButton, paper } from "@/lib/surfaces";
 
@@ -124,7 +124,7 @@ export function ChatPanelComposer({
           "flex size-7 items-center justify-center rounded-full disabled:pointer-events-none disabled:opacity-30",
         )}
       >
-        <ArrowUpIcon className="size-3.5" />
+        <ArrowUp className="size-3.5" />
       </button>
     </div>
   );

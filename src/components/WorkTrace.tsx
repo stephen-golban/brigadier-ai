@@ -1,13 +1,5 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
-import {
-  ChevronRightIcon,
-  BookOpenIcon,
-  TerminalIcon,
-  SearchIcon,
-  PencilIcon,
-  GlobeIcon,
-  WorkflowIcon,
-} from "lucide-react";
+import { BookOpen, ChevronRight, Globe, Nodes, Pencil, Search, Terminal } from "../icons";
 import {
   Collapsible,
   CollapsibleContent,
@@ -91,7 +83,7 @@ export function WorkTrace({
     <>
       <span>{summary}</span>
       {row.canCollapse && (
-        <ChevronRightIcon
+        <ChevronRight
           aria-hidden
           className={`size-3.5 transition-transform motion-reduce:transition-none ${open ? "rotate-90" : ""}`}
         />
@@ -403,15 +395,15 @@ function conciseAction(item: TraceNode["item"]) {
 function ActivityIcon({ item }: { item: TraceNode["item"] }) {
   const label = traceLabel(item);
   const Icon = isAgent(item)
-    ? WorkflowIcon
+    ? Nodes
     : label === "Read files"
-      ? BookOpenIcon
+      ? BookOpen
       : label === "Searched files"
-        ? SearchIcon
+        ? Search
         : label === "Edit files"
-          ? PencilIcon
+          ? Pencil
           : label === "Web research"
-            ? GlobeIcon
-            : TerminalIcon;
+            ? Globe
+            : Terminal;
   return <Icon aria-hidden className="size-3.5 shrink-0" />;
 }

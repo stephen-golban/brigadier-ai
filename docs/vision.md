@@ -472,10 +472,11 @@ Everything here that has not been checked, in one place:
    provider.** *Closed:* a runner exists — Vitest, jsdom and Testing Library, `npm test`, 66 tests
    in three files at `3e5c3fd` **[measured]**, pinning the rAF drain, the `ROW_CAP` trim, the
    `seedRows` two-pointer merge, cost never summed across turns, `seedSessions`, counter throttling
-   and array-reference stability, plus the paint instrument and `ThemeProvider`'s stored-preference
-   contract. *Still open:* the only component under test, `src/providers/ThemeProvider.tsx`, is not
-   mounted, renders nothing of its own and has no visual effect while we ship dark-only, so no
-   component that draws anything has a test and nothing below this line changed. The six
+   and array-reference stability, plus the paint instrument. **The theme provider is gone
+   (2026-09-10): brigadier is dark-only, there is no light palette and no theme switch, and
+   `src/main.tsx` sets a single static `dark` root class for the design system to hang variants off.**
+   *Still open (as written 2026-09-04):* no component that draws anything had a test and nothing
+   below this line changed. The six
    worktree-cleanup refusal notes were proven by rendering synthesized values through
    `react-dom/server` from a throwaway script that is now gone; the sentences and buttons are right,
    the click wiring was checked by reading only. No refusal note has been seen in a real window, and

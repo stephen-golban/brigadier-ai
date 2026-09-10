@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ArrowCounterClockwiseIcon } from "@phosphor-icons/react";
+import { ArrowRotateCcw } from "../icons";
 import { launchApi } from "../launchApi";
 import { errorMessage } from "../workspaceApi";
 import { Button } from "./controls/button";
@@ -34,7 +34,7 @@ export function ResetOnboardingButton({
           }
         }}
       >
-        <ArrowCounterClockwiseIcon aria-hidden="true" />
+        <ArrowRotateCcw aria-hidden="true" />
         {busy ? "Resetting…" : "Reset onboarding"}
       </Button>
       {error && <p role="alert">{error}</p>}

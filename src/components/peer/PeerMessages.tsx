@@ -1,6 +1,6 @@
 import { useId, useState } from "react";
 import type { ReactNode } from "react";
-import { BotIcon, ChevronDownIcon } from "lucide-react";
+import { ChevronDown, Robot } from "../../icons";
 import { CopyButton } from "../Markdown";
 import { PeerAttachmentPreviews } from "./PeerAttachmentPreviews";
 import type { PeerData, PeerMessage } from "../../peerApi";
@@ -19,13 +19,13 @@ function PeerBubble({ text, source, titles, onSelectSession, status, children }:
   const long = text.length > 200 || text.split("\n").length > 3;
   const title = peerTaskTitle(source, titles);
   return <div className="peer-message" data-author="peer">
-    <div className="peer-attribution"><BotIcon size={14} aria-hidden="true" />
+    <div className="peer-attribution"><Robot width={14} height={14} aria-hidden="true" />
       <span>Sent by Brigadier from another task</span>
     </div>
     <button type="button" className="peer-source-link" disabled={!onSelectSession} onClick={() => onSelectSession?.(source)} title={title} aria-label={`Open source task: ${title}`}>{title}</button>
     <div className="peer-bubble">
       <div id={id} className={long && !expanded ? "peer-text peer-text-collapsed" : "peer-text"}>{text}</div>
-      {long && <button type="button" className="peer-expand" aria-expanded={expanded} aria-controls={id} onClick={() => setExpanded(!expanded)}>{expanded ? "Show less" : "Show more"}<ChevronDownIcon size={14} aria-hidden="true" /></button>}
+      {long && <button type="button" className="peer-expand" aria-expanded={expanded} aria-controls={id} onClick={() => setExpanded(!expanded)}>{expanded ? "Show less" : "Show more"}<ChevronDown width={14} height={14} aria-hidden="true" /></button>}
       {status && <small className="peer-delivery-status" role="status">{status}</small>}
       {children}
     </div>

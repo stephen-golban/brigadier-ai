@@ -1,5 +1,5 @@
 import { useId, useState } from "react";
-import { BotIcon, ChevronDownIcon, MessageCircleIcon } from "lucide-react";
+import { Chat, ChevronDown, Robot } from "../../icons";
 import { peerToolCards, type LinkedTask } from "../../peerPresentation";
 import type { PeerData } from "../../peerApi";
 import "./peer.css";
@@ -16,7 +16,7 @@ export function LinkedTaskCards({ tasks, onSelectSession }: {
   return <section className="peer-task-group" aria-label="Linked tasks">
     <div id={id}>
       {visible.map(task => <div className="peer-task-card" key={task.key} data-task-id={task.id}>
-        {task.subagent ? <BotIcon size={17} aria-hidden="true" /> : <MessageCircleIcon size={17} aria-hidden="true" />}
+        {task.subagent ? <Robot width={17} height={17} aria-hidden="true" /> : <Chat width={17} height={17} aria-hidden="true" />}
         <div className="peer-task-label">
           <span title={task.title}>{task.title}</span>
           {task.state !== "ready" && <small role="status">{task.state === "pending" ? "Creating task…" : task.state === "failed" ? task.detail ?? "Creation failed" : task.detail ?? "Creation outcome unavailable"}</small>}
@@ -25,7 +25,7 @@ export function LinkedTaskCards({ tasks, onSelectSession }: {
       </div>)}
     </div>
     {tasks.length > 3 && <button type="button" className="peer-group-toggle" aria-expanded={expanded} aria-controls={id} onClick={() => setExpanded(!expanded)}>
-      {expanded ? `Show fewer ${noun}` : `Show ${tasks.length - 3} more ${noun}`} <ChevronDownIcon size={14} aria-hidden="true" style={{ transform: expanded ? "rotate(180deg)" : undefined }} />
+      {expanded ? `Show fewer ${noun}` : `Show ${tasks.length - 3} more ${noun}`} <ChevronDown width={14} height={14} aria-hidden="true" style={{ transform: expanded ? "rotate(180deg)" : undefined }} />
     </button>}
   </section>;
 }

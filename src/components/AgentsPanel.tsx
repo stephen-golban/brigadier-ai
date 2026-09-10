@@ -2,7 +2,7 @@ import { Popover } from "./controls/overlay";
 import { AgentStatus } from "./assistant-ui/elements/agent-status";
 import { Button } from "./controls/button";
 import { useEffect, useState } from "react";
-import { RobotIcon, CaretDownIcon } from "@phosphor-icons/react";
+import { CaretDown, Robot } from "../icons";
 import type { SessionRuntime } from "../feedStore";
 import { readActivity, type AgentActivity } from "../sessionApi";
 import type { PeerData } from "../peerApi";
@@ -78,13 +78,13 @@ export function AgentsPanel({
         aria-expanded={open}
         onClick={() => setOpen(!open)}
       >
-        <RobotIcon size={16} />
+        <Robot width={16} height={16} />
         <span>
           {working
             ? `${working} working`
             : `${rows.length} ${rows.length === 1 ? "agent" : "agents"}`}
         </span>
-        <CaretDownIcon size={12} />
+        <CaretDown width={12} height={12} />
       </Button>
       {open && (
         <Popover.Content placement="top end">

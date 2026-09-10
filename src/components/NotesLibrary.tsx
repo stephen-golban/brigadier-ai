@@ -1,8 +1,6 @@
 import { Checkbox } from "./controls/checkbox";
 import { useState, useImperativeHandle, type Ref } from "react";
-import { Plus, Trash2, X } from "lucide-react";
-import { NotesIcon } from "./NotesIcon";
-import { SearchIcon } from "./SearchIcon";
+import { Notepad, Plus, Search, Trash, X } from "../icons";
 import { Button } from "./controls/button";
 import { Input } from "./controls/input";
 import { Textarea } from "./controls/textarea";
@@ -172,7 +170,7 @@ export function NotesLibrary({
                 </p>
               </div>
               <div className="flex h-9 items-center gap-2 rounded-full border border-hairline bg-elevated px-3 text-text-secondary">
-                <SearchIcon />
+                <Search className="size-4" />
                 <input
                   aria-label="Search notes"
                   placeholder="Search notes"
@@ -197,7 +195,7 @@ export function NotesLibrary({
                         })
                       }
                     >
-                      <NotesIcon className="mt-0.5 shrink-0" />
+                      <Notepad className="mt-0.5 size-4 shrink-0" />
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-[15px] text-text">
                           {item.title}
@@ -332,7 +330,7 @@ export function NotesLibrary({
                         })
                       }
                     >
-                      <Trash2 />
+                      <Trash />
                     </Button>
                   )}
                   <span className="grow text-xs text-text-secondary">

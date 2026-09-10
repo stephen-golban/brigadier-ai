@@ -1,7 +1,7 @@
 import { ArtifactCard } from "./assistant-ui/elements/artifact-card";
 import { Button } from "./controls/button";
 import { useEffect, useState } from "react";
-import { FileIcon, ArrowUUpLeftIcon } from "@phosphor-icons/react";
+import { File, Undo } from "../icons";
 import {
   desktopApi,
   notify,
@@ -56,7 +56,7 @@ export function ChangedFilesCard({
                 .finally(() => setBusy(false));
             }}
           >
-            Undo <ArrowUUpLeftIcon />
+            Undo <Undo />
           </Button>
           <Button className="act" onClick={review}>
             Review
@@ -192,7 +192,7 @@ export function SessionReview({
       </header>
       {files.map((f) => (
         <Button key={f.path} onClick={() => onOpen(f.path)}>
-          <FileIcon />
+          <File />
           <span>{f.path}</span>
           <i className="added text-ok not-italic">+{f.added}</i>
           <i className="removed text-error not-italic">−{f.deleted}</i>

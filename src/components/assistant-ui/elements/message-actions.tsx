@@ -3,13 +3,13 @@
 
 import type { ComponentProps } from "react";
 import {
-  CheckIcon,
-  CopyIcon,
-  EllipsisIcon,
-  RefreshCwIcon,
-  ThumbsDownIcon,
-  ThumbsUpIcon,
-} from "lucide-react";
+  ArrowRotateCw,
+  Check,
+  Copy,
+  DotsHorizontal,
+  ThumbDown,
+  ThumbUp,
+} from "../../../icons";
 import { cn } from "@/lib/utils";
 import { ghostButton, iconSwap, iconSwapIn, iconSwapOut } from "@/lib/surfaces";
 
@@ -61,14 +61,14 @@ export function MessageActions({
           copied && "text-ok",
         )}
       >
-        <CopyIcon
+        <Copy
           className={cn(
             iconSwap,
             "size-3.5",
             copied ? iconSwapOut : iconSwapIn,
           )}
         />
-        <CheckIcon
+        <Check
           className={cn(
             iconSwap,
             "size-3.5",
@@ -89,7 +89,7 @@ export function MessageActions({
                 "bg-text/[0.06] text-text/90 dark:bg-text/[0.09]",
             )}
           >
-            <ThumbsUpIcon className="size-3.5" />
+            <ThumbUp className="size-3.5" />
           </button>
           <button
             type="button"
@@ -104,7 +104,7 @@ export function MessageActions({
                 "bg-text/[0.06] text-text/90 dark:bg-text/[0.09]",
             )}
           >
-            <ThumbsDownIcon className="size-3.5" />
+            <ThumbDown className="size-3.5" />
           </button>
         </>
       )}
@@ -115,7 +115,7 @@ export function MessageActions({
           onClick={onRegenerate}
           className={buttonClassName}
         >
-          <RefreshCwIcon
+          <ArrowRotateCw
             className={cn(
               "size-3.5",
               regenerating && "animate-spin motion-reduce:animate-none",
@@ -130,7 +130,7 @@ export function MessageActions({
           onClick={onMore}
           className={buttonClassName}
         >
-          <EllipsisIcon className="size-3.5" />
+          <DotsHorizontal className="size-3.5" />
         </button>
       )}
     </div>

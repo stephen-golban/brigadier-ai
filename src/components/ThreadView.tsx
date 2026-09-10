@@ -6,7 +6,6 @@ import { TaskPolicyStatus } from "./TaskPolicyStatus";
 import { TaskProgress } from "./TaskProgress";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useConversationHistory } from "../hooks/useConversationHistory";
-import { Telescope as TelescopeIcon } from "lucide-react";
 import { isValidElement, cloneElement, type ReactNode } from "react";
 import { ApprovalResolution, type ApprovalsProps } from "./Approvals";
 import { useApprovalHistory } from "./approvalHistory";
@@ -27,12 +26,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import {
-  PencilSimpleIcon,
-  HammerIcon,
-  ArrowsClockwiseIcon,
-  BugIcon,
-} from "@phosphor-icons/react";
+import { Bug, Loop, Pencil, Telescope, Tools } from "../icons";
 import { Button } from "./controls/button";
 import { MessageAction } from "./assistant-ui/elements/tooltip-icon-button";
 import { Thread } from "./assistant-ui/elements/thread";
@@ -153,26 +147,26 @@ function NewConversation({
               title: "Explore and understand code",
               prompt:
                 "Explore this project and explain its architecture and main flows.",
-              Icon: TelescopeIcon,
+              Icon: Telescope,
               color: "#5795ed",
             },
             {
               title: "Build a new feature, app, or tool",
               prompt: "Help me build a new feature: ",
-              Icon: HammerIcon,
+              Icon: Tools,
               color: "#a77ddd",
             },
             {
               title: "Review code and suggest changes",
               prompt:
                 "Review the current changes and suggest improvements. Focus on bugs and regressions.",
-              Icon: ArrowsClockwiseIcon,
+              Icon: Loop,
               color: "#62a781",
             },
             {
               title: "Fix issues and failures",
               prompt: "Help me investigate and fix this issue: ",
-              Icon: BugIcon,
+              Icon: Bug,
               color: "#d88a55",
             },
           ].map(({ title, prompt, Icon, color }) => (
@@ -187,7 +181,7 @@ function NewConversation({
                 )
               }
             >
-              <Icon size={18} style={{ color }} />
+              <Icon width={18} height={18} style={{ color }} />
               <span>{title}</span>
             </Button>
           ))}
@@ -603,7 +597,7 @@ function UserMessage({
               disabled={busy || editing || !onEdit}
               onClick={() => onEdit?.(item)}
             >
-              <PencilSimpleIcon size={15} />
+              <Pencil width={15} height={15} />
             </Button>
           </MessageAction>
         )}

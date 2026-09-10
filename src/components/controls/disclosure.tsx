@@ -5,7 +5,7 @@ import {
   useState,
   type ComponentProps,
 } from "react";
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDown } from "../../icons";
 import { Button } from "./button";
 const State = createContext({ open: false, toggle: () => {}, id: "" });
 function Root({
@@ -68,7 +68,7 @@ function Heading(props: ComponentProps<"div">) {
   return <div {...props} />;
 }
 function Indicator() {
-  return <ChevronDownIcon aria-hidden className="size-4" />;
+  return <ChevronDown aria-hidden className="size-4" />;
 }
 export const Disclosure = Object.assign(Root, {
   Trigger,

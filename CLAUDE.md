@@ -27,8 +27,6 @@ Mandatory rules:
 4. Read `docs/vision.md` (what we are building) and `docs/STATUS.md` (what exists, what is broken, and the landmine
    list) before anything else — but STATUS §§1–3 are dated 2026-09-04 and describe a UI replaced twice since; its §4
    numbers and §7 landmines stand. Then the briefs:
-   - `docs/plans/bb-thread-port-2026-09-09.md` — the port contract in force: §1 decisions, §5 landmines.
-   - `docs/research/bb.md` — dissection of get-bb/bb and the borrow list. Nobody has run bb.
    - `docs/research/bb-brigadier-today.md` — what this tree actually contains, dated 2026-09-09.
    - `docs/research/long-sessions.md` — context limits, compaction, caching, what ends a session.
    - `docs/research/t3code.md` — dissection of pingdotgg/t3code, closest prior art.
@@ -72,8 +70,10 @@ Settled with the owner on 2026-09-02, in full in `docs/vision.md`:
 - **The `brigadier-guide` doc is deleted**, along with the installable-CLI product it described. Do not reintroduce
   `brigadier install`, CLAUDE.md `@` imports, or hook entries in `.claude/settings.json`. Recoverable at `2327bb9`.
 - Approvals are never optimistic in the UI. Everything else may be.
-- **2026-09-09: assistant-ui Elements is abandoned.** The thread timeline and the composer are a port of get-bb/bb's
-  (MIT), per `docs/plans/bb-thread-port-2026-09-09.md`: bb's structure, brigadier's row kinds. No jotai, no TanStack Query.
+- **2026-09-10: the bb thread port is cancelled.** Both plan files are deleted; recoverable from git history at
+  `713fbc9`. The thread stays on the assistant-ui-based `src/components/ThreadView.tsx`. Generic UI controls — buttons,
+  icon buttons, menus, dialogs — move to assistant-ui's design library on Base UI, per
+  `docs/research/assistant-ui-design.md`, which is in this tree. No jotai, no TanStack Query still holds.
 
 ## 3. The sidecar is dead
 
