@@ -63,7 +63,7 @@
   }
 }
 
-.element-surface { border: 1px solid var(--color-hairline); border-radius: 10px; padding: 12px; margin-block: 10px; font-size: 12px; color: var(--color-text-secondary); overflow-wrap: anywhere; }
+.element-surface { border: 1px solid var(--color-hairline); border-radius: var(--radius-surface); padding: 12px; margin-block: 10px; font-size: 12px; color: var(--color-text-secondary); overflow-wrap: anywhere; }
 .element-surface > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; color: var(--color-text); }
 .element-surface > header > span:last-child:not(:first-child) { color: var(--color-text-tertiary); font-size: 11px; }
 .element-list-row { display: flex; align-items: center; gap: 10px; padding: 9px 0; width: 100%; text-align: left; cursor: pointer; }

@@ -45,6 +45,14 @@ export default function TerminalView({
     let disposed = false,
       id: string | null = null,
       timer: ReturnType<typeof setTimeout>;
+    // The sixteen ANSI slots were hex literals here until 2026-09-11; they are `--ansi-*` on
+    // `:root` now, so the terminal's palette is edited in `src/index.css` with everything else.
+    // `undefined` rather than a literal fallback when a token is absent: xterm then keeps its own
+    // default for that slot, and no stale copy of a colour survives in this file.
+    const ansi = (name: string) =>
+      getComputedStyle(document.documentElement)
+        .getPropertyValue(`--ansi-${name}`)
+        .trim() || undefined;
     const readTheme = () => {
     const foreground = themeColor("text");
     const secondary = themeColor("text-secondary");
@@ -54,22 +62,22 @@ export default function TerminalView({
       cursor: foreground,
       cursorAccent: themeColor("canvas"),
       selectionBackground: themeColor("selected"),
-      black: "#242424",
-      red: "#e06c75",
-      green: "#98c379",
-      yellow: "#e5c07b",
-      blue: "#61afef",
-      magenta: "#c678dd",
-      cyan: "#56b6c2",
-      white: "#dcdfe4",
+      black: ansi("black"),
+      red: ansi("red"),
+      green: ansi("green"),
+      yellow: ansi("yellow"),
+      blue: ansi("blue"),
+      magenta: ansi("magenta"),
+      cyan: ansi("cyan"),
+      white: ansi("white"),
       brightBlack: secondary,
-      brightRed: "#f08080",
-      brightGreen: "#b5d99c",
-      brightYellow: "#f5d491",
-      brightBlue: "#85c1ff",
-      brightMagenta: "#d8a1ee",
-      brightCyan: "#80d4de",
-      brightWhite: "#ffffff",
+      brightRed: ansi("bright-red"),
+      brightGreen: ansi("bright-green"),
+      brightYellow: ansi("bright-yellow"),
+      brightBlue: ansi("bright-blue"),
+      brightMagenta: ansi("bright-magenta"),
+      brightCyan: ansi("bright-cyan"),
+      brightWhite: ansi("bright-white"),
     };
     };
     const terminal = new Terminal({

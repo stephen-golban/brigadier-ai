@@ -188,34 +188,36 @@ function fileTreeFromPaths(paths: Set<string>): Map<string, FileEntry[]> {
  * the owner's decision, see the mapping table in `docs/research/apps-sdk-ui-icons.md`. Not every
  * row is a `File`: config-shaped extensions (`json`, `jsonc`, `yaml`, `yml`, `toml`) keep `Code`,
  * and `FileTypeIcon` below keeps three by-name special cases — `.gitignore` → `Branch`,
- * `claude.md` → `Sun`, `vite.config.ts` → `Bolt`. The colours below are unchanged.
+ * `claude.md` → `Sun`, `vite.config.ts` → `Bolt`. The colour values are unchanged but no longer
+ * live here: each row names a `--color-file-*` token from `src/index.css` (owner, 2026-09-11 —
+ * one theme edit drives the whole app), and the token is handed to CSS as a `var()`.
  */
 const fileTypes: { extensions: string[]; icon: IconComponent; color: string }[] = [
-  { extensions: ["tsx"], icon: File, color: "#6cb6ff" },
-  { extensions: ["ts"], icon: File, color: "#6cb6ff" },
-  { extensions: ["jsx"], icon: File, color: "#e5c07b" },
-  { extensions: ["js", "mjs", "cjs"], icon: File, color: "#e5c07b" },
-  { extensions: ["css", "scss", "sass"], icon: File, color: "#c49bea" },
-  { extensions: ["html"], icon: File, color: "#e99572" },
+  { extensions: ["tsx"], icon: File, color: "var(--color-file-ts)" },
+  { extensions: ["ts"], icon: File, color: "var(--color-file-ts)" },
+  { extensions: ["jsx"], icon: File, color: "var(--color-file-js)" },
+  { extensions: ["js", "mjs", "cjs"], icon: File, color: "var(--color-file-js)" },
+  { extensions: ["css", "scss", "sass"], icon: File, color: "var(--color-file-style)" },
+  { extensions: ["html"], icon: File, color: "var(--color-file-markup)" },
   {
     extensions: ["json", "jsonc", "yaml", "yml", "toml"],
     icon: Code,
-    color: "#e99572",
+    color: "var(--color-file-markup)",
   },
-  { extensions: ["md", "mdx"], icon: File, color: "#81b9a0" },
-  { extensions: ["rs"], icon: File, color: "#dfa180" },
-  { extensions: ["py"], icon: File, color: "#81b9a0" },
+  { extensions: ["md", "mdx"], icon: File, color: "var(--color-file-doc)" },
+  { extensions: ["rs"], icon: File, color: "var(--color-file-rust)" },
+  { extensions: ["py"], icon: File, color: "var(--color-file-doc)" },
   {
     extensions: ["png", "jpg", "jpeg", "gif", "svg", "webp", "ico"],
     icon: File,
-    color: "#b49cdb",
+    color: "var(--color-file-media)",
   },
   {
     extensions: ["sh", "go", "rb", "c", "cpp", "h", "swift"],
     icon: File,
-    color: "#81b9a0",
+    color: "var(--color-file-doc)",
   },
-  { extensions: ["txt"], icon: File, color: "#a1a1a1" },
+  { extensions: ["txt"], icon: File, color: "var(--color-file-text)" },
 ];
 
 function FileTypeIcon({ name }: { name: string }) {
@@ -223,17 +225,17 @@ function FileTypeIcon({ name }: { name: string }) {
   const extension = filename.split(".").pop() ?? "";
   const type =
     filename === ".gitignore"
-      ? { icon: Branch, color: "#e99572" }
+      ? { icon: Branch, color: "var(--color-file-markup)" }
       : filename === "claude.md"
-        ? { icon: Sun, color: "#e99572" }
+        ? { icon: Sun, color: "var(--color-file-markup)" }
         : filename === "vite.config.ts"
-          ? { icon: Bolt, color: "#b49cdb" }
+          ? { icon: Bolt, color: "var(--color-file-media)" }
           : fileTypes.find((type) => type.extensions.includes(extension));
   // Phosphor's `weight="fill"` marked the unknown-extension fallback; the set has no filled/outline
   // pair for `File`, so the single glyph carries both states and only the grey colour separates them.
   const { icon: TypeIcon, color } = type ?? {
     icon: File,
-    color: "#7f7f7f",
+    color: "var(--color-file-unknown)",
   };
   return <TypeIcon aria-hidden="true" className="shrink-0" style={{ color }} />;
 }
@@ -389,7 +391,7 @@ function FilesTree({
       return (
         <div key={entry.path}>
           <Button
-            className={`tree-row flex h-7 w-full justify-start gap-1.5 rounded-[8px] border-0 pr-3 text-left text-[13px] shadow-none hover:bg-hover [&_svg]:size-4 ${selected ? "bg-selected text-text" : "bg-transparent text-text-secondary"}`}
+            className={`tree-row flex h-7 w-full justify-start gap-1.5 rounded-[var(--radius-row)] border-0 pr-3 text-left text-[13px] shadow-none hover:bg-hover [&_svg]:size-4 ${selected ? "bg-selected text-text" : "bg-transparent text-text-secondary"}`}
             style={{ paddingLeft: 6 + depth * 14 }}
             aria-label={entry.name}
             aria-expanded={entry.directory ? open : undefined}
@@ -445,7 +447,7 @@ function FilesTree({
           <Input
             aria-label="Filter files"
             placeholder="Filter files…"
-            className="h-8 w-full rounded-[12px] border border-hairline bg-input-shell pl-8 text-[13px]"
+            className="h-8 w-full rounded-[var(--radius-control)] border border-hairline bg-input-shell pl-8 text-[13px]"
             value={filter}
             onChange={(event) => {
               setFilter(event.target.value);

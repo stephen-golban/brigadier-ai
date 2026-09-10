@@ -61,7 +61,7 @@ export function EditProjectDialog({
           <DialogHeader className="mb-3 pr-8">
             <DialogTitle className="text-[18px]">Edit project</DialogTitle>
           </DialogHeader>
-          <div className="flex h-9 overflow-hidden rounded-md border border-hairline focus-within:border-text-tertiary">
+          <div className="flex h-9 overflow-hidden rounded-md border border-hairline">
             <span className="flex w-9 shrink-0 items-center justify-center border-r border-hairline">
               <Folder className="size-4" />
             </span>

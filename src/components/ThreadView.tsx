@@ -38,6 +38,7 @@ import { ThinkingIndicator } from "./assistant-ui/elements/thinking-indicator";
 import "./assistant-ui/elements/elements.css";
 import { Markdown, CopyButton } from "./Markdown";
 import { BrandMark } from "./BrandMark";
+import { WelcomeScreen } from "./WelcomeScreen";
 import { WorkTrace } from "./WorkTrace";
 import { ChangedFilesCard } from "./SessionReview";
 import { useSessionChanges } from "../desktopApi";
@@ -95,6 +96,8 @@ export function ThreadView({
           peers={peers}
           onSelectSession={onSelectSession}
         />
+      ) : projectId === null ? (
+        <WelcomeScreen />
       ) : (
         startup ? <ProvisioningConversation startup={startup} onRetry={onRetryStartup}/> : <NewConversation projectName={projectName} projectId={projectId} />
       )}
@@ -148,26 +151,26 @@ function NewConversation({
               prompt:
                 "Explore this project and explain its architecture and main flows.",
               Icon: Telescope,
-              color: "#5795ed",
+              color: "var(--color-starter-explore)",
             },
             {
               title: "Build a new feature, app, or tool",
               prompt: "Help me build a new feature: ",
               Icon: Tools,
-              color: "#a77ddd",
+              color: "var(--color-starter-build)",
             },
             {
               title: "Review code and suggest changes",
               prompt:
                 "Review the current changes and suggest improvements. Focus on bugs and regressions.",
               Icon: Loop,
-              color: "#62a781",
+              color: "var(--color-starter-review)",
             },
             {
               title: "Fix issues and failures",
               prompt: "Help me investigate and fix this issue: ",
               Icon: Bug,
-              color: "#d88a55",
+              color: "var(--color-starter-fix)",
             },
           ].map(({ title, prompt, Icon, color }) => (
             <Button

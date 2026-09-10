@@ -66,7 +66,7 @@ export function NavigationHistoryControls({
         title="Go back"
         disabled={find(-1) < 0}
         onClick={() => move(find(-1))}
-        className="size-7 rounded-md text-text-secondary hover:bg-transparent hover:text-text [&_svg]:text-current"
+        className="chrome-button"
       >
         <ArrowLeft />
       </Button>
@@ -76,7 +76,7 @@ export function NavigationHistoryControls({
         title="Go forward"
         disabled={find(1) < 0}
         onClick={() => move(find(1))}
-        className="size-7 rounded-md text-text-secondary hover:bg-transparent hover:text-text [&_svg]:text-current"
+        className="chrome-button"
       >
         <ArrowRight />
       </Button>

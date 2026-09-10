@@ -928,3 +928,182 @@ setting the attribute, and it is untested. `grep -rn 'inset-ring' src/` is empty
 outline escape hatch was needed. Nothing here was checked against a real screen reader, and no
 keyboard-only pass was run in the built app — the evidence is the emitted CSS, `npx tsc --noEmit`,
 `npm test` and `npm run build`, nothing more.
+
+## Applied 2026-09-11 — the theme owns every corner and every colour
+
+**Owner decision.** One theme edit must drive the whole app. Before this pass the radius scale was
+in the `@theme inline` bridge and roughly forty surfaces pinned their own px corner beside it; the
+tooltip, the settings shell, the file tree, the terminal palette and the welcome starters carried
+raw hex. Measured with
+`grep -rnE 'rounded-\[[0-9.]+px\]|border-radius: *[0-9.]+px' src --include='*.tsx' --include='*.css' | grep -v 'src/components/ui/'`
+(60 hits before, 0 after) and the matching colour grep.
+
+### Two layers, both in `@theme static`
+
+`@theme static` and not `@theme inline`: `inline` prunes a theme variable no *utility* mentions, and
+the semantic names below are read as `var(--radius-row)` from hand-written CSS and from
+`rounded-[var(--radius-…)]` arbitrary values — neither counts as a mention. `static` emits every
+name. Both layers still land on `:root` in the emitted stylesheet (verified against
+`npx @tailwindcss/cli@4.3.3 -i src/index.css -o out.css`; the block is `:root` inside `@layer theme`).
+
+**Layer 1 — the scale, now monotonic.** The pre-2026-09-11 scale had `--radius-xl` (12px) *below*
+`--radius-lg` (16px), which is not a scale.
+
+| step | before | after | who moved with it |
+| --- | --- | --- | --- |
+| `--radius-xs` | — (new) | 4px | `--radius-row-action`, `--radius-chip` |
+| `--radius-sm` | 4px | **6px** | `rounded-sm` × 5: `controls/kbd.tsx`, `controls/overlay.tsx:450` menu row, `WorkTrace.tsx:117`, kit `command.tsx:127`, kit `tooltip.tsx` kbd. Also `--radius-document`. |
+| `--radius-md` | 10px | 10px | unchanged; still read by the kit's four `rounded-[min(var(--radius-md),Npx)]` clamps |
+| `--radius-lg` | 16px | 16px | unchanged |
+| `--radius-xl` | 12px | **20px** | `rounded-xl` × 4: kit `sonner.tsx:22`, kit `command.tsx:28`, kit `sidebar.tsx:301` inset, `controls/command.tsx:31` dialog |
+| `--radius-2xl` | 1rem = 14px | **28px** | no `rounded-2xl` call site |
+| `--radius-3xl` | 1.5rem = 21px | **36px** | no call site |
+| `--radius-full` | — (new; `--radius-capsule`/`--radius-pill` were 9999px) | 9999px | `rounded-full` × 27, value unchanged |
+| `--radius-surface` | 10px | `var(--radius-md)` = 10px | kit popover/dropdown/select/tooltip |
+| `--radius-thread` | 1rem = 14px | `var(--radius-lg)` = 16px | no call site |
+| `--radius`, `--radius-capsule`, `--radius-pill`, `--radius-document` | literals | `var()` of the scale | — |
+
+`--radius-control` was upstream's `0.5rem` with no call site in this tree; it is repurposed as the
+semantic control corner below.
+
+**Layer 2 — the semantic layer.** Every entry is a `var()` of the scale, never a px literal. A call
+site names the surface, never the number.
+
+| token | scale ref | px | surfaces |
+| --- | --- | --- | --- |
+| `--radius-control` | `md` | 10 | buttons, inputs |
+| `--radius-control-lg` | `lg` | 16 | the 48px onboarding field |
+| `--radius-icon-button` | `sm` | 6 | `STANDARD_ICON_BUTTON` (24px box) |
+| `--radius-icon-button-xs` | `sm` | 6 | `XS_ICON_BUTTON_RADIUS` |
+| `--radius-row` | `md` | 10 | sidebar rows, toolbar buttons, menu rows |
+| `--radius-row-action` | `xs` | 4 | the 20px hover action inside a sidebar row |
+| `--radius-popover` | `md` | 10 | popovers, dropdowns, menus |
+| `--radius-dialog` | `lg` | 16 | dialogs |
+| `--radius-tooltip` | `xl` | 20 | the tooltip pill |
+| `--radius-keycap` | `sm` | 6 | the keycap inside a tooltip |
+| `--radius-composer` | `2xl` | 28 | the composer shell and the chat panel |
+| `--radius-card` | `lg` | 16 | cards, grouped-row panels, error panels |
+| `--radius-tab` | `sm` | 6 | workbench tabs |
+| `--radius-chip` | `xs` | 4 | inline code, directive chips |
+| `--radius-thumbnail` | `sm` | 6 | attachment thumbnails |
+| `--radius-bubble` | `xl` | 20 | the peer chat bubble |
+| `--radius-badge` | `full` | 9999 | count badges, segmented pills |
+| `--radius-glyph` | `calc(xs / 2)` | 2 | the composer's 12px stop square — a glyph, not a surface |
+
+### Surface deltas — old px → token → new px
+
+`--sidebar-row-radius` is now `var(--radius-row)`. **Codex's measured 12.5px row corner
+(`docs/research/codex-sidebar.md` §4.4) is therefore no longer matched exactly; the match is now
+"nearest scale step", 10px.** The same wording applies to every 8px, 9px, 11px, 12px and 23px
+corner below: they were never steps on any scale.
+
+| surface | old | token | new |
+| --- | --- | --- | --- |
+| sidebar row / group / project row | 12.5 | `--radius-row` | 10 |
+| sidebar header + footer toolbar button | 10 | `--radius-row` | 10 |
+| sidebar row hover action | 8 | `--radius-row-action` | **4** |
+| standard icon button (`controls/button.tsx`) | 8 | `--radius-icon-button` | **6** |
+| `icon-xs` button (`controls/button.tsx`) | 10 | `--radius-icon-button-xs` | **6** |
+| tooltip pill | 20 | `--radius-tooltip` | 20 |
+| tooltip keycap | 10 | `--radius-keycap` | **6** |
+| workbench tab | 7 | `--radius-tab` | 6 |
+| workbench change-count badge | 999 | `--radius-badge` | 9999 |
+| welcome starter card | 14 | `--radius-card` | **16** |
+| rename dialog | 22 | `--radius-dialog` | **16** |
+| rename dialog input / buttons | 9 / 10 | `--radius-control` | 10 |
+| onboarding name input (`intro.css`) | 16 | `--radius-control-lg` | 16 |
+| welcome continue button (`intro.css`) | 7 | `--radius-control` | **10** |
+| launch error panel (`intro.css`) | 16 | `--radius-card` | 16 |
+| settings nav search / delete-all / unarchive | 10 | `--radius-control` | 10 |
+| settings nav item | 8 | `--radius-row` | **10** |
+| archive search field | 20 | `--radius-xl` | 20 |
+| archive rows panel | 16 | `--radius-card` | 16 |
+| thread-context panel | 20 | `--radius-xl` | 20 |
+| peer bubble | 18 | `--radius-bubble` | **20** |
+| peer task group | 12 | `--radius-card` | **16** |
+| peer task button / icon tile | 9 / 8 | `--radius-control` / `--radius-row` | 10 |
+| attachment thumbnail | 6 | `--radius-thumbnail` | 6 |
+| setup menu option | 11 | `--radius-row` | 10 |
+| setup popover input | 9 | `--radius-control` | 10 |
+| `.element-surface` | 10 | `--radius-surface` | 10 |
+| inline code / directive chip | 4 | `--radius-chip` | 4 |
+| composer format menu | 10 | `--radius-popover` | 10 |
+| composer suggestions / attachment preview | 12 | `--radius-popover` | **10** |
+| composer suggestion option / permission option / model row | 7 / 12 / 10 | `--radius-row` | 10 |
+| composer attachment pill | 9 | `--radius-control` | 10 |
+| composer queue (base / open override) | 16 / 20 | `--radius-card` / `--radius-xl` | 16 / 20 |
+| composer queue edit field | 6 | `--radius-sm` | 6 |
+| composer stop symbol | 2 | `--radius-glyph` | 2 |
+| **composer shell `.brigadier-composer`** | **23** | `--radius-composer` | **28** |
+| composer control | 18 | `--radius-xl` | **20** |
+| composer setup rail / popover / effort track | 20 | `--radius-xl` | 20 |
+| execution provider pills | 999 | `--radius-full` | 9999 |
+| effort level button | 5 | `--radius-xs` | **4** |
+| execution exact input | 8 | `--radius-control` | **10** |
+| composer approval strip | 12 | `--radius-md` | **10** |
+| file tree row (`WorkspaceTools.tsx`) | 8 | `--radius-row` | **10** |
+| file filter input (`WorkspaceTools.tsx`) | 12 | `--radius-control` | **10** |
+| notes panels ×3 (`NotesLibrary.tsx`) | 12 | `--radius-card` | **16** |
+| chat panel (`elements/chat-panel.tsx`) | 24 | `--radius-composer` | **28** |
+| monaco inputbox/button (`vscode-panels/panels.css`) | 4 | `--radius-xs` | 4 |
+| search-editor overlay (`vscode-panels/panels.css`) | 8 | `--radius-md` | **10** |
+
+The composer shell is the loudest one: `.brigadier-composer` (unlayered) was overriding the
+`rounded-composer` utility on the *same element*, so `--radius-composer: 28px` was dead and the
+composer wore 23px. Both now read the token.
+
+### Colour tokens added
+
+On `:root` (`src/index.css`):
+
+- `--tooltip: var(--popover)`, `--tooltip-foreground: var(--sidebar-foreground)`,
+  `--tooltip-border: var(--border)`. Codex measures the pill at `rgb(45,45,45)` (§4.9) and
+  `--popover` is `#2b2b2b` = `rgb(43,43,43)`; two units apart, so the tooltip is unified onto the
+  popover surface rather than carrying a fourth near-identical grey. The measured
+  `rgba(255,255,255,.084)` edge unifies onto `--border` (`rgba(255,255,255,.08)`) for the same
+  reason. **Owner-directed; this is a value change of 2/255 on the surface and 0.004 alpha on the edge.**
+- `--settings-*` (17 tokens) — the settings shell's own desaturated-teal family, every one of them a
+  literal in `src/components/settings.css` until now. Values carried over unchanged except
+  `--settings-search`, whose `#2b2b2b` **is** `--popover` and now says so.
+- `--focus-edge: #578cdd` — the rename dialog's focus border. Deliberately **not** folded into
+  `--ring` (`#3b82f6`): that is a different blue, and unifying it is an owner decision, not a cleanup.
+- `--shadow-ink-weak|-soft|(none)|-strong` — the four `#0001`-family alphas every drop shadow was
+  writing for itself, named by weight, values identical (`#0001` = `#00000011`, and so on).
+- `--ansi-*` (15 tokens) — the xterm palette that lived as hex literals in
+  `src/components/TerminalView.tsx`. The component now reads them off `:root` and passes
+  `undefined` rather than a literal when a token is absent, so xterm keeps its own default and no
+  stale copy of a colour survives in the file. `brightBlack` still tracks `--color-text-secondary`.
+
+In `@theme static` (`--color-*`, so `bg-`/`text-` utilities also resolve):
+
+- `--color-on-accent: #ffffff` — ink or fill that must stay pure white on a coloured or dark
+  ground: the change-count badge and the effort slider's knob. `--primary-foreground` is the dark
+  ink and cannot serve.
+- `--color-file-ts|js|style|markup|doc|rust|media|text|unknown` — the nine file-type inks from
+  `WorkspaceTools.tsx`'s table, consumed as `style={{ color: "var(--color-file-…)" }}`.
+  `--color-file-text` and `--color-file-unknown` are `var()`s of existing tokens; the rest keep
+  their values.
+- `--color-starter-explore|build|review|fix` — the four welcome-starter accents from `ThreadView.tsx`.
+
+Stale `var(--token, #literal)` fallbacks were stripped from `thread-context.css` (10) and
+`composer.css` (16). A fallback literal silently defeats a theme edit, and several were already
+wrong — `var(--color-elevated, #292929)` when `--color-elevated` is `#2b2b2b`.
+
+### What is deliberately still a literal
+
+- **`0 0 #0000`** in `src/index.css` and `src/focus-reset.css` — Tailwind's own "no shadow"
+  sentinel for `--tw-ring-shadow` / `--shadow-*`, not a colour.
+- **`border-radius: 50%`** on the composer send button, spinner, range thumb, effort ticks and the
+  workbench tab's close button — a shape, not a step on a scale.
+- **Comments.** `controls/input.tsx:15`, `controls/tooltip.tsx:23`, `focus-reset.css:152-153` and
+  several in `src/index.css` quote measured upstream values in prose. They are documentation of
+  what was measured, not live declarations.
+- **`src/intro.css` / `CosmicField.tsx`.** Nothing was left: the three `var(--color-canvas, #181818)`
+  fallbacks were stripped and the three corners tokenised. `CosmicField.tsx` is a GLSL shader and
+  carries no hex at all — its `radius=` is a signed-distance field, not a corner.
+
+### Not checked
+
+No visual pass in the built app. The evidence is the four gates below, the emitted stylesheet, and
+the greps — nothing was looked at. The scale re-order moves five `rounded-sm` call sites and four
+`rounded-xl` call sites that no work order named; a screenshot pass is the missing half.

@@ -10,6 +10,12 @@ import "./setup-rail.css";
 
 const branchLabelFor = (name: string) => name.replace(/^refs\/(heads|remotes)\//, "");
 
+/**
+ * What the project picker reads while no project is picked — distinct from `"Work in a project"`,
+ * which a *projectless* workspace shows because it has one and it is not a repository.
+ */
+export const PROJECT_PLACEHOLDER = "Choose a project";
+
 export function invalidBranchName(name: string): boolean {
   return !name || name === "@" || name.startsWith("-") || name.endsWith(".") ||
     /[\s~^:?*\[\\]/.test(name) || name.includes("..") || name.includes("@{") ||
@@ -31,6 +37,16 @@ export function TaskSetupRail({ project, projects, picks, options, disabled, onC
   const [name, setName] = useState("");
   const [start, setStart] = useState("");
   useEffect(() => { if (disabled) { setProjectOpen(false); setEnvironmentOpen(false); setBranchOpen(false); } }, [disabled]);
+  /**
+   * "Pick a project" from elsewhere — the welcome screen's New chat row, or a second press of the
+   * global new chat while already unpicked — opens this rail's project list. The picker is a
+   * controlled `Popover`, so the open state is set directly rather than the trigger being clicked.
+   */
+  useEffect(() => {
+    const open = () => setProjectOpen(true);
+    window.addEventListener("brigadier-pick-project", open);
+    return () => window.removeEventListener("brigadier-pick-project", open);
+  }, []);
   const selectedWorktree = options?.worktrees.find(tree => tree.path === picks.workspacePath);
   const current = picks.workspacePath ? selectedWorktree?.branch ?? null : options?.currentBranch ?? null;
   const environmentLabel = picks.workspacePath ? `Worktree · ${picks.workspacePath.split("/").pop()}` : picks.isolated ? "New worktree" : "Work locally";
@@ -48,9 +64,11 @@ export function TaskSetupRail({ project, projects, picks, options, disabled, onC
   const branches = options?.branches ?? [];
   const nameError = name && (invalidBranchName(name) ? "Enter a valid Git branch name." : branches.some(branch => !branch.remote && branch.name === name) ? "That branch already exists. Use Checkout instead." : null);
   return <div className="composer-setup-rail" aria-label="Task setup">
+    {/* The project picker stays live while no project is picked: `disabled` is the composer's
+        busy/loading flag, and with no project every one of its reasons *is* "no project". */}
     <div className="setup-picker">
       <Popover isOpen={projectOpen && !disabled} onOpenChange={setProjectOpen}>
-        <Button className="composer-select" aria-label="Project" disabled={disabled || (!onSelectProject && !onProjectless)}><Folder width={17} height={17}/><span>{project && !project.projectless ? project.name : "Work in a project"}</span><ChevronSmallDown width={14} height={14}/></Button>
+        <Button className="composer-select" aria-label="Project" disabled={(disabled && !!project) || (!onSelectProject && !onProjectless)}><Folder width={17} height={17}/><span>{project ? project.projectless ? "Work in a project" : project.name : PROJECT_PLACEHOLDER}</span><ChevronSmallDown width={14} height={14}/></Button>
         <Popover.Content placement="top start" className="composer-popover setup-popover">
           <Popover.Dialog aria-label="Project">
             <p className="composer-popover-heading">Project</p>
@@ -63,7 +81,9 @@ export function TaskSetupRail({ project, projects, picks, options, disabled, onC
         </Popover.Content>
       </Popover>
     </div>
-    {!!project && !project.projectless && <>
+    {/* A projectless workspace has no Git setup to offer. With nothing picked yet the pickers
+        stay on screen and inert — `options` is null, so both are disabled. */}
+    {!project?.projectless && <>
 
     <div className="setup-picker">
       <Popover isOpen={environmentOpen && !disabled} onOpenChange={open => { setEnvironmentOpen(open); setExisting(false); setQuery(""); }}>

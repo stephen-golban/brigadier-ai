@@ -22,6 +22,7 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
+  type CSSProperties,
 } from "react";
 
 import { bridge, toAppError } from "./bridge";
@@ -43,6 +44,7 @@ import { useAttention } from "./attention";
 
 import { RunCard } from "./components/RunCard";
 import { Sidebar, type SidebarHandle } from "./components/Sidebar";
+import { LayoutResizer } from "./components/LayoutResizer";
 import { runIsLive } from "./wire";
 import type {
   AppError,
@@ -104,6 +106,16 @@ const B4_LABEL = "b4-session-painted";
  */
 const RUN_POLL_MS = 1000;
 
+/** Sidebar width: the stored default, and the point below which a drag collapses it. */
+const SIDEBAR_DEFAULT_WIDTH = 275;
+const SIDEBAR_MIN_WIDTH = 240;
+/**
+ * The widest the sidebar may get: never past 520px, and never so wide that the thread is
+ * left under 320px. Read live rather than stored, so a smaller window wins.
+ */
+const sidebarLimit = () =>
+  Math.max(SIDEBAR_MIN_WIDTH, Math.min(520, window.innerWidth - 320));
+
 /**
  * The project the dev `burn` command creates its sessions under: `<temp>/brigadier-burn/burn`
  * (`src-tauri/src/burn.rs:50`), whose name is the directory basename.
@@ -153,6 +165,29 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
     "brigadier:sidebar-open",
     true,
   );
+  const [sidebarWidth, setSidebarWidth] = useStoredState(
+    "brigadier:sidebar-width",
+    SIDEBAR_DEFAULT_WIDTH,
+  );
+  const [resizingSidebar, setResizingSidebar] = useState(false);
+  /** Dragging past the minimum is a collapse gesture, not a clamp; the width resets. */
+  const resizeSidebar = (next: number) => {
+    if (next < SIDEBAR_MIN_WIDTH) {
+      setSidebarOpen(false);
+      setSidebarWidth(SIDEBAR_DEFAULT_WIDTH);
+      return;
+    }
+    setSidebarWidth(Math.min(next, sidebarLimit()));
+  };
+  useEffect(() => {
+    const clamp = () =>
+      setSidebarWidth((width) =>
+        Math.max(SIDEBAR_MIN_WIDTH, Math.min(sidebarLimit(), width)),
+      );
+    clamp();
+    window.addEventListener("resize", clamp);
+    return () => window.removeEventListener("resize", clamp);
+  }, [setSidebarWidth]);
 
   const rawState = useSyncExternalStore(store.subscribe, store.getState);
   const navigation = useNavigationData();
@@ -192,6 +227,27 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
   const [selectedProjectId, setSelectedProjectId] = useState<ProjectId | null>(
     null,
   );
+  /**
+   * A **global** "New chat" — the sidebar button, ⌘N, or the welcome screen's own row — starts
+   * with no project picked, so the main pane shows `WelcomeScreen` and the composer's project
+   * picker shows "Choose a project" instead of whichever repository happened to be selected.
+   *
+   * `selectedProjectId` is `null` for that state, exactly as it is when there are no projects at
+   * all; this flag is the third bit that tells the two apart. Its only job is to stop the
+   * missing-project effect below from immediately re-selecting `projects[0]` and undoing the
+   * unpick. Every explicit pick clears it through `chooseProject`, and **nothing persists it** —
+   * a reload comes back on the remembered project.
+   *
+   * The project-scoped "New chat" (a project row's ⋯ menu or its hover pencil) is a different
+   * interaction and keeps selecting that project: it carries an id on
+   * `brigadier-new-project-session`, where the global path carries `null`.
+   */
+  const [projectUnpicked, setProjectUnpicked] = useState(false);
+  /** Pick a project explicitly. Every caller but the auto-select effect goes through this. */
+  const chooseProject = useCallback((id: ProjectId | null) => {
+    setProjectUnpicked(false);
+    setSelectedProjectId(id);
+  }, []);
   const [selectedSessionId, setSelectedSessionId] = useState<SessionId | null>(
     null,
   );
@@ -384,6 +440,13 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
 
   useEffect(() => {
     if (!navigation.loaded || !projectsLoaded) return;
+    // While a global "New chat" is waiting for a project, `null` is the chosen state, not a stale
+    // selection: re-selecting `projects[0]` here is exactly the auto-pick being suppressed.
+    if (projectUnpicked) {
+      if (selectedSessionId && !state.sessions[selectedSessionId] && !startups[selectedSessionId])
+        setSelectedSessionId(null);
+      return;
+    }
     if (!projects.some((p) => p.id === selectedProjectId)) {
       setSelectedProjectId(projects[0]?.id ?? null);
       setSelectedSessionId(null);
@@ -393,6 +456,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
     navigation.loaded,
     projectsLoaded,
     projects,
+    projectUnpicked,
     selectedProjectId,
     selectedSessionId,
     state.sessions,
@@ -402,10 +466,24 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
     const refresh = () => {
       void refreshProjects().catch(say);
     };
+    /**
+     * "Start a new chat". `detail` is the project to start it in, or `null` for the global path
+     * (sidebar button, ⌘N, welcome row), which picks no project at all. Pressing it again while
+     * already unpicked opens the setup rail's project picker rather than doing nothing.
+     */
     const create = (event: Event) => {
-      const projectId = (event as CustomEvent<string>).detail;
-      setSelectedProjectId(projectId);
+      const projectId = (event as CustomEvent<string | null>).detail ?? null;
       setSelectedSessionId(null);
+      if (projectId === null) {
+        if (projectUnpicked) {
+          window.dispatchEvent(new Event("brigadier-pick-project"));
+          return;
+        }
+        setProjectUnpicked(true);
+        setSelectedProjectId(null);
+        return;
+      }
+      chooseProject(projectId);
       setNewSessionRequest({ projectId, token: Date.now() });
     };
     window.addEventListener("brigadier-navigation-changed", refresh);
@@ -414,7 +492,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
       window.removeEventListener("brigadier-navigation-changed", refresh);
       window.removeEventListener("brigadier-new-project-session", create);
     };
-  }, [refreshProjects, say]);
+  }, [refreshProjects, say, chooseProject, projectUnpicked]);
 
   // Include cross-project worker activity; only resubscribe when the project set changes.
   const visibleProjectKey = useMemo(() => {
@@ -562,6 +640,9 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
     }
     if (id !== null) {
       paintSpan.current = { sessionId: id, span: beginInteraction(B4_LABEL) };
+      // Opening a conversation is an explicit pick: it leaves the unpicked state even when the
+      // store cannot place the session, because a transcript is on screen either way.
+      setProjectUnpicked(false);
       const owner = startupsRef.current[id]?.args.projectId ?? store.getState().sessions[id]?.projectId ?? null;
       if (owner !== null) setSelectedProjectId(owner);
     }
@@ -659,10 +740,10 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
   /** Jump to the approval's session; its project too when the store knows it. */
   const focusApproval = useCallback(
     (projectId: ProjectId | null, sessionId: SessionId) => {
-      if (projectId !== null) setSelectedProjectId(projectId);
+      if (projectId !== null) chooseProject(projectId);
       selectSession(sessionId);
     },
-    [selectSession],
+    [selectSession, chooseProject],
   );
 
   /**
@@ -685,7 +766,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
         await navigation.refresh();
         setProjects((prev) => [...new Map([...prev, p].map(project => [project.id, project])).values()]);
         store.noteProjects([p.id]);
-        setSelectedProjectId(p.id);
+        chooseProject(p.id);
         setSelectedSessionId(null);
         return null;
       } catch (e) {
@@ -693,7 +774,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
         return toAppError(e);
       }
     },
-    [say, navigation.refresh],
+    [say, navigation.refresh, chooseProject],
   );
 
   /**
@@ -791,7 +872,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
     } catch (error) {
       say(error);
     }
-    setSelectedProjectId(view.project_id);
+    chooseProject(view.project_id);
     setSelectedSessionId(view.session_id);
   };
   const resumeSession = useCallback(
@@ -958,7 +1039,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
       })[0];
       if (burnProject === undefined) throw new Error("Replay project was not created");
       // The visibility effect above pushes `set_visible_projects([burnProject.id])` off this.
-      setSelectedProjectId(burnProject.id);
+      chooseProject(burnProject.id);
       const sessions = await bridge().listSessions();
       store.seedSessions(sessions);
       const newest = sessions.filter(session => session.project_id === burnProject.id)
@@ -966,7 +1047,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
       if (!newest) throw new Error("Replay conversation was not created");
       setSelectedSessionId(newest.session_id);
     },
-    [refreshProjects],
+    [refreshProjects, chooseProject],
   );
 
   const selectedProject =
@@ -1019,13 +1100,30 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
               sidebar.current?.openNotepad();
               return;
             }
-            setSelectedProjectId(projectId);
+            chooseProject(projectId);
             selectSession(sessionId);
           }}
         />
       }
       className="h-svh min-h-0 overflow-hidden"
+      /* `SidebarProvider` spreads the rest of its props onto the `.app-shell` element, so
+         both of these land there: the width every sidebar rule reads, and the flag that
+         suspends the 220ms width transition mid-drag. */
+      style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
+      data-resizing={resizingSidebar ? "true" : undefined}
     >
+      <LayoutResizer
+        orientation="vertical"
+        label="Resize sidebar"
+        className="sidebar-resizer"
+        value={sidebarWidth}
+        min={SIDEBAR_MIN_WIDTH}
+        max={sidebarLimit()}
+        tabIndex={sidebarOpen ? 0 : -1}
+        onChange={resizeSidebar}
+        onResizeStart={() => setResizingSidebar(true)}
+        onResizeEnd={() => setResizingSidebar(false)}
+      />
       <Sidebar
         ref={sidebar}
         notepadHost={notepadHost}
@@ -1047,7 +1145,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
         isMock={bridge().isMock}
         dev={BURN_UI ? <Burn onBurn={runBurn} /> : undefined}
         onSelectProject={(id) => {
-          setSelectedProjectId(id);
+          chooseProject(id);
           try {
             const last = JSON.parse(
               localStorage.getItem("brigadier:last-project-session") ?? "{}",
@@ -1163,7 +1261,8 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
               onProjectless={() => { void bridge().projectlessWorkspace().then(project => {
                 setProjects(previous => [...previous.filter(item => item.id !== project.id), project]);
                 store.noteProjects([project.id]);
-                setSelectedProjectId(project.id); setSelectedSessionId(null);
+                // A projectless workspace *is* a pick: leave the unpicked state with it.
+                chooseProject(project.id); setSelectedSessionId(null);
                 void navigation.refresh();
               }).catch(say); }}
               startup={pendingStartup}
@@ -1179,7 +1278,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
               }
               onRewound={() => setConversationRevision((n) => n + 1)}
               projects={projects}
-              onSelectProject={id => { setSelectedProjectId(id); setSelectedSessionId(null); }}
+              onSelectProject={id => { chooseProject(id); setSelectedSessionId(null); }}
               project={selectedProject}
               session={selectedSession}
               models={models}

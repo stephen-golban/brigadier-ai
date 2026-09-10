@@ -93,7 +93,18 @@ async function start(binding: PanelBinding) {
         "button.hoverBackground": "#5291f7",
         "badge.background": color("attention", "#3b82f6"),
         "badge.foreground": "#ffffff",
-        focusBorder: color("attention", "#3b82f6"),
+        // Owner decision, restated 2026-09-11: no visible focus indicator anywhere
+        // (`src/focus-reset.css`). The workbench paints these from the theme, not from a
+        // stylesheet the app can reach, so they are switched off here. `#00000000` is how a
+        // VS Code colour customisation is disabled.
+        // `input.border` above is a RESTING border and is already transparent for its own
+        // reasons; `sideBarSectionHeader.border` likewise. Only focus ids are listed here.
+        focusBorder: "#00000000",
+        contrastBorder: "#00000000",
+        contrastActiveBorder: "#00000000",
+        "list.focusOutline": "#00000000",
+        "list.focusAndSelectionOutline": "#00000000",
+        "list.inactiveFocusOutline": "#00000000",
         "list.activeSelectionBackground": "#ffffff14",
         "list.inactiveSelectionBackground": "#ffffff14",
         "list.hoverBackground": "#ffffff0d",

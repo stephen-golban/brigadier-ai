@@ -18,6 +18,9 @@ self.MonacoEnvironment = {
             ? new TsWorker()
             : new EditorWorker(),
 };
+/** Transparent black: how a VS Code / Monaco theme colour is switched off. */
+const TRANSPARENT = "#00000000";
+
 function installEditorTheme() {
   const text = editorColor("text"),
     secondary = editorColor("text-secondary"),
@@ -39,7 +42,22 @@ function installEditorTheme() {
     ],
     colors: {
       foreground: text,
-      focusBorder: secondary,
+      // Owner decision, restated 2026-09-11: no visible focus indicator anywhere
+      // (`src/focus-reset.css`). CSS cannot reach these — Monaco paints them from the theme
+      // — so they are switched off here. A fully transparent hex is how a VS Code theme
+      // colour is disabled; an empty string leaves the base theme's default in place.
+      // `focusBorder` is Monaco's focus edge on widgets, the find box and the suggest list.
+      // `contrastBorder` / `contrastActiveBorder` are the fallbacks Monaco reaches for when a
+      // widget declares no border of its own. The three `list.*Outline` ids draw the keyboard
+      // row marker in the suggest and quick-open lists.
+      // `editorWidget.border`, `editorHoverWidget.border`, `input.border` and
+      // `inputOption.activeBorder` are RESTING borders, not focus, and stay as they are.
+      focusBorder: TRANSPARENT,
+      contrastBorder: TRANSPARENT,
+      contrastActiveBorder: TRANSPARENT,
+      "list.focusOutline": TRANSPARENT,
+      "list.focusAndSelectionOutline": TRANSPARENT,
+      "list.inactiveFocusOutline": TRANSPARENT,
       "editor.background": canvas,
       "editor.foreground": text,
       "editor.lineHighlightBackground": editorColor("hover"),

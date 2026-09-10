@@ -264,7 +264,7 @@ export function NotesLibrary({
                       </Button>
                     </div>
                     {preview ? (
-                      <div className="min-h-[180px] flex-1 overflow-auto rounded-[12px] border border-hairline bg-elevated p-4">
+                      <div className="min-h-[180px] flex-1 overflow-auto rounded-[var(--radius-card)] border border-hairline bg-elevated p-4">
                         <Markdown text={note.content} />
                       </div>
                     ) : (
@@ -276,7 +276,7 @@ export function NotesLibrary({
                         onChange={(e) =>
                           setNote({ ...note, content: e.target.value })
                         }
-                        className="min-h-[180px] flex-1 resize-none rounded-[12px] bg-elevated p-4 font-mono text-sm [field-sizing:fixed]"
+                        className="min-h-[180px] flex-1 resize-none rounded-[var(--radius-card)] bg-elevated p-4 font-mono text-sm [field-sizing:fixed]"
                       />
                     )}
                   </div>
@@ -284,7 +284,7 @@ export function NotesLibrary({
                     <h2 className="text-sm font-normal text-text-secondary">
                       Details
                     </h2>
-                    <div className="rounded-[12px] border border-hairline bg-elevated p-4">
+                    <div className="rounded-[var(--radius-card)] border border-hairline bg-elevated p-4">
                       <Checkbox
                         className="flex items-center justify-between gap-4 text-sm"
                         checked={note.alwaysInclude}

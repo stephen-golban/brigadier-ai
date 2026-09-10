@@ -70,7 +70,10 @@ export function NewSession({ project, projects, onSelectProject, onNewProject, o
       ? "This folder is not a Git repository. Choose Work locally to use its files." : null;
   const branchError = picks.newBranch && (invalidBranchName(picks.newBranch) || workspace?.branches.some(branch => !branch.remote && branch.name === picks.newBranch))
     ? "The new branch name is invalid or already exists. Choose a different name or Checkout." : null;
-  const unavailable = picks.mode === "custom" ? !provider || unavailableModel || (claudeUnavailable && provider.id === "claude-code") : !providers.some(p => p.id !== "claude-code" || !claudeUnavailable);
+  // With no project picked there are no per-project execution settings to be unavailable: the
+  // saved picks are the defaults, not the user's. Saying so would be a second false alarm beside
+  // the one `docs/STATUS.md` §7 already lists, and Send is disabled by `!!project` regardless.
+  const unavailable = !project ? false : picks.mode === "custom" ? !provider || unavailableModel || (claudeUnavailable && provider.id === "claude-code") : !providers.some(p => p.id !== "claude-code" || !claudeUnavailable);
   const ready = !!project && preferences.loaded && durable.loaded && !unavailable && !unavailableEffort && !!workspace && !setupError && !workspaceError && !branchError && !missingBranch && !uploading && !sending && (!!durable.draft.text.trim() || durable.attachments.length > 0);
   const changeMode = (mode: ComposerMode) => preferences.save({ ...picks, mode, ...(mode === "custom" && !picks.manual.provider ? { manual: selection } : {}) });
   const submit = async () => {
@@ -111,7 +114,7 @@ export function NewSession({ project, projects, onSelectProject, onNewProject, o
   return <>
     <TaskSetupRail key={project?.id} project={project} projects={projects} picks={picks} options={workspace} disabled={sending || !preferences.loaded && !!project} onChange={preferences.save} onSelectProject={onSelectProject} onNewProject={onNewProject} onProjectless={onProjectless} />
     <PromptInput attachmentProjectId={project?.id} attachments={durable.attachments} onAttachments={durable.setFiles} onUploadChange={setUploading}
-      focusKey={starterFocus} rows={2} value={durable.draft.text} aria-label="Message" placeholder={project?.projectless ? "Ask anything" : project ? `Do anything in ${project.name}` : "Choose a project or work without one"}
+      focusKey={starterFocus} rows={2} value={durable.draft.text} aria-label="Message" placeholder={project?.projectless ? "Ask anything" : project ? `Do anything in ${project.name}` : projects?.length ? "Choose a project to start" : "Choose a project or work without one"}
       disabled={sending || !project || !durable.loaded} onText={durable.setText} onKeyDown={event => { if (isSubmitKey(event)) { event.preventDefault(); void submit(); } }}>
       <ComposerActions className="composer-main-actions">
         <PermissionControl value={picks.permission as PermissionPolicy} onChange={permission => preferences.save({ ...picks, permission })} disabled={controlDisabled} />

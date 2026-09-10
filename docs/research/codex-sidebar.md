@@ -630,3 +630,70 @@ owner had nudged the handle. Not treated as a discrepancy.
 - **Windows/Linux sidebar appearance** beyond the `mica` / `titleBarOverlay` facts in §1.
 - **Anything requiring the app to be running.** No DevTools inspection was done; every value here comes from
   the shipped source or from sampling the owner's PNGs.
+
+---
+
+## 9. Applied — 2026-09-10
+
+The values above were applied to brigadier's sidebar on 2026-09-10 (branch `ui/sidebar`, worker 2A).
+Visual treatment only: no row was added, removed or reordered. Dark-only. The kit's own
+`sidebar.tsx` was copied first (`src/components/ui/sidebar.tsx`, assistant-ui/assistant-ui
+`1a5da0f272668cf313e5213e49aa70e0f987de6d`, `packages/ui/src/components/react/ui/base/sidebar.tsx`,
+one line changed: lucide's `PanelLeftIcon` → brigadier's `Sidebar` glyph), and
+`src/components/controls/sidebar.tsx` was rebuilt on it.
+
+### Where each number lives
+
+| Codex value (§) | brigadier | Emitted CSS |
+|---|---|---|
+| sidebar surface `rgb(40,40,40)` at 70% over `menu` vibrancy (§1) | `--sidebar` + a `color-mix` | `:root[data-sidebar-vibrancy="true"] .app-navigation { background: color-mix(in srgb, var(--sidebar) 70%, transparent) }` |
+| unfocused ⇒ flat opaque (§1) | `data-window-focused="false"` on `<html>` | `:root[data-window-focused="false"] .app-navigation { background: var(--sidebar) }` |
+| vibrancy material `menu`, state `followWindow` (§1) | `src/hooks/use-sidebar-vibrancy.ts` | `setEffects({ effects: [Effect.Menu], state: EffectState.FollowsWindowActiveState })` |
+| text 14px / 430 / 1.5 (§2c) | `--sidebar-font-*` | `.app-navigation { font-size: var(--sidebar-font-size); font-weight: var(--sidebar-font-weight); line-height: var(--sidebar-line-height) }` with `--sidebar-font-size: 14px; --sidebar-font-weight: 430; --sidebar-line-height: 1.5` |
+| idle label `rgba(223,223,223,.85)` (§2b) | `--sidebar-text-idle` | `.app-navigation .navigation-row { color: var(--sidebar-text-idle) }` |
+| active label `#dfdfdf` (§2b) | `--sidebar-accent-foreground` | `.app-navigation .navigation-row[data-active]:not([data-active="false"]) { color: var(--sidebar-accent-foreground) }` |
+| muted `rgba(255,255,255,.498)` (§2a) | `--sidebar-text-muted` | `.app-navigation .navigation-section-title { color: var(--sidebar-text-muted); opacity: .75 }`, `.navigation-empty { color: var(--sidebar-text-muted); opacity: .5 }` |
+| hover **and** active pill `rgba(255,255,255,.078)` (§4.4) | `--sidebar-accent`, one selector for both | `.app-navigation .navigation-row:hover, .app-navigation .navigation-row[data-active]:not([data-active="false"]) { background: var(--sidebar-accent) }` |
+| row radius 12.5px (§2d) | `--sidebar-row-radius` | `.app-navigation .navigation-row { border-radius: var(--sidebar-row-radius) }`, `--sidebar-row-radius: 12.5px` |
+| row height 30px, padding 8px (§4.4) | `--sidebar-row-height`, `--sidebar-row-padding-x` | `.app-navigation .navigation-row { height: var(--sidebar-row-height); padding-block: 0; padding-inline: var(--sidebar-row-padding-x) }` |
+| 1px between rows (§4.4) | `--sidebar-row-gap` | `.app-navigation .navigation-rows { display: flex; flex-direction: column; gap: var(--sidebar-row-gap) }` |
+| 16px between sections (§4.1) | `--sidebar-section-gap` | `.navigation-content { display: flex; flex-direction: column; gap: var(--sidebar-section-gap) }` |
+| section 8px side inset, pill = width − 2×8 (§4.5, §7) | on the section, not the row | `.navigation-section { padding-inline: var(--sidebar-row-padding-x) }` |
+| nested thread text at 36px (§4.6) | 8px + 28px | `.app-navigation .navigation-sessions .navigation-row { padding-inline-start: calc(var(--sidebar-row-padding-x) + var(--sidebar-indent)) }` |
+| icons 16px (§4.4) | `--sidebar-icon-size` | `.app-navigation .navigation-row svg { width: var(--sidebar-icon-size); height: var(--sidebar-icon-size); color: inherit }` |
+| active icon `rgba(255,255,255,.904)` (§2b) | `--sidebar-icon-active` | `.app-navigation .navigation-row[data-active]:not([data-active="false"]) svg { color: var(--sidebar-icon-active) }` |
+| label fades, does not ellipsise (§6) | `.text-fade-truncate` | `mask-image: linear-gradient(to right, #000 calc(100% - 16px), transparent)` — 16px literal, because Codex's `1rem` is 16px and this app's root is 14px |
+| width 275 / min 240 (§3) | `--sidebar-width`, `--sidebar-width-min` | `.sidebar-shell { width: var(--sidebar-width, 275px) }`; the kit provider's inline `16rem` is overridden with `275px` in `controls/sidebar.tsx` |
+| toolbar button 28 × 28, radius-lg (§4.2) | `.chrome-button` | `.workspace-chrome .chrome-button { width: 28px; height: 28px; border-radius: var(--sidebar-row-radius) }` |
+| header icon buttons 24 × 24, radius-md (§4.3) | `.navigation-icon-button` | `.app-navigation .navigation-icon-button { width: 24px; height: 24px; border-radius: 10px }` |
+| collapsed bar: toggle · pencil · 1px divider · folder · title (§4.10) | `SidebarProvider`'s chrome | `.chrome-divider { width: 1px; height: 12px; background: var(--sidebar-border) }`, gaps 6px |
+| footer 46px, 8px padding, hairline (§4.8) | `.navigation-footer` | `.navigation-footer { height: 46px; padding-inline: var(--sidebar-row-padding-x); border-top: 1px solid var(--sidebar-border) }` |
+| tooltip `rgb(45,45,45)`, radius 20px, 1px `rgba(255,255,255,.084)`, 13px, 6 × 8px (§4.9) | `.tooltip-pill` | `[data-slot="tooltip-content"].tooltip-pill { border: 1px solid var(--sidebar-border); border-radius: 20px; background: rgb(45,45,45); padding: 6px 8px; font-size: 13px }` |
+| keycap `currentColor` @10%, radius 10px, 12px (§4.9) | `[data-slot="tooltip-content"] kbd` | `background: color-mix(in srgb, currentColor 10%, transparent); border-radius: 10px; font-size: 12px; padding: 2px 6px` |
+
+### Deviations from Codex, and why
+
+- **Glyphs are brigadier's `src/icons`.** Codex's are its own registry SVGs (§5) and were not
+  traced; shapes differ, sizes do not.
+- **No `corner-shape: superellipse()`.** §2d's 1.25 radius scale is already folded into the 12.5px
+  and 20px numbers; the squircle *shape* is not drawn. WKWebView's support was not checked.
+- **The panel is not resized from a 16px edge strip (§3).** brigadier resizes from
+  `LayoutResizer` (worker 2B); the clamp (275 / 240 / min(520, 100vw−320)) is the same.
+- **Collapsed chrome is a fixed `calc(var(--window-controls-inset) + 244px)`**, not content-sized,
+  so `.project-topbar` can reserve exactly that much and never overlap it. The workbench header's
+  own copy of the session title is hidden while the sidebar is collapsed — two copies of the same
+  string side by side is worse than either. Its `⋯` session menu stays.
+- **`--sidebar-ring`** carries Codex's `--color-border-focus` but is inert: focus indicators are
+  disabled app-wide (owner, 2026-09-10).
+- **Section-header ink** is `--sidebar-text-muted` at `opacity: .75`, i.e. the two-step form Codex
+  uses, rather than a pre-multiplied literal.
+
+### Not verified
+
+- No screenshot comparison was run. Every row above is the CSS this tree emits
+  (`npx @tailwindcss/cli@4.3.3 -i src/index.css -o out.css`), not a rendered pixel.
+- `font-weight: 430` is emitted; that macOS actually renders a 430 step rather than snapping to
+  400 was **not** observed here.
+- The vibrancy path (`Effect.Menu`, `FollowsWindowActiveState`, `onFocusChanged`) is exercised
+  only by `src/hooks/use-sidebar-vibrancy.test.tsx` against a mocked `@tauri-apps/api/window`. It
+  has not been run in a real window.

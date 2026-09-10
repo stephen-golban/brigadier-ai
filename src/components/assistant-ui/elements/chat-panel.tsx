@@ -13,7 +13,7 @@ export function ChatPanel({ className, ...props }: ComponentProps<"div">) {
       data-slot="chat-panel"
       className={cn(
         paper,
-        "flex h-[270px] w-full max-w-md flex-col overflow-hidden rounded-[24px]",
+        "flex h-[270px] w-full max-w-md flex-col overflow-hidden rounded-[var(--radius-composer)]",
         className,
       )}
       {...props}

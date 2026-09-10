@@ -19,26 +19,29 @@ import { cn } from "../../lib/utils";
  * over the design kit's tooltip (`src/components/ui/tooltip.tsx`) and therefore over Base UI:
  * hover intent, the hoverable popup, Escape, positioning and `aria-describedby` are all Base UI's.
  *
- * Three things stay brigadier's. The panel keeps the `glass-surface` class and the app's own
- * elevated-surface treatment instead of the kit's inverted `bg-foreground text-background` chip
- * (`Sidebar.test.tsx` asserts the class). `onlyWhenTruncated` still gates opening on the anchor's
- * own overflow, which is a product rule the kit has no equivalent for. And there is no arrow:
- * the kit's is a `bg-foreground` square, which vanishes into upstream's `bg-foreground` popup but
- * reads as a white diamond hanging off this glass panel, so `showArrow={false}` — a documented
- * deviation in `src/components/ui/UPSTREAM.md`.
+ * Three things stay brigadier's. The panel is Codex's pill — `--tooltip` (unified onto
+ * `--popover`, two units from Codex's measured `rgb(45,45,45)`), a `--radius-tooltip` corner,
+ * a 1px `--tooltip-border` edge, 13px `--tooltip-foreground`, 6px block × 8px inline padding,
+ * measured in `docs/research/codex-sidebar.md` §4.9 — instead of the kit's inverted `bg-foreground
+ * text-background` chip. That treatment is the unlayered `.tooltip-pill` block in
+ * `src/index.css`; `glass-surface` stays on the element because `Sidebar.test.tsx:165` asserts
+ * it. `onlyWhenTruncated` still gates opening on the anchor's own overflow, which is a product
+ * rule the kit has no equivalent for. And there is no arrow: the kit's is a `bg-foreground`
+ * square, which vanishes into upstream's `bg-foreground` popup but reads as a white diamond
+ * hanging off this panel, so `showArrow={false}` — a documented deviation in
+ * `src/components/ui/UPSTREAM.md`.
  *
- * The uninverted panel costs one more override, and it is why shortcut chips went invisible after
- * the port. The kit's `Kbd` (`src/components/ui/kbd.tsx`; its documented API at
- * assistant-ui.com/design/components/kbd is `className` and nothing else — there is no `variant`
- * or `size` to select for this context) styles itself
+ * The uninverted panel is why shortcut chips went invisible after the port. The kit's `Kbd`
+ * (`src/components/ui/kbd.tsx`; its documented API at assistant-ui.com/design/components/kbd is
+ * `className` and nothing else — there is no `variant` or `size` to select for this context)
+ * styles itself
  * `[[data-slot=tooltip-content]_&]:bg-background/20 [[data-slot=tooltip-content]_&]:text-background`
- * whenever it sits in a tooltip. That is right on the kit's inverted `bg-foreground text-background`
- * panel, where `--background` is the *readable* colour. On `bg-elevated` (`#2b2b2b`) it inverts the
- * wrong way: the chip fills to `#181818/20` ≈ `#282828`, within a hair of the panel behind it, and
- * letters itself `#181818`. So brigadier's own `bg-selected` (`rgba(255,255,255,.14)`, ≈ `#494949`
- * over the panel) and `text-text-secondary` (`#a1a1a1`) are re-asserted below with `!`; the kit's
- * rule is a descendant-attribute selector and outranks a plain `[&_kbd]` variant on specificity.
- * The kit file itself stays untouched.
+ * whenever it sits in a tooltip. That is right on the kit's inverted panel, where `--background`
+ * is the *readable* colour, and inverts the wrong way on any other. Codex's own keycap —
+ * `currentColor` at 10%, a `--radius-keycap` corner, 12px text in the tooltip's own ink — replaces it from
+ * `src/index.css`'s `[data-slot="tooltip-content"] kbd` rule, which is unlayered and therefore
+ * beats the kit's `@layer utilities` variant whatever their specificity. Both kit files stay
+ * verbatim copies, and no call site has to opt in.
  */
 export function Tooltip({
   content,
@@ -115,10 +118,7 @@ export function Tooltip({
           showArrow={false}
           side={placement === "right" ? "right" : "top"}
           sideOffset={8}
-          className={cn(
-            "glass-surface max-w-[calc(100vw-16px)] gap-2 rounded-md border border-hairline bg-elevated px-2.5 py-1.5 text-[12px] leading-4 font-normal text-text shadow-overlay",
-            "[&_kbd]:h-4 [&_kbd]:min-w-4 [&_kbd]:rounded-md [&_kbd]:bg-selected! [&_kbd]:px-1.5 [&_kbd]:text-[11px] [&_kbd]:text-text-secondary!",
-          )}
+          className="tooltip-pill glass-surface max-w-[calc(100vw-16px)] font-normal shadow-overlay"
         >
           {content}
         </TooltipContent>

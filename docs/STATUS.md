@@ -636,6 +636,58 @@ every bundle format for the platform being built on. Leave it alone.
   deleted). Make the Create project modal's first render independent of folder work instead, and do
   not label background configuration as "warming the picker".
 
+- **A focus reset gated on a class-name substring.** The 2026-09-10 block in `src/index.css`
+  neutralised rings only for elements matching `[class*="focus-visible:ring"]`. The gate was there
+  to spare five kit surfaces that draw a decorative, non-focus `ring-1 ring-foreground/10`
+  hairline, but it missed `ui/field.tsx`'s FieldLabel twice over — the class is written
+  `has-[>[data-slot=field]]:has-[:focus-visible]:ring-3`, whose literal substring is
+  `focus-visible]:ring`, and whose compiled selector is `:has(:focus-visible)`, not
+  `:focus-visible`. It also missed everything outside Tailwind. Replaced 2026-09-11 by
+  `src/focus-reset.css`, which resets rings on every focus state and instead EXCLUDES the
+  decorative slots by `data-slot`. Do not re-express those hairlines as `box-shadow`:
+  `controls/overlay.tsx` and `controls/modal.tsx` wrap the kit's popover, dropdown and dialog with
+  `ring-0`, so a re-expressed hairline would draw a line this app does not currently have.
+  Four focus indicators lived entirely outside that gate and outside Tailwind, and any of them
+  could be the outline the owner kept seeing: `.rename-session-dialog input.input:focus` (a solid
+  blue border, `src/index.css`), `.note-title-input:focus-visible` (a bottom rule, `src/index.css`),
+  `.welcome-name input:focus` (a 3px accent halo, `src/intro.css`), and
+  `.layout-resizer:focus-visible::after` (a 2px `var(--ring)` bar, `src/index.css`). Monaco and the
+  VS Code workbench paint their own focus edges from theme data that no stylesheet can reach;
+  `focusBorder`, `contrastBorder`, `contrastActiveBorder` and the three `list.*Outline` ids are set
+  to `#00000000` in `src/components/CodeEditor.tsx` and `src/vscode-panels/runtime.ts`.
+
+- **esbuild's CSS minifier drops an earlier rule when a later rule has a byte-identical selector,
+  `!important` notwithstanding.** Measured 2026-09-11: three `!important` overrides in
+  `src/focus-reset.css` (`.layout-resizer:focus-visible::after` and its two orientation siblings)
+  were present in the Tailwind CLI output and absent from `dist/assets/*.css`, so the blue focus
+  bar came back in the production bundle while the dev server looked correct. Every selector in
+  `src/focus-reset.css` that also exists verbatim in `src/index.css` or `src/intro.css` therefore
+  carries a redundant `:root ` prefix. A CSS override is not proven by the dev server or by the
+  Tailwind CLI output alone — grep the built bundle.
+
+- **`selectedProjectId === null` is two states, and the missing-project effect fights one of them.**
+  Added 2026-09-11 (`ui/sidebar`). A global "New chat" — the sidebar button, ⌘N, or the welcome
+  screen's own row — now starts with **no project picked**, so `App`'s `selectedProjectId` is `null`
+  while projects exist. `App.tsx`'s missing-project effect exists to force it back to `projects[0]`
+  whenever the id is not in the list, so the unpick is undone on the next render unless the effect
+  is told to stand down: that is the whole job of the `projectUnpicked` flag beside it. Do not
+  "simplify" it away, and do not persist it — a reload is meant to come back on the remembered
+  project (`brigadier:selected-project`). Every explicit pick goes through `chooseProject`, which
+  clears the flag; the only two raw `setSelectedProjectId` calls left are the boot restore and the
+  missing-project effect itself.
+- **One event, two meanings: `brigadier-new-project-session`.** Its `detail` is the project id for
+  the project-scoped new chat (a project row's ⋯ menu, its hover pencil), and `null` for the global
+  one. `Sidebar.test.tsx` asserts that ⌘N dispatches this event, which is why the global path
+  reuses it rather than adding a second. A second press while already unpicked dispatches
+  `brigadier-pick-project`, which `TaskSetupRail` answers by clicking its own project trigger —
+  `SelectMenu` owns its open state and takes no `isOpen`, so there is nothing else to drive.
+- **The composer's project picker must ignore the rail's `disabled`.** `NewSession`'s
+  `controlDisabled` includes `!project`, so honouring it would disable the one control that can
+  end the unpicked state. `TaskSetupRail` gates that picker on `disabled && !!project` instead.
+  Its placeholder is a `value` that matches no option (`PROJECT_PLACEHOLDER`), because `SelectMenu`
+  renders `options.find(o => o.value === value)?.label ?? value` — adding a placeholder row to the
+  list would make it selectable.
+
 ## Landmines already paid for (do not rediscover)
 
 - **Base UI's menus, popovers, dialogs and tooltips (2026-09-10, `ui/design-system`).** Every one
@@ -909,3 +961,133 @@ every bundle format for the platform being built on. Leave it alone.
   a verbatim upstream copy (`src/components/ui/UPSTREAM.md`) and editing it breaks the next
   `shadcn add`. The `xs` text size and the `toggle-group` `sm` size have no call sites today and are
   left alone.
+- **Tauri v2 has no fullscreen event (2026-09-10, `ui/sidebar`).** `@tauri-apps/api` **2.11.1**'s
+  `window.d.ts` exposes `isFullscreen()`, `onResized()` and `onFocusChanged()` and nothing that
+  fires on the fullscreen transition itself. `src/hooks/use-fullscreen.ts` therefore seeds from
+  `await isFullscreen()` and re-polls it inside `onResized`. Do not go looking for
+  `onFullscreenChanged`; it is not there. [measured: grepped the shipped `.d.ts`]
+- **`src/window-chrome.css`'s `--window-controls-inset: 90px` is live even when the drag layer is
+  hidden (2026-09-10, `ui/sidebar`).** The rule is `:root:has(.window-drag-region) .app-shell`, and
+  the layer is only `display: none`d while the workspace is mounted — `:has()` still matches a
+  hidden element. Anything that wants a different inset must out-specify (0,3,0), which is why the
+  macOS-fullscreen rule is written `:root:root[data-fullscreen="true"] .app-shell`: the repeated
+  `:root` buys (0,4,0) without depending on markup either worker might change, and it wins
+  whichever of the two stylesheets the bundler emits last.
+- **Never set `position` on a shared class in unlayered CSS (2026-09-10, `ui/sidebar`).**
+  `@import "tailwindcss"` puts `absolute` inside `@layer utilities`, and unlayered rules beat every
+  layer, so `.layout-resizer { position: relative }` in `src/index.css` would silently un-absolute
+  all three splitters. `.layout-resizer` styles only paint; each call site positions itself.
+- **`tauri icon` does not produce a byte-reproducible `icon.icns` (2026-09-10, `ui/sidebar`).** Two
+  runs from identical input gave two 61,359-byte files differing from offset 10 onward, while every
+  PNG under `src-tauri/icons/` and `public/brand/app-icon.svg` came back byte-identical. Diff the
+  PNGs and the SVG to decide whether a palette change reached the icons; an `icon.icns` diff on its
+  own proves nothing. Revert it rather than committing churn.
+- **`scripts/generate-brand.mjs` reads a two-level palette (2026-09-10, `ui/sidebar`).** Since the
+  design-kit port, `--color-canvas`/`--color-elevated`/`--color-attention` are `var()` aliases of
+  `--background`/`--popover`/`--ring`, so the script's old "match a literal hex under this name"
+  regex threw `Missing icon color: attention`. It now collects every `--name: value;` in
+  `src/index.css` (first declaration wins) and follows `var(--x)` up to four hops to a colour
+  literal, failing loudly on anything else.
+- **The sidebar's ink and geometry are Codex's, and they live in CSS, not in classes (2026-09-10,
+  `ui/sidebar`).** `docs/research/codex-sidebar.md` §9 is the applied table: every number is a
+  `--sidebar-*` token on `:root` and an unlayered rule in `src/index.css`'s sidebar section. The
+  unlayered part is load-bearing — `@import "tailwindcss"` puts every utility in
+  `@layer utilities`, and a layer loses to an unlayered rule whatever the specificity, which is
+  what lets `src/components/ui/sidebar.tsx` stay a verbatim upstream copy (`h-8`, `rounded-md`,
+  `text-xs`, `[&_svg]:size-4`, `peer-data-[size=default]/menu-button:top-1.5` and all) while
+  brigadier renders 30px rows with a 12.5px corner. Restyle the sidebar in that CSS block; do not
+  chase the kit's classes with `!` or with a fork of the copy.
+- **Hover and selected are the same fill (2026-09-10, `ui/sidebar`).** Codex uses
+  `rgba(255,255,255,.078)` for both; what carries the active state is the label going from
+  `rgba(223,223,223,.85)` to `#dfdfdf` and the icon to `rgba(255,255,255,.904)`. A "stronger
+  selected fill" is a regression, not an improvement.
+- **Row labels fade, they do not ellipsise (2026-09-10, `ui/sidebar`).** `.text-fade-truncate` is a
+  16px `mask-image` gradient with `text-overflow: clip`. The 16px is a literal on purpose: Codex's
+  `1rem` is 16px and this app's root font size is 14px. The footer account name is the documented
+  exception and keeps `truncate`.
+- **`useRender`'s `state` emits presence attributes, not `="true"` (2026-09-10, `ui/sidebar`).**
+  The kit's `SidebarMenuButton` renders `data-active` bare when active and omits it when not — a
+  selector written `[data-active="true"]` matches nothing. `src/index.css` uses
+  `[data-active]:not([data-active="false"])`, which accepts either spelling;
+  `src/components/controls/sidebar.test.tsx` pins which one Base UI actually emits.
+- **One ⌘B listener, not two (2026-09-10, `ui/sidebar`).** The kit's `SidebarProvider` registers
+  its own `window` keydown handler. brigadier's provider nests it and dropped its own duplicate:
+  two handlers both toggling cancel each other out and the sidebar never moves. Every open/close —
+  the shortcut, the trigger click, `toggleSidebar()` — now funnels through `applyOpen` in
+  `src/components/controls/sidebar.tsx`, which is also where the "refuse while the settings
+  overlay or a dialog is open" guards live.
+- **`SidebarProvider` hard-codes `--sidebar-width: 16rem` inline (2026-09-10, `ui/sidebar`).**
+  That is 224px against this app's 14px root and it beats any `:root` default, because it is an
+  inline style on the element every sidebar rule reads. `controls/sidebar.tsx` merges Codex's
+  275px in ahead of a caller's `style`, so `App.tsx`'s stored width still wins. A `:root`
+  `--sidebar-width` alone would never be seen.
+- **The kit's ghost variant paints `aria-expanded` (2026-09-11, `ui/sidebar`).**
+  `src/components/ui/button.tsx:17` carries `aria-expanded:bg-muted aria-expanded:text-foreground`,
+  so any button that keeps `aria-expanded` for accessibility wears a filled "selected" box for as
+  long as it is expanded. That is what made the sidebar toggle look pressed while the sidebar was
+  open. The fix is per-call-site — `className="chrome-button aria-expanded:bg-transparent"` on the
+  trigger in `src/components/controls/sidebar.tsx`, which `cn`'s tailwind-merge resolves by
+  dropping the kit's `aria-expanded:bg-muted` — not a change to the adapter, which would move every
+  menu and popover trigger in the app. The ink half needs no override: the unlayered
+  `.workspace-chrome .chrome-button { color }` already beats a `@layer utilities` rule.
+- **Hover peek waits 300ms (2026-09-11, `ui/sidebar`).** `PEEK_OPEN_DELAY_MS` in
+  `src/components/controls/sidebar.tsx`; it was 180ms and read as instant, so crossing the chrome
+  flashed the panel open. Only the opening edge is delayed — `PEEK_CLOSE_DELAY_MS` (160ms, the
+  grace period for the toggle→panel gap) and the click toggle are untouched. The two boundary
+  tests in `controls/sidebar.test.tsx` drive the pointer with `fireEvent.pointerOver` /
+  `pointerOut`, not user-event: React derives `onPointerEnter` / `onPointerLeave` from the over/out
+  pair, and user-event's internal awaits hang under `vi.useFakeTimers()` — four tests in that file
+  time out at 5s, including two that never touched the clock, because the fake timers survive the
+  aborted test.
+- **The radius scale moves as a set, and it moved back (2026-09-11, `ui/sidebar`).** The owner's
+  2026-09-10 +2px raise was reversed on 2026-09-11: `--radius`/`--radius-lg` 16px, `--radius-sm`
+  4px, `--radius-md` 10px, `--radius-surface` 10px, `--radius-xl` 12px, the standard icon button
+  8px and `icon-xs` 10px. `--radius-composer` (28px), `--sidebar-row-radius` (12.5px, Codex-
+  measured) and the 9999px pills are not part of that set and did not move. `--radius-md` is also
+  read by the kit's `rounded-[min(var(--radius-md),10px)]` clamps on `xs` / `icon-xs` / `sm` /
+  `icon-sm`, so changing it silently moves four kit sizes; `XS_ICON_BUTTON_RADIUS` in
+  `controls/button.tsx` states that corner outright so `icon-xs` follows the owner's number rather
+  than the clamp.
+- **A corner is a token, never a number (2026-09-11, `ui/sidebar`).** The radius scale and a
+  semantic layer above it live in `src/index.css`'s `@theme static` block, and every corner in
+  `src/` outside the verbatim kit copy under `src/components/ui/` reads one of them. `@theme
+  static` and not `@theme inline` is load-bearing: `inline` prunes a theme variable no *utility*
+  mentions, and the semantic names are read as `var(--radius-row)` from hand-written CSS and from
+  `rounded-[var(--radius-…)]`, neither of which counts. The scale is monotonic as of this date —
+  `--radius-xl` used to be 12px, *below* `--radius-lg`'s 16px — so `rounded-sm` moved 4px → 6px
+  (five call sites) and `rounded-xl` 12px → 20px (four). Proof:
+  `grep -rnE 'rounded-\[[0-9.]+px\]|border-radius: *[0-9.]+px' src --include='*.tsx' --include='*.css' | grep -v 'src/components/ui/'`
+  must stay empty. Full delta table in `docs/research/assistant-ui-design.md`, "Applied 2026-09-11".
+- **Codex's 12.5px row corner is now "nearest scale step", not a match (2026-09-11, `ui/sidebar`).**
+  `--sidebar-row-radius` is `var(--radius-row)` = 10px. `docs/research/codex-sidebar.md` §4.4 still
+  measures 12.5px; that number is now a reference, not the value in the tree. Same for the tooltip
+  surface: §4.9 measures `rgb(45,45,45)` and `--tooltip` is `var(--popover)` = `#2b2b2b`, two units
+  away, unified on the owner's instruction rather than kept as a fourth near-identical grey.
+- **`.brigadier-composer` was silently overriding `rounded-composer` (2026-09-11, `ui/sidebar`).**
+  Both sit on the same element (`src/components/PromptInput.tsx:164` puts the class on
+  `ComposerBar`, which carries `rounded-composer`), and the unlayered rule in
+  `src/components/composer/composer.css` beats the `@layer utilities` one — so `--radius-composer:
+  28px` was dead and the composer wore a 23px literal. Both read the token now and the corner moved
+  23px → 28px. If a composer corner ever looks wrong, check for an unlayered class fighting a
+  utility on the same node before changing the token.
+- **A `var(--token, #literal)` fallback defeats a theme edit (2026-09-11, `ui/sidebar`).** 26 of
+  them were stripped from `composer.css` and `thread-context.css`; several were already stale —
+  `var(--color-elevated, #292929)` when `--color-elevated` is `#2b2b2b`. Every `--color-*` name is
+  emitted unconditionally by `@theme static`, so the fallback never fires in the app and only fires
+  where the token is genuinely missing, which is exactly where you want to see the breakage.
+- **`src/components/TerminalView.tsx` reads its ANSI palette from CSS (2026-09-11, `ui/sidebar`).**
+  Sixteen hex literals became `--ansi-*` on `:root`. The reader returns `undefined`, not a literal,
+  when a token is missing, so xterm falls back to its own default for that slot — do not
+  reintroduce a hardcoded fallback to "be safe"; that is the second copy this change removed.
+- **`projectId === null` in the main pane means "no projects at all", not "none picked"
+  (2026-09-11, `ui/sidebar`).** `src/App.tsx:409-421` runs whenever `navigation.loaded &&
+  projectsLoaded` and forces `selectedProjectId` to `projects[0]` the moment the list is non-empty,
+  so the null case survives only while the list is empty (or, for one frame, while it loads). That
+  is the state `src/components/WelcomeScreen.tsx` draws — the bb-style mark-plus-action-rows empty
+  screen — and `NewConversation` in `src/components/ThreadView.tsx` now only ever sees a real
+  project id. Do not add a "pick a project" affordance to that screen on the assumption that
+  projects exist behind it; the screen asks `listProjects()` and disables **New chat** when they do
+  not. Its three rows call existing paths only — `pickDirectory()` + `addProject()` +
+  `brigadier-navigation-changed` (the two calls `App`'s own `pickProject` makes),
+  `brigadier-new-chat`, and `brigadier-open-notes`. There is no recent-repos importer and no tour
+  to link to, so no row was invented for one.

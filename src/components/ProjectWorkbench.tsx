@@ -55,6 +55,7 @@ import { WorkspaceTools, type WorkspaceMode } from "./WorkspaceTools";
 import { DocumentTab } from "./DocumentTab";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
 import { TerminalDock } from "./TerminalDock";
+import { LayoutResizer } from "./LayoutResizer";
 const empty: ProjectLayout = { tabs: [], active: null };
 const initial: WorkbenchData = {
   notes: [],
@@ -1383,39 +1384,19 @@ export function ProjectWorkbench({
               { "--workspace-panel-width": `${panelWidth}px` } as CSSProperties
             }
           >
-            <div
-              className="layout-resizer absolute inset-y-0 left-0 z-10 w-1 cursor-col-resize touch-none"
-              role="separator"
-              aria-label="Resize workspace"
-              aria-orientation="vertical"
-              aria-valuemin={240}
-              aria-valuemax={900}
-              aria-valuenow={panelWidth}
+            <LayoutResizer
+              orientation="vertical"
+              label="Resize workspace"
+              className="absolute inset-y-0 left-0"
+              value={panelWidth}
+              min={240}
+              max={900}
+              /* The panel is anchored right, so it widens as the pointer moves left. */
+              invert
               tabIndex={panelVisible ? 0 : -1}
-              onKeyDown={(e) => {
-                if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
-                  e.preventDefault();
-                  resizePanel(panelWidth + (e.key === "ArrowLeft" ? 24 : -24));
-                }
-              }}
-              onPointerDown={(e) => {
-                setResizingPanel(true);
-                e.currentTarget.setPointerCapture(e.pointerId);
-                e.currentTarget.dataset.start = String(e.clientX);
-                e.currentTarget.dataset.width = String(panelWidth);
-              }}
-              onPointerMove={(e) => {
-                if (e.currentTarget.hasPointerCapture(e.pointerId))
-                  resizePanel(
-                    Number(e.currentTarget.dataset.width) +
-                      Number(e.currentTarget.dataset.start) -
-                      e.clientX,
-                  );
-              }}
-              onPointerUp={(e) =>
-                e.currentTarget.releasePointerCapture(e.pointerId)
-              }
-              onLostPointerCapture={() => setResizingPanel(false)}
+              onChange={resizePanel}
+              onResizeStart={() => setResizingPanel(true)}
+              onResizeEnd={() => setResizingPanel(false)}
             />
             <div className="workbench-side-content flex min-h-0 flex-1 flex-col">
               {subagents ? <SubagentsPanel requestedId={requestedWorker} key={selectedSessionId ?? "none"} rootId={selectedSessionId} projectId={project.id} peers={peers} sessions={sessions} onFile={(path, worker) => { if(path.startsWith("brigadier-note:")) {const note=data.notes.find(note=>note.id===path.slice(15));if(note)openNote(note);}else open(path, "file", false, undefined, worker);}} /> : (

@@ -27,7 +27,12 @@ afterEach(() => {
 });
 it("reads the specified surfaces and neutral selected state from CSS", () => {
   expect(themeColor("canvas")).toBe("#181818");
-  expect(themeColor("sidebar")).toBe("#202020");
+  // The sidebar surface became Codex's `--color-background-editor-opaque` on 2026-09-10
+  // (`docs/research/codex-sidebar.md` §2a, measured; owner decision the same day). `themeColor`
+  // returns the specified string, which is now an `rgb()` triple rather than a hex literal, so
+  // the raw form is mirrored here and `editorColor` is asserted separately for Monaco's sake.
+  expect(themeColor("sidebar")).toBe("rgb(40, 40, 40)");
+  expect(editorColor("sidebar")).toBe("#282828");
   expect(themeColor("elevated")).toBe("#2b2b2b");
   expect(themeColor("input")).toBe("#2a2a2a");
   expect(themeColor("input-shell")).toBe("#1f1f1f");

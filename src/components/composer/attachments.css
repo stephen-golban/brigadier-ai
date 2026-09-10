@@ -2,7 +2,7 @@
 .attachment-import-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .composer-attachment-pending progress { width: 64px; height: 5px; accent-color: var(--ring); }
 .attachment-import-error { flex-basis: 100%; font-size: 11px; overflow-wrap: anywhere; color: var(--color-error); }
-.composer-attachment-preview .attachment-thumbnail { width: 44px; height: 44px; border-radius: 6px; object-fit: cover; flex-shrink: 0; }
+.composer-attachment-preview .attachment-thumbnail { width: 44px; height: 44px; border-radius: var(--radius-thumbnail); object-fit: cover; flex-shrink: 0; }
 .composer-attachment-preview summary:has(.attachment-thumbnail) { display: flex; align-items: center; gap: 8px; }
 .composer-attachment-preview .attachment-filename { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .composer-attachment-preview .attachment-preview-retry { display: inline-block; margin-top: 6px; }
