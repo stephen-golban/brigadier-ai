@@ -1,10 +1,20 @@
-import { forwardRef, type ComponentProps, type ReactNode } from "react";
-import { Search } from "../../icons";
-import { cn } from "../../lib/utils";
+import type { ReactNode } from "react";
+
 import { Modal } from "./modal";
 
-// Command-palette composition from the supplied shadcn example, using our
-// native dialog and semantic tokens so desktop and browser share one surface.
+/**
+ * Adapter over the kit's command parts (`src/components/ui/command.tsx`).
+ *
+ * The parts themselves are now the kit's geometry, ink and `data-slot` names. Two things stay here:
+ *
+ *  - `CommandDialog`. Upstream's builds on `@/components/ui/dialog`, which this repo does not have;
+ *    this one is the native `<dialog>` surface from `controls/modal.tsx`, unchanged.
+ *  - the `cmdk`-free selection model. `src/dependency-hygiene.test.ts:28-38` bans `cmdk` outright,
+ *    and cmdk 1.1.1 depends on four individual `@radix-ui/react-*` packages, which `CLAUDE.md` §5
+ *    forbids. `controls/search-dialog.tsx` therefore keeps driving the active row itself through
+ *    `aria-activedescendant`, and `ui/command.tsx` styles off `aria-selected` rather than cmdk's
+ *    `data-selected`.
+ */
 export function CommandDialog({
   open,
   onOpenChange,
@@ -25,80 +35,14 @@ export function CommandDialog({
     </Modal.Backdrop>
   );
 }
-export function Command(props: ComponentProps<"div">) {
-  return (
-    <div
-      {...props}
-      className={cn("flex flex-col overflow-hidden text-text", props.className)}
-    />
-  );
-}
-export const CommandInput = forwardRef<
-  HTMLInputElement,
-  ComponentProps<"input">
->(function CommandInput(props, ref) {
-  return (
-    <div className="flex h-12 shrink-0 items-center gap-2 border-b border-hairline px-3 text-text-secondary">
-      <Search className="size-4 shrink-0" />
-      <input
-        {...props}
-        ref={ref}
-        className={cn(
-          "h-full min-w-0 flex-1 bg-transparent text-sm text-text outline-none placeholder:text-text-tertiary",
-          props.className,
-        )}
-      />
-    </div>
-  );
-});
-export const CommandList = forwardRef<HTMLDivElement, ComponentProps<"div">>(
-  function CommandList(props, ref) {
-    return (
-      <div
-        {...props}
-        ref={ref}
-        role="listbox"
-        className={cn(
-          "max-h-[320px] overflow-y-auto overflow-x-hidden p-1",
-          props.className,
-        )}
-      />
-    );
-  },
-);
-export function CommandGroup({
-  heading,
-  children,
-  ...props
-}: ComponentProps<"div"> & { heading: string }) {
-  return (
-    <div {...props} role="group" aria-label={heading} className="p-1">
-      <div className="px-2 py-1.5 text-xs font-medium text-text-tertiary">
-        {heading}
-      </div>
-      {children}
-    </div>
-  );
-}
-export function CommandItem(props: ComponentProps<"div">) {
-  return (
-    <div
-      {...props}
-      role="option"
-      className={cn(
-        "flex min-h-9 cursor-default select-none items-center gap-2 rounded-md px-2 py-1.5 text-sm aria-selected:bg-selected [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-text-secondary",
-        props.className,
-      )}
-    />
-  );
-}
-export function CommandSeparator() {
-  return <div role="separator" className="-mx-1 my-1 h-px bg-hairline" />;
-}
-export function CommandEmpty({ children }: { children: ReactNode }) {
-  return (
-    <p role="status" className="py-6 text-center text-sm text-text-secondary">
-      {children}
-    </p>
-  );
-}
+
+export {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  CommandSeparator,
+  CommandShortcut,
+} from "@/components/ui/command";

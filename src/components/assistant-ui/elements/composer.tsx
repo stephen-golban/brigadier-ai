@@ -2,7 +2,7 @@
 import { Textarea as TextArea } from "../../controls/textarea";
 import type { ComponentProps } from "react";
 import { cn } from "@/lib/utils";
-import { paper } from "./surfaces";
+import { paper } from "@/lib/surfaces";
 
 export function ComposerBar({
   dragActive = false,

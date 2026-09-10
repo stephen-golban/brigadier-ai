@@ -1,32 +1,212 @@
 @import "tailwindcss" source(none);
+/* `animate-in` / `fade-in-0` / `zoom-in-95` / `slide-in-from-*` come from here, not from
+   Tailwind core (docs/research/assistant-ui-design.md, Landmine 4). */
+@import "tw-animate-css";
+/* `source(none)` is load-bearing: without it Tailwind scans node_modules and every
+   dependency's class strings land in the bundle. The two @source lines are the whole scan
+   surface, and the `not` line keeps test-only classes out of the build. */
 @source "./**/*.tsx";
 @source not "./**/*.test.tsx";
 
-@theme static {
-  --spacing: 4px;
-  --color-*: initial;
-  --radius-*: initial;
-  --shadow-*: initial;
+/* brigadier is dark-only, but the copied assistant-ui components carry ~20 `dark:` rules.
+   `src/main.tsx` puts a static `dark` class on <html>, so this variant resolves against the
+   class and not against the user's OS `prefers-color-scheme`. Do not delete either half. */
+@custom-variant dark (&:is(.dark *));
+/* The kit's bridge between Radix `data-state` and Base UI `data-open`. Every enter/exit
+   animation in the base twin is inert without these two. */
+@custom-variant data-open (&:where([data-state="open"], [data-open]:not([data-open="false"])));
+@custom-variant data-closed (&:where([data-state="closed"], [data-closed]:not([data-closed="false"])));
 
-  --color-canvas: #181818;
-  --color-sidebar: #202020;
-  --color-elevated: #2b2b2b;
-  --color-input: #2a2a2a;
-  --color-input-shell: #1f1f1f;
-  --color-hairline: rgba(255, 255, 255, 0.08);
-  --color-hover: rgba(255, 255, 255, 0.05);
-  --color-selected: rgba(255, 255, 255, 0.08);
+/* ---------------------------------------------------------------------------------------
+   assistant-ui design kit tokens — the source of truth.
+   Names and structure are upstream's (`apps/docs/styles/globals.css` at
+   assistant-ui/assistant-ui 1a5da0f). Dark-only: the kit's `.dark` block's roles are
+   declared straight onto :root and there is no light block.
+   Colour VALUES are brigadier's existing dark palette dropped into the kit's slots, so the
+   app's current look survives; kit tokens with no brigadier counterpart keep upstream's
+   value. Deviations are listed in docs/research/assistant-ui-design.md "Applied 2026-09-10".
+   --------------------------------------------------------------------------------------- */
+:root {
+  /* Upstream ships `0.5rem` here and derives `--radius-lg` from it. `:root { font-size: 14px }`
+     below makes every `rem` in this app 12.5% short of upstream's intent, so both are pinned in
+     px and agree. The port's value was 16px (brigadier's pre-port large corner); the owner
+     raised every named step by 2px on 2026-09-10, so it is 18px. Nothing else in this tree
+     reads `var(--radius)`; it is kept so a future `var(--radius)` consumer matches
+     `--radius-lg`. */
+  --radius: 18px;
+  /* Upstream derives every neutral from this oklch hue. brigadier's neutrals are hex, so
+     --tint is live only for the chart ramp below. */
+  --tint: 106;
+
+  --background: #181818;
+  --foreground: #e3e3e3;
+  --card: #2b2b2b;
+  --card-foreground: #e3e3e3;
+  --popover: #2b2b2b;
+  --popover-foreground: #e3e3e3;
+  --code-surface: #1f1f1f;
+  --primary: #e3e3e3;
+  --primary-foreground: #181818;
+  --secondary: rgba(255, 255, 255, 0.08);
+  --secondary-foreground: #e3e3e3;
+  --muted: rgba(255, 255, 255, 0.2);
+  --muted-foreground: #a1a1a1;
+  --accent: rgba(255, 255, 255, 0.14);
+  --accent-foreground: #e3e3e3;
+  --destructive: #e07a7a;
+  --border: rgba(255, 255, 255, 0.08);
+  --input: #2a2a2a;
+  --ring: #3b82f6;
+  --chart-1: oklch(0.68 0.21 41.116);
+  --chart-2: oklch(0.64 0.118 184.704);
+  --chart-3: oklch(0.56 0.09 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  --sidebar: #202020;
+  --sidebar-foreground: #e3e3e3;
+  --sidebar-primary: #3b82f6;
+  --sidebar-primary-foreground: #181818;
+  --sidebar-accent: rgba(255, 255, 255, 0.08);
+  --sidebar-accent-foreground: #e3e3e3;
+  --sidebar-border: rgba(255, 255, 255, 0.08);
+  --sidebar-ring: #3b82f6;
+}
+
+/* Upstream's `@theme inline` bridge, verbatim apart from the four notes below. Without it
+   `bg-primary`, `text-muted-foreground`, `rounded-xl` and friends are never emitted and the
+   copied components render unstyled (Landmine 1). */
+@theme inline {
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, ui-sans-serif,
+    Helvetica, Arial, sans-serif;
+  /* Upstream uses a separate display face for marketing headings; brigadier has one face. */
+  --font-display: var(--font-sans);
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --tracking-hero: -0.015em;
+  --tracking-section: -0.01em;
+  --font-weight-hero: 500;
+
+  /* Every rem here is 14px (`:root { font-size: 14px }` in @layer base), so the kit's rem
+     scale lands 12.5% under upstream's intent. The five steps a live utility reaches for are
+     therefore pinned in px. Their port values were 4 / 10 / 16 (brigadier's pre-port steps)
+     and 10 / 12 (the kit's intent for `--radius-surface` 0.625rem and `--radius-xl` 0.75rem
+     measured at a 16px root); the owner raised each by 2px on 2026-09-10, which is the +2 in
+     the numbers below. The steps with no call site keep upstream's rem literal; pin them —
+     and raise them by the same 2px — when one appears. */
+  --radius-none: 0;
+  --radius-page: 0;
+  --radius-document: var(--radius-sm);
+  --radius-sm: 6px;
+  --radius-md: 12px;
+  --radius-control: 0.5rem;
+  --radius-lg: 18px;
+  --radius-surface: 12px;
+  --radius-xl: 14px;
+  --radius-2xl: 1rem;
+  --radius-thread: 1rem;
+  --radius-3xl: 1.5rem;
+  --radius-capsule: 9999px;
+  --radius-pill: 9999px;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-code-surface: var(--code-surface);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  /* The `--color-accent` collision is resolved in the kit's favour: brigadier's five brand-blue
+     `var(--color-accent)` sites in src/components/composer/*.css were rewritten to `var(--ring)`,
+     so this name now carries the kit's menu-item hover fill and `bg-accent` /
+     `text-accent-foreground` (dropdown-menu, select, command) resolve. */
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* Upstream zeroes the whole shadow scale and lifts only floating surfaces. brigadier's
+     `--shadow-overlay` is outside this namespace and survives. */
+  --shadow-2xs: 0 0 #0000;
+  --shadow-xs: 0 0 #0000;
+  --shadow-sm: 0 0 #0000;
+  --shadow-md: 0 0 #0000;
+  --shadow-lg: 0 0 #0000;
+  --shadow-xl: 0 0 #0000;
+  --shadow-2xl: 0 0 #0000;
+}
+
+/* ---------------------------------------------------------------------------------------
+   brigadier's own theme keys. Everything above `--shadow-overlay` is a legacy alias kept so
+   the ~1,500 lines of existing `var(--color-*)` CSS and the `bg-hover` / `text-text-secondary`
+   utilities keep working; a later order retires them call-site by call-site.
+   `static` is deliberate: these names are read from hand-written CSS, which Tailwind does
+   not scan, so they must be emitted whether or not a utility uses them.
+   --------------------------------------------------------------------------------------- */
+@theme static {
+  /* Tailwind's default is 0.25rem, which is 3.5px against this app's 14px root. */
+  --spacing: 4px;
+
+  /* legacy alias — retire */
+  --color-canvas: var(--background);
+  /* legacy alias — retire */
+  --color-elevated: var(--popover);
+  /* Same name and same job as the kit's own token. It lives here rather than in the inline
+     bridge because a theme variable no utility mentions is pruned from the output, and the only
+     mentions of `var(--color-sidebar)` / `var(--color-input)` are in hand-written CSS files that
+     Tailwind never scans (`src/components/composer/composer.css` and friends). `@theme static`
+     is the opt-out: it emits every name whether or not a utility uses it. (Measured: the inline
+     bridge does emit the names it keeps — `--radius-lg` is emitted from there and
+     `src/index.css`'s own `var(--radius-lg)` resolves. Pruning, not `inline`, is the trap.) */
+  --color-sidebar: var(--sidebar);
+  --color-input: var(--input);
+  /* legacy alias — retire */
+  --color-input-shell: var(--code-surface);
+  /* legacy alias — retire */
+  --color-hairline: var(--border);
+  /* legacy alias — retire */
+  --color-hover: var(--muted);
+  /* legacy alias — retire */
+  --color-selected: var(--accent);
+  /* legacy alias — retire; no kit counterpart, literal kept */
   --color-pressed: rgba(255, 255, 255, 0.12);
-  --color-text: #e3e3e3;
-  --color-text-secondary: #a1a1a1;
+  /* legacy alias — retire */
+  --color-text: var(--foreground);
+  /* legacy alias — retire */
+  --color-text-secondary: var(--muted-foreground);
+  /* legacy alias — retire; the kit has one secondary ink, brigadier has three */
   --color-text-tertiary: #7f7f7f;
+  /* legacy alias — retire; no kit counterpart, literal kept */
   --color-text-disabled: #676767;
-  --color-attention: #3b82f6;
-  --color-accent: #3b82f6;
+  /* legacy alias — retire */
+  --color-attention: var(--ring);
+  /* legacy alias — retire; no kit counterpart, literal kept */
   --color-warn: #ef8c57;
+  /* legacy alias — retire; no kit counterpart, literal kept */
   --color-ok: #74b58a;
-  --color-error: #e07a7a;
+  /* legacy alias — retire */
+  --color-error: var(--destructive);
+  /* legacy alias — retire; no kit counterpart, literal kept */
   --color-backdrop: rgba(0, 0, 0, 0.5);
+  /* legacy aliases — retire; the glass/vibrancy set has no kit counterpart, literals kept */
   --color-menu-glass: rgba(32, 32, 32, 0.78);
   --color-glass-edge: rgba(255, 255, 255, 0.24);
   --color-sidebar-tint: rgba(32, 32, 32, 0.18);
@@ -35,13 +215,8 @@
   --color-sidebar-teal: #234644;
   --color-shadow: rgba(0, 0, 0, 0.25);
 
-  --font-sans:
-    -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, ui-sans-serif,
-    Helvetica, Arial, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  --radius-sm: 4px;
-  --radius-md: 10px;
-  --radius-lg: 16px;
+  /* legacy alias — retire; the kit's counterpart is --radius-thread (1rem), which is not
+     brigadier's composer geometry, so the literal stays. */
   --radius-composer: 28px;
   --shadow-overlay: 0 8px 24px var(--color-shadow);
 }
@@ -64,12 +239,31 @@
   body {
     margin: 0;
   }
+  /* Base UI's documented requirement: an isolated stacking context around the app so popups
+     always land above page content regardless of any z-index in our own styles.
+     https://base-ui.com/react/overview/quick-start */
+  #root {
+    isolation: isolate;
+  }
+  /* The kit draws focus with `focus-visible:ring-1 ring-ring/50`; without this reset a UA
+     box-shadow doubles the ring. */
+  :focus-visible {
+    box-shadow: none;
+  }
+  /* Base UI's scroll lock adds this attribute when a dialog opens; without the reset the
+     page shifts by the scrollbar width. */
+  body[data-scroll-locked] {
+    margin-right: 0 !important;
+    padding-right: 0 !important;
+    overflow: visible !important;
+    --removed-body-scroll-bar-size: 0px !important;
+  }
   * {
     border-color: var(--color-hairline);
   }
   ::selection {
-    background: var(--color-selected);
-    color: var(--color-text);
+    background: color-mix(in srgb, var(--ring) 40%, transparent);
+    color: var(--foreground);
   }
   ::placeholder {
     color: var(--color-text-tertiary);
@@ -114,52 +308,77 @@
   }
 }
 
-/* App-wide preference, including editor widgets and the opening screen. */
-*, *::before, *::after { outline: none !important; }
+/* ---------------------------------------------------------------------------------------
+   No visible focus indicator, anywhere. Owner decision 2026-09-10; recorded in
+   `docs/STATUS.md` §7 and `docs/research/assistant-ui-design.md` "Applied 2026-09-10".
+   Keyboard focus is deliberately invisible app-wide: this is an accessibility regression the
+   owner asked for, not an oversight. There are no skip links; the two `.sr-only` labels
+   (`src/Launch.tsx:378`, `src/components/Sidebar.tsx:751`) label inputs and never take focus,
+   so nothing here needs an outline escape hatch.
 
-/* All standard icon buttons share metrics and states, independent of placement classes. */
-.button[data-icon-button="standard"] {
-  width: 24px;
-  height: 24px;
-  min-width: 24px;
-  padding: 4px;
-  gap: 0;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--color-text-secondary);
-  box-shadow: none;
-  transition:
-    background-color 120ms ease,
-    color 120ms ease;
+   This block is UNLAYERED on purpose. Tailwind's utilities live in `@layer utilities`, and an
+   unlayered author rule beats any layered one whatever the specificity, so none of the kit's
+   `focus-visible:` classes need deleting from the copied files in `src/components/ui/`.
+
+   Three things draw focus in this tree and all three are killed below.
+   --------------------------------------------------------------------------------------- */
+
+/* 1. Outlines. The `*` sweep covers editor widgets and the opening screen, which are not
+      Tailwind's; the `:focus` / `:focus-visible` pair states the intent for elements. */
+*, *::before, *::after { outline: none !important; }
+:focus, :focus-visible, [data-focus-visible] { outline: none; }
+
+/* 2. Ring shadows. Measured at tailwindcss 4.3.3: `focus-visible:ring-[3px]` emits
+      `--tw-ring-shadow: var(--tw-ring-inset,) 0 0 0 calc(3px + var(--tw-ring-offset-width))
+      var(--tw-ring-color, currentcolor)` plus the five-part `box-shadow` composite, and
+      `focus-visible:ring-ring/50` emits only `--tw-ring-color: color-mix(in oklab,
+      var(--ring) 50%, transparent)`. Overwriting both variables leaves the composite in
+      place — so a real `shadow-*` on a focused element survives — with the ring itself gone.
+      `aria-invalid` rings are validation, not focus, and are excluded: they set the same two
+      variables from `[aria-invalid="true"]`, which is why the `:not()` is here.
+
+      The `[class*="focus-visible:ring"]` gate is load-bearing, not decoration. Every ring on
+      an element shares one `--tw-ring-shadow` slot, and five kit surfaces draw a decorative
+      hairline with a NON-focus `ring-1 ring-foreground/10` — `popover-content`,
+      `dialog-content`, `select-content`, the sonner toast body, and `avatar` with `ring-2
+      ring-background`. Base UI focuses a popup when it opens, so an ungated rule erased those
+      hairlines the moment the dialog took focus. Checked 2026-09-10: no element in this tree
+      carries both a static ring and a `focus-visible:ring`, so gating on the literal class
+      string separates them exactly. A future focus ring written as `focus:ring-*` rather than
+      `focus-visible:ring-*` would slip past this gate; add it to the selector if one appears. */
+[class*="focus-visible:ring"]:focus-visible:not([aria-invalid="true"]),
+[class*="focus-visible:ring"][data-focus-visible]:not([aria-invalid="true"]) {
+  --tw-ring-color: transparent;
+  --tw-ring-shadow: 0 0 #0000;
 }
-.button[data-icon-button="standard"] svg {
-  width: 16px;
-  height: 16px;
-  flex-shrink: 0;
-  color: currentColor;
+
+/* 3. `focus-visible:border-ring` — `border-color: var(--ring)`, a 1px blue edge that is a
+      focus indicator by any other name. It cannot be neutralised generically, because the
+      value to restore is whatever the component's resting border was, so the nine kit
+      components that carry the class are named by their own `data-slot`. Seven of them rest
+      at `border-transparent`; `:where()` keeps that selector at the same weight as the rest. */
+:where(
+  [data-slot="button"],
+  [data-slot="badge"],
+  [data-slot="input"],
+  [data-slot="textarea"],
+  [data-slot="select-trigger"],
+  [data-slot="tabs-trigger"]
+):focus-visible:not([aria-invalid="true"]) {
+  border-color: transparent;
 }
-.button[data-icon-button="standard"]:not(:disabled):hover {
-  background: var(--color-selected);
-  color: var(--color-text);
+/* The other three rest on a real border; each is put back to the value its own resting
+   utility sets (`border-input`, `data-checked:border-primary`, `data-unchecked:border-foreground/20`). */
+[data-slot="checkbox"]:focus-visible:not([aria-invalid="true"]),
+[data-slot="toggle"]:focus-visible:not([aria-invalid="true"]) {
+  border-color: var(--color-input);
 }
-.button[data-icon-button="standard"]:not(:disabled):is(
-    :active,
-    [aria-pressed="true"],
-    [aria-haspopup][aria-expanded="true"]
-  ) {
-  background: var(--color-pressed);
-  color: var(--color-text);
+[data-slot="checkbox"][data-checked]:focus-visible:not([aria-invalid="true"]),
+[data-slot="switch"][data-checked]:focus-visible:not([aria-invalid="true"]) {
+  border-color: var(--primary);
 }
-.button[data-icon-button="standard"]:is(
-    [data-variant="danger"],
-    [data-variant="destructive"]
-  ) {
-  color: var(--color-warn);
-}
-.button[data-icon-button="standard"]:disabled {
-  background: transparent;
-  color: var(--color-text-disabled);
+[data-slot="switch"][data-unchecked]:focus-visible:not([aria-invalid="true"]) {
+  border-color: color-mix(in oklab, var(--foreground) 20%, transparent);
 }
 
 /* The sidebar alone reveals the native macOS material; the thread stays opaque. */
@@ -275,7 +494,11 @@
   padding-block: 2px;
   border-radius: 8px;
 }
-.app-navigation .navigation-action,
+/* `.navigation-action` was in this rule until 2026-09-10. It is not any more: the row action is a
+   20px box (`SidebarMenuAction` in `src/components/controls/sidebar.tsx`) centred in the 28px row
+   by `inset-y-0 my-auto`, and an unlayered `height: 28px` here would beat that `size-5` utility
+   and stretch the hover fill back to full row height. `.folder-toggle` is still a full-height
+   invisible hit target and keeps it. */
 .app-navigation .folder-toggle {
   height: 28px;
 }
@@ -370,12 +593,6 @@
     -webkit-backdrop-filter: blur(24px) saturate(1.15);
   }
 }
-.blur-menu [role="menuitem"] {
-  height: 28px;
-  border-radius: var(--radius-sm);
-  padding-inline: 10px;
-  font-size: 13px;
-}
 @media (hover: none) {
   .row-action,
   .section-action {
@@ -465,7 +682,6 @@
 .workbench-panel-actions { margin-right: -8px; }
 .workbench-panel-actions > .button { display: grid; place-items: center; }
 .workbench-panel-actions > .button > svg { display: block; }
-.blur-menu [role="menuitem"] > svg { width: 14px; height: 14px; flex-shrink: 0; }
 .workbench-change-count {
   position: absolute;
   bottom: 0;
@@ -523,6 +739,13 @@
 .session-title.button[aria-pressed="true"] { background: transparent; }
 .session-title.button:hover { background: var(--color-hover); }
 .session-heading + .session-tab-divider { margin-inline: 2px; }
+/* The kit's dialog backdrop is `bg-black/10` plus a blur; brigadier's scrim is darker and flat.
+   Unlayered, so it beats the utility inside `@layer utilities`. */
+[data-slot="dialog-overlay"] {
+  background: var(--color-backdrop);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
 .rename-session-dialog { width: min(500px, calc(100vw - 40px)); padding: 24px; border-radius: 22px; }
 .rename-session-dialog .rename-save { background: var(--color-text); color: var(--color-canvas); padding-inline: 20px; }
 .terminal-dock {

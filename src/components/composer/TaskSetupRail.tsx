@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft, Branch, CaretDown, Check, Desktop, Expand, Folder, Plus } from "../../icons";
+import { ArrowLeft, Branch, Check, ChevronSmallDown, Desktop, Expand, Folder, Plus } from "../../icons";
 import { Popover, navigateItems } from "../controls/overlay";
 import { Button } from "../controls/button";
 import { SelectMenu } from "../SelectMenu";
@@ -50,7 +50,7 @@ export function TaskSetupRail({ project, projects, picks, options, disabled, onC
   return <div className="composer-setup-rail" aria-label="Task setup">
     <div className="setup-picker">
       <Popover isOpen={projectOpen && !disabled} onOpenChange={setProjectOpen}>
-        <Button className="composer-select" aria-label="Project" disabled={disabled || (!onSelectProject && !onProjectless)}><Folder width={17} height={17}/><span>{project && !project.projectless ? project.name : "Work in a project"}</span><CaretDown width={14} height={14}/></Button>
+        <Button className="composer-select" aria-label="Project" disabled={disabled || (!onSelectProject && !onProjectless)}><Folder width={17} height={17}/><span>{project && !project.projectless ? project.name : "Work in a project"}</span><ChevronSmallDown width={14} height={14}/></Button>
         <Popover.Content placement="top start" className="composer-popover setup-popover">
           <Popover.Dialog aria-label="Project">
             <p className="composer-popover-heading">Project</p>
@@ -67,7 +67,7 @@ export function TaskSetupRail({ project, projects, picks, options, disabled, onC
 
     <div className="setup-picker">
       <Popover isOpen={environmentOpen && !disabled} onOpenChange={open => { setEnvironmentOpen(open); setExisting(false); setQuery(""); }}>
-        <Button className="composer-select" aria-label="Environment" title={picks.workspacePath ?? environmentLabel} disabled={disabled || !options}>{picks.isolated || picks.workspacePath ? <Expand width={17} height={17}/> : <Desktop width={17} height={17}/>}<span>{environmentLabel}</span><CaretDown width={14} height={14} /></Button>
+        <Button className="composer-select" aria-label="Environment" title={picks.workspacePath ?? environmentLabel} disabled={disabled || !options}>{picks.isolated || picks.workspacePath ? <Expand width={17} height={17}/> : <Desktop width={17} height={17}/>}<span>{environmentLabel}</span><ChevronSmallDown width={14} height={14} /></Button>
         <Popover.Content placement="top start" className="composer-popover setup-popover">
           <Popover.Dialog aria-label="Task environment">
             {existing ? <>
@@ -90,7 +90,7 @@ export function TaskSetupRail({ project, projects, picks, options, disabled, onC
     </div>
     <div className="setup-picker">
       <Popover isOpen={branchOpen && !disabled} onOpenChange={open => {setBranchOpen(open); setBranchView("menu"); setQuery("");}}>
-        <Button className="composer-select" aria-label="Branch" title={branchLabel} disabled={disabled || !options?.isGit}><Branch width={17} height={17}/><span>{branchLabel}</span><CaretDown width={14} height={14}/></Button>
+        <Button className="composer-select" aria-label="Branch" title={branchLabel} disabled={disabled || !options?.isGit}><Branch width={17} height={17}/><span>{branchLabel}</span><ChevronSmallDown width={14} height={14}/></Button>
         <Popover.Content placement="top start" className="composer-popover setup-popover">
           <Popover.Dialog aria-label="Starting branch">
             {branchView === "menu" && picks.isolated ? <>

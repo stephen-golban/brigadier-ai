@@ -1,21 +1,39 @@
 import {
   createContext,
   useContext,
-  useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   type ComponentProps,
   type ReactNode,
 } from "react";
-import { createPortal } from "react-dom";
+import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
+import { DialogContent } from "@/components/ui/dialog";
 import { X } from "../../icons";
 import { Button } from "./button";
+import { cn } from "../../lib/utils";
+
+/**
+ * Modal dialogs, as a thin adapter over the design kit's `Dialog`
+ * (`src/components/ui/dialog.tsx`) and therefore over Base UI's. The focus trap, the Tab wrap,
+ * the scroll lock, outside-press dismissal, Escape and focus restoration are all Base UI's; the
+ * hand-rolled `<dialog showModal()>` implementation and its own Tab-cycling loop are gone.
+ *
+ * The export names are the ones eleven call sites already use (`Modal.Backdrop`,
+ * `Modal.Container`, `Modal.Dialog`, `Modal.Header`, `Modal.Heading`, `Modal.Body`,
+ * `Modal.Footer`, `Modal.CloseTrigger`), and so are the two prop rules they depend on:
+ * `isDismissable` gates the outside press and `isKeyboardDismissDisabled` gates Escape, each on
+ * its own, so a busy confirmation can refuse Escape while still refusing outside clicks.
+ */
+let modals = 0;
+
 const State = createContext({
   close: () => {},
   dismissable: true,
   keyboardDisabled: false,
   titleId: "",
 });
+
 function Backdrop({
   isOpen,
   onOpenChange,
@@ -30,19 +48,32 @@ function Backdrop({
   children: ReactNode;
 }) {
   const titleId = useId();
-  return isOpen ? (
-    <State.Provider
-      value={{
-        close: () => onOpenChange?.(false),
-        dismissable: isDismissable,
-        keyboardDisabled: isKeyboardDismissDisabled,
-        titleId,
+  return (
+    <DialogPrimitive.Root
+      open={!!isOpen}
+      disablePointerDismissal={!isDismissable}
+      onOpenChange={(open, details) => {
+        if (open) return;
+        if (details.reason === "escape-key" && isKeyboardDismissDisabled)
+          return;
+        onOpenChange?.(false);
       }}
     >
-      {children}
-    </State.Provider>
-  ) : null;
+      <State.Provider
+        value={{
+          close: () => onOpenChange?.(false),
+          dismissable: isDismissable,
+          keyboardDisabled: isKeyboardDismissDisabled,
+          titleId,
+        }}
+      >
+        {children}
+      </State.Provider>
+    </DialogPrimitive.Root>
+  );
 }
+
+/** Kept for the call sites that still pass `size`/`scroll`; the kit sizes the popup. */
 function Container({
   children,
 }: {
@@ -52,95 +83,98 @@ function Container({
 }) {
   return <>{children}</>;
 }
+
+/**
+ * The order the hand-written dialog used: an explicit autofocus first, then the first enabled
+ * control, and Base UI would otherwise focus the popup itself. `initialFocus` alone lands a frame
+ * late, so the same choice is made in a layout effect from inside the popup, where the DOM is
+ * already attached.
+ */
+const preferred = (marker: string) => {
+  const popup = document.querySelector<HTMLElement>(
+    `[data-overlay="${marker}"]`,
+  );
+  return (
+    popup?.querySelector<HTMLElement>('[data-autofocus="true"], [autofocus]') ??
+    popup?.querySelector<HTMLElement>(
+      'input:not([disabled]), button:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex="0"]',
+    ) ??
+    null
+  );
+};
+
+function Autofocus({ marker }: { marker: string }) {
+  useLayoutEffect(() => {
+    const previous = document.activeElement as HTMLElement | null;
+    preferred(marker)?.focus();
+    // Base UI restores focus itself, but a frame later; the dialog this replaced put it back
+    // before the closing render was over and the call sites assert that.
+    return () => {
+      if (previous?.isConnected) previous.focus();
+    };
+  }, [marker]);
+  return null;
+}
+
 function Dialog({
   children,
   className,
   onKeyDown,
-  onClick,
   ...props
-}: ComponentProps<"dialog">) {
+}: ComponentProps<"div">) {
   const state = useContext(State);
-  const ref = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
-    const previous = document.activeElement as HTMLElement | null;
-    const dialog = ref.current!;
-    dialog.showModal();
-    (
-      dialog.querySelector<HTMLElement>(
-        '[data-autofocus="true"], [autofocus]',
-      ) ??
-      dialog.querySelector<HTMLElement>(
-        "input:not([disabled]), button:not([disabled]), [tabindex='0']",
-      ) ??
-      dialog
-    ).focus();
-    return () => {
-      if (dialog.open) dialog.close();
-      if (previous?.isConnected) previous.focus();
-    };
-  }, []);
-  return createPortal(
-    <dialog
+  // `DialogContent` is a plain function that does not forward a ref (unlike the kit's
+  // `PopoverContent`, which does), so the popup is found by a marker attribute when Base UI asks
+  // where to put the initial focus.
+  const marker = useRef(`m${(modals += 1)}`).current;
+  return (
+    <DialogContent
+      data-overlay={marker}
       aria-labelledby={props["aria-label"] ? undefined : state.titleId}
       {...props}
-      ref={ref}
-      tabIndex={-1}
-      className={`fixed m-auto max-h-[85dvh] w-[min(640px,calc(100vw-32px))] overflow-auto rounded-md border border-hairline bg-elevated p-5 text-text backdrop:bg-backdrop ${className ?? ""}`}
-      onCancel={(event) => {
-        event.preventDefault();
-        if (!state.keyboardDisabled) state.close();
-      }}
+      showCloseButton={false}
+      initialFocus={(): HTMLElement | boolean => preferred(marker) ?? true}
+      // Base UI traps focus with sentinel spans on either side of the popup, and the redirect off
+      // a sentinel is not synchronous: a Shift+Tab from the first control intermittently leaves
+      // focus on the guard. The wrap the hand-written dialog did is kept, so the order is
+      // deterministic.
       onKeyDown={(event) => {
         onKeyDown?.(event);
-        if (event.defaultPrevented || event.nativeEvent.isComposing) return;
-        if (event.key === "Escape") {
+        if (event.defaultPrevented || event.key !== "Tab") return;
+        const nodes = Array.from(
+          event.currentTarget.querySelectorAll<HTMLElement>(
+            'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex="0"]',
+          ),
+        ).filter((node) => !node.closest("[hidden]"));
+        const first = nodes[0],
+          last = nodes[nodes.length - 1];
+        if (!first) {
           event.preventDefault();
-          event.stopPropagation();
-          if (!state.keyboardDisabled) state.close();
+          return;
         }
-        if (event.key === "Tab") {
-          const nodes = Array.from(
-            event.currentTarget.querySelectorAll<HTMLElement>(
-              'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex="0"]',
-            ),
-          ).filter((node) => !node.closest("[hidden]"));
-          const first = nodes[0],
-            last = nodes[nodes.length - 1];
-          if (!first) {
-            event.preventDefault();
-            return;
-          }
-          if (
-            event.shiftKey &&
-            (document.activeElement === first ||
-              document.activeElement === event.currentTarget)
-          ) {
-            event.preventDefault();
-            last.focus();
-          } else if (!event.shiftKey && document.activeElement === last) {
-            event.preventDefault();
-            first.focus();
-          }
-        }
-      }}
-      onClick={(event) => {
-        onClick?.(event);
-        if (event.target !== event.currentTarget || !state.dismissable) return;
-        const rect = event.currentTarget.getBoundingClientRect();
         if (
-          event.clientX < rect.left ||
-          event.clientX > rect.right ||
-          event.clientY < rect.top ||
-          event.clientY > rect.bottom
-        )
-          state.close();
+          event.shiftKey &&
+          (document.activeElement === first ||
+            document.activeElement === event.currentTarget)
+        ) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
       }}
+      className={cn(
+        "m-auto block max-h-[85dvh] w-[min(640px,calc(100vw-32px))] max-w-[calc(100vw-32px)] overflow-auto rounded-md border border-hairline bg-elevated p-5 text-text ring-0 sm:max-w-[min(640px,calc(100vw-32px))]",
+        className,
+      )}
     >
+      <Autofocus marker={marker} />
       {children}
-    </dialog>,
-    document.body,
+    </DialogContent>
   );
 }
+
 function Header(props: ComponentProps<"div">) {
   return (
     <div

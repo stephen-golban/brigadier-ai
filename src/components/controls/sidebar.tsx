@@ -422,7 +422,15 @@ export function SidebarMenuAction({
       size="icon"
       iconStyle="bare"
       className={cn(
-        "navigation-action absolute top-0 right-1 h-8 w-6 rounded-none p-0 text-text-tertiary hover:bg-transparent hover:text-text [&_svg]:text-current",
+        // A 20px box with a 14px glyph, the size the owner asked for on 2026-09-10. It replaces
+        // the pre-port `h-8 w-6 rounded-none p-0 hover:bg-transparent`, whose 24x28 square read as
+        // an oversized hover slab once the kit's ghost fill started landing on it (the port's
+        // `hover:bg-transparent` killed the kit's `hover:bg-muted` but not its `dark:hover:bg-muted/50`,
+        // and `src/main.tsx:18` stamps the `dark` class this tree's `@custom-variant dark` keys off).
+        // The fill is kept and rounded to match; `inset-y-0 my-auto` centres the shorter box in a
+        // 28px row and, at the two call sites that re-`relative` this button inside a `Tooltip`
+        // wrapper, centres it as a flex item instead.
+        "navigation-action absolute inset-y-0 right-1 my-auto size-5 min-w-5 rounded-[6px] p-0.5 text-text-tertiary hover:text-text [&_svg]:text-current [&_svg:not([class*='size-'])]:size-3.5",
         showOnHover && "row-action",
         props.className,
       )}

@@ -10,8 +10,9 @@ import {
   ThumbDown,
   ThumbUp,
 } from "../../../icons";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { ghostButton, iconSwap, iconSwapIn, iconSwapOut } from "@/lib/surfaces";
+import { iconSwap, iconSwapIn, iconSwapOut } from "@/lib/surfaces";
 
 export type Reaction = "up" | "down" | null;
 
@@ -29,6 +30,15 @@ export interface MessageActionsProps extends Omit<
   onMore?: () => void;
 }
 
+/**
+ * The kit's `ghost` variant at `icon-sm` is the same 28px box the retired `ghostButton`
+ * recipe drew; the pill radius and the resting ink are all that stay local.
+ */
+const action = "rounded-full text-text/45";
+
+/** The kit's `aria-pressed` fill lives in `controls/button`, which these rows do not use. */
+const pressed = "bg-text/[0.09] text-text/90";
+
 export function MessageActions({
   copied,
   copyLabel,
@@ -41,8 +51,6 @@ export function MessageActions({
   className,
   ...props
 }: MessageActionsProps) {
-  const buttonClassName = cn(ghostButton, "size-7");
-
   return (
     <div
       data-slot="message-actions"
@@ -50,16 +58,13 @@ export function MessageActions({
 
       {...props}
     >
-      <button
-        type="button"
+      <Button
+        variant="ghost"
+        size="icon-sm"
         aria-label={copyLabel ?? (copied ? "Copied response" : "Copy response")}
         title={copyLabel ?? (copied ? "Copied response" : "Copy response")}
         onClick={onCopy}
-        className={cn(
-          buttonClassName,
-          "grid place-items-center",
-          copied && "text-ok",
-        )}
+        className={cn(action, "grid place-items-center", copied && "text-ok")}
       >
         <Copy
           className={cn(
@@ -75,45 +80,40 @@ export function MessageActions({
             copied ? iconSwapIn : iconSwapOut,
           )}
         />
-      </button>
+      </Button>
       {onReactionChange && (
         <>
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="icon-sm"
             aria-label="Mark response helpful"
             aria-pressed={reaction === "up"}
             onClick={() => onReactionChange(reaction === "up" ? null : "up")}
-            className={cn(
-              buttonClassName,
-              reaction === "up" &&
-                "bg-text/[0.06] text-text/90 dark:bg-text/[0.09]",
-            )}
+            className={cn(action, reaction === "up" && pressed)}
           >
             <ThumbUp className="size-3.5" />
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-sm"
             aria-label="Mark response unhelpful"
             aria-pressed={reaction === "down"}
             onClick={() =>
               onReactionChange(reaction === "down" ? null : "down")
             }
-            className={cn(
-              buttonClassName,
-              reaction === "down" &&
-                "bg-text/[0.06] text-text/90 dark:bg-text/[0.09]",
-            )}
+            className={cn(action, reaction === "down" && pressed)}
           >
             <ThumbDown className="size-3.5" />
-          </button>
+          </Button>
         </>
       )}
       {onRegenerate && (
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="icon-sm"
           aria-label="Regenerate response"
           onClick={onRegenerate}
-          className={buttonClassName}
+          className={action}
         >
           <ArrowRotateCw
             className={cn(
@@ -121,17 +121,18 @@ export function MessageActions({
               regenerating && "animate-spin motion-reduce:animate-none",
             )}
           />
-        </button>
+        </Button>
       )}
       {onMore && (
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="icon-sm"
           aria-label="More response actions"
           onClick={onMore}
-          className={buttonClassName}
+          className={action}
         >
           <DotsHorizontal className="size-3.5" />
-        </button>
+        </Button>
       )}
     </div>
   );

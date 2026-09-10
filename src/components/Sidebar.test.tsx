@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import {
+  cleanup,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SidebarProvider } from "./controls/sidebar";
 import { navigationApi, emptyNavigation } from "../navigationApi";
@@ -350,10 +356,15 @@ describe("sidebar navigation", () => {
     await user.hover(trigger);
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
     await user.click(trigger);
-    expect(screen.getByRole("menuitem", { name: "Pin" })).toHaveFocus();
+    // Base UI hands a pointer-opened menu its focus on a `requestAnimationFrame`, which jsdom
+    // drives from a real timer, so the landing frame comes after `user.click` resolves. Same on
+    // the way back out: the trigger regains focus a frame after the popup is dismissed.
+    await waitFor(() =>
+      expect(screen.getByRole("menuitem", { name: "Pin" })).toHaveFocus(),
+    );
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
-    expect(trigger).toHaveFocus();
+    await waitFor(() => expect(trigger).toHaveFocus());
   });
   it("uses folder states and preserves session DOM while collapsing", async () => {
     const user = userEvent.setup();

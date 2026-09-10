@@ -60,13 +60,21 @@ async function options(
   return result;
 }
 
+/**
+ * Synchronous half of the check below. The caller needs it because taking the async path at all
+ * defers the web menu's opening by a microtask, which is long enough for a pointer-opened menu to
+ * miss the focus it is expected to have taken.
+ */
+export function nativeMenusAvailable() {
+  return isTauri() && navigator.platform.startsWith("Mac");
+}
+
 /** Returns false when the caller should display its existing web menu. */
 export async function showNativeMenu(
   entries: NativeMenuEntry[],
   anchor: HTMLElement,
 ): Promise<boolean> {
-  if (!isTauri() || !navigator.platform.startsWith("Mac") || !entries.length)
-    return false;
+  if (!nativeMenusAvailable() || !entries.length) return false;
   let menu: Menu | undefined;
   const images = new Map<ReactElement, Image>();
   const submenus: Submenu[] = [];

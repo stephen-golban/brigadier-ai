@@ -54,7 +54,7 @@ export function ActionDialog({
             Cancel
           </Button>
           <Button
-            variant={action.destructive ? "destructive" : "default"}
+            variant={action.destructive ? "danger" : "primary"}
             disabled={busy}
             onClick={() => {
               setBusy(true);

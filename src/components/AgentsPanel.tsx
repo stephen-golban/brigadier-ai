@@ -2,7 +2,7 @@ import { Popover } from "./controls/overlay";
 import { AgentStatus } from "./assistant-ui/elements/agent-status";
 import { Button } from "./controls/button";
 import { useEffect, useState } from "react";
-import { CaretDown, Robot } from "../icons";
+import { ChevronSmallDown, Robot } from "../icons";
 import type { SessionRuntime } from "../feedStore";
 import { readActivity, type AgentActivity } from "../sessionApi";
 import type { PeerData } from "../peerApi";
@@ -84,7 +84,7 @@ export function AgentsPanel({
             ? `${working} working`
             : `${rows.length} ${rows.length === 1 ? "agent" : "agents"}`}
         </span>
-        <CaretDown width={12} height={12} />
+        <ChevronSmallDown width={12} height={12} />
       </Button>
       {open && (
         <Popover.Content placement="top end">

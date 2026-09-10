@@ -547,3 +547,384 @@ Further, in descending order:
 - Experiments run here: a Vitest 4.1.11 + jsdom 30 + React 19.1 render suite against `@base-ui/react`
   1.8.0 (6/6 pass, no polyfills); an esbuild 0.25.10 bundle-size measurement; a
   `@tailwindcss/cli@4.3.3` build against a replica of our `@theme static` reset.
+
+---
+
+## Applied 2026-09-10
+
+The foundation landed on branch `ui/design-system`. Everything below is **[M]** measured in this
+tree unless tagged otherwise.
+
+**Upstream commit:** `assistant-ui/assistant-ui@1a5da0f272668cf313e5213e49aa70e0f987de6d`
+(default branch `main`, authored 2026-09-10T03:45:37Z), directory
+`packages/ui/src/components/react/ui/base/`. The path had not moved. Recorded in
+`src/components/ui/UPSTREAM.md`.
+
+**Installed:** `@base-ui/react@1.8.0`, `class-variance-authority@0.7.1`, `tw-animate-css@1.4.0`.
+The `cn` npm package was **not** installed; `src/lib/utils.ts` already exports one and every copied
+file imports `cn` from `@/lib/utils`, which `tsconfig.json` and `vite.config.ts` both map to `src/`.
+
+**Copied, byte-identical to upstream, zero deviations:** `button`, `tooltip`, `kbd`, `separator`,
+`skeleton`, `badge`, `avatar`, `input`, `textarea`, `switch`, `label`. None imports `lucide-react`.
+Only `button` is wired in.
+
+### Landmine 1 reproduced and closed, here
+
+Built with `@tailwindcss/cli@4.3.3` against `src/index.css`, same source tree both times — the only
+difference is the token bridge:
+
+| Utility | Before (with `--color-*: initial`) | After |
+| --- | --- | --- |
+| `.bg-primary` | not emitted | emitted (`background-color: var(--primary)`) |
+| `.text-muted-foreground` | not emitted | emitted (`color: var(--muted-foreground)`) |
+| `.rounded-xl` | not emitted | emitted (as `.rounded-xl!`, the one live usage; `0.75rem`) |
+| `.bg-hover` | emitted | emitted |
+| `.text-text-secondary` | emitted | emitted |
+| `.animate-in` | not emitted | emitted |
+
+Output grew 86,892 B → 100,852 B raw, 14,432 B → 16,185 B gzip.
+
+### Token mapping
+
+Decision 1 says the kit's **names** are the source of truth and the app's current dark look is
+preserved. So the kit's slots are filled with brigadier's existing hex values, and the 26
+`--color-*` tokens become aliases of those slots. Kit tokens with no brigadier counterpart keep
+upstream's value.
+
+| brigadier token | → kit token | value | note |
+| --- | --- | --- | --- |
+| `--color-canvas` | `--background` | `#181818` | |
+| `--color-text` | `--foreground` | `#e3e3e3` | |
+| `--color-elevated` | `--popover` (`--card` shares it) | `#2b2b2b` | menus, dialogs, slabs |
+| `--color-input-shell` | `--code-surface` | `#1f1f1f` | |
+| `--color-input` | `--input` | `#2a2a2a` | the kit uses `--input` only for `disabled:bg-input/50`; brigadier's solid field fill wins the slot |
+| `--color-hover` | `--muted` | `rgba(255,255,255,0.05)` | the kit's ghost/outline hover fill |
+| `--color-selected` | `--accent` | `rgba(255,255,255,0.08)` | `--secondary` carries the same value |
+| `--color-hairline` | `--border` | `rgba(255,255,255,0.08)` | |
+| `--color-text-secondary` | `--muted-foreground` | `#a1a1a1` | |
+| `--color-attention` | `--ring` | `#3b82f6` | upstream's dark `--ring` is a neutral grey; brigadier's focus colour replaces it |
+| `--color-error` | `--destructive` | `#e07a7a` | upstream's is `oklch(0.704 0.191 22.216)`, far more saturated |
+| `--color-sidebar` | `--sidebar` | `#202020` | same name, same job, one declaration |
+| — | `--primary` / `--primary-foreground` | `#e3e3e3` / `#181818` | matches the existing `.rename-save` treatment |
+| — | `--secondary-foreground`, `--card-foreground`, `--popover-foreground`, `--accent-foreground` | `#e3e3e3` | |
+| — | `--sidebar-primary` / `-ring` | `#3b82f6` | |
+| — | `--sidebar-accent` / `-border` | `rgba(255,255,255,0.08)` | |
+| — | `--chart-1` … `--chart-5` | upstream's dark values | no counterpart |
+| — | `--tint` | `106` | inert: brigadier's neutrals are hex, so only the chart ramp would use it |
+| `--color-pressed` | — | `rgba(255,255,255,0.12)` | literal kept; no kit counterpart |
+| `--color-text-tertiary` | — | `#7f7f7f` | literal kept; the kit has one secondary ink, brigadier has three |
+| `--color-text-disabled` | — | `#676767` | literal kept |
+| `--color-warn` | — | `#ef8c57` | literal kept |
+| `--color-ok` | — | `#74b58a` | literal kept |
+| `--color-backdrop` | — | `rgba(0,0,0,0.5)` | literal kept |
+| `--color-menu-glass`, `--color-glass-edge`, `--color-sidebar-tint`, `--color-sidebar-glass`, `--color-sidebar-blue`, `--color-sidebar-teal`, `--color-shadow` | — | unchanged | the vibrancy set has no kit counterpart |
+| `--color-accent` | **collides** | `var(--ring)` = `#3b82f6` | see below |
+
+**The one collision: `--color-accent`.** brigadier means the brand blue by it (5 `var(--color-accent)`
+sites in `src/components/composer/composer.css` and `attachments.css`); the kit means the menu-item
+hover fill. Both want the same Tailwind theme key. brigadier's meaning was kept, so
+`--color-accent` is **not** declared in the `@theme inline` bridge. Nothing breaks today — the only
+copied file that reaches for `bg-accent` is `badge.tsx`, on an anchor-badge hover that is unused —
+but `dropdown-menu`, `select` and `command` all style their hover row with
+`bg-accent text-accent-foreground`, so the order that copies them must first rewrite those 5 CSS
+sites to `var(--ring)` and hand `--color-accent` back to the kit.
+
+### Emission mechanics: `@theme inline` does not emit the variable
+
+**[M]** With `@theme inline { --color-input: var(--input) }`, Tailwind emits
+`.bg-input { background-color: var(--input) }` and **never emits `--color-input` itself**. That is
+fine for utilities and fatal for the ~15 hand-written CSS files that read `var(--color-input)` and
+that Tailwind never scans (only `src/index.css` is the entry). `--color-sidebar` and `--color-input`
+therefore live in the `@theme static` legacy block, not in the inline bridge. A script that walks
+every `var()` in `src/**/*.{css,tsx,ts}` against the built stylesheet reports **0 unresolved names**.
+
+**[A], not measured here:** `src/lib/theme.ts` feeds `--color-*` to Monaco through
+`getComputedStyle().getPropertyValue()`, which now returns aliases. Per CSS Custom Properties §3 the
+computed value of a custom property is its specified value *with variables substituted*, so a browser
+returns `#181818`; jsdom does not substitute, so `src/lib/theme.test.ts` now resolves the one hop
+itself. This has not been checked in a real webview.
+
+### Radius mapping
+
+`:root { font-size: 14px }` is set in `@layer base`, so **every `rem` in this app is 14px, not 16px**.
+The kit's scale is `rem`; it was copied verbatim rather than pinned to px, so it lands 12.5% under
+upstream's intent.
+
+| | before | kit token | kit value | effective px here |
+| --- | --- | --- | --- | --- |
+| `--radius-sm` | `4px` | `--radius-sm` | `0.375rem` | 5.25px |
+| `--radius-md` | `10px` | `--radius-md`, `--radius-control` | `0.5rem` | 7px |
+| `--radius-lg` | `16px` | `--radius-lg` = `var(--radius)` | `0.5rem` | 7px |
+| — | — | `--radius-surface` | `0.625rem` | 8.75px |
+| — | — | `--radius-xl` | `0.75rem` | 10.5px |
+| — | — | `--radius-2xl`, `--radius-thread` | `1rem` | 14px |
+| — | — | `--radius-3xl` | `1.5rem` | 21px |
+| — | — | `--radius-capsule`, `--radius-pill` | `9999px` | — |
+| — | — | `--radius-page`, `--radius-none` | `0` | — |
+| — | — | `--radius-document` | `var(--radius-sm)` | 5.25px |
+| `--radius-composer` | `28px` | (`--radius-thread` is 1rem) | kept literal | 28px |
+
+Live effect: `rounded-md` 28 sites 10px → 7px, `rounded-lg` 7 sites 16px → 7px, `rounded-sm` 2 sites
+4px → 5.25px, plus `var(--radius-lg)` twice in `src/index.css` (the sidebar peek corner).
+
+### Deviations from upstream
+
+In `src/index.css` (the copied files themselves have none):
+
+1. Colour values are brigadier's, per decision 1 — see the table above.
+2. Dark-only: upstream's `.dark { }` block's roles are declared straight on `:root`; there is no light
+   block and no `.light` override. `@custom-variant dark (&:is(.dark *))` is kept and both
+   `index.html` and `src/main.tsx` put a static `dark` class on `<html>`, so every `dark:` rule in the
+   copied files resolves against the class rather than the OS preference.
+3. `--color-accent` is omitted from the inline bridge (the collision above).
+4. `--color-sidebar` and `--color-input` moved from the inline bridge to the static block so the
+   variables are emitted for hand-written CSS.
+5. `--font-sans` keeps brigadier's system stack; `--font-display` aliases it, because this app has one
+   face and upstream's display face is a marketing choice.
+6. `--spacing: 4px` is kept. Tailwind's default is `0.25rem`, which is 3.5px at this root size.
+7. `@import "tailwindcss" source(none)` plus the two explicit `@source` lines are kept — upstream has
+   no equivalent, and dropping them makes Tailwind scan `node_modules`.
+8. Upstream's marketing-only tokens (`--page-width`, `--container-7xl`, the fumadocs `--color-fd-*`
+   bridge, the `tailwind-scrollbar` and typography plugins, the collapsible/accordion keyframes) are
+   not copied.
+9. Added from the kit's `@layer base`: `#root { isolation: isolate }` (Base UI's documented popup
+   requirement — upstream wraps the app in `.root` instead), `:focus-visible { box-shadow: none }`,
+   and the `body[data-scroll-locked]` reset.
+10. `@custom-variant data-open` / `data-closed` are copied verbatim.
+
+## Elements 2026-09-10 — buttons onto the kit, `dark:` retired
+
+Scope: `src/components/assistant-ui/elements/**` and `src/lib/surfaces.tsx`. Measured unless marked
+asserted.
+
+### What changed
+
+| File | Change |
+| --- | --- |
+| `message-actions.tsx` | 5 raw `<button className={ghostButton}>` → `@/components/ui/button` at `variant="ghost" size="icon-sm"`; local className narrowed to `rounded-full text-text/45`. |
+| `chat-panel.tsx` | Send button → kit `Button` at default variant, `size="icon-sm"`, `className="rounded-full"`; `inkButton` import dropped. |
+| `tooltip-icon-button.tsx` | Now kit `Button` (`variant="ghost" size="icon"`) inside kit `Tooltip`/`TooltipTrigger render={…}`/`TooltipContent`. |
+| `thread.tsx` | `controls/button` → `@/components/ui/button`; `isIconOnly size="sm"` → `size="icon"`. |
+| `surfaces.tsx` | `ghostButton` and `inkButton` deleted; six `dark:` sites collapsed. |
+| `reasoning-panel.tsx`, `thinking-indicator.tsx` | `dark:bg-attention` deleted (equal to base). |
+
+### `dark:` decisions
+
+The app is dark-only (`<html class="dark">`, `@custom-variant dark (&:is(.dark *))`), so a `dark:`
+variant is either dead weight or the only value that ever paints.
+
+| Site | Before | After | Rule |
+| --- | --- | --- | --- |
+| `surfaces.paper` | `bg-canvas … dark:bg-elevated` | `bg-elevated …` | dark value wins |
+| `surfaces.floating` | `bg-canvas … dark:bg-elevated` | `bg-elevated …` | dark value wins |
+| `surfaces.field` | `bg-text/[0.04] dark:bg-text/[0.06]` | `bg-text/[0.06]` | dark value wins |
+| `surfaces.fieldInteractive` | `bg-text/[0.04] hover:bg-text/[0.07] dark:bg-text/[0.06] dark:hover:bg-text/[0.09]` | `bg-text/[0.06] hover:bg-text/[0.09]` | dark values win (two sites) |
+| `surfaces.ghostButton` | `… dark:hover:bg-text/[0.09]` | recipe deleted | superseded by the kit's `ghost` |
+| `surfaces.live` | `text-attention dark:text-attention` | `text-attention` | identical, variant dropped |
+| `message-actions` ×2 | `bg-text/[0.06] text-text/90 dark:bg-text/[0.09]` | `bg-text/[0.09] text-text/90` | dark value wins |
+| `thread.tsx` ×2 | `bg-canvas dark:bg-canvas` | `bg-canvas` | identical, variant dropped |
+| `reasoning-panel.tsx` | `bg-attention dark:bg-attention` | `bg-attention` | identical, variant dropped |
+| `thinking-indicator.tsx` | `bg-attention … dark:bg-attention` | `bg-attention …` | identical, variant dropped |
+
+12 sites, not the 14 the brief estimated; `tool-call.tsx` carries no `dark:` variant.
+
+**Measured**, `npx @tailwindcss/cli@4.3.3 -i src/index.css -o …` before and after: the only selectors
+that disappear are the ones deleted on purpose — `dark:bg-{attention,canvas,elevated}`,
+`dark:bg-text/[0.06]`, `dark:bg-text/[0.09]`, `dark:text-attention`, `dark:hover:bg-text/[0.09]`,
+`bg-text/[0.04]`, `hover:bg-text/[0.06]`, `hover:bg-text/[0.07]`, `hover:opacity-90`,
+`focus-visible:ring-text/20`, `transition-[canvas-color,color,scale]`, `disabled:opacity-30`. Every
+replacement (`bg-text/[0.06]`, `hover:bg-text/[0.09]`, `bg-text/[0.09]`, `bg-elevated`,
+`text-text/45`, `text-ok`, `place-items-center`, `bg-primary`, `hover:bg-primary/80`,
+`dark:hover:bg-muted/50`) is present in the new output. Caveat: the two runs are not a clean A/B —
+another worker landed new `src/components/ui/**` files between them, which is why the output grew
+from 100,852 to 126,160 bytes and 764 to 918 selectors. Nothing *disappeared*, which is the claim.
+
+### `src/lib/surfaces.tsx` exports
+
+Retired: `ghostButton`, `inkButton` (nothing in `src/` imports either; `WorkTrace.tsx` takes only
+`ShimmerLabel`). Kept: `paper`, `floating`, `field`, `fieldInteractive`, `pressable`, `collapsePanel`,
+`live`, `mono`, `codeScroll`, `codeSurface`, `iconSwap{,In,Out}`, `labelSwap{,In,Out}`,
+`ShimmerLabel`, `SwapLabel`.
+
+### Upstream
+
+**Measured.** The registry index is `https://r.assistant-ui.com/registry.json` (151 items); item URLs
+are `https://r.assistant-ui.com/<item>.json`. `https://r.assistant-ui.com/index.json` and the bare
+root both 404. Source at SHA `1a5da0f272668cf313e5213e49aa70e0f987de6d` lives at
+`packages/ui/src/components/react/assistant-ui/elements/<name>.tsx` (155 files); `apps/registry` holds
+only generation scaffolding. Every registry item installs to `components/assistant-ui/elements/<name>.tsx`.
+
+All 20 local elements have an upstream counterpart — **none is Brigadier-invented**. 16 carry the
+`elements-` registry prefix; four (`markdown-text`, `syntax-highlighter`, `thread`,
+`tooltip-icon-button`) are older core items with no prefix. `thread`'s upstream source file is
+`elements/thread.aui.tsx`.
+
+| Local file | Registry item | Brigadier extensions vs upstream |
+| --- | --- | --- |
+| `agent-handoff.tsx` | `elements-agent-handoff` | not diffed |
+| `agent-plan.tsx` | `elements-agent-plan` | not diffed |
+| `agent-status.tsx` | `elements-agent-status` | not diffed |
+| `approval-card.tsx` | `elements-approval-card` | not diffed |
+| `artifact-card.tsx` | `elements-artifact-card` | not diffed |
+| `background-inbox.tsx` | `elements-background-inbox` | rewritten against `BackgroundRun`; rows are `.element-list-row` CSS, not Tailwind |
+| `chat-panel.tsx` | `elements-chat-panel` | brigadier tokens; send button now kit `Button` (upstream keeps `inkButton`) |
+| `checkpoint-history.tsx` | `elements-checkpoint-history` | rewritten against `Checkpoint`; `.element-list-row` CSS |
+| `composer.tsx` | `elements-composer` | not diffed |
+| `markdown-text.tsx` | `markdown-text` (core) | brigadier `SyntaxHighlighter`, `Copy`/`Check` from `src/icons` |
+| `message-actions.tsx` | `elements-message-actions` | **diverges**: upstream still uses `ghostButton` + raw `<button>` and `text-emerald-500`; ours is kit `Button` + `text-ok`, plus optional `copyLabel` and optional `onReactionChange`/`onRegenerate`/`onMore` (upstream requires all four) |
+| `reasoning-panel.tsx` | `elements-reasoning-panel` | brigadier tokens, `dark:` removed |
+| `recommendation-card.tsx` | `elements-recommendation-card` | not diffed |
+| `subagent-list.tsx` | `elements-subagent-list` | rewritten against `SubagentItem`; `.subagent-row` CSS |
+| `syntax-highlighter.tsx` | `syntax-highlighter` (core) | local test at `syntax-highlighter.test.tsx` |
+| `thinking-indicator.tsx` | `elements-thinking-indicator` | brigadier tokens, `dark:` removed |
+| `thread.tsx` | `thread` (core, `thread.aui.tsx`) | wholly local: wraps `ChatPanel` + `ThreadPrimitive.Viewport`, adds the `ReadonlyViewport` fallback for `ReadonlyThreadProvider` |
+| `todo-list.tsx` | `elements-todo-list` | not diffed |
+| `tool-call.tsx` | `elements-tool-call` | brigadier `Collapsible`, `SwapLabel`, `ShimmerLabel` |
+| `tooltip-icon-button.tsx` | `tooltip-icon-button` (core) | **converges**: upstream is `Button variant="ghost" size="icon"` inside kit Tooltip, which is now ours. Remaining deltas — upstream wraps in its own `TooltipProvider delayDuration={0}`, defaults `side="bottom"`, adds `aui-button-icon size-6 p-1 active:scale-90` and `Slot.Slottable`; ours keeps a native `title` and exports the extra `MessageAction` label wrapper |
+
+Not verified: the twelve rows marked "not diffed" — upstream existence and path were confirmed by
+fetching the registry item, but their bodies were not compared line by line. Do not overwrite a local
+element from the registry without doing that diff first; several of these are rewrites, not themes.
+
+`surfaces.tsx` itself is upstream `elements-surfaces` (installed here at `src/lib/surfaces.tsx`, not
+the registry's `components/assistant-ui/elements/surfaces.tsx`). Retiring `ghostButton`/`inkButton` is
+a **deliberate divergence**: a future `npx shadcn add elements-message-actions` would drag both back.
+
+## Applied 2026-09-10 (2) — owner radius raise, focus indicator removed
+
+Two owner decisions taken after looking at the running app. Both are in `src/index.css`; one also
+touches `src/components/controls/button.tsx`. Everything below is **measured** from
+`npx @tailwindcss/cli@4.3.3 -i src/index.css -o out.css`, not asserted.
+
+### Radius: every named step +2px
+
+| token | before | after |
+| --- | --- | --- |
+| `--radius` | 16px | 18px |
+| `--radius-sm` | 4px | 6px |
+| `--radius-md` | 10px | 12px |
+| `--radius-lg` | 16px | 18px |
+| `--radius-surface` | 10px | 12px |
+| `--radius-xl` | 12px | 14px |
+
+`--radius-composer` (28px) and the `9999px` pill/capsule steps are untouched, as are the steps with
+no call site (`--radius-control`, `--radius-2xl`, `--radius-thread`, `--radius-3xl`), which still
+carry upstream's rem literals. Emitted:
+
+```css
+.rounded-sm { border-radius: 6px; }
+.rounded-md { border-radius: 12px; }
+.rounded-lg { border-radius: 18px; }
+.rounded-xl { border-radius: 14px; }
+```
+
+`src/components/controls/button.tsx`: `STANDARD_ICON_BUTTON` went `rounded-[8px]` → `rounded-[10px]`.
+
+**The kit's corner clamp bites.** `src/components/ui/button.tsx` sizes `xs` and `icon-xs` and
+`src/components/ui/toggle-group.tsx` `data-[size=sm]` pin `rounded-[min(var(--radius-md),10px)]`.
+With `--radius-md` at 12px that is `min(12px, 10px)` = 10px, so those three stay at the old value
+while every sibling moved to 12. The `min(var(--radius-md),12px)` variants (`sm`, `icon-sm`, toggle
+`sm`) are fine — they now resolve to 12px, which is the intended +2.
+
+Only `icon-xs` has call sites (`Toasts.tsx:102`, `ArchivedSessions.tsx:229,298`), all through the
+adapter, so only it was corrected — in the adapter, never in the copied kit file:
+
+```ts
+export const XS_ICON_BUTTON_RADIUS = "rounded-[12px]";
+```
+
+appended after the kit's variant string, where `cn`'s tailwind-merge resolves the two `rounded-`
+classes in its favour. The adapter's own `size="icon"` path is unaffected: kit `icon` is plain
+`size-8` and `STANDARD_ICON_BUTTON`'s `rounded-[10px]` replaces the base `rounded-lg`.
+
+### Focus: no outline, no ring, anywhere
+
+Owner decision, and an accepted accessibility regression — keyboard focus has no visible indicator
+in this app. Recorded again in `docs/STATUS.md` §7 so a future session does not "fix" it.
+
+One unlayered block in `src/index.css`, placed after `@layer base` and before the first component
+rule. Unlayered is the whole trick: Tailwind's utilities sit in `@layer utilities`, and an unlayered
+author rule wins over a layered one regardless of specificity, so not one `focus-visible:` class had
+to be deleted from `src/components/ui/`.
+
+```css
+*, *::before, *::after { outline: none !important; }
+:focus, :focus-visible, [data-focus-visible] { outline: none; }
+
+[class*="focus-visible:ring"]:focus-visible:not([aria-invalid="true"]),
+[class*="focus-visible:ring"][data-focus-visible]:not([aria-invalid="true"]) {
+  --tw-ring-color: transparent;
+  --tw-ring-shadow: 0 0 #0000;
+}
+
+:where([data-slot="button"], [data-slot="badge"], [data-slot="input"], [data-slot="textarea"],
+       [data-slot="select-trigger"], [data-slot="tabs-trigger"]):focus-visible:not([aria-invalid="true"]) {
+  border-color: transparent;
+}
+[data-slot="checkbox"]:focus-visible:not([aria-invalid="true"]),
+[data-slot="toggle"]:focus-visible:not([aria-invalid="true"]) { border-color: var(--color-input); }
+[data-slot="checkbox"][data-checked]:focus-visible:not([aria-invalid="true"]),
+[data-slot="switch"][data-checked]:focus-visible:not([aria-invalid="true"]) { border-color: var(--primary); }
+[data-slot="switch"][data-unchecked]:focus-visible:not([aria-invalid="true"]) {
+  border-color: color-mix(in oklab, var(--foreground) 20%, transparent);
+}
+```
+
+**Why that neutralises the ring, measured.** At tailwindcss 4.3.3 a ring *width* utility sets the
+shadow variable and the five-part composite, and a ring *colour* utility sets only the colour
+variable:
+
+```css
+.focus-visible\:ring-\[3px\]:focus-visible {
+  --tw-ring-shadow: var(--tw-ring-inset,) 0 0 0 calc(3px + var(--tw-ring-offset-width)) var(--tw-ring-color, currentcolor);
+  box-shadow: var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow);
+}
+.focus-visible\:ring-ring\/50:focus-visible {
+  --tw-ring-color: var(--ring);
+  @supports (color: color-mix(in lab, red, red)) {
+    --tw-ring-color: color-mix(in oklab, var(--ring) 50%, transparent);
+  }
+}
+```
+
+`focus-visible:ring-1` (the kit Button's) is the same shape with `1px`. Overwriting both variables
+from the unlayered block leaves the `box-shadow` composite in place — so a real `shadow-*` on a
+focused element still paints — and renders the ring slot as `0 0 #0000`. Overwriting `box-shadow`
+itself would have been the blunt alternative and would have eaten those shadows. `--tw-ring-shadow`
+is declared `@property … initial-value: 0 0 #0000`, so the value written back is the initial one.
+
+**Why `border-color` needed nine names.** `focus-visible:border-ring` emits
+`border-color: var(--ring)` — a 1px blue edge, a focus indicator by any other name. It cannot be
+neutralised generically because the value to restore is whatever each component's resting border
+was. Seven of the nine kit files carrying the class rest at `border-transparent` (`button`, `badge`,
+`input`, `textarea`, `select` trigger, `tabs` trigger — plus `toggle`'s default variant, which has
+no border width at all); `checkbox` and `toggle`'s `outline` variant rest at `border-input`; and
+`switch` rests at `data-checked:border-primary` / `data-unchecked:border-foreground/20`. Each is put
+back to its own value. `:where()` keeps the seven-way selector from out-weighing the rest; weight is
+irrelevant anyway, since unlayered beats layered.
+
+**`aria-invalid` is excluded on purpose.** `aria-invalid:ring-1` and `aria-invalid:ring-destructive/20`
+set the same two variables from `[aria-invalid="true"]`, and validation is not focus. Without the
+`:not()`, focusing an invalid field would erase its destructive ring.
+
+**Why the `[class*="focus-visible:ring"]` gate exists.** The first draft of this block was
+ungated — `:focus-visible { --tw-ring-shadow: 0 0 #0000 }` — and that is wrong. All rings on an
+element share the one `--tw-ring-shadow` slot, and five kit surfaces draw a decorative hairline with
+a **non-focus** ring: `ring-1 ring-foreground/10` on `popover-content` (`popover.tsx:59`),
+`dialog-content` (`dialog.tsx:56`), `select-content` (`select.tsx:73`) and the sonner toast body
+(`sonner.tsx:22`), and `ring-2 ring-background` on `avatar` (`avatar.tsx:62,78,94`). Base UI focuses
+a popup when it opens, so the ungated rule erased those hairlines the instant a dialog took focus.
+Gating on the literal class string separates the two cleanly: checked 2026-09-10 by enumerating every
+`ring-` occurrence in `src/`, **no element in this tree carries both a static ring and a
+`focus-visible:ring`**, and the five surfaces above carry no focus-ring class at all.
+
+**Not checked / known limits.** A future focus ring written `focus:ring-*` instead of
+`focus-visible:ring-*` slips past the gate; so would one applied through a `group-*`/`peer-*` variant
+on an element with no `focus-visible:ring` class of its own. No `data-[focus-visible]:` utility is
+emitted from this tree today — that half of the selector is there for Base UI parts that may start
+setting the attribute, and it is untested. `grep -rn 'inset-ring' src/` is empty, so
+`--tw-inset-ring-shadow` was left alone. There are no skip links; the two `.sr-only` labels
+(`src/Launch.tsx:378`, `src/components/Sidebar.tsx:751`) label inputs and never take focus, so no
+outline escape hatch was needed. Nothing here was checked against a real screen reader, and no
+keyboard-only pass was run in the built app — the evidence is the emitted CSS, `npx tsc --noEmit`,
+`npm test` and `npm run build`, nothing more.

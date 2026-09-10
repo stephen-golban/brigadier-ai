@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import {
   Bolt,
   Branch,
-  CaretRight,
+  ChevronSmallRight,
   Code,
   File,
   Folder,
@@ -404,7 +404,7 @@ function FilesTree({
             }
           >
             {entry.directory ? (
-              <CaretRight
+              <ChevronSmallRight
                 aria-hidden="true"
                 className={`shrink-0 transition-transform duration-200 motion-reduce:transition-none ${open ? "rotate-90" : ""}`}
               />

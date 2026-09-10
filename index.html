@@ -5,7 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Brigadier</title>
     <script>
-      // Match the dark-only app before the first paint, ignoring stale theme preferences.
+      // brigadier is dark-only (owner decision 2026-09-10). The class is set here as well as in
+      // src/main.tsx so it is on <html> before the first contentful paint: `dark:` utilities inside
+      // the copied assistant-ui components resolve against it (@custom-variant dark in
+      // src/index.css), not against the user's OS preference. Never restore the saved-theme read —
+      // it could put `light` here and `dark` on the same element a tick later.
       document.documentElement.classList.add("dark");
       document.documentElement.style.colorScheme = "dark";
     </script>

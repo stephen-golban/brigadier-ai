@@ -22,6 +22,9 @@ beforeEach(() => {
   sessionStorage.clear();
   localStorage.setItem("brigadier.fps", "off");
 });
+// jsdom implements neither `showModal` nor `close` on <dialog>. Kept, not dead:
+// `src/components/RewindHistory.tsx` is a native `<dialog ref>` + `showModal()` surface — the one
+// left after `controls/modal.tsx` moved onto Base UI.
 Object.defineProperty(HTMLDialogElement.prototype, "showModal", {
   configurable: true,
   value: function () {
@@ -40,6 +43,11 @@ Object.defineProperty(window, "matchMedia", {
   }),
 });
 HTMLElement.prototype.scrollIntoView = function () {};
+
+// Base UI's documented test escape hatch. Without it a dismissed menu, popover, tooltip or
+// dialog stays in the DOM through its exit transition and every `queryByRole(...)` assertion
+// that follows a close sees the closing element. https://base-ui.com — `test/setupVitest.ts`.
+(globalThis as unknown as Record<string, unknown>).BASE_UI_ANIMATIONS_DISABLED = true;
 
 globalThis.ResizeObserver = class {
   observe() {}

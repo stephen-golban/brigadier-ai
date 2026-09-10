@@ -64,7 +64,7 @@ export function ReasoningPanel({
           </>
           <>{restingLabel}</>
         </SwapLabel>
-        <ChevronDown className="size-3.5 shrink-0 opacity-60 transition-transform duration-200 ease-[cubic-bezier(0.32,0.72,0,1)] group-data-[state=open]/trigger:rotate-180 group-data-panel-open/trigger:rotate-180 motion-reduce:transition-none" />
+        <ChevronDown className="size-3.5 shrink-0 opacity-60 transition-transform duration-200 ease-[cubic-bezier(0.32,0.72,0,1)] group-data-panel-open/trigger:rotate-180 motion-reduce:transition-none" />
       </CollapsibleTrigger>
       <CollapsibleContent className={cn(collapsePanel, "outline-none")}>
         <ol className="flex flex-col gap-4 pt-3 pb-1">
@@ -80,7 +80,7 @@ export function ReasoningPanel({
                   className={cn(
                     "mt-[7px] size-[5px] shrink-0 rounded-full transition-colors duration-300",
                     active
-                      ? "animate-pulse bg-attention dark:bg-attention"
+                      ? "animate-pulse bg-attention"
                       : "bg-text/20",
                   )}
                 />

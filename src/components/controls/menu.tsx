@@ -1,6 +1,10 @@
 import { Dropdown } from "./overlay";
 import { cn } from "../../lib/utils";
 import type { ComponentProps } from "react";
+/**
+ * The standard dropdown surface. `side`/`align` are still brigadier's names here and are
+ * translated into a `"<side> <align>"` placement string that `Dropdown.Popover` hands to Base UI.
+ */
 export function DropdownContent({
   side = "bottom",
   align = "start",

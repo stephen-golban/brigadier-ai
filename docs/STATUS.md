@@ -638,6 +638,63 @@ every bundle format for the platform being built on. Leave it alone.
 
 ## Landmines already paid for (do not rediscover)
 
+- **Base UI's menus, popovers, dialogs and tooltips (2026-09-10, `ui/design-system`).** Every one
+  of these was measured while porting `src/components/controls/` onto the assistant-ui kit; each
+  cost at least one wrong turn.
+  - **A menu opens one animation frame after `mousedown`.** floating-ui's `useClick` runs
+    `event: "mousedown"` and defers `setOpen` through `requestAnimationFrame`, so
+    `await user.click(trigger)` followed by a synchronous `getByRole("menuitem")` finds nothing.
+    `controls/overlay.tsx` prevents the internal handler with `event.preventBaseUIHandler()` and
+    toggles synchronously instead; Base UI's own `click` handler then no-ops because its
+    `pointerType` was recorded on `pointerdown`. `Popover` needs none of this — its trigger opens
+    from `click`. Do not add the same handler to a popover trigger: it double-toggles and the
+    popover never opens.
+  - **A dismissed popup stays in the DOM through its exit transition.** Under jsdom that needs
+    `globalThis.BASE_UI_ANIMATIONS_DISABLED = true`, which is why `src/test/setup.ts` sets it.
+    Without it, roughly a dozen `queryByRole(...)` assertions that follow a close see the closing
+    element.
+  - **Disabled items stay in the keyboard walk.** `MenuRoot` hard-codes `disabledIndices: []` and
+    `useMenuItem` sets `focusableWhenDisabled: true`, so arrow keys land on a disabled row. A
+    disabled `Dropdown.Item` therefore renders as a plain `<div role="menuitem" aria-disabled>`
+    outside Base UI's composite, which is what the old disabled `<button>` did.
+  - **A submenu needs a few frames to settle after Escape.** Reopening it inside that window
+    reopens the popup but leaves focus on the trigger.
+  - **Submenu triggers open on hover by default, and the hover path arms a safe polygon** that sets
+    `pointer-events: none` on everything outside the open popup — which strands a pointer click on
+    a sibling row. `controls/overlay.tsx` passes `openOnHover={false}`; brigadier's menus never
+    opened a submenu on hover anyway.
+  - **The kit's popup components do not forward a ref.** `DropdownMenuContent`,
+    `DropdownMenuSubContent` and `DialogContent` are plain functions; a `ref` never reaches the
+    popup, while `aria-label`, `data-*` and `initialFocus` do. The adapters find their popup by a
+    `data-overlay` marker. `PopoverContent` is the one exception here — it was rewritten as a
+    `forwardRef` — but `controls/overlay.tsx` shares one lookup across both paths and uses the
+    marker anyway.
+  - **`initialFocus` and Base UI's focus restoration both land a frame late.** `controls/modal.tsx`
+    also focuses in a layout effect from inside the popup and restores the previous focus in that
+    effect's cleanup, because the call sites assert focus synchronously.
+  - **Base UI's Escape swallows the key** unless the handler calls
+    `eventDetails.allowPropagation()`. Without it, Escape on a menu row that carries a tooltip
+    closes the tooltip and leaves the menu open.
+  - **A popup and a wrapper cannot both carry the same ARIA role.** Base UI puts `role="menu"` on
+    the menu popup and `role="dialog"` on the popover popup, so `Dropdown.Menu` and
+    `Popover.Dialog` are passthroughs now and their `aria-label` is lifted onto the popup; two
+    nested elements with one role make every `getByRole("menu"|"dialog")` in the suite ambiguous.
+  - **`--color-accent` changed meaning, and the name did not.** It used to be brigadier's brand
+    blue; it is now the kit's menu-item hover fill (`--color-accent: var(--accent)` =
+    `rgba(255,255,255,0.08)`), because the five composer sites that meant blue by it were rewritten
+    to `var(--ring)`. The collision is resolved, but the trap is live: any new `bg-accent`,
+    `text-accent-foreground` or `var(--color-accent)` written from memory paints a near-transparent
+    grey where the author expected `#3b82f6`. Brand blue is `--ring` / `--color-attention`.
+  - **Five `rem` sites in the kit are 12.5% short, and that is accepted.** `:root { font-size:
+    14px }` makes every `rem` in this app 14px, so the kit's own literals land under upstream's
+    intent: `ui/button.tsx:26` and `ui/toggle.tsx:16` `text-[0.8rem]` (11.2px, not 12.8px),
+    `ui/select.tsx:73` `max-h-[min(24rem,…)]` / `min-w-[max(8rem,…)]` (336/112px, not 384/128px),
+    and `ui/tooltip.tsx:63` `max-w-xs` (280px, not 320px). Left as upstream ships them: `select`
+    and `toggle` have no call site, and the two type sizes read correctly at this root. The radius
+    scale is **not** in this bucket — `--radius-sm/md/lg`, `--radius-surface` and `--radius-xl` are
+    pinned in px in `src/index.css` because brigadier's pre-port corners (4 / 10 / 16px) are the
+    reference, and `rem` there shrank `rounded-lg` from 16px to 7px app-wide.
+
 - **`set_decorations` and `set_resizable` are order-dependent on macOS, and the wrong order fails
   silently.** Tao builds the decorated style mask from its *shared* `resizable` state and then
   **queues that mask asynchronously**; a following synchronous `set_resizable(true)` is subsequently
@@ -743,3 +800,112 @@ every bundle format for the platform being built on. Leave it alone.
   directory, or expect to prune afterwards. **The rows are not deleted and deleting them is the
   owner's call, not made.** Any citation of a window count in `frame-stats.ndjson` must now say which
   slice it means.
+- **`@theme inline` declares a utility but does not emit the variable.** Measured with
+  `@tailwindcss/cli@4.3.3`, 2026-09-10: `@theme inline { --color-input: var(--input) }` emits
+  `.bg-input { background-color: var(--input) }` and no `--color-input` anywhere. Utilities keep
+  working; every `var(--color-input)` in a hand-written CSS file silently resolves to nothing.
+  Tailwind scans only `src/index.css` — `src/components/**/*.css` are plain files Vite imports — so a
+  token read from one of those must live in a **non-inline** `@theme` block. `--color-sidebar` and
+  `--color-input` are there for exactly this reason (`docs/research/assistant-ui-design.md`, "Applied
+  2026-09-10").
+- **`:root { font-size: 14px }` makes every `rem` 14px, not 16px.** The assistant-ui kit's radius and
+  type scales are `rem`, so they land 12.5% under upstream's intent: `--radius: 0.5rem` is 7px here,
+  not 8px, and the kit button's `sm` size `text-[0.8rem]` is 11.2px, not 12.8px. `--spacing: 4px` is
+  pinned in px for the same reason and must stay pinned.
+- **`--color-accent` means two different things.** brigadier's is the brand blue (`#3b82f6`, 5
+  `var(--color-accent)` sites under `src/components/composer/`); the assistant-ui kit's is the
+  menu-item hover fill. brigadier's meaning holds the Tailwind key today and the kit's is omitted from
+  the `@theme inline` bridge. Before copying `dropdown-menu`, `select` or `command` — all three style
+  the hover row `bg-accent text-accent-foreground` — rewrite those 5 CSS sites to `var(--ring)` and
+  give `--color-accent` back to the kit, or every menu hover comes out blue.
+- **`src/lib/theme.ts` reads `--color-*` through `getComputedStyle` and feeds Monaco hex.** Those
+  tokens are now aliases (`--color-canvas: var(--background)`). A browser substitutes before
+  `getComputedStyle` sees it (CSS Custom Properties §3); jsdom does not, which is why
+  `src/lib/theme.test.ts` resolves the hop itself. **Asserted, not measured in a real webview** — if
+  the editor ever comes up with default colours, this is the first thing to check.
+- **`src/components/ui/**` is a manual, un-versioned copy, not a dependency.** `@assistant-ui/ui` is
+  `private: true, version 0.0.0` and unpublished, and `r.assistant-ui.com` serves no route for it.
+  The source commit is recorded in `src/components/ui/UPSTREAM.md`; without it there is no way to
+  diff against upstream. Never run `npx shadcn init` in this repo — it overwrites `src/lib/utils.ts`
+  and rewrites the file named by `components.json`'s `tailwind.css`, which is now `src/index.css`.
+- **`ghostButton` and `inkButton` are gone from `src/lib/surfaces.tsx` on purpose** (2026-09-10). The
+  kit Button's `ghost` and default variants at `size="icon-sm"` are the same two affordances, and
+  `src/components/assistant-ui/elements/**` now imports `@/components/ui/button` instead. Both
+  recipes still exist upstream in `elements-surfaces`, so `npx shadcn add elements-message-actions`
+  (or any other `elements-*` item) will reintroduce them and the raw `<button>` call sites with them.
+  Re-port onto the kit rather than restoring the recipes. Detail:
+  `docs/research/assistant-ui-design.md` § "Elements 2026-09-10".
+- **A `dark:` variant in `src/` is dead or misleading, never both-mode styling.** `<html>` carries a
+  static `dark` class and there is no light block, so `dark:X` either duplicates the base utility or
+  silently *is* the only value that paints. Twelve such sites were collapsed in the elements and
+  `surfaces.tsx` on 2026-09-10; write the dark value on the base utility instead of adding a variant.
+- **Elements are not all themed copies — some are rewrites.** All 20 files under
+  `src/components/assistant-ui/elements/` have an upstream registry item
+  (`https://r.assistant-ui.com/<item>.json`, index at `registry.json`; source at SHA
+  `1a5da0f272668cf313e5213e49aa70e0f987de6d` under
+  `packages/ui/src/components/react/assistant-ui/elements/`), but `thread.tsx`, `subagent-list.tsx`,
+  `background-inbox.tsx` and `checkpoint-history.tsx` are local rewrites against brigadier types,
+  and `message-actions.tsx` now diverges deliberately. Never re-install an element over a local file
+  without diffing first. The bare registry root and `index.json` both 404; only `registry.json` and
+  `<item>.json` resolve.
+- **`cmdk` is banned by a test, not just by taste.** `src/dependency-hygiene.test.ts:28-38` asserts
+  no dependency matches `/cmdk|prompt-kit/` and no file under `src/` imports from either. The
+  assistant-ui kit's `command.tsx` is a `cmdk` skin, and `cmdk@1.1.1` pulls four individual
+  `@radix-ui/react-*` packages, which `CLAUDE.md` §5 forbids. `src/components/ui/command.tsx` is
+  therefore the kit's command with plain elements underneath and `aria-selected` in place of cmdk's
+  `data-selected`; `src/components/controls/search-dialog.tsx` still drives the active row itself.
+- **Base UI Collapsible emits `data-open` / `data-closed`, Radix emitted `data-state="open"`.**
+  `src/components/ui/collapsible.tsx` moved to Base UI on 2026-09-10, so any
+  `data-[state=open]:` utility aimed at it is now dead. `collapsePanel` in `src/lib/surfaces.tsx:38`
+  is one such: its expand animation stopped firing for `tool-call.tsx`, `reasoning-panel.tsx` and
+  `WorkTrace.tsx` and needs `data-open:` instead. Same trap for every other kit part — `data-active`
+  on a tab, `data-checked` on a checkbox, `data-highlighted` on a select item.
+- **A Base UI `Tabs.Tab` with `activateOnFocus` selects when anything inside it takes focus.**
+  `focusin` bubbles, so a tab's own close button would select the tab it closes.
+  `src/components/controls/tabs.tsx` guards with `event.target !== event.currentTarget` and Base
+  UI's `event.preventBaseUIHandler()`; `controls-keyboard.test.tsx:140-142` is what catches it.
+  `event.stopPropagation()` on the close button is not enough — it only stops the click.
+- **Sonner renders in place and keeps a dismissed toast mounted for its 200 ms exit.** Both bite.
+  `DesktopSettings` hides the app tree behind it from the accessibility tree, so
+  `src/components/Toasts.tsx` portals the `<Toaster>` to `document.body` as the hand-written stack
+  did (`App.test.tsx:671`). And a stale toast sits in the DOM beside a fresh one, so the notice
+  drops its `role` and takes `aria-hidden` the instant it is dismissed. Sonner's `<li>` carries no
+  role of its own — only its `<section>` wrapper is `aria-live` — which is why the notice body owns
+  `role="status"` / `role="alert"` and why these go through `toast.custom`, not `toast(msg, {action})`.
+- **Sonner's swipe handler calls `event.setPointerCapture`, which jsdom does not implement.** Any
+  click inside a toast throws an unhandled `TypeError` in vitest. `dismissible: false` per toast
+  skips that whole path and costs nothing here: the row has an explicit dismiss button and never
+  had swipe-to-dismiss. It does not affect `toast.dismiss()`.
+- **`npx shadcn add field` overwrites `label.tsx` and `separator.tsx`.** They are registry
+  dependencies of `field`, and `add --overwrite` takes them without asking. Both are assistant-ui
+  kit copies here; back up `src/components/ui/` before any `add` and restore them after. `add` also
+  installs the `cn` npm package and writes `import { cn } from "cn"` — uninstall it and rewrite the
+  imports to `@/lib/utils` (`docs/research/shadcn-base-ui.md` §3).
+- **Keyboard focus is invisible app-wide, on purpose.** Owner decision 2026-09-10: no focus outline
+  and no focus ring anywhere. The rules are one unlayered block in `src/index.css` (immediately after
+  `@layer base`, before the first component rule) — `outline: none` on `*` and on
+  `:focus`/`:focus-visible`/`[data-focus-visible]`; `--tw-ring-color: transparent` and
+  `--tw-ring-shadow: 0 0 #0000` on focus, which makes Tailwind's ring box-shadow composite render
+  nothing; and per-`data-slot` `border-color` rules that put the nine kit components carrying
+  `focus-visible:border-ring` back to their resting border. The ring rule is gated on
+  `[class*="focus-visible:ring"]` and that gate must stay: every ring on an element shares one
+  `--tw-ring-shadow` slot, and `popover-content`, `dialog-content`, `select-content`, the sonner
+  toast and `avatar` draw a decorative hairline with a non-focus `ring-1`/`ring-2`. Base UI focuses
+  a popup on open, so an ungated rule erases those hairlines. Unlayered is load-bearing: Tailwind's
+  utilities are in `@layer utilities`, and an unlayered author rule beats a layered one whatever the
+  specificity, so no `focus-visible:` class had to be deleted from the copied files in
+  `src/components/ui/`. Do not "fix" this as an accessibility bug and do not restore the ring; it is
+  an accepted a11y regression the owner asked for. `aria-invalid` rings are deliberately excluded
+  (`:not([aria-invalid="true"])`) — those are validation, not focus.
+- **The kit's `min(var(--radius-md), 10px)` corner clamp bites since the 2026-09-10 radius raise.**
+  The owner raised every named radius step by 2px (`--radius-sm` 6, `--radius-md` 12, `--radius-lg`
+  18, `--radius-surface` 12, `--radius-xl` 14, `--radius` 18). Two kit sizes cap the corner at 10px
+  rather than reading `--radius-md` — `size="xs"` and `size="icon-xs"` in
+  `src/components/ui/button.tsx:25,30` and `data-[size=sm]` in
+  `src/components/ui/toggle-group.tsx:45` — so they stay at 10px while everything else moved to 12.
+  `src/components/controls/button.tsx` corrects the `icon-xs` path with its own
+  `XS_ICON_BUTTON_RADIUS = "rounded-[12px]"`, appended after the kit's variant string so
+  tailwind-merge keeps it. Fix any future case the same way, in our adapter; `src/components/ui/` is
+  a verbatim upstream copy (`src/components/ui/UPSTREAM.md`) and editing it breaks the next
+  `shadcn add`. The `xs` text size and the `toggle-group` `sm` size have no call sites today and are
+  left alone.

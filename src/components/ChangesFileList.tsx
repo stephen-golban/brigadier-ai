@@ -1,4 +1,4 @@
-import { ArrowRotateCcw, CaretRight, ExternalLink, File, Folder, Minus, Plus } from "../icons";
+import { ArrowRotateCcw, ChevronSmallRight, ExternalLink, File, Folder, Minus, Plus } from "../icons";
 import { Button } from "./controls/button";
 import {
   Collapsible,
@@ -140,7 +140,7 @@ export function ChangesFileList(props: Props) {
                 style={{ paddingLeft: 8 + depth * 12 }}
                 aria-label={`Folder ${prefix}${name}`}
               >
-                <CaretRight className="size-3 shrink-0 group-aria-expanded/folder:rotate-90" />
+                <ChevronSmallRight className="size-3 shrink-0 group-aria-expanded/folder:rotate-90" />
                 <Folder className="size-4 shrink-0" />
                 <span className="truncate">{name}</span>
               </CollapsibleTrigger>

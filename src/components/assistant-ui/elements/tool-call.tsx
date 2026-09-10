@@ -74,7 +74,7 @@ export function ToolCall({
           </ShimmerLabel>
           <>{label}</>
         </SwapLabel>
-        <ChevronRight className="size-3.5 shrink-0 opacity-0 group-hover/trigger:opacity-60 group-focus-visible/trigger:opacity-60 group-data-[state=open]/trigger:opacity-60 transition-transform duration-200 group-data-[state=open]/trigger:rotate-90 motion-reduce:transition-none" />
+        <ChevronRight className="size-3.5 shrink-0 opacity-0 group-hover/trigger:opacity-60 group-focus-visible/trigger:opacity-60 group-data-panel-open/trigger:opacity-60 transition-transform duration-200 group-data-panel-open/trigger:rotate-90 motion-reduce:transition-none" />
         {query && (
           <span
             className={cn(

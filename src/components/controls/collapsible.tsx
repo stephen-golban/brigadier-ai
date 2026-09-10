@@ -1,68 +1,37 @@
-import { Disclosure } from "./disclosure";
+import type { ComponentProps } from "react";
+
 import {
-  createContext,
-  useContext,
-  useState,
-  isValidElement,
-  type ReactElement,
-  type ReactNode,
-  type ComponentProps,
-} from "react";
-const Expanded = createContext(false);
-export function Collapsible({
-  open,
-  defaultOpen = false,
-  onOpenChange,
-  asChild: _asChild,
-  children,
-  ...props
-}: ComponentProps<"div"> & {
-  open?: boolean;
-  defaultOpen?: boolean;
-  onOpenChange?: (open: boolean) => void;
-  asChild?: boolean;
-}) {
-  const [local, setLocal] = useState(defaultOpen);
-  const expanded = open ?? local;
-  return (
-    <Expanded.Provider value={expanded}>
-      <div {...props}>
-        <Disclosure
-          isExpanded={expanded}
-          onExpandedChange={(value) => {
-            setLocal(value);
-            onOpenChange?.(value);
-          }}
-        >
-          {children}
-        </Disclosure>
-      </div>
-    </Expanded.Provider>
-  );
+  Collapsible as KitCollapsible,
+  CollapsibleContent as KitCollapsibleContent,
+  CollapsibleTrigger as KitCollapsibleTrigger,
+} from "@/components/ui/collapsible";
+
+/**
+ * Adapter over the kit's Base UI Collapsible (`src/components/ui/collapsible.tsx`).
+ *
+ * It used to be a second skin on `controls/disclosure.tsx`, which was itself a hand-written
+ * open/closed context. Both are Base UI now, so the `Expanded` context, the manual
+ * `{expanded ? children : null}` gate and the `aria-controls` id plumbing are gone.
+ *
+ * What a consumer can no longer do: pass `asChild`. It was accepted and ignored here and no call
+ * site passed it. Base UI's composition prop is `render`, which the kit's parts forward.
+ *
+ * Behaviour that call sites depend on and that survives: the trigger carries `aria-expanded`, which
+ * `SourceControl.tsx:582` and `ChangesFileList.tsx:142` use for their caret rotation
+ * (`group-aria-expanded/section:rotate-90`).
+ */
+export function Collapsible(props: ComponentProps<typeof KitCollapsible>) {
+  return <KitCollapsible {...props} />;
 }
-export function CollapsibleTrigger({
-  asChild,
-  children,
-  ...props
-}: ComponentProps<typeof Disclosure.Trigger> & { asChild?: boolean }) {
-  const child =
-    asChild && isValidElement(children)
-      ? (children as ReactElement<{ children?: ReactNode }>)
-      : null;
-  return (
-    <Disclosure.Trigger {...(child?.props ?? {})} {...props}>
-      {child ? child.props.children : children}
-    </Disclosure.Trigger>
-  );
+
+export function CollapsibleTrigger(
+  props: ComponentProps<typeof KitCollapsibleTrigger>,
+) {
+  return <KitCollapsibleTrigger {...props} />;
 }
-export function CollapsibleContent({
-  children,
-  ...props
-}: ComponentProps<typeof Disclosure.Content>) {
-  const expanded = useContext(Expanded);
-  return (
-    <Disclosure.Content {...props}>
-      {expanded ? children : null}
-    </Disclosure.Content>
-  );
+
+export function CollapsibleContent(
+  props: ComponentProps<typeof KitCollapsibleContent>,
+) {
+  return <KitCollapsibleContent {...props} />;
 }
