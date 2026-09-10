@@ -192,6 +192,7 @@ pub fn run() {
             workbench_data::commit_settings_save,
             workbench_data::peer_settings_save,
             commands::start_session,
+            commands::projectless_workspace,
             commands::resume_session,
             commands::fork_session,
             commands::send_turn,

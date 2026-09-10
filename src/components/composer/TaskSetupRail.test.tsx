@@ -104,7 +104,7 @@ it.each(["success", "failure"] as const)("ignores an older workspace refresh %s 
 
 it.each(["environment", "checkout", "new branch"] as const)("closes an open %s setup view and prevents selection while disabled", async viewName => {
   const change = vi.fn();
-  const props = {project,picks:{mode:"auto" as const,permission:"approve" as const,manual:{provider:"",model:null,effort:null},isolated:true,baseBranch:null},options,onChange:change};
+  const props = {project,picks:{mode:"auto" as const,permission:"approve" as const,manual:{provider:"",model:null,effort:null},isolated:viewName !== "checkout",baseBranch:null},options,onChange:change};
   const view = render(<TaskSetupRail {...props} disabled={false} />);
   const trigger = viewName === "environment" ? "Environment" : "Branch";
   await userEvent.click(screen.getByRole("button", {name:trigger}));
@@ -129,4 +129,57 @@ it.each(["environment", "checkout", "new branch"] as const)("closes an open %s s
   view.rerender(<TaskSetupRail {...props} disabled={false} />);
   expect(screen.queryByRole("dialog")).toBeNull();
   expect(screen.getByRole("button", {name:trigger})).toBeEnabled();
+});
+
+it("opens worktree branches directly, filters them, and stages the selected ref", async () => {
+  const start = await mount();
+  await userEvent.click(screen.getByRole("button", {name:"Branch"}));
+  expect(screen.getByRole("listbox", {name:"Branch from"})).toBeVisible();
+  await userEvent.type(screen.getByRole("searchbox", {name:"Search branches"}), "release");
+  expect(screen.queryByRole("option", {name:"feature Local branch"})).toBeNull();
+  await userEvent.click(screen.getByRole("option", {name:"origin/release Remote branch"}));
+  expect(screen.getByRole("button", {name:"Branch"})).toHaveTextContent("Branch from: origin/release");
+  expect(start).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole("button", {name:"Send"}));
+  expect(start).toHaveBeenCalledWith(expect.objectContaining({isolated:true,baseBranch:"origin/release"}));
+});
+it("chooses the default branch when switching to a worktree and clears it on returning locally", async () => {
+  await mount();
+  await userEvent.click(screen.getByRole("button", {name:"Environment"}));
+  await userEvent.click(screen.getByRole("option", {name:"Work locally"}));
+  await userEvent.click(screen.getByRole("button", {name:"Environment"}));
+  await userEvent.click(screen.getByRole("option", {name:"New worktree"}));
+  expect(screen.getByRole("button", {name:"Branch"})).toHaveTextContent("Branch from: main");
+  await userEvent.click(screen.getByRole("button", {name:"Environment"}));
+  await userEvent.click(screen.getByRole("option", {name:"Work locally"}));
+  expect(screen.getByRole("button", {name:"Branch"})).toHaveTextContent("Current (main)");
+});
+
+it("offers project creation and a projectless mode that hides Git setup", async () => {
+  const onNewProject = vi.fn(), onProjectless = vi.fn(), onSelectProject = vi.fn();
+  const props = {project,projects:[project],picks:{mode:"auto" as const,permission:"approve" as const,manual:{provider:"",model:null,effort:null},isolated:false,baseBranch:null},options,disabled:false,onChange:vi.fn(),onNewProject,onProjectless,onSelectProject};
+  const view = render(<TaskSetupRail {...props}/>);
+  await userEvent.click(screen.getByRole("button", {name:"Project"}));
+  await userEvent.click(screen.getByRole("button", {name:"New project"}));
+  expect(onNewProject).toHaveBeenCalledTimes(1);
+  await userEvent.click(screen.getByRole("button", {name:"Project"}));
+  await userEvent.click(screen.getByRole("option", {name:"Don't work in a project"}));
+  expect(onProjectless).toHaveBeenCalledTimes(1);
+  view.rerender(<TaskSetupRail {...props} project={{...project,projectless:true}}/>);
+  expect(screen.getByRole("button", {name:"Project"})).toHaveTextContent("Work in a project");
+  expect(screen.queryByRole("button", {name:"Environment"})).toBeNull();
+  expect(screen.queryByRole("button", {name:"Branch"})).toBeNull();
+  await userEvent.click(screen.getByRole("button", {name:"Project"}));
+  await userEvent.click(screen.getByRole("option", {name:"Rail project"}));
+  expect(onSelectProject).toHaveBeenCalledWith(project.id);
+});
+it("sends projectless prompts without inherited Git selections", async () => {
+  const start = vi.fn().mockResolvedValue(true);
+  render(<NewSession project={{...project,projectless:true}} models={[]} disabled={false} onStart={start}/>);
+  await waitFor(() => expect(screen.getByRole("textbox", {name:"Message"})).toHaveAttribute("contenteditable", "true"));
+  await pasteComposer(screen.getByRole("textbox", {name:"Message"}), "A task without a repository");
+  await userEvent.click(screen.getByRole("button", {name:"Send"}));
+  expect(start).toHaveBeenCalledWith(expect.objectContaining({projectId:project.id,isolated:false,prompt:"A task without a repository"}));
+  expect(start.mock.calls[0]![0]).not.toHaveProperty("baseBranch");
+  expect(start.mock.calls[0]![0]).not.toHaveProperty("workspacePath");
 });

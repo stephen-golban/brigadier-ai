@@ -1,3 +1,4 @@
+import { ResolvedTaskRail } from "./composer/TaskSetupRail";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { composerApi, serializeComposerWrite, type ComposerCommand, type ComposerState } from "../composerApi";
 import { useDurableComposer } from "./composer/useDurableComposer";
@@ -8,7 +9,7 @@ import { ExecutionControl, ModeControl, PermissionControl, providerLabel } from 
 import { useTaskExecutionSettings, type ExecutionSelection } from "../taskSettings";
 import { useProviderCatalog } from "../providerCatalog";
 import * as feedStore from "../feedStore";
-import type { ModelInfo } from "../wire";
+import type { ProjectView, ModelInfo } from "../wire";
 import { useMessageEdit, type MessageEditProps } from "./EditMessage";
 import { PromptInput } from "./PromptInput";
 import { SendIcon } from "./icons";
@@ -18,6 +19,7 @@ import type { SessionId, WorktreeCleanup } from "../wire";
 
 const EMPTY_MODELS: ModelInfo[] = [];
 export interface ComposerProps extends MessageEditProps {
+  project?: ProjectView | null;
   models?: ModelInfo[];
   session: SessionRuntime | null;
   /** An IPC call started by this dock is in flight; both secondary actions go inert. */
@@ -35,7 +37,7 @@ export interface ComposerProps extends MessageEditProps {
 }
 
 /** A single Send/Stop control backed by a durable, serialized desktop queue. */
-export function Composer({ session, models = EMPTY_MODELS, busy, onSend, onResume, editing, onCancelEdit, onRewound }: ComposerProps) {
+export function Composer({ project = null, session, models = EMPTY_MODELS, busy, onSend, onResume, editing, onCancelEdit, onRewound }: ComposerProps) {
   const sessionId = session?.sessionId ?? null;
   const durable = useDurableComposer(sessionId, session?.projectId ?? null);
   const { providers, error: providerError } = useProviderCatalog(models);
@@ -142,6 +144,7 @@ export function Composer({ session, models = EMPTY_MODELS, busy, onSend, onResum
   };
   const canResume = !!session && (!!state?.paused || (session.worktreeRemoved && !live) || (!desktop && !!session.providerSessionId && !live));
   return <>
+    {session && project && <ResolvedTaskRail project={project} cwd={session.cwd} branch={session.branch} isolated={!!session.worktreePath || !!settings?.workspacePath}/>}
     {approvals.length > 0 && <button type="button" className="composer-approval-strip" onClick={() => document.getElementById(`approval-${approvals[0]!.requestId}`)?.scrollIntoView({ block: "center", behavior: "smooth" })}>Approval needed{approvals.length > 1 ? ` · ${approvals.length}` : ""}<span>View action ↑</span></button>}
     {(pending.length > 0 || state?.paused || state?.stopping || waiting) && <div className="composer-queue" aria-label="Message queue">
       <div className="composer-queue-header"><span>{stopping ? "Stopping task…" : state?.paused ? state.stopped ? "Queue paused because you stopped" : "Queue paused" : waitingLabel ?? `${pending.length} queued message${pending.length === 1 ? "" : "s"}`}</span>{canResume && <Button type="button" size="sm" disabled={queueBusy || stopping} onClick={() => void resume()}>Continue</Button>}</div>

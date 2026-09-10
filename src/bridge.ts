@@ -1,3 +1,4 @@
+import type { StartupProgress } from "./sessionStartup";
 import type { AgentOptions } from "./agentOptions";
 /**
  * The only module that spells a Tauri command name or an argument key.
@@ -83,6 +84,7 @@ export interface Bridge {
 
   listProjects(): Promise<ProjectView[]>;
   addProject(path: string): Promise<ProjectView>;
+  projectlessWorkspace(): Promise<ProjectView>;
   /**
    * The native directory picker behind "Add project". Resolves to the chosen absolute path, or
    * to **`null` when the user cancelled** — `@tauri-apps/plugin-dialog`'s `open()` types
@@ -102,7 +104,7 @@ export interface Bridge {
   revealPath(path: string): Promise<void>;
 
   listSessions(): Promise<SessionView[]>;
-  startSession(args: StartSessionArgs): Promise<SessionView>;
+  startSession(args: StartSessionArgs, onProgress?: (progress: StartupProgress) => void): Promise<SessionView>;
   /** Continue an ended session in place: same `session_id`, same feed, a new child. */
   resumeSession(sessionId: SessionId): Promise<SessionView>;
   forkSession(
@@ -222,6 +224,7 @@ async function call<T>(cmd: string, args?: InvokeArgs): Promise<T> {
 }
 
 const tauriBridge: Bridge = {
+  projectlessWorkspace: () => call<ProjectView>("projectless_workspace", {}),
   isMock: false,
 
   async subscribeFeed(onBatch) {
@@ -280,8 +283,11 @@ const tauriBridge: Bridge = {
     workspacePath,
     newBranch,
     attachmentIds,
-  }) =>
-    call<SessionView>("start_session", {
+  }, onProgress) => {
+    const progress = new Channel<StartupProgress>();
+    progress.onmessage = event => onProgress?.(event);
+    return call<SessionView>("start_session", {
+      progress,
       composerMode,
       composerPermission,
       projectId,
@@ -296,7 +302,8 @@ const tauriBridge: Bridge = {
       workspacePath,
       newBranch,
       attachmentIds,
-    }),
+    });
+  },
   resumeSession: (sessionId) =>
     call<SessionView>("resume_session", { sessionId }),
   forkSession: (sessionId, newWorktree = true) =>

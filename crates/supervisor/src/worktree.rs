@@ -1651,6 +1651,29 @@ mod tests {
         rig.store.close().await.expect("store closes");
     }
 
+    /// Projectless tasks share a navigation group but retain independent working folders.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn projectless_tasks_preserve_separate_working_directories() {
+        let rig = Rig::new(true);
+        let root = rig.dir.path().join("Tasks");
+        let first = root.join("first");
+        let second = root.join("second");
+        std::fs::create_dir_all(&first).expect("first workspace");
+        std::fs::create_dir_all(&second).expect("second workspace");
+        let project = rig.sup.add_project(root).await.expect("project added");
+        let a = rig.sup.start_session(&project.id, &rig.kind, StartSession::new(&first)).await.expect("first starts");
+        let b = rig.sup.start_session(&project.id, &rig.kind, StartSession::new(&second)).await.expect("second starts");
+        let a_row = rig.row(&a).await;
+        let b_row = rig.row(&b).await;
+        assert!(same_path(a_row.cwd.as_deref().expect("first cwd"), &first));
+        assert!(same_path(b_row.cwd.as_deref().expect("second cwd"), &second));
+        assert_eq!(a_row.worktree_path, None);
+        assert_eq!(b_row.worktree_path, None);
+        rig.end_and_settle(&a).await;
+        rig.end_and_settle(&b).await;
+        rig.store.close().await.expect("store closes");
+    }
+
     /// `git worktree remove` without `--force` deletes ignored files (**measured**), so a count
     /// that skipped them would hand the operator "clean, safe to remove" over their own `.env`.
     // see docs/research/worktree-git.md "Measured 2026-09-02".

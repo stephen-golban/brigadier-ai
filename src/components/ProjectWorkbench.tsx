@@ -62,6 +62,7 @@ const initial: WorkbenchData = {
 };
 export function ProjectWorkbench({
   peers,
+  pendingTitle,
   project,
   session,
   sessions,
@@ -77,6 +78,7 @@ export function ProjectWorkbench({
   newSessionRequest,
   navigation,
 }: {
+  pendingTitle?: string;
   peers: PeerData;
   project: ProjectView | null;
   session: SessionRuntime | null;
@@ -792,7 +794,7 @@ export function ProjectWorkbench({
     }
   };
   const [, setReviewTurn] = useState<string | null>(null);
-  const showConversation = !resourceActive;
+  const showConversation = !!pendingTitle || !resourceActive;
   const navigationTabs: ProjectTab[] = layout.tabs.some(
     (t) => t.kind === "session" || t.kind === "draft",
   )
@@ -1065,7 +1067,7 @@ export function ProjectWorkbench({
             {activeSession
               ? (peers.titles[activeSession.sessionId] ??
                 `Session ${activeSession.sessionId.slice(-6)}`)
-              : "New session"}
+              : pendingTitle ?? "New session"}
           </Button>
           {activeSession && !peers.subagents?.[activeSession.sessionId] && (
             <SessionMenu
@@ -1274,7 +1276,7 @@ export function ProjectWorkbench({
       >
         <div
           className="workbench-main flex min-h-0 min-w-0 flex-1 flex-col"
-          hidden={resourceActive}
+          hidden={resourceActive && !pendingTitle}
         >
           <div
             className="conversation-surface flex min-h-0 min-w-0 flex-1 flex-col"

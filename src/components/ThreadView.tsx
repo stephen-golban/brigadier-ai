@@ -1,3 +1,5 @@
+import type { SessionStartup } from "../sessionStartup";
+import { ProvisioningConversation, SessionProvisioning } from "./SessionProvisioning";
 import { profiling } from "../perfDiagnostics";
 import { TranscriptRuntime } from "./TranscriptRuntime";
 import { TaskPolicyStatus } from "./TaskPolicyStatus";
@@ -58,6 +60,7 @@ import { peerMessageContent } from "../peerPresentation";
 import { peerApi, type PeerAttachment, type PeerData } from "../peerApi";
 import {AttachmentPreview} from "./composer/AttachmentPreview";
 export function ThreadView({
+  startup, onRetryStartup,
   requests,
   sessionId,
   projectName,
@@ -69,6 +72,8 @@ export function ThreadView({
   peers,
   onSelectSession,
 }: {
+  startup?: SessionStartup;
+  onRetryStartup?: () => void;
   requests?: ReactNode;
   sessionId: string | null;
   projectId: string | null;
@@ -84,6 +89,7 @@ export function ThreadView({
     <section className="conversation flex min-h-0 min-w-0 flex-1 flex-col">
       {sessionId ? (
         <Transcript
+          startup={startup}
           requests={requests}
           key={sessionId}
           sessionId={sessionId}
@@ -96,7 +102,7 @@ export function ThreadView({
           onSelectSession={onSelectSession}
         />
       ) : (
-        <NewConversation projectName={projectName} projectId={projectId} />
+        startup ? <ProvisioningConversation startup={startup} onRetry={onRetryStartup}/> : <NewConversation projectName={projectName} projectId={projectId} />
       )}
     </section>
   );
@@ -197,6 +203,7 @@ const SessionPolicyStatus = memo(TaskPolicyStatus);
 const noActions: ReadonlyMap<string, ReactNode> = new Map();
 
 function Transcript({
+  startup,
   requests,
   sessionId,
   projectId,
@@ -207,6 +214,7 @@ function Transcript({
   onEdit,
   editing,
 }: {
+  startup?: SessionStartup;
   requests?: ReactNode;
   sessionId: string;
   projectId: string | null;
@@ -377,7 +385,7 @@ function Transcript({
             {error}
           </p>
         )}
-        {!loaded ? (
+        {startup && !loaded ? <ProvisioningConversation startup={startup}/> : !loaded ? (
           <div className="thread-empty mx-auto flex max-w-lg flex-col gap-3 p-6 text-text-disabled">
             <Spinner size="sm" /> Loading conversation…
           </div>
@@ -433,6 +441,7 @@ function Transcript({
                     onEdit={onEdit}
                     onSelectSession={onSelectSession}
                   />
+                  {index === 0 && startup && row.item.body === startup.args.prompt && <SessionProvisioning startup={startup}/>}
                 </>
               ) : (
                 <ChatPanelAssistantMessage className="w-full max-w-none text-sm text-text leading-relaxed">

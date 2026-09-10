@@ -13,3 +13,6 @@
 .setup-branch-form label { display: grid; gap: 5px; font-size: 12px; }
 .setup-branch-form .composer-select { width: 100%; justify-content: space-between; font-size: 13px; }
 .setup-branch-form .composer-popover-heading { padding: 0; }
+
+.composer-setup-rail[aria-label="Task workspace"] .setup-picker { min-height: 32px; gap: 6px; font-size: 13px; color: var(--color-text-secondary); }
+.composer-setup-rail[aria-label="Task workspace"] .setup-picker > span { max-width: 235px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
