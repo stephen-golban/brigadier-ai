@@ -1,0 +1,26 @@
+{
+  "producer_delivery": {
+    "durationS": 60.0,
+    "elapsedMs": 61842,
+    "emitted": 121776,
+    "rowsPerSec": 200.0,
+    "scriptLen": 9,
+    "sessionIds": [
+      "02380ba1-b0b1-4e7b-a94d-13e72b1ba30e",
+      "4cf89de9-a7b6-4414-a66e-700ae05485b2",
+      "9c82e57a-caae-4702-993e-1020960f5c8a",
+      "a8ed338b-5987-43f1-b268-707c39508b3e",
+      "eaa1916f-4a92-417e-8a40-a24b31af6123",
+      "07bacc63-ce59-4eb6-b787-0bb1092bb9de",
+      "75439d80-4aa2-4d39-b72e-505b9af5d5f9",
+      "21bead81-ece3-4039-9847-fcda5872c7d8",
+      "92ece09e-8a69-4df1-981e-bc8c9ef7992f",
+      "95e421cc-bcca-4d91-a906-246bbb245cdc"
+    ]
+  },
+  "activation_exit": 0,
+  "pass": false,
+  "console_locked_after": false,
+  "sleep_assertion_alive": true,
+  "capture": null
+}

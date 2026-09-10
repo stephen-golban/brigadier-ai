@@ -1,3 +1,4 @@
+import { profiling, recordRender } from "./perfDiagnostics";
 import React from "react";
 import ReactDOM from "react-dom/client";
 
@@ -16,11 +17,12 @@ import { installRenderDiagnostics, reportRenderError } from "./renderDiagnostics
 startPaintInstrumentation();
 installRenderDiagnostics();
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement, {
+const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement, {
   onCaughtError: (error, info) => reportRenderError(error, info.componentStack),
   onUncaughtError: (error, info) => reportRenderError(error, info.componentStack),
   onRecoverableError: (error, info) => reportRenderError(error, info.componentStack),
-}).render(
+});
+const tree = (
   <React.StrictMode>
     <AppErrorBoundary>
     <ThemeProvider>
@@ -28,5 +30,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement, {
       <WindowChrome />
     </ThemeProvider>
     </AppErrorBoundary>
-  </React.StrictMode>,
+  </React.StrictMode>
 );
+
+root.render(profiling ? <React.Profiler id="root" onRender={recordRender}>{tree}</React.Profiler> : tree);

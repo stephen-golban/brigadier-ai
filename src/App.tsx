@@ -1,3 +1,4 @@
+import { profiling } from "./perfDiagnostics";
 import { workerTree, conversationOwner, conversationSessions } from "./workerTree";
 import { syncArchive, readArchive } from "./sessionArchive";
 import { listen } from "@tauri-apps/api/event";
@@ -107,7 +108,7 @@ const RUN_POLL_MS = 1000;
  * (`src-tauri/src/burn.rs:50`), whose name is the directory basename.
  */
 const BURN_PROJECT_NAME = "burn";
-const BURN_ROOT_MARKER = "brigadier-burn";
+const BURN_ROOT_MARKER = "/burn-fixtures/";
 
 /**
  * Whether the burn panel is in this bundle.
@@ -911,14 +912,15 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
           Number(a.root_path.includes(BURN_ROOT_MARKER));
         return marked !== 0 ? marked : b.created_at_ms - a.created_at_ms;
       })[0];
-      if (burnProject === undefined) return;
+      if (burnProject === undefined) throw new Error("Replay project was not created");
       // The visibility effect above pushes `set_visible_projects([burnProject.id])` off this.
       setSelectedProjectId(burnProject.id);
       const sessions = await bridge().listSessions();
       store.seedSessions(sessions);
       const newest = sessions.filter(session => session.project_id === burnProject.id)
         .sort((a, b) => (b.started_at_ms ?? 0) - (a.started_at_ms ?? 0))[0];
-      setSelectedSessionId(newest?.session_id ?? null);
+      if (!newest) throw new Error("Replay conversation was not created");
+      setSelectedSessionId(newest.session_id);
     },
     [refreshProjects],
   );
@@ -1157,3 +1159,5 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
     </SidebarProvider>
   );
 }
+
+if (profiling) App.displayName = "App";

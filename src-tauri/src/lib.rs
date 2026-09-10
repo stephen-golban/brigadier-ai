@@ -265,6 +265,7 @@ pub fn run() {
             commands::subscribe_feed,
             commands::set_visible_projects,
             commands::record_frame_stats,
+            commands::record_burn_capture,
             commands::report_paint,
             commands::burn,
         ])

@@ -11,6 +11,9 @@ const srcDir = fileURLToPath(new URL("./src", import.meta.url));
 
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
+// Diagnostic-only React renderer; excluded from ordinary acceptance builds.
+// @ts-expect-error process is a nodejs global
+const reactProfile = process.env.VITE_REACT_PROFILE === "1";
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
@@ -20,7 +23,10 @@ export default defineConfig(async () => ({
   plugins: [react(), tailwindcss()],
 
   resolve: {
-    alias: { "@": srcDir },
+    alias: [
+      ...(reactProfile ? [{ find: /^react-dom\/client$/, replacement: "react-dom/profiling" }] : []),
+      { find: "@", replacement: srcDir },
+    ],
   },
   // Keep VS Code service identifiers in one module graph and retain extension asset URLs.
   // Mixing prebundled overrides with unbundled themes creates duplicate service symbols.

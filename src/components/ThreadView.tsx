@@ -1,3 +1,4 @@
+import { profiling } from "../perfDiagnostics";
 import { TranscriptRuntime } from "./TranscriptRuntime";
 import { TaskPolicyStatus } from "./TaskPolicyStatus";
 import { TaskProgress } from "./TaskProgress";
@@ -205,8 +206,8 @@ function Transcript({
     busy = session?.busy ?? false;
   const scroll = useRef<HTMLDivElement>(null),
     restored = useRef(false);
-  const saved = useRef<{ top: number; following: boolean }>(
-    (() => {
+  const [initialScroll] = useState<{ top: number; following: boolean }>(
+    () => {
       try {
         return (
           JSON.parse(
@@ -216,8 +217,9 @@ function Transcript({
       } catch {
         return { top: 0, following: true };
       }
-    })(),
+    },
   );
+  const saved = useRef(initialScroll);
   const [expanded, setExpanded] = useState<Set<string>>(() => {
     try {
       return new Set(
@@ -571,3 +573,7 @@ function UserMessage({
     </div>
   );
 }
+
+if (profiling) ThreadView.displayName = "ThreadView";
+
+if (profiling) Transcript.displayName = "Transcript";

@@ -1,32 +1,24 @@
 /**
- * The frame meter from `docs/research/feed-rendering.md` §3c.
- *
- * It runs inside the one rAF loop that `feedStore` owns — the drain runs first, then this
- * samples, so a frame time includes the work the drain did in it.
- *
- * Four things keep it honest:
- *   - the cadence is **derived**, not assumed: the 10th-percentile frame time is the display's
- *     true period, because a frame can be late but never early. WKWebView is 60 Hz or 120 Hz
- *     depending on the OS version and a WebKit preference we do not control;
- *   - that derivation is guarded against a p10 that landed on a *sub-multiple* of the real period
- *     (`derivePeriod` below), which otherwise halves the budget and invents dropped frames;
- *   - `dropped` counts missed vsyncs (`round(dt/budget) - 1`), not "frames under 60";
- *   - rAF is *paused*, not slowed, in a hidden window, so any `dt > 1000` is discarded and the
- *     window restarted, or the first ⌘-tab poisons the run.
- *
- * `longtask` and `long-animation-frame` do not exist in WebKit 26.5, so everything is derived
- * from `performance.now()` deltas.
+ * Rendering-opportunity meter, with a fixed 60 Hz acceptance target.
+ * rAF timestamps are not compositor presentation acknowledgements. Never derive the
+ * budget from loaded callbacks: sustained missed frames would become a slower target.
+ * Evidence: docs/research/native-performance-timing-2026-09-09.md.
  */
 import { bridge } from "./bridge";
 import type { FrameStats } from "./wire";
 
 /**
- * One closed window, as the front end holds it: the wire struct plus which percentile the cadence
- * came from. `hz_source` is **front-end only** — `record_frame_stats` takes the `FrameStats` in
+ * One closed window, as the front end holds it: the wire struct plus raw callback intervals and capture validity. `hz_source` is **front-end only** — `record_frame_stats` takes the `FrameStats` in
  * `docs/plans/ipc-contract.md` and nothing else, so it is stripped before the invoke.
  */
 export interface WindowReport extends FrameStats {
-  hz_source: "p10" | "p50";
+  hz_source: "target";
+  /** Raw callback intervals retained for independent analysis. */
+  intervals_ms: number[];
+  interrupted: boolean;
+  hidden: boolean;
+  focused: boolean;
+  drain_worst_ms: number;
 }
 
 const REPORT_INTERVAL_MS = 1000;
@@ -45,6 +37,15 @@ const listeners = new Set<() => void>();
 
 const STORAGE_KEY = "brigadier.fps";
 let enabled = readEnabled();
+let interrupted = false;
+let drainWorst = 0;
+/** Optional diagnostic-only timing; ordinary runs never call this. */
+export function recordDrain(duration: number): void { drainWorst = Math.max(drainWorst, duration); }
+if (typeof document !== "undefined") {
+  document.addEventListener("visibilitychange", () => {
+    if (capture !== null && document.hidden) interrupted = true;
+  });
+}
 
 function readEnabled(): boolean {
   try {
@@ -75,8 +76,8 @@ export function setEnabled(on: boolean): void {
 /* --------------------------------------------------------------- sampling */
 
 /** Called once per animation frame from the shared loop in `feedStore`. */
-export function sampleFrame(): void {
-  const now = performance.now();
+export function sampleFrame(now: number): void {
+  if (capture !== null && document.hidden) interrupted = true;
   if (!started) {
     started = true;
     last = now;
@@ -86,12 +87,6 @@ export function sampleFrame(): void {
   }
   const dt = now - last;
   last = now;
-
-  // Hidden window: rAF was paused, not slow. Throw the window away rather than record a 4 s frame.
-  if (dt > 1000) {
-    resetWindow(now);
-    return;
-  }
 
   acc.push(dt);
   if (now - windowStartPerf >= REPORT_INTERVAL_MS && acc.length >= 2) report(now);
@@ -105,53 +100,13 @@ function resetWindow(now: number): void {
   windowStartWall = Date.now();
 }
 
-/** Periods a real panel runs at, in ms: 120 Hz, 60 Hz, 30 Hz. */
-const CADENCES = [1000 / 120, 1000 / 60, 1000 / 30];
-
-/**
- * The display period for one window of frame times, and which percentile it came from.
- *
- * The 10th percentile is the honest estimator — a frame can be late but never early — right up
- * until it is not. **[measured]** In an early 10-session run (Chrome for Testing 152, not
- * WKWebView) three windows had ≥10% of their frames arrive near 8.3 ms while `p50` stayed at
- * 16.6 ms; p10 landed on a sub-multiple of the real period, `hz` came out 120, the budget halved,
- * and the window was charged 43 dropped vsyncs it had not dropped.
- *
- * So p10 is believed only when it agrees with the median; otherwise the median wins. Either way
- * the chosen sample is **snapped to the nearest real cadence** before it is returned — an
- * un-snapped p10 is what turned a healthy WKWebView run into a false "70 Hz" / "80 Hz" panel and
- * flagged 18 ms frames as failures (see feed-rendering.md §3c). `hz` in `report` below is derived
- * from this already-snapped period, so it can only ever be 120, 60 or 30.
- *
- * `sorted` must be ascending. Pure: reads no module state.
- */
-export function derivePeriod(sorted: number[]): { period: number; source: "p10" | "p50" } {
-  const n = sorted.length;
-  if (n === 0) return { period: 1000 / 60, source: "p50" };
-  const p10 = sorted[Math.min(n - 1, Math.floor(n * 0.1))];
-  const p50 = sorted[Math.min(n - 1, Math.floor(n * 0.5))];
-  if (Math.abs(p10 - p50) <= 0.2 * p50) return { period: snapToCadence(p10), source: "p10" };
-  return { period: snapToCadence(p50), source: "p50" };
-}
-
-function snapToCadence(ms: number): number {
-  // Slower than ~24 Hz is not a panel; it is a 60 Hz panel with an app stalling on it.
-  if (ms > 41.67) return 1000 / 60;
-  let best = CADENCES[0];
-  for (const c of CADENCES) {
-    if (Math.abs(c - ms) < Math.abs(best - ms)) best = c;
-  }
-  return best;
-}
+/** The repository's 60 Hz bar, independent of observed cadence and display mode. */
+export const TARGET_HZ = 60;
 
 function report(now: number): void {
   const s = acc.slice().sort((a, b) => a - b);
   const n = s.length;
-  const { period, source } = derivePeriod(s);
-  // `period` is already snapped to one of CADENCES (120/60/30 Hz), so this rounds only the
-  // floating-point noise of `1000 / period` back to that exact integer — it must never be a
-  // `Math.round(x / 10) * 10` bucket, which is what let 70 Hz / 80 Hz artifacts through.
-  const hz = Math.round(1000 / period);
+  const hz = TARGET_HZ;
   const budget = 1000 / hz;
 
   let dropped = 0;
@@ -182,7 +137,9 @@ function report(now: number): void {
     dom_nodes: document.getElementsByTagName("*").length,
   };
 
-  const windowReport: WindowReport = { ...stats, hz_source: source };
+  const windowReport: WindowReport = { ...stats, hz_source: "target", intervals_ms: acc.slice(), interrupted,
+    hidden: document.hidden, focused: document.hasFocus(), drain_worst_ms: drainWorst };
+  drainWorst = 0;
 
   resetWindow(now);
   lastReport = windowReport;
@@ -224,13 +181,23 @@ export function getLastReport(): WindowReport | null {
 
 /** Start collecting every one-second window, for a burn run. */
 export function startCapture(): void {
+  interrupted = document.hidden;
+  last = performance.now();
+  resetWindow(last);
+  started = true;
   capture = [];
 }
 
 /** Stop collecting and return the windows gathered. */
 export function stopCapture(): WindowReport[] {
-  const out: WindowReport[] = capture ?? [];
+  // A blocked event loop may run the stop timer before the next rAF callback.
+  // Retain a terminal gap that already missed an opportunity instead of hiding it.
+  const tail = performance.now() - last;
+  if (capture !== null && tail >= 1.5 * (1000 / TARGET_HZ)) acc.push(tail);
+  if (capture !== null && acc.length > 0) report(last + Math.max(0, tail));
+  const out: WindowReport[] = (capture ?? []).map(w => ({ ...w, interrupted: w.interrupted || interrupted }));
   capture = null;
+  started = false;
   return out;
 }
 
@@ -251,12 +218,13 @@ export const WORST_TOLERANCE = 3;
 export function windowPasses(w: FrameStats): boolean {
   const budget = 1000 / w.hz;
   return (
-    w.dropped === 0 && w.p95_ms <= P95_TOLERANCE * budget && w.worst_ms <= WORST_TOLERANCE * budget
+    w.hz >= TARGET_HZ && w.frames > 0 && w.dropped === 0 && w.p95_ms <= P95_TOLERANCE * budget && w.worst_ms <= WORST_TOLERANCE * budget
   );
 }
 
 export interface CaptureSummary {
   windows: number;
+  duration_ms: number;
   min_hz: number;
   worst_p95_ms: number;
   budget_ms: number;
@@ -265,8 +233,7 @@ export interface CaptureSummary {
   total_dropped: number;
   longest_drop_run: number;
   max_dom_nodes: number;
-  /** Windows whose cadence came from the median because the p10 guard fired. */
-  p50_derived_windows: number;
+  interrupted: boolean;
   pass: boolean;
 }
 
@@ -274,14 +241,16 @@ export interface CaptureSummary {
  * A run passes only when **every** one-second window passes (`windowPasses`). An average is not a
  * result. The raw numbers are reported either way.
  */
-export function summarise(windows: WindowReport[]): CaptureSummary | null {
+export function summarise(windows: WindowReport[], minimumDurationMs = 0): CaptureSummary | null {
   if (windows.length === 0) return null;
+  const duration = windows.reduce((total, w) => total + w.intervals_ms.reduce((a,b) => a+b,0), 0);
   const minHz = Math.min(...windows.map((w) => w.hz));
   const budget = 1000 / minHz;
   const worstP95 = Math.max(...windows.map((w) => w.p95_ms));
   const worst = Math.max(...windows.map((w) => w.worst_ms));
   return {
     windows: windows.length,
+    duration_ms: duration,
     min_hz: minHz,
     worst_p95_ms: round2(worstP95),
     budget_ms: round2(budget),
@@ -290,7 +259,7 @@ export function summarise(windows: WindowReport[]): CaptureSummary | null {
     total_dropped: windows.reduce((k, w) => k + w.dropped, 0),
     longest_drop_run: Math.max(...windows.map((w) => w.longest_drop_run)),
     max_dom_nodes: Math.max(...windows.map((w) => w.dom_nodes)),
-    p50_derived_windows: windows.filter((w) => w.hz_source === "p50").length,
-    pass: windows.every(windowPasses),
+    interrupted: windows.some(w => w.interrupted),
+    pass: duration >= minimumDurationMs && windows.every(w => !w.interrupted && windowPasses(w)),
   };
 }

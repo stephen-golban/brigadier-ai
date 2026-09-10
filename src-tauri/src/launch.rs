@@ -12,7 +12,7 @@ use tauri::{window::Color, Manager, State};
 const WORKSPACE_COLOR: Color = Color(24, 24, 27, 255);
 
 pub(crate) struct LaunchState {
-    dir: PathBuf,
+    pub(crate) dir: PathBuf,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

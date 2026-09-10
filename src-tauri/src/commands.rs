@@ -1220,11 +1220,14 @@ pub(crate) async fn record_frame_stats(
 #[tauri::command]
 pub(crate) async fn report_paint(
     report: PaintReport,
-    state: State<'_, AppState>,
+    state: State<'_, crate::launch::LaunchState>,
 ) -> Result<(), AppError> {
     use std::io::Write;
 
-    let path = state.get()?.data_dir.join("paint.ndjson");
+    // FCP can precede provider/store initialization. Its one-shot report must not
+    // disappear behind AppState's startup_pending error.
+    std::fs::create_dir_all(&state.dir)?;
+    let path = state.dir.join("paint.ndjson");
     let process_start_epoch_ms = crate::process_start_epoch_ms();
 
     // A launch signpost leaves through stderr and **returns before the file write**, so no
@@ -1301,6 +1304,24 @@ pub(crate) async fn report_paint(
 /// `docs/research/launch-signposts.md` records what the page must send, the HTML Standard §13.2.7
 /// step order it follows from, and the defects in the earlier recipes written for it.
 const TRACE_LABEL_PREFIX: &str = "trace:";
+
+/// Persist a complete raw benchmark capture separately from ordinary frame telemetry.
+#[tauri::command]
+pub(crate) async fn record_burn_capture(
+    capture: serde_json::Value,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
+    if !cfg!(any(debug_assertions, feature = "burn")) {
+        return Err(AppError::invalid_argument("burn is compiled out"));
+    }
+    let bytes = serde_json::to_vec(&capture).map_err(|e| AppError::invalid_argument(e.to_string()))?;
+    if bytes.len() > 2_000_000 {
+        return Err(AppError::invalid_argument("burn capture exceeds 2 MB"));
+    }
+    let path = state.get()?.data_dir.join("burn-capture.json");
+    std::fs::write(path, bytes)?;
+    Ok(())
+}
 
 /// The 10-agent burn: `sessions` replay drivers fed from a captured fixture, through the real
 /// batcher and the real channel, for `duration_s` seconds.

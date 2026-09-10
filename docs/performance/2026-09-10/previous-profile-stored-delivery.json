@@ -1,0 +1,96 @@
+{
+  "source": "/Users/stephen/Library/Application Support/ai.brigadier.perf.e2ce/brigadier.sqlite",
+  "note": "Post-hoc retained benchmark database before next fresh diagnostic; not a new performance capture",
+  "sessions": [
+    {
+      "id": "fef1cff6-bbaf-4d8f-9fc7-a4fc5e6b09bb",
+      "project_id": "f7f9ba66-485a-46d0-b74e-51a6821ea182",
+      "driver_kind": "replay",
+      "status": "failed",
+      "started_at": 1788989624353,
+      "ended_at": 1788989624353,
+      "last_event_seq": 12281
+    },
+    {
+      "id": "e6d1872e-55c9-4843-9d82-fa07b9d30928",
+      "project_id": "f7f9ba66-485a-46d0-b74e-51a6821ea182",
+      "driver_kind": "replay",
+      "status": "failed",
+      "started_at": 1788989624348,
+      "ended_at": 1788989624353,
+      "last_event_seq": 12255
+    },
+    {
+      "id": "9573a5c3-6374-422c-bdd2-08659ed09eaa",
+      "project_id": "f7f9ba66-485a-46d0-b74e-51a6821ea182",
+      "driver_kind": "replay",
+      "status": "failed",
+      "started_at": 1788989624348,
+      "ended_at": 1788989624353,
+      "last_event_seq": 12228
+    },
+    {
+      "id": "7e942992-602b-4d16-b0d6-c8624e132a68",
+      "project_id": "f7f9ba66-485a-46d0-b74e-51a6821ea182",
+      "driver_kind": "replay",
+      "status": "failed",
+      "started_at": 1788989624316,
+      "ended_at": 1788989624353,
+      "last_event_seq": 12198
+    },
+    {
+      "id": "18b235e7-c27f-4e4a-b31b-c2cb1c8238bd",
+      "project_id": "f7f9ba66-485a-46d0-b74e-51a6821ea182",
+      "driver_kind": "replay",
+      "status": "failed",
+      "started_at": 1788989624336,
+      "ended_at": 1788989624353,
+      "last_event_seq": 12167
+    },
+    {
+      "id": "3a33d834-a641-4aea-b216-6123c4253a31",
+      "project_id": "f7f9ba66-485a-46d0-b74e-51a6821ea182",
+      "driver_kind": "replay",
+      "status": "failed",
+      "started_at": 1788989624321,
+      "ended_at": 1788989624353,
+      "last_event_seq": 12134
+    },
+    {
+      "id": "f189a897-1310-40d7-b97d-e72507000bf6",
+      "project_id": "f7f9ba66-485a-46d0-b74e-51a6821ea182",
+      "driver_kind": "replay",
+      "status": "failed",
+      "started_at": 1788989624353,
+      "ended_at": 1788989624353,
+      "last_event_seq": 12101
+    },
+    {
+      "id": "51fac5e8-2a81-4ef3-93d5-480884f596ef",
+      "project_id": "f7f9ba66-485a-46d0-b74e-51a6821ea182",
+      "driver_kind": "replay",
+      "status": "failed",
+      "started_at": 1788989624347,
+      "ended_at": 1788989624353,
+      "last_event_seq": 12066
+    },
+    {
+      "id": "2b3cee72-37d6-4401-84ee-12c48f32afb0",
+      "project_id": "f7f9ba66-485a-46d0-b74e-51a6821ea182",
+      "driver_kind": "replay",
+      "status": "failed",
+      "started_at": 1788989624330,
+      "ended_at": 1788989624353,
+      "last_event_seq": 12033
+    },
+    {
+      "id": "394bbd8d-a818-439d-8cf2-06fc9c667b17",
+      "project_id": "f7f9ba66-485a-46d0-b74e-51a6821ea182",
+      "driver_kind": "replay",
+      "status": "failed",
+      "started_at": 1788989624312,
+      "ended_at": 1788989624353,
+      "last_event_seq": 12001
+    }
+  ]
+}

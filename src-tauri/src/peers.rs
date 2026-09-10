@@ -175,6 +175,34 @@ pub(crate) fn test_message(from: &str, to: &str, work: bool) {
 fn change<T>(f: impl FnOnce(&mut PeerData) -> Result<T, AppError>) -> Result<T, AppError> {
     let s = service()?;
     let mut data = s.data.lock().unwrap_or_else(|e| e.into_inner());
+    persist_change(s, &mut data, f)
+}
+
+/// Test eligibility under the same lock as mutation. Unowned signals are not peer changes.
+fn change_if<T>(
+    eligible: impl FnOnce(&PeerData) -> bool,
+    f: impl FnOnce(&mut PeerData) -> Result<T, AppError>,
+) -> Result<Option<T>, AppError> {
+    change_if_in(service()?, eligible, f)
+}
+
+fn change_if_in<T>(
+    s: &Service,
+    eligible: impl FnOnce(&PeerData) -> bool,
+    f: impl FnOnce(&mut PeerData) -> Result<T, AppError>,
+) -> Result<Option<T>, AppError> {
+    let mut data = s.data.lock().unwrap_or_else(|e| e.into_inner());
+    if !eligible(&data) {
+        return Ok(None);
+    }
+    persist_change(s, &mut data, f).map(Some)
+}
+
+fn persist_change<T>(
+    s: &Service,
+    data: &mut PeerData,
+    f: impl FnOnce(&mut PeerData) -> Result<T, AppError>,
+) -> Result<T, AppError> {
     let mut next = data.clone();
     let result = f(&mut next)?;
     let bytes = serde_json::to_vec(&next).map_err(|e| AppError::io(e.to_string()))?;
@@ -1889,6 +1917,43 @@ pub fn cli() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unowned_feed_signals_do_not_mutate_or_rewrite_peer_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = Service {
+            endpoint: String::new(), dir: dir.path().to_owned(),
+            tokens: Mutex::new(HashMap::new()), data: Mutex::new(PeerData::default()),
+        };
+        for _ in 0..1_000 {
+            let result = change_if_in(&service, |d| d.subagents.contains_key("ordinary"), |_| {
+                panic!("an ordinary session is not a worker completion")
+            });
+            assert!(matches!(result, Ok(None::<()>)));
+        }
+        assert!(!dir.path().join("peers.json").exists());
+        service.data.lock().unwrap().subagents.insert("worker".into(), "parent".into());
+        assert_eq!(change_if_in(&service, |d| d.subagents.contains_key("worker"), |d| {
+            d.titles.insert("worker".into(), "Finished".into()); Ok(42)
+        }).unwrap(), Some(42));
+        let saved: PeerData = serde_json::from_slice(&std::fs::read(dir.path().join("peers.json")).unwrap()).unwrap();
+        assert_eq!(saved.titles["worker"], "Finished");
+        assert_eq!(service.data.lock().unwrap().titles["worker"], "Finished");
+    }
+
+    #[test]
+    fn failed_peer_persistence_does_not_publish_the_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = Service {
+            endpoint: String::new(), dir: dir.path().join("missing"),
+            tokens: Mutex::new(HashMap::new()), data: Mutex::new(PeerData::default()),
+        };
+        assert!(change_if_in(&service, |_| true, |d| {
+            d.titles.insert("worker".into(), "Not saved".into()); Ok(())
+        }).is_err());
+        assert!(service.data.lock().unwrap().titles.is_empty());
+    }
+
     #[test]
     fn persisted_creation_authority_excludes_forks_and_worker_escape_paths() {
         let mut data = PeerData {

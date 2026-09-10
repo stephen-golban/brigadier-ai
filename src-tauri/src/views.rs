@@ -424,7 +424,7 @@ pub(crate) struct TurnStarted {
 pub(crate) struct FrameStats {
     /// Start of the measurement window.
     pub window_start_ms: f64,
-    /// The display's refresh rate as the page measured it.
+    /// Fixed rendering target used to count missed callback opportunities; not panel refresh.
     pub hz: f64,
     /// Frames observed in the window.
     pub frames: f64,
