@@ -1,7 +1,7 @@
-# Cosmic bridge assets
+# Brigadier brand assets
 
-`brand/fold.svg` is the selected vector master. The superseded trials (`brand/aperture.svg`, `brand/carved-b.svg`, `brand/split-b-backup.svg`) were deleted on 2026-09-09; they are recoverable from git history. `brand/app-icon.svg` and the platform icons under `src-tauri/icons` are generated with `node scripts/generate-brand.mjs` from the Fold master. The concept comparison is preserved in `docs/plans/assets/brigadier-abstract-mark-options.png`.
+`brand/striped-disc.svg` is the selected vector master (owner decision, 2026-09-10). It reconstructs the approved striped-disc raster as a solid core with fifteen vertical strokes. It uses `currentColor` and a transparent background for the shared app mark and first-paint loading mark. `brand/app-icon.svg` and the platform icons under `src-tauri/icons` are generated with `node scripts/generate-brand.mjs`. The app icon uses the intro’s solid charcoal canvas (`#181818`). The prior Fold master is retained as an archived alternative. Converge remains a favorite in `docs/plans/brand-study-2026-09-10/favorites/converge/`. The approved raster and its source reference are preserved in `docs/plans/brand-study-2026-09-10/round-6-striped-disc/`.
 
-`audio/welcome.m4a` is a 10-second edit of the original synthesized ambient score used in the approved motion concept, with a fade-out over its final 1.5 seconds. The interface also fades playback when leaving the intro. Normal app launches are silent. No audio or graphic asset was extracted from Arc's video.
+`audio/arrival.m4a` is the selected soundtrack. The interface fades playback when leaving the intro. Normal app launches are silent.
 
-The procedural light field lives in `src/components/CosmicField.tsx`. Its color formula and shape timing follow the approved Cosmic bridge study in `docs/plans/assets/cosmic-bridge-motion-reference.mp4`.
+The current intro uses `src/components/IntroDisc.tsx` to animate the fifteen `stripe-*` fragments and `disc-core` from the same vector master. `src/components/SignalField.tsx` supplies a faint echo of the vertical strokes. Motion is finite CSS in `src/intro.css`; the settled scene is static. The prior CosmicField renderer is retained for the archived studies.

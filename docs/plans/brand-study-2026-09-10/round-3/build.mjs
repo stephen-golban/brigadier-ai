@@ -11,7 +11,7 @@ const dark = css.match(/@theme static \{([\s\S]*?)\n\}/)?.[1];
 if (!dark) throw Error('App theme block changed');
 writeFileSync(resolve(dir,'preview-theme.css'),`:root {${dark.replace(/^\s*--[\w-]+\*:.*$/gm,'')}\n}\n`);
 mkdirSync(resolve(dir,'../brand'),{recursive:true});
-copyFileSync(resolve(root,'public/brand/fold.svg'),resolve(dir,'../brand/fold.svg'));
+copyFileSync(resolve(root,'public/brand/striped-disc.svg'),resolve(dir,'../brand/striped-disc.svg'));
 await build({
  entryPoints:[resolve(dir,'preview.tsx')],bundle:true,format:'esm',jsx:'automatic',
  outfile:resolve(dir,'launch-preview.js'),minify:true,define:{'process.env.NODE_ENV':'"production"'},

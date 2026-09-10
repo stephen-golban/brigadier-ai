@@ -1,0 +1,169 @@
+/* Striped-disc introduction: gather, resolve, settle. The onboarding state machine
+   owns readiness; only the action's completed animation unlocks Continue. */
+.launch {
+  --intro-ink: var(--color-text, #ededed);
+  --intro-muted: var(--color-text-secondary, #a3a3a3);
+  --disc-size: 152px;
+  --disc-travel: 120px;
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  color: var(--intro-ink);
+  font-family: var(--font-sans, system-ui, sans-serif);
+  overflow: hidden;
+  isolation: isolate;
+  background: var(--color-canvas, #181818);
+}
+.launch-window { position: absolute; inset: 0; display: grid; place-items: center; padding: 32px 24px; }
+.signal-field { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.signal-field-lines {
+  position: absolute;
+  width: min(84vw, 1000px);
+  height: min(90vh, 820px);
+  left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  display: flex; align-items: center; justify-content: space-between;
+  opacity: 0.055;
+  mask-image: radial-gradient(ellipse, #000 15%, transparent 72%);
+}
+.signal-field-lines > span {
+  display: block; flex: 0 0 1px;
+  height: var(--line-height);
+  background: var(--intro-ink);
+  transform-origin: center;
+  animation: signal-expand 5.8s cubic-bezier(.16, 1, .3, 1) var(--line-delay) both;
+}
+.launch:not([data-stage="cinematic"]) .signal-field-lines > span { animation: none; }
+.launch-welcome, .welcome-name, .welcome-greeting { grid-area: 1 / 1; }
+.launch-welcome {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 32px; text-align: center;
+}
+.intro-disc {
+  width: var(--disc-size); height: var(--disc-size);
+  color: var(--intro-ink); pointer-events: none;
+  animation: disc-settle 1.5s cubic-bezier(.65, 0, .2, 1) 3.5s both;
+}
+.intro-disc svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.intro-disc-stripe, .intro-disc-core { transform-box: view-box; transform-origin: 128px 128px; }
+.intro-disc-stripe {
+  animation: stripe-gather 2.6s cubic-bezier(.22, 1, .36, 1) var(--stripe-delay) both;
+}
+.intro-disc-core { animation: disc-resolve 1.3s cubic-bezier(.22, 1, .36, 1) 2.1s both; }
+.welcome-headline {
+  font-size: clamp(40px, 5.2vw, 66px); font-weight: 500;
+  letter-spacing: -.045em; line-height: 1.1; margin: 0; outline: none;
+}
+.welcome-headline > span { display: block; white-space: nowrap; }
+.welcome-headline > span > span {
+  display: inline-block;
+  animation: welcome-word-reveal 1.15s cubic-bezier(.16, 1, .3, 1) both;
+}
+.welcome-action {
+  display: flex; flex-direction: column; align-items: center;
+  animation: welcome-button-reveal .85s cubic-bezier(.22, 1, .36, 1) 6.15s both;
+}
+.welcome-next.welcome-continue:disabled { cursor: default; opacity: 1; }
+/* Escape and reduced motion reveal the same settled composition immediately. */
+.launch-interactive .intro-disc,
+.launch-interactive .intro-disc use,
+.launch-interactive .welcome-headline > span > span,
+.launch-interactive .welcome-action {
+  animation: none; opacity: 1; transform: none;
+}
+.welcome-continue {
+  display: inline-flex; align-items: center; justify-content: center; gap: 18px;
+  min-height: 42px; padding: 11px 19px;
+  border: 1px solid transparent; border-radius: 8px;
+  background: var(--intro-ink); color: var(--color-canvas, #181818);
+  font: inherit; font-size: 14px; font-weight: 500; cursor: pointer;
+  transition: background-color .15s ease, border-color .15s ease;
+}
+.welcome-continue:hover { background: #fff; }
+.welcome-continue:focus-visible, .launch-restart:focus-visible {
+  outline: 2px solid var(--intro-ink); outline-offset: 5px;
+}
+.welcome-continue:disabled { opacity: .4; cursor: default; }
+.welcome-continue [data-slot="kbd"] {
+  color: inherit; background: transparent; opacity: .55;
+  border-left: 1px solid currentColor; border-radius: 0; padding-left: 12px;
+}
+.welcome-name {
+  width: min(640px, 100%); text-align: center;
+  display: flex; flex-direction: column; align-items: center;
+}
+.welcome-profile-mark { display: block; width: 76px; height: 76px; margin: 0 auto 32px; }
+.launch[data-stage="entering-name"] .launch-welcome { animation: welcome-exit .2s ease-out both; }
+.launch[data-stage="entering-name"] .welcome-name { animation: name-enter .28s ease-out .12s both; }
+.welcome-name h1, .welcome-greeting h1 {
+  font-size: clamp(28px, 3.6vw, 44px); font-weight: 500; line-height: 1.2;
+  letter-spacing: -.035em; margin: 0; text-wrap: balance; overflow-wrap: anywhere; max-width: 100%;
+}
+.welcome-name > p, .welcome-greeting > p {
+  font-size: 16px; line-height: 1.5; color: var(--intro-muted); margin: 18px 0 32px;
+}
+.welcome-name input {
+  width: min(340px, 100%); margin-top: 32px; height: 52px;
+  padding: 0 16px; border: 1px solid var(--color-hairline, #414141); border-radius: 8px;
+  background: var(--color-input, #202020); color: var(--intro-ink);
+  font: inherit; font-size: 17px; box-shadow: none;
+}
+.welcome-name input::placeholder { color: var(--intro-muted); }
+.welcome-name input:focus { outline: 2px solid var(--intro-ink); outline-offset: 3px; }
+.welcome-name .welcome-continue { margin-top: 24px; }
+.welcome-name .welcome-error { color: var(--color-danger, #ffb4ab); font-size: 14px; margin: 14px 0 0; }
+.welcome-greeting { text-align: center; max-width: 90%; animation: welcome-resolve .7s both; }
+.launch-loading {
+  position: absolute; inset: 0; display: grid; place-content: center; justify-items: center;
+  gap: 12px; background: var(--color-canvas, #181818); color: var(--intro-muted); font-size: 14px;
+}
+.launch-error {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: min(460px, calc(100% - 40px)); padding: 30px;
+  border: 1px solid var(--color-hairline, #414141); border-radius: 12px;
+  background: var(--color-canvas, #181818); color: var(--intro-ink);
+  box-shadow: 0 25px 100px #0008;
+}
+.launch-error h2 { font-size: 22px; margin: 0 0 12px; }
+.launch-error p { font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; margin-bottom: 24px; color: var(--intro-muted); }
+.launch-restart { border: 0; background: transparent; color: var(--intro-muted); padding: 10px 15px; cursor: pointer; }
+.launch-reset { position: absolute; right: 24px; bottom: 20px; color: var(--intro-muted); font-size: 12px; }
+.launch-revealing { animation: workspace-reveal .5s ease-out both; pointer-events: none; }
+@keyframes signal-expand {
+  from { opacity: 0; transform: scaleY(.25); }
+  40% { opacity: 1; }
+  to { opacity: 1; transform: scaleY(1); }
+}
+@keyframes stripe-gather {
+  from { opacity: 0; transform: translateY(var(--stripe-drift)) scaleY(4.5) scaleX(.35); }
+  22% { opacity: .55; }
+  to { opacity: 1; transform: translateY(0) scaleY(1) scaleX(1); }
+}
+@keyframes disc-resolve { from { opacity: 0; transform: scale(.75); } to { opacity: 1; transform: scale(1); } }
+@keyframes disc-settle {
+  from { transform: translateY(var(--disc-travel)) scale(1.35); }
+  to { transform: translateY(0) scale(1); }
+}
+@keyframes welcome-button-reveal { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes welcome-word-reveal { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
+@keyframes welcome-exit { to { opacity: 0; transform: translateY(-8px); } }
+@keyframes name-enter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes welcome-resolve { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes workspace-reveal { from { opacity: 1; } to { opacity: 0; } }
+.launch-reduced .intro-disc, .launch-reduced .intro-disc use,
+.launch-reduced .signal-field-lines > span,
+.launch-reduced .welcome-headline > span > span,
+.launch-reduced .welcome-action, .launch-reduced .welcome-name, .launch-reduced .welcome-greeting {
+  animation: none; opacity: 1; transform: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .launch-revealing { animation-duration: .1s; }
+}
+@media (max-height: 600px), (max-width: 600px) {
+  .launch { --disc-size: 112px; --disc-travel: 100px; }
+  .launch-welcome { gap: 24px; }
+  .welcome-headline { font-size: clamp(34px, 5.2vw, 48px); }
+  .welcome-profile-mark { width: 60px; height: 60px; margin-bottom: 24px; }
+  .welcome-name > p { margin: 10px 0 20px; }
+  .welcome-name .welcome-continue { margin-top: 18px; }
+}
