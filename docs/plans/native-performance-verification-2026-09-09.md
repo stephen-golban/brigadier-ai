@@ -225,3 +225,219 @@ The early-stall diagnostic release build exited **0**. It includes source-versio
 ## Owner-requested checkpoint and handoff
 
 The owner requested committing the work so far and either resolving the remaining rendering failures or providing a continuation prompt. This checkpoint preserves the fixes, strengthened harness, passing six functional/build gates, and every recorded failed or invalid capture. It is explicitly **not** a native-performance acceptance or authorization to install a failing build. Remaining measured blocker: initial ThreadView mount intervals and isolated later intervals miss the fixed 60 Hz budget; their residual cause is not yet established. The prepared early WebContent/React diagnostic has not run. No additional quiet foreground window is assumed. Main, installed app, real user data, benchmark builds and the performance worktree are preserved for continuation. Historical “pending” and “uncommitted” entries above describe their point in the investigation; this section and the opening status describe the checkpoint.
+
+
+## Ship decision and close-out — 2026-09-10
+
+**Outcome first: the native rendering gate is NOT green.** The work is on `main` at `c6865a1` and
+`/Applications/Brigadier.app` is a build of that commit. Both were done with the gate red; the reasoning is in
+*Integration and installation* below. Every figure here is read off a file copied into `../performance/2026-09-10/`.
+Where a number was carried into the ship decision but is not in a copied file, this section says so instead of
+repeating it as measured.
+
+### Final acceptance — the machine-quiet run
+
+The owner shut down the other Claude session for this series. Release then debug, back to back, with no build,
+profiler, screen capture or UI automation in flight.
+
+| Measurement | Release | Debug/Vite |
+| --- | ---: | ---: |
+| Duration | 63,180 ms | 63,305 ms |
+| Windows | 63 | 63 |
+| Dropped 60 Hz opportunities | **2** | **21** |
+| Worst frame | **29 ms** | **61 ms** |
+| Worst window p95 | 23 ms | 25 ms |
+| `interrupted` | false | false |
+| Delivery audit | passes, zero errors | passes, zero errors |
+| Startup p50, pre-spawn → FCP | **236.28 ms** | **245.45 ms** |
+| Startup samples | 10/10 valid, all activations exit 0 | 10/10 valid, all activations exit 0 |
+
+Raw: `ship-release-burn.json`, `ship-debug-burn.json`, `ship-release-startup.json`, `ship-debug-startup.json`,
+`ship-exits.json`. The two burn exits are 1 by design — the harness fails a run that misses the frame gate.
+
+Release **FAILS** on two frames. Both are single 29 ms intervals, one in window 0 and one in window 2, at the
+transcript mount; `longest_drop_run` is 1 and every other window met both frame clauses. Startup passes ≤295 ms on
+both builds — release range 213.67–1,202.09 ms, debug 232.98–264.74 ms, cold first samples retained, not excluded.
+
+Debug/Vite **FAILS** at 21 dropped, worse than the 15 of `final-debug-burn.json` and the 12 of
+`live-history-debug-burn-1.json` on the same workload. The regression is unexplained. It is not dismissed as noise and
+no debug run has been re-taken to argue it away.
+
+Six gates on the shipped source all exit 0 (`ship-gates.json`, logs `/tmp/brigadier-perf-e2ce/s-*.log`): 811 Rust tests
+passed and 12 ignored across 44 suites; 610 frontend tests in 72 files; clippy `-D warnings`, rustdoc, `tsc --noEmit`
+and `npm run tauri build`.
+
+### The trend, and what it is not
+
+Release dropped opportunities across this task:
+
+| Run | Dropped | Worst frame | File |
+| --- | ---: | ---: | --- |
+| Pre-fix, visible foreground | 2,499 | 105 ms | recorded above; capture not copied |
+| After the live-history correction | 3 | 33 ms | `live-history-release-burn-1.json` |
+| After the feed-path and read-marker fixes | 2 | 37 ms | `final-release-burn.json` |
+| Machine-quiet final | 2 | 29 ms | `ship-release-burn.json` |
+
+A factor of ~1,250 on dropped opportunities and 105 ms → 29 ms on the worst frame. It is still not the gate: the gate
+is zero.
+
+Two entries deserve their footnotes. `peer-noop-acceptance-1.json` also recorded 2 dropped (worst 35 ms), but under the
+weaker delivery audit that the later runs replaced. `fixes-release-burn.json` is copied for completeness and is
+**invalid**: `interrupted=true`, the window went hidden, 33 windows and one 30,473 ms interval. Its only usable content
+is the two 31/32 ms frames in window 2 before the interruption.
+
+### Causes established, and the two that were wrong
+
+**Synchronous JSC collection on the WebContent main thread — real, and the fix did not pay.** The pre-fix 40-second
+`sample` of the renderer shows 36 of 3,623 main-thread samples (10 ms each, **360 ms**) inside
+`EdenGCActivityCallback`/`FullGCActivityCallback` → `Heap::collectInMutatorThread`
+(`early-trace-2-sample.txt.gz`). The feed's ring buffers were rebuilt per touched ring per drain, concat then slice:
+~344 KiB/frame of short-lived array for rings nothing renders **[measured]**, now ~0 B/frame **[asserted: arithmetic
+from the trim schedule in `src/feedStore.ts`, not re-profiled]**. GC residency after the change: 33/3,622 samples,
+**330 ms** (`final-trace-2-sample.txt.gz`). **The predicted win did not materialise** — 360 → 330 ms is inside the
+run-to-run spread. JSC's Eden collection is timer-driven with a cadence floor, so cutting allocation rate did not cut
+collection count. The change still removes real waste and fixed a latent eviction bug (below). The final machine-quiet
+sample records 27/3,560 samples, 270 ms (`ship-trace-2-sample.txt.gz`); three points, no trend claimed.
+
+**Read-marker writes — real, and the fix paid.** `markSessionRead` wrote `localStorage` on nearly every frame:
+`readPersistence` **2,815** in the pre-fix trace (`early-trace-1.json.gz`) against **224** in the post-fix trace
+(`ship-trace-1.json.gz`), same workload, measured in the app.
+
+**Refuted: the per-frame full-tree re-render is not a defect.** The replay delivers 13,483 `turn-started` and 13,473
+`turn-completed` across ten sessions in 60 seconds (`ship-release-burn.json`, `delivery_audit.sessions[*].kinds`) —
+about **449 `busy` flips per second** against 60 frames per second. A store rebuild on nearly every frame is required
+by the rule that status and approvals reach React immediately, not a bug to remove. `stateRebuild` is 3,648 over the
+run, which is the frame count, not an excess.
+
+**Refuted: the lazily-imported `MarkdownContent` chunk is not the mount stall.** It was the leading suspect. The traces
+disprove it — the module resolves *after* both stalled frames, in every trace:
+
+| Trace | Stalled frames end at | `markdown-module` resolves | Next frame |
+| --- | --- | ---: | --- |
+| `early-trace-1.json.gz` | 22,969 ms (36 ms), 23,001 ms (32 ms) | 23,018 ms | 23,022 ms, 21 ms — did not drop |
+| `ship-trace-1.json.gz` | 25,538 ms (30 ms), 25,570 ms (31 ms) | 25,584 ms | 25,590 ms, 21 ms — did not drop |
+
+The chunk costs one 21 ms frame that stays under the 25 ms drop threshold.
+
+**Correction to the earlier record.** The paragraph above headed "Native WebContent evidence" for the guarded-persistence
+diagnostic sampled the **Rust UI process, not the renderer**: `peer-noop-after-attribution.json` records
+`nativePid: 54449` while the fresh WebContent pid was 54458, and `peer-noop-after-sample.txt.gz` opens with
+`Analysis of sampling brigadier (pid 54449)`. Its ~90% "waiting in Mach receive" therefore describes the UI process and
+says nothing about WebContent. The earlier **83.9%** figure is *not* affected — `react-profile-before-2-attribution.json`
+and that sample's own header both name WebContent pid 11402, and re-counting it gives 10,523/12,535 = 83.9%.
+
+### The remaining blocker, attributed
+
+A frame must stay under 25 ms to score zero dropped. The transcript mount does not fit.
+
+- React `Render` + `Commit` spans covering the two stalled frames: **39 ms** in `ship-trace-1.json.gz` (spans between
+  25,508 and 25,570 ms; 28 ms render, 11 ms commit). The same measurement is 43 ms in `early-trace-1.json.gz`. The
+  ~44 ms carried into the ship decision sits inside that 39–47 ms bracket; it is a profiling build, so it is an upper
+  bound on the shipped build, not the shipped cost.
+- **Not recorded:** the split reported as scaffolding ~12 ms / data render ~11 ms / competing store-driven renders
+  ~9 ms / unattributed style and layout ~10 ms is not in any copied file, and neither is the "~150 new DOM nodes at
+  mount". The captures record only `max_dom_nodes`: 504 release, 868 debug. Treat the split as unverified.
+- Scaffolding cost, under jsdom, `mount-jsdom-attribution.txt`: the whole loading mount is **1.11 ms** median
+  (`mount-jsdom-current.txt`, commit 0), of which `TranscriptRuntime` + `PeerTaskCardScope` + `Thread` + spinner is
+  **0.865 ms** — `useExternalStoreRuntime` and the assistant-ui viewport primitives. The spinner alone is 0.054 ms, the
+  two side panels 0.007 ms. jsdom is not WebKit; these are relative costs, not native milliseconds.
+- A **cheap placeholder before data arrives** was implemented, measured and **rejected**: total mount React work
+  3.94 → 3.10 ms median (**−21%**), worst single commit 1.80 → 2.66 ms (**+48%**)
+  (`mount-jsdom-current.txt` vs `mount-jsdom-placeholder-variant.txt`). A missed-frame gate scores per frame, so
+  trading total work for a fatter single commit loses.
+
+### Audit changes
+
+The delivery audit's 60-second duration clause was a tautology: `src-tauri/src/burn.rs` stamps the start before the
+session loop and sleeps after it, so `killed - started >= duration` held by construction whatever the app did. It is
+relabelled a **harness configuration check** in `scripts/measure-native-burn.py` and replaced by evidence about the
+app: each session's durable stream must cover **60 contiguous one-second bins** carrying at least
+**`MIN_EVENTS_PER_SECOND = 100`** events each. Verified across 3,000 recorded session-seconds in the five captures
+copied here; the minimum bin observed is **199** against a configured 200.
+
+Known weakness, stated because it will bite someone: the rate floor is machine-sensitive in the **failing** direction.
+A slower machine could fail a run that delivered correctly.
+
+### Defects found by review, not by the benchmark
+
+Two blind adversarial reviews found five defects, each fixed with a regression test shown failing against the unfixed
+code (`915debf`, `759a376`):
+
+- A failed `localStorage.setItem` recorded as a success — `unpersisted` was cleared before the write returned.
+- An unreadable stored value mistaken for "every session was deleted", so one flush wiped every read marker **and
+  persisted the wipe**.
+- `dropSession` handing back rows already evicted past `ROW_CAP` — a latent eviction bug in the ring rewrite.
+- A permanently unwritable store restoring ~45 writes/second, because `written` is only assigned after a successful
+  `setItem`. Measured: 200 advances against a throwing store went from 200 write attempts to 13.
+- A stale-snapshot acknowledgement putting an unread dot on the conversation just left; acknowledgement now takes the
+  maximum of the live cursor and the snapshot. `SubagentsPanel` had the same defect and now shares the helper.
+
+### Read-marker durability
+
+31 controlled runs against the real isolated app, killed mid-workload: `visibilitychange→hidden` and `pagehide` flush
+**nothing** on a macOS quit in this WKWebView — a graceful Apple-Event quit (11 reps, median 100 ms lost, worst
+**240 ms / 48 events**) is level with a bare `SIGTERM` that runs no handler at all (6 reps, median 140 ms, worst
+255 ms). The control, quitting ≥6 s after advances stopped, lost 0 twice, so the method sees a flush when there is one.
+Against at most one lost advance under the old synchronous code. `blur` was added as a third trigger: it fires, it is
+user-paced, and it precedes switching away or quitting. Method, the UTF-16LE/WAL traps in reading the store, and the
+residual risk are in [read-marker durability](../research/read-marker-durability-2026-09-10.md).
+
+### Known-open, carried forward
+
+- **The mount stall, 2 dropped frames.** Next step: a lighter transcript mount — either replace the assistant-ui
+  runtime and viewport primitives on the loading path (0.865 ms of a 1.11 ms jsdom mount) or put fewer DOM nodes on
+  screen at mount. The placeholder variant is already tried and rejected; do not re-run it.
+- **The debug/Vite regression, 21 dropped against 15 and 12.** Unexplained. Remedy: repeat the debug series alone on a
+  quiet machine before changing any code, since nothing in this task's diff targets the Vite path.
+- **`RING_SLACK` doubles retention of rings nothing renders** (up to ~22,000 extra `FeedRowWire` objects at benchmark
+  load) and the promised heap measurement was never taken. Remedy: measure the heap delta; halve `RING_SLACK` if it
+  contradicts the allocation-rate argument.
+- **The audit's per-second rate floor is machine-sensitive in the failing direction.** Remedy: key the floor to the
+  producer's own achieved rate rather than a constant 100.
+- **An orphan `localStorage` key can survive a session delete inside the 250 ms window.** Not user-visible — ids are
+  UUIDs. Remedy: sweep unknown session keys on the next flush.
+- **Up to 250 ms of read-marker progress is still lost on a quit while focused.** Remedy: a synchronous flush driven
+  from Rust on the window close path, which is the only thing that closes this properly.
+
+### What was not checked
+
+Native approval decision flows, composer Auto/Custom, archive/restore and keep-awake were **not** re-exercised natively
+against this final build. Only their automated suites ran, and they pass. The last native exercise of those controls
+was the separate non-acceptance run recorded above, against an earlier bundle.
+
+The 40-second native samples start ~22 s after spawn and are sampled wall-clock residency, not CPU benchmarks. No
+release build has been sampled with the profiling instrumentation removed, so every React figure here is from a
+profiling build.
+
+### Integration and installation
+
+`main` was fast-forwarded to `c6865a1`; the worktree branch and `main` are the same commit. `/Applications/Brigadier.app`
+was replaced **without a backup**, at the owner's instruction, from a build of exactly that commit
+(`/tmp/brigadier-perf-e2ce/install.sh`, which refuses to overwrite a running app). It launched, reached first
+contentful paint at **268.35 ms** by its own `paint.ndjson`, and stayed up.
+
+It was installed **with the rendering gate red**, deliberately. The build it replaced was the same code as `main` before
+this work — the state that measured **2,499 dropped opportunities and a 105 ms worst frame** in a foreground run. The
+installed app is strictly better on every axis measured here: 2 dropped against 2,499, 29 ms worst frame against 105 ms,
+236.28 ms startup p50, and the delivery audit passing where the earlier code lost ~8,663 rows per session. That is the
+whole of the argument; it is not a claim that the gate passes.
+
+### Raw evidence copied
+
+Into `../performance/2026-09-10/`, names preserved:
+
+- Acceptance: `ship-release-burn.json`, `ship-release-startup.json`, `ship-debug-burn.json`, `ship-debug-startup.json`,
+  `ship-exits.json`, `ship-gates.json`.
+- Profiling diagnostic, **not an acceptance result**: `ship-trace-1.json.gz` (`profiling: true`; it records 3 dropped
+  and a 31 ms worst frame, which is the cost of the instrumentation, not a gate reading).
+- Trend, earlier post-fix runs: `final-release-burn.json`, `final-debug-burn.json`, and `fixes-release-burn.json`
+  (**invalid**, `interrupted=true`).
+- Pre-fix attribution: `early-trace-1.json.gz`, `early-trace-2-attribution.json`.
+- Native samples backing the GC numbers, gzipped: `early-trace-2-sample.txt.gz` (360 ms),
+  `final-trace-2-sample.txt.gz` (330 ms), `ship-trace-2-sample.txt.gz` (270 ms).
+- jsdom mount measurements: `mount-jsdom-current.txt`, `mount-jsdom-placeholder-variant.txt`,
+  `mount-jsdom-attribution.txt`.
+
+Not copied, and where they live: the multi-megabyte `sample` text originals and `ship-trace-2.json` /
+`early-trace-2.json` remain in `/tmp/brigadier-perf-e2ce/`, as do every build log, every per-run startup log and the
+frozen benchmark bundles. That directory is disposable; nothing above depends on it.
