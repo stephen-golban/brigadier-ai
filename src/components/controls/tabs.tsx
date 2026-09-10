@@ -1,112 +1,137 @@
 import {
   createContext,
   useContext,
-  useId,
   useEffect,
   useRef,
   type ComponentProps,
+  type Ref,
 } from "react";
-import { navigateItems } from "./overlay";
-const State = createContext({
-  selected: "",
-  select: (_key: string) => {},
-  id: "",
-});
+
+import {
+  Tabs as KitTabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs";
+import { cn } from "@/lib/utils";
+
+/**
+ * Adapter over the kit's Base UI Tabs (`src/components/ui/tabs.tsx`).
+ *
+ * The hand-written roving-tabindex, the `aria-controls`/`aria-labelledby` id wiring and the
+ * `onFocus`/`Enter`/`Space` handlers are all Base UI's now; `<Tabs.List activateOnFocus>` keeps the
+ * old behaviour of selecting a tab as soon as an arrow key lands on it.
+ *
+ * Two shapes are preserved because `ProjectWorkbench.tsx` needs them:
+ *  - `Tab` renders a `<div role="tab">`, not a `<button>`. A workbench tab contains its own close
+ *    button and a button inside a button is invalid; `render` + `nativeButton={false}` is Base UI's
+ *    supported way to say so.
+ *  - `ListContainer` is the scroll box that holds the list. It is not a kit part; the ref
+ *    `ProjectWorkbench` puts on it is used to find and focus the selected tab after a close
+ *    (`ProjectWorkbench.tsx:254`) — it does no scrolling. Keeping the selected tab in view is
+ *    `Tab`'s own job, below.
+ *
+ * Gone: `Tabs.Indicator`, which returned `null` and was never rendered.
+ */
+
+/**
+ * Base UI publishes the active state to `Tab` only through a `data-active` attribute, a
+ * `className` callback or a `render` callback — none of which an effect can depend on. The
+ * adapter's own Root already knows the selected key, so it hands it down directly.
+ */
+const SelectedTab = createContext<string | null>(null);
+
 function Root({
   selectedKey,
   onSelectionChange,
   variant: _variant,
-  children,
+  className,
   ...props
-}: ComponentProps<"div"> & {
+}: Omit<ComponentProps<typeof KitTabs>, "value" | "onValueChange"> & {
   selectedKey: string;
   onSelectionChange: (key: string) => void;
   variant?: string;
 }) {
-  const id = useId();
   return (
-    <State.Provider
-      value={{ selected: selectedKey, select: onSelectionChange, id }}
-    >
-      <div {...props}>{children}</div>
-    </State.Provider>
+    <SelectedTab.Provider value={selectedKey}>
+      <KitTabs
+        {...props}
+        value={selectedKey}
+        onValueChange={(value) => onSelectionChange(String(value))}
+        // The kit spaces root children by `gap-2`; every consumer here lays itself out.
+        className={cn("gap-0", className)}
+      />
+    </SelectedTab.Provider>
   );
 }
-function ListContainer(props: ComponentProps<"div">) {
+
+function ListContainer({
+  ref,
+  className,
+  ...props
+}: ComponentProps<"div"> & { ref?: Ref<HTMLDivElement> }) {
   return (
-    <div {...props} className={`overflow-x-auto ${props.className ?? ""}`} />
+    <div {...props} ref={ref} className={cn("overflow-x-auto", className)} />
   );
 }
-function List(props: ComponentProps<"div">) {
+
+function List({ className, ...props }: ComponentProps<typeof TabsList>) {
   return (
-    <div
+    <TabsList
+      activateOnFocus
+      variant="line"
       {...props}
-      role="tablist"
-      className={`tabs__list flex items-center ${props.className ?? ""}`}
-      onKeyDown={navigateItems}
+      className={cn("h-auto w-full justify-start p-0", className)}
     />
   );
 }
+
 function Tab({
   id,
-  children,
+  className,
+  onFocus,
   ...props
-}: ComponentProps<"div"> & { id: string }) {
-  const state = useContext(State);
-  const selected = state.selected === id;
-  const tabRef = useRef<HTMLDivElement>(null);
+}: Omit<ComponentProps<typeof TabsTrigger>, "value"> & { id: string }) {
+  // `TabsTrigger` types its ref as the `<button>` it renders by default; here `render={<div />}`
+  // makes it a div, so the effect below only needs `scrollIntoView`.
+  const node = useRef<HTMLButtonElement>(null);
+  const selected = useContext(SelectedTab) === id;
   useEffect(() => {
+    // Restored from the pre-port hand-written Tab (af65dec:controls/tabs.tsx:52-59). Selection
+    // moves by keyboard shortcut and by closing a neighbour, either of which can leave the new
+    // tab off-screen inside `ListContainer`'s horizontal scroll box.
     if (selected)
-      tabRef.current?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+      node.current?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
   }, [selected]);
-  // A tab can contain a separate close button; use a focusable tab container, not nested buttons.
   return (
-    <div
+    <TabsTrigger
+      value={id}
+      render={<div />}
+      nativeButton={false}
       {...props}
-      ref={tabRef}
-      id={`${state.id}-tab-${id}`}
-      role="tab"
-      aria-selected={selected}
-      aria-controls={`${state.id}-panel-${id}`}
-      tabIndex={props.tabIndex ?? (selected ? 0 : -1)}
-      className={`tabs__tab flex h-8 cursor-default items-center gap-2 rounded-md px-3 text-[13px] hover:bg-hover ${selected ? "bg-selected" : ""} ${props.className ?? ""}`}
-      onClick={() => state.select(id)}
+      // After the spread on purpose: the effect above is the whole point of the ref, and no
+      // call site passes one of its own.
+      ref={node}
       onFocus={(event) => {
-        if (event.target === event.currentTarget) state.select(id);
+        onFocus?.(event);
+        // `activateOnFocus` fires on `focusin`, which bubbles: focusing a tab's own close button
+        // would otherwise select that tab. The hand-written Tab guarded the same way
+        // (`event.target === event.currentTarget`); `preventBaseUIHandler` is Base UI's opt-out.
+        if (event.target !== event.currentTarget) event.preventBaseUIHandler?.();
       }}
-      onKeyDown={(event) => {
-        if (
-          event.target === event.currentTarget &&
-          [" ", "Enter"].includes(event.key)
-        ) {
-          event.preventDefault();
-          state.select(id);
-        }
-      }}
-    >
-      {children}
-    </div>
-  );
-}
-function Panel({ id, ...props }: ComponentProps<"div"> & { id: string }) {
-  const state = useContext(State);
-  return (
-    <div
-      {...props}
-      role="tabpanel"
-      id={`${state.id}-panel-${id}`}
-      aria-labelledby={`${state.id}-tab-${id}`}
-      hidden={state.selected !== id}
+      className={cn(
+        "h-8 flex-none cursor-default gap-2 px-3 text-[13px] font-normal hover:bg-hover data-active:bg-selected",
+        className,
+      )}
     />
   );
 }
-function Indicator() {
-  return null;
+
+function Panel({
+  id,
+  ...props
+}: Omit<ComponentProps<typeof TabsContent>, "value"> & { id: string }) {
+  return <TabsContent keepMounted value={id} {...props} />;
 }
-export const Tabs = Object.assign(Root, {
-  ListContainer,
-  List,
-  Tab,
-  Panel,
-  Indicator,
-});
+
+export const Tabs = Object.assign(Root, { ListContainer, List, Tab, Panel });

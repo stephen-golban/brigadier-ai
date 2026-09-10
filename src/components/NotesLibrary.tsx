@@ -152,7 +152,7 @@ export function NotesLibrary({
             >
               <Button
                 variant="primary"
-                className="bg-text text-canvas hover:bg-text/90"
+                className="bg-text text-canvas hover:bg-text/90 [&_svg]:text-current"
                 onClick={create}
                 disabled={busy}
               >

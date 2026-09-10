@@ -334,63 +334,14 @@
   align-items: center;
   flex-wrap: wrap;
 }
-.app-toasts {
-  position: fixed;
-  z-index: 100;
-  top: 50px;
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  align-items: center;
-  flex-direction: column;
-  gap: 8px;
-  max-width: calc(100vw - 32px);
-  pointer-events: none;
-}
-:root:has(.desktop-settings) .app-toasts {
-  left: calc(50% + var(--settings-sidebar-width) / 2);
+/* The toast stack is sonner's (`src/components/ui/sonner.tsx`); the card, spacing and ink come
+   from the design kit's `toastOptions.classNames`. This is the one rule that did not survive as a
+   sonner prop: the settings sidebar shifts the centred stack right by half its width. */
+:root:has(.desktop-settings) [data-sonner-toaster][data-x-position="center"] {
+  margin-left: calc(var(--settings-sidebar-width) / 2);
   max-width: calc(100vw - var(--settings-sidebar-width) - 32px);
 }
-.app-toast {
-  pointer-events: auto;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  background: #2b2b2b;
-  border: 1px solid #3d3d3d;
-  border-radius: 13px;
-  padding: 8px 10px 8px 14px;
-  font-size: 14px;
-  min-height: 42px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
-}
-.app-toast > svg {
-  flex-shrink: 0;
-}
-.app-toast > span {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.app-toast .button {
-  height: 25px;
-  font-size: 12px;
-  padding: 0 9px;
-  border-radius: 9px;
-}
-.app-toast .button[data-icon-button] {
-  width: 20px;
-  padding: 0;
-}
-.app-toast .toast-primary {
-  background: #fafafa;
-  color: #282828;
-}
-.app-toast .toast-action {
-  background: #393939;
-}
-.app-toast-error > span {
-  color: var(--color-error);
-}
+
 @media (max-width: 1050px) {
   :root {
     --settings-sidebar-width: 212px;

@@ -4,23 +4,21 @@ import type { ComponentProps } from "react";
 import { useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 
-export const paper = "bg-canvas border border-hairline/60 dark:bg-elevated";
+export const paper = "bg-elevated border border-hairline/60";
 
-export const floating = "bg-canvas border border-hairline/60 dark:bg-elevated";
+export const floating = "bg-elevated border border-hairline/60";
 
-export const field = "bg-text/[0.04] dark:bg-text/[0.06]";
+export const field = "bg-text/[0.06]";
 
 export const fieldInteractive =
-  "bg-text/[0.04] transition-colors hover:bg-text/[0.07] dark:bg-text/[0.06] dark:hover:bg-text/[0.09]";
+  "bg-text/[0.06] transition-colors hover:bg-text/[0.09]";
+
+// `ghostButton` and `inkButton` retired 2026-09-10: the kit Button's `ghost` and `default`
+// variants at `size="icon-sm"` are the same two affordances. Import `@/components/ui/button`
+// instead of reviving them — upstream `elements-surfaces` still ships both.
 
 export const pressable =
   "transition-transform duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] active:scale-[0.96] motion-reduce:transition-none";
-
-export const ghostButton =
-  "flex items-center justify-center rounded-full text-text/45 outline-none transition-[canvas-color,color,scale] duration-150 hover:bg-text/[0.06] hover:text-text/90 active:scale-[0.96] focus-visible:ring-1 focus-visible:ring-text/20 motion-reduce:transition-none dark:hover:bg-text/[0.09]";
-
-export const inkButton =
-  "bg-text text-canvas transition-[opacity,scale] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] hover:opacity-90 active:scale-[0.96] motion-reduce:transition-none";
 
 export const iconSwap =
   "[grid-area:1/1] transition-[opacity,scale,filter] duration-200 ease-[cubic-bezier(0.2,0,0,1)] motion-reduce:transition-none";
@@ -37,10 +35,13 @@ export const labelSwapIn = "opacity-100 blur-none";
 export const labelSwapOut =
   "pointer-events-none select-none opacity-0 blur-[2px]";
 
+// Base UI's Collapsible.Panel emits `data-open` / `data-closed` (and `--collapsible-panel-height`),
+// never Radix's `data-state`. The two `@custom-variant` lines at the top of `src/index.css` accept
+// either spelling; the keyframes in `elements/elements.css` read Base UI's variable.
 export const collapsePanel =
-  "overflow-hidden data-[state=open]:animate-[elements-expand_200ms_ease-out] motion-reduce:animate-none";
+  "overflow-hidden data-open:animate-[elements-expand_200ms_ease-out] data-closed:animate-[elements-collapse_200ms_ease-out] motion-reduce:animate-none";
 
-export const live = "text-attention dark:text-attention";
+export const live = "text-attention";
 
 export const mono = "font-mono text-[11px] tracking-tight";
 

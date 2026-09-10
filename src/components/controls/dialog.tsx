@@ -32,7 +32,7 @@ export function DialogContent({
   onInteractOutside,
   showCloseButton = true,
   ...props
-}: Omit<ComponentProps<"dialog">, "role"> & {
+}: Omit<ComponentProps<"div">, "role"> & {
   role?: "dialog" | "alertdialog";
   onEscapeKeyDown?: (event: { preventDefault: () => void }) => void;
   onInteractOutside?: (event: { preventDefault: () => void }) => void;

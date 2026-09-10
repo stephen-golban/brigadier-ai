@@ -1,75 +1,83 @@
+import type { ComponentProps } from "react";
+
 import {
-  createContext,
-  useContext,
-  useId,
-  useState,
-  type ComponentProps,
-} from "react";
-import { ChevronDown } from "../../icons";
+  Collapsible as KitCollapsible,
+  CollapsibleContent as KitCollapsibleContent,
+  CollapsibleTrigger as KitCollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import { ChevronDown } from "@/icons";
+import { cn } from "@/lib/utils";
 import { Button } from "./button";
-const State = createContext({ open: false, toggle: () => {}, id: "" });
+
+/**
+ * Adapter over the kit's Base UI Collapsible, wearing the old `Disclosure` compound API.
+ *
+ * `ThreadView.tsx:459-470` is the only consumer and uses `Root / Heading / Trigger / Indicator /
+ * Content / Body`. The hand-written `State` context, the `useId` + `aria-controls` pair and the
+ * manual toggle are Base UI's now. `isExpanded` / `defaultExpanded` / `onExpandedChange` are still
+ * accepted and map onto `open` / `defaultOpen` / `onOpenChange`.
+ *
+ * The trigger is still `controls/button.tsx`, composed through Base UI's `render`, so the `.button`
+ * ink and geometry that `ThreadView` renders bare are unchanged.
+ */
 function Root({
   isExpanded,
-  defaultExpanded = false,
+  defaultExpanded,
   onExpandedChange,
-  children,
+  className,
   ...props
-}: ComponentProps<"div"> & {
+}: Omit<
+  ComponentProps<typeof KitCollapsible>,
+  "open" | "defaultOpen" | "onOpenChange"
+> & {
   isExpanded?: boolean;
   defaultExpanded?: boolean;
   onExpandedChange?: (open: boolean) => void;
 }) {
-  const [local, setLocal] = useState(defaultExpanded);
-  const open = isExpanded ?? local;
-  const id = useId();
   return (
-    <State.Provider
-      value={{
-        open,
-        id,
-        toggle: () => {
-          setLocal(!open);
-          onExpandedChange?.(!open);
-        },
-      }}
-    >
-      <div {...props} className={`disclosure ${props.className ?? ""}`}>
-        {children}
-      </div>
-    </State.Provider>
-  );
-}
-function Trigger({ onClick, ...props }: ComponentProps<typeof Button>) {
-  const state = useContext(State);
-  return (
-    <Button
+    <KitCollapsible
       {...props}
-      className={`disclosure__trigger ${props.className ?? ""}`}
-      aria-expanded={state.open}
-      aria-controls={state.id}
-      onClick={(event) => {
-        onClick?.(event);
-        if (!event.defaultPrevented) state.toggle();
-      }}
+      open={isExpanded}
+      defaultOpen={defaultExpanded}
+      onOpenChange={(open) => onExpandedChange?.(open)}
+      className={cn("disclosure", className)}
     />
   );
 }
-function Content(props: ComponentProps<"div">) {
-  const { open, id } = useContext(State);
-  return open ? (
-    <div
+
+function Trigger({
+  className,
+  ...props
+}: ComponentProps<typeof KitCollapsibleTrigger>) {
+  return (
+    <KitCollapsibleTrigger
+      render={<Button />}
       {...props}
-      id={id}
-      className={`disclosure__content ${props.className ?? ""}`}
+      className={cn("disclosure__trigger", className)}
     />
-  ) : null;
+  );
 }
+
+function Content({
+  className,
+  ...props
+}: ComponentProps<typeof KitCollapsibleContent>) {
+  return (
+    <KitCollapsibleContent
+      {...props}
+      className={cn("disclosure__content", className)}
+    />
+  );
+}
+
 function Heading(props: ComponentProps<"div">) {
   return <div {...props} />;
 }
+
 function Indicator() {
   return <ChevronDown aria-hidden className="size-4" />;
 }
+
 export const Disclosure = Object.assign(Root, {
   Trigger,
   Content,

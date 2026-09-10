@@ -3,8 +3,9 @@
 
 import type { ComponentProps } from "react";
 import { ArrowUp } from "../../../icons";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { field, inkButton, paper } from "@/lib/surfaces";
+import { field, paper } from "@/lib/surfaces";
 
 export function ChatPanel({ className, ...props }: ComponentProps<"div">) {
   return (
@@ -114,18 +115,15 @@ export function ChatPanelComposer({
       {...props}
     >
       <span className="text-text/35 text-[13px]">{placeholder}</span>
-      <button
-        type="button"
+      <Button
+        size="icon-sm"
         aria-label="Send"
         onClick={onSend}
         disabled={!onSend}
-        className={cn(
-          inkButton,
-          "flex size-7 items-center justify-center rounded-full disabled:pointer-events-none disabled:opacity-30",
-        )}
+        className="rounded-full"
       >
         <ArrowUp className="size-3.5" />
-      </button>
+      </Button>
     </div>
   );
 }

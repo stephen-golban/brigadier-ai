@@ -577,7 +577,7 @@ within a single file.
 | `ArrowUUpLeftIcon` | `Undo` | |
 | `BracketsCurlyIcon` | `Code` | **gap** — no brackets glyph |
 | `BugIcon` | `Bug` | |
-| `CaretDownIcon` / `CaretRightIcon` | `CaretDown` / `CaretRight` | |
+| `CaretDownIcon` / `CaretRightIcon` | `ChevronSmallDown` / `ChevronSmallRight` | **corrected 2026-09-10.** First mapped to `CaretDown` / `CaretRight`, which are **filled triangles** in this set, not phosphor's chevron-shaped carets; the owner rejected them on sight. `ChevronSmall*` is the optical match: its path spans 39% × 22% of the 24-unit box against `CaretDown`'s 42% × 25%, so the same `size-3` / `width={12}` call site keeps its footprint **[measured, path data]**. Plain `ChevronDown` spans 64% × 31% and is the 16px-box choice; `SourceControl.tsx`'s icon-only commit-options button takes it. `CaretDown` / `CaretRight` now have no consumer and left `src/icons/manifest.json`. |
 | `CheckIcon` | `Check` | |
 | `FileIcon` | `File` | |
 | `FileCode/Css/Html/Image/Js/Jsx/Md/Py/Rs/Text/Ts/TsxIcon` | `File` | 13 per-language glyphs collapse to one; the per-language hex colour is kept |

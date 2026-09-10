@@ -4,14 +4,18 @@ import {
   type ComponentProps,
   type ReactElement,
 } from "react";
-import {
-  Collapsible,
-  CollapsibleTrigger,
-  CollapsibleContent,
-} from "./collapsible";
+
+import { Disclosure } from "./disclosure";
+
 export function DetailsSummary({ children }: ComponentProps<"span">) {
   return <>{children}</>;
 }
+
+/**
+ * `<details>`/`<summary>`-shaped sugar over `controls/disclosure.tsx`, which is now the kit's Base
+ * UI Collapsible. Two consumers, `App.tsx:1076` and `Burn.tsx:90`; both pass only `className` and
+ * an optional `open`. Unchanged in shape — only the primitive underneath moved.
+ */
 export function Details({
   children,
   open,
@@ -22,13 +26,13 @@ export function Details({
     (c) => isValidElement(c) && c.type === DetailsSummary,
   ) as ReactElement<ComponentProps<"span">> | undefined;
   return (
-    <Collapsible {...props} defaultOpen={open}>
-      <CollapsibleTrigger aria-label={summary?.props["aria-label"]}>
+    <Disclosure {...props} defaultExpanded={open}>
+      <Disclosure.Trigger aria-label={summary?.props["aria-label"]}>
         {summary?.props.children}
-      </CollapsibleTrigger>
-      <CollapsibleContent>
+      </Disclosure.Trigger>
+      <Disclosure.Content>
         {parts.filter((c) => c !== summary)}
-      </CollapsibleContent>
-    </Collapsible>
+      </Disclosure.Content>
+    </Disclosure>
   );
 }

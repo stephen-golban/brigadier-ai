@@ -505,7 +505,7 @@ export function Sidebar(props: SidebarProps) {
         </Tooltip>
         <Tooltip
           content={pinned ? "Unpin session" : "Pin session"}
-          className="absolute top-0 right-7 h-7 w-6"
+          className="absolute top-0 right-7 h-7 w-6 items-center justify-center"
         >
           <SidebarMenuAction
             showOnHover
@@ -514,12 +514,16 @@ export function Sidebar(props: SidebarProps) {
             disabled={s.sessionId.startsWith("starting:")}
             onClick={() => pinSession(s.sessionId)}
           >
-            {pinned ? <PinFilled className="size-4" /> : <Pin className="size-4" />}
+            {pinned ? (
+              <PinFilled className="size-3.5" />
+            ) : (
+              <Pin className="size-3.5" />
+            )}
           </SidebarMenuAction>
         </Tooltip>
         <Tooltip
           content="Archive session"
-          className="absolute top-0 right-1 h-7 w-6"
+          className="absolute top-0 right-1 h-7 w-6 items-center justify-center"
         >
           <SidebarMenuAction
             showOnHover
@@ -528,7 +532,7 @@ export function Sidebar(props: SidebarProps) {
             disabled={s.sessionId.startsWith("starting:")}
             onClick={() => archiveSession(s.sessionId)}
           >
-            <Archive className="size-4" />
+            <Archive className="size-3.5" />
           </SidebarMenuAction>
         </Tooltip>
       </SidebarMenuSubItem>
@@ -790,7 +794,7 @@ export function Sidebar(props: SidebarProps) {
                               aria-label={`Project actions ${projectName(project)}`}
                               title="Project actions"
                             >
-                              <DotsHorizontal className="size-4" />
+                              <DotsHorizontal className="size-3.5" />
                             </SidebarMenuAction>
                             <DropdownContent
                               className="w-[280px]"

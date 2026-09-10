@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ArrowRotateCcw, Bolt, CaretDown, Check, HandRaised, SettingsSlider, Sparkle, Terminal, Warning, type IconComponent } from "../../icons";
+import { ArrowRotateCcw, Bolt, Check, ChevronSmallDown, HandRaised, SettingsSlider, Sparkle, Terminal, Warning, type IconComponent } from "../../icons";
 import { Button } from "../controls/button";
 import { Popover, navigateItems } from "../controls/overlay";
 import type { ProviderCatalogEntry } from "../../providerCatalog";
@@ -20,7 +20,7 @@ export function PermissionControl({ value, onChange, disabled }: { value: Permis
   const selected = permissions.find(p => p.id === value)!;
   return <Popover isOpen={open} onOpenChange={setOpen}>
     <Button className={`composer-permission composer-control ${value === "full" ? "is-full" : ""}`} disabled={disabled} aria-label="Permissions" title={selected.label}>
-      <selected.Icon width={17} height={17} /><span className="composer-permission-label">{selected.label}</span><CaretDown className="composer-control-chevron" width={12} height={12} />
+      <selected.Icon width={17} height={17} /><span className="composer-permission-label">{selected.label}</span><ChevronSmallDown className="composer-control-chevron" width={12} height={12} />
     </Button>
     <Popover.Content placement="top start" className="composer-popover permission-popover">
       <Popover.Dialog aria-label="Permissions">
@@ -57,7 +57,7 @@ export function ModeControl({ value, onChange, started = false, disabled = false
   const model = providers.find(p => p.id === selection?.provider)?.models.find(m => m.id === selection?.model || (!!selection?.model && m.resolvedId === selection.model));
   return <Popover isOpen={open} onOpenChange={setOpen}>
     <Button className="composer-mode composer-control" disabled={disabled} aria-label="Mode" title={capitalize(value)}>
-      <Icon width={17} height={17} /><span>{capitalize(value)}</span><CaretDown className="composer-control-chevron" width={12} height={12} />
+      <Icon width={17} height={17} /><span>{capitalize(value)}</span><ChevronSmallDown className="composer-control-chevron" width={12} height={12} />
     </Button>
     <Popover.Content placement="top end" className="composer-popover permission-popover mode-popover">
       <Popover.Dialog aria-label="Execution mode">
@@ -91,7 +91,7 @@ export function ExecutionControl({ selection, providers, onChange, disabled = fa
   return <Popover isOpen={open} onOpenChange={setOpen}>
     <Button className="composer-execution composer-control" aria-label="Execution settings" title={`${providerLabel(selection.provider)} · ${label} · ${selection.effort ?? "default effort"}`} disabled={disabled}>
       <ProviderIcon provider={selection.provider} /><span className="composer-model-label">{label}</span>
-      <span className="composer-effort-label">{selection.effort ? capitalize(selection.effort) : "Default"}</span><CaretDown className="composer-control-chevron" width={13} height={13} />
+      <span className="composer-effort-label">{selection.effort ? capitalize(selection.effort) : "Default"}</span><ChevronSmallDown className="composer-control-chevron" width={13} height={13} />
     </Button>
     <Popover.Content placement="top end" className="composer-popover execution-popover">
       <Popover.Dialog aria-label="Provider, model and effort">

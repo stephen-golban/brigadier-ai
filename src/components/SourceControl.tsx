@@ -1,14 +1,9 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { ArrowRotateCw, Branch, CaretDown, CaretRight, Check, DotsHorizontal, Minus, Plus, SettingsCog, Sparkle } from "../icons";
+import { ArrowRotateCw, Branch, Check, ChevronDown, ChevronSmallDown, ChevronSmallRight, DotsHorizontal, Minus, Plus, SettingsCog, Sparkle } from "../icons";
 import { Button } from "./controls/button";
 import { ButtonGroup } from "./controls/button-group";
-import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupButton,
-  InputGroupTextarea,
-} from "./controls/input-group";
 import { Input } from "./controls/input";
+import { Textarea } from "./controls/textarea";
 import { Dropdown, Separator } from "./controls/overlay";
 import { DropdownContent } from "./controls/menu";
 import {
@@ -450,7 +445,7 @@ function RepositoryChanges({
           >
             <Branch className="size-3.5" />
             <span className="truncate">{status?.branch ?? "Repository"}</span>
-            <CaretDown className="size-3" />
+            <ChevronSmallDown className="size-3" />
           </Button>
           {!!((status?.ahead ?? 0) + (status?.behind ?? 0)) && (
             <span
@@ -462,8 +457,11 @@ function RepositoryChanges({
           )}
         </div>
         <div className="shrink-0 px-1 pb-3" data-testid="commit-composer">
-          <InputGroup className="rounded-lg border border-hairline bg-input-shell">
-            <InputGroupTextarea
+          <div
+            data-slot="input-group"
+            className="input-group flex flex-col rounded-lg border border-hairline bg-input-shell"
+          >
+            <Textarea
               id={messageId}
               aria-label="Commit message"
               placeholder="Message (⌘Enter to commit)"
@@ -485,11 +483,11 @@ function RepositoryChanges({
                 }
               }}
             />
-            <InputGroupAddon className="justify-between px-2 pb-1.5 pt-0">
+            <div className="flex items-center justify-between gap-2 px-2 pb-1.5">
               <span className="text-[11px] text-text-tertiary">
                 {staged.length ? `${staged.length} staged` : ""}
               </span>
-              <InputGroupButton
+              <Button
                 variant="ghost"
                 size="sm"
                 className="h-6 gap-1.5 px-1.5 text-xs text-text-secondary"
@@ -504,9 +502,9 @@ function RepositoryChanges({
               >
                 <Sparkle className="size-3.5" />
                 Generate
-              </InputGroupButton>
-            </InputGroupAddon>
-          </InputGroup>
+              </Button>
+            </div>
+          </div>
           <ButtonGroup
             className="mt-2 flex w-full !gap-0 rounded-md bg-selected"
             aria-label="Commit actions"
@@ -526,7 +524,7 @@ function RepositoryChanges({
                 aria-label="Commit options"
                 disabled={busy}
               >
-                <CaretDown className="size-3.5" />
+                <ChevronDown className="size-3.5" />
               </Button>
               <DropdownContent align="end">
                 <Dropdown.Item
@@ -576,7 +574,7 @@ function RepositoryChanges({
                     className="group/section flex h-8 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1 text-[13px] font-medium text-text-secondary hover:bg-hover"
                     aria-label={group.name}
                   >
-                    <CaretRight className="size-3 shrink-0 group-aria-expanded/section:rotate-90" />
+                    <ChevronSmallRight className="size-3 shrink-0 group-aria-expanded/section:rotate-90" />
                     <span>{group.name}</span>
                     <span className="ml-auto rounded-full bg-hover px-1.5 text-[11px] font-normal text-text-tertiary">
                       {group.changes.length}

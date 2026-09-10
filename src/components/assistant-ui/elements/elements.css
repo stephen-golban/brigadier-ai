@@ -2,12 +2,23 @@
 @tailwind utilities source(none);
 @source inline("shimmer");
 
+/* Base UI publishes the measured panel height as `--collapsible-panel-height`; the Radix name
+   this used to read (`--radix-collapsible-content-height`) is never set here. */
 @keyframes elements-expand {
   from {
     height: 0;
   }
   to {
-    height: var(--radix-collapsible-content-height);
+    height: var(--collapsible-panel-height);
+  }
+}
+
+@keyframes elements-collapse {
+  from {
+    height: var(--collapsible-panel-height);
+  }
+  to {
+    height: 0;
   }
 }
 

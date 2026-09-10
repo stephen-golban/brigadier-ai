@@ -9,11 +9,12 @@ import "./index.css";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { installRenderDiagnostics, reportRenderError } from "./renderDiagnostics";
 
-// brigadier is dark-only (owner decision 2026-09-10). The class is not a switch: nothing reads it
-// today — `src/index.css` declares no `@custom-variant dark`, so no `dark:` utility resolves and the
-// class is inert. It is set once, and never toggled, so the design-system phase can add that variant
-// and have every `dark:` utility light up without touching bootstrap. The stale preference from the
-// deleted theme switcher is dropped on first load.
+// brigadier is dark-only (owner decision 2026-09-10). The class is not a switch, but it is no
+// longer inert: `src/index.css` now declares `@custom-variant dark (&:is(.dark *))`, so every
+// `dark:` utility in the vendored kit resolves against this class rather than against the OS
+// preference. It is set once and never toggled; deleting it would silently drop those rules.
+// `index.html` stamps the same class so the first paint is not light. The stale preference from
+// the deleted theme switcher is dropped on first load.
 document.documentElement.classList.add("dark");
 try {
   localStorage.removeItem("brigadier.theme");
