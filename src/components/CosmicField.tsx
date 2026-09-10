@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { editorColor } from "../lib/theme";
 
 // Same analytic color field and shape timing as the selected motion study.
 // WebGL keeps continuous animation out of React and scales without video artifacts.
@@ -12,8 +11,6 @@ uniform float time;
 uniform float reveal;
 uniform float reduced;
 uniform float desktop;
-uniform vec3 canvasColor;
-uniform vec3 textColor;
 float ease(float t) { t=clamp(t,0.,1.);return t*t*(3.-2.*t); }
 void main() {
  vec2 p=(vec2(gl_FragCoord.x,size.y-gl_FragCoord.y)-size*.5)/density;
@@ -24,9 +21,10 @@ void main() {
  float curve=.2+.24*sin(u*2.9+t*.27)+.08*cos(u*6.-t*.22);
  float band=exp(-pow((v-curve)/(.11+.06*cos(u*2.)),2.))*exp(-pow(u/1.05,4.));
  float halo=exp(-pow((v-curve)/.38,2.))*exp(-pow(u/1.1,4.));
- vec3 color=mix(canvasColor,textColor,.045*halo+.065*band);
+ float blend=(tanh(u*2.)+1.)*.5;
+ vec3 color=vec3(3.,7.,22.)+(.39*halo+.49*band)*vec3(30.+85.*blend,106.-59.*blend,247.+blend*3.);
  float knot=exp(-pow((u+.52+.11*sin(t*.2))/.21,2.)-pow((v-curve)/.08,2.));
- color=mix(color,textColor,knot*.035);
+ color+=knot*vec3(26.,76.,78.);
  float expand=mix(1.,ease((time-3.15)/.72),reveal*(1.-reduced));
  float emerge=mix(1.,ease((time-.25)/1.35),reveal*(1.-reduced));
  float theta=atan(p.y,p.x);
@@ -39,14 +37,19 @@ void main() {
  float feather=22.*(1.-expand)+.45;
  float alpha=(1./(1.+exp(clamp(dist/feather,-40.,40.))))*emerge;
  float spot=exp(-pow((p.x-22.*cos(t))/38.,2.)-pow((p.y+24.*sin(t*.8))/46.,2.));
- color=mix(color,textColor,spot*.24*(1.-expand));
- color+=sin(gl_FragCoord.x*1.73+gl_FragCoord.y*6.89)*cos(gl_FragCoord.x*6.17-gl_FragCoord.y*2.43)*(.45/255.);
+ color+=spot*vec3(50.,101.,187.)*(1.-expand);
+ color+=sin(gl_FragCoord.x*1.73+gl_FragCoord.y*6.89)*cos(gl_FragCoord.x*6.17-gl_FragCoord.y*2.43)*.45;
  float dim=desktop*mix(.48,.12,ease((time-3.5)/2.3))*emerge;
  float outerGlow=exp(-max(dist,0.)/34.)*.14*emerge*(1.-expand);
  float total=alpha+dim*(1.-alpha)+outerGlow*(1.-alpha);
- vec3 rgb=(clamp(color,0.,1.)*alpha+mix(canvasColor,textColor,.12)*outerGlow*(1.-alpha))/max(total,.0001);
+ vec3 rgb=(clamp(color/255.,0.,1.)*alpha+vec3(.05,.10,.22)*outerGlow*(1.-alpha))/max(total,.0001);
  gl_FragColor=vec4(rgb,total);
 }`;
+// GLSL ES 1.00 lacks tanh; keep the formula portable to WebGL 1/WKWebView.
+const source = fragment.replace(
+  "tanh(u*2.)",
+  "((exp(clamp(u*4.,-20.,20.))-1.)/(exp(clamp(u*4.,-20.,20.))+1.))",
+);
 
 export function CosmicField({
   start,
@@ -106,7 +109,7 @@ export function CosmicField({
           context.VERTEX_SHADER,
           "attribute vec2 position;void main(){gl_Position=vec4(position,0.,1.);}",
         ],
-        [context.FRAGMENT_SHADER, fragment],
+        [context.FRAGMENT_SHADER, source],
       ] as const) {
         const shader = context.createShader(type);
         if (!shader) throw Error("No shader");
@@ -139,8 +142,6 @@ export function CosmicField({
           "reveal",
           "reduced",
           "desktop",
-          "canvasColor",
-          "textColor",
         ].map((n) => [n, context.getUniformLocation(program, n)]),
       );
       let last = -100;
@@ -181,16 +182,8 @@ export function CosmicField({
         draw(performance.now());
       };
       redraw.current = resize;
-      const updatePalette = () => {
-        for (const [uniform, token] of [["canvasColor", "canvas"], ["textColor", "text"]] as const) {
-          const hex = editorColor(token);
-          const channel = (offset: number) => parseInt(hex.slice(offset, offset + 2), 16) / 255;
-          context.uniform3f(uniforms[uniform], channel(1), channel(3), channel(5));
-        }
-        resize();
-      };
       // Changing the scene updates uniforms; it never tears down the GL program.
-      updatePalette();
+      resize();
       const lost = (event: Event) => {
         event.preventDefault();
         setFallback(true);

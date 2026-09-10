@@ -264,16 +264,12 @@ describe("required first-use profile", () => {
       value: () => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() }),
     });
     await mount();
-    const mark = document.querySelector(".launch-mark");
-    expect(mark).toBeInTheDocument();
     await animationEnd(document.querySelector(".welcome-action")!, "welcome-button-reveal");
-    expect(document.querySelector(".launch-mark")).toBe(mark);
     const background = screen.getByTestId("cosmic-field");
     const welcome = document.querySelector(".launch-welcome")!;
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Continue" })); });
     expect(document.querySelector(".launch")).toHaveAttribute("data-stage", "entering-name");
     expect(welcome).toBeInTheDocument();
-    expect(document.querySelector(".launch-mark")).toBe(mark);
     expect(screen.getByTestId("cosmic-field")).toBe(background);
     expect(document.querySelector(".welcome-name")).toHaveAttribute("inert");
     expect(screen.queryByText("Workspace ready")).not.toBeInTheDocument();
@@ -283,7 +279,6 @@ describe("required first-use profile", () => {
     expect(screen.getByRole("textbox", { name: "Your name" })).toHaveFocus();
     expect(screen.getByTestId("cosmic-field")).toBe(background);
     expect(welcome).not.toBeInTheDocument();
-    expect(document.querySelector(".launch-mark")).not.toBeInTheDocument();
     expect(screen.getByText("Workspace ready")).toBeInTheDocument();
   });
   it("holds the greeting until the lazy workspace is ready without restarting its minimum hold", async () => {

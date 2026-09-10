@@ -11,8 +11,7 @@ const dark = css.match(/@theme static \{([\s\S]*?)\n\}/)?.[1];
 if (!dark) throw Error('App theme block changed');
 writeFileSync(resolve(dir,'preview-theme.css'),`:root {${dark.replace(/^\s*--[\w-]+\*:.*$/gm,'')}\n}\n`);
 mkdirSync(resolve(dir,'../brand'),{recursive:true});
-copyFileSync(resolve(root,'public/brand/spark.svg'),resolve(dir,'../brand/spark.svg'));
-copyFileSync(resolve(root,'public/brand/spark.svg'),resolve(dir,'spark.svg'));
+copyFileSync(resolve(root,'public/brand/fold.svg'),resolve(dir,'../brand/fold.svg'));
 await build({
  entryPoints:[resolve(dir,'preview.tsx')],bundle:true,format:'esm',jsx:'automatic',
  outfile:resolve(dir,'launch-preview.js'),minify:true,define:{'process.env.NODE_ENV':'"production"'},
@@ -24,4 +23,4 @@ await build({
    b.onResolve({filter:/hooks\/useMusic$/},args=>args.importer===resolve(root,'src/Launch.tsx')?{path:resolve(dir,'PreviewMusic.tsx')}:undefined);
  }}],
 });
-console.log('Bundled the production intro and theme; only API stubs and audio comparison controls are preview-specific.');
+console.log('Bundled the production intro with preview-only API stubs and Arrival soundtrack.');
