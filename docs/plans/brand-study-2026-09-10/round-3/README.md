@@ -1,5 +1,15 @@
 # Current intro, new appearance
 
+## Reference gradient selected
+
+The user rejected the pastel trials and selected the blue gradient shown on the Spark in the supplied board. The refined geometry now uses a vertical periwinkle-to-deep-blue gradient with stops `#8caeff`, `#3b76fb` at 54%, and `#1323f9`. Colors were guided by samples from the supplied Spark image, rather than the app's flat blue. The outer silhouette and transparent terminal cutouts remain unchanged.
+
+The SVG is now displayed as a self-contained image in the shared component and startup HTML, keeping its gradient references inside its own document in WKWebView. The platform icon is generated from the same master. The native WebKit regression uses this same image-loading route and checks both the gradient and transparent cutouts. All five pixel checks passed; the native image and platform icon were visually inspected. The 21 launch/audio tests and production frontend build also passed. Arrival and the existing intro sequence remain unchanged.
+
+## Color exploration after blue rejection
+
+The user rejected the app blue and invited a different color without requiring a match to the app palette. The preview now offers Jade (`#91c9ae`, default), Coral (`#e5a092`), and Iris (`#b6a4df`). The attention token is overridden only within the review shell, so the exact production Spark geometry and intro can be compared without reinstalling each tentative choice. The native cutout correction and Arrival are retained. Production and installed-app color remain blue pending a selection. The preview rebuilt successfully and the three colors were visually inspected.
+
 ## Native cutout correction and app-blue Spark
 
 The installed WKWebView showed a solid silhouette: its external SVG `<use>` rendered the mark but failed to resolve the nested mask. Spark now uses one compound path with `fill-rule="evenodd"`, preserving the original outer geometry and rounded terminal cutouts without mask references. The shared mark, startup mark and generated platform icons use the app's `--color-attention` blue, currently `#3b82f6`. This supersedes the monochrome logo choice below; the intro background remains dark and neutral, with Arrival unchanged.

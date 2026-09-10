@@ -1,4 +1,4 @@
-// Render the external SVG <use> in WKWebView, matching the native app's tauri scheme.
+// Render the self-contained SVG image in WKWebView, matching the native app's tauri scheme.
 // Usage: swift scripts/verify-brand-webkit.swift public/brand/spark.svg /tmp/spark-webkit.png
 import AppKit
 import WebKit
@@ -25,7 +25,7 @@ final class BrandCheck: NSObject, WKURLSchemeHandler, WKNavigationDelegate {
     }
     func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
         let isSVG = urlSchemeTask.request.url!.path.hasSuffix(".svg")
-        let html = "<html><head><style>html,body{margin:0;background:#181818}svg{display:block;color:#3b82f6}</style></head><body><svg width='256' height='256' viewBox='0 0 256 256'><use href='/brand/spark.svg#mark'></use></svg></body></html>"
+        let html = "<html><head><style>html,body{margin:0;background:#181818}img{display:block}</style></head><body><img width='256' height='256' src='/brand/spark.svg'></body></html>"
         let data = isSVG ? svg : Data(html.utf8)
         urlSchemeTask.didReceive(URLResponse(url: urlSchemeTask.request.url!, mimeType: isSVG ? "image/svg+xml" : "text/html", expectedContentLength: data.count, textEncodingName: "utf-8"))
         urlSchemeTask.didReceive(data)
@@ -46,7 +46,8 @@ final class BrandCheck: NSObject, WKURLSchemeHandler, WKNavigationDelegate {
                 do { try png.write(to: URL(fileURLWithPath: self.output)) }
                 catch { fputs("\(error)\n", stderr); exit(1) }
                 let samples: [(String, Int, Int, [Int])] = [
-                    ("Spark fill", 128, 80, [59, 130, 246]),
+                    ("Upper gradient", 128, 80, [97, 144, 253]),
+                    ("Lower gradient", 128, 210, [31, 59, 250]),
                     ("Chevron cutout", 99, 117, [24, 24, 24]),
                     ("Underscore cutout", 160, 157, [24, 24, 24]),
                     ("Outside", 4, 4, [24, 24, 24]),
