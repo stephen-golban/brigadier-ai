@@ -494,7 +494,9 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
       paintSpan.current = null;
       return;
     }
-    if (store.getSessionRows(selectedSessionId).length > 0) {
+    // The count, not the rows: `getSessionRows` would build a 2,000-element snapshot to answer a
+    // yes/no question (`src/feedStore.ts`, `getSessionRowCount`).
+    if (store.getSessionRowCount(selectedSessionId) > 0) {
       pending.span.painted();
       paintSpan.current = null;
       return;

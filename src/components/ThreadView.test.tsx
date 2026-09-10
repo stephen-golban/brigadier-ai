@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { peerApi } from "../peerApi";
 import { ThreadView } from "./ThreadView";
 import { workspaceApi, type ChatItem } from "../workspaceApi";
+import { defaultSettings, workbenchApi } from "../workbenchApi";
 
 const { state } = vi.hoisted(() => ({
   state: {
@@ -472,4 +473,67 @@ it('renders the full worker transcript with read-only assistant-ui scope',async(
  render(<ThreadView sessionId="idle" projectId="p" projectName="Example" peers={peers} onFile={()=>{}}/>);
  expect(await screen.findByText(/The command failed\. Open/)).toBeVisible();
  expect(screen.queryByRole('button',{name:'Edit message'})).toBeNull();
+});
+
+it("shows the loading state until saved history arrives, then the transcript", async () => {
+  let deliver!: (items: ChatItem[]) => void;
+  vi.spyOn(workspaceApi, "chat").mockImplementation(
+    () => new Promise<ChatItem[]>((resolve) => { deliver = resolve; }),
+  );
+  render(<ThreadView sessionId="idle" projectId="p" projectName="Example" onFile={() => {}} />);
+  expect(await screen.findByText("Loading conversation…")).toBeVisible();
+  deliver(transcript);
+  expect(await screen.findByText(/The command failed/)).toBeVisible();
+  expect(screen.queryByText("Loading conversation…")).toBeNull();
+});
+
+it("restores a saved scroll position once per keyed mount, not on every history revision", async () => {
+  localStorage.setItem("brigadier:scroll:idle", JSON.stringify({ top: 120, following: false }));
+  vi.spyOn(workspaceApi, "chat").mockImplementation(async (_id, after) =>
+    transcript.filter((i) => i.seq > after),
+  );
+  const props = { projectId: "p", projectName: "Example", onFile: vi.fn() };
+  const view = render(<ThreadView {...props} sessionId="idle" />);
+  await screen.findByText(/The command failed/);
+  const viewport = view.container.querySelector<HTMLElement>(".aui-viewport")!;
+  expect(viewport.scrollTop).toBe(120);
+  // A revision reload re-enters the loading state without a keyed remount; the reader's own
+  // position must survive it.
+  viewport.scrollTop = 300;
+  view.rerender(<ThreadView {...props} sessionId="idle" revision={1} />);
+  await waitFor(() => expect(screen.getByText(/The command failed/)).toBeVisible());
+  expect(view.container.querySelector(".aui-viewport")).toBe(viewport);
+  expect(viewport.scrollTop).toBe(300);
+});
+
+it("keeps a pending approval from expanding the work rows that did not request it", async () => {
+  const { Approvals } = await import('./Approvals');
+  vi.spyOn(workspaceApi, "chat").mockResolvedValue([
+    ...transcript,
+    saved("later-user", { type: "user-text" }, "Now print the directory", 7),
+    saved("later-call", { type: "tool-call", name: "Bash" }, '{"command":"pwd"}', 8),
+  ]);
+  const requests = <Approvals approvals={[{projectId:'p',projectName:'Example',elsewhere:false,approval:{requestId:'later-approval',sessionId:'idle',openedAtMs:10,expired:false,kind:{type:'tool-permission',tool_name:'Bash',input_excerpt:'pwd',suggestions:[],tool_call_id:'later-call'}}}]} onRespond={vi.fn()} onDismiss={vi.fn()} />;
+  const view = render(<ThreadView sessionId="idle" projectId="p" projectName="Example" onFile={vi.fn()} requests={requests} />);
+  await screen.findByRole('button', { name: 'Allow' });
+  expect(screen.getAllByRole('button', { name: 'Allow' })).toHaveLength(1);
+  expect(view.container.querySelector('[data-message-id="work:user"]')?.contains(document.getElementById('approval-later-approval'))).toBe(false);
+  expect(screen.getByRole('button', { name: /Worked/ })).toHaveAttribute('aria-expanded', 'false');
+  expect(screen.queryByText("I’ll inspect the diff.")).toBeNull();
+});
+
+it("greets by display name only while no session is open", async () => {
+  const load = vi.spyOn(workbenchApi, "load").mockResolvedValue({
+    notes: [], global: defaultSettings, projects: {}, displayName: "Ada",
+  });
+  vi.spyOn(workspaceApi, "chat").mockResolvedValue(transcript);
+  const props = { projectId: "p", projectName: null, onFile: vi.fn() };
+  const view = render(<ThreadView {...props} sessionId="idle" />);
+  await screen.findByText(/The command failed/);
+  expect(screen.queryByRole("heading")).toBeNull();
+  // An open transcript reads the workbench once, for the task policy panel. The greeting is not
+  // a second reason to round-trip, nor to re-render every mounted row when the workbench changes.
+  expect(load).toHaveBeenCalledTimes(1);
+  view.rerender(<ThreadView {...props} sessionId={null} />);
+  expect(await screen.findByRole("heading", { name: "What will you build, Ada?" })).toBeVisible();
 });

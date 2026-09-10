@@ -94,17 +94,35 @@ export function retireSession(sessionId: string) {
     new CustomEvent("workbench-history-deleted", { detail: { sessionId } }),
   );
 }
+// One shared empty payload so the reset on a session change is a real no-op when there is nothing
+// to clear: a fresh object literal defeats React's `Object.is` bail-out and re-renders everything
+// under this hook, including the mounted transcript, inside the first-mount window the native
+// 60 Hz burn is measured over.
+const NO_CHANGES: SessionChanges = { files: [], turns: [] };
 export function useSessionChanges(sessionId: string | null) {
-  const [data, setData] = useState<SessionChanges>({ files: [], turns: [] });
+  const [data, setData] = useState<SessionChanges>(NO_CHANGES);
   useEffect(() => {
-    setData({ files: [], turns: [] });
+    setData(NO_CHANGES);
     if (!sessionId) return;
     let live = true,
       timer: ReturnType<typeof setTimeout>;
+    // What the render tree already shows, as of the reset above. The poll below runs every 3.5 s
+    // and a quiet session answers with the same counts each time; setting a fresh object for that
+    // re-renders everything under this hook, the mounted transcript included. The payload is a flat
+    // list of paths with two integers each plus the same per turn — a few KB of JSON for a large
+    // session, so serialising it costs microseconds against the tens of milliseconds a transcript
+    // re-render costs. This suppresses *only* a payload identical to the one on screen; any real
+    // difference in path, counts or turns still lands on the poll that first sees it. The variable
+    // is scoped to one effect run, so a session change starts it over with no stale carry.
+    let delivered = JSON.stringify(NO_CHANGES);
     const read = async () => {
       try {
         const next = await desktopApi.changes(sessionId);
-        if (live) setData(next);
+        const encoded = JSON.stringify(next);
+        if (live && encoded !== delivered) {
+          delivered = encoded;
+          setData(next);
+        }
       } catch {
         /* No counts are invented for older or unavailable checkpoints. */
       } finally {

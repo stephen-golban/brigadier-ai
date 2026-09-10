@@ -5,6 +5,7 @@
  * Evidence: docs/research/native-performance-timing-2026-09-09.md.
  */
 import { bridge } from "./bridge";
+import { profiling, traceEvent } from "./perfDiagnostics";
 import type { FrameStats } from "./wire";
 
 /**
@@ -87,6 +88,9 @@ export function sampleFrame(now: number): void {
   }
   const dt = now - last;
   last = now;
+  // Diagnostic only: `profiling` is a build-time false everywhere else, so this costs nothing and
+  // changes nothing below it. The meter's own numbers are computed exactly as before.
+  if (profiling) traceEvent("frame", dt);
 
   acc.push(dt);
   if (now - windowStartPerf >= REPORT_INTERVAL_MS && acc.length >= 2) report(now);
