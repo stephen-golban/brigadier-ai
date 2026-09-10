@@ -306,7 +306,9 @@ async fn run(
     // Clamped again here, not only in `with_rate`: this is the call that panics on a bad rate.
     let period = Duration::from_secs_f64(1.0 / rows_per_sec.clamp(MIN_ROWS_PER_SEC, MAX_ROWS_PER_SEC));
     let mut ticker = tokio::time::interval(period);
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // A load generator must catch up rather than silently lower the requested rate.
+    // See docs/research/native-react-profiling-2026-09-10.md.
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Burst);
     // The last `seq` emitted, not the next: every emission pre-increments.
     let mut seq = start_seq;
     let mut index = 0usize;

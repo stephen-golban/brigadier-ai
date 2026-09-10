@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use brigadier_core::driver::{DriverKind, StartSession};
+use brigadier_core::event::Event;
 use brigadier_supervisor::replay::{MAX_ROWS_PER_SEC, MIN_ROWS_PER_SEC, REPLAY};
 use brigadier_supervisor::ReplayDriver;
 
@@ -39,16 +40,20 @@ pub(crate) async fn run(
     let duration = validate(sessions, rows_per_sec, duration_s)?;
 
     let path = fixture_path(fixture)?;
-    let driver = ReplayDriver::from_fixture(&path).await?.with_rate(rows_per_sec);
-    let script_len = driver.script().len();
+    let loaded = ReplayDriver::from_fixture(&path).await?;
+    // Keep each replay workspace with its isolated app data. Captured session-started
+    // events must not redirect the UI to the capture author's obsolete directory.
+    let ready = state.get()?;
+    let root = ready.data_dir.join("burn-fixtures").join(uuid::Uuid::new_v4().to_string());
+    prepare_workspace(&root).await?;
+    let script = relocate_script(loaded.script(), &root);
+    let script_len = script.len();
+    let driver = ReplayDriver::new(script).with_rate(rows_per_sec);
+    let supervisor = ready.supervisor.clone();
+    supervisor.register_driver(Arc::new(driver.clone()));
+    let delivery_path = ready.data_dir.join("burn-delivery.json");
+    let started_at = std::time::Instant::now();
 
-    let supervisor = state.get()?.supervisor.clone();
-    supervisor.register_driver(Arc::new(driver));
-
-    // The burn needs a project row because the batcher keys every frame by project id. A temp
-    // directory named `burn` gives `add_project` the name without touching the operator's tree.
-    let root = std::env::temp_dir().join("brigadier-burn").join("burn");
-    std::fs::create_dir_all(&root)?;
     let project = supervisor.add_project(root.clone()).await?;
 
     let kind = DriverKind::new(REPLAY);
@@ -85,9 +90,49 @@ pub(crate) async fn run(
         // dead `ReplayDriver` per burn under the same key; the next burn registers its own
         // before it starts anything, so nothing depends on this one still being there.
         supervisor.unregister_driver(&kind);
+        let delivery = serde_json::json!({
+            "sessionIds": started.iter().map(|id| id.as_str()).collect::<Vec<_>>(),
+            "emitted": driver.emitted(), "elapsedMs": started_at.elapsed().as_millis(),
+            "rowsPerSec": rows_per_sec, "durationS": duration.as_secs_f64(), "scriptLen": script_len,
+        });
+        if let Err(error) = std::fs::write(&delivery_path, delivery.to_string()) {
+            tracing::error!(%error, "burn delivery report failed");
+        }
         tracing::info!(sessions = started.len(), "burn finished");
     });
     Ok(())
+}
+
+/// A valid disposable repository avoids exercising an unrelated workspace-error path.
+async fn prepare_workspace(root: &std::path::Path) -> Result<(), AppError> {
+    std::fs::create_dir_all(root)?;
+    for args in [
+        vec!["init", "--quiet", "--initial-branch=main", "--template="],
+        vec!["-c", "user.name=Performance Fixture", "-c", "user.email=perf@example.invalid",
+             "-c", "commit.gpgsign=false", "commit", "--quiet", "--allow-empty", "-m", "Fixture"],
+    ] {
+        let output = tokio::process::Command::new("git")
+            .current_dir(root)
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("GIT_CONFIG_GLOBAL", root.join(".no-global-git-config"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .args(args).output().await?;
+        if !output.status.success() {
+            return Err(AppError::io(String::from_utf8_lossy(&output.stderr).into_owned()));
+        }
+    }
+    Ok(())
+}
+
+/// Rewrite only fixture workspace metadata, preserving every event and its rate.
+fn relocate_script(script: &[Event], root: &std::path::Path) -> Vec<Event> {
+    script.iter().cloned().map(|mut event| {
+        if let Event::SessionStarted { cwd, .. } = &mut event {
+            *cwd = root.to_path_buf();
+        }
+        event
+    }).collect()
 }
 
 /// Check the three numbers a burn is asked for, and return the run length they mean.
@@ -139,6 +184,35 @@ fn fixture_path(fixture: &str) -> Result<PathBuf, AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn the_fresh_fixture_is_a_repository_with_a_commit() {
+        let root = tempfile::tempdir().unwrap();
+        prepare_workspace(root.path()).await.unwrap();
+        let output = tokio::process::Command::new("git")
+            .args(["rev-parse", "--verify", "HEAD"])
+            .current_dir(root.path()).output().await.unwrap();
+        assert!(output.status.success());
+    }
+
+    #[test]
+    fn a_replay_uses_its_fresh_workspace_without_changing_other_events() {
+        let script = vec![Event::SessionStarted {
+            provider_session_id: "fixture".into(), model: "fixture".into(),
+            cwd: PathBuf::from("/old/disposable/path"), capabilities: vec![], resume_token: None,
+        }];
+        let root = tempfile::tempdir().unwrap();
+        let relocated = relocate_script(&script, root.path());
+        assert_eq!(relocated.len(), script.len());
+        match &relocated[0] {
+            Event::SessionStarted { cwd, model, .. } => {
+                assert_eq!(cwd, root.path());
+                assert_eq!(model, "fixture");
+                assert!(cwd.is_dir());
+            }
+            _ => panic!("event kind changed"),
+        }
+    }
 
     #[test]
     fn a_fixture_stem_may_not_escape_the_fixtures_directory() {

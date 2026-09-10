@@ -198,6 +198,7 @@ export interface Bridge {
   settleIntent(intentId: IntentId, state: IntentSettlement): Promise<void>;
 
   recordFrameStats(stats: FrameStats): Promise<void>;
+  recordBurnCapture(capture: unknown): Promise<void>;
   /** Append one timed paint to `<data_dir>/paint.ndjson`. Fire-and-forget at every call site. */
   reportPaint(report: PaintReport): Promise<void>;
   burn(args: BurnArgs): Promise<void>;
@@ -331,6 +332,7 @@ const tauriBridge: Bridge = {
     call<void>("settle_intent", { intentId, state }),
 
   recordFrameStats: (stats) => call<void>("record_frame_stats", { stats }),
+  recordBurnCapture: (capture) => call<void>("record_burn_capture", { capture }),
   reportPaint: (report) => call<void>("report_paint", { report }),
   burn: ({ sessions, rowsPerSec, durationS, fixture }) =>
     call<void>("burn", { sessions, rowsPerSec, durationS, fixture }),

@@ -1,3 +1,9 @@
+> **Measurement correction (2026-09-09):** the per-window p10/p50 cadence estimator below is
+> retired. It can relabel missed 60 Hz opportunities as a passing 30 Hz cadence. The current
+> meter locks the 60 Hz requirement, retains raw callback timestamps and long stalls, and
+> invalidates hidden or incomplete captures. Physical panel refresh and rAF cadence are separate.
+> See [the native timing audit](native-performance-timing-2026-09-09.md).
+
 # Feed rendering: virtualized terse rows, rAF ingestion, and honest FPS in WKWebView
 
 Date: 2026-09-02. Scope: the UI half of the feed — which virtualizer, how bytes coming off a

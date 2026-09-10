@@ -4,9 +4,32 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Brigadier</title>
+    <script>
+      // Match ThemeProvider before the first contentful paint, including a saved light theme.
+      try {
+        const theme = localStorage.getItem("brigadier.theme") === "light" ? "light" : "dark";
+        document.documentElement.classList.add(theme);
+        document.documentElement.style.colorScheme = theme;
+      } catch { document.documentElement.classList.add("dark"); }
+    </script>
+    <style>
+      .boot-status { position: fixed; inset: 0; display: grid; place-content: center;
+        justify-items: center; gap: 12px; background: var(--color-canvas, #181818);
+        color: #bdc5d9; font: 14px ui-rounded, "SF Pro Rounded", system-ui, sans-serif; }
+      .boot-status p { margin: 0; }
+      .light .boot-status { background: var(--color-canvas, #fafafa); color: #52525b; }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <!-- Real startup feedback, replaced by React's matching loading state. FCP is not app-ready. -->
+      <div class="boot-status" role="status">
+        <svg width="32" height="32" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true">
+          <use href="/brand/fold.svg#mark"></use>
+        </svg>
+        <p>Opening Brigadier…</p>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

@@ -1,3 +1,4 @@
+import { countDiagnostic } from "./perfDiagnostics";
 /**
  * Feed ingestion: Channel -> module buffer -> one rAF drain -> one commit per frame.
  *
@@ -359,6 +360,7 @@ function applyBatch(batch: FeedBatch): void {
 }
 
 function rebuildState(): void {
+  countDiagnostic("stateRebuild");
   const record: Record<SessionId, SessionRuntime> = {};
   for (const [id, r] of sessions) record[id] = r;
   const order = [...sessions.values()]
@@ -377,6 +379,7 @@ function rebuildState(): void {
 let rafId = 0;
 let drainTimer: ReturnType<typeof setTimeout> | undefined;
 let running = false;
+const PROFILE_DRAIN = new URLSearchParams(location.search).has("profile");
 
 /**
  * Rows changing does not change `state` (the rings live outside it), so the loop still has to
@@ -384,8 +387,9 @@ let running = false;
  */
 let rowsChanged = false;
 
-function drain(animationFrame: boolean): void {
+function drain(timestamp?: number): void {
   if (!running) return;
+  const workStarted = PROFILE_DRAIN ? performance.now() : 0;
   cancelAnimationFrame(rafId);
   clearTimeout(drainTimer);
   scheduleDrain();
@@ -417,14 +421,15 @@ function drain(animationFrame: boolean): void {
     ingest.windowStart = now;
   }
 
-  if (animationFrame) fps.sampleFrame();
+  if (PROFILE_DRAIN) fps.recordDrain(performance.now() - workStarted);
+  if (timestamp !== undefined) fps.sampleFrame(timestamp);
 }
 
 function scheduleDrain(): void {
-  rafId = requestAnimationFrame(() => drain(true));
+  rafId = requestAnimationFrame(timestamp => drain(timestamp));
   // WKWebView pauses animation frames when occluded. Approval and turn signals
   // must still catch up with the durable transcript's independent polling.
-  drainTimer = setTimeout(() => drain(false), 250);
+  drainTimer = setTimeout(() => drain(), 250);
 }
 
 function notify(): void {

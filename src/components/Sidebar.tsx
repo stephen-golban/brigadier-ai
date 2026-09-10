@@ -1,3 +1,4 @@
+import { profiling } from "../perfDiagnostics";
 import type { SettingsRequest } from "../settingsNavigation";
 import { useSessionNavigation } from "../sessionNavigation";
 import { createPortal } from "react-dom";
@@ -1240,3 +1241,5 @@ export function Sidebar(props: SidebarProps) {
     </>
   );
 }
+
+if (profiling) Sidebar.displayName = "Sidebar";

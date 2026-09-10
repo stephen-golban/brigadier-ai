@@ -67,7 +67,7 @@ pub(crate) fn observe_signals(signals: &[Envelope]) {
             Event::TurnAborted { .. } => "stopped",
             _ => continue,
         };
-        if let Err(error) = change(|d| {
+        if let Err(error) = change_if(|d| d.assignments.contains_key(envelope.session_id.as_str()), |d| {
             let turn = match &envelope.event {
                 Event::TurnCompleted { turn_id, .. } | Event::TurnAborted { turn_id, .. } => {
                     turn_id.as_str()
@@ -82,7 +82,7 @@ pub(crate) fn observe_signals(signals: &[Envelope]) {
         let Event::TurnCompleted { turn_id, .. } = &envelope.event else {
             continue;
         };
-        match change(|data| {
+        match change_if(|d| d.subagents.contains_key(envelope.session_id.as_str()), |data| {
             let mut message = record(
                 data,
                 envelope.session_id.as_str(),
@@ -102,7 +102,7 @@ pub(crate) fn observe_signals(signals: &[Envelope]) {
                 }
             }
             Ok(message)
-        }) {
+        }).map(Option::flatten) {
             Ok(Some(message)) if message.error.is_none() => {
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {

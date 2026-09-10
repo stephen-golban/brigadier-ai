@@ -1,0 +1,22 @@
+[
+  {
+    "build": "release",
+    "measurement": "startup",
+    "exit": 0
+  },
+  {
+    "build": "release",
+    "measurement": "burn",
+    "exit": 1
+  },
+  {
+    "build": "debug",
+    "measurement": "startup",
+    "exit": 0
+  },
+  {
+    "build": "debug",
+    "measurement": "burn",
+    "exit": 1
+  }
+]

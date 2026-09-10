@@ -14,7 +14,7 @@
 }
 .launch[data-stage="loading"] .launch-loading {
   background: var(--color-canvas, #181818);
-  animation: welcome-resolve 0.3s 0.6s both;
+  /* Startup feedback must paint immediately; cinematic timing belongs to onboarding. */
 }
 .launch-window {
   position: absolute;

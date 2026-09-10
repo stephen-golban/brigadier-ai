@@ -1237,6 +1237,7 @@ export const mockBridge: Bridge = {
     run.settled.add(intentId);
   },
 
+  async recordBurnCapture() {},
   async recordFrameStats() {
     // The Rust side appends NDJSON; in the browser the console.debug in fps.ts is the record.
   },
