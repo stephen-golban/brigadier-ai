@@ -9,7 +9,7 @@ import { useState, useEffect, useSyncExternalStore } from 'react';
 import type { SessionRuntime } from '../feedStore';
 import type { PeerData } from '../peerApi';
 import { workerTree, workerPresentation } from '../workerTree';
-import { markSessionRead } from '../attention';
+import { acknowledgeSessionRead, flushSessionReads } from '../attention';
 import { useStoredState } from '../workbenchState';
 import { errorMessage } from '../workspaceApi';
 import { providerIdentity } from './AgentsPanel';
@@ -29,11 +29,24 @@ export function SubagentsPanel({ rootId, projectId, peers, sessions, onFile, req
   const feedState = useSyncExternalStore(feed.subscribe, feed.getState);
   const rows = rootId ? workerTree(rootId, peers, sessions) : [];
   const selected = rootId ? rows.find(row => row.id === selection[rootId]) : undefined;
+  // This panel's nested worker selection is its own, independent of the top-level session
+  // `App.tsx` hands `useAttention`, so the read marker for an opened worker is set here.
+  // `acknowledgeSessionRead` rather than `markSessionRead`: the snapshot's `lastEventSeq` may
+  // trail the stream by up to `COUNTER_FLUSH_MS` — the reasoning is on the helper.
   useEffect(() => {
     if (selected?.session && Number.isFinite(selected.session.lastEventSeq)) {
-      markSessionRead(selected.id, selected.session.lastEventSeq);
+      acknowledgeSessionRead(selected.id, selected.session.lastEventSeq);
     }
   }, [selected?.id, selected?.session?.lastEventSeq]);
+  // Leaving the opened worker (switching to another, or back to the list) is the same transition
+  // `useAttention`'s cleanup guards against: a cursor-only advance for `selected` between the last
+  // render and the switch would otherwise persist a sequence the live stream had already passed,
+  // via the same 500ms `COUNTER_FLUSH_MS` fold documented on `src/feedStore.ts`'s `lastEventSeq`.
+  // `-1` as the floor for the same reason as there: nothing here is fresher than what the effect
+  // above already acknowledged, so only the live stream can add anything at this instant.
+  useEffect(() => () => {
+    if (selected) { acknowledgeSessionRead(selected.id, -1); flushSessionReads(); }
+  }, [selected?.id]);
   const assignment = selected ? peers.assignments?.[selected.id] : undefined;
   const selectedProjectId = selected?.session?.projectId ?? projectId;
   const select = (id: string | null) => rootId && setSelection(old => ({...old, [rootId]: id}));

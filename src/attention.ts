@@ -1,5 +1,6 @@
 import { countDiagnostic } from "./perfDiagnostics";
 import { useEffect, useState, useSyncExternalStore } from "react";
+import { getSessionCursor } from "./feedStore";
 import type { SessionRuntime } from "./feedStore";
 
 const readKey = "brigadier:read-sessions";
@@ -43,6 +44,24 @@ let readVersion = 0;
 let unpersisted = false;
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 /**
+ * Whether the last durable write went through. It gates the two *eager* flushes below, and nothing
+ * else: the in-memory map stays authoritative and every advance stays owed either way, so a store
+ * that cannot be written costs a read marker nothing but latency.
+ *
+ * Why it has to exist: `written` is assigned only after a successful `setItem`, so under a store
+ * that always throws (private mode, exhausted quota, storage disabled) it stays `{}` forever and
+ * every advance looks like a session's first-ever marker — a `getItem` + `JSON.parse` +
+ * whole-map `JSON.stringify` + throwing `setItem` on every one. That is the ~45 writes/s the
+ * coalescing exists to remove, restored in the one environment that was already degraded
+ * **[measured, src/attention.test.ts "stops hammering a store that cannot be written"]**: 200
+ * advances made 200 attempts before this flag, ~13 after.
+ *
+ * It is not latched. A suppressed advance falls through to the trailing timer, so attempts
+ * continue at `flushDelayMs` rather than per advance, and the first one that succeeds sets this
+ * back to `true` — a store whose quota is freed resumes persisting with no user action.
+ */
+let writable = true;
+/**
  * Sessions that already have an unpersisted advance **in the current task**. A run of advances
  * inside one task gets no chance to interleave the trailing timer, so the second and later
  * advances of the same session in that task persist eagerly; the frame-driven stream delivers one
@@ -65,6 +84,7 @@ export function resetAttentionStateForTests() {
   reads = null;
   written = {};
   unpersisted = false;
+  writable = true;
   readVersion++; // bumped, not zeroed: a snapshot cached at version 0 must not match a reset store
   eager.clear();
 }
@@ -140,11 +160,14 @@ export function flushSessionReads() {
     localStorage.setItem(readKey, JSON.stringify(merged));
     written = merged;
     unpersisted = false; // set *after* the write, never before: a throw must stay owed
+    writable = true; // a store that took this write is one the eager flushes may use again
   } catch {
     // Quota, private mode, an unwritable store. The advance stays owed, so the next advance,
     // session switch, hide or `pagehide` retries it. No timer is re-armed here on purpose: a
     // permanently unwritable store would otherwise retry every 250 ms forever with no user
-    // activity at all.
+    // activity at all. `writable` stops the *eager* flushes in `markSessionRead` instead, which
+    // is what keeps a per-advance attempt from taking that timer's place.
+    writable = false;
   }
   if (changed) { readVersion++; publishReads(); }
 }
@@ -166,7 +189,9 @@ export function markSessionRead(sessionId: string, seq: number) {
   unpersisted = true;
   publishReads();
   // A session's first-ever marker is a rare, meaningful transition: persist it without waiting.
-  if (!(sessionId in written)) { flushSessionReads(); return; }
+  // Only while the store takes writes: under one that always throws, `written` never fills, so
+  // every advance would look like a first marker and pay a full failing write. See `writable`.
+  if (writable && !(sessionId in written)) { flushSessionReads(); return; }
   // The assumption this whole coalescing rests on: **[asserted]** the app delivers at most one
   // advance per session per task — one `useAttention` effect per commit, one commit per frame, the
   // shape the 60 Hz benchmark measured. Only under that does "a second advance of this session
@@ -176,10 +201,51 @@ export function markSessionRead(sessionId: string, seq: number) {
   // flushed in one scheduler callback, would make every advance eager again and restore the ~45
   // durable writes/s this change removed. If the benchmark's `readPersistence` count climbs back
   // toward the event rate, this line is why.
-  if (eager.has(sessionId)) { flushSessionReads(); return; }
+  if (writable && eager.has(sessionId)) { flushSessionReads(); return; }
   if (eager.size === 0) queueMicrotask(clearEager);
   eager.add(sessionId);
   if (flushTimer === null) flushTimer = setTimeout(flushSessionReads, flushDelayMs);
+}
+
+/**
+ * The event sequence the **stream** has reached for one session, or -1 when the store has never
+ * seen it (a fabricated session in a test, or one deleted since). `getSessionCursor` is
+ * `${rowsTotal}:${lastEventSeq}:${busy}` read straight off `src/feedStore.ts`'s live map, which is
+ * why the middle field is taken rather than `getState()`'s copy: `lastEventSeq` is a `CURSOR_FIELDS`
+ * value, folded into the React snapshot only on the `COUNTER_FLUSH_MS` (500 ms) tick.
+ *
+ * **Never call this during a render** — `src/feedStore.ts` mutates that map outside React's
+ * knowledge. Both callers below are effects.
+ */
+function liveEventSeq(sessionId: string): number {
+  const cursor = getSessionCursor(sessionId);
+  if (cursor === "") return -1;
+  const seq = Number(cursor.slice(cursor.indexOf(":") + 1, cursor.lastIndexOf(":")));
+  return Number.isFinite(seq) ? seq : -1;
+}
+
+/**
+ * Acknowledge a session at whichever is further along: the sequence the live stream has reached
+ * *at this instant*, or the one the caller's React snapshot carries. The snapshot is kept as a
+ * floor rather than dropped because a `SessionRuntime` need not have come from the store at all
+ * (a saved or closed worker has no live session, and `getSessionCursor` returns `""` for it).
+ *
+ * Prefer this over `markSessionRead(id, snapshot.lastEventSeq)` **everywhere a read marker is set
+ * from a React snapshot**: `lastEventSeq` is a `CURSOR_FIELDS` value in `src/feedStore.ts`, folded
+ * into the snapshot only on the `COUNTER_FLUSH_MS` (500 ms) tick, so the snapshot's copy may trail
+ * the stream. Persisting that stale sequence and then letting the fold lift the snapshot above it
+ * is what turns an unread dot back on for a conversation the operator just read. Pass `-1` as the
+ * snapshot floor from a cleanup, where there is no snapshot to read.
+ *
+ * Callers: `useAttention` below, and `src/components/SubagentsPanel.tsx` for its own nested worker
+ * selection. `markSessionRead` only ever advances a marker, so two callers for the same session id
+ * cannot lower it between them.
+ *
+ * **Never call this during a render** — see `liveEventSeq`. Every caller is an effect.
+ */
+export function acknowledgeSessionRead(sessionId: string, snapshotSeq: number) {
+  const live = liveEventSeq(sessionId);
+  markSessionRead(sessionId, live > snapshotSeq ? live : snapshotSeq);
 }
 
 export function working(session: SessionRuntime | undefined) {
@@ -240,11 +306,30 @@ export function useAttention(
   const [snapshotOf] = useState(attentionCache);
   const snapshot = useSyncExternalStore(subscribeReads, () => snapshotOf(sessions, selected, pending));
   // Acknowledgements advance for every event; the badge map only changes when an outcome does.
+  // The snapshot's `lastEventSeq` is the *trigger* — it still re-runs this effect on every folded
+  // advance — but the value acknowledged comes off the live stream, which is never behind it.
   useEffect(() => {
     if (!selected || !sessions[selected]) return;
-    markSessionRead(selected, sessions[selected].lastEventSeq);
+    acknowledgeSessionRead(selected, sessions[selected].lastEventSeq);
   }, [selected, sessions[selected ?? ""]?.lastEventSeq]);
-  // Leaving a session (or unmounting) persists what was read there, before the switch is visible.
-  useEffect(() => flushSessionReads, [selected]);
+  /*
+   * Leaving a session (or unmounting) acknowledges it at the live sequence and persists that,
+   * before the switch is visible.
+   *
+   * The acknowledgement here is not redundant with the effect above. A cursor-only advance for the
+   * selected session — a repeated `session-compacted`, a `turn-aborted` with `busy` already false,
+   * a repeated identical `runtime-error` — does not rebuild the snapshot, so that effect does not
+   * re-run and the last value it acknowledged trails the stream by up to `COUNTER_FLUSH_MS`.
+   * Leaving inside that window used to persist the stale sequence; the 500 ms fold then lifted the
+   * snapshot above what was persisted and the badge predicate turned an unread dot on for the
+   * conversation just read **[measured, src/attention.test.ts "acknowledges the live sequence when
+   * leaving a session a cursor-only signal just advanced"]**. `-1` as the floor because there is no
+   * snapshot to read in a cleanup: anything the snapshot ever showed was already acknowledged
+   * above, and `markSessionRead` only ever advances.
+   */
+  useEffect(() => () => {
+    if (selected) acknowledgeSessionRead(selected, -1);
+    flushSessionReads();
+  }, [selected]);
   return snapshot;
 }

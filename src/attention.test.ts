@@ -205,6 +205,33 @@ it('the test-only reset isolates module state, so a session id may be reused', (
 });
 
 /*
+ * A store that can never be written. Pre-fix, `written` was assigned only after a successful
+ * `setItem`, so it stayed `{}` forever and every advance took the "first-ever marker" branch: a
+ * synchronous `getItem` + `JSON.parse` + whole-map `JSON.stringify` + throwing `setItem` on every
+ * one — exactly the ~45 writes/s the coalescing removed, restored in the one environment already
+ * degraded. The retry path is what stops the flag from latching: attempts continue at the trailing
+ * window, so a store that frees quota resumes persisting with no user action.
+ */
+it('stops hammering a store that cannot be written, and resumes when it can again', () => {
+  vi.useFakeTimers();
+  const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    .mockImplementation(() => { throw new DOMException('quota', 'QuotaExceededError'); });
+  const advances = 200;
+  for (let seq = 1; seq <= advances; seq++) {
+    markSessionRead('unwritable', seq);
+    expect(readSequence('unwritable')).toBe(seq); // authoritative with nothing durable behind it
+    vi.advanceTimersByTime(16); // one frame, one task, as the app delivers them
+  }
+  const attempts = writes(setItem);
+  expect(attempts).toBeLessThan(advances / 10); // pre-fix: one attempt per advance, all 200
+  console.log(`failing write attempts for ${advances} advances: ${attempts}`);
+  setItem.mockRestore();
+  markSessionRead('unwritable', advances + 1);
+  vi.advanceTimersByTime(300); // the trailing window, now that the store takes writes again
+  expect(stored().unwritable).toBe(advances + 1);
+});
+
+/*
  * The badge against the real store, added 2026-09-10 with the `getState()` cursor split in
  * `src/feedStore.ts`. `lastEventSeq` no longer rebuilds the snapshot on the frame it moves, so the
  * badge predicate `(reads[id] ?? -1) < session.lastEventSeq` now reads a number that may trail the
@@ -214,6 +241,53 @@ it('the test-only reset isolates module state, so a session id may be reused', (
  * deferred.
  */
 import type {Envelope, Event, FeedBatch} from './wire';
+
+/*
+ * The other side of that trade: the **selected** session must never inherit the 500 ms lag. Pre-fix
+ * the acknowledgement read `lastEventSeq` off the React snapshot, so a cursor-only advance for the
+ * selected session (a repeated `session-compacted`, a `turn-aborted` with `busy` already false, a
+ * repeated identical `runtime-error`) inside the window before the operator switched away was
+ * persisted at the stale sequence; the fold then lifted the snapshot above it and the badge
+ * predicate turned the dot on for a conversation just read. The real store is driven here rather
+ * than a faked cursor, so a regression in either module fails this.
+ */
+it('acknowledges the live sequence when leaving a session a cursor-only signal just advanced', async () => {
+  vi.useFakeTimers();
+  // No `vi.resetModules()`: this must be the same `feedStore` instance `src/attention.ts` imports,
+  // or the live cursor it reads would belong to a different store than the one driven here.
+  const store = await import('./feedStore');
+  let seq = 0;
+  const signal = (event: Event): Envelope => ({seq: ++seq, at: 1_000, instance_id: 'i', session_id: 'ack', event});
+  const push = (...signals: Envelope[]) => {
+    store.pushBatch({project_id: 'p', rows: [], signals, counters: []} as FeedBatch);
+    vi.advanceTimersByTime(17); // one jsdom rAF period: exactly one drain
+  };
+  const announce = (): Event =>
+    ({type:'session-started', provider_session_id:'p1', model:'m', cwd:'/repo', capabilities:[], resume_token:null});
+
+  store.start();
+  push(signal(announce()), signal({type:'turn-started', turn_id:'t1'}),
+       signal({type:'turn-completed', turn_id:'t1', stop_reason:'end-turn', cost_usd_cumulative:0,
+               usage:{input_tokens:0, output_tokens:0, cache_read_tokens:0, cache_creation_tokens:0, context_window:null}}));
+  const read = store.getState();
+  const {result, rerender} = renderHook(({sessions, selected}) => useAttention(sessions, selected, []),
+    {initialProps:{sessions: read.sessions, selected: 'ack' as string|null}});
+  expect(result.current.ack).toBe(false);
+
+  push(signal(announce())); // a cursor-only advance for the session being read
+  expect(store.getState()).toBe(read); // no rebuild on this frame: the snapshot still trails
+  const live = seq;
+  rerender({sessions: store.getState().sessions, selected: null}); // …and the operator leaves
+  expect(readSequence('ack')).toBe(live); // pre-fix: the snapshot's stale sequence
+  expect(stored().ack).toBe(live); // leaving persisted it, before the switch is observable
+
+  vi.advanceTimersByTime(600); // the COUNTER_FLUSH_MS fold
+  const folded = store.getState();
+  expect(folded).not.toBe(read);
+  rerender({sessions: folded.sessions, selected: null});
+  expect(result.current.ack).toBe(false); // no dot on the conversation just read
+  store.stop();
+});
 
 it('turns a background badge on from a signal that moved only the event cursor', async () => {
   vi.useFakeTimers();
