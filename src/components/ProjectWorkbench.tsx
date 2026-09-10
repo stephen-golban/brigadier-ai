@@ -170,7 +170,7 @@ export function ProjectWorkbench({
       window.removeEventListener("workbench-history-deleted", deleted);
   }, [setLayouts]);
   const [data, setData] = useState<WorkbenchData>(initial);
-  const [mode, setMode] = useStoredState<WorkspaceMode>(
+  const [savedMode, setMode] = useStoredState<WorkspaceMode>(
     "brigadier:workspace-mode",
     "files",
   );
@@ -290,6 +290,8 @@ export function ProjectWorkbench({
     selected && selected.kind !== "session"
       ? selected.root
       : (activeSession?.cwd ?? project?.root_path ?? "");
+  const projectlessContext = !!project?.projectless && context.projectId === project.id;
+  const mode = projectlessContext && savedMode === "changes" ? "files" : savedMode;
   const refresh = () => setRevision((n) => n + 1);
   const setNote = (note: Note) => {
     setLayouts((old) =>
@@ -380,9 +382,10 @@ export function ProjectWorkbench({
   // Keep the last status visible while refreshing the same workspace.
   useEffect(() => {
     setStatus(null);
+    setError("");
   }, [context.projectId, context.sessionId]);
   useEffect(() => {
-    if (!context.projectId) return;
+    if (!context.projectId || projectlessContext) return;
     let live = true;
     void workspaceApi
       .git(context)
@@ -395,7 +398,7 @@ export function ProjectWorkbench({
     return () => {
       live = false;
     };
-  }, [context.projectId, context.sessionId, revision]);
+  }, [context.projectId, context.sessionId, projectlessContext, revision]);
   useEffect(() => {
     if (!project) return;
     const timer = setInterval(refresh, 5000);
@@ -1082,6 +1085,7 @@ export function ProjectWorkbench({
               canFork={
                 !!activeSession.providerSessionId && !working(activeSession)
               }
+              canForkWorktree={!project?.projectless}
               onFork={
                 onForkSession
                   ? (newWorktree) =>
@@ -1169,7 +1173,7 @@ export function ProjectWorkbench({
               ["search", "Search", Search],
               ["changes", "Changes", Compare],
             ] as const
-          ).map(([value, label, Icon]) => (
+          ).filter(([value]) => value !== "changes" || !projectlessContext).map(([value, label, Icon]) => (
             <Button
               key={value}
               size="icon"

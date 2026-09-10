@@ -41,6 +41,7 @@ mod peer_sessions;
 mod peers;
 mod project_icon;
 mod provider_catalog;
+mod updates;
 mod reconcile;
 mod search;
 mod session_archive;
@@ -160,6 +161,7 @@ pub fn run() {
             commands::probe_claude,
             commands::list_models,
             provider_catalog::provider_catalog,
+            updates::software_updates,
             task_memory::task_checkpoint,
             commands::list_projects,
             commands::add_project,

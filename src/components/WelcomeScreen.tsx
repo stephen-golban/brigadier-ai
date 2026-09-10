@@ -1,54 +1,14 @@
-import { useEffect, useState, type ReactNode, type SVGProps } from "react";
+import { useState, type ReactNode, type SVGProps } from "react";
 import { bridge } from "../bridge";
 import { errorMessage } from "../workspaceApi";
 import { BrandMark } from "./BrandMark";
-import { FolderPlusAdd, Notepad, PlusCircle } from "../icons";
+import { Button } from "./controls/button";
+import { FolderPlusAdd, Notepad } from "../icons";
 
-/**
- * The main pane with no project selected: a centred brand mark over a short column of actions,
- * ported from get-bb/bb's empty state. Rows are the hit target — no card, no border, no button
- * chrome; a `--radius-row` hover fill is the whole affordance.
- *
- * When it shows: `ThreadView` renders this instead of `NewConversation` while `projectId` is
- * `null`, which is now two states — no projects at all, and a global "New chat" that has not
- * picked one yet (`App`'s `projectUnpicked`, `src/App.tsx:229-250`). The row wiring assumes
- * neither: `listProjects()` is asked, so "New chat" is disabled on the answer rather than on the
- * inference.
- *
- * Every row calls a path that already exists:
- *  - New project: `pickDirectory()` then `addProject()`, the two calls `App`'s own `pickProject`
- *    makes (`src/App.tsx:772-781`), then the `brigadier-navigation-changed` event `App` and
- *    `navigationApi` both listen on, which reloads the project list and selects the new project.
- *  - New chat: the `brigadier-new-chat` event the sidebar's own "New chat" button and ⌘N
- *    dispatch (`src/components/Sidebar.tsx:438-456`). Pressed while already unpicked it opens the
- *    composer's project picker instead of doing nothing — `App` turns the second press into
- *    `brigadier-pick-project`, which `TaskSetupRail` listens for.
- *  - Notepad: the `brigadier-open-notes` event the sidebar listens for
- *    (`src/components/Sidebar.tsx:276-279`).
- * Nothing else is offered: there is no recent-repos importer and no tour to link to.
- */
+/** Welcome actions are available with or without an imported project. */
 export function WelcomeScreen() {
-  const [hasProjects, setHasProjects] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  useEffect(() => {
-    let live = true;
-    const read = () => {
-      void bridge()
-        .listProjects()
-        .then((list) => {
-          if (live) setHasProjects(list.length > 0);
-        })
-        .catch(() => {});
-    };
-    read();
-    window.addEventListener("brigadier-navigation-changed", read);
-    return () => {
-      live = false;
-      window.removeEventListener("brigadier-navigation-changed", read);
-    };
-  }, []);
-
   const addProject = async () => {
     if (busy) return;
     setError("");
@@ -79,26 +39,16 @@ export function WelcomeScreen() {
     <div className="welcome-screen flex min-h-0 flex-1 flex-col items-center overflow-y-auto px-6 py-8">
       <div aria-hidden className="min-h-4 flex-[1_1_0]" />
       <BrandMark className="brand-mark size-[120px] shrink-0 fill-current" />
-      <div className="mt-[96px] flex w-full max-w-[420px] shrink-0 flex-col gap-1.5">
-        <WelcomeRow
+      <h1 className="mt-4 shrink-0">Chat with Brigadier</h1>
+      <div className="welcome-actions shrink-0">
+        <WelcomeAction
           Icon={FolderPlusAdd}
           title="New project"
           subtitle="Create one from a local folder"
           disabled={busy}
           onClick={() => void addProject()}
         />
-        <WelcomeRow
-          Icon={PlusCircle}
-          title="New chat"
-          subtitle={
-            hasProjects ? "Start a conversation in a project" : "Add a project first"
-          }
-          disabled={!hasProjects}
-          onClick={() =>
-            window.dispatchEvent(new Event("brigadier-new-chat"))
-          }
-        />
-        <WelcomeRow
+        <WelcomeAction
           Icon={Notepad}
           title="Notepad"
           subtitle="Keep notes alongside your work"
@@ -107,7 +57,7 @@ export function WelcomeScreen() {
           }
         />
         {error && (
-          <p role="alert" className="px-4 pt-2 text-[13px] text-error">
+          <p role="alert" className="col-span-full pt-2 text-[13px] text-error">
             {error}
           </p>
         )}
@@ -117,7 +67,7 @@ export function WelcomeScreen() {
   );
 }
 
-function WelcomeRow({
+function WelcomeAction({
   Icon,
   title,
   subtitle,
@@ -131,17 +81,17 @@ function WelcomeRow({
   onClick: () => void;
 }) {
   return (
-    <button
+    <Button
       type="button"
       disabled={disabled}
       onClick={onClick}
-      className="welcome-row flex w-full items-start gap-4 rounded-[var(--radius-row)] px-4 py-3 text-left transition-colors enabled:hover:bg-muted disabled:cursor-default disabled:opacity-50"
+      className="welcome-shortcut"
     >
-      <Icon className="mt-px size-6 shrink-0 text-text-secondary" />
+      <Icon className="size-5 shrink-0 text-text-secondary" />
       <span className="flex min-w-0 flex-col gap-0.5">
-        <span className="text-[15px] font-semibold text-text">{title}</span>
-        <span className="text-[13px] text-muted-foreground">{subtitle}</span>
+        <span className="text-[14px] font-medium text-text">{title}</span>
+        <span className="text-[12px] text-muted-foreground">{subtitle}</span>
       </span>
-    </button>
+    </Button>
   );
 }

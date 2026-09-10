@@ -135,7 +135,7 @@ function NewConversation({
   }, []);
   return (
     <div className="new-conversation flex min-h-0 flex-1 flex-col items-center justify-center gap-4 px-6 text-text-secondary">
-      <BrandMark />
+      <BrandMark className="brand-mark size-[120px] shrink-0 fill-current" />
       <h1>
         {projectName
           ? `What should we build in ${projectName}?`

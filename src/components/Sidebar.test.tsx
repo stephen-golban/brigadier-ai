@@ -100,6 +100,26 @@ function mount(over: Partial<SidebarProps> = {}) {
 }
 
 describe("sidebar navigation", () => {
+  it("lists existing projectless sessions in a final Chats section and keeps their actions", async () => {
+    const user = userEvent.setup();
+    const props = mount({
+      projects: [project("p", "Example"), { ...project("tasks", "Tasks"), projectless: true }],
+      sessions: {
+        old: session("old", "tasks", "exited", { startedAtMs: 1 }),
+        recent: session("recent", "tasks", "running", { startedAtMs: 2 }),
+        code: session("code", "p", "exited"),
+      },
+    });
+    const chats = await screen.findByRole("navigation", { name: "Chats" });
+    const projects = screen.getByRole("navigation", { name: "Projects" });
+    expect(within(projects).queryByRole("button", { name: "Tasks" })).toBeNull();
+    expect(within(chats).queryByRole("button", { name: "Session code" })).toBeNull();
+    expect(within(chats).getAllByRole("button", { name: /^Session / }).map(button => button.textContent)).toEqual(["Session recent", "Session old"]);
+    expect(projects.compareDocumentPosition(chats) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await user.click(within(chats).getByRole("button", { name: "Session old" }));
+    expect(props.onSelectSession).toHaveBeenCalledWith("old");
+    expect(within(chats).getByRole("button", { name: "Archive Session old" })).toBeInTheDocument();
+  });
   it.each([null, "s"])(
     "uses primary text for project and session titles with selected session %s",
     async (selectedSessionId) => {
@@ -289,13 +309,14 @@ describe("sidebar navigation", () => {
       expect.objectContaining({ content: "Keep this", projectId: null }),
     );
   });
-  it("opens a new unsaved note directly from the Notepad plus button", async () => {
+  it("opens a new unsaved note from the footer Notepad", async () => {
     const user = userEvent.setup();
     const save = vi
       .spyOn(workbenchApi, "saveNote")
       .mockImplementation(async (n) => ({ ...n, revision: 1 }));
     mount();
-    await user.click(screen.getByRole("button", { name: "New note" }));
+    await user.click(screen.getByRole("button", { name: "Notepad" }));
+    await user.click(screen.getByRole("button", { name: "Create" }));
     const dialog = screen.getByRole("region", { name: "Notepad" });
     expect(within(dialog).getByLabelText("Note content")).toHaveValue("");
     expect(save).not.toHaveBeenCalled();

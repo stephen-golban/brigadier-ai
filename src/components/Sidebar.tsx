@@ -4,6 +4,7 @@ import { useSessionNavigation } from "../sessionNavigation";
 import { createPortal } from "react-dom";
 import { EditProjectDialog } from "./EditProjectDialog";
 import { SessionStatus } from "./SessionStatus";
+import { BrandMark } from "./BrandMark";
 import { DropdownContent } from "./controls/menu";
 // Project navigation composed from native controls.
 import {
@@ -30,7 +31,6 @@ import {
   Search,
   Settings,
   Tag,
-  Trash,
   X,
 } from "../icons";
 import type { SessionRuntime } from "../feedStore";
@@ -56,6 +56,7 @@ import {
 import { errorMessage } from "../workspaceApi";
 import { notify } from "../desktopApi";
 import { working } from "../attention";
+import { SoftwareStatus } from "./SoftwareUpdates";
 import { DesktopSettings } from "./DesktopSettings";
 import { NotesLibrary, type NotesLibraryHandle } from "./NotesLibrary";
 import { TrashLibrary } from "./TrashLibrary";
@@ -177,6 +178,7 @@ export function Sidebar(props: SidebarProps) {
     "brigadier:projects-open:v1",
     true,
   );
+  const [chatsOpen, setChatsOpen] = useStoredState("brigadier:chats-open:v1", true);
   const [pinnedProjects, setPinnedProjects] = useStoredState<string[]>(
     "brigadier:pinned-projects:v1",
     [],
@@ -390,7 +392,7 @@ export function Sidebar(props: SidebarProps) {
     }
   };
   const activeProjects = props.projects
-    .filter((p) => !isTrashed(navigation, "project", p.id))
+    .filter((p) => !p.projectless && !isTrashed(navigation, "project", p.id))
     .sort(
       (a, b) =>
         Number(pinnedProjects.includes(b.id)) -
@@ -415,7 +417,7 @@ export function Sidebar(props: SidebarProps) {
       props.selectedSessionId ? title(props.selectedSessionId) : null,
     );
   }, [props.selectedSessionId, props.titles, setCurrentSession]);
-  const projectName = (p: ProjectView) => data.projectNames?.[p.id] ?? p.name;
+  const projectName = (p: ProjectView) => p.projectless ? "Chats" : data.projectNames?.[p.id] ?? p.name;
   const pinSession = (id: string) =>
     customize(
       "pin",
@@ -428,6 +430,9 @@ export function Sidebar(props: SidebarProps) {
   const visibleSessions = activeSessions.filter(
     (s) => !archivedIds.includes(s.sessionId),
   );
+  const projectlessIds = new Set(props.projects.filter(project => project.projectless).map(project => project.id));
+  const chats = visibleSessions.filter(session => session.projectId !== null && projectlessIds.has(session.projectId))
+    .sort((a, b) => (b.startedAtMs ?? 0) - (a.startedAtMs ?? 0));
   const newSession = (projectId: string) =>
     closeNotepad(() => {
       props.onSelectProject(projectId);
@@ -437,18 +442,8 @@ export function Sidebar(props: SidebarProps) {
       );
       closeMobile();
     });
-  /**
-   * The **global** new chat: the sidebar's own button, ⌘N and the welcome screen's row. It starts
-   * with no project picked — `detail: null` on the same event a project row's ⋯ menu and hover
-   * pencil dispatch with an id — so `App` shows the welcome screen and the composer's project
-   * picker asks for one. With no projects at all there is nothing to pick and adding one is the
-   * only useful move, so that path is unchanged.
-   */
+  /** A global new chat starts without a project, including on an empty installation. */
   const startNewChat = () => {
-    if (!activeProjects.length) {
-      void addProject();
-      return;
-    }
     closeNotepad(() => {
       window.dispatchEvent(
         new CustomEvent("brigadier-new-project-session", { detail: null }),
@@ -562,23 +557,17 @@ export function Sidebar(props: SidebarProps) {
       </SidebarMenuSubItem>
     );
   };
-  const accountName = data.displayName?.trim() || "Local workspace";
-  const initials =
-    data.displayName
-      ?.trim()
-      .split(/\s+/)
-      .map((part) => part[0])
-      .slice(0, 2)
-      .join("")
-      .toUpperCase() || "B";
   return (
     <>
       <SidebarPrimitive collapsible="offcanvas" aria-label="Main navigation">
         <SidebarHeader>
           <div
-            className="navigation-title mb-2 flex h-8 items-center gap-2 text-[17px] font-semibold"
+            className="navigation-title mb-4 flex h-8 items-center gap-2 text-[17px] font-semibold"
             data-tauri-drag-region="deep"
           >
+            <span aria-hidden="true" className="flex size-4 shrink-0 items-center">
+              <BrandMark className="brand-mark size-4 shrink-0 fill-current" />
+            </span>
             <span>Brigadier</span>
             <div className="ml-auto flex items-center gap-1">
               <Tooltip
@@ -671,26 +660,6 @@ export function Sidebar(props: SidebarProps) {
                   </span>
                   <span>New chat</span>
                 </SidebarMenuButton>
-              </Tooltip>
-            </SidebarMenuItem>
-            <SidebarMenuItem className="flex items-center gap-1">
-              <SidebarMenuButton
-                className="min-w-0 flex-1 text-text [&_svg]:text-text"
-                isActive={notes}
-                onClick={() => openNotepad()}
-              >
-                <Notepad className="size-4" />
-                <span>Notepad</span>
-              </SidebarMenuButton>
-              <Tooltip content="New note">
-                <Button
-                  isIconOnly
-                  aria-label="New note"
-                  className="navigation-icon-button shrink-0"
-                  onClick={() => openNotepad(undefined, true)}
-                >
-                  <Plus />
-                </Button>
               </Tooltip>
             </SidebarMenuItem>
           </SidebarMenu>
@@ -980,7 +949,7 @@ export function Sidebar(props: SidebarProps) {
                 </SidebarMenu>
               </SidebarGroupContent>
               {!activeProjects.length && (
-                <p className="navigation-empty">Add a project to get started.</p>
+                <p className="navigation-empty">No projects imported.</p>
               )}
               {error && addPath === null && !renaming && (
                 <p role="alert" className="navigation-notice text-error">
@@ -989,39 +958,18 @@ export function Sidebar(props: SidebarProps) {
               )}
             </SidebarReveal>
           </SidebarGroup>
+          {chats.length > 0 && <SidebarGroup>
+            <SidebarSectionHeading label="Chats" open={chatsOpen} controls="sidebar-chats" onToggle={() => setChatsOpen(open => !open)} />
+            <SidebarReveal open={chatsOpen} id="sidebar-chats">
+              <SidebarGroupContent role="navigation" aria-label="Chats">
+                <SidebarMenu>{chats.map(sessionRow)}</SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarReveal>
+          </SidebarGroup>}
           {props.dev}
         </SidebarContent>
         <SidebarFooter>
-          <Dropdown>
-            <button
-              type="button"
-              className="navigation-row min-w-0 flex-1"
-              aria-label={`Account: ${accountName}`}
-            >
-              <span className="flex size-[18px] shrink-0 items-center justify-center rounded-full bg-text-tertiary text-[9px] text-text">
-                {initials}
-              </span>
-              <span className="truncate">{accountName}</span>
-            </button>
-            <DropdownContent side="top" className="w-56">
-              <Dropdown.Item onAction={showSettings}>
-                <Settings />
-                Settings
-              </Dropdown.Item>
-              <Separator />
-              <Dropdown.Item onAction={() => setTrash(true)}>
-                <Trash />
-                Trash
-                {navigation.trash.length > 0 && (
-                  <span className="ml-auto text-text-secondary">
-                    {navigation.trash.length}
-                  </span>
-                )}
-              </Dropdown.Item>
-            </DropdownContent>
-          </Dropdown>
           <Tooltip
-            className="ml-auto"
             content={
               <>
                 Settings{" "}
@@ -1043,6 +991,12 @@ export function Sidebar(props: SidebarProps) {
               <Settings />
             </Button>
           </Tooltip>
+          <Tooltip content="Notepad">
+            <Button isIconOnly className="navigation-icon-button text-text" aria-label="Notepad" aria-pressed={notes} onClick={() => openNotepad()}>
+              <Notepad />
+            </Button>
+          </Tooltip>
+          <SoftwareStatus />
         </SidebarFooter>
       </SidebarPrimitive>
       {renaming && (
@@ -1238,6 +1192,7 @@ export function Sidebar(props: SidebarProps) {
           request={settingsRequest}
           titles={props.titles ?? {}}
           jobs={props.jobs ?? []}
+          onOpenTrash={() => { setSettings(false); setTrash(true); }}
           onClose={() => setSettings(false)}
         />
       )}

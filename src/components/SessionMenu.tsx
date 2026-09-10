@@ -34,12 +34,14 @@ export function SessionMenu({
   sessionId,
   title,
   canFork,
+  canForkWorktree = true,
   onFork,
   onArchive,
 }: {
   sessionId: string;
   title: string;
   canFork: boolean;
+  canForkWorktree?: boolean;
   onFork?: (newWorktree: boolean) => Promise<void>;
   onArchive: () => void;
 }) {
@@ -180,13 +182,13 @@ export function SessionMenu({
                 <Desktop />
                 Fork session
               </Dropdown.Item>
-              <Dropdown.Item
+              {canForkWorktree && <Dropdown.Item
                 nativeIcon={<BranchAlt />}
                 onAction={() => void run(() => onFork?.(true))}
               >
                 <BranchAlt />
                 Fork session in new worktree
-              </Dropdown.Item>
+              </Dropdown.Item>}
             </DropdownContent>
           </Dropdown.SubmenuTrigger>
         </DropdownContent>

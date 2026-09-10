@@ -10,11 +10,7 @@ import "./setup-rail.css";
 
 const branchLabelFor = (name: string) => name.replace(/^refs\/(heads|remotes)\//, "");
 
-/**
- * What the project picker reads while no project is picked — distinct from `"Work in a project"`,
- * which a *projectless* workspace shows because it has one and it is not a repository.
- */
-export const PROJECT_PLACEHOLDER = "Choose a project";
+export const PROJECT_PLACEHOLDER = "Choose project";
 
 export function invalidBranchName(name: string): boolean {
   return !name || name === "@" || name.startsWith("-") || name.endsWith(".") ||
@@ -68,7 +64,7 @@ export function TaskSetupRail({ project, projects, picks, options, disabled, onC
         busy/loading flag, and with no project every one of its reasons *is* "no project". */}
     <div className="setup-picker">
       <Popover isOpen={projectOpen && !disabled} onOpenChange={setProjectOpen}>
-        <Button className="composer-select" aria-label="Project" disabled={(disabled && !!project) || (!onSelectProject && !onProjectless)}><Folder width={17} height={17}/><span>{project ? project.projectless ? "Work in a project" : project.name : PROJECT_PLACEHOLDER}</span><ChevronSmallDown width={14} height={14}/></Button>
+        <Button className="composer-select" aria-label="Project" disabled={(disabled && !!project) || (!onSelectProject && !onProjectless)}><Folder width={17} height={17}/><span>{project && !project.projectless ? project.name : PROJECT_PLACEHOLDER}</span><ChevronSmallDown width={14} height={14}/></Button>
         <Popover.Content placement="top start" className="composer-popover setup-popover">
           <Popover.Dialog aria-label="Project">
             <p className="composer-popover-heading">Project</p>
@@ -81,9 +77,7 @@ export function TaskSetupRail({ project, projects, picks, options, disabled, onC
         </Popover.Content>
       </Popover>
     </div>
-    {/* A projectless workspace has no Git setup to offer. With nothing picked yet the pickers
-        stay on screen and inert — `options` is null, so both are disabled. */}
-    {!project?.projectless && <>
+    {project && !project.projectless && <>
 
     <div className="setup-picker">
       <Popover isOpen={environmentOpen && !disabled} onOpenChange={open => { setEnvironmentOpen(open); setExisting(false); setQuery(""); }}>
@@ -152,9 +146,12 @@ export function TaskSetupRail({ project, projects, picks, options, disabled, onC
 export function ResolvedTaskRail({ project, cwd, branch, isolated, preparing = false }: {
   project: ProjectView | null; cwd: string | null; branch: string | null; isolated: boolean; preparing?: boolean;
 }) {
+  if (!project || project.projectless) return null;
   return <div className="composer-setup-rail" aria-label="Task workspace">
-    <span className="setup-picker" title={project?.root_path}><Folder width={17} height={17}/><span>{project?.name ?? "Workspace"}</span></span>
+    <span className="setup-picker" title={project && !project.projectless ? project.root_path : undefined}><Folder width={17} height={17}/><span>{project && !project.projectless ? project.name : PROJECT_PLACEHOLDER}</span></span>
+    {project && !project.projectless && <>
     <span className="setup-picker" title={cwd ?? undefined}>{isolated ? <BranchAlt width={17} height={17}/> : <Desktop width={17} height={17}/>}<span>{preparing ? "Preparing workspace…" : isolated ? "Worktree" : "Local"}</span></span>
     {branch && <span className="setup-picker" title={branch}><Branch width={17} height={17}/><span>{branchLabelFor(branch)}</span></span>}
+    </>}
   </div>;
 }

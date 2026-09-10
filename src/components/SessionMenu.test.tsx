@@ -17,6 +17,13 @@ function State() {
   return <output>{JSON.stringify(state)}</output>;
 }
 describe("session header menu", () => {
+  it("omits worktree creation for projectless chats", async () => {
+    render(<SessionMenu sessionId="chat" title="Chat" canFork canForkWorktree={false} onFork={vi.fn()} onArchive={vi.fn()} />);
+    await userEvent.click(screen.getByRole("button", { name: "Session actions" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Fork" }));
+    expect(screen.getByRole("menuitem", { name: "Fork session" })).toBeVisible();
+    expect(screen.queryByRole("menuitem", { name: "Fork session in new worktree" })).toBeNull();
+  });
   it("renames persistently, archives, and synchronizes other views", async () => {
     const user = userEvent.setup(),
       archive = vi.fn();
