@@ -88,7 +88,15 @@ pub(crate) async fn list_projects(
     state: State<'_, AppState>,
 ) -> Result<Vec<ProjectView>, AppError> {
     let rows = state.get()?.supervisor.list_projects().await?;
-    Ok(rows.iter().map(ProjectView::from).collect())
+    let scratch = projectless_root(state.get()?);
+    Ok(rows
+        .iter()
+        .map(|row| {
+            let mut view = ProjectView::from(row);
+            view.projectless = row.root_path == scratch;
+            view
+        })
+        .collect())
 }
 
 /// Record a project rooted at `path`. An existing tree returns its existing row.
@@ -98,7 +106,27 @@ pub(crate) async fn add_project(
     state: State<'_, AppState>,
 ) -> Result<ProjectView, AppError> {
     let row = crate::navigation::open_project(PathBuf::from(path), state.get()?).await?;
-    Ok(ProjectView::from(&row))
+    let mut view = ProjectView::from(&row);
+    view.projectless = row.root_path == projectless_root(state.get()?);
+    Ok(view)
+}
+
+fn projectless_root(ready: &Ready) -> PathBuf {
+    let root = ready.data_dir.join("workspaces/Tasks");
+    root.canonicalize().unwrap_or(root)
+}
+
+/// A managed workspace group for tasks started without a user project.
+#[tauri::command]
+pub(crate) async fn projectless_workspace(
+    state: State<'_, AppState>,
+) -> Result<ProjectView, AppError> {
+    let root = projectless_root(state.get()?);
+    tokio::fs::create_dir_all(&root).await?;
+    let row = crate::navigation::open_project(root, state.get()?).await?;
+    let mut view = ProjectView::from(&row);
+    view.projectless = true;
+    Ok(view)
 }
 
 /// Set whether a project's children inherit the user's MCP servers: `"off"` or `"inherit"`.
@@ -174,6 +202,7 @@ pub(crate) async fn start_session(
     composer_permission: Option<String>,
     new_branch: Option<String>,
     workspace_path: Option<String>,
+    progress: Channel<serde_json::Value>,
     state: State<'_, AppState>,
 ) -> Result<SessionView, AppError> {
     let _creation = crate::peers::CREATION.lock().await;
@@ -247,6 +276,7 @@ pub(crate) async fn start_session(
             base_branch: remembered_branch,
             new_branch,
             workspace_path,
+            progress: Some(progress),
         }),
         attachment_ids.unwrap_or_default(),
         state.clone(),
@@ -301,12 +331,24 @@ pub(crate) async fn start_session_locked(
     .await
 }
 
+fn startup_progress(
+    channel: &Option<Channel<serde_json::Value>>,
+    step: &str,
+    complete: bool,
+    detail: String,
+) {
+    if let Some(channel) = channel {
+        let _ = channel.send(serde_json::json!({"step":step,"complete":complete,"detail":detail}));
+    }
+}
+
 struct InitialComposer {
     mode: String,
     permission: String,
     base_branch: Option<String>,
     new_branch: Option<String>,
     workspace_path: Option<String>,
+    progress: Option<Channel<serde_json::Value>>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -359,7 +401,41 @@ async fn start_session_attempt(
     } else {
         project.root_path.clone()
     };
+    let projectless =
+        peer.is_none() && project.root_path == projectless_root(state.get()?);
+    let progress = composer_configuration
+        .as_ref()
+        .and_then(|c| c.progress.clone());
+    startup_progress(
+        &progress,
+        "workspace",
+        false,
+        format!("Preparing workspace: {}", project.root_path.display()),
+    );
+    startup_progress(
+        &progress,
+        "provider",
+        false,
+        format!(
+            "Provider: {}\nModel: {}\nResolving provider environment and starting process",
+            provider,
+            model.as_deref().unwrap_or("Provider default")
+        ),
+    );
     let mut req = StartSession::new(project.root_path);
+    if projectless {
+        if base_branch.is_some()
+            || composer_configuration
+                .as_ref()
+                .is_some_and(|c| c.new_branch.is_some() || c.workspace_path.is_some())
+        {
+            return Err(AppError::invalid_argument(
+                "A projectless task cannot select a Git branch or worktree",
+            ));
+        }
+        req.cwd = req.cwd.join(uuid::Uuid::new_v4().to_string());
+        tokio::fs::create_dir_all(&req.cwd).await?;
+    }
     req.display_prompt = Some(
         peer.as_ref()
             .map(|peer| peer.text.clone())
@@ -422,7 +498,11 @@ async fn start_session_attempt(
         req.prompt.take().unwrap_or_default(),
         std::mem::take(&mut req.attachments),
     );
-    let session_id = if let Some(baseline) = peer.as_ref().and_then(|p| p.baseline.clone()) {
+    let session_id = if projectless {
+        supervisor
+            .start_session(&project_id, &DriverKind::new(&provider), req)
+            .await?
+    } else if let Some(baseline) = peer.as_ref().and_then(|p| p.baseline.clone()) {
         supervisor
             .start_peer_session_at(&project_id, &DriverKind::new(&provider), req, baseline)
             .await?
@@ -470,6 +550,20 @@ async fn start_session_attempt(
             .await?
     };
     let result = async {
+        let prepared = session_view(state.inner(), &session_id).await?;
+        if let Some(channel) = &progress {
+            let _ = channel.send(serde_json::json!({
+                "step": "session", "complete": false, "detail": "Task created",
+                "sessionId": session_id.to_string()
+            }));
+        }
+        startup_progress(&progress, "workspace", true, format!(
+            "Using workspace: {}\nUsing branch: {}",
+            prepared.cwd.as_deref().unwrap_or("Unknown"),
+            prepared.branch.as_deref().unwrap_or("No Git branch")
+        ));
+        startup_progress(&progress, "provider", true, format!("Provider connected: {}", provider));
+        startup_progress(&progress, "session", false, "Saving task settings and sending initial prompt".into());
         crate::task_memory::initialize(state.inner(), session_id.as_str(), &prompt)?;
         if let Some(InitialComposer {
             mode,
@@ -477,6 +571,7 @@ async fn start_session_attempt(
             base_branch: branch,
             new_branch,
             workspace_path,
+            ..
         }) = composer_configuration
         {
             crate::task_settings::initialize(
@@ -563,6 +658,7 @@ async fn start_session_attempt(
                 return Err(error);
             }
         }
+        startup_progress(&progress, "session", true, "Initial prompt sent".into());
         session_view(state.inner(), &session_id).await
     }
     .await;

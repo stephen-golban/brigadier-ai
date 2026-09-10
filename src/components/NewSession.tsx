@@ -18,16 +18,17 @@ export interface NewSessionProps {
   project: ProjectView | null;
   projects?: ProjectView[];
   onSelectProject?: (id: string) => void;
+  onNewProject?: () => void; onProjectless?: () => void;
   models: ModelInfo[];
   disabled: boolean;
   onStart: (args: StartSessionArgs) => void | Promise<boolean>;
 }
 
-export function NewSession({ project, projects, onSelectProject, models, disabled: claudeUnavailable, onStart }: NewSessionProps) {
+export function NewSession({ project, projects, onSelectProject, onNewProject, onProjectless, models, disabled: claudeUnavailable, onStart }: NewSessionProps) {
   const currentProject = useRef(project?.id); currentProject.current = project?.id;
   const durable = useDurableComposer(project ? `project:${project.id}` : null, project?.id ?? null);
   const preferences = useProjectComposerPreferences(project?.id ?? null);
-  const picks = preferences.value;
+  const picks = project?.projectless ? {...preferences.value,isolated:false,baseBranch:null,newBranch:null,workspacePath:null} : preferences.value;
   const { providers, error: providerError } = useProviderCatalog(models);
   const selection = picks.manual.provider ? picks.manual : { ...picks.manual, provider: providers[0]?.id ?? "" };
   const provider = providers.find(p => p.id === selection.provider);
@@ -44,6 +45,7 @@ export function NewSession({ project, projects, onSelectProject, models, disable
     setWorkspaceEntry(null); setSetupError(null); setSending(false); setSendError(null);
     const refresh = () => {
       const version = ++refreshVersion;
+      if (project?.projectless) { setWorkspaceEntry({projectId:project.id,options:{isGit:false,currentBranch:null,branches:[],worktrees:[]}}); return; }
       if (project) void composerWorkspaceApi.options(project.id).then(options => {
         if (live && version === refreshVersion) { setWorkspaceEntry({projectId:project.id,options}); setSetupError(null); }
       }).catch(e => { if (live && version === refreshVersion) setSetupError(errorMessage(e)); });
@@ -76,7 +78,6 @@ export function NewSession({ project, projects, onSelectProject, models, disable
     const projectId = project.id;
     setSending(true); setSendError(null);
     try {
-      await preferences.flush();
       const draft = { text: durable.draft.text, attachmentIds: durable.attachments.map(a => a.id) };
       const custom = picks.mode === "custom";
       const fingerprint = JSON.stringify({ ...draft, picks });
@@ -108,9 +109,9 @@ export function NewSession({ project, projects, onSelectProject, models, disable
   };
   const controlDisabled = sending || !preferences.loaded || !project;
   return <>
-    <TaskSetupRail key={project?.id} project={project} projects={projects} picks={picks} options={workspace} disabled={controlDisabled} onChange={preferences.save} onSelectProject={onSelectProject} />
+    <TaskSetupRail key={project?.id} project={project} projects={projects} picks={picks} options={workspace} disabled={sending || !preferences.loaded && !!project} onChange={preferences.save} onSelectProject={onSelectProject} onNewProject={onNewProject} onProjectless={onProjectless} />
     <PromptInput attachmentProjectId={project?.id} attachments={durable.attachments} onAttachments={durable.setFiles} onUploadChange={setUploading}
-      focusKey={starterFocus} rows={2} value={durable.draft.text} aria-label="Message" placeholder={project ? `Do anything in ${project.name}` : "Add a project first"}
+      focusKey={starterFocus} rows={2} value={durable.draft.text} aria-label="Message" placeholder={project?.projectless ? "Ask anything" : project ? `Do anything in ${project.name}` : "Choose a project or work without one"}
       disabled={sending || !project || !durable.loaded} onText={durable.setText} onKeyDown={event => { if (isSubmitKey(event)) { event.preventDefault(); void submit(); } }}>
       <ComposerActions className="composer-main-actions">
         <PermissionControl value={picks.permission as PermissionPolicy} onChange={permission => preferences.save({ ...picks, permission })} disabled={controlDisabled} />

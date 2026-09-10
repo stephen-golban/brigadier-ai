@@ -879,6 +879,13 @@ function purgeSession(sessionId: string): { feed: number; approvals: number } {
 }
 
 export const mockBridge: Bridge = {
+  async projectlessWorkspace() {
+    const existing = projects.find(project => project.projectless);
+    if (existing) return existing;
+    const project = {id:"projectless",name:"Tasks",root_path:"/preview/Tasks",created_at_ms:Date.now(),projectless:true};
+    projects.push(project);
+    return project;
+  },
   isMock: true,
 
   async subscribeFeed(cb) {
@@ -974,6 +981,13 @@ export const mockBridge: Bridge = {
       throw new AppError("no_such_project", `no such project: ${projectId}`);
     }
     const s = makeSession(projectId, model ?? "claude-sonnet-4-5", 12, null);
+    const project = projects.find(project => project.id === projectId)!;
+    if (project.projectless || isolated === false || workspacePath) {
+      s.view.cwd = project.projectless ? `${project.root_path}/${s.view.session_id}` : workspacePath ?? project.root_path;
+      s.view.worktree_path = null;
+      s.view.branch = project.projectless ? null : newBranch ?? baseBranch ?? "main";
+    } else if (newBranch) s.view.branch = newBranch;
+
     localStorage.setItem(`demo:task:${s.view.session_id}`, JSON.stringify({ sessionId: s.view.session_id, projectId, mode: composerMode ?? "auto", permission: composerPermission ?? "approve", execution: { provider: provider ?? "claude-code", model: s.view.model, effort: options?.effort ?? null }, isolated: isolated ?? true, baseBranch: baseBranch ?? null, workspacePath: workspacePath ?? null, newBranch: newBranch ?? null, changes: [] }));
     row(s, `user · ${prompt.slice(0, 120)}`, "user");
     appendChat(s.view.session_id,{type:"user-text"},prompt);

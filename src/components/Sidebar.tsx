@@ -91,6 +91,7 @@ import { Tooltip } from "./controls/tooltip";
 import { useStoredState } from "../workbenchState";
 
 export interface SidebarHandle {
+  addProject: () => void;
   leaveNotepad: (next: () => void) => void;
   openNotepad: () => void;
 }
@@ -218,6 +219,7 @@ export function Sidebar(props: SidebarProps) {
     if (isMobile) setOpenMobile(false);
   };
   useImperativeHandle(props.ref, () => ({
+    addProject: () => { void addProject(); },
     leaveNotepad: closeNotepad,
     openNotepad,
   }));
@@ -506,6 +508,7 @@ export function Sidebar(props: SidebarProps) {
             showOnHover
             className="relative right-auto"
             aria-label={`${pinned ? "Unpin" : "Pin"} ${title(s.sessionId)}`}
+            disabled={s.sessionId.startsWith("starting:")}
             onClick={() => pinSession(s.sessionId)}
           >
             <PinIcon filled={pinned} />
@@ -519,6 +522,7 @@ export function Sidebar(props: SidebarProps) {
             showOnHover
             className="relative right-auto"
             aria-label={`Archive ${title(s.sessionId)}`}
+            disabled={s.sessionId.startsWith("starting:")}
             onClick={() => archiveSession(s.sessionId)}
           >
             <ArchiveIcon />

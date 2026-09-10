@@ -1,3 +1,5 @@
+import type { SessionStartup } from "../sessionStartup";
+import { StartingComposer } from "./composer/StartingComposer";
 import type { MessageEditProps } from "./EditMessage";
 import type { AgentOptions } from "../agentOptions";
 /** One chat composer: start a session, or continue the selected conversation. */
@@ -14,9 +16,11 @@ import type {
 } from "../wire";
 
 export interface DockProps extends MessageEditProps {
+  startup?: SessionStartup;
   project: ProjectView | null;
   projects?: ProjectView[];
   onSelectProject?: (id: string) => void;
+  onNewProject?: () => void; onProjectless?: () => void;
   /** The selected session, or null when none is. Selects the conversation to continue. */
   session: SessionRuntime | null;
   models: ModelInfo[];
@@ -58,11 +62,12 @@ export function Dock(props: DockProps) {
       className={`dock composer-dock shrink-0 bg-input-shell ${session ? "has-session" : ""}`}
       aria-label="the composer"
     >
-      {session === null ? (
+      {props.startup ? <StartingComposer startup={props.startup} project={project}/> : session === null ? (
         <NewSession
           project={project}
           projects={props.projects}
           onSelectProject={props.onSelectProject}
+          onNewProject={props.onNewProject} onProjectless={props.onProjectless}
           models={models}
           disabled={blocked}
           onStart={props.onStartSession}
@@ -74,6 +79,7 @@ export function Dock(props: DockProps) {
           onCancelEdit={props.onCancelEdit}
           onRewound={props.onRewound}
           session={session}
+          project={project}
           models={models}
           busy={busy}
           onSend={props.onSend}

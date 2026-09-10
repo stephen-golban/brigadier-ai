@@ -249,6 +249,7 @@ export interface ModelInfo {
 }
 
 export interface ProjectView {
+  projectless?: boolean;
   id: ProjectId;
   name: string;
   root_path: string;

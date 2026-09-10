@@ -16,11 +16,13 @@ export function invalidBranchName(name: string): boolean {
     name.split("/").some(part => !part || part.startsWith(".") || part.endsWith(".lock"));
 }
 
-export function TaskSetupRail({ project, projects, picks, options, disabled, onChange, onSelectProject }: {
+export function TaskSetupRail({ project, projects, picks, options, disabled, onChange, onSelectProject, onNewProject, onProjectless }: {
   project: ProjectView | null; projects?: ProjectView[]; picks: ProjectComposerPreferences;
   options: ComposerWorkspaceOptions | null; disabled: boolean;
   onChange: (picks: ProjectComposerPreferences) => void; onSelectProject?: (id: string) => void;
+  onNewProject?: () => void; onProjectless?: () => void;
 }) {
+  const [projectOpen, setProjectOpen] = useState(false);
   const [environmentOpen, setEnvironmentOpen] = useState(false);
   const [existing, setExisting] = useState(false);
   const [branchOpen, setBranchOpen] = useState(false);
@@ -28,14 +30,14 @@ export function TaskSetupRail({ project, projects, picks, options, disabled, onC
   const [query, setQuery] = useState("");
   const [name, setName] = useState("");
   const [start, setStart] = useState("");
-  useEffect(() => { if (disabled) { setEnvironmentOpen(false); setBranchOpen(false); } }, [disabled]);
+  useEffect(() => { if (disabled) { setProjectOpen(false); setEnvironmentOpen(false); setBranchOpen(false); } }, [disabled]);
   const selectedWorktree = options?.worktrees.find(tree => tree.path === picks.workspacePath);
   const current = picks.workspacePath ? selectedWorktree?.branch ?? null : options?.currentBranch ?? null;
   const environmentLabel = picks.workspacePath ? `Worktree · ${picks.workspacePath.split("/").pop()}` : picks.isolated ? "New worktree" : "Work locally";
-  const branchLabel = picks.newBranch ? `New: ${picks.newBranch}` : picks.baseBranch ? `Checkout: ${branchLabelFor(picks.baseBranch)}` : current ? `Current (${current})` : "Current files";
+  const branchLabel = picks.isolated && !picks.newBranch ? `Branch from: ${picks.baseBranch ? branchLabelFor(picks.baseBranch) : "Current files"}` : picks.newBranch ? `New: ${picks.newBranch}` : picks.baseBranch ? `Checkout: ${branchLabelFor(picks.baseBranch)}` : current ? `Current (${current})` : "Current files";
   const chooseEnvironment = (isolated: boolean, workspacePath: string | null = null) => {
     if (disabled) return;
-    onChange({ ...picks, isolated, workspacePath, baseBranch: null, newBranch: null });
+    onChange({ ...picks, isolated, workspacePath, baseBranch: isolated ? (options?.branches.find(branch => branch.name === "origin/main")?.name ?? options?.currentBranch ?? null) : null, newBranch: null });
     setEnvironmentOpen(false);
   };
   const chooseBranch = (baseBranch: string | null, newBranch: string | null = null) => {
@@ -46,16 +48,31 @@ export function TaskSetupRail({ project, projects, picks, options, disabled, onC
   const branches = options?.branches ?? [];
   const nameError = name && (invalidBranchName(name) ? "Enter a valid Git branch name." : branches.some(branch => !branch.remote && branch.name === name) ? "That branch already exists. Use Checkout instead." : null);
   return <div className="composer-setup-rail" aria-label="Task setup">
-    <div className="setup-picker"><FolderIcon size={17} /><SelectMenu placement="top start" label="Project" value={project?.id ?? ""} disabled={disabled || !onSelectProject} onChange={id => onSelectProject?.(id)} options={(projects ?? (project ? [project] : [])).map(p => ({ value: p.id, label: p.name }))} searchable /></div>
     <div className="setup-picker">
-      {picks.isolated || picks.workspacePath ? <ArrowsOutSimpleIcon size={17} /> : <LaptopIcon size={17} />}
+      <Popover isOpen={projectOpen && !disabled} onOpenChange={setProjectOpen}>
+        <Button className="composer-select" aria-label="Project" disabled={disabled || (!onSelectProject && !onProjectless)}><FolderIcon size={17}/><span>{project && !project.projectless ? project.name : "Work in a project"}</span><CaretDownIcon size={14}/></Button>
+        <Popover.Content placement="top start" className="composer-popover setup-popover">
+          <Popover.Dialog aria-label="Project">
+            <p className="composer-popover-heading">Project</p>
+            <div role="listbox" aria-label="Project" onKeyDown={navigateItems}>
+              {(projects ?? (project ? [project] : [])).filter(item => !item.projectless).map(item => <button key={item.id} type="button" role="option" aria-selected={project?.id === item.id} className="setup-menu-option" onClick={() => { onSelectProject?.(item.id); setProjectOpen(false); }}><FolderIcon/><span>{item.name}</span>{project?.id === item.id && <CheckIcon/>}</button>)}
+            </div>
+            {onNewProject && <Button className="setup-menu-option" onClick={() => {setProjectOpen(false); onNewProject();}}><PlusIcon/><span>New project</span></Button>}
+            {onProjectless && <button type="button" role="option" aria-selected={!!project?.projectless} className="setup-menu-option" onClick={() => {setProjectOpen(false); onProjectless();}}><FolderIcon/><span>Don't work in a project</span>{project?.projectless && <CheckIcon/>}</button>}
+          </Popover.Dialog>
+        </Popover.Content>
+      </Popover>
+    </div>
+    {!!project && !project.projectless && <>
+
+    <div className="setup-picker">
       <Popover isOpen={environmentOpen && !disabled} onOpenChange={open => { setEnvironmentOpen(open); setExisting(false); setQuery(""); }}>
-        <Button className="composer-select" aria-label="Environment" title={picks.workspacePath ?? environmentLabel} disabled={disabled || !options}><span>{environmentLabel}</span><CaretDownIcon size={14} /></Button>
+        <Button className="composer-select" aria-label="Environment" title={picks.workspacePath ?? environmentLabel} disabled={disabled || !options}>{picks.isolated || picks.workspacePath ? <ArrowsOutSimpleIcon size={17}/> : <LaptopIcon size={17}/>}<span>{environmentLabel}</span><CaretDownIcon size={14} /></Button>
         <Popover.Content placement="top start" className="composer-popover setup-popover">
           <Popover.Dialog aria-label="Task environment">
             {existing ? <>
               <Button className="setup-menu-back" onClick={() => setExisting(false)}><ArrowLeftIcon />Environment</Button>
-              <input type="search" aria-label="Search worktrees" placeholder="Find a worktree…" value={query} onChange={event => setQuery(event.target.value)} />
+              <input type="search" data-autofocus="true" aria-label="Search worktrees" placeholder="Find a worktree…" value={query} onChange={event => setQuery(event.target.value)} />
               <div role="listbox" aria-label="Existing worktree" onKeyDown={navigateItems}>
                 {options?.worktrees.filter(tree => `${tree.path} ${tree.branch ?? ""} ${tree.activeTaskTitle ?? ""}`.toLowerCase().includes(query.toLowerCase())).map(tree => <button key={tree.path} type="button" role="option" aria-label={`${tree.branch ?? "Detached HEAD"} ${tree.path}${tree.activeTaskTitle ? ` In use by ${tree.activeTaskTitle}` : tree.reason ? ` ${tree.reason}` : ""}`} disabled={!tree.available} aria-selected={picks.workspacePath === tree.path} className="setup-menu-option" onClick={() => chooseEnvironment(false, tree.path)}>
                   <GitBranchIcon /><span>{tree.branch ?? "Detached HEAD"}<small>{" "}{tree.path}</small>{!tree.available && <small>{" "}{tree.activeTaskTitle ? `In use by ${tree.activeTaskTitle}` : tree.reason ?? "Unavailable"}</small>}</span>{picks.workspacePath === tree.path && <CheckIcon />}
@@ -63,20 +80,29 @@ export function TaskSetupRail({ project, projects, picks, options, disabled, onC
                 {!options?.worktrees.length && <p className="composer-popover-heading">No worktrees in this project yet.</p>}
               </div>
             </> : <div role="listbox" aria-label="Environment" onKeyDown={navigateItems}>
-              <button type="button" role="option" aria-selected={!picks.isolated && !picks.workspacePath} className="setup-menu-option" onClick={() => chooseEnvironment(false)}><LaptopIcon /><span>Work locally<small>{" "}Use the project checkout as it stands.</small></span>{!picks.isolated && !picks.workspacePath && <CheckIcon />}</button>
-              <button type="button" role="option" aria-selected={picks.isolated && !picks.workspacePath} disabled={!options?.isGit} className="setup-menu-option" onClick={() => chooseEnvironment(true)}><ArrowsOutSimpleIcon /><span>New worktree<small>{" "}{options?.isGit ? "Create an isolated workspace when you send." : "This folder is not a Git repository."}</small></span>{picks.isolated && !picks.workspacePath && <CheckIcon />}</button>
-              <button type="button" role="option" aria-selected={!!picks.workspacePath} disabled={!options?.worktrees.length} className="setup-menu-option" onClick={() => setExisting(true)}><FolderIcon /><span>Existing worktree<small>{" "}{options?.worktrees.length ? "Choose a workspace belonging to this project." : "No worktrees in this project yet."}</small></span>{picks.workspacePath && <CheckIcon />}</button>
+              <button type="button" role="option" aria-selected={!picks.isolated && !picks.workspacePath} className="setup-menu-option" onClick={() => chooseEnvironment(false)}><LaptopIcon /><span>Work locally</span>{!picks.isolated && !picks.workspacePath && <CheckIcon />}</button>
+              <button type="button" role="option" aria-selected={picks.isolated && !picks.workspacePath} disabled={!options?.isGit} className="setup-menu-option" onClick={() => chooseEnvironment(true)}><ArrowsOutSimpleIcon /><span>New worktree{!options?.isGit && <small>This folder is not a Git repository.</small>}</span>{picks.isolated && !picks.workspacePath && <CheckIcon />}</button>
+              <button type="button" role="option" aria-selected={!!picks.workspacePath} disabled={!options?.worktrees.length} className="setup-menu-option" onClick={() => setExisting(true)}><FolderIcon /><span>Existing worktree{!options?.worktrees.length && <small>No worktrees in this project yet.</small>}</span>{picks.workspacePath && <CheckIcon />}</button>
             </div>}
           </Popover.Dialog>
         </Popover.Content>
       </Popover>
     </div>
-    <div className="setup-picker"><GitBranchIcon size={17} />
+    <div className="setup-picker">
       <Popover isOpen={branchOpen && !disabled} onOpenChange={open => {setBranchOpen(open); setBranchView("menu"); setQuery("");}}>
-        <Button className="composer-select" aria-label="Branch" title={branchLabel} disabled={disabled || !options?.isGit}><span>{branchLabel}</span><CaretDownIcon size={14}/></Button>
+        <Button className="composer-select" aria-label="Branch" title={branchLabel} disabled={disabled || !options?.isGit}><GitBranchIcon size={17}/><span>{branchLabel}</span><CaretDownIcon size={14}/></Button>
         <Popover.Content placement="top start" className="composer-popover setup-popover">
           <Popover.Dialog aria-label="Starting branch">
-            {branchView === "menu" ? <div role="listbox" aria-label="Branch" onKeyDown={navigateItems}>
+            {branchView === "menu" && picks.isolated ? <>
+              <input type="search" autoFocus data-autofocus="true" aria-label="Search branches" placeholder="Search branches" value={query} onChange={event => setQuery(event.target.value)} />
+              <p className="composer-popover-heading">Branch from:</p>
+              <div role="listbox" aria-label="Branch from" onKeyDown={navigateItems}>
+                <button type="button" role="option" aria-selected={!picks.baseBranch && !picks.newBranch} className="setup-menu-option" onClick={() => chooseBranch(null)}><GitBranchIcon/><span>Current files<small>Include uncommitted changes</small></span>{!picks.baseBranch && !picks.newBranch && <CheckIcon/>}</button>
+                {branches.filter(branch => branch.name.toLowerCase().includes(query.toLowerCase())).map(branch => <button key={branch.name} type="button" role="option" aria-label={`${branchLabelFor(branch.name)} ${branch.remote ? "Remote branch" : "Local branch"}`} aria-selected={picks.baseBranch === branch.name && !picks.newBranch} className="setup-menu-option" onClick={() => chooseBranch(branch.name)}><GitBranchIcon/><span>{branchLabelFor(branch.name)}</span>{picks.baseBranch === branch.name && !picks.newBranch && <CheckIcon/>}</button>)}
+                {!branches.some(branch => branch.name.toLowerCase().includes(query.toLowerCase())) && <p className="composer-popover-heading">No matching branches.</p>}
+              </div>
+              <button type="button" role="option" aria-selected={!!picks.newBranch} className="setup-menu-option" onClick={() => {setName(picks.newBranch ?? "");setStart(picks.baseBranch ?? "");setBranchView("new");}}><PlusIcon/><span>New branch</span></button>
+            </> : branchView === "menu" ? <div role="listbox" aria-label="Branch" onKeyDown={navigateItems}>
               <p className="composer-popover-heading">Start from:</p>
               <button type="button" role="option" aria-selected={!picks.baseBranch && !picks.newBranch} className="setup-menu-option" onClick={() => chooseBranch(null)}><GitBranchIcon /><span>Current: {current ?? "Detached HEAD"}<small>{" "}Preserve current uncommitted files.</small></span>{!picks.baseBranch && !picks.newBranch && <CheckIcon />}</button>
               <button type="button" role="option" aria-selected={!!picks.newBranch} className="setup-menu-option" onClick={() => {setName(picks.newBranch ?? "");setStart(picks.baseBranch ?? "");setBranchView("new");}}><PlusIcon /><span>New branch<small>{" "}Name a branch and choose its starting point.</small></span></button>
@@ -90,7 +116,7 @@ export function TaskSetupRail({ project, projects, picks, options, disabled, onC
                 <p className="composer-popover-heading">Created when you send.</p>
                 <Button type="submit" disabled={invalidBranchName(name) || !!nameError}>Use new branch</Button>
               </form> : <>
-                <input type="search" aria-label="Search branches" placeholder="Find a branch…" value={query} onChange={event => setQuery(event.target.value)} />
+                <input type="search" data-autofocus="true" aria-label="Search branches" placeholder="Find a branch…" value={query} onChange={event => setQuery(event.target.value)} />
                 <div role="listbox" aria-label="Checkout branch" onKeyDown={navigateItems}>{branches.filter(branch => branch.name.toLowerCase().includes(query.toLowerCase())).map(branch => <button key={branch.name} type="button" role="option" aria-label={`${branchLabelFor(branch.name)} ${branch.remote ? "Remote branch" : "Local branch"}`} aria-selected={picks.baseBranch === branch.name && !picks.newBranch} className="setup-menu-option" onClick={() => chooseBranch(branch.name)}><GitBranchIcon /><span>{branchLabelFor(branch.name)}<small>{" "}{branch.remote ? "Remote branch" : "Local branch"}</small></span>{picks.baseBranch === branch.name && !picks.newBranch && <CheckIcon />}</button>)}</div>
               </>}
             </>}
@@ -98,5 +124,17 @@ export function TaskSetupRail({ project, projects, picks, options, disabled, onC
         </Popover.Content>
       </Popover>
     </div>
+    </>}
+  </div>;
+}
+
+/** Once a task starts, its workspace identity is resolved and no longer a setup choice. */
+export function ResolvedTaskRail({ project, cwd, branch, isolated, preparing = false }: {
+  project: ProjectView | null; cwd: string | null; branch: string | null; isolated: boolean; preparing?: boolean;
+}) {
+  return <div className="composer-setup-rail" aria-label="Task workspace">
+    <span className="setup-picker" title={project?.root_path}><FolderIcon size={17}/><span>{project?.name ?? "Workspace"}</span></span>
+    <span className="setup-picker" title={cwd ?? undefined}>{isolated ? <ArrowsOutSimpleIcon size={17}/> : <LaptopIcon size={17}/>}<span>{preparing ? "Preparing workspace…" : isolated ? "Worktree" : "Local"}</span></span>
+    {branch && <span className="setup-picker" title={branch}><GitBranchIcon size={17}/><span>{branchLabelFor(branch)}</span></span>}
   </div>;
 }

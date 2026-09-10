@@ -70,7 +70,6 @@ describe("archive settings", () => {
     await userEvent.click(
       await screen.findByRole("button", { name: "Branch" }),
     );
-    await userEvent.click(screen.getByRole("option", { name: /Checkout/ }));
     expect(screen.getByRole("option", { name: /origin\/main/ })).toBeVisible();
     await userEvent.click(screen.getByRole("option", { name: /feature/ }));
     await userEvent.click(screen.getByRole("button", { name: "Send" }));

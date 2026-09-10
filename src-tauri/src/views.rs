@@ -61,6 +61,7 @@ pub(crate) struct ModelInfo {
 /// A project the operator has opened.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct ProjectView {
+    pub projectless: bool,
     /// Stable project id.
     pub id: String,
     /// Directory basename.
@@ -78,6 +79,7 @@ pub(crate) struct ProjectView {
 impl From<&ProjectRow> for ProjectView {
     fn from(row: &ProjectRow) -> Self {
         Self {
+            projectless: false,
             id: row.id.clone(),
             name: row.name.clone(),
             root_path: path_string(&row.root_path),

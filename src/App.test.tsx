@@ -38,6 +38,7 @@ import type { FeedRowWire, SessionStatus, SessionView } from "./wire";
 /** Shared with the hoisted `vi.mock` factories below; reset in `beforeEach`. */
 const h = vi.hoisted(() => ({
   peers: {origins:{},subagents:{},titles:{},closed:[],requests:[],messages:[],loaded:true} as PeerData,
+  start: vi.fn(),
   responses: [] as unknown[][],
   projects: [] as Array<{
     id: string;
@@ -147,9 +148,7 @@ vi.mock("./bridge", async (importOriginal) => {
     async listSessions() {
       return h.sessions;
     },
-    async startSession() {
-      throw new Error("not used");
-    },
+    startSession: (...args: unknown[]) => h.start(...args),
     async resumeSession() {
       throw new Error("not used");
     },
@@ -308,6 +307,7 @@ async function mountApp() {
 
 beforeEach(() => {
   vi.resetModules();
+  h.start.mockReset();
   h.projects = [project("p-live", "job-portal")];
   h.visible = [];
   h.sessions = [];
@@ -743,4 +743,55 @@ it("keeps workers out of chat navigation and routes nested cross-project approva
   expect(h.lastVisible()).toEqual(['p-live','p-worker']);
   await user.click(screen.getByRole('button',{name:'Allow'}));
   expect(h.responses).toEqual([['nested3333','permission',{type:'allow',updated_input:null,updated_permissions:[]},'root1111']]);
+});
+
+async function sendInitialPrompt(prompt = "Instant setup check") {
+  const { composerWorkspaceApi } = await import("./composerWorkspaceApi");
+  vi.spyOn(composerWorkspaceApi, "options").mockResolvedValue({isGit:true,currentBranch:"main",branches:[{name:"main",remote:false}],worktrees:[]});
+  const catalog = await import("./providerCatalog");
+  vi.spyOn(catalog, "useProviderCatalog").mockReturnValue({providers:[{id:"codex",instanceId:"codex:test",label:"Codex",version:null,models:[],modelCatalogKnown:false,efforts:[]}],error:""});
+  await mountApp();
+  const { pasteComposer } = await import("./test/composer");
+  await pasteComposer(await screen.findByRole("textbox", {name:"Message"}), prompt);
+  await userEvent.click(screen.getByRole("button", {name:"Send"}));
+}
+it("opens the task and authored message before startup resolves, then replaces the pending task", async () => {
+  let resolve!: (result:SessionView) => void;
+  h.start.mockImplementation(() => new Promise(done => {resolve=done;}));
+  await sendInitialPrompt();
+  expect(h.start).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole("button", {name:"Show conversation"})).toHaveTextContent("Instant setup check");
+  expect(document.querySelector(".startup-message")).toHaveTextContent("Instant setup check");
+  expect(screen.getByText("Setting up your task…")).toBeVisible();
+  expect(screen.getByRole("textbox", {name:"Message"})).toHaveAttribute("contenteditable", "false");
+  await act(async () => h.start.mock.calls[0]![1]({step:"workspace",complete:true,detail:"Using workspace: /repo/worktree"}));
+  await userEvent.click(screen.getByText("Setting up your task…"));
+  expect(screen.getByText(/Using workspace: \/repo\/worktree/)).toBeVisible();
+  await act(async () => resolve(view("created", "p-live")));
+  expect(screen.getByRole("button", {name:"Show conversation"})).toHaveTextContent("Instant setup check");
+  expect(screen.queryByText("Setting up your task…")).toBeNull();
+  await act(async () => h.start.mock.calls[0]![1]({step:"workspace",complete:false,detail:"Late progress"}));
+  expect(screen.queryByText("Setting up your task…")).toBeNull();
+  expect(screen.queryByText("Late progress")).toBeNull();
+  expect(localStorage.getItem("brigadier:startup:created")).toContain("Using workspace: /repo/worktree");
+});
+it("keeps a failed initial prompt and retries the same request identity", async () => {
+  h.start.mockRejectedValueOnce(new Error("Provider failed to start"));
+  await sendInitialPrompt("Retry startup check");
+  expect(await screen.findByRole("alert")).toHaveTextContent("Provider failed to start");
+  expect(document.querySelector(".startup-message")).toHaveTextContent("Retry startup check");
+  h.start.mockImplementation(() => new Promise(() => {}));
+  await userEvent.click(screen.getByRole("button", {name:"Retry setup"}));
+  expect(h.start).toHaveBeenCalledTimes(2);
+  expect(h.start.mock.calls[1]![0]).toEqual(h.start.mock.calls[0]![0]);
+  expect(screen.queryByRole("button", {name:"Retry setup"})).toBeNull();
+});
+it("does not navigate back when startup completes after the user selected another task", async () => {
+  h.sessions = [view("existing", "p-live")];
+  let resolve!: (result:SessionView) => void;
+  h.start.mockImplementation(() => new Promise(done => {resolve=done;}));
+  await sendInitialPrompt("Background startup check");
+  await userEvent.click(screen.getByRole("button", {name:"Session isting"}));
+  await act(async () => resolve(view("created", "p-live")));
+  expect(screen.getByRole("button", {name:"Show conversation"})).toHaveTextContent("Session isting");
 });

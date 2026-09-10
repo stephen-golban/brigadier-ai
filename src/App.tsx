@@ -1,3 +1,4 @@
+import { newStartup, readStartup, saveStartup, startupRuntime, type SessionStartup } from "./sessionStartup";
 import { profiling } from "./perfDiagnostics";
 import { workerTree, conversationOwner, conversationSessions } from "./workerTree";
 import { syncArchive, readArchive } from "./sessionArchive";
@@ -194,6 +195,16 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
   const [selectedSessionId, setSelectedSessionId] = useState<SessionId | null>(
     null,
   );
+  const [startups, setStartups] = useState<Record<string, SessionStartup>>({});
+  const startupsRef = useRef(startups); startupsRef.current = startups;
+  const pendingStartup = selectedSessionId ? startups[selectedSessionId] : undefined;
+  const savedStartup = useMemo(() => readStartup(selectedSessionId), [selectedSessionId]);
+  const [completedStartups, setCompletedStartups] = useState<Record<string, SessionStartup>>({});
+  const startup = pendingStartup ?? (selectedSessionId ? completedStartups[selectedSessionId] : undefined) ?? savedStartup;
+  const startupTitles = useMemo(() => Object.fromEntries(Object.entries(completedStartups).map(([id, item]) => [id, item.title])), [completedStartups]);
+  const startingRequests = useRef(new Set<string>());
+  const pendingBackendIds = new Set(Object.values(startups).map(item => item.createdSessionId).filter(Boolean));
+  const pendingSessions = Object.fromEntries(Object.values(startups).map(item => [item.id, startupRuntime(item)]));
   const [editingMessage, setEditingMessage] = useState<ChatItem | null>(null);
   const [conversationRevision, setConversationRevision] = useState(0);
   useEffect(() => setEditingMessage(null), [selectedSessionId]);
@@ -376,7 +387,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
     if (!projects.some((p) => p.id === selectedProjectId)) {
       setSelectedProjectId(projects[0]?.id ?? null);
       setSelectedSessionId(null);
-    } else if (selectedSessionId && !state.sessions[selectedSessionId])
+    } else if (selectedSessionId && !state.sessions[selectedSessionId] && !startups[selectedSessionId])
       setSelectedSessionId(null);
   }, [
     navigation.loaded,
@@ -385,6 +396,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
     selectedProjectId,
     selectedSessionId,
     state.sessions,
+    startups,
   ]);
   useEffect(() => {
     const refresh = () => {
@@ -455,7 +467,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
   // feed and `setTailSeeded` re-renders this component; both happen in the same microtask, so
   // React commits them together and the layout effect below runs after the rows are on screen.
   useEffect(() => {
-    if (selectedSessionId === null) return;
+    if (selectedSessionId === null || selectedSessionId.startsWith("starting:")) return;
     const id = selectedSessionId;
     void bridge()
       .feedTail(id, TAIL_ROWS)
@@ -550,7 +562,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
     }
     if (id !== null) {
       paintSpan.current = { sessionId: id, span: beginInteraction(B4_LABEL) };
-      const owner = store.getState().sessions[id]?.projectId ?? null;
+      const owner = startupsRef.current[id]?.args.projectId ?? store.getState().sessions[id]?.projectId ?? null;
       if (owner !== null) setSelectedProjectId(owner);
     }
     setSelectedSessionId(id);
@@ -712,22 +724,52 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
     [say],
   );
 
-  const startSession = useCallback(
-    (args: StartSessionArgs) => {
-      return bridge()
-        .startSession(args)
-        .then((view) => {
-          store.seedSessions([view]);
-          setSelectedSessionId(view.session_id);
-          return true;
-        })
-        .catch((e) => {
-          say(e);
-          return false;
-        });
-    },
-    [say],
-  );
+  const startSession = useCallback(async (input: StartSessionArgs) => {
+    const args = { ...input, requestId: input.requestId ?? crypto.randomUUID() };
+    if (startingRequests.current.has(args.requestId)) return false;
+    startingRequests.current.add(args.requestId);
+    let settled = false;
+    const record = newStartup(args);
+    // Open the authored task before any filesystem or provider work crosses IPC.
+    setStartups(previous => ({ ...previous, [record.id]: record }));
+    setSelectedProjectId(args.projectId);
+    setSelectedSessionId(record.id);
+    try {
+      const view = await bridge().startSession(args, progress => {
+        if (settled) return;
+        if (progress.sessionId) record.createdSessionId = progress.sessionId;
+        record.progress = [...record.progress, progress];
+        setStartups(previous => ({ ...previous, [record.id]: { ...record } }));
+      });
+      settled = true;
+      record.sessionId = view.session_id;
+
+      if (!record.progress.some(item => item.step === "workspace" && item.complete)) {
+        record.progress.push({step:"workspace",complete:true,detail:`Using workspace: ${view.cwd ?? "Unknown"}\nUsing branch: ${view.branch ?? "No Git branch"}`});
+      }
+      if (!record.progress.some(item => item.step === "session" && item.complete)) {
+        record.progress.push({step:"session",complete:true,detail:"Initial prompt sent"});
+      }
+      setCompletedStartups(previous => ({...previous, [view.session_id]: {...record}}));
+      saveStartup(record);
+      try {
+        const draftKey = `composer-pending:project:${args.projectId}`;
+        const pendingDraft = JSON.parse(localStorage.getItem(draftKey) ?? "null");
+        if (pendingDraft?.text === args.prompt && JSON.stringify(pendingDraft.attachmentIds) === JSON.stringify(args.attachmentIds ?? [])) localStorage.removeItem(draftKey);
+        const receiptKey = `brigadier:initial-send:${args.projectId}`;
+        if (JSON.parse(localStorage.getItem(receiptKey) ?? "null")?.id === args.requestId) localStorage.removeItem(receiptKey);
+      } catch { /* Backend receipts and drafts remain authoritative. */ }
+      store.seedSessions([view]);
+      setSelectedSessionId(current => current === record.id ? view.session_id : current);
+      setStartups(previous => { const next = {...previous}; delete next[record.id]; return next; });
+      return true;
+    } catch (error) {
+      settled = true;
+      record.error = toAppError(error).message;
+      setStartups(previous => ({ ...previous, [record.id]: { ...record } }));
+      return false;
+    } finally { startingRequests.current.delete(args.requestId); }
+  }, []);
 
   /**
    * Continue an ended session in place. The success path is `startSession`'s, deliberately: the
@@ -991,10 +1033,10 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
         attention={attention}
         jobs={jobs}
         projects={projects}
-        titles={peers.titles}
+        titles={{...startupTitles, ...peers.titles, ...Object.fromEntries(Object.values(startups).map(item => [item.id, item.title]))}}
         origins={peers.subagents ?? {}}
-        sessions={conversationSessions(state.sessions, peers)}
-        order={state.order}
+        sessions={{...Object.fromEntries(Object.entries(conversationSessions(state.sessions, peers)).filter(([id]) => !pendingBackendIds.has(id))), ...pendingSessions}}
+        order={[...Object.keys(pendingSessions), ...state.order.filter(id => !pendingBackendIds.has(id))]}
         selectedProjectId={selectedProjectId}
         selectedSessionId={selectedSessionId}
         pendingApprovals={pendingByProject}
@@ -1042,11 +1084,12 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
           style={{ display: notepadOpen ? "none" : "flex" }}
         >
           <ProjectWorkbench
+            pendingTitle={pendingStartup?.title}
             sidebarToggle={null}
             newSessionRequest={newSessionRequest}
             navigation={navigation.data}
             attention={attention}
-            peers={peers}
+            peers={{...peers,titles:{...startupTitles,...peers.titles}}}
             project={selectedProject}
             session={selectedSession}
             sessions={state.sessions}
@@ -1089,6 +1132,8 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
             }
           >
             <ThreadView
+              startup={startup}
+              onRetryStartup={pendingStartup?.error ? () => { void startSession(pendingStartup.args); } : undefined}
               requests={
                 <Approvals
                   approvals={approvalRows.filter(
@@ -1109,11 +1154,19 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
               revision={conversationRevision}
               sessionId={selectedSession?.sessionId ?? null}
               projectId={selectedProjectId}
-              projectName={selectedProject?.name ?? null}
+              projectName={selectedProject?.projectless ? null : selectedProject?.name ?? null}
               onFile={openWorkspace}
             />
 
             <Dock
+              onNewProject={() => sidebar.current?.addProject()}
+              onProjectless={() => { void bridge().projectlessWorkspace().then(project => {
+                setProjects(previous => [...previous.filter(item => item.id !== project.id), project]);
+                store.noteProjects([project.id]);
+                setSelectedProjectId(project.id); setSelectedSessionId(null);
+                void navigation.refresh();
+              }).catch(say); }}
+              startup={pendingStartup}
               editing={
                 editingMessage?.session_id === selectedSessionId
                   ? editingMessage

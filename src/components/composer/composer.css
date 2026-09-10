@@ -43,7 +43,7 @@
 @keyframes composer-spin { to { transform: rotate(360deg); } }
 .composer-setup-rail { display: flex; flex-wrap: wrap; gap: 4px 12px; max-width: 754px; margin: 0 auto -12px; padding: 5px 10px 17px; border-radius: 20px 20px 0 0; background: color-mix(in srgb, var(--color-input) 44%, var(--color-input-shell)); }
 .setup-picker { display: flex; align-items: center; min-width: 0; max-width: 100%; gap: 2px; }
-.setup-picker > svg { flex-shrink: 0; color: var(--color-text-secondary); }
+.setup-picker > svg, .setup-picker .composer-select > svg { flex-shrink: 0; color: var(--color-text-secondary); }
 .setup-picker .composer-select { min-width: 0; flex-shrink: 1; max-width: 235px; padding: 0 5px; }
 .setup-picker .composer-select > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .composer-feedback { margin: 6px auto 0; max-width: 780px; font-size: 12px; padding: 0 10px; }

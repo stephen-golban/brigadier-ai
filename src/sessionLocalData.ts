@@ -7,6 +7,7 @@ import {
 /** Remove recovery data even when the deleted chat has never been opened this run. */
 export function removeSessionLocalData(sessionId: string) {
   for (const prefix of [
+    "brigadier:startup:",
     "brigadier:scroll:",
     "brigadier:expanded:",
     "brigadier:read:",

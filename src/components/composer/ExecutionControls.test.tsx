@@ -80,7 +80,7 @@ describe("project settings", () => {
     const start = vi.fn();
     render(<NewSession project={project} models={models} disabled={false} onStart={start} />);
     await waitFor(() => expect(screen.getByRole("textbox")).toHaveAttribute("contenteditable", "true"));
-    expect(screen.getByRole("button", { name: "Branch" })).toHaveTextContent("Current (main)");
+    expect(screen.getByRole("button", { name: "Branch" })).toHaveTextContent("Branch from: Current files");
     expect(screen.queryByRole("button", { name: "Execution settings" })).toBeNull();
     expect(screen.getByRole("button", { name: "Permissions" })).toHaveTextContent("Approve for me");
     await pasteComposer(screen.getByRole("textbox"), "Build the approved feature");
