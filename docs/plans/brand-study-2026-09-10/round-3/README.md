@@ -1,4 +1,14 @@
-## Current decision — restored original intro
+## Current intro — striped disc, 2026-09-11
+
+The introduction now gathers fifteen vertical strokes into the selected disc, resolves the core, then settles the persistent logo above the welcome headline. The backdrop is a faint monochrome echo of the stripes. Continue becomes interactive at the end of its seven-second reveal; Escape and reduced motion settle immediately. Arrival and the required name-entry flow are preserved. This preview bundles the production components and stylesheet.
+
+See `docs/plans/striped-disc-intro-2026-09-11.md` for design decisions and verification.
+
+## Logo selection — 2026-09-10
+
+The owner selected the striped disc on 2026-09-10. Production uses `public/brand/striped-disc.svg` in the shared BrandMark and startup HTML; platform icons are regenerated from that master. Converge remains saved as a favorite. See `../round-6-striped-disc/README.md` for the selected raster and logo verification.
+
+## Previous decision — restored original intro
 
 Restored the original Fold logo, platform icons, cosmic background, typography and animation from `61e8576`. Arrival remains the only intro change. The app stays dark-only. This preview now renders the restored production intro directly; earlier studies below are archived alternatives.
 

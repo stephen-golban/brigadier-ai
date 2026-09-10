@@ -26,7 +26,6 @@ vi.mock("./App", () => ({
     return <div>Workspace ready</div>;
   },
 }));
-vi.mock("./components/CosmicField", () => ({ CosmicField: () => <canvas data-testid="cosmic-field" /> }));
 const initial = {
   name: "",
   completed: false,
@@ -82,6 +81,26 @@ async function animationEnd(element: Element, animationName: string) {
   });
 }
 describe("required first-use profile", () => {
+  it("keeps the disc visible and Continue ready when motion is reduced", async () => {
+    await mount();
+    expect(document.querySelector(".launch")).toHaveClass("launch-reduced");
+    expect(document.querySelector(".intro-disc")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled();
+  });
+
+  it("does not unlock Continue when a logo fragment finishes animating", async () => {
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: () => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() }),
+    });
+    await mount();
+    await animationEnd(document.querySelector(".intro-disc-stripe")!, "stripe-gather");
+    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled();
+    expect(document.querySelector(".intro-disc")).toBeInTheDocument();
+  });
+
   it("lets the user reset from name entry back to a fresh introduction", async () => {
     await enterName();
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "Stephen" } });
@@ -265,19 +284,22 @@ describe("required first-use profile", () => {
     });
     await mount();
     await animationEnd(document.querySelector(".welcome-action")!, "welcome-button-reveal");
-    const background = screen.getByTestId("cosmic-field");
+    const background = document.querySelector(".signal-field");
     const welcome = document.querySelector(".launch-welcome")!;
+    const disc = document.querySelector(".intro-disc")!;
+    expect(disc).toBeInTheDocument();
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Continue" })); });
     expect(document.querySelector(".launch")).toHaveAttribute("data-stage", "entering-name");
     expect(welcome).toBeInTheDocument();
-    expect(screen.getByTestId("cosmic-field")).toBe(background);
+    expect(document.querySelector(".intro-disc")).toBe(disc);
+    expect(document.querySelector(".signal-field")).toBe(background);
     expect(document.querySelector(".welcome-name")).toHaveAttribute("inert");
     expect(screen.queryByText("Workspace ready")).not.toBeInTheDocument();
     await animationEnd(document.querySelector(".welcome-name h1")!, "name-enter");
     expect(document.querySelector(".launch")).toHaveAttribute("data-stage", "entering-name");
     await animationEnd(document.querySelector(".welcome-name")!, "name-enter");
     expect(screen.getByRole("textbox", { name: "Your name" })).toHaveFocus();
-    expect(screen.getByTestId("cosmic-field")).toBe(background);
+    expect(document.querySelector(".signal-field")).toBe(background);
     expect(welcome).not.toBeInTheDocument();
     expect(screen.getByText("Workspace ready")).toBeInTheDocument();
   });

@@ -12,7 +12,8 @@ import { errorMessage } from "./workspaceApi";
 import { useMusic } from "./hooks/useMusic";
 import "./intro.css";
 import { BrandMark } from "./components/BrandMark";
-import { CosmicField } from "./components/CosmicField";
+import { SignalField } from "./components/SignalField";
+import { IntroDisc } from "./components/IntroDisc";
 import { NameInput } from "./components/NameInput";
 import { ResetOnboardingButton } from "./components/ResetOnboardingButton";
 const App = lazy(() => import("./App").then((m) => ({ default: m.App })));
@@ -264,7 +265,6 @@ export function Launch() {
     stage === "welcome" ||
     stage === "entering-name" ||
     (replay && transitioning);
-  const scene = welcome && !reduced;
   return (
     <>
       {showApp && (
@@ -300,25 +300,16 @@ export function Launch() {
               completeTransition();
           }}
         >
-          {prefs && (
-            <CosmicField
-              start={start}
-              reveal={stage === "cinematic"}
-              reduced={reduced}
-            />
-          )}
+          {prefs && <SignalField key={start} />}
           <div className="launch-window">
-            {scene && (
-              <div className="launch-mark" aria-hidden="true">
-                <BrandMark />
-              </div>
-            )}
             {welcome && (
               <div
+                key={start}
                 className={`launch-welcome ${stage !== "cinematic" ? "launch-interactive" : ""}`}
                 inert={stage === "entering-name"}
                 aria-hidden={stage === "entering-name"}
               >
+                <IntroDisc />
                 <h1
                   ref={heading}
                   tabIndex={-1}
@@ -326,13 +317,13 @@ export function Launch() {
                   aria-label="Your next idea starts here."
                 >
                   <span aria-hidden="true">
-                    <span style={{ animationDelay: "6.45s" }}>Your</span>{" "}
-                    <span style={{ animationDelay: "6.68s" }}>next</span>{" "}
-                    <span style={{ animationDelay: "6.91s" }}>idea</span>
+                    <span style={{ animationDelay: "4.5s" }}>Your</span>{" "}
+                    <span style={{ animationDelay: "4.64s" }}>next</span>{" "}
+                    <span style={{ animationDelay: "4.78s" }}>idea</span>
                   </span>
                   <span aria-hidden="true">
-                    <span style={{ animationDelay: "7.14s" }}>starts</span>{" "}
-                    <span style={{ animationDelay: "7.37s" }}>here.</span>
+                    <span style={{ animationDelay: "4.92s" }}>starts</span>{" "}
+                    <span style={{ animationDelay: "5.06s" }}>here.</span>
                   </span>
                 </h1>
                 <div
@@ -349,7 +340,7 @@ export function Launch() {
                   }}
                 >
                   <button
-                    className="welcome-next welcome-continue"
+                    className="welcome-hint"
                     aria-keyshortcuts="Enter"
                     aria-label={replay ? "Return to workspace" : "Continue"}
                     disabled={
@@ -357,8 +348,7 @@ export function Launch() {
                     }
                     onClick={() => void next()}
                   >
-                    <span>Continue</span>
-                    <Kbd aria-hidden="true">Enter</Kbd>
+                    <span>Press <Kbd aria-hidden="true">Enter</Kbd> to continue</span>
                   </button>
                 </div>
               </div>
@@ -374,6 +364,7 @@ export function Launch() {
                     setStage((current) => current === "entering-name" ? "name" : current);
                 }}
               >
+                <BrandMark className="welcome-profile-mark" />
                 <h1>What should we call you?</h1>
                 <label className="sr-only" htmlFor="welcome-name">
                   Your name
@@ -417,6 +408,7 @@ export function Launch() {
             )}
             {(stage === "greeting" || transitioning) && !replay && (
               <div className="welcome-greeting" role="status">
+                <BrandMark className="welcome-profile-mark" />
                 <h1>Welcome, {name}.</h1>
                 {!ready && <p>Opening your workspace…</p>}
               </div>
