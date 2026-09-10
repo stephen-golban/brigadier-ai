@@ -1,4 +1,5 @@
 import { Button } from "./controls/button";
+import { ChevronDown, Menu } from "../icons";
 /**
  * The virtualized feed: one line per event, read as a column rather than scanned as a table.
  *
@@ -167,54 +168,6 @@ function minuteOf(ms: number): number {
 
 function shortId(id: string): string {
   return id.length <= 6 ? id : id.slice(-6);
-}
-
-/** The empty state's mark: three terse lines, which is what this pane holds. Inline SVG rather
- *  than the `>_` it replaces — a terminal prompt is the most on-the-nose signal in the app, and
- *  which font on the machine claims a codepoint, at what weight and on what baseline, is not
- *  something to delegate. `currentColor` always renders. */
-function LinesMark() {
-  return (
-    <svg
-      viewBox="0 0 28 28"
-      width="28"
-      height="28"
-      aria-hidden="true"
-      focusable="false"
-    >
-      <path
-        d="M4 8h20M4 14h15M4 20h9"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-/** The jump affordance's direction, and the fold chevron; replacing a `↓` text glyph for the same
- *  reason. `.feed-fold[aria-expanded="true"]` rotates it rather than swapping the path, so an open
- *  and a closed group draw the same ink. */
-function ChevronDownIcon() {
-  return (
-    <svg
-      viewBox="0 0 10 10"
-      width="10"
-      height="10"
-      aria-hidden="true"
-      focusable="false"
-    >
-      <path
-        d="M1.75 3.75 5 7l3.25-3.25"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
 }
 
 export interface FeedProps {
@@ -421,7 +374,7 @@ export function Feed({ sessionId, projectId, projectName }: FeedProps) {
                     onClick={() => toggleFold(line.key)}
                   >
                     {line.open ? null : `+${line.folded}`}
-                    <ChevronDownIcon />
+                    <ChevronDown />
                   </Button>
                 ) : null}
                 {newMinute || newSession ? (
@@ -448,7 +401,7 @@ export function Feed({ sessionId, projectId, projectName }: FeedProps) {
       {all.length === 0 ? (
         <div className="thread-empty mx-auto flex max-w-lg flex-col gap-3 p-6 text-text-disabled">
           <span className="mark" aria-hidden="true">
-            <LinesMark />
+            <Menu width={28} height={28} />
           </span>
           <h2>
             {projectName != null && projectName !== ""
@@ -466,7 +419,7 @@ export function Feed({ sessionId, projectId, projectName }: FeedProps) {
       ) : view.shown === 0 ? (
         <div className="thread-empty mx-auto flex max-w-lg flex-col gap-3 p-6 text-text-disabled">
           <span className="mark" aria-hidden="true">
-            <LinesMark />
+            <Menu width={28} height={28} />
           </span>
           <h2>Every row so far is model prose</h2>
           <p>Turn verbose on to read it.</p>
@@ -475,7 +428,7 @@ export function Feed({ sessionId, projectId, projectName }: FeedProps) {
       {atEnd ? null : (
         <Button type="button" className="jump-pill" onClick={jump}>
           Jump to latest
-          <ChevronDownIcon />
+          <ChevronDown />
         </Button>
       )}
     </section>

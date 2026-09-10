@@ -47,12 +47,11 @@ real money on a live model or a bug that reached a review.
 
 ## The thread and the composer
 
-The current thread surface is `src/components/ThreadView.tsx`, built on assistant-ui.
+The thread surface is `src/components/ThreadView.tsx`, built on assistant-ui, and it stays there.
 
-It is being replaced by a port of get-bb/bb's thread timeline and TipTap composer — bb's structure,
-brigadier's row kinds. The contract is
-[`docs/plans/bb-thread-port-2026-09-09.md`](docs/plans/bb-thread-port-2026-09-09.md); read it before
-touching either.
+The generic UI control layer — buttons, icon buttons, menus, dialogs — is moving to assistant-ui's
+design library, which is built on Base UI. New controls go there; do not add individual
+`@radix-ui/react-*` packages.
 
 ## Layout
 

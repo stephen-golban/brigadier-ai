@@ -1,13 +1,6 @@
 import { createPortal } from "react-dom";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import {
-  Archive,
-  ArrowLeft,
-  Folder,
-  Search,
-  Settings,
-  User,
-} from "lucide-react";
+import { Archive, ArrowLeft, Folder, Search, Settings, User } from "../icons";
 import { open } from "@tauri-apps/plugin-dialog";
 import { ArchivedSessions } from "./ArchivedSessions";
 import { Checkbox } from "./controls/checkbox";
@@ -133,7 +126,7 @@ export function DesktopSettings({ data, onData, sessions, titles, projects, orig
           Back to app
         </Button>
         <label className="settings-search settings-nav-search">
-          <Search size={16} />
+          <Search width={16} height={16} />
           <Input
             ref={settingsSearch}
             aria-label="Search settings"

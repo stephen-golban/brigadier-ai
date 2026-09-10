@@ -3,12 +3,6 @@ import type { SettingsRequest } from "../settingsNavigation";
 import { useSessionNavigation } from "../sessionNavigation";
 import { createPortal } from "react-dom";
 import { EditProjectDialog } from "./EditProjectDialog";
-import { ArchiveIcon } from "./ArchiveIcon";
-import { MoreIcon, PinIcon } from "./NavigationIcons";
-import { BellIcon } from "./BellIcon";
-import { FolderIcon, FolderOpenIcon } from "./NavigationIcons";
-import { SearchIcon } from "./SearchIcon";
-import { EditIcon } from "./EditIcon";
 import { SessionStatus } from "./SessionStatus";
 import { DropdownContent } from "./controls/menu";
 // Project navigation composed from native controls.
@@ -21,14 +15,24 @@ import {
   type ReactNode,
 } from "react";
 import {
-  ChevronRight,
-  Tag,
-  Plus,
-  Settings,
-  Trash2,
+  Archive,
+  Bell,
   Check,
+  ChevronRight,
+  DotsHorizontal,
+  Edit,
+  Folder,
+  FolderOpen,
+  Notepad,
+  Pin,
+  PinFilled,
+  Plus,
+  Search,
+  Settings,
+  Tag,
+  Trash,
   X,
-} from "lucide-react";
+} from "../icons";
 import type { SessionRuntime } from "../feedStore";
 import type {
   AppError,
@@ -53,7 +57,6 @@ import { errorMessage } from "../workspaceApi";
 import { notify } from "../desktopApi";
 import { working } from "../attention";
 import { DesktopSettings } from "./DesktopSettings";
-import { NotesIcon } from "./NotesIcon";
 import { NotesLibrary, type NotesLibraryHandle } from "./NotesLibrary";
 import { TrashLibrary } from "./TrashLibrary";
 import { ActionDialog, type PendingAction } from "./ActionDialog";
@@ -476,7 +479,7 @@ export function Sidebar(props: SidebarProps) {
                 </span>
               </div>
               <div className="flex items-center gap-2 text-text-secondary">
-                <FolderIcon />
+                <Folder className="size-4" />
                 <span className="min-w-0 break-words">
                   {project ? projectName(project) : "Project"}
                 </span>
@@ -511,7 +514,7 @@ export function Sidebar(props: SidebarProps) {
             disabled={s.sessionId.startsWith("starting:")}
             onClick={() => pinSession(s.sessionId)}
           >
-            <PinIcon filled={pinned} />
+            {pinned ? <PinFilled className="size-4" /> : <Pin className="size-4" />}
           </SidebarMenuAction>
         </Tooltip>
         <Tooltip
@@ -525,7 +528,7 @@ export function Sidebar(props: SidebarProps) {
             disabled={s.sessionId.startsWith("starting:")}
             onClick={() => archiveSession(s.sessionId)}
           >
-            <ArchiveIcon />
+            <Archive className="size-4" />
           </SidebarMenuAction>
         </Tooltip>
       </SidebarMenuSubItem>
@@ -571,7 +574,7 @@ export function Sidebar(props: SidebarProps) {
                   className="size-8 text-text-secondary"
                   onClick={() => setSearch(true)}
                 >
-                  <SearchIcon />
+                  <Search className="size-4" />
                 </Button>
               </Tooltip>
               <Dropdown>
@@ -580,7 +583,7 @@ export function Sidebar(props: SidebarProps) {
                   aria-label="Notifications"
                   className="relative size-8 text-text-secondary"
                 >
-                  <BellIcon />
+                  <Bell className="size-4" />
                   {(props.pendingTotal > 0 ||
                     Object.values(props.attention ?? {}).some(Boolean)) && (
                     <span className="absolute top-1 right-1 size-1.5 rounded-full bg-attention" />
@@ -636,7 +639,7 @@ export function Sidebar(props: SidebarProps) {
                   }
                 >
                   <span className="flex size-4 items-center justify-center">
-                    <EditIcon />
+                    <Edit className="size-3.5" />
                   </span>
                   <span>New chat</span>
                 </SidebarMenuButton>
@@ -648,7 +651,7 @@ export function Sidebar(props: SidebarProps) {
                 isActive={notes}
                 onClick={() => openNotepad()}
               >
-                <NotesIcon />
+                <Notepad className="size-4" />
                 <span>Notepad</span>
               </SidebarMenuButton>
               <Tooltip content="New note">
@@ -658,7 +661,7 @@ export function Sidebar(props: SidebarProps) {
                   className="size-8 shrink-0 text-text-tertiary hover:text-text"
                   onClick={() => openNotepad(undefined, true)}
                 >
-                  <Plus size={16} strokeWidth={1.5} />
+                  <Plus width={16} height={16} />
                 </Button>
               </Tooltip>
             </SidebarMenuItem>
@@ -775,9 +778,9 @@ export function Sidebar(props: SidebarProps) {
                             onClick={toggle}
                           >
                             {open ? (
-                              <FolderOpenIcon className="size-4" />
+                              <FolderOpen className="size-4" />
                             ) : (
-                              <FolderIcon className="size-4" />
+                              <Folder className="size-4" />
                             )}
                           </button>
                           <Dropdown native>
@@ -787,7 +790,7 @@ export function Sidebar(props: SidebarProps) {
                               aria-label={`Project actions ${projectName(project)}`}
                               title="Project actions"
                             >
-                              <MoreIcon />
+                              <DotsHorizontal className="size-4" />
                             </SidebarMenuAction>
                             <DropdownContent
                               className="w-[280px]"
@@ -804,11 +807,7 @@ export function Sidebar(props: SidebarProps) {
                               >
                                 <Dropdown.Item
                                   nativeIcon={
-                                    <PinIcon
-                                      filled={pinnedProjects.includes(
-                                        project.id,
-                                      )}
-                                    />
+                                    pinnedProjects.includes(project.id) ? <PinFilled className="size-4" /> : <Pin className="size-4" />
                                   }
                                   onAction={() =>
                                     setPinnedProjects((ids) =>
@@ -818,9 +817,7 @@ export function Sidebar(props: SidebarProps) {
                                     )
                                   }
                                 >
-                                  <PinIcon
-                                    filled={pinnedProjects.includes(project.id)}
-                                  />
+                                  {pinnedProjects.includes(project.id) ? <PinFilled className="size-4" /> : <Pin className="size-4" />}
                                   {pinnedProjects.includes(project.id)
                                     ? "Unpin"
                                     : "Pin"}
@@ -842,7 +839,7 @@ export function Sidebar(props: SidebarProps) {
                               <Dropdown.Item
                                 onAction={() => newSession(project.id)}
                               >
-                                <EditIcon />
+                                <Edit className="size-3.5" />
                                 New chat
                               </Dropdown.Item>
                               {props.onReveal && (
@@ -851,7 +848,7 @@ export function Sidebar(props: SidebarProps) {
                                     props.onReveal?.(project.root_path)
                                   }
                                 >
-                                  <FolderOpenIcon />
+                                  <FolderOpen className="size-4" />
                                   Reveal in Finder
                                 </Dropdown.Item>
                               )}
@@ -913,7 +910,7 @@ export function Sidebar(props: SidebarProps) {
                             title="New chat"
                             onClick={() => newSession(project.id)}
                           >
-                            <EditIcon />
+                            <Edit className="size-3.5" />
                           </SidebarMenuAction>
                         </div>
                         <SidebarReveal
@@ -989,7 +986,7 @@ export function Sidebar(props: SidebarProps) {
               </Dropdown.Item>
               <Separator />
               <Dropdown.Item onAction={() => setTrash(true)}>
-                <Trash2 />
+                <Trash />
                 Trash
                 {navigation.trash.length > 0 && (
                   <span className="ml-auto text-text-secondary">
@@ -1057,7 +1054,7 @@ export function Sidebar(props: SidebarProps) {
                 search: "New chat",
                 content: (
                   <>
-                    <EditIcon />
+                    <Edit className="size-3.5" />
                     <span>New chat</span>
                     <Kbd className="ml-auto">
                       {navigator.platform.startsWith("Mac") ? "⌘N" : "Ctrl N"}
@@ -1074,7 +1071,7 @@ export function Sidebar(props: SidebarProps) {
                 search: "Notepad notes",
                 content: (
                   <>
-                    <NotesIcon />
+                    <Notepad className="size-4" />
                     <span>Notepad</span>
                   </>
                 ),
@@ -1106,7 +1103,7 @@ export function Sidebar(props: SidebarProps) {
               search: `${p.id} ${projectName(p)}`,
               content: (
                 <>
-                  <FolderIcon />
+                  <Folder className="size-4" />
                   {projectName(p)}
                 </>
               ),
@@ -1123,7 +1120,7 @@ export function Sidebar(props: SidebarProps) {
               search: `${s.sessionId} ${title(s.sessionId)} ${activeProjects.find((p) => p.id === s.projectId)?.name ?? ""}`,
               content: (
                 <>
-                  <EditIcon />
+                  <Edit className="size-3.5" />
                   <span className="truncate">{title(s.sessionId)}</span>
                 </>
               ),
@@ -1142,7 +1139,7 @@ export function Sidebar(props: SidebarProps) {
                 search: `${n.id} ${n.title}`,
                 content: (
                   <>
-                    <NotesIcon />
+                    <Notepad className="size-4" />
                     {n.title}
                   </>
                 ),

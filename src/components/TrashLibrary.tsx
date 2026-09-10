@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ArchiveRestore, Trash2 } from "lucide-react";
+import { Trash, Unarchive } from "../icons";
 import {
   Dialog,
   DialogContent,
@@ -89,7 +89,7 @@ export function TrashLibrary({
                     disabled={!!busy}
                     onClick={() => void restore(entry)}
                   >
-                    <ArchiveRestore />
+                    <Unarchive />
                     Restore
                   </Button>
                   <Button
@@ -109,7 +109,7 @@ export function TrashLibrary({
                       })
                     }
                   >
-                    <Trash2 />
+                    <Trash />
                   </Button>
                 </div>
               ))}

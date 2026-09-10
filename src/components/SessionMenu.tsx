@@ -1,8 +1,14 @@
 import { useEffect, useState } from "react";
-import { GitBranch, Laptop, ArrowUpRight } from "lucide-react";
-import { MoreIcon, PinIcon } from "./NavigationIcons";
-import { EditIcon } from "./EditIcon";
-import { ArchiveIcon } from "./ArchiveIcon";
+import {
+  Archive,
+  ArrowUpRight,
+  Branch,
+  Desktop,
+  DotsHorizontal,
+  Edit,
+  Pin,
+  PinFilled,
+} from "../icons";
 import { Button } from "./controls/button";
 import { Kbd } from "./controls/kbd";
 import { Input } from "./controls/input";
@@ -121,38 +127,38 @@ export function SessionMenu({
     <>
       <Dropdown native>
         <Button size="icon" aria-label="Session actions" disabled={busy}>
-          <MoreIcon />
+          <DotsHorizontal className="size-4" />
         </Button>
         <DropdownContent className="w-56">
           <Dropdown.Item
             aria-label="Rename"
             textValue="Rename"
-            nativeIcon={<EditIcon />}
+            nativeIcon={<Edit className="size-3.5" />}
             accelerator="CmdOrCtrl+Alt+R"
             onAction={rename}
           >
-            <EditIcon />
+            <Edit className="size-3.5" />
             Rename<Kbd className="ml-auto">{mac ? "⌥⌘R" : "Ctrl Alt R"}</Kbd>
           </Dropdown.Item>
           <Dropdown.Item
             aria-label={pinned ? "Unpin" : "Pin"}
             textValue={pinned ? "Unpin" : "Pin"}
-            nativeIcon={<PinIcon filled={pinned} />}
+            nativeIcon={pinned ? <PinFilled className="size-4" /> : <Pin className="size-4" />}
             accelerator="CmdOrCtrl+Alt+P"
             onAction={pin}
           >
-            <PinIcon filled={pinned} />
+            {pinned ? <PinFilled className="size-4" /> : <Pin className="size-4" />}
             {pinned ? "Unpin" : "Pin"}
             <Kbd className="ml-auto">{mac ? "⌥⌘P" : "Ctrl Alt P"}</Kbd>
           </Dropdown.Item>
           <Dropdown.Item
             aria-label={archived ? "Unarchive" : "Archive"}
             textValue={archived ? "Unarchive" : "Archive"}
-            nativeIcon={<ArchiveIcon />}
+            nativeIcon={<Archive className="size-4" />}
             accelerator="CmdOrCtrl+Shift+A"
             onAction={archive}
           >
-            <ArchiveIcon />
+            <Archive className="size-4" />
             {archived ? "Unarchive" : "Archive"}
             <Kbd className="ml-auto">{mac ? "⇧⌘A" : "Ctrl Shift A"}</Kbd>
           </Dropdown.Item>
@@ -160,18 +166,18 @@ export function SessionMenu({
           <Dropdown.SubmenuTrigger>
             <Dropdown.Item
               textValue="Fork"
-              nativeIcon={<GitBranch />}
+              nativeIcon={<Branch />}
               disabled={!canFork || !onFork}
             >
-              <GitBranch />
+              <Branch />
               Fork
             </Dropdown.Item>
             <DropdownContent side="right">
               <Dropdown.Item
-                nativeIcon={<Laptop />}
+                nativeIcon={<Desktop />}
                 onAction={() => void run(() => onFork?.(false))}
               >
-                <Laptop />
+                <Desktop />
                 Fork session
               </Dropdown.Item>
               <Dropdown.Item

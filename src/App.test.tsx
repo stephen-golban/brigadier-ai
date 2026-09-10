@@ -15,7 +15,7 @@
  *   - selecting a second session before the first settles abandons the first and never reports
  *     it against the second's rows.
  *
- * Mechanics, matching `src/feedStore.test.ts` and `src/providers/ThemeProvider.test.tsx`:
+ * Mechanics, matching `src/feedStore.test.ts` and `src/App.run.test.tsx`:
  * `globals: false`, `vi.resetModules()` plus a per-test `await import("./App")` because
  * `feedStore` is a module singleton whose sessions would otherwise leak between tests, and a
  * hand-called `cleanup()` because auto-cleanup needs a global `afterEach` that `globals: false`

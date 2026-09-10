@@ -178,7 +178,9 @@ it("keeps unknown tool completion distinct from success", () => {
       items={[item("cmd", { type: "tool-call", name: "Bash" }, "npm test")]}
     />,
   );
-  expect(container.querySelector(".lucide-check")).toBeNull();
+  // `data-icon` is stamped on every vendored icon root by `scripts/vendor-icons.mjs`, so this
+  // assertion survives an icon-library swap in a way the old `.lucide-check` class did not.
+  expect(container.querySelector('[data-icon="check"]')).toBeNull();
 });
 it("shows provider reasoning without empty disclosures or orphan copy actions", async () => {
   const user = userEvent.setup();

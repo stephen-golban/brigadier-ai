@@ -4,7 +4,7 @@ import { AgentHandoff } from './assistant-ui/elements/agent-handoff';
 import { WorkerSummary } from './WorkerSummary';
 import { AgentStatus } from "./assistant-ui/elements/agent-status";
 import * as feed from "../feedStore";
-import { ArrowLeftIcon, UsersThreeIcon } from '@phosphor-icons/react';
+import { ArrowLeft, Users } from "../icons";
 import { useState, useEffect, useSyncExternalStore } from 'react';
 import type { SessionRuntime } from '../feedStore';
 import type { PeerData } from '../peerApi';
@@ -53,7 +53,7 @@ export function SubagentsPanel({ rootId, projectId, peers, sessions, onFile, req
   const report = (e: unknown) => setError(errorMessage(e));
   return <section className="subagents-panel" aria-label="Subagents">
     <header className="subagents-heading">
-      {selected ? <Button size="icon" aria-label="Back to subagents" onClick={() => select(null)}><ArrowLeftIcon /></Button> : <UsersThreeIcon size={18} />}
+      {selected ? <Button size="icon" aria-label="Back to subagents" onClick={() => select(null)}><ArrowLeft /></Button> : <Users width={18} height={18} />}
       <span>{selected ? peers.titles[selected.id] ?? `Worker ${selected.id.slice(-6)}` : 'Subagents'}</span>
     </header>
     {error && <p role="alert" className="text-error px-3">{error}</p>}
@@ -82,7 +82,7 @@ export function SubagentsPanel({ rootId, projectId, peers, sessions, onFile, req
         const members = rows.filter(row => row.done === (group === 'Done'));
         return <section key={group}><h3>{group} · {members.length}</h3>
           {!members.length && <p>{group === 'Active' ? 'No active subagents' : 'No completed subagents'}</p>}
-          <SubagentList agents={members.map(row=>({id:row.id,name:peers.titles[row.id]??`Worker ${row.id.slice(-6)}`,model:`${row.session?providerIdentity(row.session.instanceId).name:'Provider unknown'} · ${row.session?.model??'Model unknown'}`,detail:peers.assignments?.[row.id]?.objective,icon:<UsersThreeIcon size={18}/>,...workerPresentation(row,feedState.approvals.some(a=>a.sessionId===row.id&&!a.expired))}))} onSelect={select}/>
+          <SubagentList agents={members.map(row=>({id:row.id,name:peers.titles[row.id]??`Worker ${row.id.slice(-6)}`,model:`${row.session?providerIdentity(row.session.instanceId).name:'Provider unknown'} · ${row.session?.model??'Model unknown'}`,detail:peers.assignments?.[row.id]?.objective,icon:<Users width={18} height={18}/>,...workerPresentation(row,feedState.approvals.some(a=>a.sessionId===row.id&&!a.expired))}))} onSelect={select}/>
 
         </section>;
       })}

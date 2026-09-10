@@ -1,5 +1,4 @@
-import { X } from "lucide-react";
-import { FolderIcon } from "./NavigationIcons";
+import { Folder, X } from "../icons";
 import { Button } from "./controls/button";
 import {
   Dialog,
@@ -64,7 +63,7 @@ export function EditProjectDialog({
           </DialogHeader>
           <div className="flex h-9 overflow-hidden rounded-md border border-hairline focus-within:border-text-tertiary">
             <span className="flex w-9 shrink-0 items-center justify-center border-r border-hairline">
-              <FolderIcon />
+              <Folder className="size-4" />
             </span>
             <Input
               autoFocus

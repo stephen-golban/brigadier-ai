@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "./controls/button";
+import { X } from "../icons";
 import { errorMessage } from "../workspaceApi";
 import type { PanelBinding } from "../vscode-panels/types";
 
@@ -71,7 +72,7 @@ export function VscodePanels(props: Props) {
         >
           <span className="flex-1">{error}</span>
           <Button aria-label="Dismiss error" onClick={() => setError("")}>
-            ×
+            <X className="size-3.5" />
           </Button>
         </div>
       )}

@@ -1,12 +1,4 @@
-import {
-  CaretRightIcon,
-  FileIcon,
-  FolderIcon,
-  PlusIcon,
-  MinusIcon,
-  ArrowCounterClockwiseIcon,
-  ArrowSquareOutIcon,
-} from "@phosphor-icons/react";
+import { ArrowRotateCcw, CaretRight, ExternalLink, File, Folder, Minus, Plus } from "../icons";
 import { Button } from "./controls/button";
 import {
   Collapsible,
@@ -62,7 +54,7 @@ export function ChangesFileList(props: Props) {
           data-scm-file
           onClick={() => props.onOpen(change.path, "diff", props.staged)}
         >
-          <FileIcon className="size-4 shrink-0 text-text-tertiary" />
+          <File className="size-4 shrink-0 text-text-tertiary" />
           <span
             className={`truncate text-[13px] ${code === "D" ? "line-through text-text-tertiary" : "text-text-secondary"}`}
           >
@@ -83,7 +75,7 @@ export function ChangesFileList(props: Props) {
             aria-label={`Open file ${change.path}`}
             onClick={() => props.onOpen(change.path, "file")}
           >
-            <ArrowSquareOutIcon className="size-3.5" />
+            <ExternalLink className="size-3.5" />
           </Button>
           {!props.staged && (
             <Button
@@ -95,7 +87,7 @@ export function ChangesFileList(props: Props) {
               aria-label={`Discard ${change.path}`}
               onClick={() => props.onDiscard(change.path)}
             >
-              <ArrowCounterClockwiseIcon className="size-3.5" />
+              <ArrowRotateCcw className="size-3.5" />
             </Button>
           )}
           <Button
@@ -108,9 +100,9 @@ export function ChangesFileList(props: Props) {
             onClick={() => props.onStage(change.path)}
           >
             {props.staged ? (
-              <MinusIcon className="size-3.5" />
+              <Minus className="size-3.5" />
             ) : (
-              <PlusIcon className="size-3.5" />
+              <Plus className="size-3.5" />
             )}
           </Button>
         </div>
@@ -148,8 +140,8 @@ export function ChangesFileList(props: Props) {
                 style={{ paddingLeft: 8 + depth * 12 }}
                 aria-label={`Folder ${prefix}${name}`}
               >
-                <CaretRightIcon className="size-3 shrink-0 group-aria-expanded/folder:rotate-90" />
-                <FolderIcon className="size-4 shrink-0" />
+                <CaretRight className="size-3 shrink-0 group-aria-expanded/folder:rotate-90" />
+                <Folder className="size-4 shrink-0" />
                 <span className="truncate">{name}</span>
               </CollapsibleTrigger>
               <CollapsibleContent>

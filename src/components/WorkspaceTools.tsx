@@ -1,32 +1,20 @@
-import { FolderIcon } from "./NavigationIcons";
-import { SearchIcon } from "./SearchIcon";
 import { Input } from "./controls/input";
 import { Button } from "./controls/button";
 import { VscodePanels } from "./VscodePanels";
 import { SourceControl } from "./SourceControl";
 import { useEffect, useState } from "react";
 import {
-  FileIcon,
-  FileCodeIcon,
-  FileCssIcon,
-  FileHtmlIcon,
-  FileImageIcon,
-  FileJsIcon,
-  FileJsxIcon,
-  FileMdIcon,
-  FilePyIcon,
-  FileRsIcon,
-  FileTextIcon,
-  FileTsIcon,
-  FileTsxIcon,
-  BracketsCurlyIcon,
-  CaretRightIcon,
-  GitBranchIcon,
-  SunIcon,
-  LightningIcon,
-  NotebookIcon,
-  type Icon,
-} from "@phosphor-icons/react";
+  Bolt,
+  Branch,
+  CaretRight,
+  Code,
+  File,
+  Folder,
+  Notebook,
+  Search,
+  Sun,
+  type IconComponent,
+} from "../icons";
 import {
   workspaceApi,
   errorMessage,
@@ -88,7 +76,7 @@ export function WorkspaceTools({
           className="workspace-root flex h-8 shrink-0 items-center gap-2 px-3 text-xs text-text-tertiary"
           title={root}
         >
-          <FolderIcon />
+          <Folder className="size-4" />
           <span>{root.split("/").pop()}</span>
           <span className="grow" />
           <span>{status?.branch}</span>
@@ -134,7 +122,7 @@ export function WorkspaceTools({
                     key={n.id}
                     onClick={() => onNote(n)}
                   >
-                    <NotebookIcon />
+                    <Notebook />
                     <span>{n.title || "Untitled note"}</span>
                     {n.alwaysInclude && <small>Always included</small>}
                   </Button>
@@ -193,32 +181,41 @@ function fileTreeFromPaths(paths: Set<string>): Map<string, FileEntry[]> {
   );
 }
 
-const fileTypes: { extensions: string[]; icon: Icon; color: string }[] = [
-  { extensions: ["tsx"], icon: FileTsxIcon, color: "#6cb6ff" },
-  { extensions: ["ts"], icon: FileTsIcon, color: "#6cb6ff" },
-  { extensions: ["jsx"], icon: FileJsxIcon, color: "#e5c07b" },
-  { extensions: ["js", "mjs", "cjs"], icon: FileJsIcon, color: "#e5c07b" },
-  { extensions: ["css", "scss", "sass"], icon: FileCssIcon, color: "#c49bea" },
-  { extensions: ["html"], icon: FileHtmlIcon, color: "#e99572" },
+/**
+ * Per-language file glyphs are gone: `@openai/apps-sdk-ui` has `File`, `FileCode`, `FileImage` and
+ * a handful of media types, but nothing per-language and no `Brackets`. Every per-language glyph in
+ * the table below therefore collapses to `File`, with the language carried by the colour alone —
+ * the owner's decision, see the mapping table in `docs/research/apps-sdk-ui-icons.md`. Not every
+ * row is a `File`: config-shaped extensions (`json`, `jsonc`, `yaml`, `yml`, `toml`) keep `Code`,
+ * and `FileTypeIcon` below keeps three by-name special cases — `.gitignore` → `Branch`,
+ * `claude.md` → `Sun`, `vite.config.ts` → `Bolt`. The colours below are unchanged.
+ */
+const fileTypes: { extensions: string[]; icon: IconComponent; color: string }[] = [
+  { extensions: ["tsx"], icon: File, color: "#6cb6ff" },
+  { extensions: ["ts"], icon: File, color: "#6cb6ff" },
+  { extensions: ["jsx"], icon: File, color: "#e5c07b" },
+  { extensions: ["js", "mjs", "cjs"], icon: File, color: "#e5c07b" },
+  { extensions: ["css", "scss", "sass"], icon: File, color: "#c49bea" },
+  { extensions: ["html"], icon: File, color: "#e99572" },
   {
     extensions: ["json", "jsonc", "yaml", "yml", "toml"],
-    icon: BracketsCurlyIcon,
+    icon: Code,
     color: "#e99572",
   },
-  { extensions: ["md", "mdx"], icon: FileMdIcon, color: "#81b9a0" },
-  { extensions: ["rs"], icon: FileRsIcon, color: "#dfa180" },
-  { extensions: ["py"], icon: FilePyIcon, color: "#81b9a0" },
+  { extensions: ["md", "mdx"], icon: File, color: "#81b9a0" },
+  { extensions: ["rs"], icon: File, color: "#dfa180" },
+  { extensions: ["py"], icon: File, color: "#81b9a0" },
   {
     extensions: ["png", "jpg", "jpeg", "gif", "svg", "webp", "ico"],
-    icon: FileImageIcon,
+    icon: File,
     color: "#b49cdb",
   },
   {
     extensions: ["sh", "go", "rb", "c", "cpp", "h", "swift"],
-    icon: FileCodeIcon,
+    icon: File,
     color: "#81b9a0",
   },
-  { extensions: ["txt"], icon: FileTextIcon, color: "#a1a1a1" },
+  { extensions: ["txt"], icon: File, color: "#a1a1a1" },
 ];
 
 function FileTypeIcon({ name }: { name: string }) {
@@ -226,24 +223,19 @@ function FileTypeIcon({ name }: { name: string }) {
   const extension = filename.split(".").pop() ?? "";
   const type =
     filename === ".gitignore"
-      ? { icon: GitBranchIcon, color: "#e99572" }
+      ? { icon: Branch, color: "#e99572" }
       : filename === "claude.md"
-        ? { icon: SunIcon, color: "#e99572" }
+        ? { icon: Sun, color: "#e99572" }
         : filename === "vite.config.ts"
-          ? { icon: LightningIcon, color: "#b49cdb" }
+          ? { icon: Bolt, color: "#b49cdb" }
           : fileTypes.find((type) => type.extensions.includes(extension));
+  // Phosphor's `weight="fill"` marked the unknown-extension fallback; the set has no filled/outline
+  // pair for `File`, so the single glyph carries both states and only the grey colour separates them.
   const { icon: TypeIcon, color } = type ?? {
-    icon: FileIcon,
+    icon: File,
     color: "#7f7f7f",
   };
-  return (
-    <TypeIcon
-      aria-hidden="true"
-      className="shrink-0"
-      weight={type ? "regular" : "fill"}
-      style={{ color }}
-    />
-  );
+  return <TypeIcon aria-hidden="true" className="shrink-0" style={{ color }} />;
 }
 
 function FilesTree({
@@ -412,7 +404,7 @@ function FilesTree({
             }
           >
             {entry.directory ? (
-              <CaretRightIcon
+              <CaretRight
                 aria-hidden="true"
                 className={`shrink-0 transition-transform duration-200 motion-reduce:transition-none ${open ? "rotate-90" : ""}`}
               />
@@ -448,7 +440,7 @@ function FilesTree({
             aria-hidden="true"
             className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-text-tertiary"
           >
-            <SearchIcon size={14} />
+            <Search width={14} height={14} />
           </span>
           <Input
             aria-label="Filter files"

@@ -380,6 +380,10 @@ more faithful to the ChatGPT reference. Not a copy decision, a taste decision.
 
 ### Light scheme — yes, Jan ships one
 
+> **Superseded 2026-09-10: brigadier is dark-only.** The light palette, the theme switch and
+> `src/providers/ThemeProvider.tsx` were removed by owner decision; what follows is kept as the
+> record of what was measured at the time, not as a description of the tree.
+
 **Jan is not dark-only.** `web-app/src/index.css:98` defines the full token set on `:root` in
 light values (`--background: oklch(1 0 0)`), and `:133` `.dark` overrides them
 (`--background: oklch(0.18 0 0)`) **[measured]**. The variant is wired at `:20`,

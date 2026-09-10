@@ -1,6 +1,6 @@
 // Adapted from assistant-ui Elements (MIT). No implied pause/retry actions.
 import { Spinner } from "../../controls/status";
-import { CheckIcon, CircleAlertIcon } from "lucide-react";
+import { Check, ExclamationMarkCircle } from "../../../icons";
 export function AgentStatus({
   state,
   label,
@@ -16,9 +16,9 @@ export function AgentStatus({
       {state === "working" ? (
         <Spinner size="sm" />
       ) : state === "done" ? (
-        <CheckIcon className="size-3 text-ok" />
+        <Check className="size-3 text-ok" />
       ) : state === "failed" ? (
-        <CircleAlertIcon className="size-3 text-error" />
+        <ExclamationMarkCircle className="size-3 text-error" />
       ) : (
         <span
           className={`size-1.5 rounded-full ${state === "waiting" ? "bg-selected" : "bg-elevated"}`}

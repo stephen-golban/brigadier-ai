@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft, ArrowRight } from "lucide-react";
+import { ArrowLeft, ArrowRight } from "../icons";
 import { Button } from "./controls/button";
 
 type Location = {
@@ -68,7 +68,7 @@ export function NavigationHistoryControls({
         onClick={() => move(find(-1))}
         className="size-7 rounded-md text-text-secondary hover:bg-transparent hover:text-text [&_svg]:text-current"
       >
-        <ArrowLeft strokeWidth={1.5} />
+        <ArrowLeft />
       </Button>
       <Button
         isIconOnly
@@ -78,7 +78,7 @@ export function NavigationHistoryControls({
         onClick={() => move(find(1))}
         className="size-7 rounded-md text-text-secondary hover:bg-transparent hover:text-text [&_svg]:text-current"
       >
-        <ArrowRight strokeWidth={1.5} />
+        <ArrowRight />
       </Button>
     </>
   );

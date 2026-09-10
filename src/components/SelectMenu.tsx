@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDown } from "../icons";
 import { Popover, Label, Description } from "./controls/overlay";
 import { ListBox } from "./controls/listbox";
 import { Input } from "./controls/input";
@@ -57,7 +57,7 @@ export function SelectMenu({
         <span className={selected?.warning ? "text-warn" : undefined}>
           {selected?.label ?? value}
         </span>
-        <ChevronDownIcon className="size-4" />
+        <ChevronDown className="size-4" />
       </Button>
       <Popover.Content placement={placement}>
         {searchable && (

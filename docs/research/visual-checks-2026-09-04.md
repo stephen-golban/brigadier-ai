@@ -390,6 +390,10 @@ None of these were made. Each is one line of CSS except the last.
 
 ## 7. What was NOT checked
 
+> **Superseded 2026-09-10: brigadier is dark-only.** The light palette and the theme switch were
+> removed by owner decision, so "no light mode" below is no longer a gap — there is no light mode
+> to check. Everything else in this section stands.
+
 - **No release-profile burn.** Every Check-2 number is a **debug** Rust binary served by the vite
   dev server, i.e. a React development build and unminified JS. Reaching a release burn needs the
   change proposed at §6.4. The shipped binary's scroll FPS under load is **unmeasured**.
@@ -626,6 +630,8 @@ has ever been drawn from a stored row. **[measured]**
    after the recovery.
 
 ### 8.8 What was NOT checked in this section
+
+> **Superseded 2026-09-10: brigadier is dark-only.** "No light mode" below is no longer a gap.
 
 - **Claim 3, at all.** §8.4. No approval was opened, in any engine, in a real window.
 - **`documentElement.scrollWidth` in WKWebView.** §8.3. No devtools in a release build; the overflow

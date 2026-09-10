@@ -1,16 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
-import {
-  CaretDownIcon,
-  CaretRightIcon,
-  CheckIcon,
-  GitBranchIcon,
-  ArrowClockwiseIcon,
-  PlusIcon,
-  MinusIcon,
-  SparkleIcon,
-  GearSixIcon,
-} from "@phosphor-icons/react";
-import { MoreIcon } from "./NavigationIcons";
+import { ArrowRotateCw, Branch, CaretDown, CaretRight, Check, DotsHorizontal, Minus, Plus, SettingsCog, Sparkle } from "../icons";
 import { Button } from "./controls/button";
 import { ButtonGroup } from "./controls/button-group";
 import {
@@ -271,7 +260,7 @@ function RepositoryChanges({
           disabled={busy}
           onClick={refresh}
         >
-          <ArrowClockwiseIcon className="size-4" />
+          <ArrowRotateCw className="size-4" />
         </Button>
         <Dropdown isOpen={menu} onOpenChange={setMenu}>
           <Button
@@ -281,7 +270,7 @@ function RepositoryChanges({
             title="Git actions"
             aria-label="Git actions"
           >
-            <MoreIcon />
+            <DotsHorizontal className="size-4" />
           </Button>
           <DropdownContent align="end">
             <Dropdown.Item onAction={() => setView(!tree)}>
@@ -291,10 +280,10 @@ function RepositoryChanges({
               <Dropdown.Item>Sort Changes</Dropdown.Item>
               <DropdownContent side="left">
                 <Dropdown.Item onAction={() => chooseSort("name")}>
-                  By Name {sort === "name" ? "✓" : ""}
+                  By Name {sort === "name" ? <Check className="ml-auto size-3.5" aria-hidden /> : null}
                 </Dropdown.Item>
                 <Dropdown.Item onAction={() => chooseSort("path")}>
-                  By Path {sort === "path" ? "✓" : ""}
+                  By Path {sort === "path" ? <Check className="ml-auto size-3.5" aria-hidden /> : null}
                 </Dropdown.Item>
               </DropdownContent>
             </Dropdown.SubmenuTrigger>
@@ -442,7 +431,7 @@ function RepositoryChanges({
             </Dropdown.SubmenuTrigger>
             <Separator />
             <Dropdown.Item onAction={() => setPrefs(true)}>
-              <GearSixIcon />
+              <SettingsCog />
               Commit settings
             </Dropdown.Item>
           </DropdownContent>
@@ -459,9 +448,9 @@ function RepositoryChanges({
             title="Checkout branch"
             aria-label="Checkout branch"
           >
-            <GitBranchIcon className="size-3.5" />
+            <Branch className="size-3.5" />
             <span className="truncate">{status?.branch ?? "Repository"}</span>
-            <CaretDownIcon className="size-3" />
+            <CaretDown className="size-3" />
           </Button>
           {!!((status?.ahead ?? 0) + (status?.behind ?? 0)) && (
             <span
@@ -513,7 +502,7 @@ function RepositoryChanges({
                 disabled={busy || !staged.length}
                 onClick={() => void generate()}
               >
-                <SparkleIcon className="size-3.5" />
+                <Sparkle className="size-3.5" />
                 Generate
               </InputGroupButton>
             </InputGroupAddon>
@@ -527,7 +516,7 @@ function RepositoryChanges({
               disabled={busy || !message.trim() || !status?.changes.length}
               onClick={() => commit()}
             >
-              <CheckIcon className="size-4" />
+              <Check className="size-4" />
               {busy ? "Working…" : "Commit"}
             </Button>
             <Dropdown>
@@ -537,7 +526,7 @@ function RepositoryChanges({
                 aria-label="Commit options"
                 disabled={busy}
               >
-                <CaretDownIcon className="size-3.5" />
+                <CaretDown className="size-3.5" />
               </Button>
               <DropdownContent align="end">
                 <Dropdown.Item
@@ -574,7 +563,7 @@ function RepositoryChanges({
           </p>
         ) : status.changes.length === 0 ? (
           <div className="flex items-center gap-2 p-3 text-xs text-text-tertiary">
-            <CheckIcon className="size-4" />
+            <Check className="size-4" />
             No pending changes
           </div>
         ) : (
@@ -587,7 +576,7 @@ function RepositoryChanges({
                     className="group/section flex h-8 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1 text-[13px] font-medium text-text-secondary hover:bg-hover"
                     aria-label={group.name}
                   >
-                    <CaretRightIcon className="size-3 shrink-0 group-aria-expanded/section:rotate-90" />
+                    <CaretRight className="size-3 shrink-0 group-aria-expanded/section:rotate-90" />
                     <span>{group.name}</span>
                     <span className="ml-auto rounded-full bg-hover px-1.5 text-[11px] font-normal text-text-tertiary">
                       {group.changes.length}
@@ -610,9 +599,9 @@ function RepositoryChanges({
                     }
                   >
                     {group.staged ? (
-                      <MinusIcon className="size-3.5" />
+                      <Minus className="size-3.5" />
                     ) : (
-                      <PlusIcon className="size-3.5" />
+                      <Plus className="size-3.5" />
                     )}
                   </Button>
                 </div>
@@ -703,10 +692,10 @@ function RepositoryChanges({
                       void run([{ action: "checkout", reference: branch }]);
                     }}
                   >
-                    <GitBranchIcon className="size-4" />
+                    <Branch className="size-4" />
                     <span className="truncate">{branch}</span>
                     {branch === status?.branch && (
-                      <CheckIcon className="ml-auto size-4" />
+                      <Check className="ml-auto size-4" />
                     )}
                   </Button>
                 ))

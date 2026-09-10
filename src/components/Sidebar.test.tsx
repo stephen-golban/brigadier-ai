@@ -520,14 +520,18 @@ it("shows Pin, Unpin, and Archive tooltips and fills only the pinned icon", asyn
   const pin = screen.getByRole("button", { name: "Pin Session s" });
   await user.hover(pin);
   expect(screen.getByRole("tooltip")).toHaveTextContent("Pin session");
-  expect(pin.querySelector("path")).toHaveAttribute("fill", "none");
+  // Pin and PinFilled are two separate glyphs in the vendored set, not one path with a `fill`
+  // toggle, so the state shows in `data-icon` rather than in an attribute on the path.
+  expect(pin.querySelector('[data-icon="pin"]')).not.toBeNull();
+  expect(pin.querySelector('[data-icon="pin-filled"]')).toBeNull();
   await user.click(pin);
   const unpin = (
     await screen.findAllByRole("button", { name: "Unpin Session s" })
   )[0];
   await user.hover(unpin);
   expect(screen.getByRole("tooltip")).toHaveTextContent("Unpin session");
-  expect(unpin.querySelector("path")).toHaveAttribute("fill", "currentColor");
+  expect(unpin.querySelector('[data-icon="pin-filled"]')).not.toBeNull();
+  expect(unpin.querySelector('[data-icon="pin"]')).toBeNull();
   await user.click(unpin);
   const archive = screen.getByRole("button", { name: "Archive Session s" });
   await user.hover(archive);

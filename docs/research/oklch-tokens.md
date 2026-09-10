@@ -465,6 +465,10 @@ is a dated measurement kept because it is what was actually executed here.
 
 ## 9. `src/providers/ThemeProvider.tsx`
 
+> **Superseded 2026-09-10: brigadier is dark-only.** The light palette, the theme switch and
+> `src/providers/ThemeProvider.tsx` were removed by owner decision; what follows is kept as the
+> record of what was measured at the time, not as a description of the tree.
+
 Taken from `janhq/jan`, `web-app/src/providers/ThemeProvider.tsx`, 79 lines, **Apache-2.0**,
 fetched from `raw.githubusercontent.com` (not checked out locally). The attribution notice and
 licence URL are at the top of the landed file; no Jan product name, mark or branding was carried

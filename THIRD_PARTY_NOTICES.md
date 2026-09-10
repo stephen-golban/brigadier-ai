@@ -15,50 +15,20 @@ no `license` and no `license.workspace = true`. `package.json` has no `license` 
 exists anywhere in this repository. That is the owner's decision to settle; this file recommends no
 resolution and no manifest was touched.
 
-Package dependencies are not covered — see §3.
+Package dependencies are not covered — see §2.
 
 ---
 
-## 1. janhq/jan — Apache License 2.0
+## 1. Where the licence copy reaches
 
-|                             |                                                                                              |
-| --------------------------- | -------------------------------------------------------------------------------------------- |
-| Upstream project            | `janhq/jan` — <https://github.com/janhq/jan>                                                 |
-| Copyright                   | `Copyright 2025 Menlo Research` — upstream `LICENSE:3` [measured], `docs/research/jan.md` §1 |
-| Upstream file taken         | `web-app/src/providers/ThemeProvider.tsx` (79 lines)                                         |
-| Read at upstream commit     | `9e12b2a80edb98a2776637f4ab2c5bee953c5cb3` (2026-08-29)                                      |
-| Local path                  | `src/providers/ThemeProvider.tsx`                                                            |
-| Licence                     | Apache License, Version 2.0                                                                  |
-| Licence text in this repo   | `licenses/Apache-2.0.txt`                                                                    |
-| Modified                    | **yes**                                                                                      |
-| Files taken from Jan, total | **1**                                                                                        |
+**Removed 2026-09-10: the janhq/jan Apache-2.0 entry and `licenses/Apache-2.0.txt`.** Its only
+covered file, `src/providers/ThemeProvider.tsx`, was deleted when the app went dark-only (owner
+decision 2026-09-10). No file under `src/`, `src-tauri/src/` or `crates/` cites janhq/jan, Menlo
+Research or Apache-2.0 any more [measured 2026-09-10, `grep -rn`]. `docs/research/jan.md` and
+`docs/research/oklch-tokens.md` still discuss Jan; they are notes on an upstream project, not
+vendored code, and carry no notice condition.
 
-**The file was modified.** The current provider carries the upstream attribution and a
-change notice. It now enforces the dark-only token contract and migrates stored theme
-preferences. The earlier OS theme switching and desktop-portal fallback have been removed.
-
-### 1.1 The directory boundary — read this before taking a second Jan file
-
-Only `web-app/src/**` may be copied. `web-app/` declares no `license` field of its own, so the root
-Apache-2.0 governs it (`docs/research/jan.md` §1) [measured].
-
-**No file from `core/` or `extensions/` has been copied.** Those paths declare `AGPL-3.0` in their
-`package.json` — `core/package.json:10` and six `extensions/*` [measured]. `docs/research/jan.md` §1
-reads those strings as leftovers of the AGPL→Apache relicense at `e8ca7f3c`, which changed only the
-`LICENSE` file; that reading is tagged **[asserted]** there, because no maintainer statement was
-found. It is not settled. Treat `core/` and `extensions/` as AGPL-3.0 until it is.
-
-### 1.2 Trademarks
-
-Apache-2.0 §6 grants no trademark rights (`licenses/Apache-2.0.txt:139-144`). No Jan product name,
-wordmark, logo or brand colour is shipped in this repository — `docs/plans/phase-4.md` records that
-as a hard constraint on the frontend wave.
-
----
-
-## 2. Where the licence copy reaches
-
-`licenses/Apache-2.0.txt` reaches anyone who has the repository. **It does not reach the built
+The `licenses/` texts that remain reach anyone who has the repository. **They do not reach the built
 `brigadier.app`**: `src-tauri/tauri.conf.json`'s `bundle` block declares no `licenseFile` and no
 `resources`. Two built bundle trees exist on this machine —
 `target/release/bundle/macos/brigadier.app` (built 2026-09-02 20:52) and
@@ -71,7 +41,7 @@ the text is an owner decision, deferred, not answered here.
 
 ---
 
-## 3. Not covered by this file
+## 2. Not covered by this file
 
 - **`npm` dependencies.** 7 packages in the production closure of `package.json`: 5 MIT, 2
   MIT/Apache-2.0 dual [measured, `package-lock.json` + `node_modules/*/package.json`]. No notice
@@ -84,17 +54,14 @@ the text is an owner decision, deferred, not answered here.
 
 ---
 
-## 4. What was not checked
+## 3. What was not checked
 
 - **No legal review. This is not legal advice.** Anything turning on interpretation — including
-  whether §1.1's boundary is sufficient and whether §2's bundle question needs answering before
-  release — is the owner's decision.
-- Jan's `LICENSE` was not re-read for this file; the `LICENSE:3` quote is carried
-  from `docs/research/jan.md` §1, which read it at the commit named in §1.
-- No upstream issue was opened asking whether the `core/` and `extensions/` AGPL fields are stale.
-  `docs/research/jan.md` §1 names that as the one-line de-risk.
-- `src/providers/ThemeProvider.tsx` was not re-diffed against upstream for this file; the change
-  list in §1 is that file's own in-file notice.
+  whether §1's bundle question needs answering before release, and whether removing a notice for a
+  deleted file is the right call — is the owner's decision.
+- The removal of the Jan entry was checked by grep over `src/`, `src-tauri/src/` and `crates/` only.
+  Nothing was re-diffed against upstream, and `docs/` was not swept for stale Jan citations beyond
+  the two research files named in §1.
 
 ## assistant-ui — MIT
 
@@ -107,6 +74,10 @@ The composer provider selector adapts the segmented button section of [Settings 
 ## Radix UI — MIT
 
 The installed shadcn Collapsible uses `radix-ui` 1.6.7. Copyright (c) 2022 WorkOS. License: [radix-ui-MIT.txt](licenses/radix-ui-MIT.txt).
+
+## @openai/apps-sdk-ui — MIT
+
+[`@openai/apps-sdk-ui`](https://github.com/openai/apps-sdk-ui) 0.2.2 — MIT, Copyright 2025 OpenAI. The icons under `src/icons/` are generated copies of its SVG components; full licence text in `src/icons/LICENSE.md`.
 
 ## tw-shimmer — MIT
 

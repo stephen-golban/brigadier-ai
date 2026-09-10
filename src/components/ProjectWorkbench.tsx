@@ -1,11 +1,8 @@
 import { ApprovalCard } from "./assistant-ui/elements/approval-card";
 import { useSessionArchive } from "../sessionArchive";
 import { setSessionArchived } from "../sessionNavigation";
-import { Folders as FoldersIcon, Terminal as TerminalIcon } from "lucide-react";
 import { SessionMenu } from "./SessionMenu";
 import { working } from "../attention";
-import { SidebarIcon } from "./NavigationIcons";
-import { SearchIcon } from "./SearchIcon";
 import { Tabs } from "./controls/tabs";
 import { Input } from "./controls/input";
 import { Button } from "./controls/button";
@@ -25,11 +22,15 @@ import {
   type CSSProperties,
 } from "react";
 import {
-  UsersThreeIcon,
-  XIcon,
-  FileIcon,
-  GitDiffIcon,
-} from "@phosphor-icons/react";
+  Compare,
+  File,
+  Folders,
+  Search,
+  Sidebar,
+  Terminal,
+  Users,
+  X,
+} from "../icons";
 import type { ProjectView, SessionId, ModelInfo } from "../wire";
 import type { SessionRuntime } from "../feedStore";
 import { SessionPreferences } from "./SessionPreferences";
@@ -1049,7 +1050,7 @@ export function ProjectWorkbench({
               window.dispatchEvent(new Event("brigadier-toggle-sidebar"))
             }
           >
-            <SidebarIcon size={19} />
+            <Sidebar width={19} height={19} />
           </Button>
         )}
         <div className="session-heading flex min-w-0 shrink items-center gap-1">
@@ -1127,9 +1128,9 @@ export function ProjectWorkbench({
                     className="workbench-tab shrink-0"
                   >
                     {t.kind === "diff" ? (
-                      <GitDiffIcon size={14} />
+                      <Compare width={14} height={14} />
                     ) : (
-                      <FileIcon size={14} />
+                      <File width={14} height={14} />
                     )}
                     <span className="max-w-[160px] truncate">{title}</span>
                     {(documentCommands.get(t.id)?.dirty ??
@@ -1147,7 +1148,7 @@ export function ProjectWorkbench({
                         void close(t);
                       }}
                     >
-                      <XIcon size={10} />
+                      <X width={10} height={10} />
                     </Button>
                   </Tabs.Tab>
                 );
@@ -1163,9 +1164,9 @@ export function ProjectWorkbench({
         >
           {(
             [
-              ["files", "Files", FoldersIcon],
-              ["search", "Search", SearchIcon],
-              ["changes", "Changes", GitDiffIcon],
+              ["files", "Files", Folders],
+              ["search", "Search", Search],
+              ["changes", "Changes", Compare],
             ] as const
           ).map(([value, label, Icon]) => (
             <Button
@@ -1188,7 +1189,7 @@ export function ProjectWorkbench({
               onClick={() => togglePanel(value)}
               disabled={!project}
             >
-              <Icon size={18} />
+              <Icon width={18} height={18} />
               {value === "changes" && !!status?.changes.length && (
                 <span className="workbench-change-count" aria-hidden="true">
                   {status.changes.length}
@@ -1196,7 +1197,7 @@ export function ProjectWorkbench({
               )}
             </Button>
           ))}
-          {selectedSessionId && Object.values(peers.subagents ?? {}).includes(selectedSessionId) && <Button size="icon" aria-label="Subagents" title="Subagents" aria-controls="workspace-panel" aria-pressed={panelVisible && subagents} disabled={!selectedSessionId} onClick={() => { setSubagents(true); setWorkspaceOpen(!panelVisible || !subagents); }}><UsersThreeIcon size={18}/></Button>}
+          {selectedSessionId && Object.values(peers.subagents ?? {}).includes(selectedSessionId) && <Button size="icon" aria-label="Subagents" title="Subagents" aria-controls="workspace-panel" aria-pressed={panelVisible && subagents} disabled={!selectedSessionId} onClick={() => { setSubagents(true); setWorkspaceOpen(!panelVisible || !subagents); }}><Users width={18} height={18}/></Button>}
           <Button
             size="icon"
             aria-label="Terminal"
@@ -1207,7 +1208,7 @@ export function ProjectWorkbench({
               window.dispatchEvent(new Event("workbench-terminal-toggle"))
             }
           >
-            <TerminalIcon size={18} />
+            <Terminal width={18} height={18} />
           </Button>
         </div>
       </header>
@@ -1223,7 +1224,7 @@ export function ProjectWorkbench({
             aria-label="Dismiss workspace error"
             onClick={() => setError("")}
           >
-            <XIcon />
+            <X />
           </Button>
         </div>
       )}
@@ -1339,7 +1340,7 @@ export function ProjectWorkbench({
         >
           {selected?.kind === "files" && (
             <div className="open-file-empty flex flex-1 flex-col items-center justify-center gap-3 text-text-secondary">
-              <FoldersIcon size={32} />
+              <Folders width={32} height={32} />
               <h2 className="text-lg text-text">Open file</h2>
               <p className="text-sm">Select a file from the workspace tree</p>
             </div>
