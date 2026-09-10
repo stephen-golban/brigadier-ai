@@ -56,7 +56,7 @@
 .launch-mark .brand-mark {
   width: var(--mark-size);
   height: var(--mark-size);
-  color: var(--color-text);
+  color: var(--color-attention);
   animation: brand-appear .756s ease 4.032s both;
 }
 .launch-welcome,

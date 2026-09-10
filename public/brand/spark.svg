@@ -1,12 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
   <g id="mark" fill="currentColor">
-    <mask id="spark-terminal" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="256">
-      <rect width="256" height="256" fill="white"/>
-      <g fill="none" stroke="black" stroke-width="13" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M88 99L107 128L88 157"/>
-        <path d="M143 157H177"/>
-      </g>
-    </mask>
-    <path d="M128 16C151 16 167 49 186 70C207 89 240 105 240 128C240 151 207 167 186 186C167 207 151 240 128 240C105 240 89 207 70 186C49 167 16 151 16 128C16 105 49 89 70 70C89 49 105 16 128 16Z" mask="url(#spark-terminal)"/>
+    <!-- Compound geometry preserves transparent terminal cutouts in external SVG use on WKWebView. -->
+    <path fill-rule="evenodd" d="M128 16C151 16 167 49 186 70C207 89 240 105 240 128C240 151 207 167 186 186C167 207 151 240 128 240C105 240 89 207 70 186C49 167 16 151 16 128C16 105 49 89 70 70C89 49 105 16 128 16Z M82.563 102.562L99.229 128L82.563 153.438A6.5 6.5 0 0 0 93.437 160.562L112.437 131.562A6.5 6.5 0 0 0 112.437 124.438L93.437 95.438A6.5 6.5 0 0 0 82.563 102.562Z M143 150.5H177A6.5 6.5 0 0 1 177 163.5H143A6.5 6.5 0 0 1 143 150.5Z"/>
   </g>
 </svg>

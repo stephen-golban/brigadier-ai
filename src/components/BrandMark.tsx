@@ -10,6 +10,7 @@ export function BrandMark({
       viewBox="0 0 256 256"
       role="img"
       aria-label="Brigadier"
+      style={{ color: "var(--color-attention)" }}
     >
       <use href="/brand/spark.svg#mark" />
     </svg>

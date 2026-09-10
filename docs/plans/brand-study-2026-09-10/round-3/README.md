@@ -1,5 +1,11 @@
 # Current intro, new appearance
 
+## Native cutout correction and app-blue Spark
+
+The installed WKWebView showed a solid silhouette: its external SVG `<use>` rendered the mark but failed to resolve the nested mask. Spark now uses one compound path with `fill-rule="evenodd"`, preserving the original outer geometry and rounded terminal cutouts without mask references. The shared mark, startup mark and generated platform icons use the app's `--color-attention` blue, currently `#3b82f6`. This supersedes the monochrome logo choice below; the intro background remains dark and neutral, with Arrival unchanged.
+
+`scripts/verify-brand-webkit.swift` reproduces the application's external SVG use through a native WKWebView `tauri://localhost` scheme. The old mask asset fails both cutout pixel checks. The new asset passes: Spark fill `[59,130,246]`, chevron and underscore `[24,24,24]`, matching the actual background. The PNG was visually inspected. This checks the native renderer rather than relying on the browser preview. Production frontend and macOS builds passed, and 21 launch/audio tests passed.
+
 ## Dark-only alignment with existing worktrees
 
 The user pointed to the existing dark-only decision. Both `ui-design-system` and `burn-baseline` contain commit `af65dec` ("Vendor Apps SDK UI icons, go dark-only, cancel the bb thread port"). The active UI design-system worktree also enforces dark mode at first paint. This checkout was still on its parent `61e8576` when the intro was integrated.
