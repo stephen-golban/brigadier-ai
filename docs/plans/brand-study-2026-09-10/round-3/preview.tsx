@@ -20,7 +20,7 @@ function Preview(){
    <BrandMark className="preview-mark"/>
    <fieldset className="preview-sounds"><legend>Choose a soundtrack</legend>{sounds.map(option=><button key={option.file} aria-pressed={sound===option.file} onClick={()=>void chooseSound(option.file)}><strong>{option.name}</strong><small>{option.description}</small></button>)}</fieldset>
    <button className="preview-play" onClick={async()=>{await launchApi.reset();start(true)}}>Play intro · {sounds.find(option=>option.file===sound)?.name.split(' · ')[0]}</button>
-   <p className="preview-note">The app’s monochrome palette. Spark glides up and stays.<br/>Arrival, with the existing intro sequence.</p>
+   <p className="preview-note">Spark in the app’s blue, with transparent terminal cutouts.<br/>Arrival, with the existing intro sequence.</p>
   </main>}
   {started&&<nav className="preview-toolbar" aria-label="Appearance study controls"><span>Preview</span><select aria-label="Soundtrack" value={sound} onChange={e=>void chooseSound(e.target.value)}>{sounds.map(option=><option key={option.file} value={option.file}>{option.name}</option>)}</select><button onClick={()=>void launchApi.reset()}>Replay</button><button aria-pressed={!music} onClick={()=>{setMusic(!music);void launchApi.music(!music)}}>{music?'Mute':'Unmute'}</button><button onClick={()=>start(false)}>Compare</button></nav>}
  </SoundContext.Provider>
