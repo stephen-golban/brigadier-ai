@@ -1,6 +1,7 @@
 import { profiling } from "../perfDiagnostics";
 import type { SettingsRequest } from "../settingsNavigation";
 import { useSessionNavigation } from "../sessionNavigation";
+import { archivableSession, isPendingSessionId } from "../sessionStartup";
 import { createPortal } from "react-dom";
 import { EditProjectDialog } from "./EditProjectDialog";
 import { SessionStatus } from "./SessionStatus";
@@ -485,6 +486,7 @@ export function Sidebar(props: SidebarProps) {
       projectLabel={project ? projectName(project) : "Project"}
       selected={!notes && props.selectedSessionId === s.sessionId}
       pinned={navigation.pinnedSessions.includes(s.sessionId)}
+      canArchive={archivableSession(s)}
       attention={props.attention?.[s.sessionId]} isWorking={working(s)}
       onSelect={selectSession} onPin={pinSession} onArchive={archiveSession}/>;
   };
@@ -1159,9 +1161,9 @@ export function Sidebar(props: SidebarProps) {
 if (profiling) Sidebar.displayName = "Sidebar";
 
 // Runtime counters and other sessions cannot invalidate unchanged row controls.
-const SidebarSessionRow = memo(function SidebarSessionRow({id, title, projectLabel, selected, pinned, attention, isWorking, onSelect, onPin, onArchive}: {
+const SidebarSessionRow = memo(function SidebarSessionRow({id, title, projectLabel, selected, pinned, canArchive, attention, isWorking, onSelect, onPin, onArchive}: {
   id: string; title: string; projectLabel: string; selected: boolean; pinned: boolean;
-  attention?: boolean; isWorking: boolean;
+  canArchive: boolean; attention?: boolean; isWorking: boolean;
   onSelect: (id: string) => void; onPin: (id: string) => void; onArchive: (id: string) => void;
 }) {
   return (
@@ -1208,13 +1210,13 @@ const SidebarSessionRow = memo(function SidebarSessionRow({id, title, projectLab
             </span>
           </SidebarMenuSubButton>
         </Tooltip>
-        <SidebarSessionActions id={id} title={title} pinned={pinned} onPin={onPin} onArchive={onArchive}/>
+        <SidebarSessionActions id={id} title={title} pinned={pinned} canArchive={canArchive} onPin={onPin} onArchive={onArchive}/>
 
       </SidebarMenuSubItem>
 );
 });
-const SidebarSessionActions = memo(function SidebarSessionActions({id, title, pinned, onPin, onArchive}: {
-  id: string; title: string; pinned: boolean;
+const SidebarSessionActions = memo(function SidebarSessionActions({id, title, pinned, canArchive, onPin, onArchive}: {
+  id: string; title: string; pinned: boolean; canArchive: boolean;
   onPin: (id: string) => void; onArchive: (id: string) => void;
 }) {
   return <>        <Tooltip
@@ -1225,7 +1227,7 @@ const SidebarSessionActions = memo(function SidebarSessionActions({id, title, pi
             showOnHover
             className="relative right-auto"
             aria-label={`${pinned ? "Unpin" : "Pin"} ${title}`}
-            disabled={id.startsWith("starting:")}
+            disabled={isPendingSessionId(id)}
             onClick={() => onPin(id)}
           >
             {pinned ? (
@@ -1243,7 +1245,7 @@ const SidebarSessionActions = memo(function SidebarSessionActions({id, title, pi
             showOnHover
             className="relative right-auto"
             aria-label={`Archive ${title}`}
-            disabled={id.startsWith("starting:")}
+            disabled={!canArchive}
             onClick={() => onArchive(id)}
           >
             <Archive className="size-3.5" />
