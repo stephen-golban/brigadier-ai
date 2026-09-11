@@ -183,6 +183,36 @@ export function getLastReport(): WindowReport | null {
 
 /* ------------------------------------------------------------- capturing */
 
+/**
+ * Where this meter's frames come from, and the only thing entitled to ask for them.
+ *
+ * `sampleFrame` has exactly one caller: `src/feedStore.ts`'s drain loop, on its
+ * `requestAnimationFrame` callback. So the quantity every number here reports — and the quantity
+ * the burn's `dropped === 0` gate rides on — is "did the store's frame run on time". That stays
+ * true only while the store is actually asking for frames, and since 2026-09-11 its loop is armed
+ * only while it has work to drain (`feedStore`'s `armed`/`rearm`). An unarmed loop is
+ * indistinguishable here from a loop that missed every opportunity: one idle second would enter
+ * the next report as ~60 dropped vsyncs.
+ *
+ * A **capture** is therefore what holds the loop open, and nothing else does. `startCapture`
+ * turns it on, `stopCapture` turns it off, and outside a capture dev, burn and release builds are
+ * all equally idle-silent — which is what lets the burn measure the idle change rather than be
+ * the reason it is switched off. The measured quantity is unchanged: the timestamps are still the
+ * store's own drain callbacks, not a second animation frame owned by this module.
+ *
+ * It is a registration rather than an `import { setFrameSampling } from "./feedStore"` because
+ * `feedStore` already imports this module, and the meter must not import the store back.
+ */
+type FrameSource = (on: boolean) => void;
+let frameSource: FrameSource | null = null;
+
+/** Registered once by `src/feedStore.ts` at module load; `null` unregisters (tests). */
+export function setFrameSource(source: FrameSource | null): void {
+  frameSource = source;
+  // A source that registers mid-capture still owes that capture its frames.
+  if (source !== null && capture !== null) source(true);
+}
+
 /** Start collecting every one-second window, for a burn run. */
 export function startCapture(): void {
   interrupted = document.hidden;
@@ -190,10 +220,13 @@ export function startCapture(): void {
   resetWindow(last);
   started = true;
   capture = [];
+  frameSource?.(true);
 }
 
 /** Stop collecting and return the windows gathered. */
 export function stopCapture(): WindowReport[] {
+  // First, so no further frame can land inside this function.
+  frameSource?.(false);
   // A blocked event loop may run the stop timer before the next rAF callback.
   // Retain a terminal gap that already missed an opportunity instead of hiding it.
   const tail = performance.now() - last;

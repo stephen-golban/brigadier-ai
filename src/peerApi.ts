@@ -91,15 +91,34 @@ export function usePeers() {
         .catch(() => {})
         .finally(() => { fetching = false; });
     };
-    fetch();
-    const stop = listen("peer-state-changed", fetch);
+    // Listener first, then the fetch (`docs/plans/efficiency-plan-review-2026-09-11.md` §B4).
+    // `listen` is async: with the fetch first, a `peer-state-changed` emitted between the
+    // snapshot resolving and the subscription landing is dropped — Tauri v2 buffers and replays
+    // nothing — and only the 30 s poll hid it. Registering first means the worst case is one
+    // redundant fetch instead of a lost one. The poll is deliberately left in place; removing it
+    // waits on the producer coverage this reorder is a precondition for.
+    let timer: ReturnType<typeof setInterval> | undefined;
+    let unlisten: (() => void) | undefined;
+    void (async () => {
+      try {
+        const off = await listen("peer-state-changed", fetch);
+        // Unmount raced the pending `listen()`: the subscription exists now and nothing will
+        // ever tear it down, so tear it down here.
+        if (!live) { off(); return; }
+        unlisten = off;
+      } catch {
+        // A subscription that never landed leaves the poll as the only coverage; still fetch.
+        if (!live) return;
+      }
+      fetch();
+      timer = setInterval(fetch, 30000);
+    })();
     window.addEventListener("focus", fetch);
-    const timer = setInterval(fetch, 30000);
     return () => {
       live = false;
       clearInterval(timer);
       window.removeEventListener("focus", fetch);
-      void stop.then(unlisten=>unlisten());
+      unlisten?.();
     };
   }, []);
   return useMemo(() => ({ ...data, titles: { ...data.titles, ...titles } }), [data, titles]);

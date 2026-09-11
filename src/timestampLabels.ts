@@ -6,6 +6,10 @@ export interface TimestampResponse { id: number; entries: {key: string; labels: 
 const labels = new Map<string, TimestampLabels>();
 const pending = new Map<number, {keys: string[]; finish: () => void}>();
 const inFlight = new Map<string, Promise<void>>();
+// The history page is published before preparation resolves, so a label can arrive after the row
+// that needs it has already rendered the synchronous fallback. Only a key whose *displayed* text
+// actually moved is worth a patch; every other late arrival is a cache write nobody can see.
+const changeListeners = new Set<(changed: readonly string[]) => void>();
 let worker: Worker | null = null;
 let unavailable = false;
 let nextId = 0;
@@ -16,9 +20,24 @@ export function timestampKey(date: Date, language = navigator.language) {
   return `${date.getFullYear()}:${date.getMonth()}:${date.getDate()}:${date.getHours()}:${date.getMinutes()}:${date.getTimezoneOffset()}:${language}`;
 }
 
-function remember(key: string, value: TimestampLabels) {
+/**
+ * Returns whether this write changed a label a row may already be showing. A first write for a key
+ * is never a change: nothing has read it yet, because `getTimestampLabels` writes the key it
+ * returns. `remember` is called during render through that fallback, so the notification must stay
+ * out of this function and be raised by the worker reply instead.
+ */
+function remember(key: string, value: TimestampLabels): boolean {
+  const previous = labels.get(key);
+  if (previous && previous.time === value.time && previous.date === value.date) return false;
   if (labels.size >= 2048 && !labels.has(key)) labels.delete(labels.keys().next().value!);
   labels.set(key, value);
+  return previous !== undefined;
+}
+
+/** Notified with the keys whose label text changed after something had already rendered it. */
+export function subscribeTimestampLabels(listener: (changed: readonly string[]) => void): () => void {
+  changeListeners.add(listener);
+  return () => {changeListeners.delete(listener);};
 }
 
 export function getTimestampLabels(date: Date, language: string): TimestampLabels {
@@ -66,8 +85,9 @@ export function prepareTimestampLabels(items: readonly {at: number}[]): Promise<
         worker.onmessage = ({data}: MessageEvent<TimestampResponse>) => {
           if (!pending.has(data.id)) return;
           preparation.workerLabels += data.entries.length;
-          data.entries.forEach(entry => remember(entry.key, entry.labels));
+          const changed = data.entries.filter(entry => remember(entry.key, entry.labels)).map(entry => entry.key);
           finish(data.id);
+          if (changed.length) changeListeners.forEach(listener => listener(changed));
         };
         worker.onerror = failWorker;
         worker.onmessageerror = failWorker;
