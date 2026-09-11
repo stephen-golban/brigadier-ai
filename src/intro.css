@@ -130,10 +130,6 @@
 .welcome-name .welcome-continue { margin-top: 24px; }
 .welcome-name .welcome-error { color: var(--color-error); font-size: 14px; margin: 14px 0 0; }
 .welcome-greeting { text-align: center; max-width: 90%; animation: welcome-resolve .7s both; }
-.launch-loading {
-  position: absolute; inset: 0; display: grid; place-content: center; justify-items: center;
-  gap: 12px; background: var(--color-canvas); color: var(--intro-muted); font-size: 14px;
-}
 .launch-error {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
   width: min(460px, calc(100% - 40px)); padding: 30px;

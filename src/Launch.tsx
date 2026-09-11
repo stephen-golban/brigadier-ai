@@ -12,6 +12,7 @@ import { errorMessage } from "./workspaceApi";
 import { useMusic } from "./hooks/useMusic";
 import "./intro.css";
 import { BrandMark } from "./components/BrandMark";
+import { StartupLoader } from "./components/StartupLoader";
 import { SignalField } from "./components/SignalField";
 import { IntroDisc } from "./components/IntroDisc";
 import { NameInput } from "./components/NameInput";
@@ -279,9 +280,7 @@ export function Launch() {
           inert={active || !!error}
           aria-hidden={active || !!error}
         >
-          <Suspense
-            fallback={<div className="launch-loading">Opening workspace…</div>}
-          >
+          <Suspense fallback={<StartupLoader />}>
             <App onReady={workspaceReady} />
           </Suspense>
         </div>
@@ -414,10 +413,7 @@ export function Launch() {
               </div>
             )}
             {(!prefs || !ready) && !active && !error && (
-              <div className="launch-loading">
-                <BrandMark />
-                <p>Opening Brigadier…</p>
-              </div>
+              <StartupLoader />
             )}
           </div>
           {(stage === "cinematic" || stage === "welcome" || stage === "name") && (
