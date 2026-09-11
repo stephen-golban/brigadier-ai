@@ -875,7 +875,13 @@ impl Run {
         if let Some(gate) = &self.gate {
             return Arc::clone(gate);
         }
-        let env = Arc::new(GateEnv::resolve(default_shell()).await);
+        let env = Arc::new(
+            GateEnv::resolve(default_shell())
+                .await
+                // A gate child has its own process group and survives a force-quit exactly as a
+                // session's child does; it gets the same pid record and the same startup sweep.
+                .with_tracker(Arc::clone(&self.sup.inner.tracker)),
+        );
         tracing::info!(
             path_source = ?env.path_source(),
             pipefail = env.pipefail(),
@@ -1072,7 +1078,7 @@ impl Supervisor {
 
 /// Dropping the verify future sends its owned process group a cancellation signal.
 async fn run_gate(
-    run: &Run,
+    run: &mut Run,
     env: &crate::verify::GateEnv,
     req: &crate::verify::GateRequest,
 ) -> std::io::Result<crate::verify::GateResult> {
@@ -1086,8 +1092,86 @@ async fn run_gate(
             ));
         }
         tokio::select! {
-            result = &mut work => return result,
+            result = &mut work => {
+                invalidate_gate_env(&mut run.gate, &result);
+                return result;
+            }
             _ = tokio::time::sleep(Duration::from_millis(50)) => {}
         }
+    }
+}
+
+/// Drop the run's cached [`GateEnv`] when a gate says its `PATH` could not reach the command.
+///
+/// A 127 is the one result that indicts the environment rather than the code
+/// (`crate::verify::GateReason::CommandNotFound`), and `crate::verify::run` has already discarded
+/// the **process-wide** `PATH` probe by the time this is called. The run keeps its own resolved
+/// environment for the whole run (`Run::gate_env`), so without this the re-probe would not be
+/// reached until the next run: every later gate here would keep using the `PATH` that could not
+/// see the tool, and a toolchain installed mid-run would stay invisible until the run ended.
+///
+/// Nothing else invalidates it. A red gate, a signal, a timeout and a harness failure all say
+/// something about the code or the machine's load, not about where the tools are.
+fn invalidate_gate_env(
+    cached: &mut Option<Arc<GateEnv>>,
+    result: &std::io::Result<crate::verify::GateResult>,
+) {
+    if matches!(result, Ok(gate) if gate.reason == crate::verify::GateReason::CommandNotFound) {
+        *cached = None;
+    }
+}
+
+#[cfg(test)]
+mod gate_env_tests {
+    use super::*;
+    use crate::verify::{GateReason, GateResult, PathSource};
+
+    fn result(reason: GateReason, exit_code: Option<i32>) -> std::io::Result<GateResult> {
+        Ok(GateResult {
+            command: "cargo test".into(),
+            exit_code,
+            signal: None,
+            reason,
+            duration: Duration::ZERO,
+            log_path: PathBuf::from("/dev/null"),
+            pipefail: true,
+        })
+    }
+
+    /// A tool installed mid-run — `rustup`, `nvm`, a fresh `brew install` — is unreachable for
+    /// the rest of the run unless the environment the run cached is dropped with the probe.
+    #[tokio::test]
+    async fn only_a_command_not_found_drops_the_runs_cached_gate_environment() {
+        let env = Arc::new(
+            GateEnv::with_path("/bin/sh", std::ffi::OsString::from("/bin"), PathSource::Explicit)
+                .await,
+        );
+
+        // Everything that is not a 127 says something about the code or the machine's load.
+        for kept in [
+            result(GateReason::Passed, Some(0)),
+            result(GateReason::Failed, Some(1)),
+            result(GateReason::Signalled, None),
+            result(GateReason::TimedOut, None),
+            Err(std::io::Error::other("the log would not open")),
+        ] {
+            let mut cached = Some(Arc::clone(&env));
+            invalidate_gate_env(&mut cached, &kept);
+            assert!(
+                cached.is_some(),
+                "{kept:?} must not cost the run its resolved environment"
+            );
+        }
+
+        let mut cached = Some(Arc::clone(&env));
+        invalidate_gate_env(&mut cached, &result(GateReason::CommandNotFound, Some(127)));
+        assert!(
+            cached.is_none(),
+            "the next gate in this run must resolve its PATH again"
+        );
+        // And the re-resolve is what `Run::gate_env` does with an empty slot; idempotent when
+        // it is already empty.
+        invalidate_gate_env(&mut cached, &result(GateReason::CommandNotFound, Some(127)));
+        assert!(cached.is_none());
     }
 }

@@ -571,14 +571,66 @@ function applySignal(env: Envelope, projectId: ProjectId | null): void {
 
 /* ----------------------------------------------------------------- drain */
 
-// Final buffered batches and in-flight fetches must not resurrect a deleted sidebar row.
-const deletedSessions = new Set<SessionId>();
-const deletedProjects = new Set<ProjectId>();
+/**
+ * Final buffered batches and in-flight fetches must not resurrect a deleted sidebar row.
+ *
+ * Tombstones, not a permanent denylist. The Rust batcher stops producing for a deleted session
+ * within one flush tick of `mark_deleting`, so the only batches these have to refuse are the ones
+ * already in flight when the delete landed — a window of at most a few hundred milliseconds.
+ * Holding an id past that costs `applyBatch` a spread and three `Array.filter` passes on **every**
+ * batch for the rest of the window, at ~60 batches/s, to filter against ids no producer will ever
+ * emit again (`docs/research/lifecycle-bounds-audit-2026-09-11.md` §1.1, Gap 1).
+ *
+ * So each id carries the time it expires, swept on the drain that follows it, and the maps are
+ * capped in case a project delete cascades more ids than any window has in flight.
+ *
+ * 30 s, not the few hundred milliseconds the batcher needs: `seedSessions`, `seedApprovals` and
+ * `seedRows` read these too, and an in-flight `list_sessions` issued just before the delete has to
+ * find the tombstone when it resolves. Retention is a handful of `Map` entries; the cost this
+ * bounds was never the retention, it was the per-batch rebuild above.
+ */
+const TOMBSTONE_MS = 30_000;
+/** FIFO ceiling. A `Map` iterates in insertion order, so the oldest id is `keys().next()`. */
+const TOMBSTONE_CAP = 256;
+const deletedSessions = new Map<SessionId, number>();
+const deletedProjects = new Map<ProjectId, number>();
+
+function entomb<K>(tombstones: Map<K, number>, id: K): void {
+  tombstones.delete(id);
+  tombstones.set(id, performance.now() + TOMBSTONE_MS);
+  while (tombstones.size > TOMBSTONE_CAP) tombstones.delete(tombstones.keys().next().value!);
+}
+
+/** Insertion order is expiry order — every entry gets the same `TOMBSTONE_MS` — so this stops at
+ *  the first live id rather than walking the whole map. */
+function sweep<K>(tombstones: Map<K, number>, now: number): void {
+  for (const [id, expiry] of tombstones) {
+    if (expiry > now) return;
+    tombstones.delete(id);
+  }
+}
+
+function sweepTombstones(now: number): void {
+  if (deletedSessions.size > 0) sweep(deletedSessions, now);
+  if (deletedProjects.size > 0) sweep(deletedProjects, now);
+}
+
+/** Live tombstone counts. A test hook, and §6c item 2 of the audit's soak. */
+export function getTombstones(): { sessions: number; projects: number } {
+  return { sessions: deletedSessions.size, projects: deletedProjects.size };
+}
 
 function applyBatch(batch: FeedBatch): void {
   const projectId = batch.project_id;
   if (deletedProjects.has(projectId)) return;
-  if (deletedSessions.size > 0) batch = {
+  // `some` short-circuits and allocates nothing; the rebuild below allocates four objects. A
+  // tombstone that is merely *present* is not worth one — only a batch that actually names a
+  // deleted session is.
+  if (deletedSessions.size > 0 && (
+    batch.rows.some(row => deletedSessions.has(row.s)) ||
+    batch.signals.some(signal => deletedSessions.has(signal.session_id)) ||
+    batch.counters.some(counter => deletedSessions.has(counter.session_id))
+  )) batch = {
     ...batch,
     rows: batch.rows.filter(row => !deletedSessions.has(row.s)),
     signals: batch.signals.filter(signal => !deletedSessions.has(signal.session_id)),
@@ -772,6 +824,7 @@ function drainOnce(timestamp?: number): void {
   } else if (profiling) traceEvent("drain", 0);
 
   const now = performance.now();
+  sweepTombstones(now);
   if (ingest.windowStart === 0) ingest.windowStart = now;
   // Cursors ride the counters' clock: both are per-event numbers, neither is drawn, and folding
   // them on the same tick bounds how far `state.sessions[id].lastEventSeq` may trail the stream at
@@ -1241,7 +1294,7 @@ export function noteWorktreeRemoved(sessionId: SessionId): void {
  * Idempotent, and returns whether anything went, so a caller can skip a re-render.
  */
 export function dropSession(sessionId: SessionId): boolean {
-  deletedSessions.add(sessionId);
+  entomb(deletedSessions, sessionId);
   for (const ring of projectRows.values()) {
     // Filter the ring's **logical** rows, never `buf`: `buf` may be carrying up to `RING_SLACK`
     // rows that already fell off the head, and a filter that took `buf.length` back under
@@ -1277,11 +1330,11 @@ export function dropSession(sessionId: SessionId): boolean {
  * session created behind the UI's back is in here and not in `list_sessions`'s last answer.
  */
 export function dropProject(projectId: ProjectId): boolean {
-  deletedProjects.add(projectId);
+  entomb(deletedProjects, projectId);
   const own = [...sessions.values()].filter((s) => s.projectId === projectId);
   let dropped = false;
   for (const s of own) {
-    deletedSessions.add(s.sessionId);
+    entomb(deletedSessions, s.sessionId);
     sessions.delete(s.sessionId);
     sessionRows.delete(s.sessionId);
     usageWindows.delete(s.sessionId);

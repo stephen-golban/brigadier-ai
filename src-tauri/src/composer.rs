@@ -5,8 +5,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
+    ops::ControlFlow,
     path::PathBuf,
     sync::{Mutex, OnceLock},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::{Emitter, Manager, State};
 
@@ -104,32 +106,100 @@ pub(crate) fn start(app: tauri::AppHandle) -> Result<(), AppError> {
             app: app.clone(),
         })
         .map_err(|_| AppError::io("Conversation queue already started"))?;
-    tauri::async_runtime::spawn(async move {
-        let mut changes = crate::peer_sessions::subscribe();
-        loop {
-            let ids = match service() {
-                Ok(s) => s
-                    .states
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .values()
-                    .filter(|s| {
-                        !s.paused && !s.stopped && s.queue.iter().any(|q| q.status == "queued")
-                    })
-                    .map(|s| s.session_id.clone())
-                    .collect::<Vec<_>>(),
-                Err(_) => return,
-            };
-            for id in ids {
-                if let Err(e) = drain_one(&app, &id).await {
-                    tracing::warn!("Conversation queue: {}", e.message);
-                }
-            }
-            // Provider/feed changes wake draining; fallback covers events before a subscriber joins.
-            tokio::select! { _ = changes.changed() => {}, _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {} }
-        }
-    });
+    tauri::async_runtime::spawn(drain_loop(
+        crate::peer_sessions::subscribe_queue(),
+        move || {
+            let app = app.clone();
+            async move { drain_pending(&app).await }
+        },
+    ));
     Ok(())
+}
+
+/// A conversation parked on an exhausted provider window is released by the wall clock and by
+/// nothing else: `brigadier_core::allowance::blocked_provider` filters on `reset_at > now`.
+/// Re-check a window whose reset the provider never reported on this slow bounded timer; a
+/// reported one is waited out exactly.
+const UNREPORTED_RESET_RETRY: Duration = Duration::from_secs(60);
+
+/// The conversation-queue drain loop.
+///
+/// It wakes on the composer edge — a queue mutation, a peer-state change and a session activity
+/// transition all bump `peer_sessions::subscribe_queue` — and otherwise only at a deadline
+/// `pass` asks for. Until 2026-09-11 it also woke every two seconds and on every feed batch (up
+/// to 60 a second while a session streamed), taking the state lock and scanning every
+/// conversation on each one.
+async fn drain_loop<F, Fut>(mut edges: tokio::sync::watch::Receiver<u64>, mut pass: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = ControlFlow<(), Option<Duration>>>,
+{
+    loop {
+        // Marked seen before the pass, never after: an edge that lands mid-drain must leave the
+        // receiver dirty so the next `changed()` returns at once.
+        edges.borrow_and_update();
+        let ControlFlow::Continue(deadline) = pass().await else {
+            return;
+        };
+        let woken = match deadline {
+            Some(after) => tokio::select! {
+                changed = edges.changed() => changed.is_ok(),
+                _ = tokio::time::sleep(after) => true,
+            },
+            None => edges.changed().await.is_ok(),
+        };
+        if !woken {
+            return;
+        }
+    }
+}
+
+/// One pass over every conversation whose queue can move. Returns the deadline the loop must
+/// wake at with no edge, or `None` to park.
+async fn drain_pending(app: &tauri::AppHandle) -> ControlFlow<(), Option<Duration>> {
+    let ids = match service() {
+        Ok(s) => runnable_ids(&s.states.lock().unwrap_or_else(|e| e.into_inner())),
+        Err(_) => return ControlFlow::Break(()),
+    };
+    for id in ids {
+        if let Err(e) = drain_one(app, &id).await {
+            tracing::warn!("Conversation queue: {}", e.message);
+        }
+    }
+    let Ok(s) = service() else {
+        return ControlFlow::Break(());
+    };
+    let deadline = allowance_deadline(
+        &s.states.lock().unwrap_or_else(|e| e.into_inner()),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    );
+    ControlFlow::Continue(deadline)
+}
+
+/// Whether this conversation's queue can move at all. The same filter the loop has always used.
+fn runnable(state: &ComposerState) -> bool {
+    !state.paused && !state.stopped && state.queue.iter().any(|q| q.status == "queued")
+}
+fn runnable_ids(states: &BTreeMap<String, ComposerState>) -> Vec<String> {
+    states
+        .values()
+        .filter(|s| runnable(s))
+        .map(|s| s.session_id.clone())
+        .collect()
+}
+fn allowance_deadline(states: &BTreeMap<String, ComposerState>, now: u64) -> Option<Duration> {
+    states
+        .values()
+        .filter(|s| runnable(s))
+        .filter_map(|s| s.waiting.as_ref())
+        .map(|w| match w.reset_at {
+            Some(at) => Duration::from_secs(at.saturating_sub(now).max(1)),
+            None => UNREPORTED_RESET_RETRY,
+        })
+        .min()
 }
 fn read(id: &str) -> Result<ComposerState, AppError> {
     Ok(service()?
@@ -532,6 +602,12 @@ pub(crate) async fn update_queued_turn(
     }
     validate_prompt_command(state.inner(), &session_id, &text, &attachment_ids).await?;
     if let Some(selection) = &execution {
+        // `validate_selection` reads the driver registry, and Codex's driver is registered on
+        // demand (`crate::state::ensure_codex`). Editing a queued turn onto Codex before
+        // anything in this launch has named it must not be rejected as unavailable.
+        if selection.provider == "codex" {
+            crate::state::ensure_codex(state.get()?).await;
+        }
         crate::task_settings::validate_selection(state.inner(), selection)?;
     }
     change(&session_id, |s| {
@@ -1083,6 +1159,120 @@ pub(crate) async fn execute_composer_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    fn queued(session: &str, waiting: Option<u64>) -> ComposerState {
+        let mut state = ComposerState {
+            session_id: session.into(),
+            waiting: waiting.map(|reset_at| brigadier_core::allowance::Waiting {
+                provider: "claude-code".into(),
+                instance: "i".into(),
+                reset_at: Some(reset_at),
+                observed_at: 0,
+            }),
+            ..Default::default()
+        };
+        enqueue(&mut state, "q".into(), "work".into(), vec![]).unwrap();
+        state
+    }
+
+    /// What one drain pass reports back to the loop.
+    type Pass = std::future::Ready<ControlFlow<(), Option<Duration>>>;
+
+    /// Counts drain passes and hands the loop whatever deadline the test wants back.
+    fn counting(deadline: Option<Duration>) -> (Arc<AtomicUsize>, impl FnMut() -> Pass) {
+        let passes = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&passes);
+        (passes, move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            std::future::ready(ControlFlow::Continue(deadline))
+        })
+    }
+
+    /// The whole point of the edge: an idle app runs one pass and then nothing, however long it
+    /// is left alone. A feed batch that moves nothing earns no edge
+    /// (`peer_sessions::tests::only_signals_that_move_a_session_earn_an_edge`) and so reaches
+    /// this loop as no wake at all.
+    #[tokio::test(start_paused = true)]
+    async fn the_queue_parks_between_edges_and_drains_on_each_one() {
+        let (tx, rx) = tokio::sync::watch::channel(0u64);
+        let (passes, pass) = counting(None);
+        let task = tokio::spawn(drain_loop(rx, pass));
+        tokio::time::sleep(Duration::from_secs(3600)).await;
+        assert_eq!(passes.load(Ordering::SeqCst), 1, "no fallback tick");
+
+        for expected in 2..=4 {
+            tx.send_modify(|v| *v += 1);
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            assert_eq!(passes.load(Ordering::SeqCst), expected);
+        }
+        tokio::time::sleep(Duration::from_secs(3600)).await;
+        assert_eq!(passes.load(Ordering::SeqCst), 4, "one pass per edge, no more");
+
+        drop(tx);
+        task.await.unwrap();
+    }
+
+    /// The one timer left: a queue parked on an exhausted provider window is released by the
+    /// wall clock, so the loop waits that window out and nothing shorter.
+    #[tokio::test(start_paused = true)]
+    async fn a_parked_allowance_window_is_the_only_deadline_the_queue_arms() {
+        let (tx, rx) = tokio::sync::watch::channel(0u64);
+        let (passes, pass) = counting(Some(Duration::from_secs(90)));
+        let task = tokio::spawn(drain_loop(rx, pass));
+        tokio::time::sleep(Duration::from_secs(89)).await;
+        assert_eq!(passes.load(Ordering::SeqCst), 1);
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert_eq!(passes.load(Ordering::SeqCst), 2, "woken at the reported reset");
+        drop(tx);
+        task.await.unwrap();
+    }
+
+    #[test]
+    fn the_queue_deadline_is_the_nearest_reported_reset_and_nothing_when_nothing_is_parked() {
+        let now = 1_000;
+        let mut states = BTreeMap::from([
+            ("a".to_owned(), queued("a", None)),
+            ("b".to_owned(), queued("b", Some(now + 300))),
+        ]);
+        assert_eq!(
+            allowance_deadline(&states, now),
+            Some(Duration::from_secs(300))
+        );
+        states.insert("c".into(), queued("c", Some(now + 30)));
+        assert_eq!(
+            allowance_deadline(&states, now),
+            Some(Duration::from_secs(30))
+        );
+        // An unreported reset is re-probed on the slow bounded timer, not parked forever.
+        states.get_mut("c").unwrap().waiting.as_mut().unwrap().reset_at = None;
+        assert_eq!(allowance_deadline(&states, now), Some(UNREPORTED_RESET_RETRY));
+        // A reset already in the past is not a zero-length sleep.
+        states.get_mut("c").unwrap().waiting.as_mut().unwrap().reset_at = Some(now - 10);
+        assert_eq!(allowance_deadline(&states, now), Some(Duration::from_secs(1)));
+        // Paused, stopped or nothing queued: no deadline, and no pass.
+        for state in states.values_mut() {
+            state.paused = true;
+        }
+        assert_eq!(allowance_deadline(&states, now), None);
+        assert!(runnable_ids(&states).is_empty());
+    }
+
+    #[test]
+    fn only_conversations_with_movable_queues_are_scanned() {
+        let mut states = BTreeMap::from([
+            ("a".to_owned(), queued("a", None)),
+            ("b".to_owned(), queued("b", None)),
+            ("c".to_owned(), queued("c", None)),
+        ]);
+        states.get_mut("b").unwrap().paused = true;
+        states.get_mut("c").unwrap().queue[0].status = "sent".into();
+        assert_eq!(runnable_ids(&states), vec!["a".to_owned()]);
+    }
+
     #[test]
     fn prompt_commands_require_current_catalog_and_preserve_advertised_arguments() {
         let catalog = vec![

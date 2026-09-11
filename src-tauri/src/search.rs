@@ -156,6 +156,12 @@ fn patterns(value: &str) -> Result<globset::GlobSet, AppError> {
         .map_err(|e| AppError::invalid_argument(e.to_string()))
 }
 fn search(dir: &Path, q: &Query) -> Result<Results, AppError> {
+    search_visited(dir, q).map(|(results, _)| results)
+}
+
+/// Runs a search and also reports how many walk entries it visited. Tests assert the
+/// count so an explicit-path search cannot silently regress into a full traversal.
+fn search_visited(dir: &Path, q: &Query) -> Result<(Results, usize), AppError> {
     if q.text.is_empty() || q.text.len() > 4096 {
         return Err(AppError::invalid_argument(
             "Enter a search of 1–4096 characters",
@@ -193,8 +199,27 @@ fn search(dir: &Path, q: &Query) -> Result<Results, AppError> {
         files: 0,
     };
     let mut total = 0;
-    let mut visited = 0;
+    let mut visited = 0usize;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    // `paths` scopes a search to explicit candidates. Prune the walk to those candidates and
+    // the directories on the way to them rather than traversing the whole root. The prune
+    // reuses the walk itself, so ignore layers, hidden handling, `.git`/`.brigadier` pruning,
+    // `follow_links(false)` and iteration order are the walk's own; the membership test below
+    // is unchanged, so the prune can only drop entries that post-filter would have dropped.
+    // Candidates are compared against the walk's normalization — relative to the root with
+    // backslashes rewritten to forward slashes — so `./a.ts`, an absolute path and `src\a.ts`
+    // select nothing, exactly as they select nothing in the post-filter. That is deliberate
+    // and unchanged: the sole producer (src/vscode-panels/workspace.ts) sends normalized
+    // workspace-relative paths.
+    let scope = q.paths.as_ref().map(|paths| {
+        let candidates: std::collections::HashSet<String> = paths.iter().cloned().collect();
+        let ancestors: std::collections::HashSet<String> = paths
+            .iter()
+            .flat_map(|path| path.match_indices('/').map(|(i, _)| path[..i].to_owned()))
+            .collect();
+        (candidates, ancestors)
+    });
+    let scope_root = dir.to_path_buf();
     for entry in ignore::WalkBuilder::new(dir)
         .hidden(false)
         .git_ignore(q.use_ignore_files.unwrap_or(true))
@@ -202,7 +227,21 @@ fn search(dir: &Path, q: &Query) -> Result<Results, AppError> {
         .git_exclude(q.use_ignore_files.unwrap_or(true))
         .ignore(q.use_ignore_files.unwrap_or(true))
         .follow_links(false)
-        .filter_entry(|e| e.file_name() != ".git" && e.file_name() != ".brigadier")
+        .filter_entry(move |e| {
+            if e.file_name() == ".git" || e.file_name() == ".brigadier" {
+                return false;
+            }
+            let Some((candidates, ancestors)) = &scope else {
+                return true;
+            };
+            let Ok(relative) = e.path().strip_prefix(&scope_root) else {
+                return true;
+            };
+            let relative = relative.to_string_lossy().replace('\\', "/");
+            relative.is_empty()
+                || candidates.contains(&relative)
+                || ancestors.contains(&relative)
+        })
         .build()
     {
         visited += 1;
@@ -297,7 +336,7 @@ fn search(dir: &Path, q: &Query) -> Result<Results, AppError> {
             break;
         }
     }
-    Ok(result)
+    Ok((result, visited))
 }
 #[tauri::command]
 pub(crate) async fn workspace_search(
@@ -644,6 +683,241 @@ mod tests {
         assert!(!globs.is_match("src/nested/a.ts"));
         assert!(!globs.is_match("src/a.js"));
     }
+    /// A tree that exercises every rule the explicit-path scope has to preserve:
+    /// hidden files, ignored files and directories, `.git`/`.brigadier`, a file symlink,
+    /// a directory symlink, a non-regular file, an oversized file, a NUL file and a
+    /// directory named as a candidate.
+    fn parity_fixture() -> tempfile::TempDir {
+        let d = tempfile::tempdir().unwrap();
+        for dir in [
+            "src",
+            "src/nested",
+            ".hidden-dir",
+            "ignored-dir",
+            ".git",
+            ".brigadier",
+            "src/.brigadier",
+        ] {
+            std::fs::create_dir_all(d.path().join(dir)).unwrap();
+        }
+        for path in [
+            "src/a.ts",
+            "src/nested/b.ts",
+            "src/.brigadier/hidden-internal.ts",
+            ".hidden.ts",
+            ".hidden-dir/c.ts",
+            "ignored.ts",
+            "ignored-dir/d.ts",
+            "tmp-ignored.ts",
+            ".git/config.ts",
+            ".brigadier/state.ts",
+            "plain.txt",
+        ] {
+            std::fs::write(d.path().join(path), "needle here\nneedle again\n").unwrap();
+        }
+        std::fs::write(d.path().join(".gitignore"), "ignored.ts\nignored-dir/\n").unwrap();
+        std::fs::write(d.path().join(".ignore"), "tmp-ignored.ts\n").unwrap();
+        std::fs::write(
+            d.path().join("big.ts"),
+            "needle\n".repeat(512 * 1024 / 7 + 32),
+        )
+        .unwrap();
+        std::fs::write(d.path().join("nul.ts"), b"needle\0more\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            symlink("src/a.ts", d.path().join("link.ts")).unwrap();
+            symlink("src", d.path().join("linked-dir")).unwrap();
+            assert!(
+                std::process::Command::new("mkfifo")
+                    .arg(d.path().join("fifo.ts"))
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        d
+    }
+
+    fn parity_candidates(dir: &Path) -> Vec<String> {
+        let mut paths: Vec<String> = [
+            "src/a.ts",
+            "src/a.ts", // duplicate: visited once, reported once
+            "src/nested/b.ts",
+            "src/.brigadier/hidden-internal.ts",
+            ".hidden.ts",
+            ".hidden-dir/c.ts",
+            "ignored.ts",
+            "ignored-dir/d.ts",
+            "tmp-ignored.ts",
+            ".git/config.ts",
+            ".brigadier/state.ts",
+            "plain.txt",
+            "big.ts",
+            "nul.ts",
+            "src",   // a directory, not a regular file
+            "src/",  // trailing slash never matches a walk path
+            "./src/a.ts",
+            "../outside.ts",
+            "missing.ts",
+            "src\\a.ts",
+        ]
+        .iter()
+        .map(|p| (*p).to_owned())
+        .collect();
+        paths.push(dir.join("src/a.ts").to_string_lossy().into_owned());
+        #[cfg(unix)]
+        paths.extend(
+            ["link.ts", "linked-dir/a.ts", "fifo.ts"]
+                .iter()
+                .map(|p| (*p).to_owned()),
+        );
+        paths
+    }
+
+    type Shape = (
+        Vec<(String, usize, usize, usize, usize, String)>,
+        Vec<(String, String, String, usize)>,
+        bool,
+        usize,
+    );
+
+    fn shape(r: &Results) -> Shape {
+        (
+            r.hits
+                .iter()
+                .map(|h| {
+                    (
+                        h.path.clone(),
+                        h.line,
+                        h.column,
+                        h.end_line,
+                        h.end_column,
+                        h.text.clone(),
+                    )
+                })
+                .collect(),
+            r.replacements
+                .iter()
+                .map(|c| (c.path.clone(), c.before.clone(), c.after.clone(), c.count))
+                .collect(),
+            r.truncated,
+            r.files,
+        )
+    }
+
+    /// Runs the query twice — scoped to `paths`, and unscoped — and asserts the scoped run
+    /// returns exactly the unscoped run filtered by the same membership rule.
+    fn assert_scope_parity(dir: &Path, base: &Query, paths: &[String]) {
+        let wanted: std::collections::HashSet<&String> = paths.iter().collect();
+        let mut unscoped = base.clone();
+        unscoped.paths = None;
+        let baseline = search(dir, &unscoped).unwrap();
+        let (hits, replacements, truncated, files) = shape(&baseline);
+        assert!(!truncated, "fixture must not truncate");
+        let distinct: std::collections::HashSet<&String> = hits.iter().map(|h| &h.0).collect();
+        assert_eq!(files, distinct.len(), "files counts distinct matched files");
+        let hits: Vec<_> = hits.into_iter().filter(|h| wanted.contains(&h.0)).collect();
+        let replacements: Vec<_> = replacements
+            .into_iter()
+            .filter(|c| wanted.contains(&c.0))
+            .collect();
+        let files = hits
+            .iter()
+            .map(|h| h.0.clone())
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+
+        let mut scoped = base.clone();
+        scoped.paths = Some(paths.to_vec());
+        let actual = search(dir, &scoped).unwrap();
+        assert_eq!(shape(&actual), (hits, replacements, false, files));
+    }
+
+    #[test]
+    fn explicit_paths_return_exactly_the_walk_filtered_by_membership() {
+        let d = parity_fixture();
+        let root = d.path().canonicalize().unwrap();
+        let paths = parity_candidates(&root);
+        let base = Query {
+            text: "needle".into(),
+            regex: false,
+            case_sensitive: false,
+            whole_word: false,
+            include: String::new(),
+            exclude: String::new(),
+            replacement: None,
+            use_ignore_files: None,
+            paths: None,
+            include_all: vec![],
+        };
+        for use_ignore_files in [Some(true), Some(false), None] {
+            let mut q = base.clone();
+            q.use_ignore_files = use_ignore_files;
+            assert_scope_parity(&root, &q, &paths);
+
+            q.include = "*.ts".into();
+            q.exclude = "nested".into();
+            assert_scope_parity(&root, &q, &paths);
+
+            q.include = String::new();
+            q.exclude = String::new();
+            q.include_all = vec!["src".into()];
+            assert_scope_parity(&root, &q, &paths);
+
+            q.include_all = vec![];
+            q.replacement = Some("pin".into());
+            assert_scope_parity(&root, &q, &paths);
+        }
+        // The scope is not vacuous: the unscoped search does find files the scope drops.
+        let mut unscoped = base.clone();
+        unscoped.paths = None;
+        assert!(search(&root, &unscoped).unwrap().files > 1);
+        // And the scoped search does return something.
+        let mut scoped = base;
+        scoped.paths = Some(paths);
+        assert!(search(&root, &scoped).unwrap().files > 0);
+    }
+
+    #[test]
+    fn explicit_paths_visit_only_the_candidates_and_their_ancestors() {
+        let d = parity_fixture();
+        std::fs::create_dir_all(d.path().join("bulk/deep")).unwrap();
+        for i in 0..300 {
+            std::fs::write(d.path().join(format!("bulk/deep/f-{i}.ts")), "needle").unwrap();
+        }
+        let root = d.path().canonicalize().unwrap();
+        let mut q = Query {
+            text: "needle".into(),
+            regex: false,
+            case_sensitive: false,
+            whole_word: false,
+            include: String::new(),
+            exclude: String::new(),
+            replacement: None,
+            use_ignore_files: Some(true),
+            paths: None,
+            include_all: vec![],
+        };
+        let (_, walked) = search_visited(&root, &q).unwrap();
+        assert!(walked > 300, "full walk visits the whole tree: {walked}");
+
+        q.paths = Some(vec![
+            "src/a.ts".into(),
+            "src/a.ts".into(),
+            "src/nested/b.ts".into(),
+        ]);
+        let (result, visited) = search_visited(&root, &q).unwrap();
+        assert_eq!(result.files, 2);
+        // root + src + src/a.ts + src/nested + src/nested/b.ts
+        assert_eq!(visited, 5);
+
+        q.paths = Some(vec![]);
+        let (result, visited) = search_visited(&root, &q).unwrap();
+        assert_eq!(result.files, 0);
+        assert_eq!(visited, 1, "only the root entry");
+    }
+
     #[test]
     fn vscode_ignore_toggle_and_open_file_scope_are_applied() {
         let d = tempfile::tempdir().unwrap();

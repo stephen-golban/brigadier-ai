@@ -831,12 +831,24 @@ pub async fn has_submodules(git: &Path, repo: &Path) -> Result<bool, WorktreeErr
 pub async fn main_worktree_of(git: &Path, dir: &Path) -> Result<Option<PathBuf>, WorktreeError> {
     let toplevel = show_toplevel(git, dir).await?;
     let common = git_common_dir(git, dir).await?;
-    let Some(main) = common.parent() else { return Ok(None) };
-    let same = |a: &Path, b: &Path| {
-        let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-        canon(a) == canon(b)
-    };
-    Ok(if same(main, &toplevel) { None } else { Some(main.to_path_buf()) })
+    Ok(main_worktree_from(&toplevel, &common))
+}
+
+/// [`main_worktree_of`]'s verdict, from readings the caller already has.
+///
+/// The two `rev-parse` calls behind it are pure reads of the same tree at the same instant, so a
+/// caller that has just made them — session startup makes both, then called `main_worktree_of`
+/// and made them again — passes them in rather than paying for two more processes
+/// (`docs/research/verify-and-telemetry-audit-2026-09-11.md` §5 a3).
+#[must_use]
+pub fn main_worktree_from(toplevel: &Path, common: &Path) -> Option<PathBuf> {
+    let main = common.parent()?;
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    if canon(main) == canon(toplevel) {
+        None
+    } else {
+        Some(main.to_path_buf())
+    }
 }
 
 /// `git check-ref-format --branch <name>`, as a cheap assertion before anything is created.

@@ -3,10 +3,20 @@ use crate::{error::AppError, state::AppState};
 use brigadier_core::event::SessionId;
 use brigadier_supervisor::Supervisor;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, path::Path};
+use std::{collections::BTreeMap, ops::ControlFlow, path::Path, sync::OnceLock, time::Duration};
 use tauri::{Emitter, Manager, State};
 static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 const DAY: u64 = 86_400_000;
+
+/// Every archive mutation, as an edge the retention task parks on.
+///
+/// The archive is written through [`save`] and nowhere else, in this process and no other, so one
+/// bump there covers archiving, unarchiving, a settings change, a deletion and the legacy
+/// migration alike.
+static MUTATIONS: OnceLock<tokio::sync::watch::Sender<u64>> = OnceLock::new();
+fn mutations() -> &'static tokio::sync::watch::Sender<u64> {
+    MUTATIONS.get_or_init(|| tokio::sync::watch::channel(0).0)
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct Settings {
@@ -53,7 +63,9 @@ fn save(dir: &Path, data: &Data) -> Result<(), AppError> {
     crate::note_files::atomic_write(
         &dir.join("session-retention.json"),
         &serde_json::to_vec(data).map_err(|e| AppError::io(e.to_string()))?,
-    )
+    )?;
+    mutations().send_modify(|v| *v = v.wrapping_add(1));
+    Ok(())
 }
 pub(crate) fn require_active(dir: &Path, id: &str) -> Result<(), AppError> {
     if read(dir)?.entries.contains_key(id) {
@@ -265,51 +277,238 @@ pub(crate) async fn archive_delete(
     .await?;
     Ok(data)
 }
-pub(crate) fn start(app: tauri::AppHandle) {
-    tauri::async_runtime::spawn(async move {
-        loop {
-            let result: Result<(), AppError> = async {
-                let _creation = crate::peers::CREATION.lock().await;
-                let _lifecycle = crate::peers::LIFECYCLE.lock().await;
-                let _lock = LOCK.lock().await;
-                let state = app.state::<AppState>();
-                let ready = state.get()?;
-                let mut data = read(&ready.data_dir)?;
-                let origins = crate::peers::snapshot()?.subagents;
-                let due: std::collections::BTreeSet<_> = data
-                    .entries
-                    .iter()
-                    .filter(|(id, entry)| {
-                        !origins.contains_key(*id) && expired(entry, &data.settings, now())
-                    })
-                    .map(|(id, _)| id.clone())
-                    .chain(data.pending_deletions.keys().cloned())
-                    .collect();
-                if due.is_empty() {
-                    return Ok(());
+/// The coarsest the sweep ever is, and the cadence it keeps whenever a pass could not settle
+/// everything it found. The retention window is measured in days, so a minute of slack changes
+/// nothing — it is the same granularity the fixed 60 s poll had.
+const MIN_REVISIT: Duration = Duration::from_secs(60);
+
+/// How long until the earliest entry falls due, or `None` when nothing can.
+///
+/// Pure, and the whole of the arming decision: an unretained or empty archive earns no timer at
+/// all, and a full one earns exactly one, at the moment it can first do something.
+fn next_due(data: &Data, at: u64) -> Option<Duration> {
+    // A deletion that failed part-way is retried on the cadence, not at an expiry it has already
+    // passed.
+    if !data.pending_deletions.is_empty() {
+        return Some(MIN_REVISIT);
+    }
+    if !data.settings.auto_delete {
+        return None;
+    }
+    let window = u64::from(data.settings.retention_days) * DAY;
+    data.entries
+        .values()
+        .map(|entry| {
+            entry
+                .archived_at
+                .saturating_add(window)
+                .saturating_sub(at)
+        })
+        .min()
+        .map(Duration::from_millis)
+}
+
+/// One retention pass. Returns how long the loop may sleep with no archive mutation, or `None` to
+/// park until one lands.
+async fn sweep_once(app: &tauri::AppHandle) -> ControlFlow<(), Option<Duration>> {
+    let pass = async {
+        let _creation = crate::peers::CREATION.lock().await;
+        let _lifecycle = crate::peers::LIFECYCLE.lock().await;
+        let _lock = LOCK.lock().await;
+        let state = app.state::<AppState>();
+        let ready = state.get()?;
+        let mut data = read(&ready.data_dir)?;
+        let origins = crate::peers::snapshot()?.subagents;
+        let at = now();
+        // An expired chat that is somebody's subagent is not ours to delete, and nothing it
+        // depends on is written through `save`. That one case keeps the old cadence.
+        let deferred = data
+            .entries
+            .iter()
+            .any(|(id, entry)| origins.contains_key(id) && expired(entry, &data.settings, at));
+        let due: std::collections::BTreeSet<_> = data
+            .entries
+            .iter()
+            .filter(|(id, entry)| !origins.contains_key(*id) && expired(entry, &data.settings, at))
+            .map(|(id, _)| id.clone())
+            .chain(data.pending_deletions.keys().cloned())
+            .collect();
+        if !due.is_empty() {
+            for id in due {
+                if let Err(error) =
+                    delete_chat(&ready.supervisor, &ready.data_dir, &mut data, &id, &origins).await
+                {
+                    tracing::warn!(chat = %id, "Archive cleanup: {}", error.message);
                 }
-                for id in due {
-                    if let Err(error) =
-                        delete_chat(&ready.supervisor, &ready.data_dir, &mut data, &id, &origins)
-                            .await
-                    {
-                        tracing::warn!(chat = %id, "Archive cleanup: {}", error.message);
-                    }
-                }
-                let _ = app.emit("archive-changed", ());
-                Ok(())
             }
-            .await;
-            if let Err(e) = result {
-                tracing::warn!("Archive cleanup: {}", e.message);
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            let _ = app.emit("archive-changed", ());
         }
-    });
+        let next = if deferred {
+            Some(MIN_REVISIT)
+        } else {
+            next_due(&data, now()).map(|d| d.max(MIN_REVISIT))
+        };
+        Ok::<_, AppError>(next)
+    }
+    .await;
+    match pass {
+        Ok(next) => ControlFlow::Continue(next),
+        Err(e) => {
+            tracing::warn!("Archive cleanup: {}", e.message);
+            // A read that failed is a state this task cannot compute a deadline from; retry on
+            // the cadence rather than parking on an edge that may never come.
+            ControlFlow::Continue(Some(MIN_REVISIT))
+        }
+    }
+}
+
+/// The retention loop.
+///
+/// It wakes on an archive mutation and otherwise only at the deadline the pass asked for. Until
+/// 2026-09-11 it woke every 60 s for the app's life, taking three global mutexes and reading two
+/// files each time to find nothing due
+/// (`docs/research/lifecycle-bounds-audit-2026-09-11.md` §2 gap 6).
+async fn retention_loop<F, Fut>(mut edges: tokio::sync::watch::Receiver<u64>, mut pass: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = ControlFlow<(), Option<Duration>>>,
+{
+    loop {
+        // Marked seen before the pass, never after: a mutation that lands mid-pass must leave the
+        // receiver dirty so the next `changed()` returns at once.
+        edges.borrow_and_update();
+        let ControlFlow::Continue(deadline) = pass().await else {
+            return;
+        };
+        let woken = match deadline {
+            Some(after) => tokio::select! {
+                changed = edges.changed() => changed.is_ok(),
+                () = tokio::time::sleep(after) => true,
+            },
+            None => edges.changed().await.is_ok(),
+        };
+        if !woken {
+            return;
+        }
+    }
+}
+
+pub(crate) fn start(app: tauri::AppHandle) {
+    let edges = mutations().subscribe();
+    tauri::async_runtime::spawn(retention_loop(edges, move || {
+        let app = app.clone();
+        async move { sweep_once(&app).await }
+    }));
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    /// Gap 6: an idle app must not wake this task at all. One pass, then a park — no timer, no
+    /// mutex, no file read — until something actually changes the archive.
+    #[tokio::test(start_paused = true)]
+    async fn an_empty_archive_parks_and_wakes_only_on_a_mutation() {
+        let (edge, rx) = tokio::sync::watch::channel(0u64);
+        let passes = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&passes);
+        let task = tokio::spawn(retention_loop(rx, move || {
+            let counted = Arc::clone(&counted);
+            async move {
+                counted.fetch_add(1, Ordering::Relaxed);
+                ControlFlow::Continue(None)
+            }
+        }));
+
+        tokio::task::yield_now().await;
+        assert_eq!(passes.load(Ordering::Relaxed), 1, "one pass at startup");
+        tokio::time::advance(Duration::from_secs(3600)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            passes.load(Ordering::Relaxed),
+            1,
+            "an hour of an empty archive is zero wakeups"
+        );
+
+        edge.send_modify(|v| *v += 1);
+        tokio::task::yield_now().await;
+        assert_eq!(passes.load(Ordering::Relaxed), 2, "a mutation re-arms it");
+        task.abort();
+    }
+
+    /// And a deadline the pass asked for is honoured to the millisecond, not rounded up to a
+    /// fixed poll.
+    #[tokio::test(start_paused = true)]
+    async fn a_deadline_the_pass_asked_for_is_what_wakes_it() {
+        let (_edge, rx) = tokio::sync::watch::channel(0u64);
+        let passes = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&passes);
+        let task = tokio::spawn(retention_loop(rx, move || {
+            let counted = Arc::clone(&counted);
+            async move {
+                counted.fetch_add(1, Ordering::Relaxed);
+                ControlFlow::Continue(Some(Duration::from_secs(600)))
+            }
+        }));
+
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(599)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(passes.load(Ordering::Relaxed), 1, "not a second early");
+        tokio::time::advance(Duration::from_secs(2)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(passes.load(Ordering::Relaxed), 2, "and not a second late");
+        task.abort();
+    }
+
+    /// The arming decision itself: nothing retainable earns no timer, and an entry earns one at
+    /// its own expiry rather than on a minute's poll.
+    #[test]
+    fn the_next_deadline_comes_from_the_archive_itself() {
+        let mut data = Data::default();
+        assert_eq!(next_due(&data, DAY), None, "an empty archive parks");
+
+        data.entries.insert(
+            "old".into(),
+            Entry {
+                archived_at: 0,
+                needs_review: None,
+            },
+        );
+        data.entries.insert(
+            "new".into(),
+            Entry {
+                archived_at: 3 * DAY,
+                needs_review: None,
+            },
+        );
+        // Default retention is 7 days, so the earlier chat is due at day 7, the later at day 10.
+        assert_eq!(
+            next_due(&data, DAY),
+            Some(Duration::from_millis(6 * DAY)),
+            "the soonest expiry decides"
+        );
+        assert_eq!(
+            next_due(&data, 8 * DAY),
+            Some(Duration::ZERO),
+            "an overdue entry is due now"
+        );
+
+        data.settings.auto_delete = false;
+        assert_eq!(next_due(&data, DAY), None, "retention off parks for good");
+
+        data.settings.auto_delete = true;
+        data.pending_deletions.insert("old".into(), vec!["old".into()]);
+        assert_eq!(
+            next_due(&data, DAY),
+            Some(MIN_REVISIT),
+            "an unfinished deletion is retried on the cadence"
+        );
+    }
+
     #[test]
     fn expiry_obeys_defaults_disable_and_custom_days() {
         let entry = Entry {

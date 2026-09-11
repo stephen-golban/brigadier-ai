@@ -15,6 +15,8 @@ use std::{
 use tauri::{ipc::Channel, State};
 
 struct Terminal {
+    /// The registry key, and the id this shell's pid record is filed under.
+    id: String,
     session_id: Option<String>,
     master: Box<dyn MasterPty + Send>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
@@ -265,6 +267,9 @@ impl Drop for Terminal {
     fn drop(&mut self) {
         // Before the early return: a tab closed on an exited shell still has a parked forwarder.
         self.stream.mark(&self.stream.closed);
+        // The waiter thread untracks too, once `wait()` returns; both are idempotent, and this
+        // one is what makes the record gone by the time `terminal_close` returns.
+        crate::tracker::untrack_child(&self.id);
         if self.exited.load(Ordering::Acquire) {
             return;
         }
@@ -352,7 +357,7 @@ fn spawn_profile(
         .openpty(size(cols, rows))
         .map_err(error)?;
     let shell = shell.unwrap_or_else(default_shell);
-    let mut command = CommandBuilder::new(shell);
+    let mut command = CommandBuilder::new(shell.clone());
     command.arg("-l");
     command.cwd(&cwd);
     command.env("TERM", "xterm-256color");
@@ -362,6 +367,13 @@ fn spawn_profile(
     drop(pair.slave);
     let pid = child.process_id();
     let killer = child.clone_killer();
+    let id = format!("terminal-{}", NEXT.fetch_add(1, Ordering::Relaxed));
+    // The PTY makes this shell a session leader, so its pid is its own pgid and the record is
+    // safe for the next launch's sweep to act on. Without it a force-quit leaves up to 12 login
+    // shells with nothing to find them (`docs/research/lifecycle-bounds-audit-2026-09-11.md` §3).
+    if let Some(pid) = pid {
+        crate::tracker::track_child(&id, pid, std::path::Path::new(&shell), &cwd);
+    }
     let output = Arc::new(Mutex::new(Output::default()));
     let exited = Arc::new(AtomicBool::new(false));
     let drained = Arc::new(AtomicBool::new(false));
@@ -379,15 +391,18 @@ fn spawn_profile(
         reader_stream.mark(&reader_stream.drained);
     });
     let waiter_stream = stream.clone();
+    let waiter_id = id.clone();
     std::thread::spawn(move || {
         let _ = child.wait();
         drop(lease);
+        // A shell the user exited leaves no record behind either, not just one whose tab closed.
+        crate::tracker::untrack_child(&waiter_id);
         waiter_stream.mark(&waiter_stream.exited);
     });
-    let id = format!("terminal-{}", NEXT.fetch_add(1, Ordering::Relaxed));
     registry.insert(
         id.clone(),
         Terminal {
+            id: id.clone(),
             session_id: None,
             master: pair.master,
             writer: Arc::new(Mutex::new(writer)),
@@ -1074,5 +1089,57 @@ mod tests {
             );
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
+    }
+
+    /// Somewhere for the pid records to go. Only a real launch installs a tracker
+    /// (`lib.rs`'s `setup`), so in a test binary this is the only one and it lives as long as the
+    /// process.
+    fn ambient_pid_dir() -> std::path::PathBuf {
+        static DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
+        let dir = DIR.get_or_init(|| tempfile::tempdir().expect("tempdir"));
+        let open = brigadier_proc::PidDir::open(dir.path()).expect("pid dir");
+        crate::tracker::install(std::sync::Arc::new(brigadier_proc::PidTracker::new(
+            open,
+            "terminal-test-run",
+        )));
+        let installed = crate::tracker::ambient_dir().expect("a tracker is installed");
+        assert_eq!(
+            installed,
+            dir.path(),
+            "only this test installs a tracker in a test binary"
+        );
+        installed
+    }
+
+    /// A force-quit leaves a login shell running, and the next launch can only reap it from a pid
+    /// record (`docs/research/lifecycle-bounds-audit-2026-09-11.md` §3 gap 2). So the record must
+    /// exist while the shell does, and be gone the moment the tab closes.
+    #[tokio::test]
+    async fn a_terminal_shell_is_recorded_in_the_pid_directory_until_it_closes() {
+        let pids = ambient_pid_dir();
+        let root = tempfile::tempdir().unwrap();
+        let id = spawn(root.path().to_path_buf(), 80, 24).unwrap();
+        let record = pids.join(format!("{id}.json"));
+        assert!(
+            record.exists(),
+            "a live shell must be recorded at {}",
+            record.display()
+        );
+        let written = std::fs::read_to_string(&record).unwrap();
+        let pid = lock()[&id].pid.expect("the shell has a pid");
+        assert!(
+            written.contains(&format!("\"pid\":{pid}")),
+            "the record names the shell's own pid: {written}"
+        );
+        assert!(
+            !written.contains("\"pgid\":0"),
+            "the PTY makes the shell a group leader: {written}"
+        );
+
+        terminal_close(id.clone());
+        assert!(
+            !record.exists(),
+            "a closed tab must leave nothing for the next launch to sweep"
+        );
     }
 }

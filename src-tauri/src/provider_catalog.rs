@@ -1,7 +1,7 @@
 //! Selectable providers come from registered adapters, never guessed model families.
 use crate::{error::AppError, state::AppState};
 use serde::Serialize;
-use tauri::{Emitter, State};
+use tauri::{Emitter, Manager, State};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -85,6 +85,12 @@ fn refresh_behind_the_answer(app: tauri::AppHandle, supervisor: brigadier_superv
         // itself — and it is a `Drop` so an unwind still wakes it.
         let _emit = EmitOnDrop(app);
         let _guard = guard;
+        // The first discovery that needs Codex is what spawns its app-server; the launch path no
+        // longer does (`crate::state::ensure_codex`). Behind the answer, like everything else
+        // here.
+        if let Ok(ready) = _emit.0.state::<AppState>().get() {
+            crate::state::ensure_codex(ready).await;
+        }
         if let Err(error) = brigadier_supervisor::orchestration::discover(&supervisor).await {
             tracing::debug!(%error,"Connected model discovery incomplete; retaining observations");
         }

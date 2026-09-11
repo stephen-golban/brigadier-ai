@@ -1,7 +1,7 @@
 import { removeSessionLocalData } from "./sessionLocalData";
 import { mockSessionChanges } from "./mock";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listen } from "./listeners";
 import { useEffect, useState } from "react";
 import { desktop, errorMessage } from "./workspaceApi";
 import { bridge } from "./bridge";
