@@ -323,7 +323,27 @@ fn label(event: &Event) -> String {
             Decision::Allow { .. } => "request-resolved(allow)".into(),
             Decision::Deny { reason, .. } => format!("request-resolved(deny:{reason})"),
         },
-        Event::SessionCompacted { .. } => "session-compacted".into(),
+        Event::SessionCompacting => "session-compacting".into(),
+        Event::SessionCompacted {
+            trigger,
+            pre_tokens,
+            post_tokens,
+            cumulative_dropped_tokens,
+            duration_ms,
+        } => {
+            let n = |v: &Option<u64>| v.map_or_else(|| "-".to_owned(), |n| n.to_string());
+            format!(
+                "session-compacted({trigger:?},{}→{},dropped {},{}ms)",
+                n(pre_tokens),
+                n(post_tokens),
+                n(cumulative_dropped_tokens),
+                n(duration_ms)
+            )
+        }
+        Event::SessionCompactFailed { error } => format!(
+            "session-compact-failed({})",
+            error.as_deref().unwrap_or("-")
+        ),
         Event::RuntimeWarning { .. } => "runtime-warning".into(),
         Event::RuntimeError { .. } => "runtime-error".into(),
         Event::UsageWindows { status, windows } => {
@@ -2285,51 +2305,97 @@ async fn interleaved_nested_streams_do_not_steal_parent_blocks() {
 // s11 — the first real auto-compaction, CLI 2.1.268
 // -----------------------------------------------------------------------------------------
 
-/// A real `compact_boundary` becomes `Event::SessionCompacted`, and the live phase does not.
+/// Replays the whole real capture and returns its compaction lane, in order.
 ///
-/// The capture is `crates/claude-spike/fixtures/s11-auto-compaction.ndjson`: brigadier's own argv
-/// against `claude-haiku-4-5` with `CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000`, so the 67,000-token
-/// threshold was crossed in two turns. See `docs/research/compaction-and-long-sessions-2026-09-11.md`.
+/// `drop_boundary` deletes the one `system/compact_boundary` line and nothing else, which is the
+/// only way to exercise the held-close path (`Adapter::flush_pending_compaction`) without
+/// hand-writing a frame: every other byte fed here is what the CLI actually sent.
 ///
-/// What this test also pins is the **gap**: the three `system/status` frames around the
-/// compaction — `requesting`, `compacting`, then `null` with `compact_result` — produce no event
-/// at all (`adapter.rs`, the `SystemMessage::Status(_) => {}` arm), and the failed compaction in
-/// the same capture (`compact_error: "too_few_groups"`) is therefore invisible. Only the
-/// after-the-fact boundary is reported, and only two of its five numbers survive.
-#[tokio::test]
-async fn s11_a_real_auto_compaction_is_reported_after_the_fact_only() {
+/// The fixture is `crates/claude-spike/fixtures/s11-auto-compaction.ndjson`: brigadier's own argv
+/// against `claude-haiku-4-5` with `CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000`, CLI 2.1.268. See
+/// `docs/research/compaction-and-long-sessions-2026-09-11.md` §A2.
+async fn compaction_lane(drop_boundary: bool) -> Vec<String> {
     let mut rig = Rig::start("s11-auto-compaction.ndjson", 512).await;
     rig.send_turn().await;
     // The capture's other `control_response`s answer `get_context_usage`, which the capture
     // harness sent and the adapter never does; feeding them would block on an id that never comes.
     while let Some(line) = rig.lines.pop_front() {
-        if !is_control_response(&line) {
-            rig.feed_raw(&line).await;
+        if is_control_response(&line) {
+            continue;
+        }
+        if drop_boundary && line.contains(r#""subtype":"compact_boundary""#) {
+            continue;
+        }
+        rig.feed_raw(&line).await;
+    }
+    let mut lane = Vec::new();
+    while let Ok(Some(envelope)) =
+        tokio::time::timeout(Duration::from_millis(750), rig.events.recv()).await
+    {
+        let label = label(&envelope.event);
+        if label.starts_with("session-compact") {
+            lane.push(label);
         }
     }
+    lane
+}
 
-    let mut compactions = Vec::new();
-    for _ in 0..400 {
-        let event = rig.next_event().await;
-        if let Event::SessionCompacted {
-            trigger,
-            pre_tokens,
-        } = &event
-        {
-            compactions.push((format!("{trigger:?}"), *pre_tokens));
-        }
-        let done = matches!(&event, Event::TurnCompleted { .. }) && !compactions.is_empty();
-        rig.collected.push(event);
-        if done {
-            break;
-        }
-    }
-
+/// The real capture's two compactions, live phase and all, with every number the boundary carries.
+///
+/// Before 2026-09-11 this lane was one entry long: the three `system/status` frames were dropped,
+/// so the 12.3-second pause showed nothing, the failed attempt was silent, and three of the
+/// boundary's four numbers stopped at `claude-wire`.
+#[tokio::test]
+async fn s11_a_real_auto_compaction_reaches_the_ui_live_and_with_every_number() {
     assert_eq!(
-        compactions,
-        [("Auto".to_owned(), Some(70633))],
-        "one boundary, auto, carrying the pre-compaction token count"
+        compaction_lane(false).await,
+        [
+            // Turn 2: opened, then abandoned — `compact_result: "failed"`, no boundary.
+            "session-compacting",
+            "session-compact-failed(too_few_groups)",
+            // Turn 3: opened, then closed by the boundary's own numbers.
+            "session-compacting",
+            "session-compacted(Auto,70633→1379,dropped 69254,12262ms)",
+        ],
+        "the compaction lane the UI sees"
     );
-    // The failed compaction earlier in the same capture produced no boundary and no event.
-    assert_eq!(compactions.len(), 1, "the failed attempt must not be reported");
+}
+
+/// `"requesting"` is not a compaction, and the capture is the proof.
+///
+/// Three `system/status` frames say `"requesting"` and only two compactions follow: the first
+/// turn requests and never compacts. Emitting the live phase on `"requesting"` would put a
+/// compaction indicator on every turn of every session.
+#[tokio::test]
+async fn s11_the_requesting_status_does_not_open_a_compaction() {
+    let requesting = fixture_lines("s11-auto-compaction.ndjson")
+        .iter()
+        .filter(|l| l.contains(r#""status":"requesting""#))
+        .count();
+    assert_eq!(requesting, 3, "the capture's `requesting` frames");
+    let opened = compaction_lane(false)
+        .await
+        .iter()
+        .filter(|l| *l == "session-compacting")
+        .count();
+    assert_eq!(opened, 2, "one live phase per real compaction, not per request");
+}
+
+/// A `compact_result: "success"` whose boundary never arrives still closes the live phase.
+///
+/// Never observed — in the capture the boundary is the next line — so this replays the real
+/// capture with that one line deleted. The close is bare rather than absent: an indicator that
+/// never stops is worse than a notice with no numbers in it.
+#[tokio::test]
+async fn s11_a_success_with_no_boundary_still_closes_the_compaction() {
+    assert_eq!(
+        compaction_lane(true).await,
+        [
+            "session-compacting",
+            "session-compact-failed(too_few_groups)",
+            "session-compacting",
+            "session-compacted(Auto,-→-,dropped -,-ms)",
+        ],
+        "the held close is flushed by the next message"
+    );
 }

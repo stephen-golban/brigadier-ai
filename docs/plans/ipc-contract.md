@@ -61,7 +61,8 @@ SessionCounter{ session_id: string, rows_total: number, rows_dropped: number, de
   measured 4 279 bytes, two alone cross the 8192-byte cliff (`tauri-commands.md` §9).
 - Signal events are the envelopes whose `event.type` is one of: `session-started`,
   `session-exited`, `turn-started`, `turn-completed`, `turn-aborted`, `request-opened`,
-  `request-resolved`, `session-compacted`, `runtime-error`, `runtime-warning`, `usage-windows`.
+  `request-resolved`, `session-compacting`, `session-compacted`, `session-compact-failed`,
+  `runtime-error`, `runtime-warning`, `usage-windows`.
   Everything else is represented only by its terse row (`feed::terse_line`) or not at all.
 - `set_visible_projects(project_ids: string[]) -> ()` — rows for projects not in the list are
   dropped in Rust and counted in `rows_dropped`; signals still flow.
@@ -128,7 +129,9 @@ second one.
 
 | event | level | code | id | body | detail |
 |---|---|---|---|---|---|
-| `Event::SessionCompacted` | `info` | `compacted` | `{session}:notice:compacted:{seq}` | `manual` / `auto` | `{pre_tokens}` when reported |
+| `Event::SessionCompacted` | `info` | `compacted` | `{session}:notice:compacted:{seq}` | `manual` / `auto` | `{pre_tokens, post_tokens, cumulative_dropped_tokens, duration_ms}`, each key present only when reported; the object itself absent when none is |
+| `Event::SessionCompactFailed` | `warning` | `compact-failed` | `{session}:notice:compact-failed:{seq}` | `Context compaction failed[: reason]` — a sentence, not a discriminator, because an unknown code renders its body verbatim | `{error}` when the provider named one |
+| `Event::SessionCompacting` | — | — | — | — | **no notice and no feed row.** A live phase, delivered as a signal the way `usage-windows` is; exactly one of the two rows above closes it |
 | `Event::RuntimeWarning` | `warning` | `runtime` | `{session}:notice:warning:{seq}` | the message, bounded | — |
 | `Event::RuntimeError` | `error`, or `fatal` when `fatal` | `runtime` | `{session}:notice:error:{seq}` | the message, bounded | — |
 | `Event::SessionExited` | `info` | `exited` | `{session}:notice:exited:{seq}` | the exit reason | `{exit_code}` when observed |

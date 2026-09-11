@@ -147,21 +147,58 @@ fn notice(env: &Envelope) -> Option<(String, ItemKind, String)> {
         Event::SessionCompacted {
             trigger,
             pre_tokens,
+            post_tokens,
+            cumulative_dropped_tokens,
+            duration_ms,
         } => {
             let trigger = match trigger {
                 brigadier_core::event::CompactTrigger::Manual => "manual",
                 brigadier_core::event::CompactTrigger::Auto => "auto",
             };
+            // One object, keys present only where the provider reported a number, and `None`
+            // when it reported none at all — so a renderer can test for a key rather than for a
+            // sentinel, and `{"pre_tokens":n}` from before 2026-09-11 still parses.
+            let mut detail = serde_json::Map::new();
+            for (key, value) in [
+                ("pre_tokens", pre_tokens),
+                ("post_tokens", post_tokens),
+                ("cumulative_dropped_tokens", cumulative_dropped_tokens),
+                ("duration_ms", duration_ms),
+            ] {
+                if let Some(n) = value {
+                    detail.insert(key.to_owned(), serde_json::json!(n));
+                }
+            }
             Some((
                 format!("{session}:notice:compacted:{seq}"),
                 ItemKind::Notice {
                     level: NoticeLevel::Info,
                     code: "compacted".to_owned(),
-                    detail: pre_tokens.map(|n| serde_json::json!({ "pre_tokens": n })),
+                    detail: (!detail.is_empty()).then_some(serde_json::Value::Object(detail)),
                 },
                 trigger.to_owned(),
             ))
         }
+        // A **warning**, not an error: the session continues and the CLI retries on a later
+        // turn, so nothing stopped and nothing was lost — but it is no longer silent.
+        //
+        // The body is a sentence rather than the discriminator the two older notices carry,
+        // because `ThreadView::noticeSentence` falls back to the body verbatim for a code it
+        // does not know, and `too_few_groups` alone is not a sentence.
+        Event::SessionCompactFailed { error } => Some((
+            format!("{session}:notice:compact-failed:{seq}"),
+            ItemKind::Notice {
+                level: NoticeLevel::Warning,
+                code: "compact-failed".to_owned(),
+                detail: error
+                    .as_ref()
+                    .map(|reason| serde_json::json!({ "error": reason })),
+            },
+            match error {
+                Some(reason) => format!("Context compaction failed: {reason}"),
+                None => "Context compaction failed".to_owned(),
+            },
+        )),
         Event::RuntimeWarning { message } => Some((
             format!("{session}:notice:warning:{seq}"),
             ItemKind::Notice {

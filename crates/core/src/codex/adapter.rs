@@ -654,7 +654,12 @@ impl Actor {
                             } else {
                                 CompactTrigger::Auto
                             },
+                            // The Codex lane reports no token counts with its compaction item;
+                            // these are the Claude boundary's numbers and Codex has no analogue.
                             pre_tokens: None,
+                            post_tokens: None,
+                            cumulative_dropped_tokens: None,
+                            duration_ms: None,
                         },
                         None,
                         Some(&msg),

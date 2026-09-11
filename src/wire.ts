@@ -94,14 +94,48 @@ export type ItemKind =
        */
       type: "notice";
       level: NoticeLevel;
-      /** What happened: `compacted`, `runtime`, `exited`. Open — render an unknown code as text. */
+      /**
+       * What happened: `compacted`, `compact-failed`, `runtime`, `exited`. Open — render an
+       * unknown code as text.
+       */
       code: string;
-      /** `{pre_tokens}` on a compaction, `{exit_code}` on an exit, absent otherwise. */
+      /**
+       * `CompactedNoticeDetail` on `compacted`, `CompactFailedNoticeDetail` on `compact-failed`,
+       * `{exit_code}` on an exit, absent otherwise. `unknown` on purpose: narrow it by `code`.
+       */
       detail?: unknown;
     };
 
 /** How loud an `ItemKind` notice is. */
 export type NoticeLevel = "info" | "warning" | "error" | "fatal";
+
+/**
+ * `detail` on a `code: "compacted"` notice — every number the provider's `compact_boundary`
+ * reported, and only those: a key is **absent** when it reported none, never zero, and the whole
+ * object is absent when it reported nothing at all. Measured values are the real capture's
+ * (`crates/claude-spike/fixtures/s11-auto-compaction.ndjson:49`, CLI 2.1.268).
+ *
+ * Tokens and milliseconds. There is no cost field and none is ever added (`docs/vision.md` §6).
+ */
+export interface CompactedNoticeDetail {
+  /** Tokens before. Measured: `70633`. */
+  pre_tokens?: number;
+  /** Tokens after — the summary alone. Measured: `1379`. */
+  post_tokens?: number;
+  /** Tokens every compaction in this session has dropped so far. Measured: `69254`. */
+  cumulative_dropped_tokens?: number;
+  /** Milliseconds the compaction took. Measured: `12262`. */
+  duration_ms?: number;
+}
+
+/**
+ * `detail` on a `code: "compact-failed"` notice. Absent when the provider named no reason, in
+ * which case the notice body is the bare sentence and there is nothing further to show.
+ */
+export interface CompactFailedNoticeDetail {
+  /** The provider's slug, e.g. `"too_few_groups"`. Open set — render it, do not switch on it. */
+  error: string;
+}
 
 export type RequestKind =
   | {
@@ -179,7 +213,53 @@ export type Event =
   | { type: "content-delta"; item_id: ItemId; text: string }
   | { type: "request-opened"; request_id: RequestId; kind: RequestKind; turn_id: TurnId | null }
   | { type: "request-resolved"; request_id: RequestId; decision: Decision }
-  | { type: "session-compacted"; trigger: CompactTrigger; pre_tokens: number | null }
+  | {
+      /**
+       * A compaction is under way and has not finished — the live phase, ~12 s on the one real
+       * capture. Carries no feed row and no thread notice: it is a signal, like `usage-windows`.
+       *
+       * Emitted from `system/status: "compacting"` only. The `"requesting"` status that precedes
+       * it is **not** compaction-specific — the same capture carries one in front of an ordinary
+       * turn — so this never fires on a turn that does not compact.
+       *
+       * Exactly one of `session-compacted` or `session-compact-failed` follows it, on every path,
+       * including a provider that dies mid-compaction.
+       */
+      type: "session-compacting";
+    }
+  | {
+      /** A compaction that finished. Read from `system/compact_boundary`. */
+      type: "session-compacted";
+      trigger: CompactTrigger;
+      /** Tokens before compaction. Measured: `70633`. */
+      pre_tokens: number | null;
+      /**
+       * Tokens after compaction — the summary alone, not the whole context. Measured: `1379`.
+       *
+       * The three fields below are **absent**, not null, when the provider did not report them
+       * (`skip_serializing_if` on the Rust side), and absent on every event persisted before
+       * 2026-09-11. Optional so a build that predates the Rust change still type-checks.
+       */
+      post_tokens?: number;
+      /** Tokens **every** compaction in this session has dropped so far. Measured: `69254`. */
+      cumulative_dropped_tokens?: number;
+      /** How long it took. Measured: `12262` — "Context compacted · 12.3 s" is this number. */
+      duration_ms?: number;
+    }
+  | {
+      /**
+       * A compaction the provider abandoned. A **warning**, not an error: the session runs on and
+       * the CLI retries on a later turn. It has no `compact_boundary` — the failing status frame
+       * is the only carrier there is.
+       */
+      type: "session-compact-failed";
+      /**
+       * The provider's own reason slug, e.g. `"too_few_groups"` — the one value ever observed.
+       * The set is **open**: render an unrecognised slug as text rather than switching on it.
+       * `null` when the frame named no reason.
+       */
+      error: string | null;
+    }
   | { type: "runtime-warning"; message: string }
   | { type: "runtime-error"; message: string; fatal: boolean }
   | {
@@ -217,7 +297,9 @@ export type SignalEventType =
   | "turn-aborted"
   | "request-opened"
   | "request-resolved"
+  | "session-compacting"
   | "session-compacted"
+  | "session-compact-failed"
   | "runtime-error"
   | "runtime-warning"
   | "usage-windows";
