@@ -57,7 +57,14 @@ afterEach(async () => {
   vi.useRealTimers();
   fake.sync.mockReset(); fake.unlisten.mockReset(); say.mockReset();
   fake.listened.length = 0; fake.handlers.clear(); fake.gate = null; fake.nativeGate = null;
+  visibility("visible");
 });
+
+/** jsdom has no window manager; `visibilityState` is a plain getter to redefine. */
+function visibility(value: "visible" | "hidden") {
+  Object.defineProperty(document, "visibilityState", { configurable: true, get: () => value });
+}
+const visibilityChanged = () => document.dispatchEvent(new Event("visibilitychange"));
 
 /** What `src-tauri` emits when the archive moves under the window. */
 const archiveChanged = () => fake.handlers.get("archive-changed")?.();
@@ -130,4 +137,60 @@ it("bridges a native menu event onto the window once its subscription is live", 
   fake.handlers.get("native-new-session")?.();
   expect(seen).toHaveBeenCalledTimes(1);
   window.removeEventListener("workbench-new-session", seen);
+});
+
+/*
+ * Gap 5, `docs/research/lifecycle-bounds-audit-2026-09-11.md` §2.2. The 5 s poll used to be armed
+ * for the app's whole life with no visibility gate, waking a backgrounded window 720 times an hour
+ * to re-read an archive that `archive-changed` already reports.
+ */
+it("stops polling while the window is hidden and refreshes once when it comes forward", async () => {
+  vi.useFakeTimers();
+  fake.sync.mockResolvedValue(undefined);
+  renderHook(() => useArchiveAndNativeEvents(say));
+  await act(async () => {});
+  expect(fake.sync).toHaveBeenCalledTimes(1);
+  await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+  expect(fake.sync).toHaveBeenCalledTimes(2);
+
+  visibility("hidden");
+  await act(async () => { visibilityChanged(); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  expect(fake.sync).toHaveBeenCalledTimes(2);
+
+  // Coming forward reads once, so whatever moved while the window was away lands before it draws.
+  visibility("visible");
+  await act(async () => { visibilityChanged(); });
+  expect(fake.sync).toHaveBeenCalledTimes(3);
+  await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+  expect(fake.sync).toHaveBeenCalledTimes(4);
+});
+
+/* An event that lands while hidden is still honoured: only the poll is gated, never the producer. */
+it("still syncs on archive-changed while hidden", async () => {
+  vi.useFakeTimers();
+  fake.sync.mockResolvedValue(undefined);
+  renderHook(() => useArchiveAndNativeEvents(say));
+  await act(async () => {});
+  visibility("hidden");
+  await act(async () => { visibilityChanged(); });
+  expect(fake.sync).toHaveBeenCalledTimes(1);
+  await act(async () => { archiveChanged(); });
+  expect(fake.sync).toHaveBeenCalledTimes(2);
+});
+
+it("arms no poll at all for a window that unmounts hidden", async () => {
+  vi.useFakeTimers();
+  fake.sync.mockResolvedValue(undefined);
+  visibility("hidden");
+  const { unmount } = renderHook(() => useArchiveAndNativeEvents(say));
+  await act(async () => {});
+  // The first read is the sidebar's initial state, not a poll, so it happens either way.
+  expect(fake.sync).toHaveBeenCalledTimes(1);
+  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+  expect(fake.sync).toHaveBeenCalledTimes(1);
+  unmount();
+  visibility("visible");
+  await act(async () => { visibilityChanged(); });
+  expect(fake.sync).toHaveBeenCalledTimes(1);
 });

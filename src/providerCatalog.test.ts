@@ -23,7 +23,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 vi.mock("./workspaceApi", () => ({ desktop: true, errorMessage: String }));
 
-import { useProviderCatalog, type ProviderCatalogEntry } from "./providerCatalog";
+import { providerCatalogStore, useProviderCatalog, type ProviderCatalogEntry } from "./providerCatalog";
 
 // `await` between the unmount and the reset on purpose: the hook unsubscribes through
 // `stop.then(unlisten => unlisten())`, a microtask, so a synchronous reset would move the
@@ -34,7 +34,14 @@ afterEach(async () => {
   vi.useRealTimers();
   fake.invoke.mockReset(); fake.unlisten.mockReset();
   fake.listened.length = 0; fake.handlers.length = 0; fake.gate = null;
+  visibility("visible");
 });
+
+/** jsdom has no window manager; `visibilityState` is a plain getter to redefine. */
+function visibility(value: "visible" | "hidden") {
+  Object.defineProperty(document, "visibilityState", { configurable: true, get: () => value });
+}
+const visibilityChanged = () => document.dispatchEvent(new Event("visibilitychange"));
 
 const NONE: never[] = [];
 const entry = (over: Partial<ProviderCatalogEntry> = {}): ProviderCatalogEntry => ({
@@ -282,4 +289,95 @@ it("unsubscribes a listen that resolves after unmount, and never reads or polls"
   expect(fake.invoke).not.toHaveBeenCalled();
   await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
   expect(fake.invoke).not.toHaveBeenCalled();
+});
+
+/*
+ * Gap 8, `docs/research/lifecycle-bounds-audit-2026-09-11.md` §4. The hook is mounted by
+ * `Composer`, `NewSession` and `SessionPreferences` at once, and each mount used to hold its own
+ * budget, its own subscription, its own `focus` listener and — on a machine with no CLI, where the
+ * catalogue never settles — its own 15 s poll for the window's life.
+ */
+it("shares one subscription, one budget and one poll across every mount", async () => {
+  vi.useFakeTimers();
+  fake.invoke.mockResolvedValue([]);
+  const a = renderHook(() => useProviderCatalog(NONE));
+  const b = renderHook(() => useProviderCatalog(NONE));
+  const c = renderHook(() => useProviderCatalog(NONE));
+  expect(providerCatalogStore().consumers).toBe(3);
+
+  await act(async () => { await vi.advanceTimersByTimeAsync(BUDGET_MS); });
+  expect(fake.listened).toEqual(["provider-catalog-refreshed"]);
+  expect(fake.invoke).toHaveBeenCalledTimes(5);
+
+  // One invoke per cadence tick, not one per mount.
+  await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+  expect(fake.invoke).toHaveBeenCalledTimes(6);
+  await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+  expect(fake.invoke).toHaveBeenCalledTimes(7);
+
+  // And every mount sees the one answer.
+  fake.invoke.mockResolvedValue([entry()]);
+  await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+  for (const mount of [a, b, c]) {
+    expect(mount.result.current.providers).toHaveLength(1);
+    expect(mount.result.current.loaded).toBe(true);
+  }
+
+  // The store outlives a mount and is torn down by the last one to leave.
+  a.unmount(); b.unmount();
+  expect(providerCatalogStore().consumers).toBe(1);
+  expect(fake.unlisten).not.toHaveBeenCalled();
+  c.unmount();
+  await act(async () => {});
+  expect(providerCatalogStore()).toEqual({ consumers: 0, running: false, polling: false });
+  expect(fake.unlisten).toHaveBeenCalledTimes(1);
+  await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+  expect(fake.invoke).toHaveBeenCalledTimes(8);
+});
+
+/*
+ * A hidden window cannot draw a model picker, so it is not worth an IPC round trip — and the
+ * budget must not be spent behind its back either, or a window backgrounded through the whole
+ * launch would come forward to a permanently empty catalogue.
+ */
+it("invokes nothing while hidden, and reads once when the window comes forward", async () => {
+  vi.useFakeTimers();
+  fake.invoke.mockResolvedValue([]);
+  visibility("hidden");
+  renderHook(() => useProviderCatalog(NONE));
+  await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+  expect(fake.listened).toEqual(["provider-catalog-refreshed"]);
+  expect(fake.invoke).not.toHaveBeenCalled();
+  expect(providerCatalogStore().polling).toBe(false);
+
+  visibility("visible");
+  await act(async () => { visibilityChanged(); });
+  expect(fake.invoke).toHaveBeenCalledTimes(1);
+  // The budget was given back, not burned while hidden.
+  await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+  expect(fake.invoke).toHaveBeenCalledTimes(2);
+  expect(providerCatalogStore().polling).toBe(true);
+});
+
+/* A CLI installed while the window is in the background is still found when it comes forward. */
+it("clears the poll on hide and re-arms it on show", async () => {
+  vi.useFakeTimers();
+  fake.invoke.mockResolvedValue([]);
+  renderHook(() => useProviderCatalog(NONE));
+  await act(async () => { await vi.advanceTimersByTimeAsync(BUDGET_MS); });
+  expect(fake.invoke).toHaveBeenCalledTimes(5);
+  expect(providerCatalogStore().polling).toBe(true);
+
+  visibility("hidden");
+  await act(async () => { visibilityChanged(); });
+  expect(providerCatalogStore().polling).toBe(false);
+  await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+  expect(fake.invoke).toHaveBeenCalledTimes(5);
+
+  fake.invoke.mockResolvedValue([entry()]);
+  visibility("visible");
+  await act(async () => { visibilityChanged(); });
+  expect(fake.invoke).toHaveBeenCalledTimes(6);
+  // Settled: the poll it re-armed stops itself.
+  expect(providerCatalogStore().polling).toBe(false);
 });

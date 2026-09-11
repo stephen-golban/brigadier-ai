@@ -1729,3 +1729,97 @@ describe("selector and keyed subscriptions", () => {
     store.stop();
   });
 });
+
+/*
+ * Gap 1, `docs/research/lifecycle-bounds-audit-2026-09-11.md` §1.1. The tombstones a delete leaves
+ * used to be permanent, and their only reader — `applyBatch` — rebuilt **every** batch for the rest
+ * of the window as soon as one existed: a spread plus three `Array.filter` passes at ~60 batches/s,
+ * against ids no producer can ever emit again.
+ */
+describe("deletion tombstones", () => {
+  it("does not rebuild a batch that names no deleted session", async () => {
+    const store = await load();
+    store.start();
+    pushRows(store, "s1", [1]);
+    pushRows(store, "s2", [1]);
+    expect(store.dropSession("s1")).toBe(true);
+    expect(store.getTombstones()).toEqual({ sessions: 1, projects: 0 });
+
+    // The proof that no rebuild happened: the rebuild is three `filter` calls on these arrays.
+    const clean = batch({ rows: rows("s2", [2]) });
+    const rowFilter = vi.spyOn(clean.rows, "filter");
+    const signalFilter = vi.spyOn(clean.signals, "filter");
+    const counterFilter = vi.spyOn(clean.counters, "filter");
+    store.pushBatch(clean);
+    vi.advanceTimersByTime(FRAME_MS);
+    expect(rowFilter).not.toHaveBeenCalled();
+    expect(signalFilter).not.toHaveBeenCalled();
+    expect(counterFilter).not.toHaveBeenCalled();
+    expect(store.getSessionRowCount("s2")).toBe(2);
+    store.stop();
+  });
+
+  it("still refuses an in-flight batch that does name the deleted session", async () => {
+    const store = await load();
+    store.start();
+    pushRows(store, "s1", [1]);
+    expect(store.dropSession("s1")).toBe(true);
+
+    const late = batch({ rows: [...rows("s1", [2]), ...rows("s2", [1])] });
+    const rowFilter = vi.spyOn(late.rows, "filter");
+    store.pushBatch(late);
+    vi.advanceTimersByTime(FRAME_MS);
+    expect(rowFilter).toHaveBeenCalled();
+    expect(store.getSessionRowCount("s1")).toBe(0);
+    expect(store.getSessionRowCount("s2")).toBe(1);
+    store.stop();
+  });
+
+  it("evicts a tombstone on the first drain past its window", async () => {
+    const store = await load();
+    store.start();
+    pushRows(store, "s1", [1]);
+    store.dropSession("s1");
+    expect(store.getTombstones().sessions).toBe(1);
+
+    // A drain inside the window keeps it: an in-flight `list_sessions` may still resolve.
+    vi.advanceTimersByTime(29_000);
+    pushRows(store, "s2", [1]);
+    expect(store.getTombstones().sessions).toBe(1);
+
+    vi.advanceTimersByTime(1_000);
+    pushRows(store, "s2", [2]);
+    expect(store.getTombstones().sessions).toBe(0);
+    store.stop();
+  });
+
+  it("evicts a project tombstone on the same clock", async () => {
+    const store = await load();
+    store.start();
+    pushRows(store, "s1", [1]);
+    store.dropProject(PROJECT);
+    expect(store.getTombstones()).toEqual({ sessions: 1, projects: 1 });
+
+    vi.advanceTimersByTime(30_000);
+    store.pushBatch({ project_id: "p2", rows: rows("s9", [1]), signals: [], counters: [] });
+    vi.advanceTimersByTime(FRAME_MS);
+    expect(store.getTombstones()).toEqual({ sessions: 0, projects: 0 });
+    store.stop();
+  });
+
+  /* A cascade larger than any window has batches in flight must not become the unbounded set. */
+  it("caps the tombstones at 256, oldest first", async () => {
+    const store = await load();
+    store.start();
+    for (let i = 0; i < 300; i++) store.dropSession(`s${i}`);
+    expect(store.getTombstones().sessions).toBe(256);
+
+    // The 256 kept are the newest: the oldest 44 went.
+    const late = batch({ rows: [...rows("s0", [1]), ...rows("s299", [1])] });
+    store.pushBatch(late);
+    vi.advanceTimersByTime(FRAME_MS);
+    expect(store.getSessionRowCount("s0")).toBe(1);
+    expect(store.getSessionRowCount("s299")).toBe(0);
+    store.stop();
+  });
+});

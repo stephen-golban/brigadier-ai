@@ -80,6 +80,31 @@ function failWorker() {
   [...pending.keys()].forEach(finish);
 }
 
+/** How long one request may take before history stops waiting on it. */
+const REQUEST_TIMEOUT_MS = 1000;
+/**
+ * How many requests in a row may time out before the worker is given up on.
+ *
+ * The timeout used to be the worker's death sentence: one 1 s hiccup under load set `unavailable`
+ * and terminated the worker, and every row for the rest of the window then formatted its label on
+ * the main thread, silently (`docs/research/lifecycle-bounds-audit-2026-09-11.md` §1.4). A slow
+ * reply and a broken worker are different things — `onerror`/`onmessageerror` still fail it at
+ * once, and a reply that arrives late still counts as the worker answering.
+ */
+const MAX_CONSECUTIVE_TIMEOUTS = 3;
+let consecutiveTimeouts = 0;
+
+/** One request gave up waiting. Its callers take the synchronous fallback; the next request is
+ *  still posted, and may well be answered. */
+function requestTimedOut(id: number) {
+  if (!pending.has(id)) return;
+  finish(id);
+  // One timeout, one failure. The last one also gives the worker up, and `failWorker` counts
+  // that itself — counting here as well would score that timeout twice.
+  if (++consecutiveTimeouts >= MAX_CONSECUTIVE_TIMEOUTS) failWorker();
+  else preparation.workerFailures++;
+}
+
 export function prepareTimestampLabels(items: readonly {at: number}[]): Promise<void> {
   if (unavailable || typeof Worker === "undefined") return Promise.resolve();
   const entries = [...new Map(items.filter(item => item.at > 0).map(({at}) => {
@@ -93,7 +118,10 @@ export function prepareTimestampLabels(items: readonly {at: number}[]): Promise<
       if (!worker) {
         worker = new Worker(new URL("./timestampLabels.worker.ts", import.meta.url), {type: "module"});
         worker.onmessage = ({data}: MessageEvent<TimestampResponse>) => {
-          if (!pending.has(data.id)) return;
+          // A reply for a request that already timed out is still an answer: it is cached, it is
+          // announced if it moved any text, and it clears the consecutive-timeout count. Only
+          // `finish` is skipped — those callers were released when the request gave up.
+          consecutiveTimeouts = 0;
           preparation.workerLabels += data.entries.length;
           const changed = data.entries.filter(entry => remember(entry.key, entry.labels)).map(entry => entry.key);
           finish(data.id);
@@ -105,8 +133,9 @@ export function prepareTimestampLabels(items: readonly {at: number}[]): Promise<
       const id = ++nextId;
       let resolve!: () => void;
       const completion = new Promise<void>(done => { resolve = done; });
-      // A failed worker must never leave history waiting indefinitely.
-      const timeout = setTimeout(failWorker, 1000);
+      // A slow worker must never leave history waiting indefinitely — per request, so that a
+      // later request is not punished for an earlier one's hiccup.
+      const timeout = setTimeout(() => requestTimedOut(id), REQUEST_TIMEOUT_MS);
       pending.set(id, {keys: fresh.map(entry => entry.key), finish: () => {clearTimeout(timeout); resolve();}});
       fresh.forEach(entry => inFlight.set(entry.key, completion));
       worker.postMessage({id, entries: fresh} satisfies TimestampRequest);

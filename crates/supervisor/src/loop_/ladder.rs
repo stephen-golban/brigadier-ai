@@ -334,7 +334,7 @@ fn select(text: &str, eligible: &[bool]) -> Option<usize> {
 /// command and independently reviewed. An evidence judge may select one eligible branch or
 /// reject both. Serial calls keep the same root concurrency budget; no cost-unbounded fanout.
 pub(super) async fn competing(
-    run: &Run,
+    run: &mut Run,
     phase: &PhaseRow,
     baseline: &str,
     failure: &str,

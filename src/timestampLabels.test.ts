@@ -30,7 +30,7 @@ it("prepares a complete page once, sharing overlapping requests without main-thr
   expect(format).not.toHaveBeenCalled();
 });
 
-it.each(["error", "timeout"])("settles history and falls back when worker setup fails through %s", async mode => {
+it("settles history and falls back when the worker itself fails", async () => {
   vi.useFakeTimers();
   vi.stubGlobal("Worker", FakeWorker);
   const api = await import("./timestampLabels");
@@ -38,13 +38,94 @@ it.each(["error", "timeout"])("settles history and falls back when worker setup 
   const expected = new Date(at).toLocaleTimeString(undefined, {hour: "numeric", minute: "2-digit"});
   const ready = api.prepareTimestampLabels([{at}]);
   const worker = FakeWorker.instances[0]!;
-  if (mode === "error") worker.onerror!();
-  else await vi.advanceTimersByTimeAsync(1000);
+  worker.onerror!();
   await ready;
   expect(worker.terminate).toHaveBeenCalledOnce();
   expect(api.getTimestampLabels(new Date(at), navigator.language).time).toBe(expected);
   await api.prepareTimestampLabels([{at: at + 60000}]);
   expect(FakeWorker.instances).toHaveLength(1);
+});
+
+/*
+ * `docs/research/lifecycle-bounds-audit-2026-09-11.md` §1.4. The timeout used to be the worker's
+ * death sentence: one 1 s hiccup under load disabled label preparation for the rest of the window,
+ * silently, and every row thereafter formatted its label on the rendering thread.
+ */
+it("releases one timed-out request and still posts the next one", async () => {
+  vi.useFakeTimers();
+  vi.stubGlobal("Worker", FakeWorker);
+  const api = await import("./timestampLabels");
+  const slow = new Date(2026, 8, 11, 11, 12).getTime();
+  const ready = api.prepareTimestampLabels([{at: slow}]);
+  const worker = FakeWorker.instances[0]!;
+  await vi.advanceTimersByTimeAsync(1000);
+  await ready;
+  expect(worker.terminate).not.toHaveBeenCalled();
+  expect(api.getTimestampPreparation().workerFailures).toBe(1);
+  // That row took the synchronous fallback, as it must.
+  expect(api.getTimestampLabels(new Date(slow), navigator.language).time)
+    .toBe(new Date(slow).toLocaleTimeString(undefined, {hour: "numeric", minute: "2-digit"}));
+
+  // The next request goes to the same worker, and is answered.
+  const next = new Date(2026, 8, 11, 12, 30).getTime();
+  const second = api.prepareTimestampLabels([{at: next}]);
+  expect(worker.postMessage).toHaveBeenCalledTimes(2);
+  const request = worker.postMessage.mock.calls[1]![0];
+  worker.onmessage!({data: {id: request.id, entries: [{key: request.entries[0].key, labels: {time: "prepared", date: "date"}}]}} as MessageEvent<TimestampResponse>);
+  await second;
+  expect(api.getTimestampLabels(new Date(next), navigator.language)).toEqual({time: "prepared", date: "date"});
+});
+
+it("gives the worker up after three consecutive timeouts", async () => {
+  vi.useFakeTimers();
+  vi.stubGlobal("Worker", FakeWorker);
+  const api = await import("./timestampLabels");
+  const base = new Date(2026, 8, 11, 11, 12).getTime();
+  for (let i = 0; i < 3; i++) {
+    const ready = api.prepareTimestampLabels([{at: base + i * 60_000}]);
+    await vi.advanceTimersByTimeAsync(1000);
+    await ready;
+  }
+  const worker = FakeWorker.instances[0]!;
+  expect(worker.postMessage).toHaveBeenCalledTimes(3);
+  expect(worker.terminate).toHaveBeenCalledOnce();
+  // Three timeouts, of which the third is also the give-up. One failure each, not four for
+  // three: the give-up is the same event as the timeout that caused it.
+  expect(api.getTimestampPreparation().workerFailures).toBe(3);
+
+  // Stable failure state: no retry storm, no new worker.
+  await api.prepareTimestampLabels([{at: base + 600_000}]);
+  expect(worker.postMessage).toHaveBeenCalledTimes(3);
+  expect(FakeWorker.instances).toHaveLength(1);
+});
+
+it("an answered request clears the consecutive-timeout count", async () => {
+  vi.useFakeTimers();
+  vi.stubGlobal("Worker", FakeWorker);
+  const api = await import("./timestampLabels");
+  const base = new Date(2026, 8, 11, 11, 12).getTime();
+  const answer = async (at: number) => {
+    const ready = api.prepareTimestampLabels([{at}]);
+    const worker = FakeWorker.instances[0]!;
+    const calls = worker.postMessage.mock.calls;
+    const request = calls[calls.length - 1]![0];
+    worker.onmessage!({data: {id: request.id, entries: [{key: request.entries[0].key, labels: {time: "t", date: "d"}}]}} as MessageEvent<TimestampResponse>);
+    await ready;
+  };
+  const timeOut = async (at: number) => {
+    const ready = api.prepareTimestampLabels([{at}]);
+    await vi.advanceTimersByTimeAsync(1000);
+    await ready;
+  };
+  await timeOut(base);
+  await timeOut(base + 60_000);
+  await answer(base + 120_000);
+  await timeOut(base + 180_000);
+  await timeOut(base + 240_000);
+  const worker = FakeWorker.instances[0]!;
+  expect(worker.terminate).not.toHaveBeenCalled();
+  await timeOut(base + 300_000);
+  expect(worker.terminate).toHaveBeenCalledOnce();
 });
 
 it("the worker keeps the existing default-locale date and time text", async () => {

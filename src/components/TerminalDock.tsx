@@ -19,10 +19,13 @@ import {
   type WorkspaceContext,
 } from "../workspaceApi";
 import { workbenchApi } from "../workbenchApi";
+import { removeTerminalSnapshot, sweepTerminalSnapshots } from "../sessionLocalData";
 import { LayoutResizer } from "./LayoutResizer";
 import type { ProjectLayout, ProjectTab } from "../workbenchState";
 const TerminalView = lazy(() => import("./TerminalView"));
 const groupOf = (t: ProjectTab) => t.terminalGroup ?? t.id;
+/** The startup sweep runs once per window, not once per dock. */
+let swept = false;
 
 /**
  * The divider between two panes of one split. Panes are weighted, not sized, so the drag
@@ -121,6 +124,17 @@ export function TerminalDock({
   useEffect(() => {
     if (active) setVisited(true);
   }, [active]);
+  // Per-tab removal covers a tab closed through the UI; this covers everything the UI never saw —
+  // a layout dropped wholesale, a crash between the close and the layout write, and every snapshot
+  // orphaned before that removal existed. The in-memory layout's own tab ids are passed in, so a
+  // layout that has not been persisted yet cannot have its live terminals swept.
+  useEffect(() => {
+    if (swept) return;
+    swept = true;
+    sweepTerminalSnapshots(layout.tabs.map((t) => t.id));
+    // The first dock is the only sweep; `layout` is read once, deliberately.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   useEffect(() => {
     if (!visited) return;
     void workspaceApi
@@ -177,6 +191,10 @@ export function TerminalDock({
     const remove = async () => {
       const id = ids.current.get(tab.id);
       if (id) await workspaceApi.closeTerminal(id);
+      // The scrollback snapshot dies with the tab. Nothing else ever removes it: a tab id is a
+      // `crypto.randomUUID()` minted per terminal and never reused, so the key would be orphaned
+      // for good (`docs/research/lifecycle-bounds-audit-2026-09-11.md` §1.6, Gap 3).
+      removeTerminalSnapshot(tab.id);
       onChange((old) => {
         const tabs = old.tabs.filter((t) => t.id !== tab.id);
         const remaining = tabs.filter((t) => t.kind === "terminal");

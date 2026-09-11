@@ -1,4 +1,5 @@
 import { readArchive } from "../sessionArchive";
+import { terminalSnapshotKey, writeTerminalSnapshot } from "../sessionLocalData";
 import { themeColor } from "../lib/theme";
 import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
@@ -105,7 +106,7 @@ export default function TerminalView({
       theme: readTheme(),
     });
     terminalRef.current = terminal;
-    const snapshotKey = `brigadier:terminal:${tabId}`;
+    const snapshotKey = terminalSnapshotKey(tabId);
     let snapshot: { output?: string; cwd?: string } = {};
     try {
       snapshot = JSON.parse(localStorage.getItem(snapshotKey) ?? "{}");
@@ -114,19 +115,15 @@ export default function TerminalView({
     }
     const serialize = new SerializeAddon();
     terminal.loadAddon(serialize);
+    // Recovery is best effort, but a write that did not land is not allowed to be silent: it is
+    // the one symptom of an exhausted origin quota, which takes every other `localStorage` writer
+    // in the app down with it (`docs/research/lifecycle-bounds-audit-2026-09-11.md` §1.6, Gap 3).
     const persist = () => {
       if (context.sessionId && readArchive().deleted.includes(context.sessionId)) return;
-      try {
-        localStorage.setItem(
-          snapshotKey,
-          JSON.stringify({
-            ...snapshot,
-            output: serialize.serialize({ scrollback: 200 }),
-          }),
-        );
-      } catch {
-        /* bounded recovery is best effort */
-      }
+      writeTerminalSnapshot(tabId, {
+        ...snapshot,
+        output: serialize.serialize({ scrollback: 200 }),
+      });
     };
     // Serializing 200 lines of scrollback is the expensive half of this component, so it happens
     // only when something changed, and at most once per deadline. `dirty` is what changed;

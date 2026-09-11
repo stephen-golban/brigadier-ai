@@ -1,7 +1,7 @@
 import { TodoList } from './assistant-ui/elements/todo-list';
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from '../listeners';
 import { desktop } from '../workspaceApi';
 interface TaskMemory { sessionId:string; revision:number; goal:string; progress:{id:string;text:string;status:'pending'|'in-progress'|'done'|'blocked'}[]; decisions:string[]; results:string[]; verification:string[]; unresolved:string[] }
 export function TaskProgress({sessionId}:{sessionId:string}) {
