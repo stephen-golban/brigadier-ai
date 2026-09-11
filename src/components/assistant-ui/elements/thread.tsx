@@ -29,7 +29,7 @@ export function Thread({
           scrollToBottomOnRunStart={false}
         >
           <ChatPanelMessages className="aui-viewport block min-h-0 p-0 overscroll-contain">
-            <div className="aui-thread-content mx-auto w-full max-w-[820px] px-6 py-6">
+            <div className="aui-thread-content mx-auto w-full max-w-[var(--thread-max-width)] px-[var(--thread-pad-x)] pt-[var(--thread-pad-x)] pb-[var(--thread-pad-bottom)]">
               {children}
             </div>
             <ThreadPrimitive.ViewportFooter className="aui-thread-footer sticky bottom-3 flex justify-center [&_button:disabled]:hidden">
@@ -58,7 +58,7 @@ function ReadonlyViewport({children,viewportRef,onScroll,followingInitially}:{ch
  useLayoutEffect(()=>{if(following.current&&viewport.current)viewport.current.scrollTop=viewport.current.scrollHeight;},[children]);
  return <ChatPanel className="aui-thread relative h-auto min-h-0 min-w-0 max-w-none flex-1 rounded-none border-0 bg-canvas">
    <ChatPanelMessages ref={node=>{viewport.current=node;if(typeof viewportRef==='function')viewportRef(node);else if(viewportRef)viewportRef.current=node;}} className="aui-viewport block min-h-0 p-0 overscroll-contain" onScroll={event=>{const e=event.currentTarget;following.current=e.scrollHeight-e.scrollTop-e.clientHeight<64;onScroll?.(event);}}>
-     <div className="aui-thread-content mx-auto w-full max-w-[820px] px-6 py-6">{children}</div>
+     <div className="aui-thread-content mx-auto w-full max-w-[var(--thread-max-width)] px-[var(--thread-pad-x)] pt-[var(--thread-pad-x)] pb-[var(--thread-pad-bottom)]">{children}</div>
    </ChatPanelMessages>
  </ChatPanel>;
 }

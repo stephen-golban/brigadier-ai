@@ -3,6 +3,11 @@
    Tailwind core (docs/research/assistant-ui-design.md, Landmine 4). */
 @import "tw-animate-css";
 @import "./focus-reset.css";
+/* The vendored Codex thread kit (src/components/thread/UPSTREAM.md). Imported after
+   focus-reset so the app-wide `outline: none` still wins, and ahead of every rule below so
+   its unlayered `.thread-*` rules share one unlayered band with brigadier's own. Its
+   `:root` block declares only `--thread-*`, aliased onto the `--color-*` layer below. */
+@import "./components/thread/thread.css";
 /* `source(none)` is load-bearing: without it Tailwind scans node_modules and every
    dependency's class strings land in the bundle. The two @source lines are the whole scan
    surface, and the `not` line keeps test-only classes out of the build. */

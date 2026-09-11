@@ -1,4 +1,4 @@
-import { ApprovalCard as ApprovalElement } from "./assistant-ui/elements/approval-card";
+import { ApprovalRequest, type ApprovalRequestKind } from "./thread/ApprovalRequest";
 import { Checkbox } from "./controls/checkbox";
 import { Input } from "./controls/input";
 import { Button } from "@/components/ui/button";
@@ -173,36 +173,64 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
     onFocus(row.projectId, row.conversationId ?? approval.sessionId);
   };
 
+  // Plan §3 row 12. The chrome is the vendored `ApprovalRequest`; the state machine above is
+  // untouched and stays **non-optimistic**: `decision` is `"pending"` until the store drops the
+  // row on `request-resolved`, `loading` means "sent, awaiting that", and there is no local
+  // `submitted` flag anywhere. Do not adopt assistant-ui's `disabled={submitted}` tool-fallback
+  // pattern here or anywhere else.
+  //
+  // `approval.expired` is the kit's brigadier-added fourth decision value: *open but no longer
+  // answerable*, a Dismiss-only card. It is a different thing from a resolved history row whose
+  // `decision` is null, which is `ApprovalResolution` below and is not an `ApprovalRequest` at
+  // all (§1.4, landmine 5).
+  //
+  // `autoFocus={false}`: the kit focuses Approve on mount, which would pull focus out of the
+  // composer the instant a request opens mid-typing. Enter/Escape still answer the card — the
+  // kit's own handler ignores the keystroke when focus is inside `input, textarea,
+  // [contenteditable]:not([contenteditable="false"]), [role="textbox"], …`
+  // (`src/components/thread/ApprovalRequest.tsx`), and the Lexical composer is both
+  // `contenteditable` and `role="textbox"` (`src/components/composer/RichPromptEditor.tsx`).
   return (
-    <ApprovalElement
+    <ApprovalRequest
       id={`approval-${approval.requestId}`}
       data-request-id={approval.requestId}
-      aria-busy={responding}
       style={{ scrollMarginBlock: "24px" }}
       className={`approval${readOnly ? " expired" : ""}${row.elsewhere ? " elsewhere" : ""}`}
       onClick={focus}
-      heading={
-        <div className="approval-head flex flex-wrap gap-2">
-          <strong>
-            {kind === null
-              ? "unreadable request"
-              : kind.type === "tool-permission"
-                ? kind.tool_name
-                : "question"}
-          </strong>
-          <span className="dim text-text-tertiary">
-            {row.projectName ?? "project unknown"} ·{" "}
-            {shortSessionId(approval.sessionId)} ·{" "}
-            {new Date(approval.openedAtMs).toLocaleTimeString()}
-          </span>
+      kind={requestIcon(kind)}
+      decision={readOnly ? "expired" : "pending"}
+      loading={responding}
+      autoFocus={false}
+      showShortcutHints
+      approveShortcutLabel="⏎"
+      rejectShortcutLabel="esc"
+      title={
+        kind === null
+          ? "unreadable request"
+          : kind.type === "tool-permission"
+            ? kind.tool_name
+            : "question"
+      }
+      description={
+        <span className="approval-head">
+          {row.projectName ?? "project unknown"} ·{" "}
+          {shortSessionId(approval.sessionId)} ·{" "}
+          {new Date(approval.openedAtMs).toLocaleTimeString()}
           {row.elsewhere ? <span className="chip">other project</span> : null}
           {readOnly ? (
             <span className="chip plain">
               expired: no longer answerable (app restarted or session ended)
             </span>
           ) : null}
-        </div>
+        </span>
       }
+      approveLabel="Allow"
+      rejectLabel={denying ? "Cancel" : "Deny"}
+      approveDisabled={denying}
+      onApprove={kind === null ? undefined : allow}
+      onReject={() => setDenying(!denying)}
+      onDismiss={readOnly ? () => onDismiss(approval.requestId) : undefined}
+      dismissLabel="Dismiss"
     >
       {/*
         R2, 2026-09-05. **The detail scrolls; the decision does not.**
@@ -210,9 +238,8 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
         not confirm it against a mock with no open approval; the owner confirmed it in a real
         window on 2026-09-04 — `Waiting on you · 1 open` with both buttons needing a scroll inside
         the dock to reach, which he said he mostly did not notice.
-        This wrapper is the fix: the head and the action row are fixed children of the card, and
-        the excerpt and the suggestions are the only thing that yields. A card squeezed to the
-        window's 800x500 minimum therefore loses excerpt, never the decision.
+        The kit's card keeps its header and its action row as fixed children; only this body
+        yields. A card squeezed to the window's 800x500 minimum loses excerpt, never the decision.
       */}
       {row.subagentTitle && <p className="px-3 text-text-secondary">Subagent request · {row.subagentTitle}</p>}
       <div className="approval-body max-h-64 overflow-auto">
@@ -256,20 +283,8 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
 
       {responseError && <p role="alert" className="text-error text-xs">{responseError} Your decision has not been confirmed; you can retry.</p>}
       {responding && <p role="status" className="text-xs text-text-secondary">Sending decision…</p>}
-      {readOnly ? (
-        <div className="approval-actions mt-3 flex flex-wrap items-center justify-end gap-2">
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="act"
-            onClick={() => onDismiss(approval.requestId)}
-          >
-            Dismiss
-          </Button>
-        </div>
-      ) : denying ? (
-        <div className="approval-actions mt-3 flex flex-wrap items-center justify-end gap-2">
+      {denying && (
+        <div className="approval-deny mt-3 flex flex-wrap items-center justify-end gap-2">
           <Input
             className="reason"
             disabled={responding}
@@ -284,38 +299,21 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
           <Button type="button" variant="ghost" size="sm" disabled={responding} className="act danger text-warn" onClick={deny}>
             Confirm deny
           </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="act"
-            disabled={responding}
-            onClick={() => setDenying(false)}
-          >
-            Cancel
-          </Button>
-        </div>
-      ) : (
-        <div className="approval-actions mt-3 flex flex-wrap items-center justify-end gap-2">
-          {kind === null ? null : (
-            <Button type="button" variant="ghost" size="sm" disabled={responding} className="send wide" onClick={allow}>
-              Allow
-            </Button>
-          )}
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="act danger text-warn"
-            disabled={responding}
-            onClick={() => setDenying(true)}
-          >
-            Deny
-          </Button>
         </div>
       )}
-    </ApprovalElement>
+    </ApprovalRequest>
   );
+}
+
+/** Which identity glyph the card wears. Presentation only; it never widens a permission. */
+function requestIcon(kind: ApprovalItem["kind"]): ApprovalRequestKind {
+  if (kind === null || kind.type !== "tool-permission") return "generic";
+  const name = kind.tool_name.toLowerCase();
+  if (name.startsWith("mcp · ") || name.startsWith("mcp__")) return "mcp";
+  if (["bash", "shell", "exec_command", "write_stdin"].includes(name)) return "command";
+  if (["edit", "write", "multiedit", "apply_patch", "notebookedit"].includes(name)) return "file";
+  if (["webfetch", "websearch"].includes(name)) return "network";
+  return "permission";
 }
 
 /** A confirmed decision is separate from the requested action's eventual execution result. */

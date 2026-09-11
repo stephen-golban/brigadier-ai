@@ -356,8 +356,12 @@ it("folds a full turn while preserving commentary boundaries and independent too
     />,
   );
 
+  // Phase 4 / plan §3 row 5 (D6): the turn header now always carries the completion time
+  // (`· done 3:04 PM`) alongside the elapsed figure, so the accessible name is no longer the
+  // duration on its own. The duration itself is still pinned — this turn ran 15m 53s, above
+  // the 60 s floor below which the elapsed figure is not printed at all.
   const parent = await screen.findByRole("button", {
-    name: "Worked for 15m 53s",
+    name: /^Worked for 15m 53s · done /,
   });
   expect(parent).toHaveAttribute("aria-expanded", "false");
   expect(screen.getByText("Implemented compact work blocks.")).toBeVisible();
@@ -467,11 +471,21 @@ it("expands a collapsed ancestor so a nested pending approval is reachable", asy
   await waitFor(() => expect(document.querySelector('[data-trace-id="agent-call"] #approval-nested-approval')).toBeVisible());
 });
 
+// Phase 4 work item 8. `TranscriptRuntime` used to build the read-only message array with
+// `m.content.filter(p => p.type === 'text')`, so every non-text part — which since phase 4 is
+// every work row, every notice and every changed-files card — drew nothing in the nested
+// `ThreadView` that `SubagentsPanel` mounts for a selected worker, and in every archived
+// session. The turn header and the command row below are that dropped content.
 it('renders the full worker transcript with read-only assistant-ui scope',async()=>{
+ const user = userEvent.setup();
  vi.spyOn(workspaceApi,'chat').mockResolvedValue(transcript);
  const peers={origins:{idle:'root'},subagents:{idle:'root'},titles:{},closed:[],messages:[],requests:[]};
- render(<ThreadView sessionId="idle" projectId="p" projectName="Example" peers={peers} onFile={()=>{}}/>);
+ const view=render(<ThreadView sessionId="idle" projectId="p" projectName="Example" peers={peers} onFile={()=>{}}/>);
  expect(await screen.findByText(/The command failed\. Open/)).toBeVisible();
+ const turn = screen.getByRole('button',{name:/Worked/});
+ await user.click(turn);
+ expect(view.container.querySelector('[data-trace-id="call"]')).not.toBeNull();
+ expect(screen.getByRole('button',{name:/Ran git diff/})).toBeVisible();
  expect(screen.queryByRole('button',{name:'Edit message'})).toBeNull();
 });
 

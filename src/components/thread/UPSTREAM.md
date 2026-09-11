@@ -160,3 +160,21 @@ D11 calls for stripping the CSS property some Codex UI surfaces use for a supere
 (squircle) corner treatment: the source `styles.css` contains zero occurrences of it at
 this pinned commit — confirmed by grepping the clone before extraction. Nothing to
 strip.
+
+## Phase 4 modifications (2026-09-11)
+
+Wiring the kit up (plan §5 phase 4) needed five further brigadier deviations. All of them are
+in the vendored files themselves rather than in a wrapper, because each is a prop the kit does
+not expose or a render decision the kit makes for a component tree brigadier does not have.
+
+| File | Deviation | Why |
+| --- | --- | --- |
+| `AgentActivity.tsx` | A **closed disclosure renders no body** (`{resolvedOpen ? children : null}`, all three disclosure modes). Upstream keeps the subtree mounted behind `hidden`. | A brigadier transcript is up to 600 rows and every activity row's body is a tool result, a nested trace and possibly an approval card. Upstream's behaviour mounts all of it at all times — the cost the Radix `CollapsibleContent` this replaced did not pay, on a thread that already misses its frame gate (plan §6 landmine 7). `hasBody` still decides whether a toggle exists, so the control and its `aria-expanded` are unchanged. |
+| `CommandExecution.tsx` | `disclosureMode` / `disclosureIndicator` forwarded to `AgentActivity`. | The kit hard-codes the `details` disclosure. brigadier needs a real `<button aria-expanded>`: focus indicators are off app-wide (landmine 15), so a `<summary>` with no announced role is an invisible control (landmine 17). |
+| `SearchActivity.tsx` | Same two props, plus a `children` prop rendered after the entries list. | Same reason for the disclosure; `children` because the kit's only body is its `entries` list and brigadier has no entries for a `Grep` — it has the tool result. |
+| `FileChangeGroup.tsx` | `FileChangeStats` exported and given a props spread. | Plan §3 row 8's per-edit `+A -D` on an activity row, drawn `data-variant="agent-activity"` so they stay colourless until the row is hovered. The kit keeps the component file-private. |
+| `thread.css` | User-bubble radius 22px (was `var(--radius-xl)`), max-width 70% (was 77%), padding 10x16 (was 8x12). Plus a brigadier-additions block at the end of the file for the `data-variant="agent-activity"` diff-stat hover. | `docs/research/codex-thread-tokens.md` §3.1 is the measured source and outranks the kit's own defaults, which are a second-hand replica. |
+
+`ApprovalRequest.tsx` needed no further change: phase 3R's `"expired"` decision value and
+`onDismiss`/`dismissLabel` pair are what `src/components/Approvals.tsx` now drives, and the
+kit's global Enter/Escape handler was audited rather than modified — see that file's comment.

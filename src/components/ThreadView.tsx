@@ -6,15 +6,23 @@ import { TaskPolicyStatus } from "./TaskPolicyStatus";
 import { TaskProgress } from "./TaskProgress";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useConversationHistory } from "../hooks/useConversationHistory";
-import { isValidElement, cloneElement, type ReactNode } from "react";
+import { isValidElement, cloneElement, createContext, useContext, type ComponentProps, type ReactNode } from "react";
 import { ApprovalResolution, type ApprovalsProps } from "./Approvals";
 import { useApprovalHistory } from "./approvalHistory";
 import { useTaskExecutionSettings } from "../taskSettings";
 import { ProviderChangeDivider } from "./composer/ProviderChangeDivider";
 import { providerChangePlacement } from "./composer/providerChangePlacement";
 import {
+  MessagePrimitive,
+  MessageProvider,
+  fromThreadMessageLike,
+  type DataMessagePartComponent,
+  type TextMessagePartComponent,
+  type ThreadMessage,
   type ThreadMessageLike,
 } from "@assistant-ui/react";
+import { AgentMessage } from "./thread/AgentMessage";
+import { InlineNotice, StatusBanner } from "./thread/Notices";
 import { Spinner } from "./controls/status";
 import { Disclosure } from "./controls/disclosure";
 import {
@@ -32,10 +40,6 @@ import { iconButton, labelledButtonIcons } from "@/lib/surfaces";
 import { cn } from "@/lib/utils";
 import { MessageAction } from "./assistant-ui/elements/tooltip-icon-button";
 import { Thread } from "./assistant-ui/elements/thread";
-import {
-  ChatPanelAssistantMessage,
-  ChatPanelUserMessage,
-} from "./assistant-ui/elements/chat-panel";
 import { ThinkingIndicator } from "./assistant-ui/elements/thinking-indicator";
 import "./assistant-ui/elements/elements.css";
 import { Markdown, CopyButton } from "./Markdown";
@@ -43,10 +47,12 @@ import { BrandMark } from "./BrandMark";
 import { WelcomeScreen } from "./WelcomeScreen";
 import { WorkTrace } from "./WorkTrace";
 import { ChangedFilesCard } from "./SessionReview";
+import type { FileChange } from "../desktopApi";
 import { useSessionChanges } from "../desktopApi";
 import {
   type ChatItem,
 } from "../workspaceApi";
+import type { ThreadRow } from "../threadProjection";
 import { workbenchApi } from "../workbenchApi";
 import * as store from "../feedStore";
 import { projectThread, flattenTrace } from "../threadProjection";
@@ -203,6 +209,133 @@ const SessionProgress = memo(TaskProgress);
 const SessionPolicyStatus = memo(TaskPolicyStatus);
 const noActions: ReadonlyMap<string, ReactNode> = new Map();
 
+
+/**
+ * Everything a part renderer needs that is not in the part itself: the projected row it came
+ * from, and the session-scoped callbacks. A part component is reached through the runtime, so
+ * it cannot be handed props — this is the seam that replaces the old prop drilling.
+ */
+type RowApprovals = { pending: boolean; actions: ReadonlyMap<string, ReactNode> };
+const noRowApprovals: RowApprovals = { pending: false, actions: noActions };
+const noFiles: FileChange[] = [];
+/** Saved bodies carry their own `at`; the runtime's clock must not enter the render. */
+const EPOCH = new Date(0);
+const COMPLETE = { type: "complete", reason: "stop" } as const;
+type RowScopeValue = {
+  row: ThreadRow;
+  index: number;
+  sessionId: string;
+  projectId: string | null;
+  readOnly: boolean;
+  busy: boolean;
+  editing: boolean;
+  peers?: PeerData;
+  onFile: (path: string) => void;
+  onEdit?: (item: ChatItem) => void;
+  onSelectSession?: (id: string) => void;
+  expanded: Set<string>;
+  toggle: (id: string) => void;
+  approvals: RowApprovals;
+  files: FileChange[];
+};
+const RowScope = createContext<RowScopeValue | null>(null);
+function useRowScope(): RowScopeValue {
+  const scope = useContext(RowScope);
+  if (!scope) throw new Error("A thread part rendered outside its row scope.");
+  return scope;
+}
+
+/** Row 1 / row 2: prose. Which bubble it is follows the row, not the part. */
+const ThreadText: TextMessagePartComponent = ({ text, status }) => {
+  const scope = useRowScope();
+  const { row } = scope;
+  if (row.type === "message" && row.item.kind.type === "user-text")
+    return <UserMessage text={text} item={row.item} scope={scope} />;
+  return (
+    <AgentMessage
+      role="assistant"
+      status={status.type === "running" ? "running" : "completed"}
+      actions={<CopyButton text={text} />}
+    >
+      <Markdown text={text} onFile={scope.onFile} />
+    </AgentMessage>
+  );
+};
+
+/** Row 5–11: the whole work row, header and trace. */
+const WorkPart: DataMessagePartComponent = () => {
+  const scope = useRowScope();
+  if (scope.row.type !== "work") return null;
+  return (
+    <WorkTrace
+      row={scope.row}
+      hasPendingApproval={scope.approvals.pending}
+      actionRequests={scope.approvals.actions}
+      sessionTitles={scope.peers?.titles}
+      onSelectSession={scope.onSelectSession}
+      expanded={scope.expanded}
+      toggle={scope.toggle}
+      onFile={scope.onFile}
+    />
+  );
+};
+
+/** Row 13 / row 14: a lifecycle notice in `seq` order. Never a banner unless it is fatal. */
+const NoticePart: DataMessagePartComponent<{
+  level: string;
+  code: string;
+  text: string;
+}> = ({ data, status }) => {
+  const tone =
+    data.level === "fatal" || data.level === "error"
+      ? "error"
+      : data.level === "warning"
+        ? "warning"
+        : "neutral";
+  if (tone === "error")
+    return (
+      <StatusBanner tone="error" heading={noticeHeading(data.code)}>
+        {data.text}
+      </StatusBanner>
+    );
+  return (
+    <InlineNotice tone={tone} shimmering={status.type === "running"}>
+      {data.text || noticeHeading(data.code)}
+    </InlineNotice>
+  );
+};
+
+function noticeHeading(code: string): string {
+  if (code === "compacted") return "Context compacted";
+  if (code === "exited") return "The provider exited";
+  if (code === "runtime") return "Runtime error";
+  return code;
+}
+
+/** Row 8: the per-turn changed-files card, attached under the final answer. */
+const ChangedFilesPart: DataMessagePartComponent<{ turn: string }> = ({ data }) => {
+  const scope = useRowScope();
+  return (
+    <ChangedFilesCard
+      sessionId={scope.sessionId}
+      turn={data.turn}
+      files={scope.files}
+    />
+  );
+};
+
+const threadParts: ComponentProps<typeof MessagePrimitive.Parts>["components"] = {
+  Text: ThreadText,
+  Empty: () => null,
+  data: {
+    by_name: {
+      work: WorkPart,
+      notice: NoticePart,
+      "changed-files": ChangedFilesPart,
+    },
+  },
+};
+
 function Transcript({
   startup,
   requests,
@@ -227,6 +360,7 @@ function Transcript({
   editing: boolean;
 }) {
   const changes = useSessionChanges(sessionId);
+  const readOnly = peers?.loaded === false || !!peers?.subagents?.[sessionId];
   const {items, turns: turnRecords, loaded, error, hasOlder, paging, historical, older, latest} = useConversationHistory(sessionId, revision);
   const hydrated = loaded;
   const { settings: executionSettings } = useTaskExecutionSettings(sessionId);
@@ -318,21 +452,6 @@ function Transcript({
     estimateSize: () => 140, overscan: 6, getItemKey: index => rows[index]!.id,
     enabled: virtualized, initialRect: {width: 800, height: 800} });
   const visibleRows = virtualized ? virtual.getVirtualItems().map(item => ({row: rows[item.index]!, index: item.index, virtual: item})) : rows.map((row,index)=>({row,index,virtual: null}));
-  // The runtime owns only viewport behavior. Render saved rows directly with the
-  // standalone Elements, so its synthetic startup message cannot enter our renderer.
-  const messages = useMemo<ThreadMessageLike[]>(
-    () =>
-      rows.map((row) => ({
-        id: row.id,
-        role:
-          row.type === "message" && row.item.kind.type === "user-text"
-            ? "user"
-            : "assistant",
-        content:
-          row.type === "message" ? [{ type: "text", text: row.item.body }] : [],
-      })),
-    [rows],
-  );
   const turns = useMemo(() => {
     let turn: string | null = null;
     return rows.map((row) => {
@@ -341,6 +460,64 @@ function Transcript({
       return turn;
     });
   }, [rows]);
+  // Every row is a real message with real parts (plan §5 phase 4 item 1). This used to be
+  // `content: []` for anything that was not prose, with the row drawn by hand-written JSX
+  // beside the runtime; the renderers below are reached through `MessagePrimitive.Parts`
+  // instead, which is also what makes the read-only thread in `SubagentsPanel` work.
+  const messages = useMemo<ThreadMessage[]>(
+    () =>
+      rows.map((row, index): ThreadMessage => {
+        const like = ((): ThreadMessageLike => {
+        if (row.type === "work")
+          return {
+            id: row.id,
+            role: "assistant",
+            content: [{ type: "data-work", data: { rowId: row.id } }],
+          };
+        if (row.type === "notice")
+          return {
+            id: row.id,
+            role: "assistant",
+            content: [
+              {
+                type: "data-notice",
+                data: { level: row.level, code: row.code, text: row.item.body },
+              },
+            ],
+          };
+        if (row.item.kind.type === "user-text") {
+          // The displayed body is the peer delivery's text when this turn was steered in by
+          // another session, and the item's own body otherwise — resolved here so the part
+          // carries what is drawn rather than a string the renderer has to re-derive.
+          const { text } = peerMessageContent(row.item, peers, index === 0);
+          return { id: row.id, role: "user", content: [{ type: "text", text }] };
+        }
+        const turn = turns[index];
+        return {
+          id: row.id,
+          role: "assistant",
+          status: row.streaming
+            ? ({ type: "running" } as const)
+            : ({ type: "complete", reason: "stop" } as const),
+          content: [
+            { type: "text" as const, text: row.item.body },
+            ...(row.final && turn
+              ? [{ type: "data-changed-files" as const, data: { turn } }]
+              : []),
+          ],
+        };
+        })();
+        // Normalised here, not by index off the runtime: the external store commits its
+        // message list one render behind `rows`, and a `MessageByIndexProvider` reading a
+        // freshly-appended row throws `index out of bounds` before that commit lands.
+        return fromThreadMessageLike(
+          { createdAt: EPOCH, ...like },
+          row.id,
+          COMPLETE,
+        );
+      }),
+    [rows, turns, peers],
+  );
   useLayoutEffect(() => {
     if (hydrated && !restored.current && scroll.current) {
       restored.current = true;
@@ -356,10 +533,10 @@ function Transcript({
       return next;
     });
   return (
-    <TranscriptRuntime sessionId={sessionId} messages={messages} busy={busy} loaded={loaded} readOnly={peers?.loaded === false || !!peers?.subagents?.[sessionId]}>
+    <TranscriptRuntime sessionId={sessionId} messages={messages} busy={busy} loaded={loaded} readOnly={readOnly}>
       <PeerTaskCardScope rows={rows} sessionTitles={peers?.titles} sessionId={sessionId} peers={peers}>
       <Thread
-        readOnly={peers?.loaded === false || !!peers?.subagents?.[sessionId]}
+        readOnly={readOnly}
         viewportRef={scroll}
         scrollToBottomOnInitialize={saved.current.following}
         onScroll={() => {
@@ -401,68 +578,56 @@ function Transcript({
         {historical && <Button variant="ghost" size="sm" className="mx-auto mb-4" onClick={() => void latest()}>Return to latest messages</Button>}
         <div style={virtualized ? {height: virtual.getTotalSize(), position: 'relative'} : undefined}>
         {visibleRows.map(({row, index, virtual: position}) => {
-          const turn = turns[index];
+          const user = row.type === "message" && row.item.kind.type === "user-text";
           return (
-            <div
+            <RowScope.Provider
               key={row.id}
+              value={{
+                row,
+                index,
+                sessionId,
+                projectId: projectId ?? session?.projectId ?? null,
+                readOnly,
+                busy,
+                editing,
+                peers,
+                onFile,
+                onEdit,
+                onSelectSession,
+                expanded,
+                toggle,
+                approvals: rowApprovals.get(row.id) ?? noRowApprovals,
+                files:
+                  changes.turns.find((t) => t.turnId === turns[index])?.files ?? noFiles,
+              }}
+            >
+            <div
               data-message-id={row.id}
               data-index={index}
               ref={position ? virtual.measureElement : undefined}
               style={position ? {position: 'absolute', width: '100%', top: 0, left: 0, transform: `translateY(${position.start}px)`} : undefined}
-              className={`aui-message group/message ${row.type === "work" ? "aui-activity" : row.item.kind.type}`}
+              className={`aui-message group/message ${row.type === "work" ? "aui-activity" : row.type === "notice" ? "notice" : row.item.kind.type}`}
             >
-              {row.type === "work" ? (
-                <WorkTrace
-                  row={row}
-                  hasPendingApproval={rowApprovals.get(row.id)?.pending ?? false}
-                  actionRequests={rowApprovals.get(row.id)?.actions ?? noActions}
-                  sessionTitles={peers?.titles}
-                  onSelectSession={onSelectSession}
-                  expanded={expanded}
-                  toggle={toggle}
-                  onFile={onFile}
-                />
-              ) : row.item.kind.type === "user-text" ? (
-                <>
-                  {providerChanges.before.get(row.item.id)?.map(change => <ProviderChangeDivider key={change.id} change={change} />)}
-                  {row.item.at > 0 && (
-                    <div className="message-separator mb-2 text-xs text-text-tertiary">
-                      {dateLabel(row.item.at)}
-                    </div>
-                  )}
-                  <UserMessage
-                    readOnly={peers?.loaded === false || !!peers?.subagents?.[sessionId]}
-                    item={row.item}
-                    projectId={projectId ?? session?.projectId ?? null}
-                    onFile={onFile}
-                    peers={peers}
-                    initial={index === 0}
-                    busy={busy}
-                    editing={editing}
-                    onEdit={onEdit}
-                    onSelectSession={onSelectSession}
-                  />
-                  {index === 0 && startup && row.item.body === startup.args.prompt && <SessionProvisioning startup={startup}/>}
-                </>
-              ) : (
-                <ChatPanelAssistantMessage className="w-full max-w-none text-sm text-text leading-relaxed">
-                  <Markdown text={row.item.body} onFile={onFile} />
-                  <div className="aui-message-actions flex items-center gap-1">
-                    <CopyButton text={row.item.body} />
-                  </div>
-                  {row.final && turn && (
-                    <ChangedFilesCard
-                      sessionId={sessionId}
-                      turn={turn}
-                      files={
-                        changes.turns.find((t) => t.turnId === turn)?.files ??
-                        []
-                      }
-                    />
-                  )}
-                </ChatPanelAssistantMessage>
+              {user && providerChanges.before.get(row.item.id)?.map(change => <ProviderChangeDivider key={change.id} change={change} />)}
+              {user && row.item.at > 0 && (
+                <div className="message-separator mb-2 text-xs text-text-tertiary">
+                  {dateLabel(row.item.at)}
+                </div>
               )}
+              {/* One dispatch, in the runtime: the row's parts choose their own renderer. */}
+              <MessageProvider
+                message={messages[index]!}
+                index={index}
+                isLast={index === rows.length - 1}
+              >
+                <MessagePrimitive.Parts
+                  components={threadParts}
+                  unstable_showEmptyOnNonTextEnd={false}
+                />
+              </MessageProvider>
+              {user && index === 0 && startup && row.item.body === startup.args.prompt && <SessionProvisioning startup={startup}/>}
             </div>
+            </RowScope.Provider>
           );
         })}
         </div>
@@ -516,29 +681,21 @@ function dateLabel(at: number) {
   const date = new Date(at);
   return `${date.toDateString() === new Date().toDateString() ? "Today" : date.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`;
 }
+/**
+ * Row 1. The bubble is the kit's `AgentMessage` at the measured tokens (70% of the column,
+ * 22px radius, 10x16 padding — `docs/research/codex-thread-tokens.md` §3.1); the clamp, the
+ * attachment preview and the edit affordance are brigadier's and are unchanged.
+ */
 function UserMessage({
-  readOnly = false,
+  text,
   item,
-  projectId,
-  onFile,
-  peers,
-  initial,
-  busy,
-  editing,
-  onEdit,
-  onSelectSession,
+  scope,
 }: {
-  readOnly?: boolean;
+  text: string;
   item: ChatItem;
-  projectId: string | null;
-  onFile: (path: string) => void;
-  peers?: PeerData;
-  initial: boolean;
-  busy: boolean;
-  editing: boolean;
-  onEdit?: (item: ChatItem) => void;
-  onSelectSession?: (id: string) => void;
+  scope: RowScopeValue;
 }) {
+  const { readOnly, projectId, onFile, peers, busy, editing, onEdit, onSelectSession, index } = scope;
   const [expanded, setExpanded] = useState(false);
   const [attachment, setAttachment] = useState<PeerAttachment | null>(null);
   const [sourceError, setSourceError] = useState('');
@@ -548,68 +705,61 @@ function UserMessage({
     if (!projectId) {setSourceError('Attachment project is unavailable.');return;}
     void peerApi.attachment(projectId, path.slice('brigadier-attachment:'.length)).then(file=>setAttachment(file.metadata), error=>setSourceError(String(error)));
   };
-  const { source, text } = peerMessageContent(item, peers, initial);
+  const { source } = peerMessageContent(item, peers, index === 0);
   if (source) return <PeerIncomingMessage item={item} peers={peers} onSelectSession={onSelectSession} />;
-  const long =
-    text.length > 480 || text.split("\n").length > 8;
+  const long = text.length > 480 || text.split("\n").length > 8;
   return (
-    <div className="flex min-w-0 flex-col items-end gap-1">
-      <ChatPanelUserMessage className="max-w-[85%] bg-elevated px-4 py-3 text-sm whitespace-pre-wrap sm:max-w-[75%]">
-        <div
-          className={
-            long && !expanded ? "line-clamp-5" : ""
-          }
-        >
-          <Markdown text={text} onFile={openReference} />
-        </div>
-        {attachment && <AttachmentPreview attachment={attachment}/>}
-        {sourceError && <p role="alert">{sourceError}</p>}
-        {long && (
-          <Button
-            variant="link"
-            size="sm"
-            className="h-auto px-0 pt-2 text-text-secondary"
-            aria-expanded={expanded}
-            onClick={() => setExpanded(!expanded)}
-          >
-            {expanded ? "Show less" : "Show more"}
-            <span aria-hidden="true">⌄</span>
-          </Button>
-        )}
-      </ChatPanelUserMessage>
-      <div className="aui-message-actions flex items-center gap-1 text-xs text-text-tertiary">
-        {item.at > 0 && (
-          <time dateTime={new Date(item.at).toISOString()}>
-            {new Date(item.at).toLocaleTimeString(undefined, {
-              hour: "numeric",
-              minute: "2-digit",
-            })}
-          </time>
-        )}
-        <CopyButton text={text} />
-        {!source && !readOnly && (
-          <MessageAction
-            tooltip={
-              busy ? "Wait for the current turn to finish" : "Edit message"
-            }
-          >
-            <Button
-              variant="ghost"
-              size="icon"
-              className={cn(iconButton, "size-7")}
-              aria-label="Edit message"
-              title={
-                busy ? "Wait for the current turn to finish" : "Edit message"
-              }
-              disabled={busy || editing || !onEdit}
-              onClick={() => onEdit?.(item)}
+    <AgentMessage
+      role="user"
+      attachments={attachment ? <AttachmentPreview attachment={attachment}/> : undefined}
+      actions={
+        <>
+          {item.at > 0 && (
+            <time dateTime={new Date(item.at).toISOString()}>
+              {new Date(item.at).toLocaleTimeString(undefined, {
+                hour: "numeric",
+                minute: "2-digit",
+              })}
+            </time>
+          )}
+          <CopyButton text={text} />
+          {!readOnly && (
+            <MessageAction
+              tooltip={busy ? "Wait for the current turn to finish" : "Edit message"}
             >
-              <Pencil width={15} height={15} />
-            </Button>
-          </MessageAction>
-        )}
+              <Button
+                variant="ghost"
+                size="icon"
+                className={cn(iconButton, "size-7")}
+                aria-label="Edit message"
+                title={busy ? "Wait for the current turn to finish" : "Edit message"}
+                disabled={busy || editing || !onEdit}
+                onClick={() => onEdit?.(item)}
+              >
+                <Pencil width={15} height={15} />
+              </Button>
+            </MessageAction>
+          )}
+        </>
+      }
+    >
+      <div className={long && !expanded ? "line-clamp-5" : ""}>
+        <Markdown text={text} onFile={openReference} />
       </div>
-    </div>
+      {sourceError && <p role="alert">{sourceError}</p>}
+      {long && (
+        <Button
+          variant="link"
+          size="sm"
+          className="h-auto px-0 pt-2 text-text-secondary"
+          aria-expanded={expanded}
+          onClick={() => setExpanded(!expanded)}
+        >
+          {expanded ? "Show less" : "Show more"}
+          <span aria-hidden="true">⌄</span>
+        </Button>
+      )}
+    </AgentMessage>
   );
 }
 

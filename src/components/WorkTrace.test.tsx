@@ -210,7 +210,11 @@ it("automatically folds an open live parent on completion and restores nested de
   await user.click(
     screen.getByRole("button", { name: "Running npm run build" }),
   );
-  expect(screen.getByText("Request")).toBeVisible();
+  // Phase 4: the command row is the kit's `CommandExecution` (plan §3 row 7), whose expanded
+  // body is a shell card — a `$ <command>` line and a `CommandOutput` pane — not the old
+  // `Request`/`Result` label pair. The behaviour under test is unchanged: expanding the live
+  // row reveals the command it is running.
+  expect(screen.getByText("npm run build", { selector: "code" })).toBeVisible();
   view.rerender(
     <Harness
       items={[
