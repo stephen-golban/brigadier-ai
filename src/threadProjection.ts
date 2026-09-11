@@ -132,6 +132,25 @@ export function traceFailed(node: TraceNode): boolean {
   );
 }
 
+/**
+ * True when a `lastStop` string is the `{ error }` shape shared by `StopReason::Error` and
+ * `AbortReason::Error` (`src/wire.ts`). Both terminal reasons persist as `status: "failed"`
+ * (`crates/store/src/chat.rs::write_turn`), so recognizing the shape — not which enum produced
+ * it — is what keeps this live guess and the later persisted record from disagreeing.
+ */
+function isErrorStop(value: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      typeof (parsed as { error?: unknown }).error === "string"
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** Display projection only. Original bodies, including lifecycle updates, are preserved. */
 export function projectThread(
   items: ChatItem[],
@@ -253,12 +272,23 @@ export function projectThread(
     while (answerStart > 0 && prose(meaningful[answerStart - 1]!)) answerStart--;
     const activity = meaningful.slice(0, answerStart);
     const answer = meaningful.slice(answerStart);
-    const fallback =
-      latest && lastStop && lastStop !== "end-turn"
-        ? lastStop === "interrupted"
-          ? "interrupted"
-          : "stopped"
-        : "unknown";
+    // `lastStop` mirrors `StopReason` for a completed turn, but `feedStore.ts` now also writes
+    // it from `AbortReason` on `turn-aborted`, using the same bare-string/`{error}` encoding
+    // (`src/wire.ts`). Its two abort-only bare values, "interrupted" and "killed", cannot
+    // collide with any `StopReason` variant, so they are read here unambiguously — this is the
+    // live signal that stands in for `evidence.status` until the persisted turn record lands.
+    // Both fold to "interrupted", matching `chat.rs::write_turn`'s own `AbortReason::Error =>
+    // "failed", _ => "interrupted"`: a killed turn was stopped on the harness's own say-so, not
+    // a failure of the agent, and the live guess must agree with what SQLite will say next.
+    const fallback = !latest || !lastStop
+      ? "unknown"
+      : lastStop === "interrupted" || lastStop === "killed"
+        ? "interrupted"
+        : isErrorStop(lastStop)
+          ? "failed"
+          : lastStop !== "end-turn"
+            ? "stopped"
+            : "unknown";
     const status = running
       ? "running"
       : evidence?.status === "running"

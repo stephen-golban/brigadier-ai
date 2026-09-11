@@ -363,6 +363,51 @@ it("does not make interrupted work collapsible, and still gives prose-only recor
   });
   expect(rows[2]).toMatchObject({ final: true });
 });
+describe("AbortReason carried live through lastStop (turn-aborted)", () => {
+  it("shows an aborted turn as interrupted from lastStop alone, before any persisted turn record arrives", () => {
+    const rows = projectThread([user, call("cmd")], false, [], "interrupted");
+    expect(work(rows[1])).toMatchObject({ status: "interrupted" });
+  });
+  it("agrees with the persisted status once chat_turns lands, so the row's status does not flip", () => {
+    const live = work(
+      projectThread([user, call("cmd")], false, [], "interrupted")[1],
+    );
+    expect(live.status).toBe("interrupted");
+    const settled = work(
+      projectThread(
+        [user, call("cmd")],
+        false,
+        [
+          {
+            id: "t",
+            start_seq: 0,
+            end_seq: 0,
+            started_at: 1000,
+            ended_at: 2000,
+            status: "interrupted",
+          },
+        ],
+        "interrupted",
+      )[1],
+    );
+    // Same classification before and after the persisted record supplies real timing — the
+    // extra fields it adds (`startedAt`, `durationMs`, `completedAtMs`) are not a status flip.
+    expect(settled.status).toBe(live.status);
+  });
+  it("does not fold a killed turn's live signal into failed — chat.rs treats it as interrupted too", () => {
+    const rows = projectThread([user, call("cmd")], false, [], "killed");
+    expect(work(rows[1])).toMatchObject({ status: "interrupted" });
+  });
+  it("keeps a live AbortReason::Error out of the interrupted bucket", () => {
+    const rows = projectThread(
+      [user, call("cmd")],
+      false,
+      [],
+      JSON.stringify({ error: "disconnected" }),
+    );
+    expect(work(rows[1])).toMatchObject({ status: "failed" });
+  });
+});
 it("formats long elapsed times without dropping seconds or adding zero units", () => {
   expect(workDuration(60000)).toBe("1m");
   expect(workDuration(3661000)).toBe("1h 1m 1s");
