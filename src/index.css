@@ -1320,3 +1320,200 @@
 .app-shell[data-sidebar-peek="true"] .sidebar-resizer {
   display: none;
 }
+
+/* ---------------------------------------------------------------------------------------
+   Row 2 — the assistant answer's markdown, conformed to the measured tokens.
+   2026-09-11. docs/research/codex-thread-tokens.md §4 is authoritative for every number
+   below; docs/plans/codex-thread-rebuild-2026-09-11.md §3 row 2 maps them.
+
+   The element these rules land on is `src/components/assistant-ui/elements/markdown-text.tsx`,
+   whose Tailwind classes ship a 15px body on a 1.625 line (24.375px) and a 12px block rhythm.
+   The measurement is 14px on 22.75px with a 3.5px rhythm unit. That file belongs to another
+   worker this session, so the values are corrected here, in the cascade, rather than in its
+   class strings: Tailwind's utilities sit in `@layer utilities` and these unlayered rules
+   outrank them regardless of specificity. Scoped to `.aui-thread-content` on purpose — the
+   same component draws notes and documents in the workbench, which are not the thread.
+   --------------------------------------------------------------------------------------- */
+.aui-thread-content .aui-md {
+  --thread-md-space: 3.5px;
+  font-size: var(--thread-font-size);
+  line-height: var(--thread-md-line);
+}
+/* §4.1. `p` carries the 3.5px tail; the gap between two paragraphs is 4 units. */
+.aui-thread-content .aui-md-p {
+  margin: 0 0 var(--thread-md-space);
+}
+.aui-thread-content .aui-md > .aui-md-p:not(:first-child) {
+  margin-top: calc(var(--thread-md-space) * 2);
+}
+.aui-thread-content .aui-md .aui-md-p + .aui-md-p,
+.aui-thread-content .aui-md-li > .aui-md-p + .aui-md-p {
+  margin-block: calc(var(--thread-md-space) * 4);
+}
+.aui-thread-content .aui-md > :first-child {
+  margin-top: 0;
+}
+.aui-thread-content .aui-md > :last-child {
+  margin-bottom: 0;
+}
+/* §4.1: the list indents by one line box, the item by 1.5 units. */
+.aui-thread-content .aui-md-ul,
+.aui-thread-content .aui-md-ol {
+  margin: 0;
+  margin-inline-start: 0;
+  padding-inline-start: var(--thread-md-line);
+}
+.aui-thread-content .aui-md-p + .aui-md-ul,
+.aui-thread-content .aui-md-p + .aui-md-ol {
+  margin-top: 0;
+}
+.aui-thread-content .aui-md-li {
+  line-height: var(--thread-md-line);
+  padding-inline-start: calc(var(--thread-md-space) * 1.5);
+}
+.aui-thread-content .aui-md-li::marker {
+  color: currentColor;
+  font-weight: 600;
+}
+/* §4.1: 6 units of inset, 2 of block padding, a 3.5px rail, no fill. */
+.aui-thread-content .aui-md-blockquote {
+  border: 0;
+  line-height: calc(var(--thread-md-space) * 6);
+  margin-block: calc(var(--thread-md-space) * 4);
+  padding-block: calc(var(--thread-md-space) * 2);
+  padding-inline-start: calc(var(--thread-md-space) * 6);
+  position: relative;
+}
+.aui-thread-content .aui-md-blockquote::after {
+  background: var(--thread-border-strong);
+  border-radius: calc(var(--thread-md-space) / 2);
+  bottom: 0;
+  content: "";
+  inset-inline-start: 0;
+  position: absolute;
+  top: 0;
+  width: var(--thread-md-space);
+}
+.aui-thread-content .aui-md-hr {
+  border-top: 1px solid var(--thread-border-strong);
+  margin: calc(var(--thread-md-space) * 7) 0;
+}
+/* §4.2. `._Heading_` is semibold throughout; h5/h6 stay at body size. */
+.aui-thread-content .aui-md-h1,
+.aui-thread-content .aui-md-h2,
+.aui-thread-content .aui-md-h3,
+.aui-thread-content .aui-md-h4,
+.aui-thread-content .aui-md-h5,
+.aui-thread-content .aui-md-h6 {
+  font-weight: 600;
+}
+.aui-thread-content .aui-md-h1 {
+  font-size: calc(var(--thread-font-size) * 1.5);
+  line-height: calc(var(--thread-md-space) * 8);
+  margin: 0 0 calc(var(--thread-md-space) * 2);
+}
+.aui-thread-content .aui-md-h2 {
+  font-size: calc(var(--thread-font-size) * 1.25);
+  line-height: calc(var(--thread-md-space) * 7);
+  margin: calc(var(--thread-md-space) * 4) 0 var(--thread-md-space);
+}
+.aui-thread-content .aui-md-h3 {
+  font-size: calc(var(--thread-font-size) * 1.125);
+  line-height: calc(var(--thread-md-space) * 7);
+  margin: calc(var(--thread-md-space) * 4) 0 var(--thread-md-space);
+}
+.aui-thread-content .aui-md-h4 {
+  font-size: var(--thread-font-size);
+  line-height: calc(var(--thread-md-space) * 6);
+  margin: calc(var(--thread-md-space) * 4) 0 0;
+}
+.aui-thread-content .aui-md-h4 + .aui-md-p {
+  margin-top: 0;
+}
+.aui-thread-content .aui-md-h5,
+.aui-thread-content .aui-md-h6 {
+  font-size: var(--thread-font-size);
+  line-height: var(--thread-md-line);
+  margin: 0;
+}
+/* §4.4: the fenced block is a 20px `--radius-3xl-base` corner over a 5.2% wash inside a 4.2%
+   hairline, 16px of padding, its code 13px on a 20px line. brigadier splits the surface into a
+   language/copy header and the pane below it, so the corner is shared between the two rather
+   than set on one box; the four inner numbers are the measured ones. The header's own bar
+   geometry (Codex's `min-h-12 ps-4 pe-1.5`) is not in the plan's row-2 token list and is left
+   as it is. */
+.aui-thread-content .aui-code-header-root {
+  background: rgba(255, 255, 255, 0.052);
+  border: 1px solid var(--thread-border-light);
+  border-bottom: 0;
+  border-end-end-radius: 0;
+  border-end-start-radius: 0;
+  border-start-end-radius: var(--radius-xl);
+  border-start-start-radius: var(--radius-xl);
+  margin-top: calc(var(--thread-md-space) * 5);
+  padding-inline: 16px;
+}
+.aui-thread-content .aui-md-pre {
+  background: rgba(255, 255, 255, 0.052);
+  border: 1px solid var(--thread-border-light);
+  border-end-end-radius: var(--radius-xl);
+  border-end-start-radius: var(--radius-xl);
+  font-size: var(--thread-code-size);
+  line-height: var(--thread-code-line);
+  margin-block: calc(var(--thread-md-space) * 5);
+  padding: 16px;
+}
+/* A fence that carries a header joins it: no second corner, no second top border, no gap. */
+.aui-thread-content .aui-code-header-root + .aui-md-pre {
+  border-start-end-radius: 0;
+  border-start-start-radius: 0;
+  border-top-width: 0;
+  margin-top: 0;
+}
+.aui-thread-content .aui-md-pre code {
+  font-size: inherit;
+  line-height: inherit;
+}
+/* §4.3: `.inline-markdown` is a 6px chip, 1px/6px of padding, at 0.92em. */
+.aui-thread-content .aui-md-inline-code {
+  /* The shipped rule is a two-colour mix, not a 60% fade: 60% of the ghost-hover wash plus 6%
+     of the text colour, which normalises to roughly rgba(237,237,237,.162). */
+  background: color-mix(in srgb, rgba(255, 255, 255, 0.078) 60%, var(--color-text) 6%);
+  border-radius: var(--thread-radius-sm);
+  font-size: 0.92em;
+  padding: 1px 6px;
+}
+/* §4.5: tables run one step down, at `--markdown-small-font-size`. */
+.aui-thread-content .aui-md-table {
+  font-size: var(--thread-font-size-sm);
+}
+.aui-thread-content .aui-md-th {
+  font-weight: 600;
+  line-height: calc(var(--thread-md-space) * 4);
+  padding-block: calc(var(--thread-md-space) * 2);
+}
+.aui-thread-content .aui-md-td {
+  padding-block: calc(var(--thread-md-space) * 2.5);
+}
+
+/* Row 4 — reasoning. docs/research/codex-thread-tokens.md §13 and plan §3 row 4 put the
+   collapsed label at `text-size-chat` (14px) in `text-text/60`, its chevron at `icon-2xs`
+   (14px) on `duration-relaxed` (0.3s). `reasoning-panel.tsx` ships 13.5px, `text-text/55` and
+   a 12.25px chevron at 200ms; that file belongs to another worker this session, so the four
+   numbers are corrected in the cascade. Two further §13 properties are NOT applied here
+   because they are the component's behaviour rather than its tokens, and are recorded in
+   docs/performance/2026-09-11-thread-shots/tokens/README.md: the chevron is `opacity-60`
+   always rather than hidden until hover, and it opens by `rotate-180` rather than `rotate-90`. */
+.aui-thread-content [data-slot="reasoning-panel"] > button {
+  color: var(--thread-text-dim);
+  font-size: var(--thread-font-size);
+  line-height: var(--thread-line-height);
+}
+.aui-thread-content [data-slot="reasoning-panel"] > button:hover {
+  color: var(--color-text);
+}
+.aui-thread-content [data-slot="reasoning-panel"] > button > svg {
+  height: 14px;
+  transition-duration: var(--thread-duration-relaxed);
+  width: 14px;
+}

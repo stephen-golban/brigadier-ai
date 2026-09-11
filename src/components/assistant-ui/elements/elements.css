@@ -44,14 +44,6 @@
   position: relative;
   min-width: 0;
 }
-.aui-message.assistant-text
-  > [data-slot="chat-panel-assistant-message"]
-  > .aui-message-actions {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  z-index: 1;
-}
 .aui-message-actions {
   opacity: 0;
   transition: opacity 120ms;
