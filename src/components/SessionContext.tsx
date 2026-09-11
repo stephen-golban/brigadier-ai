@@ -18,6 +18,20 @@ const MIN_READ_GAP_MS = 4_000;
 /** How close to the threshold counts as "about to compact", in points of the window. */
 const NEAR_THRESHOLD_POINTS = 8;
 
+/** The last observed decrease in the reading: a message reset, or a within-turn compaction. */
+export interface Drop {
+  from: number;
+  to: number;
+  /** `sampledAt` of the lower reading, in ms. */
+  at: number;
+}
+
+/** The usable token count of a reading, or null when there is not one to compare against. */
+export function usedTokens(reading: ContextReading | null): number | null {
+  if (!reading?.available || !Number.isFinite(reading.used) || reading.used! < 0) return null;
+  return reading.used!;
+}
+
 export function contextPercent(reading: ContextReading | null): number | null {
   if (
     !reading?.available ||
@@ -66,13 +80,30 @@ function sourceLabel(source: string | null | undefined): string | null {
 }
 
 /**
- * The context meter: how full the provider's window is, and where it will auto-compact.
+ * The context meter: how full the window of **the current response** is, and where it will
+ * auto-compact.
  *
- * The second number is the point of the component. A compaction is twelve silent seconds
- * (`duration_ms: 12262`, measured) followed by a past-tense row, and the harness gets no
- * in-progress signal — so the only way a user sees one coming is to see the line before they
- * cross it. The `<meter>` carries the threshold as its `high` attribute, so the bar changes
- * colour at exactly the crossing point rather than at a decorative 80%.
+ * **Scope, because the copy used to get it wrong.** brigadier's interactive path does not
+ * accumulate. Every user message kills the running `claude` child and spawns a fresh one with no
+ * `--resume` and no provider transcript; the harness re-assembles a bounded brief from SQLite
+ * instead (`docs/research/does-a-session-accumulate-2026-09-11.md` §0–§2, measured). So this
+ * figure covers one response and returns to its floor at the next message. It is not a
+ * conversation-long budget, and no number of messages can walk it up to the threshold.
+ *
+ * The threshold still earns its place: a compaction is unreachable *across a conversation* but
+ * reachable *within one turn* whose own tool output burns the remaining headroom — roughly 120k
+ * tokens on the default model, effectively unreachable on a 1M-context one (same file, §3). A
+ * compaction is twelve silent seconds (`duration_ms: 12262`, measured) followed by a past-tense
+ * row, and the harness gets no in-progress signal, so the only way a user sees one coming is to
+ * see the line before they cross it. The `<meter>` carries the threshold as its `high` attribute,
+ * so the bar changes colour at exactly the crossing point rather than at a decorative 80%.
+ *
+ * **The drop line is a tripwire, not decoration.** On a correct tree this number sawtooths. The
+ * popover reports the last decrease it actually observed, so an operator can tell a reset from a
+ * glitch — and so a figure that only ever climbs across messages, which would mean conversation
+ * history had been wired back into the send path, shows up as a drop line that never populates.
+ * It reports what was seen and does not accuse: with reads coalesced at 4 s and polled at 8 s the
+ * per-turn floor is not reliably sampled, so an automatic alarm would misfire.
  *
  * Tokens and a model name, never a dollar figure.
  */
@@ -86,13 +117,17 @@ export function SessionContext({
   busy: boolean;
 }) {
   const [reading, setReading] = useState<ContextReading | null>(null);
+  const [drop, setDrop] = useState<Drop | null>(null);
   const lastRead = useRef(0);
+  const lastUsed = useRef<number | null>(null);
   // Only a different session clears the number. Clearing on `revision` — as this did — blanked
   // the meter to `—` on every signal and repainted it a moment later, so the figure flickered
   // through every turn boundary it was supposed to be reporting.
   useEffect(() => {
     setReading(null);
+    setDrop(null);
     lastRead.current = 0;
+    lastUsed.current = null;
   }, [sessionId]);
   useEffect(() => {
     let live = true;
@@ -101,7 +136,16 @@ export function SessionContext({
       lastRead.current = Date.now();
       try {
         const value = await sessionApi.context(sessionId);
-        if (live) setReading(value);
+        if (live) {
+          setReading(value);
+          const used = usedTokens(value);
+          if (used !== null) {
+            const previous = lastUsed.current;
+            if (previous !== null && used < previous)
+              setDrop({ from: previous, to: used, at: value.sampledAt ?? Date.now() });
+            lastUsed.current = used;
+          }
+        }
       } catch (e) {
         if (live) setReading({ available: false, reason: errorMessage(e) });
       }
@@ -124,10 +168,10 @@ export function SessionContext({
     percent === null
       ? "Context usage unknown"
       : mark === null
-        ? `Context ${percent}% used; the provider did not report a compaction threshold`
+        ? `This response: context ${percent}% used; the provider did not report a compaction threshold`
         : past
-          ? `Context ${percent}% used, past the ${mark}% auto-compaction threshold`
-          : `Context ${percent}% used, auto-compacts at ${mark}%`;
+          ? `This response: context ${percent}% used, past the ${mark}% auto-compaction threshold`
+          : `This response: context ${percent}% used, auto-compacts at ${mark}%`;
   return (
     <Popover>
       <Button variant="ghost" size="sm" className="gauge-button" aria-label={label}>
@@ -153,13 +197,26 @@ export function SessionContext({
       </Button>
       <Popover.Content placement="top end">
         <Popover.Dialog aria-label="Context usage" className="w-72 p-3 text-sm">
-          <b>Current context</b>
+          <b>This response</b>
           {percent === null ? (
             <p>{reading?.reason ?? "Reading provider context…"}</p>
           ) : (
             <>
               <p>
                 ≈ {reading!.used!.toLocaleString()} / {reading!.limit!.toLocaleString()} tokens
+              </p>
+              <p>
+                Resets at your next message. brigadier sends every message to a fresh window, so
+                this covers the response being written now — never the conversation.
+              </p>
+              <p>
+                <small>
+                  {drop
+                    ? `Last drop ${drop.from.toLocaleString()} → ${drop.to.toLocaleString()} tokens at ${new Date(drop.at).toLocaleTimeString()}.`
+                    : "No drop seen yet."}{" "}
+                  A figure that climbs across messages instead of dropping would mean conversation
+                  history had been wired back in.
+                </small>
               </p>
               <p>
                 {mark === null || reading!.compactAt == null ? (
@@ -170,7 +227,8 @@ export function SessionContext({
                     {sourceLabel(reading!.compactSource)
                       ? `, from ${sourceLabel(reading!.compactSource)}`
                       : ""}
-                    . Compacting takes about ten seconds and summarises the conversation so far.
+                    . Only one long response can reach that line; compacting takes about twelve
+                    seconds and summarises what this response has done so far.
                   </>
                 )}
               </p>

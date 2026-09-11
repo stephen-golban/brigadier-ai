@@ -11,8 +11,14 @@
  * under `CLAUDE_CODE_AUTO_COMPACT_WINDOW` on the same afternoon
  * (`docs/research/compaction-and-long-sessions-2026-09-11.md` §A1), so a component that computed
  * one from `limit` would draw a line that is simply wrong, which is worse than no line.
+ *
+ * The second thing pinned here is the **scope**. The meter reads the live child's window, and the
+ * live child lives for exactly one response: every user message kills it and spawns a fresh one
+ * with no `--resume` (`docs/research/does-a-session-accumulate-2026-09-11.md` §0–§2, measured).
+ * So the copy says "this response", says it resets at the next message, and the drop line records
+ * the reset when it lands — the sawtooth is the invariant, and its absence is the bug.
  */
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { sessionApi, type ContextReading } from "../sessionApi";
 import { compactPercent, contextPercent, SessionContext } from "./SessionContext";
@@ -48,6 +54,15 @@ async function mount(value: ContextReading, busy = false) {
   return { read, view };
 }
 
+/** Click the gauge open and let Base UI mount the popup. Fake timers are already installed. */
+async function open(triggerLabel: string) {
+  fireEvent.click(screen.getByLabelText(triggerLabel));
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(50);
+  });
+  return screen.getByLabelText("Context usage");
+}
+
 describe("context meter", () => {
   it("reads a percentage only from a usable current reading", () => {
     expect(contextPercent(null)).toBeNull();
@@ -72,7 +87,7 @@ describe("context meter", () => {
 
   it("shows where the window is and where it compacts, and marks the line on the track", async () => {
     await mount(reading());
-    screen.getByLabelText("Context 60% used, auto-compacts at 84%");
+    screen.getByLabelText("This response: context 60% used, auto-compacts at 84%");
     expect(screen.getByText("Context 60%")).toBeInTheDocument();
     // `high` is the threshold, so the native bar changes colour at the crossing point rather
     // than at a decorative constant.
@@ -87,17 +102,17 @@ describe("context meter", () => {
 
   it("warns before the threshold and states the crossing after it", async () => {
     await mount(reading({ used: 158_000 }));
-    screen.getByLabelText("Context 79% used, auto-compacts at 84%");
+    screen.getByLabelText("This response: context 79% used, auto-compacts at 84%");
     expect(screen.getByText("compacts soon")).toBeInTheDocument();
     cleanup();
     await mount(reading({ used: 172_000 }));
-    screen.getByLabelText("Context 86% used, past the 84% auto-compaction threshold");
+    screen.getByLabelText("This response: context 86% used, past the 84% auto-compaction threshold");
     expect(screen.getByText("compacting")).toBeInTheDocument();
   });
 
   it("draws no line when the provider reported no threshold", async () => {
     await mount(reading({ compactAt: null, compactSource: null }));
-    screen.getByLabelText("Context 60% used; the provider did not report a compaction threshold");
+    screen.getByLabelText("This response: context 60% used; the provider did not report a compaction threshold");
     expect(document.querySelector(".gauge-mark")).toBeNull();
   });
 
@@ -133,13 +148,13 @@ describe("context meter", () => {
     // Still one call — and, the flicker this used to have: the meter still reads 60%, it did not
     // blank to `—` on each of the seven rerenders.
     expect(read).toHaveBeenCalledTimes(1);
-    screen.getByLabelText("Context 60% used, auto-compacts at 84%");
+    screen.getByLabelText("This response: context 60% used, auto-compacts at 84%");
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(4_000);
     });
     expect(read).toHaveBeenCalledTimes(2);
-    screen.getByLabelText("Context 5% used, auto-compacts at 84%");
+    screen.getByLabelText("This response: context 5% used, auto-compacts at 84%");
   });
 
   it("clears the reading when the session changes, and polls slower when idle", async () => {
@@ -152,12 +167,58 @@ describe("context meter", () => {
       await vi.advanceTimersByTimeAsync(1);
     });
     expect(read).toHaveBeenLastCalledWith("other");
-    screen.getByLabelText("Context 10% used, auto-compacts at 84%");
+    screen.getByLabelText("This response: context 10% used, auto-compacts at 84%");
     // Busy re-reads at 8 s; idle would not have.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(8_100);
     });
     expect(read).toHaveBeenCalledTimes(3);
+  });
+
+  it("scopes the popover to the current response and says what the reset is", async () => {
+    // The copy this replaced read "summarises the conversation so far", which described an
+    // accumulating session that does not exist: every user message kills the `claude` child and
+    // spawns a fresh one with no `--resume`
+    // (`docs/research/does-a-session-accumulate-2026-09-11.md` §0–§2, measured).
+    await mount(reading());
+    const text = (await open("This response: context 60% used, auto-compacts at 84%")).textContent ?? "";
+    expect(text).toContain("This response");
+    expect(text).toContain("Resets at your next message");
+    expect(text).toContain("never the conversation");
+    // The threshold stays visible — a compaction is unreachable across a conversation but
+    // reachable inside one long turn (same file, §3).
+    expect(text).toContain("Auto-compacts at 167,000 tokens (84%)");
+    expect(text).toContain("Only one long response can reach that line");
+    // The old claim is gone, not merely supplemented.
+    expect(text).not.toContain("summarises the conversation so far");
+    expect(text).not.toMatch(/\$|usd/i);
+  });
+
+  it("reports the last drop it saw, so a missing sawtooth is visible", async () => {
+    // The tripwire. On a compliant tree the figure climbs within a turn and drops at the next
+    // message; a number that only ever climbs across messages would mean provider history had
+    // been wired back into the send path. This reports what it observed and does not accuse —
+    // with reads coalesced at 4 s the per-turn floor is not reliably sampled.
+    const { read } = await mount(reading({ used: 120_000, sampledAt: 1 }), true);
+    const popover = await open("This response: context 60% used, auto-compacts at 84%");
+    expect(popover.textContent).toContain("No drop seen yet.");
+
+    read.mockResolvedValue(reading({ used: 43_000, sampledAt: 2 }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(8_100);
+    });
+    const after = screen.getByLabelText("Context usage").textContent ?? "";
+    expect(after).toContain("Last drop 120,000 → 43,000 tokens at");
+    expect(after).toContain("would mean conversation history had been wired back in");
+
+    // A climb does not overwrite the recorded drop, and does not invent one.
+    read.mockResolvedValue(reading({ used: 60_000, sampledAt: 3 }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(8_100);
+    });
+    expect(screen.getByLabelText("Context usage").textContent).toContain(
+      "Last drop 120,000 → 43,000 tokens at",
+    );
   });
 
   it("answers from the browser fixture off the desktop, threshold included", async () => {

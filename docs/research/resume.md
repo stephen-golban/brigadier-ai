@@ -1,5 +1,13 @@
 # Resume: continuing an exited session
 
+> **Stale since 2026-09-11 — read §12 first.** This brief describes the UI's Resume button as
+> replaying the provider transcript into a new child. **It does not.** The Resume button takes the
+> same fresh-child path as an ordinary send: no `--resume`, no transcript, and the stored
+> `resume_token` is nulled in SQLite on the way through. Everything §1–§11 says about how
+> `--resume` behaves at the *provider layer* still holds and is still exercised — by one remaining
+> caller and by fork — but the sentence "Resume continues the old conversation" is false today.
+> §12 has the corrections with `path:line`. Do not act on §1 or §7 without reading it.
+
 Date: 2026-09-02. Scope: the "Resume" action on an exited session — reuse the stored
 `resume_token`, spawn a new CLI child that continues the old conversation, keep the old history
 visible in the feed. No live session was started for this brief; every wire claim is either read
@@ -337,3 +345,91 @@ Cross-cwd and worktree resume (§3), `--fork-session`, the resume-from-summary d
 resume whose transcript the provider has swept, and a resume of a `failed` (rather than `exited`)
 row: the predicate accepts `failed`, and a unit test covers the refusal branches, but no live
 crash-then-resume was staged. The live test was run **once**, by instruction.
+
+---
+
+## 12. Correction, 2026-09-11: the Resume button does not resume
+
+Read in this worktree (`/Users/stephen/Development/brigadier-ai.worktrees/codex-thread`, branch
+`ui/codex-thread`, at `02be7d0`) on **2026-09-11**. **[measured]** means read today with
+`path:line`; **[asserted]** means inferred from those reads without being run. **Nothing was run
+for this correction** — no test, no build, no live CLI. Where this section and §§1–11 disagree,
+this section is the newer read of the same tree.
+
+The larger finding this came out of is
+`docs/research/does-a-session-accumulate-2026-09-11.md`: brigadier's interactive path does not
+accumulate at all, so there is no old conversation in the provider for a resume to continue.
+
+### What the Resume button actually does
+
+`resume_session` in `src-tauri/src/commands.rs:683-699` — the Tauri command behind the button —
+does **not** call `Supervisor::resume_session`. Its one dispatch line is
+`crate::task_settings::prepare_dispatch(state.inner(), &session_id, None)`, the same call every
+ordinary send makes. **[measured]**
+
+`prepare_dispatch` (`src-tauri/src/task_settings.rs:391-415`) is unconditional and ends in
+`Supervisor::restart_execution` (`crates/supervisor/src/lib.rs:1378`), whose own doc comment at
+`:1374-1376` reads *"Replace an idle provider execution with a fresh native session … No native
+transcript or resume token is passed to the provider."* **[measured]** That path:
+
+| step | where | effect |
+|---|---|---|
+| kill the live child | `crates/supervisor/src/lib.rs:1389-1397` | SIGTERM then SIGKILL the group; refuses first if a response is running |
+| build a plain `StartSession` | `crates/supervisor/src/lib.rs:1461-1469` | no `resume` field |
+| spawn | `crates/core/src/claude/driver.rs:258` `resume: None` | `build_argv` emits no `--resume=` |
+| forget the token | `crates/supervisor/src/lib.rs:1500` → `crates/store/src/conversation_data.rs:76` | `UPDATE sessions SET … provider_session_id=NULL, resume_token=NULL` |
+
+**[measured]** So pressing Resume starts a transcript-less child and, as a side effect, destroys
+the token a real resume would have needed. §1's table row "the provider layer already resumes,
+nothing above it does" was right about the layering and wrong about which way the button goes.
+
+### What still passes `--resume`, and what it can reach
+
+Two live paths, not zero. `does-a-session-accumulate-2026-09-11.md` §4 says
+`Supervisor::resume_session` "has no caller outside tests in this tree" — **that is wrong**, and
+this is the correction:
+
+1. **`resume-subagent`.** `src-tauri/src/peers.rs:1165-1191` (the peer MCP action) →
+   `crate::composer::resume_subagent_locked` (`src-tauri/src/composer.rs:740`) →
+   `Supervisor::resume_session_with_env` (`crates/supervisor/src/lib.rs:1206`) at
+   `src-tauri/src/composer.rs:753`, guarded by `if !supervisor.is_live(&id)`. This is an
+   orchestrator reviving a stopped worker whose child has died; it is not reachable from the
+   composer or from the Resume button. **[measured]**
+2. **Fork.** `crates/supervisor/src/fork.rs:104` sets `req.fork = true` on a `ResumeSession` built
+   from the stored token, and `:130` hands it to `driver.resume_session`, which sets
+   `resume: Some(req.token)` (`crates/core/src/claude/driver.rs:303`) — i.e. `--resume=<id>
+   --fork-session`. **[measured]**
+
+Both read `record.resume_token` (`crates/supervisor/src/lib.rs:1243`, which refuses with
+`NotResumable` when it is `None`). Because `replace_execution_settings` nulls that token on **every
+send** and the next `system/init` writes a fresh one (`crates/core/src/claude/adapter.rs:539-548`),
+the token they find is the provider id of the **current single-turn child**. Consequence: **a fork
+branches that one turn's transcript, not the conversation** — and the same is true of a
+`resume-subagent` revival. **[asserted — inferred from those four sites; no fork and no
+subagent revival was run, so this is the one claim here nobody has observed.]**
+
+### What this changes in the sections above
+
+- **§1, first line** — "The provider layer already resumes. Nothing above it does." Now: the
+  provider layer resumes; above it, only fork and `resume-subagent` do, and the Resume button does
+  not.
+- **§7 "Recommended data model"** — the `Resumed { session_id, start_seq }` reuse-the-row design
+  landed and is still the shape in use; `restart_execution` carries the same struct
+  (`crates/supervisor/src/lib.rs:1461-1469`) precisely so a fresh child keeps the harness row and
+  feed numbering. That part survives. What does not survive is the premise that the new child
+  inherits provider history.
+- **§11's live measurements stand.** `crates/supervisor/tests/live_resume.rs` still exists and
+  still drives `Supervisor::resume_session` (`:314`), so the 2026-09-02 numbers — same harness row,
+  same provider id, `recall answer: pelican` — remain a correct measurement of the **supervisor
+  API**. They are no longer a measurement of what the button does. **[measured that the test and
+  its call site exist; not re-run.]**
+- **§9's risks** are unchanged for the two paths that remain and moot for the button.
+
+### Not checked
+
+Nothing was executed. The negative "the Resume button reaches no `--resume`" rests on reading
+`commands.rs:683-699` and following `prepare_dispatch` through, plus a repo-wide grep for
+`resume_session` over `crates/` and `src-tauri/src/` — a grep negative is weaker than a read. No
+fork, no `resume-subagent` revival and no live CLI were run, so the single-turn-transcript
+consequence above is reasoning, not observation. The Codex driver's own `resume_session`
+(`crates/core/src/codex/mod.rs:174`) was not examined; Codex is not v1.
