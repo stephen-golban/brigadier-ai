@@ -1,0 +1,23 @@
+{
+  "identifier": "ai.brigadier.perf.cssspike",
+  "productName": "Brigadier CssSpike",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Brigadier CssSpike",
+        "url": "index.html?burn=auto&preroll=4000",
+        "visible": false,
+        "transparent": true,
+        "theme": "Dark",
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "width": 1280,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 500
+      }
+    ]
+  }
+}
