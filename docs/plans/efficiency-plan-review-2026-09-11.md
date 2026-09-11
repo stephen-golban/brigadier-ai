@@ -64,6 +64,20 @@ revised order.
 - **Acceptance:** cold trace shows the `markdown-module` stamp resolving before the first transcript mount; startup p50
   unchanged; a visible capture with zero misses in windows 0–3.
 
+**Measured update (2026-09-11, after the review):** `docs/performance/2026-09-11/cold-path-attribution.md` analysed the
+six recovered diagnostic traces. The Markdown chunk is exculpated: `markdown-module` resolves 15–21 ms *after* the last
+dropping frame in three of four traces, inside a frame that drops nothing. The cold hitch is two clusters. Cluster A at
+about 1.0 s is a 29–31 ms shell mount frame (`Sidebar`/`ProjectWorkbench`/`Tabs`), one drop, in five of six captures;
+that belongs to P4b. Cluster B at 2.3–2.5 s is two or three frames of 36–61 ms, three to five drops, in eight of eight
+captures: the first transcript mount commit (`ThreadView→Transcript→TranscriptRuntime→AssistantRuntimeProvider`,
+13 ms render + 7 ms commit), the first history round trip (`history-request` fires 3 ms after the commit ends, and the
+first `turns` await is 17–34 ms against a steady-state mean of about 1 ms), and the `turns-response` merge. All eight
+files predate the timestamp Worker (no `capture.timestampPreparation` key), so the labels-on-critical-path cost is
+untested; HEAD added that await to a path already inside a dropping frame. P4a therefore targets, in order: publish the
+page before labels resolve; start the history fetch in parallel with the mount; replace the stringify comparison; and
+only then preload the Markdown chunk, as a demoted item worth one late frame. The late single-drop misses (25–28 ms) sit
+in the measured JSC GC band and remain unproved.
+
 ### B3. The largest idle timer is missing from the inventory — P2, P5 (verified)
 
 - `src/feedStore.ts:630-635`: `scheduleDrain()` arms a `requestAnimationFrame` and a 250 ms `setTimeout`; `drain()`

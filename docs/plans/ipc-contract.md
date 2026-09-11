@@ -389,6 +389,14 @@ was deleted, and the card should say so rather than drawing a hole.
 **No new error codes.** Both commands draw from the closed set in **Conventions**:
 `no_such_session`, `no_such_project`, `session_running`, `invalid_argument`, `worktree`, `store`.
 
+**Window event `cleanup-changed` — added 2026-09-11.** Emitted after — never before — every
+persisted transition of the `session-cleanup.json` queue: queued by `session_discard`, cleared at
+startup, parked with an `error`, unparked by `session_cleanup_retry`, removed on success, and the
+drain that empties the queue (`src-tauri/src/cleanup.rs`). Its payload is the same `Job[]`
+(`{ id, sessions, error }`) that `session_cleanup_status` returns, so a listener needs no second
+fetch, and the frontend registers the listener before that one startup snapshot — there is no poll
+behind it any more.
+
 ### `report_paint`
 
 One timed paint from the page, appended to `<data_dir>/paint.ndjson`. It exists because **B4**,

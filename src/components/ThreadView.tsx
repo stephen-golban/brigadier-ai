@@ -229,7 +229,7 @@ function Transcript({
   editing: boolean;
 }) {
   const changes = useSessionChanges(sessionId);
-  const {items, turns: turnRecords, loaded, error, hasOlder, paging, historical, older, latest} = useConversationHistory(sessionId, revision);
+  const {items, turns: turnRecords, loaded, error, hasOlder, paging, historical, labelPatch, older, latest} = useConversationHistory(sessionId, revision);
   const hydrated = loaded;
   const { settings: executionSettings } = useTaskExecutionSettings(sessionId);
   const executionChanges = executionSettings?.changes;
@@ -439,9 +439,14 @@ function Transcript({
                 <>
                   {providerChanges.before.get(row.item.id)?.map(change => <ProviderChangeDivider key={change.id} change={change} />)}
                   {row.item.at > 0 && (
-                    <MessageTimestamp at={row.item.at}/>
+                    // The history page is published before its labels are prepared, so a label
+                    // that arrives late and differs from the fallback already on screen patches
+                    // this one row by remounting it. `labelPatch` is empty in the measured case,
+                    // so the key stays `undefined` and no timestamp is disturbed.
+                    <MessageTimestamp key={labelPatch.get(row.item.seq)} at={row.item.at}/>
                   )}
                   <UserMessage
+                    labelPatch={labelPatch.get(row.item.seq)}
                     readOnly={peers?.loaded === false || !!peers?.subagents?.[sessionId]}
                     item={row.item}
                     projectId={projectId ?? session?.projectId ?? null}
@@ -526,6 +531,7 @@ function stopLabel(reason: string) {
 function UserMessage({
   readOnly = false,
   item,
+  labelPatch,
   projectId,
   onFile,
   peers,
@@ -537,6 +543,8 @@ function UserMessage({
 }: {
   readOnly?: boolean;
   item: ChatItem;
+  /** Bumped only when a prepared label replaced different text; remounts just this clock. */
+  labelPatch?: number;
   projectId: string | null;
   onFile: (path: string) => void;
   peers?: PeerData;
@@ -586,7 +594,7 @@ function UserMessage({
       </ChatPanelUserMessage>
       <div className="aui-message-actions flex items-center gap-1 text-xs text-text-tertiary">
         {item.at > 0 && (
-          <MessageTime at={item.at}/>
+          <MessageTime key={labelPatch} at={item.at}/>
         )}
         <CopyButton text={text} />
         {!source && !readOnly && (
