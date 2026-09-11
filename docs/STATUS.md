@@ -391,7 +391,10 @@ sidebar included. Idle on the current markup it is **123** (release build, 800x5
 expression folds to `false` and a release `vite build` strips the only UI that can call the command
 `--features burn` compiles, which means **every burn number this project has is a debug-build
 number**. **[measured]** `VITE_BURN=1` now makes a release burn reachable and **no release burn has
-been run**, so the debug-build caveat on this number stands. A debug Rust binary, a vite dev server
+been run**, so the debug-build caveat on this number stands. **[2026-09-11]** It no longer holds for the
+project as a whole: every capture under `docs/performance/2026-09-11/` came from a release build
+(`tauri build --features burn`) with `VITE_BURN=1`, bound to its source, machine and toolchain in
+`docs/performance/2026-09-11/baseline-manifest.md`. A debug Rust binary, a vite dev server
 and a React development build are each strictly slower than what ships, so the near-pass is an
 **upper bound on badness, not a release result**; the shipped binary's scroll FPS under load is
 unmeasured. **[asserted]**
