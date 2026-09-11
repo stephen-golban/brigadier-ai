@@ -40,6 +40,8 @@ export function useProviderCatalog(fallback: ModelInfo[]): ProviderCatalogState 
   if(!desktop) {setState({providers:[{id:'claude-code',label:'Claude Code (demo)',instanceId:'replay:demo',version:null,models:fallback.map(m=>({...m,efforts:[]})),efforts:[],modelCatalogKnown:true}],error:'',loaded:true});return;}
   let attempts=0;
   let inflight=false;
+  /** A read has come back with a real catalogue: the poll has nothing left to find. */
+  let settledOnce=false;
   let timer:ReturnType<typeof setTimeout>|undefined;
   let poll:ReturnType<typeof setInterval>|undefined;
   const stopPolling=()=>{clearInterval(poll);poll=undefined;};
@@ -57,7 +59,7 @@ export function useProviderCatalog(fallback: ModelInfo[]): ProviderCatalogState 
     // `startup_pending`, so the error is held back until the retries are spent.
     const done=settled(p);
     const retrying=!done&&again();
-    if(done)stopPolling();
+    if(done){settledOnce=true;stopPolling();}
     setState({providers:p,error:'',loaded:!retrying});
    },e=>{
     inflight=false;
@@ -67,14 +69,31 @@ export function useProviderCatalog(fallback: ModelInfo[]): ProviderCatalogState 
    });
   };
   const refresh=()=>{attempts=0;clearTimeout(timer);read();};
-  read();
-  // The retry budget is spent in 4.2 s; this covers the rest of the launch, and stops itself the
-  // moment a real catalogue arrives. It never touches `loaded` — a spent budget is settled, and a
-  // later poll that finds a provider simply fills `providers` in.
-  poll=setInterval(read,POLL_MS);
-  const stop=listen(REFRESHED_EVENT,()=>{if(live)read();});
+  // Subscribe before the first read (`docs/plans/efficiency-plan-review-2026-09-11.md` §B4).
+  // `listen` is async and Tauri v2 neither buffers nor replays: with `read()` first, a
+  // `provider-catalog-refreshed` emitted while the subscription was still resolving was lost,
+  // and only the 15 s poll would ever have noticed — the exact case the event exists for, a
+  // handshake finishing right after the first read. The poll stays until this hook's producer
+  // coverage is proven; it is a belt, not the mechanism.
+  let unlisten:(()=>void)|undefined;
+  void (async()=>{
+   try{
+    const off=await listen(REFRESHED_EVENT,()=>{if(live)read();});
+    // Unmount raced the pending `listen()`: nothing else will ever call this one.
+    if(!live){off();return;}
+    unlisten=off;
+   }catch{
+    if(!live)return;
+   }
+   read();
+   // The retry budget is spent in 4.2 s; this covers the rest of the launch, and stops itself the
+   // moment a real catalogue arrives. It never touches `loaded` — a spent budget is settled, and a
+   // later poll that finds a provider simply fills `providers` in. A read that settled while this
+   // was still awaiting the subscription (a `focus` beat it to it) needs no poll at all.
+   if(!settledOnce)poll=setInterval(read,POLL_MS);
+  })();
   window.addEventListener('focus',refresh);
-  return ()=>{live=false;clearTimeout(timer);stopPolling();window.removeEventListener('focus',refresh);void stop.then(unlisten=>unlisten()).catch(()=>{});};
+  return ()=>{live=false;clearTimeout(timer);stopPolling();window.removeEventListener('focus',refresh);unlisten?.();};
  },[fallback]);
  return state;
 }

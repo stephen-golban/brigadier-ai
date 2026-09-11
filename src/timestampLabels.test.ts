@@ -58,3 +58,47 @@ it("the worker keeps the existing default-locale date and time text", async () =
     date: date.toLocaleDateString(undefined, {month: "short", day: "numeric"}),
   }}))});
 });
+
+/*
+ * The history page is published before preparation resolves (P4a item 1), so a row can render the
+ * synchronous fallback first and a prepared label can land on a key that is already on screen.
+ * Only the keys whose text actually moved may be announced; announcing the rest would remount
+ * timestamps for nothing on every cold mount.
+ */
+it.each([
+  ["identical text", {time: "1:45 PM", date: "Sep 11"}, 0],
+  ["different text", {time: "13:45", date: "11 Sept"}, 1],
+])("announces a late label only when it replaces %s", async (_name, prepared, announcements) => {
+  vi.stubGlobal("Worker", FakeWorker);
+  const api = await import("./timestampLabels");
+  const announced: string[][] = [];
+  const stop = api.subscribeTimestampLabels(keys => announced.push([...keys]));
+  const at = new Date(2026, 8, 11, 13, 45).getTime();
+  const ready = api.prepareTimestampLabels([{at}]);
+  const worker = FakeWorker.instances[0]!;
+  const request = worker.postMessage.mock.calls[0]![0];
+  // The row renders while the worker is still busy: this is the fallback the page now publishes.
+  const fallback = api.getTimestampLabels(new Date(at), navigator.language);
+  expect(fallback.time).toBe(new Date(at).toLocaleTimeString(undefined, {hour: "numeric", minute: "2-digit"}));
+  const equal = {time: fallback.time, date: fallback.date};
+  worker.onmessage!({data: {id: request.id, entries: [{key: request.entries[0].key, labels: announcements ? prepared : equal}]}} as MessageEvent<TimestampResponse>);
+  await ready;
+  expect(announced).toHaveLength(announcements);
+  if (announcements) expect(announced[0]).toEqual([request.entries[0].key]);
+  stop();
+});
+
+it("announces nothing when the worker times out and the fallback stands", async () => {
+  vi.useFakeTimers();
+  vi.stubGlobal("Worker", FakeWorker);
+  const api = await import("./timestampLabels");
+  const announced: string[][] = [];
+  api.subscribeTimestampLabels(keys => announced.push([...keys]));
+  const at = new Date(2026, 8, 11, 14, 45).getTime();
+  const ready = api.prepareTimestampLabels([{at}]);
+  await vi.advanceTimersByTimeAsync(1000);
+  await ready;
+  expect(announced).toEqual([]);
+  expect(api.getTimestampLabels(new Date(at), navigator.language).time)
+    .toBe(new Date(at).toLocaleTimeString(undefined, {hour: "numeric", minute: "2-digit"}));
+});
