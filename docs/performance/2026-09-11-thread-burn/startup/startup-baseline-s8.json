@@ -1,0 +1,160 @@
+{
+  "binary": "/private/tmp/brig-burn-20260911/frozen-baseline.app/Contents/MacOS/brigadier",
+  "paint_log": "/Users/stephen/Library/Application Support/ai.brigadier.perf.cssspike/paint.ndjson",
+  "requested_runs": 10,
+  "samples": [
+    {
+      "run": 0,
+      "activation_exit": 0,
+      "pre_spawn_epoch_ms": 1789122566617.293,
+      "paint": {
+        "process_start_epoch_ms": 1789122566621.676,
+        "main_to_fcp_ms": 215.323974609375,
+        "kind": "fcp",
+        "epoch_ms": 1789122566837.0
+      },
+      "pre_spawn_to_fcp_ms": 219.70703125,
+      "clock_discontinuity_ms": 0.006931624999992891,
+      "console_locked_after": false,
+      "valid": true
+    },
+    {
+      "run": 1,
+      "activation_exit": 0,
+      "pre_spawn_epoch_ms": 1789122569034.177,
+      "paint": {
+        "process_start_epoch_ms": 1789122569040.3098,
+        "main_to_fcp_ms": 228.690185546875,
+        "kind": "fcp",
+        "epoch_ms": 1789122569269.0
+      },
+      "pre_spawn_to_fcp_ms": 234.822998046875,
+      "clock_discontinuity_ms": 0.0034121250000680448,
+      "console_locked_after": false,
+      "valid": true
+    },
+    {
+      "run": 2,
+      "activation_exit": 0,
+      "pre_spawn_epoch_ms": 1789122571495.768,
+      "paint": {
+        "process_start_epoch_ms": 1789122571502.24,
+        "main_to_fcp_ms": 220.760009765625,
+        "kind": "fcp",
+        "epoch_ms": 1789122571723.0
+      },
+      "pre_spawn_to_fcp_ms": 227.23193359375,
+      "clock_discontinuity_ms": 0.004987296874787717,
+      "console_locked_after": false,
+      "valid": true
+    },
+    {
+      "run": 3,
+      "activation_exit": 0,
+      "pre_spawn_epoch_ms": 1789122573965.137,
+      "paint": {
+        "process_start_epoch_ms": 1789122573971.557,
+        "main_to_fcp_ms": 213.443115234375,
+        "kind": "fcp",
+        "epoch_ms": 1789122574185.0
+      },
+      "pre_spawn_to_fcp_ms": 219.863037109375,
+      "clock_discontinuity_ms": 0.003557609375093307,
+      "console_locked_after": false,
+      "valid": true
+    },
+    {
+      "run": 4,
+      "activation_exit": 0,
+      "pre_spawn_epoch_ms": 1789122576428.047,
+      "paint": {
+        "process_start_epoch_ms": 1789122576434.1272,
+        "main_to_fcp_ms": 226.872802734375,
+        "kind": "fcp",
+        "epoch_ms": 1789122576661.0
+      },
+      "pre_spawn_to_fcp_ms": 232.952880859375,
+      "clock_discontinuity_ms": 0.0039336093759629875,
+      "console_locked_after": false,
+      "valid": true
+    },
+    {
+      "run": 5,
+      "activation_exit": 0,
+      "pre_spawn_epoch_ms": 1789122578885.532,
+      "paint": {
+        "process_start_epoch_ms": 1789122578891.5168,
+        "main_to_fcp_ms": 219.4833984375,
+        "kind": "fcp",
+        "epoch_ms": 1789122579111.0002
+      },
+      "pre_spawn_to_fcp_ms": 225.46826171875,
+      "clock_discontinuity_ms": 0.003425781249461579,
+      "console_locked_after": false,
+      "valid": true
+    },
+    {
+      "run": 6,
+      "activation_exit": 0,
+      "pre_spawn_epoch_ms": 1789122581312.1448,
+      "paint": {
+        "process_start_epoch_ms": 1789122581318.148,
+        "main_to_fcp_ms": 219.85205078125,
+        "kind": "fcp",
+        "epoch_ms": 1789122581538.0
+      },
+      "pre_spawn_to_fcp_ms": 225.855224609375,
+      "clock_discontinuity_ms": 0.0027939374995185062,
+      "console_locked_after": false,
+      "valid": true
+    },
+    {
+      "run": 7,
+      "activation_exit": 0,
+      "pre_spawn_epoch_ms": 1789122583740.4631,
+      "paint": {
+        "process_start_epoch_ms": 1789122583746.5068,
+        "main_to_fcp_ms": 223.4931640625,
+        "kind": "fcp",
+        "epoch_ms": 1789122583970.0
+      },
+      "pre_spawn_to_fcp_ms": 229.536865234375,
+      "clock_discontinuity_ms": 0.003457031249126885,
+      "console_locked_after": false,
+      "valid": true
+    },
+    {
+      "run": 8,
+      "activation_exit": 0,
+      "pre_spawn_epoch_ms": 1789122586162.284,
+      "paint": {
+        "process_start_epoch_ms": 1789122586167.269,
+        "main_to_fcp_ms": 227.731201171875,
+        "kind": "fcp",
+        "epoch_ms": 1789122586395.0002
+      },
+      "pre_spawn_to_fcp_ms": 232.71630859375,
+      "clock_discontinuity_ms": 0.00437012499969569,
+      "console_locked_after": false,
+      "valid": true
+    },
+    {
+      "run": 9,
+      "activation_exit": 0,
+      "pre_spawn_epoch_ms": 1789122588623.225,
+      "paint": {
+        "process_start_epoch_ms": 1789122588629.636,
+        "main_to_fcp_ms": 237.364013671875,
+        "kind": "fcp",
+        "epoch_ms": 1789122588867.0
+      },
+      "pre_spawn_to_fcp_ms": 243.77490234375,
+      "clock_discontinuity_ms": 0.003726562499650754,
+      "console_locked_after": false,
+      "valid": true
+    }
+  ],
+  "p50_ms": 228.3843994140625,
+  "pass": true,
+  "limitations": "Warm-cache launches. Pre-spawn includes launch-call overhead. FCP is not presentation or workspace readiness. Operator must verify unlocked foreground conditions."
+}
