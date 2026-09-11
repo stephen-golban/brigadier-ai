@@ -23,6 +23,7 @@ import {
   traceFailed,
   activeWorkLabel,
   activitySummary,
+  workDuration,
   type TraceNode,
   type ThreadRow,
 } from "../threadProjection";
@@ -202,6 +203,7 @@ function TraceList({ nodes, ...props }: TraceProps & { nodes: TraceNode[] }) {
                 {...props}
                 running={live}
                 current={live}
+                elapsedMs={elapsedUntilNext(first, shown[index + 1]?.[0])}
               />
             );
           const id = `batch:${first.item.id}`;
@@ -265,6 +267,20 @@ function TraceBatch({ nodes, ...props }: TraceProps & { nodes: TraceNode[] }) {
     </>
   );
 }
+/**
+ * Wall time this node occupied, taken from the `at` stamps already on the items: this node's own
+ * `at` to the next node in the same list. Nothing on the wire says how long a model thought, so
+ * this is the only figure available. `at === 0` is the tree's "no recorded time"
+ * (`src/threadProjection.ts`), a next stamp before this one is a clock artefact, and under a
+ * second there is nothing worth naming — each returns no figure rather than a `0s` nobody can
+ * justify.
+ */
+function elapsedUntilNext(node: TraceNode, next: TraceNode | undefined): number | undefined {
+  if (!next || node.item.at <= 0 || next.item.at < node.item.at) return undefined;
+  const ms = next.item.at - node.item.at;
+  return ms >= 1000 ? ms : undefined;
+}
+
 function TraceEntry({
   node,
   expanded,
@@ -272,7 +288,8 @@ function TraceEntry({
   onFile,
   running,
   current = false,
-}: TraceProps & { node: TraceNode; current?: boolean }) {
+  elapsedMs,
+}: TraceProps & { node: TraceNode; current?: boolean; elapsedMs?: number }) {
   const { item, result, updates, children } = node;
   const links = useContext(SessionLinks);
   const actionRequests = useContext(ActionRequests);
@@ -298,7 +315,14 @@ function TraceEntry({
         streaming={false}
         open={open}
         onOpenChange={() => toggle(item.id)}
-        restingLabel="Reasoning"
+        // Plan §3 row 4: the collapsed row names what the model spent, not the kind of row it
+        // is. "Reasoning" was the internal noun for the panel; a person reads a verb and a
+        // figure. With no usable pair of timestamps the figure is dropped, never faked.
+        restingLabel={
+          elapsedMs === undefined
+            ? "Thought"
+            : `Thought for ${workDuration(elapsedMs)}`
+        }
         className="max-w-none"
       />
     );

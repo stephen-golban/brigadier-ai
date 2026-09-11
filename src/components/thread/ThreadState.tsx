@@ -100,8 +100,10 @@ export function ThreadLoadingState({
   label,
   ...props
 }: ThreadLoadingStateProps) {
+  // Brigadier modification (UPSTREAM.md): the kit's copy named the vendor's product. This
+  // harness is not that product and must never say so, in the bundle or on screen.
   const resolvedLabel =
-    label ?? (kind === "reconnecting" ? "Reconnecting to ChatGPT…" : "Loading chat…");
+    label ?? (kind === "reconnecting" ? "Reconnecting…" : "Loading conversation…");
   return (
     <div
       aria-busy="true"

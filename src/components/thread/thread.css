@@ -248,8 +248,11 @@
   line-height: var(--thread-line-height-md);
   padding: 0;
 }
+/* brigadier deviation from the kit (UPSTREAM.md). The measured design gives the turn header
+   and every activity fold **no hover fill**: the only feedback is the label going 60% -> 100%
+   over the hairline rule (`docs/research/codex-thread-tokens.md` §5.3, plan §3 row 5 and the
+   §3 preamble). The kit filled the row instead, which the measurement outranks. */
 .thread-activity-timeline__toggle:hover {
-  background: var(--thread-background-button-secondary-hover);
   color: var(--thread-text);
 }
 .thread-activity-timeline__toggle:focus-visible {
@@ -3015,4 +3018,92 @@ summary.thread-activity__header::after,
   .thread-file-change__stats[data-variant="agent-activity"] [data-stat] {
     transition: none;
   }
+}
+
+/* Plan §3 row 7: a failed command is red. The tone is keyed off `data-status="failed"`, which
+   the footer already carries and which `WorkTrace` derives as **`is_error && !interrupted`** on
+   the tool result (`traceFailed` + `resultKind(node).interrupted`).
+
+   It is deliberately *not* keyed off `exitCode`. `exit_code` is `Some(0)` on success, `Some(N)`
+   on failure and `None` when no code could be parsed — and `None` does not mean success: a real
+   failure whose body does not parse carries `None` too. `is_error` alone is not enough either;
+   it is set by an interrupt and by an operator **denial**, and a denial must never be painted
+   as a crash. That is what `!interrupted` excludes (`src/wire.ts`, `crates/core/src/event.rs`).
+
+   The marker is a dot as well as a hue, so a failure is not carried by colour alone. */
+.thread-command-execution__footer[data-status="failed"] {
+  color: var(--thread-text-error);
+}
+.thread-command-execution__footer[data-status="failed"]::before {
+  background: currentColor;
+  border-radius: 9999px;
+  content: "";
+  flex: 0 0 auto;
+  height: 0.375rem;
+  width: 0.375rem;
+}
+
+/* Plan §3 row 12. The approval body wraps; it never clips. A tool input is one long line of
+   JSON far more often than not, and `<pre>`'s inherited `white-space: pre` pushed it under the
+   card's right edge where a horizontal scrollbar is the only way back to it. */
+.approval-body pre,
+.approval-body code {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.approval-body {
+  min-width: 0;
+}
+
+/* Plan §3 row 12, the readable summary. The subject of the request sits in the card header's
+   `details` slot: the command, the path, the address. `ApprovalCommandPreview` pads itself for
+   the card body, which double-indents it here, so the inline padding is handed back. */
+.thread-approval-request__details .thread-approval-command {
+  padding-inline: 0;
+}
+.approval-subject {
+  display: block;
+  font-family: var(--thread-font-mono);
+  font-size: var(--thread-font-size-code);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.approval-intent {
+  overflow-wrap: anywhere;
+}
+.approvals .suggestions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+}
+.approvals .suggestions li {
+  min-width: 0;
+}
+.approvals .suggestions li span {
+  overflow-wrap: anywhere;
+}
+.approval-raw summary {
+  color: var(--thread-text-tertiary);
+}
+
+/* The kit gives the card's `children` slot no inline padding — upstream only ever passes it
+   self-padding previews, so brigadier's body ran flush to the card edge and the suggestion
+   checkboxes sat outside it. `ApprovalRequest`'s only consumer in this app is
+   `src/components/Approvals.tsx`, so the padding belongs on the slot rather than on each child. */
+.thread-approval-request__body {
+  padding-inline: 1rem;
+  padding-bottom: 0.25rem;
+}
+
+/* The app-wide checkbox border is `--input` (#2a2a2a), which is invisible on this card's
+   elevated surface — measured `rgb(42,42,42)` on `rgb(45,45,45)`. That was tolerable while the
+   row's label was the literal word "apply"; now the label is the scope sentence, and the only
+   thing saying "this is a toggle you are granting" is the control itself. Scoped to the
+   approval card rather than retinting every checkbox in the app. */
+.approvals .suggestions [role="checkbox"] {
+  border-color: color-mix(in srgb, var(--thread-text) 32%, transparent);
 }

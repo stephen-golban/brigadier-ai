@@ -15,6 +15,7 @@ import {
   type ReactNode,
 } from "react";
 import { useIsMobile } from "../../hooks/use-mobile";
+import { approvalOwnsKey } from "../thread/approvalKeys";
 import { Button } from "@/components/ui/button";
 import { iconButton } from "@/lib/surfaces";
 import { cn } from "../../lib/utils";
@@ -155,7 +156,11 @@ export function SidebarProvider({
         setPeek(false);
     };
     const escape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setPeek(false);
+      // One Escape, one action. A pending approval card owns the keystroke while it is open —
+      // Escape is its deny — and closing the peek sidebar out from under the same press is a
+      // second, unasked-for effect. With no answerable approval on screen this is false and the
+      // sidebar's Escape is unchanged. See `src/components/thread/approvalKeys.ts`.
+      if (event.key === "Escape" && !approvalOwnsKey(event)) setPeek(false);
     };
     document.addEventListener("pointerdown", outside);
     document.addEventListener("keydown", escape);

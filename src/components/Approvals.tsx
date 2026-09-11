@@ -1,4 +1,4 @@
-import { ApprovalRequest, type ApprovalRequestKind } from "./thread/ApprovalRequest";
+import { ApprovalCommandPreview, ApprovalRequest, type ApprovalRequestKind } from "./thread/ApprovalRequest";
 import { Checkbox } from "./controls/checkbox";
 import { Input } from "./controls/input";
 import { Button } from "@/components/ui/button";
@@ -24,7 +24,7 @@ import { Button } from "@/components/ui/button";
  */
 import { useState } from "react";
 import type { ApprovalHistoryItem } from "./approvalHistory";
-import type { MouseEvent } from "react";
+import type { MouseEvent, ReactNode } from "react";
 
 import type { ApprovalItem } from "../feedStore";
 import type { Decision, ProjectId, RequestId, SessionId } from "../wire";
@@ -118,6 +118,22 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
 
   const kind = approval.kind;
   const readOnly = approval.expired;
+  // The tool input, parsed once. The card leads with what this request *concerns* — the command,
+  // the file, the address — instead of the excerpt verbatim; the excerpt stays one disclosure
+  // away, because the exact bytes are what an operator audits a grant against.
+  const input = kind?.type === "tool-permission" ? parseInput(kind.input_excerpt) : null;
+  const command = field(input, "command") ?? field(input, "cmd");
+  const path = field(input, "file_path") ?? field(input, "path") ?? field(input, "notebook_path");
+  const url = field(input, "url");
+  const pattern = field(input, "pattern") ?? field(input, "query");
+  const intent = field(input, "description") ?? field(input, "prompt");
+  // The subject of the request, chosen by what the tool *is* rather than by which field the
+  // excerpt happens to carry first: a `Write` whose input mentions a command is still about its
+  // path. Falls through the others only when the tool's own field is absent.
+  const subjectNode = kind?.type === "tool-permission" ? subject(requestIcon(kind), { command, path, url, pattern }) : undefined;
+  // Nothing recognised: an unfamiliar tool shape is exactly where a summary must not be invented,
+  // so the excerpt stays the default presentation, as it was before the summary existed.
+  const summarised = subjectNode !== undefined || intent !== undefined;
   let mcp: {message: string; description?: string; arguments?: unknown} | null = null;
   if (kind?.type === "tool-permission" && kind.tool_name.startsWith("MCP · ")) {
     try {
@@ -231,6 +247,7 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
       onReject={() => setDenying(!denying)}
       onDismiss={readOnly ? () => onDismiss(approval.requestId) : undefined}
       dismissLabel="Dismiss"
+      details={mcp ? undefined : subjectNode}
     >
       {/*
         R2, 2026-09-05. **The detail scrolls; the decision does not.**
@@ -253,7 +270,14 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
               <p className="mb-2">{mcp.message}</p>
               {typeof mcp.description === "string" && <p className="mb-2 text-text-secondary">{mcp.description}</p>}
               {mcp.arguments !== undefined && <pre className="excerpt">{JSON.stringify(mcp.arguments, null, 2)}</pre>}
-            </> : <pre className="excerpt">{kind.input_excerpt}</pre>}
+            </> : intent !== undefined ? (
+              <p className="approval-intent mb-2 text-text-secondary">{intent}</p>
+            ) : input === null || !summarised ? (
+              // Either not JSON — the excerpt is bounded to 8 KiB by the adapter and can arrive
+              // truncated mid-token — or a shape with no field this app recognises. Both leave
+              // the bytes as the whole story, so they stay the default presentation.
+              <pre className="excerpt">{kind.input_excerpt}</pre>
+            ) : null}
             {kind.suggestions.length > 0 ? (
               <ul className="suggestions">
                 {kind.suggestions.map((s, i) => (
@@ -263,12 +287,23 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
                       disabled={readOnly || responding}
                       onCheckedChange={() => toggle(i)}
                     >
-                      <span>apply</span>
+                      {/* The sentence is presentation only. What `allow` echoes back is the
+                          suggestion object verbatim, unchanged and uninterpreted; the exact
+                          bytes of every rule are under "Show the full request" below. */}
+                      <span title={JSON.stringify(s)}>{scopeSummary(s)}</span>
                     </Checkbox>
-                    <pre className="suggestion">{JSON.stringify(s)}</pre>
                   </li>
                 ))}
               </ul>
+            ) : null}
+            {!mcp && input !== null && summarised ? (
+              <details className="approval-raw mt-2 text-xs text-text-tertiary">
+                <summary className="cursor-pointer">Show the full request</summary>
+                <pre className="excerpt mt-2">{kind.input_excerpt}</pre>
+                {kind.suggestions.map((s, i) => (
+                  <pre className="suggestion mt-1" key={i}>{JSON.stringify(s)}</pre>
+                ))}
+              </details>
             ) : null}
           </>
         ) : (
@@ -303,6 +338,90 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
       )}
     </ApprovalRequest>
   );
+}
+
+/** The tool input as an object, or `null` when the excerpt is not a JSON object — it is bounded
+ *  to 8 KiB by `crates/core/src/event.rs` and can arrive truncated mid-token. */
+function parseInput(excerpt: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(excerpt);
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** One non-empty string field of the tool input, or `undefined`. Never guesses a shape. */
+function field(input: Record<string, unknown> | null, name: string): string | undefined {
+  const value = input?.[name];
+  return typeof value === "string" && value.trim() !== "" ? value : undefined;
+}
+
+/** What this request is *about*, drawn the way its tool kind wants to be read. */
+function subject(
+  icon: ApprovalRequestKind,
+  fields: { command?: string; path?: string; url?: string; pattern?: string },
+): ReactNode {
+  const { command, path, url, pattern } = fields;
+  const preferred =
+    icon === "command" ? command
+    : icon === "file" ? path
+    : icon === "network" ? url
+    : undefined;
+  const chosen = preferred ?? command ?? path ?? url ?? pattern;
+  if (chosen === undefined) return undefined;
+  if (chosen === command) return <ApprovalCommandPreview command={chosen} />;
+  if (chosen === path) return <FilePath path={chosen} />;
+  return <span className="approval-subject">{chosen}</span>;
+}
+
+/** The path a request concerns, split so the eye lands on the file rather than the prefix. */
+function FilePath({ path }: { path: string }) {
+  const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  return (
+    <span className="approval-subject" title={path}>
+      {cut >= 0 ? <span className="text-text-tertiary">{path.slice(0, cut + 1)}</span> : null}
+      {path.slice(cut + 1)}
+    </span>
+  );
+}
+
+/**
+ * What checking this box would grant, in a sentence. **Presentation only** — `allow` echoes the
+ * suggestion object back verbatim (`updated_permissions`), and an unrecognised shape falls back
+ * to its own JSON rather than to a reassuring guess. The raw object is always reachable: it is
+ * the checkbox's `title` and it is printed under "Show the full request".
+ */
+function scopeSummary(suggestion: unknown): string {
+  const raw = JSON.stringify(suggestion);
+  if (typeof suggestion !== "object" || suggestion === null) return raw;
+  const s = suggestion as Record<string, unknown>;
+  if (s.type === "addRules" && Array.isArray(s.rules)) {
+    const verb = s.behavior === "deny" ? "Always deny" : s.behavior === "allow" ? "Always allow" : `Add a ${String(s.behavior ?? "permission")} rule for`;
+    const rules = s.rules
+      .map((rule) => {
+        if (typeof rule !== "object" || rule === null) return null;
+        const entry = rule as Record<string, unknown>;
+        const tool = typeof entry.toolName === "string" ? entry.toolName : null;
+        const content = typeof entry.ruleContent === "string" ? entry.ruleContent : null;
+        if (tool === null) return null;
+        return content === null ? tool : `${tool} · ${content}`;
+      })
+      .filter((r): r is string => r !== null);
+    if (rules.length > 0) return `${verb} ${rules.join(", ")}, for the rest of this session`;
+  }
+  if (s.type === "setMode" && typeof s.mode === "string") {
+    const modes: Record<string, string> = {
+      acceptEdits: "accept edits without asking",
+      bypassPermissions: "bypass permission prompts",
+      default: "ask for every permission",
+      plan: "plan only, without acting",
+    };
+    return `Switch this session to ${modes[s.mode] ?? s.mode}`;
+  }
+  return raw;
 }
 
 /** Which identity glyph the card wears. Presentation only; it never widens a permission. */

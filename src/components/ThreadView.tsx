@@ -300,7 +300,7 @@ const NoticePart: DataMessagePartComponent<{
     );
   return (
     <InlineNotice tone={tone} shimmering={status.type === "running"}>
-      {data.text || noticeHeading(data.code)}
+      {noticeSentence(data.code, data.text)}
     </InlineNotice>
   );
 };
@@ -310,6 +310,34 @@ function noticeHeading(code: string): string {
   if (code === "exited") return "The provider exited";
   if (code === "runtime") return "Runtime error";
   return code;
+}
+
+/**
+ * What a person reads, not what the enum is called.
+ *
+ * `crates/store/src/chat.rs` puts a **discriminator** in the body of the two lifecycle notices
+ * that have one — a compaction carries its trigger (`auto` / `manual`) and an exit carries its
+ * reason (`graceful` / `killed` / `crashed` / `error: …`) — because the body is the only field
+ * those events have to carry it in. Printing it verbatim put the word `auto` in the transcript
+ * where a sentence belongs. A `runtime` notice's body is already a real message and is used as
+ * written; anything unrecognised falls back to the body, then to the code, rather than being
+ * dropped.
+ */
+function noticeSentence(code: string, text: string): string {
+  if (code === "compacted")
+    return text === "auto"
+      ? "Context automatically compacted"
+      : text === "manual"
+        ? "Context compacted"
+        : noticeHeading(code);
+  if (code === "exited") {
+    if (text === "graceful") return "The provider exited";
+    if (text === "killed") return "The provider was stopped";
+    if (text === "crashed") return "The provider crashed";
+    if (text.startsWith("error: ")) return `The provider exited: ${text.slice(7)}`;
+    return text ? `The provider exited · ${text}` : noticeHeading(code);
+  }
+  return text || noticeHeading(code);
 }
 
 /** Row 8: the per-turn changed-files card, attached under the final answer. */
@@ -671,7 +699,14 @@ function stopLabel(reason: string) {
   if (reason === "refusal") return "The agent could not fulfill this request";
   try {
     const value = JSON.parse(reason) as { error?: string; other?: string };
-    return value.error ?? value.other ?? reason;
+    // `error` is a provider message and reads as prose. `other` is a raw provider token the
+    // wire could not map (`crates/core/src/claude/adapter.rs` rides it verbatim) — it is shown,
+    // because dropping it would hide why a turn ended, but it is framed rather than passed off
+    // as a sentence.
+    if (typeof value.error === "string") return value.error;
+    if (typeof value.other === "string")
+      return `Stopped · ${value.other.replace(/[_-]/g, " ")}`;
+    return reason;
   } catch {
     return reason;
   }

@@ -38,6 +38,44 @@ export interface ComposerProps extends MessageEditProps {
   ) => Promise<WorktreeCleanup | null>;
 }
 
+/**
+ * Is the first pending approval's card on screen right now?
+ *
+ * Both surfaces belong, and they do different jobs: the **card in the thread** is where a
+ * request is read and answered, in the place in the transcript it happened; this **strip** is
+ * a jump affordance for a card that has scrolled out of the viewport. What did not belong was
+ * showing them at the same time, each stating the same count — `01-thread-collapsed-full.png`
+ * has "Waiting on you · 2 open" and "Approval needed · 2" in one screenshot. Gating the strip
+ * on the card's visibility means neither ever restates the other.
+ *
+ * This is presentation only. It observes the card; it cannot resolve, dismiss or alter one, and
+ * the approval's own non-optimistic state machine is untouched.
+ */
+function useApprovalVisible(requestId: string | undefined): boolean {
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    if (requestId === undefined) { setVisible(false); return; }
+    if (typeof IntersectionObserver === "undefined") { setVisible(false); return; }
+    let observer: IntersectionObserver | undefined;
+    // The card mounts from the transcript's own refetch, which is not this component's render.
+    // Poll briefly for the element rather than assuming it is there on the first frame.
+    const attach = () => {
+      const card = document.getElementById(`approval-${requestId}`);
+      if (!card) return false;
+      observer = new IntersectionObserver(
+        entries => setVisible(entries.some(entry => entry.isIntersecting)),
+        { threshold: 0 },
+      );
+      observer.observe(card);
+      return true;
+    };
+    if (attach()) return () => observer?.disconnect();
+    const timer = setInterval(() => { if (attach()) clearInterval(timer); }, 250);
+    return () => { clearInterval(timer); observer?.disconnect(); };
+  }, [requestId]);
+  return visible;
+}
+
 /** A single Send/Stop control backed by a durable, serialized desktop queue. */
 export function Composer({ project = null, session, models = EMPTY_MODELS, busy, onSend, onResume, editing, onCancelEdit, onRewound }: ComposerProps) {
   const sessionId = session?.sessionId ?? null;
@@ -56,6 +94,7 @@ export function Composer({ project = null, session, models = EMPTY_MODELS, busy,
     : settings?.execution;
   const feed = useSyncExternalStore(feedStore.subscribe, feedStore.getState);
   const approvals = feed.approvals.filter(item => item.sessionId === sessionId && !item.expired);
+  const approvalOnScreen = useApprovalVisible(approvals[0]?.requestId);
   const edit = useMessageEdit({ editing, onCancelEdit, onRewound });
   const [uploading, setUploading] = useState(false);
   const [sending, setSending] = useState(false);
@@ -147,7 +186,7 @@ export function Composer({ project = null, session, models = EMPTY_MODELS, busy,
   const canResume = !!session && (!!state?.paused || (session.worktreeRemoved && !live) || (!desktop && !!session.providerSessionId && !live));
   return <>
     {session && project && <ResolvedTaskRail project={project} cwd={session.cwd} branch={session.branch} isolated={!!session.worktreePath || !!settings?.workspacePath}/>}
-    {approvals.length > 0 && <button type="button" className="composer-approval-strip" onClick={() => document.getElementById(`approval-${approvals[0]!.requestId}`)?.scrollIntoView({ block: "center", behavior: "smooth" })}>Approval needed{approvals.length > 1 ? ` · ${approvals.length}` : ""}<span>View action ↑</span></button>}
+    {approvals.length > 0 && !approvalOnScreen && <button type="button" className="composer-approval-strip" onClick={() => document.getElementById(`approval-${approvals[0]!.requestId}`)?.scrollIntoView({ block: "center", behavior: "smooth" })}>Approval needed{approvals.length > 1 ? ` · ${approvals.length}` : ""}<span>View action ↑</span></button>}
     {(pending.length > 0 || state?.paused || state?.stopping || waiting) && <div className="composer-queue" aria-label="Message queue">
       <div className="composer-queue-header"><span>{stopping ? "Stopping task…" : state?.paused ? state.stopped ? "Queue paused because you stopped" : "Queue paused" : waitingLabel ?? `${pending.length} queued message${pending.length === 1 ? "" : "s"}`}</span>{canResume && <Button type="button" variant="ghost" size="sm" disabled={queueBusy || stopping} onClick={() => void resume()}>Continue</Button>}</div>
       {pending.map(item => <div className="composer-queue-row" key={item.id}>
