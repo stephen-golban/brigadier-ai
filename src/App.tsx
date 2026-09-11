@@ -156,6 +156,12 @@ const BURN_UI = import.meta.env.DEV || import.meta.env.VITE_BURN === "1";
 const emptySelectedApprovals: ApprovalRow[] = [];
 
 /**
+ * How long after the startup data lands the Markdown chunk is warmed. **[not measured]** — see the
+ * comment at its one use in the mount effect; the P9 burn is what settles the number.
+ */
+const MARKDOWN_PRELOAD_DELAY_MS = 1500;
+
+/**
  * Archive sync and the native menu event bridge, in that order and only in that order.
  *
  * **Listeners first, then the fetch** (`docs/plans/efficiency-plan-review-2026-09-11.md` §B4).
@@ -164,6 +170,11 @@ const emptySelectedApprovals: ApprovalRow[] = [];
  * a real window in which an `archive-changed` was dropped and the sidebar stayed stale for up to
  * five seconds. The poll is deliberately still here: it is what hid that window, and it goes only
  * once the producer side is proven to emit on every archive mutation.
+ *
+ * The gate is `archive-changed` alone. The seven native menu subscriptions register alongside it
+ * and are torn down with it, but the first `syncArchive()` does not wait on them: they carry no
+ * archive state, so making the sidebar's first read depend on all eight registrations only adds
+ * latency.
  *
  * The browser/mock branch keeps its synchronous first refresh: there is nothing to subscribe to,
  * so there is nothing to wait for.
@@ -188,62 +199,68 @@ export function useArchiveAndNativeEvents(say: (e: unknown) => void): void {
       }
     };
     let timer: ReturnType<typeof setInterval> | undefined;
-    let unlisteners: Array<() => void> = [];
+    const unlisteners: Array<() => void> = [];
     const begin = () => {
       void refresh();
       timer = setInterval(() => void refresh(), 5000);
     };
+    // Unmount can win the race against any pending `listen()`: it is live now and nothing else
+    // will ever tear it down, so tear it down here.
+    const collect = (stop: () => void) => {
+      if (stopped) stop();
+      else unlisteners.push(stop);
+    };
+    const subscribe = (promise: Promise<() => void>): Promise<() => void> =>
+      promise.catch((e): (() => void) => {
+        if (!stopped) say(e);
+        return () => {};
+      });
     if (!desktop) begin();
     else
       void (async () => {
-        const settled = await Promise.all(
-          [
-            listen("archive-changed", () => void refresh()),
-            listen("native-close-tab", () =>
-              window.dispatchEvent(new Event("workbench-close-tab")),
-            ),
-            listen("native-new-session", () =>
-              window.dispatchEvent(new Event("workbench-new-session")),
-            ),
-            listen("native-new-terminal", () =>
-              window.dispatchEvent(new Event("workbench-new-terminal")),
-            ),
-            listen<string>("native-session-action", (event) =>
-              window.dispatchEvent(
-                new CustomEvent("workbench-session-action", {
-                  detail: event.payload,
-                }),
-              ),
-            ),
-            listen("native-toggle-terminal", () =>
-              window.dispatchEvent(new Event("workbench-terminal-toggle")),
-            ),
-            listen("native-split-terminal", () =>
-              window.dispatchEvent(new Event("workbench-terminal-split")),
-            ),
-            listen("native-new-files", () =>
-              window.dispatchEvent(new Event("workbench-new-files")),
-            ),
-          ].map((promise) =>
-            promise.catch((e): (() => void) => {
-              if (!stopped) say(e);
-              return () => {};
-            }),
+        // Only `archive-changed` gates the first fetch. The seven native menu subscriptions have
+        // nothing to do with the archive, and making the sidebar's first read wait on all eight
+        // registrations is eight IPC round trips of latency for a dependency on one of them.
+        const natives = [
+          listen("native-close-tab", () =>
+            window.dispatchEvent(new Event("workbench-close-tab")),
           ),
+          listen("native-new-session", () =>
+            window.dispatchEvent(new Event("workbench-new-session")),
+          ),
+          listen("native-new-terminal", () =>
+            window.dispatchEvent(new Event("workbench-new-terminal")),
+          ),
+          listen<string>("native-session-action", (event) =>
+            window.dispatchEvent(
+              new CustomEvent("workbench-session-action", {
+                detail: event.payload,
+              }),
+            ),
+          ),
+          listen("native-toggle-terminal", () =>
+            window.dispatchEvent(new Event("workbench-terminal-toggle")),
+          ),
+          listen("native-split-terminal", () =>
+            window.dispatchEvent(new Event("workbench-terminal-split")),
+          ),
+          listen("native-new-files", () =>
+            window.dispatchEvent(new Event("workbench-new-files")),
+          ),
+        ];
+        for (const native of natives) void subscribe(native).then(collect);
+        const archive = await subscribe(
+          listen("archive-changed", () => void refresh()),
         );
-        // Unmount raced the pending `listen()` calls: they are live now and nothing else will
-        // ever tear them down, so tear them down here — and start no poll.
-        if (stopped) {
-          for (const unlisten of settled) unlisten();
-          return;
-        }
-        unlisteners = settled;
-        begin();
+        collect(archive);
+        // No poll for a hook that is already gone.
+        if (!stopped) begin();
       })();
     return () => {
       stopped = true;
       clearInterval(timer);
       for (const unlisten of unlisteners) unlisten();
+      unlisteners.length = 0;
     };
   }, [say]);
 }
@@ -419,6 +436,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
   useEffect(() => {
     const b = bridge();
     let cancelled = false;
+    let preloadTimer: ReturnType<typeof setTimeout> | undefined;
 
     store.start();
     void b.subscribeFeed(store.pushBatch).catch(say);
@@ -454,10 +472,20 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
             projectList.find(p => !p.projectless)?.id ?? null,
         );
       // The 286 KB Markdown chunk, fetched and evaluated here rather than on the first transcript
-      // mount. This is after first contentful paint, so it cannot spend the 295 ms budget; the
-      // zero-delay timer yields the task first. Desktop only: the browser mock mounts no
-      // transcript. `preloadMarkdownContent` shares `lazy`'s promise, so it never fetches twice.
-      if (desktop) setTimeout(() => void preloadMarkdownContent(), 0);
+      // mount. Desktop only: the browser mock mounts no transcript. `preloadMarkdownContent`
+      // shares `lazy`'s promise, so it never fetches twice.
+      //
+      // The delay is **[not measured]**. A zero-delay timer put the fetch and parse in the
+      // ~1.0 s shell-mount region — Cluster A of `docs/performance/2026-09-11/cold-path-attribution.md`
+      // §3, a 29-31 ms frame that drops one vsync in five of six captures, and the one window
+      // where this chunk could plausibly make things worse. 1500 ms clears it with margin and is
+      // still well before a user opens a transcript; no capture says 1500 rather than 400 or 3000.
+      // The P9 burn decides the number, not this comment.
+      if (desktop)
+        preloadTimer = setTimeout(
+          () => void preloadMarkdownContent(),
+          MARKDOWN_PRELOAD_DELAY_MS,
+        );
     })();
 
     void b
@@ -471,6 +499,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
 
     return () => {
       cancelled = true;
+      clearTimeout(preloadTimer);
       store.stop();
     };
   }, [say]);

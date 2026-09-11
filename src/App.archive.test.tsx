@@ -19,6 +19,8 @@ const fake = vi.hoisted(() => ({
   sync: vi.fn(),
   /** Held open to keep the `listen()` calls unresolved, which is the window under test. */
   gate: null as Promise<void> | null,
+  /** Holds only the `native-*` registrations open, which the archive fetch must not wait on. */
+  nativeGate: null as Promise<void> | null,
 }));
 
 // The handler goes live only when the promise resolves, as the real IPC registration does.
@@ -26,7 +28,8 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: (name: string, handler: () => void) => {
     fake.listened.push(name);
     const register = () => { fake.handlers.set(name, handler); return fake.unlisten; };
-    return (fake.gate ?? Promise.resolve()).then(register);
+    const gate = name.startsWith("native-") ? (fake.nativeGate ?? fake.gate) : fake.gate;
+    return (gate ?? Promise.resolve()).then(register);
   },
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => undefined), isTauri: () => true }));
@@ -53,7 +56,7 @@ afterEach(async () => {
   await Promise.resolve(); await Promise.resolve();
   vi.useRealTimers();
   fake.sync.mockReset(); fake.unlisten.mockReset(); say.mockReset();
-  fake.listened.length = 0; fake.handlers.clear(); fake.gate = null;
+  fake.listened.length = 0; fake.handlers.clear(); fake.gate = null; fake.nativeGate = null;
 });
 
 /** What `src-tauri` emits when the archive moves under the window. */
@@ -97,6 +100,26 @@ it("unsubscribes listens that resolve after unmount, and never syncs or polls", 
   expect(fake.sync).not.toHaveBeenCalled();
   await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
   expect(fake.sync).not.toHaveBeenCalled();
+});
+
+/*
+ * Only `archive-changed` gates the fetch. The native menu subscriptions carry no archive state, so
+ * waiting on all eight registrations before the sidebar's first read is pure added latency.
+ */
+it("does not wait on the native menu subscriptions before the first archive fetch", async () => {
+  let openNatives: () => void = () => {};
+  fake.nativeGate = new Promise<void>(r => { openNatives = r; });
+  fake.sync.mockResolvedValue(undefined);
+  renderHook(() => useArchiveAndNativeEvents(say));
+
+  await act(async () => {});
+  expect(fake.listened).toContain("native-new-session");
+  expect(fake.handlers.has("native-new-session")).toBe(false); // still registering
+  expect(fake.handlers.has("archive-changed")).toBe(true);
+  expect(fake.sync).toHaveBeenCalledTimes(1);
+
+  await act(async () => { openNatives(); });
+  expect(fake.handlers.has("native-new-session")).toBe(true);
 });
 
 it("bridges a native menu event onto the window once its subscription is live", async () => {

@@ -70,6 +70,70 @@ it("asks its frame source for frames for exactly the capture's duration", () => 
   }
 });
 
+/*
+ * The idle baseline. Every historical capture carried an `idleWindow`; once the loop became
+ * idle-silent, `getLastReport()` could only ever hand the burn a *capture's* window (or null), so
+ * the baseline is now measured explicitly and must not disturb the capture it precedes.
+ */
+it("samples one idle window from the frame source and leaves capture state untouched", async () => {
+  const asked: boolean[] = [];
+  try {
+    fps.stopCapture(); // close the capture `beforeEach` opened
+    const before = fps.getLastReport();
+    fps.setFrameSource((on) => asked.push(on));
+
+    const pending = fps.sampleIdleWindow(5);
+    expect(asked).toEqual([true]);
+    fps.sampleFrame(200);
+    fps.sampleFrame(200 + 1000 / 60);
+    fps.sampleFrame(200 + 2000 / 60);
+    const idle = await pending;
+
+    expect(idle?.frames).toBe(2);
+    expect(idle?.dropped).toBe(0);
+    expect(idle?.hz).toBe(60);
+    expect(asked).toEqual([true, false]);
+    // Nothing the meter's own state can tell apart from "no window ever closed".
+    expect(fps.getLastReport()).toBe(before);
+    fps.startCapture();
+    expect(fps.stopCapture()).toEqual([]);
+  } finally {
+    fps.setFrameSource(null);
+  }
+});
+
+it("cancels an idle sample that a capture starts on top of, and keeps the two apart", async () => {
+  const asked: boolean[] = [];
+  try {
+    fps.stopCapture();
+    fps.setFrameSource((on) => asked.push(on));
+    const pending = fps.sampleIdleWindow(5);
+    fps.sampleFrame(200);
+    fps.sampleFrame(217);
+    // A burn never waits on its own baseline; the capture takes the frame source as it stands.
+    fps.startCapture();
+    fps.sampleFrame(300);
+    fps.sampleFrame(300 + 1000 / 60);
+    expect(await pending).toBeNull();
+    expect(asked).toEqual([true, true]);
+    const windows = fps.stopCapture();
+    expect(asked).toEqual([true, true, false]);
+    // Two frames, both the capture's: the sample's intervals did not leak into it.
+    expect(windows[0].frames).toBe(2);
+    expect(windows[0].intervals_ms).not.toContain(17);
+  } finally {
+    fps.setFrameSource(null);
+  }
+});
+
+it("never offers a finished capture's window as the idle baseline", async () => {
+  const windows = capture(1000 / 60, 120);
+  expect(windows.length).toBeGreaterThan(0);
+  expect(fps.getLastReport()).not.toBeNull();
+  // No frames arrived on the idle path, so it reports nothing — it does not reuse that window.
+  expect(await fps.sampleIdleWindow(5)).toBeNull();
+});
+
 it("owes frames to a capture that was already open when the source registered", () => {
   const asked: boolean[] = [];
   try {

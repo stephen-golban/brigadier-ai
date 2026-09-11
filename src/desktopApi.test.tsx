@@ -120,6 +120,70 @@ it("applies a later event without any fetch of its own", async () => {
   expect(fake.invoke.mock.calls.length).toBe(1);
 });
 
+/*
+ * The two ways the event-only hook can go permanently silent, both of which the deleted 2 s poll
+ * used to hide: an event that carries no array, and a first snapshot that rejects.
+ */
+it("re-reads the queue for an event that carries no array", async () => {
+  fake.invoke.mockImplementation(async () => []);
+  const { result } = renderHook(() => useCleanup());
+  await act(async () => {});
+  expect(result.current).toEqual([]);
+  fake.invoke.mockImplementation(async () => [job("a")]);
+  // `announced` is already true here, so an unforced read would fetch this and throw it away.
+  await act(async () => { emit(undefined); });
+  expect(fake.invoke.mock.calls.length).toBe(2);
+  expect(result.current).toEqual([job("a")]);
+});
+
+it("retries a rejected first snapshot after 1 s and applies the answer", async () => {
+  vi.useFakeTimers();
+  fake.invoke.mockRejectedValueOnce(new Error("queue unreadable")).mockResolvedValue([job("a")]);
+  const { result } = renderHook(() => useCleanup());
+  await act(async () => {});
+  expect(result.current).toEqual([]);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  expect(result.current).toEqual([job("a")]);
+  const calls = fake.invoke.mock.calls.length;
+  await act(async () => { await vi.advanceTimersByTimeAsync(60000); });
+  expect(fake.invoke.mock.calls.length).toBe(calls);
+});
+
+it("bounds the retries at 1 s and 5 s and then stops", async () => {
+  vi.useFakeTimers();
+  fake.invoke.mockRejectedValue(new Error("queue unreadable"));
+  renderHook(() => useCleanup());
+  await act(async () => {});
+  expect(fake.invoke).toHaveBeenCalledTimes(1);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  expect(fake.invoke).toHaveBeenCalledTimes(2);
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  expect(fake.invoke).toHaveBeenCalledTimes(3);
+  await act(async () => { await vi.advanceTimersByTimeAsync(60000); });
+  expect(fake.invoke).toHaveBeenCalledTimes(3);
+});
+
+it("cancels a pending retry on dispose", async () => {
+  vi.useFakeTimers();
+  fake.invoke.mockRejectedValue(new Error("queue unreadable"));
+  const { unmount } = renderHook(() => useCleanup());
+  await act(async () => {});
+  unmount();
+  await act(async () => { await vi.advanceTimersByTimeAsync(60000); });
+  expect(fake.invoke).toHaveBeenCalledTimes(1);
+});
+
+it("drops a pending retry when an event answers first", async () => {
+  vi.useFakeTimers();
+  fake.invoke.mockRejectedValue(new Error("queue unreadable"));
+  const { result } = renderHook(() => useCleanup());
+  await act(async () => {});
+  await act(async () => { emit([job("a")]); });
+  expect(result.current).toEqual([job("a")]);
+  await act(async () => { await vi.advanceTimersByTimeAsync(60000); });
+  expect(fake.invoke).toHaveBeenCalledTimes(1);
+});
+
 it("unlistens on dispose", async () => {
   fake.invoke.mockImplementation(async () => []);
   const { unmount } = renderHook(() => useCleanup());

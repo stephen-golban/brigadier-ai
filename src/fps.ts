@@ -28,8 +28,6 @@ let acc: number[] = [];
 let last = 0;
 let windowStartPerf = 0;
 let windowStartWall = 0;
-let dropRun = 0;
-let longestDropRun = 0;
 let started = false;
 
 let lastReport: WindowReport | null = null;
@@ -78,6 +76,15 @@ export function setEnabled(on: boolean): void {
 
 /** Called once per animation frame from the shared loop in `feedStore`. */
 export function sampleFrame(now: number): void {
+  // An idle sample owns the frames it asked for. Letting them into the accumulators would close a
+  // window, move `lastReport` and hand the next `startCapture` a stale `last` — the sample is a
+  // measurement *of* the idle path, not a capture of it. `startCapture` cancels any sample in
+  // flight, so a capture and a sample are never open at the same time.
+  if (idleSample !== null) {
+    if (idleSample.last > 0) idleSample.intervals.push(now - idleSample.last);
+    idleSample.last = now;
+    return;
+  }
   if (capture !== null && document.hidden) interrupted = true;
   if (!started) {
     started = true;
@@ -98,8 +105,6 @@ export function sampleFrame(now: number): void {
 
 function resetWindow(now: number): void {
   acc = [];
-  dropRun = 0;
-  longestDropRun = 0;
   windowStartPerf = now;
   windowStartWall = Date.now();
 }
@@ -107,16 +112,26 @@ function resetWindow(now: number): void {
 /** The repository's 60 Hz bar, independent of observed cadence and display mode. */
 export const TARGET_HZ = 60;
 
-function report(now: number): void {
-  const s = acc.slice().sort((a, b) => a - b);
+/**
+ * The window arithmetic, over an interval series and nothing else. Pure: it reads no accumulator
+ * and writes no capture state, so an idle sample and a capture window are computed by exactly the
+ * same code and are comparable in a capture file.
+ */
+function buildWindow(
+  intervals: readonly number[],
+  startWall: number,
+  drainWorstMs: number,
+  wasInterrupted: boolean,
+): { stats: FrameStats; window: WindowReport } {
+  const s = intervals.slice().sort((a, b) => a - b);
   const n = s.length;
   const hz = TARGET_HZ;
   const budget = 1000 / hz;
 
   let dropped = 0;
-  dropRun = 0;
-  longestDropRun = 0;
-  for (const dt of acc) {
+  let dropRun = 0;
+  let longestDropRun = 0;
+  for (const dt of intervals) {
     const missed = Math.max(0, Math.round(dt / budget) - 1);
     dropped += missed;
     if (missed > 0) {
@@ -129,7 +144,7 @@ function report(now: number): void {
 
   const at = (q: number) => round2(s[Math.min(n - 1, Math.floor(n * q))] ?? 0);
   const stats: FrameStats = {
-    window_start_ms: windowStartWall,
+    window_start_ms: startWall,
     hz,
     frames: n,
     dropped,
@@ -140,9 +155,12 @@ function report(now: number): void {
     longest_drop_run: longestDropRun,
     dom_nodes: document.getElementsByTagName("*").length,
   };
+  return { stats, window: { ...stats, hz_source: "target", intervals_ms: intervals.slice(), interrupted: wasInterrupted,
+    hidden: document.hidden, focused: document.hasFocus(), drain_worst_ms: drainWorstMs } };
+}
 
-  const windowReport: WindowReport = { ...stats, hz_source: "target", intervals_ms: acc.slice(), interrupted,
-    hidden: document.hidden, focused: document.hasFocus(), drain_worst_ms: drainWorst };
+function report(now: number): void {
+  const { stats, window: windowReport } = buildWindow(acc, windowStartWall, drainWorst, interrupted);
   drainWorst = 0;
 
   resetWindow(now);
@@ -176,7 +194,13 @@ export function subscribe(cb: () => void): () => void {
   return () => listeners.delete(cb);
 }
 
-/** The most recent one-second window, or null before the first one closes. */
+/**
+ * The most recent one-second window, or null before the first one closes.
+ *
+ * Since the loop is armed only by a capture, every window this can return came **from a capture**:
+ * on a first burn it is null and on a second it is the previous run's last window. It is therefore
+ * not an idle baseline, whatever it is called at the call site — `sampleIdleWindow` is.
+ */
 export function getLastReport(): WindowReport | null {
   return lastReport;
 }
@@ -206,6 +230,15 @@ export function getLastReport(): WindowReport | null {
 type FrameSource = (on: boolean) => void;
 let frameSource: FrameSource | null = null;
 
+/** One in-flight `sampleIdleWindow`, held apart from every capture accumulator. */
+interface IdleSample {
+  intervals: number[];
+  last: number;
+  startWall: number;
+  cancelled: boolean;
+}
+let idleSample: IdleSample | null = null;
+
 /** Registered once by `src/feedStore.ts` at module load; `null` unregisters (tests). */
 export function setFrameSource(source: FrameSource | null): void {
   frameSource = source;
@@ -213,8 +246,52 @@ export function setFrameSource(source: FrameSource | null): void {
   if (source !== null && capture !== null) source(true);
 }
 
+/**
+ * One window of the idle path, measured explicitly rather than inferred.
+ *
+ * The burn's `idleWindow` used to be `getLastReport()`, which since the loop became idle-silent is
+ * null on a first burn and the previous run's *capture* window on a second — the field was
+ * recording nothing. This asks the frame source for frames for `ms`, counts the store's own drain
+ * callbacks over that span with the same arithmetic a capture window uses (`buildWindow`), and
+ * gives the frames back. It touches no capture state: not `acc`, not `lastReport`, not `capture`,
+ * and it notifies no subscriber.
+ *
+ * `drain_worst_ms` is reported as 0 — the sample deliberately leaves the capture's drain
+ * accumulator alone rather than consuming it.
+ *
+ * Returns null when there is nothing honest to report: a capture is already open, a sample is
+ * already running, no frame arrived at all, or a capture started while the sample was in flight.
+ * **A capture cancels the sample**, rather than the sample delaying the capture: a burn must never
+ * wait on a baseline, and `startCapture` takes the frame source over as it stands.
+ */
+export function sampleIdleWindow(ms = REPORT_INTERVAL_MS): Promise<WindowReport | null> {
+  if (idleSample !== null || capture !== null) return Promise.resolve(null);
+  const sample: IdleSample = { intervals: [], last: 0, startWall: Date.now(), cancelled: false };
+  idleSample = sample;
+  frameSource?.(true);
+  return new Promise((resolve) =>
+    setTimeout(() => {
+      // Identity, not a null check: a capture that cancelled this sample now owns the source.
+      if (idleSample === sample) {
+        idleSample = null;
+        frameSource?.(false);
+      }
+      resolve(
+        sample.cancelled || sample.intervals.length === 0
+          ? null
+          : buildWindow(sample.intervals, sample.startWall, 0, document.hidden).window,
+      );
+    }, ms),
+  );
+}
+
 /** Start collecting every one-second window, for a burn run. */
 export function startCapture(): void {
+  // A baseline never delays or contaminates the run it is a baseline for.
+  if (idleSample !== null) {
+    idleSample.cancelled = true;
+    idleSample = null;
+  }
   interrupted = document.hidden;
   last = performance.now();
   resetWindow(last);

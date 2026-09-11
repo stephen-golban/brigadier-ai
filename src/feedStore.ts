@@ -769,6 +769,13 @@ function drainOnce(timestamp?: number): void {
  * and an approval or turn signal must still land — `docs/vision.md` §9 forbids an optimistic
  * card, so the card's arrival is the signal's arrival. Both stay armed for as long as there is
  * pending work, which is what the loop did unconditionally before this change.
+ *
+ * **What this cost an occluded approval.** The old loop re-armed the fallback every drain, so a
+ * batch arriving into an occluded window landed on a timer that was already part-way through its
+ * `DRAIN_FALLBACK_MS` — a uniform 0-250 ms wait, ~125 ms on average. The timer is now started by
+ * the arrival itself, so that wait is a fixed ~250 ms: the worst case is unchanged and the average
+ * roughly doubles. Still inside the documented bound, and it buys an idle window that wakes
+ * nothing at all. **[not measured]** — arithmetic off the arming rule, not a timed occluded run.
  */
 function armWork(): void {
   if (armed === "work") return;
