@@ -64,7 +64,8 @@ use crate::claude::process::{ExitInfo, KillHandle};
 use crate::driver::DriverError;
 use crate::event::{
     bounded, AbortReason, CompactTrigger, Envelope, Event, ExitReason, InstanceId, ItemId,
-    ItemKind, RequestId, RequestKind, SessionId, StopReason, TurnId, Usage, SUMMARY_LIMIT,
+    ItemKind, RequestId, RequestKind, SessionId, StopReason, TurnId, Usage, UsageWindow,
+    SUMMARY_LIMIT,
 };
 use crate::session::{
     Command, CommandError, Decision, FinalText, NativeControl, SessionBackend, SessionHandle,
@@ -627,6 +628,20 @@ where
                             Some(raw),
                         );
                     }
+                    let windows = usage_windows(&info);
+                    if !windows.is_empty() {
+                        self.emit(
+                            Event::UsageWindows {
+                                status: info
+                                    .get("status")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or_default()
+                                    .to_owned(),
+                                windows,
+                            },
+                            Some(raw),
+                        );
+                    }
                 }
             }
             // Informational frames, deliberately not events: `system/thinking_tokens` alone was
@@ -1021,6 +1036,12 @@ where
     /// the harness already knows what it wrote, and an interruption is reported by `TurnAborted`.
     fn on_user(&mut self, user: UserMessage, raw: &str) {
         let parent = user.parent_tool_use_id.as_deref().map(ItemId::new);
+        // The frame-level sibling, read once for the whole frame: it is not per block, and on the
+        // failure and interrupt paths it is a string rather than the success-shaped object.
+        let interrupted = user
+            .tool_use_result
+            .as_ref()
+            .is_some_and(claude_wire::message::ToolUseResult::is_interrupted);
         let MessageContent::Blocks(blocks) = user.message.content else {
             return;
         };
@@ -1037,12 +1058,21 @@ where
             let body = content.as_ref().map(result_text).unwrap_or_default();
             let summary = summarize(&body);
             let is_error = is_error.unwrap_or(false);
+            // Only on the failure path: a succeeding command never writes the line, so parsing a
+            // success body could only ever pick up a command's own output quoting the phrase.
+            let exit_code = if is_error {
+                parse_exit_code(&body)
+            } else {
+                None
+            };
             self.emit(
                 Event::item_completed(
                     ItemId::new(format!("{tool_use_id}:result")),
                     ItemKind::ToolResult {
                         tool_call_id: tool_use_id,
                         is_error,
+                        exit_code,
+                        interrupted,
                     },
                     &summary,
                     parent.clone(),
@@ -2021,6 +2051,65 @@ fn result_text(content: &Value) -> String {
     }
 }
 
+/// Every entry of `rate_limit_info.unifiedWindows`, as [`UsageWindow`]s.
+///
+/// The window **set is open**: an unrecognised key is passed through with its name verbatim
+/// rather than dropped, so a CLI that adds a third window renders without a Rust change
+/// (`docs/plans/codex-thread-rebuild-2026-09-11.md` §4.3). An entry missing either number is
+/// skipped — a window with no utilization is not a window.
+///
+/// **No cost is read, and no cost field exists to read it into** (`docs/vision.md` §6).
+///
+/// Ordering note: the source is a [`Value`], so the keys arrive in `serde_json`'s map order —
+/// sorted, since `preserve_order` is not enabled — rather than in the provider's literal write
+/// order. With the two measured keys the two orders coincide; the UI must not depend on it.
+fn usage_windows(info: &Value) -> Vec<UsageWindow> {
+    let Some(map) = info.get("unifiedWindows").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    map.iter()
+        .filter_map(|(name, w)| {
+            Some(UsageWindow {
+                name: name.clone(),
+                utilization: w.get("utilization").and_then(Value::as_f64)?,
+                resets_at: w.get("resetsAt").and_then(Value::as_i64)?,
+            })
+        })
+        .collect()
+}
+
+/// `^Exit code (\d+)(\n|$)`, anchored at byte 0 of a `tool_result` body.
+///
+/// **This is the only carrier of a shell exit code anywhere on the wire.** There is no numeric
+/// field: `exitCode`, `exit_code`, `returnCode` are 0 hits across all six captures
+/// (`docs/research/cli-steer-and-exit-codes.md` §2). Written by hand rather than with a regex
+/// crate because the pattern is four tokens and the dependency would be a new one.
+///
+/// Deliberately strict:
+/// - anchored, so a command whose own output *mentions* `Exit code 7` on a later line — or on the
+///   first line but after other text — yields `None` rather than a fabricated code;
+/// - the line ends at the first `\n` **or at end of input**. Measured against CLI 2.1.268 on
+///   2026-09-11, driven over the real stdio protocol with `build_argv`'s flags: a failing
+///   command with no output at all writes
+///   exactly `"Exit code 3"` with **no trailing newline**, and a signalled one writes
+///   `"Exit code 144"` the same way. Requiring the newline missed both silently;
+/// - digits only, so `Exit code -1` and `Exit code 3x` are `None`;
+/// - no `is_error` fallback. `is_error` is `true` for a failure, an interrupt **and** a rejected
+///   tool use (landmine 1), so inferring a code from it would print a red exit code on a run the
+///   operator themself stopped.
+///
+/// A non-Bash tool's body never begins with the line, so the same function returns `None` for it
+/// without needing to know the tool's name.
+fn parse_exit_code(body: &str) -> Option<i32> {
+    let rest = body.strip_prefix("Exit code ")?;
+    // The whole remainder when the body ends there — the measured no-output shape.
+    let digits = rest.split('\n').next()?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
 /// Trim `s` to at most `max_bytes` **from the front**, on a UTF-8 boundary.
 ///
 /// The opposite end from [`bounded`], and on purpose: this is the buffer a loop reads a fenced
@@ -2220,6 +2309,137 @@ mod tests {
             approval_request_id(&session, 1),
             approval_request_id(&session, 2)
         );
+    }
+
+    /// The five cases `docs/plans/codex-thread-rebuild-2026-09-11.md` §4.1 names, plus the
+    /// malformed ones. The measured shapes have their own test below.
+    #[test]
+    fn exit_code_is_parsed_only_from_the_anchored_first_line() {
+        // A real failure: exit 3, stdout and stderr already concatenated with no delimiter.
+        assert_eq!(parse_exit_code("Exit code 3\nout\nerr"), Some(3));
+        // Zero. Never observed in the captures — a succeeding command writes no line at all and
+        // `is_error` is false — but the grammar admits it and the parser must not special-case it.
+        assert_eq!(parse_exit_code("Exit code 0\n"), Some(0));
+        // Multi-digit, because a shell's codes run to 255 and signals report 128+n.
+        assert_eq!(parse_exit_code("Exit code 130\nkilled\n"), Some(130));
+        // Absent: the line is simply not there. This is every successful Bash result.
+        assert_eq!(parse_exit_code("ok"), None);
+        assert_eq!(parse_exit_code(""), None);
+        // Mentioned later rather than first: a command whose own output talks about exit codes.
+        // The anchor is what stops this becoming a fabricated red badge.
+        assert_eq!(parse_exit_code("checking…\nExit code 7\n"), None);
+        assert_eq!(parse_exit_code("see Exit code 7\n"), None);
+        // On the first line but not at byte 0.
+        assert_eq!(parse_exit_code(" Exit code 7\n"), None);
+        // A non-Bash tool's body — `Read`'s, `Grep`'s — never begins with the line.
+        assert_eq!(parse_exit_code("     1\tuse serde::Serialize;\n"), None);
+        assert_eq!(
+            parse_exit_code("<tool_use_error>File does not exist.</tool_use_error>"),
+            None
+        );
+        // Malformed: no digits, a sign, or trailing junk. Each yields `None`, never a wrong code.
+        assert_eq!(parse_exit_code("Exit code \nout"), None);
+        assert_eq!(parse_exit_code("Exit code -1\nout"), None);
+        assert_eq!(parse_exit_code("Exit code 3x\nout"), None);
+        assert_eq!(parse_exit_code("Exit code 3x"), None);
+        assert_eq!(parse_exit_code("Exit code three\n"), None);
+        assert_eq!(parse_exit_code("Exit code "), None);
+    }
+
+    /// The four shapes captured off CLI 2.1.268 on 2026-09-11, verbatim.
+    ///
+    /// Driven with brigadier's own `build_argv` flags plus `--model haiku` in a throwaway git
+    /// repo, reading the raw stdout frames. **No body carries a trailing
+    /// newline** — the earlier `^Exit code (\d+)\n` anchor was pinned against the documented
+    /// shape, not a capture, and silently missed the first and fourth of these.
+    #[test]
+    fn measured_bash_bodies_from_cli_2_1_268() {
+        // 1. `bash -c 'exit 3'` — fails with no output at all. `is_error: true`, sibling
+        //    `tool_use_result` the plain string `"Error: Exit code 3"`.
+        assert_eq!(parse_exit_code("Exit code 3"), Some(3));
+        // 2. `bash -c 'echo err 1>&2; exit 4'` — stderr only, no stdout. `is_error: true`,
+        //    sibling `"Error: Exit code 4\nerr"`. Note: still no trailing newline.
+        assert_eq!(parse_exit_code("Exit code 4\nerr"), Some(4));
+        // 3. `bash -c 'true'` — succeeds with no output. `is_error: false`, sibling the success
+        //    *object* `{stdout:"",stderr:"",interrupted:false,…}`. The line is absent entirely,
+        //    so a success yields no code rather than a fabricated zero.
+        assert_eq!(parse_exit_code("(Bash completed with no output)"), None);
+        // 4. `bash -c 'kill -TERM $$'` — signalled. The CLI reports it as an ordinary numeric
+        //    code (144 as measured, 128+n), again with no output and no newline.
+        assert_eq!(parse_exit_code("Exit code 144"), Some(144));
+    }
+
+    /// `is_error` is true for all three failing shapes above **and** for an interrupt, so the
+    /// code is read from the body alone. A body that is only a prose error yields `None`.
+    #[test]
+    fn a_measured_failure_body_without_the_line_yields_no_code() {
+        assert_eq!(parse_exit_code("Error: Exit code 3"), None);
+        assert_eq!(parse_exit_code("User rejected tool use"), None);
+        assert_eq!(parse_exit_code("(Bash completed with no output)"), None);
+    }
+
+    /// `is_error` is `true` for a failure, an interrupt **and** a rejected tool use, so it is
+    /// never the evidence for either of the two new fields.
+    #[test]
+    fn an_interrupt_is_read_from_the_sibling_and_never_from_is_error() {
+        use claude_wire::message::ToolUseResult;
+        let rejected = ToolUseResult::Message("User rejected tool use".into());
+        assert!(rejected.is_interrupted());
+        assert_eq!(parse_exit_code("User rejected tool use"), None);
+        // The failure path's string is *not* an interrupt, though `is_error` is true for both.
+        assert!(!ToolUseResult::Message("Error: Exit code 3\nout\nerr".into()).is_interrupted());
+        // The success-shaped object, both ways round.
+        let ok: ToolUseResult = serde_json::from_value(serde_json::json!({
+            "stdout": "ok", "stderr": "", "interrupted": false,
+            "isImage": false, "noOutputExpected": false
+        }))
+        .expect("structured");
+        assert!(!ok.is_interrupted());
+        let cut: ToolUseResult =
+            serde_json::from_value(serde_json::json!({"stdout": "", "interrupted": true}))
+                .expect("structured");
+        assert!(cut.is_interrupted());
+        // A non-Bash tool's object shape carries no `interrupted` at all.
+        let read: ToolUseResult =
+            serde_json::from_value(serde_json::json!({"type": "text", "file": {"content": "x"}}))
+                .expect("structured");
+        assert!(!read.is_interrupted());
+    }
+
+    #[test]
+    fn usage_windows_pass_every_key_through_and_carry_no_cost() {
+        let info = serde_json::json!({
+            "status": "allowed", "resetsAt": 1_789_068_000i64, "rateLimitType": "five_hour",
+            "unifiedWindows": {
+                "five_hour": {"utilization": 0.25, "resetsAt": 1_789_068_000i64},
+                "seven_day": {"utilization": 0.16, "resetsAt": 1_789_556_400i64},
+                // A window this build has never heard of is passed through, not dropped.
+                "thirty_day": {"utilization": 0.02, "resetsAt": 1_791_000_000i64}
+            }
+        });
+        let windows = usage_windows(&info);
+        assert_eq!(windows.len(), 3);
+        assert_eq!(windows[0].name, "five_hour");
+        assert!((windows[0].utilization - 0.25).abs() < f64::EPSILON);
+        assert_eq!(windows[0].resets_at, 1_789_068_000);
+        assert_eq!(windows[2].name, "thirty_day");
+        // A 0–1 fraction, never a percentage.
+        assert!(windows.iter().all(|w| (0.0..=1.0).contains(&w.utilization)));
+        // No cost anywhere, even when the frame carries one.
+        let with_cost = serde_json::json!({
+            "total_cost_usd": 4.21,
+            "unifiedWindows": {"five_hour": {"utilization": 0.5, "resetsAt": 1i64}}
+        });
+        let encoded = serde_json::to_string(&usage_windows(&with_cost)).expect("json");
+        assert!(!encoded.contains("cost"), "{encoded}");
+        assert!(!encoded.contains("4.21"), "{encoded}");
+        // Missing or drifted numbers skip the window rather than inventing a zero.
+        assert!(usage_windows(&serde_json::json!({})).is_empty());
+        assert!(usage_windows(&serde_json::json!({"unifiedWindows": []})).is_empty());
+        assert!(usage_windows(
+            &serde_json::json!({"unifiedWindows": {"five_hour": {"resetsAt": 1i64}}})
+        )
+        .is_empty());
     }
 
     #[test]

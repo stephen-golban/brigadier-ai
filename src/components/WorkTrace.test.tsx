@@ -232,15 +232,23 @@ it("automatically folds an open live parent on completion and restores nested de
   expect(screen.getByText("Build passed")).toBeVisible();
 });
 
+// The fixture carries a trailing tool call on purpose. Streaming (§4.2.3) makes a running turn's
+// trailing prose its answer row, so 60 consecutive prose nodes with nothing after them are no
+// longer activity at all — this row would be empty and the assertions below unreachable. One tool
+// call at the end is what a real long live turn looks like, and it puts all 61 nodes in the
+// activity list where the cap and the "show earlier" control are what is under test.
 it("shows recent progress in a long live turn, with earlier work available on demand", async () => {
-  const items = Array.from({ length: 60 }, (_, i) =>
-    item(`progress-${i}`, { type: "assistant-text" }, `Step ${i}`),
-  );
+  const items = [
+    ...Array.from({ length: 60 }, (_, i) =>
+      item(`progress-${i}`, { type: "assistant-text" }, `Step ${i}`),
+    ),
+    item("cmd", { type: "tool-call", name: "Bash" }, "npm run build"),
+  ];
   render(<Harness items={items} running />);
   expect(screen.getByText("Step 59")).toBeVisible();
   expect(screen.queryByText("Step 0")).toBeNull();
   await userEvent.click(
-    screen.getByRole("button", { name: "Show earlier activity (20)" }),
+    screen.getByRole("button", { name: "Show earlier activity (21)" }),
   );
   expect(screen.getByText("Step 0")).toBeVisible();
 });
@@ -257,4 +265,39 @@ it("keeps created peer tasks navigable when the work disclosure is folded", asyn
   expect(screen.getByRole("button", {name:/Worked/})).toHaveAttribute("aria-expanded", "false");
   await userEvent.setup().click(screen.getByRole("button", {name:"Open chat: Review attachments"}));
   expect(select).toHaveBeenCalledWith("peer");
+});
+
+// The shimmer claims the model is thinking. Once its prose is promoted to a streaming answer row
+// below this one (`row.streamingAnswer`), that claim sits directly above words the operator can
+// watch arriving — and on a turn whose only content so far is that prose, this row is empty, which
+// is exactly the case the shimmer was written for.
+it("does not claim to be thinking while an answer is streaming below", () => {
+  const streaming = projectThread(
+    [
+      item("u", { type: "user-text" }, "go"),
+      item("p", { type: "assistant-text" }, "Here is the answer so far"),
+    ].map((i, seq) => ({ ...i, seq })),
+    true,
+  );
+  const row = streaming[1] as Extract<ThreadRow, { type: "work" }>;
+  expect(row).toMatchObject({ type: "work", running: true, streamingAnswer: true });
+  const view = render(
+    <WorkTrace row={row} expanded={new Set()} toggle={() => {}} onFile={() => {}} />,
+  );
+  expect(screen.queryByRole("status")).toBeNull();
+
+  // A live turn that ends in reasoning still shimmers: reasoning is never promoted, so nothing is
+  // being drawn below this row and the model really is between visible actions.
+  const reasoning = projectThread(
+    [
+      item("u", { type: "user-text" }, "go"),
+      item("think", { type: "thinking" }, "Provider reasoning"),
+    ].map((i, seq) => ({ ...i, seq })),
+    true,
+  )[1] as Extract<ThreadRow, { type: "work" }>;
+  expect(reasoning.streamingAnswer).toBeUndefined();
+  view.rerender(
+    <WorkTrace row={reasoning} expanded={new Set()} toggle={() => {}} onFile={() => {}} />,
+  );
+  expect(screen.getByRole("status")).toHaveTextContent("Thinking");
 });

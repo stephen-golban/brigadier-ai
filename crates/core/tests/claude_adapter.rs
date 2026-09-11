@@ -292,9 +292,18 @@ fn kind_label(kind: &ItemKind) -> String {
         ItemKind::AssistantText => "assistant-text".into(),
         ItemKind::Thinking => "thinking".into(),
         ItemKind::ToolCall { name } => format!("tool-call({name})"),
-        ItemKind::ToolResult { is_error, .. } => format!("tool-result(is_error={is_error})"),
+        ItemKind::ToolResult {
+            is_error,
+            exit_code,
+            interrupted,
+            ..
+        } => format!(
+            "tool-result(is_error={is_error},exit={},interrupted={interrupted})",
+            exit_code.map_or_else(|| "none".to_owned(), |c| c.to_string())
+        ),
         ItemKind::UserText => "user-text".into(),
         ItemKind::Subagent { .. } => "subagent".into(),
+        ItemKind::Notice { level, code, .. } => format!("notice({level:?},{code})"),
     }
 }
 
@@ -317,6 +326,9 @@ fn label(event: &Event) -> String {
         Event::SessionCompacted { .. } => "session-compacted".into(),
         Event::RuntimeWarning { .. } => "runtime-warning".into(),
         Event::RuntimeError { .. } => "runtime-error".into(),
+        Event::UsageWindows { status, windows } => {
+            format!("usage-windows({status},{})", windows.len())
+        }
     }
 }
 
@@ -434,6 +446,8 @@ async fn s1_handshake_and_turn() {
             "turn-started",
             "item-started:user-text",
             "item-completed:user-text",
+            // `rate_limit_event` now yields a typed event: one per turn, no cost field.
+            "usage-windows(allowed,2)",
             "session-started",
             "item-started:thinking",
             "item-completed:thinking",
@@ -513,6 +527,8 @@ async fn s2_can_use_tool_allow() {
             "item-started:user-text",
             "item-completed:user-text",
             "session-started",
+            // `rate_limit_event` now yields a typed event: one per turn, no cost field.
+            "usage-windows(allowed,2)",
             "item-started:thinking",
             "item-completed:thinking",
             "item-started:tool-call(Bash)",
@@ -548,7 +564,7 @@ async fn s2_can_use_tool_allow() {
         rig.labels_until(is_turn_end).await,
         [
             "request-resolved(allow)",
-            "item-completed:tool-result(is_error=false)",
+            "item-completed:tool-result(is_error=false,exit=none,interrupted=false)",
             "item-started:thinking",
             "item-completed:thinking",
             "item-started:assistant-text",
@@ -604,7 +620,7 @@ async fn s3_can_use_tool_deny() {
         [
             "request-resolved(deny:denied by test)",
             // The CLI still writes a `tool_result`, flagged as an error, for a denied call.
-            "item-completed:tool-result(is_error=true)",
+            "item-completed:tool-result(is_error=true,exit=none,interrupted=false)",
             "item-started:thinking",
             "item-completed:thinking",
             "item-started:assistant-text",
@@ -643,6 +659,8 @@ async fn s4_interrupt_then_a_second_turn() {
             "item-started:user-text",
             "item-completed:user-text",
             "session-started",
+            // `rate_limit_event` now yields a typed event: one per turn, no cost field.
+            "usage-windows(allowed,2)",
             "item-started:thinking",
             "item-completed:thinking",
             "item-started:assistant-text",
@@ -710,6 +728,8 @@ async fn s6_hook_callback_is_answered_with_an_empty_object() {
             "item-started:user-text",
             "item-completed:user-text",
             "session-started",
+            // `rate_limit_event` now yields a typed event: one per turn, no cost field.
+            "usage-windows(allowed,2)",
             "item-started:thinking",
             "item-completed:thinking",
             "item-started:tool-call(Bash)",
@@ -1067,6 +1087,8 @@ async fn kill_reaches_the_supervisor_and_reports_killed() {
             "turn-started",
             "item-started:user-text",
             "item-completed:user-text",
+            // `rate_limit_event` now yields a typed event: one per turn, no cost field.
+            "usage-windows(allowed,2)",
             "session-started",
             "turn-aborted(Killed)",
             &format!("session-exited({:?})", ExitReason::Killed),

@@ -91,6 +91,11 @@ export function useConversationHistory(sessionId: string, revision: number) {
     // resolution would stop the mounted transcript following a live conversation.
     // **[measured]** 534-544 history responses in 63 s of the 60 Hz benchmark; under 60 fails the
     // run at `scripts/measure-native-burn.py:119`.
+    // The token's `deltas` field is what makes a *streaming* body arrive at all: a content delta
+    // writes to SQLite but produces no feed row and no signal, so without it `rowsTotal` and
+    // `lastEventSeq` hold still for the whole of a long answer and nothing here ever fires
+    // (§4.2 of `docs/plans/codex-thread-rebuild-2026-09-11.md`). Streamed prose therefore grows at
+    // this debounce's 100 ms granularity, not per fragment.
     let token = '';
     const unsubscribe = store.subscribe(()=>{
       const next = store.getSessionCursor(sessionId);

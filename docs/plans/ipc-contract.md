@@ -51,7 +51,7 @@ FeedRowWire   { s: string /*session_id*/, q: number /*seq*/, t: number /*at_ms*/
                 k: FeedKind /*what the row is*/ }
 FeedKind      = "turn" | "tool" | "text" | "think" | "user" | "sub" | "appr" | "warn" | "err" | "sys"
               | "unknown"
-SessionCounter{ session_id: string, rows_total: number, rows_dropped: number }
+SessionCounter{ session_id: string, rows_total: number, rows_dropped: number, deltas: number }
 ```
 
 - One batch per animation frame (16 ms tick in Rust) per project; an empty frame sends nothing.
@@ -61,10 +61,102 @@ SessionCounter{ session_id: string, rows_total: number, rows_dropped: number }
   measured 4 279 bytes, two alone cross the 8192-byte cliff (`tauri-commands.md` §9).
 - Signal events are the envelopes whose `event.type` is one of: `session-started`,
   `session-exited`, `turn-started`, `turn-completed`, `turn-aborted`, `request-opened`,
-  `request-resolved`, `session-compacted`, `runtime-error`, `runtime-warning`. Everything else is
-  represented only by its terse row (`feed::terse_line`) or not at all.
+  `request-resolved`, `session-compacted`, `runtime-error`, `runtime-warning`, `usage-windows`.
+  Everything else is represented only by its terse row (`feed::terse_line`) or not at all.
 - `set_visible_projects(project_ids: string[]) -> ()` — rows for projects not in the list are
   dropped in Rust and counted in `rows_dropped`; signals still flow.
+
+#### `SessionCounter.deltas` — added 2026-09-11, additive
+
+`rows_total` and `rows_dropped` keep their names and their meaning. `deltas` is the count of
+`Event::ContentDelta`s seen for the session, cumulative for the life of the process like the other
+two, and counted whether or not the project is visible.
+
+**It is a cursor, not a quantity anyone reads, and nothing may draw it.** A streamed fragment
+produces no terse row (`feed::terse_line` returns `None` for `ContentDelta`) and is not a signal,
+so before this field nothing downstream moved when prose arrived: the webview's session cursor
+never changed and no refetch was scheduled. Folding `deltas` into that cursor is what makes a
+growing body visible.
+
+**Cost.** Zero extra messages and zero extra rows: `flush_once` already emits one counter per
+touched session per frame, so a frame carrying 40 deltas carries one counter whose `deltas`
+advanced by 40. `"deltas":1234` is ~16 bytes of JSON per touched session per frame, inside the
+unchanged `MAX_MESSAGE_BYTES = 8000` / 24-row packing. The rejected alternative — promoting
+`ContentDelta` to a signal — would ship roughly one envelope per token, each carrying its text,
+against the 8192-byte `eval` cliff. The signal list above deliberately does **not** contain
+`content-delta`.
+
+Rust: `brigadier_supervisor::SessionCounter` (`crates/supervisor/src/wire.rs`), incremented in
+`batcher::push`, pinned by `batcher.rs::a_frame_of_deltas_costs_one_counter_and_no_rows_or_signals`
+and `::deltas_are_counted_for_an_invisible_project_too`. TypeScript mirrors it as **optional**
+(`deltas?: number`) so counter literals written before it still type-check.
+
+#### `Event::UsageWindows` — added 2026-09-11
+
+```
+{ type: "usage-windows", status: string, windows: { name: string, utilization: number,
+                                                    resets_at: number }[] }
+```
+
+Derived from the CLI's `rate_limit_event.rate_limit_info.unifiedWindows`. `utilization` is a
+**0–1 fraction** at two-decimal resolution, not a percentage; `resets_at` is **unix seconds**, not
+the milliseconds every other timestamp in this contract uses, because that is what the provider
+sends. One per turn, early.
+
+The window **set is open**: a `unifiedWindows` key this build has never seen is passed through with
+its name verbatim rather than dropped, and `status` stays a string for the same reason — the UI
+renders what it is given and does not switch on a closed enum.
+
+**There is no cost field and none is ever added.** The user runs on their own subscription and is
+never billed a dollar figure, so the gauge is the window, not the money (`docs/vision.md` §6).
+`total_cost_usd` exists on the provider's wire and stops at the adapter.
+
+It is a **signal** — the gauge must update whether or not the project is visible — and it produces
+**no feed row**: `feed::terse_line` returns `None` for it, so a per-turn gauge reading cannot push
+real rows out of the capped ring. Its `k`, if one is ever asked for, is `sys`.
+
+#### `ItemKind::Notice` — added 2026-09-11
+
+```
+{ type: "notice", level: "info" | "warning" | "error" | "fatal", code: string, detail?: unknown }
+```
+
+A lifecycle note the store synthesises so the thread can show it inline. **No adapter emits one**:
+`brigadier_store::chat::project` mints it from the matching event with a **deterministic synthetic
+id**, `"{session}:notice:{code}:{seq}"`, so a replay upserts the same row rather than appending a
+second one.
+
+| event | level | code | id | body | detail |
+|---|---|---|---|---|---|
+| `Event::SessionCompacted` | `info` | `compacted` | `{session}:notice:compacted:{seq}` | `manual` / `auto` | `{pre_tokens}` when reported |
+| `Event::RuntimeWarning` | `warning` | `runtime` | `{session}:notice:warning:{seq}` | the message, bounded | — |
+| `Event::RuntimeError` | `error`, or `fatal` when `fatal` | `runtime` | `{session}:notice:error:{seq}` | the message, bounded | — |
+| `Event::SessionExited` | `info` | `exited` | `{session}:notice:exited:{seq}` | the exit reason | `{exit_code}` when observed |
+
+`Event::SessionStarted` deliberately gets **no** notice: `system/init` is re-emitted at the start of
+every turn on the same `session_id`, so a notice per init would be one per turn.
+
+#### `ItemKind::ToolResult` — two fields added 2026-09-11
+
+```
+{ type: "tool-result", tool_call_id: string, is_error: boolean,
+  exit_code?: number, interrupted?: boolean }
+```
+
+Both are skipped on the wire when they carry nothing (`None` / `false`), so a consumer built
+against the two-field shape reads an unchanged frame.
+
+`exit_code` is parsed by Rust from the literal first line `Exit code N\n` of the tool result body.
+**That line is the only carrier of a shell exit code anywhere on the wire** — `exitCode`,
+`exit_code` and `returnCode` are 0 hits across all six captures
+(`docs/research/cli-steer-and-exit-codes.md` §2). The parse is anchored at byte 0 and requires the
+terminating newline, so a command whose own output mentions the phrase yields nothing.
+**TypeScript never parses a tool body.**
+
+`interrupted` comes from the frame-level `tool_use_result` sibling: the literal string
+`"User rejected tool use"`, or `interrupted: true` on the structured form. **Neither field is ever
+inferred from `is_error`**, which is `true` for a failure, an interrupt and a rejected tool use
+alike — inferring would print a red exit code on a run the operator themself stopped.
 
 #### `FeedRowWire.k` — the kind discriminator
 
@@ -82,9 +174,9 @@ protocol error, and a slug a future build adds reads back as `"unknown"` rather 
 | `user` | `ItemKind::UserText` |
 | `sub` | `ItemKind::Subagent` |
 | `appr` | `Event::RequestOpened`, `Event::RequestResolved` |
-| `warn` | `Event::RuntimeWarning` |
-| `err` | `Event::RuntimeError` (fatal or not) |
-| `sys` | `Event::SessionStarted`, `Event::SessionExited`, `Event::SessionCompacted` — those three and nothing else |
+| `warn` | `Event::RuntimeWarning`, `ItemKind::Notice` at level `warning` |
+| `err` | `Event::RuntimeError` (fatal or not), `ItemKind::Notice` at level `error` or `fatal` |
+| `sys` | `Event::SessionStarted`, `Event::SessionExited`, `Event::SessionCompacted`, `Event::UsageWindows`, `ItemKind::Notice` at level `info` |
 | `unknown` | No event. A row whose kind was never recorded: it predates `feed.kind` (migration 1, 2026-09-03), or its stored slug came from a build that knows a class this one does not |
 
 **`unknown` is not a class, it is the absence of one.** A UI toggle that filters or styles by `k`

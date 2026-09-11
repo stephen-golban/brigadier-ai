@@ -73,6 +73,20 @@ pub struct SessionCounter {
     pub rows_total: u64,
     /// Rows that were never delivered: the project was invisible, or the buffer overflowed.
     pub rows_dropped: u64,
+    /// Content deltas seen for this session, ever.
+    ///
+    /// **A cursor, not a quantity anyone reads.** It exists so the UI can tell that an item's
+    /// body grew without a row or a signal being spent on each fragment: a delta produces no
+    /// terse row (`brigadier_store::feed::terse_line` returns `None`) and is not a signal, so
+    /// before this field nothing downstream moved when streaming text arrived, and no refetch was
+    /// scheduled. Nothing may draw it.
+    ///
+    /// Coalescing is free: one counter per touched session per frame already, so a frame carrying
+    /// 40 deltas carries one counter whose `deltas` advanced by 40. The rejected alternative was
+    /// promoting `Event::ContentDelta` to a signal, which is ~600 envelopes a turn against an
+    /// 8 KB per-message cliff.
+    // see docs/plans/codex-thread-rebuild-2026-09-11.md §4.2.1 and landmine 10.
+    pub deltas: u64,
 }
 
 /// One batch of feed traffic for one project, sized to stay on Tauri's `eval` fast path.

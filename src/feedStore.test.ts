@@ -22,6 +22,7 @@ import type {
   Envelope,
   Event,
   FeedBatch,
+  SessionCounter,
   FeedRowWire,
   SessionId,
   SessionView,
@@ -954,7 +955,10 @@ describe("snapshot identity", () => {
     // 20 frames is 340 ms, inside COUNTER_FLUSH_MS, so the snapshot still carries the old cursor
     // while the live one has moved 20 times.
     expect(store.getState().sessions["s1"]!.lastEventSeq).toBe(seqAtSettle);
-    expect(store.getSessionCursor("s1")).toBe(`0:${seqAtSettle + 20}:false`);
+    // `rowsTotal:lastEventSeq:busy|deltas` since §4.2.2: a session with no streamed content
+    // reports `0` for the delta cursor, and the delta rides after a `|` so `src/attention.ts`'s
+    // positional read of `lastEventSeq` still works (see `getSessionCursor`).
+    expect(store.getSessionCursor("s1")).toBe(`0:${seqAtSettle + 20}:false|0`);
     store.stop();
   });
 
@@ -1073,6 +1077,183 @@ describe("snapshot identity", () => {
     const folded = store.getState();
     expect(folded).not.toBe(settled);
     expect(folded.sessions["s1"]!.lastEventSeq).toBe(seqAtSettle + 1);
+    store.stop();
+  });
+});
+
+describe("content deltas (§4.2.1)", () => {
+  /** `deltas` is optional on the wire mirror, so "no delta field at all" is expressible here. */
+  const counter = (
+    sessionId: SessionId,
+    rowsTotal: number,
+    deltas?: number,
+  ): SessionCounter => ({
+    session_id: sessionId,
+    rows_total: rowsTotal,
+    rows_dropped: 0,
+    ...(deltas === undefined ? {} : { deltas }),
+  });
+
+  it("moves the live cursor on the frame a delta lands, without rebuilding the snapshot", async () => {
+    const store = await load();
+    let notifies = 0;
+    store.subscribe(() => {
+      notifies += 1;
+    });
+    store.start();
+    // A signal in the same batch as a counter commits and anchors the throttle clock, exactly as
+    // the "are throttled to COUNTER_FLUSH_MS" test above does: what follows is inside the window.
+    store.pushBatch(
+      batch({
+        signals: [env("s1", { type: "turn-started", turn_id: "t1" })],
+        counters: [counter("s1", 0, 0)],
+      }),
+    );
+    vi.advanceTimersByTime(FRAME_MS);
+
+    const settled = store.getState();
+    const before = store.getSessionCursor("s1");
+    const notifiesAtRest = notifies;
+
+    // A counters-only batch whose *only* movement is `deltas`: no row, no signal, nothing drawn.
+    store.pushBatch(batch({ counters: [counter("s1", 0, 12)] }));
+    vi.advanceTimersByTime(FRAME_MS);
+
+    expect(store.getSessionCursor("s1")).not.toBe(before);
+    expect(store.getSessionCursor("s1")).toBe("0:1:true|12");
+    // The transcript is woken on this frame — the whole point — but the React snapshot is not
+    // rebuilt for it, so nothing else in the window re-renders.
+    expect(notifies).toBe(notifiesAtRest + 1);
+    expect(store.getState()).toBe(settled);
+
+    // And it never reaches the snapshot at all: a whole streaming answer's worth of deltas
+    // rebuilds `getState()` zero times, while the live cursor tracks every frame.
+    const rebuilt = store.getState();
+    let cursor = store.getSessionCursor("s1");
+    for (let i = 13; i < 73; i++) {
+      store.pushBatch(batch({ counters: [counter("s1", 0, i)] }));
+      vi.advanceTimersByTime(FRAME_MS);
+      expect(store.getSessionCursor("s1")).not.toBe(cursor);
+      cursor = store.getSessionCursor("s1");
+    }
+    vi.advanceTimersByTime(600);
+    expect(store.getState()).toBe(rebuilt);
+    expect(JSON.stringify(store.getState())).not.toMatch(/deltas/);
+    store.stop();
+  });
+
+  it("refuses a non-finite delta instead of notifying on every frame for ever", async () => {
+    const store = await load();
+    let notifies = 0;
+    store.subscribe(() => {
+      notifies += 1;
+    });
+    store.start();
+    store.pushBatch(
+      batch({
+        signals: [env("s1", { type: "turn-started", turn_id: "t1" })],
+        counters: [counter("s1", 0, 0)],
+      }),
+    );
+    vi.advanceTimersByTime(FRAME_MS);
+    const before = notifies;
+    // `NaN !== NaN`, so an unguarded counter would mark the store dirty on every frame.
+    for (let i = 0; i < 5; i++) {
+      store.pushBatch(batch({ counters: [counter("s1", 0, Number.NaN)] }));
+      vi.advanceTimersByTime(FRAME_MS);
+    }
+    expect(notifies).toBe(before);
+    expect(store.getSessionCursor("s1")).toBe("0:1:true|0");
+    store.stop();
+  });
+
+  it("holds still for a counter batch that carries no delta field at all", async () => {
+    const store = await load();
+    let notifies = 0;
+    store.subscribe(() => {
+      notifies += 1;
+    });
+    store.start();
+    store.pushBatch(
+      batch({
+        signals: [env("s1", { type: "turn-started", turn_id: "t1" })],
+        counters: [counter("s1", 0, 0)],
+      }),
+    );
+    vi.advanceTimersByTime(FRAME_MS);
+    const before = notifies;
+    const cursor = store.getSessionCursor("s1");
+
+    // A pre-phase-2 counter (no `deltas`) must stay throttled exactly as it was.
+    store.pushBatch(batch({ counters: [counter("s1", 40)] }));
+    vi.advanceTimersByTime(FRAME_MS);
+    expect(notifies).toBe(before);
+    expect(store.getSessionCursor("s1")).not.toBe(cursor); // `rows_total` moved, `deltas` did not
+    expect(store.getSessionCursor("s1")).toBe("40:1:true|0");
+    store.stop();
+  });
+});
+
+describe("usage windows (§4.3)", () => {
+  const usage = (utilization: number): Event => ({
+    type: "usage-windows",
+    status: "allowed",
+    windows: [
+      { name: "five_hour", utilization, resets_at: 1_789_068_000 },
+      { name: "seven_day", utilization: 0.16, resets_at: 1_789_556_400 },
+    ],
+  });
+
+  it("keeps the windows off the snapshot and hands back a cached reference", async () => {
+    const store = await load();
+    store.start();
+    store.pushBatch(batch({ signals: [env("s1", usage(0.25))] }));
+    vi.advanceTimersByTime(FRAME_MS);
+
+    const first = store.getUsageWindows("s1");
+    expect(first).toEqual([
+      { name: "five_hour", utilization: 0.25, resets_at: 1_789_068_000 },
+      { name: "seven_day", utilization: 0.16, resets_at: 1_789_556_400 },
+    ]);
+    // Windows, never dollars: the value carries a fraction and a reset time and nothing else.
+    expect(Object.keys(first[0]!)).toEqual(["name", "utilization", "resets_at"]);
+    expect(JSON.stringify(first)).not.toMatch(/cost|usd|dollar/i);
+    // Not on the React snapshot, in either direction.
+    expect(store.getState().sessions["s1"]).not.toHaveProperty("windows");
+    expect(JSON.stringify(store.getState())).not.toMatch(/five_hour/);
+
+    // The same values re-announced: a notify, and the identical array, so the gauge does not
+    // re-render and nothing else sees a change at all.
+    const snapshot = store.getState();
+    store.pushBatch(batch({ signals: [env("s1", usage(0.25))] }));
+    vi.advanceTimersByTime(FRAME_MS);
+    expect(store.getUsageWindows("s1")).toBe(first);
+    expect(store.getState()).toBe(snapshot);
+
+    // A moved utilization replaces the reference.
+    store.pushBatch(batch({ signals: [env("s1", usage(0.5))] }));
+    vi.advanceTimersByTime(FRAME_MS);
+    const moved = store.getUsageWindows("s1");
+    expect(moved).not.toBe(first);
+    expect(moved[0]!.utilization).toBe(0.5);
+
+    // An unknown session, and a dropped one, share one frozen empty array.
+    expect(store.getUsageWindows("never-seen")).toBe(store.getUsageWindows(null));
+    store.dropSession("s1");
+    expect(store.getUsageWindows("s1")).toBe(store.getUsageWindows(null));
+    store.stop();
+  });
+
+  it("advances the live cursor like any other signal", async () => {
+    const store = await load();
+    store.start();
+    store.pushBatch(batch({ signals: [env("s1", { type: "turn-started", turn_id: "t1" })] }));
+    vi.advanceTimersByTime(FRAME_MS);
+    vi.advanceTimersByTime(600);
+    const before = store.getSessionCursor("s1");
+    store.pushBatch(batch({ signals: [env("s1", usage(0.25))] }));
+    vi.advanceTimersByTime(FRAME_MS);
+    expect(store.getSessionCursor("s1")).not.toBe(before);
     store.stop();
   });
 });

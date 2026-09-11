@@ -97,8 +97,13 @@ export function WorkTrace({
     </>
   );
   const last = row.nodes[row.nodes.length - 1];
+  // `row.streamingAnswer` says the turn's trailing prose is already being drawn as an answer row
+  // below this one (`src/threadProjection.ts`). The model is visibly writing, so a shimmer here
+  // would claim it is thinking directly above the words arriving — and on a turn whose only
+  // content so far is that prose, this row has no nodes at all, which is the `!last` arm.
   const needsThinking =
     row.running &&
+    !row.streamingAnswer &&
     (!last ||
       last.item.kind.type === "assistant-text" ||
       last.item.kind.type === "thinking");

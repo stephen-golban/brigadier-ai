@@ -688,6 +688,11 @@ impl Actor {
                             ItemKind::ToolResult {
                                 tool_call_id: id.into(),
                                 is_error: failed,
+                                // Codex reports a numeric `exitCode` of its own, but this field
+                                // is the Claude CLI's `Exit code N` line and nothing else writes
+                                // it; wiring Codex's is not in this phase's contract.
+                                exit_code: None,
+                                interrupted: false,
                             },
                             &output,
                             None,
