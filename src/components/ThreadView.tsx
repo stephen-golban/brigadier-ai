@@ -10,7 +10,7 @@ import { useConversationHistory } from "../hooks/useConversationHistory";
 import { isValidElement, cloneElement, createContext, useContext, type ComponentProps, type ReactNode } from "react";
 import { ApprovalResolution, type ApprovalsProps } from "./Approvals";
 import { useApprovalHistory } from "./approvalHistory";
-import { useTaskExecutionSettings } from "../taskSettings";
+import { useTaskExecutionSettings, type ExecutionChange } from "../taskSettings";
 import { ProviderChangeDivider } from "./composer/ProviderChangeDivider";
 import { providerChangePlacement } from "./composer/providerChangePlacement";
 import {
@@ -56,6 +56,7 @@ import {
   type ChatItem,
 } from "../workspaceApi";
 import type { ThreadRow } from "../threadProjection";
+import { reuseRows } from "./rowIdentity";
 import { workbenchApi } from "../workbenchApi";
 import * as store from "../feedStore";
 import { projectThread, flattenTrace } from "../threadProjection";
@@ -417,6 +418,171 @@ const threadParts: ComponentProps<typeof MessagePrimitive.Parts>["components"] =
   },
 };
 
+const EMPTY_ROWS: ThreadRow[] = [];
+type BuiltMessage = {
+  row: ThreadRow;
+  turn: string | null;
+  first: boolean;
+  peers?: PeerData;
+  message: ThreadMessage;
+};
+const EMPTY_MESSAGES: Map<string, BuiltMessage> = new Map();
+
+/**
+ * Every row is a real message with real parts (plan §5 phase 4 item 1). This used to be
+ * `content: []` for anything that was not prose, with the row drawn by hand-written JSX beside the
+ * runtime; the renderers above are reached through `MessagePrimitive.Parts` instead, which is also
+ * what makes the read-only thread in `SubagentsPanel` work.
+ *
+ * Pure, and out of the component, so the caller can cache one message per row against exactly the
+ * four inputs it reads.
+ */
+function rowMessage(
+  row: ThreadRow,
+  turn: string | null,
+  first: boolean,
+  peers: PeerData | undefined,
+): ThreadMessage {
+  const like = ((): ThreadMessageLike => {
+    if (row.type === "work")
+      return {
+        id: row.id,
+        role: "assistant",
+        content: [{ type: "data-work", data: { rowId: row.id } }],
+      };
+    if (row.type === "notice")
+      return {
+        id: row.id,
+        role: "assistant",
+        content: [
+          {
+            type: "data-notice",
+            data: {
+              level: row.level,
+              code: row.code,
+              text: row.item.body,
+              // The compaction's measured numbers live here, not in the body; the row prints
+              // them beside its label (`noticeSentence`).
+              detail: row.item.kind.type === "notice" ? row.item.kind.detail : undefined,
+            },
+          },
+        ],
+      };
+    if (row.item.kind.type === "user-text") {
+      // The displayed body is the peer delivery's text when this turn was steered in by
+      // another session, and the item's own body otherwise — resolved here so the part
+      // carries what is drawn rather than a string the renderer has to re-derive.
+      const { text } = peerMessageContent(row.item, peers, first);
+      return { id: row.id, role: "user", content: [{ type: "text", text }] };
+    }
+    return {
+      id: row.id,
+      role: "assistant",
+      status: row.streaming
+        ? ({ type: "running" } as const)
+        : ({ type: "complete", reason: "stop" } as const),
+      content: [
+        { type: "text" as const, text: row.item.body },
+        ...(row.final && turn
+          ? [{ type: "data-changed-files" as const, data: { turn } }]
+          : []),
+      ],
+    };
+  })();
+  // Normalised here, not by index off the runtime: the external store commits its message list one
+  // render behind `rows`, and a `MessageByIndexProvider` reading a freshly-appended row throws
+  // `index out of bounds` before that commit lands.
+  return fromThreadMessageLike({ createdAt: EPOCH, ...like }, row.id, COMPLETE);
+}
+
+/**
+ * One row, and the memo boundary the transcript needs.
+ *
+ * The row's scope used to be an object literal inside `Transcript`'s own JSX, so every row's parts
+ * re-rendered whenever `Transcript` rendered at all — a fresh `requests` element, an approval
+ * anywhere, a history poll that changed nothing. A `useMemo` on the context value alone would not
+ * have fixed that: the row's element tree is recreated by `Transcript`'s render either way. The
+ * boundary has to be a memoised component, and the scope is then memoised inside it because the
+ * props that are **not** in the scope — the virtualiser's offset, `isLast`, the message — move on
+ * their own.
+ *
+ * Every prop here must therefore be referentially stable across a render that changed nothing:
+ * `row` and `message` are (`rowIdentity.ts` and the message cache), `approvals` falls back to one
+ * shared empty value, `toggle` is a `useCallback`, and the rest are scalars or `Transcript`'s own
+ * props.
+ */
+type TranscriptRowProps = {
+  row: ThreadRow;
+  index: number;
+  isLast: boolean;
+  message: ThreadMessage;
+  sessionId: string;
+  projectId: string | null;
+  readOnly: boolean;
+  busy: boolean;
+  editing: boolean;
+  peers?: PeerData;
+  onFile: (path: string) => void;
+  onEdit?: (item: ChatItem) => void;
+  onSelectSession?: (id: string) => void;
+  expanded: Set<string>;
+  toggle: (id: string) => void;
+  approvals: RowApprovals;
+  files: FileChange[];
+  labelPatch?: number;
+  /** Provider markers that belong above this row; only a saved user message ever has one. */
+  dividers?: ExecutionChange[];
+  /** The startup card, on the first row only, and only while its prompt is still the one shown. */
+  provisioning?: SessionStartup;
+  /** Absolute offset in the virtualised list; `undefined` means the list is not virtualised. */
+  offset?: number;
+  measure?: (element: HTMLDivElement | null) => void;
+};
+const TranscriptRow = memo(function TranscriptRow({
+  row, index, isLast, message, sessionId, projectId, readOnly, busy, editing, peers,
+  onFile, onEdit, onSelectSession, expanded, toggle, approvals, files, labelPatch,
+  dividers, provisioning, offset, measure,
+}: TranscriptRowProps) {
+  const scope = useMemo<RowScopeValue>(
+    () => ({
+      row, index, sessionId, projectId, readOnly, busy, editing, peers,
+      onFile, onEdit, onSelectSession, expanded, toggle, approvals, files, labelPatch,
+    }),
+    [row, index, sessionId, projectId, readOnly, busy, editing, peers,
+     onFile, onEdit, onSelectSession, expanded, toggle, approvals, files, labelPatch],
+  );
+  const user = row.type === "message" && row.item.kind.type === "user-text";
+  return (
+    <RowScope.Provider value={scope}>
+      <div
+        data-message-id={row.id}
+        data-index={index}
+        ref={measure}
+        style={offset === undefined ? undefined : {position: 'absolute', width: '100%', top: 0, left: 0, transform: `translateY(${offset}px)`}}
+        className={`aui-message group/message ${row.type === "work" ? "aui-activity" : row.type === "notice" ? "notice" : row.item.kind.type}`}
+      >
+        {dividers?.map(change => <ProviderChangeDivider key={change.id} change={change} />)}
+        {user && row.type === "message" && row.item.at > 0 && (
+          // The history page is published before its labels are prepared, so a label that
+          // arrives late and differs from the fallback already on screen patches this one
+          // row by remounting it. `labelPatch` is empty in the measured case, so the key
+          // stays `undefined` and no timestamp is disturbed.
+          <MessageTimestamp key={labelPatch} at={row.item.at}/>
+        )}
+        {/* One dispatch, in the runtime: the row's parts choose their own renderer. */}
+        <MessageProvider message={message} index={index} isLast={isLast}>
+          <MessagePrimitive.Parts
+            components={threadParts}
+            unstable_showEmptyOnNonTextEnd={false}
+          />
+        </MessageProvider>
+        {provisioning && <SessionProvisioning startup={provisioning}/>}
+      </div>
+    </RowScope.Provider>
+  );
+});
+if (profiling) TranscriptRow.displayName = "TranscriptRow";
+
 function Transcript({
   startup,
   requests,
@@ -501,10 +667,21 @@ function Transcript({
       /* Keep in-memory state. */
     }
   }, [expanded, sessionId]);
-  const rows = useMemo(
-    () => projectThread(items, busy, turnRecords, session?.lastStop),
-    [items, busy, turnRecords, session?.lastStop],
-  );
+  // `projectThread` returns all-new row objects every call, and a running turn re-projects every
+  // 100 ms whether or not anything moved, so the identities are handed back to the rows that did
+  // not change (`rowIdentity.ts`). Without this, nothing below — the row memo, the message list,
+  // `PeerTaskCardScope` — can ever bail out during a live turn.
+  // Written during render, and safe if React throws that render away: `reuseRows` never mutates
+  // what it was given, and a discarded result is structurally equal to the one that replaces it.
+  const projected = useRef<ThreadRow[]>(EMPTY_ROWS);
+  const rows = useMemo(() => {
+    const next = reuseRows(
+      projected.current,
+      projectThread(items, busy, turnRecords, session?.lastStop),
+    );
+    projected.current = next;
+    return next;
+  }, [items, busy, turnRecords, session?.lastStop]);
   const approvalElement = isValidElement<ApprovalsProps>(requests) && Array.isArray(requests.props.approvals) ? requests : null;
   const approvalHistory = useApprovalHistory(sessionId, pendingApprovalKey);
   const confirmedApprovals = approvalHistory.filter(item => {
@@ -518,6 +695,9 @@ function Transcript({
   const matchedRequests = new Set<string>();
   // One `flattenTrace` pass per work row, keeping each row's cards with the row. The row list
   // below used to re-flatten the same trace twice more per row on every render to rebuild this.
+  // A row with neither a pending decision nor a resolved one keeps the shared empty value rather
+  // than a fresh object per render: that object is a row memo input, and every work row in a
+  // transcript without approvals has the same one.
   const rowApprovals = new Map<string, { pending: boolean; actions: ReadonlyMap<string, ReactNode> }>();
   for (const row of rows) {
     if (row.type !== "work") continue;
@@ -535,7 +715,7 @@ function Transcript({
       }
       if (cards.length) actions.set(node.item.id, cards);
     }
-    rowApprovals.set(row.id, { pending, actions });
+    if (pending || actions.size) rowApprovals.set(row.id, { pending, actions });
   }
   const hasApprovals = (approvalElement?.props.approvals.length ?? 0) > 0;
   // Pending decisions must remain mounted and directly reachable even in long transcripts.
@@ -552,71 +732,30 @@ function Transcript({
       return turn;
     });
   }, [rows]);
-  // Every row is a real message with real parts (plan §5 phase 4 item 1). This used to be
-  // `content: []` for anything that was not prose, with the row drawn by hand-written JSX
-  // beside the runtime; the renderers below are reached through `MessagePrimitive.Parts`
-  // instead, which is also what makes the read-only thread in `SubagentsPanel` work.
-  const messages = useMemo<ThreadMessage[]>(
-    () =>
-      rows.map((row, index): ThreadMessage => {
-        const like = ((): ThreadMessageLike => {
-        if (row.type === "work")
-          return {
-            id: row.id,
-            role: "assistant",
-            content: [{ type: "data-work", data: { rowId: row.id } }],
-          };
-        if (row.type === "notice")
-          return {
-            id: row.id,
-            role: "assistant",
-            content: [
-              {
-                type: "data-notice",
-                data: {
-              level: row.level,
-              code: row.code,
-              text: row.item.body,
-              // The compaction's measured numbers live here, not in the body; the row prints
-              // them beside its label (`noticeSentence`).
-              detail: row.item.kind.type === "notice" ? row.item.kind.detail : undefined,
-            },
-              },
-            ],
-          };
-        if (row.item.kind.type === "user-text") {
-          // The displayed body is the peer delivery's text when this turn was steered in by
-          // another session, and the item's own body otherwise — resolved here so the part
-          // carries what is drawn rather than a string the renderer has to re-derive.
-          const { text } = peerMessageContent(row.item, peers, index === 0);
-          return { id: row.id, role: "user", content: [{ type: "text", text }] };
-        }
-        const turn = turns[index];
-        return {
-          id: row.id,
-          role: "assistant",
-          status: row.streaming
-            ? ({ type: "running" } as const)
-            : ({ type: "complete", reason: "stop" } as const),
-          content: [
-            { type: "text" as const, text: row.item.body },
-            ...(row.final && turn
-              ? [{ type: "data-changed-files" as const, data: { turn } }]
-              : []),
-          ],
-        };
-        })();
-        // Normalised here, not by index off the runtime: the external store commits its
-        // message list one render behind `rows`, and a `MessageByIndexProvider` reading a
-        // freshly-appended row throws `index out of bounds` before that commit lands.
-        return fromThreadMessageLike(
-          { createdAt: EPOCH, ...like },
-          row.id,
-          COMPLETE,
-        );
-      }),
-    [rows, turns, peers],
-  );
+  // One normalised message per row, each kept only as long as its own inputs hold. Rebuilding the
+  // list is not enough to rebuild a message: the object is a row memo input, and a re-projection
+  // that changed one row must not hand 39 other rows a new one.
+  // Written during render like `projected` above, and safe for the same reason: a cache entry a
+  // discarded render built is replaced by an equal one, and nothing here reads a stale entry —
+  // every hit is gated on the identities it was built from.
+  const built = useRef<Map<string, BuiltMessage>>(EMPTY_MESSAGES);
+  const messages = useMemo<ThreadMessage[]>(() => {
+    const next = new Map<string, BuiltMessage>();
+    const list = rows.map((row, index): ThreadMessage => {
+      const turn = turns[index] ?? null;
+      const first = index === 0;
+      const cached = built.current.get(row.id);
+      if (cached && cached.row === row && cached.turn === turn && cached.first === first && cached.peers === peers) {
+        next.set(row.id, cached);
+        return cached.message;
+      }
+      const message = rowMessage(row, turn, first, peers);
+      next.set(row.id, { row, turn, first, peers, message });
+      return message;
+    });
+    built.current = next;
+    return list;
+  }, [rows, turns, peers]);
   useLayoutEffect(() => {
     if (hydrated && !restored.current && scroll.current) {
       restored.current = true;
@@ -624,13 +763,17 @@ function Transcript({
         scroll.current.scrollTop = saved.current.top;
     }
   }, [hydrated]);
-  const toggle = (id: string) =>
-    setExpanded((old) => {
-      const next = new Set(old);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+  // Stable: it is a row memo input, and a fresh closure per render would re-render every row.
+  const toggle = useCallback(
+    (id: string) =>
+      setExpanded((old) => {
+        const next = new Set(old);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      }),
+    [],
+  );
   return (
     <TranscriptRuntime sessionId={sessionId} messages={messages} busy={busy} loaded={loaded} readOnly={readOnly}>
       <PeerTaskCardScope rows={rows} sessionTitles={peers?.titles} sessionId={sessionId} peers={peers}>
@@ -679,57 +822,31 @@ function Transcript({
         {visibleRows.map(({row, index, virtual: position}) => {
           const user = row.type === "message" && row.item.kind.type === "user-text";
           return (
-            <RowScope.Provider
+            <TranscriptRow
               key={row.id}
-              value={{
-                row,
-                index,
-                sessionId,
-                projectId: projectId ?? session?.projectId ?? null,
-                readOnly,
-                busy,
-                editing,
-                peers,
-                onFile,
-                onEdit,
-                onSelectSession,
-                expanded,
-                toggle,
-                approvals: rowApprovals.get(row.id) ?? noRowApprovals,
-                labelPatch: row.type === "message" ? labelPatch.get(row.item.seq) : undefined,
-                files:
-                  changes.turns.find((t) => t.turnId === turns[index])?.files ?? noFiles,
-              }}
-            >
-            <div
-              data-message-id={row.id}
-              data-index={index}
-              ref={position ? virtual.measureElement : undefined}
-              style={position ? {position: 'absolute', width: '100%', top: 0, left: 0, transform: `translateY(${position.start}px)`} : undefined}
-              className={`aui-message group/message ${row.type === "work" ? "aui-activity" : row.type === "notice" ? "notice" : row.item.kind.type}`}
-            >
-              {user && providerChanges.before.get(row.item.id)?.map(change => <ProviderChangeDivider key={change.id} change={change} />)}
-              {user && row.item.at > 0 && (
-                // The history page is published before its labels are prepared, so a label that
-                // arrives late and differs from the fallback already on screen patches this one
-                // row by remounting it. `labelPatch` is empty in the measured case, so the key
-                // stays `undefined` and no timestamp is disturbed.
-                <MessageTimestamp key={labelPatch.get(row.item.seq)} at={row.item.at}/>
-              )}
-              {/* One dispatch, in the runtime: the row's parts choose their own renderer. */}
-              <MessageProvider
-                message={messages[index]!}
-                index={index}
-                isLast={index === rows.length - 1}
-              >
-                <MessagePrimitive.Parts
-                  components={threadParts}
-                  unstable_showEmptyOnNonTextEnd={false}
-                />
-              </MessageProvider>
-              {user && index === 0 && startup && row.item.body === startup.args.prompt && <SessionProvisioning startup={startup}/>}
-            </div>
-            </RowScope.Provider>
+              row={row}
+              index={index}
+              isLast={index === rows.length - 1}
+              message={messages[index]!}
+              sessionId={sessionId}
+              projectId={projectId ?? session?.projectId ?? null}
+              readOnly={readOnly}
+              busy={busy}
+              editing={editing}
+              peers={peers}
+              onFile={onFile}
+              onEdit={onEdit}
+              onSelectSession={onSelectSession}
+              expanded={expanded}
+              toggle={toggle}
+              approvals={rowApprovals.get(row.id) ?? noRowApprovals}
+              files={changes.turns.find((t) => t.turnId === turns[index])?.files ?? noFiles}
+              labelPatch={row.type === "message" ? labelPatch.get(row.item.seq) : undefined}
+              dividers={user && row.type === "message" ? providerChanges.before.get(row.item.id) : undefined}
+              provisioning={user && index === 0 && row.type === "message" && startup && row.item.body === startup.args.prompt ? startup : undefined}
+              offset={position ? position.start : undefined}
+              measure={position ? virtual.measureElement : undefined}
+            />
           );
         })}
         </div>
