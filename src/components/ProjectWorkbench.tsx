@@ -45,10 +45,10 @@ import { peerApi, type PeerData } from "../peerApi";
 import { workspaceApi, errorMessage, type GitStatus } from "../workspaceApi";
 import {
   workbenchApi,
-  defaultSettings,
   type WorkbenchData,
   type Note,
 } from "../workbenchApi";
+import { useWorkbenchSnapshot, updateWorkbench } from "../workbenchStore";
 import {
   useStoredState,
   workspaceKey,
@@ -63,11 +63,6 @@ import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
 import { TerminalDock } from "./TerminalDock";
 import { LayoutResizer } from "./LayoutResizer";
 const empty: ProjectLayout = { tabs: [], active: null };
-const initial: WorkbenchData = {
-  notes: [],
-  global: { ...defaultSettings },
-  projects: {},
-};
 export function ProjectWorkbench({
   peers,
   pendingTitle,
@@ -106,7 +101,6 @@ export function ProjectWorkbench({
 }) {
   const archive = useSessionArchive();
   const [sessionPrefs, setSessionPrefs] = useState(false);
-  const [dataLoaded, setDataLoaded] = useState(false);
   const [legacyLayouts] = useState(migrateSessionLayouts);
   const [layouts, setLayouts] = useStoredState<Record<string, ProjectLayout>>(
     sessionLayoutsKey,
@@ -175,7 +169,17 @@ export function ProjectWorkbench({
     return () =>
       window.removeEventListener("workbench-history-deleted", deleted);
   }, [setLayouts]);
-  const [data, setData] = useState<WorkbenchData>(initial);
+  // One shared snapshot, one poll and one in-flight `workbench_load` for the whole window; this
+  // component used to hold its own copy behind a 3 s timer of its own (`src/workbenchStore.ts`).
+  const workbench = useWorkbenchSnapshot();
+  const data = workbench.data;
+  const setData = useCallback(
+    (next: WorkbenchData | ((previous: WorkbenchData) => WorkbenchData)) =>
+      updateWorkbench((previous) =>
+        typeof next === "function" ? next(previous) : next,
+      ),
+    [],
+  );
   const [savedMode, setMode] = useStoredState<WorkspaceMode>(
     "brigadier:workspace-mode",
     "files",
@@ -318,30 +322,20 @@ export function ProjectWorkbench({
       notes: [...d.notes.filter((n) => n.id !== note.id), note],
     }));
   };
-  const loadData = useCallback(() => {
-    void workbenchApi
-      .load()
-      .then((d) => {
-        setData(previous => JSON.stringify(previous) === JSON.stringify(d) ? previous : d);
-        setDataLoaded(true);
-      })
-      .catch((e) => setError(errorMessage(e)));
-  }, []);
+  // The load, its cadence and its `workbench-data-changed` listener now live in the shared store.
+  // What is left here is the storage-full notice, which is this component's alone.
   useEffect(() => {
-    loadData();
-    const timer = setInterval(loadData, 3000);
-    window.addEventListener("workbench-data-changed", loadData);
     const failure = () =>
       setError(
         "Local storage is full. Keep unsaved tabs open and save their contents.",
       );
     window.addEventListener("brigadier-storage-error", failure);
-    return () => {
-      clearInterval(timer);
-      window.removeEventListener("workbench-data-changed", loadData);
+    return () =>
       window.removeEventListener("brigadier-storage-error", failure);
-    };
-  }, [loadData]);
+  }, []);
+  useEffect(() => {
+    if (workbench.error) setError(workbench.error);
+  }, [workbench.error]);
   useEffect(() => {
     if (
       !project ||
@@ -405,11 +399,25 @@ export function ProjectWorkbench({
       live = false;
     };
   }, [context.projectId, context.sessionId, projectlessContext, revision]);
+  /**
+   * The Git status poll. Cadence unchanged at 5 s — no event covers workspace freshness yet
+   * (`docs/performance/2026-09-11/timer-inventory.md` row 7 parks that behind the P3 spike) — but
+   * it is armed only while a project is selected and the workspace is a real repository, and a
+   * tick while the document is hidden fetches nothing. Becoming visible refreshes once, so a
+   * window that was occluded across several cadences comes back current rather than stale.
+   */
   useEffect(() => {
-    if (!project) return;
-    const timer = setInterval(refresh, 5000);
-    return () => clearInterval(timer);
-  }, [project?.id]);
+    if (!project || projectlessContext) return;
+    const tick = () => {
+      if (document.visibilityState !== "hidden") refresh();
+    };
+    const timer = setInterval(tick, 5000);
+    document.addEventListener("visibilitychange", tick);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", tick);
+    };
+  }, [project?.id, projectlessContext]);
   const open = useCallback(
     (
       path: string,
@@ -1375,7 +1383,7 @@ export function ProjectWorkbench({
             !["session", "draft", "terminal", "files"].includes(
               panelTab.kind,
             ) &&
-            (panelTab.kind !== "note" || dataLoaded) && (
+            (panelTab.kind !== "note" || workbench.loaded) && (
               <DocumentTab
                 key={panelTab.id}
                 tab={panelTab}

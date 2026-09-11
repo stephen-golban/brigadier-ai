@@ -1,5 +1,6 @@
 //! Local PTYs owned by the window. Bytes stay bytes across reads (UTF-8 can split anywhere).
 use crate::{error::AppError, state::AppState};
+use base64::{engine::general_purpose::STANDARD, Engine};
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use std::{
@@ -7,10 +8,11 @@ use std::{
     io::{Read, Write},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, Mutex, OnceLock, Weak,
+        Arc, Condvar, Mutex, OnceLock, Weak,
     },
+    time::Duration,
 };
-use tauri::State;
+use tauri::{ipc::Channel, State};
 
 struct Terminal {
     session_id: Option<String>,
@@ -21,6 +23,9 @@ struct Terminal {
     exited: Arc<AtomicBool>,
     pid: Option<u32>,
     drained: Arc<AtomicBool>,
+    /// The push half of this terminal: the same ring, plus whatever channel the webview last
+    /// handed us. Idle until `terminal_subscribe` is called.
+    stream: Arc<Stream>,
     cwd: std::path::PathBuf,
     // The waiter owns the lease until the shell exits. Terminal tabs at the same
     // canonical root share it; keeping an exited tab open must not retain ownership.
@@ -31,8 +36,235 @@ struct Output {
     bytes: VecDeque<u8>,
     dropped: usize,
 }
+
+/// The ring the reader thread fills, and the only buffer between the PTY and the webview. The
+/// channel adds none of its own as long as every message stays on the `eval` path; see
+/// [`FRAME_PAYLOAD`].
+const RING_BYTES: usize = 1024 * 1024;
+/// PTY bytes per frame. 4096 bytes encode to 5464 base64 characters, so the largest message this
+/// sends is about 5.6 KB — under tauri's 8192-byte `MAX_JSON_DIRECT_EXECUTE_THRESHOLD`
+/// (`tauri-2.11.5/src/ipc/channel.rs`), which is the line between `webview.eval` and the
+/// **unbounded** `ChannelDataIpcQueue`. Crossing it is the one thing this path may not do.
+const FRAME_PAYLOAD: usize = 4096;
+/// Frames one flush may send back to back: 128 KiB, so a ~8 MB/s ceiling at [`FLUSH_INTERVAL`].
+/// The cap is what keeps a burst from turning into an unbounded run of `eval` calls; anything past
+/// it waits for the next flush in the ring, not in a queue. 8 frames (2 MB/s) sat under the old
+/// re-armed 8 KiB poll, so a `yes`-class writer would have paced against the flush rather than the
+/// ring.
+const FRAMES_PER_FLUSH: usize = 32;
+/// At most one flush per animation frame, the feed channel's rule. A flush after an idle stretch
+/// happens immediately; the interval only spaces flushes that follow one.
+const FLUSH_INTERVAL: Duration = Duration::from_millis(16);
+
+/// One frame of terminal output on its way to the webview.
+///
+/// `bytes` is base64 rather than the `number[]` `terminal_read` returns: a JSON array costs up to
+/// four characters per byte, base64 exactly four per three, and the whole serialized message has
+/// to stay under 8192 bytes (see [`FRAME_PAYLOAD`]).
+#[derive(Clone, Serialize)]
+pub(crate) struct TerminalFrame {
+    /// 1-based and strictly increasing per terminal id, across subscriptions. A gap means the
+    /// channel dropped a message, never that this code skipped one.
+    seq: u64,
+    /// Base64 of at most [`FRAME_PAYLOAD`] PTY bytes, in the order the PTY produced them. Empty
+    /// on the final frame.
+    bytes: String,
+    /// Bytes the ring discarded *before* the bytes in this frame, since the previous frame. The
+    /// same overflow counter `terminal_read` returns as `dropped`, read by whichever of the two
+    /// takes it first.
+    dropped_before: usize,
+    /// True on exactly one frame: the last, sent once the ring is empty **and** the PTY has
+    /// reached EOF — the same condition as `terminal_read`'s `exited`.
+    exited: bool,
+    /// Whether the PTY reader has reached EOF. Always true on the final frame.
+    drained: bool,
+}
+
+/// The push half of one terminal: the ring, a condvar the reader signals, and at most one webview
+/// channel.
+///
+/// There is no timer anywhere in here. The forwarder parks on `wake` and is woken by the reader
+/// thread, the child waiter, or [`Terminal::drop`]; an idle PTY costs nothing at either end.
+struct Stream {
+    output: Arc<Mutex<Output>>,
+    /// Signalled with `output` unlocked or locked; every waiter re-checks its own predicate.
+    wake: Condvar,
+    /// Replaced, never added to — the same rule as the feed sink (`src-tauri/src/sink.rs`): a
+    /// reload wipes the JS callback registry and a `send` on the old channel is silently lost.
+    channel: Mutex<Option<Channel<TerminalFrame>>>,
+    exited: Arc<AtomicBool>,
+    drained: Arc<AtomicBool>,
+    /// Set by `Terminal::drop`; the forwarder stops without sending an exit frame.
+    closed: AtomicBool,
+    /// One forwarder thread per terminal at most. Cleared when it returns, so a later
+    /// subscription starts a new one.
+    forwarding: AtomicBool,
+    seq: AtomicU64,
+    /// Bumped under the channel lock by every subscription. A forwarder about to stop compares it
+    /// with what it saw, so a channel installed in that window restarts it instead of being left
+    /// with nobody pushing.
+    epoch: AtomicU64,
+}
+
+impl Stream {
+    fn new(output: Arc<Mutex<Output>>, exited: Arc<AtomicBool>, drained: Arc<AtomicBool>) -> Self {
+        Self {
+            output,
+            wake: Condvar::new(),
+            channel: Mutex::new(None),
+            exited,
+            drained,
+            closed: AtomicBool::new(false),
+            forwarding: AtomicBool::new(false),
+            seq: AtomicU64::new(1),
+            epoch: AtomicU64::new(0),
+        }
+    }
+    fn lock_output(&self) -> std::sync::MutexGuard<'_, Output> {
+        self.output.lock().unwrap_or_else(|e| e.into_inner())
+    }
+    /// Append one PTY read to the ring, discarding the oldest bytes past [`RING_BYTES`], and wake
+    /// the forwarder. The reader thread's only contact with the rest of this module.
+    fn push(&self, chunk: &[u8]) {
+        {
+            let mut out = self.lock_output();
+            out.bytes.extend(chunk);
+            let excess = out.bytes.len().saturating_sub(RING_BYTES);
+            out.bytes.drain(..excess);
+            out.dropped += excess;
+        }
+        self.wake.notify_all();
+    }
+    /// The PTY is finished and everything it wrote is in the ring.
+    fn finished(&self) -> bool {
+        self.exited.load(Ordering::Acquire) && self.drained.load(Ordering::Acquire)
+    }
+    /// Raise one of the end-of-stream flags and wake the forwarder. **The store happens under the
+    /// output lock**, which is the whole point of this function: [`Stream::forward`] evaluates
+    /// `closed` and `finished()` while holding that lock and then parks on `wake` still holding
+    /// it, so a flag raised outside the lock is free to land between the check and the park, and
+    /// the `notify_all` that follows it reaches nobody. The forwarder then sleeps forever — no
+    /// exit frame, and the thread and its 1 MiB ring never go away.
+    fn mark(&self, flag: &AtomicBool) {
+        {
+            let _out = self.lock_output();
+            flag.store(true, Ordering::Release);
+        }
+        self.wake.notify_all();
+    }
+    /// Install `channel`, dropping any previous one, and start the forwarder if it is not already
+    /// running. A second subscriber therefore **replaces** the first rather than joining it;
+    /// nothing is replayed to it, because the ring is a buffer and not a transcript.
+    fn subscribe(self: &Arc<Self>, channel: Channel<TerminalFrame>) {
+        {
+            let mut installed = self.channel.lock().unwrap_or_else(|e| e.into_inner());
+            *installed = Some(channel);
+            self.epoch.fetch_add(1, Ordering::AcqRel);
+        }
+        if !self.forwarding.swap(true, Ordering::AcqRel) {
+            let stream = self.clone();
+            std::thread::spawn(move || stream.forward());
+        }
+        self.wake.notify_all();
+    }
+    /// Give up the `forwarding` claim, unless a channel was installed since `epoch` was read — in
+    /// which case the forwarder keeps going, because `subscribe` has already decided not to start
+    /// a second thread.
+    fn stop(&self, epoch: u64) -> bool {
+        let _installed = self.channel.lock().unwrap_or_else(|e| e.into_inner());
+        if self.epoch.load(Ordering::Acquire) != epoch {
+            return false;
+        }
+        self.forwarding.store(false, Ordering::Release);
+        true
+    }
+    /// Send one frame. `false` means the channel is gone and the forwarder should stop.
+    fn send(&self, bytes: &[u8], dropped_before: usize, exited: bool) -> bool {
+        // Clone out of the guard before sending: `Channel::send` reaches into the event loop and
+        // must not run with this mutex held (`src-tauri/src/sink.rs`).
+        let channel = self
+            .channel
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let Some(channel) = channel else { return false };
+        // `seq` is allocated only once a channel is known to be installed, so the number a
+        // subscriber never sees is one the channel dropped — not one this code burned deciding
+        // there was nobody to send to.
+        let frame = TerminalFrame {
+            seq: self.seq.fetch_add(1, Ordering::Relaxed),
+            bytes: STANDARD.encode(bytes),
+            dropped_before,
+            exited,
+            drained: self.drained.load(Ordering::Acquire),
+        };
+        match channel.send(frame) {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::debug!("terminal channel rejected a frame: {e}");
+                false
+            }
+        }
+    }
+    /// Park until there is something to send, flush a bounded burst, repeat. Returns after the
+    /// exit frame, after the terminal is closed, or when the channel goes away.
+    fn forward(&self) {
+        loop {
+            let mut out = self.lock_output();
+            loop {
+                if self.closed.load(Ordering::Acquire) {
+                    self.forwarding.store(false, Ordering::Release);
+                    return;
+                }
+                if !out.bytes.is_empty() || out.dropped > 0 || self.finished() {
+                    break;
+                }
+                out = self.wake.wait(out).unwrap_or_else(|e| e.into_inner());
+            }
+            // The subscription these frames belong to, read before the first send.
+            let epoch = self.epoch.load(Ordering::Acquire);
+            let mut burst: Vec<(usize, Vec<u8>)> = Vec::new();
+            for _ in 0..FRAMES_PER_FLUSH {
+                let dropped_before = std::mem::take(&mut out.dropped);
+                let count = out.bytes.len().min(FRAME_PAYLOAD);
+                if count == 0 && dropped_before == 0 {
+                    break;
+                }
+                burst.push((dropped_before, out.bytes.drain(..count).collect()));
+            }
+            // Read under the same guard that drained the ring: `drained` is stored after the last
+            // push, so `finished() && empty` cannot race a byte into the ring behind our back.
+            let finished = self.finished() && out.bytes.is_empty();
+            drop(out);
+            let mut lost = false;
+            for (dropped_before, bytes) in &burst {
+                if !self.send(bytes, *dropped_before, false) {
+                    lost = true;
+                    break;
+                }
+            }
+            if lost {
+                if self.stop(epoch) {
+                    return;
+                }
+                continue;
+            }
+            if finished {
+                self.send(&[], 0, true);
+                if self.stop(epoch) {
+                    return;
+                }
+                continue;
+            }
+            std::thread::sleep(FLUSH_INTERVAL);
+        }
+    }
+}
+
 impl Drop for Terminal {
     fn drop(&mut self) {
+        // Before the early return: a tab closed on an exited shell still has a parked forwarder.
+        self.stream.mark(&self.stream.closed);
         if self.exited.load(Ordering::Acquire) {
             return;
         }
@@ -132,28 +364,25 @@ fn spawn_profile(
     let killer = child.clone_killer();
     let output = Arc::new(Mutex::new(Output::default()));
     let exited = Arc::new(AtomicBool::new(false));
-    let sink = output.clone();
     let drained = Arc::new(AtomicBool::new(false));
-    let reader_done = drained.clone();
+    let stream = Arc::new(Stream::new(output.clone(), exited.clone(), drained.clone()));
+    let reader_stream = stream.clone();
     std::thread::spawn(move || {
         let mut bytes = [0; 8192];
         while let Ok(n) = reader.read(&mut bytes) {
             if n == 0 {
                 break;
             }
-            let mut out = sink.lock().unwrap_or_else(|e| e.into_inner());
-            out.bytes.extend(&bytes[..n]);
-            let excess = out.bytes.len().saturating_sub(1024 * 1024);
-            out.bytes.drain(..excess);
-            out.dropped += excess;
+            reader_stream.push(&bytes[..n]);
         }
-        reader_done.store(true, Ordering::Release);
+        // After the last `push`, so a forwarder that sees `drained` sees every byte with it.
+        reader_stream.mark(&reader_stream.drained);
     });
-    let done = exited.clone();
+    let waiter_stream = stream.clone();
     std::thread::spawn(move || {
         let _ = child.wait();
         drop(lease);
-        done.store(true, Ordering::Release);
+        waiter_stream.mark(&waiter_stream.exited);
     });
     let id = format!("terminal-{}", NEXT.fetch_add(1, Ordering::Relaxed));
     registry.insert(
@@ -167,6 +396,7 @@ fn spawn_profile(
             exited,
             pid,
             drained,
+            stream,
             cwd: root,
             lease: shared_lease,
         },
@@ -295,6 +525,29 @@ pub(crate) struct TerminalOutput {
     dropped: usize,
     busy: bool,
 }
+/// Push output for `id` at the webview's `on_output` channel until the shell exits.
+///
+/// Subscribing is the only thing that starts a forwarder, so a terminal nobody watches costs one
+/// reader thread and nothing else. The backlog is whatever is in the ring: subscribing after
+/// output has already arrived delivers it first, in order, because the ring is the only buffer in
+/// the path. A second subscription **replaces** the first (`Stream::subscribe`).
+#[tauri::command]
+pub(crate) fn terminal_subscribe(
+    id: String,
+    on_output: Channel<TerminalFrame>,
+) -> Result<(), AppError> {
+    let stream = lock()
+        .get(&id)
+        .ok_or_else(|| AppError::invalid_argument("Terminal is closed"))?
+        .stream
+        .clone();
+    stream.subscribe(on_output);
+    Ok(())
+}
+
+/// **Deprecated** in favour of `terminal_subscribe`; kept for one release as a fallback and used
+/// by the tests in this file. It drains the same ring as the forwarder, so calling both on one
+/// terminal splits the output between them.
 #[tauri::command]
 pub(crate) fn terminal_read(id: String) -> Result<TerminalOutput, AppError> {
     let registry = lock();
@@ -400,6 +653,235 @@ pub(crate) async fn terminal_info(id: String) -> Result<TerminalInfo, AppError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What the webview would see: every message's serialized length, and the frame it carried.
+    #[derive(Default)]
+    struct Frames {
+        seen: Vec<(usize, TerminalFrameWire)>,
+    }
+    #[derive(serde::Deserialize, Clone)]
+    struct TerminalFrameWire {
+        seq: u64,
+        bytes: String,
+        dropped_before: usize,
+        exited: bool,
+        drained: bool,
+    }
+    fn collector() -> (Channel<TerminalFrame>, Arc<Mutex<Frames>>) {
+        let frames: Arc<Mutex<Frames>> = Arc::default();
+        let sink = frames.clone();
+        let channel = Channel::new(move |body: tauri::ipc::InvokeResponseBody| {
+            let json = match body {
+                tauri::ipc::InvokeResponseBody::Json(json) => json,
+                tauri::ipc::InvokeResponseBody::Raw(bytes) => {
+                    String::from_utf8(bytes).expect("frames serialize as JSON")
+                }
+            };
+            let frame: TerminalFrameWire =
+                serde_json::from_str(&json).expect("frames serialize as JSON");
+            sink.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .seen
+                .push((json.len(), frame));
+            Ok(())
+        });
+        (channel, frames)
+    }
+    fn detached() -> Arc<Stream> {
+        Arc::new(Stream::new(
+            Arc::new(Mutex::new(Output::default())),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        ))
+    }
+    /// Wait for `predicate` over the frames delivered so far, or fail.
+    fn until(
+        frames: &Arc<Mutex<Frames>>,
+        what: &str,
+        predicate: impl Fn(&[(usize, TerminalFrameWire)]) -> bool,
+    ) -> Vec<(usize, TerminalFrameWire)> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            {
+                let seen = &frames.lock().unwrap_or_else(|e| e.into_inner()).seen;
+                if predicate(seen) {
+                    return seen.clone();
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "{what}: {} frames delivered",
+                    seen.len()
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+    fn unbase64(text: &str) -> Vec<u8> {
+        STANDARD.decode(text).expect("frames carry standard base64")
+    }
+    #[test]
+    fn frames_stay_ordered_under_the_payload_cap_and_report_what_the_ring_dropped() {
+        let stream = detached();
+        // 1.5 MiB through a 1 MiB ring: the oldest 512 KiB are gone before anyone subscribes.
+        let source: Vec<u8> = (0..RING_BYTES + RING_BYTES / 2)
+            .map(|i| b"0123456789abcdef"[i % 16])
+            .collect();
+        for chunk in source.chunks(8192) {
+            stream.push(chunk);
+        }
+        stream.exited.store(true, Ordering::Release);
+        stream.drained.store(true, Ordering::Release);
+        let (channel, frames) = collector();
+        stream.subscribe(channel);
+        let seen = until(&frames, "no exit frame", |seen| {
+            seen.last().is_some_and(|(_, frame)| frame.exited)
+        });
+        assert!(seen.len() > 1);
+        for (index, (size, frame)) in seen.iter().enumerate() {
+            assert_eq!(frame.seq, index as u64 + 1, "frames must not reorder");
+            // The whole message, not just the payload: over 8192 bytes tauri parks it in an
+            // unbounded queue instead of `eval`ing it.
+            assert!(*size < 8192, "{size} byte message at seq {}", frame.seq);
+            assert!(unbase64(&frame.bytes).len() <= FRAME_PAYLOAD);
+        }
+        let (_, last) = seen.last().unwrap();
+        assert!(last.exited && last.drained && last.bytes.is_empty());
+        assert!(
+            seen[..seen.len() - 1]
+                .iter()
+                .all(|(_, frame)| !frame.exited),
+            "exit is signalled once, at the end"
+        );
+        let dropped: usize = seen.iter().map(|(_, frame)| frame.dropped_before).sum();
+        assert_eq!(dropped, source.len() - RING_BYTES);
+        let delivered: Vec<u8> = seen
+            .iter()
+            .flat_map(|(_, frame)| unbase64(&frame.bytes))
+            .collect();
+        assert_eq!(delivered, source[dropped..], "bytes must arrive in order");
+    }
+    #[test]
+    fn exit_is_withheld_until_the_pty_is_both_finished_and_drained() {
+        let stream = detached();
+        stream.push(b"tail of the output");
+        // The child is gone but the reader thread has not reported EOF: `terminal_read` calls that
+        // "not exited" and so does the stream.
+        stream.exited.store(true, Ordering::Release);
+        let (channel, frames) = collector();
+        stream.subscribe(channel);
+        let seen = until(&frames, "no output frame", |seen| !seen.is_empty());
+        assert_eq!(unbase64(&seen[0].1.bytes), b"tail of the output");
+        assert!(seen
+            .iter()
+            .all(|(_, frame)| !frame.exited && !frame.drained));
+        stream.push(b" and its last line");
+        stream.drained.store(true, Ordering::Release);
+        stream.wake.notify_all();
+        let seen = until(&frames, "no exit frame", |seen| {
+            seen.last().is_some_and(|(_, frame)| frame.exited)
+        });
+        let delivered: Vec<u8> = seen
+            .iter()
+            .flat_map(|(_, frame)| unbase64(&frame.bytes))
+            .collect();
+        assert_eq!(delivered, b"tail of the output and its last line");
+    }
+    #[test]
+    fn a_second_subscriber_replaces_the_first_and_nothing_is_replayed() {
+        let stream = detached();
+        let (first_channel, first) = collector();
+        stream.subscribe(first_channel);
+        stream.push(b"before");
+        until(&first, "first subscriber got nothing", |seen| {
+            !seen.is_empty()
+        });
+        let (second_channel, second) = collector();
+        stream.subscribe(second_channel);
+        let delivered_to_first = first.lock().unwrap().seen.len();
+        stream.push(b"after");
+        let seen = until(&second, "second subscriber got nothing", |seen| {
+            !seen.is_empty()
+        });
+        assert_eq!(
+            unbase64(&seen[0].1.bytes),
+            b"after",
+            "no replay of the ring"
+        );
+        assert_eq!(
+            seen[0].1.seq, 2,
+            "seq is per terminal, not per subscription"
+        );
+        assert_eq!(
+            first.lock().unwrap().seen.len(),
+            delivered_to_first,
+            "the replaced channel stops receiving"
+        );
+    }
+    /// The forwarder checks `finished()` under the output lock and then parks on `wake` still
+    /// holding it. Raising `exited`/`drained` outside that lock lets them land in the window
+    /// between the check and the park, and the `notify_all` behind them reaches nobody: no exit
+    /// frame ever, and the thread and its ring leak. 200 unsynchronised races.
+    #[test]
+    fn an_exit_that_races_the_forwarders_wait_still_delivers_the_exit_frame() {
+        for round in 0..200 {
+            let stream = detached();
+            let (channel, frames) = collector();
+            stream.subscribe(channel);
+            let ending = stream.clone();
+            let finisher = std::thread::spawn(move || {
+                ending.mark(&ending.exited);
+                ending.mark(&ending.drained);
+            });
+            until(&frames, &format!("no exit frame on round {round}"), |seen| {
+                seen.last().is_some_and(|(_, frame)| frame.exited)
+            });
+            finisher.join().unwrap();
+        }
+    }
+    #[tokio::test]
+    async fn a_shell_streams_its_backlog_then_its_exit_over_one_channel() {
+        let root = tempfile::tempdir().unwrap();
+        let id = spawn(root.path().to_path_buf(), 80, 24).unwrap();
+        terminal_write(id.clone(), "printf 'PTY_%s\\n' STREAMED; exit\n".into())
+            .await
+            .unwrap();
+        // Subscribe only after output is already sitting in the ring: the backlog is the ring, so
+        // a late subscriber must still see every byte, oldest first.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            let waiting = {
+                let registry = lock();
+                let out = registry[&id].output.lock().unwrap();
+                String::from_utf8_lossy(&out.bytes.iter().copied().collect::<Vec<u8>>())
+                    .contains("PTY_STREAMED")
+            };
+            if waiting {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "shell produced nothing"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let (channel, frames) = collector();
+        terminal_subscribe(id.clone(), channel).unwrap();
+        let seen = until(&frames, "no exit frame", |seen| {
+            seen.last().is_some_and(|(_, frame)| frame.exited)
+        });
+        let text = String::from_utf8_lossy(
+            &seen
+                .iter()
+                .flat_map(|(_, frame)| unbase64(&frame.bytes))
+                .collect::<Vec<u8>>(),
+        )
+        .into_owned();
+        assert!(text.contains("PTY_STREAMED"), "{text}");
+        assert!(seen.last().unwrap().1.bytes.is_empty());
+        assert!(seen[..seen.len() - 1].iter().all(|(_, f)| !f.exited));
+        terminal_close(id.clone());
+        assert!(terminal_subscribe(id, collector().0).is_err());
+    }
     #[tokio::test]
     async fn selected_shell_starts_in_split_directory_and_archive_closes_only_its_owner() {
         let root = tempfile::tempdir().unwrap();

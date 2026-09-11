@@ -1,5 +1,5 @@
 import { mockChatItems, mockChatTurns } from "./mock";
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import type { ItemKind } from "./wire";
 export interface WorkspaceContext {
   projectId: string;
@@ -35,6 +35,18 @@ export interface ChatItem {
   body: string;
   parent_id: string | null;
   provider_uuid?: string | null;
+}
+/**
+ * One message of terminal output. `bytes` is base64 of at most 4096 PTY bytes rather than a
+ * `number[]`, which keeps the serialized message under tauri's 8192-byte `eval` threshold and off
+ * the unbounded channel queue behind it (`src-tauri/src/terminal.rs`).
+ */
+export interface TerminalFrame {
+  seq: number;
+  bytes: string;
+  dropped_before: number;
+  exited: boolean;
+  drained: boolean;
 }
 export interface HistoryPage { items: ChatItem[]; nextAfter: number; nextBefore: number | null; hasMore: boolean }
 export interface ChatTurn {
@@ -125,6 +137,28 @@ export const workspaceApi = {
           new Error("Interactive terminals are available in the desktop app."),
         ),
   terminalProfiles: (): Promise<{ path: string; name: string; default: boolean }[]> => desktop ? invoke("terminal_profiles") : Promise.resolve([]),
+  /**
+   * Stream this terminal's output. Resolves once Rust holds the channel — frames only flow after
+   * that, and the backlog is whatever is still in the 1 MiB ring, so a late subscriber gets the
+   * bytes that arrived while it was opening, oldest first.
+   *
+   * Subscribing twice to one id replaces the first channel; nothing is replayed to the second.
+   * The returned teardown detaches this page's handler (`docs/plans/ipc-contract.md`, terminal
+   * section); the Rust-side forwarder stops when the terminal is closed.
+   */
+  subscribeTerminal: async (
+    id: string,
+    onFrame: (frame: TerminalFrame) => void,
+  ): Promise<() => void> => {
+    if (!desktop) return () => {};
+    const channel = new Channel<TerminalFrame>();
+    channel.onmessage = onFrame;
+    await invoke("terminal_subscribe", { id, onOutput: channel });
+    return () => {
+      channel.onmessage = () => {};
+    };
+  },
+  /** @deprecated Polled fallback, kept for one release. Use `subscribeTerminal`. */
   readTerminal: (
     id: string,
   ): Promise<{ data: number[]; exited: boolean; dropped: number; busy:boolean }> =>

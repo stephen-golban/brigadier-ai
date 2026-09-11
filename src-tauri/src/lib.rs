@@ -254,6 +254,7 @@ pub fn run() {
             terminal::terminal_open,
             terminal::terminal_profiles,
             terminal::terminal_read,
+            terminal::terminal_subscribe,
             terminal::terminal_write,
             terminal::terminal_resize,
             terminal::terminal_close,
