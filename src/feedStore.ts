@@ -11,6 +11,13 @@ import { countDiagnostic, markRenderUpdate, profiling, traceEvent } from "./perf
  *     `useSyncExternalStore` subscribers **once**. Ten channel messages in one frame are ten
  *     tasks and would be ten renders without this; React's automatic batching only collapses
  *     updates *within* a task.
+ *   - **That loop is armed only while it has something to do** (2026-09-11, plan review B3). A
+ *     `pushBatch` on an idle store arms the frame and its 250 ms fallback; a drain that empties
+ *     the buffer arms nothing again, except one timer at the `COUNTER_FLUSH_MS` deadline when a
+ *     counter or cursor is still owed to the snapshot. An idle window therefore wakes zero times
+ *     a second where it used to wake ~64, in every build — the one exception is an open
+ *     `src/fps.ts` capture, which holds the loop at full rate for its own duration. See `armed`,
+ *     `rearm` and `setFrameSampling`.
  *   - `getSessionRows` / `getProjectRows` / `getState` return cached references. A session whose
  *     rows did not change this frame keeps the identical array, so its pane does not re-render.
  *   - No `flushSync`, and the feed is never read inside `startTransition`: a store mutated 60
@@ -248,9 +255,14 @@ const ingest = { rowsIn: 0, batches: 0, rowsInWindow: 0, batchesInWindow: 0, win
 /**
  * The Channel `onmessage`. Push and return; anything else here runs on the main thread inside
  * the eval'd script that delivered the message.
+ *
+ * The push is also what wakes the loop: the drain is armed only while there is work to do
+ * (`armWork`), so an idle window arms nothing at all. `armWork` is a boolean check and two
+ * scheduler calls at most once per idle->busy edge, not once per batch.
  */
 export function pushBatch(batch: FeedBatch): void {
   buffer.push(batch);
+  if (running && armed !== "work") armWork();
 }
 
 /* ----------------------------------------------------------------- rings */
@@ -563,6 +575,23 @@ function rebuildState(): void {
 let rafId = 0;
 let drainTimer: ReturnType<typeof setTimeout> | undefined;
 let running = false;
+/**
+ * What the loop currently has armed, and the whole idle rule (2026-09-11, plan review B3).
+ *
+ *   - `"work"` — a `requestAnimationFrame` **and** the `DRAIN_FALLBACK_MS` timer, exactly as the
+ *     loop used to arm unconditionally. Armed by `pushBatch` on the idle->busy edge and by
+ *     `rearm()` while anything is still pending.
+ *   - `"fold"` — one `setTimeout` for the remainder of the `COUNTER_FLUSH_MS` window, and nothing
+ *     else. The only work it can have to do is folding cursors and counters into the snapshot.
+ *   - `"none"` — nothing is armed. This is what an idle window now costs: zero wakeups, where the
+ *     old `scheduleDrain()`/`drain()` pair re-armed both timers on every drain and woke the store
+ *     ~64 times a second for the life of the app with an empty buffer.
+ */
+let armed: "none" | "work" | "fold" = "none";
+/** See `setFrameSampling`. Off except while a frame-meter capture is open. */
+let frameSampling = false;
+/** WKWebView pauses animation frames when occluded; see `armWork`. */
+const DRAIN_FALLBACK_MS = 250;
 const PROFILE_DRAIN = new URLSearchParams(location.search).has("profile");
 
 /**
@@ -574,10 +603,21 @@ let rowsChanged = false;
 function drain(timestamp?: number): void {
   if (!running) return;
   const workStarted = PROFILE_DRAIN ? performance.now() : 0;
-  cancelAnimationFrame(rafId);
-  clearTimeout(drainTimer);
-  scheduleDrain();
+  // Whichever of the two fired, its twin is cancelled. `rearm()` in the `finally` decides whether
+  // anything goes back on, so an exception in `applyBatch` cannot leave the loop unarmed — which
+  // is the property the old "re-arm before the work" line bought.
+  disarm();
+  try {
+    drainOnce(timestamp);
+  } finally {
+    rearm();
+  }
+  // `drain_worst_ms` now includes the re-arm — two scheduler calls at most — because that is part
+  // of what a wakeup costs. It is a diagnostic, not a gate.
+  if (PROFILE_DRAIN) fps.recordDrain(performance.now() - workStarted);
+}
 
+function drainOnce(timestamp?: number): void {
   if (buffer.length > 0) {
     const batches = buffer;
     buffer = [];
@@ -618,7 +658,6 @@ function drain(timestamp?: number): void {
     ingest.windowStart = now;
   }
 
-  if (PROFILE_DRAIN) fps.recordDrain(performance.now() - workStarted);
   if (timestamp !== undefined) {
     fps.sampleFrame(timestamp);
     // rAF only: the 250 ms fallback is an ordinary timer, so its reply would not straddle a
@@ -627,29 +666,115 @@ function drain(timestamp?: number): void {
   }
 }
 
-function scheduleDrain(): void {
+/**
+ * Full-rate arm: one animation frame **and** the fallback timer, both live at once.
+ *
+ * The fallback is not redundant. WKWebView pauses animation frames when the window is occluded,
+ * and an approval or turn signal must still land — `docs/vision.md` §9 forbids an optimistic
+ * card, so the card's arrival is the signal's arrival. Both stay armed for as long as there is
+ * pending work, which is what the loop did unconditionally before this change.
+ */
+function armWork(): void {
+  if (armed === "work") return;
+  if (armed === "fold") { clearTimeout(drainTimer); drainTimer = undefined; }
   rafId = requestAnimationFrame(timestamp => drain(timestamp));
-  // WKWebView pauses animation frames when occluded. Approval and turn signals
-  // must still catch up with the durable transcript's independent polling.
-  drainTimer = setTimeout(() => drain(), 250);
+  drainTimer = setTimeout(() => drain(), DRAIN_FALLBACK_MS);
+  armed = "work";
 }
+
+/**
+ * Fold-only arm: one timer for the rest of the `COUNTER_FLUSH_MS` window, no animation frame.
+ *
+ * This is the tick the 500 ms fold needs and the only one it needs. A counters-only or
+ * cursor-only delta is applied to the live map at once and owes React a snapshot no later than
+ * `COUNTER_FLUSH_MS` after the last flush; the deadline is known, so it is a deadline, not a
+ * poll. It is armed only when such a delta is actually outstanding — no live-session tick, no
+ * pending-counter heartbeat — and the drain that services it clears both flags, so it never
+ * re-arms itself. A push arriving first upgrades it to `armWork` and the fold rides that frame.
+ */
+function armFold(delayMs: number): void {
+  if (armed !== "none") return;
+  drainTimer = setTimeout(() => drain(), delayMs);
+  armed = "fold";
+}
+
+function disarm(): void {
+  if (rafId !== 0) { cancelAnimationFrame(rafId); rafId = 0; }
+  if (drainTimer !== undefined) { clearTimeout(drainTimer); drainTimer = undefined; }
+  armed = "none";
+}
+
+/** Anything the loop still owes a consumer. Checked at `start()` and after every drain. */
+function pending(): boolean {
+  return buffer.length > 0 || stateDirty || countersDirty || cursorsDirty || signalsDirty || rowsChanged;
+}
+
+/**
+ * Decide what the loop is allowed to hold after a drain (or at `start()`).
+ *
+ * Work pending -> full rate. Only a cursor or counter pending -> one timer at its deadline.
+ * Nothing pending -> nothing armed, and the next `pushBatch` is what wakes the store again.
+ */
+function rearm(): void {
+  if (!running) return;
+  if (frameSampling) { armWork(); return; }
+  if (buffer.length > 0 || stateDirty || signalsDirty || rowsChanged) { armWork(); return; }
+  if (countersDirty || cursorsDirty) {
+    const due = lastCounterFlush + COUNTER_FLUSH_MS - performance.now();
+    armFold(due > 0 ? due : 0);
+  }
+}
+
+/**
+ * Keep an animation frame armed every frame even with nothing to drain, for exactly as long as a
+ * frame-meter capture is open.
+ *
+ * `src/fps.ts` derives the frame meter — and with it the burn's dropped-vsync gate — from the rAF
+ * timestamps this loop hands it, so a window that stops asking for frames reads as a window that
+ * missed them: one idle second becomes ~60 dropped vsyncs in the next report. The burn brackets
+ * its capture with idle time at both ends (`src/components/Burn.tsx`: `startCapture()` before the
+ * sessions exist, and a 1.2 s tail after the run), and that idle time is part of what it measures.
+ *
+ * The window is the **capture**, not the build. `fps.startCapture()` calls this with `true` and
+ * `fps.stopCapture()` with `false`, through the registration on the line below; no build-time flag
+ * reaches it any more. Dev, burn and release builds are therefore all idle-silent whenever no
+ * capture is open, which is what lets a burn measure the idle change instead of being the reason
+ * it is switched off. The meter still reads this loop's own frame timestamps, so the quantity it
+ * reports is the one it always reported. **[not measured]** no burn has been run against this.
+ */
+export function setFrameSampling(on: boolean): void {
+  if (frameSampling === on) return;
+  frameSampling = on;
+  if (!running) return;
+  if (on) armWork();
+  else if (!pending()) disarm();
+}
+
+fps.setFrameSource(setFrameSampling);
 
 function notify(): void {
   for (const cb of listeners) cb();
 }
 
-/** Start the single rAF loop. Idempotent. */
+/**
+ * Start the loop. Idempotent, so React StrictMode's double-invoked mount effect arms nothing
+ * twice; the second `start()` returns on the `running` guard and the pair `start`/`stop`/`start`
+ * leaves exactly one arming behind.
+ *
+ * Nothing is armed unless something is already pending: batches that arrived before the start
+ * (the Channel is opened on the same line in `src/App.tsx`) are drained on the frame after this,
+ * and a start with an empty buffer costs one boolean.
+ */
 export function start(): void {
   if (running) return;
   running = true;
-  scheduleDrain();
+  rearm();
 }
 
 /** Stop the loop (tests, teardown). */
 export function stop(): void {
   running = false;
-  cancelAnimationFrame(rafId);
-  clearTimeout(drainTimer);
+  disarm();
 }
 
 /* ------------------------------------------------------------- snapshots */

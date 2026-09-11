@@ -6,13 +6,19 @@ const fake = vi.hoisted(() => ({
   listened: [] as string[],
   handlers: [] as (() => void)[],
   unlisten: vi.fn(),
+  /** Held open to keep a `listen()` unresolved; see the reordering tests at the bottom. */
+  gate: null as Promise<void> | null,
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: fake.invoke, isTauri: () => true }));
+// `listen` resolves a microtask later at the earliest, and the handler is only live once it has:
+// Tauri registers the subscription across the IPC boundary, and nothing emitted before that is
+// buffered or replayed (`docs/plans/efficiency-plan-review-2026-09-11.md` §B4). The mock models
+// exactly that — the name is recorded synchronously, the handler is not.
 vi.mock("@tauri-apps/api/event", () => ({
   listen: (name: string, handler: () => void) => {
     fake.listened.push(name);
-    fake.handlers.push(handler);
-    return Promise.resolve(fake.unlisten);
+    const register = () => { fake.handlers.push(handler); return fake.unlisten; };
+    return (fake.gate ?? Promise.resolve()).then(register);
   },
 }));
 vi.mock("./workspaceApi", () => ({ desktop: true, errorMessage: String }));
@@ -27,7 +33,7 @@ afterEach(async () => {
   await Promise.resolve(); await Promise.resolve();
   vi.useRealTimers();
   fake.invoke.mockReset(); fake.unlisten.mockReset();
-  fake.listened.length = 0; fake.handlers.length = 0;
+  fake.listened.length = 0; fake.handlers.length = 0; fake.gate = null;
 });
 
 const NONE: never[] = [];
@@ -51,6 +57,8 @@ it("reports not loaded until the first read resolves", async () => {
   const { result } = renderHook(() => useProviderCatalog(NONE));
   expect(result.current.loaded).toBe(false);
   expect(result.current.providers).toEqual([]);
+  // The read starts once the subscription is live, one microtask after mount.
+  await act(async () => {});
   await act(async () => { resolve([entry()]); });
   expect(result.current.loaded).toBe(true);
   expect(result.current.providers).toHaveLength(1);
@@ -229,4 +237,49 @@ it("unsubscribes and stops every timer on unmount", async () => {
   expect(fake.unlisten).toHaveBeenCalledTimes(1);
   await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
   expect(fake.invoke).toHaveBeenCalledTimes(2);
+});
+
+/*
+ * B4, `docs/plans/efficiency-plan-review-2026-09-11.md`: the subscription is registered **before**
+ * the first read, so there is no window in which a `provider-catalog-refreshed` can be emitted
+ * and dropped. The old order read first and subscribed afterwards; with `listen` unresolved the
+ * read below could not have been answered by the event at all, and only the 15 s poll would have
+ * found the catalogue — 15 s of "No provider CLI is connected" on a machine that has one.
+ */
+it("subscribes before it reads, so a refresh at the first read's heels is not lost", async () => {
+  let open: () => void = () => {};
+  fake.gate = new Promise<void>(r => { open = r; });
+  fake.invoke.mockResolvedValue([]);
+  const { result } = renderHook(() => useProviderCatalog(NONE));
+
+  // Nothing is read while the subscription is still landing. This is the invariant.
+  await act(async () => {});
+  expect(fake.listened).toEqual(["provider-catalog-refreshed"]);
+  expect(fake.invoke).not.toHaveBeenCalled();
+
+  await act(async () => { open(); });
+  expect(fake.invoke).toHaveBeenCalledTimes(1);
+  expect(result.current.providers).toEqual([]);
+
+  // The emit the old order raced: it lands, because the handler was live before the read was.
+  fake.invoke.mockResolvedValue([entry()]);
+  await act(async () => { refreshed(); });
+  expect(fake.invoke).toHaveBeenCalledTimes(2);
+  expect(result.current.providers).toHaveLength(1);
+  expect(result.current.loaded).toBe(true);
+});
+
+it("unsubscribes a listen that resolves after unmount, and never reads or polls", async () => {
+  vi.useFakeTimers();
+  let open: () => void = () => {};
+  fake.gate = new Promise<void>(r => { open = r; });
+  fake.invoke.mockResolvedValue([entry()]);
+  const { unmount } = renderHook(() => useProviderCatalog(NONE));
+  unmount();
+
+  await act(async () => { open(); });
+  expect(fake.unlisten).toHaveBeenCalledTimes(1);
+  expect(fake.invoke).not.toHaveBeenCalled();
+  await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+  expect(fake.invoke).not.toHaveBeenCalled();
 });

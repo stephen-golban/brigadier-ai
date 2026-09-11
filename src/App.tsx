@@ -33,6 +33,7 @@ import type { PaintedSpan } from "./paint";
 import { Approvals } from "./components/Approvals";
 import type { ApprovalRow } from "./components/Approvals";
 import { Burn } from "./components/Burn";
+import { preloadMarkdownContent } from "./components/Markdown";
 import { Dock } from "./components/Dock";
 import { ThreadView } from "./components/ThreadView";
 import { useStoredState } from "./workbenchState";
@@ -153,6 +154,99 @@ const BURN_ROOT_MARKER = "/burn-fixtures/";
 const BURN_UI = import.meta.env.DEV || import.meta.env.VITE_BURN === "1";
 
 const emptySelectedApprovals: ApprovalRow[] = [];
+
+/**
+ * Archive sync and the native menu event bridge, in that order and only in that order.
+ *
+ * **Listeners first, then the fetch** (`docs/plans/efficiency-plan-review-2026-09-11.md` §B4).
+ * `listen` is async and Tauri v2 neither buffers nor replays an event emitted before its
+ * subscription lands, so the old shape — `syncArchive()`, then the 5 s poll, then `listen` — had
+ * a real window in which an `archive-changed` was dropped and the sidebar stayed stale for up to
+ * five seconds. The poll is deliberately still here: it is what hid that window, and it goes only
+ * once the producer side is proven to emit on every archive mutation.
+ *
+ * The browser/mock branch keeps its synchronous first refresh: there is nothing to subscribe to,
+ * so there is nothing to wait for.
+ *
+ * Exported for `src/App.archive.test.tsx`, which drives this wiring on its own rather than
+ * through a full `App` render — the shell's own tests run with `desktop` false and cannot reach
+ * this branch at all.
+ */
+export function useArchiveAndNativeEvents(say: (e: unknown) => void): void {
+  useEffect(() => {
+    let stopped = false,
+      reading = false;
+    const refresh = async () => {
+      if (stopped || reading) return;
+      reading = true;
+      try {
+        await syncArchive();
+      } catch (e) {
+        if (!stopped) say(e);
+      } finally {
+        reading = false;
+      }
+    };
+    let timer: ReturnType<typeof setInterval> | undefined;
+    let unlisteners: Array<() => void> = [];
+    const begin = () => {
+      void refresh();
+      timer = setInterval(() => void refresh(), 5000);
+    };
+    if (!desktop) begin();
+    else
+      void (async () => {
+        const settled = await Promise.all(
+          [
+            listen("archive-changed", () => void refresh()),
+            listen("native-close-tab", () =>
+              window.dispatchEvent(new Event("workbench-close-tab")),
+            ),
+            listen("native-new-session", () =>
+              window.dispatchEvent(new Event("workbench-new-session")),
+            ),
+            listen("native-new-terminal", () =>
+              window.dispatchEvent(new Event("workbench-new-terminal")),
+            ),
+            listen<string>("native-session-action", (event) =>
+              window.dispatchEvent(
+                new CustomEvent("workbench-session-action", {
+                  detail: event.payload,
+                }),
+              ),
+            ),
+            listen("native-toggle-terminal", () =>
+              window.dispatchEvent(new Event("workbench-terminal-toggle")),
+            ),
+            listen("native-split-terminal", () =>
+              window.dispatchEvent(new Event("workbench-terminal-split")),
+            ),
+            listen("native-new-files", () =>
+              window.dispatchEvent(new Event("workbench-new-files")),
+            ),
+          ].map((promise) =>
+            promise.catch((e): (() => void) => {
+              if (!stopped) say(e);
+              return () => {};
+            }),
+          ),
+        );
+        // Unmount raced the pending `listen()` calls: they are live now and nothing else will
+        // ever tear them down, so tear them down here — and start no poll.
+        if (stopped) {
+          for (const unlisten of settled) unlisten();
+          return;
+        }
+        unlisteners = settled;
+        begin();
+      })();
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+      for (const unlisten of unlisteners) unlisten();
+    };
+  }, [say]);
+}
 
 export function App({ onReady }: { onReady?: () => void } = {}) {
   const peers = usePeers();
@@ -359,6 +453,11 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
             )?.id ??
             projectList.find(p => !p.projectless)?.id ?? null,
         );
+      // The 286 KB Markdown chunk, fetched and evaluated here rather than on the first transcript
+      // mount. This is after first contentful paint, so it cannot spend the 295 ms budget; the
+      // zero-delay timer yields the task first. Desktop only: the browser mock mounts no
+      // transcript. `preloadMarkdownContent` shares `lazy`'s promise, so it never fetches twice.
+      if (desktop) setTimeout(() => void preloadMarkdownContent(), 0);
     })();
 
     void b
@@ -376,64 +475,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
     };
   }, [say]);
 
-  useEffect(() => {
-    let stopped = false,
-      reading = false;
-    const refresh = async () => {
-      if (stopped || reading) return;
-      reading = true;
-      try {
-        await syncArchive();
-      } catch (e) {
-        if (!stopped) say(e);
-      } finally {
-        reading = false;
-      }
-    };
-    void refresh();
-    const timer = setInterval(() => void refresh(), 5000);
-    const listeners = !desktop
-      ? []
-      : [
-          listen("archive-changed", () => void refresh()),
-          listen("native-close-tab", () =>
-            window.dispatchEvent(new Event("workbench-close-tab")),
-          ),
-          listen("native-new-session", () =>
-            window.dispatchEvent(new Event("workbench-new-session")),
-          ),
-          listen("native-new-terminal", () =>
-            window.dispatchEvent(new Event("workbench-new-terminal")),
-          ),
-          listen<string>("native-session-action", (event) =>
-            window.dispatchEvent(
-              new CustomEvent("workbench-session-action", {
-                detail: event.payload,
-              }),
-            ),
-          ),
-          listen("native-toggle-terminal", () =>
-            window.dispatchEvent(new Event("workbench-terminal-toggle")),
-          ),
-          listen("native-split-terminal", () =>
-            window.dispatchEvent(new Event("workbench-terminal-split")),
-          ),
-          listen("native-new-files", () =>
-            window.dispatchEvent(new Event("workbench-new-files")),
-          ),
-        ].map((promise) =>
-          promise.catch((e) => {
-            if (!stopped) say(e);
-            return () => {};
-          }),
-        );
-    return () => {
-      stopped = true;
-      clearInterval(timer);
-      for (const listener of listeners)
-        void listener.then((unlisten) => unlisten()).catch(() => {});
-    };
-  }, [say]);
+  useArchiveAndNativeEvents(say);
 
   // Onboarding can fade only after the initial workspace data has committed.
   useEffect(() => {
