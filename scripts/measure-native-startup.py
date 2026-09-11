@@ -6,6 +6,7 @@ Run only with an unlocked, foreground desktop and no builds/capture/profilers ac
 See docs/research/native-performance-timing-2026-09-09.md.
 """
 import argparse
+import datetime
 import json
 import os
 import plistlib
@@ -18,6 +19,39 @@ import time
 def console_locked():
     status = subprocess.check_output(["ioreg", "-n", "Root", "-d1", "-a"])
     return bool(plistlib.loads(status).get("IOConsoleLocked", True))
+
+
+def source_stamp(build_flags):
+    """Provenance for the result file: which source this run measured, never a score.
+
+    `dirty`/`dirty_files` cover the whole worktree, so a measurement taken over
+    uncommitted edits cannot later be read back as a clean-revision result. A git
+    failure records `None` rather than a clean-looking default. The pass rule is
+    unaffected.
+    """
+    root = Path(__file__).resolve().parent.parent
+
+    def git(*args, strip=True):
+        try:
+            done = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True)
+        except OSError:
+            return None
+        if done.returncode != 0:
+            return None
+        # `--porcelain` encodes the status in the first two columns, so that output is
+        # only right-stripped; a leading space there is data, not padding.
+        return done.stdout.strip() if strip else done.stdout.rstrip("\n")
+
+    head, branch = git("rev-parse", "HEAD"), git("rev-parse", "--abbrev-ref", "HEAD")
+    status = git("status", "--porcelain", strip=False)
+    return {
+        "head": head,
+        "dirty": None if status is None else bool(status),
+        "dirty_files": [line[3:] for line in status.splitlines()] if status else [],
+        "branch": None if branch in (None, "HEAD") else branch,
+        "build_flags": build_flags,
+        "captured_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
 
 
 def measure(binary, paint_log, count, output, activate_helper):
@@ -84,7 +118,16 @@ def measure(binary, paint_log, count, output, activate_helper):
         time.sleep(2)
     complete = len(samples) == count and all(s["valid"] for s in samples)
     median = statistics.median(s["pre_spawn_to_fcp_ms"] for s in samples) if complete else None
+    build_flags = {
+        "env": {name: os.environ.get(name) for name in ("VITE_BURN", "BRIGADIER_TRACE")},
+        "binary": str(binary),
+        "paint_log": str(paint_log),
+        "child_env_overrides": {"BRIGADIER_TRACE": "1"},
+        "requested_runs": count,
+        "note": "This runner never builds. Build flags are properties of the binary handed to it and are not verified here.",
+    }
     result = {
+        "source": source_stamp(build_flags),
         "binary": str(binary), "paint_log": str(paint_log), "requested_runs": count, "samples": samples,
         "p50_ms": median, "pass": complete and median <= 295,
         "limitations": "Warm-cache launches. Pre-spawn includes launch-call overhead. FCP is not presentation or workspace readiness. Operator must verify unlocked foreground conditions.",

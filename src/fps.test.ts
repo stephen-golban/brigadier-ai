@@ -44,3 +44,38 @@ it("retains a terminal stall when the stop timer precedes rAF", () => {
   vi.mocked(performance.now).mockReturnValue(1300);
   expect(fps.summarise(fps.stopCapture())?.pass).toBe(false);
 });
+
+/*
+ * The frame source is the drain loop in `src/feedStore.ts`, which is armed only while it has work
+ * (2026-09-11). A capture is the one thing that holds it open, so the request has to bracket the
+ * capture exactly: on at `startCapture`, off at `stopCapture`, and nothing in between or outside.
+ */
+it("asks its frame source for frames for exactly the capture's duration", () => {
+  const asked: boolean[] = [];
+  try {
+    fps.stopCapture(); // close the capture `beforeEach` opened, before anything is registered
+    fps.setFrameSource(on => asked.push(on));
+    expect(asked).toEqual([]);
+
+    fps.startCapture();
+    expect(asked).toEqual([true]);
+    fps.sampleFrame(100);
+    fps.sampleFrame(117);
+    expect(asked).toEqual([true]);
+
+    fps.stopCapture();
+    expect(asked).toEqual([true, false]);
+  } finally {
+    fps.setFrameSource(null);
+  }
+});
+
+it("owes frames to a capture that was already open when the source registered", () => {
+  const asked: boolean[] = [];
+  try {
+    fps.setFrameSource(on => asked.push(on)); // `beforeEach` already opened a capture
+    expect(asked).toEqual([true]);
+  } finally {
+    fps.setFrameSource(null);
+  }
+});
