@@ -39,15 +39,27 @@ My measurement windows, from the harness's own per-launch log mtimes:
   minutes** (baseline, full, baseline, full …). A background load that varies on a timescale longer
   than one 40-second series moves both arms together. That is why §3 reports a paired, bootstrapped
   delta and an explicitly measured noise floor rather than a difference of two isolated medians.
-- The clean re-run is **queued but did not happen**: at 03:33 the Mac's console locked
+- **The clean re-run did not happen, and no quiet number exists.** At 03:33 the Mac's console locked
   (`IOConsoleLocked=True`), and both `scripts/measure-native-startup.py` and
-  `scripts/measure-native-burn.py` refuse to run locked, by design — the first attempt returned 19
-  series of `{"p50_ms": null, "pass": false}` with the single sample `"console locked before
-  launch"`. Still locked at 04:01. A waiter (`<scratchpad>/spike-perf/wait-and-run.sh`) is parked
-  until ~05:19; it re-runs every arm with the same n, plus both burns, the moment the console
-  unlocks with no foreign build present. Its output goes to
-  `<scratchpad>/spike-perf/startup-q*.json` and `burn-q{baseline,full}.json`. Until those exist,
-  §3–§6 are the contended numbers.
+  `scripts/measure-native-burn.py` refuse to run locked, by design: all 19 re-run series returned
+  `{"p50_ms": null, "pass": false}` with the single sample `"console locked before launch"`. A
+  waiter parked for the unlock (`<scratchpad>/spike-perf/wait-and-run.sh`) was itself killed at 04:01
+  with exit 144, still locked, having produced **zero** valid samples. Every
+  `<scratchpad>/spike-perf/startup-q*.json` is a locked-refusal stub, not data; there are no
+  `burn-q*.json` at all. **§3–§6 are the contended numbers and there is nothing cleaner behind
+  them.**
+
+  To settle it, on an unlocked foreground desktop with `pgrep -f "cargo |rustc|tauri build"` empty,
+  run `<scratchpad>/spike-perf/quiet-run.sh` (19 interleaved series, ~15 min, all bundles already
+  frozen and built) followed by `resetdata.sh; burn.sh qbaseline` and `resetdata.sh; burn.sh qfull`
+  (~5 min). That also picks up the three `frozen-mdt-*.app` bundles that close the §5 gap.
+
+  Those bundles live in the session scratchpad (1.9 GB, 23 × 44 MB) and are deliberately **not**
+  checked in. If the scratchpad is gone, each one rebuilds in 66–104 s from §2's recipe: swap the one
+  `@import` line in `src/index.css` between `spike-{full,nofilechange,tokensonly}.css` (or delete it
+  for the baseline arm), re-inject `docs/performance/2026-09-11-css-spike/matching-dom.html` into
+  `index.html`'s `#root` for the §5 arms, build, freeze. The runners are checked in beside it under
+  `runners/`; they carry absolute scratchpad paths and need those repointed first.
 
 ---
 
@@ -247,7 +259,8 @@ arms B/C/D, and not the synthetic thread in arms E/F. **Custom-property inherita
 never exercised in any measured arm.** The +24.50 ms is class-selector matching alone. Three further
 release bundles exist with `data-codex-ui data-theme="dark"` on the synthetic thread's wrapper
 (`frozen-mdt-{nocss,fullcss,nofc}.app`, all built exit 0); the console locked before they could be
-measured, so the cost of resolving 311 inherited custom properties across 460 elements is **unknown**
+measured and never unlocked, so the cost of resolving 311 inherited custom properties across 460
+elements is **unknown**
 and is the one number this spike is missing. It can only add to the +24.50 ms, so arm F's 264.78 ms
 p50 is a lower bound for the token-applied case — 30 ms from the gate.
 
@@ -295,9 +308,9 @@ dial.
 
 ## 7. What I did not check
 
-- **A quiet machine.** Every sample is contended or possibly contended (§1). The queued re-run had
-  not produced output when this was written. Absolute p50s are upper bounds; the deltas are paired
-  and interleaved and survive.
+- **A quiet machine.** Every sample is contended or possibly contended (§1). The re-run produced no
+  valid samples at all — the console locked and stayed locked. Absolute p50s are upper bounds; the
+  deltas are paired and interleaved and survive. §1 has the exact command to close this.
 - **n=1 per burn arm.** One 63-second burn per configuration. A dropped-frame delta of ±1 is not
   resolvable at n=1; I did not repeat the burns.
 - **Custom-property inheritance.** No measured arm carried `[data-codex-ui]`, so the kit's 311 tokens
@@ -338,15 +351,16 @@ Reverted:
 
 Added, untracked, so the evidence outlives the scratchpad:
 
-- `docs/performance/2026-09-11-css-spike/` (376 KB) — every startup series JSON with all samples
+- `docs/performance/2026-09-11-css-spike/` (456 KB) — every startup series JSON with all samples
   retained, both full burn captures with their raw frame intervals, `build-exits.txt` (nine builds,
-  all exit 0), `vendor-{full,nofc}.txt`, and `analysis.txt` (the pooled stats and bootstrap output
-  reproduced in §3 and §5).
+  all exit 0), `vendor-{full,nofc}.txt`, `analysis.txt` (the pooled stats and bootstrap output
+  reproduced in §3 and §5), `matching-dom.html` (the §5 probe), and `runners/` (the eight wrapper
+  scripts and the isolated `tauri.json`).
 
 Raw evidence not copied in — frozen bundles, per-launch logs, runner scripts — stays in
 `<scratchpad>/spike-perf/` =
 `/private/tmp/claude-501/-Users-stephen-Development-brigadier-ai/14e67347-0897-4eec-9dd1-f6e922823da6/scratchpad/spike-perf/`:
 `startup-*.json` (every launch retained), `burn-{baseline,full}.json` (full captures with raw frame
 intervals), `build-*.{log,exit}`, `vendor-{full,nofc}.txt`, `matching-dom.html`, `analysis.txt`, the
-frozen `.app` bundles, and the runner scripts. `startup-q*.json` / `burn-q*.json` will appear if the
-queued quiet re-run ever fires.
+23 frozen `.app` bundles, and the runner scripts. The `startup-q*.json` files there are
+locked-refusal stubs with no samples — ignore them; §1 says how to produce the real ones.
