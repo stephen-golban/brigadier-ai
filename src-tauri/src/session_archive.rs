@@ -647,4 +647,71 @@ mod tests {
         assert!(root.join("file").exists());
         store.close().await.unwrap();
     }
+
+    /// A setup that fails on a held workspace lease leaves nothing behind to archive.
+    ///
+    /// The refusal happens in [`crate::composer_workspaces::prepare_checkout`], **before** any
+    /// session row is created, so there is nothing for [`archive_set`] to archive: its
+    /// `supervisor.session(&id).is_none()` guard would refuse the front end's own pending id with
+    /// "Session no longer exists". The stuck task is therefore the front end's to discard
+    /// (`src/App.tsx`, `discardStartup`), and the lease is released the moment setup returns its
+    /// error — which is what makes the retry below succeed with nothing else cleaned up.
+    ///
+    /// The trigger is a **branch switch**, because that is the only setup shape that still takes a
+    /// lease: attaching to the checkout as it stands runs no git write and no longer asks for one
+    /// (`composer_workspaces::checkout`, `docs/research/workspace-avoidance-proposal-2026-09-11.md`
+    /// §3 design A). The original 2026-09-11 report — "Work locally" + "Current (main)" refused
+    /// because a brigadier terminal held the workspace — is that change, not this invariant.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_setup_failure_on_a_held_workspace_lease_creates_no_session_to_archive() {
+        crate::test_support::isolate_workspace_locks();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        std::fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        git(&root, &["init", "-q", "-b", "main"]);
+        std::fs::write(root.join("file"), "original").unwrap();
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-qm", "initial"]);
+        git(&root, &["branch", "alternate"]);
+        let state = crate::state::AppState::pending();
+        assert!(
+            state.initialize(Ok(crate::state::build(dir.path().join("data"))
+                .await
+                .unwrap()))
+        );
+        let ready = state.get().unwrap();
+        let project = ready.supervisor.add_project(root.clone()).await.unwrap();
+        let held = brigadier_core::checkpoint::WorkspaceLease::acquire(&root).unwrap();
+        assert!(crate::composer_workspaces::prepare_checkout(
+            &state,
+            &project.id,
+            None,
+            Some("alternate"),
+            None
+        )
+        .await
+        .is_err());
+        // Nothing to archive, nothing to stop, nothing half-held: the failure is entirely
+        // before session creation.
+        assert!(ready.supervisor.list_sessions().await.unwrap().is_empty());
+        assert!(read(&ready.data_dir).unwrap().entries.is_empty());
+        drop(held);
+        // "Retry setup" with the blocker gone: the same call now succeeds.
+        assert_eq!(
+            crate::composer_workspaces::prepare_checkout(
+                &state,
+                &project.id,
+                None,
+                Some("alternate"),
+                None
+            )
+            .await
+            .unwrap()
+            .1
+            .as_deref(),
+            Some("alternate")
+        );
+        ready.supervisor.shutdown().await;
+    }
 }

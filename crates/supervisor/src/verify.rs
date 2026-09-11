@@ -560,6 +560,7 @@ mod tests {
 
     impl Rig {
         fn new() -> Self {
+        brigadier_core::checkpoint::WorkspaceLease::isolate_registry_for_tests();
             Self {
                 dir: tempfile::tempdir().expect("tempdir"),
             }

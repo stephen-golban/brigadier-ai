@@ -25,6 +25,11 @@ pub enum Error {
     /// Invalid persisted metadata.
     #[error("checkpoint metadata: {0}")]
     Json(#[from] serde_json::Error),
+    /// An overlapping lease already owns the workspace, with whatever could be proven about it.
+    /// Additive: [`Error::Unavailable`] keeps its shape, so callers that only print compile and
+    /// read unchanged. see docs/research/workspace-lock-holder-identity-2026-09-11.md
+    #[error("{0}")]
+    Busy(Box<LockConflict>),
 }
 /// Checkpoint operation result.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -155,7 +160,9 @@ pub(crate) fn valid_path(path: &str) -> bool {
 }
 
 mod lease;
+mod owner;
 pub use lease::WorkspaceLease;
+pub use owner::{LeaseKind, LockConflict, LockOwner};
 
 #[cfg(not(unix))]
 mod unsupported_restore {

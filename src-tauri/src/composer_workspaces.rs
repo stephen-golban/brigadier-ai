@@ -189,11 +189,14 @@ pub(crate) async fn prepare_checkout(
         ));
     }
     supervisor.workspace_writable(&path).await?;
-    let _lease = brigadier_core::checkpoint::WorkspaceLease::acquire(&path)
-        .map_err(|e| invalid(e.to_string()))?;
     let branch = checkout(&path, base, new_branch).await?;
     Ok((path, branch))
 }
+/// Attaching to the checkout as it stands takes no lease: it runs no git write, so an open
+/// terminal on that directory is not a conflict. A branch switch or a new branch does write, and
+/// takes the lease below — after the no-op returns and before the dirty check, so nothing can
+/// change the tree between "this tree is clean" and the checkout that relies on it.
+/// see docs/research/workspace-avoidance-proposal-2026-09-11.md §3 design A.
 pub(crate) async fn checkout(
     path: &Path,
     base: Option<&str>,
@@ -230,6 +233,8 @@ pub(crate) async fn checkout(
     if same && new_branch.is_none() {
         return Ok(live);
     }
+    let _lease = brigadier_core::checkpoint::WorkspaceLease::acquire(path)
+        .map_err(|e| invalid(e.to_string()))?;
     if !same
         && !setup_git(path, &["status", "--porcelain", "--untracked-files=all"])
             .await?
@@ -295,7 +300,9 @@ pub(crate) async fn checkout(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use brigadier_core::checkpoint::WorkspaceLease;
     async fn repo() -> tempfile::TempDir {
+        crate::test_support::isolate_workspace_locks();
         let dir = tempfile::tempdir().unwrap();
         git(dir.path(), &["init", "-q", "-b", "main"])
             .await
@@ -442,5 +449,78 @@ mod tests {
         assert!(validate_member(dir.path(), &nested).await.is_err());
         assert!(checkout(dir.path(), Some("external"), None).await.is_err());
         assert_eq!(current(dir.path()).await.as_deref(), Some("main"));
+    }
+
+    /// A ready app over a real repository, so `prepare_checkout` runs its whole admission path.
+    async fn app(repo: &Path) -> (tempfile::TempDir, AppState, String) {
+        crate::test_support::isolate_workspace_locks();
+        let data = tempfile::tempdir().unwrap();
+        let state = AppState::pending();
+        assert!(
+            state.initialize(Ok(crate::state::build(data.path().join("data"))
+                .await
+                .unwrap()))
+        );
+        let project = state
+            .get()
+            .unwrap()
+            .supervisor
+            .add_project(repo.canonicalize().unwrap())
+            .await
+            .unwrap();
+        (data, state, project.id)
+    }
+
+    /// The owner's 2026-09-11 report: "Work locally" + "Current (main)" on a checkout that has a
+    /// brigadier terminal open on it. Setup writes nothing there, so it must not ask for a lease.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_terminal_does_not_block_attaching_to_the_current_branch() {
+        let dir = repo().await;
+        let (_data, state, project) = app(dir.path()).await;
+        let shell = WorkspaceLease::terminal_as(dir.path(), "terminal-9").unwrap();
+        let (path, branch) = prepare_checkout(&state, &project, None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(path, dir.path().canonicalize().unwrap());
+        assert_eq!(branch.as_deref(), Some("main"));
+        drop(shell);
+        state.get().unwrap().supervisor.shutdown().await;
+    }
+
+    /// The other half of the same change: a switch does write the tree, so the terminal gate
+    /// stays, and the refusal now names the shell to close.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_terminal_still_blocks_a_branch_switch_and_the_refusal_names_it() {
+        let dir = repo().await;
+        git(dir.path(), &["branch", "alternate"]).await.unwrap();
+        let (_data, state, project) = app(dir.path()).await;
+        let shell = WorkspaceLease::terminal_as(dir.path(), "terminal-9").unwrap();
+        let refused = prepare_checkout(&state, &project, None, Some("alternate"), None)
+            .await
+            .unwrap_err();
+        assert!(
+            refused.message.contains("held by terminal"),
+            "{}",
+            refused.message
+        );
+        let created = prepare_checkout(&state, &project, None, None, Some("proposal"))
+            .await
+            .unwrap_err();
+        assert!(
+            created.message.contains("held by terminal"),
+            "{}",
+            created.message
+        );
+        assert_eq!(current(dir.path()).await.as_deref(), Some("main"));
+        drop(shell);
+        assert_eq!(
+            prepare_checkout(&state, &project, None, Some("alternate"), None)
+                .await
+                .unwrap()
+                .1
+                .as_deref(),
+            Some("alternate")
+        );
+        state.get().unwrap().supervisor.shutdown().await;
     }
 }

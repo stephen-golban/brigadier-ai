@@ -168,7 +168,7 @@ impl Supervisor {
         self.checkpoint_maintenance().await?;
         let root = self.checkpoint_root(id).await?;
         self.workspace_writable(&root).await?;
-        let lease = WorkspaceLease::writer(&root).map_err(failure)?;
+        let lease = WorkspaceLease::writer_as(&root, id.as_str()).map_err(failure)?;
         let seq = self.barrier(id).await?;
         let result = async {
             let pre = self.capture_at(root).await?;
@@ -258,7 +258,7 @@ impl Supervisor {
         self.finish_epoch(id, 0).await?;
         let root = self.checkpoint_root(id).await?;
         self.workspace_writable(&root).await?;
-        let _lease = WorkspaceLease::acquire(&root).map_err(failure)?;
+        let _lease = WorkspaceLease::acquire_as(&root, id.as_str()).map_err(failure)?;
         let seq = self.barrier(id).await?;
         let result=async {
             let all=self.inner.store.workspace_epochs(id.to_string()).await?;
@@ -418,7 +418,7 @@ impl Supervisor {
         if std::fs::canonicalize(root).map_err(failure)? != op.plan.current.root {
             return Err(failure("Rewind workspace changed"));
         }
-        let lease = WorkspaceLease::acquire(&op.plan.current.root).map_err(failure)?;
+        let lease = WorkspaceLease::acquire_as(&op.plan.current.root, id.as_str()).map_err(failure)?;
         let seq = self.barrier(&id).await?;
         let snapshots = self.snapshots()?;
         let validation = {
@@ -706,6 +706,7 @@ mod tests {
     }
     impl Rig {
         async fn new(reply: Reply) -> Self {
+        WorkspaceLease::isolate_registry_for_tests();
             let dir = tempfile::tempdir().unwrap();
             let root = dir.path().join("workspace");
             std::fs::create_dir(&root).unwrap();
@@ -1202,7 +1203,7 @@ impl Supervisor {
             .ok_or_else(|| failure("This session predates saved file baselines"))?;
         let snapshots = self.snapshots()?;
         // The original project is the worktree's ancestor, so one lease covers both captures.
-        let lease = WorkspaceLease::acquire(&project.root_path).map_err(failure)?;
+        let lease = WorkspaceLease::acquire_as(&project.root_path, id.as_str()).map_err(failure)?;
         let (source, plan) = tokio::task::spawn_blocking(move || {
             let source = snapshots.capture(&source, Coverage::default())?;
             let current = snapshots.capture(&project.root_path, Coverage::default())?;
@@ -1341,7 +1342,7 @@ impl Supervisor {
         let _serial = self.inner.checkpoints.serial.lock().await;
         self.require_session_available(id)?;
         let root = self.checkpoint_root(id).await?;
-        let _lease = WorkspaceLease::acquire(&root).map_err(failure)?;
+        let _lease = WorkspaceLease::acquire_as(&root, id.as_str()).map_err(failure)?;
         let epoch = self
             .inner
             .store

@@ -619,6 +619,7 @@ mod tests {
     }
     #[tokio::test]
     async fn open_terminals_allow_stage_and_commit_but_protect_working_files() {
+        crate::test_support::isolate_workspace_locks();
         let dir = repo().await;
         let root = dir.path();
         seed(root, "before").await;

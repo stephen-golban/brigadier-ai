@@ -21,6 +21,7 @@ struct Rig {
 }
 impl Rig {
     fn new() -> Self {
+        WorkspaceLease::isolate_registry_for_tests();
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("work");
         fs::create_dir(&root).unwrap();
@@ -327,6 +328,7 @@ fn missing_restore_parent_is_created_only_after_validation() {
 
 #[test]
 fn hierarchical_leases_exclude_nested_roots_but_allow_siblings_and_aliases() {
+    WorkspaceLease::isolate_registry_for_tests();
     let parent = tempfile::tempdir().unwrap();
     let child = parent.path().join("child");
     let sibling = parent.path().join("sibling");
@@ -348,6 +350,7 @@ fn hierarchical_leases_exclude_nested_roots_but_allow_siblings_and_aliases() {
 
 #[test]
 fn durable_recovery_blocks_nested_roots_after_live_lease_exits() {
+    WorkspaceLease::isolate_registry_for_tests();
     let parent = tempfile::tempdir().unwrap();
     let child = parent.path().join("child");
     let sibling = parent.path().join("sibling");
@@ -438,6 +441,7 @@ fn recovery_marker_is_idempotent_only_for_its_owner() {
 
 #[test]
 fn interactive_shells_allow_writers_but_guard_destructive_operations_in_both_directions() {
+    WorkspaceLease::isolate_registry_for_tests();
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("root");
     let child = root.join("child");
