@@ -283,16 +283,18 @@ impl Batcher {
         })
     }
 
-    /// Cumulative `(rows_total, rows_dropped)` for one session, for tests and instrumentation.
+    /// Cumulative `(rows_total, rows_dropped, deltas)` for one session, for tests and
+    /// instrumentation — every field [`SessionCounter`] carries, so this cannot silently report
+    /// less than the wire does.
     ///
     /// `None` once the session has both started and exited and a tick has run: its last counter
     /// was delivered with its exit signal, and the entry is then dropped rather than kept for the
     /// life of the app.
-    pub fn counters(&self, project_id: &str, session_id: &str) -> Option<(u64, u64)> {
+    pub fn counters(&self, project_id: &str, session_id: &str) -> Option<(u64, u64, u64)> {
         let state = lock(&self.inner.state);
         let accum = state.projects.get(project_id)?;
         let c = accum.counters.get(session_id)?;
-        Some((c.total, c.dropped))
+        Some((c.total, c.dropped, c.deltas))
     }
 
     /// Rows sitting in one project's buffer right now.
@@ -706,7 +708,7 @@ mod tests {
         batcher.push("p", &envelope(2, exited()));
         batcher.flush_once();
         let _ = sink.take();
-        assert_eq!(batcher.counters("p", "s1").map(|(t, _)| t), Some(2));
+        assert_eq!(batcher.counters("p", "s1").map(|(t, ..)| t), Some(2));
         assert_eq!(batcher.tracked_projects(), vec!["p".to_owned()]);
     }
 
@@ -742,18 +744,15 @@ mod tests {
         assert_eq!(batch.counters[0].deltas, 40);
         assert_eq!(batch.counters[0].rows_total, 0);
         assert_eq!(batch.counters[0].rows_dropped, 0);
-        // The field's whole cost, measured rather than argued: `,"deltas":40` is 12 bytes of the
-        // 63 this counter serialises to, and 14 bytes at a four-digit count. The message carrying
-        // it was already being sent — `push` marks the session touched for a delta as it does for
-        // any other event — so the frame costs 12 more bytes, not one more message.
-        let bytes = serde_json::to_vec(&batch.counters[0]).expect("json");
-        assert_eq!(
-            bytes.len(),
-            63,
-            "{}",
-            String::from_utf8_lossy(&bytes)
-        );
-        assert!(bytes.len() < MAX_MESSAGE_BYTES / 100);
+        // The **field's** cost, not the counter's: measure what the field adds by removing it
+        // from the encoding, so an unrelated field somebody adds later cannot fail this for the
+        // wrong reason. The message carrying it was already being sent — `push` marks the
+        // session touched for a delta as it does for any other event — so a frame of deltas
+        // costs these bytes, not one more message.
+        let json = serde_json::to_string(&batch.counters[0]).expect("json");
+        let field = r#","deltas":40"#;
+        assert!(json.contains(field), "{json}");
+        assert_eq!(json.len() - json.replace(field, "").len(), 12);
     }
 
     /// The same holds when the project is invisible: rows are dropped there, deltas are not

@@ -620,7 +620,11 @@ async fn s3_can_use_tool_deny() {
         [
             "request-resolved(deny:denied by test)",
             // The CLI still writes a `tool_result`, flagged as an error, for a denied call.
-            "item-completed:tool-result(is_error=true,exit=none,interrupted=false)",
+            // The operator denied this. `is_error` is the CLI's, and it is `true` for a denial
+            // exactly as it is for a crash — but `interrupted` is brigadier's own
+            // `Decision::Deny`, so the row renders as a decision rather than as a red failure,
+            // and no exit code is parsed out of the reason the operator typed.
+            "item-completed:tool-result(is_error=true,exit=none,interrupted=true)",
             "item-started:thinking",
             "item-completed:thinking",
             "item-started:assistant-text",
@@ -2047,9 +2051,68 @@ async fn partial_text_uses_one_stable_item_and_rate_limit_is_retained() {
     assert!(
         matches!(rig.next_event().await, Event::ItemCompleted { item_id, .. } if item_id == id)
     );
-    rig.feed_raw(r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1900000000}}"#).await;
-    assert!(
-        matches!(rig.next_event().await, Event::RuntimeWarning { message } if message.contains("rejected") && message.contains("1900000000"))
+    // A rejected usage limit is a short human sentence, **not** the frame. `chat::project` turns
+    // every `RuntimeWarning` into a permanent transcript notice, so a 2 KB dump of
+    // `overageStatus`/`overageDisabledReason`/`isUsingOverage` would sit in the thread for good.
+    // The structured reading is not lost: `record_usage` still gets the whole frame, and
+    // `Event::UsageWindows` carries the windows the gauge draws.
+    rig.feed_raw(r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1900000000,"rateLimitType":"five_hour","overageStatus":"rejected","overageDisabledReason":"org_level_disabled","isUsingOverage":false}}"#).await;
+    let Event::RuntimeWarning { message } = rig.next_event().await else {
+        panic!("a rejected limit warns");
+    };
+    assert!(message.contains("usage limit reached"), "{message}");
+    assert!(message.contains("five_hour"), "{message}");
+    assert!(!message.contains("1900000000"), "no raw frame: {message}");
+    assert!(!message.contains("overageStatus"), "no raw frame: {message}");
+    assert!(!message.contains('{'), "no raw frame: {message}");
+    assert!(message.len() < 200, "a notice is a sentence: {message}");
+}
+
+/// The exit-code parser runs on shell results and nothing else.
+///
+/// The grammar is `Bash`'s. Every other tool's result body is content — a file this one happens to
+/// start with the words, a search hit, a subagent's prose — and a denied tool's body is a reason
+/// an operator typed. A parser pointed at either would fabricate a red exit code out of text
+/// nobody meant as one.
+#[tokio::test]
+async fn only_a_shell_tools_body_is_parsed_for_an_exit_code() {
+    let mut rig = Rig::start("s1-handshake-and-turn.ndjson", 64).await;
+
+    // A `Read` whose file *begins* with the line. Same bytes, not a shell result.
+    rig.feed_raw(r#"{"type":"assistant","uuid":"a1","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_read","name":"Read","input":{"file_path":"/w/notes.txt"}}]},"parent_tool_use_id":null}"#).await;
+    assert!(matches!(rig.next_event().await, Event::ItemStarted { .. }));
+    assert!(matches!(rig.next_event().await, Event::ItemCompleted { .. }));
+    rig.feed_raw(r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_read","content":"Exit code 3\nwhat the file says","is_error":true}]},"parent_tool_use_id":null}"#).await;
+    let Event::ItemCompleted { kind, .. } = rig.next_event().await else {
+        panic!("the read result completes")
+    };
+    assert_eq!(
+        kind,
+        ItemKind::ToolResult {
+            tool_call_id: "toolu_read".into(),
+            is_error: true,
+            exit_code: None,
+            interrupted: false,
+        },
+    );
+
+    // The identical body under `Bash` does carry a code — the gate narrows the parser, it does
+    // not disable it.
+    rig.feed_raw(r#"{"type":"assistant","uuid":"a2","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_bash","name":"Bash","input":{"command":"false"}}]},"parent_tool_use_id":null}"#).await;
+    assert!(matches!(rig.next_event().await, Event::ItemStarted { .. }));
+    assert!(matches!(rig.next_event().await, Event::ItemCompleted { .. }));
+    rig.feed_raw(r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_bash","content":"Exit code 3\nwhat the file says","is_error":true}]},"parent_tool_use_id":null}"#).await;
+    let Event::ItemCompleted { kind, .. } = rig.next_event().await else {
+        panic!("the bash result completes")
+    };
+    assert_eq!(
+        kind,
+        ItemKind::ToolResult {
+            tool_call_id: "toolu_bash".into(),
+            is_error: true,
+            exit_code: Some(3),
+            interrupted: false,
+        },
     );
 }
 

@@ -19,6 +19,72 @@ files, kept as a record of what was observed. Reproduce by driving the same CLI 
 it with the argv below, write a `user` frame mid-turn, and read the raw stream-json frames back. 6 CLI
 invocations total.
 
+---
+
+## Amendment — 2026-09-11, CLI `2.1.268`: §2's exit-code grammar was wrong
+
+**Scope: §2 only.** Everything in §1 and §3 still rests on the 2026-09-10 / `2.1.267` runs above and
+was **not** re-measured. What follows was measured against `claude --version` = **`2.1.268`**, the
+same argv as above (`build_argv`'s flags, `--model haiku`) in a throwaway cwd, reading the raw
+stream-json frames back.
+
+**What changed, and why it matters.** §2 below concluded *"parse `/^Exit code (\d+)\n/` off the
+first line"*. **The trailing newline is not always there.** The 2026-09-10 runs only ever exercised
+a command that produced output (`echo out; echo err 1>&2; exit 3`), so the newline was always the
+separator before that output — it was read as part of the grammar when it is only the start of the
+next line. A failing command with **no** output writes the line and stops. Requiring the newline
+silently returned no code for exactly those cases, which is the common one for a script that fails
+quietly.
+
+**The four measured bodies** (`tool_result.content`, verbatim, `\n` shown as an escape; none of the
+four ends in a newline):
+
+| # | command | `content` | `is_error` | `tool_use_result` sibling |
+|---|---|---|---|---|
+| 1 | `bash -c 'exit 3'` | `"Exit code 3"` | `true` | `"Error: Exit code 3"` |
+| 2 | `bash -c 'echo err 1>&2; exit 4'` | `"Exit code 4\nerr"` | `true` | `"Error: Exit code 4\nerr"` |
+| 3 | `bash -c 'true'` | `"(Bash completed with no output)"` | `false` | the success object `{stdout:"",stderr:"",interrupted:false,…}` |
+| 4 | `bash -c 'kill -TERM $$'` | `"Exit code 143"` | `true` | `"Error: Exit code 143"` |
+
+Row 3 is the one that settles a tempting shortcut: a **success** writes no `Exit code` line at all,
+so a zero can never be read off the wire and must not be fabricated from `is_error: false`.
+
+**The grammar is therefore `^Exit code (\d+)(\n|$)`**, anchored at byte 0, digits only, the line
+ending at the first newline *or at end of input*. Implemented in
+`crates/core/src/claude/adapter.rs::parse_exit_code`, pinned by
+`measured_bash_bodies_from_cli_2_1_268`.
+
+**Signals are now tested, and 143 is the number.** Row 4 was re-measured on its own on 2026-09-11
+after a reviewer disputed an earlier note that recorded **144**. Driven through the CLI itself —
+`2.1.268`, `--model haiku`, `--permission-mode bypassPermissions`, the rest of `build_argv`'s flags,
+one turn asking for that one command — the Bash tool invoked `bash -c 'kill -TERM $$'` and the
+answering frame was, verbatim:
+
+```json
+{"type":"tool_result","content":"Exit code 143","is_error":true,"tool_use_id":"toolu_019Ui4HyxRUwYkCzBfvawuJT"}
+```
+
+with the sibling `"tool_use_result": "Error: Exit code 143"`. **143 = 128 + SIGTERM(15)** — the same
+number a bare `bash -c 'kill -TERM $$'` gives in a plain shell, so the CLI's Bash tool adds nothing
+to a signalled child's code. The earlier **144 was wrong**; the reviewer's plain-shell reading was
+right, and the two contexts agree.
+
+**A denial is not this shape, and has no fixed marker.** Not a change to §2's measurements but the
+correction they were being used to justify: §2 records the interrupt sibling as the fixed string
+`"User rejected tool use"`. An operator **denial** is not that string — this repo's own captures
+carry `"Error: denied by spike"` (`crates/claude-spike/fixtures/s3-can-use-tool-deny.ndjson:11`) and
+`"Error: brigadier wall: …"` (`…/s10-deny-read-stop-bounce.ndjson:10`), because the CLI echoes the
+deny *reason* verbatim. **There is no provider-side marker for a denial**, so a harness must take it
+from its own `Decision::Deny` and never from the error text — matching text an operator typed would
+be a parser pointed at human input, and a denial classified as a failure renders a decision the
+operator made as a red error.
+
+**Still not checked, after this amendment:** exit codes other than 0, 3, 4 and 143; signals other
+than SIGTERM; whether the `Exit code N` prefix is localized; non-Bash tools' `tool_use_result`
+shapes; whether a timed-out or backgrounded Bash ever sets `interrupted: true`.
+
+---
+
 **Authority.** This file is authoritative for Claude Code CLI `2.1.267`'s observed behaviour on: mid-turn
 input injection (steering vs. queueing), `interrupt` with and without `cancel_queued`, Bash tool exit-code
 representation on the wire, partial-message (`stream_event`) shapes, and the `rate_limit_event` /
@@ -274,8 +340,12 @@ Point by point:
 
 ### Consequences for a thread UI
 
-- To show an exit code, parse `/^Exit code (\d+)\n/` off the first line of `tool_result.content`.
-  There is nothing else. Fall back to `is_error` alone.
+- To show an exit code, parse the first line of `tool_result.content`. There is nothing else.
+  **Corrected 2026-09-11 — see the amendment at the top of this file: the grammar is
+  `^Exit code (\d+)(\n|$)`, not `^Exit code (\d+)\n`.** A failing command with no output writes
+  `"Exit code 3"` and stops, and requiring the newline missed it silently. Do **not** "fall back to
+  `is_error` alone": `is_error` is `true` for a failure, an interrupt **and** an operator denial,
+  so it cannot tell a red exit code apart from a decision the operator made.
 - Do not type `tool_use_result` as an object. It is `object | string`, and the string form is
   exactly the failure/interrupt path a UI most wants to style.
 - stdout and stderr cannot be rendered in separate panes on failure — they are already merged by
@@ -286,7 +356,9 @@ Point by point:
 - Non-Bash tools' `tool_use_result` shapes (Read, Edit, Grep, Task) — only Bash was exercised.
 - Whether a *timed-out* or backgrounded Bash sets `interrupted: true`; never observed `true`.
 - Whether output truncation adds fields (no command produced enough output to truncate).
-- Exit codes other than 0 and 3; signals (e.g. 130, SIGSEGV) were not tested.
+- ~~Exit codes other than 0 and 3; signals (e.g. 130, SIGSEGV) were not tested.~~ **Superseded
+  2026-09-11:** 4 and 143 were measured, and SIGTERM reports 143 — see the amendment at the top.
+  Signals other than SIGTERM are still untested.
 - Whether the `Exit code N` prefix is localized or version-stable.
 
 ---
