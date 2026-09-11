@@ -162,6 +162,7 @@ pub fn run() {
             commands::list_models,
             provider_catalog::provider_catalog,
             updates::software_updates,
+            updates::update_software,
             task_memory::task_checkpoint,
             commands::list_projects,
             commands::add_project,
