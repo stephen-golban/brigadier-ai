@@ -26,6 +26,26 @@ export interface BurnProps {
   onBurn: (args: BurnArgs) => Promise<void>;
 }
 
+/**
+ * Diagnostic-only pre-roll, in ms: start the sessions, wait, and *then* open the capture.
+ *
+ * The burn's drops are concentrated in its first three one-second windows, where the app is
+ * mounting its first project and its first transcript for the very first time
+ * (`docs/performance/burn-frame-2026-09-11.md`). This is how that attribution is falsified: with a
+ * pre-roll the cold mount happens outside the capture, so if the long frames are the cold mount
+ * they leave the capture with it, and if they are the steady-state feed they stay.
+ *
+ * It is **0 on every ordinary run** — an explicitly enabled burn build (`VITE_BURN=1`) reading an
+ * explicit `?preroll=` in its own window URL is the only thing that can move it — so the acceptance
+ * path below is the path it always was. The value is written into the capture, so no file can be
+ * read back later without saying which arm produced it.
+ */
+export function diagnosticPrerollMs(search: string): number {
+  if (import.meta.env.VITE_BURN !== "1") return 0;
+  const ms = Number(new URLSearchParams(search).get("preroll"));
+  return Number.isFinite(ms) && ms > 0 ? Math.min(ms, 30_000) : 0;
+}
+
 export function Burn({ onBurn }: BurnProps) {
   const [sessions, setSessions] = useState(10);
   const [rowsPerSec, setRowsPerSec] = useState(200);
@@ -39,6 +59,18 @@ export function Burn({ onBurn }: BurnProps) {
     setBusy(true);
     setError(null);
     setSummary(null);
+    const preroll = diagnosticPrerollMs(location.search);
+    let startedSuccessfully = false;
+    let prerollError: unknown = null;
+    if (preroll > 0) {
+      try {
+        await onBurn({ sessions, rowsPerSec, durationS, fixture });
+        startedSuccessfully = true;
+      } catch (e) {
+        prerollError = e;
+      }
+      await new Promise((r) => setTimeout(r, preroll));
+    }
     // The idle baseline, measured rather than inherited: the drain loop is armed only while it has
     // work or a capture is open, so `getLastReport()` here is null on a first burn and the previous
     // run's capture window on a second. `sampleIdleWindow` arms the loop for one second of genuine
@@ -46,14 +78,18 @@ export function Burn({ onBurn }: BurnProps) {
     const idleWindow = await fps.sampleIdleWindow();
     resetDiagnostics();
     fps.startCapture();
-    let startedSuccessfully = false;
     const initialVisibility = { hidden: document.hidden, focused: document.hasFocus() };
     try {
-      await onBurn({ sessions, rowsPerSec, durationS, fixture });
-      startedSuccessfully = true;
+      if (preroll > 0) {
+        if (prerollError !== null) throw prerollError;
+      } else {
+        await onBurn({ sessions, rowsPerSec, durationS, fixture });
+        startedSuccessfully = true;
+      }
       // The command returns as soon as the sessions are started (matching the mock's `burn`);
       // the meter is what times the run, so we wait out the run ourselves before reading it.
-      await new Promise((r) => setTimeout(r, durationS * 1000 + 1200));
+      // A pre-roll has already spent part of the run, so the capture closes with it, not after it.
+      await new Promise((r) => setTimeout(r, durationS * 1000 + 1200 - preroll));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -67,6 +103,7 @@ export function Burn({ onBurn }: BurnProps) {
         initialVisibility, idleWindow,
         finalVisibility: { hidden: document.hidden, focused: document.hasFocus() },
         profiling: new URLSearchParams(location.search).has("profile"),
+        prerollMs: preroll,
         clockOffsetMs: Date.now() - (performance.timeOrigin + performance.now()),
         supportedEntryTypes: typeof PerformanceObserver === "undefined" ? [] : PerformanceObserver.supportedEntryTypes,
         delivery: { history: getHistoryDelivery(), ingest: store.getIngest(), sessions: Object.values(store.getState().sessions).map(s => ({ id: s.sessionId, projectId: s.projectId, rowsTotal: s.rowsTotal, rowsDropped: s.rowsDropped, lastEventSeq: s.lastEventSeq, status: s.status })) },
