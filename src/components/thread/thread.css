@@ -3157,6 +3157,57 @@ summary.thread-activity__header::after,
   min-width: 0;
 }
 
+/* Owner review 2026-09-11, item 1. The payload is drawn by `ApprovalCommandPreview` — the card's
+   own vendored code block. Two corrections it needs inside the body rather than the header:
+
+   1. It pads itself 0.75rem for a slot that has none, and `.thread-approval-request__body`
+      already pads 16px, which double-indented it. Same hand-back as the `__details` rule below.
+   2. `.approval-body code` above sets `white-space: pre-wrap`, which is right — but the kit
+      collapses its own `code` to a `-webkit-box` when the block is not expanded, and a block
+      whose text still overflows must be able to scroll sideways rather than clip. The surface
+      already caps height at 20rem and scrolls; this only removes the clamp's horizontal clip. */
+.thread-approval-request__body .thread-approval-command {
+  padding-inline: 0;
+}
+.thread-approval-request__body .thread-approval-command__surface {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+/* Owner review 2026-09-11, item 6, found by looking. The end-of-turn changed-files card already
+   rendered in the thread (`ThreadView.tsx`, the `data-changed-files` part on a turn's final
+   answer), but `desktopApi.changes` answered an empty list outside Tauri, so it had never been on
+   screen in the browser fixture. With `src/mock.ts` answering it, both of its class hooks turned
+   out to carry no rules at all: every file row inherited the ghost button's `justify-center`, so
+   the paths sat centred, and the header's `+`/`−` totals ran straight into the word "files".
+   Layout only — the Undo / Review actions and the card's data are untouched. */
+.edited-files-card .edited-file {
+  gap: 12px;
+  justify-content: space-between;
+  text-align: left;
+  width: 100%;
+}
+.edited-files-card .edited-file > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.edited-files-card > header small {
+  margin-inline-start: 8px;
+}
+
+/* Owner review 2026-09-11, item 2. Several open requests used to sit flush: measured gaps of
+   `[0, 0]` between three stacked cards, because `.approvals-body` was a plain block and the
+   kit's card carries no outer margin. The step is the thread's own `--conversation-item-gap`,
+   16px (`docs/research/codex-thread-tokens.md` §2, measured), so a stack of decisions is spaced
+   the way consecutive conversation items are. */
+.approvals-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
 /* Plan §3 row 12, the readable summary. The subject of the request sits in the card header's
    `details` slot: the command, the path, the address. `ApprovalCommandPreview` pads itself for
    the card body, which double-indents it here, so the inline padding is handed back. */

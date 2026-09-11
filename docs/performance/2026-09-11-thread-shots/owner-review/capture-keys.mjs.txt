@@ -1,0 +1,64 @@
+import { chromium } from "/Users/stephen/.npm/_npx/705bc6b22212b352/node_modules/playwright/index.mjs";
+import { openApp } from "./open.mjs";
+import { mkdirSync, writeFileSync } from "node:fs";
+const out = process.argv[2]; mkdirSync(out, { recursive: true });
+const log = []; const say = m => { log.push(m); console.log(m); };
+const b = await chromium.launch();
+const URL = "http://localhost:1421/?rps=0&approvals=manual";
+const peek = p => p.evaluate(() => document.querySelector("[data-sidebar-peek]")?.dataset.sidebarPeek);
+const denies = p => p.locator(".approval-deny").count();
+const cards = p => p.locator('[data-thread-approval-surface][data-decision="pending"]').count();
+
+async function peekWithApproval(page) {
+  const tog = page.getByRole("button", { name: "Toggle Sidebar" }).first();
+  await tog.click(); await page.waitForTimeout(900);
+  await page.mouse.move(700, 700); await page.waitForTimeout(400);
+  await tog.hover(); await page.waitForTimeout(1800);
+  await page.mouse.move(150, 400); await page.waitForTimeout(600);
+  await page.evaluate(() => document.activeElement?.blur?.());
+}
+
+/* A. Enter on the code block's own Collapse control must expand/collapse, never approve.
+      This is the arm the new payload blocks add: `!target?.closest("button, a")` in the kit's
+      handler is what must hold. */
+const a = await b.newPage({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 2, colorScheme: "dark" });
+await openApp(a, URL); await a.waitForTimeout(9000);
+for (const s of await a.locator("details.approval-raw > summary").all()) { await s.click().catch(() => {}); await a.waitForTimeout(120); }
+const toggle = a.locator(".approval-body .thread-approval-command__actions button").first();
+say(`A payload-toggles=${await a.locator(".approval-body .thread-approval-command__actions button").count()}`);
+if (await toggle.count()) {
+  const before = await cards(a);
+  await toggle.focus();
+  const label = (await toggle.innerText()).trim();
+  await a.keyboard.press("Enter");
+  await a.waitForTimeout(600);
+  say(`A enter-on-code-toggle label=${JSON.stringify(label)} -> ${JSON.stringify((await toggle.innerText()).trim())} cards ${before} -> ${await cards(a)}`);
+} else say("A no collapse control on the payload (every block fits)");
+
+/* B. Enter in the card, focus on the card body, still approves. */
+const beforeB = await cards(a);
+await a.locator(".thread-approval-request").last().click({ position: { x: 5, y: 5 } }).catch(() => {});
+await a.keyboard.press("Enter");
+await a.waitForTimeout(900);
+say(`B enter-approves cards ${beforeB} -> ${await cards(a)}`);
+
+/* C. Escape opens the deny prompt and beats the peek sidebar. */
+const c = await b.newPage({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 2, colorScheme: "dark" });
+await openApp(c, URL); await c.waitForTimeout(9000);
+await peekWithApproval(c);
+say(`C peek-before=${await peek(c)} deny-rows-before=${await denies(c)}`);
+await c.keyboard.press("Escape"); await c.waitForTimeout(700);
+say(`C peek-after=${await peek(c)} deny-rows-after=${await denies(c)}`);
+await c.screenshot({ path: `${out}/escape-collision.png` });
+
+/* D. Control: no approval. Escape still closes the peek. */
+const d = await b.newPage({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 2, colorScheme: "dark" });
+await openApp(d, "http://localhost:1421/?rps=0"); await d.waitForTimeout(2000);
+await peekWithApproval(d);
+say(`D control answerable=${await cards(d)} peek-before=${await peek(d)}`);
+await d.keyboard.press("Escape"); await d.waitForTimeout(700);
+say(`D control peek-after=${await peek(d)}`);
+await d.screenshot({ path: `${out}/escape-control.png` });
+
+writeFileSync(`${out}/keys.txt`, log.join("\n") + "\n");
+await b.close();

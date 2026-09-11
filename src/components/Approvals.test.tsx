@@ -30,6 +30,26 @@ it('keeps Deny explicit and removes an approval when its Stop resolution arrives
   expect(screen.queryByRole('button',{name:'Allow'})).toBeNull();
   expect(screen.queryByRole('button',{name:'Deny'})).toBeNull();
 });
+/**
+ * Owner review 2026-09-11, item 1. A tool payload is code and is drawn in the card's own vendored
+ * code block (`ApprovalCommandPreview`), not as a bare `<pre>` against the card wall. The DOM
+ * assertion is the point: a stylesheet change alone would not have moved this.
+ */
+it('draws every tool payload in a code block rather than as loose text',()=>{
+  const excerpt = JSON.stringify({command:'rm -rf ./target',description:'clear the cache'});
+  const suggestion = {type:'addRules',rules:[{toolName:'Bash',ruleContent:'rm:*'}],behavior:'allow'};
+  const tool: ApprovalRow = {...row, approval: {...row.approval, requestId: 'tool-request',
+    kind: {type:'tool-permission', tool_name:'Bash', input_excerpt: excerpt,
+      suggestions:[suggestion], tool_call_id:null}}};
+  const view = render(<Approvals approvals={[tool]} onRespond={vi.fn()} onDismiss={vi.fn()}/>);
+  fireEvent.click(screen.getByText('Show the full request'));
+  const body = view.container.querySelector('.approval-body')!;
+  expect(body.querySelector('pre')).toBeNull();
+  const blocks = [...body.querySelectorAll('.approval-code .thread-approval-command__surface code')];
+  // The excerpt and each permission rule, each on its own surface.
+  expect(blocks.map(block => block.textContent)).toEqual([excerpt, JSON.stringify(suggestion)]);
+});
+
 it('never allows a restored expired MCP approval',()=>{
   render(<Approvals approvals={[{...row,approval:{...row.approval,expired:true}}]} onRespond={vi.fn()} onDismiss={vi.fn()}/>);
   expect(screen.queryByRole('button',{name:'Allow'})).toBeNull();
