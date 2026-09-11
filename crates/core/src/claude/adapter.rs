@@ -1127,12 +1127,30 @@ where
             // it did not fail. Rendering either as a red exit code is the failure mode
             // `docs/vision.md` §9 exists to prevent.
             let interrupted = interrupted || denied;
-            // Only a failing **shell** result: a success writes no line, a denial's body is text
-            // an operator typed, and every other tool's body is content.
-            let exit_code = if is_error && is_shell && !interrupted {
+            // Only a **shell** result gets a code, and only when the operator did not stop it:
+            // a denial's body is text an operator typed, and every other tool's body is content.
+            //
+            // On the failure path the code is read off the body's literal `Exit code N` line
+            // (`parse_exit_code`). On success the line is measured to be **absent entirely**
+            // (`docs/research/cli-steer-and-exit-codes.md` row 3: `bash -c 'true'` writes
+            // `"(Bash completed with no output)"`, `is_error: false`, no `Exit code` text
+            // anywhere), so `Some(0)` here is inferred from `is_error == false`, not parsed.
+            //
+            // That inference is deliberately allowed even though this file's `parse_exit_code`
+            // doc comment (below) forbids inferring a code from `is_error` on the *failure*
+            // side. The two are not the same mistake: `is_error: true` is many-to-one — failure,
+            // interrupt and denial all set it, so it alone can't tell you which — but
+            // `is_error: false` on a shell result has exactly one measured meaning, because the
+            // Bash tool's own success/failure split *is* the exit-code split: every failing body
+            // measured (codes 3, 4, 143) sets `is_error: true`, and the CLI never emits a
+            // non-zero code with `is_error: false`. Reading `false` as "exited 0" is reading the
+            // one bit of information the wire actually carries, not fabricating a second one.
+            let exit_code = if !is_shell || interrupted {
+                None
+            } else if is_error {
                 parse_exit_code(&body)
             } else {
-                None
+                Some(0)
             };
             self.emit(
                 Event::item_completed(

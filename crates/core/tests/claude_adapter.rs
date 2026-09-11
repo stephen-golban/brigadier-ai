@@ -564,7 +564,10 @@ async fn s2_can_use_tool_allow() {
         rig.labels_until(is_turn_end).await,
         [
             "request-resolved(allow)",
-            "item-completed:tool-result(is_error=false,exit=none,interrupted=false)",
+            // Success writes no `Exit code` line (measured,
+            // `docs/research/cli-steer-and-exit-codes.md` row 3), so the 0 here is read off
+            // `is_error == false`, not parsed.
+            "item-completed:tool-result(is_error=false,exit=0,interrupted=false)",
             "item-started:thinking",
             "item-completed:thinking",
             "item-started:assistant-text",
@@ -2112,6 +2115,97 @@ async fn only_a_shell_tools_body_is_parsed_for_an_exit_code() {
             is_error: true,
             exit_code: Some(3),
             interrupted: false,
+        },
+    );
+}
+
+/// A successful shell result writes no `Exit code` line at all (measured,
+/// `docs/research/cli-steer-and-exit-codes.md` row 3: `bash -c 'true'` writes
+/// `"(Bash completed with no output)"`, `is_error: false`). So the footer used to read "Exit code
+/// unknown" on *every* successful command — there was nothing to parse. The fix reads the zero off
+/// `is_error == false` instead of parsing it, and this pins that inference end to end through
+/// `on_user`, together with the three cases it must not touch: a non-Bash tool's success, an
+/// interrupted Bash result (even one hypothetically reported `is_error: false`), and the ordinary
+/// failure path, which is unchanged.
+#[tokio::test]
+async fn a_successful_shell_result_infers_exit_zero_and_nothing_else_does() {
+    let mut rig = Rig::start("s1-handshake-and-turn.ndjson", 64).await;
+
+    // 1. `bash -c 'true'` — succeeds with no output, `is_error: false`. This is the case the
+    //    footer bug was about: `exit_code` must come back `Some(0)`, not `None`.
+    rig.feed_raw(r#"{"type":"assistant","uuid":"a-ok","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_ok","name":"Bash","input":{"command":"true"}}]},"parent_tool_use_id":null}"#).await;
+    assert!(matches!(rig.next_event().await, Event::ItemStarted { .. }));
+    assert!(matches!(rig.next_event().await, Event::ItemCompleted { .. }));
+    rig.feed_raw(r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_ok","content":"(Bash completed with no output)","is_error":false}]},"parent_tool_use_id":null}"#).await;
+    let Event::ItemCompleted { kind, .. } = rig.next_event().await else {
+        panic!("the successful bash result completes")
+    };
+    assert_eq!(
+        kind,
+        ItemKind::ToolResult {
+            tool_call_id: "toolu_ok".into(),
+            is_error: false,
+            exit_code: Some(0),
+            interrupted: false,
+        },
+    );
+
+    // 4. `bash -c 'kill -TERM $$'` — signalled, `is_error: true`, an ordinary numeric code. The
+    //    failure branch is untouched by this change; pinned alongside the success case so the two
+    //    read together.
+    rig.feed_raw(r#"{"type":"assistant","uuid":"a-sig","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_sig","name":"Bash","input":{"command":"kill -TERM $$"}}]},"parent_tool_use_id":null}"#).await;
+    assert!(matches!(rig.next_event().await, Event::ItemStarted { .. }));
+    assert!(matches!(rig.next_event().await, Event::ItemCompleted { .. }));
+    rig.feed_raw(r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_sig","content":"Exit code 143","is_error":true}]},"parent_tool_use_id":null}"#).await;
+    let Event::ItemCompleted { kind, .. } = rig.next_event().await else {
+        panic!("the signalled bash result completes")
+    };
+    assert_eq!(
+        kind,
+        ItemKind::ToolResult {
+            tool_call_id: "toolu_sig".into(),
+            is_error: true,
+            exit_code: Some(143),
+            interrupted: false,
+        },
+    );
+
+    // A non-Bash tool's success must never gain a code — the inference is gated on `is_shell`,
+    // not on `is_error` alone.
+    rig.feed_raw(r#"{"type":"assistant","uuid":"a-read","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_read_ok","name":"Read","input":{"file_path":"/w/notes.txt"}}]},"parent_tool_use_id":null}"#).await;
+    assert!(matches!(rig.next_event().await, Event::ItemStarted { .. }));
+    assert!(matches!(rig.next_event().await, Event::ItemCompleted { .. }));
+    rig.feed_raw(r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_read_ok","content":"hello","is_error":false}]},"parent_tool_use_id":null}"#).await;
+    let Event::ItemCompleted { kind, .. } = rig.next_event().await else {
+        panic!("the read result completes")
+    };
+    assert_eq!(
+        kind,
+        ItemKind::ToolResult {
+            tool_call_id: "toolu_read_ok".into(),
+            is_error: false,
+            exit_code: None,
+            interrupted: false,
+        },
+    );
+
+    // An interrupted Bash result must never gain a code either, even reported `is_error: false` —
+    // not a measured wire shape, but the inference must not depend on that combination never
+    // occurring: `interrupted` is checked first regardless of `is_error`.
+    rig.feed_raw(r#"{"type":"assistant","uuid":"a-int","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_int","name":"Bash","input":{"command":"sleep 6"}}]},"parent_tool_use_id":null}"#).await;
+    assert!(matches!(rig.next_event().await, Event::ItemStarted { .. }));
+    assert!(matches!(rig.next_event().await, Event::ItemCompleted { .. }));
+    rig.feed_raw(r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_int","content":"","is_error":false}]},"parent_tool_use_id":null,"tool_use_result":{"stdout":"","stderr":"","interrupted":true}}"#).await;
+    let Event::ItemCompleted { kind, .. } = rig.next_event().await else {
+        panic!("the interrupted bash result completes")
+    };
+    assert_eq!(
+        kind,
+        ItemKind::ToolResult {
+            tool_call_id: "toolu_int".into(),
+            is_error: false,
+            exit_code: None,
+            interrupted: true,
         },
     );
 }
