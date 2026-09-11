@@ -44,8 +44,18 @@
   --thread-code-block-bg: var(--code-surface);
   --thread-text-foreground: var(--color-text);
   --thread-text: var(--color-text);
-  --thread-text-secondary: var(--color-text-secondary);
-  --thread-text-tertiary: var(--color-text-tertiary);
+  /* CONFORMANCE 2026-09-11 (docs/research/codex-thread-tokens.md §9.2, rows 624-626): the
+     thread's dim ink is an *alpha* ramp over whatever surface a row sits on, not an opaque
+     grey. `text-secondary` is `#dfdfdf` at 65%, `text-tertiary` / `text-codex-description`
+     is white at 49.8%, and the activity/turn-header label is its own step, `text-text/60`
+     (§5.1, §6.1). Aliasing these to brigadier's opaque --color-text-secondary (#a1a1a1) and
+     --color-text-tertiary (#7f7f7f) was off on every surface and could not track the
+     approval card's lighter ground. Scoped to the thread; the sidebar keeps its own. */
+  --thread-text-secondary: color-mix(in srgb, var(--color-text) 65%, transparent);
+  --thread-text-tertiary: rgba(255, 255, 255, 0.498);
+  /* `text-text/60` and `text-text/40` — the activity label and its chevron (§5.3, §6.1). */
+  --thread-text-dim: color-mix(in srgb, var(--color-text) 60%, transparent);
+  --thread-text-faint: color-mix(in srgb, var(--color-text) 40%, transparent);
   --thread-text-accent: var(--color-attention);
   --thread-text-error: var(--color-error);
   --thread-text-warning: var(--color-warn);
@@ -76,7 +86,7 @@
      from the aliases above the same way src/index.css builds e.g. --sidebar-accent ---- */
   --thread-border-strong: rgba(255, 255, 255, 0.16);
   --thread-border-heavy: rgba(255, 255, 255, 0.16);
-  --thread-border-light: rgba(255, 255, 255, 0.04);
+  --thread-border-light: rgba(255, 255, 255, 0.042);
   --thread-border-warning: color-mix(in oklab, var(--color-warn) 40%, transparent);
   --thread-border-error: color-mix(in oklab, var(--color-error) 40%, transparent);
   --thread-background-button-primary-hover: color-mix(in oklab, var(--primary) 80%, transparent);
@@ -110,6 +120,16 @@
      between brigadier's --radius-xl/20px and --radius-2xl/28px, no exact match) stays
      literal. */
   --thread-approval-card-radius: 25px;
+  /* CONFORMANCE 2026-09-11: the note above settled for --color-elevated (#2b2b2b) as "off by
+     2/255". §8.1 measures rgb(45,45,45); the literal costs nothing and is what was measured. */
+  --thread-approval-card-surface: rgb(45, 45, 45);
+  /* §7: the file-change card and the in-thread notice card are `rounded-lg`, which under the
+     electron superellipse scale is 12.5px — between brigadier's --radius-md (10) and
+     --radius-lg (16), so it has no scale step to alias. */
+  --thread-radius-card: 12.5px;
+  /* §6.2: the addition / deletion dots beside an edited-file row, at 70%. */
+  --thread-chart-blue: #339cff;
+  --thread-chart-red: #ff6764;
   /* file-change card body (row 8) */
   --thread-background-elevated-secondary: rgb(40, 40, 40);
 
@@ -137,21 +157,29 @@
 
   /* ---- remaining referenced kit tokens with no brigadier equivalent to alias to:
      the kit's own dark value, collapsed from its three duplicated forms to one ---- */
-  --thread-spacing: 0.25rem;
-  --thread-font-size-xs: 0.75rem;
-  --thread-font-size-md: 1rem;
-  --thread-line-height-xs: 1rem;
-  --thread-line-height-sm: 1.125rem;
-  --thread-line-height-md: 1.5rem;
-  --thread-line-height-code: 1.25rem;
+  /* CONFORMANCE 2026-09-11. These nine were the kit's own rems. This app pins
+     `:root { font-size: 14px }` (src/index.css), so every one of them resolved 12.5% short of
+     the kit's intent *and* of the measurement: --thread-font-size-code came out at 10.5px
+     against a measured 13px, --thread-line-height-code at 17.5px against 20px, and
+     --thread-font-size-xs at 10.5px against 12px. Pinned in px, from
+     docs/research/codex-thread-tokens.md §2 (`--text-xs` 12 / `--text-sm` 13 / chat 14,
+     chat line-height `font-size + 8px` = 22, code 13/20, `leading-5` = 20 on 13px chrome,
+     `leading-4` = 16 on the 12px keycap). */
+  --thread-spacing: 4px;
+  --thread-font-size-xs: 12px;
+  --thread-font-size-md: 14px;
+  --thread-line-height-xs: 16px;
+  --thread-line-height-sm: 20px;
+  --thread-line-height-md: 22px;
+  --thread-line-height-code: 20px;
   --thread-font-size-chat: var(--thread-font-size-md);
-  --thread-font-size-code: var(--thread-font-size-xs);
+  --thread-font-size-code: var(--thread-code-size);
   --thread-font-weight-normal: 400;
   --thread-font-weight-medium: 500;
   --thread-font-weight-semibold: 600;
   --thread-font-weight-shell: 445;
-  --thread-group-gap: 0.25rem;
-  --thread-conversation-thread-assistant-actions-gap: 0.1875rem;
+  --thread-group-gap: 4px;
+  --thread-conversation-thread-assistant-actions-gap: 2px;
   --thread-conversation-thread-user-turn-gap: 2.125rem;
   /* 70%, measured (docs/research/codex-thread-tokens.md §3.1). The kit's own default is 77%;
      the measurement wins. */
@@ -160,10 +188,10 @@
   --thread-loading-spinner-size: 1rem;
   --thread-loading-shimmer-duration: 2s;
   --thread-context-optimization-icon-size: 1rem;
-  --thread-context-optimization-gap: 0.5rem;
+  --thread-context-optimization-gap: 6px;
   --thread-context-optimization-min-height: 1.75rem;
   --thread-message-highlight-duration: 1400ms;
-  --thread-subagent-chip-height: 1.75rem;
+  --thread-subagent-chip-height: 20px;
   --thread-subagent-panel-row-min-height: 2rem;
   --thread-subagent-panel-header-height: 3rem;
   --thread-approval-command-max-height: 20rem;
@@ -215,7 +243,8 @@
   gap: var(--thread-conversation-thread-assistant-actions-gap);
 }
 .thread-activity-timeline {
-  color: var(--thread-text-secondary);
+  /* §5.1: the turn label is `text-text/60`, not the generic secondary ink. */
+  color: var(--thread-text-dim);
   min-width: 0;
 }
 .thread-activity-timeline__pre-toggle,
@@ -230,8 +259,9 @@
 .thread-activity-timeline__toggle-row {
   display: flex;
   flex-direction: column;
-  font-size: var(--thread-font-size-md);
-  gap: 0.25rem;
+  font-size: var(--thread-font-size-chat);
+  /* §5.2: the label and its hairline sit in a `gap-2` column. */
+  gap: 8px;
 }
 .thread-activity-timeline__toggle {
   align-items: center;
@@ -239,12 +269,13 @@
   background: transparent;
   border: 1px solid transparent;
   border-radius: var(--thread-radius-sm);
-  color: var(--thread-text-secondary);
+  color: var(--thread-text-dim);
   cursor: pointer;
   display: inline-flex;
   font: inherit;
-  font-size: var(--thread-font-size-md);
-  gap: 0.25rem;
+  font-size: var(--thread-font-size-chat);
+  /* §5.3: label to chevron is `gap-1`. */
+  gap: 4px;
   line-height: var(--thread-line-height-md);
   padding: 0;
 }
@@ -259,16 +290,20 @@
   outline: 2px solid var(--thread-focus);
   outline-offset: 1px;
 }
+/* §5.3 gives this chevron `icon-2xs` (a 14px *icon box*) at `text-text/40`. The kit draws it
+   as a CSS border caret rather than an icon, so 14px cannot be applied to the element: the
+   glyph inside a 14px chevron spans ~7px, which is the box set here. Recorded as a shape
+   mismatch, not a measurement ignored. */
 .thread-activity-timeline__chevron {
   border-bottom: 1.5px solid currentColor;
   border-right: 1.5px solid currentColor;
-  color: var(--thread-text-tertiary);
+  color: var(--thread-text-faint);
   flex: 0 0 auto;
-  height: 0.375rem;
+  height: 7px;
   margin-inline: 0.125rem 0.25rem;
   transform: rotate(-45deg);
   transition: transform var(--thread-transition);
-  width: 0.375rem;
+  width: 7px;
 }
 .thread-activity-timeline[data-expanded]
   .thread-activity-timeline__chevron {
@@ -290,7 +325,9 @@
   margin-top: var(--thread-item-gap);
 }
 .thread-turn-duration {
-  color: var(--thread-text-secondary);
+  /* §5.1: `<span class="text-text/60 tabular-nums">`. */
+  color: var(--thread-text-dim);
+  font-variant-numeric: tabular-nums;
 }
 .thread-status-banner {
   --thread-notice-border: var(--thread-border-heavy);
@@ -303,20 +340,21 @@
   align-items: center;
   background: var(--thread-background-surface);
   border: 1px solid var(--thread-notice-border);
-  border-radius: var(--thread-radius-2xl, 1rem);
+  border-radius: var(--thread-radius-card);
   box-shadow: var(--thread-shadow-sm);
   color: var(--thread-text);
   container-type: inline-size;
   display: grid;
   font-family: var(--thread-font-sans);
   font-size: var(--thread-font-size-sm);
-  gap: 0.5rem;
+  gap: 8px;
   grid-template-columns: auto minmax(0, 1fr);
   isolation: isolate;
-  line-height: 1.25rem;
+  line-height: var(--thread-line-height-sm);
   min-width: 0;
   overflow: hidden;
-  padding: 0.5rem 0.5rem 0.5rem 0.75rem;
+  /* §14 (plan §3 row 14): the in-thread error card is `rounded-lg px-4 py-3 text-sm`. */
+  padding: 12px 16px;
   position: relative;
   width: 100%;
 }
@@ -558,15 +596,18 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Plan §3 row 14: the inline status strip is `gap-2 px-4 py-1 text-sm text-secondary` with an
+   `icon-xs` (16px) glyph. */
 .thread-inline-notice {
   align-items: center;
   color: var(--thread-text-secondary);
   display: flex;
   font-family: var(--thread-font-sans);
-  font-size: var(--thread-font-size-md);
-  gap: 0.5rem;
-  line-height: var(--thread-line-height-md);
+  font-size: var(--thread-font-size-sm);
+  gap: 8px;
+  line-height: var(--thread-line-height-sm);
   min-width: 0;
+  padding: 4px 16px;
   width: 100%;
 }
 .thread-inline-notice[data-tone="warning"] {
@@ -583,7 +624,7 @@
 .thread-inline-notice__label {
   align-items: center;
   display: inline-flex;
-  gap: 0.5rem;
+  gap: 8px;
   justify-content: center;
   max-width: min(100%, 30rem);
   min-width: 0;
@@ -601,8 +642,8 @@
 }
 .thread-inline-notice__icon svg,
 .thread-inline-notice__trailing svg {
-  height: 0.875rem;
-  width: 0.875rem;
+  height: 16px;
+  width: 16px;
 }
 .thread-inline-notice__message {
   min-width: 0;
@@ -1188,7 +1229,7 @@
   outline-offset: 2px;
 }
 .thread-activity {
-  color: var(--thread-text-secondary);
+  color: var(--thread-text-dim);
   min-width: 0;
 }
 .thread-activity__disclosure {
@@ -1198,7 +1239,9 @@
   align-items: center;
   border-radius: var(--thread-radius-sm);
   display: flex;
-  gap: 0.5rem;
+  /* §6.1: icon to label is `gap-1.5` = 6px; label to chevron is `gap-1` = 4px, which the
+     chevron takes back out of this one gap below. */
+  gap: 6px;
   min-height: 1.75rem;
   min-width: 0;
   padding: 0.125rem 0;
@@ -1251,23 +1294,26 @@ button.thread-activity__header {
 .thread-activity__button-chevron {
   align-items: center;
   display: flex;
-  flex: 0 0 0.75rem;
+  /* §6.1: `icon-2xs` = 14px, and `duration-relaxed` = 0.3s on the rotate/fade (the 0.15s
+     `duration-basic` above belongs to the turn header's caret, §5.3). */
+  flex: 0 0 14px;
   height: 1.3125rem;
   justify-content: center;
+  margin-inline-start: -2px;
   min-width: 0;
   opacity: 0;
   rotate: none;
   transition:
-    opacity var(--thread-transition),
-    rotate var(--thread-transition);
-  width: 0.75rem;
+    opacity var(--thread-duration-relaxed),
+    rotate var(--thread-duration-relaxed);
+  width: 14px;
 }
 .thread-activity__button-chevron svg {
-  height: 0.875rem;
+  height: 14px;
   /* Disclosure state belongs to the wrapper, even for captured SVG roots. */
   opacity: 1 !important;
   rotate: none !important;
-  width: 0.875rem;
+  width: 14px;
 }
 .thread-activity__header:hover > .thread-activity__button-chevron,
 .thread-activity__header:focus-within > .thread-activity__button-chevron {
@@ -1299,12 +1345,23 @@ summary.thread-activity__header::after {
   > summary.thread-activity__header::after {
   transform: rotate(225deg) translate(-0.1rem, -0.1rem);
 }
+/* §6.1: the label is `text-text/60`, and hovering the row promotes it (and its children) to
+   `--color-text`. There is no hover *fill* anywhere on an activity row; brightening the ink is
+   the whole of the feedback. Hovering a file link inside the row suppresses the brighten. */
 .thread-activity__summary {
-  color: var(--thread-text-secondary);
+  color: var(--thread-text-dim);
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.thread-activity__header:hover > .thread-activity__summary,
+.thread-activity__header:focus-visible > .thread-activity__summary,
+.thread-activity__header:hover > * > .thread-activity__summary {
+  color: var(--thread-text);
+}
+.thread-activity__header:has(a:hover, button:hover) > .thread-activity__summary {
+  color: var(--thread-text-dim);
 }
 .thread-activity[data-status="running"] .thread-activity__summary {
   color: var(--thread-text);
@@ -1312,22 +1369,26 @@ summary.thread-activity__header::after {
 .thread-activity[data-status="warning"] .thread-activity__summary {
   color: var(--thread-warning);
 }
+/* §6.2: the trailing `+A -D` / state slot is `text-size-chat-sm` = 13px, not 12px. */
 .thread-activity__detail {
   color: var(--thread-text-tertiary);
-  font-size: 0.75rem;
+  font-size: var(--thread-font-size-sm);
   margin-left: auto;
   text-transform: capitalize;
 }
+/* §6.1: an expanded body is indented `ps-6` = 24px. The kit indented it 18.5px (3.5 margin +
+   1 rail + 14 padding). The 24px here is the rail plus the padding, so the *text* starts where
+   the measurement puts it; the rail itself is brigadier's and has no Codex counterpart. */
 .thread-activity__body {
   border-left: 1px solid var(--thread-border);
   color: var(--thread-text-secondary);
-  margin: 0.25rem 0 0 0.25rem;
+  margin: 4px 0 0 0;
   overflow-wrap: anywhere;
-  padding: 0.25rem 0 0.25rem 1rem;
+  padding: 4px 0 4px calc(var(--thread-indent) - 1px);
 }
 .thread-activity__description {
   color: var(--thread-text-secondary);
-  margin: 0.25rem 0 0 1rem;
+  margin: 4px 0 0 var(--thread-indent);
   overflow-wrap: anywhere;
 }
 .thread-activity__description > :first-child {
@@ -1793,8 +1854,8 @@ summary.thread-activity__header::after {
 }
 .thread-command-execution__shell-label {
   color: var(--thread-text-secondary);
-  font-size: 0.8125rem;
-  line-height: 1.160714rem;
+  font-size: var(--thread-font-size-sm);
+  line-height: var(--thread-line-height-sm);
   padding: 0.25rem 0.5rem;
 }
 .thread-command-execution__command-row {
@@ -1809,9 +1870,11 @@ summary.thread-activity__header::after {
   cursor: pointer;
   display: -webkit-box;
   font-family: var(--thread-font-mono);
-  font-size: 0.8125rem;
+  /* §2: code in the thread is 13px on a 20px line. The kit's 0.8125rem/1.21875rem resolved
+     to 11.375/17.06 against this app's 14px root. */
+  font-size: var(--thread-code-size);
   font-weight: var(--thread-font-weight-shell);
-  line-height: 1.21875rem;
+  line-height: var(--thread-code-line);
   min-width: 0;
   overflow: hidden;
   overflow-wrap: anywhere;
@@ -1907,11 +1970,14 @@ summary.thread-activity__header::after {
   flex-direction: column-reverse;
   font: inherit;
   font-family: var(--thread-font-mono);
-  font-size: 0.8125rem;
+  font-size: var(--thread-code-size);
   font-weight: var(--thread-font-weight-shell);
-  line-height: 1.21875rem;
+  line-height: var(--thread-code-line);
   margin: 0;
-  max-height: 9rem;
+  /* §6.3: the collapsed output box is `{n}lh` tall for n = 20, which is the cap `WorkTrace`
+     already applies to the text. The kit's 9rem (126px) clipped that to six lines and made
+     the cap invisible, so the pane is sized to the cap it is given. */
+  max-height: calc(20 * var(--thread-code-line) + 16px);
   overflow-x: auto;
   overflow-y: auto;
   padding: 0.5rem;
@@ -2004,11 +2070,15 @@ summary.thread-activity__header::after {
   > .thread-activity__body {
   animation: none;
 }
+/* §8.1: `rounded-3xl border border-default bg-surface-elevated-secondary`. Measured: 25px,
+   1px rgba(255,255,255,.084), rgb(45,45,45), and no shadow — the kit's 2xl drop shadow has no
+   counterpart in the bundle. The `data-presentation="composer"` variant below is the composer
+   dock's own surface and keeps its shadow. */
 .thread-approval-request {
-  background: var(--thread-bg-elevated);
-  border: 0;
+  background: var(--thread-approval-card-surface);
+  border: 1px solid var(--thread-border);
   border-radius: var(--thread-approval-card-radius);
-  box-shadow: var(--thread-shadow-2xl);
+  box-shadow: none;
   color: var(--thread-text);
   container-name: approval-request;
   container-type: inline-size;
@@ -2026,7 +2096,8 @@ summary.thread-activity__header::after {
     var(--thread-bg-elevated) 96%,
     transparent
   );
-  border-radius: 1.5625rem;
+  border: 0;
+  border-radius: var(--thread-approval-card-radius);
   box-shadow:
     0 0 0 0.5px color-mix(in srgb, var(--thread-text) 16%, transparent),
     0 3px 7.5px rgba(0, 0, 0, 0.04),
@@ -2084,31 +2155,36 @@ summary.thread-activity__header::after {
 .thread-approval-request__button-label {
   min-width: 0;
 }
+/* §8.3: the keycap is 16px tall, min 16px wide, radius-md (10px), currentColor at 10%,
+   12px on a 16px line, 6px of side padding. Every one of those was short in the kit. */
 .thread-approval-request__shortcut {
   align-items: center;
-  background: color-mix(in srgb, currentColor 9%, transparent);
-  border-radius: 0.25rem;
-  color: var(--thread-text-secondary);
+  background: color-mix(in srgb, currentColor 10%, transparent);
+  border-radius: var(--radius-md);
+  /* §8.3: `bg-current/10 text-current` — the chip inherits the button's own ink, so both the
+     fill and the glyph track it. Pinning it to the secondary ink made the fill 6.5% instead. */
+  color: inherit;
   display: inline-flex;
   font-family: inherit;
-  font-size: 0.6875rem;
+  font-size: var(--thread-font-size-xs);
   font-weight: 445;
-  height: 1.125rem;
+  height: 16px;
   justify-content: center;
-  line-height: 1;
-  min-width: 1.25rem;
-  padding: 0 0.25rem;
+  line-height: var(--thread-line-height-xs);
+  min-width: 16px;
+  padding: 0 6px;
 }
 .thread-approval-request__button--primary
   .thread-approval-request__shortcut {
-  color: color-mix(in srgb, var(--thread-bg) 62%, transparent);
+  color: var(--thread-approval-card-surface);
 }
+/* §8.1: header pad 16/16/12, gap 8; actions pad 8/16/16, gap 8. */
 .thread-approval-request__header {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 8px;
   min-width: 0;
-  padding: 1rem 1rem 0.75rem;
+  padding: 16px 16px 12px;
 }
 .thread-approval-request__identity {
   align-items: center;
@@ -2116,8 +2192,8 @@ summary.thread-activity__header::after {
   display: flex;
   font-size: var(--thread-font-size-sm);
   font-weight: var(--thread-font-weight-normal);
-  gap: 0.5rem;
-  line-height: 1.25rem;
+  gap: 8px;
+  line-height: var(--thread-line-height-sm);
   min-width: 0;
 }
 .thread-approval-request__identity-icon {
@@ -2143,10 +2219,11 @@ summary.thread-activity__header::after {
   gap: 0.125rem;
   min-width: 0;
 }
+/* §8.1: title 14/500/20, subtitle 13 on a 20px line. */
 .thread-approval-request__heading h3 {
   font-size: var(--thread-font-size-chat);
   font-weight: var(--thread-font-weight-medium);
-  line-height: 1.25rem;
+  line-height: var(--thread-line-height-sm);
   margin: 0;
   min-width: 0;
   overflow-wrap: anywhere;
@@ -2167,7 +2244,7 @@ summary.thread-activity__header::after {
 .thread-approval-request__description {
   color: var(--thread-text-tertiary);
   font-size: var(--thread-font-size-sm);
-  line-height: 1.25rem;
+  line-height: var(--thread-line-height-sm);
 }
 .thread-approval-request__context {
   display: flex;
@@ -2180,7 +2257,7 @@ summary.thread-activity__header::after {
   font-size: var(--thread-font-size-sm);
   gap: 0.75rem;
   grid-template-columns: auto minmax(0, 1fr);
-  line-height: 1.25rem;
+  line-height: var(--thread-line-height-sm);
   margin: 0;
   min-width: 0;
 }
@@ -2196,7 +2273,7 @@ summary.thread-activity__header::after {
 .thread-approval-request__details {
   color: var(--thread-text-secondary);
   font-size: var(--thread-font-size-sm);
-  line-height: 1.25rem;
+  line-height: var(--thread-line-height-sm);
   min-width: 0;
 }
 .thread-approval-request__body {
@@ -2262,21 +2339,23 @@ summary.thread-activity__header::after {
   border: 0;
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: 8px;
   margin: 0;
   min-width: 0;
-  padding: 0.5rem 1rem 1rem;
+  padding: 8px 16px 16px;
 }
 .thread-approval-request__action-cluster {
   align-items: center;
   display: flex;
-  gap: 0.5rem;
+  gap: 8px;
   margin-left: auto;
 }
 .thread-approval-request__button {
   align-items: center;
-  background: transparent;
-  border: 1px solid var(--thread-border-heavy);
+  /* §8.2: `outline` is a filled 3.2% wash inside a `border-default` hairline, not a
+     transparent box inside the kit's heavier 16% rule. */
+  background: rgba(255, 255, 255, 0.032);
+  border: 1px solid var(--thread-border);
   border-radius: var(--thread-radius-md);
   color: var(--thread-text);
   cursor: pointer;
@@ -2286,8 +2365,13 @@ summary.thread-activity__header::after {
   font-weight: var(--thread-font-weight-medium);
   gap: 0.375rem;
   justify-content: center;
-  min-height: 2rem;
-  padding: 0.375rem 0.75rem;
+  /* §8.2: `size="composer"` is 28px tall, 8px of side padding, `py-0`, 13px on an 18px line.
+     The kit's 5.25px of vertical padding on a 22px inherited line box made the button 34.5px.
+     28px is below the 44px touch guidance, but this is a pointer-only desktop surface and 28
+     is what the reference ships; the row it sits in keeps 8px of separation. */
+  line-height: 18px;
+  min-height: 28px;
+  padding: 0 8px;
   transition:
     background var(--thread-transition),
     border-color var(--thread-transition),
@@ -2296,7 +2380,8 @@ summary.thread-activity__header::after {
 .thread-approval-request__button--primary {
   background: var(--thread-text);
   border-color: var(--thread-text);
-  color: var(--thread-bg);
+  /* §8.2: the primary label is the card's own surface, not the app canvas. */
+  color: var(--thread-approval-card-surface);
 }
 .thread-approval-request__button:hover:not(:disabled) {
   background: var(--thread-background-button-secondary-hover);
@@ -2515,10 +2600,11 @@ button.thread-subagent-activity__row:focus-visible {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* §3 row 11: chips are 14px/20px in an `h-5` strip with 6px gaps. */
 .thread-subagent-activity-group {
   color: var(--thread-text);
-  font-size: var(--thread-font-size-sm);
-  line-height: 1.25rem;
+  font-size: var(--thread-font-size-chat);
+  line-height: var(--thread-line-height-sm);
   min-width: 0;
   padding-left: 0.375rem;
 }
@@ -2532,14 +2618,14 @@ button.thread-subagent-activity__row:focus-visible {
   font: inherit;
   gap: 0.375rem;
   height: var(--thread-subagent-chip-height);
-  margin-right: 0.375rem;
+  margin-right: 6px;
   max-width: 12rem;
   min-width: 0;
   padding: 0 0.5rem 0 0.375rem;
   vertical-align: middle;
 }
 .thread-subagent-activity-group__chip:first-child {
-  margin-left: -0.375rem;
+  margin-left: -6px;
 }
 button.thread-subagent-activity-group__chip {
   cursor: pointer;
@@ -2559,7 +2645,7 @@ button.thread-subagent-activity-group__chip:focus-visible {
   outline-offset: 2px;
 }
 .thread-subagent-activity-group__status {
-  font-size: var(--thread-font-size-md);
+  font-size: var(--thread-font-size-chat);
   vertical-align: middle;
 }
 .thread-subagent-activity-group__chip[data-animate-entrance] {
@@ -2656,45 +2742,55 @@ summary.thread-activity__header::after,
 .thread-file-change-group * {
   box-sizing: border-box;
 }
+/* §6.2, §7: the diff pair is the measured green/red, never this app's generic ok/error hues
+   (#74b58a / #e07a7a). The dots beside them are `bg-chart-blue/70` and `bg-chart-red/70`. */
 .thread-file-change__stats {
   align-items: center;
   display: inline-flex;
   font-size: var(--thread-font-size-sm);
-  gap: 0.375rem;
+  gap: 4px;
   line-height: var(--thread-line-height-sm);
   white-space: nowrap;
 }
 .thread-file-change__stats [data-stat="additions"] {
-  color: var(--thread-success);
+  color: var(--thread-decoration-added);
 }
 .thread-file-change__stats [data-stat="deletions"] {
-  color: var(--thread-danger);
+  color: var(--thread-decoration-deleted);
 }
 .thread-file-change__stats [data-dot] {
   border-radius: var(--thread-radius-full);
-  height: 0.375rem;
-  width: 0.375rem;
+  height: 6px;
+  width: 6px;
 }
 .thread-file-change__stats [data-dot="added"] {
-  background: var(--thread-text-accent);
+  background: color-mix(in srgb, var(--thread-chart-blue) 70%, transparent);
 }
 .thread-file-change__stats [data-dot="deleted"] {
-  background: var(--thread-danger);
+  background: color-mix(in srgb, var(--thread-chart-red) 70%, transparent);
 }
+/* §7: `rounded-lg` on the electron superellipse scale is 12.5px, not brigadier's 10px step. */
 .thread-file-change-group {
   background: var(--thread-background-elevated-secondary);
   border: 1px solid var(--thread-border);
-  border-radius: var(--thread-radius-lg);
+  border-radius: var(--thread-radius-card);
   color: var(--thread-text-secondary);
   min-width: 0;
   overflow: hidden;
 }
+/* §7: header is `px-2.5 py-0.5` (10px / 2px) over a `border-b`, filled with
+   `bg-background-primary-ghost-hover/60`, its text 13px `text-codex-description/80`. The kit's
+   56px-tall, unfilled, 8.75/10.5-padded header was its own invention. */
 .thread-file-change-group__header {
   align-items: center;
+  background: color-mix(in srgb, rgba(255, 255, 255, 0.078) 60%, transparent);
+  border-bottom: 1px solid var(--thread-border);
+  color: rgba(255, 255, 255, 0.398);
   display: flex;
-  gap: 0.625rem;
-  min-height: 4rem;
-  padding: 0.625rem 0.75rem;
+  font-size: var(--thread-font-size-sm);
+  gap: 8px;
+  min-height: 0;
+  padding: 2px 10px;
 }
 .thread-file-change-group__indicator {
   align-items: center;
@@ -2713,8 +2809,8 @@ summary.thread-activity__header::after,
   min-width: 0;
 }
 .thread-file-change-group__summary {
-  color: var(--thread-text);
-  font-size: var(--thread-font-size-md);
+  color: inherit;
+  font-size: var(--thread-font-size-sm);
   font-weight: var(--thread-font-weight-medium);
   line-height: var(--thread-line-height-md);
 }
@@ -3002,14 +3098,19 @@ summary.thread-activity__header::after,
 .thread-activity:hover
   .thread-file-change__stats[data-variant="agent-activity"]
   [data-stat="additions"] {
-  color: var(--thread-success);
+  color: var(--thread-decoration-added);
 }
 .thread-activity:hover
   .thread-file-change__stats[data-variant="agent-activity"]
   [data-stat="deletions"] {
-  color: var(--thread-danger);
+  color: var(--thread-decoration-deleted);
 }
-.thread-activity:has(a:hover, button:hover)
+/* CONFORMANCE 2026-09-11: `button:hover` here matched the activity header itself — which is a
+   `<button>` — so the suppression fired on every row hover and the stats never took colour at
+   all. §6.2 suppresses only when the pointer is on a file link inside the row
+   (`[data-agent-activity-file-link]`); brigadier's counterpart is the markdown `.file-link`
+   button and any real anchor. */
+.thread-activity:has(a:hover, .file-link:hover)
   .thread-file-change__stats[data-variant="agent-activity"]
   [data-stat] {
   color: var(--thread-text-tertiary);
@@ -3095,8 +3196,8 @@ summary.thread-activity__header::after,
    checkboxes sat outside it. `ApprovalRequest`'s only consumer in this app is
    `src/components/Approvals.tsx`, so the padding belongs on the slot rather than on each child. */
 .thread-approval-request__body {
-  padding-inline: 1rem;
-  padding-bottom: 0.25rem;
+  padding-inline: 16px;
+  padding-bottom: 4px;
 }
 
 /* The app-wide checkbox border is `--input` (#2a2a2a), which is invisible on this card's

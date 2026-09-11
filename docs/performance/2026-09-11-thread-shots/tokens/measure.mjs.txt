@@ -1,0 +1,237 @@
+import { chromium } from "/Users/stephen/.npm/_npx/705bc6b22212b352/node_modules/playwright/index.mjs";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { openApp } from "./open.mjs";
+
+const out = process.argv[2];
+mkdirSync(out, { recursive: true });
+const url = "http://localhost:1420/?rps=0&approvals=manual";
+const browser = await chromium.launch();
+const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 2, colorScheme: "dark" });
+const errs = []; page.on("pageerror", (e) => errs.push(String(e)));
+const ok = await openApp(page, url);
+await page.waitForTimeout(1500);
+
+// Expand every fold so the activity rows, command rows and reasoning panels are on screen.
+const fold = page.locator(".work-block .thread-activity-timeline__toggle").first();
+if (await fold.count() && (await fold.getAttribute("aria-expanded")) === "false") { await fold.click(); await page.waitForTimeout(500); }
+for (const row of await page.locator('.work-activity-row button[aria-expanded="false"]').all()) {
+  await row.click().catch(() => {}); await page.waitForTimeout(120);
+}
+await page.waitForTimeout(400);
+for (const row of await page.locator('.work-group-details .work-activity-row button[aria-expanded="false"]').all()) {
+  await row.click().catch(() => {}); await page.waitForTimeout(120);
+}
+await page.waitForTimeout(600);
+
+const probe = async (spec) => {
+  const res = {};
+  for (const [key, [sel, props, pseudo]] of Object.entries(spec)) {
+    res[key] = await page.evaluate(([sel, props, pseudo]) => {
+      const el = document.querySelector(sel);
+      if (!el) return null;
+      const cs = getComputedStyle(el, pseudo ?? undefined);
+      const o = {};
+      for (const p of props) o[p] = cs.getPropertyValue(p);
+      const r = el.getBoundingClientRect();
+      o["#box"] = `${Math.round(r.width * 100) / 100}x${Math.round(r.height * 100) / 100}`;
+      return o;
+    }, [sel, props, pseudo ?? null]);
+  }
+  return res;
+};
+
+const T = ["font-size", "line-height", "font-weight", "color"];
+const BOX = ["padding-top", "padding-right", "padding-bottom", "padding-left", "border-radius", "background-color"];
+
+const data = {};
+data.opened = ok;
+data.root = await page.evaluate(() => {
+  const cs = getComputedStyle(document.documentElement);
+  const names = ["--thread-font-size","--thread-line-height","--thread-font-weight","--thread-font-size-sm","--thread-md-line","--thread-code-size","--thread-code-line","--thread-font-size-xs","--thread-font-size-md","--thread-font-size-chat","--thread-font-size-code","--thread-line-height-xs","--thread-line-height-sm","--thread-line-height-md","--thread-line-height-code","--thread-spacing","--thread-group-gap","--thread-max-width","--thread-pad-x","--thread-item-gap","--thread-grouped-gap","--thread-indent","--thread-radius-message","--thread-approval-card-radius","--thread-decoration-added","--thread-decoration-deleted","--thread-subagent-chip-height","--thread-context-optimization-gap","--thread-conversation-thread-assistant-actions-gap"];
+  const o = {}; for (const n of names) o[n] = cs.getPropertyValue(n).trim();
+  o["html font-size"] = cs.fontSize;
+  return o;
+});
+
+data.rows = await probe({
+  "00 column .aui-thread-content": [".aui-thread-content", ["max-width","padding-left","padding-right","padding-top","padding-bottom","font-size","line-height","font-weight"]],
+  "01 user bubble": ['.thread-agent-message[data-role="user"] .thread-agent-message__content', [...BOX, ...T, "max-width"]],
+  "01 user row": ['.thread-agent-message[data-role="user"]', ["align-items","gap","justify-content"]],
+  "01 user actions": ['.thread-agent-message[data-role="user"] .thread-agent-message__actions', ["gap","opacity"]],
+  "01 user accessories": ['.thread-agent-message[data-role="user"] .thread-agent-message__accessories', ["font-size","line-height"]],
+  "02 assistant md": ['.aui-message.assistant-text .aui-md', ["font-size","line-height","font-weight","color"]],
+  "02 assistant p2": ['.aui-message.assistant-text .aui-md-p + .aui-md-p', ["margin-top","margin-bottom"]],
+  "04 reasoning trigger": ['[data-slot="reasoning-panel"] button', ["font-size","line-height","color","gap","padding-left"]],
+  "05 turn toggle": [".thread-activity-timeline__toggle", [...T, "gap", "background-color"]],
+  "05 turn duration": [".thread-turn-duration", ["color","font-size","line-height"]],
+  "05 turn rule": [".thread-activity-timeline__rule", ["border-top-width","border-top-color"]],
+  "05 turn chevron": [".thread-activity-timeline__chevron", ["width","height","color","transition-duration"]],
+  "05 toggle row": [".thread-activity-timeline__toggle-row", ["font-size","gap"]],
+  "06 activity header": [".work-activity-row .thread-activity__header", ["gap","min-height","padding-top","padding-bottom","font-size"]],
+  "06 activity summary": [".work-activity-row .thread-activity__summary", ["color","font-size","line-height"]],
+  "06 activity chevron": [".work-activity-row .thread-activity__button-chevron svg", ["width","height"]],
+  "06 activity chevron box": [".work-activity-row .thread-activity__button-chevron", ["transition-duration","opacity"]],
+  "06 activity body": [".work-activity-row .thread-activity__body", ["margin-left","padding-left","border-left-width","padding-top","padding-bottom","color"]],
+  "06 activity detail": [".work-activity-row .thread-activity__detail", ["font-size","color","margin-left"]],
+  "07 command output": [".thread-command-output", ["font-size","line-height","font-family"]],
+  "07 command output pre": [".thread-command-output pre", ["font-size","line-height","font-family","max-height","padding-top"]],
+  "07 command line": [".thread-command-execution__command-line", ["font-size","line-height","font-family"]],
+  "02 md list": ['.aui-message.assistant-text .aui-md-ul, .aui-message.assistant-text .aui-md-ol', ["padding-inline-start","margin-top","margin-bottom"]],
+  "02 md li": ['.aui-message.assistant-text .aui-md-li', ["padding-inline-start","line-height"]],
+  "02 md h2": ['.aui-message.assistant-text .aui-md-h2', ["font-size","line-height","margin-top","margin-bottom","font-weight"]],
+  "02 md pre": ['.aui-message.assistant-text .aui-md-pre', ["font-size","line-height","padding-top","border-bottom-left-radius","background-color","border-top-width","border-top-color","margin-bottom"]],
+  "02 md inline code": ['.aui-message.assistant-text .aui-md-inline-code', ["font-size","border-radius","padding-top","padding-left","background-color"]],
+  "06 chevron offset": [".work-activity-row .thread-activity__button-chevron", ["margin-inline-start"]],
+  "07 command footer": [".thread-command-execution__footer", ["font-size","color"]],
+  "08 diff stats": ['.thread-file-change__stats[data-variant="agent-activity"]', ["font-size","line-height","gap"]],
+  "08 diff add": ['.thread-file-change__stats[data-variant="agent-activity"] [data-stat="additions"]', ["color"]],
+  "08 diff del": ['.thread-file-change__stats[data-variant="agent-activity"] [data-stat="deletions"]', ["color"]],
+  "10 search row": [".thread-search-activity .thread-activity__header", ["gap","min-height"]],
+  "12 approval card": [".thread-approval-request", ["border-radius","background-color","border-top-width","border-top-color","box-shadow"]],
+  "12 approval header": [".thread-approval-request__header", ["padding-top","padding-right","padding-bottom","padding-left","gap"]],
+  "12 approval title": [".thread-approval-request__heading h3", ["font-size","line-height","font-weight","color"]],
+  "12 approval subtitle": [".thread-approval-request__description", ["font-size","line-height","color"]],
+  "12 approval identity": [".thread-approval-request__identity", ["font-size","line-height","color"]],
+  "12 approval actions": [".thread-approval-request__actions", ["padding-top","padding-right","padding-bottom","padding-left","gap"]],
+  "12 approval btn": [".thread-approval-request__button", ["min-height","padding-left","padding-right","padding-top","padding-bottom","font-size","line-height","background-color","border-top-width","border-top-color","color","border-radius"]],
+  "12 approval btn primary": [".thread-approval-request__button--primary", ["background-color","color","min-height"]],
+  "12 approval keycap": [".thread-approval-request__shortcut", ["height","min-width","border-radius","font-size","line-height","padding-left","padding-right","background-color"]],
+  "14 inline notice": [".thread-inline-notice", ["font-size","line-height","color"]],
+  "14 status banner": [".thread-status-banner", ["border-radius","padding-top","font-size"]],
+  "18 scroll to bottom": ['[data-slot="scroll-to-bottom"], .aui-thread-scroll-to-bottom', ["width","height","border-radius"]],
+});
+
+// hover behaviours
+const hoverProbe = async (hoverSel, readSel, props) => {
+  const h = page.locator(hoverSel).first();
+  if (!(await h.count())) return null;
+  const read = async () => page.evaluate(([s, p]) => { const el = document.querySelector(s); if (!el) return null; const cs = getComputedStyle(el); const o = {}; for (const q of p) o[q] = cs.getPropertyValue(q); return o; }, [readSel, props]);
+  const idle = await read();
+  await h.hover(); await page.waitForTimeout(350);
+  const hov = await read();
+  await page.mouse.move(5, 5); await page.waitForTimeout(250);
+  return { idle, hover: hov };
+};
+data.hover = {
+  "05 turn header": await hoverProbe(".thread-activity-timeline__toggle", ".thread-activity-timeline__toggle", ["color", "background-color"]),
+  "06 activity label": await hoverProbe(".work-activity-row .thread-activity__header", ".work-activity-row .thread-activity__summary", ["color"]),
+  "08 diff stat on hover": await hoverProbe('.thread-activity:has(.thread-file-change__stats) .thread-activity__header', '.thread-file-change__stats[data-variant="agent-activity"] [data-stat="additions"]', ["color"]),
+};
+
+// Command output cap: how many lines are visible before "Show more".
+data.outputCap = await page.evaluate(() => {
+  const el = document.querySelector(".thread-command-output");
+  if (!el) return null;
+  return { lines: (el.textContent ?? "").split("\n").length, more: !!document.querySelector(".work-output-more") };
+});
+data.mounted = await page.evaluate(() => {
+  const q = (s) => document.querySelectorAll(s).length;
+  return {
+    "file-change-group card": q(".thread-file-change-group"),
+    "tool-call card": q(".thread-tool-call"),
+    "mcp group": q(".thread-mcp-tool-call-group"),
+    "subagent activity": q(".thread-subagent-activity"),
+    "subagent group": q(".thread-subagent-activity-group"),
+    "context optimization": q(".thread-thread-context-optimization"),
+    "interruption summary": q(".thread-thread-interruption-summary"),
+    "inline notice": q(".thread-inline-notice"),
+    "status banner": q(".thread-status-banner"),
+    "search activity": q(".thread-search-activity"),
+    "command execution": q(".thread-command-execution"),
+    "diff stats": q(".thread-file-change__stats"),
+    "reasoning panel": q('[data-slot="reasoning-panel"]'),
+    "approval request": q(".thread-approval-request"),
+  };
+});
+// ---- Rows with no mount site in this app or no data in the fixture are measured by putting
+// the component's own markup into the live document: the cascade is the shipped one, the data
+// is not the fixture's. Every number from here down is labelled "injected" in the README.
+await page.evaluate(() => {
+  const host = document.createElement("div");
+  host.id = "token-probe";
+  host.innerHTML = `
+    <div class="thread-activity" data-status="completed"><div class="thread-activity__disclosure">
+      <button class="thread-activity__header" type="button">
+        <span class="thread-activity__summary">Edited feed.rs</span>
+        <span class="thread-activity__detail"><span class="thread-file-change__stats" data-variant="agent-activity"><span data-stat="additions">+12</span><span data-stat="deletions">-3</span><span data-dot="added"></span><span data-dot="deleted"></span></span></span>
+      </button></div></div>
+    <div class="thread-file-change-group"><div class="thread-file-change-group__header">
+      <span class="thread-file-change-group__summary">feed.rs</span>
+      <span class="thread-file-change__stats"><span data-stat="additions">+12</span><span data-stat="deletions">-3</span></span>
+    </div><div class="thread-file-change-group__files"><div class="thread-file-change-group__file"><button type="button"><span class="thread-file-change-group__path">a/b.rs</span></button></div></div></div>
+    <div class="thread-inline-notice" data-tone="neutral"><span class="thread-inline-notice__rule"></span><span class="thread-inline-notice__label"><span class="thread-inline-notice__icon"><svg viewBox="0 0 16 16"></svg></span><span class="thread-inline-notice__message">Context compacted</span></span><span class="thread-inline-notice__rule"></span></div>
+    <div class="thread-status-banner" data-tone="error" data-layout="horizontal"><span class="thread-status-banner__icon"><svg viewBox="0 0 16 16"></svg></span><div class="thread-status-banner__main"><div class="thread-status-banner__body"><p class="thread-status-banner__heading">Run failed</p><div class="thread-status-banner__content">The session ended.</div></div></div></div>
+    <div class="aui-message assistant-text"><div class="aui-md text-[15px] leading-relaxed text-text wrap-anywhere" id="md-probe">
+      <h2 class="aui-md-h2 mt-5 mb-2 scroll-m-20 text-lg font-semibold first:mt-0 last:mb-0">Heading</h2>
+      <p class="aui-md-p my-3 leading-relaxed first:mt-0 last:mb-0">One.</p>
+      <p class="aui-md-p my-3 leading-relaxed first:mt-0 last:mb-0">Two.</p>
+      <ul class="aui-md-ul marker:text-text-secondary my-3 ms-5 list-disc [&>li]:mt-1"><li class="aui-md-li leading-relaxed">alpha</li><li class="aui-md-li leading-relaxed">beta</li></ul>
+      <hr class="aui-md-hr border-hairline my-3" />
+      <blockquote class="aui-md-blockquote border-hairline text-text-secondary my-3 border-s-2 ps-4"><p class="aui-md-p my-3 leading-relaxed first:mt-0 last:mb-0">quoted</p></blockquote>
+      <p class="aui-md-p my-3 leading-relaxed first:mt-0 last:mb-0">with <code class="aui-md-inline-code bg-elevated rounded-md px-1.5 py-0.5 font-mono text-[0.85em]">inline</code> code</p>
+      <div class="aui-code-header-root border-hairline bg-elevated mt-3 flex items-center justify-between rounded-t-md px-3.5 py-1.5 text-xs"><span>ts</span></div>
+      <pre class="aui-md-pre border-hairline bg-elevated overflow-x-auto rounded-t-none rounded-b-md p-3.5 text-[13px] leading-relaxed"><code>const a = 1;</code></pre>
+      <div class="aui-md-table-wrapper my-3 overflow-x-auto"><table class="aui-md-table w-full border-separate border-spacing-0"><thead><tr class="aui-md-tr"><th class="aui-md-th bg-elevated px-3 py-1.5 text-start font-medium">h</th></tr></thead><tbody><tr class="aui-md-tr"><td class="aui-md-td border-hairline border-s border-b px-3 py-1.5 text-start">c</td></tr></tbody></table></div>
+    </div></div>
+    <div class="thread-subagent-activity-group"><button class="thread-subagent-activity-group__chip"><span class="thread-subagent-activity-group__status">*</span><span>reviewer</span></button><button class="thread-subagent-activity-group__chip"><span>builder</span></button></div>
+  `;
+  document.querySelector(".aui-thread-content").appendChild(host);
+});
+await page.waitForTimeout(300);
+data.injected = await probe({
+  "12 approval btn height": [".thread-approval-request__button", ["height"]],
+  "08 stats (injected)": ['#token-probe .thread-file-change__stats[data-variant="agent-activity"]', ["font-size","line-height","gap"]],
+  "08 stats add (injected)": ['#token-probe .thread-file-change__stats[data-variant="agent-activity"] [data-stat="additions"]', ["color"]],
+  "08 stats del (injected)": ['#token-probe .thread-file-change__stats[data-variant="agent-activity"] [data-stat="deletions"]', ["color"]],
+  "08 stats dot add (injected)": ['#token-probe .thread-file-change__stats[data-variant="agent-activity"] [data-dot="added"]', ["background-color","width","height"]],
+  "08 stats dot del (injected)": ['#token-probe .thread-file-change__stats[data-variant="agent-activity"] [data-dot="deleted"]', ["background-color","width","height"]],
+  "08 card (injected)": ["#token-probe .thread-file-change-group", ["border-radius","border-top-width","border-top-color","background-color"]],
+  "08 card header (injected)": ["#token-probe .thread-file-change-group__header", ["padding-top","padding-bottom","padding-left","padding-right","font-size","background-color","color","border-bottom-width","min-height"]],
+  "08 card stat add (injected)": ['#token-probe .thread-file-change-group__header [data-stat="additions"]', ["color"]],
+  "11 subagent chip (injected)": ["#token-probe .thread-subagent-activity-group__chip", ["height","margin-right","border-radius"]],
+  "11 subagent group (injected)": ["#token-probe .thread-subagent-activity-group", ["font-size","line-height"]],
+  "14 inline notice (injected)": ["#token-probe .thread-inline-notice", ["font-size","line-height","gap","padding-top","padding-left","color"]],
+  "14 inline icon (injected)": ["#token-probe .thread-inline-notice__icon svg", ["width","height"]],
+  "02 md root (injected)": ["#md-probe", ["font-size","line-height"]],
+  "02 md h2 (injected)": ["#md-probe .aui-md-h2", ["font-size","line-height","margin-top","margin-bottom","font-weight"]],
+  "02 md p2 (injected)": ["#md-probe .aui-md-p + .aui-md-p", ["margin-top","margin-bottom"]],
+  "02 md ul (injected)": ["#md-probe .aui-md-ul", ["padding-inline-start","margin-top","margin-bottom"]],
+  "02 md li (injected)": ["#md-probe .aui-md-li", ["padding-inline-start","line-height"]],
+  "02 md hr (injected)": ["#md-probe .aui-md-hr", ["margin-top","margin-bottom","border-top-width"]],
+  "02 md blockquote (injected)": ["#md-probe .aui-md-blockquote", ["padding-inline-start","padding-top","line-height"]],
+  "02 md inline code (injected)": ["#md-probe .aui-md-inline-code", ["font-size","border-radius","padding-top","padding-left","background-color"]],
+  "02 md pre (injected)": ["#md-probe .aui-md-pre", ["font-size","line-height","padding-top","border-bottom-left-radius","border-top-left-radius","background-color","border-top-width","border-top-color","margin-top","margin-bottom"]],
+  "02 md code header (injected)": ["#md-probe .aui-code-header-root", ["border-top-left-radius","margin-top","padding-left","background-color"]],
+  "02 md table (injected)": ["#md-probe .aui-md-table", ["font-size"]],
+  "02 md th (injected)": ["#md-probe .aui-md-th", ["padding-top","padding-bottom","line-height","font-weight"]],
+  "02 md td (injected)": ["#md-probe .aui-md-td", ["padding-top","padding-bottom"]],
+  "14 status banner (injected)": ["#token-probe .thread-status-banner", ["border-radius","padding-top","padding-left","font-size","line-height","gap"]],
+});
+data.hover["08 diff stat on hover (injected)"] = await hoverProbe('#token-probe .thread-activity__header', '#token-probe .thread-file-change__stats[data-variant="agent-activity"] [data-stat="additions"]', ["color"]);
+data.hover["08 diff stat del on hover (injected)"] = await hoverProbe('#token-probe .thread-activity__header', '#token-probe .thread-file-change__stats[data-variant="agent-activity"] [data-stat="deletions"]', ["color"]);
+for (const [n, sel] of [["r02-markdown-injected", "#md-probe"], ["r08-diff-stats-injected", '#token-probe .thread-activity'], ["r08-file-card-injected", "#token-probe .thread-file-change-group"], ["r11-subagent-injected", "#token-probe .thread-subagent-activity-group"], ["r14-inline-notice-injected", "#token-probe .thread-inline-notice"], ["r14-status-banner-injected", "#token-probe .thread-status-banner"]]) {
+  const t = page.locator(sel).first();
+  if (await t.count()) await t.screenshot({ path: `${out}/${n}.png` }).catch((e) => console.log(`shot ${n} failed ${e.message}`));
+}
+await page.evaluate(() => document.getElementById("token-probe")?.remove());
+data.errors = errs;
+writeFileSync(`${out}/measurements.json`, JSON.stringify(data, null, 2));
+console.log(JSON.stringify(data, null, 2));
+
+// shots
+const shot = async (name, sel) => {
+  const t = sel ? page.locator(sel).first() : page;
+  if (sel && !(await t.count())) { console.log(`MISSING ${name} (${sel})`); return; }
+  await t.screenshot({ path: `${out}/${name}.png` }).catch((e) => console.log(`shot ${name} failed ${e.message}`));
+};
+await shot("full");
+await shot("r01-user-bubble", '.aui-message.user-text');
+await shot("r02-assistant", '.aui-message.assistant-text');
+await shot("r04-reasoning", '[data-slot="reasoning-panel"]');
+await shot("r05-turn-header", '.work-block .thread-activity-timeline__toggle-row');
+await shot("r06-activity", '.work-activity');
+await shot("r07-command", '.thread-command-execution');
+await shot("r08-diff-stats", '.thread-activity:has(.thread-file-change__stats)');
+await shot("r10-search", '.thread-search-activity');
+await shot("r12-approval", '.thread-approval-request');
+await browser.close();

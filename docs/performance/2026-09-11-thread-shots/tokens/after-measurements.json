@@ -1,0 +1,517 @@
+{
+  "opened": true,
+  "root": {
+    "--thread-font-size": "14px",
+    "--thread-line-height": "22px",
+    "--thread-font-weight": "430",
+    "--thread-font-size-sm": "13px",
+    "--thread-md-line": "22.75px",
+    "--thread-code-size": "13px",
+    "--thread-code-line": "20px",
+    "--thread-font-size-xs": "12px",
+    "--thread-font-size-md": "14px",
+    "--thread-font-size-chat": "14px",
+    "--thread-font-size-code": "13px",
+    "--thread-line-height-xs": "16px",
+    "--thread-line-height-sm": "20px",
+    "--thread-line-height-md": "22px",
+    "--thread-line-height-code": "20px",
+    "--thread-spacing": "4px",
+    "--thread-group-gap": "4px",
+    "--thread-max-width": "768px",
+    "--thread-pad-x": "16px",
+    "--thread-item-gap": "16px",
+    "--thread-grouped-gap": "4px",
+    "--thread-indent": "24px",
+    "--thread-radius-message": "22px",
+    "--thread-approval-card-radius": "25px",
+    "--thread-decoration-added": "#40c977",
+    "--thread-decoration-deleted": "#fa423e",
+    "--thread-subagent-chip-height": "20px",
+    "--thread-context-optimization-gap": "6px",
+    "--thread-conversation-thread-assistant-actions-gap": "2px",
+    "html font-size": "14px"
+  },
+  "rows": {
+    "00 column .aui-thread-content": {
+      "max-width": "768px",
+      "padding-left": "16px",
+      "padding-right": "16px",
+      "padding-top": "16px",
+      "padding-bottom": "32px",
+      "font-size": "14px",
+      "line-height": "22px",
+      "font-weight": "430",
+      "#box": "768x1841.56"
+    },
+    "01 user bubble": {
+      "padding-top": "10px",
+      "padding-right": "16px",
+      "padding-bottom": "10px",
+      "padding-left": "16px",
+      "border-radius": "22px",
+      "background-color": "color(srgb 0.890196 0.890196 0.890196 / 0.05)",
+      "font-size": "14px",
+      "line-height": "22px",
+      "font-weight": "430",
+      "color": "rgb(227, 227, 227)",
+      "max-width": "70%",
+      "#box": "372.98x42.75"
+    },
+    "01 user row": {
+      "align-items": "flex-end",
+      "gap": "4px",
+      "justify-content": "flex-end",
+      "#box": "736x74.75"
+    },
+    "01 user actions": {
+      "gap": "4px",
+      "opacity": "0",
+      "#box": "111.94x28"
+    },
+    "01 user accessories": {
+      "font-size": "12px",
+      "line-height": "16px",
+      "#box": "111.94x28"
+    },
+    "02 assistant md": {
+      "font-size": "14px",
+      "line-height": "22.75px",
+      "font-weight": "430",
+      "color": "rgb(227, 227, 227)",
+      "#box": "736x119"
+    },
+    "02 assistant p2": {
+      "margin-top": "14px",
+      "margin-bottom": "14px",
+      "#box": "736x22.75"
+    },
+    "04 reasoning trigger": {
+      "font-size": "14px",
+      "line-height": "22px",
+      "color": "color(srgb 0.890196 0.890196 0.890196 / 0.6)",
+      "gap": "6px",
+      "padding-left": "0px",
+      "#box": "117x26"
+    },
+    "05 turn toggle": {
+      "font-size": "14px",
+      "line-height": "22px",
+      "font-weight": "430",
+      "color": "color(srgb 0.890196 0.890196 0.890196 / 0.6)",
+      "gap": "4px",
+      "background-color": "rgba(0, 0, 0, 0)",
+      "#box": "308.38x24"
+    },
+    "05 turn duration": {
+      "color": "color(srgb 0.890196 0.890196 0.890196 / 0.6)",
+      "font-size": "14px",
+      "line-height": "22px",
+      "#box": "228.09x17"
+    },
+    "05 turn rule": {
+      "border-top-width": "1px",
+      "border-top-color": "rgba(255, 255, 255, 0.08)",
+      "#box": "736x1"
+    },
+    "05 turn chevron": {
+      "width": "7px",
+      "height": "7px",
+      "color": "color(srgb 0.890196 0.890196 0.890196 / 0.4)",
+      "transition-duration": "0.15s",
+      "#box": "9.9x9.9"
+    },
+    "05 toggle row": {
+      "font-size": "14px",
+      "gap": "8px",
+      "#box": "736x33"
+    },
+    "06 activity header": {
+      "gap": "6px",
+      "min-height": "24.5px",
+      "padding-top": "1.75px",
+      "padding-bottom": "1.75px",
+      "font-size": "14px",
+      "#box": "170.75x25.5"
+    },
+    "06 activity summary": {
+      "color": "color(srgb 0.890196 0.890196 0.890196 / 0.6)",
+      "font-size": "14px",
+      "line-height": "22px",
+      "#box": "132.75x22"
+    },
+    "06 activity chevron": {
+      "width": "14px",
+      "height": "14px",
+      "#box": "14x14"
+    },
+    "06 activity chevron box": {
+      "transition-duration": "0.3s, 0.3s",
+      "opacity": "1",
+      "#box": "18.38x14"
+    },
+    "06 activity body": {
+      "margin-left": "0px",
+      "padding-left": "23px",
+      "border-left-width": "1px",
+      "padding-top": "4px",
+      "padding-bottom": "4px",
+      "color": "color(srgb 0.890196 0.890196 0.890196 / 0.65)",
+      "#box": "736x194.25"
+    },
+    "06 activity detail": {
+      "font-size": "13px",
+      "color": "rgba(255, 255, 255, 0.498)",
+      "margin-left": "0px",
+      "#box": "35.92x22"
+    },
+    "07 command output": {
+      "font-size": "14px",
+      "line-height": "22px",
+      "font-family": "-apple-system, \"system-ui\", \"Segoe UI\", system-ui, ui-sans-serif, Helvetica, Arial, sans-serif",
+      "#box": "712x34"
+    },
+    "07 command output pre": {
+      "font-size": "13px",
+      "line-height": "20px",
+      "font-family": "ui-monospace, \"SF Mono\", Menlo, Consolas, monospace",
+      "max-height": "416px",
+      "padding-top": "7px",
+      "#box": "712x34"
+    },
+    "07 command line": {
+      "font-size": "13px",
+      "line-height": "20px",
+      "font-family": "ui-monospace, \"SF Mono\", Menlo, Consolas, monospace",
+      "#box": "675x20"
+    },
+    "02 md list": null,
+    "02 md li": null,
+    "02 md h2": null,
+    "02 md pre": null,
+    "02 md inline code": null,
+    "06 chevron offset": {
+      "margin-inline-start": "-2px",
+      "#box": "18.38x14"
+    },
+    "07 command footer": {
+      "font-size": "14px",
+      "color": "rgba(255, 255, 255, 0.498)",
+      "#box": "710x27.25"
+    },
+    "08 diff stats": null,
+    "08 diff add": null,
+    "08 diff del": null,
+    "10 search row": null,
+    "12 approval card": {
+      "border-radius": "25px",
+      "background-color": "rgb(45, 45, 45)",
+      "border-top-width": "1px",
+      "border-top-color": "rgba(255, 255, 255, 0.08)",
+      "box-shadow": "none",
+      "#box": "736x274.69"
+    },
+    "12 approval header": {
+      "padding-top": "16px",
+      "padding-right": "16px",
+      "padding-bottom": "12px",
+      "padding-left": "16px",
+      "gap": "8px",
+      "#box": "734x127.5"
+    },
+    "12 approval title": {
+      "font-size": "14px",
+      "line-height": "20px",
+      "font-weight": "500",
+      "color": "rgb(227, 227, 227)",
+      "#box": "702x20"
+    },
+    "12 approval subtitle": {
+      "font-size": "13px",
+      "line-height": "20px",
+      "color": "rgba(255, 255, 255, 0.498)",
+      "#box": "702x20"
+    },
+    "12 approval identity": {
+      "font-size": "13px",
+      "line-height": "20px",
+      "color": "color(srgb 0.890196 0.890196 0.890196 / 0.65)",
+      "#box": "702x20"
+    },
+    "12 approval actions": {
+      "padding-top": "8px",
+      "padding-right": "16px",
+      "padding-bottom": "16px",
+      "padding-left": "16px",
+      "gap": "8px",
+      "#box": "734x52"
+    },
+    "12 approval btn": {
+      "min-height": "28px",
+      "padding-left": "8px",
+      "padding-right": "8px",
+      "padding-top": "0px",
+      "padding-bottom": "0px",
+      "font-size": "13px",
+      "line-height": "18px",
+      "background-color": "rgba(255, 255, 255, 0.03)",
+      "border-top-width": "1px",
+      "border-top-color": "rgba(255, 255, 255, 0.08)",
+      "color": "rgb(227, 227, 227)",
+      "border-radius": "6px",
+      "#box": "86.92x28"
+    },
+    "12 approval btn primary": {
+      "background-color": "rgb(227, 227, 227)",
+      "color": "rgb(45, 45, 45)",
+      "min-height": "28px",
+      "#box": "81.02x28"
+    },
+    "12 approval keycap": {
+      "height": "16px",
+      "min-width": "16px",
+      "border-radius": "10px",
+      "font-size": "12px",
+      "line-height": "16px",
+      "padding-left": "6px",
+      "padding-right": "6px",
+      "background-color": "color(srgb 0.890196 0.890196 0.890196 / 0.1)",
+      "#box": "32.05x16"
+    },
+    "14 inline notice": null,
+    "14 status banner": null,
+    "18 scroll to bottom": null
+  },
+  "hover": {
+    "05 turn header": {
+      "idle": {
+        "color": "color(srgb 0.890196 0.890196 0.890196 / 0.6)",
+        "background-color": "rgba(0, 0, 0, 0)"
+      },
+      "hover": {
+        "color": "rgb(227, 227, 227)",
+        "background-color": "rgba(0, 0, 0, 0)"
+      }
+    },
+    "06 activity label": {
+      "idle": {
+        "color": "color(srgb 0.890196 0.890196 0.890196 / 0.6)"
+      },
+      "hover": {
+        "color": "rgb(227, 227, 227)"
+      }
+    },
+    "08 diff stat on hover": null,
+    "08 diff stat on hover (injected)": {
+      "idle": {
+        "color": "rgba(255, 255, 255, 0.498)"
+      },
+      "hover": {
+        "color": "rgb(64, 201, 119)"
+      }
+    },
+    "08 diff stat del on hover (injected)": {
+      "idle": {
+        "color": "rgba(255, 255, 255, 0.498)"
+      },
+      "hover": {
+        "color": "rgb(250, 66, 62)"
+      }
+    }
+  },
+  "outputCap": {
+    "lines": 1,
+    "more": false
+  },
+  "mounted": {
+    "file-change-group card": 0,
+    "tool-call card": 0,
+    "mcp group": 0,
+    "subagent activity": 0,
+    "subagent group": 0,
+    "context optimization": 0,
+    "interruption summary": 0,
+    "inline notice": 0,
+    "status banner": 0,
+    "search activity": 0,
+    "command execution": 3,
+    "diff stats": 0,
+    "reasoning panel": 1,
+    "approval request": 3
+  },
+  "injected": {
+    "12 approval btn height": {
+      "height": "28px",
+      "#box": "86.92x28"
+    },
+    "08 stats (injected)": {
+      "font-size": "13px",
+      "line-height": "20px",
+      "gap": "4px",
+      "#box": "60.23x20"
+    },
+    "08 stats add (injected)": {
+      "color": "rgba(255, 255, 255, 0.498)",
+      "#box": "22.02x20"
+    },
+    "08 stats del (injected)": {
+      "color": "rgba(255, 255, 255, 0.498)",
+      "#box": "14.22x20"
+    },
+    "08 stats dot add (injected)": {
+      "background-color": "color(srgb 0.2 0.611765 1 / 0.7)",
+      "width": "6px",
+      "height": "6px",
+      "#box": "6x6"
+    },
+    "08 stats dot del (injected)": {
+      "background-color": "color(srgb 1 0.403922 0.392157 / 0.7)",
+      "width": "6px",
+      "height": "6px",
+      "#box": "6x6"
+    },
+    "08 card (injected)": {
+      "border-radius": "12.5px",
+      "border-top-width": "1px",
+      "border-top-color": "rgba(255, 255, 255, 0.08)",
+      "background-color": "rgb(40, 40, 40)",
+      "#box": "736x61.5"
+    },
+    "08 card header (injected)": {
+      "padding-top": "2px",
+      "padding-bottom": "2px",
+      "padding-left": "10px",
+      "padding-right": "10px",
+      "font-size": "13px",
+      "background-color": "color(srgb 1 1 1 / 0.0470588)",
+      "color": "rgba(255, 255, 255, 0.396)",
+      "border-bottom-width": "1px",
+      "min-height": "0px",
+      "#box": "734x27"
+    },
+    "08 card stat add (injected)": {
+      "color": "rgb(64, 201, 119)",
+      "#box": "22.02x20"
+    },
+    "11 subagent chip (injected)": {
+      "height": "20px",
+      "margin-right": "6px",
+      "border-radius": "9999px",
+      "#box": "81.19x20"
+    },
+    "11 subagent group (injected)": {
+      "font-size": "14px",
+      "line-height": "20px",
+      "#box": "736x21.31"
+    },
+    "14 inline notice (injected)": {
+      "font-size": "13px",
+      "line-height": "20px",
+      "gap": "8px",
+      "padding-top": "4px",
+      "padding-left": "16px",
+      "color": "color(srgb 0.890196 0.890196 0.890196 / 0.65)",
+      "#box": "736x28"
+    },
+    "14 inline icon (injected)": {
+      "width": "16px",
+      "height": "16px",
+      "#box": "16x16"
+    },
+    "02 md root (injected)": {
+      "font-size": "14px",
+      "line-height": "22.75px",
+      "#box": "736x465.92"
+    },
+    "02 md h2 (injected)": {
+      "font-size": "17.5px",
+      "line-height": "24.5px",
+      "margin-top": "0px",
+      "margin-bottom": "3.5px",
+      "font-weight": "600",
+      "#box": "736x24.5"
+    },
+    "02 md p2 (injected)": {
+      "margin-top": "14px",
+      "margin-bottom": "14px",
+      "#box": "736x22.75"
+    },
+    "02 md ul (injected)": {
+      "padding-inline-start": "22.75px",
+      "margin-top": "0px",
+      "margin-bottom": "0px",
+      "#box": "736x49.5"
+    },
+    "02 md li (injected)": {
+      "padding-inline-start": "5.25px",
+      "line-height": "22.75px",
+      "#box": "713.25x22.75"
+    },
+    "02 md hr (injected)": {
+      "margin-top": "24.5px",
+      "margin-bottom": "24.5px",
+      "border-top-width": "1px",
+      "#box": "736x1"
+    },
+    "02 md blockquote (injected)": {
+      "padding-inline-start": "21px",
+      "padding-top": "7px",
+      "line-height": "21px",
+      "#box": "736x40.25"
+    },
+    "02 md inline code (injected)": {
+      "font-size": "12.88px",
+      "border-radius": "6px",
+      "padding-top": "1px",
+      "padding-left": "6px",
+      "background-color": "color(srgb 0.938462 0.938462 0.938462 / 0.107059)",
+      "#box": "58.53x17"
+    },
+    "02 md pre (injected)": {
+      "font-size": "13px",
+      "line-height": "20px",
+      "padding-top": "16px",
+      "border-bottom-left-radius": "20px",
+      "border-top-left-radius": "0px",
+      "background-color": "rgba(255, 255, 255, 0.05)",
+      "border-top-width": "0px",
+      "border-top-color": "rgba(255, 255, 255, 0.043)",
+      "margin-top": "0px",
+      "margin-bottom": "17.5px",
+      "#box": "736x53"
+    },
+    "02 md code header (injected)": {
+      "border-top-left-radius": "20px",
+      "margin-top": "17.5px",
+      "padding-left": "16px",
+      "background-color": "rgba(255, 255, 255, 0.05)",
+      "#box": "736x27"
+    },
+    "02 md table (injected)": {
+      "font-size": "13px",
+      "#box": "736x69.25"
+    },
+    "02 md th (injected)": {
+      "padding-top": "7px",
+      "padding-bottom": "7px",
+      "line-height": "14px",
+      "font-weight": "600",
+      "#box": "736x28"
+    },
+    "02 md td (injected)": {
+      "padding-top": "8.75px",
+      "padding-bottom": "8.75px",
+      "#box": "736x41.25"
+    },
+    "14 status banner (injected)": {
+      "border-radius": "12.5px",
+      "padding-top": "12px",
+      "padding-left": "16px",
+      "font-size": "13px",
+      "line-height": "20px",
+      "gap": "8px",
+      "#box": "736x67.75"
+    }
+  },
+  "errors": []
+}
