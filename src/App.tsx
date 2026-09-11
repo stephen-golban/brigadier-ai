@@ -1,9 +1,9 @@
-import { newStartup, readStartup, saveStartup, startupRuntime, type SessionStartup } from "./sessionStartup";
+import { isPendingSessionId, newStartup, readStartup, saveStartup, startupRuntime, type SessionStartup } from "./sessionStartup";
 import { profiling } from "./perfDiagnostics";
 import { workerTree, conversationOwner, conversationSessions } from "./workerTree";
 import { syncArchive, readArchive } from "./sessionArchive";
 import { listen } from "@tauri-apps/api/event";
-import { renameSession } from "./sessionNavigation";
+import { renameSession, setSessionArchived } from "./sessionNavigation";
 import { NavigationHistoryControls } from "./components/NavigationHistoryControls";
 import { Button } from "@/components/ui/button";
 import { Details, DetailsSummary } from "./components/controls/details";
@@ -618,7 +618,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
   // feed and `setTailSeeded` re-renders this component; both happen in the same microtask, so
   // React commits them together and the layout effect below runs after the rows are on screen.
   useEffect(() => {
-    if (selectedSessionId === null || selectedSessionId.startsWith("starting:")) return;
+    if (selectedSessionId === null || isPendingSessionId(selectedSessionId)) return;
     const id = selectedSessionId;
     void bridge()
       .feedTail(id, TAIL_ROWS)
@@ -884,6 +884,10 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
     startingRequests.current.add(args.requestId);
     let settled = false;
     const record = newStartup(args);
+    // A retry reuses the request identity, so it reuses the row. Carry the previous attempt's
+    // session forward: if that attempt created one before failing, it is still the only thing a
+    // later discard has to archive, and a fresh record would forget it.
+    record.createdSessionId = startupsRef.current[record.id]?.createdSessionId;
     // Open the authored task before any filesystem or provider work crosses IPC.
     setStartups(previous => ({ ...previous, [record.id]: record }));
     chooseProject(args.projectId);
@@ -924,6 +928,55 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
       return false;
     } finally { startingRequests.current.delete(args.requestId); }
   }, [chooseProject]);
+
+  /**
+   * Abandon a startup. The archive action on a `starting:` row addresses no native session — the
+   * id is the startup's own — so archiving it means discarding the record, which is the whole of
+   * what a failed setup left behind: the workspace lease is released when `start_session`
+   * returns its error, and the row exists only in this map.
+   *
+   * **The record goes first, and nothing can put it back.** The bug this fixes is a task that
+   * outlived every action that could dispose of it, so a rejected `archive_set` — "Session no
+   * longer exists", "Chat deletion is in progress" — must not reinstate the trap on a narrower
+   * path. The record is dropped from the ref as well as the state, which is also what makes a
+   * second click a no-op rather than a second archive.
+   *
+   * A startup that got as far as creating a session carries its id in `createdSessionId`; that
+   * one is a real chat, so it goes down the ordinary archive path, which stops it and closes its
+   * terminals. If that fails the chat is still in the sidebar under its own id, and the failure
+   * is a notice rather than a silent loss.
+   *
+   * The guard is the state machine's, not a button's: a startup still running its setup owns an
+   * in-flight `start_session` and stays protected, exactly as before.
+   */
+  const discardStartup = useCallback(async (id: string) => {
+    const record = startupsRef.current[id];
+    if (!record?.error) return;
+    const remaining = { ...startupsRef.current };
+    delete remaining[id];
+    startupsRef.current = remaining;
+    setStartups(previous => {
+      if (!previous[id]) return previous;
+      const next = { ...previous };
+      delete next[id];
+      return next;
+    });
+    setSelectedSessionId(current => (current === id ? null : current));
+    if (record.createdSessionId) {
+      try {
+        await setSessionArchived(record.createdSessionId, true);
+      } catch (error) {
+        say(error);
+      }
+    }
+  }, [say]);
+  useEffect(() => {
+    const archive = (event: Event) => {
+      void discardStartup((event as CustomEvent<{ sessionId: string }>).detail.sessionId);
+    };
+    window.addEventListener("workbench-archive-session", archive);
+    return () => window.removeEventListener("workbench-archive-session", archive);
+  }, [discardStartup]);
 
   /**
    * Continue an ended session in place. The success path is `startSession`'s, deliberately: the

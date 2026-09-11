@@ -803,6 +803,68 @@ it("keeps a failed initial prompt and retries the same request identity", async 
   expect(h.start.mock.calls[1]![0]).toEqual(h.start.mock.calls[0]![0]);
   expect(screen.queryByRole("button", {name:"Retry setup"})).toBeNull();
 });
+/*
+ * The owner's 2026-09-11 trap: setup failed on a workspace lock, and the task could then be
+ * neither archived nor closed — the sidebar's archive action was disabled on the `starting:`
+ * prefix alone, and `ProjectWorkbench`'s archive listener drops any id the session store has
+ * never seen, so the only control left was a Retry that failed identically.
+ *
+ * What is pinned here is the state machine, not the button: a startup is archivable exactly
+ * when its setup has failed, and archiving one discards it — there is no native session behind
+ * a `starting:` id to stop.
+ */
+it("archives a task whose setup failed, and protects one that is still setting up", async () => {
+  let fail!: (error: Error) => void;
+  h.start.mockImplementation(() => new Promise((_resolve, reject) => { fail = reject; }));
+  await sendInitialPrompt("Stuck setup check");
+  const archive = () => screen.getByRole("button", { name: "Archive Stuck setup check" });
+  // Mid-setup: an in-flight `start_session` owns this row, and it stays protected.
+  expect(await screen.findByRole("button", { name: "Archive Stuck setup check" })).toBeDisabled();
+
+  await act(async () => {
+    fail(new Error("Workspace overlaps another running turn, terminal, or restore operation"));
+  });
+  expect(await screen.findByRole("alert")).toHaveTextContent("Workspace overlaps another running turn");
+  expect(screen.getByRole("button", { name: "Retry setup" })).toBeVisible();
+  expect(archive()).toBeEnabled();
+
+  await userEvent.click(archive());
+  // Archived, closed and abandoned: the row, the failure and the retry are all gone, the
+  // selection is back on a new task, and nothing was asked of the native session commands.
+  expect(screen.queryByRole("button", { name: "Archive Stuck setup check" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Retry setup" })).toBeNull();
+  expect(screen.queryByText(/Workspace overlaps another running turn/)).toBeNull();
+  expect(screen.getByRole("button", { name: "Show conversation" })).toHaveTextContent("New session");
+  expect(h.start).toHaveBeenCalledTimes(1);
+});
+/*
+ * The same disposal one step later: setup created the session and then failed, so the startup
+ * carries a real chat id and archiving it crosses IPC — where `archive_set` can refuse
+ * ("Session no longer exists", "Chat deletion is in progress"). The refusal must not reinstate
+ * the trap: the startup row is this window's, it goes regardless, and the refusal is a notice.
+ */
+it("discards a task whose setup failed after creating a session, even when archiving that session is refused", async () => {
+  const toasts: string[] = [];
+  const collect = (event: Event) => toasts.push((event as CustomEvent<{message:string}>).detail.message);
+  window.addEventListener("brigadier-toast", collect);
+  const navigation = await import("./sessionNavigation");
+  const archived = vi.spyOn(navigation, "setSessionArchived")
+    .mockRejectedValue(new Error("Chat deletion is in progress"));
+  let fail!: (error: Error) => void;
+  h.start.mockImplementation(() => new Promise((_resolve, reject) => { fail = reject; }));
+  await sendInitialPrompt("Half-created setup check");
+  await act(async () => h.start.mock.calls[0]![1]({step:"session",complete:false,detail:"Task created",sessionId:"half-created"}));
+  await act(async () => { fail(new Error("Provider process exited during setup")); });
+  const archive = await screen.findByRole("button", { name: "Archive Half-created setup check" });
+  expect(archive).toBeEnabled();
+
+  await userEvent.click(archive);
+  expect(screen.queryByRole("button", { name: "Archive Half-created setup check" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Retry setup" })).toBeNull();
+  expect(archived.mock.calls).toEqual([["half-created", true]]);
+  await waitFor(() => expect(toasts.some(message => message.includes("Chat deletion is in progress"))).toBe(true));
+  window.removeEventListener("brigadier-toast", collect);
+});
 it("does not navigate back when startup completes after the user selected another task", async () => {
   h.sessions = [view("existing", "p-live")];
   let resolve!: (result:SessionView) => void;

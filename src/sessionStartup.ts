@@ -20,9 +20,28 @@ export interface SessionStartup {
   createdSessionId?: string;
 }
 
+/** Prefix of a startup's own sidebar id. No native session command accepts one. */
+export const PENDING_PREFIX = "starting:";
+
+export function isPendingSessionId(id: string): boolean {
+  return id.startsWith(PENDING_PREFIX);
+}
+
+/**
+ * Whether a sidebar row can be archived — which for a startup means abandoned.
+ *
+ * A startup is a session in exactly two states: `starting`, which owns an in-flight
+ * `start_session` and is protected, and `failed`, which owns nothing the harness is still
+ * using and must stay disposable. Before this, every `starting:` id was refused on its prefix
+ * alone, so a setup that failed could only be retried (`docs/vision.md` §9).
+ */
+export function archivableSession(session: Pick<SessionRuntime, "sessionId" | "status">): boolean {
+  return !isPendingSessionId(session.sessionId) || session.status === "failed";
+}
+
 export function newStartup(args: StartSessionArgs): SessionStartup {
   return {
-    id: `starting:${args.requestId}`,
+    id: `${PENDING_PREFIX}${args.requestId}`,
     args,
     title: args.prompt.trim().split("\n")[0]?.slice(0, 100) || "New task",
     startedAt: Date.now(),
