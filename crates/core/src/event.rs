@@ -446,13 +446,21 @@ pub enum ItemKind {
         /// The tool call this answers.
         tool_call_id: String,
         /// True when the tool reported failure. **Also true for an interrupt and for a rejected
-        /// tool use**, so it is never on its own evidence that a command failed.
+        /// tool use**, so it is never on its own evidence that a command failed — pair it with
+        /// `interrupted` below. `is_error && !interrupted` is the field a renderer should key a
+        /// failure color off, not `exit_code`: a genuine failure whose body doesn't parse (a
+        /// non-Bash tool's error text, or an unrecognised shape) still has `exit_code: None`.
         is_error: bool,
-        /// Parsed from the literal first line `Exit code N\n` of the result body. `None` when the
-        /// body carries no such line — never inferred from `is_error`, and never present for a
-        /// tool that is not a shell.
+        /// On failure, parsed from the literal first line `Exit code N` of the result body.
+        /// On success, `Some(0)`: a successful shell result carries no `Exit code` line at all
+        /// (measured, `docs/research/cli-steer-and-exit-codes.md` row 3), so the zero is read off
+        /// `is_error == false` rather than parsed. `None` for an interrupted or denied result, and
+        /// always `None` for a tool that is not a shell — see `is_error` above for the coloring
+        /// field a renderer should key off instead of this one, since a genuine failure whose body
+        /// does not parse also leaves this `None`.
         // see docs/plans/codex-thread-rebuild-2026-09-11.md §4.1 — there is no numeric exit-code
-        // field anywhere on the wire; that first line is the only carrier.
+        // field anywhere on the wire; that first line is the only carrier on failure, and absence
+        // of the line is the only carrier of success.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         exit_code: Option<i32>,
         /// Set when the operator stopped this rather than the command failing: an interrupt, or
