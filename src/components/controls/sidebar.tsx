@@ -6,6 +6,8 @@ import { Kbd } from "./kbd";
 import { Modal } from "./modal";
 import {
   createContext,
+  useCallback,
+  useMemo,
   useContext,
   useEffect,
   useState,
@@ -116,17 +118,17 @@ export function SidebarProvider({
   const previewTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
   );
-  const keepPreview = () => clearTimeout(previewTimer.current);
+  const keepPreview = useCallback(() => clearTimeout(previewTimer.current), []);
   const open = controlled ?? local,
     isMobile = useIsMobile();
-  const previewSidebar = () => {
+  const previewSidebar = useCallback(() => {
     // `keepPreview` is the cancel half: a `pointerleave` before the timer fires clears it, so a
     // pointer that only passes over the toggle never reaches `setPeek(true)`.
     keepPreview();
     if (!open && !isMobile)
       previewTimer.current = setTimeout(() => setPeek(true), PEEK_OPEN_DELAY_MS);
-  };
-  const leavePreview = () => {
+  }, [keepPreview, open, isMobile]);
+  const leavePreview = useCallback(() => {
     keepPreview();
     previewTimer.current = setTimeout(() => {
       // Portaled project/account menus remain usable while the sidebar is previewed.
@@ -137,12 +139,12 @@ export function SidebarProvider({
       )
         setPeek(false);
     }, PEEK_CLOSE_DELAY_MS);
-  };
+  }, [keepPreview]);
   useEffect(() => () => clearTimeout(previewTimer.current), []);
   useEffect(() => {
     keepPreview();
     setPeek(false);
-  }, [open, isMobile]);
+  }, [open, isMobile, keepPreview]);
   useEffect(() => {
     if (!peek) return;
     const outside = (event: PointerEvent) => {
@@ -176,7 +178,7 @@ export function SidebarProvider({
    * swallow the shortcut. The kit still calls `preventDefault()` before we refuse, which is the
    * pre-port behaviour too.
    */
-  const applyOpen = (next: boolean) => {
+  const applyOpen = useCallback((next: boolean) => {
     if (
       document.querySelector(".desktop-settings") ||
       document.querySelector('[role="dialog"]')
@@ -189,25 +191,15 @@ export function SidebarProvider({
       setLocal(next);
       onOpenChange?.(next);
     }
-  };
-  const toggleSidebar = () => applyOpen(isMobile ? !openMobile : !open);
+  }, [keepPreview, isMobile, onOpenChange]);
+  const toggleSidebar = useCallback(() => applyOpen(isMobile ? !openMobile : !open), [applyOpen, isMobile, openMobile, open]);
+  const context = useMemo(() => ({
+    open, openMobile, isMobile, peek, attention, currentSession, setCurrentSession,
+    previewSidebar, keepPreview, leavePreview, setOpenMobile, toggleSidebar,
+  }), [open, openMobile, isMobile, peek, attention, currentSession,
+    previewSidebar, keepPreview, leavePreview, toggleSidebar]);
   return (
-    <Context.Provider
-      value={{
-        open,
-        openMobile,
-        isMobile,
-        peek,
-        attention,
-        currentSession,
-        setCurrentSession,
-        previewSidebar,
-        keepPreview,
-        leavePreview,
-        setOpenMobile,
-        toggleSidebar,
-      }}
-    >
+    <Context.Provider value={context}>
       <KitSidebarProvider
         {...props}
         open={isMobile ? openMobile : open}

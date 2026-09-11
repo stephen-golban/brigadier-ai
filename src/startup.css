@@ -1,0 +1,63 @@
+/* Loaded by index.html before React; shared with every startup fallback. */
+.startup-loader {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  isolation: isolate;
+  background: #252728;
+  color: #a0a2a2;
+}
+
+/* Static soft light keeps startup cheap and also respects reduced motion. */
+.startup-loader::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  background:
+    radial-gradient(ellipse at 0% 38%, #426576 0%, transparent 42%),
+    radial-gradient(ellipse at 0% 80%, #00606b 0%, transparent 48%),
+    radial-gradient(ellipse at 100% 100%, #465f4a 0%, transparent 55%),
+    linear-gradient(165deg, #125c86 0%, #075175 43%, #345d56 82%);
+}
+
+.startup-loader::after {
+  content: "";
+  position: absolute;
+  inset: 7% 13% 16%;
+  z-index: -1;
+  border-radius: 36px;
+  background: #252728;
+  box-shadow: 0 0 48px 20px #252728;
+  filter: blur(28px);
+}
+
+.startup-brand {
+  display: grid;
+  justify-items: center;
+  animation: startup-arrive 650ms cubic-bezier(.22, 1, .36, 1) both;
+}
+
+.startup-mark {
+  display: block;
+  width: 64px;
+  height: 64px;
+  fill: currentColor;
+  animation: startup-breathe 3s ease-in-out 650ms infinite;
+}
+
+@keyframes startup-arrive {
+  from { opacity: .6; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes startup-breathe {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: .65; transform: scale(.96); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .startup-brand, .startup-mark { animation: none; }
+}

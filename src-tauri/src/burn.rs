@@ -55,6 +55,9 @@ pub(crate) async fn run(
     let started_at = std::time::Instant::now();
 
     let project = supervisor.add_project(root.clone()).await?;
+    // The UI discovers this project asynchronously. Capture every real feed row from the
+    // first producer event; this does not mount or warm the transcript before capture.
+    let capture_project = supervisor.capture_project(&project.id);
 
     let kind = DriverKind::new(REPLAY);
     let mut started = Vec::with_capacity(sessions);
@@ -88,6 +91,7 @@ pub(crate) async fn run(
     );
 
     tauri::async_runtime::spawn(async move {
+        let _capture_project = capture_project;
         tokio::time::sleep(duration).await;
         let mut lifetimes = Vec::with_capacity(started.len());
         for (id, &started_elapsed_ms) in started.iter().zip(start_elapsed_ms.iter()) {
