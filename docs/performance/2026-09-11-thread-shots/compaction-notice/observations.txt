@@ -1,0 +1,4 @@
+opened: true
+inline notices: 2
+currency present: false
+pageerrors: 0

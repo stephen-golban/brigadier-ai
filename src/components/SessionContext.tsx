@@ -94,8 +94,11 @@ function sourceLabel(source: string | null | undefined): string | null {
  * reachable *within one turn* whose own tool output burns the remaining headroom — roughly 120k
  * tokens on the default model, effectively unreachable on a 1M-context one (same file, §3). A
  * compaction is twelve silent seconds (`duration_ms: 12262`, measured) followed by a past-tense
- * row, and the harness gets no in-progress signal, so the only way a user sees one coming is to
- * see the line before they cross it. The `<meter>` carries the threshold as its `high` attribute,
+ * warning row, so the only way a user sees one coming is to see the line before they cross it.
+ * There **is** an in-progress signal on the wire (`session-compacting`) and it deliberately has no
+ * consumer: owner ruling 2026-09-11, no live indicator of any kind — no spinner, no progress row,
+ * no status line. That is why the flag below reads `past the line`, which is what this meter
+ * measured, rather than `compacting`, which named an event nothing here can observe. The `<meter>` carries the threshold as its `high` attribute,
  * so the bar changes colour at exactly the crossing point rather than at a decorative 80%.
  *
  * **The drop line is a tripwire, not decoration.** On a correct tree this number sawtooths. The
@@ -192,7 +195,7 @@ export function SessionContext({
         </span>
         <span>Context {percent === null ? "—" : `${percent}%`}</span>
         {near && (
-          <small className="gauge-warn">{past ? "compacting" : "compacts soon"}</small>
+          <small className="gauge-warn">{past ? "past the line" : "compacts soon"}</small>
         )}
       </Button>
       <Popover.Content placement="top end">

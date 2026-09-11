@@ -144,6 +144,15 @@ fn notice(env: &Envelope) -> Option<(String, ItemKind, String)> {
     let session = env.session_id.as_str();
     let seq = env.seq;
     match &env.event {
+        // **Informational, and it stays informational.** A compaction is ordinary provider
+        // housekeeping and is presented as one: a timeline boundary, not an alarm
+        // (owner ruling 2026-09-11, which reversed an earlier warning-level ruling the same day).
+        //
+        // What it is *not* is a conversation being summarised. brigadier spawns a fresh child for
+        // every user message (`docs/research/does-a-session-accumulate-2026-09-11.md` §0), so no
+        // cross-message history exists to compact; the only route here is one response whose own
+        // tool output fills the window mid-turn. `ThreadView::noticeSentence` says so in words,
+        // and the numbers below are what it prints beside them.
         Event::SessionCompacted {
             trigger,
             pre_tokens,
@@ -179,8 +188,15 @@ fn notice(env: &Envelope) -> Option<(String, ItemKind, String)> {
                 trigger.to_owned(),
             ))
         }
-        // A **warning**, not an error: the session continues and the CLI retries on a later
-        // turn, so nothing stopped and nothing was lost — but it is no longer silent.
+        // A **warning**, not an error: the turn runs on, so nothing stopped and nothing was
+        // lost — but it is no longer silent.
+        //
+        // Unlike the success above, this one keeps its warning level: a compaction that did not
+        // happen is a real failure, and the response runs on with a full window.
+        //
+        // The wording follows the same rule the success does: the thing that could not be
+        // compacted is one response, never a conversation. A bare "context compaction failed"
+        // invited the reader to picture a session history; there is no such history.
         //
         // The body is a sentence rather than the discriminator the two older notices carry,
         // because `ThreadView::noticeSentence` falls back to the body verbatim for a code it
@@ -195,8 +211,10 @@ fn notice(env: &Envelope) -> Option<(String, ItemKind, String)> {
                     .map(|reason| serde_json::json!({ "error": reason })),
             },
             match error {
-                Some(reason) => format!("Context compaction failed: {reason}"),
-                None => "Context compaction failed".to_owned(),
+                Some(reason) => {
+                    format!("Could not compact this response's context: {reason}")
+                }
+                None => "Could not compact this response's context".to_owned(),
             },
         )),
         Event::RuntimeWarning { message } => Some((
