@@ -1,6 +1,6 @@
 import {cleanup,render,screen,waitFor} from '@testing-library/react';
 import {afterEach,expect,it,vi} from 'vitest';
-import {useAui} from '@assistant-ui/react';
+import {MessagePrimitive,MessageProvider,fromThreadMessageLike,useAui} from '@assistant-ui/react';
 import {TranscriptRuntime} from './TranscriptRuntime';
 import MarkdownContent from './MarkdownContent';
 afterEach(()=>{cleanup();vi.unstubAllGlobals();});
@@ -27,4 +27,25 @@ it('rejects edits and sends in the actual worker runtime and updates its transcr
  view.rerender(<TranscriptRuntime {...props} messages={[{id:'updated',role:'assistant',content:'continued result'}]}><Probe/></TranscriptRuntime>);
  expect(client!.thread().getState().messages[0]?.id).toBe('updated');
  expect(client!.composer().getState().canSend).toBe(false);
+});
+
+// Work item 8's own unit. The read-only converter used to keep only `text` parts, so a
+// read-only thread drew nothing for a work row, a notice or a changed-files card — all of
+// which are `data-*` parts. It must carry every part the writable path carries, and the
+// read-only scope must have the `dataRenderers` the runtime adapter mounts on the other path.
+it('carries non-text parts through the read-only converter and renders them',()=>{
+ const message=fromThreadMessageLike(
+  {id:'work',role:'assistant',content:[{type:'data-work',data:{rowId:'work:user'}}]},
+  'work',{type:'complete',reason:'stop'});
+ render(
+  <TranscriptRuntime sessionId="worker" busy={false} loaded readOnly
+    messages={[{id:'work',role:'assistant',content:[{type:'data-work',data:{rowId:'work:user'}}]}]}>
+   <MessageProvider message={message} index={0}>
+    <MessagePrimitive.Parts
+      unstable_showEmptyOnNonTextEnd={false}
+      components={{data:{by_name:{work:({data})=><p>work row {(data as {rowId:string}).rowId}</p>}}}}/>
+   </MessageProvider>
+  </TranscriptRuntime>,
+ );
+ expect(screen.getByText('work row work:user')).toBeVisible();
 });

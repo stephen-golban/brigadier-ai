@@ -8,7 +8,7 @@
  * property in its tokens file to a non-root attribute selector (alongside `:root`),
  * plus `[data-theme="light"]` / `[data-theme="dark"]` selectors, and duplicates its
  * dark values a third time under `@media (prefers-color-scheme: dark)`. brigadier's
- * paint spike (docs/research/codex-thread-tokens.md; src/spike/codex-css/) measured
+ * paint spike (docs/research/codex-thread-tokens.md) measured
  * the kit's arms WITHOUT that attribute present anywhere in the tree, so custom-
  * property inheritance through that selector was never exercised — carrying the
  * scoping forward would both reintroduce an unmeasured cost and leave every property
@@ -67,7 +67,9 @@
   --thread-radius-md: var(--radius-sm);
   --thread-radius-lg: var(--radius-md);
   --thread-radius-2xl: var(--radius-lg);
-  --thread-radius-message: var(--radius-xl);
+  /* Measured, not aliased: docs/research/codex-thread-tokens.md §3.1 puts the user bubble at
+     a 22px corner, which no step of brigadier's radius scale matches. */
+  --thread-radius-message: 22px;
   --thread-radius-full: var(--radius-full);
 
   /* ---- bespoke literals: sub-variants brigadier has no existing token for, built
@@ -151,7 +153,9 @@
   --thread-group-gap: 0.25rem;
   --thread-conversation-thread-assistant-actions-gap: 0.1875rem;
   --thread-conversation-thread-user-turn-gap: 2.125rem;
-  --thread-user-message-max-width: 77%;
+  /* 70%, measured (docs/research/codex-thread-tokens.md §3.1). The kit's own default is 77%;
+     the measurement wins. */
+  --thread-user-message-max-width: 70%;
   --thread-user-message-compact-max-width: 88%;
   --thread-loading-spinner-size: 1rem;
   --thread-loading-shimmer-duration: 2s;
@@ -859,7 +863,8 @@
   max-width: var(--thread-user-message-max-width);
   overflow: hidden;
   overflow-wrap: anywhere;
-  padding: 0.5rem 0.75rem;
+  /* 10px x 16px, measured (docs/research/codex-thread-tokens.md §3.1); the kit ships 8x12. */
+  padding: 10px 16px;
 }
 .thread-agent-message[data-role="user"]
   .thread-agent-message__content:focus-visible {
@@ -2975,5 +2980,39 @@ summary.thread-activity__header::after,
 
   to {
     background: color-mix(in srgb, var(--thread-text) 5%, transparent);
+  }
+}
+
+/* ---------------------------------------------------------------------------------------
+   brigadier additions. Everything above this line is the vendored kit; everything below is
+   this app's, and is listed in src/components/thread/UPSTREAM.md.
+   --------------------------------------------------------------------------------------- */
+
+/* Plan §3 row 8: an activity row's own `+A -D` stay colourless until the row is hovered, so a
+   scan down the trace is not a wall of green and red. On the file-change card itself they are
+   coloured at rest, which is the default above. Hovering a link inside the row suppresses the
+   brighten entirely. */
+.thread-file-change__stats[data-variant="agent-activity"] [data-stat] {
+  color: var(--thread-text-tertiary);
+  transition: color var(--thread-duration-basic) var(--thread-ease-enter);
+}
+.thread-activity:hover
+  .thread-file-change__stats[data-variant="agent-activity"]
+  [data-stat="additions"] {
+  color: var(--thread-success);
+}
+.thread-activity:hover
+  .thread-file-change__stats[data-variant="agent-activity"]
+  [data-stat="deletions"] {
+  color: var(--thread-danger);
+}
+.thread-activity:has(a:hover, button:hover)
+  .thread-file-change__stats[data-variant="agent-activity"]
+  [data-stat] {
+  color: var(--thread-text-tertiary);
+}
+@media (prefers-reduced-motion: reduce) {
+  .thread-file-change__stats[data-variant="agent-activity"] [data-stat] {
+    transition: none;
   }
 }

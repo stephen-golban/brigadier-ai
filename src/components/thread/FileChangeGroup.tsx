@@ -31,17 +31,25 @@ function toAgentStatus(status: FileChangeStatus): AgentItemStatus {
   return "pending";
 }
 
-function FileChangeStats({
+/** Brigadier deviation: exported (the kit keeps it file-private) and given a props spread,
+ *  so an activity row can carry its own per-edit counts — plan §3 row 8's `+A/-D`, drawn
+ *  `data-variant="agent-activity"` so they stay colourless until the row is hovered. */
+export function FileChangeStats({
   additions,
   change,
+  className,
   deletions,
-}: {
+  ...props
+}: Omit<HTMLAttributes<HTMLSpanElement>, "children"> & {
   additions?: number;
   change: FileChangeKind;
   deletions?: number;
 }) {
   return (
-    <span className="thread-file-change__stats">
+    <span
+      className={["thread-file-change__stats", className].filter(Boolean).join(" ")}
+      {...props}
+    >
       {additions !== undefined ? (
         <span data-stat="additions">+{additions}</span>
       ) : null}

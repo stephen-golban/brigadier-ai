@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import type { AgentItemStatus } from "./types";
-import { AgentActivity } from "./AgentActivity";
+import { AgentActivity, type AgentActivityProps } from "./AgentActivity";
 
 export type CommandExecutionStatus =
   | AgentItemStatus
@@ -84,6 +84,11 @@ export interface CommandExecutionProps
   cwd?: string;
   defaultOpen?: boolean;
   detail?: ReactNode;
+  /** Brigadier addition: forwarded to `AgentActivity`. The kit hard-codes the `details`
+   *  disclosure; brigadier needs the real `<button aria-expanded>` (landmine 17). */
+  disclosureIndicator?: AgentActivityProps["disclosureIndicator"];
+  /** Brigadier addition: forwarded to `AgentActivity`. */
+  disclosureMode?: AgentActivityProps["disclosureMode"];
   durationMs?: number;
   exitCode?: number;
   footer?: ReactNode;
@@ -112,6 +117,8 @@ export function CommandExecution({
   cwd,
   defaultOpen = false,
   detail,
+  disclosureIndicator,
+  disclosureMode,
   durationMs,
   exitCode,
   footer,
@@ -292,6 +299,8 @@ export function CommandExecution({
       className={classes}
       data-execution-status={status}
       detail={detail}
+      disclosureIndicator={disclosureIndicator}
+      disclosureMode={disclosureMode}
       indicator={indicator ?? <TerminalIcon>{terminalIcon}</TerminalIcon>}
       kind="command"
       onOpenChange={handleOpenChange}

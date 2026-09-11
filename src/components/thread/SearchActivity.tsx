@@ -2,7 +2,7 @@
 import { Globe, Search as SearchGlyph } from "../../icons";
 import type { HTMLAttributes, ReactNode } from "react";
 import type { AgentItemStatus } from "./types";
-import { AgentActivity } from "./AgentActivity";
+import { AgentActivity, type AgentActivityProps } from "./AgentActivity";
 
 export type SearchActivityKind = "code" | "web";
 
@@ -16,7 +16,14 @@ export interface SearchActivityEntry {
 
 export interface SearchActivityProps
   extends Omit<HTMLAttributes<HTMLDivElement>, "children"> {
+  /** Brigadier addition: the disclosure body. The kit's own body is the `entries` list and
+   *  nothing else; brigadier has no `entries` for a `Grep`, but it does have the result. */
+  children?: ReactNode;
   defaultOpen?: boolean;
+  /** Brigadier addition: forwarded to `AgentActivity` (see `CommandExecution.tsx`). */
+  disclosureIndicator?: AgentActivityProps["disclosureIndicator"];
+  /** Brigadier addition: forwarded to `AgentActivity`. */
+  disclosureMode?: AgentActivityProps["disclosureMode"];
   entries?: readonly SearchActivityEntry[];
   kind: SearchActivityKind;
   onEntryOpen?: (entry: SearchActivityEntry) => void;
@@ -52,8 +59,11 @@ function codeSearchSummary(
 }
 
 export function SearchActivity({
+  children,
   className,
   defaultOpen = false,
+  disclosureIndicator,
+  disclosureMode,
   entries = [],
   kind,
   onEntryOpen,
@@ -107,7 +117,7 @@ export function SearchActivity({
         {action}
       </span>
     );
-  const body = entries.length > 0 ? (
+  const entryList = entries.length > 0 ? (
     <ol className="thread-search-activity__entries" tabIndex={0}>
       {entries.map((entry) => {
         const content = (
@@ -135,12 +145,23 @@ export function SearchActivity({
       })}
     </ol>
   ) : undefined;
+  const body =
+    entryList === undefined && (children === undefined || children === null)
+      ? undefined
+      : (
+          <>
+            {entryList}
+            {children}
+          </>
+        );
 
   return (
     <AgentActivity
       className={classes}
       data-search-kind={kind}
       defaultOpen={defaultOpen}
+      disclosureIndicator={disclosureIndicator}
+      disclosureMode={disclosureMode}
       indicator={<SearchIcon kind={kind} />}
       kind="search"
       onOpenChange={onOpenChange}

@@ -31,6 +31,14 @@ export interface AgentActivityProps
   summary: ReactNode;
 }
 
+/**
+ * Brigadier deviation: a closed disclosure renders no body. Upstream keeps every collapsed
+ * row's subtree mounted behind `hidden`, which in a brigadier transcript means every tool
+ * result, every nested trace and every approval card in a 600-row history is in the DOM at
+ * all times — the cost the component this replaced (`CollapsibleContent`) did not pay, and
+ * the thread already misses its frame gate (`docs/plans/codex-thread-rebuild-2026-09-11.md`
+ * landmine 7). `hasBody` still decides whether a toggle exists, so the control is unchanged.
+ */
 export function AgentActivity({
   children,
   className,
@@ -114,7 +122,7 @@ export function AgentActivity({
             className="thread-activity__body"
             hidden={!resolvedOpen}
           >
-            {children}
+            {resolvedOpen ? children : null}
           </div>
         </div>
       ) : hasBody && disclosureMode === "button" ? (
@@ -137,7 +145,7 @@ export function AgentActivity({
             className="thread-activity__body"
             hidden={!resolvedOpen}
           >
-            {children}
+            {resolvedOpen ? children : null}
           </div>
         </div>
       ) : hasBody ? (
@@ -168,7 +176,9 @@ export function AgentActivity({
           >
             {header}
           </summary>
-          <div className="thread-activity__body">{children}</div>
+          <div className="thread-activity__body">
+            {resolvedOpen ? children : null}
+          </div>
         </details>
       ) : (
         <div className="thread-activity__header">{header}</div>
