@@ -2,7 +2,7 @@ import { ArrowDown, ArrowRotateCw, Check, Terminal, Warning } from "../icons";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useState } from "react";
 import { openSettings } from "../settingsNavigation";
-import { refreshSoftwareUpdates, useSoftwareUpdates } from "../softwareUpdates";
+import { refreshSoftwareUpdates, updateSoftware, useSoftwareUpdates } from "../softwareUpdates";
 import { desktop, errorMessage } from "../workspaceApi";
 import { BrandMark } from "./BrandMark";
 import { ProviderIcon } from "./composer/ExecutionControls";
@@ -12,10 +12,12 @@ import { labelledButtonIcons } from "@/lib/surfaces";
 import { Tooltip } from "./controls/tooltip";
 import "./software-updates.css";
 
-function SoftwareIcon({ provider }: { provider: string }) {
-  if (provider === "brigadier") return <BrandMark className="size-5 shrink-0 fill-current" />;
-  if (provider === "codex" || provider === "claude-code") return <span className={`software-provider-icon ${provider}`} role="img" aria-label={provider === "codex" ? "Codex" : "Claude Code"} />;
-  return <ProviderIcon provider={provider} />;
+function SoftwareIcon({ provider, updateAvailable = false }: { provider: string; updateAvailable?: boolean }) {
+  return <span className={updateAvailable ? "text-warn" : "text-text-secondary"}>
+    {provider === "brigadier" ? <BrandMark className="size-5 shrink-0 fill-current" />
+      : provider === "codex" || provider === "claude-code" ? <span className={`software-provider-icon ${provider}`} role="img" aria-label={provider === "codex" ? "Codex" : "Claude Code"} />
+      : <ProviderIcon provider={provider} />}
+  </span>;
 }
 
 export function SoftwareStatus() {
@@ -33,34 +35,38 @@ export function SoftwareStatus() {
     <Button variant="ghost" size="sm" className={cn(labelledButtonIcons, "software-status")} aria-label={`Software updates: ${summary}`} onClick={() => openSettings({ page: "updates" })}>
       {updates.length > 0 && <ArrowDown className="size-3.5 text-warn" />}
       {appUpdate && <BrandMark className="size-4 fill-current text-warn" />}
-      {providers.map(row => <span key={row.id} className={row.updateAvailable ? "text-warn" : "text-text-secondary"}><SoftwareIcon provider={row.provider} /></span>)}
+      {providers.map(row => <SoftwareIcon key={row.id} provider={row.provider} updateAvailable={row.updateAvailable} />)}
       {!providers.length && !appUpdate && <Terminal className="size-4" />}
     </Button>
   </Tooltip>;
 }
 
 export function SoftwareUpdates() {
-  const { rows, checking, error, checkedAt } = useSoftwareUpdates();
+  const { rows, checking, error, checkedAt, updatingId, updateError } = useSoftwareUpdates();
   const [openError, setOpenError] = useState("");
   return <section className="settings-section software-updates" aria-label="CLI and app updates">
     <div className="software-updates-heading">
       <div><h2>CLI and app updates</h2><p>Installed versions and available releases on this machine.</p></div>
-      <Button variant="secondary" size="sm" className={labelledButtonIcons} disabled={!desktop || checking} onClick={() => void refreshSoftwareUpdates(true)}><ArrowRotateCw className="size-4" />{checking ? "Checking…" : "Check for updates"}</Button>
+      <Button variant="secondary" size="sm" className={labelledButtonIcons} disabled={!desktop || checking || !!updatingId} onClick={() => void refreshSoftwareUpdates(true)}><ArrowRotateCw className="size-4" />{checking ? "Checking…" : "Check for updates"}</Button>
     </div>
     {!desktop && <p>CLI update checks are available in the desktop app.</p>}
     {!!rows.length && <div className="software-update-list">
       {rows.map(row => <div className="software-update-row" key={row.id}>
-        <SoftwareIcon provider={row.provider} />
+        <SoftwareIcon provider={row.provider} updateAvailable={row.updateAvailable} />
         <div className="software-update-description"><div><strong>{row.label}</strong><span>{row.installedVersion ?? "Version unknown"}{row.updateAvailable && ` → ${row.latestVersion}`}</span></div>
           {row.error && <p>{row.error}</p>}
         </div>
-        {row.updateAvailable && row.releaseUrl ? <Button variant="ghost" size="sm" className={labelledButtonIcons} aria-label={`View ${row.label} update`} title="View release and installation instructions" onClick={() => { setOpenError(""); void openUrl(row.releaseUrl!).catch(error => setOpenError(errorMessage(error))); }}><ArrowDown className="size-4" /></Button>
+        {updatingId === row.id || (row.updateAvailable && ["codex", "claude-code"].includes(row.provider)) ? <Button variant="secondary" size="sm" className={labelledButtonIcons} disabled={!desktop || !!updatingId} aria-label={updatingId === row.id ? `Updating ${row.label}` : `Update ${row.label}`} aria-busy={updatingId === row.id} onClick={() => void updateSoftware(row.id)}>
+          {updatingId === row.id ? <><ArrowRotateCw className="size-4 motion-safe:animate-spin" />Updating…</> : <><ArrowDown className="size-4" />Update</>}
+        </Button>
+          : row.updateAvailable && row.releaseUrl ? <Button variant="ghost" size="sm" className={labelledButtonIcons} aria-label={`View ${row.label} update`} title="View release and installation instructions" onClick={() => { setOpenError(""); void openUrl(row.releaseUrl!).catch(error => setOpenError(errorMessage(error))); }}><ArrowDown className="size-4" /></Button>
           : row.error ? <Warning className="size-4 text-text-tertiary" aria-label="Update status unavailable" />
           : <Check className="size-4 text-text-tertiary" aria-label="Up to date" />}
       </div>)}
     </div>}
     {desktop && !checking && checkedAt > 0 && !rows.some(row => row.provider !== "brigadier") && !error && <p>No connected CLIs were found.</p>}
     {(error || openError) && <p role="alert">{error || openError}</p>}
+    {updateError && <p role="alert">{updateError}</p>}
     {checkedAt > 0 && <p className="software-checked-at">Last checked {new Date(checkedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</p>}
   </section>;
 }
