@@ -227,7 +227,7 @@ async fn ten_sessions_at_two_hundred_rows_a_second_stay_under_the_cliff() {
     let mut total = 0u64;
     let mut dropped = 0u64;
     for session in &sessions {
-        let (t, d) = h
+        let (t, d, _deltas) = h
             .sup
             .batcher()
             .counters(&project, session.as_str())

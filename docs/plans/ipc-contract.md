@@ -146,15 +146,25 @@ every turn on the same `session_id`, so a notice per init would be one per turn.
 Both are skipped on the wire when they carry nothing (`None` / `false`), so a consumer built
 against the two-field shape reads an unchanged frame.
 
-`exit_code` is parsed by Rust from the literal first line `Exit code N\n` of the tool result body.
+`exit_code` is parsed by Rust from the literal first line `Exit code N` of the tool result body,
+the line ending at a newline **or at end of input** — a failing command with no output writes
+`"Exit code 3"` and stops (measured, CLI 2.1.268; the amendment at the top of
+`docs/research/cli-steer-and-exit-codes.md`). It is parsed only for **shell** tool results, so a
+file whose first line happens to read that way, and a denial reason an operator typed, are never
+parsed.
 **That line is the only carrier of a shell exit code anywhere on the wire** — `exitCode`,
 `exit_code` and `returnCode` are 0 hits across all six captures
 (`docs/research/cli-steer-and-exit-codes.md` §2). The parse is anchored at byte 0 and requires the
 terminating newline, so a command whose own output mentions the phrase yields nothing.
 **TypeScript never parses a tool body.**
 
-`interrupted` comes from the frame-level `tool_use_result` sibling: the literal string
-`"User rejected tool use"`, or `interrupted: true` on the structured form. **Neither field is ever
+`interrupted` means *the operator stopped this*, and covers an interrupt and a **denial** alike —
+both are decisions, and neither is a failure. It comes from two places: the frame-level
+`tool_use_result` sibling (the literal string `"User rejected tool use"`, or `interrupted: true` on
+the structured form), and, for a denial, brigadier's **own** `Decision::Deny`. The provider gives no
+marker for a denial — it echoes the deny reason verbatim, so the captures carry
+`"Error: denied by spike"` and `"Error: brigadier wall: …"` — so the decision is the only reliable
+source and the error text is never matched. **Neither field is ever
 inferred from `is_error`**, which is `true` for a failure, an interrupt and a rejected tool use
 alike — inferring would print a red exit code on a run the operator themself stopped.
 

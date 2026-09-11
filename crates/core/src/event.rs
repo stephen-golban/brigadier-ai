@@ -455,8 +455,12 @@ pub enum ItemKind {
         // field anywhere on the wire; that first line is the only carrier.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         exit_code: Option<i32>,
-        /// Set when the result was produced by an interrupt or a rejection rather than by the
-        /// command failing. Renders as *You stopped*, never as a failure.
+        /// Set when the operator stopped this rather than the command failing: an interrupt, or
+        /// a **denial**. Renders as a decision, never as a failure.
+        ///
+        /// A denial's source is brigadier's own [`crate::session::Decision::Deny`], not the
+        /// provider: the CLI echoes the deny *reason* verbatim, so there is no marker in the
+        /// error text to match and matching it would be a parser pointed at human input.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         interrupted: bool,
     },

@@ -211,6 +211,20 @@ struct OpenTurn {
     minted: bool,
 }
 
+/// How many `tool_use` ids the adapter remembers for a decision or a tool-kind lookup.
+///
+/// Each entry is one short id. The bound exists only so a session whose results never arrive
+/// cannot grow a set for the life of the process; a real session drains each entry with the
+/// `tool_result` that answers it.
+const DECISION_MEMORY: usize = 1024;
+
+/// Tool names whose result body carries the `Exit code N` grammar.
+///
+/// Measured for `Bash` and nothing else (`docs/research/cli-steer-and-exit-codes.md` §2). Every
+/// other tool's result body is content — a file, a search hit, a subagent's prose — and a denied
+/// tool's body is a reason an operator typed. [`parse_exit_code`] is never pointed at any of them.
+const SHELL_TOOLS: [&str; 1] = ["Bash"];
+
 /// One parked `can_use_tool`, kept so the answer can be written back.
 #[derive(Debug)]
 struct OpenPermission {
@@ -218,6 +232,14 @@ struct OpenPermission {
     cli_request_id: String,
     /// The tool arguments as the model produced them; echoed as `updatedInput` on an allow.
     original_input: Value,
+    /// The `tool_use` id this prompt gates, when the CLI supplied one.
+    ///
+    /// Kept so a **deny** can be recognised in the `tool_result` that answers it. The provider's
+    /// own error string cannot do that job: the CLI echoes the operator's deny *reason* verbatim
+    /// — `"Error: denied by spike"` (`s3-can-use-tool-deny.ndjson:11`), `"Error: brigadier wall:
+    /// …"` (`s10-deny-read-stop-bounce.ndjson:10`) — so there is no fixed marker to match, and
+    /// matching the text an operator typed would be a parser pointed at human input.
+    tool_use_id: Option<String>,
 }
 
 /// Drives one session. Constructed by [`connect`]; owns the child's stdin.
@@ -262,6 +284,22 @@ struct Adapter<W> {
     open_permissions: HashMap<RequestId, OpenPermission>,
     by_cli_id: HashMap<String, RequestId>,
     withdrawn: HashSet<RequestId>,
+    /// `tool_use` ids the **operator** denied, drained by the `tool_result` that answers them.
+    ///
+    /// The source of truth for a denial is brigadier's own [`Decision::Deny`], never the
+    /// provider's error text. A denial is a decision, not a failure, and the two must not render
+    /// alike (`docs/vision.md` §9).
+    denied_tool_uses: HashSet<String>,
+    /// Insertion order for [`Adapter::denied_tool_uses`], so a denial whose result never arrives
+    /// cannot grow the set without bound.
+    denied_order: VecDeque<String>,
+    /// `tool_use` id → tool name, for the tools whose results carry a parsable exit code.
+    ///
+    /// Only shell tools write the `Exit code N` grammar, so only their bodies are parsed; every
+    /// other result body is content, and a denial's body is text an operator typed.
+    shell_tool_uses: HashSet<String>,
+    /// Insertion order for [`Adapter::shell_tool_uses`], bounding it the same way.
+    shell_order: VecDeque<String>,
     pending_acks: HashMap<String, oneshot::Sender<Result<(), CommandError>>>,
 
     /// The open turn's assistant **text** so far, main loop only, bounded to
@@ -359,6 +397,10 @@ where
         open_permissions: HashMap::new(),
         by_cli_id: HashMap::new(),
         withdrawn: HashSet::new(),
+        denied_tool_uses: HashSet::new(),
+        denied_order: VecDeque::new(),
+        shell_tool_uses: HashSet::new(),
+        shell_order: VecDeque::new(),
         pending_acks: HashMap::new(),
         native_pending: HashMap::new(),
         rewind_paused: false,
@@ -618,11 +660,22 @@ where
                         info.clone(),
                     );
                     if info.get("status").and_then(Value::as_str) == Some("rejected") {
+                        // A short human sentence, not the frame. `crate::store`'s projection now
+                        // turns every `RuntimeWarning` into a permanent transcript notice, and a
+                        // notice is a sentence a person reads — 2 KB of `overageStatus`,
+                        // `overageDisabledReason` and `isUsingOverage` is a debug dump, and it
+                        // would sit in the thread for good. The structured reading is not lost:
+                        // it still reaches `record_usage`, and `Event::UsageWindows` below
+                        // carries the windows the gauge draws.
+                        let window = info
+                            .get("rateLimitType")
+                            .and_then(Value::as_str)
+                            .unwrap_or("usage");
                         self.emit(
                             Event::RuntimeWarning {
                                 message: format!(
-                                    "Provider usage limit: {}",
-                                    bounded(&info.to_string(), 2048)
+                                    "Provider usage limit reached on the {window} window; \
+                                     requests are being rejected until it resets"
                                 ),
                             },
                             Some(raw),
@@ -1021,6 +1074,12 @@ where
                 if parent.is_none() {
                     self.last_action = Some(bounded(&summary, 240));
                 }
+                // The one place the tool's *name* is visible: a `tool_result` block carries only
+                // the id, so the kind has to be remembered here for `on_user` to know whether its
+                // body is a shell transcript or content.
+                if SHELL_TOOLS.contains(&name.as_str()) {
+                    self.remember_shell(id.clone());
+                }
                 let kind = ItemKind::ToolCall { name };
                 self.emit_item(ItemId::new(id), kind, &summary, parent, raw);
             }
@@ -1058,9 +1117,19 @@ where
             let body = content.as_ref().map(result_text).unwrap_or_default();
             let summary = summarize(&body);
             let is_error = is_error.unwrap_or(false);
-            // Only on the failure path: a succeeding command never writes the line, so parsing a
-            // success body could only ever pick up a command's own output quoting the phrase.
-            let exit_code = if is_error {
+            // A denial is the operator's own decision, recorded when brigadier answered the
+            // prompt. It is never read out of the CLI's error string: the CLI echoes the deny
+            // *reason* verbatim, so `"Error: denied by spike"` and `"Error: brigadier wall: …"`
+            // are both denials with no marker in common.
+            let denied = self.denied_tool_uses.remove(&tool_use_id);
+            let is_shell = self.shell_tool_uses.remove(&tool_use_id);
+            // An interrupt and a denial are the same fact to a reader: the operator stopped this,
+            // it did not fail. Rendering either as a red exit code is the failure mode
+            // `docs/vision.md` §9 exists to prevent.
+            let interrupted = interrupted || denied;
+            // Only a failing **shell** result: a success writes no line, a denial's body is text
+            // an operator typed, and every other tool's body is content.
+            let exit_code = if is_error && is_shell && !interrupted {
                 parse_exit_code(&body)
             } else {
                 None
@@ -1262,6 +1331,7 @@ where
             OpenPermission {
                 cli_request_id: cli_request_id.clone(),
                 original_input: ask.input,
+                tool_use_id: ask.tool_use_id,
             },
         );
         self.by_cli_id.insert(cli_request_id, request_id.clone());
@@ -1439,6 +1509,13 @@ where
             }
         }
 
+        // A deny is the operator's decision, and the `tool_result` that answers it must say so.
+        // Recorded here rather than sniffed out of the CLI's error text downstream: the CLI
+        // echoes the deny *reason* verbatim, so there is no fixed string to match and the text
+        // is whatever a human typed.
+        if let (Decision::Deny { .. }, Some(tool_use_id)) = (&decision, open.tool_use_id) {
+            self.remember_denied(tool_use_id);
+        }
         self.emit(
             Event::RequestResolved {
                 request_id,
@@ -1446,6 +1523,36 @@ where
             },
             None,
         );
+    }
+
+    /// Record a denied `tool_use` id, evicting the oldest once the set is full.
+    ///
+    /// A denial whose `tool_result` never arrives — the session died first — would otherwise sit
+    /// here for the life of the process. The cap is the same shape as the frame-dedup ring above;
+    /// a human cannot deny faster than the results come back, so eviction is unreachable in
+    /// practice and exists only so the set cannot grow without bound.
+    fn remember_denied(&mut self, tool_use_id: String) {
+        if self.denied_tool_uses.insert(tool_use_id.clone()) {
+            self.denied_order.push_back(tool_use_id);
+            if self.denied_order.len() > DECISION_MEMORY {
+                if let Some(old) = self.denied_order.pop_front() {
+                    self.denied_tool_uses.remove(&old);
+                }
+            }
+        }
+    }
+
+    /// Record that a `tool_use` id belongs to a tool whose result body carries the
+    /// `Exit code N` grammar, evicting the oldest once the set is full.
+    fn remember_shell(&mut self, tool_use_id: String) {
+        if self.shell_tool_uses.insert(tool_use_id.clone()) {
+            self.shell_order.push_back(tool_use_id);
+            if self.shell_order.len() > DECISION_MEMORY {
+                if let Some(old) = self.shell_order.pop_front() {
+                    self.shell_tool_uses.remove(&old);
+                }
+            }
+        }
     }
 
     // -------------------------------------------------------------------------------------
@@ -2071,7 +2178,16 @@ fn usage_windows(info: &Value) -> Vec<UsageWindow> {
         .filter_map(|(name, w)| {
             Some(UsageWindow {
                 name: name.clone(),
-                utilization: w.get("utilization").and_then(Value::as_f64)?,
+                // Clamped, not trusted. The gauge reads this as a fraction of a bar, and a
+                // provider value outside 0–1 — an overage window, a future encoding as a
+                // percentage — would draw past the end of it or fill it backwards. A non-finite
+                // value cannot arrive from JSON, but is refused here rather than clamped,
+                // because `f64::clamp` returns NaN for it rather than a number.
+                utilization: w
+                    .get("utilization")
+                    .and_then(Value::as_f64)
+                    .filter(|u| u.is_finite())?
+                    .clamp(0.0, 1.0),
                 resets_at: w.get("resetsAt").and_then(Value::as_i64)?,
             })
         })
@@ -2092,7 +2208,9 @@ fn usage_windows(info: &Value) -> Vec<UsageWindow> {
 ///   2026-09-11, driven over the real stdio protocol with `build_argv`'s flags: a failing
 ///   command with no output at all writes
 ///   exactly `"Exit code 3"` with **no trailing newline**, and a signalled one writes
-///   `"Exit code 144"` the same way. Requiring the newline missed both silently;
+///   `"Exit code 143"` the same way (143 = 128 + SIGTERM, re-measured through the CLI on
+///   2026-09-11; an earlier note here said 144 and was wrong). Requiring the newline missed both
+///   silently;
 /// - digits only, so `Exit code -1` and `Exit code 3x` are `None`;
 /// - no `is_error` fallback. `is_error` is `true` for a failure, an interrupt **and** a rejected
 ///   tool use (landmine 1), so inferring a code from it would print a red exit code on a run the
@@ -2320,8 +2438,9 @@ mod tests {
         // Zero. Never observed in the captures — a succeeding command writes no line at all and
         // `is_error` is false — but the grammar admits it and the parser must not special-case it.
         assert_eq!(parse_exit_code("Exit code 0\n"), Some(0));
-        // Multi-digit, because a shell's codes run to 255 and signals report 128+n.
-        assert_eq!(parse_exit_code("Exit code 130\nkilled\n"), Some(130));
+        // Multi-digit, because a shell's codes run to 255 and a signalled child reports 128+n —
+        // measured at 143 for SIGTERM, see `measured_bash_bodies_from_cli_2_1_268`.
+        assert_eq!(parse_exit_code("Exit code 143\nkilled\n"), Some(143));
         // Absent: the line is simply not there. This is every successful Bash result.
         assert_eq!(parse_exit_code("ok"), None);
         assert_eq!(parse_exit_code(""), None);
@@ -2365,8 +2484,14 @@ mod tests {
         //    so a success yields no code rather than a fabricated zero.
         assert_eq!(parse_exit_code("(Bash completed with no output)"), None);
         // 4. `bash -c 'kill -TERM $$'` — signalled. The CLI reports it as an ordinary numeric
-        //    code (144 as measured, 128+n), again with no output and no newline.
-        assert_eq!(parse_exit_code("Exit code 144"), Some(144));
+        //    code, again with no output and no newline. **Re-measured 2026-09-11 through the CLI
+        //    itself** (2.1.268, `--model haiku`, `--permission-mode bypassPermissions`, the rest
+        //    of `build_argv`'s flags): the Bash tool invoked `bash -c 'kill -TERM $$'` and the
+        //    answering frame was `{"type":"tool_result","content":"Exit code 143",
+        //    "is_error":true,…}` with the sibling `"Error: Exit code 143"`. **143, not 144** —
+        //    128 + SIGTERM(15), exactly what a bare shell gives, so the CLI adds nothing. An
+        //    earlier comment here said 144; it was wrong and is corrected.
+        assert_eq!(parse_exit_code("Exit code 143"), Some(143));
     }
 
     /// `is_error` is true for all three failing shapes above **and** for an interrupt, so the
@@ -2376,6 +2501,35 @@ mod tests {
         assert_eq!(parse_exit_code("Error: Exit code 3"), None);
         assert_eq!(parse_exit_code("User rejected tool use"), None);
         assert_eq!(parse_exit_code("(Bash completed with no output)"), None);
+    }
+
+    /// **A denial is the operator's decision, not a failure**, and the CLI gives no fixed marker
+    /// for one: it echoes the deny *reason* verbatim, so this repo's own captures carry
+    /// `"Error: denied by spike"` (`s3-can-use-tool-deny.ndjson:11`) and `"Error: brigadier wall:
+    /// …"` (`s10-deny-read-stop-bounce.ndjson:10`). Neither is
+    /// [`claude_wire::message::REJECTED_TOOL_USE`], so reading the provider's string classifies
+    /// both as ordinary failures — red, with an exit code, for a decision the operator made.
+    ///
+    /// The fix is to read the denial from brigadier's own [`Decision::Deny`]. This pins that the
+    /// provider's string cannot do the job, which is the reason the adapter keeps the id.
+    #[test]
+    fn a_denial_has_no_marker_in_the_providers_string() {
+        use claude_wire::message::ToolUseResult;
+        for reason in [
+            // Verbatim from the two captures.
+            "Error: denied by spike",
+            "Error: brigadier wall: Read is not allowed here",
+            // And whatever an operator types next.
+            "Error: not on main, please",
+        ] {
+            let sibling = ToolUseResult::Message(reason.to_owned());
+            assert!(
+                !sibling.is_interrupted(),
+                "{reason} is a denial, and the provider's string does not say so",
+            );
+            // Nor does the body carry the shell grammar, so no code is fabricated from it.
+            assert_eq!(parse_exit_code(reason), None);
+        }
     }
 
     /// `is_error` is `true` for a failure, an interrupt **and** a rejected tool use, so it is
@@ -2440,6 +2594,20 @@ mod tests {
             &serde_json::json!({"unifiedWindows": {"five_hour": {"resetsAt": 1i64}}})
         )
         .is_empty());
+        // Clamped, not trusted: the gauge draws this as a fraction of a bar, so a value outside
+        // 0–1 would draw past the end of it or fill it backwards. The packer already drops a
+        // non-finite `f64`; a finite out-of-range one it would happily ship.
+        let wild = serde_json::json!({"unifiedWindows": {
+            "a": {"utilization": 1.7, "resetsAt": 1i64},
+            "b": {"utilization": -0.5, "resetsAt": 2i64},
+            "c": {"utilization": 25.0, "resetsAt": 3i64}
+        }});
+        let clamped = usage_windows(&wild);
+        assert_eq!(clamped.len(), 3, "an out-of-range window is clamped, never dropped");
+        assert!((clamped[0].utilization - 1.0).abs() < f64::EPSILON);
+        assert!(clamped[1].utilization.abs() < f64::EPSILON);
+        assert!((clamped[2].utilization - 1.0).abs() < f64::EPSILON);
+        assert!(clamped.iter().all(|w| (0.0..=1.0).contains(&w.utilization)));
     }
 
     #[test]
