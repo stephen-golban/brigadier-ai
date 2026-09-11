@@ -20,7 +20,8 @@ use std::path::{Path, PathBuf};
 
 use brigadier_core::worktree::{
     self, add_or_rollback, check_ref_format, commits_only_here, dirty_count, ensure_excluded,
-    has_commits, has_submodules, is_repo, main_worktree_of, resolve_git, short_id, show_toplevel,
+    git_common_dir, has_commits, has_submodules, is_repo, main_worktree_from, resolve_git,
+    short_id, show_toplevel,
     RemoveForce, WorktreeError, WorktreeSpec,
 };
 use serde::Serialize;
@@ -441,7 +442,11 @@ pub(crate) async fn prepare_named(
         tracing::warn!("no git on PATH; the session will run in the project root");
         return Ok(None);
     };
-    if !is_repo(&git, project_root).await {
+    // `git_common_dir` **is** the repository test (`is_repo` is that call and nothing else), and
+    // the linked-worktree check below needs its answer too. Read once: two of the twelve git
+    // processes a session start pays for were this pair, run twice microseconds apart against an
+    // unchanged tree (`docs/research/verify-and-telemetry-audit-2026-09-11.md` §5 a3).
+    let Ok(common) = git_common_dir(&git, project_root).await else {
         if new_branch.is_some() {
             return Err(SupervisorError::InvalidArgument(
                 "A Git repository is required to create a branch".into(),
@@ -452,7 +457,7 @@ pub(crate) async fn prepare_named(
             "not a git repository; the session will run in the project root"
         );
         return Ok(None);
-    }
+    };
     // A project root that is a *subdirectory* of a repository would get a checkout of the whole
     // repository, whose top level is the new path — so the child's cwd would be the repository
     // root, two levels from where the operator pointed, with no indication. **measured**. Refuse
@@ -472,7 +477,7 @@ pub(crate) async fn prepare_named(
     // `status --ignored=matching -uall` in the outer reports nothing, so `dirty_count` says 0 over
     // another session's uncommitted work. The remedy is to open the main repository instead.
     // see docs/research/worktree-cleanup.md §1.6.
-    if let Some(main) = main_worktree_of(&git, project_root).await? {
+    if let Some(main) = main_worktree_from(&toplevel, &common) {
         return Err(SupervisorError::from(WorktreeError::LinkedWorktree {
             dir: project_root.to_owned(),
             main,

@@ -1,6 +1,6 @@
 import { countDiagnostic, profiling, traceEvent } from "../perfDiagnostics";
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from '../listeners';
 import { workspaceApi, desktop, errorMessage, type ChatItem, type ChatTurn, type HistoryPage } from '../workspaceApi';
 import * as store from '../feedStore';
 import { mergeHistory } from '../conversationHistory';

@@ -2,7 +2,7 @@ import { isPendingSessionId, newStartup, readStartup, saveStartup, startupRuntim
 import { profiling } from "./perfDiagnostics";
 import { workerTree, conversationOwner, conversationSessions } from "./workerTree";
 import { syncArchive, readArchive } from "./sessionArchive";
-import { listen } from "@tauri-apps/api/event";
+import { listen } from "./listeners";
 import { renameSession, setSessionArchived } from "./sessionNavigation";
 import { NavigationHistoryControls } from "./components/NavigationHistoryControls";
 import { Button } from "@/components/ui/button";
@@ -246,9 +246,33 @@ export function useArchiveAndNativeEvents(say: (e: unknown) => void): void {
     };
     let timer: ReturnType<typeof setInterval> | undefined;
     const unlisteners: Array<() => void> = [];
+    // The 5 s poll is a belt to `archive-changed`'s braces, and a hidden window has no sidebar to
+    // keep fresh: it is armed on show and cleared on hide, exactly as `src/workbenchStore.ts`
+    // does with its own 3 s interval (`:173-180`). Coming forward refreshes once, so whatever the
+    // window missed while it was away lands before it is drawn
+    // (`docs/research/lifecycle-bounds-audit-2026-09-11.md` §2.2, Gap 5).
+    const arm = () => {
+      if (timer === undefined && document.visibilityState !== "hidden")
+        timer = setInterval(() => void refresh(), 5000);
+    };
+    const disarm = () => {
+      clearInterval(timer);
+      timer = undefined;
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") disarm();
+      else {
+        void refresh();
+        arm();
+      }
+    };
     const begin = () => {
+      // The first read happens whatever the visibility: it is the sidebar's initial state, not a
+      // poll, and `document.visibilityState` at mount is "hidden" for a window opened in the
+      // background that will be shown without a `visibilitychange`.
       void refresh();
-      timer = setInterval(() => void refresh(), 5000);
+      arm();
+      document.addEventListener("visibilitychange", onVisibility);
     };
     // Unmount can win the race against any pending `listen()`: it is live now and nothing else
     // will ever tear it down, so tear it down here.
@@ -304,7 +328,8 @@ export function useArchiveAndNativeEvents(say: (e: unknown) => void): void {
       })();
     return () => {
       stopped = true;
-      clearInterval(timer);
+      disarm();
+      document.removeEventListener("visibilitychange", onVisibility);
       for (const unlisten of unlisteners) unlisten();
       unlisteners.length = 0;
     };

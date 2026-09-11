@@ -80,6 +80,12 @@ nix = { version = "0.31.3", default-features = false, features = ["resource"] }
 # The reconciler's unit tests build a throwaway `.brigadier/worktrees/` tree on disk; the same
 # version every other crate in this workspace already pins.
 tempfile = "3.27"
+# `test-util` is deliberately not part of tokio's `full`, and it is what
+# `#[tokio::test(start_paused = true)]` needs. The keep-awake and conversation-queue loops are
+# proved to park — no timer armed over an hour of virtual time — and to renew a 60-second power
+# lease at 45 seconds, neither of which can be observed on a real clock. Same line as
+# `crates/store/Cargo.toml:35` and `crates/supervisor/Cargo.toml:29`.
+tokio = { workspace = true, features = ["test-util"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # A completion barrier for Tao's queued NSWindow geometry/style changes.

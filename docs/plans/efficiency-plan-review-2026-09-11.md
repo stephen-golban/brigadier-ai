@@ -219,6 +219,43 @@ in the measured JSC GC band and remain unproved.
 - **Correction:** P0 copies the shared-clock capture into `docs/performance/2026-09-11/` and the burn runner stamps
   `git rev-parse HEAD`, dirty state and build flags into every JSON. Fix the script comment.
 
+## Measured on main `c8da07b` (2026-09-11, after boundaries 1–3)
+
+Captures `docs/performance/2026-09-11/startup-main-c8da07b.json` and `burn-main-c8da07b.json`, both stamped
+`source.head c8da07b`, `dirty false`, console unlocked, load average about 2, desktop untouched, never hidden or
+occluded, release bundle `ai.brigadier.perf.efficiency` with `VITE_BURN=1 --features burn`.
+
+| Capture | Result | Bar |
+|---|---|---|
+| Startup, 10 runs | p50 241.8 ms, `pass: true`, 10/10 valid | 295 ms p50 |
+| Burn, 63 windows | `pass: false`, 3 dropped, worst 34 ms, delivery audit pass | 0 dropped |
+
+The three drops are one each in windows 0, 1 and 2 (26, 34 and 26 ms) while the DOM grows from 320 to 462 nodes;
+windows 3 to 62 drop nothing. Best previous valid run in the repo: 2 dropped, worst 29 ms (2026-09-10); best on the
+2026-09-11 tree before this work: 3 dropped, worst 43 ms. Steady state is now clean; the residual is the cold open, and
+this capture attributes nothing because no trace was taken. Under decision 1 the install decision still needs the
+cold trace on this tree.
+
+## Boundary record
+
+| Commit | Contents | Gates |
+|---|---|---|
+| `af7d961` | P0 evidence and provenance stamps, P1 event-driven flusher with paused-clock tests, plan and review | six, exit 0 |
+| `1b77f1c` | P4a cold path, P2 idle drain and listener-first subscriptions, cleanup event | six, exit 0 |
+| `462c6bf` | Blind-review fixes on the second boundary | six, exit 0 |
+| `c8da07b` | P4b keyed subscriptions and shared workbench store, P5 terminal Channel, blind-review fixes | six, exit 0 |
+| boundary 4 | P5b batch-rate wakes removed, P3 spike (closed, no watcher), P6 pruned walk, P7 and P8 audits, P8 lifecycle fixes, blind-review fixes | see commit |
+
+P7 closes as: `verify.rs` audited (`docs/research/verify-and-telemetry-audit-2026-09-11.md`), one duplicate gate on the
+rung-2 winner declined as the last check before a phase commit, PATH probe shared per process with re-probe on a 127,
+two duplicate git reads removed, Codex app-server no longer spawned at build. Out of this plan's scope but recorded
+there: the 80% usage reserve is drawn in the UI and enforced by no dispatch gate.
+
+P8 closes as: `docs/research/lifecycle-bounds-audit-2026-09-11.md`, with the three top gaps fixed (bounded owner-busy
+wait, listeners drained on unload, terminal snapshots removed on close), tombstones and catalogue poll bounded,
+terminal shells and gate children in the pid directory. Force-quit still leaves a `setsid` grandchild behind; that is
+documented as unfixable at this layer.
+
 ## Nonblocking improvements
 
 - **Three whole-snapshot subscribers, not one.** `src/components/Composer.tsx:57` and `SubagentsPanel.tsx:30` use
@@ -268,6 +305,12 @@ the implementing sessions.
    poll that arms only while the workbench is visible and a worktree is dirty or a session is live. The lead decides
    from the spike numbers whether the dependency ever lands. Reason: a dependency with no OS-level exclusion and no
    root-change detection is a new subsystem, not a timer removal.
+   **Closed 2026-09-11 after the spike** (`docs/research/fsevents-spike-2026-09-11.md`, measured on this machine):
+   a watcher idles at 1.2 CPU-s/hour against 4.1 CPU-s/hour/worktree for a 5 s poll, delivers in 11.9 ms p50, but an
+   `npm ci` produces 160 k events at 85 k/s, all filtered post hoc, with `Rescan` in 3 of 9 runs and every `.git`
+   self-write reported; Apple Git's fsmonitor gives no measurable `git status` gain on 1,303 tracked files. Nothing
+   measured forces the dependency. `notify` is not added. Git freshness stays on the bounded poll that arms only while
+   the workbench is visible. The one unmeasured variable is whether the owner can see the freshness gap.
 3. **Commits.** Five, each with all six gates green: P0+P1; P4a+P2; P4b+P5; P3 spike + P6; P7+P8+P9. Never a commit
    with a partial gate set. Reason: CLAUDE.md §4 is not negotiable per checkpoint.
 4. **Hidden terminal.** Out of scope. Current restore-then-fresh-shell behaviour is preserved and tested as is. Reason:

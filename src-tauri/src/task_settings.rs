@@ -368,6 +368,12 @@ pub(crate) async fn update_task_execution_settings(
         }
     }
     if settings.mode == "custom" {
+        // Same reason as `prepare_dispatch` below: the registry `validate_selection` reads is
+        // where Codex's lazily registered driver lands (`crate::state::ensure_codex`), and
+        // switching a task to Codex is one of the ways a launch first names it.
+        if settings.execution.provider == "codex" {
+            crate::state::ensure_codex(state.get()?).await;
+        }
         validate_selection(state.inner(), &settings.execution)?;
     }
     apply_update(&mut task, settings)?;
@@ -400,6 +406,11 @@ pub(crate) async fn prepare_dispatch(
         None if task.mode == "auto" => resolve_auto(state, Some(&task.execution))?,
         None => task.execution.clone(),
     };
+    // Resume and peer dispatch both land here, and either can be the first thing in a launch to
+    // name Codex — whose driver is registered on demand.
+    if selection.provider == "codex" {
+        crate::state::ensure_codex(state.get()?).await;
+    }
     validate_selection(state, &selection)?;
     state
         .get()?

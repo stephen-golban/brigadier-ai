@@ -55,7 +55,12 @@ impl ChannelSink {
 impl FeedSink for ChannelSink {
     fn send(&self, batch: FeedBatch) -> Result<(), SinkError> {
         crate::peers::observe_signals(&batch.signals);
-        crate::peer_sessions::notify();
+        // Not a blanket `peer_sessions::notify()`. A batch is up to 60 a second while a session
+        // streams, and until 2026-09-11 every one of them woke the keep-awake task and the
+        // composer drain loop to re-derive state no batch had moved. `observe_activity` folds
+        // the batch's signals into the activity model and wakes only what the signals concern;
+        // a batch of rows and counters wakes nothing.
+        crate::peer_sessions::observe_activity(&batch.signals);
         // Clone out of the guard before sending: `Channel::send` reaches into the event loop and
         // must not run with this mutex held.
         let channel = self.lock().clone();

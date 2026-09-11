@@ -19,6 +19,18 @@ struct Actor {
     busy: AtomicBool,
     sends: AtomicUsize,
 }
+impl Actor {
+    /// Set the status this fake provider reports, and raise the edge a real one would.
+    ///
+    /// Every real adapter emits a turn or request event at each status change, and the delivery
+    /// loop caches the provider's answer until that edge says it is stale
+    /// (`peers::OwnerActivity`). A flag flipped with no event at all is a state no adapter can
+    /// produce, so the test raises the edge itself rather than relying on a poll.
+    fn set_busy(&self, busy: bool) {
+        self.busy.store(busy, Ordering::SeqCst);
+        crate::peer_sessions::test_activity_edge();
+    }
+}
 struct Driver {
     instance: InstanceId,
     actors: Arc<Mutex<HashMap<String, Arc<Actor>>>>,
@@ -154,8 +166,8 @@ pub(crate) async fn run(state: &AppState, project: &str, root: &Path) {
 
     // Parent busy and a queued child follow-up: neither may be bypassed. Accepted child
     // delivery is still active work, so its receipt becoming delivered is insufficient.
-    owner.busy.store(true, Ordering::SeqCst);
-    worker.busy.store(true, Ordering::SeqCst);
+    owner.set_busy(true);
+    worker.set_busy(true);
     test_message(parent.as_str(), child.as_str(), true);
     let message = receipt("first", 10);
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -177,14 +189,14 @@ pub(crate) async fn run(state: &AppState, project: &str, root: &Path) {
                 0,
                 "active accepted child follow-up still blocks wake"
             );
-            worker.busy.store(false, Ordering::SeqCst);
+            worker.set_busy(false);
             tokio::time::sleep(Duration::from_millis(150)).await;
             assert_eq!(
                 owner.sends.load(Ordering::SeqCst),
                 0,
                 "busy parent still blocks wake"
             );
-            owner.busy.store(false, Ordering::SeqCst);
+            owner.set_busy(false);
         });
     })
     .await
@@ -203,7 +215,7 @@ pub(crate) async fn run(state: &AppState, project: &str, root: &Path) {
     assert_eq!(owner.sends.load(Ordering::SeqCst), 1);
 
     // An active read/wait consumes the final result while delivery waits for the parent.
-    owner.busy.store(true, Ordering::SeqCst);
+    owner.set_busy(true);
     let message = receipt("observed", 20);
     tokio::time::timeout(Duration::from_secs(5), async {
         tokio::join!(deliver_in(state, message.clone()), async {
@@ -214,7 +226,7 @@ pub(crate) async fn run(state: &AppState, project: &str, root: &Path) {
                 "cursor":json!({"revision":20}).to_string()}),
             )
             .unwrap();
-            owner.busy.store(false, Ordering::SeqCst);
+            owner.set_busy(false);
         });
     })
     .await
@@ -225,13 +237,13 @@ pub(crate) async fn run(state: &AppState, project: &str, root: &Path) {
     assert!(consumed.delivered && consumed.error.is_none());
 
     // Stop cancellation while waiting cannot later turn into a continuation.
-    owner.busy.store(true, Ordering::SeqCst);
+    owner.set_busy(true);
     let message = receipt("stopped", 30);
     tokio::time::timeout(Duration::from_secs(5), async {
         tokio::join!(deliver_in(state, message.clone()), async {
             tokio::time::sleep(Duration::from_millis(150)).await;
             cancel_pending(parent.as_str()).unwrap();
-            owner.busy.store(false, Ordering::SeqCst);
+            owner.set_busy(false);
         });
     })
     .await

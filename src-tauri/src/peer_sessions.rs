@@ -1,6 +1,9 @@
 //! Read-only cross-session coordination. Waiting holds no lifecycle or store locks.
 use crate::{error::AppError, navigation, peers, state::Ready};
-use brigadier_core::{event::SessionId, session::NativeControl};
+use brigadier_core::{
+    event::{Envelope, Event, RequestId, SessionId, TurnId},
+    session::NativeControl,
+};
 use brigadier_store::SessionRecord;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -10,15 +13,308 @@ use std::{
     time::Duration,
 };
 
+// ---------------------------------------------------------------------------
+// Edges
+//
+// Three watches, narrowest last. A feed batch bumps none of them by itself: only the signals
+// that move something a consumer reads do, through `observe_activity`. Before 2026-09-11 the
+// sink bumped `changes()` on every batch, so two always-on tasks woke at batch rate — up to
+// 60 times a second while a session streamed — to re-derive state that had not moved.
+//
+//   `subscribe()`          cross-session waiters (`wait`): peer/composer state, or activity.
+//   `subscribe_queue()`    the composer drain loop: everything `composer::drain_one` reads.
+//   `subscribe_activity()` keep-awake: the count of working sessions, and a staleness token.
+// ---------------------------------------------------------------------------
+
+/// What the activity edge carries.
+///
+/// **"Activity" means exactly what the provider adapters report as `status == "Working"`:** a
+/// turn is open on the session and nothing is blocking it. Both adapters compute that status
+/// from two pieces of state, and both emit an event at every mutation of either, so it can be
+/// derived from the event stream instead of asked for over an RPC:
+///
+/// - Claude (`crates/core/src/claude/adapter.rs:1708`) ranks `Rewinding` > `Needs approval` >
+///   `Working` > `Idle`. `open_turn` is set only alongside an emitted [`Event::TurnStarted`]
+///   (`:1042-1047`, `:2029-2037`) and cleared only alongside [`Event::TurnCompleted`] or
+///   [`Event::TurnAborted`] (`:2047-2053`, `:2123`); `open_permissions` is inserted only
+///   alongside [`Event::RequestOpened`] (`:1458`, `:1469`) and removed only alongside
+///   [`Event::RequestResolved`] (`:1584`, `:2110-2118`). `Rewinding` cannot overlap a turn:
+///   every path that sets `rewind_paused` first requires `open_turn.is_none()` (`:1714-1727`,
+///   `:1734`, `:1748`, `:1783`), so dropping it from this model loses no case.
+/// - Codex (`crates/core/src/codex/adapter.rs:469`) ranks `Needs approval` > `Working` >
+///   `Idle`, from the same two pieces.
+///
+/// Native background work is covered. A Claude `Task` subagent has its own status
+/// (`adapter.rs:872` writes `task["status"]`, never the session's), and it runs inside its
+/// parent's turn, so the parent's `open_turn` — and this model — stays working until the last
+/// of them finishes and the turn completes.
+///
+/// Not covered, deliberately: a provider that stops emitting turn events altogether. That
+/// failure empties the feed as well, so it is not silent.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Activity {
+    /// How many sessions are working.
+    pub busy: usize,
+    /// A staleness token for an answer a consumer cached about **one** session.
+    ///
+    /// Bumped by every turn/request/session signal, not only by one that moved [`Self::busy`].
+    /// Owner A completing in the same batch as B starting holds the count at 1, so a consumer
+    /// that keyed its cache off the count alone would never re-ask and would never deliver A's
+    /// completion (`peers::OwnerActivity`). Also bumped by a re-decision no session caused at
+    /// all, such as the keep-awake preference changing; every consumer re-decides idempotently.
+    pub epoch: u64,
+}
+
+/// One session's open turns and the requests parked against them.
+#[derive(Default)]
+struct SessionActivity {
+    turns: HashSet<TurnId>,
+    blocked: HashSet<RequestId>,
+}
+impl SessionActivity {
+    fn busy(&self) -> bool {
+        !self.turns.is_empty() && self.blocked.is_empty()
+    }
+    fn settled(&self) -> bool {
+        self.turns.is_empty() && self.blocked.is_empty()
+    }
+}
+/// Only sessions with something open are held, so the map is empty whenever the app is idle.
+#[derive(Default)]
+struct Sessions(HashMap<String, SessionActivity>);
+impl Sessions {
+    fn entry(&mut self, id: &str) -> &mut SessionActivity {
+        self.0.entry(id.to_owned()).or_default()
+    }
+    /// Apply `f` to an existing record, and forget the record once nothing is open on it.
+    fn close(&mut self, id: &str, f: impl FnOnce(&mut SessionActivity)) {
+        if let Some(entry) = self.0.get_mut(id) {
+            f(entry);
+            if entry.settled() {
+                self.0.remove(id);
+            }
+        }
+    }
+    fn busy(&self) -> usize {
+        self.0.values().filter(|s| s.busy()).count()
+    }
+}
+
+/// Which edges one batch of signals earns. A batch that moves nothing earns none, and then no
+/// task wakes at all.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Edges {
+    /// The number of working sessions changed.
+    activity: bool,
+    /// Some session's turns or blocking requests moved, whether or not the total did. This is
+    /// what invalidates an answer cached about one session; see [`Activity::epoch`].
+    status: bool,
+    /// Something the composer drain loop reads changed.
+    queue: bool,
+}
+
+static SESSIONS: OnceLock<Mutex<Sessions>> = OnceLock::new();
+fn sessions() -> &'static Mutex<Sessions> {
+    SESSIONS.get_or_init(Mutex::default)
+}
 static CHANGES: OnceLock<tokio::sync::watch::Sender<u64>> = OnceLock::new();
 fn changes() -> &'static tokio::sync::watch::Sender<u64> {
     CHANGES.get_or_init(|| tokio::sync::watch::channel(0).0)
 }
+static QUEUE: OnceLock<tokio::sync::watch::Sender<u64>> = OnceLock::new();
+fn queue() -> &'static tokio::sync::watch::Sender<u64> {
+    QUEUE.get_or_init(|| tokio::sync::watch::channel(0).0)
+}
+static ACTIVITY: OnceLock<tokio::sync::watch::Sender<Activity>> = OnceLock::new();
+fn activity_edge() -> &'static tokio::sync::watch::Sender<Activity> {
+    ACTIVITY.get_or_init(|| tokio::sync::watch::channel(Activity::default()).0)
+}
+
+/// Cross-session waiters. Coarse on purpose: [`wait`] re-reads the store and the peer file on
+/// every wake, and keeps its own bounded fallback for persistence lag.
 pub(crate) fn subscribe() -> tokio::sync::watch::Receiver<u64> {
     changes().subscribe()
 }
+/// The composer drain loop: queue contents, peer ownership, session activity and observed
+/// provider allowance are the whole of what `composer::drain_one` reads.
+pub(crate) fn subscribe_queue() -> tokio::sync::watch::Receiver<u64> {
+    queue().subscribe()
+}
+/// Keep-awake, and any consumer caching a per-session answer. The receiver's current value is the
+/// live count, so a task that subscribes late still decides correctly on its first pass.
+pub(crate) fn subscribe_activity() -> tokio::sync::watch::Receiver<Activity> {
+    activity_edge().subscribe()
+}
+
+/// Peer or composer state changed: ownership, a message, an assignment, a queue, a draft.
+/// Never called per feed batch.
 pub(crate) fn notify() {
     changes().send_modify(|v| *v = v.wrapping_add(1));
+    queue().send_modify(|v| *v = v.wrapping_add(1));
+}
+/// The keep-awake preference or shutdown flag changed; its task must re-decide although no
+/// session moved.
+pub(crate) fn notify_keep_awake() {
+    activity_edge().send_modify(|a| a.epoch = a.epoch.wrapping_add(1));
+}
+
+/// Fold one feed batch's signals into the activity model and wake only the tasks it concerns.
+///
+/// Signals are rare — `brigadier_supervisor::batcher::is_signal` admits ten event kinds, none of
+/// them the per-token `ContentDelta` — so this walk costs nothing next to the batch it rides on.
+pub(crate) fn observe_activity(signals: &[Envelope]) {
+    if signals.is_empty() {
+        return;
+    }
+    let edges = {
+        let mut model = sessions().lock().unwrap_or_else(|e| e.into_inner());
+        fold(&mut model, signals, activity_edge())
+    };
+    if edges.queue {
+        notify();
+    }
+}
+
+/// Apply one batch and publish the activity edge it earns, both under the caller's model guard.
+///
+/// Publishing inside the guard is what keeps the watch honest. Two folds racing would otherwise
+/// each compute a count under the lock and then publish outside it, in either order, and leave
+/// the watch showing a count that no fold ever ended on.
+fn fold(
+    model: &mut Sessions,
+    signals: &[Envelope],
+    edge: &tokio::sync::watch::Sender<Activity>,
+) -> Edges {
+    let edges = apply_signals(model, signals);
+    if edges.activity || edges.status {
+        let busy = model.busy();
+        edge.send_modify(|a| {
+            a.busy = busy;
+            if edges.status {
+                a.epoch = a.epoch.wrapping_add(1);
+            }
+        });
+    }
+    edges
+}
+
+fn apply_signals(model: &mut Sessions, signals: &[Envelope]) -> Edges {
+    let before = model.busy();
+    let mut edges = Edges::default();
+    for env in signals {
+        let id = env.session_id.as_str();
+        match &env.event {
+            // A start is a fresh provider execution on the same identity, an exit is the end of
+            // one: either way nothing that was open on the old process is open any more.
+            Event::SessionStarted { .. } | Event::SessionExited { .. } => {
+                model.0.remove(id);
+                edges.status = true;
+            }
+            Event::TurnStarted { turn_id } => {
+                model.entry(id).turns.insert(turn_id.clone());
+                edges.status = true;
+            }
+            Event::TurnCompleted { turn_id, .. } | Event::TurnAborted { turn_id, .. } => {
+                model.close(id, |s| {
+                    s.turns.remove(turn_id);
+                });
+                edges.status = true;
+            }
+            Event::RequestOpened { request_id, .. } => {
+                model.entry(id).blocked.insert(request_id.clone());
+                edges.status = true;
+            }
+            Event::RequestResolved { request_id, .. } => {
+                model.close(id, |s| {
+                    s.blocked.remove(request_id);
+                });
+                edges.status = true;
+            }
+            // An observed usage window is the only thing that releases a queue parked on an
+            // exhausted account before its reported reset.
+            Event::UsageWindows { .. } => edges.queue = true,
+            _ => {}
+        }
+    }
+    // Everything that moves a session also moves what the composer drain loop reads.
+    edges.queue |= edges.status;
+    edges.activity = model.busy() != before;
+    edges
+}
+
+/// The sessions this model believes are working.
+fn busy_sessions() -> Vec<String> {
+    sessions()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .0
+        .iter()
+        .filter(|(_, s)| s.busy())
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
+/// Correct the model for one session against what the provider actually reports.
+///
+/// The model is fed by a lossy transport: `brigadier_supervisor::batcher` drops the **oldest**
+/// signal once a project's buffer is full (`PROJECT_SIGNAL_CAP`), so a dropped `TurnCompleted`
+/// would otherwise leave a session working for the rest of the process's life — and the machine
+/// awake with it. `working == true` is not acted on: a session the model already counts is
+/// already right, and a record dropped here is rebuilt by the next `TurnStarted`.
+pub(crate) fn reconcile(session_id: &str, working: bool) {
+    if working {
+        return;
+    }
+    let mut model = sessions().lock().unwrap_or_else(|e| e.into_inner());
+    let before = model.busy();
+    if model.0.remove(session_id).is_none() {
+        return;
+    }
+    let busy = model.busy();
+    if busy != before {
+        // Inside the guard, for the reason [`fold`] gives.
+        activity_edge().send_modify(|a| a.busy = busy);
+    }
+}
+
+/// Ask the provider about every session the model believes is working, and forget the record of
+/// any that is not.
+///
+/// One `NativeControl::Activity` round trip per believed-busy session — adapter memory, not a
+/// model call or a network call. The caller is [`crate::keep_awake`], which runs this **only**
+/// while it is actually holding a power assertion and at most once per 45 s renewal, so an idle
+/// app pays nothing at all and a working one pays a handful of round trips a minute.
+pub(crate) async fn verify_busy(ready: &Ready) {
+    for id in busy_sessions() {
+        let session = SessionId::new(&id);
+        if !ready.supervisor.is_live(&session) {
+            reconcile(&id, false);
+            continue;
+        }
+        match tokio::time::timeout(
+            Duration::from_secs(1),
+            ready
+                .supervisor
+                .native_control(&session, NativeControl::Activity),
+        )
+        .await
+        {
+            // `"Working"` is the adapters' own word for it; see [`Activity`].
+            Ok(Ok(value)) => reconcile(&id, value["status"] == "Working"),
+            // No answer is not an answer. Leave the record alone and ask again next renewal.
+            _ => continue,
+        }
+    }
+}
+
+/// Test hook: raise the activity edge a provider status change raises.
+///
+/// A fake driver in a test flips its reported status behind the event stream's back, and every
+/// consumer here is entitled to keep its cached answer until an edge says otherwise
+/// ([`Activity::epoch`]). Never called by the app.
+#[cfg(test)]
+pub(crate) fn test_activity_edge() {
+    activity_edge().send_modify(|a| a.epoch = a.epoch.wrapping_add(1));
 }
 
 #[derive(Default)]
@@ -230,7 +526,9 @@ async fn wait(ready: &Ready, caller: &str, v: &Value) -> Result<Value, AppError>
             .collect::<Vec<_>>(),
     )?;
     let _waiting = Waiting(caller.into());
-    let mut changes = changes().subscribe();
+    // The only consumer of the general edge, and the only loop that still re-reads rather than
+    // being told what changed. It keeps its own bounded fallback below for persistence lag.
+    let mut changes = subscribe();
     let inbox = peers::snapshot()?
         .messages
         .into_iter()
@@ -449,6 +747,172 @@ pub(crate) async fn dispatch(ready: &Ready, caller: &str, v: &Value) -> Result<V
 #[cfg(test)]
 mod tests {
     use super::*;
+    use brigadier_core::event::{AbortReason, InstanceId, StopReason, Usage};
+
+    fn env(session: &str, event: Event) -> Envelope {
+        Envelope::new(1, InstanceId::new("i"), SessionId::new(session), event)
+    }
+    fn started(turn: &str) -> Event {
+        Event::TurnStarted {
+            turn_id: TurnId::new(turn),
+        }
+    }
+    fn completed(turn: &str) -> Event {
+        Event::TurnCompleted {
+            turn_id: TurnId::new(turn),
+            stop_reason: StopReason::EndTurn,
+            usage: Usage::default(),
+            cost_usd_cumulative: 0.0,
+        }
+    }
+    fn opened(request: &str) -> Event {
+        Event::RequestOpened {
+            request_id: RequestId::new(request),
+            kind: brigadier_core::event::RequestKind::UserInput {
+                prompt: "?".into(),
+                options: vec![],
+            },
+            turn_id: None,
+        }
+    }
+    fn resolved(request: &str) -> Event {
+        Event::RequestResolved {
+            request_id: RequestId::new(request),
+            decision: brigadier_core::session::Decision::deny("no"),
+        }
+    }
+
+    /// The edge a feed batch earns is the whole of what wakes keep-awake and the composer, so
+    /// this is the boundary the batch-rate wake was removed at.
+    #[test]
+    fn only_signals_that_move_a_session_earn_an_edge() {
+        let mut model = Sessions::default();
+        // Rows, counters and content deltas carry no signal at all; these do carry one and
+        // still move nothing either consumer reads.
+        for quiet in [
+            Event::RuntimeWarning {
+                message: "slow".into(),
+            },
+            Event::SessionCompacting,
+        ] {
+            assert_eq!(
+                apply_signals(&mut model, &[env("s", quiet)]),
+                Edges::default(),
+                "a signal that moves nothing must wake nothing"
+            );
+        }
+        assert_eq!(model.busy(), 0);
+
+        // A turn opens: both edges, because keep-awake must assert and the composer must stop
+        // trying to send into a busy session.
+        assert_eq!(
+            apply_signals(&mut model, &[env("s", started("t1"))]),
+            Edges {
+                activity: true,
+                status: true,
+                queue: true
+            }
+        );
+        assert_eq!(model.busy(), 1);
+        // A second turn on a second session is an activity edge (the count moved) ...
+        assert!(apply_signals(&mut model, &[env("other", started("t2"))]).activity);
+        assert_eq!(model.busy(), 2);
+        // ... and a usage window is a queue edge only: it can release a parked queue, but no
+        // session started or stopped working.
+        assert_eq!(
+            apply_signals(
+                &mut model,
+                &[env(
+                    "s",
+                    Event::UsageWindows {
+                        status: "allowed".into(),
+                        windows: vec![]
+                    }
+                )]
+            ),
+            Edges {
+                activity: false,
+                status: false,
+                queue: true
+            }
+        );
+
+        // An approval parks the turn: the adapter reports "Needs approval", not "Working", so
+        // the lease is released exactly as it was before this was derived from events.
+        assert!(apply_signals(&mut model, &[env("s", opened("r1"))]).activity);
+        assert_eq!(model.busy(), 1);
+        assert!(apply_signals(&mut model, &[env("s", resolved("r1"))]).activity);
+        assert_eq!(model.busy(), 2);
+
+        // One batch can hold both halves of a transition and then net to nothing.
+        assert_eq!(
+            apply_signals(
+                &mut model,
+                &[env("s", opened("r2")), env("s", resolved("r2"))]
+            ),
+            Edges {
+                activity: false,
+                status: true,
+                queue: true
+            }
+        );
+        assert_eq!(model.busy(), 2);
+
+        assert!(apply_signals(&mut model, &[env("s", completed("t1"))]).activity);
+        assert_eq!(model.busy(), 1);
+        // An aborted turn and an exited session both settle; nothing is retained for either.
+        assert!(apply_signals(
+            &mut model,
+            &[env(
+                "other",
+                Event::TurnAborted {
+                    turn_id: TurnId::new("t2"),
+                    reason: AbortReason::Killed
+                }
+            )]
+        )
+        .activity);
+        assert_eq!(model.busy(), 0);
+        assert!(model.0.is_empty(), "an idle app retains no activity records");
+    }
+
+    #[test]
+    fn a_session_that_dies_mid_turn_is_forgotten_and_a_restart_starts_clean() {
+        let mut model = Sessions::default();
+        apply_signals(&mut model, &[env("s", started("t1"))]);
+        assert_eq!(model.busy(), 1);
+        // No TurnCompleted: the adapter synthesises one on exit, but a lost stream must not
+        // leave a phantom working session holding the machine awake either.
+        assert!(apply_signals(
+            &mut model,
+            &[env(
+                "s",
+                Event::SessionExited {
+                    reason: brigadier_core::event::ExitReason::Crashed,
+                    exit_code: Some(1)
+                }
+            )]
+        )
+        .activity);
+        assert_eq!(model.busy(), 0);
+        assert!(model.0.is_empty());
+
+        apply_signals(&mut model, &[env("s", started("t1"))]);
+        apply_signals(
+            &mut model,
+            &[env(
+                "s",
+                Event::SessionStarted {
+                    provider_session_id: "p".into(),
+                    model: "m".into(),
+                    cwd: std::path::PathBuf::from("/tmp"),
+                    capabilities: vec![],
+                    resume_token: None,
+                },
+            )],
+        );
+        assert_eq!(model.busy(), 0, "a fresh execution inherits no open turn");
+    }
 
     #[test]
     fn retired_process_failure_is_not_a_failed_assignment(){
@@ -686,6 +1150,86 @@ mod tests {
         previous.status = "Idle".into();
         assert!(!ready_for_wait(Some(&previous), 16, "Idle"));
         assert!(ready_for_wait(Some(&previous), 16, "Rewinding"));
+    }
+
+    /// The bug this is the regression test for: a consumer's cached "this owner is still
+    /// working" answer is invalidated by the edge, and the edge used to fire only when the
+    /// **total** moved. A completing in the same batch as B starting holds the total at 1, so
+    /// `peers::OwnerActivity` never re-asked and the completion was never delivered.
+    #[test]
+    fn a_completion_and_a_start_in_one_batch_still_invalidate_a_cached_answer() {
+        let (tx, mut rx) = tokio::sync::watch::channel(Activity::default());
+        let mut model = Sessions::default();
+        assert!(fold(&mut model, &[env("a", started("t1"))], &tx).activity);
+        rx.borrow_and_update();
+        assert_eq!(tx.borrow().busy, 1);
+
+        let edges = fold(
+            &mut model,
+            &[env("a", completed("t1")), env("b", started("t2"))],
+            &tx,
+        );
+        assert!(
+            !edges.activity,
+            "one session was working before and one after: the count did not move"
+        );
+        assert!(edges.status, "but two sessions moved, so a cached answer is stale");
+        assert_eq!(tx.borrow().busy, 1);
+        assert!(
+            rx.has_changed().unwrap(),
+            "the waiter must be told to ask again"
+        );
+
+        // A batch that moves no session at all still wakes nobody.
+        rx.borrow_and_update();
+        fold(&mut model, &[env("a", Event::SessionCompacting)], &tx);
+        assert!(!rx.has_changed().unwrap());
+    }
+
+    /// Publishing outside the model guard lets two folds publish out of order and strand the
+    /// watch on a count neither of them ended on. The invariant is global, so other tests
+    /// folding concurrently cannot make this one lie.
+    #[test]
+    fn concurrent_folds_leave_the_watch_agreeing_with_the_model() {
+        std::thread::scope(|scope| {
+            for thread in 0..8 {
+                scope.spawn(move || {
+                    for i in 0..200 {
+                        let id = format!("race-{thread}-{i}");
+                        observe_activity(&[env(&id, started("t"))]);
+                        observe_activity(&[env(&id, completed("t"))]);
+                    }
+                });
+            }
+        });
+        let model = sessions().lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(
+            activity_edge().borrow().busy,
+            model.busy(),
+            "the published count is the count the last fold ended on"
+        );
+        assert!(!model.0.keys().any(|id| id.starts_with("race-")));
+    }
+
+    /// A `TurnCompleted` the transport dropped leaves the model working for ever. The provider
+    /// is the authority, and the record it does not back is forgotten.
+    #[test]
+    fn a_record_the_provider_does_not_back_is_dropped_and_republished() {
+        let id = format!("stuck-{}", uuid::Uuid::new_v4());
+        observe_activity(&[env(&id, started("t"))]);
+        assert!(busy_sessions().contains(&id));
+
+        reconcile(&id, true);
+        assert!(
+            busy_sessions().contains(&id),
+            "a session the provider confirms is working keeps its record"
+        );
+
+        reconcile(&id, false);
+        assert!(!busy_sessions().contains(&id));
+        let model = sessions().lock().unwrap_or_else(|e| e.into_inner());
+        assert!(!model.0.contains_key(&id));
+        assert_eq!(activity_edge().borrow().busy, model.busy());
     }
 
     #[test]

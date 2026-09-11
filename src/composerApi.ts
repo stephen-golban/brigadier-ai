@@ -1,6 +1,6 @@
 /** Durable composer contract. The desktop service owns ordering, acknowledgement and recovery. */
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listen } from "./listeners";
 import { desktop } from "./workspaceApi";
 import type { ExecutionSelection } from "./taskSettings";
 export interface ComposerDraft { text: string; attachmentIds: string[] }
