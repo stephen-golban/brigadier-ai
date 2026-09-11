@@ -1404,6 +1404,104 @@ async fn manage(app: &tauri::AppHandle, target: &str, action: &str) -> Result<()
     }
     Ok(())
 }
+/// How long a delivery parked on a busy owner sleeps with no activity edge to wake it.
+///
+/// A bound, not a cadence: nothing is asked of the provider when it expires, so this is the cost
+/// of re-reading local state, not of a control-protocol round trip.
+const OWNER_BUSY_FALLBACK: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// How long a cached *the owner is working* answer is trusted with no edge to refresh it.
+///
+/// The activity edge is the primary invalidation and in an ordinary turn it is enough: every
+/// adapter emits a turn or request event at each status change. But the feed those events ride
+/// on is lossy — `brigadier_supervisor::batcher` drops a project's **oldest** buffered signal
+/// once the buffer is full — and a dropped `TurnCompleted` raises no edge at all. With the edge
+/// as the only invalidation, that cached `true` is final: the completion is never handed over,
+/// for the life of the process.
+///
+/// So the answer has a ceiling as well as an edge. A genuinely busy owner costs 120 round trips
+/// an hour, against the 36,000 the 100 ms loop this replaced cost, and each one is adapter
+/// memory rather than a model call. A stuck one is stranded for 30 s instead of for ever —
+/// without depending on the keep-awake preference, which is off by default and whose renewal
+/// reconciliation (`crate::peer_sessions::verify_busy`) is therefore not a bound this can rely
+/// on.
+const OWNER_ANSWER_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The owner-busy wait in [`deliver_in`].
+///
+/// A completion cannot be handed to an owner that is mid-turn. Until 2026-09-11 that meant one
+/// `native_control(Activity)` round trip to the provider CLI every 100 ms for as long as the
+/// owner worked — ten a second, for the whole of that turn, and the loop's only deadline sat
+/// *below* the three `continue`s so none of them could ever expire
+/// (`docs/research/lifecycle-bounds-audit-2026-09-11.md` §4 gap 7).
+///
+/// The owner's status moves only when a turn, an approval or a session starts or ends, and every
+/// one of those bumps [`crate::peer_sessions::subscribe_activity`]. So the provider is asked once
+/// and the answer is reused until that edge says it is stale — or until it is
+/// [`OWNER_ANSWER_MAX_AGE`] old, because the edge can be lost.
+struct OwnerActivity {
+    edges: tokio::sync::watch::Receiver<crate::peer_sessions::Activity>,
+    /// The last observed answer, or `false` for *nothing observed since the last edge*.
+    busy: bool,
+    /// When that answer was taken, against [`OWNER_ANSWER_MAX_AGE`]. `tokio::time::Instant`, so
+    /// a test's paused clock is the clock this ages on.
+    asked: tokio::time::Instant,
+}
+impl OwnerActivity {
+    fn new() -> Self {
+        Self::on(crate::peer_sessions::subscribe_activity())
+    }
+    fn on(edges: tokio::sync::watch::Receiver<crate::peer_sessions::Activity>) -> Self {
+        Self {
+            edges,
+            busy: false,
+            asked: tokio::time::Instant::now(),
+        }
+    }
+    /// Consume an edge that landed while the pass was doing something else.
+    fn observe(&mut self) {
+        if self.edges.has_changed().unwrap_or(true) {
+            self.edges.borrow_and_update();
+            self.busy = false;
+        }
+    }
+    /// Whether the owner is working. `ask` — the provider round trip — runs only when the last
+    /// answer is stale: an edge said so, or it has aged past [`OWNER_ANSWER_MAX_AGE`].
+    async fn busy<F>(&mut self, ask: F) -> Result<bool, AppError>
+    where
+        F: std::future::Future<Output = Result<bool, AppError>>,
+    {
+        if self.busy && self.asked.elapsed() < OWNER_ANSWER_MAX_AGE {
+            return Ok(true);
+        }
+        self.busy = ask.await?;
+        self.asked = tokio::time::Instant::now();
+        Ok(self.busy)
+    }
+    /// Park until the activity edge moves or `fallback` elapses, whichever comes first.
+    async fn wait(&mut self, fallback: std::time::Duration) {
+        if tokio::time::timeout(fallback, self.edges.changed())
+            .await
+            .is_ok()
+        {
+            self.busy = false;
+        }
+    }
+}
+
+/// The other park in [`deliver_in`]: the owner still has queued or undelivered work of its own.
+///
+/// That is not an activity question. A composer queue and an undelivered work message are
+/// published on the **general** edge (`peer_sessions::notify`), which the activity watch never
+/// carries, so parking on the activity watch turned this branch into a poll at
+/// [`OWNER_BUSY_FALLBACK`] — 1 s, where the loop it replaced polled at 100 ms.
+async fn wait_for_pending(
+    edge: &mut tokio::sync::watch::Receiver<u64>,
+    fallback: std::time::Duration,
+) {
+    let _ = tokio::time::timeout(fallback, edge.changed()).await;
+}
+
 async fn deliver(app: tauri::AppHandle, message: Message) {
     let state = app.state::<AppState>();
     deliver_in(state.inner(), message).await;
@@ -1436,7 +1534,15 @@ async fn deliver_in(state: &AppState, message: Message) {
         let text = peer_text(&referenced);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(24 * 3600);
         let mut can_resume = message.resume;
+        let mut owner = OwnerActivity::new();
+        let mut pending_edge = crate::peer_sessions::subscribe();
         loop {
+            // At the top, so **every** path below is bounded by it. Three `continue`s used to sit
+            // above the old check and could wait for ever.
+            if std::time::Instant::now() > deadline {
+                return Err(AppError::io("Peer message expired before delivery"));
+            }
+            owner.observe();
             {
                 let _guard = LIFECYCLE.lock().await;
                 snapshot()?.authorize_delivery(&message.from, &message.to)?;
@@ -1506,19 +1612,24 @@ async fn deliver_in(state: &AppState, message: Message) {
                         }))
                 {
                     drop(_guard);
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    wait_for_pending(&mut pending_edge, OWNER_BUSY_FALLBACK).await;
                     continue;
                 }
                 if message.completion_seq.is_some() && sup.is_live(&SessionId::new(&message.from)) {
-                    let child = sup
-                        .native_control(
-                            &SessionId::new(&message.from),
-                            brigadier_core::session::NativeControl::Activity,
-                        )
+                    let busy = owner
+                        .busy(async {
+                            let child = sup
+                                .native_control(
+                                    &SessionId::new(&message.from),
+                                    brigadier_core::session::NativeControl::Activity,
+                                )
+                                .await?;
+                            Ok::<bool, AppError>(child["status"] != "Idle")
+                        })
                         .await?;
-                    if child["status"] != "Idle" {
+                    if busy {
                         drop(_guard);
-                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        owner.wait(OWNER_BUSY_FALLBACK).await;
                         continue;
                     }
                 }
@@ -1587,9 +1698,6 @@ async fn deliver_in(state: &AppState, message: Message) {
                         Err(e) => return Err(AppError::from(e)),
                     }
                 }
-            }
-            if std::time::Instant::now() > deadline {
-                return Err(AppError::io("Peer message expired before delivery"));
             }
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
@@ -1917,6 +2025,129 @@ pub fn cli() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Gap 7's acceptance test, on its own watch so no other test's edge can answer for it.
+    ///
+    /// An owner that works for an hour must cost one `native_control(Activity)` round trip per
+    /// [`OWNER_ANSWER_MAX_AGE`] — 120 — and not one per 100 ms, which was 36,000. The wait must
+    /// still end promptly when the activity edge moves, and the edge must still be what makes
+    /// the answer stale early.
+    #[tokio::test(start_paused = true)]
+    async fn a_busy_owner_is_asked_once_per_ceiling_and_at_once_on_an_activity_edge() {
+        let (edge, rx) = tokio::sync::watch::channel(crate::peer_sessions::Activity::default());
+        let mut owner = OwnerActivity::on(rx);
+        let asks = std::sync::atomic::AtomicUsize::new(0);
+        let ask = || async {
+            asks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok::<bool, AppError>(true)
+        };
+        let asked = || asks.load(std::sync::atomic::Ordering::Relaxed);
+
+        let started = tokio::time::Instant::now();
+        while started.elapsed() < std::time::Duration::from_secs(3600) {
+            owner.observe();
+            assert!(owner.busy(ask()).await.unwrap(), "the owner is still working");
+            owner.wait(OWNER_BUSY_FALLBACK).await;
+        }
+        assert_eq!(
+            asked(),
+            3600 / OWNER_ANSWER_MAX_AGE.as_secs() as usize,
+            "an hour of a busy owner is one round trip per ceiling, not 36,000"
+        );
+        assert!(
+            started.elapsed() >= std::time::Duration::from_secs(3600),
+            "the fallback is what advanced the clock"
+        );
+
+        // Take a fresh answer, so the next round trip can only be the edge's doing.
+        owner.observe();
+        assert!(owner.busy(ask()).await.unwrap());
+        let refreshed = asked();
+
+        // The edge makes the answer stale at once, well inside the ceiling.
+        edge.send_modify(|a| a.busy = 1);
+        let woke = tokio::time::Instant::now();
+        owner.wait(OWNER_BUSY_FALLBACK).await;
+        assert_eq!(woke.elapsed(), std::time::Duration::ZERO, "an edge wakes it at once");
+        assert!(owner.busy(ask()).await.unwrap());
+        assert_eq!(asked(), refreshed + 1, "one edge, one re-ask");
+    }
+
+    /// The edge can be lost: `brigadier_supervisor::batcher` drops a project's oldest buffered
+    /// signal when the buffer fills, and a dropped `TurnCompleted` raises no edge at all. The
+    /// ceiling is what keeps that from stranding the completion for the life of the process —
+    /// and it does not depend on the keep-awake preference, which is off by default.
+    #[tokio::test(start_paused = true)]
+    async fn an_owner_whose_completion_raised_no_edge_is_re_asked_at_the_ceiling() {
+        // Never bumped: this is the dropped-signal case, not the ordinary one.
+        let (_edge, rx) = tokio::sync::watch::channel(crate::peer_sessions::Activity::default());
+        let mut owner = OwnerActivity::on(rx);
+        let working = std::sync::atomic::AtomicBool::new(true);
+        let asks = std::sync::atomic::AtomicUsize::new(0);
+        let ask = || async {
+            asks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok::<bool, AppError>(working.load(std::sync::atomic::Ordering::Relaxed))
+        };
+
+        let started = tokio::time::Instant::now();
+        // The shape of `deliver_in`'s owner-busy branch: park while busy, deliver when not.
+        while owner.busy(ask()).await.unwrap() {
+            // The owner finishes one second in, and the event that would say so is lost.
+            working.store(false, std::sync::atomic::Ordering::Relaxed);
+            owner.wait(OWNER_BUSY_FALLBACK).await;
+            assert!(
+                started.elapsed() <= OWNER_ANSWER_MAX_AGE,
+                "the delivery must not wait past the ceiling"
+            );
+        }
+        assert_eq!(
+            started.elapsed(),
+            OWNER_ANSWER_MAX_AGE,
+            "stranded for the ceiling, and then delivered"
+        );
+        assert_eq!(
+            asks.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "the first answer, and the one the ceiling forced"
+        );
+    }
+
+    /// The composer-pending park: a queue or an inbox change wakes it at once, and nothing at
+    /// all still bounds it at [`OWNER_BUSY_FALLBACK`].
+    #[tokio::test(start_paused = true)]
+    async fn a_pending_park_wakes_on_the_general_edge_and_is_bounded_without_one() {
+        let (edge, mut rx) = tokio::sync::watch::channel(0u64);
+
+        let quiet = tokio::time::Instant::now();
+        wait_for_pending(&mut rx, OWNER_BUSY_FALLBACK).await;
+        assert_eq!(
+            quiet.elapsed(),
+            OWNER_BUSY_FALLBACK,
+            "with nothing to report the park is still bounded"
+        );
+
+        edge.send_modify(|v| *v += 1);
+        let woken = tokio::time::Instant::now();
+        wait_for_pending(&mut rx, OWNER_BUSY_FALLBACK).await;
+        assert_eq!(
+            woken.elapsed(),
+            std::time::Duration::ZERO,
+            "a composer or inbox change wakes the delivery immediately"
+        );
+    }
+
+    /// And the edge it parks on is the one those changes are published to.
+    #[test]
+    fn the_pending_park_subscribes_to_the_general_edge() {
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src")
+                .join("peers.rs"),
+        )
+        .unwrap();
+        assert!(src.contains("let mut pending_edge = crate::peer_sessions::subscribe();"));
+        assert!(src.contains("wait_for_pending(&mut pending_edge, OWNER_BUSY_FALLBACK).await;"));
+    }
 
     #[test]
     fn unowned_feed_signals_do_not_mutate_or_rewrite_peer_state() {

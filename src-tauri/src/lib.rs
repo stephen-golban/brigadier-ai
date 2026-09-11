@@ -332,6 +332,13 @@ pub fn run() {
                 match handle.state::<AppState>().get() {
                     Ok(ready) => {
                         tracing::info!(?ready, "brigadier started");
+                        // Terminal shells are spawned from a blocking thread with no `AppState`
+                        // in reach and need the same pid record a session's child gets. Installed
+                        // here rather than inside `state::build` so that only a real launch
+                        // publishes one.
+                        if let Some(tracker) = ready.tracker.clone() {
+                            tracker::install(tracker);
+                        }
                         let keep_awake_enabled = workbench_data::keep_awake_enabled(&ready.data_dir)
                             .unwrap_or_else(|error| {
                                 tracing::warn!(%error, "Could not load keep-awake preference");

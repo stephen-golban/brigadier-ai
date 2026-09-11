@@ -205,3 +205,23 @@ it("can unsplit the original pane and resize split panes without losing the grou
   expect(latest.activeTerminal).toBe(original.id);
   expect(screen.getAllByRole("textbox")).toHaveLength(1);
 });
+/*
+ * Gap 3, `docs/research/lifecycle-bounds-audit-2026-09-11.md` §1.6. A tab id is a
+ * `crypto.randomUUID()` minted per terminal and never reused, so a snapshot the close leaves
+ * behind — tens of KiB of serialized scrollback — is orphaned for the origin's life.
+ */
+it("removes a closed terminal's scrollback snapshot", async () => {
+  render(<Harness />);
+  await act(async () => {});
+  toggle();
+  await screen.findByRole("textbox");
+  const tab = latest.tabs[0];
+  const key = `brigadier:terminal:${tab.id}`;
+  localStorage.setItem(key, JSON.stringify({ output: "x", at: Date.now() }));
+  await userEvent.click(screen.getByRole("button", { name: "Kill terminal" }));
+  await waitFor(() =>
+    expect(workspaceApi.closeTerminal).toHaveBeenCalledWith(tab.id),
+  );
+  expect(localStorage.getItem(key)).toBeNull();
+  expect(latest.tabs).toHaveLength(0);
+});

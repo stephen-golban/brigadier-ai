@@ -231,6 +231,14 @@ pub(crate) async fn start_session(
             effort: options.and_then(|o| o.effort).filter(|e| e != "auto"),
         }
     };
+    // Before every check that needs the driver, not after them. Codex's driver is registered
+    // lazily — its probe spawns an app-server child, so a launch that never uses it never pays
+    // for one (`crate::state::ensure_codex`) — and both `validate_selection` and
+    // `require_provider` below read the registry, so a first Codex session used to be rejected
+    // as "provider unavailable" by checks that ran before the thing they check for existed.
+    if selection.provider == "codex" {
+        crate::state::ensure_codex(state.get()?).await;
+    }
     crate::task_settings::validate_selection(state.inner(), &selection)?;
     let provider = selection.provider;
     let model = selection.model;

@@ -29,13 +29,18 @@
 // see docs/research/orchestration-loop.md §6 for the design and its measured exit-code table, and
 // docs/research/gate-environment.md §4 for the PATH rules this file implements.
 
+use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use brigadier_core::event::SessionId;
 use serde::Serialize;
 use tokio::process::Command;
+
+use crate::tracker::ProcessTracker;
 
 /// How long [`GateEnv::resolve`] waits for `$SHELL -l -i -c` before giving up on it.
 ///
@@ -145,12 +150,30 @@ impl GateReason {
 /// Resolving is not free — [`PATH_PROBE_TIMEOUT`] is ten seconds in the worst case — so this is
 /// built once per launch and shared. Both facts it holds are about the machine, not about the
 /// phase, so nothing here changes between gate runs.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct GateEnv {
     shell: PathBuf,
     path: OsString,
     path_source: PathSource,
     pipefail: bool,
+    /// The app's pid tracker, when there is one. A gate child is in its own process group and
+    /// outlives a force-quit exactly as a session's child does, so it gets the same record and
+    /// the same next-start sweep (`docs/research/lifecycle-bounds-audit-2026-09-11.md` §3 gap 2).
+    tracker: Option<Arc<dyn ProcessTracker>>,
+}
+
+/// Hand-written because [`ProcessTracker`] is not `Debug`: whether one is attached is the only
+/// thing about it this type can usefully print.
+impl std::fmt::Debug for GateEnv {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GateEnv")
+            .field("shell", &self.shell)
+            .field("path", &self.path)
+            .field("path_source", &self.path_source)
+            .field("pipefail", &self.pipefail)
+            .field("tracked", &self.tracker.is_some())
+            .finish()
+    }
 }
 
 impl GateEnv {
@@ -188,8 +211,18 @@ impl GateEnv {
     /// Call once per launch and keep the result. `shell` is `/bin/sh` in production; the
     /// parameter exists so a test can point it at a stub that rejects `-o pipefail`.
     pub async fn resolve(shell: impl Into<PathBuf>) -> Self {
-        let (path, path_source) = resolve_path().await;
+        let (path, path_source) = resolved_path().await;
         Self::with_path(shell, path, path_source).await
+    }
+
+    /// Record every gate child under `tracker`, so a force-quit mid-`cargo test` is recoverable.
+    ///
+    /// Without one the gate still runs and its own timeout still kills its group; what is lost is
+    /// the pid record the next launch's sweep reads.
+    #[must_use]
+    pub fn with_tracker(mut self, tracker: Arc<dyn ProcessTracker>) -> Self {
+        self.tracker = Some(tracker);
+        self
     }
 
     /// [`Self::resolve`] with the `PATH` supplied rather than discovered.
@@ -208,6 +241,7 @@ impl GateEnv {
             path,
             path_source,
             pipefail,
+            tracker: None,
         }
     }
 }
@@ -277,6 +311,179 @@ impl GateResult {
     }
 }
 
+/// How long a gate waits for another gate on the same worktree to release its workspace lease.
+///
+/// The case this exists for is a **cancelled** gate: dropping [`run`]'s future leaves the real
+/// work in a detached task that is still killing its process group, and that task holds the
+/// lease until it returns. A stop followed at once by a restart would otherwise fail on a lease
+/// that is milliseconds from being released
+/// (`docs/research/verify-and-telemetry-audit-2026-09-11.md` §2 G1). Comfortably longer than
+/// `SIGTERM` + [`KILL_GRACE`] + `SIGKILL` + reap; a gate that is genuinely still running is
+/// still refused, one bound later.
+pub const LEASE_HANDOVER_BOUND: Duration = Duration::from_secs(5);
+
+/// Gate runs that have not yet released their workspace lease: `cwd` → run id → *was this run
+/// cancelled*. Plus the edge that fires whenever one of them lets go of a tree.
+type InFlightGates = (
+    Mutex<HashMap<PathBuf, HashMap<u64, bool>>>,
+    tokio::sync::watch::Sender<u64>,
+);
+static IN_FLIGHT: OnceLock<InFlightGates> = OnceLock::new();
+static NEXT_RUN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+fn in_flight() -> &'static InFlightGates {
+    IN_FLIGHT.get_or_init(|| (Mutex::new(HashMap::new()), tokio::sync::watch::channel(0).0))
+}
+#[cfg(test)]
+fn in_flight_count(cwd: &Path) -> usize {
+    in_flight()
+        .0
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(cwd)
+        .map_or(0, HashMap::len)
+}
+/// Whether a **cancelled** run still holds this tree. Nothing else earns a wait: a gate that is
+/// genuinely running is refused at once, exactly as before.
+fn releasing(cwd: &Path) -> bool {
+    in_flight()
+        .0
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(cwd)
+        .is_some_and(|runs| runs.values().any(|cancelled| *cancelled))
+}
+
+/// Counts one gate run as holding `cwd` for as long as it lives. Created by [`run`] **before**
+/// the task is spawned, so a cancellation can always find the entry, and dropped by that task
+/// after its lease — the edge it fires means the lease is already released.
+struct InFlight {
+    cwd: PathBuf,
+    id: u64,
+}
+impl InFlight {
+    fn enter(cwd: &Path) -> Self {
+        let id = NEXT_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        in_flight()
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(cwd.to_path_buf())
+            .or_default()
+            .insert(id, false);
+        Self {
+            cwd: cwd.to_path_buf(),
+            id,
+        }
+    }
+}
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        {
+            let mut live = in_flight().0.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(runs) = live.get_mut(&self.cwd) {
+                runs.remove(&self.id);
+                if runs.is_empty() {
+                    live.remove(&self.cwd);
+                }
+            }
+        }
+        in_flight().1.send_modify(|v| *v = v.wrapping_add(1));
+    }
+}
+
+/// Marks a run cancelled the instant [`run`]'s future is dropped — synchronously, in the
+/// canceller's own context, so a restart issued on the next line cannot miss it.
+///
+/// This is the observable half of G1: the detached task is still killing its process group and
+/// still holds the lease, and this is what says so.
+struct CancelMark {
+    cwd: PathBuf,
+    id: u64,
+    armed: bool,
+}
+impl CancelMark {
+    fn arm(in_flight: &InFlight) -> Self {
+        Self {
+            cwd: in_flight.cwd.clone(),
+            id: in_flight.id,
+            armed: true,
+        }
+    }
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+impl Drop for CancelMark {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        if let Some(cancelled) = in_flight()
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_mut(&self.cwd)
+            .and_then(|runs| runs.get_mut(&self.id))
+        {
+            *cancelled = true;
+        }
+    }
+}
+
+/// Take the workspace lease, waiting up to `bound` only for a **cancelled** gate on the same tree
+/// to finish its kill and let go.
+///
+/// Exclusion is unchanged: a live gate's refusal is returned immediately, and a cancelled one
+/// that will not let go is refused once `bound` has passed.
+async fn acquire_workspace(
+    cwd: &Path,
+    bound: Duration,
+) -> std::io::Result<brigadier_core::checkpoint::WorkspaceLease> {
+    let deadline = Instant::now() + bound;
+    let mut edges = in_flight().1.subscribe();
+    loop {
+        let refusal = match brigadier_core::checkpoint::WorkspaceLease::acquire(cwd) {
+            Ok(lease) => return Ok(lease),
+            Err(e) => e,
+        };
+        let left = deadline.saturating_duration_since(Instant::now());
+        if !releasing(cwd) || left.is_zero() {
+            return Err(std::io::Error::other(refusal));
+        }
+        if tokio::time::timeout(left, edges.changed()).await.is_err() {
+            return Err(std::io::Error::other(refusal));
+        }
+    }
+}
+
+/// Names one gate child in the pid registry. Unique per launch, and no session id can collide
+/// with it.
+static NEXT_GATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// One tracked gate child, untracked whatever ends the run — pass, fail, timeout or cancel.
+struct TrackedGate {
+    tracker: Arc<dyn ProcessTracker>,
+    id: SessionId,
+}
+impl TrackedGate {
+    fn track(tracker: &Arc<dyn ProcessTracker>, pid: u32, binary: &Path, cwd: &Path) -> Self {
+        let id = SessionId::new(format!(
+            "gate-{}",
+            NEXT_GATE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        tracker.track(&id, pid, binary, cwd);
+        Self {
+            tracker: Arc::clone(tracker),
+            id,
+        }
+    }
+}
+impl Drop for TrackedGate {
+    fn drop(&mut self) {
+        self.tracker.untrack(&self.id);
+    }
+}
+
 /// Run one verify command and return its real exit code.
 ///
 /// # Errors
@@ -288,8 +495,16 @@ pub async fn run(env: &GateEnv, req: &GateRequest) -> std::io::Result<GateResult
     let env = env.clone();
     let req = req.clone();
     let (cancel, receiver) = tokio::sync::oneshot::channel::<()>();
-    let task = tokio::spawn(async move { run_owned(&env, &req, receiver).await });
+    // Registered here rather than inside the task, so the mark below always has an entry to set
+    // even if this future is dropped before the task is first polled.
+    let in_flight = InFlight::enter(&req.cwd);
+    let cancelled = CancelMark::arm(&in_flight);
+    let task = tokio::spawn(async move {
+        let _in_flight = in_flight;
+        run_owned(&env, &req, receiver).await
+    });
     let result = task.await.map_err(std::io::Error::other)?;
+    cancelled.disarm();
     drop(cancel);
     result
 }
@@ -298,8 +513,10 @@ async fn run_owned(
     req: &GateRequest,
     mut cancel: tokio::sync::oneshot::Receiver<()>,
 ) -> std::io::Result<GateResult> {
-    let _lease = brigadier_core::checkpoint::WorkspaceLease::acquire(&req.cwd)
-        .map_err(std::io::Error::other)?;
+    // The registry entry is the caller's (`run`), and is dropped only once this task returns —
+    // which is what lets the *next* gate on this tree wait for a cancelled run's lease instead
+    // of failing on it.
+    let _lease = acquire_workspace(&req.cwd, LEASE_HANDOVER_BOUND).await?;
     if let Some(parent) = req.log_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -351,6 +568,12 @@ async fn run_owned(
     let started = Instant::now();
     let mut child = cmd.spawn()?;
     let pid = child.id();
+    // The record the next launch's sweep reads. Dropped on every exit path below, so a gate that
+    // ended normally leaves nothing behind for the sweep to judge.
+    let _tracked = match (&env.tracker, pid) {
+        (Some(tracker), Some(pid)) => Some(TrackedGate::track(tracker, pid, &env.shell, &req.cwd)),
+        _ => None,
+    };
 
     let waited = tokio::select! {
         waited=tokio::time::timeout(req.timeout,child.wait())=>waited,
@@ -391,6 +614,12 @@ async fn run_owned(
         // No code means a signal, and a signal is red. An OOM-killed `cargo test` lands here.
         None => GateReason::Signalled,
     };
+    // The `PATH` this ran with could not reach the command. It may be the plan's fault, and it
+    // may be a toolchain installed since the probe; the next gate re-asks rather than repeating
+    // this answer for the rest of the process's life.
+    if reason == GateReason::CommandNotFound {
+        forget_resolved_path().await;
+    }
 
     Ok(GateResult {
         command: req.command.clone(),
@@ -466,6 +695,56 @@ async fn probe_pipefail(shell: &Path, path: &OsStr) -> bool {
             false
         }
     }
+}
+
+/// The one probe result for this process, or `None` until the first resolve.
+///
+/// The probe is a fact about the **machine**, not about the shell a caller runs commands through
+/// (`docs/research/verify-and-telemetry-audit-2026-09-11.md` §5 a1), so a `GateEnv` on `$SHELL`
+/// and one on `/bin/sh` share it while each keeps its own `pipefail` answer. Before 2026-09-11
+/// it was paid once per `Run` and again for the updater — up to
+/// [`PATH_PROBE_TIMEOUT`] each time.
+static RESOLVED_PATH: tokio::sync::Mutex<Option<(OsString, PathSource)>> =
+    tokio::sync::Mutex::const_new(None);
+
+/// The machine's resolved `PATH` and where it came from, probed at most once per process **once
+/// a login shell has answered**.
+///
+/// Concurrent callers serialize on the cache rather than each spawning a login shell: the first
+/// pays the probe, the rest wait for it.
+///
+/// A fallback answer is deliberately **not** cached. `LoginShellTimedOut` under momentary load,
+/// or `Inherited` before `$SHELL` is set, is a snapshot of a bad moment; caching it would make
+/// that moment this process's `PATH` for the rest of its life, and the only symptom is gates
+/// that cannot find `npm`. The cost is that a machine that keeps timing out re-pays up to
+/// [`PATH_PROBE_TIMEOUT`] per gate — ten seconds against a gate that runs a build, and against a
+/// launch that would otherwise be permanently wrong.
+pub async fn resolved_path() -> (OsString, PathSource) {
+    resolved_path_from(resolve_path()).await
+}
+
+async fn resolved_path_from(
+    probe: impl std::future::Future<Output = (OsString, PathSource)>,
+) -> (OsString, PathSource) {
+    let mut slot = RESOLVED_PATH.lock().await;
+    if let Some(cached) = slot.as_ref() {
+        return cached.clone();
+    }
+    let resolved = probe.await;
+    if resolved.1 == PathSource::LoginShell {
+        *slot = Some(resolved.clone());
+    }
+    resolved
+}
+
+/// Discard the cached probe so the next [`resolved_path`] asks the machine again.
+///
+/// Called by [`run`] on a gate that exited 127: the plan named a command this `PATH` cannot
+/// reach, and a toolchain installed after the probe — `rustup`, `nvm`, a fresh `brew install` —
+/// is exactly the case where asking again is worth up to [`PATH_PROBE_TIMEOUT`]. Nothing calls it
+/// on a timer, and a gate that finds its command never pays for it.
+pub async fn forget_resolved_path() {
+    *RESOLVED_PATH.lock().await = None;
 }
 
 /// Resolve a `PATH` for gates, deliberately, once.
@@ -662,6 +941,8 @@ mod tests {
     /// (`docs/research/gate-environment.md` §2, **measured**).
     #[tokio::test]
     async fn command_not_found_is_one_hundred_and_twenty_seven_with_its_own_slug() {
+        // A 127 discards the cached `PATH`, which the two probe tests below own.
+        let _serial = PATH_CACHE.lock().await;
         let rig = Rig::new();
         let out = run(&sh_env().await, &rig.req("nosuchprogram_xyz"))
             .await
@@ -670,6 +951,46 @@ mod tests {
         assert_eq!(out.reason, GateReason::CommandNotFound);
         assert_eq!(out.reason.slug(), "command_not_found");
         assert!(!out.is_green());
+    }
+
+    /// And that discard is the point: a tool installed after the probe is otherwise unreachable
+    /// for the rest of the process's life, because the `PATH` that cannot see it is cached.
+    #[tokio::test]
+    async fn a_gate_that_cannot_find_its_command_discards_the_cached_path() {
+        let _serial = PATH_CACHE.lock().await;
+        forget_resolved_path().await;
+        let primed = resolved_path_from(async {
+            (OsString::from("/stub/bin"), PathSource::LoginShell)
+        })
+        .await;
+        assert_eq!(primed.1, PathSource::LoginShell);
+
+        let rig = Rig::new();
+        let out = run(&sh_env().await, &rig.req("nosuchprogram_xyz"))
+            .await
+            .expect("ran");
+        assert_eq!(out.reason, GateReason::CommandNotFound);
+
+        let after = resolved_path_from(async {
+            (OsString::from("/stub/reprobed"), PathSource::LoginShell)
+        })
+        .await;
+        assert_eq!(
+            after.0,
+            OsString::from("/stub/reprobed"),
+            "the next gate asks the machine again"
+        );
+
+        // A gate that *does* find its command leaves the cache alone.
+        let green = run(&sh_env().await, &rig.req("printf ok")).await.expect("ran");
+        assert!(green.is_green());
+        assert_eq!(
+            resolved_path_from(async { (OsString::from("/stub/third"), PathSource::LoginShell) })
+                .await
+                .0,
+            OsString::from("/stub/reprobed")
+        );
+        forget_resolved_path().await;
     }
 
     /// Row 4, the dash row, via a stub `sh` that answers `set: Illegal option -o pipefail` at
@@ -991,4 +1312,245 @@ mod tests {
 
     #[cfg(not(unix))]
     fn make_executable(_path: &Path) {}
+
+    // ---- the workspace lease, and the gate's own pid record ----
+
+    /// A tracker that records what it was told, so a test can read the registry the real one
+    /// writes to disk.
+    #[derive(Default)]
+    struct RecordingTracker {
+        live: Mutex<Vec<String>>,
+        seen: Mutex<Vec<(String, u32)>>,
+    }
+    impl RecordingTracker {
+        fn live(&self) -> Vec<String> {
+            self.live.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        }
+        fn seen(&self) -> Vec<(String, u32)> {
+            self.seen.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        }
+    }
+    impl ProcessTracker for RecordingTracker {
+        fn track(&self, session_id: &SessionId, pid: u32, _binary: &Path, _cwd: &Path) {
+            self.live
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(session_id.to_string());
+            self.seen
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push((session_id.to_string(), pid));
+        }
+        fn untrack(&self, session_id: &SessionId) {
+            self.live
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .retain(|id| id != session_id.as_str());
+        }
+        fn shutdown_sync(&self, _grace: Duration) {}
+    }
+
+    /// G2: the gate child gets a pid record while it runs and none once it is over, so a
+    /// force-quit mid-`cargo test` is recoverable and a normal exit leaves the sweep nothing.
+    #[tokio::test]
+    async fn a_gate_child_is_recorded_while_it_runs_and_forgotten_when_it_ends() {
+        let tracker = Arc::new(RecordingTracker::default());
+        let env = sh_env()
+            .await
+            .with_tracker(Arc::clone(&tracker) as Arc<dyn ProcessTracker>);
+        let rig = Rig::new();
+
+        // The command reads the registry from inside the run, which is the only moment a record
+        // is supposed to exist.
+        let probe = Arc::clone(&tracker);
+        let during = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            probe.live()
+        });
+        let out = run(&env, &rig.req("sleep 0.4")).await.expect("ran");
+        assert!(out.is_green());
+
+        let live = during.await.expect("probe");
+        assert_eq!(live.len(), 1, "the running gate must have one record: {live:?}");
+        assert!(
+            live[0].starts_with("gate-"),
+            "the record is namespaced away from session ids: {live:?}"
+        );
+        assert!(
+            tracker.live().is_empty(),
+            "a gate that ended normally must leave no record: {:?}",
+            tracker.live()
+        );
+        let seen = tracker.seen();
+        assert_eq!(seen.len(), 1);
+        assert!(seen[0].1 > 1, "the recorded pid is the shell's own");
+    }
+
+    /// A timed-out gate is untracked too: the record must not outlive the group it names.
+    #[tokio::test]
+    async fn a_timed_out_gate_leaves_no_pid_record() {
+        let tracker = Arc::new(RecordingTracker::default());
+        let env = sh_env()
+            .await
+            .with_tracker(Arc::clone(&tracker) as Arc<dyn ProcessTracker>);
+        let rig = Rig::new();
+        let mut req = rig.req("sleep 30");
+        req.timeout = Duration::from_millis(200);
+
+        let out = run(&env, &req).await.expect("ran");
+        assert_eq!(out.reason, GateReason::TimedOut);
+        assert_eq!(tracker.seen().len(), 1, "it was recorded at spawn");
+        assert!(tracker.live().is_empty(), "and forgotten at the kill");
+    }
+
+    /// G1: a stop followed immediately by a restart must not fail on the lease the cancelled
+    /// gate's detached kill is still holding.
+    ///
+    /// Dropping [`run`]'s future is exactly what `run_gate` does when the stop flag is set.
+    #[tokio::test]
+    async fn a_cancelled_gate_hands_the_workspace_to_the_next_one() {
+        let rig = Rig::new();
+        let env = sh_env().await;
+        let long = rig.req("sleep 30");
+
+        let mut cancelled = Box::pin(run(&env, &long));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(400), &mut cancelled)
+                .await
+                .is_err(),
+            "the gate should still be running when it is cancelled"
+        );
+        drop(cancelled);
+
+        let out = tokio::time::timeout(
+            LEASE_HANDOVER_BOUND + Duration::from_secs(2),
+            run(&env, &rig.req("printf ok")),
+        )
+        .await
+        .expect("the restart must not hang")
+        .expect("the workspace must be free for the restart");
+        assert_eq!(out.exit_code, Some(0));
+        assert_eq!(rig.log(), "ok");
+        assert_eq!(
+            in_flight_count(rig.dir.path()),
+            0,
+            "both runs released the tree"
+        );
+    }
+
+    /// Exclusion is unchanged: a gate that really is running still refuses a second one, and
+    /// refuses it promptly rather than after the handover bound.
+    #[tokio::test]
+    async fn a_second_gate_on_a_live_tree_is_still_refused() {
+        let rig = Rig::new();
+        let env = sh_env().await;
+        let live = rig.req("sleep 3");
+        let mut first = Box::pin(run(&env, &live));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(400), &mut first)
+                .await
+                .is_err()
+        );
+
+        let started = Instant::now();
+        let second = run(&env, &rig.req("printf no")).await;
+        assert!(second.is_err(), "two gates must not share one worktree");
+        assert!(
+            started.elapsed() < LEASE_HANDOVER_BOUND,
+            "a live gate is refused on the lease, not waited out: {:?}",
+            started.elapsed()
+        );
+        drop(first);
+    }
+
+    // ---- the shared PATH probe ----
+
+    /// Serializes the two tests that share the process-wide `PATH` cache. Async-aware because
+    /// everything they hold it across is an `await`.
+    static PATH_CACHE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// a1: one login-shell probe per process, however many `GateEnv`s ask for it.
+    #[tokio::test]
+    async fn the_path_probe_runs_once_per_process() {
+        let _serial = PATH_CACHE.lock().await;
+        forget_resolved_path().await;
+        let probes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let probe = || {
+            let probes = Arc::clone(&probes);
+            async move {
+                probes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                (OsString::from("/stub/bin"), PathSource::LoginShell)
+            }
+        };
+
+        let first = resolved_path_from(probe()).await;
+        let second = resolved_path_from(probe()).await;
+        assert_eq!(first, second);
+        assert_eq!(first.0, OsString::from("/stub/bin"));
+        assert_eq!(first.1, PathSource::LoginShell);
+        assert_eq!(
+            probes.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the second caller must reuse the first probe"
+        );
+        forget_resolved_path().await;
+    }
+
+    /// And the explicit refresh does re-probe.
+    #[tokio::test]
+    async fn forgetting_the_path_probes_again() {
+        let _serial = PATH_CACHE.lock().await;
+        forget_resolved_path().await;
+        let probes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let probe = || {
+            let probes = Arc::clone(&probes);
+            async move {
+                let n = probes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                (OsString::from(format!("/stub/{n}")), PathSource::LoginShell)
+            }
+        };
+        assert_eq!(resolved_path_from(probe()).await.0, OsString::from("/stub/0"));
+        assert_eq!(resolved_path_from(probe()).await.0, OsString::from("/stub/0"));
+        forget_resolved_path().await;
+        assert_eq!(resolved_path_from(probe()).await.0, OsString::from("/stub/1"));
+        assert_eq!(
+            probes.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "exactly one probe before the refresh and one after"
+        );
+        forget_resolved_path().await;
+    }
+
+    /// Only a login-shell answer is cached. A fallback is a snapshot of a bad moment — a loaded
+    /// machine, a shell that had not been set yet — and caching it makes that moment permanent.
+    #[tokio::test]
+    async fn a_fallback_path_is_never_cached_and_the_next_gate_re_probes() {
+        let _serial = PATH_CACHE.lock().await;
+        for source in [PathSource::LoginShellTimedOut, PathSource::Inherited] {
+            forget_resolved_path().await;
+            let probes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let probe = || {
+                let probes = Arc::clone(&probes);
+                async move {
+                    let n = probes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    (OsString::from(format!("/stub/{n}")), source)
+                }
+            };
+            assert_eq!(resolved_path_from(probe()).await.0, OsString::from("/stub/0"));
+            assert_eq!(
+                resolved_path_from(probe()).await.0,
+                OsString::from("/stub/1"),
+                "{source:?} must not be this process's PATH for ever"
+            );
+            assert_eq!(probes.load(std::sync::atomic::Ordering::Relaxed), 2);
+            // And the moment a login shell does answer, that answer is kept.
+            let good = resolved_path_from(async {
+                (OsString::from("/stub/good"), PathSource::LoginShell)
+            })
+            .await;
+            assert_eq!(good.0, OsString::from("/stub/good"));
+            assert_eq!(resolved_path_from(probe()).await.0, OsString::from("/stub/good"));
+        }
+        forget_resolved_path().await;
+    }
 }

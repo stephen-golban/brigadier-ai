@@ -267,6 +267,38 @@ impl Ready {
     }
 }
 
+/// One Codex probe per launch, run the first time something actually needs the provider.
+///
+/// `get_or_init` is what makes it once: concurrent callers wait for the first, and a probe that
+/// failed is not retried — the same single-attempt behaviour the eager launch probe had.
+static CODEX: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+
+/// Register the Codex driver if the machine has a usable Codex, spawning the app-server the first
+/// time and never again.
+///
+/// Cheap and idempotent after the first call, so a caller that may or may not need Codex can
+/// simply await it. Failure is a log line and a provider that stays unregistered, exactly as at
+/// launch; nothing about a missing Codex is an error for the caller.
+pub(crate) async fn ensure_codex(ready: &Ready) {
+    CODEX
+        .get_or_init(|| async {
+            let mut config = brigadier_core::codex::CodexDriverConfig::new("codex:default");
+            config.attachment_dir =
+                Some(ready.data_dir.join("provider-attachments").join("codex"));
+            match brigadier_core::codex::CodexDriver::probe(config).await {
+                Ok(driver) => ready.supervisor.register_driver(Arc::new(driver)),
+                Err(error) => tracing::info!(%error, "Codex provider unavailable"),
+            }
+        })
+        .await;
+}
+
+/// Whether the Codex app-server has been spawned in this process.
+#[cfg(test)]
+pub(crate) fn codex_probed() -> bool {
+    CODEX.initialized()
+}
+
 /// Probe the `claude` binary and, on success, register the driver under `claude-code`.
 async fn probe(supervisor: &Supervisor) -> Result<ClaudeStatus, AppError> {
     match ClaudeDriver::probe(ClaudeDriverConfig::new(CLAUDE_INSTANCE)).await {
@@ -336,12 +368,11 @@ pub(crate) async fn build(data_dir: PathBuf) -> Result<Ready, AppError> {
     crate::trace::stage("supervisor_new");
 
     let claude = probe(&supervisor).await;
-    let mut codex_config = brigadier_core::codex::CodexDriverConfig::new("codex:default");
-    codex_config.attachment_dir = Some(data_dir.join("provider-attachments").join("codex"));
-    match brigadier_core::codex::CodexDriver::probe(codex_config).await {
-        Ok(driver) => supervisor.register_driver(Arc::new(driver)),
-        Err(error) => tracing::info!(%error, "Codex provider unavailable"),
-    }
+    // Codex is **not** probed here. Its probe spawns a `codex` app-server child — `--version`,
+    // `initialize`, discovery, then a kill — and Codex is deferred for v1, so a launch that never
+    // touches it paid for that child every time
+    // (`docs/research/verify-and-telemetry-audit-2026-09-11.md` §4.3). `ensure_codex` runs it on
+    // the first catalogue discovery or the first dispatch that names the provider, once.
     // The `claude --version` child. One of two per launch — the frontend's mount-time
     // `probeClaude()` spawns the other (`perceived-performance.md` §1.4). No session, no API call.
     crate::trace::stage_with(
@@ -431,5 +462,79 @@ mod launch_lifecycle_tests {
         state.shutdown_sync("test", Duration::ZERO);
         assert!(!state.initialize(Err(AppError::io("Late result"))));
         assert_eq!(state.get().unwrap_err().code, "startup_pending");
+    }
+
+    /// The lazy registration has to run *before* the checks that read the driver registry, or
+    /// the first thing in a launch to name Codex is rejected for the driver it was about to
+    /// register. Structural, for the same reason the test below is: the alternative is spawning
+    /// a real `codex` app-server in a unit test.
+    #[test]
+    fn the_lazy_codex_registration_precedes_the_checks_that_read_the_registry() {
+        for (file, check) in [
+            (
+                "commands.rs",
+                "crate::task_settings::validate_selection(state.inner(), &selection)?;",
+            ),
+            (
+                "composer.rs",
+                "crate::task_settings::validate_selection(state.inner(), selection)?;",
+            ),
+            (
+                "task_settings.rs",
+                "validate_selection(state.inner(), &settings.execution)?;",
+            ),
+            ("task_settings.rs", "validate_selection(state, &selection)?;"),
+        ] {
+            let src = std::fs::read_to_string(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(file),
+            )
+            .expect(file);
+            let at = src
+                .find(check)
+                .unwrap_or_else(|| panic!("{file} no longer contains `{check}`"));
+            let guard = src[..at].rfind("ensure_codex").unwrap_or_else(|| {
+                panic!("{file}: `{check}` runs with no lazy Codex registration before it")
+            });
+            assert!(
+                src[guard..at].matches('\n').count() < 12,
+                "{file}: the registration must guard `{check}`, not sit in another function"
+            );
+        }
+    }
+
+    /// A launch with no Codex session must spawn no `codex` child.
+    ///
+    /// `CodexDriver::probe` is the only thing in this app that starts one — it runs
+    /// `codex --version`, then an app-server over stdio for `initialize`, discovery and the usage
+    /// read, then kills it (`crates/core/src/codex/mod.rs:59-88`) — so proving it is called from
+    /// one lazy place, and that nothing has called it, is proving there is no child. Codex is
+    /// deferred for v1 (`CLAUDE.md` §2), so that is every ordinary launch.
+    #[test]
+    fn the_codex_app_server_is_spawned_lazily_and_from_one_place() {
+        let sources: Vec<PathBuf> = std::fs::read_dir(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        )
+        .expect("src")
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|e| e == "rs"))
+        .collect();
+        let callers: Vec<String> = sources
+            .iter()
+            .filter(|path| {
+                std::fs::read_to_string(path)
+                    .unwrap_or_default()
+                    .contains("CodexDriver::probe")
+            })
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            callers,
+            vec!["state.rs".to_string()],
+            "the Codex app-server has exactly one spawn site, `ensure_codex`"
+        );
+        assert!(
+            !crate::state::codex_probed(),
+            "no test, and no launch, has needed Codex — so no `codex` child was started"
+        );
     }
 }
