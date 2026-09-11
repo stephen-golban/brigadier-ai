@@ -186,6 +186,39 @@ describe("Git status refresh", () => {
     expect(screen.queryByRole("button", { name: "Changes" })).toBeNull();
     expect(screen.queryByTestId("changes-panel")).toBeNull();
   });
+  /**
+   * `docs/performance/2026-09-11/timer-inventory.md` row 7. The 5 s cadence stays — no event
+   * covers workspace freshness yet — but an occluded window must not spend a `git status` per
+   * tick, and must come back current rather than stale.
+   */
+  it("skips the Git poll while the document is hidden and refreshes once on becoming visible", async () => {
+    let visibility: DocumentVisibilityState = "visible";
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => visibility,
+    });
+    try {
+      const git = vi
+        .spyOn(workspaceApi, "git")
+        .mockResolvedValue(status("one.ts"));
+      await act(async () => {
+        render(workbench());
+      });
+      expect(git).toHaveBeenCalledTimes(1);
+      visibility = "hidden";
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20_000);
+      });
+      expect(git).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        visibility = "visible";
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      expect(git).toHaveBeenCalledTimes(2);
+    } finally {
+      delete (document as unknown as Record<string, unknown>).visibilityState;
+    }
+  });
   it("orders Files, Search, Changes and refreshes the count with the panel hidden", async () => {
     const git = vi.spyOn(workspaceApi, "git").mockResolvedValue({
       branch: "main",

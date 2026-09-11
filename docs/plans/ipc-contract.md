@@ -220,6 +220,81 @@ before every send is unchanged and remains the binding check.
 `Event::TurnCompleted` and on `SessionView`, and is never rendered into a feed row
 (`docs/vision.md` §6, changed 2026-09-03).
 
+## Terminal channel — added 2026-09-11 (P5)
+
+`terminal_subscribe(id: string, on_output: Channel<TerminalFrame>) -> ()` — called once per
+terminal, after `terminal_open` returns its id. Frames flow only after this call.
+
+```
+TerminalFrame {
+  seq:            number,   // 1-based, gapless per terminal id, across subscriptions
+  bytes:          string,   // base64 of at most 4096 PTY bytes, in order; "" on the final frame
+  dropped_before: number,   // bytes the ring discarded *before* these, since the previous frame
+  exited:         boolean,  // true on exactly one frame: the last
+  drained:        boolean,  // the PTY reader has reached EOF; always true on the final frame
+}
+```
+
+- **`bytes` is base64, not the `number[]` `terminal_read` returns.** A JSON array costs up to four
+  characters per byte; base64 costs exactly four per three. 4096 bytes encode to 5464 characters,
+  so the largest message this sends is ~5.6 KB — under Tauri's 8192-byte
+  `MAX_JSON_DIRECT_EXECUTE_THRESHOLD` (`tauri-2.11.5/src/ipc/channel.rs`). That threshold is the
+  line between `webview.eval` and the **unbounded** `ChannelDataIpcQueue`, whose contents can be
+  lost when the Rust-side channel drops
+  (`docs/research/efficiency-plan-external-facts-2026-09-11.md` §3.2). Every terminal message
+  stays on the `eval` side of it, which also keeps ordering inside one mechanism rather than
+  across two — cross-size-boundary ordering is **unverified** and this path deliberately never
+  tests it. Pinned by
+  `terminal.rs::frames_stay_ordered_under_the_payload_cap_and_report_what_the_ring_dropped`,
+  which asserts the whole serialized message, not just the payload.
+- **Coalescing and the buffer bound.** The forwarder flushes immediately after an idle stretch and
+  then at most once per 16 ms, sending at most 32 frames (128 KiB) per flush — a sustained ceiling
+  of ~8 MB/s, above anything the old 8 KiB re-armed poll could carry. Anything past that waits
+  **in the existing 1 MiB ring**, which stays the only buffer in the path; nothing is queued
+  anywhere else. Output that overruns the ring is discarded at its head and counted, exactly as
+  `terminal_read`'s `dropped` always was, and reported as `dropped_before` on the next frame — the
+  frontend writes the same `[N bytes skipped while output exceeded the buffer]` notice ahead of
+  the bytes that survived.
+- **There is no timer on either side while the PTY is idle.** Rust parks the forwarder on a
+  condvar the reader thread signals; the webview arms a timer only for the snapshot deadline
+  below. A terminal nobody subscribes to starts no forwarder at all.
+- **Ordering and UTF-8.** Bytes stay bytes: the split into frames is at an arbitrary byte offset,
+  as the old 8192-byte `terminal_read` cap always was, and **nothing in this path aligns UTF-8 or
+  escape-sequence boundaries**. xterm reassembles both across writes; that is the whole of the
+  guarantee, unchanged from the polled path.
+- **Exit.** `exited: true` arrives on its own final frame, after the last byte, and only once both
+  the child has been reaped **and** the reader thread has reached EOF — the same condition
+  `terminal_read`'s `exited` has always used. The frontend prints `[Process exited]` on it.
+- **Backlog.** There is no separate backlog request and none is needed: the ring *is* the backlog,
+  so subscribing after output has already arrived delivers it first, oldest byte first.
+- **Two subscribers: the second replaces the first**, like the feed sink (`src-tauri/src/sink.rs`)
+  and for the same reason — a webview reload leaves the old channel accepting sends that go
+  nowhere. Nothing is replayed to the second subscriber, and `seq` keeps counting rather than
+  restarting. Frames already drained for a channel that has gone away are lost. A number is drawn
+  only once a channel is installed, so a gap the subscriber observes means the channel dropped a
+  message and never that Rust burned a number with nobody listening.
+- **Remount is still a fresh shell.** A terminal view that mounts again restores its localStorage
+  snapshot, prints `[Restored output. Starting a fresh shell.]` and opens a **new** terminal id.
+  Hidden-terminal process retention is out of scope for P5 and nothing here implies it.
+- `terminal_read(id)` is **deprecated** and kept for one release as a fallback. It drains the same
+  ring as the forwarder, so calling both on one terminal splits the output between them; nothing
+  in `src/` calls it any more.
+
+### Snapshot and CWD policy
+
+- The localStorage snapshot (`brigadier:terminal:<tabId>`, SerializeAddon over 200 scrollback
+  lines) is **dirty-triggered**: output marks it dirty and arms one 3 s deadline; the deadline
+  persists and disarms itself; `pagehide` and unmount flush only if it is still dirty. Zero output
+  is zero serialization and zero timers — `TerminalView.tsx` exports `terminalTimers()`, a test
+  hook counting the deadlines every mounted terminal is holding, which is what
+  `TerminalView.test.tsx` asserts is 0 while the PTY is idle.
+- **CWD has no event source from an arbitrary shell**, and this does not pretend otherwise. It is
+  `lsof -a -p <pid> -d cwd` on macOS and `/proc/<pid>/cwd` on Linux (`terminal_info`), a **poll**,
+  bounded to the moments it can have changed: on a snapshot deadline when the terminal is visible
+  **and** output arrived or Enter was pressed since the last check, and once when the tab takes
+  focus. A hidden terminal is never checked. The value is as fresh as the last check and no
+  fresher; it is used to reopen the shell in the same directory after a remount.
+
 ## Commands
 
 | command | args | returns |

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState } from "react";
 import { composerApi, serializeComposerWrite, type ComposerCommand, type ComposerState } from "../composerApi";
 import { useDurableComposer } from "./composer/useDurableComposer";
 import { desktop, errorMessage } from "../workspaceApi";
@@ -21,6 +21,9 @@ import type { SessionRuntime } from "../feedStore";
 import type { SessionId, WorktreeCleanup } from "../wire";
 
 const EMPTY_MODELS: ModelInfo[] = [];
+
+/** Module-scope, as `subscribeTo` requires: the registration holds it for the life of the mount. */
+const selectApprovals = (s: feedStore.StoreState) => s.approvals;
 export interface ComposerProps extends MessageEditProps {
   models?: ModelInfo[];
   session: SessionRuntime | null;
@@ -92,8 +95,17 @@ export function Composer({ session, models = EMPTY_MODELS, busy, onSend, onResum
   const effectiveSelection = settings?.mode === "auto" && settings.execution.provider === activeProvider
     ? { ...settings.execution, model: settings.execution.model ?? session?.model ?? null, effort: settings.execution.effort ?? session?.effort ?? null }
     : settings?.execution;
-  const feed = useSyncExternalStore(feedStore.subscribe, feedStore.getState);
-  const approvals = feed.approvals.filter(item => item.sessionId === sessionId && !item.expired);
+  /**
+   * One field of the snapshot, not the snapshot (`docs/plans/efficiency-plan-review-2026-09-11.md`,
+   * "Three whole-snapshot subscribers"). The composer reads `approvals` and nothing else out of
+   * the feed store, so a frame that moved rows, a cursor or a session's `busy` no longer wakes it.
+   *
+   * Still non-optimistic (`docs/vision.md` §9): this is the store's own array, replaced on the
+   * frame a `request-opened` or `request-resolved` lands, and the `expired` filter is what keeps a
+   * resolved-without-decision row out of the answerable set while leaving it on screen elsewhere.
+   */
+  const feedApprovals = feedStore.useFeedSelector(selectApprovals);
+  const approvals = feedApprovals.filter(item => item.sessionId === sessionId && !item.expired);
   const approvalOnScreen = useApprovalVisible(approvals[0]?.requestId);
   const edit = useMessageEdit({ editing, onCancelEdit, onRewound });
   const [uploading, setUploading] = useState(false);

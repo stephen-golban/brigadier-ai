@@ -70,6 +70,7 @@ import { countDiagnostic, markRenderUpdate, profiling, traceEvent } from "./perf
  * is therefore expected to be neutral on that fixture.** Its win is a real workload, where a turn
  * lasts seconds, rows never dirty the snapshot, and counters fold twice a second.
  */
+import { useRef, useState, useSyncExternalStore } from "react";
 import * as fps from "./fps";
 import { ZERO_USAGE } from "./wire";
 import type {
@@ -278,6 +279,15 @@ const projectRows = new Map<ProjectId, Ring>();
 const sessions = new Map<SessionId, SessionRuntime>();
 const approvals = new Map<string, ApprovalItem>();
 const listeners = new Set<() => void>();
+
+/**
+ * One `subscribeTo` registration, reduced to the only thing `notify` has to do with it.
+ *
+ * The selected value it last handed out lives in the closure `subscribeTo` builds, not in a
+ * generic field: that keeps the registry non-generic (so the `Set` needs no cast) and keeps the
+ * fan-out allocation-free — `check()` reads the selection, compares it, and returns.
+ */
+const selectorListeners = new Set<{ check: () => void }>();
 
 /** Projects the UI has actually listed, and the ones only the feed has ever mentioned. */
 const knownProjects = new Set<ProjectId>();
@@ -640,19 +650,56 @@ function same<T>(a: readonly T[], b: readonly T[]): boolean {
   return true;
 }
 
+/** How many keys `state.sessions` holds, so `rebuildSessions` needs no `Object.keys` allocation. */
+let snapshotSessionCount = 0;
+
+/**
+ * The `sessions` record for the next snapshot, **keeping the previous record's identity when no
+ * session record moved** (2026-09-11, plan review "Three whole-snapshot subscribers").
+ *
+ * Two identities, and both matter:
+ *
+ *   - *Per record.* A `SessionRuntime` is only ever replaced by `patch`/`seedSessions` and friends,
+ *     which all diff first, so an untouched session keeps the identical object across any number of
+ *     rebuilds — which is what lets a consumer of one session hold an identity compare.
+ *   - *Per map.* This used to allocate a fresh record on every rebuild, so `state.sessions` moved
+ *     whenever an approval opened, a warning arrived or a project was noted — and every consumer
+ *     memoised on it rebuilt for a change that touched no session at all.
+ *
+ * The guard is O(sessions) with no allocation on the fast path: a count compare, then one identity
+ * compare per live session. A rebuild that did move a record pays the record build it always paid.
+ */
+function rebuildSessions(): Record<SessionId, SessionRuntime> {
+  const prev = state.sessions;
+  if (snapshotSessionCount === sessions.size) {
+    let moved = false;
+    for (const [id, r] of sessions) {
+      if (prev[id] === r) continue;
+      moved = true;
+      break;
+    }
+    if (!moved) return prev;
+  }
+  const record: Record<SessionId, SessionRuntime> = {};
+  for (const [id, r] of sessions) record[id] = r;
+  snapshotSessionCount = sessions.size;
+  return record;
+}
+
 /**
  * Rebuild the React snapshot from the live map.
  *
  * `order` and `approvals` keep the previous array when the rebuild produced the same elements in
  * the same sequence — the same rule `getSessionRows`/`getProjectRows` already follow, so a
  * consumer that memoises on `state.order` is not invalidated by a rebuild that was about one
- * session's `busy`. `sessions` is a fresh record every time: a rebuild only happens because some
- * runtime in it was replaced.
+ * session's `busy`. `sessions` follows the same rule through `rebuildSessions`.
+ *
+ * `version` still increments on every rebuild: it counts rebuilds, not changes, and nothing here
+ * changes that.
  */
 function rebuildState(): void {
   countDiagnostic("stateRebuild");
-  const record: Record<SessionId, SessionRuntime> = {};
-  for (const [id, r] of sessions) record[id] = r;
+  const record = rebuildSessions();
   const order = [...sessions.values()]
     .sort((a, b) => (b.startedAtMs ?? 0) - (a.startedAtMs ?? 0))
     .map((r) => r.sessionId);
@@ -859,8 +906,24 @@ export function setFrameSampling(on: boolean): void {
 
 fps.setFrameSource(setFrameSampling);
 
+/**
+ * Wake every subscriber the frame owes something to, in one pass and in registration order.
+ *
+ * Two registries, one rule each:
+ *
+ *   - `listeners` (`subscribe`) is the unconditional fan-out. It is what a consumer reading
+ *     something *outside* the snapshot needs — `getSessionCursor`, a row ring — because the frame
+ *     that moved those did not necessarily rebuild `state` at all.
+ *   - `selectorListeners` (`subscribeTo`) fires only when the registration's own selection moved.
+ *     The comparison is the whole cost; nothing is allocated for a selection that held still.
+ *
+ * The fan-out stays O(listeners): every registry is walked once, and each entry does a constant
+ * amount of work. A listener that unsubscribes from inside its own callback is safe — `Set`
+ * iteration tolerates deletion of the current or a later element.
+ */
 function notify(): void {
   for (const cb of listeners) cb();
+  for (const entry of selectorListeners) entry.check();
 }
 
 /**
@@ -890,6 +953,93 @@ export function stop(): void {
 export function subscribe(cb: () => void): () => void {
   listeners.add(cb);
   return () => listeners.delete(cb);
+}
+
+/**
+ * Subscribe to **one projection of the snapshot**, not to the snapshot.
+ *
+ * `listener` is called only on a frame where `select(getState())` actually moved, judged by
+ * `isEqual` (`Object.is` by default). A frame that rebuilt `state` for somebody else's session
+ * costs this registration one selector call and one comparison, and wakes nothing.
+ *
+ * The selection is read from the **snapshot**, so it inherits every guarantee the snapshot has:
+ * `order`, `approvals`, `unknownProjects` and now `sessions` all keep their identity across a
+ * rebuild that did not move them, which is what makes `Object.is` a sufficient default.
+ *
+ * `select` is called on subscribe to seed the baseline, and must be pure. It is held for the life
+ * of the registration: pass a module-scope function, or a wrapper that reads the current one
+ * (which is what `useFeedSelector` does), rather than re-subscribing per render.
+ *
+ * Returns the unsubscribe. `subscribe` is untouched and still the right call for anything read
+ * outside the snapshot (`getSessionCursor`, `getSessionRows`).
+ */
+export function subscribeTo<T>(
+  select: (s: StoreState) => T,
+  listener: () => void,
+  isEqual: (a: T, b: T) => boolean = Object.is,
+): () => void {
+  let last = select(state);
+  const entry = {
+    check: () => {
+      const next = select(state);
+      if (isEqual(last, next)) return;
+      last = next;
+      listener();
+    },
+  };
+  selectorListeners.add(entry);
+  return () => {
+    selectorListeners.delete(entry);
+  };
+}
+
+/**
+ * `useSyncExternalStore` over one projection of the snapshot.
+ *
+ * Two caches, and both are required:
+ *
+ *   - the **subscription** is a `subscribeTo`, so React is not even told about a frame in which
+ *     this component's selection held still. That is the fan-out saving; a plain
+ *     `useSyncExternalStore(subscribe, …)` still runs React's own snapshot comparison on every
+ *     one of those frames, for every mounted consumer.
+ *   - **`getSnapshot` returns a cached value.** React calls it more than once per render and
+ *     compares with `Object.is`; a selector that built a fresh object each call would re-render
+ *     for ever. The cache is keyed on the snapshot's identity *and* the selector's, and an
+ *     `isEqual`-equal recomputation keeps the previously returned reference.
+ *
+ * `select` and `isEqual` are read through a ref, so an inline arrow does not re-subscribe on every
+ * render. They must still be pure and must not close over per-render values that change the
+ * *meaning* of the selection — the subscription holds the newest pair but compares against the
+ * value the old pair produced. Prefer a module-scope selector; pass a parameterised one only when
+ * its parameter is stable for the life of the mount.
+ */
+export function useFeedSelector<T>(
+  select: (s: StoreState) => T,
+  isEqual: (a: T, b: T) => boolean = Object.is,
+): T {
+  const latest = useRef({ select, isEqual });
+  latest.current.select = select;
+  latest.current.isEqual = isEqual;
+  const cache = useRef<{ state: StoreState; select: (s: StoreState) => T; value: T } | null>(null);
+  const [api] = useState(() => ({
+    subscribe: (cb: () => void): (() => void) =>
+      subscribeTo(
+        (s: StoreState) => latest.current.select(s),
+        cb,
+        (a: T, b: T) => latest.current.isEqual(a, b),
+      ),
+    getSnapshot: (): T => {
+      const snapshot = state;
+      const sel = latest.current.select;
+      const prev = cache.current;
+      if (prev !== null && prev.state === snapshot && prev.select === sel) return prev.value;
+      const next = sel(snapshot);
+      const value = prev !== null && latest.current.isEqual(prev.value, next) ? prev.value : next;
+      cache.current = { state: snapshot, select: sel, value };
+      return value;
+    },
+  }));
+  return useSyncExternalStore(api.subscribe, api.getSnapshot);
 }
 
 /**
@@ -986,16 +1136,51 @@ export function noteProjects(ids: readonly ProjectId[]): void {
   notify();
 }
 
-/** Fold `list_sessions` into the store without disturbing anything the feed already knows. */
+/**
+ * `list_sessions` returns a fresh `Usage` object every call, so identity says nothing about it.
+ * Five flat numbers, compared by value, so a re-seed that changed none of them keeps `prev`.
+ */
+function sameUsage(a: Usage, b: Usage): boolean {
+  return (
+    a.input_tokens === b.input_tokens &&
+    a.output_tokens === b.output_tokens &&
+    a.cache_read_tokens === b.cache_read_tokens &&
+    a.cache_creation_tokens === b.cache_creation_tokens &&
+    a.context_window === b.context_window
+  );
+}
+
+/**
+ * Whether the rebuilt record differs from the one in the map. Every key, `Object.is`: the record
+ * is rebuilt wholesale from a spread of `prev`, so `Object.keys(next)` is all of them.
+ */
+function movedRecord(prev: SessionRuntime, next: SessionRuntime): boolean {
+  for (const key of Object.keys(next) as (keyof SessionRuntime)[]) {
+    if (!Object.is(prev[key], next[key])) return true;
+  }
+  return false;
+}
+
+/**
+ * Fold `list_sessions` into the store without disturbing anything the feed already knows.
+ *
+ * **Diffs before it stores.** Six production call sites re-seed on focus, on a resume and after
+ * every mutation, and every one of them hands back records whose fields are almost always
+ * identical to what is already here. Replacing them wholesale moved every record, which moved
+ * `state.sessions` through `rebuildSessions`, which woke every selector memoised on it. A seed
+ * that changed nothing now stores nothing, rebuilds nothing and notifies nobody.
+ */
 export function seedSessions(views: SessionView[]): void {
+  let changed = false;
   for (const v of views) {
     if (deletedSessions.has(v.session_id) || (v.project_id !== null && deletedProjects.has(v.project_id))) continue;
-    const prev = sessions.get(v.session_id) ?? blank(v.session_id, v.project_id);
+    const held = sessions.get(v.session_id);
+    const prev = held ?? blank(v.session_id, v.project_id);
     // A view that says the session is live carries `ended_at_ms: null` / `exit_code: null` and
     // means it — that is exactly what `resume_session` returns for a session this store still
     // has an end time for. `??` would have kept the stale end and shown a live session as ended.
     const live = v.status === "starting" || v.status === "running";
-    sessions.set(v.session_id, {
+    const next: SessionRuntime = {
       ...prev,
       projectId: v.project_id ?? prev.projectId,
       status: v.status,
@@ -1008,13 +1193,17 @@ export function seedSessions(views: SessionView[]): void {
       worktreePath: v.worktree_path ?? prev.worktreePath,
       branch: v.branch ?? prev.branch,
       costUsd: Math.max(prev.costUsd, v.cost_usd_cumulative),
-      usage: v.usage,
+      usage: sameUsage(prev.usage, v.usage) ? prev.usage : v.usage,
       startedAtMs: v.started_at_ms ?? prev.startedAtMs,
       endedAtMs: live ? v.ended_at_ms : v.ended_at_ms ?? prev.endedAtMs,
       exitCode: live ? v.exit_code : v.exit_code ?? prev.exitCode,
       lastEventSeq: Math.max(prev.lastEventSeq, v.last_event_seq),
-    });
+    };
+    if (held !== undefined && !movedRecord(held, next)) continue;
+    sessions.set(v.session_id, next);
+    changed = true;
   }
+  if (!changed) return;
   rebuildState();
   notify();
 }

@@ -26,11 +26,13 @@
  * `performance.mark` to the surface area.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { memo } from "react";
 import {
   act,
   cleanup,
   fireEvent,
   render,
+  renderHook,
   screen,
   within,
   waitFor,
@@ -39,12 +41,41 @@ import { pasteComposer } from "./test/composer";
 import userEvent from "@testing-library/user-event";
 
 import type { PeerData } from "./peerApi";
+import type { SidebarProps } from "./components/Sidebar";
 import { ZERO_USAGE } from "./wire";
 import type { FeedRowWire, SessionStatus, SessionView } from "./wire";
 
 /* --------------------------------------------------------------- fixtures */
 
 /** Shared with the hoisted `vi.mock` factories below; reset in `beforeEach`. */
+/**
+ * A render counter for the memoised `Sidebar` in **this** tree.
+ *
+ * `Sidebar.test.tsx` counts calls to `useSessionNavigation`, which is called once at the top of
+ * `SidebarView`'s body and nowhere else in *its* tree. The shell's tree has two more callers —
+ * `PromptInput` in the dock and `SessionMenu` inside each sidebar row — so that counter here would
+ * only say "something in the shell rendered" and could never observe a memo skipping.
+ *
+ * So `counted` re-memoises the real `Sidebar` behind a component that increments on every render
+ * React lets through. Both memos use `memo`'s default shallow prop comparison, so the outer one
+ * admits exactly the renders the inner one would: identity-equal props bail out of both, and a
+ * prop that moved re-renders both.
+ *
+ * What it therefore counts is **renders driven by props**. A re-render `SidebarView` causes from
+ * inside itself — its own `useWorkbenchSnapshot`, `useSessionNavigation` or `useFeedSelector`
+ * waking — happens under the outer memo and is *not* counted here; that claim is
+ * `Sidebar.test.tsx`'s, whose probe sits inside the component body.
+ */
+const probe = vi.hoisted(() => ({ renders: 0 }));
+function counted(
+  Real: typeof import("./components/Sidebar").Sidebar,
+): typeof import("./components/Sidebar").Sidebar {
+  return memo(function CountedSidebar(props: SidebarProps) {
+    probe.renders += 1;
+    return <Real {...props} />;
+  }) as typeof import("./components/Sidebar").Sidebar;
+}
+
 const h = vi.hoisted(() => ({
   peers: {origins:{},subagents:{},titles:{},closed:[],requests:[],messages:[],loaded:true} as PeerData,
   start: vi.fn(),
@@ -83,6 +114,16 @@ const h = vi.hoisted(() => ({
   /** Every path `add_project` was called with, in order. Empty is how "nothing was added" is
    *  asserted, and it is the whole point of the cancel test. */
   added: [] as string[],
+  /**
+   * Every props object `App` handed `Sidebar`, in render order.
+   *
+   * This is how the identity contract with `Sidebar`'s `memo` is asserted: a memo compares props
+   * by identity, so "the sidebar did not have to re-render" is a statement about `Object.is` on
+   * these objects and about nothing that is visible in the DOM.
+   */
+  sidebarProps: [] as Array<Record<string, unknown>>,
+  /** The real `Sidebar`, re-imported per test; see the mock factory below. */
+  realSidebar: null as typeof import("./components/Sidebar").Sidebar | null,
   /** Every `delete_session` / `delete_project` call, in order, with the `force` it carried. */
   deletes: [] as Array<{
     kind: "session" | "project";
@@ -112,6 +153,35 @@ vi.mock("./paint", () => ({
     };
   },
 }));
+
+/**
+ * The real `Sidebar`, wrapped so every props object it is handed is recorded.
+ *
+ * A wrapper rather than a stub: every other test in this file drives the real sidebar, and a fake
+ * one would quietly turn them into tests of the fake. The wrapper adds one component to the tree
+ * and forwards the props untouched, `ref` included (React 19 passes it as an ordinary prop).
+ */
+vi.mock("./components/Sidebar", async () => {
+  // **Neither `importOriginal` nor a captured reference.** Vitest re-instantiates a module's whole
+  // dependency subtree for `importActual`, and a `vi.mock` factory's result is cached *across*
+  // `vi.resetModules()` — either way the sidebar this wrapper renders ends up carrying a second
+  // `controls/sidebar` module, a second React context that the provider `App` rendered never
+  // filled, and every test in this file dies on "Sidebar provider is missing".
+  //
+  // So the real component is re-imported per test in `beforeEach`, from a query-suffixed id that
+  // is a distinct module to Vite (and so escapes this mock) while its own relative imports still
+  // resolve into the one shared graph. The factory's own copy is only the fallback.
+  // The id is declared in `src/test/vite-query.d.ts`, so this needs no error suppression.
+  const fallback: typeof import("./components/Sidebar") = await import("./components/Sidebar.tsx?unmocked");
+  return {
+    ...fallback,
+    Sidebar: (props: Record<string, unknown>) => {
+      h.sidebarProps.push(props);
+      const Real = h.realSidebar ?? fallback.Sidebar;
+      return <Real {...(props as unknown as Parameters<typeof Real>[0])} />;
+    },
+  };
+});
 
 vi.mock("./bridge", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./bridge")>();
@@ -322,8 +392,10 @@ async function mountApp() {
   await screen.findAllByText(h.projects[0]!.name);
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.resetModules();
+  const unmocked: typeof import("./components/Sidebar") = await import("./components/Sidebar.tsx?unmocked");
+  h.realSidebar = counted(unmocked.Sidebar);
   h.start.mockReset();
   h.projects = [project("p-live", "job-portal")];
   h.visible = [];
@@ -339,6 +411,8 @@ beforeEach(() => {
   h.picked = null;
   h.added = [];
   h.deletes = [];
+  h.sidebarProps = [];
+  probe.renders = 0;
 });
 
 afterEach(() => {
@@ -1027,5 +1101,290 @@ describe("projectless chat creation", () => {
     expect(within(screen.getByRole("navigation", { name: "Projects" })).queryByRole("button", { name: "Tasks" })).toBeNull();
     expect(screen.queryByLabelText("Task workspace")).toBeNull();
     expect(screen.queryByRole("button", { name: "Project" })).toBeNull();
+  });
+});
+
+/* ------------------------------------------------- P4b: the shell's subscriptions */
+
+/**
+ * The shell subscribes to five projections of the feed snapshot rather than to the snapshot
+ * (`docs/plans/efficiency-plan-review-2026-09-11.md`, "Three whole-snapshot subscribers"), and
+ * builds `Sidebar`'s `titles`/`sessions`/`order` in memos rather than as JSX literals.
+ *
+ * What is asserted here is identity, not pixels. `Sidebar` is memoised by its own owner; a memo is
+ * worth nothing unless the props it compares are stable, and nothing in the rendered output would
+ * show that they are not.
+ */
+describe("the shell's store subscriptions", () => {
+  /** One drain frame with jsdom's real `requestAnimationFrame`, plus margin. */
+  const frame = () => new Promise<void>((done) => setTimeout(done, 40));
+
+  let seq = 0;
+  function envelope(sessionId: string, event: unknown, at = 1_700_000_000_000) {
+    seq += 1;
+    return { seq, at, instance_id: "inst-1", session_id: sessionId, event };
+  }
+  const feedBatch = (parts: Record<string, unknown>) => ({
+    project_id: "p-live",
+    rows: [],
+    signals: [],
+    counters: [],
+    ...parts,
+  });
+  const started = (model = "claude-sonnet-4-5") => ({
+    type: "session-started",
+    provider_session_id: "prov-1",
+    model,
+    cwd: "/repos/job-portal",
+    capabilities: [],
+    resume_token: null,
+  });
+  const opened = (requestId: string) => ({
+    type: "request-opened",
+    request_id: requestId,
+    turn_id: "t1",
+    kind: { type: "tool-permission", tool_name: "Edit", input_excerpt: "{}", suggestions: [], tool_call_id: null },
+  });
+
+  const lastProps = () => h.sidebarProps[h.sidebarProps.length - 1]!;
+
+  it("leaves every derived sidebar prop identical when an unrelated session's rows arrive", async () => {
+    h.sessions = [view("aaaa1111", "p-live"), view("bbbb2222", "p-live")];
+    await mountApp();
+    const store = await import("./feedStore");
+    const before = lastProps();
+
+    // Rows are not in the snapshot at all, so this frame must not reach the shell.
+    await act(async () => {
+      store.pushBatch(feedBatch({ rows: [row("bbbb2222", 1), row("bbbb2222", 2)] }) as never);
+      await frame();
+    });
+
+    const after = lastProps();
+    expect(after.titles).toBe(before.titles);
+    expect(after.sessions).toBe(before.sessions);
+    expect(after.order).toBe(before.order);
+    expect(after.pendingApprovals).toBe(before.pendingApprovals);
+    // The three that used to be rebuilt in the JSX on every render: an inline arrow, a fresh
+    // `<Burn/>` element (which made the memo inert in every dev and `VITE_BURN` build, i.e. every
+    // build a burn is captured on), and `peers.subagents ?? {}`.
+    expect(after.onSelectProject).toBe(before.onSelectProject);
+    expect(after.dev).toBe(before.dev);
+    expect(after.origins).toBe(before.origins);
+  });
+
+  it("does not re-render the memoised sidebar at all when an unrelated session's rows arrive", async () => {
+    h.sessions = [view("aaaa1111", "p-live"), view("bbbb2222", "p-live")];
+    await mountApp();
+    await act(async () => {});
+    const renders = probe.renders;
+    const wrapperRenders = h.sidebarProps.length;
+    // The probe is alive: a dead one would make the assertion below vacuous.
+    expect(renders).toBeGreaterThan(0);
+
+    await act(async () => {
+      const store = await import("./feedStore");
+      store.pushBatch(feedBatch({ rows: [row("bbbb2222", 1), row("bbbb2222", 2)] }) as never);
+      await frame();
+    });
+
+    // Neither the memo nor the wrapper outside it: the shell is not woken by a rows-only frame at
+    // all now that it selects `sessions`/`order`/`approvals` instead of the whole snapshot.
+    expect(probe.renders).toBe(renders);
+    expect(h.sidebarProps.length).toBe(wrapperRenders);
+  });
+
+  it("still re-renders the sidebar when one of its props really moves", async () => {
+    h.sessions = [view("aaaa1111", "p-live")];
+    await mountApp();
+    const store = await import("./feedStore");
+    await act(async () => {});
+    const renders = probe.renders;
+
+    await act(async () => {
+      store.pushBatch(feedBatch({ signals: [envelope("cccc3333", started(), 1_700_000_009_000)] }) as never);
+      await frame();
+    });
+
+    expect(probe.renders).toBeGreaterThan(renders);
+  });
+
+  it("keeps titles and order identical when an unrelated session's `busy` flips", async () => {
+    h.sessions = [view("aaaa1111", "p-live"), view("bbbb2222", "p-live")];
+    await mountApp();
+    const store = await import("./feedStore");
+    const before = lastProps();
+
+    await act(async () => {
+      store.pushBatch(feedBatch({ signals: [envelope("bbbb2222", { type: "turn-started", turn_id: "t1" })] }) as never);
+      await frame();
+    });
+
+    const after = lastProps();
+    // The shell did re-render — so the identity assertions below are about the memos holding, not
+    // about the sidebar never being asked.
+    expect(after).not.toBe(before);
+    // The one prop that genuinely moved moves; nothing else does.
+    expect(after.sessions).not.toBe(before.sessions);
+    expect((after.sessions as Record<string, { busy: boolean }>)["bbbb2222"]!.busy).toBe(true);
+    expect((after.sessions as Record<string, unknown>)["aaaa1111"]).toBe(
+      (before.sessions as Record<string, unknown>)["aaaa1111"],
+    );
+    expect(after.titles).toBe(before.titles);
+    expect(after.order).toBe(before.order);
+    expect(after.onSelectProject).toBe(before.onSelectProject);
+    expect(after.dev).toBe(before.dev);
+    expect(after.origins).toBe(before.origins);
+  });
+
+  it("hands the sidebar one frozen `origins` object while the peer snapshot has no subagents", async () => {
+    // `peers.subagents` is undefined until `peer_snapshot` answers — the first seconds after
+    // launch, which is the window `Sidebar`'s memo exists for. `?? {}` made that a fresh object
+    // every render and the memo could never skip through it.
+    h.peers = { ...h.peers, subagents: undefined };
+    h.sessions = [view("aaaa1111", "p-live"), view("bbbb2222", "p-live")];
+    await mountApp();
+    const store = await import("./feedStore");
+    const before = lastProps();
+    expect(before.origins).toEqual({});
+    expect(Object.isFrozen(before.origins)).toBe(true);
+
+    await act(async () => {
+      store.pushBatch(feedBatch({ signals: [envelope("bbbb2222", { type: "turn-started", turn_id: "t1" })] }) as never);
+      await frame();
+    });
+
+    const after = lastProps();
+    expect(after).not.toBe(before);
+    expect(after.origins).toBe(before.origins);
+  });
+
+  it("passes a real order change through to the sidebar", async () => {
+    h.sessions = [view("aaaa1111", "p-live")];
+    await mountApp();
+    const store = await import("./feedStore");
+    const before = lastProps();
+
+    await act(async () => {
+      store.pushBatch(feedBatch({ signals: [envelope("cccc3333", started(), 1_700_000_009_000)] }) as never);
+      await frame();
+    });
+
+    const after = lastProps();
+    expect(after.order).not.toBe(before.order);
+    expect(after.order).toEqual(["cccc3333", "aaaa1111"]);
+    expect(
+      within(screen.getByRole("navigation", { name: "Projects" })).getByRole("button", {
+        name: "Session cc3333",
+      }),
+    ).toBeVisible();
+  });
+
+  it("delivers a new approval on the frame it opens, clears it on request-resolved, and keeps a resolved-without-decision row as Expired", async () => {
+    const user = userEvent.setup();
+    h.sessions = [view("aaaa1111", "p-live")];
+    await mountApp();
+    await selectHistory(user, "aaaa1111");
+    const store = await import("./feedStore");
+    const pendingTotal = () => lastProps().pendingTotal as number;
+    expect(pendingTotal()).toBe(0);
+
+    // Approvals are never optimistic (`docs/vision.md` §9): the card is on screen because the
+    // store said so, on the frame the signal landed.
+    await act(async () => {
+      store.pushBatch(feedBatch({ signals: [envelope("aaaa1111", opened("r1"))] }) as never);
+      await frame();
+    });
+    expect(pendingTotal()).toBe(1);
+    expect(await screen.findByRole("button", { name: "Allow" })).toBeVisible();
+
+    // And it clears only on `request-resolved`.
+    await act(async () => {
+      store.pushBatch(feedBatch({
+        signals: [envelope("aaaa1111", {
+          type: "request-resolved",
+          request_id: "r1",
+          decision: { type: "allow", updated_input: null, updated_permissions: [] },
+        })],
+      }) as never);
+      await frame();
+    });
+    await waitFor(() => expect(pendingTotal()).toBe(0));
+    expect(screen.queryByRole("button", { name: "Allow" })).toBeNull();
+
+    // The third state: resolved with no decision comes back from `pending_approvals` as
+    // `expired: true`. The shell still counts and draws it; it is read-only, not absent.
+    await act(async () => {
+      store.seedApprovals([{
+        session_id: "aaaa1111",
+        request_id: "r2",
+        opened_at_ms: 1_700_000_000_000,
+        resolved: false,
+        expired: true,
+        kind: { type: "tool-permission", tool_name: "Edit", input_excerpt: "{}", suggestions: [], tool_call_id: null },
+      }]);
+    });
+    await waitFor(() => expect(pendingTotal()).toBe(1));
+    expect(await screen.findByText(/no longer answerable/)).toBeVisible();
+  });
+});
+
+/**
+ * `useFeedSelector`'s two caches — the `getSnapshot` one `useSyncExternalStore` requires, and the
+ * `subscribeTo` registration that keeps React out of the loop entirely on a frame the selection
+ * held still.
+ */
+describe("useFeedSelector", () => {
+  /** Derived on purpose: a pass-through selector would satisfy the caching rule by accident. */
+  const selectIds = (s: import("./feedStore").StoreState) => Object.keys(s.sessions);
+  const selectApprovals = (s: import("./feedStore").StoreState) => s.approvals;
+
+  const approval = (requestId: string) => ({
+    session_id: "aaaa1111",
+    request_id: requestId,
+    opened_at_ms: 1_700_000_000_000,
+    resolved: false,
+    expired: false,
+    kind: { type: "tool-permission" as const, tool_name: "Edit", input_excerpt: "{}", suggestions: [], tool_call_id: null },
+  });
+
+  it("returns the identical value across reads with no store change", async () => {
+    const store = await import("./feedStore");
+    store.seedSessions([view("aaaa1111", "p-live")]);
+    const { result, rerender } = renderHook(() => store.useFeedSelector(selectIds));
+    const first = result.current;
+    expect(first).toEqual(["aaaa1111"]);
+    // A second render with nothing moved: `getSnapshot` must hand back the identical array, which
+    // is also why React did not throw its "result of getSnapshot should be cached" loop guard.
+    rerender();
+    expect(result.current).toBe(first);
+  });
+
+  it("does not render on a frame its selection held still, and disposes its listener on unmount", async () => {
+    const store = await import("./feedStore");
+    let renders = 0;
+    const { result, unmount } = renderHook(() => {
+      renders += 1;
+      return store.useFeedSelector(selectApprovals);
+    });
+    const baseline = renders;
+
+    // A session arriving rebuilds the snapshot and notifies; the approvals selection does not move.
+    await act(async () => {
+      store.seedSessions([view("aaaa1111", "p-live")]);
+    });
+    expect(renders).toBe(baseline);
+
+    await act(async () => {
+      store.seedApprovals([approval("r1")]);
+    });
+    expect(renders).toBe(baseline + 1);
+    expect(result.current.map((a) => a.requestId)).toEqual(["r1"]);
+
+    unmount();
+    await act(async () => {
+      store.seedApprovals([approval("r2")]);
+    });
+    expect(renders).toBe(baseline + 1);
   });
 });

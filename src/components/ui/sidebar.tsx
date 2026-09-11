@@ -91,9 +91,12 @@ function SidebarProvider({
 
   React.useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      // `!altKey`: the app binds ⌘⌥B to the workspace toggle (`src/App.tsx`), and without this
+      // guard that chord fires both. Upstream's kit has no such neighbour; see `UPSTREAM.md`.
       if (
         event.key === SIDEBAR_KEYBOARD_SHORTCUT &&
-        (event.metaKey || event.ctrlKey)
+        (event.metaKey || event.ctrlKey) &&
+        !event.altKey
       ) {
         event.preventDefault();
         toggleSidebar();
