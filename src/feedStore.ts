@@ -487,7 +487,16 @@ function applySignal(env: Envelope, projectId: ProjectId | null): void {
       });
       break;
     case "turn-aborted":
-      patch(id, projectId, { busy: false, lastStop: null, lastEventSeq: env.seq });
+      // `AbortReason` uses the same bare-string/`{error}` encoding as `StopReason` above, and
+      // its two abort-only bare values ("interrupted", "killed") never collide with a
+      // `StopReason` variant — so `lastStop` can carry either terminal reason through the same
+      // field, and the interruption is a live signal (`threadProjection.ts`) before the
+      // persisted turn record lands.
+      patch(id, projectId, {
+        busy: false,
+        lastStop: typeof e.reason === "string" ? e.reason : JSON.stringify(e.reason),
+        lastEventSeq: env.seq,
+      });
       break;
     case "request-opened":
       approvals.set(e.request_id, {

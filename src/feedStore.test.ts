@@ -395,6 +395,51 @@ describe("cost", () => {
   });
 });
 
+describe("turn-aborted", () => {
+  it("carries a bare AbortReason into lastStop, unambiguous against any StopReason", async () => {
+    const store = await load();
+    store.start();
+
+    store.pushBatch(
+      batch({ signals: [env("s1", { type: "turn-aborted", turn_id: "t1", reason: "interrupted" })] }),
+    );
+    vi.advanceTimersByTime(FRAME_MS);
+    expect(store.getState().sessions["s1"]!.lastStop).toBe("interrupted");
+    expect(store.getState().sessions["s1"]!.busy).toBe(false);
+    store.stop();
+  });
+
+  it("carries a killed AbortReason into lastStop the same way", async () => {
+    const store = await load();
+    store.start();
+
+    store.pushBatch(
+      batch({ signals: [env("s1", { type: "turn-aborted", turn_id: "t1", reason: "killed" })] }),
+    );
+    vi.advanceTimersByTime(FRAME_MS);
+    expect(store.getState().sessions["s1"]!.lastStop).toBe("killed");
+    store.stop();
+  });
+
+  it("encodes an AbortReason::Error the same way turn-completed encodes a StopReason::Error", async () => {
+    const store = await load();
+    store.start();
+
+    store.pushBatch(
+      batch({
+        signals: [
+          env("s1", { type: "turn-aborted", turn_id: "t1", reason: { error: "disconnected" } }),
+        ],
+      }),
+    );
+    vi.advanceTimersByTime(FRAME_MS);
+    expect(store.getState().sessions["s1"]!.lastStop).toBe(
+      JSON.stringify({ error: "disconnected" }),
+    );
+    store.stop();
+  });
+});
+
 describe("seedSessions", () => {
   it("clears a stale end when the view says the session is live", async () => {
     const store = await load();
