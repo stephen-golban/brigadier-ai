@@ -1,0 +1,23 @@
+opened ?rps=0&approvals=manual -> true
+D1 strip-text "Context 22% | 5-hour 23%"
+D1 aria ["Context 22% used, auto-compacts at 84%","5-hour usage window 23% spent"]
+D1 marks ["38.625px","36.7969px"] meters [{"value":22,"low":76,"high":84,"w":46},{"value":23,"low":70,"high":80,"w":46}]
+D1 money false
+D1 context-popover "Current context |  | ≈ 43,333 / 200,000 tokens |  | Auto-compacts at 167,000 tokens (84%), from the model's default. Compacting takes about ten seconds and summarises the conversation so far. |  | claude-sonnet-4-5 |  | Provider estimate · Includes instructions and tools · Updated 3:32:58 PM"
+D1 usage-popover "Usage windows | 5-hour | 26% | resets in 2h 14m | 7-day | 5% | resets in 3d 1h | The marked line is the 80% reserve — headroom kept so your own Claude Code keeps working, not a spending limit. Your subscription is never billed per token, so there is no figure in dollars to show."
+D1 usage-popover-money false
+opened ?rps=0&approvals=manual&context=80&usage=62 -> true
+D2-near strip-text "Context 80% | compacts soon | 5-hour 71%"
+D2-near aria ["Context 80% used, auto-compacts at 84%","5-hour usage window 71% spent"]
+D2-near marks ["38.625px","36.7969px"] meters [{"value":80,"low":76,"high":84,"w":46},{"value":71,"low":70,"high":80,"w":46}]
+D2-near money false
+opened ?rps=0&approvals=manual&context=90&usage=86 -> true
+D3-past strip-text "Context 90% | compacting | 5-hour 95% | past reserve"
+D3-past aria ["Context 90% used, past the 84% auto-compaction threshold","5-hour usage window 95% spent, past the 80% reserve"]
+D3-past marks ["38.625px","36.7969px"] meters [{"value":90,"low":76,"high":84,"w":46},{"value":95,"low":70,"high":80,"w":46}]
+D3-past money false
+D4-light strip-text "Context 35% | 5-hour 13%"
+D4-light aria ["Context 35% used, auto-compacts at 84%","5-hour usage window 13% spent"]
+D4-light marks ["38.625px","36.7969px"] meters [{"value":35,"low":76,"high":84,"w":46},{"value":13,"low":70,"high":80,"w":46}]
+D4-light money false
+pageerrors []

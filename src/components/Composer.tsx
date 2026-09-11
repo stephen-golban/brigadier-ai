@@ -13,6 +13,8 @@ import * as feedStore from "../feedStore";
 import type { ModelInfo } from "../wire";
 import { useMessageEdit, type MessageEditProps } from "./EditMessage";
 import { PromptInput } from "./PromptInput";
+import { SessionContext } from "./SessionContext";
+import { UsageWindows } from "./UsageWindows";
 import { ArrowUp, X } from "../icons";
 import { isSubmitKey } from "../keys";
 import type { SessionRuntime } from "../feedStore";
@@ -199,6 +201,27 @@ export function Composer({ session, models = EMPTY_MODELS, busy, onSend, onResum
       The freed slot is the queue rail's: the queued/pending block below is now the first thing in
       the dock, and its `-9px` bottom margin tucks it into the composer the way the setup rail did.
     */}
+    {/*
+      The two gauges, in the slot the setup rail vacated.
+
+      **Why here.** Both answer "where do I stand before I press send", which is a question about
+      the *next* turn, so they belong against the composer and not in the transcript. The dock is
+      also the only surface that is always on screen while a session is live: `SessionCard`'s
+      "Context" panel is the other candidate and is the wrong one, because it is a `<details>` that
+      collapses below 1500px — a threshold you can only see when you remember to open a drawer is a
+      threshold you get surprised by. This strip sits above the queue rail, on the same 12px,
+      `--color-input` terms as `.composer-approval-strip`, so the dock reads as one stack of
+      session state rather than a new panel.
+
+      It is per-session by construction: `Composer` is the branch `Dock` takes only once a session
+      exists (`src/components/Dock.tsx`), so neither gauge can render against a session that has
+      not started. `.dock-usage` is the class `thread-context.css:25` already hides inside a
+      `.worker-composer` — a worker's sub-composer is not where you read the parent's window.
+    */}
+    {session && <div className="dock-usage" aria-label="Session usage">
+      <SessionContext sessionId={session.sessionId} revision={session.lastEventSeq} busy={session.busy} />
+      <UsageWindows sessionId={sessionId} />
+    </div>}
     {approvals.length > 0 && !approvalOnScreen && <button type="button" className="composer-approval-strip" onClick={() => document.getElementById(`approval-${approvals[0]!.requestId}`)?.scrollIntoView({ block: "center", behavior: "smooth" })}>Approval needed{approvals.length > 1 ? ` · ${approvals.length}` : ""}<span>View action ↑</span></button>}
     {(pending.length > 0 || state?.paused || state?.stopping || waiting) && <div className="composer-queue" aria-label="Message queue">
       <div className="composer-queue-header"><span>{stopping ? "Stopping task…" : state?.paused ? state.stopped ? "Queue paused because you stopped" : "Queue paused" : waitingLabel ?? `${pending.length} queued message${pending.length === 1 ? "" : "s"}`}</span>{canResume && <Button type="button" variant="ghost" size="sm" disabled={queueBusy || stopping} onClick={() => void resume()}>Continue</Button>}</div>

@@ -147,3 +147,32 @@
   .composer-queue-actions { width: 100%; justify-content: end; }
 }
 @media (prefers-reduced-motion: reduce) { .composer-spinner { animation: none; } }
+
+/* The two gauges above the composer. Same 12px, `--color-input` terms as the approval strip, so
+   the dock reads as one stack of session state rather than a second panel. */
+.dock-usage { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; width: calc(100% - 28px); max-width: 752px; margin: 0 auto 10px; }
+.dock-usage .gauge-button { gap: 7px; padding: 3px 9px; min-height: 26px; border-radius: var(--radius-md); background: var(--color-input); font-size: 12px; font-weight: 400; color: var(--color-text-secondary); }
+.dock-usage .gauge-button:hover:not(:disabled) { color: var(--color-text); }
+/* The threshold line is the point of the meter, so it is drawn on the track rather than implied
+   by a colour change alone: `--gauge-mark` is the compaction point for context and the reserve
+   for a usage window. `<meter>` is a replaced element with no usable pseudo-elements, hence the
+   sibling tick inside a positioned wrapper. */
+.gauge-track { position: relative; display: inline-flex; width: 46px; height: 8px; flex-shrink: 0; }
+.gauge-track meter { appearance: none; -webkit-appearance: none; width: 100%; height: 100%; border: 0; border-radius: var(--radius-full); background: color-mix(in srgb, currentColor 18%, transparent); overflow: hidden; }
+.gauge-track meter::-webkit-meter-bar { background: color-mix(in srgb, currentColor 18%, transparent); border: 0; border-radius: var(--radius-full); height: 100%; }
+.gauge-track meter::-webkit-meter-optimum-value { background: var(--color-text-secondary); border-radius: var(--radius-full); }
+.gauge-track meter::-webkit-meter-suboptimum-value { background: var(--color-warn); border-radius: var(--radius-full); }
+.gauge-track meter::-webkit-meter-even-less-good-value { background: var(--color-error); border-radius: var(--radius-full); }
+.gauge-track meter::-moz-meter-bar { background: var(--color-text-secondary); border-radius: var(--radius-full); }
+.gauge-track meter:-moz-meter-sub-optimum::-moz-meter-bar { background: var(--color-warn); }
+.gauge-track meter:-moz-meter-sub-sub-optimum::-moz-meter-bar { background: var(--color-error); }
+.gauge-mark { position: absolute; top: -2px; bottom: -2px; left: var(--gauge-mark); width: 2px; margin-left: -1px; border-radius: 1px; background: var(--color-text); opacity: .55; pointer-events: none; }
+.gauge-warn { color: var(--color-warn); white-space: nowrap; font-size: 11px; }
+.usage-window-list { display: grid; gap: 9px; margin: 9px 0 11px; }
+.usage-window-row { display: grid; grid-template-columns: 52px 46px auto 1fr; align-items: center; gap: 8px; font-size: 12px; }
+.usage-window-name { color: var(--color-text); }
+.usage-window-value { color: var(--color-text); font-variant-numeric: tabular-nums; }
+.usage-window-reset { color: var(--color-text-tertiary); text-align: right; white-space: nowrap; }
+@container composer-dock (max-width: 450px) {
+  .dock-usage .gauge-button > span:not(.gauge-track) { max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
