@@ -211,13 +211,44 @@ fn every_variant() -> Vec<(Event, Option<&'static str>)> {
             Some("approval denied · timeout"),
         ),
         (
-            Event::SessionCompacted { trigger: CompactTrigger::Auto, pre_tokens: Some(180_000) },
+            // The real capture's numbers: `s11-auto-compaction.ndjson:49`, CLI 2.1.268.
+            Event::SessionCompacted {
+                trigger: CompactTrigger::Auto,
+                pre_tokens: Some(70_633),
+                post_tokens: Some(1_379),
+                cumulative_dropped_tokens: Some(69_254),
+                duration_ms: Some(12_262),
+            },
+            Some("context compacted · auto · 70633 → 1379 tokens · 12.3 s"),
+        ),
+        (
+            // A provider that reports only `pre_tokens` keeps the older line verbatim.
+            Event::SessionCompacted {
+                trigger: CompactTrigger::Auto,
+                pre_tokens: Some(180_000),
+                post_tokens: None,
+                cumulative_dropped_tokens: None,
+                duration_ms: None,
+            },
             Some("context compacted · auto · 180000 tokens before"),
         ),
         (
-            Event::SessionCompacted { trigger: CompactTrigger::Manual, pre_tokens: None },
+            Event::SessionCompacted {
+                trigger: CompactTrigger::Manual,
+                pre_tokens: None,
+                post_tokens: None,
+                cumulative_dropped_tokens: None,
+                duration_ms: None,
+            },
             Some("context compacted · manual"),
         ),
+        // A live phase carries no row, the way `usage-windows` carries none.
+        (Event::SessionCompacting, None),
+        (
+            Event::SessionCompactFailed { error: Some("too_few_groups".into()) },
+            Some("context compaction failed · too_few_groups"),
+        ),
+        (Event::SessionCompactFailed { error: None }, Some("context compaction failed")),
         (
             Event::RuntimeWarning { message: "settings.json shadows the mode".into() },
             Some("warning · settings.json shadows the mode"),
@@ -357,7 +388,19 @@ fn kind_is_pinned_for_every_variant() {
             "sys",
         ),
         (Event::SessionExited { reason: ExitReason::Graceful, exit_code: Some(0) }, "sys"),
-        (Event::SessionCompacted { trigger: CompactTrigger::Auto, pre_tokens: None }, "sys"),
+        (
+            Event::SessionCompacted {
+                trigger: CompactTrigger::Auto,
+                pre_tokens: None,
+                post_tokens: None,
+                cumulative_dropped_tokens: None,
+                duration_ms: None,
+            },
+            "sys",
+        ),
+        (Event::SessionCompacting, "sys"),
+        // A compaction the provider abandoned is a warning: the session ran on.
+        (Event::SessionCompactFailed { error: Some("too_few_groups".into()) }, "warn"),
         (Event::TurnStarted { turn_id: TurnId::new("t1") }, "turn"),
         (
             Event::TurnCompleted {
@@ -511,11 +554,24 @@ fn terse_line_is_bounded() {
 fn lifecycle_events_project_to_notices_with_deterministic_ids() {
     let cases: Vec<(Event, &str, NoticeLevel, &str, &str)> = vec![
         (
-            Event::SessionCompacted { trigger: CompactTrigger::Auto, pre_tokens: Some(180_000) },
+            Event::SessionCompacted {
+                trigger: CompactTrigger::Auto,
+                pre_tokens: Some(180_000),
+                post_tokens: None,
+                cumulative_dropped_tokens: None,
+                duration_ms: None,
+            },
             "s1:notice:compacted:7",
             NoticeLevel::Info,
             "compacted",
             "auto",
+        ),
+        (
+            Event::SessionCompactFailed { error: Some("too_few_groups".into()) },
+            "s1:notice:compact-failed:7",
+            NoticeLevel::Warning,
+            "compact-failed",
+            "Context compaction failed: too_few_groups",
         ),
         (
             Event::RuntimeWarning { message: "settings.json shadows the mode".into() },
@@ -591,11 +647,50 @@ fn lifecycle_events_project_to_notices_with_deterministic_ids() {
 fn notice_detail_carries_the_numbers_the_row_renders() {
     let compacted = brigadier_store::chat::project(&env(
         3,
-        Event::SessionCompacted { trigger: CompactTrigger::Manual, pre_tokens: Some(180_000) },
+        Event::SessionCompacted {
+            trigger: CompactTrigger::Manual,
+            pre_tokens: Some(180_000),
+            post_tokens: None,
+            cumulative_dropped_tokens: None,
+            duration_ms: None,
+        },
     ))
     .expect("notice");
     let ItemKind::Notice { detail, .. } = compacted.kind else { panic!("not a notice") };
     assert_eq!(detail, Some(serde_json::json!({"pre_tokens": 180_000})));
+
+    // The real capture's boundary, whole: every number the provider sent, none invented.
+    // see crates/claude-spike/fixtures/s11-auto-compaction.ndjson:49, CLI 2.1.268.
+    let full = brigadier_store::chat::project(&env(
+        4,
+        Event::SessionCompacted {
+            trigger: CompactTrigger::Auto,
+            pre_tokens: Some(70_633),
+            post_tokens: Some(1_379),
+            cumulative_dropped_tokens: Some(69_254),
+            duration_ms: Some(12_262),
+        },
+    ))
+    .expect("notice");
+    let ItemKind::Notice { detail, .. } = full.kind else { panic!("not a notice") };
+    assert_eq!(
+        detail,
+        Some(serde_json::json!({
+            "pre_tokens": 70_633,
+            "post_tokens": 1_379,
+            "cumulative_dropped_tokens": 69_254,
+            "duration_ms": 12_262,
+        }))
+    );
+
+    let failed =
+        brigadier_store::chat::project(&env(5, Event::SessionCompactFailed { error: Some("too_few_groups".into()) }))
+            .expect("notice");
+    let ItemKind::Notice { detail, .. } = failed.kind else { panic!("not a notice") };
+    assert_eq!(detail, Some(serde_json::json!({"error": "too_few_groups"})));
+
+    // A live phase is not a transcript row at all.
+    assert!(brigadier_store::chat::project(&env(6, Event::SessionCompacting)).is_none());
 
     let exited = brigadier_store::chat::project(&env(
         4,

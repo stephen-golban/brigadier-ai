@@ -51,7 +51,11 @@ pub fn is_signal(event: &Event) -> bool {
             | Event::TurnAborted { .. }
             | Event::RequestOpened { .. }
             | Event::RequestResolved { .. }
+            // The live compaction phase and its two terminators: a 12-second pause the
+            // operator is owed an explanation for, whether or not the project is on screen.
+            | Event::SessionCompacting
             | Event::SessionCompacted { .. }
+            | Event::SessionCompactFailed { .. }
             | Event::RuntimeError { .. }
             | Event::RuntimeWarning { .. }
             // The usage gauge must update whether or not the project is visible — it is the

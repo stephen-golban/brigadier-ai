@@ -37,7 +37,7 @@ MIN_EVENTS_PER_SECOND = 100
 # (docs/performance/codex-thread-burn-2026-09-11.md §5).
 # Pinned against the Rust rule by `crates/store/tests/feed.rs`
 # `the_burn_harness_row_rule_matches_terse_line`, which fails the build if a new variant drifts.
-NON_ROW_EVENT_TYPES = {"turn-started", "content-delta", "item-updated", "usage-windows"}
+NON_ROW_EVENT_TYPES = {"turn-started", "content-delta", "item-updated", "usage-windows", "session-compacting"}
 # Event types that can carry a chat item's `seq` in the transcript the UI mounts: the three item
 # events and `content-delta` (`brigadier_store::chat::append_delta` moves the item's seq to the
 # delta's), plus the lifecycle events `brigadier_store::chat::project` mints a synthetic notice
@@ -50,6 +50,7 @@ CHAT_ITEM_EVENT_TYPES = {
     "item-completed",
     "content-delta",
     "session-compacted",
+    "session-compact-failed",
     "runtime-warning",
     "runtime-error",
     "session-exited",

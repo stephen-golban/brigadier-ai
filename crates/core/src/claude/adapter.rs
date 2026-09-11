@@ -47,7 +47,7 @@ use claude_wire::control::{
 };
 use claude_wire::message::{
     AssistantMessage, CliMessage, ContentBlock, ContentBlockKnown, KnownMessage, MessageContent,
-    ResultErrorTag, ResultMessage, SystemInit, SystemMessage, UserMessage,
+    ResultErrorTag, ResultMessage, SystemInit, SystemMessage, SystemStatus, UserMessage,
 };
 use claude_wire::{
     decode_line, encode_line, ControlRequest, ControlRequestBody, ControlResponse, Inbound,
@@ -225,6 +225,12 @@ const DECISION_MEMORY: usize = 1024;
 /// tool's body is a reason an operator typed. [`parse_exit_code`] is never pointed at any of them.
 const SHELL_TOOLS: [&str; 1] = ["Bash"];
 
+/// Bytes a provider compaction-failure slug may occupy on an event.
+///
+/// `"too_few_groups"` is 14; the cap is there because the field is provider text, and provider
+/// text rides from an event into persistence and back out to the UI.
+const COMPACT_ERROR_LIMIT: usize = 120;
+
 /// One parked `can_use_tool`, kept so the answer can be written back.
 #[derive(Debug)]
 struct OpenPermission {
@@ -306,6 +312,20 @@ struct Adapter<W> {
     /// [`FINAL_TEXT_LIMIT`] by keeping the tail.
     native_pending: HashMap<String, (NativeControl, oneshot::Sender<Result<Value, CommandError>>)>,
     rewind_paused: bool,
+    /// True between `system/status` `"compacting"` and whichever frame closes the compaction.
+    ///
+    /// Guards against a second [`Event::SessionCompacting`] for one compaction, and against a
+    /// `compact_boundary` that arrives with no phase in front of it emitting a close for a phase
+    /// the UI never opened.
+    compacting: bool,
+    /// A `compact_result: "success"` has been seen and its `compact_boundary` has not.
+    ///
+    /// The capture shows the boundary arriving immediately after
+    /// (`crates/claude-spike/fixtures/s11-auto-compaction.ndjson:48` then `:49`, CLI 2.1.268),
+    /// and that is where the numbers live, so the close is held for one message to collect them.
+    /// If anything else arrives first the close is emitted bare rather than lost — a compaction
+    /// indicator that never stops is worse than a notice with no numbers in it.
+    pending_compact_success: bool,
     checkpoint_send: Option<TurnId>,
     checkpoint_tasks_overflow: bool,
     checkpoint_revision: Option<u64>,
@@ -404,6 +424,8 @@ where
         pending_acks: HashMap::new(),
         native_pending: HashMap::new(),
         rewind_paused: false,
+        compacting: false,
+        pending_compact_success: false,
         checkpoint_send: None,
         checkpoint_tasks_overflow: false,
         checkpoint_revision: None,
@@ -647,6 +669,15 @@ where
                 }
             }
         }
+        // A held `compact_result: "success"` closes here when the boundary is not what came next.
+        if self.pending_compact_success
+            && !matches!(
+                &message,
+                KnownMessage::System(SystemMessage::CompactBoundary(_))
+            )
+        {
+            self.flush_pending_compaction();
+        }
         match message {
             KnownMessage::System(system) => self.on_system(system, raw),
             KnownMessage::Assistant(assistant) => self.on_assistant(assistant, raw),
@@ -854,28 +885,108 @@ where
         match system {
             SystemMessage::Init(init) => self.on_init(init, raw),
             SystemMessage::CompactBoundary(boundary) => {
-                let trigger = match boundary.compact_metadata.trigger.as_str() {
+                let meta = boundary.compact_metadata;
+                let trigger = match meta.trigger.as_str() {
                     "manual" => CompactTrigger::Manual,
                     _ => CompactTrigger::Auto,
                 };
-                let pre_tokens = boundary.compact_metadata.pre_tokens;
+                self.pending_compact_success = false;
+                self.compacting = false;
                 self.emit(
                     Event::SessionCompacted {
                         trigger,
-                        pre_tokens,
+                        pre_tokens: meta.pre_tokens,
+                        post_tokens: meta.post_tokens,
+                        cumulative_dropped_tokens: meta.cumulative_dropped_tokens,
+                        duration_ms: meta.duration_ms,
                     },
                     Some(raw),
                 );
             }
-            // Hook lifecycle frames need `includeHookEvents`; `status`, `permission_denied` and
-            // the 25 other subtypes are informational. `result.permission_denials` is the
-            // authoritative denial record (docs/research/agent-sdk.md §6), so the advisory frame
-            // is not an event of its own.
+            SystemMessage::Status(status) => self.on_status(&status, raw),
+            // Hook lifecycle frames need `includeHookEvents`; `permission_denied` and the 25
+            // other subtypes are informational. `result.permission_denials` is the authoritative
+            // denial record (docs/research/agent-sdk.md §6), so the advisory frame is not an
+            // event of its own.
             SystemMessage::Hook(_)
-            | SystemMessage::Status(_)
             | SystemMessage::PermissionDenied(_)
             | SystemMessage::Other(_) => {}
         }
+    }
+
+    /// `system/status`: the only live view of a compaction there is.
+    ///
+    /// Three frames make one compaction — `"requesting"`, `"compacting"`, then an explicit
+    /// `null` carrying `compact_result` — and only the middle one means a compaction is under
+    /// way. `"requesting"` is **not** compaction-specific: the same capture carries one in front
+    /// of an ordinary turn that compacts nothing
+    /// (`crates/claude-spike/fixtures/s11-auto-compaction.ndjson:4`), so opening a compaction on
+    /// it would put a spinner on every turn.
+    ///
+    /// The closing `null` frame is the only carrier of failure anywhere on the wire: no
+    /// `compact_boundary` follows a failed compaction, and before this arm existed the whole
+    /// attempt was silent.
+    // see docs/research/compaction-and-long-sessions-2026-09-11.md §A2 — measured, CLI 2.1.268.
+    fn on_status(&mut self, status: &SystemStatus, raw: &str) {
+        // `Some(Some(_))` is a phase name, `Some(None)` the explicit null that clears one, and
+        // `None` the key being absent altogether — three cases the wire keeps apart on purpose.
+        match status.status.as_ref().map(Option::as_deref) {
+            Some(Some("compacting")) => {
+                if !self.compacting {
+                    self.compacting = true;
+                    self.emit(Event::SessionCompacting, Some(raw));
+                }
+            }
+            Some(None) => match status.extra.get("compact_result").and_then(Value::as_str) {
+                // The numbers are on the boundary that follows, so the close waits one message
+                // for it (`Adapter::pending_compact_success`).
+                Some("success") => self.pending_compact_success = true,
+                // Anything that is not success ended the attempt. `compact_error` is the reason
+                // when the CLI sends one; failing that, an unrecognised `compact_result` value is
+                // itself the most honest reason available, and a bare `"failed"` leaves the
+                // reason `None` rather than inventing one.
+                Some(other) => {
+                    let error = status
+                        .extra
+                        .get("compact_error")
+                        .and_then(Value::as_str)
+                        .map(|reason| bounded(reason, COMPACT_ERROR_LIMIT))
+                        .or_else(|| {
+                            (other != "failed").then(|| bounded(other, COMPACT_ERROR_LIMIT))
+                        });
+                    self.pending_compact_success = false;
+                    self.compacting = false;
+                    self.emit(Event::SessionCompactFailed { error }, Some(raw));
+                }
+                // A null status with no `compact_result` clears some other phase — `"requesting"`
+                // on a turn that never compacts — and is not ours.
+                None => {}
+            },
+            _ => {}
+        }
+    }
+
+    /// Close a compaction whose `compact_result: "success"` was not followed by a boundary.
+    ///
+    /// Never observed: in the one real capture the boundary is the very next line. It exists so
+    /// that the live phase has exactly one terminator on every path — a compaction indicator
+    /// that never stops is a worse failure than a notice with no numbers on it.
+    ///
+    /// The trigger is **asserted, not measured**: this adapter refuses `NativeControl::Compact`
+    /// (see `Adapter::on_command`), so every compaction it can witness is the CLI's own.
+    fn flush_pending_compaction(&mut self) {
+        self.pending_compact_success = false;
+        self.compacting = false;
+        self.emit(
+            Event::SessionCompacted {
+                trigger: CompactTrigger::Auto,
+                pre_tokens: None,
+                post_tokens: None,
+                cumulative_dropped_tokens: None,
+                duration_ms: None,
+            },
+            None,
+        );
     }
 
     /// `system/init` arrives **once per turn**, not once per process: the spike's interrupted
@@ -1990,6 +2101,11 @@ where
     /// waiter left is a turn that never ends.
     // see crates/core/src/approval.rs — teardown fan-out is that type's stated contract.
     fn on_exit(&mut self, info: Option<ExitInfo>) {
+        // A child that dies between `compact_result: "success"` and its boundary still has to
+        // close the compaction it opened, or the indicator outlives the session.
+        if self.pending_compact_success {
+            self.flush_pending_compaction();
+        }
         let exit_code = info.and_then(|i| i.code);
         let open: Vec<RequestId> = self.open_permissions.keys().cloned().collect();
         self.approvals.cancel_all(EXIT_REASON);

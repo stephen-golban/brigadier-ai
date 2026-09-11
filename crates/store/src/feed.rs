@@ -52,12 +52,14 @@ pub enum FeedKind {
     /// An approval or a question and its answer: [`Event::RequestOpened`],
     /// [`Event::RequestResolved`].
     Appr,
-    /// [`Event::RuntimeWarning`].
+    /// [`Event::RuntimeWarning`], and [`Event::SessionCompactFailed`] — a compaction the
+    /// provider abandoned is something the operator should see, and nothing stopped.
     Warn,
     /// [`Event::RuntimeError`], fatal or not.
     Err,
     /// Session lifetime and housekeeping: [`Event::SessionStarted`], [`Event::SessionExited`],
-    /// [`Event::SessionCompacted`]. Nothing else: this is a real class, not a bucket.
+    /// [`Event::SessionCompacted`], [`Event::SessionCompacting`]. Nothing else: this is a real
+    /// class, not a bucket.
     Sys,
     /// The row's kind was never recorded — it predates `feed.kind`, or its slug was written by a
     /// build that knows a class this one does not.
@@ -116,6 +118,7 @@ pub fn kind(event: &Event) -> FeedKind {
     match event {
         Event::SessionStarted { .. }
         | Event::SessionExited { .. }
+        | Event::SessionCompacting
         | Event::SessionCompacted { .. } => FeedKind::Sys,
         Event::TurnStarted { .. } | Event::TurnCompleted { .. } | Event::TurnAborted { .. } => {
             FeedKind::Turn
@@ -125,7 +128,7 @@ pub fn kind(event: &Event) -> FeedKind {
         | Event::ItemCompleted { kind, .. } => item_kind(kind),
         Event::ContentDelta { .. } => FeedKind::Text,
         Event::RequestOpened { .. } | Event::RequestResolved { .. } => FeedKind::Appr,
-        Event::RuntimeWarning { .. } => FeedKind::Warn,
+        Event::RuntimeWarning { .. } | Event::SessionCompactFailed { .. } => FeedKind::Warn,
         Event::RuntimeError { .. } => FeedKind::Err,
         // Housekeeping the operator did not cause: the usage gauge, not a feed row (see
         // `terse_line`, which returns `None` for it).
@@ -202,19 +205,36 @@ pub fn terse_line(event: &Event) -> Option<String> {
             Decision::Allow { .. } => "approval allowed".to_owned(),
             Decision::Deny { reason, .. } => join("approval denied", reason),
         },
+        // A live phase, not a record: the row would be a permanent line saying something is
+        // happening that has since stopped. Delivered as a signal, the way `UsageWindows` is.
+        Event::SessionCompacting => return None,
         Event::SessionCompacted {
             trigger,
             pre_tokens,
+            post_tokens,
+            duration_ms,
+            ..
         } => {
             let trigger = match trigger {
                 brigadier_core::event::CompactTrigger::Manual => "manual",
                 brigadier_core::event::CompactTrigger::Auto => "auto",
             };
-            match pre_tokens {
-                Some(n) => format!("context compacted · {trigger} · {n} tokens before"),
-                None => format!("context compacted · {trigger}"),
-            }
+            let tokens = match (pre_tokens, post_tokens) {
+                (Some(pre), Some(post)) => format!(" · {pre} → {post} tokens"),
+                (Some(pre), None) => format!(" · {pre} tokens before"),
+                (None, Some(post)) => format!(" · {post} tokens after"),
+                (None, None) => String::new(),
+            };
+            let took = match duration_ms {
+                Some(ms) => format!(" · {}", duration_str(*ms)),
+                None => String::new(),
+            };
+            format!("context compacted · {trigger}{tokens}{took}")
         }
+        Event::SessionCompactFailed { error } => match error {
+            Some(reason) => join("context compaction failed", reason),
+            None => "context compaction failed".to_owned(),
+        },
         Event::RuntimeWarning { message } => join("warning", message),
         Event::RuntimeError { message, fatal } => {
             join(if *fatal { "fatal error" } else { "error" }, message)
@@ -222,6 +242,18 @@ pub fn terse_line(event: &Event) -> Option<String> {
         Event::UsageWindows { .. } => return None,
     };
     Some(bounded(&line, FEED_LINE_LIMIT))
+}
+
+/// A duration for a one-line row: seconds to one decimal once it passes a second.
+///
+/// The measured compaction is `12262` ms, which reads as `12.3 s`; sub-second stays in
+/// milliseconds rather than rendering as `0.3 s`.
+fn duration_str(ms: u64) -> String {
+    if ms < 1000 {
+        format!("{ms} ms")
+    } else {
+        format!("{:.1} s", ms as f64 / 1000.0)
+    }
 }
 
 fn join(label: &str, tail: &str) -> String {

@@ -282,13 +282,58 @@ pub enum Event {
         /// The answer that unblocked it.
         decision: Decision,
     },
-    /// The provider compacted its own context.
-    // see docs/research/agent-sdk.md §6 — `system/compact_boundary.compact_metadata`.
+    /// The provider started compacting its own context and has not finished.
+    ///
+    /// Emitted from `system/status` `"compacting"` and from nothing else. The `"requesting"`
+    /// frame that precedes it is **not** a compaction: the same capture carries one in front of
+    /// an ordinary turn that never compacts
+    /// (`crates/claude-spike/fixtures/s11-auto-compaction.ndjson:4`, CLI 2.1.268), so emitting on
+    /// it would spin a compaction indicator for every turn.
+    ///
+    /// A live phase, not a record. It carries no feed row and no thread notice — the way
+    /// [`Event::UsageWindows`] carries none — and exactly one of [`Event::SessionCompacted`] or
+    /// [`Event::SessionCompactFailed`] always closes it.
+    // see docs/research/compaction-and-long-sessions-2026-09-11.md §A2 for the measured order.
+    SessionCompacting,
+    /// The provider compacted its own context, and finished.
+    ///
+    /// Read from `system/compact_boundary.compact_metadata`, which a failed compaction never
+    /// emits. Every number below `trigger` was observed populated on the real capture
+    /// (`crates/claude-spike/fixtures/s11-auto-compaction.ndjson:49`, CLI 2.1.268), and every one
+    /// is optional because the type file says so and one capture is not a guarantee.
+    // see docs/research/compaction-and-long-sessions-2026-09-11.md §A2.
     SessionCompacted {
         /// What caused the compaction.
         trigger: CompactTrigger,
-        /// Token count before compaction, when reported.
+        /// Token count before compaction, when reported. Measured: `70633`.
         pre_tokens: Option<u64>,
+        /// Token count after compaction, when reported: the summary alone, not the whole
+        /// context. Measured: `1379`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        post_tokens: Option<u64>,
+        /// Context tokens every compaction in this session has dropped so far, when reported —
+        /// **cumulative**, not this compaction's own loss. Measured: `69254` on the first one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cumulative_dropped_tokens: Option<u64>,
+        /// How long the compaction took, when reported. Measured: `12262` ms — the whole of
+        /// which the operator previously spent looking at nothing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
+    },
+    /// The provider tried to compact and did not manage it.
+    ///
+    /// The session survives and the CLI tries again on a later turn, so this is a **warning**,
+    /// not an error: nothing was lost and nothing stopped. It is read from the `status: null`
+    /// frame's `compact_result`, which is the only carrier — no `compact_boundary` follows a
+    /// failure, which is why this case used to be silent.
+    // see docs/research/compaction-and-long-sessions-2026-09-11.md §A2 — measured at
+    // `crates/claude-spike/fixtures/s11-auto-compaction.ndjson:26`.
+    SessionCompactFailed {
+        /// The provider's own reason slug, bounded, when it sent one. `"too_few_groups"` is the
+        /// one value ever observed; the set is **open**, and an unrecognised slug is passed
+        /// through verbatim rather than dropped or renamed. `None` when the frame carried a
+        /// non-success `compact_result` with no `compact_error` beside it.
+        error: Option<String>,
     },
     /// Something the operator should see that did not stop the session.
     RuntimeWarning {
@@ -742,12 +787,40 @@ mod tests {
             }),
             r#"{"type":"session-exited","reason":{"error":"pipe closed"},"exit_code":null}"#
         );
+        // The old two-field shape still encodes exactly as it did: the three numbers added on
+        // 2026-09-11 are `skip_serializing_if`, so a build that has none of them is unchanged.
         assert_eq!(
             wire(Event::SessionCompacted {
                 trigger: CompactTrigger::Auto,
-                pre_tokens: Some(180_000)
+                pre_tokens: Some(180_000),
+                post_tokens: None,
+                cumulative_dropped_tokens: None,
+                duration_ms: None,
             }),
             r#"{"type":"session-compacted","trigger":"auto","pre_tokens":180000}"#
+        );
+        // The real capture's numbers, in wire order.
+        // see crates/claude-spike/fixtures/s11-auto-compaction.ndjson:49.
+        assert_eq!(
+            wire(Event::SessionCompacted {
+                trigger: CompactTrigger::Auto,
+                pre_tokens: Some(70_633),
+                post_tokens: Some(1_379),
+                cumulative_dropped_tokens: Some(69_254),
+                duration_ms: Some(12_262),
+            }),
+            r#"{"type":"session-compacted","trigger":"auto","pre_tokens":70633,"post_tokens":1379,"cumulative_dropped_tokens":69254,"duration_ms":12262}"#
+        );
+        assert_eq!(wire(Event::SessionCompacting), r#"{"type":"session-compacting"}"#);
+        assert_eq!(
+            wire(Event::SessionCompactFailed {
+                error: Some("too_few_groups".into())
+            }),
+            r#"{"type":"session-compact-failed","error":"too_few_groups"}"#
+        );
+        assert_eq!(
+            wire(Event::SessionCompactFailed { error: None }),
+            r#"{"type":"session-compact-failed","error":null}"#
         );
     }
 
@@ -969,7 +1042,23 @@ mod tests {
                 request_id: RequestId::new("r1"),
                 decision: Decision::allow(),
             },
-            Event::SessionCompacted { trigger: CompactTrigger::Manual, pre_tokens: None },
+            Event::SessionCompacted {
+                trigger: CompactTrigger::Manual,
+                pre_tokens: None,
+                post_tokens: None,
+                cumulative_dropped_tokens: None,
+                duration_ms: None,
+            },
+            Event::SessionCompacted {
+                trigger: CompactTrigger::Auto,
+                pre_tokens: Some(70_633),
+                post_tokens: Some(1_379),
+                cumulative_dropped_tokens: Some(69_254),
+                duration_ms: Some(12_262),
+            },
+            Event::SessionCompacting,
+            Event::SessionCompactFailed { error: Some("too_few_groups".into()) },
+            Event::SessionCompactFailed { error: None },
             Event::RuntimeWarning { message: "w".into() },
             Event::RuntimeError { message: "e".into(), fatal: false },
             Event::ItemCompleted {

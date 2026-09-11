@@ -463,3 +463,63 @@ Still missing, in order of what the capture now makes cheap:
   `initialize` option was tried that might enable them.
 - `crates/core/src/claude/adapter.rs` was **not** changed — the status frames are still dropped.
   That is WO-4's work and outside this run's owned paths.
+
+---
+# Addendum 2, same day: the capture reaches the UI (WO-4)
+
+## A6. What changed
+
+§7 WO-4 is done. `crates/core/src/claude/adapter.rs` no longer drops `system/status`; the boundary's
+numbers no longer stop at `claude-wire`; a failed compaction is no longer silent.
+
+Three events now carry it, all pinned against `s11-auto-compaction.ndjson` and nothing hand-written:
+
+| event | source frame | row | thread notice |
+|---|---|---|---|
+| `session-compacting` | `system/status: "compacting"` | none | none — a signal, like `usage-windows` |
+| `session-compacted` (`trigger`, `pre_tokens`, `post_tokens`, `cumulative_dropped_tokens`, `duration_ms`) | `system/compact_boundary` | `context compacted · auto · 70633 → 1379 tokens · 12.3 s` | `info`, code `compacted`, all four numbers in `detail` |
+| `session-compact-failed` (`error`) | `system/status: null` with `compact_result != "success"` | `context compaction failed · too_few_groups` | `warning`, code `compact-failed` |
+
+Failure is a **warning**, not an error: the session runs on and the CLI retries on a later turn, so
+nothing stopped and nothing was lost — but nothing is hidden either. `compact_error` is passed
+through verbatim, bounded to 120 bytes; `too_few_groups` is the only value ever observed and the set
+is treated as open. A `compact_result` value this build does not know becomes the reason itself
+rather than being dropped, and a bare `"failed"` with no `compact_error` leaves the reason `null`
+rather than inventing one.
+
+## A7. Where this addendum corrects §A2 — the capture wins
+
+§A2 calls a compaction "**four** frames" and lists `status: "requesting"` as the first. As a
+*description of a compaction* that holds; as a *classifier* it does not, and the same capture is the
+counter-example: line 4 is `{"status":"requesting"}` on turn 1, which compacts nothing. The capture
+carries **three** `requesting` frames and **two** compactions. So the live phase opens on
+`"compacting"` and on nothing else — opening it on `"requesting"` would spin a compaction indicator
+on every turn of every session. Pinned by
+`crates/core/tests/claude_adapter.rs::s11_the_requesting_status_does_not_open_a_compaction`.
+
+## A8. Tests and gates
+
+Against the real capture, replayed through the adapter rig:
+`s11_a_real_auto_compaction_reaches_the_ui_live_and_with_every_number` (the whole lane, in order:
+compacting → failed(too_few_groups) → compacting → compacted(70633→1379, dropped 69254, 12262 ms)),
+`s11_the_requesting_status_does_not_open_a_compaction`, and
+`s11_a_success_with_no_boundary_still_closes_the_compaction` — the capture replayed with its single
+`compact_boundary` line deleted, which is the only path that exercises the held close. Plus the
+store's row and notice pins in `crates/store/tests/feed.rs` and the wire-shape pins in
+`crates/core/src/event.rs`.
+
+Gates: `cargo test --workspace` exit 0, `cargo clippy --workspace --all-targets -- -D warnings`
+exit 0, `cargo doc --workspace --no-deps` exit 0, `npx tsc --noEmit` exit 0.
+
+## A9. What was still not checked
+
+- No live CLI was run for this change: every frame came from the recorded capture.
+- `trigger: "manual"` is still unobserved; the held-close path asserts `auto` because this adapter
+  refuses `NativeControl::Compact`, which is reasoning, not measurement.
+- `npm test`, `npm run tauri build` and the burn were not run (another worker holds `src/`). The
+  burn harness's `NON_ROW_EVENT_TYPES` / `CHAT_ITEM_EVENT_TYPES` literals in
+  `scripts/measure-native-burn.py` were updated for the three events because
+  `crates/store/tests/feed.rs` pins them, but the harness itself was not executed.
+- The UI half is not built here: no component consumes `session-compacting` yet, so "the user now
+  sees a spinner" is **not** claimed — what is claimed is that the event reaches the webview's
+  signal path.
