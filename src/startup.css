@@ -6,32 +6,14 @@
   place-items: center;
   overflow: hidden;
   isolation: isolate;
-  background: #252728;
-  color: #a0a2a2;
-}
-
-/* Static soft light keeps startup cheap and also respects reduced motion. */
-.startup-loader::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: -2;
+  /* A continuous field of soft color, with no inset panel or window silhouette. */
   background:
-    radial-gradient(ellipse at 0% 38%, #426576 0%, transparent 42%),
-    radial-gradient(ellipse at 0% 80%, #00606b 0%, transparent 48%),
-    radial-gradient(ellipse at 100% 100%, #465f4a 0%, transparent 55%),
-    linear-gradient(165deg, #125c86 0%, #075175 43%, #345d56 82%);
-}
-
-.startup-loader::after {
-  content: "";
-  position: absolute;
-  inset: 7% 13% 16%;
-  z-index: -1;
-  border-radius: 36px;
-  background: #252728;
-  box-shadow: 0 0 48px 20px #252728;
-  filter: blur(28px);
+    radial-gradient(ellipse 42% 22% at 8% 77%, #005b69 0%, transparent 100%),
+    radial-gradient(ellipse 22% 38% at 100% 48%, #304844 0%, transparent 85%),
+    radial-gradient(ellipse 20% 27% at 46% 75%, #3f4d4b 0%, transparent 100%),
+    radial-gradient(ellipse 24% 25% at 70% 66%, #395358 0%, transparent 100%),
+    linear-gradient(180deg, #0d547c 0%, #235f80 37%, #385c70 48%, #075868 63%, #2b625b 84%, #425c4e 100%);
+  color: #fff;
 }
 
 .startup-brand {
@@ -45,7 +27,16 @@
   width: 64px;
   height: 64px;
   fill: currentColor;
-  animation: startup-breathe 3s ease-in-out 650ms infinite;
+  /* Sweep a brighter band through the white mark without moving its silhouette. */
+  -webkit-mask-image: linear-gradient(110deg, rgb(0 0 0 / .65) 35%, #000 50%, rgb(0 0 0 / .65) 65%);
+  mask-image: linear-gradient(110deg, rgb(0 0 0 / .65) 35%, #000 50%, rgb(0 0 0 / .65) 65%);
+  -webkit-mask-size: 300% 100%;
+  mask-size: 300% 100%;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: 100% 0;
+  mask-position: 100% 0;
+  animation: startup-shimmer 2.8s ease-in-out 650ms infinite;
 }
 
 @keyframes startup-arrive {
@@ -53,11 +44,12 @@
   to { opacity: 1; transform: translateY(0); }
 }
 
-@keyframes startup-breathe {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: .65; transform: scale(.96); }
+@keyframes startup-shimmer {
+  0%, 15% { -webkit-mask-position: 100% 0; mask-position: 100% 0; }
+  70%, 100% { -webkit-mask-position: 0% 0; mask-position: 0% 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .startup-brand, .startup-mark { animation: none; }
+  .startup-mark { -webkit-mask-image: none; mask-image: none; }
 }
