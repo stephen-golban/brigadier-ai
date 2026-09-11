@@ -5,10 +5,11 @@
 //! so [`load`] strips leading `//` lines before decoding). It is a *checklist* — one fixture per
 //! arm, transcribed, not observed.
 //!
-//! `crates/claude-spike/fixtures/*.ndjson` is the real thing: raw taps of CLI 2.1.257. The tests
-//! at the bottom of this file run every line of it through [`decode_line`] and back out through
-//! [`encode_line`]. For `system/init`, `result` and `can_use_tool` those captures are the evidence
-//! and the hand-written fixtures are only a convenience.
+//! `crates/claude-spike/fixtures/*.ndjson` is the real thing: raw taps of CLI 2.1.257, plus
+//! `s11-auto-compaction.ndjson` from 2.1.268. The tests at the bottom of this file run every line
+//! of it through [`decode_line`] and back out through [`encode_line`]. For `system/init`,
+//! `result`, `can_use_tool`, `system/status` and `system/compact_boundary` those captures are the
+//! evidence and the hand-written fixtures are only a convenience.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -176,6 +177,7 @@ fn expected() -> BTreeMap<&'static str, &'static str> {
         ("system_other_task_started.json", "system/other:task_started"),
         ("system_permission_denied.json", "system/permission_denied"),
         ("system_status.json", "system/status"),
+        ("system_status_compact_failed.json", "system/status"),
         ("tool_progress.json", "tool_progress"),
         ("tool_use_summary.json", "tool_use_summary"),
         ("transcript_mirror.json", "transcript_mirror"),
@@ -708,4 +710,138 @@ fn real_captures_round_trip_byte_faithfully() {
     }
     assert!(checked > 100, "only {checked} capture lines checked");
     assert!(failures.is_empty(), "{} of {checked} lines lost data:\n{}", failures.len(), failures.join("\n"));
+}
+
+// ---------------------------------------------------------------------------------------------
+// The first real compaction anyone has captured: `s11-auto-compaction.ndjson`, CLI 2.1.268,
+// `claude-haiku-4-5`, driven with brigadier's own argv and `CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000`
+// so the 67,000-token threshold was reachable in two cheap turns. Recorded in
+// `docs/research/compaction-and-long-sessions-2026-09-11.md`.
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn the_real_compact_boundary_keeps_every_field_it_carries() {
+    let Inbound::Message(CliMessage::Known(known)) =
+        decode_line(&load("system_compact_boundary.json")).unwrap()
+    else {
+        panic!("expected a known message");
+    };
+    let KnownMessage::System(SystemMessage::CompactBoundary(boundary)) = known.as_ref() else {
+        panic!("expected system/compact_boundary");
+    };
+    let meta = &boundary.compact_metadata;
+    assert_eq!(meta.trigger, "auto");
+    // The four numbers. Only `trigger` and `pre_tokens` reach `Event::SessionCompacted` today.
+    assert_eq!(meta.pre_tokens, Some(70633));
+    assert_eq!(meta.post_tokens, Some(1379));
+    assert_eq!(meta.cumulative_dropped_tokens, Some(69254));
+    assert_eq!(meta.duration_ms, Some(12262));
+    // `preserved_messages` is not in `sdk.d.ts` next to `preserved_segment`, and the CLI sends it.
+    assert_eq!(
+        meta.extra["preserved_segment"]["tail_uuid"],
+        "4af5f796-b825-4a65-b972-5af75299b87b"
+    );
+    assert_eq!(meta.extra["preserved_messages"]["uuids"].as_array().unwrap().len(), 4);
+    assert_eq!(
+        boundary.logical_parent_uuid.as_deref(),
+        Some("4af5f796-b825-4a65-b972-5af75299b87b"),
+        "the boundary names the message the summary is spliced after"
+    );
+    assert_eq!(
+        boundary.session_id.as_deref(),
+        Some("664bd465-c3a0-4335-8924-50f433284cac")
+    );
+}
+
+#[test]
+fn a_compaction_is_three_status_frames_then_a_boundary() {
+    // What the live lane actually looks like, in order, from the one capture that has it.
+    let mut phases: Vec<String> = Vec::new();
+    for (file, _no, line) in capture_lines() {
+        if file != "s11-auto-compaction.ndjson" {
+            continue;
+        }
+        let Inbound::Message(CliMessage::Known(known)) = decode_line(&line).unwrap() else {
+            continue;
+        };
+        match known.as_ref() {
+            KnownMessage::System(SystemMessage::Status(status)) => {
+                let phase = match &status.status {
+                    // Absent and explicitly-null are different frames on the wire.
+                    None => "absent".to_owned(),
+                    Some(None) => format!(
+                        "null:{}",
+                        status.extra["compact_result"].as_str().unwrap_or("-")
+                    ),
+                    Some(Some(phase)) => phase.clone(),
+                };
+                phases.push(phase);
+            }
+            KnownMessage::System(SystemMessage::CompactBoundary(_)) => {
+                phases.push("boundary".to_owned());
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        phases,
+        [
+            // Turn 1: a plain request, no compaction.
+            "requesting",
+            // Turn 2: crossed the threshold, tried, and refused — no boundary follows.
+            "requesting",
+            "compacting",
+            "null:failed",
+            // Turn 3: compacted for real.
+            "requesting",
+            "compacting",
+            "null:success",
+            "boundary",
+        ],
+        "the compaction lane drifted"
+    );
+
+    // The failure carries its reason, and it is only in `extra`.
+    let Inbound::Message(CliMessage::Known(known)) =
+        decode_line(&load("system_status_compact_failed.json")).unwrap()
+    else {
+        panic!("expected a known message");
+    };
+    let KnownMessage::System(SystemMessage::Status(status)) = known.as_ref() else {
+        panic!("expected system/status");
+    };
+    assert_eq!(status.status, Some(None), "an explicit null, not a missing key");
+    assert_eq!(status.extra["compact_result"], "failed");
+    assert_eq!(status.extra["compact_error"], "too_few_groups");
+    assert_eq!(status.permission_mode, None, "the CLI omits permissionMode here");
+}
+
+#[test]
+fn a_status_frame_without_the_key_is_not_a_status_frame_with_null() {
+    // `Option<Option<String>>`: the two cases must not collapse, or the end-of-compaction frame
+    // re-encodes without its `status` key and `real_captures_round_trip_byte_faithfully` fails.
+    let absent = br#"{"type":"system","subtype":"status","permissionMode":"acceptEdits"}"#;
+    let null = br#"{"type":"system","subtype":"status","status":null}"#;
+    let value = br#"{"type":"system","subtype":"status","status":"compacting"}"#;
+
+    let status_of = |line: &[u8]| {
+        let Inbound::Message(CliMessage::Known(known)) = decode_line(line).unwrap() else {
+            panic!("expected a known message");
+        };
+        let KnownMessage::System(SystemMessage::Status(status)) = known.as_ref() else {
+            panic!("expected system/status");
+        };
+        status.clone()
+    };
+
+    assert_eq!(status_of(absent).status, None);
+    assert_eq!(status_of(absent).permission_mode.as_deref(), Some("acceptEdits"));
+    assert_eq!(status_of(null).status, Some(None));
+    assert_eq!(status_of(value).status, Some(Some("compacting".to_owned())));
+
+    for line in [&absent[..], &null[..], &value[..]] {
+        let decoded = decode_line(line).unwrap();
+        let re: serde_json::Value = serde_json::from_slice(&encode_line(&decoded).unwrap()).unwrap();
+        assert_eq!(re, serde_json::from_slice::<serde_json::Value>(line).unwrap());
+    }
 }

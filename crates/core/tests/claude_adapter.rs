@@ -2280,3 +2280,56 @@ async fn interleaved_nested_streams_do_not_steal_parent_blocks() {
         assert!(matches!(rig.next_event().await,Event::ItemCompleted {item_id,..} if item_id==ids[index]));
     }
 }
+
+// -----------------------------------------------------------------------------------------
+// s11 — the first real auto-compaction, CLI 2.1.268
+// -----------------------------------------------------------------------------------------
+
+/// A real `compact_boundary` becomes `Event::SessionCompacted`, and the live phase does not.
+///
+/// The capture is `crates/claude-spike/fixtures/s11-auto-compaction.ndjson`: brigadier's own argv
+/// against `claude-haiku-4-5` with `CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000`, so the 67,000-token
+/// threshold was crossed in two turns. See `docs/research/compaction-and-long-sessions-2026-09-11.md`.
+///
+/// What this test also pins is the **gap**: the three `system/status` frames around the
+/// compaction — `requesting`, `compacting`, then `null` with `compact_result` — produce no event
+/// at all (`adapter.rs`, the `SystemMessage::Status(_) => {}` arm), and the failed compaction in
+/// the same capture (`compact_error: "too_few_groups"`) is therefore invisible. Only the
+/// after-the-fact boundary is reported, and only two of its five numbers survive.
+#[tokio::test]
+async fn s11_a_real_auto_compaction_is_reported_after_the_fact_only() {
+    let mut rig = Rig::start("s11-auto-compaction.ndjson", 512).await;
+    rig.send_turn().await;
+    // The capture's other `control_response`s answer `get_context_usage`, which the capture
+    // harness sent and the adapter never does; feeding them would block on an id that never comes.
+    while let Some(line) = rig.lines.pop_front() {
+        if !is_control_response(&line) {
+            rig.feed_raw(&line).await;
+        }
+    }
+
+    let mut compactions = Vec::new();
+    for _ in 0..400 {
+        let event = rig.next_event().await;
+        if let Event::SessionCompacted {
+            trigger,
+            pre_tokens,
+        } = &event
+        {
+            compactions.push((format!("{trigger:?}"), *pre_tokens));
+        }
+        let done = matches!(&event, Event::TurnCompleted { .. }) && !compactions.is_empty();
+        rig.collected.push(event);
+        if done {
+            break;
+        }
+    }
+
+    assert_eq!(
+        compactions,
+        [("Auto".to_owned(), Some(70633))],
+        "one boundary, auto, carrying the pre-compaction token count"
+    );
+    // The failed compaction earlier in the same capture produced no boundary and no event.
+    assert_eq!(compactions.len(), 1, "the failed attempt must not be reported");
+}

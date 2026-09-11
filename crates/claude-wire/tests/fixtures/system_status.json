@@ -1,2 +1,3 @@
-// hand-written from sdk.d.ts SDKStatusMessage; replace with a real capture from crates/claude-spike when available
-{"type":"system","subtype":"status","status":"compacting","permissionMode":"acceptEdits","compact_result":"success","uuid":"9f0c1d2e-0000-4000-8000-0000000000a5","session_id":"9f0c1d2e-0000-4000-8000-000000000001"}
+// real capture, CLI 2.1.268, claude-spike/fixtures/s11-auto-compaction.ndjson:47
+// the live "compacting" phase; `permissionMode` is modelled but the CLI omits it here
+{"type":"system","subtype":"status","status":"compacting","session_id":"664bd465-c3a0-4335-8924-50f433284cac","uuid":"c0036d37-865a-432d-8d9e-b410c64745e2"}

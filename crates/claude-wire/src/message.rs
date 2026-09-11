@@ -29,6 +29,20 @@ where
     Ok(T::deserialize(&value).ok())
 }
 
+/// Deserialises a present field into `Some(_)`, so an explicit `null` becomes `Some(None)` rather
+/// than collapsing into the `None` that means "the key was absent".
+///
+/// Serde's own `Option` impl maps JSON `null` to `None` at whichever level it is applied, so a bare
+/// `Option<Option<T>>` cannot tell the two apart; this pushes the null one level down. Used by
+/// [`SystemStatus::status`], where the difference is the whole end-of-compaction frame.
+pub(crate) fn present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
 /// One frame from the CLI, tolerant of message types this crate does not know.
 ///
 /// Implemented as an `#[serde(untagged)]` wrapper (not a custom `Deserialize`): serde tries
@@ -231,13 +245,22 @@ literal_tag!(
     CompactBoundaryTag { CompactBoundary => "compact_boundary" }
 );
 
-/// `system`/`compact_boundary` (`sdk.d.ts:3378`).
+/// `system`/`compact_boundary` (`sdk.d.ts:3378`; first observed on the wire in
+/// `crates/claude-spike/fixtures/s11-auto-compaction.ndjson:49`, CLI 2.1.268).
+///
+/// It arrives **after** the three `system`/`status` frames of the compaction and **before** the
+/// synthetic `user` frame that carries the summary ("This session is being continued from a
+/// previous conversation…"). A compaction that fails emits neither.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SystemCompactBoundary {
     /// Always `"compact_boundary"`.
     pub subtype: CompactBoundaryTag,
     /// What was compacted and why.
     pub compact_metadata: CompactMetadata,
+    /// Uuid of the last message kept, which the summary is spliced after. Measured on the real
+    /// capture; equals `compact_metadata.preserved_segment.tail_uuid` there.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logical_parent_uuid: Option<String>,
     /// Frame uuid.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uuid: Option<String>,
@@ -249,18 +272,23 @@ pub struct SystemCompactBoundary {
     pub extra: Extra,
 }
 
-/// `compact_metadata` (`sdk.d.ts:3381-3405`).
+/// `compact_metadata` (`sdk.d.ts:3381-3405`). Every field below `trigger` was observed populated
+/// in `crates/claude-spike/fixtures/s11-auto-compaction.ndjson:49`, CLI 2.1.268.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompactMetadata {
     /// `"manual"` or `"auto"`.
     pub trigger: String,
-    /// Token count before compaction.
+    /// Token count before compaction. Measured: `70633`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pre_tokens: Option<u64>,
-    /// Token count after compaction.
+    /// Token count after compaction. Measured: `1379` — the summary alone, not the whole context.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub post_tokens: Option<u64>,
-    /// How long compaction took.
+    /// Running total of context tokens every compaction in this session has removed, roughly
+    /// `pre_tokens - post_tokens` summed. Measured: `69254` on the first compaction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cumulative_dropped_tokens: Option<u64>,
+    /// How long compaction took. Measured: `12262` ms, on haiku, for a 70k context.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
     /// `preserved_segment`, `preserved_messages`, and anything added later.
@@ -324,14 +352,29 @@ literal_tag!(
     StatusTag { Status => "status" }
 );
 
-/// `system`/`status` (`sdk.d.ts:5042`).
+/// `system`/`status` (`sdk.d.ts:5042`; first observed on the wire in
+/// `crates/claude-spike/fixtures/s11-auto-compaction.ndjson`, CLI 2.1.268).
+///
+/// A compaction shows up here as three frames in order: `"requesting"`, `"compacting"`, then
+/// `null` carrying `compact_result` (`"success"` or `"failed"`, the latter with `compact_error`)
+/// in [`Self::extra`]. The `compact_boundary` frame follows only when it succeeded.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SystemStatus {
     /// Always `"status"`.
     pub subtype: StatusTag,
-    /// `"compacting" | "requesting" | null`.
+    /// `"compacting" | "requesting"`, or an explicit `null` that clears the phase.
+    ///
+    /// Two `Option`s, not one, because the outer and the inner mean different things on the wire
+    /// and the difference is load-bearing: the frame that *ends* a compaction is
+    /// `{"status":null,"compact_result":"success"}`, and a single `Option` plus
+    /// `skip_serializing_if` re-encoded it without the key at all. Measured on the real capture —
+    /// `crates/claude-spike/fixtures/s11-auto-compaction.ndjson:26` and `:48`, CLI 2.1.268 — where
+    /// it cost two lines of `real_captures_round_trip_byte_faithfully`.
+    ///
+    /// `None` = the key was absent; `Some(None)` = the key was present and `null`.
+    #[serde(default, deserialize_with = "present")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub status: Option<String>,
+    pub status: Option<Option<String>>,
     /// Current permission mode, camelCase on the wire.
     #[serde(rename = "permissionMode")]
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -336,3 +336,130 @@ Not a code question. No files until the owner rules.
   names; "nothing marks a six-hour session" is a negative from grep, which is weaker than a read.
 - `docs/research/rewind-context-2026-09-05.md`'s measured `get_context_usage` reply was taken as
   written against CLI 2.1.261 and not re-probed today; the installed CLI may have moved.
+
+---
+
+# Addendum, same day: a real compaction, captured
+
+Everything in this addendum is **[measured]** against CLI **2.1.268** on this machine unless marked
+otherwise. Earlier sections were written without a capture; §2's "Unknown" is now settled.
+
+## A1. The cheap trigger
+
+`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` — the variable §7 WO-3 did not name but the CLI's own
+`autocompact_state` schema does — **is inert**. Set to `1` it changed nothing: `autoCompactThreshold`
+stayed at its default and three turns produced no compaction. **[measured]** It is read
+(`ipt()` in the bundle: `testPctOverride: o ? parseFloat(o) : undefined`) but did not reach the
+resolved threshold; why was not chased.
+
+**`CLAUDE_CODE_AUTO_COMPACT_WINDOW` works, and is the trigger.** **[measured]**
+`claude --help`, 2.1.268: `--autocompact <auto|tokens>  Auto-compact window size (auto, or
+100k–1M tokens)`. 100k is a hard floor — `MXe()` rejects anything below it, and `Fb()` clamps with
+`Math.max(min, value)`. The same value can come from the `autoCompactWindow` setting or `/autocompact`.
+`DISABLE_AUTO_COMPACT` / `DISABLE_COMPACT` turn it off; `CLAUDE_CODE_MAX_CONTEXT_TOKENS` only moves
+the window for models the CLI does not recognise.
+
+Measured, `get_context_usage` on `claude-haiku-4-5`, no model turn spent:
+
+| env | `maxTokens` | `autoCompactThreshold` | `autocompactSource` |
+|---|---|---|---|
+| (none) | 200000 | 167000 | `model-default` |
+| `CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000` | 100000 | **67000** | `env` |
+
+So the cheapest real compaction costs **one turn of ~34k filler tokens** on top of the ~33k the
+CLI's own prompt, tools, memory files and skills already occupy, then one more turn to cross. Three
+haiku turns end to end.
+
+## A2. The capture
+
+`crates/claude-spike/fixtures/s11-auto-compaction.ndjson`, 64 frames. Driven by
+`build_argv`'s flags reproduced verbatim (`--output-format stream-json --verbose --input-format
+stream-json --model claude-haiku-4-5 --include-partial-messages --permission-prompt-tool stdio
+--strict-mcp-config --permission-mode default`), `CLAUDE_CODE_ENTRYPOINT=sdk-ts`, in a throwaway git
+repo. The driver script is scratch, not in the tree.
+
+A compaction is **four** frames, not one:
+
+```
+{"type":"system","subtype":"status","status":"requesting","session_id":"664bd465…","uuid":"b4711e6b…"}
+{"type":"system","subtype":"status","status":"compacting","session_id":"664bd465…","uuid":"c0036d37…"}
+{"type":"system","subtype":"status","status":null,"compact_result":"success","session_id":"664bd465…","uuid":"9344422a…"}
+{"type":"system","subtype":"compact_boundary","uuid":"a563fc05-676e-4724-84dc-b594c66b3d5d","compact_metadata":{"trigger":"auto","pre_tokens":70633,"post_tokens":1379,"cumulative_dropped_tokens":69254,"duration_ms":12262,"preserved_segment":{"head_uuid":"ef8eb9d5…","anchor_uuid":"628bfd5a…","tail_uuid":"4af5f796…"},"preserved_messages":{"anchor_uuid":"628bfd5a…","uuids":[…4…],"all_uuids":[…4…]}},"logical_parent_uuid":"4af5f796-b825-4a65-b972-5af75299b87b","session_id":"664bd465…"}
+```
+
+Then a synthetic `user` frame (`isSynthetic: true`, 2,474 characters) whose text opens
+*"This session is being continued from a previous conversation that ran out of context."*
+
+The same capture contains a **failed** compaction one turn earlier — the threshold was crossed with
+too little to summarise:
+
+```
+{"type":"system","subtype":"status","status":null,"compact_result":"failed","compact_error":"too_few_groups","session_id":"664bd465…","uuid":"388cd023…"}
+```
+
+No `compact_boundary` follows a failure. `get_context_usage` measured `totalTokens` **70535 → 23313**
+across the successful one.
+
+Not captured: `compact_progress` (`compact_start`/`compact_end`), `stream_mode` and
+`autocompact_state` exist in the CLI's schemas, are marked `@internal`, and appeared on **no** line
+of this capture. **[measured — absence, on one capture]**
+
+## A3. Where brigadier was wrong, and what changed
+
+| Claim in §2 | Reality | Action |
+|---|---|---|
+| `compact_boundary` never observed; may not reach the stdio lane | It does, verbatim in the shape `claude-wire` models | Fixture replaced with the real frame |
+| `CompactMetadata` = trigger, pre_tokens, post_tokens, duration_ms | Also `cumulative_dropped_tokens`, `preserved_messages` | `cumulative_dropped_tokens` and `logical_parent_uuid` now typed |
+| `SystemStatus.status` is `Option<String>` | The frame that **ends** a compaction is `"status":null`, and `Option<String>` + `skip_serializing_if` re-encoded it with the key **gone** | **Decoder bug, fixed**: `Option<Option<String>>` with a `present` deserializer. It cost two lines of `real_captures_round_trip_byte_faithfully` the moment the capture landed |
+| `system/status` carries `permissionMode` | The CLI omits it on all six captured status frames | Field kept (modelled, optional); fixture is now the real frame |
+
+Tests pinning this, all on the real capture: `crates/claude-wire/tests/decode.rs`
+(`the_real_compact_boundary_keeps_every_field_it_carries`,
+`a_compaction_is_three_status_frames_then_a_boundary`,
+`a_status_frame_without_the_key_is_not_a_status_frame_with_null`) and
+`crates/core/tests/claude_adapter.rs` (`s11_a_real_auto_compaction_is_reported_after_the_fact_only`).
+
+Gates: `cargo test --workspace` exit 0, `cargo clippy --workspace --all-targets -- -D warnings`
+exit 0, `cargo doc --workspace --no-deps` exit 0 (one pre-existing bare-URL warning in
+`crates/core/src/claude/storage.rs:2`, untouched). Frontend gates not run — another worker holds
+`src/`.
+
+## A4. What a user would now see
+
+With the real frames, on the path that exists today:
+
+- **During** the ~12 s compaction: nothing. All three `system/status` frames are dropped by
+  `crates/core/src/claude/adapter.rs`'s `SystemMessage::Status(_) => {}` arm. The session simply
+  pauses. **[measured — the capture's 12,262 ms `duration_ms`, and the code]**
+- **After**: one inline row, **"Context automatically compacted"**, and the session card's last
+  message becomes `context compacted (auto)`. The feed row reads
+  `context compacted · auto · 70633 tokens before`.
+- **The summary is never shown.** `adapter.rs::on_user` emits only for `tool_result` blocks, so the
+  synthetic summary frame — a `text` block — produces no item at all. The user sees a gap in the
+  transcript where 69,254 tokens of their conversation used to be, and one sentence about it.
+- **A failed compaction is completely silent.** `compact_result: "failed"` /
+  `compact_error: "too_few_groups"` is carried in the dropped status frame and nowhere else; no
+  boundary follows, so no row appears. The session will try again next turn.
+
+Still missing, in order of what the capture now makes cheap:
+
+1. A live "Compacting…" affordance, and a warning row on `compact_result: "failed"` — §7 WO-4 is
+   unblocked, and the shape it needs is in `s11-auto-compaction.ndjson`.
+2. `post_tokens`, `duration_ms` and `cumulative_dropped_tokens` reach `claude-wire` and stop at
+   `Event::SessionCompacted`, which carries only `trigger` and `pre_tokens`
+   (`crates/core/src/event.rs:285-291`). "70,633 → 1,379 in 12.3 s" is three numbers the wire hands
+   over for free and the product throws away.
+3. §7 WO-1 and WO-2 are unchanged: the context meter is still unmounted, and
+   `src-tauri/src/conversation.rs` still drops `autoCompactThreshold` — the number this addendum
+   spent three turns measuring by hand.
+
+## A5. What was not checked
+
+- One capture, one model (`claude-haiku-4-5`), one window (100k). Whether `trigger: "manual"` or a
+  1M-context model produces a different shape was not tested.
+- Why `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` is inert was not chased past confirming the threshold did
+  not move.
+- The `@internal` `compact_progress` / `autocompact_state` frames were not provoked; no flag or
+  `initialize` option was tried that might enable them.
+- `crates/core/src/claude/adapter.rs` was **not** changed — the status frames are still dropped.
+  That is WO-4's work and outside this run's owned paths.
