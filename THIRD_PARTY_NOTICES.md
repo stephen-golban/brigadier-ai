@@ -28,6 +28,17 @@ Research or Apache-2.0 any more [measured 2026-09-10, `grep -rn`]. `docs/researc
 `docs/research/oklch-tokens.md` still discuss Jan; they are notes on an upstream project, not
 vendored code, and carry no notice condition.
 
+**Stale as of 2026-09-11, corrected here: the "Radix UI — MIT" entry.** The design-system
+migration (`216d45e`, 2026-09-10) overwrote the one vendored file that used it —
+`src/components/ui/collapsible.tsx` — with the assistant-ui kit's Base UI twin;
+`src/components/ui/UPSTREAM.md` records "`radix-ui` was removed 2026-09-10 with the last Radix
+import; nothing under `src/` imports it" [measured, `grep -rn "radix-ui\|@radix-ui" src/`: no
+import site, only prose mentions in `UPSTREAM.md` and two source-code comments describing packages
+*not* taken]. `package.json` carries no `radix-ui` dependency. The entry below is replaced by a
+"Base UI — MIT" entry. `licenses/radix-ui-MIT.txt` is now unreferenced by this file but is **not
+deleted by this edit** — this worker's owned path is `THIRD_PARTY_NOTICES.md` only; removing the
+stale licence text is a follow-up.
+
 The `licenses/` texts that remain reach anyone who has the repository. **They do not reach the built
 `brigadier.app`**: `src-tauri/tauri.conf.json`'s `bundle` block declares no `licenseFile` and no
 `resources`. Two built bundle trees exist on this machine —
@@ -67,13 +78,15 @@ the text is an owner decision, deferred, not answered here.
 
 Source: [assistant-ui Elements and registry](https://github.com/assistant-ui/assistant-ui), retrieved 2026-09-07. Copyright (c) 2025 AgentbaseAI Inc. License: [assistant-ui-MIT.txt](licenses/assistant-ui-MIT.txt).
 
-Adapted components live in `src/components/assistant-ui/elements`: thread, composer, Markdown, reasoning, tool calls, approval cards, artifact cards, agent status and plans. The standalone Chat Panel, Message Actions, Reasoning Panel, Tool Call and Thinking Indicator were installed from the shadcn registry on 2026-09-09, together with surfaces, range and the Radix Collapsible dependency. These conversation disclosures use Radix; other controls retain their existing native implementations. Brigadier supplies existing backend state, safe file navigation, independent phase states and approval decisions. `src/hooks/use-copy-to-clipboard.ts` is from the same registry.
+Adapted components live in `src/components/assistant-ui/elements`: thread, composer, Markdown, reasoning, tool calls, approval cards, artifact cards, agent status and plans. The standalone Chat Panel, Message Actions, Reasoning Panel, Tool Call and Thinking Indicator were installed from the shadcn registry on 2026-09-09, together with surfaces and range. Brigadier supplies existing backend state, safe file navigation, independent phase states and approval decisions. `src/hooks/use-copy-to-clipboard.ts` is from the same registry.
 
 The composer provider selector adapts the segmented button section of [Settings Panel](https://r.assistant-ui.com/elements-settings-panel.json) and the `field` token from [Elements surfaces](https://r.assistant-ui.com/elements-surfaces.json), retrieved 2026-09-09, under the same assistant-ui MIT license.
 
-## Radix UI — MIT
+`src/components/ui/` is a second, larger vendored set copied 2026-09-10 from two sources under the same MIT terms: the assistant-ui kit's `base/` directory (`packages/ui/src/components/react/ui/base/`, same project and copyright as above) and the shadcn registry at style `base-nova`. 28 files, full per-file provenance (source, SHA/version, deviations) in `src/components/ui/UPSTREAM.md`. Its `collapsible.tsx` is the kit's `base/collapsible.tsx`, on Base UI — it **overwrote** the pre-port `radix-ui`-based file of the same name that day; brigadier's Collapsible has used Base UI, not Radix, since 2026-09-10.
 
-The installed shadcn Collapsible uses `radix-ui` 1.6.7. Copyright (c) 2022 WorkOS. License: [radix-ui-MIT.txt](licenses/radix-ui-MIT.txt).
+## Base UI — MIT
+
+`src/components/ui/`'s primitives (the migration replacing Radix, `216d45e`/`a4e46eb`, 2026-09-10/11) are `@base-ui/react` 1.8.0. Copyright (c) 2019 Material-UI SAS [from `node_modules/@base-ui/react/LICENSE` and `package.json`, 2026-09-11]. License: MIT — text not yet copied to `licenses/base-ui-MIT.txt` by this edit (out of scope; see the §1 note above), full text at `node_modules/@base-ui/react/LICENSE` in the meantime.
 
 ## @openai/apps-sdk-ui — MIT
 
@@ -82,3 +95,50 @@ The installed shadcn Collapsible uses `radix-ui` 1.6.7. Copyright (c) 2022 WorkO
 ## tw-shimmer — MIT
 
 The assistant-ui Elements surface helpers use `tw-shimmer` 0.4.12. Copyright (c) 2025 AgentbaseAI Inc. License: [tw-shimmer-MIT.txt](licenses/tw-shimmer-MIT.txt).
+
+## codex-ui-kit — MIT (pre-registered 2026-09-11; not yet vendored)
+
+**No files from this project are in the tree as of this entry.** A later phase will vendor a
+subset of its source files; this section is written to stay accurate both before and after that
+lands, so it is not removed once the code arrives — only its "not yet vendored" framing needs
+updating then.
+
+Source: [codex-ui-kit](https://github.com/JaminZhou/codex-ui-kit), pinned at commit
+`9f3af2c3a6386d4ea05f8b3f2c1051ae1a50789d`. Copyright (c) 2026 JaminZhou. License: MIT, reproduced
+below from the upstream `LICENSE` file (not yet copied to `licenses/codex-ui-kit-MIT.txt` — out of
+scope for this edit, see §1):
+
+```
+MIT License
+
+Copyright (c) 2026 JaminZhou
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+When the vendoring lands, the copied files will be **modified** from upstream: CSS custom
+properties and class names are renamed from a `codex-ui-` prefix to brigadier's own. codex-ui-kit
+is an unofficial, independent project, **not affiliated with, sponsored by, or endorsed by
+OpenAI**; "Codex" and "OpenAI" are trademarks of OpenAI.
+
+**Excluded from the vendoring:** the five subagent avatar SVGs under the kit's
+`src/assets/subagents/` are not copied. The kit's own `src/assets/subagents/README.md` states they
+were captured from the rendered Codex Desktop app, remain OpenAI's copyright, and are not
+relicensed under the kit's MIT license. No OpenAI brand assets, fonts, logos, sounds or
+illustrations are shipped by brigadier.
