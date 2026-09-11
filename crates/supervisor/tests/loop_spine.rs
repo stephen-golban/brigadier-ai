@@ -49,6 +49,7 @@ struct Rig {
 impl Rig {
     /// A store, a supervisor, and a project that **is** a git repository with one commit.
     async fn new() -> Option<Rig> {
+        brigadier_core::checkpoint::WorkspaceLease::isolate_registry_for_tests();
         Self::build(true).await
     }
 

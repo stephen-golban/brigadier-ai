@@ -494,6 +494,8 @@ mod tests {
     }
     #[tokio::test]
     async fn local_branch_selection_changes_git_and_missing_branch_preserves_checkout() {
+        // A branch switch takes a workspace lease; keep it out of `~/.brigadier`.
+        crate::test_support::isolate_workspace_locks();
         let dir = tempfile::tempdir().unwrap();
         for args in [
             &["init", "-b", "main"][..],

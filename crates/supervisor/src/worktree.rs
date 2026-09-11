@@ -953,6 +953,7 @@ mod tests {
     impl Rig {
         /// `commits = false` leaves HEAD unborn.
         fn new(commits: bool) -> Rig {
+        brigadier_core::checkpoint::WorkspaceLease::isolate_registry_for_tests();
             let git = resolve_git().expect("git on PATH");
             let dir = tempfile::tempdir().expect("temp dir");
             let repo = dir.path().join("repo");

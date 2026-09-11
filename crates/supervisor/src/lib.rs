@@ -1128,6 +1128,11 @@ impl Supervisor {
             }
         };
 
+        // The lease is taken before the child exists, so there is no session to name until here.
+        // see docs/research/workspace-lock-holder-identity-2026-09-11.md
+        if let Some(lease) = &writer_lease {
+            lease.relabel(handle.session_id.as_str());
+        }
         let mut row = SessionRow::new(handle.session_id.clone());
         row.project_id = Some(project.id.clone());
         row.instance_id = Some(handle.instance_id.clone());
@@ -2708,6 +2713,7 @@ mod tests {
 
     impl Rig {
         fn new() -> Rig {
+        brigadier_core::checkpoint::WorkspaceLease::isolate_registry_for_tests();
             let dir = tempfile::tempdir().expect("temp dir");
             let store = Store::open(dir.path()).expect("store opens");
             let sup = Supervisor::new(SupervisorConfig::new(

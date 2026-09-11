@@ -65,15 +65,33 @@ fn lock() -> std::sync::MutexGuard<'static, HashMap<String, Terminal>> {
     terminals().lock().unwrap_or_else(|e| e.into_inner())
 }
 pub(crate) fn close_sessions(ids: &[String]) {
-    lock().retain(|_, terminal| {
+    let mut registry = lock();
+    registry.retain(|_, terminal| {
         !terminal
             .session_id
             .as_ref()
             .is_some_and(|id| ids.contains(id))
     });
+    relabel(&registry);
 }
 pub(crate) fn shutdown() {
     lock().clear();
+}
+/// Name a tab that is still open on each shared lease. Tabs at one root share one lease, so the
+/// tab that first took it is usually gone by the time a turn is refused, and a refusal that says
+/// "close terminal 3" has to mean a terminal that is actually there.
+/// see docs/research/workspace-lock-holder-identity-2026-09-11.md §1
+fn relabel(registry: &HashMap<String, Terminal>) {
+    let mut named = std::collections::HashSet::new();
+    for (id, terminal) in registry {
+        // A tab whose shell has exited holds nothing, so it must not consume its root's turn.
+        if !named.contains(&terminal.cwd) {
+            if let Some(lease) = terminal.lease.upgrade() {
+                lease.relabel(id);
+                named.insert(terminal.cwd.clone());
+            }
+        }
+    }
 }
 fn size(cols: u16, rows: u16) -> PtySize {
     PtySize {
@@ -105,13 +123,17 @@ fn spawn_profile(
             "Close a terminal before opening another (limit 12)",
         ));
     }
+    // The id is allocated before the lease so the lease can carry it: a turn refused by this
+    // shell names the tab the user has to close.
+    // see docs/research/workspace-lock-holder-identity-2026-09-11.md
+    let id = format!("terminal-{}", NEXT.fetch_add(1, Ordering::Relaxed));
     let lease = registry
         .values()
         .filter(|terminal| terminal.cwd == root)
         .find_map(|terminal| terminal.lease.upgrade())
         .map(Ok)
         .unwrap_or_else(|| {
-            brigadier_core::checkpoint::WorkspaceLease::terminal(&root)
+            brigadier_core::checkpoint::WorkspaceLease::terminal_as(&root, &id)
                 .map(Arc::new)
                 .map_err(error)
         })?;
@@ -155,7 +177,6 @@ fn spawn_profile(
         drop(lease);
         done.store(true, Ordering::Release);
     });
-    let id = format!("terminal-{}", NEXT.fetch_add(1, Ordering::Relaxed));
     registry.insert(
         id.clone(),
         Terminal {
@@ -171,6 +192,8 @@ fn spawn_profile(
             lease: shared_lease,
         },
     );
+    // A reused lease still names the tab that opened it; point it at this one instead.
+    relabel(&registry);
     Ok(id)
 }
 
@@ -342,7 +365,9 @@ pub(crate) fn terminal_resize(id: String, cols: u16, rows: u16) -> Result<(), Ap
 }
 #[tauri::command]
 pub(crate) fn terminal_close(id: String) {
-    lock().remove(&id);
+    let mut registry = lock();
+    registry.remove(&id);
+    relabel(&registry);
 }
 
 fn busy(t: &Terminal) -> bool {
@@ -402,6 +427,7 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn selected_shell_starts_in_split_directory_and_archive_closes_only_its_owner() {
+        crate::test_support::isolate_workspace_locks();
         let root = tempfile::tempdir().unwrap();
         let cwd = root.path().join("nested");
         std::fs::create_dir(&cwd).unwrap();
@@ -454,6 +480,7 @@ mod tests {
     }
     #[tokio::test]
     async fn terminals_share_workspace_until_last_shell_exits() {
+        crate::test_support::isolate_workspace_locks();
         struct Shells(Vec<String>);
         impl Drop for Shells {
             fn drop(&mut self) {
@@ -502,11 +529,23 @@ mod tests {
         assert!(!String::from_utf8_lossy(&second_output).contains("FIRST_READY"));
         // Closing one tab neither kills the other shell nor releases its restore guard.
         let first_exited = lock()[&first].exited.clone();
+        let closed = first.clone();
         terminal_close(first);
         while !first_exited.load(Ordering::Acquire) {
             assert!(std::time::Instant::now() < deadline);
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
+        // The shared lease was opened by the tab just closed, and the only tab left is `second`,
+        // so a refusal that still named the closed one would send the user nowhere.
+        // see docs/research/workspace-lock-holder-identity-2026-09-11.md
+        let refusal = brigadier_core::checkpoint::WorkspaceLease::acquire(root.path())
+            .unwrap_err()
+            .to_string();
+        let tab = |id: &str| format!("terminal {}", id.trim_start_matches("terminal-"));
+        assert!(
+            refusal.contains(&tab(&second)) && !refusal.contains(&tab(&closed)),
+            "{refusal}"
+        );
         let third = spawn(root.path().to_path_buf(), 80, 24).unwrap();
         shells.0.push(third.clone());
         assert!(brigadier_core::checkpoint::WorkspaceLease::acquire(root.path()).is_err());
@@ -529,6 +568,7 @@ mod tests {
 
     #[tokio::test]
     async fn foreground_command_is_busy_and_shell_is_idle() {
+        crate::test_support::isolate_workspace_locks();
         let root = tempfile::tempdir().unwrap();
         let id = spawn(root.path().to_path_buf(), 80, 24).unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
@@ -554,6 +594,7 @@ mod tests {
     }
     #[tokio::test]
     async fn local_shell_roundtrip_exit_and_close() {
+        crate::test_support::isolate_workspace_locks();
         let root = tempfile::tempdir().unwrap();
         let id = spawn(root.path().to_path_buf(), 80, 24).unwrap();
         terminal_resize(id.clone(), 100, 30).unwrap();

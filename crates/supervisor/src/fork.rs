@@ -85,7 +85,8 @@ impl Supervisor {
             }
         }
         // Keep the source stable while the CLI copies its transcript and we copy display history.
-        let _source_lease = match brigadier_core::checkpoint::WorkspaceLease::writer(&source_dir) {
+        let _source_lease = match brigadier_core::checkpoint::WorkspaceLease::writer_as(&source_dir, source.as_str())
+        {
             Ok(lease) => lease,
             Err(error) => {
                 if let Some(tree) = prepared {
@@ -228,6 +229,7 @@ mod tests {
         SessionId,
         Arc<Mutex<Vec<ResumeSession>>>,
     ) {
+        brigadier_core::checkpoint::WorkspaceLease::isolate_registry_for_tests();
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("repo");
         std::fs::create_dir(&root).unwrap();

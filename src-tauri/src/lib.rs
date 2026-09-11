@@ -52,6 +52,8 @@ mod state;
 mod tab_menu;
 mod task_memory;
 mod task_settings;
+#[cfg(test)]
+mod test_support;
 mod keep_awake;
 mod composer_workspaces;
 mod terminal;
@@ -316,6 +318,12 @@ pub fn run() {
             }
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
+                // Drain the workspace-lock registry once per launch, off the main thread.
+                // See docs/research/workspace-lock-holder-identity-2026-09-11.md §4.
+                let _ = tokio::task::spawn_blocking(
+                    brigadier_core::checkpoint::WorkspaceLease::sweep_registry,
+                )
+                .await;
                 let result = state::build(data_dir).await;
                 if !handle.state::<AppState>().initialize(result) {
                     return;

@@ -49,6 +49,7 @@ impl Harness {
     }
 
     fn new() -> Harness {
+        brigadier_core::checkpoint::WorkspaceLease::isolate_registry_for_tests();
         let dir = tempfile::tempdir().expect("temp dir");
         let store = Store::open(dir.path()).expect("store opens");
         let run_id = store.run_id().to_owned();
