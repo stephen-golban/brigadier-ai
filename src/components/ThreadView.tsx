@@ -24,6 +24,7 @@ import {
 } from "@assistant-ui/react";
 import { AgentMessage } from "./thread/AgentMessage";
 import { InlineNotice, StatusBanner } from "./thread/Notices";
+import type { CompactedNoticeDetail } from "../wire";
 import { Spinner } from "./controls/status";
 import { Disclosure } from "./controls/disclosure";
 import {
@@ -287,6 +288,8 @@ const NoticePart: DataMessagePartComponent<{
   level: string;
   code: string;
   text: string;
+  /** `CompactedNoticeDetail` on a `compacted` notice, `{error}` on a failure, absent otherwise. */
+  detail?: unknown;
 }> = ({ data, status }) => {
   const tone =
     data.level === "fatal" || data.level === "error"
@@ -302,13 +305,13 @@ const NoticePart: DataMessagePartComponent<{
     );
   return (
     <InlineNotice tone={tone} shimmering={status.type === "running"}>
-      {noticeSentence(data.code, data.text)}
+      {noticeSentence(data.code, data.text, data.detail)}
     </InlineNotice>
   );
 };
 
 function noticeHeading(code: string): string {
-  if (code === "compacted") return "Context compacted";
+  if (code === "compacted") return "This response's context was compacted";
   if (code === "exited") return "The provider exited";
   if (code === "runtime") return "Runtime error";
   return code;
@@ -324,14 +327,27 @@ function noticeHeading(code: string): string {
  * where a sentence belongs. A `runtime` notice's body is already a real message and is used as
  * written; anything unrecognised falls back to the body, then to the code, rather than being
  * dropped.
+ *
+ * **The compaction sentence names one response, never the conversation.** Every user message gets
+ * a fresh child with no provider transcript
+ * (`docs/research/does-a-session-accumulate-2026-09-11.md` §0), so a conversation here cannot
+ * accumulate and cannot be summarised. The only reachable compaction is one response whose own
+ * tool output filled the window mid-turn. Copy reading "Context automatically compacted"
+ * described an event this product does not have, and a reader who believed it would self-censor
+ * long threads for no reason.
+ *
+ * It stays **informational** — a boundary in the timeline, drawn as a rule with a centred label
+ * by `InlineNotice`, not an alarm. Only the failure beside it is a warning.
  */
-function noticeSentence(code: string, text: string): string {
+function noticeSentence(code: string, text: string, detail?: unknown): string {
   if (code === "compacted")
-    return text === "auto"
-      ? "Context automatically compacted"
-      : text === "manual"
-        ? "Context compacted"
-        : noticeHeading(code);
+    return (
+      (text === "auto"
+        ? noticeHeading(code)
+        : text === "manual"
+          ? "This response's context was compacted on request"
+          : noticeHeading(code)) + compactionNumbers(detail)
+    );
   if (code === "exited") {
     if (text === "graceful") return "The provider exited";
     if (text === "killed") return "The provider was stopped";
@@ -340,6 +356,38 @@ function noticeSentence(code: string, text: string): string {
     return text ? `The provider exited · ${text}` : noticeHeading(code);
   }
   return text || noticeHeading(code);
+}
+
+/**
+ * The measured tail of a compaction label: ` · 12s · 70,633 → 1,379 tokens`.
+ *
+ * Only what the provider actually reported. `CompactedNoticeDetail` omits a key rather than
+ * sending zero (`src/wire.ts`), so a missing number is dropped from the label instead of being
+ * printed as `0`, and a boundary that reported nothing produces an empty tail and a bare
+ * sentence. The real capture's values are the ones above
+ * (`crates/claude-spike/fixtures/s11-auto-compaction.ndjson:49`, CLI 2.1.268).
+ *
+ * `cumulative_dropped_tokens` is deliberately not shown: it is every compaction in the provider
+ * session added together, not this one's loss, so putting it next to a before/after pair would
+ * read as a third figure about this event. Tokens and seconds, never a dollar figure
+ * (`docs/vision.md` §6).
+ */
+function compactionNumbers(detail: unknown): string {
+  if (typeof detail !== "object" || detail === null) return "";
+  const d = detail as CompactedNoticeDetail;
+  const num = (v: unknown): number | null =>
+    typeof v === "number" && Number.isFinite(v) ? v : null;
+  const parts: string[] = [];
+  const ms = num(d.duration_ms);
+  if (ms !== null)
+    parts.push(ms < 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms / 1000)}s`);
+  const pre = num(d.pre_tokens);
+  const post = num(d.post_tokens);
+  if (pre !== null && post !== null)
+    parts.push(`${pre.toLocaleString()} → ${post.toLocaleString()} tokens`);
+  else if (pre !== null) parts.push(`${pre.toLocaleString()} tokens before`);
+  else if (post !== null) parts.push(`${post.toLocaleString()} tokens after`);
+  return parts.length ? ` · ${parts.join(" · ")}` : "";
 }
 
 /** Row 8: the per-turn changed-files card, attached under the final answer. */
@@ -522,7 +570,14 @@ function Transcript({
             content: [
               {
                 type: "data-notice",
-                data: { level: row.level, code: row.code, text: row.item.body },
+                data: {
+              level: row.level,
+              code: row.code,
+              text: row.item.body,
+              // The compaction's measured numbers live here, not in the body; the row prints
+              // them beside its label (`noticeSentence`).
+              detail: row.item.kind.type === "notice" ? row.item.kind.detail : undefined,
+            },
               },
             ],
           };

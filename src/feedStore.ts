@@ -513,8 +513,12 @@ function applySignal(env: Envelope, projectId: ProjectId | null): void {
       if (approvals.delete(e.request_id)) stateDirty = true;
       break;
     case "session-compacted":
+      // Unprefixed, unlike the `warning:` and `error:` lines below: a compaction is ordinary
+      // housekeeping. Phrased about the response rather than the session, because only one
+      // response's own tool output can reach a compaction here — every user message spawns a
+      // fresh child (`docs/research/does-a-session-accumulate-2026-09-11.md` §0).
       patch(id, projectId, {
-        lastMessage: `context compacted (${e.trigger})`,
+        lastMessage: `response context compacted (${e.trigger})`,
         lastEventSeq: env.seq,
       });
       break;

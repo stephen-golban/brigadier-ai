@@ -595,3 +595,99 @@ Nothing was run for this addendum. The WO status column is read from the tree at
 uncommitted `SessionContext.tsx` change, not from a test run; "landed" means the code is present and
 mounted, not that it was exercised against a live CLI. No figure here is new — every number is
 quoted from §A1 above or from `does-a-session-accumulate-2026-09-11.md`, which itself ran nothing.
+
+---
+
+# Addendum 4, same day: the owner's ruling, and where the compaction work stops
+
+Addendum 3 left two things open: what a compaction should *look* like now that it can only ever be a
+within-turn event, and whether WO-4's live `session-compacting` signal should drive an affordance.
+Both are settled by owner ruling, 2026-09-11. This addendum records the ruling and what was built
+against it; it supersedes the WO-4 and WO-6 rows above and the "live Compacting… affordance" line in
+§7.
+
+## A10. The ruling
+
+1. **A compaction is presented as a compaction, normally.** Informational, not an alarm, not an
+   anomaly. It is a boundary in the timeline, so it is drawn as a separator — a hairline rule with a
+   centred label — and it keeps the measured numbers, because they are the useful part.
+2. **No live indicator, of any kind.** No spinner, no progress row, no status line while it happens.
+3. **The wording must not imply a conversation was summarised.** There is no cross-message history
+   to summarise (`docs/research/does-a-session-accumulate-2026-09-11.md` §0). What was compacted is
+   **this one response**.
+
+An earlier ruling the same day made the completed compaction a *warning* with no numbers; it was
+reversed in full before anything was committed. Only the failure is a warning.
+
+## A11. What the tree now does
+
+| surface | text | level |
+|---|---|---|
+| thread, compaction | `This response's context was compacted · 12s · 70,633 → 1,379 tokens` | info |
+| thread, compaction (manual trigger) | `This response's context was compacted on request · …` | info |
+| thread, failure | `Could not compact this response's context: too_few_groups` | warning |
+| session list subtitle | `response context compacted (auto)` | — |
+
+The text is minted in two places and both had to change: the level, the code and the trigger
+discriminator come from `crates/store/src/chat.rs`; the sentence and the number formatting from
+`noticeSentence` / `compactionNumbers` in `src/components/ThreadView.tsx`. The failure's whole
+sentence is minted in Rust, because `noticeSentence` falls back to the body verbatim for a code it
+does not know.
+
+**Component: the vendored kit's `InlineNotice`** (`src/components/thread/Notices.tsx`, CSS at
+`thread.css:601-632`). It is already the separator shape the ruling asks for — `flex: 1 1 0`
+hairline either side of a centred, `nowrap` label — and it is already the renderer `NoticePart`
+dispatches to, so no new row type and no new dependency. assistant-ui's `day-separator` element was
+the other candidate and was rejected: it is not in any installed package (`grep -ril day-separator
+node_modules/@assistant-ui` finds nothing — it lives in the Elements registry, abandoned by
+`CLAUDE.md` §2 on 2026-09-09), so taking it would mean hand-copying a component identical in shape
+to one already vendored here. **[measured]**
+
+Numbers shown: `duration_ms` and the `pre_tokens → post_tokens` pair, each dropped from the label
+when the provider did not report it. `cumulative_dropped_tokens` is deliberately **not** shown — it
+is every compaction in the provider session added together, not this one's loss, and beside a
+before/after pair it would read as a third figure about this event.
+
+## A12. `session-compacting` has no consumer, deliberately
+
+The event stays on the wire end to end — emitted at `crates/core/src/claude/adapter.rs` from
+`system/status: "compacting"`, declared at `src/wire.ts:228` — and **nothing consumes it.**
+`src/feedStore.ts` has no `case "session-compacting"`, no component reads it, and the feed
+projection returns `None` for it (`crates/store/src/feed.rs:210`). That is the ruling, not an
+oversight, and it should not be "fixed" by a later reader. **[measured — grep across `src/`,
+`crates/`, `src-tauri/` on 2026-09-11 finds the three sites above and no others.]**
+
+The one place the meter could have implied a live state was its past-threshold flag, which read
+`compacting`. It now reads `past the line`: what the meter measured, rather than an event it cannot
+observe. `src/components/SessionContext.tsx`.
+
+## A13. WO status, superseding the table in Addendum 3
+
+- **WO-4** — *complete, and it stops here*. The signal is decoded and carried; the affordance
+  Addendum 2 argued for is ruled out. Nothing further is owed.
+- **WO-6** — **landed**. `src/mock.ts` `seedCompactionNotices` seeds both notices mid-turn, with the
+  real capture's numbers (`crates/claude-spike/fixtures/s11-auto-compaction.ndjson:49`). Evidence:
+  `docs/performance/2026-09-11-thread-shots/compaction-notice/`. This fixture had hidden the
+  compaction row from review twice; it no longer can.
+- **WO-7** — unchanged and still open: whether brigadier should offer a within-turn `/compact`.
+
+## A14. The meter's real job
+
+Stated plainly, because Addendum 3 buried it in a closing paragraph: **the context meter's primary
+job on this product is a tripwire, not a budget.** It cannot be a session budget — there is no
+session to budget. It exists to (a) show one response approaching the only threshold it can reach,
+and (b) prove the central invariant by sawtoothing: a figure that climbs monotonically across
+messages is proof that provider history was wired back into the send path. The drop line reports
+what it observed and does not accuse, because reads are coalesced at 4 s and the per-turn floor is
+not reliably sampled.
+
+## A15. What was not checked for this addendum
+
+- **No live CLI.** The screenshots are the browser fixture (`src/mock.ts`) driven headless; the
+  desktop path was not exercised and no `claude` child was spawned. The numbers on screen are the
+  fixture's copy of a real capture, not a fresh measurement.
+- **`npm run tauri build` and the burn were not run** (excluded from this order). The four gates that
+  were run — `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo doc --workspace --no-deps`, `npm test` (708), `npx tsc --noEmit` — all exited 0.
+- The manual-trigger sentence was not photographed; only `auto` is reachable from the fixture.
+- Nothing was re-probed about `autoCompactThreshold`; §A1's figures stand as quoted.

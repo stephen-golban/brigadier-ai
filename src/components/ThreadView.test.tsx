@@ -614,3 +614,59 @@ it("retains user markdown links across busy updates and uses the current file ha
   expect(onFile).not.toHaveBeenCalled();
   state.sessions.s = {busy: true};
 });
+
+// The compaction label is the only statement this product makes about what a compaction is, and
+// the browser fixture could not reach either notice, so nobody had read them on screen. Three
+// things are asserted: the success stays **informational** (a timeline boundary, not an alarm),
+// the label carries the provider's own measured numbers rather than a bare sentence, and both
+// name **one response** — a conversation here cannot accumulate, because every user message
+// spawns a fresh child (`docs/research/does-a-session-accumulate-2026-09-11.md` §0).
+it("draws a compaction as an informational boundary with its measured numbers", async () => {
+  const notice = (
+    id: string,
+    seq: number,
+    level: "info" | "warning",
+    code: string,
+    body: string,
+    detail?: unknown,
+  ): ChatItem => ({
+    session_id: "idle",
+    id,
+    seq,
+    at: 0,
+    kind: { type: "notice", level, code, detail },
+    body,
+    parent_id: null,
+  });
+  vi.spyOn(workspaceApi, "chat").mockResolvedValue([
+    // The real capture's boundary: s11-auto-compaction.ndjson:49, CLI 2.1.268.
+    notice("n1", 1, "info", "compacted", "auto", {
+      pre_tokens: 70_633,
+      post_tokens: 1_379,
+      cumulative_dropped_tokens: 69_254,
+      duration_ms: 12_262,
+    }),
+    notice(
+      "n2",
+      2,
+      "warning",
+      "compact-failed",
+      "Could not compact this response's context: too_few_groups",
+    ),
+  ]);
+  render(
+    <ThreadView sessionId="idle" projectId="p" projectName="Example" onFile={() => {}} />,
+  );
+  const compacted = await screen.findByText(
+    "This response's context was compacted · 12s · 70,633 → 1,379 tokens",
+  );
+  // Informational, and drawn by `InlineNotice`: a hairline rule either side of a centred label.
+  expect(compacted.closest("[data-tone]")).toHaveAttribute("data-tone", "neutral");
+  expect(compacted.closest(".thread-inline-notice")).not.toBeNull();
+  // The cumulative figure is every compaction in the session added up, never this one's loss.
+  expect(compacted.textContent).not.toContain("69,254");
+  // The failure keeps its warning level.
+  const failed = screen.getByText("Could not compact this response's context: too_few_groups");
+  expect(failed.closest("[data-tone]")).toHaveAttribute("data-tone", "warning");
+  expect(screen.queryByText("Context automatically compacted")).toBeNull();
+});

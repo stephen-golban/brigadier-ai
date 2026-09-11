@@ -561,6 +561,8 @@ fn lifecycle_events_project_to_notices_with_deterministic_ids() {
                 cumulative_dropped_tokens: None,
                 duration_ms: None,
             },
+            // Informational: a compaction is ordinary provider housekeeping, drawn as a timeline
+            // boundary. Only the *failure* below is a warning.
             "s1:notice:compacted:7",
             NoticeLevel::Info,
             "compacted",
@@ -571,7 +573,7 @@ fn lifecycle_events_project_to_notices_with_deterministic_ids() {
             "s1:notice:compact-failed:7",
             NoticeLevel::Warning,
             "compact-failed",
-            "Context compaction failed: too_few_groups",
+            "Could not compact this response's context: too_few_groups",
         ),
         (
             Event::RuntimeWarning { message: "settings.json shadows the mode".into() },

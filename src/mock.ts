@@ -154,6 +154,34 @@ function seedChanges(sessionId: string, turnId: string) {
 }
 
 /**
+ * The two compaction notices, mid-turn, where the only reachable compaction happens.
+ *
+ * Owner review 2026-09-11: the fixture could not reach either row, so their wording, their level
+ * and the numbers on them were unreviewable from the running app — only a throwaway component
+ * harness had ever drawn them, the third time this fixture has hidden working code. They are
+ * seeded inside the turn, after the last tool result, because that is the only place a compaction
+ * can occur here: every user message spawns a fresh child
+ * (`docs/research/does-a-session-accumulate-2026-09-11.md` §0), so nothing accumulates across
+ * messages and only one response's own tool output can fill the window. `projectThread` holds a
+ * mid-turn notice until the work row flushes, so both land directly under the activity fold.
+ *
+ * Levels and bodies are exactly what `crates/store/src/chat.rs` mints: the success is **info**,
+ * carrying the trigger discriminator (`auto`) that `ThreadView::noticeSentence` turns into a
+ * sentence; the failure is a **warning** carrying its whole sentence. The numbers are the real
+ * capture's (`crates/claude-spike/fixtures/s11-auto-compaction.ndjson:49`, CLI 2.1.268) — a
+ * screenshot of this row is a screenshot of measured values, not of placeholders.
+ */
+function seedCompactionNotices(sessionId:string) {
+  appendChat(sessionId,{type:'notice',level:'warning',code:'compact-failed',
+    detail:{error:'too_few_groups'}},
+    "Could not compact this response's context: too_few_groups",
+    'preview-compact-failed');
+  appendChat(sessionId,{type:'notice',level:'info',code:'compacted',
+    detail:{pre_tokens:70_633,post_tokens:1_379,cumulative_dropped_tokens:69_254,duration_ms:12_262}},
+    'auto','preview-compacted');
+}
+
+/**
  * Long enough that the header prints both halves: §3 row 5 renders the elapsed figure only above
  * the 60 s floor, and the completion time always.
  */
@@ -179,6 +207,7 @@ function seedConversation(sessionId:string) {
   appendChat(sessionId,{type:'tool-call',name:'Bash'},'npm run lint --silent','preview-lint');
   appendChat(sessionId,{type:'tool-result',tool_call_id:'preview-lint',is_error:true,exit_code:1},'src/components/ThreadView.tsx\n  412:9  error  Unexpected console statement\n\n1 problem (1 error, 0 warnings)');
   appendChat(sessionId,{type:'tool-result',tool_call_id:'preview-agent',is_error:false},'Keep the final answer visible; put routine work inside an expandable row.');
+  seedCompactionNotices(sessionId);
   appendChat(sessionId,{type:'assistant-text'},'The conversation now keeps progress readable between compact activity rows. Nested agent details remain available when you expand them.\n\nOpen [README.md](README.md) to explore the workspace.\n\n*Browser preview — simulated activity; no agent was called.*');
   // `appendChat` stamps every row with the same `Date.now()`, which makes every derived elapsed
   // figure zero. Spread them over the turn so the reasoning row and the per-call durations carry

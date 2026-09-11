@@ -107,7 +107,9 @@ describe("context meter", () => {
     cleanup();
     await mount(reading({ used: 172_000 }));
     screen.getByLabelText("This response: context 86% used, past the 84% auto-compaction threshold");
-    expect(screen.getByText("compacting")).toBeInTheDocument();
+    // The meter reports the crossing it measured, not a compaction in progress: there is no live
+    // indicator and `session-compacting` has no consumer, by decision (owner ruling 2026-09-11).
+    expect(screen.getByText("past the line")).toBeInTheDocument();
   });
 
   it("draws no line when the provider reported no threshold", async () => {
