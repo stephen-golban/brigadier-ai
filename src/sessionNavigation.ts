@@ -13,6 +13,28 @@ function read<T>(key: string, fallback: T): T {
     return fallback;
   }
 }
+/**
+ * One parse per key per distinct stored string, shared by every caller in the window.
+ *
+ * `useSessionNavigation` is mounted once per `SessionMenu` — one per session row — plus the
+ * sidebar, the composer and `usePeers`, and each mount used to `JSON.parse` both keys for itself.
+ * The cache is keyed on the raw string, so a `getItem` (no parse) is all a hit costs and a write
+ * from any source invalidates it without a subscription: the `brigadier-session-navigation-changed`
+ * and `storage` events `subscribe` already listens to re-run the getters, which then see a
+ * different raw string and re-parse. The values handed out are read-only to their callers; the
+ * writers here build a fresh object and go through `write`.
+ */
+const noTitles: Record<string, string> = Object.freeze({});
+const noArchived: string[] = [];
+const parsed = new Map<string, { raw: string | null; value: unknown }>();
+function cachedRead<T>(key: string, fallback: T): T {
+  const raw = localStorage.getItem(key);
+  const hit = parsed.get(key);
+  if (hit && hit.raw === raw) return hit.value as T;
+  const value = read(key, fallback);
+  parsed.set(key, { raw, value });
+  return value;
+}
 function write(key: string, value: unknown) {
   localStorage.setItem(key, JSON.stringify(value));
   window.dispatchEvent(new Event(eventName));
@@ -62,8 +84,8 @@ export function useSessionNavigation() {
   );
   return useMemo(
     () => ({
-      titles: read<Record<string, string>>(titlesKey, {}),
-      archivedIds: read<string[]>(archivedKey, []),
+      titles: cachedRead<Record<string, string>>(titlesKey, noTitles),
+      archivedIds: cachedRead<string[]>(archivedKey, noArchived),
     }),
     [titles, archived],
   );

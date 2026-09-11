@@ -5,7 +5,7 @@ import { WorkerSummary } from './WorkerSummary';
 import { AgentStatus } from "./assistant-ui/elements/agent-status";
 import * as feed from "../feedStore";
 import { ArrowLeft, Users } from "../icons";
-import { useState, useEffect, useSyncExternalStore } from 'react';
+import { useState, useEffect } from 'react';
 import type { SessionRuntime } from '../feedStore';
 import type { PeerData } from '../peerApi';
 import { workerTree, workerPresentation } from '../workerTree';
@@ -19,6 +19,9 @@ import { ThreadView } from './ThreadView';
 import { composerApi } from '../composerApi';
 import './thread-context.css';
 
+/** Module-scope, as `subscribeTo` requires: the registration holds it for the life of the mount. */
+const selectApprovals = (s: feed.StoreState) => s.approvals;
+
 export function SubagentsPanel({ rootId, projectId, peers, sessions, onFile, requestedId }: {
   requestedId?: string | null;
   rootId: string | null; projectId: string; peers: PeerData;
@@ -27,7 +30,10 @@ export function SubagentsPanel({ rootId, projectId, peers, sessions, onFile, req
   const [selection, setSelection] = useStoredState<Record<string, string | null>>('brigadier:worker-panel-selection', {});
   useEffect(()=>{if(rootId && requestedId)setSelection(old=>({...old,[rootId]:requestedId}));},[rootId,requestedId]);
   const [error, setError] = useState('');
-  const feedState = useSyncExternalStore(feed.subscribe, feed.getState);
+  // `approvals` and nothing else (`docs/plans/efficiency-plan-review-2026-09-11.md`, "Three
+  // whole-snapshot subscribers"): this panel asks one question of the feed store — is a worker
+  // waiting on an unexpired approval — and used to re-render on every frame the snapshot moved.
+  const approvals = feed.useFeedSelector(selectApprovals);
   const rows = rootId ? workerTree(rootId, peers, sessions) : [];
   const selected = rootId ? rows.find(row => row.id === selection[rootId]) : undefined;
   // This panel's nested worker selection is its own, independent of the top-level session
@@ -60,7 +66,7 @@ export function SubagentsPanel({ rootId, projectId, peers, sessions, onFile, req
     {error && <p role="alert" className="text-error px-3">{error}</p>}
     {selected ? <>
       <div className="worker-parent-note">From {peers.titles[selected.parent] ?? 'parent task'} · {selected.session ? providerIdentity(selected.session.instanceId).name : 'Provider unknown'} · {selected.session?.model ?? 'Model unknown'}</div>
-      <div className="worker-parent-note"><AgentStatus {...workerPresentation(selected, feedState.approvals.some(a=>a.sessionId===selected.id&&!a.expired))}/></div>
+      <div className="worker-parent-note"><AgentStatus {...workerPresentation(selected, approvals.some(a=>a.sessionId===selected.id&&!a.expired))}/></div>
       {assignment?.continuedFrom && <AgentHandoff from={peers.titles[assignment.continuedFrom]??'Previous worker'} to={peers.titles[selected.id]??'Current worker'} reason={assignment.selection.reason} carried={[assignment.objective,assignment.criteria,assignment.scope]} settled={assignment.state!=='starting'}/>}
       {assignment && <div className="worker-parent-note space-y-2">
         <p>{assignment.objective}</p><p>Acceptance: {assignment.criteria}</p><p>Scope: {assignment.scope}</p>
@@ -73,7 +79,7 @@ export function SubagentsPanel({ rootId, projectId, peers, sessions, onFile, req
         <BackgroundInbox runs={rows.filter(row=>row.awaitingIntegration).map(row=>({id:row.id,title:peers.titles[row.id]??'Worker result',state:'ready',summary:peers.assignments?.[row.id]?.result??undefined}))} onCollect={select}/>
     </div>}
       <div className="worker-parent-note">View-only activity. Send instructions and answer requests in the orchestrator conversation.</div>
-      {feedState.approvals.some(a => a.sessionId === selected.id && !a.expired) && <p role="status" className="worker-parent-note">Waiting for a response in the orchestrator conversation.</p>}
+      {approvals.some(a => a.sessionId === selected.id && !a.expired) && <p role="status" className="worker-parent-note">Waiting for a response in the orchestrator conversation.</p>}
       <ThreadView sessionId={selected.id} projectId={selectedProjectId} projectName={null} peers={peers} onFile={path => onFile(path, selected.session)} onSelectSession={id => { if(rows.some(r => r.id === id)) select(id); }} />
       {selected.session && !selected.done && <Button variant="ghost" size="sm" onClick={() => void composerApi.stop(selected.id).catch(report)}>Stop subagent</Button>}
       {!selected.session && <p className="worker-parent-note">Saved activity. Execution state is unavailable.</p>}
@@ -83,7 +89,7 @@ export function SubagentsPanel({ rootId, projectId, peers, sessions, onFile, req
         const members = rows.filter(row => row.done === (group === 'Done'));
         return <section key={group}><h3>{group} · {members.length}</h3>
           {!members.length && <p>{group === 'Active' ? 'No active subagents' : 'No completed subagents'}</p>}
-          <SubagentList agents={members.map(row=>({id:row.id,name:peers.titles[row.id]??`Worker ${row.id.slice(-6)}`,model:`${row.session?providerIdentity(row.session.instanceId).name:'Provider unknown'} · ${row.session?.model??'Model unknown'}`,detail:peers.assignments?.[row.id]?.objective,icon:<Users width={18} height={18}/>,...workerPresentation(row,feedState.approvals.some(a=>a.sessionId===row.id&&!a.expired))}))} onSelect={select}/>
+          <SubagentList agents={members.map(row=>({id:row.id,name:peers.titles[row.id]??`Worker ${row.id.slice(-6)}`,model:`${row.session?providerIdentity(row.session.instanceId).name:'Provider unknown'} · ${row.session?.model??'Model unknown'}`,detail:peers.assignments?.[row.id]?.objective,icon:<Users width={18} height={18}/>,...workerPresentation(row,approvals.some(a=>a.sessionId===row.id&&!a.expired))}))} onSelect={select}/>
 
         </section>;
       })}

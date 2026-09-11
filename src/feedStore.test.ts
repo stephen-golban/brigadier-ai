@@ -686,6 +686,54 @@ describe("seedSessions", () => {
     store.stop();
   });
 
+  it("stores nothing and wakes nobody when every seeded record is unchanged", async () => {
+    const store = await load();
+    store.start();
+    store.seedSessions([view({ session_id: "s1" }), view({ session_id: "s2" })]);
+    const seeded = store.getState();
+    expect(Object.keys(seeded.sessions)).toEqual(["s1", "s2"]);
+
+    let wakes = 0;
+    store.subscribeTo((st) => st.sessions, () => { wakes += 1; });
+    let notifies = 0;
+    store.subscribe(() => { notifies += 1; });
+
+    // Six production call sites re-seed on focus and after every mutation. `list_sessions` hands
+    // back fresh objects each time, so this is the shape of every one of them.
+    store.seedSessions([view({ session_id: "s1" }), view({ session_id: "s2" })]);
+
+    const again = store.getState();
+    expect(again).toBe(seeded);
+    expect(again.sessions).toBe(seeded.sessions);
+    expect(again.sessions["s1"]).toBe(seeded.sessions["s1"]);
+    expect(wakes).toBe(0);
+    expect(notifies).toBe(0);
+    store.stop();
+  });
+
+  it("replaces only the record whose field moved", async () => {
+    const store = await load();
+    store.start();
+    store.seedSessions([view({ session_id: "s1" }), view({ session_id: "s2" })]);
+    const before = store.getState();
+
+    let wakes = 0;
+    store.subscribeTo((st) => st.sessions, () => { wakes += 1; });
+
+    store.seedSessions([
+      view({ session_id: "s1" }),
+      view({ session_id: "s2", branch: "feature/x" }),
+    ]);
+
+    const after = store.getState();
+    expect(after.sessions).not.toBe(before.sessions);
+    expect(after.sessions["s1"]).toBe(before.sessions["s1"]);
+    expect(after.sessions["s2"]).not.toBe(before.sessions["s2"]);
+    expect(after.sessions["s2"]!.branch).toBe("feature/x");
+    expect(wakes).toBe(1);
+    store.stop();
+  });
+
   it("takes the higher of the known and seeded cumulative cost", async () => {
     const store = await load();
     store.start();
@@ -1493,6 +1541,191 @@ describe("usage windows (§4.3)", () => {
     store.pushBatch(batch({ signals: [env("s1", usage(0.25))] }));
     vi.advanceTimersByTime(FRAME_MS);
     expect(store.getSessionCursor("s1")).not.toBe(before);
+    store.stop();
+  });
+});
+
+/**
+ * The selector and keyed subscriptions added for P4b
+ * (`docs/plans/efficiency-plan-review-2026-09-11.md`, "Keyed listeners need a new store API").
+ *
+ * What they pin is the half a render-count cannot see: that a registration is *not woken* for a
+ * frame that moved something else. A consumer whose snapshot came back `Object.is`-equal renders
+ * nothing either way, so a regression here is invisible from the DOM and shows up only as CPU.
+ */
+describe("selector and keyed subscriptions", () => {
+  function started(): Event {
+    return {
+      type: "session-started",
+      provider_session_id: "prov-1",
+      model: "model-a",
+      cwd: "/repo",
+      capabilities: [],
+      resume_token: null,
+    };
+  }
+
+  const opened = (requestId: string): Event => ({
+    type: "request-opened",
+    request_id: requestId,
+    turn_id: "t1",
+    kind: { type: "tool-permission", tool_name: "Edit", input_excerpt: "x", suggestions: [], tool_call_id: null },
+  });
+
+  it("wakes a selector listener only on a frame its own selection moved", async () => {
+    const store = await load();
+    store.start();
+    store.pushBatch(batch({ signals: [env("s1", started())] }));
+    vi.advanceTimersByTime(FRAME_MS);
+
+    let approvalWakes = 0;
+    let sessionWakes = 0;
+    const offApprovals = store.subscribeTo((s) => s.approvals, () => { approvalWakes += 1; });
+    store.subscribeTo((s) => s.sessions, () => { sessionWakes += 1; });
+
+    // A `busy` flip replaces one session record: the sessions selection moves, approvals do not.
+    store.pushBatch(batch({ signals: [env("s1", { type: "turn-started", turn_id: "t1" })] }));
+    vi.advanceTimersByTime(FRAME_MS);
+    expect(sessionWakes).toBe(1);
+    expect(approvalWakes).toBe(0);
+
+    // Rows change no record and no snapshot field at all; neither selection may move.
+    store.pushBatch(batch({ rows: rows("s1", [1, 2]) }));
+    vi.advanceTimersByTime(FRAME_MS);
+    expect(sessionWakes).toBe(1);
+    expect(approvalWakes).toBe(0);
+
+    // Approvals are never optimistic (`docs/vision.md` §9): the card arrives on this frame. The
+    // session already exists, so `request-opened` replaces no record and the sessions selection
+    // must hold still through it.
+    store.pushBatch(batch({ signals: [env("s1", opened("r1"))] }));
+    vi.advanceTimersByTime(FRAME_MS);
+    expect(approvalWakes).toBe(1);
+    expect(sessionWakes).toBe(1);
+
+    store.pushBatch(batch({ signals: [env("s1", { type: "request-resolved", request_id: "r1", decision: { type: "allow", updated_input: null, updated_permissions: [] } })] }));
+    vi.advanceTimersByTime(FRAME_MS);
+    expect(approvalWakes).toBe(2);
+    expect(store.getState().approvals).toEqual([]);
+
+    // Unsubscribed registrations are gone, not merely quiet.
+    offApprovals();
+    store.pushBatch(batch({ signals: [env("s1", opened("r2"))] }));
+    vi.advanceTimersByTime(FRAME_MS);
+    expect(approvalWakes).toBe(2);
+    expect(sessionWakes).toBe(1);
+    store.stop();
+  });
+
+  it("delivers an approval and a session change that share one notify to both selectors", async () => {
+    const store = await load();
+    store.start();
+    store.pushBatch(batch({ signals: [env("s1", started())] }));
+    vi.advanceTimersByTime(FRAME_MS);
+
+    let approvalWakes = 0;
+    let sessionWakes = 0;
+    store.subscribeTo((s) => s.approvals, () => { approvalWakes += 1; });
+    store.subscribeTo((s) => s.sessions, () => { sessionWakes += 1; });
+
+    store.pushBatch(batch({ signals: [env("s1", { type: "turn-started", turn_id: "t1" }), env("s1", opened("r1"))] }));
+    vi.advanceTimersByTime(FRAME_MS);
+    expect(approvalWakes).toBe(1);
+    expect(sessionWakes).toBe(1);
+    expect(store.getState().approvals.map((a) => a.requestId)).toEqual(["r1"]);
+    store.stop();
+  });
+
+  it("keeps the `sessions` record identical across a rebuild that moved no session", async () => {
+    const store = await load();
+    store.start();
+    store.pushBatch(batch({ signals: [env("s1", started()), env("s2", started(), 9_000)] }));
+    vi.advanceTimersByTime(FRAME_MS);
+    const before = store.getState();
+    expect(before.order).toEqual(["s2", "s1"]);
+
+    // An approval opening on a session the store already knows rebuilds the snapshot — and must
+    // leave the sessions record, its per-session objects and the order alone.
+    store.pushBatch(batch({ signals: [env("s1", opened("r1"))] }));
+    vi.advanceTimersByTime(FRAME_MS);
+    const withCard = store.getState();
+    expect(withCard).not.toBe(before);
+    expect(withCard.sessions).toBe(before.sessions);
+    expect(withCard.order).toBe(before.order);
+    expect(withCard.approvals).not.toBe(before.approvals);
+
+    // A `busy` flip on s1 replaces s1's record and therefore the map — and nothing else.
+    store.pushBatch(batch({ signals: [env("s1", { type: "turn-started", turn_id: "t1" })] }));
+    vi.advanceTimersByTime(FRAME_MS);
+    const busy = store.getState();
+    expect(busy.sessions).not.toBe(withCard.sessions);
+    expect(busy.sessions["s2"]).toBe(withCard.sessions["s2"]);
+    expect(busy.sessions["s1"]).not.toBe(withCard.sessions["s1"]);
+    expect(busy.order).toBe(withCard.order);
+    expect(busy.approvals).toBe(withCard.approvals);
+    store.stop();
+  });
+
+  it("rebuilds the `sessions` record when a session arrives or leaves without moving the count", async () => {
+    const store = await load();
+    store.start();
+    store.pushBatch(batch({ signals: [env("s1", started())] }));
+    vi.advanceTimersByTime(FRAME_MS);
+    const one = store.getState();
+
+    // s1 out, s2 in: the same size, a different set. The guard is per record, not per count.
+    store.pushBatch(batch({ signals: [env("s2", started(), 9_000)] }));
+    vi.advanceTimersByTime(FRAME_MS);
+    expect(store.dropSession("s1")).toBe(true);
+    const swapped = store.getState();
+    expect(Object.keys(swapped.sessions)).toEqual(["s2"]);
+    expect(swapped.sessions).not.toBe(one.sessions);
+    store.stop();
+  });
+
+  it("honours a custom comparison and seeds its baseline at subscribe time", async () => {
+    const store = await load();
+    store.start();
+    store.pushBatch(batch({ signals: [env("s1", started())] }));
+    vi.advanceTimersByTime(FRAME_MS);
+
+    let wakes = 0;
+    // "How many sessions are there" — a number, so `Object.is` already suffices; the custom
+    // comparator here is a length compare over the order array, which does not.
+    store.subscribeTo(
+      (s) => s.order,
+      () => { wakes += 1; },
+      (a, b) => a.length === b.length,
+    );
+
+    store.pushBatch(batch({ signals: [env("s1", { type: "turn-started", turn_id: "t1" })] }));
+    vi.advanceTimersByTime(FRAME_MS);
+    expect(wakes).toBe(0);
+
+    store.pushBatch(batch({ signals: [env("s2", started(), 9_000)] }));
+    vi.advanceTimersByTime(FRAME_MS);
+    expect(wakes).toBe(1);
+    store.stop();
+  });
+
+  it("carries a resolved-without-decision row as the third state, Expired", async () => {
+    const store = await load();
+    store.start();
+    let wakes = 0;
+    store.subscribeTo((s) => s.approvals, () => { wakes += 1; });
+
+    // `pending_approvals` answers with `expired: true` for a row a previous run left resolved
+    // with no decision (`docs/plans/ipc-contract.md` §618-622). It is a state, not an absence:
+    // the shell still counts and draws it, and only a dismissal takes it away.
+    store.seedApprovals([
+      { session_id: "s1", request_id: "r1", opened_at_ms: 1, resolved: false, expired: true, kind: { type: "tool-permission", tool_name: "Edit", input_excerpt: "x", suggestions: [], tool_call_id: null } },
+    ]);
+    expect(wakes).toBe(1);
+    expect(store.getState().approvals.map((a) => a.expired)).toEqual([true]);
+
+    store.dismissApproval("r1");
+    expect(wakes).toBe(2);
+    expect(store.getState().approvals).toEqual([]);
     store.stop();
   });
 });

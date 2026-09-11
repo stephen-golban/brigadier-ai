@@ -21,7 +21,6 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
   type CSSProperties,
 } from "react";
 
@@ -154,6 +153,53 @@ const BURN_ROOT_MARKER = "/burn-fixtures/";
 const BURN_UI = import.meta.env.DEV || import.meta.env.VITE_BURN === "1";
 
 const emptySelectedApprovals: ApprovalRow[] = [];
+
+/**
+ * The `origins` `Sidebar` gets when the peer snapshot has not answered yet.
+ *
+ * A module-level frozen constant, not `?? {}`: an inline `{}` is a fresh object on every render of
+ * `App`, so `Sidebar`'s `memo` could never skip for as long as `peers.subagents` was undefined —
+ * which is exactly the first seconds after launch, the Cluster A window the memo exists for
+ * (`docs/performance/2026-09-11/cold-path-attribution.md` §3). Frozen so a consumer that mutated
+ * it would fail loudly rather than poison every later render.
+ */
+const EMPTY_ORIGINS: Record<string, string> = Object.freeze({});
+
+/**
+ * What the shell reads out of the feed store, one projection per `useFeedSelector`.
+ *
+ * Module-scope on purpose: `subscribeTo` holds the selector for the life of the registration, and
+ * a fresh arrow per render would make the subscription's baseline and its comparison disagree.
+ *
+ * This is the whole list — grep `useFeedSelector` in this file and it is these five. The shell
+ * draws no row ring and no `getSessionCursor`, so it registers nothing on the unkeyed `subscribe`
+ * at all; a frame that only moved rows or a cursor now reaches `App` not at all instead of
+ * reaching it and being compared away.
+ */
+const selectSessions = (s: store.StoreState) => s.sessions;
+const selectOrder = (s: store.StoreState) => s.order;
+const selectApprovals = (s: store.StoreState) => s.approvals;
+const selectUnknownProjects = (s: store.StoreState) => s.unknownProjects;
+const selectRuntimeWarnings = (s: store.StoreState) => s.runtimeWarnings;
+
+/**
+ * Hold an array's identity for as long as its elements do not move.
+ *
+ * The contract with `Sidebar`'s `memo` (`docs/plans/efficiency-and-rendering-plan-2026-09-11.md`
+ * §P4, "Build sidebar titles/order/session projections at their owner with stable identities"): a
+ * memoised child is worth nothing if its parent hands it a fresh array every render, and
+ * `sidebarOrder` is derived from `sessions`, which does move whenever any one session's `busy`
+ * flips. Element-wise, because both inputs are ids and the list is one screenful of them.
+ *
+ * `useMemo` cannot do this: its cache is keyed on the inputs, and the inputs are what moved.
+ */
+function useStableIds(next: SessionId[]): SessionId[] {
+  const held = useRef(next);
+  const prev = held.current;
+  if (prev !== next && (prev.length !== next.length || next.some((id, i) => id !== prev[i])))
+    held.current = next;
+  return held.current;
+}
 
 /**
  * How long after the startup data lands the Markdown chunk is warmed. **[not measured]** — see the
@@ -302,23 +348,43 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
     return () => window.removeEventListener("resize", clamp);
   }, [setSidebarWidth]);
 
-  const rawState = useSyncExternalStore(store.subscribe, store.getState);
+  /**
+   * Five projections, not one snapshot (`docs/plans/efficiency-plan-review-2026-09-11.md`,
+   * "Three whole-snapshot subscribers" / "Keyed listeners need a new store API").
+   *
+   * What the shell renders is what it selects, and nothing else: the session records, their order,
+   * **every** approval including expired ones, the unknown-project set, and the runtime-warning
+   * edge. Rows and `lastEventSeq` are read by panes further down, never here, so the shell no
+   * longer wakes on the frames that move them.
+   *
+   * Approvals stay non-optimistic (`docs/vision.md` §9): this is the same `state.approvals` array
+   * the store rebuilds on the frame a `request-opened` or `request-resolved` lands, and a resolved
+   * row that came back with no decision is still carried as `expired: true` rather than dropped.
+   */
+  const storeSessions = store.useFeedSelector(selectSessions);
+  const storeOrder = store.useFeedSelector(selectOrder);
+  const storeApprovals = store.useFeedSelector(selectApprovals);
+  const unknownProjects = store.useFeedSelector(selectUnknownProjects);
+  const runtimeWarnings = store.useFeedSelector(selectRuntimeWarnings);
   const navigation = useNavigationData();
-  const state = useMemo(() => {
-    const sessions = Object.fromEntries(
-      Object.entries(rawState.sessions).filter(
-        ([id, session]) =>
-          navigation.loaded &&
-          !isTrashed(navigation.data, "session", id) &&
-          !isTrashed(navigation.data, "project", session.projectId),
+  /**
+   * The store's sessions minus whatever the navigation data has trashed. Memoised on the store's
+   * own `sessions` record, which now keeps its identity across a rebuild that moved no session
+   * (`src/feedStore.ts`, `rebuildSessions`) — so an approval opening, a warning arriving or a
+   * project being noted no longer rebuilds this map or anything derived from it.
+   */
+  const sessions = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.entries(storeSessions).filter(
+          ([id, session]) =>
+            navigation.loaded &&
+            !isTrashed(navigation.data, "session", id) &&
+            !isTrashed(navigation.data, "project", session.projectId),
+        ),
       ),
-    );
-    return {
-      ...rawState,
-      sessions,
-      order: rawState.order.filter((id) => !!sessions[id]),
-    };
-  }, [rawState, navigation.data, navigation.loaded]);
+    [storeSessions, navigation.data, navigation.loaded],
+  );
 
   const [allProjects, setProjects] = useState<ProjectView[]>([]);
   const projects = useMemo(
@@ -372,8 +438,19 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
   const startup = pendingStartup ?? (selectedSessionId ? completedStartups[selectedSessionId] : undefined) ?? savedStartup;
   const startupTitles = useMemo(() => Object.fromEntries(Object.entries(completedStartups).map(([id, item]) => [id, item.title])), [completedStartups]);
   const startingRequests = useRef(new Set<string>());
-  const pendingBackendIds = new Set(Object.values(startups).map(item => item.createdSessionId).filter(Boolean));
-  const pendingSessions = Object.fromEntries(Object.values(startups).map(item => [item.id, startupRuntime(item)]));
+  /**
+   * The two projections of `startups` the sidebar needs, memoised on it rather than rebuilt every
+   * render. Both feed the `Sidebar` props below, and a fresh `Set` or record per render would
+   * invalidate those memos — and with them `Sidebar`'s own `memo` — on every unrelated re-render.
+   */
+  const pendingBackendIds = useMemo(
+    () => new Set(Object.values(startups).map(item => item.createdSessionId).filter(Boolean)),
+    [startups],
+  );
+  const pendingSessions = useMemo(
+    () => Object.fromEntries(Object.values(startups).map(item => [item.id, startupRuntime(item)])),
+    [startups],
+  );
   const [editingMessage, setEditingMessage] = useState<ChatItem | null>(null);
   const [conversationRevision, setConversationRevision] = useState(0);
   useEffect(() => setEditingMessage(null), [selectedSessionId]);
@@ -516,14 +593,14 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
     // While a global "New chat" is waiting for a project, `null` is the chosen state, not a stale
     // selection: re-selecting `projects[0]` here is exactly the auto-pick being suppressed.
     if (projectUnpicked) {
-      if (selectedSessionId && !state.sessions[selectedSessionId] && !startups[selectedSessionId])
+      if (selectedSessionId && !sessions[selectedSessionId] && !startups[selectedSessionId])
         setSelectedSessionId(null);
       return;
     }
     if (!projects.some((p) => p.id === selectedProjectId)) {
       setSelectedProjectId(projects.find(p => !p.projectless)?.id ?? null);
       setSelectedSessionId(null);
-    } else if (selectedSessionId && !state.sessions[selectedSessionId] && !startups[selectedSessionId])
+    } else if (selectedSessionId && !sessions[selectedSessionId] && !startups[selectedSessionId])
       setSelectedSessionId(null);
   }, [
     navigation.loaded,
@@ -532,7 +609,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
     projectUnpicked,
     selectedProjectId,
     selectedSessionId,
-    state.sessions,
+    sessions,
     startups,
   ]);
   useEffect(() => {
@@ -571,11 +648,11 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
   const visibleProjectKey = useMemo(() => {
     const visible = new Set(projects.filter(p => p.projectless).map(p => p.id));
     if (selectedProjectId) visible.add(selectedProjectId);
-    if (selectedSessionId) for (const row of workerTree(selectedSessionId, peers, state.sessions)) {
+    if (selectedSessionId) for (const row of workerTree(selectedSessionId, peers, sessions)) {
       if (row.session?.projectId) visible.add(row.session.projectId);
     }
     return JSON.stringify([...visible]);
-  }, [selectedProjectId, selectedSessionId, peers.subagents, state.sessions, projects]);
+  }, [selectedProjectId, selectedSessionId, peers.subagents, sessions, projects]);
   useEffect(() => {
     if (selectedProjectId !== null) localStorage.setItem("brigadier:selected-project", selectedProjectId);
     void bridge().setVisibleProjects(JSON.parse(visibleProjectKey)).catch(say);
@@ -585,7 +662,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
   // one behind the UI's back). Re-read `list_projects` once per unknown id, coalesced, so the
   // project appears in the sidebar and can be selected; its sessions then arrive as signals.
   useEffect(() => {
-    const unknown = state.unknownProjects;
+    const unknown = unknownProjects;
     // Feed batches start before the first `list_projects` answers; those ids are not unknown,
     // they are merely early, and `noteProjects` clears them when the answer lands.
     if (!projectsLoaded || unknown.length === 0) return;
@@ -604,7 +681,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
         // A failed refresh is not worth a banner; the next unknown project retries it.
       });
     }, UNKNOWN_PROJECT_REFETCH_MS);
-  }, [state.unknownProjects, projectsLoaded, refreshProjects]);
+  }, [unknownProjects, projectsLoaded, refreshProjects]);
 
   // Own teardown, so a dep change above does not cancel the pending re-fetch.
   useEffect(
@@ -748,7 +825,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
   const selectedSession =
     selectedSessionId === null || peers.loaded === false || !!peers.subagents?.[selectedSessionId]
       ? null
-      : (state.sessions[selectedSessionId] ?? null);
+      : (sessions[selectedSessionId] ?? null);
   const openWorkspace = useCallback((path?: string) => {
     if (path)
       window.dispatchEvent(
@@ -777,14 +854,14 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
    * filtered by the selection. A webview reload resets `selectedProjectId` to `projectList[0]`
    * (the effect above), so filtering hid a still-answerable prompt on any other project and read
    * as data loss (`docs/research/approvals.md` §7 gap 7). The project name travels with the card
-   * instead; `state.approvals` is already sorted oldest-first by the store.
+   * instead; the store already sorts its `approvals` oldest-first.
    */
   const approvalRows = useMemo<ApprovalRow[]>(() => {
     const byId = new Map(projects.map((p) => [p.id, p]));
-    return state.approvals.map((a) => {
+    return storeApprovals.map((a) => {
       // session_id -> project_id via the store's session list; -> project via `list_projects`.
       const conversationId = conversationOwner(a.sessionId, peers);
-      const projectId = state.sessions[conversationId]?.projectId ?? null;
+      const projectId = sessions[conversationId]?.projectId ?? null;
       return {
         approval: a,
         conversationId,
@@ -798,7 +875,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
           projectId !== selectedProjectId,
       };
     });
-  }, [state.approvals, state.sessions, projects, selectedProjectId, peers.subagents, peers.titles]);
+  }, [storeApprovals, sessions, projects, selectedProjectId, peers.subagents, peers.titles]);
 
   /** Pending approvals per project, for the sidebar badge. */
   const pendingByProject = useMemo(() => {
@@ -1033,14 +1110,14 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
   /**
    * Two triggers, and both are the contract's.
    *
-   * The project selection is the obvious one. `state.runtimeWarnings` is the other: the
+   * The project selection is the obvious one. `runtimeWarnings` is the other: the
    * reconciler emits a `runtime-warning` for an intent it could not settle, and
    * `docs/plans/ipc-contract.md` §"The run" → Signals says the card refetches `current_run` on it.
    * That is why the run needs no channel of its own.
    */
   useEffect(() => {
     void refreshRun(selectedProjectId);
-  }, [selectedProjectId, state.runtimeWarnings, refreshRun]);
+  }, [selectedProjectId, runtimeWarnings, refreshRun]);
 
   // While a run is live, ask. See `RUN_POLL_MS` for why this is a poll and not a subscription.
   const runLive = runIsLive(run);
@@ -1113,14 +1190,27 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
       if (burnProject === undefined) throw new Error("Replay project was not created");
       // The visibility effect above pushes `set_visible_projects([burnProject.id])` off this.
       chooseProject(burnProject.id);
-      const sessions = await bridge().listSessions();
-      store.seedSessions(sessions);
-      const newest = sessions.filter(session => session.project_id === burnProject.id)
+      const sessionViews = await bridge().listSessions();
+      store.seedSessions(sessionViews);
+      const newest = sessionViews.filter(session => session.project_id === burnProject.id)
         .sort((a, b) => (b.started_at_ms ?? 0) - (a.started_at_ms ?? 0))[0];
       if (!newest) throw new Error("Replay conversation was not created");
       setSelectedSessionId(newest.session_id);
     },
     [refreshProjects, chooseProject],
+  );
+
+  /**
+   * The dev burn panel, as one element rather than one per render.
+   *
+   * `<Burn onBurn={runBurn} />` in the JSX is a fresh React element every render, and `memo`
+   * compares by identity — so in **every** dev build and every `VITE_BURN=1` build the sidebar's
+   * memo was inert, which is every build a burn is ever captured on. `runBurn` is a `useCallback`
+   * over two stable callbacks, so this element is built once.
+   */
+  const devPanel = useMemo(
+    () => (BURN_UI ? <Burn onBurn={runBurn} /> : undefined),
+    [runBurn],
   );
 
   const selectedProject =
@@ -1152,7 +1242,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
   const pendingTotal = approvalRows.length;
   const jobs = useCleanup();
   const [viewedSession, setViewedSession] = useState<string | null>(null);
-  const attention = useAttention(state.sessions, viewedSession, [
+  const attention = useAttention(sessions, viewedSession, [
     ...approvalRows.map((r) => r.conversationId ?? r.approval.sessionId),
     ...peers.requests.filter((r) => !r.resolved).map((r) => conversationOwner(r.from, peers)),
   ]);
@@ -1179,6 +1269,79 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
   const transcriptRequests = useMemo(() => <Approvals approvals={selectedApprovals}
     onRespond={respond} onDismiss={store.dismissApproval} onFocus={focusApproval}/>,
     [selectedApprovals, respond, focusApproval]);
+  /**
+   * `Sidebar`'s three derived props, hoisted out of the JSX (they were three fresh literals built
+   * inline on every render of `App`).
+   *
+   * **This is the contract with `Sidebar`'s `memo`.** A `memo` compares props by identity, so a
+   * parent that rebuilds `titles`, `sessions` and `order` on every render defeats it completely:
+   * the memo would then cost a comparison and save nothing. Each of these keeps its identity for
+   * exactly as long as its own inputs do, and its inputs are now identity-stable themselves —
+   * `storeSessions`/`storeOrder` from `rebuildSessions`'s guard, `pendingSessions` and
+   * `pendingBackendIds` from the memos above, `startupTitles` and `peers.titles` from their own
+   * owners. A frame that moves only feed rows, a cursor or another session's approval leaves all
+   * three `Object.is`-identical; `src/App.test.tsx` asserts exactly that.
+   *
+   * `sidebarOrder` additionally goes through `useStableIds`, because it is derived from `sessions`
+   * and `sessions` does move whenever any one session's `busy` flips — while the *order* usually
+   * does not.
+   */
+  const sidebarTitles = useMemo(
+    () => ({
+      ...startupTitles,
+      ...peers.titles,
+      ...Object.fromEntries(Object.values(startups).map(item => [item.id, item.title])),
+    }),
+    [startupTitles, peers.titles, startups],
+  );
+  const sidebarSessions = useMemo(
+    () => ({
+      ...Object.fromEntries(
+        Object.entries(conversationSessions(sessions, peers)).filter(
+          ([id]) => !pendingBackendIds.has(id),
+        ),
+      ),
+      ...pendingSessions,
+    }),
+    [sessions, peers, pendingBackendIds, pendingSessions],
+  );
+  const sidebarOrder = useStableIds(
+    useMemo(
+      () => [
+        ...Object.keys(pendingSessions),
+        ...storeOrder.filter(id => !!sessions[id] && !pendingBackendIds.has(id)),
+      ],
+      [pendingSessions, storeOrder, sessions, pendingBackendIds],
+    ),
+  );
+  /**
+   * Picking a project from the sidebar, and restoring whatever chat was last open in it.
+   *
+   * A `useCallback` rather than the inline arrow this was: the arrow was a new function on every
+   * render of `App`, which on its own defeated `Sidebar`'s `memo` completely. Its only closure is
+   * `chooseProject`, itself a `useCallback` with no dependencies; `setSelectedSessionId` is a
+   * state setter and stable by construction, and `readArchive`/`store.getState` are read live on
+   * purpose — the restored id must be checked against the archive and the store *now*, not
+   * against whatever they held when this callback was built.
+   */
+  const selectProject = useCallback(
+    (id: ProjectId) => {
+      chooseProject(id);
+      try {
+        const last = JSON.parse(
+          localStorage.getItem("brigadier:last-project-session") ?? "{}",
+        )[id];
+        setSelectedSessionId(
+          last && !readArchive().entries[last] && store.getState().sessions[last]
+            ? last
+            : null,
+        );
+      } catch {
+        setSelectedSessionId(null);
+      }
+    },
+    [chooseProject],
+  );
   const selectTranscriptSession = useCallback((id: string) => {
     if (selectedSessionId && workerTree(selectedSessionId, peers, store.getState().sessions).some(row => row.id === id))
       window.dispatchEvent(new CustomEvent("workbench-open-worker", {detail: {rootId: selectedSessionId, id}}));
@@ -1198,7 +1361,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
           isAvailable={({ projectId, sessionId, page }) =>
             page === "notepad" ||
             (!!projects.find((p) => p.id === projectId) &&
-              (!sessionId || !!state.sessions[sessionId]))
+              (!sessionId || !!sessions[sessionId]))
           }
           onNavigate={({ projectId, sessionId, page }) => {
             if (page === "notepad") {
@@ -1236,10 +1399,10 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
         attention={attention}
         jobs={jobs}
         projects={projects}
-        titles={{...startupTitles, ...peers.titles, ...Object.fromEntries(Object.values(startups).map(item => [item.id, item.title]))}}
-        origins={peers.subagents ?? {}}
-        sessions={{...Object.fromEntries(Object.entries(conversationSessions(state.sessions, peers)).filter(([id]) => !pendingBackendIds.has(id))), ...pendingSessions}}
-        order={[...Object.keys(pendingSessions), ...state.order.filter(id => !pendingBackendIds.has(id))]}
+        titles={sidebarTitles}
+        origins={peers.subagents ?? EMPTY_ORIGINS}
+        sessions={sidebarSessions}
+        order={sidebarOrder}
         selectedProjectId={selectedProjectId}
         selectedSessionId={selectedSessionId}
         pendingApprovals={pendingByProject}
@@ -1248,24 +1411,8 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
         claude={claude}
         claudeError={claudeError}
         isMock={bridge().isMock}
-        dev={BURN_UI ? <Burn onBurn={runBurn} /> : undefined}
-        onSelectProject={(id) => {
-          chooseProject(id);
-          try {
-            const last = JSON.parse(
-              localStorage.getItem("brigadier:last-project-session") ?? "{}",
-            )[id];
-            setSelectedSessionId(
-              last &&
-                !readArchive().entries[last] &&
-                store.getState().sessions[last]
-                ? last
-                : null,
-            );
-          } catch {
-            setSelectedSessionId(null);
-          }
-        }}
+        dev={devPanel}
+        onSelectProject={selectProject}
         onSelectSession={selectSession}
         onAddProject={addProject}
         // Both plugins exist only in a real Tauri window. In a browser (`npm run dev`) the mock
@@ -1295,7 +1442,7 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
             peers={{...peers,titles:{...startupTitles,...peers.titles}}}
             project={selectedProject}
             session={selectedSession}
-            sessions={state.sessions}
+            sessions={sessions}
             selectedSessionId={selectedSessionId}
             onSelectSession={selectSession}
             onForkSession={forkSession}
