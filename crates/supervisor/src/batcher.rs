@@ -110,10 +110,16 @@ struct State {
     projects: BTreeMap<String, ProjectAccum>,
     /// `None` until the UI says otherwise, which means "everything is visible".
     visible: Option<BTreeSet<String>>,
+    #[cfg(any(debug_assertions, feature = "burn"))]
+    capture_projects: BTreeMap<String, usize>,
 }
 
 impl State {
     fn is_visible(&self, project_id: &str) -> bool {
+        #[cfg(any(debug_assertions, feature = "burn"))]
+        if self.capture_projects.contains_key(project_id) {
+            return true;
+        }
         match &self.visible {
             None => true,
             Some(set) => set.contains(project_id),
@@ -140,6 +146,28 @@ struct Frame {
 #[derive(Clone)]
 pub struct Batcher {
     inner: Arc<Inner>,
+}
+
+/// Keeps a diagnostic project's complete row stream enabled until capture ends.
+#[cfg(any(debug_assertions, feature = "burn"))]
+pub struct CaptureProject {
+    inner: Weak<Inner>,
+    project_id: String,
+}
+
+#[cfg(any(debug_assertions, feature = "burn"))]
+impl Drop for CaptureProject {
+    fn drop(&mut self) {
+        if let Some(inner) = self.inner.upgrade() {
+            let mut state = lock(&inner.state);
+            if let Some(count) = state.capture_projects.get_mut(&self.project_id) {
+                *count -= 1;
+                if *count == 0 {
+                    state.capture_projects.remove(&self.project_id);
+                }
+            }
+        }
+    }
 }
 
 impl std::fmt::Debug for Batcher {
@@ -208,6 +236,19 @@ impl Batcher {
     /// counters keep flowing.
     pub fn set_visible_projects(&self, ids: Vec<String>) {
         lock(&self.inner.state).visible = Some(ids.into_iter().collect());
+    }
+
+    /// Preserve the actual capture workload even while UI project selection changes.
+    #[cfg(any(debug_assertions, feature = "burn"))]
+    pub fn capture_project(&self, project_id: &str) -> CaptureProject {
+        *lock(&self.inner.state)
+            .capture_projects
+            .entry(project_id.to_owned())
+            .or_default() += 1;
+        CaptureProject {
+            inner: Arc::downgrade(&self.inner),
+            project_id: project_id.to_owned(),
+        }
     }
 
     /// Drain every project with something pending and send it, splitting under the byte cap.
@@ -572,6 +613,46 @@ mod tests {
         // The warning is both a signal and a row, so 11 rows were offered and 11 dropped.
         assert_eq!(counter.rows_total, 11);
         assert_eq!(counter.rows_dropped, 11);
+    }
+
+    #[test]
+    fn capture_keeps_rows_from_first_event_through_selection_changes_and_releases() {
+        let (batcher, sink) = sink();
+        batcher.set_visible_projects(vec!["chats".into()]);
+        let first = batcher.capture_project("p");
+        let second = batcher.capture_project("p");
+        batcher.push("p", &row_event(1));
+        batcher.set_visible_projects(vec![]);
+        drop(first);
+        batcher.push("p", &row_event(2));
+        batcher.push("other", &row_event(3));
+        batcher.flush_once();
+        let batches = sink.take();
+        assert_eq!(
+            batches
+                .iter()
+                .flat_map(|b| &b.rows)
+                .map(|r| r.q)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_eq!(
+            batches
+                .iter()
+                .find(|b| b.project_id == "p")
+                .unwrap()
+                .counters[0]
+                .rows_dropped,
+            0
+        );
+        drop(second);
+        batcher.push("p", &row_event(4));
+        batcher.flush_once();
+        assert!(sink.take().iter().all(|b| b.rows.is_empty()));
+        batcher.set_visible_projects(vec!["p".into()]);
+        batcher.push("p", &row_event(5));
+        batcher.flush_once();
+        assert_eq!(sink.take().iter().flat_map(|b| &b.rows).count(), 1);
     }
 
     #[test]

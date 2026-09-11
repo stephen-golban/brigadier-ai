@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { workspaceApi, desktop, errorMessage, type ChatItem, type ChatTurn } from '../workspaceApi';
 import * as store from '../feedStore';
 import { mergeHistory } from '../conversationHistory';
+import { prepareTimestampLabels } from '../timestampLabels';
 
 // One shared empty window, so the reset below can be a real no-op. The effect re-runs on every
 // `[sessionId, revision]` change and must clear the previous conversation; on a first mount it has
@@ -54,7 +55,10 @@ export function useConversationHistory(sessionId: string, revision: number) {
         const merged = mode === 'latest' ? page.items : mergeHistory(windowItems, page.items, mode === 'older' ? 'older' : 'latest');
         // `d` on the request is the window size asked about; 0 means no invoke was made at all.
         if (profiling) traceEvent("turns-request", merged.length);
-        const recorded = merged.length ? await workspaceApi.chatTurns(sessionId, {start: Math.min(...merged.map(item => item.seq)), end: Math.max(...merged.map(item => item.seq))}) : [];
+        const [recorded] = await Promise.all([
+          merged.length ? workspaceApi.chatTurns(sessionId, {start: Math.min(...merged.map(item => item.seq)), end: Math.max(...merged.map(item => item.seq))}) : [],
+          prepareTimestampLabels(merged),
+        ]);
         if (profiling) traceEvent("turns-response", recorded.length);
         if(!live) return;
         if(mode!=='updates') {

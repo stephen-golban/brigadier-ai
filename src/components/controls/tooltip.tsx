@@ -1,4 +1,6 @@
 import {
+  createContext,
+  useContext,
   useId,
   useRef,
   useState,
@@ -13,6 +15,15 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "../../lib/utils";
+
+const GroupedTooltips = createContext(false);
+
+/** One hint at a time within a navigation surface, using Base UI's delay group. */
+export function TooltipGroup({children}: {children: ReactNode}) {
+  return <GroupedTooltips.Provider value={true}>
+    <TooltipProvider delay={0} closeDelay={100}>{children}</TooltipProvider>
+  </GroupedTooltips.Provider>;
+}
 
 /**
  * A non-interactive hint, shown on hover or keyboard focus without taking focus. A thin adapter
@@ -57,6 +68,7 @@ export function Tooltip({
   placement?: "top" | "right";
   children: ReactElement<ComponentProps<"button">>;
 }) {
+  const grouped = useContext(GroupedTooltips);
   const [open, setOpen] = useState(false);
   const [allowed, setAllowed] = useState(!onlyWhenTruncated);
   const anchor = useRef<HTMLSpanElement>(null);
@@ -80,8 +92,7 @@ export function Tooltip({
     measure();
     setOpen(true);
   };
-  return (
-    <TooltipProvider delay={0} closeDelay={100}>
+  const hint = (
       <KitTooltip
         open={open && allowed}
         onOpenChange={(next, details) => {
@@ -123,6 +134,6 @@ export function Tooltip({
           {content}
         </TooltipContent>
       </KitTooltip>
-    </TooltipProvider>
   );
+  return grouped ? hint : <TooltipProvider delay={0} closeDelay={100}>{hint}</TooltipProvider>;
 }

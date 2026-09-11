@@ -152,6 +152,8 @@ const BURN_ROOT_MARKER = "/burn-fixtures/";
  */
 const BURN_UI = import.meta.env.DEV || import.meta.env.VITE_BURN === "1";
 
+const emptySelectedApprovals: ApprovalRow[] = [];
+
 export function App({ onReady }: { onReady?: () => void } = {}) {
   const peers = usePeers();
   const [workspaceOpen, setWorkspaceOpen] = useStoredState(
@@ -1101,6 +1103,16 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
     }
   }, [notice]);
 
+  const filteredApprovals = approvalRows.filter(row => row.conversationId === selectedSessionId);
+  const selectedApprovals = filteredApprovals.length ? filteredApprovals : emptySelectedApprovals;
+  const transcriptRequests = useMemo(() => <Approvals approvals={selectedApprovals}
+    onRespond={respond} onDismiss={store.dismissApproval} onFocus={focusApproval}/>,
+    [selectedApprovals, respond, focusApproval]);
+  const selectTranscriptSession = useCallback((id: string) => {
+    if (selectedSessionId && workerTree(selectedSessionId, peers, store.getState().sessions).some(row => row.id === id))
+      window.dispatchEvent(new CustomEvent("workbench-open-worker", {detail: {rootId: selectedSessionId, id}}));
+    else selectSession(id);
+  }, [selectedSessionId, peers, selectSession]);
   return (
     <SidebarProvider
       open={sidebarOpen}
@@ -1256,21 +1268,9 @@ export function App({ onReady }: { onReady?: () => void } = {}) {
             <ThreadView
               startup={startup}
               onRetryStartup={pendingStartup?.error ? () => { void startSession(pendingStartup.args); } : undefined}
-              requests={
-                <Approvals
-                  approvals={approvalRows.filter(
-                    (row) => row.conversationId === selectedSessionId,
-                  )}
-                  onRespond={respond}
-                  onDismiss={store.dismissApproval}
-                  onFocus={focusApproval}
-                />
-              }
+              requests={transcriptRequests}
               peers={peers}
-              onSelectSession={id => {
-                if(selectedSessionId && workerTree(selectedSessionId,peers,state.sessions).some(row=>row.id===id)) window.dispatchEvent(new CustomEvent("workbench-open-worker",{detail:{rootId:selectedSessionId,id}}));
-                else selectSession(id);
-              }}
+              onSelectSession={selectTranscriptSession}
               onEdit={setEditingMessage}
               editing={editingMessage !== null}
               revision={conversationRevision}

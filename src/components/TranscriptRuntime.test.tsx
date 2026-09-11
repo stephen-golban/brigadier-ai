@@ -4,6 +4,23 @@ import {useAui} from '@assistant-ui/react';
 import {TranscriptRuntime} from './TranscriptRuntime';
 import MarkdownContent from './MarkdownContent';
 afterEach(()=>{cleanup();vi.unstubAllGlobals();});
+it('retains unchanged runtime messages through parent renders and running-state updates',()=>{
+ let client:ReturnType<typeof useAui>|undefined;
+ function Probe(){client=useAui();return null;}
+ const props={sessionId:'root',loaded:true,readOnly:false};
+ const messages=[{id:'first',role:'assistant' as const,content:'Earlier answer'},{id:'last',role:'assistant' as const,content:'Current answer'}];
+ const view=render(<TranscriptRuntime {...props} busy={false} messages={messages}><Probe/><span>First parent render</span></TranscriptRuntime>);
+ const first=client!.thread().getState().messages[0];
+ view.rerender(<TranscriptRuntime {...props} busy={false} messages={messages}><Probe/><span>Updated parent</span></TranscriptRuntime>);
+ expect(client!.thread().getState().messages[0]).toBe(first);
+ view.rerender(<TranscriptRuntime {...props} busy messages={messages}><Probe/></TranscriptRuntime>);
+ expect(client!.thread().getState().messages[0]).toBe(first);
+ expect(client!.thread().getState().messages[1]?.status?.type).toBe('running');
+ view.rerender(<TranscriptRuntime {...props} busy={false} messages={[messages[0]!,{...messages[1]!,content:'Finished answer'}]}><Probe/></TranscriptRuntime>);
+ expect(client!.thread().getState().messages[0]).toBe(first);
+ expect(client!.thread().getState().messages[1]?.content).toEqual([{type:'text',text:'Finished answer'}]);
+ expect(client!.thread().getState().messages[1]?.status?.type).toBe('complete');
+});
 it('renders complete saved text and legitimate repetition even when native animation frames pause',async()=>{
  vi.stubGlobal('requestAnimationFrame',vi.fn(()=>1));
  vi.stubGlobal('cancelAnimationFrame',vi.fn());

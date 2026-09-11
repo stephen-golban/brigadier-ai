@@ -1,3 +1,4 @@
+import { MessageTimestamp, MessageTime } from "./MessageTimestamp";
 import type { SessionStartup } from "../sessionStartup";
 import { ProvisioningConversation, SessionProvisioning } from "./SessionProvisioning";
 import { profiling } from "../perfDiagnostics";
@@ -19,6 +20,7 @@ import { Spinner } from "./controls/status";
 import { Disclosure } from "./controls/disclosure";
 import {
   memo,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -56,7 +58,7 @@ import { PeerAttachmentPreviews } from "./peer/PeerAttachmentPreviews";
 import { peerMessageContent } from "../peerPresentation";
 import { peerApi, type PeerAttachment, type PeerData } from "../peerApi";
 import {AttachmentPreview} from "./composer/AttachmentPreview";
-export function ThreadView({
+export const ThreadView = memo(function ThreadView({
   startup, onRetryStartup,
   requests,
   sessionId,
@@ -105,7 +107,7 @@ export function ThreadView({
       )}
     </section>
   );
-}
+});
 
 // The greeting is only ever read by this branch. Holding its state — and its `workbench_load`
 // round trip and `workbench-data-changed` listener — in `ThreadView` re-rendered the whole
@@ -235,9 +237,20 @@ function Transcript({
     () => providerChangePlacement(executionChanges ?? [], items, historical),
     [executionChanges, items, historical],
   );
-  const state = useSyncExternalStore(store.subscribe, store.getState),
-    session = state.sessions[sessionId],
-    busy = session?.busy ?? false;
+  // Only these fields affect transcript pixels; history keeps its own live cursor subscription.
+  const session = useSyncExternalStore(store.subscribe, useMemo(() => {
+    let previous: {busy: boolean; lastStop: string | null | undefined; projectId: string | null | undefined} | undefined;
+    return () => {
+      const current = store.getState().sessions[sessionId];
+      const busy = current?.busy ?? false;
+      if (!previous || previous.busy !== busy || previous.lastStop !== current?.lastStop || previous.projectId !== current?.projectId)
+        previous = {busy, lastStop: current?.lastStop, projectId: current?.projectId};
+      return previous;
+    };
+  }, [sessionId]));
+  const busy = session.busy;
+  const pendingApprovalKey = useSyncExternalStore(store.subscribe, useCallback(() =>
+    JSON.stringify((store.getState().approvals ?? []).filter(item => item.sessionId === sessionId).map(item => item.requestId)), [sessionId]));
   const scroll = useRef<HTMLDivElement>(null),
     restored = useRef(false);
   const [initialScroll] = useState<{ top: number; following: boolean }>(
@@ -280,7 +293,7 @@ function Transcript({
     [items, busy, turnRecords, session?.lastStop],
   );
   const approvalElement = isValidElement<ApprovalsProps>(requests) && Array.isArray(requests.props.approvals) ? requests : null;
-  const approvalHistory = useApprovalHistory(sessionId, (state.approvals ?? []).filter(item => item.sessionId === sessionId).map(item => item.requestId).join(":"));
+  const approvalHistory = useApprovalHistory(sessionId, pendingApprovalKey);
   const confirmedApprovals = approvalHistory.filter(item => {
     if (!item.resolved) return false;
     const first = items[0], last = items[items.length - 1];
@@ -426,9 +439,7 @@ function Transcript({
                 <>
                   {providerChanges.before.get(row.item.id)?.map(change => <ProviderChangeDivider key={change.id} change={change} />)}
                   {row.item.at > 0 && (
-                    <div className="message-separator mb-2 text-xs text-text-tertiary">
-                      {dateLabel(row.item.at)}
-                    </div>
+                    <MessageTimestamp at={row.item.at}/>
                   )}
                   <UserMessage
                     readOnly={peers?.loaded === false || !!peers?.subagents?.[sessionId]}
@@ -512,10 +523,6 @@ function stopLabel(reason: string) {
   }
 }
 
-function dateLabel(at: number) {
-  const date = new Date(at);
-  return `${date.toDateString() === new Date().toDateString() ? "Today" : date.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`;
-}
 function UserMessage({
   readOnly = false,
   item,
@@ -542,12 +549,12 @@ function UserMessage({
   const [expanded, setExpanded] = useState(false);
   const [attachment, setAttachment] = useState<PeerAttachment | null>(null);
   const [sourceError, setSourceError] = useState('');
-  const openReference = (path: string) => {
+  const openReference = useCallback((path: string) => {
     if (path.startsWith('brigadier-session:')) { onSelectSession?.(path.slice('brigadier-session:'.length)); return; }
     if (!path.startsWith('brigadier-attachment:')) { onFile(path); return; }
     if (!projectId) {setSourceError('Attachment project is unavailable.');return;}
     void peerApi.attachment(projectId, path.slice('brigadier-attachment:'.length)).then(file=>setAttachment(file.metadata), error=>setSourceError(String(error)));
-  };
+  }, [onFile, onSelectSession, projectId]);
   const { source, text } = peerMessageContent(item, peers, initial);
   if (source) return <PeerIncomingMessage item={item} peers={peers} onSelectSession={onSelectSession} />;
   const long =
@@ -579,12 +586,7 @@ function UserMessage({
       </ChatPanelUserMessage>
       <div className="aui-message-actions flex items-center gap-1 text-xs text-text-tertiary">
         {item.at > 0 && (
-          <time dateTime={new Date(item.at).toISOString()}>
-            {new Date(item.at).toLocaleTimeString(undefined, {
-              hour: "numeric",
-              minute: "2-digit",
-            })}
-          </time>
+          <MessageTime at={item.at}/>
         )}
         <CopyButton text={text} />
         {!source && !readOnly && (
