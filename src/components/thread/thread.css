@@ -19,7 +19,7 @@
  * — consistent with src/index.css's own "Dark-only" declaration.
  *
  * TOKEN MAPPING (second rename pass, plan §5 phase 3R step 4): every semantic colour
- * and radius token below that has a clear match in brigadier's existing --color-*/
+ * and radius token below that has a clear match in brigadier's existing --color-* /
  * --radius-* layer (src/index.css, "CSS token vocabulary" section) is aliased to it
  * rather than carrying its own literal. Kept as literals: the diff green/red and their
  * .23 tints (row 8), the approval card's own surface colour (row 12), the file-change
@@ -36,7 +36,7 @@
  * the byte accounting.
  */
 :root {
-  /* ---- aliased onto brigadier's existing --color-*/--radius-* layer ---- */
+  /* ---- aliased onto brigadier's existing --color-* / --radius-* layer ---- */
   --thread-background-surface: var(--color-canvas);
   --thread-bg: var(--color-canvas);
   --thread-bg-subtle: var(--code-surface);
