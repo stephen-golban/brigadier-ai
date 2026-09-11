@@ -21,3 +21,20 @@ Rejected containment/unopened-tooltip experiments and other intermediate capture
 Complete signed bundle: `/tmp/brigadier-release-20260911/Brigadier-timestamp-fix.app`.
 
 After reviewing the unresolved performance result and research, the user explicitly requested committing these changes, merging our branches/worktrees into main, removing our remaining branches/worktrees, and coordinating the remaining issue with the task "Reduce Brigadier CPU usage". This authorizes integration of the current work; it does not establish a passing performance result. That task received the findings but reports that the user's STOP instruction remains in effect, so further diagnosis and app installation are pending resumption. No further benchmark or full-suite run is required for this handoff. Production app data and protected design backups are unchanged; the installed app has not been replaced by this integration.
+
+## 2026-09-11 review outcome
+
+An adversarial review of the follow-on efficiency plan is at `docs/plans/efficiency-plan-review-2026-09-11.md`;
+its P0 recovery work landed as `baseline-manifest.md` (source, toolchain, machine, and every capture in this
+directory bound to its numbers and the commit that added it) and `timer-inventory.md` beside this file.
+
+- The 45 ms shared-clock capture the plan quotes was only in `/tmp`. It is now `burn-shared-clock.json` here,
+  with seventeen other recovered captures; the manifest's table says which are valid and which are not.
+- **The 60 Hz zero-drop gate has never passed in this repository's history.** All 36 burn JSONs under
+  `docs/performance/` that carry a rendering summary report `summary.pass: false`. The best run recorded is
+  `docs/performance/2026-09-10/ship-release-burn.json`: `total_dropped: 2`, `worst_ms: 29`, 63 windows,
+  `interrupted: false`, `pass: false` — verified by reading that file, not quoted from a note.
+- `scripts/measure-native-burn.py` and `scripts/measure-native-startup.py` now stamp a `source` object
+  (`head`, `dirty`, `dirty_files`, `branch`, `build_flags`, `captured_at`) into every result. Captures taken
+  before today carry none; their revision binding rests on the manifest.
+- Nothing above is a new measurement. No build, benchmark, profile or app run was performed for it.

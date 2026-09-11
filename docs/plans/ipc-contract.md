@@ -54,7 +54,9 @@ FeedKind      = "turn" | "tool" | "text" | "think" | "user" | "sub" | "appr" | "
 SessionCounter{ session_id: string, rows_total: number, rows_dropped: number }
 ```
 
-- One batch per animation frame (16 ms tick in Rust) per project; an empty frame sends nothing.
+- At most one batch per animation frame per project: Rust flushes as soon as an event
+  arrives after an idle stretch and otherwise on a deadline one frame (16 ms) after the
+  previous flush, so nothing pending means no timer and no message.
 - Serialized size of every message is asserted `< 8000` bytes before `send`; a frame that does not
   fit is split into several messages, at most 24 rows each (`feed-rendering.md` §4).
 - Signal envelopes are sent with `raw` stripped (`raw: None`): one envelope with a raw excerpt
