@@ -1,6 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { useSessionNavigation } from "./sessionNavigation";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { desktop } from "./workspaceApi";
 export interface PeerAttachment {
@@ -102,5 +102,5 @@ export function usePeers() {
       void stop.then(unlisten=>unlisten());
     };
   }, []);
-  return { ...data, titles: { ...data.titles, ...titles } };
+  return useMemo(() => ({ ...data, titles: { ...data.titles, ...titles } }), [data, titles]);
 }

@@ -9,6 +9,9 @@ description = "Managed state for N supervised agent sessions, and the flow contr
 name = "brigadier_supervisor"
 path = "src/lib.rs"
 
+[features]
+burn = []
+
 [dependencies]
 brigadier-core = { path = "../core" }
 # Process-group kill for the gate's timeout: `cargo test` spawns children, and killing the pid

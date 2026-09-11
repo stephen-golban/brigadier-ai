@@ -1,12 +1,14 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { Profiler } from "react";
 import userEvent from "@testing-library/user-event";
 import { peerApi } from "../peerApi";
 import { ThreadView } from "./ThreadView";
 import { workspaceApi, type ChatItem } from "../workspaceApi";
 import { defaultSettings, workbenchApi } from "../workbenchApi";
 
-const { state } = vi.hoisted(() => ({
+const { state, listeners } = vi.hoisted(() => ({
+  listeners: new Set<() => void>(),
   state: {
     sessions: {
       s: { busy: true },
@@ -17,7 +19,8 @@ const { state } = vi.hoisted(() => ({
 }));
 vi.mock("../feedStore", () => ({
   getState: () => state,
-  subscribe: () => () => {},
+  getSessionCursor: () => "",
+  subscribe: (listener: () => void) => { listeners.add(listener); return () => listeners.delete(listener); },
 }));
 vi.mock("../desktopApi", async (original) => ({
   ...(await original<typeof import("../desktopApi")>()),
@@ -549,4 +552,49 @@ it("swaps the greeting for the welcome screen when no project is selected", asyn
     expect(screen.getByRole("button", { name: new RegExp(title) })).toBeVisible();
   expect(screen.queryByRole("button", { name: /New chat/ })).toBeNull();
   expect(screen.getByRole("heading", { name: "Chat with Brigadier" })).toBeVisible();
+});
+
+it("ignores other sessions and cursor-only changes but shows selected busy changes immediately", async () => {
+  vi.spyOn(workspaceApi, "chat").mockResolvedValue([]);
+  const committed = vi.fn();
+  render(<Profiler id="transcript" onRender={committed}><ThreadView sessionId="s" projectId="p" projectName="Example" onFile={vi.fn()}/></Profiler>);
+  await screen.findByText("Waiting for the first response…");
+  await act(async () => {});
+  committed.mockClear();
+  act(() => {
+    state.sessions.cancelled = {...state.sessions.cancelled, busy: true};
+    state.sessions.s = Object.assign({}, state.sessions.s, {lastEventSeq: 99});
+    listeners.forEach(listener => listener());
+  });
+  expect(committed).not.toHaveBeenCalled();
+  act(() => {
+    state.sessions.s = {...state.sessions.s, busy: false};
+    listeners.forEach(listener => listener());
+  });
+  expect(screen.getByText("No saved message bodies in this session.")).toBeVisible();
+  expect(screen.queryByText("Working…")).not.toBeInTheDocument();
+  state.sessions.s = {busy: true};
+  state.sessions.cancelled = {busy: false, lastStop: "interrupted"};
+});
+
+it("retains user markdown links across busy updates and uses the current file handler", async () => {
+  vi.spyOn(workspaceApi, "chat").mockResolvedValue([saved("user-link", {type: "user-text"}, "[Open source](./source.ts)", 1)]);
+  const onFile = vi.fn();
+  const props = {sessionId: "s", projectId: "p", projectName: "Example", onFile, onEdit: vi.fn()};
+  const view = render(<ThreadView {...props}/>);
+  const link = await screen.findByRole("button", {name: "Open source"});
+  act(() => link.focus());
+  act(() => {
+    state.sessions.s = {busy: false};
+    listeners.forEach(listener => listener());
+  });
+  expect(screen.getByRole("button", {name: "Open source"})).toBe(link);
+  expect(link).toHaveFocus();
+  expect(screen.getByRole("button", {name: "Edit message"})).toBeEnabled();
+  const nextOnFile = vi.fn();
+  view.rerender(<ThreadView {...props} onFile={nextOnFile}/>);
+  await userEvent.click(screen.getByRole("button", {name: "Open source"}));
+  expect(nextOnFile).toHaveBeenCalledWith("source.ts");
+  expect(onFile).not.toHaveBeenCalled();
+  state.sessions.s = {busy: true};
 });

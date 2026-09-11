@@ -1,8 +1,8 @@
 import { MessageActions } from "./assistant-ui/elements/message-actions";
 import { profiling, traceEvent } from "../perfDiagnostics";
-import { useEffect, useState, lazy, Suspense } from "react";
+import { memo, useEffect, useState, lazy, Suspense } from "react";
 
-export function CopyButton({ text }: { text: string }) {
+export const CopyButton = memo(function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState(false);
   useEffect(() => {
@@ -32,7 +32,7 @@ export function CopyButton({ text }: { text: string }) {
       }}
     />
   );
-}
+});
 /**
  * `./MarkdownContent` is a 286 KB built chunk; its fetch, parse and evaluation is a candidate for
  * the stall on the first transcript mount. The profiling build stamps the moment it resolves; the

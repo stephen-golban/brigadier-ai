@@ -1,10 +1,39 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
-import { Tooltip } from "./tooltip";
+import { Tooltip, TooltipGroup } from "./tooltip";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "./kbd";
 afterEach(cleanup);
+
+it("shares one hint across grouped controls and retains keyboard and pointer access", async () => {
+  const user = userEvent.setup();
+  render(<TooltipGroup>
+    <Tooltip content="Pin this session"><Button aria-label="Pin">Pin</Button></Tooltip>
+    <Tooltip content="Archive this session"><Button aria-label="Archive">Archive</Button></Tooltip>
+  </TooltipGroup>);
+  const pin = screen.getByRole("button", {name: "Pin"});
+  const archive = screen.getByRole("button", {name: "Archive"});
+  await user.hover(pin);
+  expect(screen.getByRole("tooltip")).toHaveTextContent("Pin this session");
+  await user.hover(archive);
+  await waitFor(() => expect(screen.getAllByRole("tooltip")).toHaveLength(1));
+  expect(screen.getByRole("tooltip")).toHaveTextContent("Archive this session");
+  await user.hover(screen.getByRole("tooltip"));
+  expect(screen.getByRole("tooltip")).toBeInTheDocument();
+  await user.unhover(screen.getByRole("tooltip"));
+  await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument());
+  await user.tab();
+  expect(pin).toHaveFocus();
+  expect(pin).toHaveAccessibleDescription("Pin this session");
+  await user.tab();
+  expect(archive).toHaveFocus();
+  expect(archive).toHaveAccessibleDescription("Archive this session");
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+  expect(archive).toHaveFocus();
+});
+
 it("shows the shortcut on focus, dismisses with Escape, and preserves activation", async () => {
   const user = userEvent.setup();
   const search = vi.fn();

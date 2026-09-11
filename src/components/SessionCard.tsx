@@ -1,7 +1,8 @@
 import { AgentStatus } from './assistant-ui/elements/agent-status';
 import { WorkerSummary } from './WorkerSummary';
 import { BackgroundInbox } from './assistant-ui/elements/background-inbox';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
+import { useSessionSources } from '../hooks/useSessionSources';
 import { useTaskExecutionSettings } from '../taskSettings';
 import { BranchAlt, Branch, Compare, ExternalLink, File, Folder, SettingsCog, SettingsSlider, Users } from "../icons";
 import { Button } from "@/components/ui/button";
@@ -12,9 +13,6 @@ import { peerApi, type PeerData } from '../peerApi';
 import { useSessionChanges } from '../desktopApi';
 import { workerTree } from '../workerTree';
 import './thread-context.css';
-import { invoke } from '@tauri-apps/api/core';
-import { desktop } from '../workspaceApi';
-import type { PeerAttachment } from '../peerApi';
 
 export function SessionCard({ session, sessions, peers, onSelect, onChanges, onSettings, onSubagents, onFiles }: {
   session: SessionRuntime; sessions: Record<string, SessionRuntime>; peers: PeerData;
@@ -27,13 +25,7 @@ export function SessionCard({ session, sessions, peers, onSelect, onChanges, onS
   const navigate = (action: () => void) => {setOpen(false);action();};
   const rows = workerTree(session.sessionId, peers, sessions);
   const [error, setError] = useState('');
-  const [savedSources, setSavedSources] = useState<PeerAttachment[]>([]);
-  useEffect(() => {
-    let live = true;
-    setSavedSources([]);
-    if (desktop) void invoke<PeerAttachment[]>('session_sources', {sessionId: session.sessionId}).then(files => { if(live)setSavedSources(files); }, error => { if(live)setError(String(error)); });
-    return () => { live = false; };
-  }, [session.sessionId, session.busy, session.lastTurnId]);
+  const {sources: savedSources, error: sourceError} = useSessionSources(session.sessionId, session.busy, session.lastTurnId);
   const files = new Map([...peers.messages, ...(peers.inputs ?? [])]
     .filter(m => m.to === session.sessionId)
     .flatMap(m => m.attachments ?? []).concat(savedSources).map(a => [a.id, a]));
@@ -65,7 +57,7 @@ export function SessionCard({ session, sessions, peers, onSelect, onChanges, onS
         <Button variant="ghost" size="sm" className={cn(labelledButtonIcons, "context-row")} onClick={()=>navigate(onFiles)}><Folder/><span>Project files</span></Button>
         {[...files.values()].map(a => <Button key={a.id} variant="ghost" size="sm" className={cn(labelledButtonIcons, "context-row")} onClick={() => void viewAttachment(a.id)} title={a.name}><File/><span>{a.name}</span></Button>)}
         {peers.origins[session.sessionId] && <Button variant="ghost" size="sm" className={cn(labelledButtonIcons, "context-row")} onClick={() => onSelect(peers.origins[session.sessionId]!)}><ExternalLink/><span>Source conversation</span></Button>}
-        {error && <p role="alert" className="text-error">{error}</p>}
+        {(error || sourceError) && <p role="alert" className="text-error">{error || sourceError}</p>}
       </section>
     </aside>
   </details>;
