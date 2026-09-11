@@ -8,6 +8,14 @@ Every claim below is marked **[measured]** (read today in this worktree, with `p
 `/Users/stephen/Development/brigadier-ai.worktrees/codex-thread`, branch `ui/codex-thread`, at
 `759eb5a`. Nothing was run: no build, no test, no burn.
 
+> **Corrected later the same day — see Addendum 3 at the end.** §§5–7 were written before anyone
+> checked whether the interactive session accumulates at all. It does not: every user message kills
+> the `claude` child and spawns a fresh one with no `--resume`
+> (`docs/research/does-a-session-accumulate-2026-09-11.md`, measured). The measurements below are
+> unaffected — they were taken inside one child's lifetime — but "compaction" here means a
+> **within-turn** event, never a conversation-long one. Addendum 3 says which of §7's
+> recommendations survive.
+
 ## 0. Verdict
 
 The claim is **half wrong and half right, and the halves are not the ones you would guess.**
@@ -523,3 +531,67 @@ exit 0, `cargo doc --workspace --no-deps` exit 0, `npx tsc --noEmit` exit 0.
 - The UI half is not built here: no component consumes `session-compacting` yet, so "the user now
   sees a spinner" is **not** claimed — what is claimed is that the event reaches the webview's
   signal path.
+
+---
+
+# Addendum 3, same day: the session does not accumulate — what that changes here
+
+Everything above §5 was written on the assumption, never stated because nobody thought to doubt it,
+that the interactive session **accumulates** — that turn 2 is answered by the same `claude` child
+that answered turn 1. It is not. Read
+**`docs/research/does-a-session-accumulate-2026-09-11.md`** before acting on §7.
+
+The short form, from that file's §0–§2 **[measured]**: every user message passes
+`task_settings::prepare_dispatch` → `Supervisor::restart_execution`, which kills the live child and
+spawns a fresh one with **no `--resume` and no provider transcript**
+(`crates/core/src/claude/driver.rs:258` `resume: None`); the harness re-assembles a bounded brief
+from SQLite instead — orchestration instructions, the task checkpoint, and the last four text items,
+ceiling ≈ **9,000 tokens**. Five messages over an hour are five children.
+
+**No measurement in this document changes.** §A1's `autoCompactThreshold` **167,000** of **200,000**
+on CLI 2.1.268, §A2's capture, and §A3–§A9 were all taken inside a single child's lifetime, which is
+exactly the scope that still exists. What changes is the *scope* the recommendations assumed.
+
+## What is now wrong above
+
+- **§6's opening premise, "what actually happens to a very long session".** The table's harness-side
+  rows are still right — the feed ring (`ROW_CAP = 2000`), the 600-item history window, the 100-item
+  page, the absent SQLite retention are all properties of brigadier's own store and are untouched by
+  the child restart. The *provider-side* reading of that section is wrong: there is no long provider
+  session. Item 60,000 in SQLite is still item 60,000; the model answering it has seen four texts.
+- **§6b, row "Six-hour session".** "Nothing marks it" is fixed (the meter and the gauge are mounted
+  at `src/components/Composer.tsx:222-223`), but the row's framing — a six-hour window filling up —
+  describes a thing that does not happen.
+- **§6b, row "Session resumed after restart"** and §6's `--resume` paragraph. The Resume button does
+  not pass `--resume`; it takes the same fresh-child path as a send, and nulls `resume_token` on the
+  way through. Corrected in `docs/research/resume.md` §12, which also names the two paths that do
+  still pass the flag (fork, and the peer `resume-subagent` action).
+- **The verdict line "compaction is plumbed but unproven".** Proven since, by §A2's capture — and
+  now correctly scoped: **not reachable across a conversation, reachable within a single turn** whose
+  own tool output burns the ~120,000 tokens of headroom left after the ~42–50k cold start, on the
+  default model. Effectively unreachable in one turn on a 1M-context model.
+  **[asserted — arithmetic in `does-a-session-accumulate-2026-09-11.md` §3, not observed]**
+
+## Which of §7's recommendations survive
+
+| WO | status on 2026-09-11 |
+|---|---|
+| **WO-1** mount the context meter | **Landed** (`src/components/Composer.tsx:222`). Its *copy* was wrong — it described an accumulating conversation — and is corrected in `src/components/SessionContext.tsx`: "This response", "Resets at your next message", plus a drop line. |
+| **WO-2** surface the threshold | **Landed** (`src-tauri/src/conversation.rs:87-88`). Survives unchanged, and matters more now, not less: the threshold is the one thing in the meter that a single runaway turn can still reach. |
+| **WO-3** capture a real compaction | **Landed** — the Addendum above. |
+| **WO-4** stop dropping `system/status` | **Landed** — Addendum 2. Still right: a within-turn compaction is exactly where a live "Compacting…" affordance is worth having, because the user cannot escape it by sending another message. |
+| **WO-5** mount a usage-window gauge | **Landed** (`src/components/Composer.tsx:223`). Wholly unaffected — subscription windows are the provider's rolling 5-hour and 7-day counters and do not reset when a child does. |
+| **WO-6** make the compaction row demonstrable in `src/mock.ts` | **Still open.** `src/mock.ts` emits no `session-compacted`; grep finds none. Survives as written. **[measured]** |
+| **WO-7** should brigadier *own* compaction? | **Survives, and the finding sharpens it rather than settling it.** Position (a) — "windows are rented per decision and thrown away" — is not an aspiration; it is what the code does. A `/compact` button would therefore be a *within-turn* control only, and the honest question for the owner shrinks to: is there value in compacting one long response mid-flight, versus interrupting and re-scoping it? |
+
+One recommendation this document did **not** make and should have: the meter's own drop line is a
+free tripwire on the product's central invariant. A figure that climbs monotonically across messages
+means provider history was wired back into the send path. Added as a reported fact, not an alarm, in
+`SessionContext.tsx`.
+
+## Not checked
+
+Nothing was run for this addendum. The WO status column is read from the tree at `02be7d0` plus the
+uncommitted `SessionContext.tsx` change, not from a test run; "landed" means the code is present and
+mounted, not that it was exercised against a live CLI. No figure here is new — every number is
+quoted from §A1 above or from `does-a-session-accumulate-2026-09-11.md`, which itself ran nothing.
