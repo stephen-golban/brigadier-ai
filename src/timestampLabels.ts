@@ -25,13 +25,23 @@ export function timestampKey(date: Date, language = navigator.language) {
  * is never a change: nothing has read it yet, because `getTimestampLabels` writes the key it
  * returns. `remember` is called during render through that fallback, so the notification must stay
  * out of this function and be raised by the worker reply instead.
+ *
+ * An empty cached `date` is **unknown, not different**. The synchronous fallback stores
+ * `date: ""` (it formats no historical date at all) while the worker always answers with a real
+ * one — `{month: "short", day: "numeric"}`, `timestampLabels.worker.ts`. The row that rendered the
+ * fallback shows the *same* string either way, because `MessageTimestamp` formats
+ * `labels.date || date.toLocaleDateString(undefined, {month: "short", day: "numeric"})` from the
+ * same locale and zone. Announcing that fill-in would remount every timestamp on the page on every
+ * cold mount, for text that did not move. The value is still cached; only the announcement is
+ * withheld, and a `time` that really differs is still announced.
  */
 function remember(key: string, value: TimestampLabels): boolean {
   const previous = labels.get(key);
   if (previous && previous.time === value.time && previous.date === value.date) return false;
   if (labels.size >= 2048 && !labels.has(key)) labels.delete(labels.keys().next().value!);
   labels.set(key, value);
-  return previous !== undefined;
+  if (previous === undefined) return false;
+  return !(previous.date === "" && previous.time === value.time);
 }
 
 /** Notified with the keys whose label text changed after something had already rendered it. */

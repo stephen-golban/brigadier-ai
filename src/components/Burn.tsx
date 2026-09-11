@@ -39,7 +39,11 @@ export function Burn({ onBurn }: BurnProps) {
     setBusy(true);
     setError(null);
     setSummary(null);
-    const idleWindow = fps.getLastReport();
+    // The idle baseline, measured rather than inherited: the drain loop is armed only while it has
+    // work or a capture is open, so `getLastReport()` here is null on a first burn and the previous
+    // run's capture window on a second. `sampleIdleWindow` arms the loop for one second of genuine
+    // idle, reads the store's own frame callbacks, and gives the frames back before the capture.
+    const idleWindow = await fps.sampleIdleWindow();
     resetDiagnostics();
     fps.startCapture();
     let startedSuccessfully = false;

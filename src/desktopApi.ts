@@ -175,12 +175,33 @@ export function useCleanup() {
         }
       }
     };
-    const read = async () => {
+    // A snapshot the boot-time emit cannot replace. `cleanup::start` emits before the webview
+    // exists, so a first `session_cleanup_status` that rejects used to leave the queue empty until
+    // the next persisted transition — which for an already-drained queue never comes. Two bounded
+    // retries, 1 s then 5 s, then stop: a queue file that is unreadable twice over six seconds is a
+    // real failure, not a boot race, and no timer outlives it. Cancelled by dispose and by the
+    // first event to land, which is a newer answer than any snapshot.
+    const RETRY_DELAYS_MS = [1000, 5000];
+    let attempt = 0;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    /**
+     * `force` is for the event that carries no array: the listener has already flipped `announced`,
+     * so an unforced read would fetch the queue and then discard it, leaving the state stale with
+     * nothing left to correct it.
+     */
+    const read = async (force = false) => {
       try {
         const next = await desktopApi.cleanup();
-        if (!announced) apply(next);
+        if (force || !announced) apply(next);
       } catch (e) {
-        if (live) notify(errorMessage(e), true);
+        if (!live) return;
+        notify(errorMessage(e), true);
+        if (announced || attempt >= RETRY_DELAYS_MS.length) return;
+        const delay = RETRY_DELAYS_MS[attempt++];
+        retryTimer = setTimeout(() => {
+          retryTimer = undefined;
+          if (live && !announced) void read();
+        }, delay);
       }
     };
     // Registration first, then one snapshot. `listen` is itself async, so fetching first leaves a
@@ -190,8 +211,10 @@ export function useCleanup() {
     // returns, so there is no second fetch.
     void listen<CleanupJob[]>("cleanup-changed", (event) => {
       announced = true;
+      clearTimeout(retryTimer);
+      retryTimer = undefined;
       if (Array.isArray(event.payload)) apply(event.payload);
-      else void read();
+      else void read(true);
     })
       .then((stop) => {
         // Dispose can win the race against registration; the listener still has to be dropped.
@@ -207,6 +230,8 @@ export function useCleanup() {
       });
     return () => {
       live = false;
+      clearTimeout(retryTimer);
+      retryTimer = undefined;
       unlisten?.();
       unlisten = undefined;
     };

@@ -8,7 +8,11 @@
  * number, which no jsdom test could produce:
  *
  *   - it runs once, after the startup `Promise.all` has landed, not during the first render;
- *   - it is a `setTimeout(…, 0)`, so the paint's task is yielded first;
+ *   - it is on a timer well clear of the shell mount, not a `setTimeout(…, 0)` that lands inside
+ *     it (Cluster A of that file, rel 1032-1052). The delay itself is **[not measured]**; what is
+ *     pinned here is that it is deferred and cancellable, not that it is 1500 ms;
+ *   - the pending timer is cleared when the shell unmounts, so no test and no torn-down window
+ *     pulls a 286 KB chunk behind it;
  *   - it does not run in the browser-mock branch, which mounts no transcript and would only gain
  *     a dangling dynamic import in every test that renders the shell.
  *
@@ -84,7 +88,10 @@ vi.mock("./bridge", async (importOriginal) => {
   return { ...actual, bridge: () => fake };
 });
 
-/** Mount the shell with `desktop` forced, and wait out the startup effect and its zero timer. */
+/** The delay in `src/App.tsx`. Deliberately duplicated: a test that read it could not pin it. */
+const DELAY_MS = 1500;
+
+/** Mount the shell with `desktop` forced, and wait out the startup effect — but not its timer. */
 async function mount(desktop: boolean) {
   vi.resetModules();
   vi.doMock("./workspaceApi", async (importOriginal) => ({
@@ -92,17 +99,18 @@ async function mount(desktop: boolean) {
     desktop,
   }));
   const { App } = await import("./App");
-  render(<App />);
-  // Two macrotasks, deliberately: the first lets the startup `Promise.all` settle and *schedule*
-  // the zero-delay timer, the second is the one that runs it. A single flush would pass the
-  // negative test for the wrong reason.
+  const view = render(<App />);
+  // Two macrotask flushes, deliberately: they let the startup `Promise.all` settle and *schedule*
+  // the timer without running it. Time only moves where a test moves it.
   for (let i = 0; i < 2; i++)
     await act(async () => {
-      await new Promise((r) => setTimeout(r, 0));
+      await vi.advanceTimersByTimeAsync(0);
     });
+  return view;
 }
 
 beforeEach(() => {
+  vi.useFakeTimers();
   h.preload.mockClear();
   h.projects = [
     { id: "p1", name: "job-portal", root_path: "/repos/job-portal", created_at_ms: 1_700_000_000_000 },
@@ -111,15 +119,41 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.doUnmock("./workspaceApi");
 });
 
-it("warms the Markdown chunk once, after the startup data has landed", async () => {
+it("warms the Markdown chunk once, and only after the shell-mount region", async () => {
   await mount(true);
+  // Nothing during the mount: a zero-delay timer would have fired in the flushes above.
+  expect(h.preload).not.toHaveBeenCalled();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(DELAY_MS - 1);
+  });
+  expect(h.preload).not.toHaveBeenCalled();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1);
+  });
   expect(h.preload).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(10_000);
+  });
+  expect(h.preload).toHaveBeenCalledTimes(1);
+});
+
+it("clears the pending preload when the shell unmounts first", async () => {
+  const { unmount } = await mount(true);
+  unmount();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(10_000);
+  });
+  expect(h.preload).not.toHaveBeenCalled();
 });
 
 it("does not warm it in the browser mock, which mounts no transcript", async () => {
   await mount(false);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(10_000);
+  });
   expect(h.preload).not.toHaveBeenCalled();
 });
