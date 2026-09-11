@@ -231,8 +231,11 @@ export function markSessionRead(sessionId: string, seq: number) {
 /**
  * The event sequence the **stream** has reached for one session, or -1 when the store has never
  * seen it (a fabricated session in a test, or one deleted since). `getSessionCursor` is
- * `${rowsTotal}:${lastEventSeq}:${busy}` read straight off `src/feedStore.ts`'s live map, which is
- * why the middle field is taken rather than `getState()`'s copy: `lastEventSeq` is a `CURSOR_FIELDS`
+ * `${rowsTotal}:${lastEventSeq}:${busy}|${deltas}` read straight off `src/feedStore.ts`'s live map,
+ * which is why the field between the *first* and the *last* colon is taken rather than
+ * `getState()`'s copy — and why the delta counter is appended after a `|` rather than as a fourth
+ * colon-separated field, which would make that slice `"21:0"` and this read `-1`: `lastEventSeq`
+ * is a `CURSOR_FIELDS`
  * value, folded into the React snapshot only on the `COUNTER_FLUSH_MS` (500 ms) tick.
  *
  * **Never call this during a render** — `src/feedStore.ts` mutates that map outside React's

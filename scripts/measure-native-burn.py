@@ -29,6 +29,32 @@ WORKLOAD_SECONDS = 60
 # just enough to keep a bin non-empty.
 MIN_EVENTS_PER_SECOND = 100
 
+# Event types that `brigadier_store::feed::terse_line` returns `None` for, so the producer emits
+# them but no feed row exists for the front end to ingest. Counting one of these as a row makes the
+# audit report a delivery deficit that never happened: on 2026-09-11 the newly added `usage-windows`
+# envelope (one per turn) accounted for 12,143 of a reported 12,210-row "deficit" while every
+# session's `rowsTotal` matched the real row count exactly
+# (docs/performance/codex-thread-burn-2026-09-11.md §5).
+# Pinned against the Rust rule by `crates/store/tests/feed.rs`
+# `the_burn_harness_row_rule_matches_terse_line`, which fails the build if a new variant drifts.
+NON_ROW_EVENT_TYPES = {"turn-started", "content-delta", "item-updated", "usage-windows"}
+# Event types that can carry a chat item's `seq` in the transcript the UI mounts: the three item
+# events and `content-delta` (`brigadier_store::chat::append_delta` moves the item's seq to the
+# delta's), plus the lifecycle events `brigadier_store::chat::project` mints a synthetic notice
+# from. Omitting the notice types makes the durable maximum *lower* than the UI's, which the audit
+# then reports as a transcript that never received its final item sequence.
+# Pinned by `crates/store/tests/feed.rs` `the_burn_harness_item_seq_rule_matches_chat_project`.
+CHAT_ITEM_EVENT_TYPES = {
+    "item-started",
+    "item-updated",
+    "item-completed",
+    "content-delta",
+    "session-compacted",
+    "runtime-warning",
+    "runtime-error",
+    "session-exited",
+}
+
 
 def verify_delivery(data_dir, producer, capture):
     """Audit producer → durable envelopes → terminal UI counters, after capture."""
@@ -63,11 +89,11 @@ def verify_delivery(data_dir, producer, capture):
         kinds = Counter(e["event"]["type"] for e in events)
         contiguous = all(e["seq"] == i + 1 and e["session_id"] == session_id for i, e in enumerate(events))
         # Canonical terse_line excludes these event types; this fixture has no deltas/updates.
-        rows = sum(n for kind, n in kinds.items() if kind not in {"turn-started", "content-delta", "item-updated"})
+        rows = sum(n for kind, n in kinds.items() if kind not in NON_ROW_EVENT_TYPES)
         ui = frontend.get(session_id, {})
         first, last = events[0]["at"], events[-1]["at"]
         per_second = Counter((e["at"] - first) // 1000 for e in events if e["event"]["type"] != "session-exited")
-        last_item_seq = max((e["seq"] for e in events if e["event"]["type"] in {"item-started", "item-updated", "item-completed"}), default=0)
+        last_item_seq = max((e["seq"] for e in events if e["event"]["type"] in CHAT_ITEM_EVENT_TYPES), default=0)
         life = lifetimes.get(session_id) or {}
         stamps = [life.get(field) for field in ("startedElapsedMs", "killedElapsedMs", "lifetimeMs")]
         entry = {"lastItemSeq": last_item_seq, "session": session_id, "events": len(events), "rows": rows,

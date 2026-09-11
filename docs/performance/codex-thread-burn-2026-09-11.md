@@ -28,10 +28,14 @@ document replaces them with uncontended measurements of both arms.
 - **The rebuild did not fix the 60 Hz failure.** It moved the median from 5 to 4 — one drop, one-sided
   permutation p = 0.075 at n=8 vs n=5, i.e. not separable. Read it as *unchanged*, not improved. §5
   gives a reason to discount even the apparent improvement.
-- **A delivery regression turned up that is not a frame number.** The branch's front end ingests
+- ~~**A delivery regression turned up that is not a frame number.** The branch's front end ingests
   **11.18%** fewer terse rows than the producer emitted (12,210 rows short, reproducibly), against
   **0.07%** on the baseline. Neither arm is a valid *acceptance* result — both fail the harness's
-  delivery audit — but the branch fails it far harder, and it is new. §5.
+  delivery audit — but the branch fails it far harder, and it is new. §5.~~
+  **Withdrawn 2026-09-11, see §5's correction.** There is no delivery regression: 12,143 of the
+  12,210 are `usage-windows` envelopes that carry no feed row and the harness counted as rows, and
+  the other 67 are the batcher's own reported `rowsDropped` (the baseline's 81, unchanged in kind).
+  Both arms still fail the acceptance audit on `rowsDropped != 0`, which is pre-existing.
 
 ---
 
@@ -236,6 +240,39 @@ its final item sequence` — in **all five** accepted runs, and `Producer count 
 envelopes` in one. The 12,210-row deficit reproduces to the row across runs and is spread evenly over
 all ten sessions (~1,221 each), so it is systematic, not a timing artifact.
 
+**Correction, 2026-09-11 (diagnosed after this document was written): there is no delivery
+regression. The harness's row rule was stale.** `scripts/measure-native-burn.py` derived the
+producer's row count by excluding a hard-coded `{turn-started, content-delta, item-updated}`, and
+this branch added a fourth event that carries no feed row — `Event::UsageWindows`, for which
+`brigadier_store::feed::terse_line` returns `None` (`crates/store/src/feed.rs`). Counted off this
+document's own evidence, per session:
+
+| arm | harness "rows" | `usage-windows` | real terse rows | batcher `rowsDropped` | frontend `rowsIn` |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| baseline b6 | 107,912 | 0 | 107,912 | 81 | **107,831** |
+| branch b6 | 109,262 | 12,143 | 97,119 | 67 | **97,052** |
+
+`real terse rows − rowsDropped == rowsIn` **exactly** on both arms, and every one of the branch's
+ten sessions has `rowsTotal == rows − usage-windows` to the row. The 12,210 splits as 12,143
+non-rows plus the 67 the batcher itself reports dropping at its buffer cap — the same pre-existing
+class as the baseline's 81. **No row was lost; nothing is missing from what a user sees.**
+
+`Mounted transcript has not received its final item sequence` is the same staleness: `session-exited`
+now mints a `Notice` chat item at its own seq (`crates/store/src/chat.rs`), so the UI's
+`lastItemSeq` was 12002 against the harness's item-events-only maximum of 11999 — the transcript was
+**ahead**, not behind. Both rules are now named constants pinned against the Rust source by
+`crates/store/tests/feed.rs` `the_burn_harness_row_rule_matches_terse_line` and
+`…_item_seq_rule_matches_chat_project`. The §5 delivery-audit paragraph below stands as what was
+measured on the day; its conclusion does not.
+
+**The paragraph that follows still stands, for a different reason.** The branch's front end does
+render ~10% fewer rows in the same 60 seconds, and that is by construction, not by loss: the replay
+driver emits at a fixed ~200 *events* per second, the branch spends one of every ~10 on a
+`usage-windows` envelope that carries no row, and so it completes 12,144 turns against the
+baseline's 13,492 (`item-started` per turn is 3.0 in both arms; total events 121,406 vs 121,404).
+Less row work per second is still less row work, so the branch's one-drop advantage is still not
+evidence of better frame pacing.
+
 A front end that ingests 11% fewer rows has 11% less work to do. **The branch's one-drop advantage is
 therefore not evidence of better frame pacing**, and this document does not claim it as such. The
 delivery deficit is a finding in its own right: it is a regression against the merge-base, it is
@@ -306,10 +343,14 @@ them is §3's recipe, ~85 s per arm.
 
 - **The other five gates.** Not re-run here; the brief records them green on this branch. This document
   measures only the render gate.
-- **The cause of the 11.18% row-ingest deficit** (§5). Measured and reproduced, not diagnosed. No
-  bisect, no attribution to a commit.
-- **Whether the 12,210 missing rows change what a user sees.** The audit counts rows; I did not inspect
-  the rendered transcript for visible loss.
+- ~~**The cause of the 11.18% row-ingest deficit** (§5). Measured and reproduced, not diagnosed.~~
+  **Closed** by §5's correction: the harness's row rule was stale, not the delivery path.
+- ~~**Whether the 12,210 missing rows change what a user sees.**~~ **Closed**: no row was missing.
+  `real terse rows − rowsDropped == rowsIn` exactly on both arms, and `rowsTotal` matches the real
+  row count in all ten branch sessions. What is still unchecked is whether the **67** rows the
+  batcher itself reports dropping at its buffer cap — a pre-existing behaviour, 81 on the baseline —
+  are visible to a user; the store reports them honestly as `rowsDropped` and the audit already
+  fails on them.
 - **n=5 on the branch burn arm.** Ten further branch attempts were lost to window occlusion. A
   one-drop difference is not resolvable at n=8 vs n=5 and I do not claim it is.
 - **A truly idle machine.** Accepted runs had mean 1-minute load 2.75–5.98 from the desktop session

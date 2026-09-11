@@ -271,6 +271,67 @@ fn no_variant_renders_a_dollar_figure() {
     }
 }
 
+/// The wire `type` string for one event, as the durable NDJSON carries it.
+fn wire_type(event: &Event) -> String {
+    serde_json::to_value(event).expect("event serialises")["type"]
+        .as_str()
+        .expect("the union is internally tagged")
+        .to_owned()
+}
+
+/// One `NAME = {"a", "b"}` set literal, read out of the burn harness.
+fn harness_set(name: &str) -> std::collections::BTreeSet<String> {
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/measure-native-burn.py");
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let anchor = text
+        .find(&format!("\n{name} = {{"))
+        .unwrap_or_else(|| panic!("no {name} literal in {}", path.display()));
+    let open = anchor + text[anchor..].find('{').expect("open brace");
+    let close = open + text[open..].find('}').expect("close brace");
+    text[open + 1..close]
+        .split(',')
+        .map(|s| s.trim().trim_matches('"').to_owned())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// The burn harness derives the producer's row count from the durable event stream, by excluding
+/// the event types that carry no feed row. That exclusion list is a literal in Python and cannot
+/// be checked by the compiler, so it is checked here instead.
+///
+/// **[measured]** the cost of it drifting: `docs/performance/codex-thread-burn-2026-09-11.md` §5
+/// reports an 11.18% row-delivery deficit on this branch. 12,143 of those 12,210 rows are
+/// `usage-windows` envelopes the harness counted as rows while `terse_line` returns `None` for
+/// them; the remaining 67 are the batcher's own reported `rows_dropped`. No row was lost.
+#[test]
+fn the_burn_harness_row_rule_matches_terse_line() {
+    let expected: std::collections::BTreeSet<String> = every_variant()
+        .iter()
+        .filter(|(event, _)| terse_line(event).is_none())
+        .map(|(event, _)| wire_type(event))
+        .collect();
+    assert_eq!(harness_set("NON_ROW_EVENT_TYPES"), expected);
+}
+
+/// The same, for the harness's "has the mounted transcript reached the final item?" clause: it
+/// takes the durable maximum over the event types that can carry a chat item's seq. Miss one and
+/// the durable maximum sits *below* what the UI legitimately holds, which the harness then reports
+/// as a transcript that never received its final item sequence.
+#[test]
+fn the_burn_harness_item_seq_rule_matches_chat_project() {
+    let mut expected: std::collections::BTreeSet<String> = every_variant()
+        .iter()
+        .filter(|(event, _)| brigadier_store::chat::project(&env(1, event.clone())).is_some())
+        .map(|(event, _)| wire_type(event))
+        .collect();
+    // `chat::append_delta` moves an existing item's seq to the delta's, so a delta can carry the
+    // transcript's maximum even though it projects to no item of its own.
+    expected.insert("content-delta".to_owned());
+    assert_eq!(harness_set("CHAT_ITEM_EVENT_TYPES"), expected);
+}
+
 /// The wire's `k`, pinned against the event it comes from.
 ///
 /// Exhaustiveness is the compiler's job — `feed::kind` and its `item_kind` helper match without a
