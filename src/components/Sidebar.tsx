@@ -45,11 +45,11 @@ import type {
   ProjectView,
   SessionId,
 } from "../wire";
+import { workbenchApi, type WorkbenchData } from "../workbenchApi";
 import {
-  workbenchApi,
-  defaultSettings,
-  type WorkbenchData,
-} from "../workbenchApi";
+  useWorkbenchSnapshot,
+  publishWorkbench,
+} from "../workbenchStore";
 import {
   navigationApi,
   useNavigationData,
@@ -163,14 +163,14 @@ const projectTags = [
   "violet",
   "pink",
 ];
-export function Sidebar(props: SidebarProps) {
+function SidebarView(props: SidebarProps) {
   const { data: navigation, error: navigationError } = useNavigationData();
   const { isMobile, setOpenMobile, setCurrentSession } = useSidebar();
-  const [data, setData] = useState<WorkbenchData>({
-    notes: [],
-    global: defaultSettings,
-    projects: {},
-  });
+  // The workbench payload is shared with `ProjectWorkbench` through one store, one poll and one
+  // in-flight `workbench_load` (`src/workbenchStore.ts`). This component used to own a copy and
+  // a 2.5 s timer of its own.
+  const workbench = useWorkbenchSnapshot();
+  const data = workbench.data;
   const [expanded, setExpanded] = useStoredState<Record<string, boolean>>(
     "brigadier:project-expanded:v1",
     {},
@@ -218,16 +218,19 @@ export function Sidebar(props: SidebarProps) {
     };
     window.addEventListener("brigadier-view-chat", view);
     return () => window.removeEventListener("brigadier-view-chat", view);
-  });
-  const openNotepad = (id?: string, create = false) => {
-    if (notes) notepad.current?.open(id, create);
-    else {
-      setNoteId(id);
-      setNewNote(create);
-      setNotes(true);
-    }
-    if (isMobile) setOpenMobile(false);
-  };
+  }, [closeNotepad, props.onSelectSession]);
+  const openNotepad = useCallback(
+    (id?: string, create = false) => {
+      if (notes) notepad.current?.open(id, create);
+      else {
+        setNoteId(id);
+        setNewNote(create);
+        setNotes(true);
+      }
+      if (isMobile) setOpenMobile(false);
+    },
+    [notes, isMobile, setOpenMobile],
+  );
   useImperativeHandle(props.ref, () => ({
     addProject: () => { void addProject(); },
     leaveNotepad: closeNotepad,
@@ -244,21 +247,6 @@ export function Sidebar(props: SidebarProps) {
   const [busy, setBusy] = useState(false);
   const saving = useRef(false);
   useEffect(() => {
-    let live = true,
-      revision = 0;
-    const refresh = () => {
-      const request = ++revision;
-      void workbenchApi
-        .load()
-        .then((d) => {
-          if (live && request === revision) setData(previous => JSON.stringify(previous) === JSON.stringify(d) ? previous : d);
-        })
-        .catch((e) => {
-          if (live) setError(errorMessage(e));
-        });
-    };
-    refresh();
-    const timer = setInterval(refresh, 2500);
     const show = (event: Event) => { setSettingsRequest((event as CustomEvent<SettingsRequest>).detail ?? {}); setSettings(true); };
     const key = (e: KeyboardEvent) => {
       if (document.querySelector(".desktop-settings")) return;
@@ -271,24 +259,24 @@ export function Sidebar(props: SidebarProps) {
         setSearch((s) => !s);
       }
     };
-    window.addEventListener("workbench-data-changed", refresh);
     window.addEventListener("brigadier-settings", show);
     window.addEventListener("keydown", key);
     return () => {
-      live = false;
-      clearInterval(timer);
-      window.removeEventListener("workbench-data-changed", refresh);
       window.removeEventListener("brigadier-settings", show);
       window.removeEventListener("keydown", key);
     };
   }, []);
+  // A load failure keeps reporting through the same sticky `error` line it always did.
+  useEffect(() => {
+    if (workbench.error) setError(workbench.error);
+  }, [workbench.error]);
   useEffect(() => {
     const open = () => openNotepad();
     window.addEventListener("brigadier-open-notes", open);
     return () => window.removeEventListener("brigadier-open-notes", open);
-  });
+  }, [openNotepad]);
   const changed = (next: WorkbenchData) => {
-    setData(next);
+    publishWorkbench(next);
     window.dispatchEvent(new Event("workbench-data-changed"));
   };
   const closeMobile = useCallback(() => {
@@ -350,7 +338,7 @@ export function Sidebar(props: SidebarProps) {
     try {
       await navigationApi.customize("name", renaming.id, renaming.name);
       setRenaming(null);
-      setData(await workbenchApi.load());
+      publishWorkbench(await workbenchApi.load());
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -1158,7 +1146,22 @@ export function Sidebar(props: SidebarProps) {
   );
 }
 
-if (profiling) Sidebar.displayName = "Sidebar";
+/**
+ * `docs/performance/2026-09-11/cold-path-attribution.md` §3, Cluster A: a 29–31 ms frame at about
+ * 1.0 s whose React spans are `App / SidebarProvider / Sidebar / SidebarContent / SidebarGroup`.
+ * The rows inside were already memoised; the component around them was not, so every `App`
+ * re-render re-ran the whole subtree. No custom comparator: a default shallow compare respects
+ * callback identity, and an equality function that ignored callbacks would keep stale handlers
+ * (forbidden by `docs/plans/efficiency-plan-review-2026-09-11.md`). Props that are rebuilt on
+ * every `App` render — an inline `onSelectProject`, freshly spread `titles`/`sessions`/`order` —
+ * defeat this memo until they are hoisted in `App.tsx`.
+ */
+export const Sidebar = memo(SidebarView);
+
+if (profiling) {
+  SidebarView.displayName = "Sidebar";
+  Sidebar.displayName = "Sidebar";
+}
 
 // Runtime counters and other sessions cannot invalidate unchanged row controls.
 const SidebarSessionRow = memo(function SidebarSessionRow({id, title, projectLabel, selected, pinned, canArchive, attention, isWorking, onSelect, onPin, onArchive}: {

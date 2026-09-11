@@ -1,13 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  act,
   cleanup,
+  fireEvent,
   render,
   screen,
   waitFor,
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { SidebarProvider } from "./controls/sidebar";
+import { SidebarProvider, useSidebar } from "./controls/sidebar";
 import { navigationApi, emptyNavigation } from "../navigationApi";
 import { Sidebar, type SidebarProps } from "./Sidebar";
 import type { SessionRuntime } from "../feedStore";
@@ -19,6 +21,24 @@ import {
   type SessionStatus,
 } from "../wire";
 import { workbenchApi, defaultSettings } from "../workbenchApi";
+import { useState } from "react";
+/**
+ * A render counter for `Sidebar` itself. `useSessionNavigation` is called once at the top of its
+ * body and nowhere else in this tree, so wrapping it counts `Sidebar` renders without reaching
+ * inside the component. `vi.hoisted` is what keeps the counter out of the mock factory's TDZ.
+ */
+const probe = vi.hoisted(() => ({ renders: 0 }));
+vi.mock("../sessionNavigation", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../sessionNavigation")>();
+  return {
+    ...actual,
+    useSessionNavigation: () => {
+      probe.renders++;
+      return actual.useSessionNavigation();
+    },
+  };
+});
 beforeEach(() => {
   localStorage.clear();
   vi.spyOn(workbenchApi, "load").mockResolvedValue({
@@ -632,4 +652,92 @@ it("keeps failed edits in the modal and Cancel discards the unsaved name", async
   await user.click(screen.getByRole("button", { name: "Cancel" }));
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Example" })).toBeVisible();
+});
+
+describe("sidebar memoisation", () => {
+  /**
+   * `docs/performance/2026-09-11/cold-path-attribution.md` §3 Cluster A: a 29–31 ms frame over
+   * `App / SidebarProvider / Sidebar / …`. The rows inside were memoised; the component was not,
+   * so every `App` render re-ran the whole subtree.
+   */
+  it("does not re-render when the parent re-renders with identity-equal props", async () => {
+    const sessions = { code: session("code", "p", "exited") };
+    const props: SidebarProps = {
+      projects: [project("p", "Example")],
+      sessions,
+      order: Object.keys(sessions),
+      selectedProjectId: null,
+      selectedSessionId: null,
+      pendingTotal: 0,
+      appInfo: null,
+      claude: { binary: "/usr/local/bin/claude", version: "2.1.4" },
+      claudeError: null,
+      isMock: true,
+      onSelectProject: vi.fn(),
+      onSelectSession: vi.fn(),
+      onAddProject: vi.fn(),
+    };
+    let bump!: () => void;
+    function Harness({ props }: { props: SidebarProps }) {
+      const [n, setN] = useState(0);
+      bump = () => setN((value) => value + 1);
+      return (
+        <>
+          <span data-testid="bumps">{n}</span>
+          <Sidebar {...props} />
+        </>
+      );
+    }
+    const view = render(
+      <SidebarProvider>
+        <Harness props={props} />
+      </SidebarProvider>,
+    );
+    await screen.findByRole("navigation", { name: "Projects" });
+    await waitFor(() => expect(workbenchApi.load).toHaveBeenCalled());
+    await act(async () => {});
+    const before = probe.renders;
+
+    await act(async () => bump());
+    expect(screen.getByTestId("bumps")).toHaveTextContent("1");
+    expect(probe.renders).toBe(before);
+
+    // Control: a prop that really changed still gets through.
+    view.rerender(
+      <SidebarProvider>
+        <Harness props={{ ...props, pendingTotal: 3 }} />
+      </SidebarProvider>,
+    );
+    expect(probe.renders).toBeGreaterThan(before);
+  });
+});
+
+/**
+ * The kit's own ⌘B listener (`src/components/ui/sidebar.tsx`), exercised through the provider that
+ * wires it. It lives here rather than beside the kit file because `src/components/ui/` is a
+ * vendored copy with no test of its own (`UPSTREAM.md`).
+ */
+describe("the kit's ⌘B", () => {
+  function OpenState() {
+    const { open } = useSidebar();
+    return <span data-testid="sidebar-open">{String(open)}</span>;
+  }
+
+  it("leaves ⌘⌥B alone, which the shell binds to the workspace toggle", () => {
+    render(
+      <SidebarProvider>
+        <OpenState />
+      </SidebarProvider>,
+    );
+    const open = () => screen.getByTestId("sidebar-open").textContent;
+    expect(open()).toBe("true");
+
+    // `App.tsx`'s workspace toggle. Without the `!altKey` guard this collapsed the sidebar as a
+    // side effect of opening the workbench.
+    fireEvent.keyDown(window, { key: "b", metaKey: true, altKey: true });
+    expect(open()).toBe("true");
+
+    fireEvent.keyDown(window, { key: "b", metaKey: true });
+    expect(open()).toBe("false");
+  });
 });
