@@ -96,26 +96,34 @@ export function WorkTrace({
   // each element's text before joining, so a separate ` · done …` span reads back as
   // `Worked for 15m 53s· done …` with the separator's space gone.
   const done = row.completedAtMs != null ? ` · ${doneLabel(row.completedAtMs)}` : "";
+  /*
+    Owner review 2026-09-11, item 5: **the turn summary does not count failures.**
+
+    It used to append a red `· 1 failure` here (measured `rgb(224,122,122)` on the collapsed
+    header). A tool call returning non-zero is ordinary — a `grep` that matched nothing, a lint
+    run that found something — and hoisting it into the turn's one-line summary, in the app's
+    error hue, told the operator at a glance that the turn broke when it had not. In the real
+    Codex thread the red marker sits on the failing command row and nowhere else.
+
+    The row-level treatment is untouched and must stay: `.thread-command-execution__footer`
+    keyed off `data-status="failed"` paints "Exit code N" in `--thread-text-error` with a dot,
+    so a failure is still discoverable — one fold down, on the row it happened on.
+
+    `ThreadRow.failures` is still projected (`src/threadProjection.ts`) and still tested; it now
+    has no renderer.
+  */
   const heading = (
-    <>
-      {/* The kit owns the 1 s tick and the d/h/m/s formatting; brigadier owns every word. */}
-      <TurnDuration
-        className="work-turn-duration"
-        status={status}
-        startedAtMs={row.startedAt}
-        durationMs={row.durationMs}
-        completedAtMs={row.completedAtMs}
-        workingLabel={(time) => (time === null ? outcome : `${outcome} for ${time}`)}
-        workedLabel={(time) => (longEnough ? `${outcome} for ${time}${done}` : `${outcome}${done}`)}
-        stoppedLabel={(time) => (longEnough ? `${outcome} after ${time}${done}` : `${outcome}${done}`)}
-      />
-      {row.failures > 0 && (
-        <span className="text-error">
-          {" "}
-          · {row.failures} {row.failures === 1 ? "failure" : "failures"}
-        </span>
-      )}
-    </>
+    /* The kit owns the 1 s tick and the d/h/m/s formatting; brigadier owns every word. */
+    <TurnDuration
+      className="work-turn-duration"
+      status={status}
+      startedAtMs={row.startedAt}
+      durationMs={row.durationMs}
+      completedAtMs={row.completedAtMs}
+      workingLabel={(time) => (time === null ? outcome : `${outcome} for ${time}`)}
+      workedLabel={(time) => (longEnough ? `${outcome} for ${time}${done}` : `${outcome}${done}`)}
+      stoppedLabel={(time) => (longEnough ? `${outcome} after ${time}${done}` : `${outcome}${done}`)}
+    />
   );
   const last = row.nodes[row.nodes.length - 1];
   // `row.streamingAnswer` says the turn's trailing prose is already being drawn as an answer row

@@ -78,7 +78,6 @@ export function Dock(props: DockProps) {
           onCancelEdit={props.onCancelEdit}
           onRewound={props.onRewound}
           session={session}
-          project={project}
           models={models}
           busy={busy}
           onSend={props.onSend}

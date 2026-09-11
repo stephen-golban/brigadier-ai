@@ -35,6 +35,7 @@ import type {
   WorkOrderView,
 } from "./wire";
 import type { ChatItem, ChatTurn } from "./workspaceApi";
+import type { SessionChanges } from "./desktopApi";
 import type { Bridge, BurnArgs, StartSessionArgs } from "./bridge";
 
 /* ----------------------------------------------------------------- state */
@@ -114,6 +115,34 @@ function recordTurn(sessionId:string,fromSeq:number,durationMs:number) {
   chatTurns.set(sessionId,turns);
 }
 /**
+ * The `session_changes` rows the desktop store writes for a session.
+ *
+ * Owner review 2026-09-11, item 6. `desktopApi.changes` answered `{files: [], turns: []}` outside
+ * Tauri, and `ChangedFilesCard` returns `null` on an empty list — so the end-of-turn changed-files
+ * row was **unreachable from the browser fixture** and could not be looked at, exactly the way
+ * `chatTurns` made the turn header unreadable in the previous round. The renderer was already in
+ * the thread (`ThreadView.tsx`, the `data-changed-files` part on the turn's final answer); this is
+ * the fixture catching up, not a move.
+ *
+ * The turn key is the user message's `provider_uuid ?? id` — what `Transcript` carries in `turns`
+ * — not the `chat_turns` row id. The seeded prompt is `chat-1`.
+ *
+ * The paths and counts are the ones the seeded `git status --short` / `git diff --stat` results
+ * already print, so the fixture stays internally consistent. Synthetic: no repository is read.
+ */
+const sessionChanges = new Map<string, SessionChanges>();
+export function mockSessionChanges(sessionId: string): SessionChanges {
+  return sessionChanges.get(sessionId) ?? { files: [], turns: [] };
+}
+function seedChanges(sessionId: string, turnId: string) {
+  const files = [
+    { path: "src/components/ThreadView.tsx", added: 19, deleted: 5, binary: false },
+    { path: "src/components/thread/thread.css", added: 26, deleted: 2, binary: false },
+  ];
+  sessionChanges.set(sessionId, { files, turns: [{ turnId, files }] });
+}
+
+/**
  * Long enough that the header prints both halves: §3 row 5 renders the elapsed figure only above
  * the 60 s floor, and the completion time always.
  */
@@ -148,6 +177,8 @@ function seedConversation(sessionId:string) {
   const step = items.length > 1 ? SEEDED_TURN_MS/(items.length-1) : 0;
   items.forEach((item,index) => { item.at = Math.round(endedAt-SEEDED_TURN_MS+step*index); });
   recordTurn(sessionId,items[0]?.seq??1,SEEDED_TURN_MS);
+  const prompt = items.find(item => item.kind.type === "user-text");
+  if (prompt) seedChanges(sessionId, prompt.provider_uuid ?? prompt.id);
 }
 
 
@@ -916,6 +947,7 @@ function noRows(): DeletedRows {
 function purgeSession(sessionId: string): { feed: number; approvals: number } {
   conversations.delete(sessionId);
   chatTurns.delete(sessionId);
+  sessionChanges.delete(sessionId);
   const feed = feedRows.get(sessionId)?.length ?? 0;
   let gone = 0;
   for (const [id, a] of approvals) {

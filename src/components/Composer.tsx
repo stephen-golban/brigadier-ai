@@ -1,4 +1,3 @@
-import { ResolvedTaskRail } from "./composer/TaskSetupRail";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { composerApi, serializeComposerWrite, type ComposerCommand, type ComposerState } from "../composerApi";
 import { useDurableComposer } from "./composer/useDurableComposer";
@@ -11,7 +10,7 @@ import { ExecutionControl, ModeControl, PermissionControl, providerLabel } from 
 import { useTaskExecutionSettings, type ExecutionSelection } from "../taskSettings";
 import { useProviderCatalog } from "../providerCatalog";
 import * as feedStore from "../feedStore";
-import type { ProjectView, ModelInfo } from "../wire";
+import type { ModelInfo } from "../wire";
 import { useMessageEdit, type MessageEditProps } from "./EditMessage";
 import { PromptInput } from "./PromptInput";
 import { ArrowUp, X } from "../icons";
@@ -21,7 +20,6 @@ import type { SessionId, WorktreeCleanup } from "../wire";
 
 const EMPTY_MODELS: ModelInfo[] = [];
 export interface ComposerProps extends MessageEditProps {
-  project?: ProjectView | null;
   models?: ModelInfo[];
   session: SessionRuntime | null;
   /** An IPC call started by this dock is in flight; both secondary actions go inert. */
@@ -77,7 +75,7 @@ function useApprovalVisible(requestId: string | undefined): boolean {
 }
 
 /** A single Send/Stop control backed by a durable, serialized desktop queue. */
-export function Composer({ project = null, session, models = EMPTY_MODELS, busy, onSend, onResume, editing, onCancelEdit, onRewound }: ComposerProps) {
+export function Composer({ session, models = EMPTY_MODELS, busy, onSend, onResume, editing, onCancelEdit, onRewound }: ComposerProps) {
   const sessionId = session?.sessionId ?? null;
   const durable = useDurableComposer(sessionId, session?.projectId ?? null);
   const { providers, error: providerError } = useProviderCatalog(models);
@@ -185,7 +183,22 @@ export function Composer({ project = null, session, models = EMPTY_MODELS, busy,
   };
   const canResume = !!session && (!!state?.paused || (session.worktreeRemoved && !live) || (!desktop && !!session.providerSessionId && !live));
   return <>
-    {session && project && <ResolvedTaskRail project={project} cwd={session.cwd} branch={session.branch} isolated={!!session.worktreePath || !!settings?.workspacePath}/>}
+    {/*
+      Owner review 2026-09-11, item 4: **the project / environment / branch rail is setup
+      information and does not survive the start of a session.**
+
+      "Started" is not a new flag. `Dock` already splits the composer three ways on it
+      (`src/components/Dock.tsx`): `startup` → `StartingComposer`, which carries the resolved rail
+      while the workspace is still being prepared; `session === null` → `NewSession`, which carries
+      the *editable* `TaskSetupRail` because the choices are still open; and otherwise this
+      component, which is reached only once a session exists. The same split is already stated on
+      the dock element as `.has-session`, and every execution control below passes `started`
+      unconditionally for the same reason. So rendering `ResolvedTaskRail` here at all *was* the
+      defect — there is no condition to add, only a rail to drop.
+
+      The freed slot is the queue rail's: the queued/pending block below is now the first thing in
+      the dock, and its `-9px` bottom margin tucks it into the composer the way the setup rail did.
+    */}
     {approvals.length > 0 && !approvalOnScreen && <button type="button" className="composer-approval-strip" onClick={() => document.getElementById(`approval-${approvals[0]!.requestId}`)?.scrollIntoView({ block: "center", behavior: "smooth" })}>Approval needed{approvals.length > 1 ? ` · ${approvals.length}` : ""}<span>View action ↑</span></button>}
     {(pending.length > 0 || state?.paused || state?.stopping || waiting) && <div className="composer-queue" aria-label="Message queue">
       <div className="composer-queue-header"><span>{stopping ? "Stopping task…" : state?.paused ? state.stopped ? "Queue paused because you stopped" : "Queue paused" : waitingLabel ?? `${pending.length} queued message${pending.length === 1 ? "" : "s"}`}</span>{canResume && <Button type="button" variant="ghost" size="sm" disabled={queueBusy || stopping} onClick={() => void resume()}>Continue</Button>}</div>

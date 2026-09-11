@@ -280,11 +280,13 @@ it("renders a recorded duration after history reload without hiding the final an
       onFile={() => {}}
     />,
   );
-  expect(
-    await screen.findByRole("button", {
-      name: /Worked for 2m 14s.*1 failure/,
-    }),
-  ).toHaveAttribute("aria-expanded", "false");
+  const header = await screen.findByRole("button", {
+    name: /Worked for 2m 14s/,
+  });
+  expect(header).toHaveAttribute("aria-expanded", "false");
+  // Owner review 2026-09-11, item 5: the recorded duration is the whole summary. The turn's
+  // failure count used to be appended here in the error hue; it is the failing row's business.
+  expect(header).not.toHaveAccessibleName(/failure/);
   expect(screen.getByText(/The command failed/)).toBeVisible();
   expect(screen.queryByText("I’ll inspect the diff.")).toBeNull();
 });

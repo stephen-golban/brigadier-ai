@@ -126,6 +126,21 @@ describe("chat composer", () => {
     expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();
     expect(fields()).toHaveLength(1);
   });
+  /**
+   * Owner review 2026-09-11, item 4. The project / environment / branch rail is a **setup**
+   * control and does not outlive the choice it makes. `Dock` is where "started" already lives:
+   * no session is the editable `TaskSetupRail` ("Task setup"), a session is neither rail. The
+   * resolved read-only rail ("Task workspace") belongs only to `StartingComposer`, while the
+   * workspace is still being prepared, and is asserted there by `SessionProvisioning`'s own tests.
+   */
+  it("drops the workspace rail once a session has started", async () => {
+    const { props, view } = mount();
+    expect(screen.getByLabelText("Task setup")).toBeInTheDocument();
+    view.rerender(<Dock {...props} session={session()} />);
+    await waitFor(() => expect(fields()[0]).toHaveAttribute("contenteditable", "true"));
+    expect(screen.queryByLabelText("Task workspace")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Task setup")).not.toBeInTheDocument();
+  });
   it("keeps chat available while an automation exists", () => {
     mount();
     expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();

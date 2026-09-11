@@ -31,6 +31,35 @@ import type { Decision, ProjectId, RequestId, SessionId } from "../wire";
 
 const DEFAULT_DENY_REASON = "Denied by operator";
 
+/**
+ * Owner review 2026-09-11, item 1: **a tool payload is code and is drawn as code.**
+ *
+ * It used to be a bare `<pre class="excerpt">` — no surface, no radius, no padding (measured
+ * `rgba(0,0,0,0)` background, `0px` border, `0px` radius, `0px` padding before this change), so
+ * a JSON body ran as loose monospace text straight against the card wall.
+ *
+ * This is not a new component. `ApprovalCommandPreview` is the approval card's own vendored code
+ * block — the same surface the command subject in the card header already uses
+ * (`src/components/thread/ApprovalRequest.tsx`, `.thread-approval-command__surface`): opaque
+ * editor ground, `--thread-radius-sm`, `--thread-font-mono`, `white-space: pre-wrap` with
+ * `overflow-wrap: anywhere`, and a 20rem scroll cap. It wraps and scrolls; it never clips.
+ *
+ * `defaultExpanded`: the clamp is a 3-line `-webkit-line-clamp`, and clipping the payload is the
+ * defect. Opened, the surface scrolls instead, and the kit's own Collapse control stays for a
+ * long one.
+ */
+function ApprovalCode({ className, label, text }: { className?: string; label: string; text: string }) {
+  return (
+    <ApprovalCommandPreview
+      aria-label={label}
+      className={["approval-code", className].filter(Boolean).join(" ")}
+      collapsedLines={12}
+      command={text}
+      defaultExpanded
+    />
+  );
+}
+
 /** Same rule as `Feed.tsx`'s own `shortId`; session ids are UUIDs (`driver.rs:149`). */
 function shortSessionId(id: SessionId): string {
   return id.length <= 6 ? id : id.slice(-6);
@@ -269,14 +298,14 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
             {mcp ? <>
               <p className="mb-2">{mcp.message}</p>
               {typeof mcp.description === "string" && <p className="mb-2 text-text-secondary">{mcp.description}</p>}
-              {mcp.arguments !== undefined && <pre className="excerpt">{JSON.stringify(mcp.arguments, null, 2)}</pre>}
+              {mcp.arguments !== undefined && <ApprovalCode label="Tool arguments" text={JSON.stringify(mcp.arguments, null, 2)} />}
             </> : intent !== undefined ? (
               <p className="approval-intent mb-2 text-text-secondary">{intent}</p>
             ) : input === null || !summarised ? (
               // Either not JSON — the excerpt is bounded to 8 KiB by the adapter and can arrive
               // truncated mid-token — or a shape with no field this app recognises. Both leave
               // the bytes as the whole story, so they stay the default presentation.
-              <pre className="excerpt">{kind.input_excerpt}</pre>
+              <ApprovalCode label="Tool input" text={kind.input_excerpt} />
             ) : null}
             {kind.suggestions.length > 0 ? (
               <ul className="suggestions">
@@ -299,9 +328,9 @@ function ApprovalCard({ row, onRespond, onDismiss, onFocus }: CardProps) {
             {!mcp && input !== null && summarised ? (
               <details className="approval-raw mt-2 text-xs text-text-tertiary">
                 <summary className="cursor-pointer">Show the full request</summary>
-                <pre className="excerpt mt-2">{kind.input_excerpt}</pre>
+                <ApprovalCode className="mt-2" label="Tool input" text={kind.input_excerpt} />
                 {kind.suggestions.map((s, i) => (
-                  <pre className="suggestion mt-1" key={i}>{JSON.stringify(s)}</pre>
+                  <ApprovalCode className="mt-1" label="Permission rule" key={i} text={JSON.stringify(s)} />
                 ))}
               </details>
             ) : null}

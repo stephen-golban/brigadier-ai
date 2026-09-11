@@ -1,4 +1,5 @@
 import { removeSessionLocalData } from "./sessionLocalData";
+import { mockSessionChanges } from "./mock";
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import { desktop, errorMessage } from "./workspaceApi";
@@ -55,7 +56,7 @@ export const desktopApi = {
   changes: (sessionId: string): Promise<SessionChanges> =>
     desktop
       ? invoke("session_changes", { sessionId })
-      : Promise.resolve({ files: [], turns: [] }),
+      : Promise.resolve(mockSessionChanges(sessionId)),
   diff: (
     sessionId: string,
     path: string,

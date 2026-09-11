@@ -63,7 +63,10 @@ describe("work disclosure", () => {
       />,
     );
     expect(screen.queryByText("npm test")).not.toBeInTheDocument();
-    const summary = screen.getByRole("button", { name: /Worked.*1 failure/ });
+    // Owner review 2026-09-11, item 5: the turn summary says how long, never how many failed.
+    // A failure stays discoverable one fold down, on the row it happened on.
+    const summary = screen.getByRole("button", { name: /Worked/ });
+    expect(summary).not.toHaveAccessibleName(/failure/);
     await user.tab();
     expect(summary).toHaveFocus();
     await user.keyboard("{Enter}");

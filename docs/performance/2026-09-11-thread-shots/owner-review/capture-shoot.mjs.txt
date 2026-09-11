@@ -1,0 +1,130 @@
+import { chromium } from "/Users/stephen/.npm/_npx/705bc6b22212b352/node_modules/playwright/index.mjs";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { openApp } from "./open.mjs";
+
+const out = process.argv[2];
+const url = "http://localhost:1421/?rps=0&approvals=manual";
+mkdirSync(out, { recursive: true });
+const log = [];
+const say = (m) => { log.push(m); console.log(m); };
+
+const browser = await chromium.launch();
+const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 2, colorScheme: "dark" });
+const errors = [];
+page.on("pageerror", (e) => errors.push(String(e)));
+say(`opened ${await openApp(page, url)}`);
+// Wait for the mock to mint several approvals (one every ~4 s of its clock).
+await page.waitForTimeout(9000);
+
+const shot = async (name, locator) => {
+  const t = locator ?? page;
+  try { await t.screenshot({ path: `${out}/${name}.png` }); say(`shot ${name}`); }
+  catch (e) { say(`shot ${name} FAILED: ${e.message}`); }
+};
+
+await shot("00-full");
+
+/* ---------- R5: failure count in the turn header ---------- */
+const header = page.locator(".work-block .thread-activity-timeline__toggle-row").first();
+say(`R5 turn-header-text ${JSON.stringify((await header.innerText()).trim())}`);
+say(`R5 red-spans ${JSON.stringify(await page.locator(".work-block .thread-activity-timeline__toggle span.text-error").evaluateAll(
+  els => els.map(e => ({ text: e.textContent, color: getComputedStyle(e).color }))))}`);
+await shot("r5-turn-header", header);
+// The row-level failure treatment must survive.
+const fold = page.locator(".work-block .thread-activity-timeline__toggle").first();
+if ((await fold.getAttribute("aria-expanded")) === "false") { await fold.click(); await page.waitForTimeout(600); }
+const group = page.locator(".work-activity-row button", { hasText: "Ran commands" }).first();
+if (await group.count()) { await group.click(); await page.waitForTimeout(500); }
+for (const row of await page.locator('.work-group-details .work-activity-row button[aria-expanded="false"]').all()) {
+  await row.click().catch(() => {}); await page.waitForTimeout(150);
+}
+await page.waitForTimeout(400);
+say(`R5 row-level-footers ${JSON.stringify(await page.locator(".thread-command-execution__footer").evaluateAll(
+  els => els.map(e => ({ status: e.dataset.status, text: e.innerText.trim(), color: getComputedStyle(e).color }))))}`);
+const failed = page.locator('.thread-command-execution:has(.thread-command-execution__footer[data-status="failed"])').first();
+if (await failed.count()) await shot("r5-row-failure", failed);
+if ((await fold.getAttribute("aria-expanded")) === "true") { await fold.click(); await page.waitForTimeout(500); }
+
+/* ---------- R6: changed-files card in the thread ---------- */
+say(`R6 edited-files-cards ${await page.locator(".edited-files-card").count()}`);
+const efc = page.locator(".edited-files-card").first();
+if (await efc.count()) {
+  const geom = await page.evaluate(() => {
+    const c = document.querySelector(".edited-files-card");
+    const comp = document.querySelector(".brigadier-composer");
+    const thread = document.querySelector(".aui-thread-viewport, .thread-scroll-container, .conversation");
+    return { card: c.getBoundingClientRect().top, composerTop: comp?.getBoundingClientRect().top ?? null,
+             insideThread: thread ? thread.contains(c) : null,
+             insideComposerDock: !!c.closest(".composer-dock") };
+  });
+  say(`R6 geometry ${JSON.stringify(geom)}`);
+  await efc.scrollIntoViewIfNeeded().catch(() => {});
+  await page.waitForTimeout(400);
+  say(`R6 file-rows ${JSON.stringify(await page.locator(".edited-files-card .edited-file").evaluateAll(els => els.slice(0,2).map(e => {
+    const s = getComputedStyle(e); return { text: e.innerText.replace(/\n/g, " "), justify: s.justifyContent, align: s.textAlign };
+  })))}`);
+  await shot("r6-changed-files", efc);
+} else say("R6 no changed-files card on screen");
+
+/* ---------- R1/R2: approval cards ---------- */
+const cards = page.locator(".thread-approval-request");
+say(`R2 approval-card-count ${await cards.count()}`);
+say(`R2 card-gaps ${JSON.stringify(await page.locator(".approvals-body .thread-approval-request").evaluateAll(els => {
+  const r = els.map(e => e.getBoundingClientRect());
+  return r.slice(1).map((b, i) => Math.round(b.top - r[i].bottom));
+}))}`);
+say(`R2 approvals-body-style ${JSON.stringify(await page.locator(".approvals-body").first().evaluate(e => {
+  const s = getComputedStyle(e); return { display: s.display, rowGap: s.rowGap };
+}).catch(() => null))}`);
+const first = cards.first();
+await first.scrollIntoViewIfNeeded().catch(() => {});
+await page.waitForTimeout(400);
+await shot("r2-approval-stack", page.locator(".approvals-body").first());
+
+// Open every "Show the full request" so the payload is on screen.
+for (const s of await page.locator("details.approval-raw > summary").all()) { await s.click().catch(() => {}); await page.waitForTimeout(120); }
+await page.waitForTimeout(300);
+say(`R1 payload-pres ${JSON.stringify(await page.locator(".approval-body pre.excerpt, .approval-body .thread-approval-command__surface").evaluateAll(els => els.slice(0, 3).map(e => {
+  const s = getComputedStyle(e);
+  return { sel: e.tagName.toLowerCase() + "." + e.className, bg: s.backgroundColor,
+           radius: s.borderTopLeftRadius, pad: s.paddingTop + "/" + s.paddingLeft,
+           mono: /mono/i.test(getComputedStyle(e.querySelector("code") ?? e).fontFamily),
+           overflowX: s.overflowX, overflowY: s.overflowY, maxH: s.maxHeight,
+           scrollW: e.scrollWidth, clientW: e.clientWidth, clipped: e.scrollWidth > e.clientWidth && s.overflowX === "visible" };
+}))) }`);
+await shot("r1-approval-payload", first);
+
+/* ---------- R3/R4: composer area ---------- */
+const dockGeom = await page.evaluate(() => {
+  const q = (s) => document.querySelector(s);
+  const box = (s) => { const e = q(s); return e ? e.getBoundingClientRect() : null; };
+  const strip = box(".composer-approval-strip"), comp = box(".brigadier-composer"),
+        rail = box('.composer-setup-rail[aria-label="Task workspace"]'), queue = box(".composer-queue");
+  return {
+    stripPresent: !!strip, railPresent: !!rail, queuePresent: !!queue,
+    stripToComposerGap: strip && comp ? Math.round(comp.top - strip.bottom) : null,
+    railToNextGap: rail && strip ? Math.round(strip.top - rail.bottom) : null,
+    stripMargin: q(".composer-approval-strip") ? getComputedStyle(q(".composer-approval-strip")).margin : null,
+    railMargin: q('.composer-setup-rail[aria-label="Task workspace"]') ? getComputedStyle(q('.composer-setup-rail[aria-label="Task workspace"]')).margin : null,
+  };
+});
+say(`R3R4 dock ${JSON.stringify(dockGeom)}`);
+const dock = page.locator(".composer-dock").first();
+await shot("r3r4-composer-dock", dock);
+
+/* ---------- a short window forces the strip on screen ---------- */
+await page.setViewportSize({ width: 1100, height: 560 });
+await page.waitForTimeout(900);
+await page.evaluate(() => { const el = [...document.querySelectorAll("*")].find(e => e.scrollHeight > e.clientHeight + 40 && e.clientHeight > 150); if (el) el.scrollTop = 0; });
+await page.waitForTimeout(1200);
+say(`R3R4 short-window ${JSON.stringify(await page.evaluate(() => {
+  const q = (s) => document.querySelector(s);
+  const b = (s) => { const e = q(s); return e ? e.getBoundingClientRect() : null; };
+  const strip = b(".composer-approval-strip"), comp = b(".brigadier-composer"), rail = b('.composer-setup-rail[aria-label="Task workspace"]');
+  return { strip: !!strip, rail: !!rail, stripToComposerGap: strip && comp ? Math.round(comp.top - strip.bottom) : null };
+}))}`);
+await shot("r3r4-short-window");
+
+say(`pageerrors ${JSON.stringify(errors)}`);
+writeFileSync(`${out}/observations.txt`, log.join("\n") + "\n");
+await browser.close();

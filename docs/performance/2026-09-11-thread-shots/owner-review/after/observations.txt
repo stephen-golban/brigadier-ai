@@ -1,0 +1,22 @@
+opened true
+shot 00-full
+R5 turn-header-text "Worked for 1m 14s · done 3:19 PM"
+R5 red-spans []
+shot r5-turn-header
+R5 row-level-footers [{"status":"completed","text":"Success","color":"rgba(255, 255, 255, 0.498)"},{"status":"failed","text":"Exit code 1","color":"rgb(224, 122, 122)"}]
+shot r5-row-failure
+R6 edited-files-cards 1
+R6 geometry {"card":352.75,"composerTop":836,"insideThread":true,"insideComposerDock":false}
+R6 file-rows [{"text":"src/components/ThreadView.tsx +19 −5","justify":"space-between","align":"left"},{"text":"src/components/thread/thread.css +26 −2","justify":"space-between","align":"left"}]
+shot r6-changed-files
+R2 approval-card-count 3
+R2 card-gaps [16,16]
+R2 approvals-body-style {"display":"flex","rowGap":"16px"}
+shot r2-approval-stack
+R1 payload-pres [{"sel":"div.thread-approval-command__surface","bg":"rgb(31, 31, 31)","radius":"6px","pad":"0px/0px","mono":true,"overflowX":"auto","overflowY":"hidden","maxH":"280px","scrollW":702,"clientW":702,"clipped":false},{"sel":"div.thread-approval-command__surface","bg":"rgb(31, 31, 31)","radius":"6px","pad":"0px/0px","mono":true,"overflowX":"auto","overflowY":"hidden","maxH":"280px","scrollW":702,"clientW":702,"clipped":false},{"sel":"div.thread-approval-command__surface","bg":"rgb(31, 31, 31)","radius":"6px","pad":"0px/0px","mono":true,"overflowX":"auto","overflowY":"hidden","maxH":"280px","scrollW":702,"clientW":702,"clipped":false}]
+shot r1-approval-payload
+R3R4 dock {"stripPresent":false,"railPresent":false,"queuePresent":false,"stripToComposerGap":null,"railToNextGap":null,"stripMargin":null,"railMargin":null}
+shot r3r4-composer-dock
+R3R4 short-window {"strip":true,"rail":false,"stripToComposerGap":16}
+shot r3r4-short-window
+pageerrors []
