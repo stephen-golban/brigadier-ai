@@ -1,6 +1,7 @@
 import { resetDiagnostics, getDiagnostics } from "../perfDiagnostics";
 import * as store from "../feedStore";
 import { getHistoryDelivery } from "../hooks/useConversationHistory";
+import { getTimestampPreparation } from "../timestampLabels";
 import { Details, DetailsSummary } from "./controls/details";
 import { Button } from "@/components/ui/button";
 import { Input } from "./controls/input";
@@ -66,6 +67,7 @@ export function Burn({ onBurn }: BurnProps) {
         supportedEntryTypes: typeof PerformanceObserver === "undefined" ? [] : PerformanceObserver.supportedEntryTypes,
         delivery: { history: getHistoryDelivery(), ingest: store.getIngest(), sessions: Object.values(store.getState().sessions).map(s => ({ id: s.sessionId, projectId: s.projectId, rowsTotal: s.rowsTotal, rowsDropped: s.rowsDropped, lastEventSeq: s.lastEventSeq, status: s.status })) },
         diagnostics: getDiagnostics(),
+        timestampPreparation: getTimestampPreparation(),
         summary: result, windows,
       };
       await bridge().recordBurnCapture(capture).catch(async e => {

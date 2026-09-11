@@ -17,6 +17,10 @@ import { documentCommands } from "../documentCommands";
 import { documentKey } from "../workbenchState";
 import {
   useCallback,
+  memo,
+  type Dispatch,
+  type SetStateAction,
+  type RefObject,
   useEffect,
   useRef,
   useState,
@@ -318,7 +322,7 @@ export function ProjectWorkbench({
     void workbenchApi
       .load()
       .then((d) => {
-        setData(d);
+        setData(previous => JSON.stringify(previous) === JSON.stringify(d) ? previous : d);
         setDataLoaded(true);
       })
       .catch((e) => setError(errorMessage(e)));
@@ -1451,31 +1455,11 @@ export function ProjectWorkbench({
           </aside>
         )}
       </div>
-      {Object.entries(layouts).map(([key, saved]) => {
-        const [projectId, sessionId] = JSON.parse(key) as [
-          string,
-          string | null,
-        ];
-        return (
-          <TerminalDock
-            key={key}
-            active={key === layoutKey}
-            suspended={!!(sessionId && archive.entries[sessionId])}
-            context={{ projectId, sessionId }}
-            layout={saved}
-            onChange={(update) =>
-              setLayouts((old) => ({
-                ...old,
-                [key]: update(old[key] ?? empty),
-              }))
-            }
-            onReady={(tabId, id) => {
-              if (id) terminalIds.current.set(tabId, id);
-              else terminalIds.current.delete(tabId);
-            }}
-          />
-        );
-      })}
+      {Object.entries(layouts).map(([key, saved]) => (
+        <WorkbenchTerminalDock key={key} owner={key} layout={saved}
+          active={key === layoutKey} suspended={!!archive.entries[(JSON.parse(key) as [string, string | null])[1] ?? ""]}
+          setLayouts={setLayouts} terminalIds={terminalIds}/>
+      ))}
       {sessionPrefs && project && (
         <SessionPreferences
           projectId={project.id}
@@ -1488,3 +1472,21 @@ export function ProjectWorkbench({
     </Tabs>
   );
 }
+
+// Keep mounted PTYs, but do not run every saved dock's hooks for a feed status update.
+const WorkbenchTerminalDock = memo(function WorkbenchTerminalDock({owner, layout, active, suspended, setLayouts, terminalIds}: {
+  owner: string; layout: ProjectLayout; active: boolean; suspended: boolean;
+  setLayouts: Dispatch<SetStateAction<Record<string, ProjectLayout>>>;
+  terminalIds: RefObject<Map<string, string>>;
+}) {
+  const [projectId, sessionId] = JSON.parse(owner) as [string, string | null];
+  const onChange = useCallback((update: (old: ProjectLayout) => ProjectLayout) => {
+    setLayouts(old => ({...old, [owner]: update(old[owner] ?? empty)}));
+  }, [owner, setLayouts]);
+  const onReady = useCallback((tabId: string, id: string | null) => {
+    if (id) terminalIds.current.set(tabId, id);
+    else terminalIds.current.delete(tabId);
+  }, [terminalIds]);
+  return <TerminalDock active={active} suspended={suspended} context={{projectId, sessionId}}
+    layout={layout} onChange={onChange} onReady={onReady}/>;
+});

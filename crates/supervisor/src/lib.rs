@@ -2380,6 +2380,12 @@ impl Supervisor {
         self.inner.batcher.set_visible_projects(ids);
     }
 
+    /// Retain all rows for a diagnostic capture without changing UI visibility policy.
+    #[cfg(any(debug_assertions, feature = "burn"))]
+    pub fn capture_project(&self, project_id: &str) -> batcher::CaptureProject {
+        self.inner.batcher.capture_project(project_id)
+    }
+
     // ---- teardown ------------------------------------------------------------------------
 
     /// End every live session gracefully, then kill whatever is left.

@@ -16,7 +16,7 @@ tauri-build = { version = "2", features = [] }
 
 [features]
 # Compiles the fixture-replay load generator into a release-profile binary; debug builds always have it.
-burn = []
+burn = ["brigadier-supervisor/burn"]
 
 [dependencies]
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }

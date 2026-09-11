@@ -7,7 +7,8 @@ import {
   waitFor,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useEffect } from "react";
+import { memo, useEffect } from "react";
+import { useSidebar as useKitSidebar } from "../ui/sidebar";
 import { afterEach, expect, it, vi } from "vitest";
 import {
   Sidebar,
@@ -168,4 +169,27 @@ it("carries the active row on a data attribute the Codex rules can select", () =
   expect(
     screen.getByRole("button", { name: "Other chat" }),
   ).not.toHaveAttribute("data-active");
+});
+
+it("keeps both sidebar contexts stable through unrelated parent updates", () => {
+  const wrapper = vi.fn();
+  const kit = vi.fn();
+  const Probe = memo(function Probe() {
+    wrapper(useSidebar());
+    kit(useKitSidebar());
+    return null;
+  });
+  const onOpenChange = vi.fn();
+  const {rerender} = render(<SidebarProvider open onOpenChange={onOpenChange}><Probe/></SidebarProvider>);
+  const beforeWrapper = wrapper.mock.calls[wrapper.mock.calls.length - 1]![0];
+  const beforeKit = kit.mock.calls[kit.mock.calls.length - 1]![0];
+  wrapper.mockClear(); kit.mockClear();
+  rerender(<SidebarProvider open onOpenChange={onOpenChange}><Probe/></SidebarProvider>);
+  expect(wrapper).not.toHaveBeenCalled();
+  expect(kit).not.toHaveBeenCalled();
+  rerender(<SidebarProvider open={false} onOpenChange={onOpenChange}><Probe/></SidebarProvider>);
+  expect(wrapper.mock.calls[wrapper.mock.calls.length - 1]![0]).not.toBe(beforeWrapper);
+  expect(kit.mock.calls[kit.mock.calls.length - 1]![0]).not.toBe(beforeKit);
+  expect(wrapper.mock.calls[wrapper.mock.calls.length - 1]![0].open).toBe(false);
+  expect(kit.mock.calls[kit.mock.calls.length - 1]![0].open).toBe(false);
 });

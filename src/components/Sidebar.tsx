@@ -9,6 +9,8 @@ import { DropdownContent } from "./controls/menu";
 // Project navigation composed from native controls.
 import {
   useEffect,
+  useCallback,
+  memo,
   useRef,
   useState,
   useImperativeHandle,
@@ -93,7 +95,7 @@ import {
 import { Dropdown, Separator } from "./controls/overlay";
 import { SidebarReveal } from "./controls/sidebar-reveal";
 import { Kbd } from "./controls/kbd";
-import { Tooltip } from "./controls/tooltip";
+import { Tooltip, TooltipGroup } from "./controls/tooltip";
 import { useStoredState } from "../workbenchState";
 
 export interface SidebarHandle {
@@ -198,7 +200,7 @@ export function Sidebar(props: SidebarProps) {
     () => props.onNotepadOpenChange?.(notes),
     [notes, props.onNotepadOpenChange],
   );
-  const closeNotepad = (next: () => void) => {
+  const closeNotepad = useCallback((next: () => void) => {
     const done = () => {
       setNotes(false);
       setNewNote(false);
@@ -206,7 +208,7 @@ export function Sidebar(props: SidebarProps) {
     };
     if (notes) notepad.current?.leave(done);
     else done();
-  };
+  }, [notes]);
   useEffect(() => {
     const view = (event: Event) => {
       const id = (event as CustomEvent<string>).detail;
@@ -248,7 +250,7 @@ export function Sidebar(props: SidebarProps) {
       void workbenchApi
         .load()
         .then((d) => {
-          if (live && request === revision) setData(d);
+          if (live && request === revision) setData(previous => JSON.stringify(previous) === JSON.stringify(d) ? previous : d);
         })
         .catch((e) => {
           if (live) setError(errorMessage(e));
@@ -288,19 +290,19 @@ export function Sidebar(props: SidebarProps) {
     setData(next);
     window.dispatchEvent(new Event("workbench-data-changed"));
   };
-  const closeMobile = () => {
+  const closeMobile = useCallback(() => {
     if (isMobile) setOpenMobile(false);
-  };
+  }, [isMobile, setOpenMobile]);
   const selectProject = (id: string) =>
     closeNotepad(() => {
       props.onSelectProject(id);
       closeMobile();
     });
-  const selectSession = (id: string) =>
+  const selectSession = useCallback((id: string) =>
     closeNotepad(() => {
       props.onSelectSession(id);
       closeMobile();
-    });
+    }), [closeNotepad, props.onSelectSession, closeMobile]);
   const addProject = async () => {
     if (busy) return;
     setError("");
@@ -330,7 +332,7 @@ export function Sidebar(props: SidebarProps) {
     return () =>
       window.removeEventListener("brigadier-onboarding-complete", start);
   }, [props.projects.length, props.onPickProject]);
-  const customize = (
+  const customize = useCallback((
     kind: "color" | "pin",
     id: string,
     value: string | null,
@@ -338,7 +340,7 @@ export function Sidebar(props: SidebarProps) {
     void navigationApi
       .customize(kind, id, value)
       .catch((e) => notify(errorMessage(e), true));
-  };
+  }, []);
   const rename = async () => {
     if (!renaming || saving.current) return;
     saving.current = true;
@@ -420,15 +422,15 @@ export function Sidebar(props: SidebarProps) {
     );
   }, [props.selectedSessionId, props.titles, setCurrentSession]);
   const projectName = (p: ProjectView) => p.projectless ? "Chats" : data.projectNames?.[p.id] ?? p.name;
-  const pinSession = (id: string) =>
+  const pinSession = useCallback((id: string) =>
     customize(
       "pin",
       id,
       navigation.pinnedSessions.includes(id) ? null : "pinned",
-    );
-  const archiveSession = (id: string) => {
+    ), [customize, navigation.pinnedSessions]);
+  const archiveSession = useCallback((id: string) => {
     window.dispatchEvent(new CustomEvent("workbench-archive-session", { detail: { sessionId: id } }));
-  };
+  }, []);
   const visibleSessions = activeSessions.filter(
     (s) => !archivedIds.includes(s.sessionId),
   );
@@ -478,89 +480,16 @@ export function Sidebar(props: SidebarProps) {
     };
   });
   const sessionRow = (s: SessionRuntime) => {
-    const pinned = navigation.pinnedSessions.includes(s.sessionId);
-    const project = props.projects.find((p) => p.id === s.projectId);
-    return (
-      <SidebarMenuSubItem key={s.sessionId} className="group/session">
-        <Tooltip
-          className="w-full"
-          onlyWhenTruncated=".session-label"
-          placement="right"
-          content={
-            <div className="w-72 max-w-full space-y-2 py-1">
-              <div className="flex items-start gap-3">
-                <span className="min-w-0 flex-1 break-words text-[13px] text-text">
-                  {title(s.sessionId)}
-                </span>
-                <span className="flex h-5 w-4 shrink-0 items-center justify-center">
-                  <SessionStatus
-                    attention={props.attention?.[s.sessionId]}
-                    working={working(s)}
-                  />
-                </span>
-              </div>
-              <div className="flex items-center gap-2 text-text-secondary">
-                <Folder className="size-4" />
-                <span className="min-w-0 break-words">
-                  {project ? projectName(project) : "Project"}
-                </span>
-              </div>
-            </div>
-          }
-        >
-          <SidebarMenuSubButton
-            isActive={!notes && props.selectedSessionId === s.sessionId}
-            className="session-row"
-            onClick={() => selectSession(s.sessionId)}
-          >
-            <span className="session-label text-fade-truncate min-w-0 flex-1 text-left text-text">
-              {title(s.sessionId)}
-            </span>
-            <span className="session-indicator absolute top-0 right-1 flex h-7 w-6 items-center justify-center">
-              <SessionStatus
-                attention={props.attention?.[s.sessionId]}
-                working={working(s)}
-              />
-            </span>
-          </SidebarMenuSubButton>
-        </Tooltip>
-        <Tooltip
-          content={pinned ? "Unpin session" : "Pin session"}
-          className="absolute top-0 right-7 h-7 w-6 items-center justify-center"
-        >
-          <SidebarMenuAction
-            showOnHover
-            className="relative right-auto"
-            aria-label={`${pinned ? "Unpin" : "Pin"} ${title(s.sessionId)}`}
-            disabled={s.sessionId.startsWith("starting:")}
-            onClick={() => pinSession(s.sessionId)}
-          >
-            {pinned ? (
-              <PinFilled className="size-3.5" />
-            ) : (
-              <Pin className="size-3.5" />
-            )}
-          </SidebarMenuAction>
-        </Tooltip>
-        <Tooltip
-          content="Archive session"
-          className="absolute top-0 right-1 h-7 w-6 items-center justify-center"
-        >
-          <SidebarMenuAction
-            showOnHover
-            className="relative right-auto"
-            aria-label={`Archive ${title(s.sessionId)}`}
-            disabled={s.sessionId.startsWith("starting:")}
-            onClick={() => archiveSession(s.sessionId)}
-          >
-            <Archive className="size-3.5" />
-          </SidebarMenuAction>
-        </Tooltip>
-      </SidebarMenuSubItem>
-    );
+    const project = props.projects.find(p => p.id === s.projectId);
+    return <SidebarSessionRow key={s.sessionId} id={s.sessionId} title={title(s.sessionId)}
+      projectLabel={project ? projectName(project) : "Project"}
+      selected={!notes && props.selectedSessionId === s.sessionId}
+      pinned={navigation.pinnedSessions.includes(s.sessionId)}
+      attention={props.attention?.[s.sessionId]} isWorking={working(s)}
+      onSelect={selectSession} onPin={pinSession} onArchive={archiveSession}/>;
   };
   return (
-    <>
+    <TooltipGroup>
       <SidebarPrimitive collapsible="offcanvas" aria-label="Main navigation">
         <SidebarHeader>
           <div
@@ -1223,8 +1152,101 @@ export function Sidebar(props: SidebarProps) {
       {action && (
         <ActionDialog action={action} onClose={() => setAction(null)} />
       )}
-    </>
+    </TooltipGroup>
   );
 }
 
 if (profiling) Sidebar.displayName = "Sidebar";
+
+// Runtime counters and other sessions cannot invalidate unchanged row controls.
+const SidebarSessionRow = memo(function SidebarSessionRow({id, title, projectLabel, selected, pinned, attention, isWorking, onSelect, onPin, onArchive}: {
+  id: string; title: string; projectLabel: string; selected: boolean; pinned: boolean;
+  attention?: boolean; isWorking: boolean;
+  onSelect: (id: string) => void; onPin: (id: string) => void; onArchive: (id: string) => void;
+}) {
+  return (
+      <SidebarMenuSubItem key={id} className="group/session">
+        <Tooltip
+          className="w-full"
+          onlyWhenTruncated=".session-label"
+          placement="right"
+          content={
+            <div className="w-72 max-w-full space-y-2 py-1">
+              <div className="flex items-start gap-3">
+                <span className="min-w-0 flex-1 break-words text-[13px] text-text">
+                  {title}
+                </span>
+                <span className="flex h-5 w-4 shrink-0 items-center justify-center">
+                  <SessionStatus
+                    attention={attention}
+                    working={isWorking}
+                  />
+                </span>
+              </div>
+              <div className="flex items-center gap-2 text-text-secondary">
+                <Folder className="size-4" />
+                <span className="min-w-0 break-words">
+                  {projectLabel}
+                </span>
+              </div>
+            </div>
+          }
+        >
+          <SidebarMenuSubButton
+            isActive={selected}
+            className="session-row"
+            onClick={() => onSelect(id)}
+          >
+            <span className="session-label text-fade-truncate min-w-0 flex-1 text-left text-text">
+              {title}
+            </span>
+            <span className="session-indicator absolute top-0 right-1 flex h-7 w-6 items-center justify-center">
+              <SessionStatus
+                attention={attention}
+                working={isWorking}
+              />
+            </span>
+          </SidebarMenuSubButton>
+        </Tooltip>
+        <SidebarSessionActions id={id} title={title} pinned={pinned} onPin={onPin} onArchive={onArchive}/>
+
+      </SidebarMenuSubItem>
+);
+});
+const SidebarSessionActions = memo(function SidebarSessionActions({id, title, pinned, onPin, onArchive}: {
+  id: string; title: string; pinned: boolean;
+  onPin: (id: string) => void; onArchive: (id: string) => void;
+}) {
+  return <>        <Tooltip
+          content={pinned ? "Unpin session" : "Pin session"}
+          className="absolute top-0 right-7 h-7 w-6 items-center justify-center"
+        >
+          <SidebarMenuAction
+            showOnHover
+            className="relative right-auto"
+            aria-label={`${pinned ? "Unpin" : "Pin"} ${title}`}
+            disabled={id.startsWith("starting:")}
+            onClick={() => onPin(id)}
+          >
+            {pinned ? (
+              <PinFilled className="size-3.5" />
+            ) : (
+              <Pin className="size-3.5" />
+            )}
+          </SidebarMenuAction>
+        </Tooltip>
+        <Tooltip
+          content="Archive session"
+          className="absolute top-0 right-1 h-7 w-6 items-center justify-center"
+        >
+          <SidebarMenuAction
+            showOnHover
+            className="relative right-auto"
+            aria-label={`Archive ${title}`}
+            disabled={id.startsWith("starting:")}
+            onClick={() => onArchive(id)}
+          >
+            <Archive className="size-3.5" />
+          </SidebarMenuAction>
+        </Tooltip></>;
+});
