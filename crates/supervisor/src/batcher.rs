@@ -97,6 +97,10 @@ struct ProjectAccum {
     counters: BTreeMap<String, Counters>,
     /// Sessions touched since the last flush; only these get a counter in the next message.
     touched: BTreeSet<String>,
+    /// Whether this project has already warned about overflowing [`PROJECT_SIGNAL_CAP`]. The flag
+    /// goes with the project's entry when [`ProjectAccum::prune`] forgets it, so a project that
+    /// falls quiet and later overflows again warns once more. That is the point of the warning.
+    warned_signal_drop: bool,
 }
 
 impl ProjectAccum {
@@ -140,6 +144,16 @@ impl State {
 struct Inner {
     state: Mutex<State>,
     sink: Arc<dyn FeedSink>,
+    changed: tokio::sync::watch::Sender<u64>,
+    /// Signals dropped at [`PROJECT_SIGNAL_CAP`], process-wide and cumulative.
+    ///
+    /// Not on the wire: [`crate::wire::FeedBatch`] and [`SessionCounter`] have no field for it
+    /// (`crates/supervisor/src/wire.rs:69-89`), and adding one would change the shape
+    /// `docs/plans/ipc-contract.md` pins. It lives here, read by
+    /// [`Batcher::signals_dropped`], so a drop is countable rather than invisible.
+    signals_dropped: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    flushes: std::sync::atomic::AtomicUsize,
 }
 
 /// One project's traffic for one tick, taken out from under the lock before anything is packed.
@@ -193,7 +207,13 @@ impl std::fmt::Debug for Batcher {
 impl Batcher {
     /// A batcher feeding `sink`. Nothing ticks until [`Batcher::spawn_flusher`] is called.
     pub fn new(sink: Arc<dyn FeedSink>) -> Self {
-        Self { inner: Arc::new(Inner { state: Mutex::new(State::default()), sink }) }
+        Self { inner: Arc::new(Inner {
+            state: Mutex::new(State::default()), sink,
+            changed: tokio::sync::watch::channel(0).0,
+            signals_dropped: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(test)]
+            flushes: std::sync::atomic::AtomicUsize::new(0),
+        }) }
     }
 
     /// Account for one envelope. Never awaits, never serializes, never touches the sink.
@@ -201,6 +221,8 @@ impl Batcher {
     /// The row is dropped here rather than downstream when its project is not visible, so an
     /// unwatched project costs one counter increment per event and nothing else.
     pub fn push(&self, project_id: &str, env: &Envelope) {
+        let mut dropped_signal = false;
+        let mut warn_signal_drop = false;
         let mut state = lock(&self.inner.state);
         let visible = state.is_visible(project_id);
         let session = env.session_id.as_str().to_owned();
@@ -242,13 +264,40 @@ impl Batcher {
             signal.raw = None;
             if accum.signals.len() >= PROJECT_SIGNAL_CAP {
                 accum.signals.pop_front();
+                // Signals are the events the UI must see, so a drop here is worse than a dropped
+                // row and gets counted the same way — process-wide rather than in the frame,
+                // because the wire shape has nowhere to carry it.
+                dropped_signal = true;
+                if !accum.warned_signal_drop {
+                    accum.warned_signal_drop = true;
+                    warn_signal_drop = true;
+                }
             }
             accum.signals.push_back(signal);
         }
+        drop(state);
+        if dropped_signal {
+            self.inner.signals_dropped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if warn_signal_drop {
+                tracing::warn!(
+                    project_id,
+                    cap = PROJECT_SIGNAL_CAP,
+                    "feed signal buffer is full; dropping the oldest signal"
+                );
+            }
+        }
+        self.inner.changed.send_modify(|revision| *revision = revision.wrapping_add(1));
     }
 
     /// Replace the visible set. Rows for anything outside it are dropped and counted; signals and
     /// counters keep flowing.
+    ///
+    /// Deliberately does **not** wake the flusher, and needs no wake: the visibility filter is
+    /// applied in [`Batcher::push`] and never in [`Batcher::flush_once`], so changing the set
+    /// makes nothing that is already pending newly flushable — it only changes what later pushes
+    /// accumulate, and each of those wakes the flusher itself. If the filter ever moves into
+    /// `flush_once`, this function must send on `changed` or a newly visible project's backlog
+    /// waits for its next event.
     pub fn set_visible_projects(&self, ids: Vec<String>) {
         lock(&self.inner.state).visible = Some(ids.into_iter().collect());
     }
@@ -270,6 +319,8 @@ impl Batcher {
     ///
     /// A project with nothing pending sends nothing at all — an idle app is silent.
     pub fn flush_once(&self) {
+        #[cfg(test)]
+        self.inner.flushes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let drained = {
             let mut state = lock(&self.inner.state);
             let mut out: Vec<Frame> = Vec::new();
@@ -310,19 +361,49 @@ impl Batcher {
         }
     }
 
-    /// Tick `flush_once` every `interval` until the last [`Batcher`] is dropped.
+    /// Flush on a deadline anchored to the previous flush; no timer runs while the feed is idle.
+    ///
+    /// What this actually bounds, which is not a hard 16 ms:
+    ///
+    /// - **After an idle stretch** the deadline is already in the past, so the first push is
+    ///   flushed as soon as the task is scheduled — it does not wait an `interval`.
+    /// - **Under sustained traffic** flushes are one `interval` apart start to start (the
+    ///   deadline is taken before the drain, so a flush that takes `f` does not push the period
+    ///   out to `interval + f`). A flush slower than `interval` simply makes the next deadline
+    ///   already past, and the loop runs back to back rather than accumulating a backlog of
+    ///   deadlines.
+    /// - **A push landing after the drain has consumed the change** — inside `flush_once`, or
+    ///   between it and the next `changed().await` — is not lost: it bumps the revision and the
+    ///   next iteration returns immediately, so that row waits up to one more `interval`.
+    /// - Executor scheduling and serialization sit on top of all three. Nothing here is
+    ///   real-time.
     ///
     /// The task holds a weak reference on purpose: it is the app's own lifetime that ends it, and
-    /// nothing has to remember to stop it.
+    /// nothing has to remember to stop it. It holds no sender either, only a `watch::Receiver`,
+    /// so dropping the last [`Batcher`] closes the channel and ends the loop.
     pub fn spawn_flusher(&self, interval: Duration) -> tokio::task::JoinHandle<()> {
         let weak = Arc::downgrade(&self.inner);
+        let mut changed = self.inner.changed.subscribe();
+        // Subscribe before checking the accumulator, covering data queued before startup as
+        // well as pushes racing with this check. The receiver owns no sender/Inner reference.
+        if lock(&self.inner.state).projects.values().any(ProjectAccum::pending) {
+            changed.mark_changed();
+        }
         let interval = if interval.is_zero() { DEFAULT_FRAME_INTERVAL } else { interval };
         tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(interval);
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            loop {
-                ticker.tick().await;
+            // The next flush's earliest start, anchored to the previous flush's start. Beginning
+            // in the past makes the very first flush immediate.
+            let mut next = tokio::time::Instant::now();
+            while changed.changed().await.is_ok() {
+                // Already past for the first push after idle, so this returns without parking.
+                tokio::time::sleep_until(next).await;
+                // Consume the burst before draining. A push during/after the drain remains
+                // unseen and schedules the next flush, so there is no lost-wakeup window.
+                changed.borrow_and_update();
                 let Some(inner) = Weak::upgrade(&weak) else { return };
+                // Taken before the drain: the period owed is measured from when this flush
+                // started, so flush time comes out of the interval instead of adding to it.
+                next = tokio::time::Instant::now() + interval;
                 Batcher { inner }.flush_once();
             }
         })
@@ -350,6 +431,22 @@ impl Batcher {
     /// Projects the accumulator still holds an entry for, for tests and instrumentation.
     pub fn tracked_projects(&self) -> Vec<String> {
         lock(&self.inner.state).projects.keys().cloned().collect()
+    }
+
+    /// Signals dropped at [`PROJECT_SIGNAL_CAP`] since the process started, across every project.
+    ///
+    /// Rows have `SessionCounter::rows_dropped` on the wire; signals have nowhere to go in
+    /// [`crate::wire::FeedBatch`], so this counter and the `warn` on a project's first drop are
+    /// the whole record. Anything other than `0` means a project accumulated 2 000 signals
+    /// between two frames, which means the sink has stopped consuming.
+    pub fn signals_dropped(&self) -> u64 {
+        self.inner.signals_dropped.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// How many times [`Batcher::flush_once`] has run, for the flusher's own tests.
+    #[cfg(test)]
+    pub(crate) fn flush_count(&self) -> usize {
+        self.inner.flushes.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -882,5 +979,232 @@ mod tests {
         assert_eq!(sink.take()[0].counters.len(), 1);
         batcher.flush_once();
         assert!(sink.is_empty(), "an untouched project is silent");
+    }
+
+    /// Signals have no `rows_dropped` equivalent on the wire, so the cap is only observable
+    /// through the process-wide counter and the per-project warning.
+    #[test]
+    fn the_signal_buffer_is_capped_and_the_overflow_is_counted() {
+        let (batcher, sink) = sink();
+        assert_eq!(batcher.signals_dropped(), 0);
+        for seq in 0..(PROJECT_SIGNAL_CAP as u64 + 7) {
+            batcher.push("p", &envelope(seq, Event::RuntimeWarning { message: "w".into() }));
+        }
+        assert_eq!(batcher.signals_dropped(), 7, "every signal past the cap is counted");
+        batcher.flush_once();
+        let batches = sink.take();
+        let delivered: usize = batches.iter().map(|b| b.signals.len()).sum();
+        assert_eq!(delivered, PROJECT_SIGNAL_CAP, "the buffer holds at most the cap");
+        let first = batches.iter().flat_map(|b| &b.signals).next().expect("signals crossed");
+        assert_eq!(first.seq, 7, "the oldest signals are the ones that went");
+    }
+
+    // ---------------------------------------------------------------- the flusher loop
+    //
+    // Every test below drives `spawn_flusher` on a paused clock: the only place the cadence is
+    // observable at all. `settle` hands the runtime to the flusher task without advancing the
+    // clock, so "no flush happened" is a claim about the deadline and not about timing luck.
+
+    /// Yield enough times for the flusher task to run to its next park. Advances no clock.
+    async fn settle() {
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    fn seqs(batches: &[FeedBatch]) -> Vec<u64> {
+        batches.iter().flat_map(|b| b.rows.iter().map(|r| r.q)).collect()
+    }
+
+    const INTERVAL: Duration = Duration::from_millis(16);
+
+    /// A sink that pushes back into the batcher from inside `send`, which is exactly the window
+    /// the loop must not lose: `flush_once` has already drained the accumulator and consumed the
+    /// change notification.
+    #[derive(Default)]
+    struct ReentrantSink {
+        batches: Mutex<Vec<FeedBatch>>,
+        inject: Mutex<Option<(Batcher, Envelope)>>,
+    }
+
+    impl ReentrantSink {
+        fn take(&self) -> Vec<FeedBatch> {
+            std::mem::take(&mut lock(&self.batches))
+        }
+    }
+
+    impl FeedSink for ReentrantSink {
+        fn send(&self, batch: FeedBatch) -> Result<(), crate::sink::SinkError> {
+            lock(&self.batches).push(batch);
+            if let Some((batcher, env)) = lock(&self.inject).take() {
+                batcher.push("p", &env);
+            }
+            Ok(())
+        }
+    }
+
+    /// A sink that refuses everything and counts the attempts.
+    #[derive(Default)]
+    struct FailingSink {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl FailingSink {
+        fn calls(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    impl FeedSink for FailingSink {
+        fn send(&self, _batch: FeedBatch) -> Result<(), crate::sink::SinkError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Err(crate::sink::SinkError::Closed)
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn data_queued_before_the_flusher_starts_goes_out_without_another_push() {
+        let (batcher, sink) = sink();
+        batcher.push("p", &row_event(0));
+        let flusher = batcher.spawn_flusher(INTERVAL);
+        settle().await;
+        assert_eq!(batcher.flush_count(), 1, "the queued row was flushed on its own");
+        assert_eq!(seqs(&sink.take()), vec![0]);
+        drop(batcher);
+        flusher.await.expect("the flusher ends cleanly");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_push_during_the_sleep_rides_the_same_flush() {
+        let (batcher, sink) = sink();
+        let flusher = batcher.spawn_flusher(INTERVAL);
+        batcher.push("p", &row_event(0));
+        settle().await;
+        assert_eq!(batcher.flush_count(), 1, "the first push after idle is not delayed");
+        let _ = sink.take();
+
+        batcher.push("p", &row_event(1));
+        settle().await;
+        assert_eq!(batcher.flush_count(), 1, "the deadline holds the next flush");
+        batcher.push("p", &row_event(2));
+        tokio::time::advance(INTERVAL).await;
+        settle().await;
+        assert_eq!(batcher.flush_count(), 2, "one flush for the burst, not one each");
+        assert_eq!(seqs(&sink.take()), vec![1, 2]);
+        drop(batcher);
+        flusher.await.expect("the flusher ends cleanly");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_push_landing_after_the_drain_schedules_another_flush() {
+        let sink = Arc::new(ReentrantSink::default());
+        let batcher = Batcher::new(sink.clone());
+        *lock(&sink.inject) = Some((batcher.clone(), row_event(1)));
+        let flusher = batcher.spawn_flusher(INTERVAL);
+
+        batcher.push("p", &row_event(0));
+        settle().await;
+        assert_eq!(batcher.flush_count(), 1);
+        assert_eq!(seqs(&sink.take()), vec![0], "the injected row missed this frame");
+
+        settle().await;
+        assert_eq!(batcher.flush_count(), 1, "and waits for the deadline rather than spinning");
+        tokio::time::advance(INTERVAL).await;
+        settle().await;
+        assert_eq!(batcher.flush_count(), 2, "the push after the drain scheduled a flush");
+        assert_eq!(seqs(&sink.take()), vec![1], "nothing was lost to the drain window");
+        drop(batcher);
+        flusher.await.expect("the flusher ends cleanly");
+    }
+
+    /// The cadence regression this loop exists to avoid: flushes one `interval` apart start to
+    /// start, not `interval` plus however long a flush takes.
+    #[tokio::test(start_paused = true)]
+    async fn sustained_pushes_flush_exactly_one_interval_apart() {
+        let (batcher, sink) = sink();
+        let flusher = batcher.spawn_flusher(INTERVAL);
+        batcher.push("p", &row_event(0));
+        settle().await;
+        assert_eq!(batcher.flush_count(), 1);
+
+        for i in 1..=5usize {
+            batcher.push("p", &row_event(i as u64));
+            settle().await;
+            assert_eq!(batcher.flush_count(), i, "push {i} did not flush early");
+            tokio::time::advance(INTERVAL - Duration::from_millis(1)).await;
+            settle().await;
+            assert_eq!(batcher.flush_count(), i, "nothing flushed 1 ms before the deadline");
+            tokio::time::advance(Duration::from_millis(1)).await;
+            settle().await;
+            assert_eq!(batcher.flush_count(), i + 1, "flush {} landed on the deadline", i + 1);
+        }
+        assert_eq!(seqs(&sink.take()), vec![0, 1, 2, 3, 4, 5], "every row crossed, in order");
+        drop(batcher);
+        flusher.await.expect("the flusher ends cleanly");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_idle_feed_costs_no_flushes_and_the_next_push_is_immediate() {
+        let (batcher, sink) = sink();
+        let flusher = batcher.spawn_flusher(INTERVAL);
+        settle().await;
+        assert_eq!(batcher.flush_count(), 0, "an empty accumulator never wakes the loop");
+
+        batcher.push("p", &row_event(0));
+        settle().await;
+        assert_eq!(batcher.flush_count(), 1);
+        let _ = sink.take();
+
+        tokio::time::advance(INTERVAL * 100).await;
+        settle().await;
+        assert_eq!(batcher.flush_count(), 1, "100 intervals of idle run no timer");
+        assert!(sink.is_empty());
+
+        batcher.push("p", &row_event(1));
+        settle().await;
+        assert_eq!(batcher.flush_count(), 2, "the first push after idle does not wait");
+        assert_eq!(seqs(&sink.take()), vec![1]);
+        drop(batcher);
+        flusher.await.expect("the flusher ends cleanly");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn dropping_the_last_batcher_ends_the_flusher() {
+        let (batcher, sink) = sink();
+        let flusher = batcher.spawn_flusher(INTERVAL);
+        batcher.push("p", &row_event(0));
+        settle().await;
+
+        let clone = batcher.clone();
+        drop(batcher);
+        settle().await;
+        assert!(!flusher.is_finished(), "a live clone keeps the loop running");
+
+        drop(clone);
+        tokio::time::timeout(Duration::from_secs(5), flusher)
+            .await
+            .expect("the loop ends when the last owner goes")
+            .expect("and ends without panicking");
+        assert_eq!(Arc::strong_count(&sink), 1, "the task retained no accumulator and no sender");
+    }
+
+    /// Today's behaviour, pinned rather than changed: `flush_once` logs a refused batch and
+    /// carries on, and the loop keeps its cadence.
+    #[tokio::test(start_paused = true)]
+    async fn a_refusing_sink_does_not_stop_later_flushes() {
+        let sink = Arc::new(FailingSink::default());
+        let batcher = Batcher::new(sink.clone());
+        let flusher = batcher.spawn_flusher(INTERVAL);
+
+        batcher.push("p", &row_event(0));
+        settle().await;
+        assert_eq!((batcher.flush_count(), sink.calls()), (1, 1));
+
+        batcher.push("p", &row_event(1));
+        tokio::time::advance(INTERVAL).await;
+        settle().await;
+        assert_eq!((batcher.flush_count(), sink.calls()), (2, 2), "the refusal was not fatal");
+        drop(batcher);
+        flusher.await.expect("the flusher ends cleanly");
     }
 }

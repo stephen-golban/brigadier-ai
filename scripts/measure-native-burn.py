@@ -6,7 +6,9 @@ may run during this acceptance workload. Raw results are never filtered.
 """
 import argparse
 from collections import Counter
+import datetime
 import json
+import os
 from pathlib import Path
 import plistlib
 import subprocess
@@ -18,15 +20,50 @@ def locked():
     return bool(plistlib.loads(data).get("IOConsoleLocked", True))
 
 
+def source_stamp(build_flags):
+    """Provenance for the result file: which source this run measured, never a score.
+
+    `dirty`/`dirty_files` cover the whole worktree, so a capture taken over uncommitted
+    edits cannot later be read back as a clean-revision result. A git failure records
+    `None` rather than a clean-looking default. Nothing here affects the pass rules.
+    """
+    root = Path(__file__).resolve().parent.parent
+
+    def git(*args, strip=True):
+        try:
+            done = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True)
+        except OSError:
+            return None
+        if done.returncode != 0:
+            return None
+        # `--porcelain` encodes the status in the first two columns, so that output is
+        # only right-stripped; a leading space there is data, not padding.
+        return done.stdout.strip() if strip else done.stdout.rstrip("\n")
+
+    head, branch = git("rev-parse", "HEAD"), git("rev-parse", "--abbrev-ref", "HEAD")
+    status = git("status", "--porcelain", strip=False)
+    return {
+        "head": head,
+        "dirty": None if status is None else bool(status),
+        "dirty_files": [line[3:] for line in status.splitlines()] if status else [],
+        "branch": None if branch in (None, "HEAD") else branch,
+        "build_flags": build_flags,
+        "captured_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+
 # The audited workload, pinned by `main`'s `expected` against `capture["workload"]`: 60 s at
 # 200 rows/s. The delivery clause below is stated in these terms rather than read out of the
 # producer report, so a producer that misreports its own configuration cannot relax it.
 WORKLOAD_SECONDS = 60
 # Per-second floor over those 60 seconds. Nominal is 200 events/s, and every one of the 600 audited
-# seconds in the recorded passing run (docs/performance/2026-09-10/live-history-release-burn-1.json)
-# carries 199-201. Half the nominal rate is a 2x margin against a scheduling hiccup shifting events
-# across a bin boundary, and still fails a session that front-loads its events and then trickles
-# just enough to keep a bin non-empty.
+# seconds in docs/performance/2026-09-10/live-history-release-burn-1.json carries 199-201. That file
+# is cited for its delivery bins only: it is not a passing run. Its rendering summary is
+# `pass: false` with `total_dropped: 3` and a 33 ms worst interval, and its own delivery audit
+# records one error (one session under the workload-event floor).
+# Half the nominal rate is a 2x margin against a scheduling hiccup shifting events across a bin
+# boundary, and still fails a session that front-loads its events and then trickles just enough to
+# keep a bin non-empty.
 MIN_EVENTS_PER_SECOND = 100
 
 # Event types that `brigadier_store::feed::terse_line` returns `None` for, so the producer emits
@@ -194,7 +231,16 @@ def main(args):
     passed = bool(activation.returncode == 0 and delivery_audit["pass"] and capture and capture.get("workload") == expected and summary.get("pass")
                   and summary.get("duration_ms", 0) >= 60000 and not capture.get("profiling") and capture.get("diagnostics") is None
                   and not console_locked and hold_alive)
-    result = {"delivery_audit": delivery_audit, "producer_delivery": delivery, "activation_exit": activation.returncode if activation else None, "pass": passed, "console_locked_after": console_locked,
+    build_flags = {
+        "env": {name: os.environ.get(name) for name in ("VITE_BURN", "BRIGADIER_TRACE", "BRIGADIER_BURN")},
+        "binary": str(args.binary.resolve()),
+        "data_dir": str(args.data_dir),
+        "child_env_overrides": {},
+        "capture_profiling": (capture or {}).get("profiling"),
+        "capture_diagnostics": (capture or {}).get("diagnostics") is not None,
+        "note": "This runner never builds. VITE_BURN=1, --features burn and ?burn=auto are properties of the binary handed to it and are not verified here.",
+    }
+    result = {"source": source_stamp(build_flags), "delivery_audit": delivery_audit, "producer_delivery": delivery, "activation_exit": activation.returncode if activation else None, "pass": passed, "console_locked_after": console_locked,
               "pid": child.pid, "sleep_assertion_alive": hold_alive, "capture": capture}
     args.output.write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps({"pass": passed, "console_locked_after": console_locked,

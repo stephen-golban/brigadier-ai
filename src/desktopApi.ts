@@ -1,6 +1,7 @@
 import { removeSessionLocalData } from "./sessionLocalData";
 import { mockSessionChanges } from "./mock";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
 import { desktop, errorMessage } from "./workspaceApi";
 import { bridge } from "./bridge";
@@ -141,44 +142,73 @@ export function useSessionChanges(sessionId: string | null) {
 export function useCleanup() {
   const [jobs, setJobs] = useState<CleanupJob[]>([]);
   useEffect(() => {
-    let live = true,
-      timer: ReturnType<typeof setTimeout>;
+    if (!desktop) return;
+    let live = true;
+    // Set by the first event to land. The snapshot command reads the queue file at the moment it
+    // runs, so a `cleanup-changed` that arrives while it is in flight is strictly newer than what
+    // it will answer with; applying that answer afterwards would put the stale queue back on
+    // screen and nothing polls any more to correct it.
+    let announced = false;
+    let unlisten: (() => void) | undefined;
     const retired = new Set<string>();
     const errors = new Set<string>();
+    const apply = (next: CleanupJob[]) => {
+      if (!live) return;
+      setJobs(next);
+      for (const job of next) {
+        for (const id of job.sessions) {
+          if (!retired.has(id)) {
+            retireSession(id);
+            retired.add(id);
+          }
+        }
+        if (job.error && !errors.has(job.id + job.error)) {
+          errors.add(job.id + job.error);
+          notify(
+            `Session cleanup: ${job.error}`,
+            true,
+            () =>
+              void desktopApi
+                .retryCleanup(job.id)
+                .catch((e) => notify(errorMessage(e), true)),
+          );
+        }
+      }
+    };
     const read = async () => {
       try {
         const next = await desktopApi.cleanup();
-        if (!live) return;
-        setJobs(next);
-        for (const job of next) {
-          for (const id of job.sessions) {
-            if (!retired.has(id)) {
-              retireSession(id);
-              retired.add(id);
-            }
-          }
-          if (job.error && !errors.has(job.id + job.error)) {
-            errors.add(job.id + job.error);
-            notify(
-              `Session cleanup: ${job.error}`,
-              true,
-              () =>
-                void desktopApi
-                  .retryCleanup(job.id)
-                  .catch((e) => notify(errorMessage(e), true)),
-            );
-          }
-        }
+        if (!announced) apply(next);
       } catch (e) {
         if (live) notify(errorMessage(e), true);
-      } finally {
-        if (live) timer = setTimeout(read, 2000);
       }
     };
-    if (desktop) void read();
+    // Registration first, then one snapshot. `listen` is itself async, so fetching first leaves a
+    // window in which a queue transition is emitted to nobody — which the old 2 s poll papered
+    // over and a hook with no timer cannot. The backend emits after every persisted transition
+    // (`src-tauri/src/cleanup.rs`, `cleanup-changed`) and carries the same array this command
+    // returns, so there is no second fetch.
+    void listen<CleanupJob[]>("cleanup-changed", (event) => {
+      announced = true;
+      if (Array.isArray(event.payload)) apply(event.payload);
+      else void read();
+    })
+      .then((stop) => {
+        // Dispose can win the race against registration; the listener still has to be dropped.
+        if (!live) {
+          stop();
+          return;
+        }
+        unlisten = stop;
+        void read();
+      })
+      .catch((e) => {
+        if (live) notify(errorMessage(e), true);
+      });
     return () => {
       live = false;
-      clearTimeout(timer);
+      unlisten?.();
+      unlisten = undefined;
     };
   }, []);
   return jobs;

@@ -240,6 +240,9 @@ type RowScopeValue = {
   toggle: (id: string) => void;
   approvals: RowApprovals;
   files: FileChange[];
+  /** Bumped only when a prepared label replaced different text; remounts just this row's clock.
+   *  Undefined in the measured case — no label ever moved — so no timestamp is disturbed. */
+  labelPatch?: number;
 };
 const RowScope = createContext<RowScopeValue | null>(null);
 function useRowScope(): RowScopeValue {
@@ -439,7 +442,7 @@ function Transcript({
 }) {
   const changes = useSessionChanges(sessionId);
   const readOnly = peers?.loaded === false || !!peers?.subagents?.[sessionId];
-  const {items, turns: turnRecords, loaded, error, hasOlder, paging, historical, older, latest} = useConversationHistory(sessionId, revision);
+  const {items, turns: turnRecords, loaded, error, hasOlder, paging, historical, labelPatch, older, latest} = useConversationHistory(sessionId, revision);
   const hydrated = loaded;
   const { settings: executionSettings } = useTaskExecutionSettings(sessionId);
   const executionChanges = executionSettings?.changes;
@@ -693,6 +696,7 @@ function Transcript({
                 expanded,
                 toggle,
                 approvals: rowApprovals.get(row.id) ?? noRowApprovals,
+                labelPatch: row.type === "message" ? labelPatch.get(row.item.seq) : undefined,
                 files:
                   changes.turns.find((t) => t.turnId === turns[index])?.files ?? noFiles,
               }}
@@ -706,7 +710,11 @@ function Transcript({
             >
               {user && providerChanges.before.get(row.item.id)?.map(change => <ProviderChangeDivider key={change.id} change={change} />)}
               {user && row.item.at > 0 && (
-                <MessageTimestamp at={row.item.at}/>
+                // The history page is published before its labels are prepared, so a label that
+                // arrives late and differs from the fallback already on screen patches this one
+                // row by remounting it. `labelPatch` is empty in the measured case, so the key
+                // stays `undefined` and no timestamp is disturbed.
+                <MessageTimestamp key={labelPatch.get(row.item.seq)} at={row.item.at}/>
               )}
               {/* One dispatch, in the runtime: the row's parts choose their own renderer. */}
               <MessageProvider
@@ -811,7 +819,7 @@ function UserMessage({
       attachments={attachment ? <AttachmentPreview attachment={attachment}/> : undefined}
       actions={
         <>
-          {item.at > 0 && <MessageTime at={item.at}/>}
+          {item.at > 0 && <MessageTime key={scope.labelPatch} at={item.at}/>}
           <CopyButton text={text} />
           {!readOnly && (
             <MessageAction

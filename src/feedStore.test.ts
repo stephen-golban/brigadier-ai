@@ -34,6 +34,9 @@ type Store = typeof import("./feedStore");
 /** One drain frame. jsdom's rAF period is 1000/60 ms, so 17 ms is one and only one. */
 const FRAME_MS = 17;
 
+/** `COUNTER_FLUSH_MS` in `src/feedStore.ts`, which does not export it. */
+const COUNTER_FLUSH_MS = 500;
+
 const PROJECT = "p1";
 
 let seq = 0;
@@ -42,6 +45,16 @@ async function load(): Promise<Store> {
   vi.resetModules();
   seq = 0;
   return await import("./feedStore");
+}
+
+/**
+ * The store plus the frame meter **from the same module graph**. `load()` resets the registry, so
+ * importing `./fps` afterwards hands back the very instance `feedStore` registered its
+ * `setFrameSampling` with; a top-level `import * as fps` would be a stale one from the first test.
+ */
+async function loadWithMeter(): Promise<{ store: Store; meter: typeof import("./fps") }> {
+  const store = await load();
+  return { store, meter: await import("./fps") };
 }
 
 function zeroUsage(): Usage {
@@ -114,6 +127,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Spies first: a `requestAnimationFrame` spy installed over the *faked* one survives
+  // `useRealTimers()` and would hand the next test a frame callback tied to a dead clock.
+  vi.restoreAllMocks();
   // Drops the pending rAF interval of whatever module instance this test loaded.
   vi.useRealTimers();
 });
@@ -178,6 +194,184 @@ describe("the rAF drain", () => {
     store.pushBatch(batch({ rows: rows("s1", [2]) }));
     vi.advanceTimersByTime(FRAME_MS);
     expect(notifies).toBe(2);
+    store.stop();
+  });
+
+  /*
+   * The idle rule (plan review B3, `docs/plans/efficiency-plan-review-2026-09-11.md`). The loop
+   * used to re-arm a frame and a 250 ms timer on every drain, empty buffer or not: ~64 wakeups a
+   * second for the life of the window. Vitest fakes `requestAnimationFrame` alongside
+   * `setTimeout`, so `vi.getTimerCount()` is the store's whole wakeup budget in one number — two
+   * while work is pending (the frame and its occlusion fallback), one while only a counter fold
+   * is owed, zero when the store has nothing to do.
+   */
+  it("arms nothing at all while there is nothing to drain", async () => {
+    const store = await load();
+    let notifies = 0;
+    store.subscribe(() => { notifies += 1; });
+
+    store.start();
+    expect(vi.getTimerCount()).toBe(0);
+
+    vi.advanceTimersByTime(10_000);
+
+    expect(vi.getTimerCount()).toBe(0);
+    expect(notifies).toBe(0);
+    store.stop();
+  });
+
+  it("wakes on a push, drains on the next frame, and goes quiet again", async () => {
+    const store = await load();
+    let notifies = 0;
+    store.subscribe(() => { notifies += 1; });
+    store.start();
+
+    store.pushBatch(batch({ rows: rows("s1", [1]) }));
+    // The frame and its occlusion fallback, both armed by the push itself.
+    expect(vi.getTimerCount()).toBe(2);
+
+    vi.advanceTimersByTime(FRAME_MS);
+    expect(store.getSessionRows("s1").map((r) => r.q)).toEqual([1]);
+    expect(notifies).toBe(1);
+
+    // Drained with an empty queue: nothing is left armed, and ten idle seconds cost nothing.
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(10_000);
+    expect(notifies).toBe(1);
+
+    // A second push re-arms from cold.
+    store.pushBatch(batch({ rows: rows("s1", [2]) }));
+    expect(vi.getTimerCount()).toBe(2);
+    vi.advanceTimersByTime(FRAME_MS);
+    expect(store.getSessionRows("s1").map((r) => r.q)).toEqual([1, 2]);
+    expect(notifies).toBe(2);
+    expect(vi.getTimerCount()).toBe(0);
+    store.stop();
+  });
+
+  /*
+   * WKWebView pauses animation frames when the window is occluded, and an approval card may not
+   * be optimistic (`docs/vision.md` §9), so the signal's arrival is the card's arrival. The
+   * fallback is armed with the frame and survives it never firing.
+   */
+  it("still drains within 250 ms when animation frames never fire", async () => {
+    const store = await load();
+    const frames = vi.spyOn(globalThis, "requestAnimationFrame").mockReturnValue(1);
+    store.start();
+    store.pushBatch(
+      batch({
+        signals: [
+          env("s1", {
+            type: "request-opened",
+            request_id: "r1",
+            turn_id: "t1",
+            kind: { type: "tool-permission", tool_name: "Edit", input_excerpt: "x", suggestions: [], tool_call_id: null },
+          }),
+        ],
+      }),
+    );
+
+    vi.advanceTimersByTime(249);
+    expect(store.getState().approvals).toEqual([]);
+    vi.advanceTimersByTime(1);
+    expect(store.getState().approvals.map((a) => a.requestId)).toEqual(["r1"]);
+
+    expect(vi.getTimerCount()).toBe(0);
+    store.stop();
+    frames.mockRestore();
+  });
+
+  /*
+   * The one deadline the idle rule keeps: a counters-only delta owes the snapshot a fold within
+   * `COUNTER_FLUSH_MS`, so a single timer is armed for the remainder of that window — one, not
+   * two, so it is the deadline and not a frame — and nothing at all once the fold has landed.
+   */
+  it("arms one fold timer for a held counter, and nothing after it lands", async () => {
+    const store = await load();
+    store.start();
+    // A signal in the same batch as counters commits immediately and anchors the flush clock,
+    // exactly as the "counters are throttled" test above sets it up.
+    store.pushBatch(
+      batch({
+        signals: [env("s1", { type: "runtime-warning", message: "hi" })],
+        counters: [{ session_id: "s1", rows_total: 1, rows_dropped: 0 }],
+      }),
+    );
+    vi.advanceTimersByTime(FRAME_MS);
+    expect(store.getState().sessions["s1"]!.rowsTotal).toBe(1);
+    expect(vi.getTimerCount()).toBe(0);
+
+    store.pushBatch(batch({ counters: [{ session_id: "s1", rows_total: 7, rows_dropped: 0 }] }));
+    vi.advanceTimersByTime(FRAME_MS);
+    expect(store.getState().sessions["s1"]!.rowsTotal).toBe(1); // held inside the window
+    expect(vi.getTimerCount()).toBe(1);
+
+    vi.advanceTimersByTime(COUNTER_FLUSH_MS);
+    expect(store.getState().sessions["s1"]!.rowsTotal).toBe(7);
+    expect(vi.getTimerCount()).toBe(0);
+    store.stop();
+  });
+
+  /*
+   * `src/fps.ts` reads the frame meter — and the burn's `dropped === 0` gate — off this loop's rAF
+   * timestamps, so an idle-silent loop would read as a window that missed every opportunity. The
+   * window that holds the loop open is a **capture**, not a build flag: nothing in dev or in a
+   * `VITE_BURN` build asks for a frame until `fps.startCapture()` does. See `setFrameSampling` and
+   * `fps.setFrameSource`.
+   */
+  it("holds the loop at full rate for a frame-meter capture and lets go at its end", async () => {
+    const { store, meter } = await loadWithMeter();
+    store.start();
+    expect(vi.getTimerCount()).toBe(0); // no capture: idle-silent, dev build and all
+
+    meter.startCapture();
+    expect(vi.getTimerCount()).toBe(2); // the frame and its occlusion fallback
+    vi.advanceTimersByTime(FRAME_MS * 3);
+    expect(vi.getTimerCount()).toBe(2);
+
+    const windows = meter.stopCapture();
+    // Within the same tick, and so well inside one frame, nothing is armed again.
+    expect(vi.getTimerCount()).toBe(0);
+    expect(windows).toHaveLength(1);
+    expect(windows[0]!.intervals_ms).toHaveLength(3);
+    expect(windows[0]!.dropped).toBe(0);
+
+    vi.advanceTimersByTime(FRAME_MS * 10);
+    expect(vi.getTimerCount()).toBe(0);
+    store.stop();
+  });
+
+  it("drains a push on the capture's own frame, and the meter samples that frame", async () => {
+    const { store, meter } = await loadWithMeter();
+    store.start();
+    meter.startCapture();
+    vi.advanceTimersByTime(FRAME_MS * 2);
+
+    store.pushBatch(batch({ rows: rows("s1", [1]) }));
+    vi.advanceTimersByTime(FRAME_MS);
+    expect(store.getSessionRows("s1").map((r) => r.q)).toEqual([1]);
+
+    const windows = meter.stopCapture();
+    expect(windows[0]!.intervals_ms).toHaveLength(3);
+    expect(vi.getTimerCount()).toBe(0);
+    store.stop();
+  });
+
+  it("invalidates a capture whose document hid on one of the store's frames", async () => {
+    const { store, meter } = await loadWithMeter();
+    store.start();
+    meter.startCapture();
+    vi.advanceTimersByTime(FRAME_MS);
+    Object.defineProperty(document, "hidden", { configurable: true, value: true });
+    try {
+      vi.advanceTimersByTime(FRAME_MS);
+    } finally {
+      Object.defineProperty(document, "hidden", { configurable: true, value: false });
+    }
+
+    const windows = meter.stopCapture();
+    expect(windows.every((w) => w.interrupted)).toBe(true);
+    expect(meter.summarise(windows)?.pass).toBe(false);
     store.stop();
   });
 
