@@ -59,14 +59,49 @@ export type ItemKind =
   | { type: "assistant-text" }
   | { type: "thinking" }
   | { type: "tool-call"; name: string }
-  | { type: "tool-result"; tool_call_id: string; is_error: boolean }
+  | {
+      type: "tool-result";
+      tool_call_id: string;
+      /**
+       * True for a failure, **and** for an interrupt, **and** for a rejected tool use. It is
+       * never on its own evidence that a command failed, and never the source of an exit code.
+       */
+      is_error: boolean;
+      /**
+       * Parsed by Rust from the literal first line `Exit code N\n` of the tool result body —
+       * the only carrier of a shell exit code anywhere on the wire. Absent when the body has no
+       * such line, which is every successful command and every non-shell tool.
+       *
+       * **TypeScript never parses a tool body.** Optional so a build that predates the Rust
+       * change still type-checks; until it lands the UI leaves the exit code undefined.
+       */
+      exit_code?: number | null;
+      /** The operator stopped or rejected this tool use. Renders as *You stopped*, not a failure. */
+      interrupted?: boolean;
+    }
   | { type: "user-text" }
   | {
       type: "subagent";
       task_id: string;
       subagent_type: string | null;
       description: string | null;
+    }
+  | {
+      /**
+       * A lifecycle note the Rust store synthesises so the thread can show it inline. No adapter
+       * emits one: `brigadier_store::chat::project` mints it from the matching event with a
+       * deterministic id, so a replay cannot duplicate it.
+       */
+      type: "notice";
+      level: NoticeLevel;
+      /** What happened: `compacted`, `runtime`, `exited`. Open — render an unknown code as text. */
+      code: string;
+      /** `{pre_tokens}` on a compaction, `{exit_code}` on an exit, absent otherwise. */
+      detail?: unknown;
     };
+
+/** How loud an `ItemKind` notice is. */
+export type NoticeLevel = "info" | "warning" | "error" | "fatal";
 
 export type RequestKind =
   | {
@@ -146,7 +181,32 @@ export type Event =
   | { type: "request-resolved"; request_id: RequestId; decision: Decision }
   | { type: "session-compacted"; trigger: CompactTrigger; pre_tokens: number | null }
   | { type: "runtime-warning"; message: string }
-  | { type: "runtime-error"; message: string; fatal: boolean };
+  | { type: "runtime-error"; message: string; fatal: boolean }
+  | {
+      /**
+       * Where the operator stands against their own usage windows, once per turn, early.
+       *
+       * **There is no cost field and none is ever added.** The user runs on their own
+       * subscription and is never billed a dollar figure, so the gauge is the window, not the
+       * money (`docs/vision.md` §6) — `total_cost_usd` exists on the provider's wire and stops
+       * here.
+       */
+      type: "usage-windows";
+      /** `"allowed"`, `"rejected"`, or a value a future CLI adds. Never switch on a closed set. */
+      status: string;
+      /** One per key present in `unifiedWindows`. The set is **open**; render what you are given. */
+      windows: UsageWindow[];
+    };
+
+/** One usage window: how much of it is spent, and when it refills. */
+export interface UsageWindow {
+  /** `"five_hour"`, `"seven_day"`, or a future key, verbatim. */
+  name: string;
+  /** Fraction of the window consumed, 0–1 at two-decimal resolution. **Not a percentage.** */
+  utilization: number;
+  /** **Unix seconds**, not the milliseconds the rest of this file uses. */
+  resets_at: number;
+}
 
 /** The event types the Rust side forwards as signals regardless of project visibility. */
 export type SignalEventType =
@@ -159,7 +219,8 @@ export type SignalEventType =
   | "request-resolved"
   | "session-compacted"
   | "runtime-error"
-  | "runtime-warning";
+  | "runtime-warning"
+  | "usage-windows";
 
 export interface Envelope {
   seq: number;
@@ -217,6 +278,18 @@ export interface SessionCounter {
   session_id: SessionId;
   rows_total: number;
   rows_dropped: number;
+  /**
+   * Content deltas seen for this session, ever. **A cursor, nothing may draw it.**
+   *
+   * A streamed fragment produces no terse row and is not a signal, so without this nothing
+   * downstream moved when prose arrived and no refetch was scheduled. One counter per touched
+   * session per frame already, so a frame carrying 40 deltas carries one counter advanced by 40
+   * — against the rejected alternative of ~600 envelopes a turn at an 8 KB per-message cliff.
+   *
+   * Optional here although Rust always writes it, so counter literals written before this field
+   * still type-check.
+   */
+  deltas?: number;
 }
 
 export interface FeedBatch {

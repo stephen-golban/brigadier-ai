@@ -1,6 +1,6 @@
 //! Bounded display projection, separate from the fixed-height activity feed.
 use crate::Result;
-use brigadier_core::event::{bounded, Envelope, Event, ItemKind};
+use brigadier_core::event::{bounded, Envelope, Event, ItemKind, NoticeLevel};
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
@@ -131,8 +131,99 @@ pub struct ChatItem {
     pub provider_uuid: Option<String>,
 }
 
+/// A lifecycle event's synthetic [`ChatItem`], or `None` when the event is not one.
+///
+/// **The id is deterministic** — `"{session}:notice:{code}:{seq}"` — so a replay of the same
+/// envelope upserts the same row rather than appending a second one. The seq is in the id on
+/// purpose: two warnings in one session are two notices, and only their seq tells them apart.
+///
+/// `session-started` deliberately gets no notice: `system/init` is re-emitted at the start of
+/// **every turn** on the same `session_id` (landmine 2), so a row per init would be a row per turn.
+// see docs/plans/codex-thread-rebuild-2026-09-11.md §4.4 for the table this implements.
+fn notice(env: &Envelope) -> Option<(String, ItemKind, String)> {
+    let session = env.session_id.as_str();
+    let seq = env.seq;
+    match &env.event {
+        Event::SessionCompacted {
+            trigger,
+            pre_tokens,
+        } => {
+            let trigger = match trigger {
+                brigadier_core::event::CompactTrigger::Manual => "manual",
+                brigadier_core::event::CompactTrigger::Auto => "auto",
+            };
+            Some((
+                format!("{session}:notice:compacted:{seq}"),
+                ItemKind::Notice {
+                    level: NoticeLevel::Info,
+                    code: "compacted".to_owned(),
+                    detail: pre_tokens.map(|n| serde_json::json!({ "pre_tokens": n })),
+                },
+                trigger.to_owned(),
+            ))
+        }
+        Event::RuntimeWarning { message } => Some((
+            format!("{session}:notice:warning:{seq}"),
+            ItemKind::Notice {
+                level: NoticeLevel::Warning,
+                code: "runtime".to_owned(),
+                detail: None,
+            },
+            message.clone(),
+        )),
+        Event::RuntimeError { message, fatal } => Some((
+            format!("{session}:notice:error:{seq}"),
+            ItemKind::Notice {
+                level: if *fatal {
+                    NoticeLevel::Fatal
+                } else {
+                    NoticeLevel::Error
+                },
+                code: "runtime".to_owned(),
+                detail: None,
+            },
+            message.clone(),
+        )),
+        Event::SessionExited { reason, exit_code } => Some((
+            format!("{session}:notice:exited:{seq}"),
+            ItemKind::Notice {
+                level: NoticeLevel::Info,
+                code: "exited".to_owned(),
+                detail: exit_code.map(|c| serde_json::json!({ "exit_code": c })),
+            },
+            exit_text(reason),
+        )),
+        _ => None,
+    }
+}
+
+/// One word for why a session ended, for a notice body.
+fn exit_text(reason: &brigadier_core::event::ExitReason) -> String {
+    use brigadier_core::event::ExitReason;
+    match reason {
+        ExitReason::Graceful => "graceful".to_owned(),
+        ExitReason::Killed => "killed".to_owned(),
+        ExitReason::Crashed => "crashed".to_owned(),
+        ExitReason::Error(e) => format!("error: {e}"),
+    }
+}
+
 /// Only completed items have authoritative content in the current Claude adapter.
 pub fn project(env: &Envelope) -> Option<ChatItem> {
+    if let Some((id, kind, body)) = notice(env) {
+        return Some(ChatItem {
+            session_id: env.session_id.to_string(),
+            id,
+            seq: env.seq,
+            at: crate::schema::to_millis(env.at),
+            kind,
+            body: bounded(&body, 128 * 1024),
+            parent_id: None,
+            // Synthesised here, not by the provider: there is no provider frame to take a uuid
+            // from, and `provider_uuid` is documented as absent on synthetic messages.
+            provider_uuid: None,
+        });
+    }
     let (item_id, kind, summary, parent_item_id) = match &env.event {
         Event::ItemStarted {
             item_id,

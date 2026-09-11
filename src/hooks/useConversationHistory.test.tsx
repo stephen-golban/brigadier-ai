@@ -2,7 +2,7 @@ import { act, cleanup, renderHook } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { useConversationHistory } from './useConversationHistory';
 
-const fake = vi.hoisted(() => ({seq: 1, subscribers: new Set<() => void>(), history: vi.fn()}));
+const fake = vi.hoisted(() => ({seq: 1, deltas: 0, subscribers: new Set<() => void>(), history: vi.fn()}));
 vi.mock('../workspaceApi', () => ({desktop:false, errorMessage:String, workspaceApi:{
   historyPage: fake.history,
   chatTurns: async () => [],
@@ -11,10 +11,12 @@ vi.mock('../feedStore', () => ({
   // The hook reads the *live* cursor, not the React snapshot: `src/feedStore.ts` folds
   // `lastEventSeq`/`rowsTotal` into `getState()` only every 500 ms, and a token at that
   // resolution would stop the mounted transcript following a live conversation.
-  getSessionCursor: (id: string) => id === 's' ? `${fake.seq}:${fake.seq}:true` : '',
+  // `rowsTotal:lastEventSeq:busy|deltas` since §4.2.2 — a streamed body moves only the delta
+  // field, and this hook is the only thing that turns that into a refetch.
+  getSessionCursor: (id: string) => id === 's' ? `${fake.seq}:${fake.seq}:true|${fake.deltas}` : '',
   subscribe: (fn: () => void) => {fake.subscribers.add(fn); return () => fake.subscribers.delete(fn);},
 }));
-afterEach(() => {cleanup();vi.useRealTimers();fake.history.mockReset();fake.seq=1;});
+afterEach(() => {cleanup();vi.useRealTimers();fake.history.mockReset();fake.seq=1;fake.deltas=0;});
 
 it('refreshes during a continuous stream, preserves older browsing, and catches up on latest', async () => {
   vi.useFakeTimers();
@@ -104,4 +106,28 @@ it('clears the previous conversation when the session or revision changes', asyn
   expect(result.current.loaded).toBe(false);
   expect(result.current.historical).toBe(false);
   expect(result.current.error).toBe(null);
+});
+
+/*
+ * Streaming bodies (§4.2.2 item 4). A content delta produces no feed row and no signal, so
+ * `rowsTotal` and `lastEventSeq` hold still for the whole of a long answer; the delta counter is
+ * the only thing that moves, and the body it grew lives in SQLite until this hook refetches it.
+ */
+it('refetches a growing body when only the delta counter moves', async () => {
+  vi.useFakeTimers();
+  let body = 'Hel';
+  fake.history.mockImplementation(async () => ({items:[{id:'stream',session_id:'s',seq:4,at:4,kind:{type:'assistant-text'},body}], nextAfter:4, nextBefore:null, hasMore:false}));
+  const {result} = renderHook(() => useConversationHistory('s', 0));
+  await act(async () => {});
+  const mounted = fake.history.mock.calls.length;
+  expect(result.current.items[0]!.body).toBe('Hel');
+
+  // Three deltas, each its own frame, with `seq` (and so `rowsTotal`/`lastEventSeq`) frozen.
+  for (const next of ['Hello', 'Hello, wo', 'Hello, world']) {
+    body = next;
+    await act(async () => {fake.deltas += 1; fake.subscribers.forEach(fn => fn()); await vi.advanceTimersByTimeAsync(150);});
+  }
+  expect(fake.history.mock.calls.length).toBe(mounted + 3);
+  expect(result.current.items[0]!.body).toBe('Hello, world');
+  expect(result.current.items).toHaveLength(1);
 });

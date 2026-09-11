@@ -76,6 +76,7 @@ import type {
   SessionStatus,
   SessionView,
   Usage,
+  UsageWindow,
 } from "./wire";
 
 /** Rows kept in memory per session, and per project. Older rows fall off the head. */
@@ -123,6 +124,65 @@ const CURSOR_FIELDS: ReadonlySet<string> = new Set(["lastEventSeq"]);
 
 const EMPTY_ROWS: readonly FeedRowWire[] = Object.freeze([]);
 const EMPTY_PROJECT_IDS: readonly ProjectId[] = Object.freeze([]);
+
+/**
+ * Content deltas counted per session, ever (§4.2.1) — **outside** the React snapshot, beside the
+ * usage windows and for the same reason in reverse.
+ *
+ * It is a cursor nothing draws, so it must not be on `SessionRuntime`: a field there arrives on
+ * the counters path, and the `COUNTER_FLUSH_MS` fold would then call `rebuildState()` twice a
+ * second for the whole of a streaming answer — on a pure-prose turn, where no row, no signal and
+ * no `busy` flip would otherwise have rebuilt anything — re-rendering every `getState()` consumer
+ * in the window for a number that is only ever compared with itself inside `getSessionCursor`.
+ */
+const sessionDeltas = new Map<SessionId, number>();
+
+const EMPTY_WINDOWS: readonly UsageWindow[] = Object.freeze([]);
+
+/**
+ * Latest usage windows per session — **outside** the React snapshot, on purpose.
+ *
+ * `windows` is a fresh array on every turn, so putting it on `SessionRuntime` would replace the
+ * runtime object (and the whole `sessions` record) once a turn for a number one small gauge
+ * draws, re-rendering every `getState()` consumer. `CURSOR_FIELDS` is equally wrong in the other
+ * direction: the gauge *is* drawn, so it must not wait for the 500 ms counter fold. The row rings
+ * already solve this shape — a module map plus a reader that hands back the same reference until
+ * the values actually change (`docs/vision.md` §6, §4.3 of the plan).
+ */
+const usageWindows = new Map<SessionId, readonly UsageWindow[]>();
+
+/** Field-wise, because each event carries freshly deserialised objects. */
+function sameWindows(a: readonly UsageWindow[], b: readonly UsageWindow[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]!;
+    const y = b[i]!;
+    if (x.name !== y.name || x.utilization !== y.utilization || x.resets_at !== y.resets_at)
+      return false;
+  }
+  return true;
+}
+
+function recordUsageWindows(sessionId: SessionId, windows: readonly UsageWindow[]): void {
+  const prev = usageWindows.get(sessionId) ?? EMPTY_WINDOWS;
+  // Identical values keep the identical array, so a re-announced window costs no render.
+  if (sameWindows(prev, windows)) return;
+  usageWindows.set(sessionId, windows.length === 0 ? EMPTY_WINDOWS : [...windows]);
+}
+
+/**
+ * The usage windows the provider last reported for one session, newest first as the provider
+ * ordered them. **Cached reference**: the same array comes back until a value actually moves, so
+ * `useSyncExternalStore(subscribe, () => getUsageWindows(id))` schedules nothing on the frames in
+ * between. Never call it during a render for a different session's id.
+ *
+ * Windows, never dollars (`docs/vision.md` §6): this carries a utilization fraction and a reset
+ * time, and no cost field is ever added to it.
+ */
+export function getUsageWindows(sessionId: SessionId | null): readonly UsageWindow[] {
+  if (sessionId === null) return EMPTY_WINDOWS;
+  return usageWindows.get(sessionId) ?? EMPTY_WINDOWS;
+}
 
 /* ------------------------------------------------------------------ state */
 
@@ -238,6 +298,9 @@ let cursorsDirty = false;
  *  (`getSessionCursor`) without claiming the snapshot moved. Counters deliberately do **not** set
  *  it — `src/feedStore.test.ts` "are throttled to COUNTER_FLUSH_MS" pins a held counter as silent. */
 let signalsDirty = false;
+/** A session's `deltas` counter moved this frame: a body grew. Wakes `subscribe` callbacks that
+ *  read `getSessionCursor`, without rebuilding the snapshot and without the counters' throttle. */
+let deltasDirty = false;
 let lastCounterFlush = 0;
 
 /** Ingestion counters, for the meter overlay. Not part of the React snapshot. */
@@ -375,6 +438,12 @@ function applySignal(env: Envelope, projectId: ProjectId | null): void {
   // `useSyncExternalStore` consumer whose snapshot came back `Object.is`-equal.
   signalsDirty = true;
   switch (e.type) {
+    case "usage-windows":
+      // Off the snapshot (see `usageWindows`), but still a signal: `lastEventSeq` advances like
+      // every other signal's, and `signalsDirty` above is what wakes the gauge's subscriber.
+      patch(id, projectId, { lastEventSeq: env.seq });
+      recordUsageWindows(id, e.windows);
+      break;
     case "session-started":
       // Open, deliberately left alone (2026-09-10): `system/init` arrives **once per turn**
       // (`docs/STATUS.md` §7), so `startedAtMs` is re-stamped every turn and `StoreState.order`
@@ -523,6 +592,19 @@ function applyBatch(batch: FeedBatch): void {
       });
       countersDirty = true;
     }
+    // `deltas` is optional on the mirror so counter literals that predate the Rust field still
+    // type-check, and a non-finite value is refused outright: `NaN !== NaN` would mark the store
+    // dirty and notify on every frame, for ever.
+    const deltas =
+      typeof c.deltas === "number" && Number.isFinite(c.deltas) ? c.deltas : 0;
+    if ((sessionDeltas.get(c.session_id) ?? 0) !== deltas) {
+      sessionDeltas.set(c.session_id, deltas);
+      // A grown body must reach the transcript at frame resolution, not at the counters' 500 ms
+      // fold: this wakes `subscribe` (and so `useConversationHistory`'s cursor read) without
+      // rebuilding the snapshot at all. `countersDirty` deliberately stays silent —
+      // `src/feedStore.test.ts` "are throttled to COUNTER_FLUSH_MS" pins a held counter as such.
+      deltasDirty = true;
+    }
   }
 }
 
@@ -605,11 +687,12 @@ function drain(timestamp?: number): void {
     rebuildState();
     if (profiling) traceEvent("notify", listeners.size);
     notify();
-  } else if (signalsDirty || rowsChanged) {
+  } else if (signalsDirty || rowsChanged || deltasDirty) {
     if (profiling) traceEvent("notify", listeners.size);
     notify();
   }
   signalsDirty = false;
+  deltasDirty = false;
   rowsChanged = false;
 
   if (now - ingest.windowStart >= 1000) {
@@ -672,8 +755,21 @@ export function getState(): StoreState {
 
 /**
  * A change token for one session at the resolution of the **event stream**, not of the snapshot:
- * `${rowsTotal}:${lastEventSeq}:${busy}` read straight off the live map the drain writes, so it
- * moves on the frame an event lands whether or not that event rebuilt `state`.
+ * `${rowsTotal}:${lastEventSeq}:${busy}|${deltas}` read straight off the live map the drain
+ * writes, so it moves on the frame an event lands whether or not that event rebuilt `state`.
+ *
+ * `deltas` is why a streaming body reaches the transcript at all: a content delta produces no
+ * feed row and no signal (`crates/store/src/feed.rs`, `crates/supervisor/src/batcher.rs`), so
+ * without it the first three fields hold still for the whole of a long answer and no refetch is
+ * ever scheduled (§4.2 of `docs/plans/codex-thread-rebuild-2026-09-11.md`).
+ *
+ * **Why `|` and not a fourth `:` field**, which is what §4.2.2 writes: `src/attention.ts`'s
+ * `liveEventSeq` reads `lastEventSeq` positionally, as the text between the *first* and the
+ * *last* colon. A fourth colon-separated field makes that `Number("21:0")` → `NaN` → `-1`, and a
+ * read marker that lands on `-1` turns the unread dot back on for a conversation the operator just
+ * read (`src/attention.test.ts`, `src/components/SubagentsPanel.test.tsx` both catch it). That
+ * file is not this phase's to edit. Give `liveEventSeq` a real parse and this can become the
+ * plain fourth field the plan describes.
  *
  * `src/hooks/useConversationHistory.ts` is the caller, from inside its `store.subscribe` callback.
  * **[measured]** the 60 Hz native benchmark records 534-544 history responses in 63 s
@@ -688,7 +784,9 @@ export function getState(): StoreState {
  */
 export function getSessionCursor(sessionId: SessionId): string {
   const s = sessions.get(sessionId);
-  return s === undefined ? "" : `${s.rowsTotal}:${s.lastEventSeq}:${s.busy}`;
+  return s === undefined
+    ? ""
+    : `${s.rowsTotal}:${s.lastEventSeq}:${s.busy}|${sessionDeltas.get(sessionId) ?? 0}`;
 }
 
 export function getSessionRows(sessionId: SessionId | null): readonly FeedRowWire[] {
@@ -820,6 +918,8 @@ export function dropSession(sessionId: SessionId): boolean {
   }
   const had = sessions.delete(sessionId);
   sessionRows.delete(sessionId);
+  usageWindows.delete(sessionId);
+  sessionDeltas.delete(sessionId);
   let dropped = had;
   for (const [id, a] of approvals) {
     if (a.sessionId === sessionId && approvals.delete(id)) dropped = true;
@@ -846,6 +946,8 @@ export function dropProject(projectId: ProjectId): boolean {
     deletedSessions.add(s.sessionId);
     sessions.delete(s.sessionId);
     sessionRows.delete(s.sessionId);
+    usageWindows.delete(s.sessionId);
+    sessionDeltas.delete(s.sessionId);
     dropped = true;
     for (const [id, a] of approvals) {
       if (a.sessionId === s.sessionId) approvals.delete(id);

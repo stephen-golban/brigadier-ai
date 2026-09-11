@@ -5,7 +5,7 @@ use std::time::SystemTime;
 
 use brigadier_core::event::{
     AbortReason, CompactTrigger, Envelope, Event, ExitReason, InstanceId, ItemId, ItemKind,
-    RequestId, RequestKind, SessionId, StopReason, TurnId, Usage,
+    NoticeLevel, RequestId, RequestKind, SessionId, StopReason, TurnId, Usage, UsageWindow,
 };
 use brigadier_core::session::Decision;
 use brigadier_store::feed::{apply, kind, terse_line, FeedKind, FEED_LINE_LIMIT};
@@ -147,7 +147,12 @@ fn every_variant() -> Vec<(Event, Option<&'static str>)> {
             Event::ItemCompleted {
                 parent_item_id: None,
                 item_id: ItemId::new("i1"),
-                kind: ItemKind::ToolResult { tool_call_id: "tu_1".into(), is_error: false },
+                kind: ItemKind::ToolResult {
+                    tool_call_id: "tu_1".into(),
+                    is_error: false,
+                    exit_code: None,
+                    interrupted: false,
+                },
                 summary: "12 lines".into(),
             },
             Some("tool result done · 12 lines"),
@@ -156,7 +161,12 @@ fn every_variant() -> Vec<(Event, Option<&'static str>)> {
             Event::ItemCompleted {
                 parent_item_id: None,
                 item_id: ItemId::new("i1"),
-                kind: ItemKind::ToolResult { tool_call_id: "tu_1".into(), is_error: true },
+                kind: ItemKind::ToolResult {
+                    tool_call_id: "tu_1".into(),
+                    is_error: true,
+                    exit_code: Some(3),
+                    interrupted: false,
+                },
                 summary: "exit 1".into(),
             },
             Some("tool failed done · exit 1"),
@@ -216,6 +226,27 @@ fn every_variant() -> Vec<(Event, Option<&'static str>)> {
         (
             Event::RuntimeError { message: "pipe closed".into(), fatal: true },
             Some("fatal error · pipe closed"),
+        ),
+        // No row: it arrives once a turn, it is delivered as a signal, and the gauge draws it.
+        // Also the reason `no_variant_renders_a_dollar_figure` has nothing to catch here — the
+        // variant carries no cost field at all.
+        (
+            Event::UsageWindows {
+                status: "allowed".into(),
+                windows: vec![
+                    UsageWindow {
+                        name: "five_hour".into(),
+                        utilization: 0.25,
+                        resets_at: 1_789_068_000,
+                    },
+                    UsageWindow {
+                        name: "seven_day".into(),
+                        utilization: 0.16,
+                        resets_at: 1_789_556_400,
+                    },
+                ],
+            },
+            None,
         ),
     ]
 }
@@ -283,7 +314,47 @@ fn kind_is_pinned_for_every_variant() {
         (item(ItemKind::AssistantText), "text"),
         (item(ItemKind::Thinking), "think"),
         (item(ItemKind::ToolCall { name: "Bash".into() }), "tool"),
-        (item(ItemKind::ToolResult { tool_call_id: "tu_1".into(), is_error: true }), "tool"),
+        (
+            item(ItemKind::ToolResult {
+                tool_call_id: "tu_1".into(),
+                is_error: true,
+                exit_code: Some(3),
+                interrupted: false,
+            }),
+            "tool",
+        ),
+        (
+            item(ItemKind::Notice {
+                level: NoticeLevel::Info,
+                code: "compacted".into(),
+                detail: None,
+            }),
+            "sys",
+        ),
+        (
+            item(ItemKind::Notice {
+                level: NoticeLevel::Warning,
+                code: "runtime".into(),
+                detail: None,
+            }),
+            "warn",
+        ),
+        (
+            item(ItemKind::Notice {
+                level: NoticeLevel::Error,
+                code: "runtime".into(),
+                detail: None,
+            }),
+            "err",
+        ),
+        (
+            item(ItemKind::Notice {
+                level: NoticeLevel::Fatal,
+                code: "runtime".into(),
+                detail: None,
+            }),
+            "err",
+        ),
         (item(ItemKind::UserText), "user"),
         (
             item(ItemKind::Subagent {
@@ -368,6 +439,119 @@ fn terse_line_is_bounded() {
     let line = terse_line(&long).expect("a warning always gets a row");
     assert!(line.len() <= FEED_LINE_LIMIT, "{} bytes", line.len());
     assert!(line.ends_with('…'));
+}
+
+/// Four lifecycle events become four notice items with deterministic ids; nothing else does.
+///
+/// The ids carry the seq, so a replay of the same envelope upserts the same row rather than
+/// appending a second one, and two warnings in one session stay two notices.
+// see docs/plans/codex-thread-rebuild-2026-09-11.md §4.4.
+#[test]
+fn lifecycle_events_project_to_notices_with_deterministic_ids() {
+    let cases: Vec<(Event, &str, NoticeLevel, &str, &str)> = vec![
+        (
+            Event::SessionCompacted { trigger: CompactTrigger::Auto, pre_tokens: Some(180_000) },
+            "s1:notice:compacted:7",
+            NoticeLevel::Info,
+            "compacted",
+            "auto",
+        ),
+        (
+            Event::RuntimeWarning { message: "settings.json shadows the mode".into() },
+            "s1:notice:warning:7",
+            NoticeLevel::Warning,
+            "runtime",
+            "settings.json shadows the mode",
+        ),
+        (
+            Event::RuntimeError { message: "boom".into(), fatal: false },
+            "s1:notice:error:7",
+            NoticeLevel::Error,
+            "runtime",
+            "boom",
+        ),
+        (
+            Event::RuntimeError { message: "pipe closed".into(), fatal: true },
+            "s1:notice:error:7",
+            NoticeLevel::Fatal,
+            "runtime",
+            "pipe closed",
+        ),
+        (
+            Event::SessionExited { reason: ExitReason::Crashed, exit_code: Some(9) },
+            "s1:notice:exited:7",
+            NoticeLevel::Info,
+            "exited",
+            "crashed",
+        ),
+    ];
+    for (event, id, level, code, body) in cases {
+        let envelope = env(7, event.clone());
+        let item = brigadier_store::chat::project(&envelope)
+            .unwrap_or_else(|| panic!("a notice for {event:?}"));
+        assert_eq!(item.id, id);
+        assert_eq!(item.body, body);
+        assert_eq!(item.parent_id, None);
+        assert_eq!(item.provider_uuid, None, "synthetic, so no provider uuid");
+        match item.kind {
+            ItemKind::Notice { level: got_level, code: ref got_code, .. } => {
+                assert_eq!(got_level, level);
+                assert_eq!(got_code, code);
+            }
+            other => panic!("{other:?} is not a notice"),
+        }
+        // Deterministic: the same envelope projects to the same id, so a replay upserts.
+        assert_eq!(brigadier_store::chat::project(&envelope).expect("again").id, id);
+    }
+    // `session-started` deliberately gets none: `system/init` is re-emitted every turn, so a
+    // notice per init would be a notice per turn.
+    assert!(brigadier_store::chat::project(&env(
+        8,
+        Event::SessionStarted {
+            provider_session_id: "abc".into(),
+            model: "m".into(),
+            cwd: PathBuf::from("/w"),
+            capabilities: vec![],
+            resume_token: None,
+        }
+    ))
+    .is_none());
+    // Neither does a turn boundary, a delta, or the usage gauge.
+    assert!(brigadier_store::chat::project(&env(9, Event::TurnStarted { turn_id: TurnId::new("t") })).is_none());
+    assert!(brigadier_store::chat::project(&env(
+        10,
+        Event::UsageWindows { status: "allowed".into(), windows: vec![] }
+    ))
+    .is_none());
+}
+
+/// The compaction and exit notices carry their number in `detail`, not in the body text.
+#[test]
+fn notice_detail_carries_the_numbers_the_row_renders() {
+    let compacted = brigadier_store::chat::project(&env(
+        3,
+        Event::SessionCompacted { trigger: CompactTrigger::Manual, pre_tokens: Some(180_000) },
+    ))
+    .expect("notice");
+    let ItemKind::Notice { detail, .. } = compacted.kind else { panic!("not a notice") };
+    assert_eq!(detail, Some(serde_json::json!({"pre_tokens": 180_000})));
+
+    let exited = brigadier_store::chat::project(&env(
+        4,
+        Event::SessionExited { reason: ExitReason::Graceful, exit_code: Some(0) },
+    ))
+    .expect("notice");
+    let ItemKind::Notice { detail, .. } = exited.kind else { panic!("not a notice") };
+    assert_eq!(detail, Some(serde_json::json!({"exit_code": 0})));
+
+    // No exit code observed: the key is absent rather than a fabricated zero.
+    let killed = brigadier_store::chat::project(&env(
+        5,
+        Event::SessionExited { reason: ExitReason::Killed, exit_code: None },
+    ))
+    .expect("notice");
+    let ItemKind::Notice { detail, .. } = killed.kind else { panic!("not a notice") };
+    assert_eq!(detail, None);
 }
 
 fn env(seq: u64, event: Event) -> Envelope {

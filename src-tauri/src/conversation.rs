@@ -121,7 +121,7 @@ fn has_file_changes(history: &[ChatItem], target_seq: u64) -> bool {
         }
         history.iter().any(|result| result.seq >= target_seq && matches!(
             &result.kind,
-            ItemKind::ToolResult { tool_call_id, is_error: false } if tool_call_id == &call.id
+            ItemKind::ToolResult { tool_call_id, is_error: false, .. } if tool_call_id == &call.id
         ))
     })
 }
@@ -500,6 +500,8 @@ mod tests {
             ItemKind::ToolResult {
                 tool_call_id: "edit".into(),
                 is_error: false,
+                exit_code: None,
+                interrupted: false,
             },
         );
         let failed = item(
@@ -508,6 +510,8 @@ mod tests {
             ItemKind::ToolResult {
                 tool_call_id: "edit".into(),
                 is_error: true,
+                exit_code: None,
+                interrupted: false,
             },
         );
         assert!(!has_file_changes(&[item("user", 2, ItemKind::UserText)], 2));
@@ -535,7 +539,9 @@ mod tests {
                     5,
                     ItemKind::ToolResult {
                         tool_call_id: "read".into(),
-                        is_error: false
+                        is_error: false,
+                        exit_code: None,
+                        interrupted: false
                     }
                 )
             ],

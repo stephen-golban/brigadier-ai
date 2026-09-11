@@ -13,7 +13,8 @@
 // store a pointer plus a derived summary and treat the file as a cache that may vanish.
 
 use brigadier_core::event::{
-    bounded, AbortReason, Envelope, Event, ExitReason, ItemKind, RequestKind, StopReason,
+    bounded, AbortReason, Envelope, Event, ExitReason, ItemKind, NoticeLevel, RequestKind,
+    StopReason,
 };
 use brigadier_core::session::Decision;
 
@@ -126,6 +127,9 @@ pub fn kind(event: &Event) -> FeedKind {
         Event::RequestOpened { .. } | Event::RequestResolved { .. } => FeedKind::Appr,
         Event::RuntimeWarning { .. } => FeedKind::Warn,
         Event::RuntimeError { .. } => FeedKind::Err,
+        // Housekeeping the operator did not cause: the usage gauge, not a feed row (see
+        // `terse_line`, which returns `None` for it).
+        Event::UsageWindows { .. } => FeedKind::Sys,
     }
 }
 
@@ -136,6 +140,14 @@ fn item_kind(kind: &ItemKind) -> FeedKind {
         ItemKind::ToolCall { .. } | ItemKind::ToolResult { .. } => FeedKind::Tool,
         ItemKind::UserText => FeedKind::User,
         ItemKind::Subagent { .. } => FeedKind::Sub,
+        // By level, which is equivalent to the by-code table in
+        // `docs/plans/codex-thread-rebuild-2026-09-11.md` §4.4 — `compacted` and `exited` are the
+        // only `Info` notices — and stays total when a new code is added.
+        ItemKind::Notice { level, .. } => match level {
+            NoticeLevel::Info => FeedKind::Sys,
+            NoticeLevel::Warning => FeedKind::Warn,
+            NoticeLevel::Error | NoticeLevel::Fatal => FeedKind::Err,
+        },
     }
 }
 
@@ -143,8 +155,10 @@ fn item_kind(kind: &ItemKind) -> FeedKind {
 /// contributes nothing.
 ///
 /// `None` for [`Event::ContentDelta`] (a fragment of a line already summarised by its item),
-/// [`Event::ItemUpdated`] (superseded by the item's completion) and [`Event::TurnStarted`]
-/// (the turn's accounting arrives with its completion).
+/// [`Event::ItemUpdated`] (superseded by the item's completion), [`Event::TurnStarted`]
+/// (the turn's accounting arrives with its completion) and [`Event::UsageWindows`] (a gauge
+/// reading that arrives once a turn; it is delivered as a signal and drawn as a gauge, and a row
+/// per turn would push real rows out of the capped ring).
 ///
 /// The canonical schema gives [`Event::RuntimeWarning`] no severity field, so no threshold can
 /// be applied here and every warning gets a row; if warnings ever become chatty the threshold
@@ -205,6 +219,7 @@ pub fn terse_line(event: &Event) -> Option<String> {
         Event::RuntimeError { message, fatal } => {
             join(if *fatal { "fatal error" } else { "error" }, message)
         }
+        Event::UsageWindows { .. } => return None,
     };
     Some(bounded(&line, FEED_LINE_LIMIT))
 }
@@ -239,6 +254,18 @@ fn item_label(kind: &ItemKind) -> String {
                 "subagent {}",
                 subagent_type.as_deref().unwrap_or(task_id.as_str())
             )
+        }
+        // Defensive: no adapter emits an item with this kind — `crate::chat::project` mints the
+        // notices straight into `chat_items`, and the feed row for the same moment comes from the
+        // `Event` the notice was minted from. The arm exists because `item_label` is total.
+        ItemKind::Notice { level, code, .. } => {
+            let level = match level {
+                NoticeLevel::Info => "notice",
+                NoticeLevel::Warning => "warning",
+                NoticeLevel::Error => "error",
+                NoticeLevel::Fatal => "fatal error",
+            };
+            format!("{level} {code}")
         }
     }
 }

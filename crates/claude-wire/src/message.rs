@@ -444,8 +444,11 @@ pub struct UserMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     /// Structured tool result payload the CLI attaches alongside the content block.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_use_result: Option<Value>,
+    ///
+    /// A frame-level **sibling of `message`**, not a field inside it, and its type is unstable —
+    /// see [`ToolUseResult`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_use_result: Option<ToolUseResult>,
     /// CLI-synthesised rather than user-authored.
     #[serde(rename = "isSynthetic")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -457,6 +460,84 @@ pub struct UserMessage {
     /// `origin`, `priority`, `shouldQuery`, `timestamp`, `file_attachments`, …
     #[serde(flatten)]
     pub extra: Extra,
+}
+
+/// The `tool_use_result` sibling a `user` frame carries beside its `tool_result` block.
+///
+/// **Untagged on purpose: the CLI writes three different JSON types into this one key**, measured
+/// across the six captures in `crates/claude-spike/fixtures` and recorded in
+/// `docs/research/cli-steer-and-exit-codes.md` §2 —
+///
+/// - a **structured object** on success, `{stdout, stderr, interrupted, isImage,
+///   noOutputExpected}` for `Bash`, and a wholly different set of keys for `Read`, `Write`,
+///   `Task`, `ToolSearch`, … (`{type, file}`, `{type, filePath, content, structuredPatch, …}`,
+///   `{isAsync, status, agentId, …}`, `{matches, query, total_deferred_tools}`);
+/// - the **string** `"Error: " + content` when a command exits non-zero;
+/// - the **string** `"User rejected tool use"` when the operator interrupted or denied it.
+///
+/// [`ToolUseResult::Structured`]'s named fields are the `Bash` shape only; every other key is
+/// caught by its `extra` and re-emitted verbatim, which is what keeps
+/// `decode.rs::real_captures_round_trip_byte_faithfully` green for the eleven non-`Bash` object
+/// shapes in the captures. [`ToolUseResult::Other`] is the lenient arm: a value that is neither a
+/// string nor an object — or an object whose `stdout` has drifted to a non-string — is kept as a
+/// [`Value`] rather than failing the whole `user` frame down to [`CliMessage::Unknown`].
+///
+/// **There is no exit-code field here or anywhere else on the wire.** The only carrier of an exit
+/// code is the literal first line `Exit code N\n` of `tool_result.content`; it is parsed in
+/// `brigadier_core::claude::adapter`, never inferred from `is_error`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ToolUseResult {
+    /// An object payload. The five named fields are `Bash`'s; anything else lands in `extra`.
+    Structured {
+        /// Standard output, when the tool reports it separately.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stdout: Option<String>,
+        /// Standard error. Note that in `tool_result.content` stderr is concatenated **after**
+        /// stdout with no delimiter; only this sibling separates them.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stderr: Option<String>,
+        /// True when the tool was cut short rather than having failed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        interrupted: Option<bool>,
+        /// True when the result body is an image rather than text.
+        #[serde(default, rename = "isImage", skip_serializing_if = "Option::is_none")]
+        is_image: Option<bool>,
+        /// True when the tool is expected to produce no output at all.
+        #[serde(
+            default,
+            rename = "noOutputExpected",
+            skip_serializing_if = "Option::is_none"
+        )]
+        no_output_expected: Option<bool>,
+        /// Every other key, verbatim.
+        #[serde(flatten)]
+        extra: Extra,
+    },
+    /// A bare string: `"Error: …"` on a non-zero exit, `"User rejected tool use"` on an interrupt.
+    Message(String),
+    /// Anything else, kept rather than dropped.
+    Other(Value),
+}
+
+/// The exact string the CLI writes when the operator interrupted or denied a tool use.
+// see docs/plans/codex-thread-rebuild-2026-09-11.md §4.1 and landmine 1 — an interrupt is an
+// interruption, not a failure, and it arrives with `is_error: true` like a failure does.
+pub const REJECTED_TOOL_USE: &str = "User rejected tool use";
+
+impl ToolUseResult {
+    /// True when this result says the tool was interrupted or rejected rather than having failed.
+    ///
+    /// Two carriers, both read: the literal [`REJECTED_TOOL_USE`] string, and `interrupted: true`
+    /// on the structured form. Nothing is inferred from `is_error`, which is `true` for a failure,
+    /// an interrupt and a rejection alike.
+    pub fn is_interrupted(&self) -> bool {
+        match self {
+            Self::Message(s) => s == REJECTED_TOOL_USE,
+            Self::Structured { interrupted, .. } => interrupted.unwrap_or(false),
+            Self::Other(_) => false,
+        }
+    }
 }
 
 /// The Anthropic `BetaMessage` / `MessageParam` shape carried by `assistant` and `user` frames.

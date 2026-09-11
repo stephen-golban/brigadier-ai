@@ -302,6 +302,33 @@ pub enum Event {
         /// True when the session cannot continue.
         fatal: bool,
     },
+    /// The provider reported where the operator stands against their own usage windows.
+    ///
+    /// Arrives once per turn, early. **There is no cost field and none is ever added**: the user
+    /// runs on their own subscription and is never billed a dollar figure, so the gauge is the
+    /// window, not the money (`docs/vision.md` §6).
+    // see docs/plans/codex-thread-rebuild-2026-09-11.md §4.3 — `rate_limit_event.unifiedWindows`.
+    UsageWindows {
+        /// `"allowed"`, `"rejected"`, or a value a future CLI adds. A string, not an enum: the
+        /// UI renders what it is given rather than switching on a closed set.
+        status: String,
+        /// One entry per key present in `unifiedWindows`. The set is **open** — an unrecognised
+        /// window name is passed through, never dropped.
+        windows: Vec<UsageWindow>,
+    },
+}
+
+/// One usage window: how much of it is spent, and when it refills.
+// see docs/plans/codex-thread-rebuild-2026-09-11.md §4.3 for the measured frame.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct UsageWindow {
+    /// `"five_hour"`, `"seven_day"`, or a future key, verbatim.
+    pub name: String,
+    /// Fraction of the window consumed, 0.0–1.0, at two-decimal resolution. **Not a percentage.**
+    pub utilization: f64,
+    /// When the window resets, in **unix seconds** — not the milliseconds the rest of this module
+    /// uses, because that is what the provider sends.
+    pub resets_at: i64,
 }
 
 impl Event {
@@ -418,8 +445,20 @@ pub enum ItemKind {
     ToolResult {
         /// The tool call this answers.
         tool_call_id: String,
-        /// True when the tool reported failure.
+        /// True when the tool reported failure. **Also true for an interrupt and for a rejected
+        /// tool use**, so it is never on its own evidence that a command failed.
         is_error: bool,
+        /// Parsed from the literal first line `Exit code N\n` of the result body. `None` when the
+        /// body carries no such line — never inferred from `is_error`, and never present for a
+        /// tool that is not a shell.
+        // see docs/plans/codex-thread-rebuild-2026-09-11.md §4.1 — there is no numeric exit-code
+        // field anywhere on the wire; that first line is the only carrier.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
+        /// Set when the result was produced by an interrupt or a rejection rather than by the
+        /// command failing. Renders as *You stopped*, never as a failure.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        interrupted: bool,
     },
     /// Text we sent on the operator's behalf.
     UserText,
@@ -433,6 +472,35 @@ pub enum ItemKind {
         /// The task description, when reported.
         description: Option<String>,
     },
+    /// A lifecycle note the store synthesises so the thread can show it inline: a compaction, a
+    /// runtime warning or error, a session exit.
+    ///
+    /// Never emitted by an adapter — `brigadier_store::chat::project` mints these from the
+    /// matching [`Event`] with a deterministic synthetic id, so a replay cannot duplicate one.
+    // see docs/plans/codex-thread-rebuild-2026-09-11.md §4.4.
+    Notice {
+        /// How loud it is.
+        level: NoticeLevel,
+        /// A stable slug for what happened: `compacted`, `runtime`, `exited`.
+        code: String,
+        /// Structured extras the row may render — `pre_tokens`, `exit_code` — or `None`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<serde_json::Value>,
+    },
+}
+
+/// How loud an [`ItemKind::Notice`] is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NoticeLevel {
+    /// Housekeeping: a compaction, a clean exit.
+    Info,
+    /// Something the operator should see that did not stop the session.
+    Warning,
+    /// An error the session survived.
+    Error,
+    /// An error the session did not survive.
+    Fatal,
 }
 
 /// What a parked request is asking for.
@@ -724,11 +792,45 @@ mod tests {
         assert_eq!(
             wire(Event::ItemCompleted {
                 item_id: ItemId::new("i2"),
-                kind: ItemKind::ToolResult { tool_call_id: "tu_1".into(), is_error: true },
+                kind: ItemKind::ToolResult {
+                    tool_call_id: "tu_1".into(),
+                    is_error: true,
+                    exit_code: None,
+                    interrupted: false,
+                },
                 summary: "exit 1".into(),
                 parent_item_id: None,
             }),
             r#"{"type":"item-completed","item_id":"i2","kind":{"type":"tool-result","tool_call_id":"tu_1","is_error":true},"summary":"exit 1","parent_item_id":null}"#
+        );
+        // Both new fields are skipped when they carry nothing, so a consumer built against the
+        // shape above still reads the frame above byte for byte.
+        assert_eq!(
+            wire(Event::ItemCompleted {
+                item_id: ItemId::new("i3"),
+                kind: ItemKind::ToolResult {
+                    tool_call_id: "tu_2".into(),
+                    is_error: true,
+                    exit_code: Some(3),
+                    interrupted: true,
+                },
+                summary: "exit 3".into(),
+                parent_item_id: None,
+            }),
+            r#"{"type":"item-completed","item_id":"i3","kind":{"type":"tool-result","tool_call_id":"tu_2","is_error":true,"exit_code":3,"interrupted":true},"summary":"exit 3","parent_item_id":null}"#
+        );
+        assert_eq!(
+            wire(Event::ItemCompleted {
+                item_id: ItemId::new("i4"),
+                kind: ItemKind::Notice {
+                    level: NoticeLevel::Warning,
+                    code: "runtime".into(),
+                    detail: None,
+                },
+                summary: "shadowed".into(),
+                parent_item_id: None,
+            }),
+            r#"{"type":"item-completed","item_id":"i4","kind":{"type":"notice","level":"warning","code":"runtime"},"summary":"shadowed","parent_item_id":null}"#
         );
         assert_eq!(
             wire(Event::ContentDelta { item_id: ItemId::new("i1"), text: "hel".into() }),
@@ -858,6 +960,35 @@ mod tests {
             Event::SessionCompacted { trigger: CompactTrigger::Manual, pre_tokens: None },
             Event::RuntimeWarning { message: "w".into() },
             Event::RuntimeError { message: "e".into(), fatal: false },
+            Event::ItemCompleted {
+                item_id: ItemId::new("i2"),
+                kind: ItemKind::ToolResult {
+                    tool_call_id: "tu_1".into(),
+                    is_error: true,
+                    exit_code: Some(3),
+                    interrupted: true,
+                },
+                summary: "s".into(),
+                parent_item_id: None,
+            },
+            Event::ItemCompleted {
+                item_id: ItemId::new("i3"),
+                kind: ItemKind::Notice {
+                    level: NoticeLevel::Fatal,
+                    code: "runtime".into(),
+                    detail: Some(serde_json::json!({"exit_code": 9})),
+                },
+                summary: "s".into(),
+                parent_item_id: None,
+            },
+            Event::UsageWindows {
+                status: "allowed".into(),
+                windows: vec![UsageWindow {
+                    name: "five_hour".into(),
+                    utilization: 0.25,
+                    resets_at: 1_789_068_000,
+                }],
+            },
         ] {
             round_trip(event);
         }

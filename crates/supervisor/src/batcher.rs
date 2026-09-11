@@ -54,6 +54,10 @@ pub fn is_signal(event: &Event) -> bool {
             | Event::SessionCompacted { .. }
             | Event::RuntimeError { .. }
             | Event::RuntimeWarning { .. }
+            // The usage gauge must update whether or not the project is visible — it is the
+            // operator's own subscription being spent, not this project's progress. One envelope
+            // per turn, and it carries no row (`terse_line` returns `None` for it).
+            | Event::UsageWindows { .. }
     )
 }
 
@@ -65,6 +69,8 @@ struct Counters {
     started: bool,
     /// A `SessionExited` was seen for it.
     ended: bool,
+    /// Content deltas seen, delivered or not — see [`SessionCounter::deltas`].
+    deltas: u64,
 }
 
 impl Counters {
@@ -172,6 +178,11 @@ impl Batcher {
         match &env.event {
             Event::SessionStarted { .. } => counters.started = true,
             Event::SessionExited { .. } => counters.ended = true,
+            // Counted whether or not the project is visible, the same rule `total` follows: an
+            // invisible project's session must still show a grown body the moment it is looked at
+            // again. Deliberately outside the `terse_line` block below, which a delta never
+            // enters, and deliberately **not** a signal.
+            Event::ContentDelta { .. } => counters.deltas += 1,
             _ => {}
         }
 
@@ -230,6 +241,7 @@ impl Batcher {
                         session_id,
                         rows_total: c.total,
                         rows_dropped: c.dropped,
+                        deltas: c.deltas,
                     });
                 }
                 out.push(Frame { project_id: project_id.clone(), rows, signals, counters });
@@ -696,6 +708,86 @@ mod tests {
         let _ = sink.take();
         assert_eq!(batcher.counters("p", "s1").map(|(t, _)| t), Some(2));
         assert_eq!(batcher.tracked_projects(), vec!["p".to_owned()]);
+    }
+
+    fn delta(seq: u64) -> Envelope {
+        envelope(
+            seq,
+            Event::ContentDelta {
+                item_id: ItemId::new("i1"),
+                text: "tok".into(),
+            },
+        )
+    }
+
+    /// The streaming delivery half: a frame of N deltas costs **one** counter, **zero** rows and
+    /// **zero** signals, and the counter's `deltas` has advanced by N.
+    ///
+    /// Promoting `ContentDelta` to a signal instead would put ~600 envelopes a turn on a channel
+    /// with an 8 KB per-message cliff. This is the sanctioned alternative.
+    // see docs/plans/codex-thread-rebuild-2026-09-11.md §4.2.1 and landmines 10, 18.
+    #[test]
+    fn a_frame_of_deltas_costs_one_counter_and_no_rows_or_signals() {
+        let (batcher, sink) = sink();
+        for seq in 0..40 {
+            batcher.push("p", &delta(seq));
+        }
+        batcher.flush_once();
+        let batches = sink.take();
+        assert_eq!(batches.len(), 1, "one message, not one per delta");
+        let batch = &batches[0];
+        assert!(batch.rows.is_empty(), "a delta is not a row");
+        assert!(batch.signals.is_empty(), "a delta is not a signal");
+        assert_eq!(batch.counters.len(), 1);
+        assert_eq!(batch.counters[0].deltas, 40);
+        assert_eq!(batch.counters[0].rows_total, 0);
+        assert_eq!(batch.counters[0].rows_dropped, 0);
+        // The field's whole cost, measured rather than argued: `,"deltas":40` is 12 bytes of the
+        // 63 this counter serialises to, and 14 bytes at a four-digit count. The message carrying
+        // it was already being sent — `push` marks the session touched for a delta as it does for
+        // any other event — so the frame costs 12 more bytes, not one more message.
+        let bytes = serde_json::to_vec(&batch.counters[0]).expect("json");
+        assert_eq!(
+            bytes.len(),
+            63,
+            "{}",
+            String::from_utf8_lossy(&bytes)
+        );
+        assert!(bytes.len() < MAX_MESSAGE_BYTES / 100);
+    }
+
+    /// The same holds when the project is invisible: rows are dropped there, deltas are not
+    /// counted any differently, so a session whose body grew while unwatched says so the moment
+    /// it is looked at again.
+    #[test]
+    fn deltas_are_counted_for_an_invisible_project_too() {
+        let (batcher, sink) = sink();
+        batcher.set_visible_projects(vec!["other".into()]);
+        for seq in 0..5 {
+            batcher.push("p", &delta(seq));
+        }
+        batcher.push("p", &row_event(5));
+        batcher.flush_once();
+        let batches = sink.take();
+        let batch = &batches[0];
+        assert!(batch.rows.is_empty(), "an invisible project sends no rows");
+        assert_eq!(batch.counters[0].deltas, 5);
+        assert_eq!(batch.counters[0].rows_total, 1);
+        assert_eq!(batch.counters[0].rows_dropped, 1);
+    }
+
+    /// Cumulative for the life of the session, like `rows_total`: a later frame carries the
+    /// running total, not that frame's delta, so a dropped message cannot lose the cursor.
+    #[test]
+    fn the_delta_counter_is_cumulative_across_frames() {
+        let (batcher, sink) = sink();
+        batcher.push("p", &delta(0));
+        batcher.flush_once();
+        assert_eq!(sink.take()[0].counters[0].deltas, 1);
+        batcher.push("p", &delta(1));
+        batcher.push("p", &delta(2));
+        batcher.flush_once();
+        assert_eq!(sink.take()[0].counters[0].deltas, 3);
     }
 
     #[test]
