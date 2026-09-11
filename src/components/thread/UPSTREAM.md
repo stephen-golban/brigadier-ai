@@ -178,3 +178,18 @@ not expose or a render decision the kit makes for a component tree brigadier doe
 `ApprovalRequest.tsx` needed no further change: phase 3R's `"expired"` decision value and
 `onDismiss`/`dismissLabel` pair are what `src/components/Approvals.tsx` now drives, and the
 kit's global Enter/Escape handler was audited rather than modified — see that file's comment.
+
+## Visual-defect fixes (2026-09-11)
+
+Found by running the application and looking at it; evidence in
+`docs/performance/2026-09-11-thread-shots/fixes/`.
+
+| File | Deviation | Why |
+| --- | --- | --- |
+| `ThreadState.tsx` | `ThreadLoadingState`'s default labels: `"Reconnecting to ChatGPT…"` → `"Reconnecting…"`, `"Loading chat…"` → `"Loading conversation…"`. | **This product must never display the vendor's brand text.** The string shipped in the bundle even though the component has no mount site. |
+| `ApprovalRequest.tsx` | The inline focus-exemption selector in the global hotkey handler is now the exported `approvalHotkeyExemptSelector` from the new `approvalKeys.ts`. Same string, one definition. | The peek sidebar installs its own document-level Escape handler, and one keystroke both denied an approval and closed the sidebar. Both handlers now read one predicate (`approvalOwnsKey`), so the pending approval wins while it is open and the sidebar's Escape is otherwise untouched. Ordering between two `document` listeners is mount order, so `event.defaultPrevented` is not a usable arbiter — see that file's comment. |
+| `CommandExecution.tsx` | The default footer reads its outcome off `status`, not off `exitCode`. | `exit_code` is `Some(0)` on success, `Some(N)` on failure and `None` when nothing could be parsed, and **`None` does not mean success** (`src/wire.ts`, `crates/core/src/event.rs`, commit `1709a99`). The kit's `exitCode === 0 ? "Success" : "Exit code " + (exitCode ?? "unknown")` printed **"Exit code unknown"** on every command with no parsed code. |
+| `thread.css` | `.thread-activity-timeline__toggle:hover` no longer sets a background. | `docs/research/codex-thread-tokens.md` §5.3 and plan §3 row 5: hover is **text-only**, 60% → 100% over the hairline. The measurement outranks the kit's own default, which is a second-hand replica. |
+| `thread.css` | New: `.thread-command-execution__footer[data-status="failed"]` is `--thread-text-error` with a dot marker. | Plan §3 row 7, "Non-zero exit → red". Keyed off `is_error && !interrupted`, never off the exit code, so an operator **denial** is never painted as a crash. |
+| `thread.css` | New: `.thread-approval-request__body` gets `padding-inline: 1rem`. | The kit gives the `children` slot no inline padding — upstream only ever passes it self-padding previews — so brigadier's body ran flush to the card edge and the suggestion checkboxes sat outside it. |
+| `thread.css` | New: approval body wrapping, `.approval-subject`, `.suggestions` layout, and a visible border on the suggestion checkboxes. | Plan §3 row 12. A `<pre>`'s inherited `white-space: pre` pushed the tool input under the card's right edge (measured `scrollWidth` 750 vs `clientWidth` 736). The checkbox border is the app-wide `--input` `#2a2a2a`, invisible on this card's `rgb(45,45,45)` surface, and the row's label is now a scope sentence rather than the word "apply" — so the control is the only thing saying it is a toggle. Scoped to the card, not a retint of every checkbox in the app. |

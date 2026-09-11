@@ -12,6 +12,7 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
+import { approvalHotkeyExemptSelector } from "./approvalKeys";
 import {
   getBlockedSurface,
   surfaceBlockedEventName,
@@ -285,12 +286,11 @@ export function ApprovalRequest({
       );
       if (activeSurfaces[activeSurfaces.length - 1] !== rootRef.current) return;
 
+      // Brigadier deviation (UPSTREAM.md): the kit's inline selector is now the shared
+      // `approvalHotkeyExemptSelector`, so the sidebar's own document-level Escape handler
+      // stands down on exactly the keystrokes this one takes. Same string, one definition.
       const target = event.target instanceof Element ? event.target : null;
-      if (
-        target?.closest(
-          'input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"], [role="dialog"], [role="menu"]',
-        )
-      ) {
+      if (target?.closest(approvalHotkeyExemptSelector)) {
         return;
       }
 

@@ -194,7 +194,9 @@ it("shows provider reasoning without empty disclosures or orphan copy actions", 
   );
   expect(screen.getAllByRole("button")).toHaveLength(1);
   await user.click(screen.getByRole("button", { name: /Worked/ }));
-  await user.click(screen.getByRole("button", { name: "Reasoning" }));
+  // Plan §3 row 4: the collapsed label names the elapsed figure. The fixture stamps every
+  // item at the same instant, so there is no usable pair and the bare verb is correct here.
+  await user.click(screen.getByRole("button", { name: "Thought" }));
   expect(screen.getByText("Provider reasoning")).toBeVisible();
   expect(screen.queryByRole("button", { name: "Copy" })).toBeNull();
 });

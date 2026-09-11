@@ -34,7 +34,7 @@ import type {
   SessionView,
   WorkOrderView,
 } from "./wire";
-import type { ChatItem } from "./workspaceApi";
+import type { ChatItem, ChatTurn } from "./workspaceApi";
 import type { Bridge, BurnArgs, StartSessionArgs } from "./bridge";
 
 /* ----------------------------------------------------------------- state */
@@ -85,6 +85,39 @@ function appendChat(sessionId:string,kind:ChatItem['kind'],body:string,id?:strin
 export function mockChatItems(sessionId:string,after:number):ChatItem[] {
   return (conversations.get(sessionId)??[]).filter(item=>item.seq>after).slice(0,20);
 }
+/**
+ * The `chat_turns` rows the desktop store writes for a session. The browser fixture used to
+ * answer `chatTurns` with `[]`, which is why the turn header could only ever read `Worked`:
+ * `projectThread` finds no `evidence`, so `durationMs` and `completedAtMs` are both absent and
+ * `WorkTrace` has nothing to print. The renderer was never the defect; the fixture was.
+ */
+const chatTurns = new Map<string, ChatTurn[]>();
+export function mockChatTurns(sessionId:string,range:{start?:number;end?:number}):ChatTurn[] {
+  return (chatTurns.get(sessionId)??[]).filter(turn =>
+    (range.end === undefined || turn.start_seq <= range.end) &&
+    (range.start === undefined || turn.end_seq === null || turn.end_seq >= range.start));
+}
+/** The highest `seq` recorded for a session, or 0. */
+function lastSeq(sessionId:string):number {
+  const items = conversations.get(sessionId)??[];
+  return items.length ? items[items.length-1]!.seq : 0;
+}
+/** Close a turn over every item appended since `fromSeq`, as the store does at `turn-completed`. */
+function recordTurn(sessionId:string,fromSeq:number,durationMs:number) {
+  const items = conversations.get(sessionId)??[];
+  const last = items[items.length-1];
+  if (!last || last.seq < fromSeq) return;
+  const endedAt = Date.now();
+  const turns = chatTurns.get(sessionId)??[];
+  turns.push({id:`turn-${sessionId}-${turns.length+1}`,start_seq:fromSeq,end_seq:last.seq,
+    started_at:endedAt-durationMs,ended_at:endedAt,status:"completed"});
+  chatTurns.set(sessionId,turns);
+}
+/**
+ * Long enough that the header prints both halves: §3 row 5 renders the elapsed figure only above
+ * the 60 s floor, and the completion time always.
+ */
+const SEEDED_TURN_MS = 74_000;
 function seedConversation(sessionId:string) {
   appendChat(sessionId,{type:'user-text'},'Review the workspace and suggest the next change.');
   appendChat(sessionId,{type:'thinking'},'');
@@ -96,11 +129,25 @@ function seedConversation(sessionId:string) {
   appendChat(sessionId,{type:'assistant-text'},'The workspace review is complete. I’m checking the current changes before choosing the next step.');
   appendChat(sessionId,{type:'thinking'},'The editor and source control share navigation state. I’ll check the pending diff before recommending a change.','preview-reasoning');
   appendChat(sessionId,{type:'tool-call',name:'Bash'},'git status --short','preview-status');
-  appendChat(sessionId,{type:'tool-result',tool_call_id:'preview-status',is_error:false},' M src/components/ThreadView.tsx');
+  // `exit_code: 0` on a successful shell result is what Rust now puts on the wire; without it
+  // every green command's footer read "Exit code unknown" (`crates/core/src/claude/adapter.rs`).
+  appendChat(sessionId,{type:'tool-result',tool_call_id:'preview-status',is_error:false,exit_code:0},' M src/components/ThreadView.tsx');
   appendChat(sessionId,{type:'tool-call',name:'Bash'},'git diff --stat','preview-diff');
-  appendChat(sessionId,{type:'tool-result',tool_call_id:'preview-diff',is_error:false},'src/components/ThreadView.tsx | 24 +++++++++---');
+  appendChat(sessionId,{type:'tool-result',tool_call_id:'preview-diff',is_error:false,exit_code:0},'src/components/ThreadView.tsx | 24 +++++++++---');
+  // A non-zero exit, so the failure treatment is reachable from the fixture rather than only
+  // from a throwaway component harness. `is_error` with no `interrupted` is the failure rule.
+  appendChat(sessionId,{type:'tool-call',name:'Bash'},'npm run lint --silent','preview-lint');
+  appendChat(sessionId,{type:'tool-result',tool_call_id:'preview-lint',is_error:true,exit_code:1},'src/components/ThreadView.tsx\n  412:9  error  Unexpected console statement\n\n1 problem (1 error, 0 warnings)');
   appendChat(sessionId,{type:'tool-result',tool_call_id:'preview-agent',is_error:false},'Keep the final answer visible; put routine work inside an expandable row.');
   appendChat(sessionId,{type:'assistant-text'},'The conversation now keeps progress readable between compact activity rows. Nested agent details remain available when you expand them.\n\nOpen [README.md](README.md) to explore the workspace.\n\n*Browser preview — simulated activity; no agent was called.*');
+  // `appendChat` stamps every row with the same `Date.now()`, which makes every derived elapsed
+  // figure zero. Spread them over the turn so the reasoning row and the per-call durations carry
+  // the numbers a real session would.
+  const items = conversations.get(sessionId)??[];
+  const endedAt = Date.now();
+  const step = items.length > 1 ? SEEDED_TURN_MS/(items.length-1) : 0;
+  items.forEach((item,index) => { item.at = Math.round(endedAt-SEEDED_TURN_MS+step*index); });
+  recordTurn(sessionId,items[0]?.seq??1,SEEDED_TURN_MS);
 }
 
 
@@ -868,6 +915,7 @@ function noRows(): DeletedRows {
 /** Drop one session's rows from the mock's own state, and report what went. */
 function purgeSession(sessionId: string): { feed: number; approvals: number } {
   conversations.delete(sessionId);
+  chatTurns.delete(sessionId);
   const feed = feedRows.get(sessionId)?.length ?? 0;
   let gone = 0;
   for (const [id, a] of approvals) {
@@ -990,8 +1038,10 @@ export const mockBridge: Bridge = {
 
     localStorage.setItem(`demo:task:${s.view.session_id}`, JSON.stringify({ sessionId: s.view.session_id, projectId, mode: composerMode ?? "auto", permission: composerPermission ?? "approve", execution: { provider: provider ?? "claude-code", model: s.view.model, effort: options?.effort ?? null }, isolated: isolated ?? true, baseBranch: baseBranch ?? null, workspacePath: workspacePath ?? null, newBranch: newBranch ?? null, changes: [] }));
     row(s, `user · ${prompt.slice(0, 120)}`, "user");
+    const firstSeq = lastSeq(s.view.session_id) + 1;
     appendChat(s.view.session_id,{type:"user-text"},prompt);
     appendChat(s.view.session_id,{type:"assistant-text"},"Browser preview: your message was received. Open the desktop app to run a real agent.");
+    recordTurn(s.view.session_id, firstSeq, 1_400);
     return { ...s.view };
   },
 
@@ -1008,6 +1058,9 @@ export const mockBridge: Bridge = {
     if (!newWorktree) { child.view.cwd = parent.view.cwd; child.view.worktree_path = null; child.view.branch = parent.view.branch; }
     const items = conversations.get(sessionId) ?? [];
     for (const item of items) appendChat(child.view.session_id, item.kind, item.body, item.id, item.parent_id);
+    for (const [index, item] of (conversations.get(child.view.session_id) ?? []).entries())
+      item.at = items[index]?.at ?? item.at;
+    chatTurns.set(child.view.session_id, (chatTurns.get(sessionId) ?? []).map(turn => ({ ...turn, id: `${turn.id}-fork` })));
     return { ...child.view };
   },
 
@@ -1125,8 +1178,10 @@ export const mockBridge: Bridge = {
       throw new AppError("session_not_running", `session is ${s.view.status}`);
     }
     row(s, `user · ${text.slice(0, 120)}`, "user");
+    const firstSeq = lastSeq(sessionId) + 1;
     appendChat(sessionId,{type:"user-text"},text);
     appendChat(sessionId,{type:"assistant-text"},"Browser preview: no agent was called. Your draft and conversation controls work here; execution runs in the desktop app.");
+    recordTurn(sessionId, firstSeq, 1_400);
     return { turn_id: `t-${s.turnId++}` };
   },
 

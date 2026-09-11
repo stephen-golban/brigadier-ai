@@ -1,0 +1,4 @@
+peek-before=true deny-rows-before=0
+peek-after=false deny-rows-after=1
+control answerable=0 peek-before=true
+control peek-after=false

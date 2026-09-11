@@ -235,15 +235,31 @@ export function CommandExecution({
       className="thread-command-execution__footer"
       data-status={status}
     >
+      {/*
+        Brigadier deviation (UPSTREAM.md). The outcome is read off `status`, which the caller
+        derives from `is_error && !interrupted` — never off `exitCode`. `exit_code` is `Some(0)`
+        for a successful shell command, `Some(N)` for a failed one and `None` when no code could
+        be parsed, and **`None` does not mean success**: a real failure whose body does not parse
+        carries `None` too (`src/wire.ts`, `crates/core/src/event.rs`). The kit's
+        `exitCode === 0 ? Success : "Exit code " + (exitCode ?? "unknown")` therefore printed
+        "Exit code unknown" on every command with no parsed code, whatever actually happened.
+        The code is shown whenever it is a number, and stands in for nothing when it is not.
+      */}
       {running
         ? null
         : status === "pending"
           ? "Pending"
           : status === "interrupted"
             ? "Stopped"
-            : exitCode === 0
-              ? <span data-success>Success</span>
-              : `Exit code ${exitCode ?? "unknown"}`}
+            : status === "failed"
+              ? typeof exitCode === "number"
+                ? `Exit code ${exitCode}`
+                : "Failed"
+              : exitCode === 0
+                ? <span data-success>Success</span>
+                : typeof exitCode === "number"
+                  ? `Exit code ${exitCode}`
+                  : "Completed"}
     </div>
   );
   const body = hideRawCommand ? (

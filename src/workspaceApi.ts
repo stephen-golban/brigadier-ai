@@ -1,4 +1,4 @@
-import { mockChatItems } from "./mock";
+import { mockChatItems, mockChatTurns } from "./mock";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { ItemKind } from "./wire";
 export interface WorkspaceContext {
@@ -111,7 +111,7 @@ export const workspaceApi = {
     return {items, nextAfter: Math.max(options.after ?? 0,...items.map(i=>i.seq)), nextBefore: items[0]?.seq ?? null, hasMore: matching.length > items.length};
   },
   chatTurns: (sessionId: string, range: {start?: number; end?: number} = {}): Promise<ChatTurn[]> =>
-    desktop ? invoke("chat_turns", { sessionId, ...range }) : Promise.resolve([]),
+    desktop ? invoke("chat_turns", { sessionId, ...range }) : Promise.resolve(mockChatTurns(sessionId, range)),
   openTerminal: (
     context: WorkspaceContext,
     cols: number,
