@@ -141,6 +141,29 @@ describe("chat composer", () => {
     expect(screen.queryByLabelText("Task workspace")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Task setup")).not.toBeInTheDocument();
   });
+  /**
+   * The slot the setup rail vacated. Both gauges answer "where do I stand before I press send",
+   * which is a question about the next turn, so they live against the composer — and only once a
+   * session exists, because `Composer` is the branch `Dock` takes only then.
+   *
+   * This assertion exists because both components were **complete, tested and imported by
+   * nothing** for two days: `SessionContext` was dropped by a composer redesign at `42c5144` and
+   * `getUsageWindows` never had a consumer at all. A unit test on a component nobody mounts
+   * passes forever.
+   */
+  it("mounts the context meter and the usage gauge only once a session exists", async () => {
+    const { props, view } = mount();
+    expect(document.querySelector(".dock-usage")).toBeNull();
+    view.rerender(<Dock {...props} session={session()} />);
+    await waitFor(() => expect(fields()[0]).toHaveAttribute("contenteditable", "true"));
+    const strip = document.querySelector(".dock-usage");
+    expect(strip).not.toBeNull();
+    // The meter is there before its first reading lands, showing an em dash rather than a
+    // fabricated number; the gauge renders nothing at all until the provider has reported.
+    await waitFor(() => expect(screen.getByText(/^Context /)).toBeInTheDocument());
+    // Usage windows, never dollars: no currency reaches this strip whatever the wire carries.
+    expect(strip!.textContent).not.toMatch(/\$|usd/i);
+  });
   it("keeps chat available while an automation exists", () => {
     mount();
     expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();

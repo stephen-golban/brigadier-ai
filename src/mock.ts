@@ -8,6 +8,11 @@
  * It exists so the front end and its FPS meter can be exercised without the Rust side, so it is
  * a load generator first and a fake second. `?rps=` sets the total rows/sec across all running
  * sessions (default 200); `?sessions=` seeds that many running sessions (default 1).
+ *
+ * The composer's two gauges are driven from here as well, because a state the fixture cannot
+ * reach is a state nobody reviews: `?context=` pins the context meter's fill as a percentage of
+ * the window (default: it climbs with the session), and `?usage=` / `?usage7=` seed the two usage
+ * windows. `docs/performance/2026-09-11-thread-shots/context-meter/` is what they produced.
  */
 import {
   MAX_ROWS_PER_BATCH,
@@ -53,6 +58,12 @@ interface MockSession {
   until: number | null;
   cost: number;
   turnId: number;
+  /** Fraction of the rolling five-hour window spent, 0–1. Seeded by `?usage=`. */
+  usageFive: number;
+  /** Fraction of the rolling seven-day window spent, 0–1. */
+  usageSeven: number;
+  /** The `usage-windows` signal has been announced for this session at least once. */
+  usageAnnounced: boolean;
 }
 
 const projects: ProjectView[] = [
@@ -339,9 +350,88 @@ function makeSession(
     until,
     cost: 0,
     turnId: 1,
+    usageFive: clampFraction(percentParam("usage", 15) / 100),
+    usageSeven: clampFraction(percentParam("usage7", 3) / 100),
+    usageAnnounced: false,
   };
   sessions.set(id, s);
   return s;
+}
+
+/* --------------------------------------------------------- usage + context
+ *
+ * Both gauges the composer draws are answered from here, because a component the fixture cannot
+ * reach is a component nobody reviews: `SessionContext` and `UsageWindows` were each complete,
+ * tested and mounted nowhere for two days, and the browser demo could not have shown the gap.
+ *
+ * Windows, never dollars (`docs/vision.md` §6). `UsageWindow` carries a utilization fraction and
+ * a reset epoch; there is no cost field here and none is added.
+ */
+
+function clampFraction(n: number): number {
+  return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0;
+}
+
+/** Like `num`, except `0` is kept: an empty window is a state worth photographing. */
+function percentParam(name: string, fallback: number): number {
+  const raw = params().get(name);
+  if (raw === null) return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/**
+ * The measured shape of the CLI's `get_context_usage` reply, minus the fields
+ * `src-tauri/src/conversation.rs` drops: a 200,000-token window auto-compacting at 167,000, which
+ * is what CLI 2.1.268 reported on `claude-haiku-4-5` with no override
+ * (`docs/research/compaction-and-long-sessions-2026-09-11.md` §A1, measured).
+ *
+ * `?context=<percent>` pins the fill so the approach to the threshold — and the state past it —
+ * can be photographed; left alone it climbs with the session's own row count, so a running demo
+ * walks toward the line on its own.
+ */
+export function demoContextReading(sessionId: string): import("./sessionApi").ContextReading {
+  const s = sessions.get(sessionId);
+  const limit = 200_000;
+  const compactAt = 167_000;
+  const pinned = params().get("context");
+  const percent =
+    pinned === null
+      ? Math.min(97, 17 + (s?.seq ?? 0) / 60)
+      : Math.min(100, Math.max(0, Number(pinned) || 0));
+  return {
+    available: true,
+    used: Math.round((limit * percent) / 100),
+    limit,
+    compactAt,
+    compactSource: "model-default",
+    model: s?.view.model ?? "claude-opus-5[1m]",
+    estimated: true,
+    sampledAt: Date.now(),
+  };
+}
+
+/**
+ * One `usage-windows` signal, shaped like the `rate_limit_event` the CLI streams unasked.
+ *
+ * The real provider sends **exactly one per session**, at 804–984 ms, reporting utilization
+ * *before* that session's own spend (`docs/vision.md` §6, measured). The demo announces once on
+ * the same terms and then re-announces on turn boundaries with the five-hour window climbing, so
+ * the reserve line is something a reviewer can watch a session walk into rather than a number
+ * that never moves. That re-announcement is the one place this fixture is knowingly more generous
+ * than the wire.
+ */
+function usageSignal(s: MockSession): Event {
+  const now = Math.floor(Date.now() / 1000);
+  return {
+    type: "usage-windows",
+    status: "allowed",
+    windows: [
+      // Two decimals is the provider's own resolution, so 1% is the finest step available.
+      { name: "five_hour", utilization: Math.round(s.usageFive * 100) / 100, resets_at: now + 8_040 },
+      { name: "seven_day", utilization: Math.round(s.usageSeven * 100) / 100, resets_at: now + 262_800 },
+    ],
+  };
 }
 
 function envelope(s: MockSession, event: Event): Envelope {
@@ -417,6 +507,12 @@ function tick(): void {
       byProject.set(projectId, p);
     }
 
+    // The provider's one-per-session reading, before this session has spent anything.
+    if (!s.usageAnnounced) {
+      s.usageAnnounced = true;
+      p.signals.push(envelope(s, usageSignal(s)));
+    }
+
     if (s.until !== null && now >= s.until) {
       s.view.status = "exited";
       s.view.ended_at_ms = now;
@@ -464,6 +560,10 @@ function tick(): void {
           cost_usd_cumulative: s.cost,
         }),
       );
+      // A turn's worth of the rolling window. Two decimals, so the step is visible at 1%.
+      s.usageFive = clampFraction(s.usageFive + 0.01);
+      s.usageSeven = clampFraction(s.usageSeven + 0.002);
+      p.signals.push(envelope(s, usageSignal(s)));
     }
   }
 

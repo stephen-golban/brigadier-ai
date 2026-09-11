@@ -77,9 +77,18 @@ pub(crate) async fn session_context(
                 .get("maxTokens")
                 .and_then(Value::as_u64)
                 .filter(|n| *n > 0);
+            // The compaction trigger point, and where it came from. `get_context_usage` has always
+            // carried both; dropping them is why the meter could say "62% used" and not "and it
+            // compacts at 84%", which is the number that answers "can I start a long run now?".
+            // Measured 2026-09-11 on CLI 2.1.268: 167000 of a 200000 window by model default,
+            // 67000 of 100000 under `CLAUDE_CODE_AUTO_COMPACT_WINDOW`
+            // (`docs/research/compaction-and-long-sessions-2026-09-11.md` §A1). The ratio is not
+            // fixed, so the UI must never derive this from `limit`.
+            let compact_at = value.get("autoCompactThreshold").and_then(Value::as_u64);
+            let compact_source = value.get("autocompactSource").and_then(Value::as_str);
             if let (Some(used), Some(limit)) = (used, limit) {
                 Ok(
-                    json!({"available":true,"used":used,"limit":limit,"model":value.get("model"),"estimated":true,"sampledAt":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis()}),
+                    json!({"available":true,"used":used,"limit":limit,"compactAt":compact_at,"compactSource":compact_source,"model":value.get("model"),"estimated":true,"sampledAt":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis()}),
                 )
             } else {
                 Ok(

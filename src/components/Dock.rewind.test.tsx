@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { sessionApi } from "../sessionApi";
-import { contextPercent, SessionContext } from "./SessionContext";
 import { useState } from "react";
 import { Dock } from "./Dock";
 import type { SessionRuntime } from "../feedStore";
@@ -98,34 +97,11 @@ function EditHarness({
   );
 }
 describe("dock rewind", () => {
-  it("calculates only a current provider reading, including compaction and unknown", async () => {
-    expect(contextPercent(null)).toBeNull();
-    expect(contextPercent({ available: true, used: 1, limit: 0 })).toBeNull();
-    expect(
-      contextPercent({ available: true, used: NaN, limit: 200000 }),
-    ).toBeNull();
-    expect(
-      contextPercent({ available: true, used: 220000, limit: 200000 }),
-    ).toBe(110);
-    const read = vi.spyOn(sessionApi, "context").mockResolvedValue({
-      available: true,
-      used: 120000,
-      limit: 200000,
-      model: "model",
-      sampledAt: 1,
-    });
-    const view = render(
-      <SessionContext sessionId="s" revision={0} busy={false} />,
-    );
-    await screen.findByLabelText("Context usage approximately 60%");
-    read.mockResolvedValue({ available: true, used: 10000, limit: 200000 });
-    view.rerender(<SessionContext sessionId="s" revision={1} busy={false} />);
-    await screen.findByLabelText("Context usage approximately 5%");
-    read.mockResolvedValue({ available: false, reason: "Unavailable" });
-    view.rerender(<SessionContext sessionId="s" revision={2} busy={false} />);
-    await screen.findByLabelText("Context usage unknown");
-    expect(screen.queryByText("5%")).not.toBeInTheDocument();
-  });
+  /*
+   * The context meter's own behaviour — the percentage, the compaction line, the coalescing and
+   * the browser-fixture path — moved to `SessionContext.test.tsx` when it was re-mounted. It was
+   * only ever here because `Dock.rewind.test.tsx` was where the component last had an importer.
+   */
   it("edits in the only composer input and restores the unsent draft on cancellation", async () => {
     const user = userEvent.setup();
     vi.spyOn(composerApi, "state").mockResolvedValue({ ...emptyComposer("s"), draft: { text: "Unsent next turn", attachmentIds: [] } });
