@@ -1,2 +1,0 @@
-// hand-written from invented: proves CliMessage::Unknown survives an unmodelled type; replace with a real capture from crates/claude-spike when available
-{"type":"a_type_invented_after_2_1_257","payload":{"deep":{"nested":[1,"two",3.5,null,true]}},"session_id":"s"}

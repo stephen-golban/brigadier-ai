@@ -1,8 +1,0 @@
-===PERF===
-commit 0: n=10 phase=mount actual_median=1.11 base_median=0.88 nodes=16
-commit 1: n=10 phase=update actual_median=0.66 base_median=0.69 nodes=16
-commit 2: n=10 phase=update actual_median=1.80 base_median=1.53 nodes=31
-commit 3: n=8 phase=update actual_median=0.24 base_median=1.63 nodes=31
-commit 4: n=2 phase=update actual_median=0.10 base_median=2.12 nodes=32
-total_actual_median=3.94 max_commit_median=1.80 commits_per_run=4,4,4,4,3,5,4,5,4,3
-===END===

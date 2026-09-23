@@ -1,2 +1,0 @@
-// hand-written from sdk.d.ts:4500; replace with a real capture from crates/claude-spike when available
-{"type":"system","subtype":"hook_started","hook_id":"hook_0","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse","uuid":"9f0c1d2e-0000-4000-8000-0000000000a4","session_id":"9f0c1d2e-0000-4000-8000-000000000001"}

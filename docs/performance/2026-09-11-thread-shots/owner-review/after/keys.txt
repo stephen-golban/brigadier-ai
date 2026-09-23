@@ -1,7 +1,0 @@
-A payload-toggles=0
-A no collapse control on the payload (every block fits)
-B enter-approves cards 3 -> 2
-C peek-before=true deny-rows-before=0
-C peek-after=true deny-rows-after=1
-D control answerable=0 peek-before=true
-D control peek-after=false

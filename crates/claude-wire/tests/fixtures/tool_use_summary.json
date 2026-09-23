@@ -1,2 +1,0 @@
-// hand-written from sdk.d.ts SDKToolUseSummaryMessage; replace with a real capture from crates/claude-spike when available
-{"type":"tool_use_summary","summary":"read three files","preceding_tool_use_ids":["toolu_01","toolu_02"],"uuid":"9f0c1d2e-0000-4000-8000-0000000000d3","session_id":"9f0c1d2e-0000-4000-8000-000000000001"}

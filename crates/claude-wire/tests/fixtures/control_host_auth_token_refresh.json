@@ -1,2 +1,0 @@
-// hand-written from sdk.mjs:47464-47468; replace with a real capture from crates/claude-spike when available
-{"type":"control_request","request_id":"ha1","request":{"subtype":"host_auth_token_refresh"}}

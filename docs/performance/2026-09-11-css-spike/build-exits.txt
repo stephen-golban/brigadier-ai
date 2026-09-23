@@ -1,9 +1,0 @@
-build_label=baseline exit=0 seconds=104
-build_label=full exit=0 seconds=80
-build_label=matchdom-fullcss exit=0 seconds=66
-build_label=matchdom-nocss exit=0 seconds=72
-build_label=mdt-fullcss exit=0 seconds=72
-build_label=mdt-nocss exit=0 seconds=73
-build_label=mdt-nofc exit=0 seconds=74
-build_label=nofc exit=0 seconds=71
-build_label=tokens exit=0 seconds=70

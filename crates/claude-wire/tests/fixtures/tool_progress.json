@@ -1,2 +1,0 @@
-// hand-written from sdk.d.ts:5234; replace with a real capture from crates/claude-spike when available
-{"type":"tool_progress","tool_use_id":"toolu_01","tool_name":"Bash","parent_tool_use_id":null,"elapsed_time_seconds":3.5,"task_id":"task_1","heartbeat":true,"uuid":"9f0c1d2e-0000-4000-8000-0000000000d2","session_id":"9f0c1d2e-0000-4000-8000-000000000001"}

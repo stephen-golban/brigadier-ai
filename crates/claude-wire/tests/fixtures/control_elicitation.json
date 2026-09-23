@@ -1,2 +1,0 @@
-// hand-written from sdk.d.ts:3535-3555; replace with a real capture from crates/claude-spike when available
-{"type":"control_request","request_id":"el1","request":{"subtype":"elicitation","mcp_server_name":"pencil","message":"Authorize access?","mode":"url","url":"https://example.invalid/auth","elicitation_id":"eli_1","requested_schema":{"type":"object","properties":{}},"title":"Authorize","display_name":"Pencil","description":"OAuth consent"}}

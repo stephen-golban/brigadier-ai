@@ -1,3 +1,0 @@
-// real capture, CLI 2.1.268, claude-spike/fixtures/s11-auto-compaction.ndjson:26
-// compaction that refused to run: status back to null, compact_result/compact_error set
-{"type":"system","subtype":"status","status":null,"compact_result":"failed","compact_error":"too_few_groups","session_id":"664bd465-c3a0-4335-8924-50f433284cac","uuid":"388cd023-ea7d-41e4-b945-76cdf5e136e4"}
