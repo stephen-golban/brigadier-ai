@@ -21,6 +21,7 @@ The user talks to exactly one **orchestrator**. The orchestrator never does work
 | MCP / skills | Each CLI uses its own config | One registry, injected into any vendor per task |
 | Runtime | Node server + daemon, sync SQLite stalls, memory leaks | Rust core, single-writer async store, bounded memory |
 | Security | Unauthenticated local HTTP API | Authenticated local IPC only; OS sandbox for workers |
+| Cleanup | Leaked worktrees and processes; teardown can retry forever | Cleanup ledger per session; everything Brigadier creates is removed; crash sweep on launch |
 | Claude integration | Agent SDK (conflicts with Anthropic subscription terms) | The user's own unmodified `claude` binary |
 | Platforms | macOS arm64, Linux alpha, no Windows | Universal macOS, then Windows and Linux |
 
@@ -34,6 +35,7 @@ The user talks to exactly one **orchestrator**. The orchestrator never does work
 6. **No new tests by default.** Verification is real: typecheck, lint, build, the existing suite, and a runtime smoke check. Test writing is a toggle. This applies to Brigadier's own development too.
 7. **Performance is a feature.** It is enforced by the budgets in §4, not hoped for.
 8. **Local-first and private.** No Brigadier backend, no accounts, no telemetry (crash reports opt-in only).
+9. **Leave no litter.** Brigadier removes everything it created: worktrees, CLI session files, scratchpads, temp files, processes, and ports. Only task-relevant changes ever reach a commit, and nothing Brigadier didn't create is ever touched.
 
 ## 3. Architecture overview
 
@@ -52,7 +54,7 @@ The user talks to exactly one **orchestrator**. The orchestrator never does work
    claude (user's binary)     codex app-server       opencode · cursor · qwen · local
 ```
 
-- **`brigadierd`** is a separate Rust process. The Tauri app launches it, and it keeps running when the window closes (menu bar), so Autopilot and long sessions continue. It uses Tokio for async work. Blocking work (SQLite, git, indexing) runs on dedicated threads, never on the async runtime.
+- **`brigadierd`** is a separate Rust process. The Tauri app launches it, and it keeps running when the window closes (menu bar), so long and unattended sessions continue. It uses Tokio for async work. Blocking work (SQLite, git, indexing) runs on dedicated threads, never on the async runtime.
 - **IPC** runs over a Unix domain socket (a named pipe on Windows) with a per-launch secret token. The UI receives a streamed event feed and sends commands. There is no TCP listener by default.
 - **Event store:** SQLite in WAL mode. One dedicated writer thread batches appends; there is a read-connection pool. Events are append-only per session. Large payloads (worker transcripts, diffs, screenshots) go to a content-addressed blob store on disk.
 - **Data location:** `~/Library/Application Support/Brigadier/`, behind a platform-paths abstraction. Brains are stored per project there, never in the repo.
@@ -76,7 +78,14 @@ The user talks to exactly one **orchestrator**. The orchestrator never does work
   registry/      # curated model registry (JSON), published via GitHub
   docs/
   ```
-- **UI stack:** React 19, Vite, Tailwind 4, and assistant-ui components copied into the repo and run on **ExternalStoreRuntime** over our own state. Primitives are Radix, and all icons come from the `@openai/apps-sdk-ui` icon set; lucide is replaced everywhere.
+- **UI stack:** React 19, Vite, Tailwind 4, and assistant-ui as the complete UI kit.
+  - We adopt their design system ([design.md](https://www.assistant-ui.com/design.md)) and their primitives and [elements](https://www.assistant-ui.com/elements), copied into the repo using the **Radix flavor**, and adapt them to our liking.
+  - Components run on **ExternalStoreRuntime** over our own state.
+  - All icons come from the `@openai/apps-sdk-ui` icon set; lucide is replaced everywhere.
+- **Theme:**
+  - **Dark only.** One global theme owns every token: color pairs, surfaces, borders, radii, type, spacing, control heights, and pill, button, icon-button, and icon sizes.
+  - **Density: Compact / Normal.** A global setting that switches the size and spacing tokens, so the whole app tightens or loosens at once.
+  - Copied assistant-ui components are rewritten onto these tokens and keep no hard-coded colors or sizes. A lint rule rejects raw colors and arbitrary pixel values in component code.
 
 ## 4. Performance budgets (enforced from Phase 1, reported in the Inspector)
 
@@ -94,7 +103,33 @@ The user talks to exactly one **orchestrator**. The orchestrator never does work
 ## 5. Key domain concepts
 
 - **Project:** a workspace of one or more repos. It owns one **Project Brain** and a service map.
-- **Session:** one orchestrator conversation in a project. It has its own session branch per touched repo (`brigadier/<slug>`) and can live indefinitely. Several sessions can run at once.
+- **Session:** one orchestrator conversation in a project. It can live indefinitely, and several sessions can run at once. Its environment is chosen in the composer:
+  - **Local checkout:** reviewed task commits land directly on the branch you pick, in your own checkout. Workers still use temporary worktrees for parallel work, created from that branch's latest commit. Your uncommitted changes are never overwritten, and Brigadier asks whether workers should see them.
+  - **New worktree:** you pick a base branch, and the session gets its own worktree on a new branch. Worker worktrees are created from the session branch and merge back into it. When the work is done, the session branch merges into the base branch after your one-click go-ahead.
+  - In both modes Brigadier's git engine performs merges on the orchestrator's instruction, and a merge worker resolves conflicts.
+- **Chat:** a plain conversation outside any project, listed under "Chats" in the sidebar, like ChatGPT. It is **not** a Brigadier session: there is no orchestrator and no workers. You talk directly to the model you picked. Chats get:
+  - web search and attachments;
+  - plugins and connectors from the registry;
+  - the Personal Brain as memory;
+  - automatic fallback when a limit is hit;
+  - image generation, quietly routed to Codex and shown inline.
+
+  A chat runs in a scratch folder, with no repo and no code editing.
+- **Sidebar** (ChatGPT layout): New chat and Search, then navigation items (Plugins, Scheduled, Usage), then Pinned, then **Projects** (folders with their sessions nested), then **Chats**.
+- **Lifecycle** (applies to both sessions and chats):
+  - **Hibernate:** automatic when idle. CLI processes stop and temp files are cleaned up, but the session stays in the sidebar, ready to continue.
+  - **Archive:** hidden in an Archived view. Workers stop and all leftovers are cleaned up. The transcript and artifacts are kept, so the session is restorable; the orchestrator restarts from the Brain and the transcript. Unmerged branches are kept.
+  - **Delete:** permanent. It asks what to do with unmerged branches, and has a "forget what the Brain learned from this session" checkbox, off by default.
+- **Permission level** (composer picker, remembered per project):
+  - **Ask for approval:** you approve every plan and every change. Sandboxed.
+  - **Approve for me** (default): Brigadier approves on your behalf, sandboxed.
+    - Small tasks just go.
+    - Big, risky, or architectural plans get a stricter fusion-panel review instead of your approval.
+    - It stops only for questions only you can answer (product choices, unclear requirements). The affected task waits while other tasks continue.
+  - **Full access:** Approve for me without the OS sandbox, shown with an orange warning pill.
+
+  At every level, actions that affect the outside world (push, deploy, publish, remote DB or cloud, credentials) always ask.
+- **Cleanup ledger:** Brigadier records every file, directory, process, and port each spawned CLI session creates, including worktrees; Claude transcripts, todos, shell snapshots, paste cache, and file history for that session; Codex thread records; temp folders; dev servers; and headless browsers. They are removed when a task finishes, when a session is archived or deleted, and by a crash-recovery sweep on every launch. Brigadier deletes only what it recorded, never your own CLI sessions.
 - **Task:** a unit of delegated work in the session's task graph. It has a type (scout, research, implement, review, merge, verify), a quality floor, an assigned model, and a status.
 - **Worker:** a CLI session running one task, in its own git worktree for write tasks. It returns a **structured report**: summary, changes, decisions, verification, open questions, and artifact references. The report is capped at about 800 tokens, and details stay in artifacts.
 - **Artifact:** full worker transcript, diff, command output, screenshot, or research note. It is stored in the blob store and retrievable by the orchestrator on demand.
@@ -116,12 +151,18 @@ Each phase lists its **goal**, **deliverables**, **key design**, and **done when
 - Authenticated IPC (socket + per-launch token) with a typed protocol; TS types are generated from Rust.
 - Event store (single-writer SQLite WAL, migrations, blob store) and platform paths.
 - An OS abstraction trait covering sandbox, paths, credential storage (Keychain), process spawn, and shell. macOS is implemented; Windows and Linux have compiling stubs.
-- Bare-bones desktop UI: projects list, session view with assistant-ui Thread and Composer on ExternalStoreRuntime, apps-sdk-ui icons.
+- **Theme foundation:**
+  - The assistant-ui design system is copied in (Radix flavor), with a dark-only token set and Compact / Normal density tokens.
+  - A lint rule bans raw colors and arbitrary pixel values.
+  - apps-sdk-ui icons replace lucide.
+- **Bare-bones desktop UI:**
+  - A ChatGPT-style sidebar (Projects with nested sessions, and Chats).
+  - A session view using assistant-ui Thread and Composer on ExternalStoreRuntime.
 - **Inspector panel** (developer view) showing the live event stream, process list, and performance metrics against the §4 budgets.
 - CI on macOS, Windows, and Linux: build, lint, and a launch smoke check on all three.
 - Signed and notarized macOS dev build (bundle ID `ai.brigadier.app`, universal, macOS 14+).
 
-**Done when:** The app launches in under 1 s. You can create a project and session and type messages that persist across app restarts. The Inspector shows live metrics within budget. CI is green on all three OSes.
+**Done when:** The app launches in under 1 s. You can create a project and session and type messages that persist across app restarts. Switching density visibly tightens every control, and no component carries a hard-coded color or size. The Inspector shows live metrics within budget. CI is green on all three OSes.
 
 ---
 
@@ -155,17 +196,44 @@ Each phase lists its **goal**, **deliverables**, **key design**, and **done when
   - Workers can ask the orchestrator blocking questions through a worker-side MCP tool.
   - Workers honor the repo's `CLAUDE.md` / `AGENTS.md` whatever their vendor, and do not load the user's personal CLI hooks or plugins.
 - **Non-blocking orchestration.** The user can chat at any time. Worker results queue up as events for the orchestrator's next turn, and only final reports and blocking questions enter its context.
-- **Git flow.**
-  - The session branch `brigadier/<slug>` is created from the current HEAD and checked out in the user's folder. Uncommitted changes are never overwritten: Brigadier stashes them or asks first.
-  - Each accepted task becomes one clean commit.
-  - An optional fully isolated session worktree is available.
-  - Merge and PR always need confirmation.
-- **Modes:** Ask, Smart (default), and Autopilot, plus the always-ask list (push, deploy, publish, remote DB/cloud, credentials, anything outside the project).
+- **Git flow:** the two session environments from §5.
+  - **Local checkout:** commits land on the picked branch.
+  - **New worktree:** a session branch created from the picked base, merged into the base after one-click approval.
+  - Worker worktrees are used in both modes.
+  - Each accepted task becomes one clean, reviewed commit.
+  - Uncommitted changes are never overwritten.
+  - PRs always need confirmation.
+- **Permission levels:** Ask for approval / Approve for me (default) / Full access, as described in §5, plus the always-ask list for outward-facing actions.
 - **Secrets:** a per-project list of gitignored env files copied into worktrees, with values redacted in the UI, logs, and Brain.
-- **UI:** worker cards (expandable live transcript, stop/pause), approval cards, @-mention of worker cards, a plan card, and the orchestrator model picker. Model selection order: session choice first, then the project's remembered choice, then the global default in Settings.
+- **Composer** (BB parity), built from assistant-ui composer elements:
+  - project picker, including "no project", which makes it a Chat;
+  - local checkout vs new worktree;
+  - branch picker, with "New branch…";
+  - permission level;
+  - attachments;
+  - reasoning effort;
+  - provider and model.
+
+  The model and effort choice is resolved in this order: session choice, then the project's remembered choice, then the global default in Settings. The permission level is remembered per project.
+- **Message queue:** assistant-ui's Message queue element, extended with:
+  - **Steer** (send now into the running turn), delete, a ⋯ menu with edit, and drag to reorder;
+  - an editing state and attachment summaries;
+  - "Queue paused because you interrupted → Resume";
+  - a queueing on/off toggle.
+- **Chats:** plain conversations directly with the picked model, with web search, attachments, and fallback. Plugins and image generation are added in Phase 7, and memory in Phase 4.
+- **Cleanup and lifecycle:**
+  - The cleanup ledger, and the pre-commit litter guard, which strips scratch notes, debug scripts, logs, and stray files unrelated to the task.
+  - Workers get a scratch folder outside the repo.
+  - Crash-recovery sweep on launch.
+  - Hibernate, archive, and delete as described in §5.
+- **UI:**
+  - Worker cards (expandable live transcript, stop/pause).
+  - Approval cards.
+  - @-mention of worker cards.
+  - A plan card.
 - Simple routing for now: a static table choosing between Claude and Codex models.
 
-**Done when:** "Add feature X" in a real repo goes all the way through. Parallel Claude and Codex workers run in separate worktrees, reports come back, commits land on the session branch, and approvals work. The Inspector shows the orchestrator's context growing only by messages and reports.
+**Done when:** "Add feature X" in a real repo goes all the way through, in both local-checkout and worktree modes. Parallel Claude and Codex workers run in separate worktrees, reports come back, commits land on the right branch, and approvals work. Queued messages can be steered, edited, and reordered. A plain Chat works. After archiving a session, no worktrees, CLI session files, or processes from it remain. The Inspector shows the orchestrator's context growing only by messages and reports.
 
 ---
 
@@ -192,8 +260,7 @@ Each phase lists its **goal**, **deliverables**, **key design**, and **done when
   - The new session gets a briefing of about 15–25k tokens built from the Brain, the handoff note, and the last N messages verbatim.
   - It can search the full transcript on demand.
   - The user sees nothing.
-- **Personal Brain:** global preferences, plus an optional export of conventions to `AGENTS.md`.
-- **Side chats:** a forked orchestrator session that shares the Brain but keeps the main session's context clean.
+- **Personal Brain:** global preferences, which also serve as memory in Chats (shown with assistant-ui Memory chips), plus an optional export of conventions to `AGENTS.md`.
 - **Inspector:** Brain graph viewer, orchestrator context meter, rebirth log.
 
 **Done when:** A session goes through at least 3 rebirths while working on Brigadier itself, with no loss of decisions and no user-visible seams. Repeated questions are answered from the Brain without a scout. **From here on, Brigadier is developed with Brigadier.**
@@ -232,7 +299,7 @@ Each phase lists its **goal**, **deliverables**, **key design**, and **done when
   - Trivial changes get one reviewer from a different vendor.
   - Large, risky, or architectural work, including its plan, gets the **fusion panel**: parallel independent reviewers from different vendors, plus an analyst that reports consensus, contradictions, gaps, unique insights, and blind spots.
   - Confirmed issues go back to the original worker to fix.
-  - `/fuse` forces a full panel, and Autopilot raises the level one step.
+  - `/fuse` forces a full panel, and when Brigadier approves on your behalf (Approve for me, Full access), risky plans always get the stricter panel.
 - **Verification pipeline** (per project, learned into the Brain):
   - Typecheck, lint, and build.
   - The existing test suite. If a change breaks an existing test, the worker fixes the code; it edits the test only for an intended behaviour change.
@@ -267,6 +334,7 @@ Each phase lists its **goal**, **deliverables**, **key design**, and **done when
   - **Local-only mode** per project.
 - **ACP adapter** covering opencode, Cursor (`cursor-agent acp`) and Qwen, with quirk handling per vendor.
 - Image and screenshot attachments everywhere, routed to vision-capable models.
+- **Chats get the full set:** plugins and connectors from the registry, and image generation routed quietly to Codex and shown inline, even when chatting with Claude.
 
 **Done when:** An MCP server configured only in Claude is used by a Codex worker. A skill from `~/.agents/skills` is applied to a Codex task. A local model handles titles and summaries. opencode works as a worker if it is installed.
 
@@ -294,7 +362,22 @@ Each phase lists its **goal**, **deliverables**, **key design**, and **done when
 **Goal:** Turn the bare-bones app into the product.
 
 **Deliverables**
-- A full design pass using assistant-ui components (copied), Radix primitives, and apps-sdk-ui icons.
+- **A full design pass on the assistant-ui design system and elements**, adapted to our dark theme and density tokens. Element mapping:
+  - Worker cards: Subagent list, Task card, Agent status.
+  - Approvals: Approval card, Permission grant.
+  - Plans: Agent plan, Todo list.
+  - Fallback notices: Handoff.
+  - Usage: Quota banner, Cost meter.
+  - Inspector: Context breakdown, Trace waterfall, Tool timeline.
+  - Task-graph panel: Flow graph.
+  - Diffs: Code diff, Reviewable diff.
+  - Files and terminal: File tree, Terminal block.
+  - Embedded browser: Web preview.
+  - Plugins screen: MCP config dialog, Server panel.
+  - Automations: Schedule card.
+  - Personal Brain: Memory chips.
+  - Sidebar: Thread list sidebar, Thread search.
+  - Also: Command palette, and Model selector with reasoning effort.
 - Session view polish: streaming performance at the §4 budgets, virtualized timeline, and lazy-loaded worker transcripts.
 - **Diff viewer** with "select lines → add to chat".
 - **Terminal** (xterm.js over a PTY from the core).
@@ -302,8 +385,8 @@ Each phase lists its **goal**, **deliverables**, **key design**, and **done when
 - **Embedded browser** with element annotation ("fix this"), shared with the smoke checks.
 - **Task-graph panel**, which replaces a kanban board.
 - **Native notifications:** approval needed, worker blocked, session done, limit hit.
-- **Automations:** scheduled or recurring sessions that run under Autopilot.
-- **Settings:** default orchestrator model and effort, modes, test toggle, secrets list, routing overrides, plugins, skills, local models, enrichment toggle.
+- **Automations:** scheduled or recurring sessions that run under Approve for me.
+- **Settings:** density (Compact / Normal), default orchestrator model and effort, default permission level, test toggle, secrets list, routing overrides, plugins, skills, local models, enrichment toggle.
 - The Inspector stays available as a developer view.
 
 **Done when:** A full day of real work on Brigadier happens in the app without falling back to a terminal, at the performance budgets.
@@ -349,11 +432,11 @@ Each phase lists its **goal**, **deliverables**, **key design**, and **done when
 |---|---|
 | Q1 | Public, free, MIT, local-first; no backend or accounts; open-core possible later |
 | Q2 | Pure orchestrator + scouts + Project Brain + rebirth instead of compaction |
-| Q3 | Modes: Ask / Smart (default) / Autopilot; irreversible actions always confirm |
+| Q3 | Autonomy modes; irreversible and outward-facing actions always confirm (levels finalized in Q27) |
 | Q4 | Layered routing: curated + discovery + outcome learning + overrides |
 | Q5 | Proactive quota balancing + mid-task cross-provider fallback with a quality floor |
 | Q6 | Risk-tiered, cross-vendor review; fusion panel for risky work and plans |
-| Q7 | Worktrees per worker; commits on `brigadier/<slug>` in the user's checkout |
+| Q7 | Worktrees per worker; accepted tasks land as clean commits (branch semantics superseded by Q23) |
 | Q8 | Workers visible as read-only live cards; redirect via the orchestrator |
 | Q9 | Mandatory freshness check, cached in the Brain |
 | Q10 | No new tests by default, real verification; test-writing toggle |
@@ -366,6 +449,12 @@ Each phase lists its **goal**, **deliverables**, **key design**, and **done when
 | Q17 | Orchestrator model: session picker → per-project remembered choice → global default |
 | Q18 | Brain seeding: static index + skeleton pass + lazy learning + idle-quota enrichment |
 | Q19 | Local models as free helpers + trivial workers + local-only mode |
-| Q20 | Feature scope per the table (diff, terminal, files, browser, GitHub, usage, side chats, automations, notifications) |
+| Q20 | Feature scope per the table (diff, terminal, files, browser, GitHub, usage, automations, notifications); side chats later dropped in favor of Chats (Q24) |
 | Q21 | MIT, no telemetry, universal macOS 14+, DMG + Homebrew, signed updater, `ai.brigadier.app` |
 | Q22 | Cross-platform core from day one; Windows and Linux ship in Phase 10 |
+| Q23 | Composer environment: Local checkout (commits on the picked branch) or New worktree (session branch from the picked base, merged into it on approval); worker worktrees in both |
+| Q24 | Chats are plain ChatGPT-style conversations with the picked model (no orchestrator), under "Chats" in the sidebar |
+| Q25 | Archive (hidden, cleaned up, restorable) / Delete (permanent, Brain knowledge kept by default); idle sessions hibernate |
+| Q26 | One permission picker combining autonomy and sandbox; outward actions always ask (levels finalized in Q27) |
+| Q27 | Levels: Ask for approval / Approve for me (default; stricter fusion review approves big plans on your behalf; stops only for questions only you can answer) / Full access (no sandbox, orange pill) |
+| — | Additions (2026-09-24): leave-no-litter cleanup ledger and litter guard; BB-parity composer; message queue (steer, edit, reorder, pause/resume); ChatGPT-style sidebar; assistant-ui design system + elements as the full UI kit; dark-only theme with Compact / Normal density, everything token-driven |
