@@ -1,2 +1,0 @@
-// hand-written from sdk.d.ts:4304-4315; replace with a real capture from crates/claude-spike when available
-{"type":"control_request","request_id":"ud1","request":{"subtype":"request_user_dialog","dialog_kind":"refusal_fallback_prompt","payload":{"original_model":"a","fallback_model":"b"},"tool_use_id":"toolu_03"}}

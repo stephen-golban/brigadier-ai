@@ -1,2 +1,0 @@
-// hand-written from invented: proves ResultMessage::Other survives a new subtype; replace with a real capture from crates/claude-spike when available
-{"type":"result","subtype":"error_quota_exhausted_v2","duration_ms":10,"is_error":true,"session_id":"s","uuid":"u"}

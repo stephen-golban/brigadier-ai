@@ -1,3 +1,0 @@
-{"request":{"hooks":{},"subtype":"initialize"},"request_id":"spike_1","type":"control_request"}
-{"message":{"content":"Use the Bash tool to run: echo brigadier-spike-ok. Then reply done.","role":"user"},"parent_tool_use_id":null,"type":"user"}
-{"response":{"request_id":"c837b6ff-8fce-4f62-8740-cf0b91d70b08","response":{"behavior":"allow","updatedInput":{"command":"echo brigadier-spike-ok","description":"Echo the string brigadier-spike-ok"}},"subtype":"success"},"type":"control_response"}

@@ -1,5 +1,0 @@
-opened true
-trigger aria "This response: context 41% used, auto-compacts at 84%"
-popover "This response | ≈ 82,000 / 200,000 tokens | Resets at your next message. brigadier sends every message to a fresh window, so this covers the response being written now — never the conversation. | No drop seen yet. A figure that climbs across messages instead of dropping would mean conversation history had been wired back in. | Auto-compacts at 167,000 tokens (84%), from the model's default. Only one long response can reach that line; compacting takes about twelve seconds and summarises what this response has done so far. | claude-sonnet-4-5 | Provider estimate · Includes instructions and tools · Updated 3:47:06 PM"
-money false
-pageerrors []

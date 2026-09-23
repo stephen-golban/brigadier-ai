@@ -1,2 +1,0 @@
-// hand-written from sdk.d.ts SDKResultError; replace with a real capture from crates/claude-spike when available
-{"type":"result","subtype":"error_max_turns","duration_ms":900,"duration_api_ms":800,"is_error":true,"num_turns":40,"errors":["max turns reached"],"total_cost_usd":1.02,"usage":{"input_tokens":1},"modelUsage":{},"permission_denials":[],"terminal_reason":"max_turns","stop_reason":null,"session_id":"9f0c1d2e-0000-4000-8000-000000000001","uuid":"9f0c1d2e-0000-4000-8000-0000000000c2"}

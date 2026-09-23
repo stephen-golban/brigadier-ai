@@ -1,2 +1,0 @@
-// hand-written from sdk.d.ts:4011-4020; replace with a real capture from crates/claude-spike when available
-{"type":"control_request","request_id":"it1","request":{"subtype":"interrupt","cancel_queued":true}}

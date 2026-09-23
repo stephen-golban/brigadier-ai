@@ -1,2 +1,0 @@
-// hand-written from sdk.d.ts:4832; replace with a real capture from crates/claude-spike when available
-{"type":"prompt_suggestion","suggestion":"Run the tests","uuid":"9f0c1d2e-0000-4000-8000-0000000000d5","session_id":"9f0c1d2e-0000-4000-8000-000000000001"}
