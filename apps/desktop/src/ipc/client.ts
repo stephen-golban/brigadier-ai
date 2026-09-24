@@ -78,3 +78,8 @@ export function smokeFinish(
 export function nowEpochMs(): number {
   return performance.timeOrigin + performance.now();
 }
+
+/** Opens the system folder picker (at `starting` when it exists); `null` when cancelled. */
+export function pickFolder(starting?: string): Promise<string | null> {
+  return invoke<string | null>("pick_folder", { starting: starting || null });
+}

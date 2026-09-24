@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { pickFolder } from "@/ipc/client";
 import type { ProviderKind, ProviderOverview, RawSession } from "@/ipc/generated";
 import { formatDateTime } from "@/lib/format";
 import {
@@ -292,14 +293,28 @@ function StartSessionForm() {
             disabled={efforts.length === 0}
           />
         </div>
-        <Input
-          aria-label="Working directory"
-          placeholder="Working directory (absolute path)"
-          value={cwd}
-          onChange={(event) => setCwd(event.target.value)}
-          className="h-control-sm font-mono text-xs"
-          spellCheck={false}
-        />
+        <div className="flex items-center gap-2">
+          <Input
+            aria-label="Working directory"
+            placeholder="Working directory (absolute path)"
+            value={cwd}
+            onChange={(event) => setCwd(event.target.value)}
+            className="h-control-sm min-w-0 flex-1 font-mono text-xs"
+            spellCheck={false}
+          />
+          <Button
+            type="button"
+            size="xs"
+            variant="outline"
+            onClick={() =>
+              void pickFolder(cwd.trim()).then((folder) => {
+                if (folder) setCwd(folder);
+              })
+            }
+          >
+            Browse…
+          </Button>
+        </div>
         <div className="flex flex-wrap items-center gap-2">
           <ToggleGroup
             type="single"

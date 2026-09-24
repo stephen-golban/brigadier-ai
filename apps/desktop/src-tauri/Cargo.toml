@@ -21,6 +21,7 @@ brigadier-sandbox.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "2.11.6", features = ["tray-icon", "image-png"] }
+tauri-plugin-dialog = "2.7.3"
 tauri-plugin-single-instance = "2.4.5"
 tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
 tracing.workspace = true
