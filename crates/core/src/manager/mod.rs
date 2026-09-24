@@ -200,11 +200,10 @@ impl SessionManager {
             })
             .await?;
         }
-        let suffix = uuid::Uuid::now_v7().simple().to_string();
-        let suffix = &suffix[suffix.len() - 8..];
-        let setup = setup.map(|request| Setup::from_request(request, suffix));
+        let id = ConversationId::generate();
+        let setup = setup.map(|request| Setup::from_request(request, &id));
         self.core
-            .create_conversation(kind, project_id, title, setup)
+            .create_conversation(id, kind, project_id, title, setup)
             .await
     }
 

@@ -776,10 +776,9 @@ impl SessionManager {
                     .as_ref()
                     .map(|id| id.0.clone())
                     .unwrap_or_else(|| "none".into());
-                let worktree = self.owned_dir("worktrees", &project).join(format!(
-                    "session-{}",
-                    &conversation_id.0[conversation_id.0.len() - 8..]
-                ));
+                let worktree = self
+                    .owned_dir("worktrees", &project)
+                    .join(format!("session-{}", conversation_id.short()));
                 self.runtime
                     .ledger()
                     .record(
@@ -1783,7 +1782,7 @@ fn access_for(kind: TaskKind, permission: PermissionLevel) -> WorkerAccess {
 
 /// `brigadier/<session>/task-<n>-<slug>`.
 fn task_branch(conversation_id: &ConversationId, number: u32, title: &str) -> String {
-    let session = &conversation_id.0[conversation_id.0.len() - 8..];
+    let session = conversation_id.short();
     let slug: String = title
         .to_lowercase()
         .chars()
