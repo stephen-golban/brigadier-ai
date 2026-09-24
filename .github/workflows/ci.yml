@@ -139,14 +139,25 @@ jobs:
           BRIGADIER_DATA_DIR: ${{ runner.temp }}/brigadier-smoke
           BRIGADIER_SMOKE_REPORT: ${{ runner.temp }}/smoke-report.json
         run: |
-          if [ "$RUNNER_OS" = "Linux" ]; then
-            # A desktop session has a D-Bus session bus (the single-instance lock and the tray
-            # use it); xvfb-run alone has none. Without DRI3, WebKitGTK needs the DMA-BUF
-            # renderer off to draw at all.
-            WEBKIT_DISABLE_DMABUF_RENDERER=1 dbus-run-session -- xvfb-run -a "${{ matrix.app }}" --smoke
-          else
-            "${{ matrix.app }}" --smoke
-          fi
+          smoke() {
+            if [ "$RUNNER_OS" = "Linux" ]; then
+              # A desktop session has a D-Bus session bus (the single-instance lock and the tray
+              # use it); xvfb-run alone has none. Without DRI3, WebKitGTK needs the DMA-BUF
+              # renderer off to draw at all.
+              WEBKIT_DISABLE_DMABUF_RENDERER=1 dbus-run-session -- xvfb-run -a "${{ matrix.app }}" --smoke
+            else
+              "${{ matrix.app }}" --smoke
+            fi
+          }
+          # The first launch of a freshly built binary on a fresh runner also pays one-time OS
+          # work (malware scan, loader and webview caches) that a user pays once after
+          # installing. Warm the OS up with a throwaway launch, then measure a cold app start
+          # with a fresh data directory. The warm-up's report is printed, never judged.
+          echo "::group::Warm-up launch (not judged)"
+          BRIGADIER_DATA_DIR="$RUNNER_TEMP/brigadier-warmup" \
+            BRIGADIER_SMOKE_REPORT="$RUNNER_TEMP/warmup-report.json" smoke || true
+          echo "::endgroup::"
+          smoke
 
       - name: Smoke report
         if: always()
