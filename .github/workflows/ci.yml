@@ -3,11 +3,15 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
+    paths-ignore: ["**.md", "docs/**", "LICENSE"]
   pull_request:
+    paths-ignore: ["**.md", "docs/**", "LICENSE"]
   workflow_dispatch:
 
+# A push cancels an older push's run, never a run someone started by hand.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -25,6 +29,7 @@ jobs:
   checks:
     name: Format, bindings, typecheck, lint
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
@@ -53,15 +58,18 @@ jobs:
   build:
     name: Build, clippy, smoke (${{ matrix.name }})
     needs: checks
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         include:
+          # Release tags build the universal app and DMG; other runs the native (arm64) app,
+          # which compiles once instead of twice.
           - name: macOS
             os: macos-latest
-            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
-            tauri-args: --target universal-apple-darwin --bundles app,dmg
-            app: target/universal-apple-darwin/release/bundle/macos/Brigadier.app/Contents/MacOS/brigadier
+            rust-targets: ${{ startsWith(github.ref, 'refs/tags/v') && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+            tauri-args: ${{ startsWith(github.ref, 'refs/tags/v') && '--target universal-apple-darwin --bundles app,dmg' || '--bundles app' }}
+            app: ${{ startsWith(github.ref, 'refs/tags/v') && 'target/universal-apple-darwin/release/bundle/macos/Brigadier.app/Contents/MacOS/brigadier' || 'target/release/bundle/macos/Brigadier.app/Contents/MacOS/brigadier' }}
           - name: Windows
             os: windows-latest
             rust-targets: ""
@@ -84,7 +92,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
-            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev xvfb
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev xvfb dbus
 
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -132,7 +140,10 @@ jobs:
           BRIGADIER_SMOKE_REPORT: ${{ runner.temp }}/smoke-report.json
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
-            xvfb-run -a "${{ matrix.app }}" --smoke
+            # A desktop session has a D-Bus session bus (the single-instance lock and the tray
+            # use it); xvfb-run alone has none. Without DRI3, WebKitGTK needs the DMA-BUF
+            # renderer off to draw at all.
+            WEBKIT_DISABLE_DMABUF_RENDERER=1 dbus-run-session -- xvfb-run -a "${{ matrix.app }}" --smoke
           else
             "${{ matrix.app }}" --smoke
           fi
