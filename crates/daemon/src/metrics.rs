@@ -13,7 +13,7 @@ use brigadier_store::Store;
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 use tokio::sync::{Notify, watch};
 
-use crate::supervisor::{SLOW_POLL, Supervisor};
+use crate::supervisor::{Supervisor, slow_poll_threshold};
 
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 const HEARTBEAT: Duration = Duration::from_millis(50);
@@ -162,12 +162,12 @@ impl Metrics {
             cpu_percent,
             scheduler_delay: LatencySummary::from_samples(&mut delays),
             tasks: TaskPollMetrics {
-                slow_poll_threshold_ms: SLOW_POLL.as_secs_f64() * 1000.0,
+                slow_poll_threshold_ms: slow_poll_threshold().as_secs_f64() * 1000.0,
                 polls: tasks.total_poll_count,
                 slow_polls: tasks.total_slow_poll_count,
                 slow_poll_total_ms: tasks.total_slow_poll_duration.as_secs_f64() * 1000.0,
                 mean_poll_us: tasks.mean_poll_duration().as_secs_f64() * 1e6,
-                long_delay_threshold_ms: SLOW_POLL.as_secs_f64() * 1000.0,
+                long_delay_threshold_ms: slow_poll_threshold().as_secs_f64() * 1000.0,
                 scheduled: tasks.total_scheduled_count,
                 long_delays: tasks.total_long_delay_count,
                 mean_scheduling_delay_us: tasks.mean_scheduled_duration().as_secs_f64() * 1e6,

@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use tokio::sync::mpsc;
@@ -6,8 +7,25 @@ use tokio::task::JoinHandle;
 use tokio_metrics::TaskMonitor;
 use tokio_util::sync::CancellationToken;
 
-/// A poll longer than this held a runtime worker hostage: a stall (§4).
-pub const SLOW_POLL: Duration = Duration::from_millis(10);
+/// A poll longer than 10 ms held a runtime worker hostage: a stall (§4).
+const STALL_BUDGET: Duration = Duration::from_millis(10);
+
+/// Multiplier for timing budgets on shared CI runners, where the OS may deschedule a thread
+/// mid-poll. Always 1 unless the environment says otherwise.
+pub const TOLERANCE_ENV: &str = "BRIGADIER_BUDGET_TOLERANCE";
+
+/// The stall threshold in effect: the §4 budget times the timing tolerance.
+pub fn slow_poll_threshold() -> Duration {
+    static THRESHOLD: OnceLock<Duration> = OnceLock::new();
+    *THRESHOLD.get_or_init(|| {
+        let tolerance = std::env::var(TOLERANCE_ENV)
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+            .filter(|value| value.is_finite() && *value >= 1.0)
+            .unwrap_or(1.0);
+        STALL_BUDGET.mul_f64(tolerance)
+    })
+}
 
 /// Spawns every daemon task under one [`TaskMonitor`] (so poll times are measured for all of
 /// them) and turns the failure of a critical task into a daemon exit.
@@ -22,8 +40,8 @@ impl Supervisor {
     pub fn new(shutdown: CancellationToken) -> (Self, mpsc::Receiver<String>) {
         let (fatal, fatal_rx) = mpsc::channel(8);
         let monitor = TaskMonitor::builder()
-            .with_slow_poll_threshold(SLOW_POLL)
-            .with_long_delay_threshold(SLOW_POLL)
+            .with_slow_poll_threshold(slow_poll_threshold())
+            .with_long_delay_threshold(slow_poll_threshold())
             .clone()
             .build();
         (

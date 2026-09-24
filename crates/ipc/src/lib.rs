@@ -7,6 +7,7 @@
 //! - Framing: length-prefixed JSON, at most [`MAX_FRAME_BYTES`] per frame.
 //! - Types: [`protocol`] and [`metrics`], exported to TypeScript by the `gen-ts` binary.
 
+pub mod app;
 pub mod frame;
 pub mod metrics;
 pub mod protocol;
