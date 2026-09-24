@@ -3,4 +3,17 @@
 //! Inspector.
 
 /// `(name, recording)` pairs.
-pub const BUILTIN: &[(&str, &str)] = &[];
+pub const BUILTIN: &[(&str, &str)] = &[
+    (
+        "claude-thinking-read",
+        include_str!("../fixtures/claude-thinking-read.jsonl"),
+    ),
+    (
+        "claude-steer-interrupt-approvals",
+        include_str!("../fixtures/claude-steer-interrupt-approvals.jsonl"),
+    ),
+    (
+        "codex-steer-interrupt-escalation",
+        include_str!("../fixtures/codex-steer-interrupt-escalation.jsonl"),
+    ),
+];
