@@ -18,6 +18,10 @@ use crate::model::{Access, ApprovalKind, ApprovalRequest};
 /// between (`git -C repo push` matches `git push`).
 pub const ALWAYS_ASK: &[&[&str]] = &[
     &["git", "push"],
+    &["git", "send-pack"],
+    &["git", "send-email"],
+    &["git", "lfs", "push"],
+    &["gh", "gist", "create"],
     &["gh", "pr", "create"],
     &["gh", "pr", "merge"],
     &["gh", "pr", "close"],
