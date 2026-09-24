@@ -207,7 +207,8 @@ impl SessionManager {
         }
     }
 
-    /// Under "Ask for approval", write tasks wait for an approved plan.
+    /// Under "Ask for approval", write tasks wait for an approved plan, and for the user's
+    /// decision on a newer plan still open.
     async fn check_plan_gate(&self, id: &ConversationId) -> Result<()> {
         let conversation = self.core.conversation(id)?;
         let Some(Setup::Session { permission, .. }) = conversation.setup else {
@@ -217,6 +218,16 @@ impl SessionManager {
             return Ok(());
         }
         let board = self.core.board(id).await?;
+        if let Some(open) = board
+            .plans
+            .values()
+            .find(|plan| matches!(plan.state, PlanState::Proposed | PlanState::InReview { .. }))
+        {
+            return Err(Error::Invalid(format!(
+                "The plan \"{}\" is waiting for the user's decision: wait for it before starting implement or merge tasks.",
+                open.title
+            )));
+        }
         let approved = board
             .plans
             .values()
