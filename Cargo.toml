@@ -32,12 +32,16 @@ brigadier-store = { path = "crates/store" }
 brigadier-ipc = { path = "crates/ipc" }
 brigadier-providers = { path = "crates/providers" }
 brigadier-sandbox = { path = "crates/sandbox" }
+brigadier-git = { path = "crates/git" }
+brigadier-router = { path = "crates/router" }
+brigadier-mcp-server = { path = "crates/mcp-server" }
 
 anyhow = "1.0.104"
 base64 = "0.23.1"
 blake3 = "1.8.7"
 dirs = "7.0.0"
 nix = { version = "0.31.3", features = ["fs", "process", "signal", "user"] }
+schemars = "1.2.2"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 rusqlite_migration = "2.6.0"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -50,7 +54,7 @@ tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 ts-rs = "12.0.1"
-uuid = { version = "1.26.1", features = ["v7", "serde"] }
+uuid = { version = "1.26.1", features = ["v4", "v7", "serde"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

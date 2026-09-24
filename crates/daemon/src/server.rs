@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
+use brigadier_core::manager::SessionManager;
 use brigadier_core::runtime::{Runtime, StartRaw};
 use brigadier_core::{Core, EnvironmentRequest, MAX_ATTACHMENT_BYTES, Setup, SetupRequest};
 use brigadier_ipc::metrics::{DaemonMetrics, Diagnostics, budgets};
@@ -38,6 +39,8 @@ pub struct Daemon {
     pub core: Arc<Core>,
     /// Provider sessions and what Brigadier knows about each provider.
     pub runtime: Arc<Runtime>,
+    /// Live sessions, Chats and workers; answers the Brigadier MCP tools and the gate.
+    pub sessions: Arc<SessionManager>,
     pub store: Store,
     pub metrics: Arc<Metrics>,
     pub supervisor: Supervisor,
@@ -57,6 +60,7 @@ impl Daemon {
         info: DaemonInfo,
         core: Arc<Core>,
         runtime: Arc<Runtime>,
+        sessions: Arc<SessionManager>,
         store: Store,
         metrics: Arc<Metrics>,
         supervisor: Supervisor,
@@ -68,6 +72,7 @@ impl Daemon {
             info,
             core,
             runtime,
+            sessions,
             store,
             metrics,
             supervisor,

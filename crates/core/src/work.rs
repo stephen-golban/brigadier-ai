@@ -27,7 +27,9 @@ pub struct AttachmentRef {
 // ----- tasks and workers ------------------------------------------------------------------
 
 /// What a task does (PLAN.md §5).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS, schemars::JsonSchema,
+)]
 #[serde(rename_all = "camelCase")]
 pub enum TaskKind {
     /// Looks around the repository and answers a question.
@@ -157,7 +159,7 @@ pub struct Report {
     pub submitted_at_ms: i64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum ReviewVerdict {
     Approve,
