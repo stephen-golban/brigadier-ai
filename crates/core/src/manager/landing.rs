@@ -693,8 +693,11 @@ impl SessionManager {
                 let repo = git.open(&repo).map_err(git_error)?;
                 // `git branch -d` would compare with the main checkout's HEAD, which is not
                 // the target in a new-worktree session; the merge check here is the real one.
-                if repo.is_merged(&branch, &into).map_err(git_error)? {
-                    repo.delete_branch(&branch, true).map_err(git_error)?;
+                // Deleted only at the tip found merged: a commit added since then stays.
+                if let Some(tip) = repo.branch_tip(&branch).map_err(git_error)?
+                    && repo.is_merged(&branch, &into).map_err(git_error)?
+                {
+                    repo.delete_branch_at(&branch, &tip).map_err(git_error)?;
                 }
                 Ok(())
             })
