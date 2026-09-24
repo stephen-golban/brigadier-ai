@@ -1,4 +1,5 @@
 import {
+  Archive,
   ChatCompose,
   DotsHorizontal,
   Folder,
@@ -7,12 +8,22 @@ import {
   Pencil,
   Pin,
   Plus,
+  Settings,
+  SettingsCog,
+  Sleep,
+  Trash,
   Unpin,
+  X,
 } from "@openai/apps-sdk-ui/components/Icon";
 import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
 
+import { DeleteDialog } from "@/app/dialogs/DeleteDialog";
+import { errorText } from "@/app/dialogs/fields";
+import { ProjectDialog } from "@/app/dialogs/ProjectDialog";
+import { SettingsDialog } from "@/app/dialogs/SettingsDialog";
 import { NameDialog } from "@/app/NameDialog";
 import { SearchDialog } from "@/app/SearchDialog";
+import { Button } from "@/components/ui/button";
 import {
   Collapsible,
   CollapsibleContent,
@@ -22,12 +33,14 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Kbd } from "@/components/ui/kbd";
 import {
   Sidebar,
   SidebarContent,
+  SidebarFooter,
   SidebarGroup,
   SidebarGroupAction,
   SidebarGroupContent,
@@ -41,10 +54,11 @@ import {
   SidebarMenuSubButton,
   SidebarMenuSubItem,
 } from "@/components/ui/sidebar";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { Conversation, Project } from "@/ipc/generated";
 import { cn } from "@/lib/utils";
 import {
-  createProject,
+  archive,
   openConversation,
   renameConversation,
   select,
@@ -54,8 +68,10 @@ import {
 import { useApp } from "@/state/store";
 
 type DialogState =
-  | { type: "project" }
+  | { type: "newProject" }
+  | { type: "projectSettings"; project: Project }
   | { type: "rename"; conversation: Conversation }
+  | { type: "settings" }
   | null;
 
 type Sections = {
@@ -65,11 +81,21 @@ type Sections = {
   sessions: Record<string, Conversation[]>;
 };
 
+/** What the rows can ask the sidebar to do. */
+type RowActions = {
+  onRename: (conversation: Conversation) => void;
+  onDelete: (conversation: Conversation) => void;
+  onError: (error: string) => void;
+};
+
 function useSections(): Sections {
   const projects = useApp((s) => s.projects);
   const conversations = useApp((s) => s.conversations);
   return useMemo(() => {
-    const all = Object.values(conversations);
+    // Archived conversations live in the Archived view only.
+    const all = Object.values(conversations).filter(
+      (conversation) => conversation.lifecycle !== "archived",
+    );
     const pinned = all
       .filter((conversation) => conversation.pinnedAtMs !== null)
       .toSorted((a, b) => (b.pinnedAtMs ?? 0) - (a.pinnedAtMs ?? 0));
@@ -112,12 +138,21 @@ export function AppSidebar() {
   const isChatDraft = useApp(
     (s) => s.selection.type === "draft" && s.selection.kind === "chat",
   );
+  const isArchived = useApp((s) => s.selection.type === "archived");
+  const archivedCount = useApp(
+    (s) =>
+      Object.values(s.conversations).filter(
+        (conversation) => conversation.lifecycle === "archived",
+      ).length,
+  );
   const catalogLoaded = useApp((s) => s.catalogLoaded);
   const searchShortcut = useApp((s) =>
     s.info?.platform === "macos" ? "⌘K" : "Ctrl K",
   );
   const [dialog, setDialog] = useState<DialogState>(null);
+  const [deleting, setDeleting] = useState<Conversation | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // Cmd/Ctrl+K opens search from anywhere.
   useEffect(() => {
@@ -131,8 +166,16 @@ export function AppSidebar() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  const onRename = (conversation: Conversation) =>
-    setDialog({ type: "rename", conversation });
+  const actions = useMemo<RowActions>(
+    () => ({
+      onRename: (conversation) => setDialog({ type: "rename", conversation }),
+      onDelete: (conversation) => setDeleting(conversation),
+      onError: (message) => setError(message),
+    }),
+    [],
+  );
+  const onProjectSettings = (project: Project) =>
+    setDialog({ type: "projectSettings", project });
 
   return (
     <Sidebar>
@@ -155,6 +198,20 @@ export function AppSidebar() {
               <Kbd className="ms-auto">{searchShortcut}</Kbd>
             </SidebarMenuButton>
           </SidebarMenuItem>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              isActive={isArchived}
+              onClick={() => select({ type: "archived" })}
+            >
+              <Archive />
+              <span className="flex-1">Archived</span>
+              {archivedCount > 0 && (
+                <span className="text-sidebar-foreground/60 ms-auto text-xs tabular-nums">
+                  {archivedCount}
+                </span>
+              )}
+            </SidebarMenuButton>
+          </SidebarMenuItem>
         </SidebarMenu>
       </SidebarHeader>
 
@@ -169,7 +226,7 @@ export function AppSidebar() {
                     key={conversation.id}
                     conversation={conversation}
                     active={conversation.id === activeId}
-                    onRename={onRename}
+                    actions={actions}
                   />
                 ))}
               </SidebarMenu>
@@ -182,7 +239,7 @@ export function AppSidebar() {
           <SidebarGroupAction
             title="New project"
             aria-label="New project"
-            onClick={() => setDialog({ type: "project" })}
+            onClick={() => setDialog({ type: "newProject" })}
           >
             <Plus />
           </SidebarGroupAction>
@@ -195,17 +252,18 @@ export function AppSidebar() {
                   sessions={sessions[project.id] ?? NO_SESSIONS}
                   activeId={activeId}
                   drafting={draftProjectId === project.id}
-                  onRename={onRename}
+                  actions={actions}
+                  onSettings={onProjectSettings}
                 />
               ))}
             </SidebarMenu>
             {catalogLoaded && projects.length === 0 && (
               <EmptyHint>
-                Projects group sessions on one or more repos.{" "}
+                Projects group sessions on a repository.{" "}
                 <button
                   type="button"
                   className="text-sidebar-foreground underline-offset-4 hover:underline"
-                  onClick={() => setDialog({ type: "project" })}
+                  onClick={() => setDialog({ type: "newProject" })}
                 >
                   Create a project
                 </button>
@@ -223,7 +281,7 @@ export function AppSidebar() {
                   key={conversation.id}
                   conversation={conversation}
                   active={conversation.id === activeId}
-                  onRename={onRename}
+                  actions={actions}
                 />
               ))}
             </SidebarMenu>
@@ -234,18 +292,50 @@ export function AppSidebar() {
         </SidebarGroup>
       </SidebarContent>
 
+      <SidebarFooter>
+        {error && (
+          <div
+            role="alert"
+            className="border-destructive/40 bg-destructive/10 text-destructive rounded-control flex items-start gap-2 border px-2 py-1.5 text-xs"
+          >
+            <p className="min-w-0 flex-1 wrap-break-word">{error}</p>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              aria-label="Dismiss"
+              onClick={() => setError(null)}
+            >
+              <X />
+            </Button>
+          </div>
+        )}
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton onClick={() => setDialog({ type: "settings" })}>
+              <Settings />
+              <span>Settings</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
+      </SidebarFooter>
+
       <SearchDialog open={searchOpen} onOpenChange={setSearchOpen} />
-      <NameDialog
-        open={dialog?.type === "project"}
+      <ProjectDialog
+        open={dialog?.type === "newProject" || dialog?.type === "projectSettings"}
         onOpenChange={(open) => !open && setDialog(null)}
-        title="New project"
-        description="A project owns its sessions and, later, its repos and Brain."
-        label="Project name"
-        confirmLabel="Create project"
-        onSubmit={async (name) => {
-          const project = await createProject(name);
+        project={dialog?.type === "projectSettings" ? dialog.project : null}
+        onCreated={(project) => {
+          setProjectExpanded(project.id, true);
           select({ type: "draft", kind: "session", projectId: project.id });
         }}
+      />
+      <SettingsDialog
+        open={dialog?.type === "settings"}
+        onOpenChange={(open) => !open && setDialog(null)}
+      />
+      <DeleteDialog
+        conversation={deleting}
+        onOpenChange={(open) => !open && setDeleting(null)}
       />
       <NameDialog
         open={dialog?.type === "rename"}
@@ -281,15 +371,21 @@ const ProjectRow = memo(function ProjectRow({
   sessions,
   activeId,
   drafting,
-  onRename,
+  actions,
+  onSettings,
 }: {
   project: Project;
   sessions: Conversation[];
   activeId: string | null;
   drafting: boolean;
-  onRename: (conversation: Conversation) => void;
+  actions: RowActions;
+  onSettings: (project: Project) => void;
 }) {
   const expanded = useApp((s) => s.expandedProjects[project.id] ?? true);
+  const newSession = () => {
+    setProjectExpanded(project.id, true);
+    select({ type: "draft", kind: "session", projectId: project.id });
+  };
   return (
     <Collapsible
       asChild
@@ -298,22 +394,37 @@ const ProjectRow = memo(function ProjectRow({
     >
       <SidebarMenuItem>
         <CollapsibleTrigger asChild>
-          <SidebarMenuButton isActive={drafting}>
+          <SidebarMenuButton isActive={drafting} className="pe-14">
             {expanded ? <FolderOpen /> : <Folder />}
             <span>{project.name}</span>
           </SidebarMenuButton>
         </CollapsibleTrigger>
         <SidebarMenuAction
           showOnHover
+          className="end-7"
           title={`New session in ${project.name}`}
           aria-label={`New session in ${project.name}`}
-          onClick={() => {
-            setProjectExpanded(project.id, true);
-            select({ type: "draft", kind: "session", projectId: project.id });
-          }}
+          onClick={newSession}
         >
           <Plus />
         </SidebarMenuAction>
+        <DropdownMenu modal={false}>
+          <DropdownMenuTrigger asChild>
+            <SidebarMenuAction showOnHover aria-label={`Options for ${project.name}`}>
+              <DotsHorizontal />
+            </SidebarMenuAction>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent side="right" align="start">
+            <DropdownMenuItem onSelect={newSession}>
+              <Plus />
+              New session
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => onSettings(project)}>
+              <SettingsCog />
+              Project settings…
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
         <CollapsibleContent>
           <SidebarMenuSub>
             {sessions.map((conversation) => (
@@ -321,7 +432,7 @@ const ProjectRow = memo(function ProjectRow({
                 key={conversation.id}
                 conversation={conversation}
                 active={conversation.id === activeId}
-                onRename={onRename}
+                actions={actions}
                 nested
               />
             ))}
@@ -337,18 +448,37 @@ const ProjectRow = memo(function ProjectRow({
   );
 });
 
+/** A small moon after the title of a conversation that went idle and stopped its CLIs. */
+function HibernatedMark() {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          data-slot="hibernated-badge"
+          aria-label="Hibernated"
+          className="text-sidebar-foreground/60 ms-auto flex shrink-0 items-center"
+        >
+          <Sleep className="size-icon-sm" />
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="right">Hibernated</TooltipContent>
+    </Tooltip>
+  );
+}
+
 const ConversationRow = memo(function ConversationRow({
   conversation,
   active,
-  onRename,
+  actions,
   nested = false,
 }: {
   conversation: Conversation;
   active: boolean;
-  onRename: (conversation: Conversation) => void;
+  actions: RowActions;
   nested?: boolean;
 }) {
   const pinned = conversation.pinnedAtMs !== null;
+  const hibernated = conversation.lifecycle === "hibernated";
   const menu = (
     <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
@@ -365,14 +495,33 @@ const ConversationRow = memo(function ConversationRow({
       </DropdownMenuTrigger>
       <DropdownMenuContent side="right" align="start">
         <DropdownMenuItem
-          onSelect={() => void setPinned(conversation.id, !pinned)}
+          onSelect={() =>
+            void setPinned(conversation.id, !pinned).catch((error: unknown) =>
+              actions.onError(errorText(error)),
+            )
+          }
         >
           {pinned ? <Unpin /> : <Pin />}
           {pinned ? "Unpin" : "Pin"}
         </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => onRename(conversation)}>
+        <DropdownMenuItem onSelect={() => actions.onRename(conversation)}>
           <Pencil />
           Rename
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          onSelect={() =>
+            void archive(conversation.id).catch((error: unknown) =>
+              actions.onError(errorText(error)),
+            )
+          }
+        >
+          <Archive />
+          Archive
+        </DropdownMenuItem>
+        <DropdownMenuItem variant="destructive" onSelect={() => actions.onDelete(conversation)}>
+          <Trash />
+          Delete…
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -386,7 +535,8 @@ const ConversationRow = memo(function ConversationRow({
           className="pe-7"
           onClick={() => openConversation(conversation.id)}
         >
-          <span>{conversation.title}</span>
+          <span className="min-w-0 truncate">{conversation.title}</span>
+          {hibernated && <HibernatedMark />}
         </SidebarMenuSubButton>
         {menu}
       </SidebarMenuSubItem>
@@ -396,9 +546,11 @@ const ConversationRow = memo(function ConversationRow({
     <SidebarMenuItem>
       <SidebarMenuButton
         isActive={active}
+        className={cn(hibernated && "pe-7")}
         onClick={() => openConversation(conversation.id)}
       >
-        <span>{conversation.title}</span>
+        <span className="min-w-0 truncate">{conversation.title}</span>
+        {hibernated && <HibernatedMark />}
       </SidebarMenuButton>
       {menu}
     </SidebarMenuItem>

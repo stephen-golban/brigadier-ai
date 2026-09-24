@@ -2,15 +2,32 @@ import { request } from "@/ipc/client";
 import type {
   Access,
   ApprovalDecision,
+  AttachmentRef,
   Conversation,
   Density,
+  MessageQueue,
   Project,
+  ProjectPatch,
   ProviderKind,
   RawApprovals,
   RawSession,
+  RepoInfo,
+  Settings,
+  Setup,
+  SetupRequest,
 } from "@/ipc/generated";
 import { applyDensity } from "@/lib/density";
 import {
+  boardFromView,
+  emptyBoard,
+  ORCHESTRATOR_ENTRIES,
+  updateBoard,
+  useBoard,
+  WORKER_ENTRIES,
+  type WorkerTranscript,
+} from "@/state/board";
+import {
+  emptyDraft,
   emptyThread,
   mergeMessages,
   replaceCatalog,
@@ -40,16 +57,15 @@ export async function loadCatalog(): Promise<void> {
   replaceCatalog(catalog.projects, catalog.conversations, catalog.settings);
 }
 
-/** Loads the newest page of a conversation, replacing what was loaded. */
-export async function loadMessages(id: string): Promise<void> {
+/**
+ * Loads a conversation's view (newest messages, tasks, cards, queue, run state), replacing
+ * what was loaded. Live events that arrived meanwhile are kept.
+ */
+export async function loadConversation(id: string): Promise<void> {
   updateThread(id, (thread) => ({ ...thread, loading: true }));
   try {
-    const { page } = await request({
-      method: "listMessages",
-      conversationId: id,
-      before: null,
-      limit: PAGE,
-    });
+    const { view } = await request({ method: "getConversation", id, limit: PAGE });
+    const page = view.messages;
     const newest = page.messages.at(-1)?.seq ?? 0;
     updateThread(id, (thread) => ({
       ...thread,
@@ -62,6 +78,14 @@ export async function loadMessages(id: string): Promise<void> {
       hasMore: page.hasMore,
       loading: false,
     }));
+    useApp.setState((state) => ({
+      conversations: { ...state.conversations, [id]: view.conversation },
+    }));
+    useBoard.setState((state) =>
+      state.board?.conversationId === id
+        ? { board: boardFromView(view, state.board) }
+        : state,
+    );
   } catch (error) {
     updateThread(id, (thread) => ({ ...thread, loading: false }));
     throw error;
@@ -116,10 +140,17 @@ export async function loadFullText(
 
 export function select(selection: Selection): void {
   useApp.setState({ selection });
-  if (selection.type === "conversation") {
-    const thread = useApp.getState().threads[selection.id];
-    if (!thread) void loadMessages(selection.id);
+  const { board } = useBoard.getState();
+  if (selection.type !== "conversation") {
+    if (board) useBoard.setState({ board: null });
+    return;
   }
+  if (board?.conversationId !== selection.id) {
+    useBoard.setState({ board: emptyBoard(selection.id) });
+  }
+  void loadConversation(selection.id).catch((error: unknown) => {
+    console.error("loading the conversation failed", error);
+  });
 }
 
 export function openConversation(id: string): void {
@@ -134,13 +165,29 @@ export function setProjectExpanded(id: string, expanded: boolean): void {
   }));
 }
 
-export async function createProject(name: string): Promise<Project> {
-  const { project } = await request({ method: "createProject", name, repo: null });
+function storeProject(project: Project): void {
   useApp.setState((state) => ({
     projects: { ...state.projects, [project.id]: project },
   }));
+}
+
+/** Creates a project on a repository; an empty name names it after the folder. */
+export async function createProject(name: string, repo: string | null): Promise<Project> {
+  const { project } = await request({ method: "createProject", name, repo });
+  storeProject(project);
   setProjectExpanded(project.id, true);
   return project;
+}
+
+export async function updateProject(id: string, patch: ProjectPatch): Promise<Project> {
+  const { project } = await request({ method: "updateProject", id, patch });
+  storeProject(project);
+  return project;
+}
+
+export async function getRepoInfo(path: string): Promise<RepoInfo> {
+  const { repo } = await request({ method: "getRepoInfo", path });
+  return repo;
 }
 
 function storeConversation(conversation: Conversation): void {
@@ -163,69 +210,455 @@ export async function setPinned(id: string, pinned: boolean): Promise<void> {
   storeConversation(conversation);
 }
 
+/** A message as the composer hands it over. */
+export type Outgoing = {
+  text: string;
+  attachments: AttachmentRef[];
+  /** Workers the message @-mentions. */
+  mentions: string[];
+};
+
+/** Turns the composer's choices for a draft into the new conversation's setup. */
+export type DraftTarget =
+  | { kind: "chat"; setup: SetupRequest | null }
+  | { kind: "session"; projectId: string; setup: SetupRequest | null };
+
 /**
- * Sends a user message from the current view. A draft first becomes a real chat or session;
- * the message shows immediately and is replaced by the daemon's copy once committed.
+ * Sends a user message from the current view. A draft first becomes a real chat or session
+ * with the composer's setup; the message shows immediately and is replaced by the daemon's
+ * copy once committed. While a turn runs the daemon queues it, unless queueing is off, in
+ * which case it steers the running turn.
  */
-export async function sendMessage(text: string): Promise<void> {
-  const { selection } = useApp.getState();
+export async function send(outgoing: Outgoing, draft?: DraftTarget): Promise<void> {
+  const { selection, settings } = useApp.getState();
   let conversationId: string;
   if (selection.type === "conversation") {
     conversationId = selection.id;
-  } else if (selection.type === "draft") {
+  } else if (selection.type === "draft" && draft) {
     const { conversation } = await request({
       method: "createConversation",
-      kind: selection.kind,
-      projectId: selection.kind === "session" ? selection.projectId : null,
+      kind: draft.kind,
+      projectId: draft.kind === "session" ? draft.projectId : null,
       title: null,
-      setup: null,
+      setup: draft.setup,
     });
     storeConversation(conversation);
     conversationId = conversation.id;
     updateThread(conversationId, () => emptyThread);
     // Only follow the new conversation if the user is still looking at the draft.
     if (useApp.getState().selection === selection) {
-      useApp.setState({ selection: { type: "conversation", id: conversationId } });
+      useApp.setState({ draft: emptyDraft(null) });
+      select({ type: "conversation", id: conversationId });
     }
   } else {
     return;
   }
 
-  const localId = crypto.randomUUID();
-  useApp.setState((state) => ({
-    pending: [
-      ...state.pending,
-      { localId, conversationId, text, createdAtMs: Date.now() },
-    ],
-  }));
-  try {
-    const { message } = await request({
-      method: "appendMessage",
-      conversationId,
-      text,
-    });
-    updateThread(conversationId, (thread) => ({
-      ...thread,
-      items: mergeMessages(thread.items, [message]),
-    }));
-  } finally {
+  const board = useBoard.getState().board;
+  const running =
+    board?.conversationId === conversationId &&
+    (board.run === "running" || board.run === "starting");
+  const steer = running && !settings.queueEnabled;
+  // A message sent while a turn runs is queued; it shows in the queue, not the thread.
+  const localId = running ? null : crypto.randomUUID();
+  if (localId) {
     useApp.setState((state) => ({
-      pending: state.pending.filter((entry) => entry.localId !== localId),
+      pending: [
+        ...state.pending,
+        {
+          localId,
+          conversationId,
+          text: outgoing.text,
+          attachments: outgoing.attachments,
+          createdAtMs: Date.now(),
+        },
+      ],
     }));
+  }
+  try {
+    const { outcome } = await request({
+      method: "sendMessage",
+      conversationId,
+      text: outgoing.text,
+      attachments: outgoing.attachments,
+      mentions: outgoing.mentions,
+      steer,
+    });
+    if (outcome.type === "sent") {
+      updateThread(conversationId, (thread) => ({
+        ...thread,
+        items: mergeMessages(thread.items, [outcome.message]),
+      }));
+    } else {
+      updateBoard(conversationId, (current) =>
+        current.queue.items.some((item) => item.id === outcome.item.id)
+          ? current
+          : { ...current, queue: { ...current.queue, items: [...current.queue.items, outcome.item] } },
+      );
+    }
+  } finally {
+    if (localId) {
+      useApp.setState((state) => ({
+        pending: state.pending.filter((entry) => entry.localId !== localId),
+      }));
+    }
   }
 }
 
-export async function setDensity(density: Density): Promise<void> {
-  applyDensity(density);
-  const previous = useApp.getState().settings;
-  useApp.setState({ settings: { ...previous, density } });
+/** Changes what can still change after creation: model, effort and permission level. */
+export async function updateSetup(id: string, setup: Setup): Promise<void> {
+  const { conversation } = await request({ method: "updateSetup", id, setup });
+  storeConversation(conversation);
+}
+
+/** Stores a file in the daemon's blob store, for attaching to a message. */
+export async function addAttachment(file: File): Promise<AttachmentRef> {
+  const data = await fileToBase64(file);
+  const { attachment } = await request({
+    method: "addAttachment",
+    name: file.name,
+    mime: file.type || "application/octet-stream",
+    data,
+  });
+  return attachment;
+}
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => {
+      const url = String(reader.result);
+      resolve(url.slice(url.indexOf(",") + 1));
+    });
+    reader.addEventListener("error", () =>
+      reject(reader.error ?? new Error(`could not read ${file.name}`)),
+    );
+    reader.readAsDataURL(file);
+  });
+}
+
+// ----- message queue ---------------------------------------------------------------------
+
+function showQueue(conversationId: string, queue: MessageQueue): void {
+  updateBoard(conversationId, (board) => ({ ...board, queue }));
+}
+
+export async function editQueued(
+  conversationId: string,
+  itemId: string,
+  outgoing: Outgoing,
+): Promise<void> {
+  const { queue } = await request({
+    method: "editQueued",
+    conversationId,
+    itemId,
+    text: outgoing.text,
+    attachments: outgoing.attachments,
+    mentions: outgoing.mentions,
+  });
+  showQueue(conversationId, queue);
+}
+
+export async function deleteQueued(conversationId: string, itemId: string): Promise<void> {
+  const { queue } = await request({ method: "deleteQueued", conversationId, itemId });
+  showQueue(conversationId, queue);
+}
+
+export async function moveQueued(
+  conversationId: string,
+  itemId: string,
+  index: number,
+): Promise<void> {
+  // Show the new order right away; the daemon's answer (or its event) confirms it.
+  updateBoard(conversationId, (board) => {
+    const items = board.queue.items.filter((item) => item.id !== itemId);
+    const moved = board.queue.items.find((item) => item.id === itemId);
+    if (!moved) return board;
+    items.splice(index, 0, moved);
+    return { ...board, queue: { ...board.queue, items } };
+  });
   try {
-    await request({ method: "updateSettings", settings: { ...previous, density } });
+    const { queue } = await request({ method: "moveQueued", conversationId, itemId, index });
+    showQueue(conversationId, queue);
+  } catch (error) {
+    await loadConversation(conversationId).catch(() => {});
+    throw error;
+  }
+}
+
+/** Sends a queued message into the running turn now. */
+export async function steerQueued(conversationId: string, itemId: string): Promise<void> {
+  await request({ method: "steerQueued", conversationId, itemId });
+}
+
+export async function resumeQueue(conversationId: string): Promise<void> {
+  const { queue } = await request({ method: "resumeQueue", conversationId });
+  showQueue(conversationId, queue);
+}
+
+/** Stops the running turn; the queue pauses until resumed. */
+export async function interrupt(conversationId: string): Promise<void> {
+  await request({ method: "interrupt", conversationId });
+}
+
+export async function setQueueEnabled(queueEnabled: boolean): Promise<void> {
+  await updateSettings({ ...useApp.getState().settings, queueEnabled });
+}
+
+// ----- cards and workers -----------------------------------------------------------------
+
+export async function answerCard(
+  conversationId: string,
+  cardId: string,
+  decision: ApprovalDecision,
+): Promise<void> {
+  await request({ method: "answerCard", conversationId, cardId, decision });
+}
+
+export async function answerQuestion(
+  conversationId: string,
+  cardId: string,
+  answer: string,
+): Promise<void> {
+  await request({ method: "answerQuestion", conversationId, cardId, answer });
+}
+
+export async function decidePlan(
+  conversationId: string,
+  cardId: string,
+  approve: boolean,
+  message: string | null,
+): Promise<void> {
+  await request({ method: "decidePlan", conversationId, cardId, approve, message });
+}
+
+export async function stopTask(taskId: string): Promise<void> {
+  await request({ method: "stopTask", taskId });
+}
+
+export async function pauseTask(taskId: string): Promise<void> {
+  await request({ method: "pauseTask", taskId });
+}
+
+export async function resumeTask(taskId: string): Promise<void> {
+  await request({ method: "resumeTask", taskId });
+}
+
+export async function readArtifact(id: string, offset: number, limit: number) {
+  const { text } = await request({ method: "readArtifact", id, offset, limit });
+  return text;
+}
+
+/** Transcript entries fetched per page. */
+const WORKER_PAGE = 500;
+
+function updateWorkerTranscript(
+  conversationId: string,
+  taskId: string,
+  update: (transcript: WorkerTranscript) => WorkerTranscript,
+): void {
+  updateBoard(conversationId, (board) => ({
+    ...board,
+    transcripts: {
+      ...board.transcripts,
+      [taskId]: update(
+        board.transcripts[taskId] ?? { entries: [], hasMore: false, loading: false },
+      ),
+    },
+  }));
+}
+
+/**
+ * Starts following a worker's transcript: loads its newest page, keeping live entries that
+ * arrived meanwhile. Transcripts load only when their card is opened.
+ */
+export async function openWorkerTranscript(conversationId: string, taskId: string): Promise<void> {
+  const board = useBoard.getState().board;
+  if (board?.conversationId !== conversationId || board.transcripts[taskId]) return;
+  updateWorkerTranscript(conversationId, taskId, (transcript) => ({ ...transcript, loading: true }));
+  try {
+    const { page } = await request({
+      method: "listWorkerEvents",
+      taskId,
+      before: null,
+      limit: WORKER_PAGE,
+    });
+    const newest = page.entries.at(-1)?.streamSeq ?? 0;
+    updateWorkerTranscript(conversationId, taskId, (transcript) => ({
+      entries: [
+        ...page.entries,
+        ...transcript.entries.filter((entry) => entry.streamSeq > newest),
+      ].slice(-WORKER_ENTRIES),
+      hasMore: page.hasMore,
+      loading: false,
+    }));
+  } catch (error) {
+    updateWorkerTranscript(conversationId, taskId, (transcript) => ({
+      ...transcript,
+      loading: false,
+    }));
+    throw error;
+  }
+}
+
+export async function loadEarlierWorkerEntries(
+  conversationId: string,
+  taskId: string,
+): Promise<void> {
+  const transcript = useBoard.getState().board?.transcripts[taskId];
+  const oldest = transcript?.entries[0];
+  if (!transcript || !oldest || transcript.loading) return;
+  updateWorkerTranscript(conversationId, taskId, (current) => ({ ...current, loading: true }));
+  try {
+    const { page } = await request({
+      method: "listWorkerEvents",
+      taskId,
+      before: oldest.streamSeq,
+      limit: WORKER_PAGE,
+    });
+    updateWorkerTranscript(conversationId, taskId, (current) => ({
+      entries: [...page.entries, ...current.entries],
+      hasMore: page.hasMore,
+      loading: false,
+    }));
+  } catch (error) {
+    updateWorkerTranscript(conversationId, taskId, (current) => ({ ...current, loading: false }));
+    throw error;
+  }
+}
+
+// ----- lifecycle -------------------------------------------------------------------------
+
+export async function hibernate(id: string): Promise<void> {
+  const { conversation } = await request({ method: "hibernate", id });
+  storeConversation(conversation);
+}
+
+export async function archive(id: string): Promise<void> {
+  const { conversation } = await request({ method: "archive", id });
+  storeConversation(conversation);
+  const { selection } = useApp.getState();
+  if (selection.type === "conversation" && selection.id === id) {
+    select({ type: "draft", kind: "chat" });
+  }
+}
+
+export async function restore(id: string): Promise<void> {
+  const { conversation } = await request({ method: "restore", id });
+  storeConversation(conversation);
+}
+
+export async function deleteConversation(
+  id: string,
+  deleteBranches: boolean,
+  forgetBrain: boolean,
+): Promise<void> {
+  await request({ method: "delete", id, deleteBranches, forgetBrain });
+  const { selection } = useApp.getState();
+  if (selection.type === "conversation" && selection.id === id) {
+    select({ type: "draft", kind: "chat" });
+  }
+  useApp.setState((state) => {
+    const { [id]: _deleted, ...conversations } = state.conversations;
+    const { [id]: _thread, ...threads } = state.threads;
+    return { conversations, threads };
+  });
+}
+
+// ----- orchestrator log (Inspector) ------------------------------------------------------
+
+/** Orchestrator log entries fetched per page. */
+const ORCHESTRATOR_PAGE = 1_000;
+
+/** Follows a conversation's orchestrator log in the Inspector, or stops with `null`. */
+export async function openOrchestratorLog(conversationId: string | null): Promise<void> {
+  if (conversationId === null) {
+    useBoard.setState({ orchestrator: null });
+    return;
+  }
+  useBoard.setState({
+    orchestrator: { conversationId, entries: [], hasMore: false, loading: true },
+  });
+  try {
+    const { page } = await request({
+      method: "listOrchestratorLog",
+      conversationId,
+      before: null,
+      limit: ORCHESTRATOR_PAGE,
+    });
+    const log = useBoard.getState().orchestrator;
+    if (log?.conversationId !== conversationId) return;
+    const newest = page.entries.at(-1)?.streamSeq ?? 0;
+    useBoard.setState({
+      orchestrator: {
+        conversationId,
+        entries: [
+          ...page.entries,
+          ...log.entries.filter((entry) => entry.streamSeq > newest),
+        ].slice(-ORCHESTRATOR_ENTRIES),
+        hasMore: page.hasMore,
+        loading: false,
+      },
+    });
+  } catch (error) {
+    const log = useBoard.getState().orchestrator;
+    if (log?.conversationId === conversationId) {
+      useBoard.setState({ orchestrator: { ...log, loading: false } });
+    }
+    throw error;
+  }
+}
+
+export async function loadEarlierOrchestratorLog(): Promise<void> {
+  const log = useBoard.getState().orchestrator;
+  const oldest = log?.entries[0];
+  if (!log || !oldest || log.loading) return;
+  useBoard.setState({ orchestrator: { ...log, loading: true } });
+  const { conversationId } = log;
+  try {
+    const { page } = await request({
+      method: "listOrchestratorLog",
+      conversationId,
+      before: oldest.streamSeq,
+      limit: ORCHESTRATOR_PAGE,
+    });
+    const current = useBoard.getState().orchestrator;
+    if (current?.conversationId !== conversationId) return;
+    useBoard.setState({
+      orchestrator: {
+        ...current,
+        entries: [...page.entries, ...current.entries],
+        hasMore: page.hasMore,
+        loading: false,
+      },
+    });
+  } catch (error) {
+    const current = useBoard.getState().orchestrator;
+    if (current?.conversationId === conversationId) {
+      useBoard.setState({ orchestrator: { ...current, loading: false } });
+    }
+    throw error;
+  }
+}
+
+// ----- settings --------------------------------------------------------------------------
+
+export async function updateSettings(settings: Settings): Promise<void> {
+  const previous = useApp.getState().settings;
+  applyDensity(settings.density);
+  useApp.setState({ settings });
+  try {
+    const { settings: saved } = await request({ method: "updateSettings", settings });
+    useApp.setState({ settings: saved });
   } catch (error) {
     applyDensity(previous.density);
     useApp.setState({ settings: previous });
     throw error;
   }
+}
+
+export async function setDensity(density: Density): Promise<void> {
+  await updateSettings({ ...useApp.getState().settings, density });
 }
 
 export function setInspectorOpen(open: boolean, tab?: InspectorTab): void {
