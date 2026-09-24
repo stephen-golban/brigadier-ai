@@ -30,5 +30,8 @@ export default defineConfig({
     target: platform === "windows" ? "chrome120" : "safari17",
     minify: !process.env.TAURI_ENV_DEBUG,
     sourcemap: Boolean(process.env.TAURI_ENV_DEBUG),
+    // Served from inside the app bundle, not over a network: one main chunk loads faster than
+    // several at cold start (measured by the smoke check). The Inspector is split out lazily.
+    chunkSizeWarningLimit: 1024,
   },
 });

@@ -32,6 +32,9 @@ const twMerge = extendTailwindMerge({
         "composer",
         "sidebar",
         "sidebar-icon",
+        "titlebar",
+        "traffic-lights",
+        "inspector",
       ],
       container: ["thread"],
       radius: [

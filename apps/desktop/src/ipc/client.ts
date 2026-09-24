@@ -1,0 +1,80 @@
+import { Channel, invoke } from "@tauri-apps/api/core";
+
+import type {
+  AppInfo,
+  BridgeEvent,
+  IpcError,
+  Request,
+  Response,
+  SmokeReport,
+  UiMeasurements,
+} from "@/ipc/generated";
+
+export type Method = Request["method"];
+export type RequestOf<M extends Method> = Extract<Request, { method: M }>;
+export type ResponseOf<M extends Method> = Extract<Response, { method: M }>;
+
+/** Rejection raised by `request` when the daemon (or the bridge) reports an error. */
+export class RequestError extends Error {
+  readonly code: IpcError["code"];
+
+  constructor(error: IpcError) {
+    super(error.message);
+    this.name = "RequestError";
+    this.code = error.code;
+  }
+}
+
+function isIpcError(value: unknown): value is IpcError {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "code" in value &&
+    "message" in value
+  );
+}
+
+/** Sends a typed request to brigadierd through the shell and returns its paired response. */
+export async function request<M extends Method>(
+  req: RequestOf<M>,
+): Promise<ResponseOf<M>> {
+  try {
+    const response = await invoke<Response>("ipc_request", { request: req });
+    if (response.method !== req.method) {
+      throw new Error(
+        `expected a ${req.method} response, got ${response.method}`,
+      );
+    }
+    return response as ResponseOf<M>;
+  } catch (error) {
+    throw isIpcError(error) ? new RequestError(error) : error;
+  }
+}
+
+/** Routes the shell's bridge events (daemon events, metrics, connection state) to `onEvent`. */
+export async function subscribe(
+  onEvent: (event: BridgeEvent) => void,
+): Promise<void> {
+  const channel = new Channel<BridgeEvent>(onEvent);
+  await invoke("ipc_subscribe", { channel });
+}
+
+export function appInfo(): Promise<AppInfo> {
+  return invoke<AppInfo>("app_info");
+}
+
+/** Reports the first interactive paint; resolves to cold start in ms. */
+export function appReady(paintMs: number): Promise<number> {
+  return invoke<number>("app_ready", { paintMs });
+}
+
+export function smokeFinish(
+  measurements: UiMeasurements,
+): Promise<SmokeReport> {
+  return invoke<SmokeReport>("smoke_finish", { measurements });
+}
+
+/** High-resolution wall clock in ms since the Unix epoch, comparable with daemon timestamps. */
+export function nowEpochMs(): number {
+  return performance.timeOrigin + performance.now();
+}

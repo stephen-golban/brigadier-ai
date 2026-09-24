@@ -22,6 +22,8 @@
  *               min-h-composer                composer input minimum height
  *               message-contain               skip rendering off-screen messages
  *   Layout      w-sidebar, w-sidebar-icon     sidebar widths
+ *               h-titlebar, ps-traffic-lights top bars; inset clearing the macOS traffic lights
+ *               w-inspector                   the Inspector panel
  *               max-w-thread, max-w-{xs,sm,md,lg} readable column / surface widths
  *   Radii       rounded-control (buttons, inputs), rounded-surface (menus, popovers),
  *               rounded-dialog, rounded-thread (message bubbles, composer), rounded-capsule,
@@ -88,6 +90,10 @@
   --spacing-composer: 2.5rem;
   --spacing-sidebar: 16rem;
   --spacing-sidebar-icon: 3rem;
+  /* Window chrome: top bars, room for the macOS traffic lights, the Inspector panel. */
+  --spacing-titlebar: 3rem;
+  --spacing-traffic-lights: 4.75rem;
+  --spacing-inspector: 28rem;
   /* Placeholder height for off-screen messages skipped by content-visibility. */
   --message-intrinsic-size: 12rem;
 
@@ -246,6 +252,8 @@
   --spacing-composer: 2rem;
   --spacing-sidebar: 14rem;
   --spacing-sidebar-icon: 2.5rem;
+  --spacing-titlebar: 2.5rem;
+  --spacing-inspector: 24rem;
   --message-intrinsic-size: 9rem;
 
   --radius-xs: 0.125rem;

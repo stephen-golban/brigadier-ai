@@ -1,0 +1,154 @@
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { memo, useLayoutEffect, useRef, useState } from "react";
+
+import { Button } from "@/components/ui/button";
+import type { DomainEvent, EventEnvelope } from "@/ipc/generated";
+import { formatClock, formatMs } from "@/lib/format";
+import { probeSamples, summarize } from "@/lib/perf";
+import { tokenPx } from "@/lib/tokens";
+import { runProbeBurst } from "@/state/actions";
+import { INSPECTOR_EVENTS, useApp } from "@/state/store";
+
+function summary(event: DomainEvent): string {
+  switch (event.type) {
+    case "projectCreated":
+      return event.project.name;
+    case "conversationCreated":
+      return `${event.conversation.kind} “${event.conversation.title}”`;
+    case "conversationRenamed":
+      return `“${event.title}”`;
+    case "conversationPinned":
+      return event.pinnedAtMs === null ? "unpinned" : "pinned";
+    case "messageAppended":
+      return event.message.text.slice(0, 120).replace(/\s+/g, " ");
+    case "settingsChanged":
+      return `density ${event.settings.density}`;
+    case "probe":
+      return `probe ${event.index + 1}/${event.count}`;
+  }
+}
+
+const EventRow = memo(function EventRow({ envelope }: { envelope: EventEnvelope }) {
+  return (
+    <div className="h-row-sm flex items-center gap-2 px-3 font-mono text-xs">
+      <span className="text-muted-foreground w-12 shrink-0 text-end tabular-nums">
+        {envelope.seq}
+      </span>
+      <span className="text-muted-foreground shrink-0 tabular-nums">
+        {formatClock(envelope.atMs)}
+      </span>
+      <span className="text-foreground shrink-0">{envelope.event.type}</span>
+      <span className="text-muted-foreground min-w-0 flex-1 truncate" title={envelope.stream}>
+        {envelope.stream} · {summary(envelope.event)}
+      </span>
+    </div>
+  );
+});
+
+function useProbeBurst() {
+  const [state, setState] = useState<{
+    burstId: string;
+    count: number;
+    painted: number;
+    p95: number;
+  } | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const run = async () => {
+    setBusy(true);
+    try {
+      const burst = await runProbeBurst();
+      const started = performance.now();
+      // Poll the painted count until the burst is done (or clearly stalled).
+      await new Promise<void>((resolve) => {
+        const tick = () => {
+          const samples = probeSamples(burst.burstId);
+          setState({
+            burstId: burst.burstId,
+            count: burst.count,
+            painted: samples.length,
+            p95: summarize(samples).p95Ms,
+          });
+          if (samples.length >= burst.count || performance.now() - started > 15_000) {
+            resolve();
+          } else {
+            setTimeout(tick, 100);
+          }
+        };
+        tick();
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return { state, busy, run };
+}
+
+export function EventsTab() {
+  const events = useApp((s) => s.inspector.events);
+  const density = useApp((s) => s.settings.density);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const probe = useProbeBurst();
+
+  // The app does not use React Compiler, so the virtualizer's unmemoizable API is fine here.
+  // oxlint-disable-next-line react/incompatible-library
+  const virtualizer = useVirtualizer({
+    count: events.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => tokenPx("--spacing-row-sm"),
+    getItemKey: (index) => events[index]?.seq ?? index,
+    overscan: 10,
+  });
+
+  // Row height is a density token.
+  useLayoutEffect(() => {
+    virtualizer.measure();
+  }, [density, virtualizer]);
+
+  return (
+    <>
+      <div className="flex shrink-0 items-center gap-2 border-b px-3 py-2 text-xs">
+        <span className="text-muted-foreground flex-1">
+          Live, newest first · last {Math.min(events.length, INSPECTOR_EVENTS)}
+        </span>
+        {probe.state && (
+          <span className="text-muted-foreground tabular-nums">
+            {probe.state.painted}/{probe.state.count} painted · p95{" "}
+            {formatMs(probe.state.p95)}
+          </span>
+        )}
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={probe.busy}
+          onClick={() => void probe.run()}
+        >
+          Run probe burst
+        </Button>
+      </div>
+      <div ref={scrollRef} data-selectable className="min-h-0 flex-1 overflow-y-auto">
+        {events.length === 0 ? (
+          <p className="text-muted-foreground p-4 text-xs">
+            Events appear here as the core commits them.
+          </p>
+        ) : (
+          <div className="relative w-full" style={{ height: `${virtualizer.getTotalSize()}px` }}>
+            {virtualizer.getVirtualItems().map((item) => {
+              const envelope = events[item.index];
+              if (!envelope) return null;
+              return (
+                <div
+                  key={item.key}
+                  className="absolute inset-x-0 top-0"
+                  style={{ transform: `translateY(${item.start}px)` }}
+                >
+                  <EventRow envelope={envelope} />
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
