@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::{self, Read};
 use std::os::unix::ffi::OsStringExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -72,6 +72,15 @@ impl Processes for MacProcesses {
     fn kill_group(&self, pid: u32) -> Result<()> {
         unix::kill_group(pid)
     }
+    fn in_dir(&self, dir: &Path) -> Result<Vec<u32>> {
+        let dir = dir.canonicalize()?;
+        let own = std::process::id();
+        Ok(all_pids()?
+            .into_iter()
+            .filter(|pid| *pid != own && *pid > 1)
+            .filter(|pid| working_dir(*pid).is_some_and(|cwd| cwd.starts_with(&dir)))
+            .collect())
+    }
     fn start_time_ms(&self, pid: u32) -> Result<f64> {
         let pid = i32::try_from(pid)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid pid"))?;
@@ -95,6 +104,62 @@ impl Processes for MacProcesses {
         }
         Ok(info.pbi_start_tvsec as f64 * 1000.0 + info.pbi_start_tvusec as f64 / 1000.0)
     }
+}
+
+/// Every process id on the machine, per `proc_listallpids`.
+fn all_pids() -> Result<Vec<u32>> {
+    let mut capacity = 4096;
+    loop {
+        let mut pids = vec![0 as libc::pid_t; capacity];
+        let bytes = (capacity * std::mem::size_of::<libc::pid_t>()) as libc::c_int;
+        // SAFETY: `pids` is a writable buffer of exactly `bytes` bytes; the call returns how
+        // many pids it wrote, never more than fit.
+        #[allow(unsafe_code)]
+        let count = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+        let count = usize::try_from(count).map_err(|_| io::Error::last_os_error())?;
+        if count < capacity {
+            pids.truncate(count);
+            return Ok(pids
+                .into_iter()
+                .filter_map(|pid| u32::try_from(pid).ok())
+                .collect());
+        }
+        capacity *= 2;
+    }
+}
+
+/// A process's working directory, per `PROC_PIDVNODEPATHINFO`. Readable for the current
+/// user's processes only; `None` otherwise or once it has exited.
+fn working_dir(pid: u32) -> Option<PathBuf> {
+    let pid = libc::c_int::try_from(pid).ok()?;
+    let size = std::mem::size_of::<libc::proc_vnodepathinfo>();
+    let mut info = std::mem::MaybeUninit::<libc::proc_vnodepathinfo>::zeroed();
+    // SAFETY: `info` is a writable buffer of exactly `size` bytes, which is what
+    // PROC_PIDVNODEPATHINFO fills; the return value is checked before `info` is read.
+    #[allow(unsafe_code)]
+    let (written, info) = unsafe {
+        let written = libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDVNODEPATHINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            size as libc::c_int,
+        );
+        (written, info.assume_init())
+    };
+    if written != size as libc::c_int {
+        return None;
+    }
+    let raw = info.pvi_cdir.vip_path.as_flattened();
+    let bytes: Vec<u8> = raw
+        .iter()
+        .take_while(|byte| **byte != 0)
+        .map(|byte| *byte as u8)
+        .collect();
+    if bytes.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(OsString::from_vec(bytes)))
 }
 
 /// A process's children, per `proc_listchildpids`.

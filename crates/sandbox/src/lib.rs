@@ -98,6 +98,11 @@ pub trait Processes: Send + Sync {
     fn kill_group(&self, pid: u32) -> Result<()>;
     /// Wall-clock start time of a process, in milliseconds since the Unix epoch.
     fn start_time_ms(&self, pid: u32) -> Result<f64>;
+    /// The current user's processes whose working directory is `dir` or inside it. This finds
+    /// what a worker started in its worktree even after it detached from the worker's process
+    /// tree (a dev server started in the background). Only ever used on folders Brigadier
+    /// created.
+    fn in_dir(&self, dir: &Path) -> Result<Vec<u32>>;
 }
 
 /// Generic secrets stored in the OS credential store, namespaced by service.
