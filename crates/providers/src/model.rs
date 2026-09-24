@@ -443,6 +443,68 @@ pub enum Origin {
     },
 }
 
+/// A file sent with a turn. Images reach the model as images; other files are named by path,
+/// for a session that can read them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InputFile {
+    pub path: PathBuf,
+    /// The name the user gave it (the file's own name when attached).
+    pub name: String,
+    pub mime: String,
+}
+
+impl InputFile {
+    pub fn is_image(&self) -> bool {
+        matches!(
+            self.mime.as_str(),
+            "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+        )
+    }
+}
+
+/// What a turn (or a steer) sends: text, files, or both.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TurnInput {
+    pub text: String,
+    pub files: Vec<InputFile>,
+}
+
+impl TurnInput {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            files: Vec::new(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.text.trim().is_empty() && self.files.is_empty()
+    }
+
+    /// The text followed by a line per file that is not an image, naming where it is.
+    pub fn text_with_file_notes(&self) -> String {
+        let mut text = self.text.clone();
+        for file in self.files.iter().filter(|file| !file.is_image()) {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(&format!(
+                "[Attached file \"{}\" ({}): {}]",
+                file.name,
+                file.mime,
+                file.path.display()
+            ));
+        }
+        text
+    }
+}
+
+impl From<String> for TurnInput {
+    fn from(text: String) -> Self {
+        Self::text(text)
+    }
+}
+
 /// Everything needed to start a provider session.
 #[derive(Debug, Clone)]
 pub struct SessionSpec {

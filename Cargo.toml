@@ -34,6 +34,7 @@ brigadier-providers = { path = "crates/providers" }
 brigadier-sandbox = { path = "crates/sandbox" }
 
 anyhow = "1.0.104"
+base64 = "0.23.1"
 blake3 = "1.8.7"
 dirs = "7.0.0"
 nix = { version = "0.31.3", features = ["fs", "process", "signal", "user"] }

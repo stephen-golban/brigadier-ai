@@ -538,9 +538,9 @@ impl Runtime {
     pub async fn send(&self, id: &RawSessionId, text: String, steer: bool) -> Result<()> {
         let session = self.live(id)?;
         let result = if steer {
-            session.steer(text).await
+            session.steer(text.into()).await
         } else {
-            session.send(text).await
+            session.send(text.into()).await
         };
         result.map_err(provider_error)
     }

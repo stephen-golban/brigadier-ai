@@ -12,12 +12,13 @@ publish.workspace = true
 codegen = ["dep:typify", "dep:schemars", "dep:syn", "dep:prettyplease"]
 
 [dependencies]
+base64.workspace = true
 brigadier-sandbox.workspace = true
 dirs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["process", "io-util", "sync", "time", "rt", "macros"] }
+tokio = { workspace = true, features = ["process", "io-util", "sync", "time", "rt", "macros", "fs"] }
 tracing.workspace = true
 ts-rs.workspace = true
 uuid = { workspace = true, features = ["v4"] }
