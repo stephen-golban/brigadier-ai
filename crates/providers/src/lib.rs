@@ -128,9 +128,11 @@ pub trait ProviderSession: Send + Sync {
     fn is_running(&self) -> bool;
 }
 
-/// Turns recorded CLI output back into events.
+/// Turns a recorded session back into events.
 pub trait Replayer: Send {
-    fn feed(&mut self, line: &str) -> Vec<ProviderEvent>;
+    /// Takes recorded lines in both directions: some output only reads right knowing what
+    /// Brigadier sent (Claude reports an interrupted turn as an error).
+    fn feed(&mut self, dir: record::Direction, line: &str) -> Vec<ProviderEvent>;
 }
 
 pub mod cleanup {
