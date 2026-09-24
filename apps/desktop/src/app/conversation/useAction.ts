@@ -1,9 +1,6 @@
 import { useCallback, useState } from "react";
 
-/**
- * Runs a daemon request from a button and keeps its error to show next to it. Requests the
- * orchestrator runtime doesn't serve yet answer "… is not available in this build yet".
- */
+/** Runs a daemon request from a button and keeps its error to show next to it. */
 export function useAction(): {
   busy: boolean;
   error: string | null;
