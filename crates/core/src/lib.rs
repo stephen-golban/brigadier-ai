@@ -4,13 +4,16 @@
 //! catalog (projects, sessions, chats, settings) rebuilt from the log on start, and records
 //! every change as a [`DomainEvent`].
 
+mod board;
 pub mod model;
 mod projection;
 pub mod runtime;
 mod sessions;
+pub mod work;
 
 pub use model::*;
-pub use sessions::{Core, ProbeBurst};
+pub use sessions::{Core, MAX_ATTACHMENT_BYTES, ProbeBurst};
+pub use work::*;
 
 /// Errors surfaced to clients.
 #[derive(Debug, thiserror::Error)]

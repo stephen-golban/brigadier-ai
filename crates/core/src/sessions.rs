@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::future::Future;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -6,11 +8,15 @@ use brigadier_store::{NewEvent, Retention, Store, StreamPage};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::board::{self, Board};
 use crate::model::{
-    Catalog, Conversation, ConversationId, ConversationKind, DomainEvent, Message, MessagePage,
-    MessageRole, Project, ProjectId, Settings, streams,
+    Catalog, Conversation, ConversationId, ConversationKind, ConversationView, DomainEvent,
+    EnvironmentKind, Lifecycle, Message, MessagePage, MessageRole, ModelChoice,
+    OrchestratorLogEntry, OrchestratorPage, Project, ProjectId, ProjectPatch, ProjectRepo,
+    RawEntry, Settings, Setup, WorkerPage, streams,
 };
 use crate::projection::Projection;
+use crate::work::{AttachmentRef, MessageQueue, QueuedMessage, Task, TaskId};
 use crate::{Error, Result, now_ms};
 
 const MAX_NAME_CHARS: usize = 200;
@@ -27,6 +33,11 @@ const CATALOG_PAGE: u32 = 1_000;
 /// Serialized size a message page may reach, well under the IPC frame cap. A single message
 /// always fits: its inline text is capped at `INLINE_TEXT_BYTES`.
 const PAGE_BYTES: usize = 4 * 1024 * 1024;
+/// Largest attachment accepted (it travels base64-encoded in one IPC frame).
+pub const MAX_ATTACHMENT_BYTES: usize = 10 * 1024 * 1024;
+const MAX_ATTACHMENTS: usize = 20;
+const MAX_QUEUED: usize = 50;
+const BOARD_PAGE: u32 = 1_000;
 
 /// A synthetic event burst started by [`Core::probe_burst`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -42,6 +53,9 @@ pub struct ProbeBurst {
 pub struct Core {
     store: Store,
     projection: Mutex<Projection>,
+    /// Boards of the conversations read since start, kept current by every write through
+    /// [`Core::record_conversation`].
+    boards: tokio::sync::Mutex<HashMap<ConversationId, Board>>,
 }
 
 impl Core {
@@ -86,6 +100,7 @@ impl Core {
         Ok(Arc::new(Self {
             store,
             projection: Mutex::new(projection),
+            boards: tokio::sync::Mutex::new(HashMap::new()),
         }))
     }
 
@@ -97,11 +112,23 @@ impl Core {
         self.projection().catalog()
     }
 
-    pub async fn create_project(&self, name: String) -> Result<Project> {
+    /// Creates a project, optionally with its repository (named after it when `name` is
+    /// empty).
+    pub async fn create_project(&self, name: String, repo: Option<String>) -> Result<Project> {
+        let repos = match repo {
+            Some(path) => vec![check_repo(path).await?],
+            None => Vec::new(),
+        };
+        let name = match (name.trim().is_empty(), repos.first()) {
+            (true, Some(repo)) => repo.name.clone(),
+            _ => clean_name(&name, "project name")?,
+        };
         let project = Project {
             id: ProjectId::generate(),
-            name: clean_name(&name, "project name")?,
+            name,
             created_at_ms: now_ms(),
+            repos,
+            prefs: Default::default(),
         };
         self.record(vec![(
             streams::CATALOG.into(),
@@ -113,12 +140,63 @@ impl Core {
         Ok(project)
     }
 
+    pub async fn update_project(&self, id: ProjectId, patch: ProjectPatch) -> Result<Project> {
+        let mut project = self.project(&id)?;
+        if let Some(name) = patch.name {
+            project.name = clean_name(&name, "project name")?;
+        }
+        if let Some(paths) = patch.repos {
+            let mut repos = Vec::with_capacity(paths.len());
+            for path in paths {
+                repos.push(check_repo(path).await?);
+            }
+            project.repos = repos;
+        }
+        if let Some(prefs) = patch.prefs {
+            for file in &prefs.secret_files {
+                check_secret_path(file)?;
+            }
+            project.prefs = prefs;
+        }
+        self.record(vec![(
+            streams::CATALOG.into(),
+            DomainEvent::ProjectUpdated {
+                project: project.clone(),
+            },
+        )])
+        .await?;
+        Ok(project)
+    }
+
+    pub fn project(&self, id: &ProjectId) -> Result<Project> {
+        self.projection()
+            .projects
+            .get(id)
+            .cloned()
+            .ok_or_else(|| Error::NotFound(format!("project {id}")))
+    }
+
+    pub fn settings(&self) -> Settings {
+        self.projection().settings.clone()
+    }
+
+    /// Creates a session or a chat. A session's setup is remembered by its project.
     pub async fn create_conversation(
         &self,
         kind: ConversationKind,
         project_id: Option<ProjectId>,
         title: Option<String>,
+        setup: Option<Setup>,
     ) -> Result<Conversation> {
+        match (&setup, kind) {
+            (Some(Setup::Session { .. }), ConversationKind::Chat)
+            | (Some(Setup::Chat { .. }), ConversationKind::Session) => {
+                return Err(Error::Invalid(
+                    "the setup does not match the conversation kind".into(),
+                ));
+            }
+            _ => {}
+        }
         match (kind, &project_id) {
             (ConversationKind::Session, None) => {
                 return Err(Error::Invalid("a session belongs to a project".into()));
@@ -141,6 +219,21 @@ impl Core {
             },
         };
         let now = now_ms();
+        let mut events = Vec::new();
+        if let (Some(Setup::Session { repo, .. }), Some(project_id)) = (&setup, &project_id) {
+            let mut project = self.project(project_id)?;
+            if !project.repos.iter().any(|known| known.path == *repo) {
+                return Err(Error::Invalid(format!(
+                    "{repo} is not one of the project's repositories"
+                )));
+            }
+            if remember(&mut project, setup.as_ref()) {
+                events.push((
+                    streams::CATALOG.into(),
+                    DomainEvent::ProjectUpdated { project },
+                ));
+            }
+        }
         let conversation = Conversation {
             id: ConversationId::generate(),
             kind,
@@ -149,15 +242,99 @@ impl Core {
             pinned_at_ms: None,
             created_at_ms: now,
             updated_at_ms: now,
+            setup,
+            lifecycle: Lifecycle::Active,
         };
+        events.insert(
+            0,
+            (
+                streams::CATALOG.into(),
+                DomainEvent::ConversationCreated {
+                    conversation: conversation.clone(),
+                },
+            ),
+        );
+        self.record(events).await?;
+        Ok(conversation)
+    }
+
+    /// Changes a conversation's setup (model, effort, permission level; a session's
+    /// environment only while it has none). A session's project remembers it.
+    pub async fn set_setup(&self, id: ConversationId, setup: Setup) -> Result<Conversation> {
+        let conversation = self.conversation(&id)?;
+        match (&conversation.setup, &setup, conversation.kind) {
+            (_, Setup::Chat { .. }, ConversationKind::Chat) => {}
+            (
+                Some(Setup::Session {
+                    repo, environment, ..
+                }),
+                Setup::Session {
+                    repo: new_repo,
+                    environment: new_environment,
+                    ..
+                },
+                ConversationKind::Session,
+            ) if repo != new_repo || !same_environment(environment, new_environment) => {
+                return Err(Error::Invalid(
+                    "a session's repository and environment cannot change".into(),
+                ));
+            }
+            (_, Setup::Session { .. }, ConversationKind::Session) => {}
+            _ => {
+                return Err(Error::Invalid(
+                    "the setup does not match the conversation kind".into(),
+                ));
+            }
+        }
+        let mut events = vec![(
+            streams::CATALOG.into(),
+            DomainEvent::ConversationSetUp {
+                id: id.clone(),
+                setup: setup.clone(),
+            },
+        )];
+        if let Some(project_id) = &conversation.project_id {
+            let mut project = self.project(project_id)?;
+            if remember(&mut project, Some(&setup)) {
+                events.push((
+                    streams::CATALOG.into(),
+                    DomainEvent::ProjectUpdated { project },
+                ));
+            }
+        }
+        self.record(events).await?;
+        self.conversation(&id)
+    }
+
+    pub async fn set_lifecycle(
+        &self,
+        id: ConversationId,
+        lifecycle: Lifecycle,
+    ) -> Result<Conversation> {
+        let current = self.conversation(&id)?;
+        if current.lifecycle != lifecycle {
+            self.record(vec![(
+                streams::CATALOG.into(),
+                DomainEvent::ConversationLifecycleChanged {
+                    id: id.clone(),
+                    lifecycle,
+                },
+            )])
+            .await?;
+        }
+        self.conversation(&id)
+    }
+
+    /// Removes a conversation from the catalog. Its streams are purged by the caller.
+    pub async fn forget_conversation(&self, id: ConversationId) -> Result<()> {
+        self.conversation(&id)?;
         self.record(vec![(
             streams::CATALOG.into(),
-            DomainEvent::ConversationCreated {
-                conversation: conversation.clone(),
-            },
+            DomainEvent::ConversationDeleted { id: id.clone() },
         )])
         .await?;
-        Ok(conversation)
+        self.boards.lock().await.remove(&id);
+        Ok(())
     }
 
     pub async fn rename_conversation(
@@ -196,31 +373,35 @@ impl Core {
 
     /// Appends a user message. The first message of an untitled conversation names it.
     pub async fn append_message(&self, id: ConversationId, text: String) -> Result<Message> {
+        self.append_user_message(id, text, Vec::new(), Vec::new())
+            .await
+    }
+
+    /// Appends a user message with its attachments and @-mentions. It may be attachments
+    /// only.
+    pub async fn append_user_message(
+        &self,
+        id: ConversationId,
+        text: String,
+        attachments: Vec<AttachmentRef>,
+        mentions: Vec<TaskId>,
+    ) -> Result<Message> {
         let conversation = self.conversation(&id)?;
-        let trimmed = text.trim();
-        if trimmed.is_empty() {
+        let trimmed = text.trim().to_owned();
+        if trimmed.is_empty() && attachments.is_empty() {
             return Err(Error::Invalid("message is empty".into()));
         }
-
-        let (inline, blob) = if text.len() > INLINE_TEXT_BYTES {
-            let hash = self.store.blobs().put(text.clone().into_bytes()).await?;
-            (
-                prefix(&text, PREVIEW_BYTES).to_owned(),
-                Some(hash.to_string()),
+        check_attachments(&attachments)?;
+        let mut message = self
+            .new_message(
+                &id,
+                MessageRole::User,
+                uuid::Uuid::now_v7().to_string(),
+                text,
             )
-        } else {
-            (text.clone(), None)
-        };
-        let message = Message {
-            id: uuid::Uuid::now_v7().to_string(),
-            conversation_id: id.clone(),
-            // Assigned by the store; the stream sequence is the message position.
-            seq: 0,
-            role: MessageRole::User,
-            text: inline,
-            blob,
-            created_at_ms: now_ms(),
-        };
+            .await?;
+        message.attachments = attachments;
+        message.mentions = mentions;
 
         let mut events = vec![(
             streams::conversation(&id),
@@ -233,11 +414,20 @@ impl Core {
             NEW_SESSION_TITLE | NEW_CHAT_TITLE
         );
         if untitled {
+            let title = if trimmed.is_empty() {
+                message
+                    .attachments
+                    .first()
+                    .map(|attachment| title_from(&attachment.name))
+                    .unwrap_or_else(|| conversation.title.clone())
+            } else {
+                title_from(&trimmed)
+            };
             events.push((
                 streams::CATALOG.into(),
                 DomainEvent::ConversationRenamed {
                     id: id.clone(),
-                    title: title_from(trimmed),
+                    title,
                 },
             ));
         }
@@ -245,6 +435,96 @@ impl Core {
         Ok(Message {
             seq: stored[0],
             ..message
+        })
+    }
+
+    /// Appends an assistant message, ending the stream of deltas with the same `message_id`.
+    pub async fn append_assistant_message(
+        &self,
+        id: ConversationId,
+        message_id: String,
+        text: String,
+        model: Option<ModelChoice>,
+    ) -> Result<Message> {
+        self.conversation(&id)?;
+        let mut message = self
+            .new_message(&id, MessageRole::Assistant, message_id, text)
+            .await?;
+        message.model = model;
+        let stored = self
+            .record_conversation(
+                &id,
+                vec![DomainEvent::MessageAppended {
+                    message: message.clone(),
+                }],
+            )
+            .await?;
+        Ok(Message {
+            seq: stored[0],
+            ..message
+        })
+    }
+
+    async fn new_message(
+        &self,
+        id: &ConversationId,
+        role: MessageRole,
+        message_id: String,
+        text: String,
+    ) -> Result<Message> {
+        let (inline, blob) = if text.len() > INLINE_TEXT_BYTES {
+            let hash = self.store.blobs().put(text.clone().into_bytes()).await?;
+            (
+                prefix(&text, PREVIEW_BYTES).to_owned(),
+                Some(hash.to_string()),
+            )
+        } else {
+            (text, None)
+        };
+        Ok(Message {
+            id: message_id,
+            conversation_id: id.clone(),
+            // Assigned by the store; the stream sequence is the message position.
+            seq: 0,
+            role,
+            text: inline,
+            blob,
+            created_at_ms: now_ms(),
+            attachments: Vec::new(),
+            mentions: Vec::new(),
+            model: None,
+        })
+    }
+
+    /// Stores an attachment in the blob store.
+    pub async fn add_attachment(
+        &self,
+        name: String,
+        mime: String,
+        bytes: Vec<u8>,
+    ) -> Result<AttachmentRef> {
+        if bytes.is_empty() {
+            return Err(Error::Invalid("the attachment is empty".into()));
+        }
+        if bytes.len() > MAX_ATTACHMENT_BYTES {
+            return Err(Error::Invalid(format!(
+                "attachments are limited to {} MB",
+                MAX_ATTACHMENT_BYTES / (1024 * 1024)
+            )));
+        }
+        let name = clean_name(&name, "attachment name")?;
+        let mime = if mime.trim().is_empty() {
+            "application/octet-stream".to_owned()
+        } else {
+            mime.trim().to_owned()
+        };
+        let size = bytes.len() as u64;
+        let hash = self.store.blobs().put(bytes).await?;
+        Ok(AttachmentRef {
+            id: hash.to_string(),
+            name,
+            mime,
+            bytes: size,
         })
     }
 
@@ -302,6 +582,113 @@ impl Core {
         Ok(MessagePage { messages, has_more })
     }
 
+    /// A page of a worker's transcript, oldest first.
+    pub async fn list_worker_events(
+        &self,
+        task_id: &TaskId,
+        before: Option<i64>,
+        limit: u32,
+    ) -> Result<WorkerPage> {
+        let (events, has_more) = self
+            .read_page(streams::task(task_id), "worker.event", before, limit)
+            .await?;
+        let entries = events
+            .iter()
+            .filter_map(|event| match decode(event) {
+                Ok(DomainEvent::WorkerEvent {
+                    event: provider, ..
+                }) => Some(Ok(RawEntry {
+                    stream_seq: event.stream_seq,
+                    at_ms: event.at_ms,
+                    event: provider,
+                })),
+                Ok(_) => None,
+                Err(err) => Some(Err(err)),
+            })
+            .collect::<Result<_>>()?;
+        Ok(WorkerPage { entries, has_more })
+    }
+
+    /// A page of the orchestrator log, oldest first.
+    pub async fn list_orchestrator_log(
+        &self,
+        id: &ConversationId,
+        before: Option<i64>,
+        limit: u32,
+    ) -> Result<OrchestratorPage> {
+        self.conversation(id)?;
+        let (events, has_more) = self
+            .read_page(
+                streams::orchestrator(id),
+                "orchestrator.logged",
+                before,
+                limit,
+            )
+            .await?;
+        let entries = events
+            .iter()
+            .filter_map(|event| match decode(event) {
+                Ok(DomainEvent::OrchestratorLogged { entry, .. }) => {
+                    Some(Ok(OrchestratorLogEntry {
+                        stream_seq: event.stream_seq,
+                        at_ms: event.at_ms,
+                        entry,
+                    }))
+                }
+                Ok(_) => None,
+                Err(err) => Some(Err(err)),
+            })
+            .collect::<Result<_>>()?;
+        Ok(OrchestratorPage { entries, has_more })
+    }
+
+    /// Up to `limit` events of `kind` before `before`, oldest first, and whether older ones
+    /// exist.
+    async fn read_page(
+        &self,
+        stream: String,
+        kind: &str,
+        before: Option<i64>,
+        limit: u32,
+    ) -> Result<(Vec<brigadier_store::StoredEvent>, bool)> {
+        let limit = limit.clamp(1, brigadier_store::MAX_PAGE - 1);
+        let mut events = self
+            .store
+            .read_stream(
+                stream,
+                StreamPage {
+                    before,
+                    kinds: vec![kind.to_owned()],
+                    limit: limit + 1,
+                },
+            )
+            .await?;
+        let has_more = events.len() > limit as usize;
+        events.truncate(limit as usize);
+        events.reverse();
+        Ok((events, has_more))
+    }
+
+    /// Bytes `offset..offset + limit` of a blob, and its total size.
+    pub async fn read_blob_range(
+        &self,
+        hash: String,
+        offset: u64,
+        limit: u32,
+    ) -> Result<(Vec<u8>, u64)> {
+        let hash = hash.parse()?;
+        let bytes = self
+            .store
+            .blobs()
+            .get(hash)
+            .await?
+            .ok_or_else(|| Error::NotFound("artifact".into()))?;
+        let total = bytes.len() as u64;
+        let start = offset.min(total) as usize;
+        let end = start.saturating_add(limit as usize).min(bytes.len());
+        Ok((bytes[start..end].to_vec(), total))
+    }
+
     /// Full text of a message stored in the blob store.
     pub async fn read_blob_text(&self, hash: String) -> Result<String> {
         let hash = hash.parse()?;
@@ -312,6 +699,260 @@ impl Core {
             .await?
             .ok_or_else(|| Error::NotFound("blob".into()))?;
         String::from_utf8(bytes).map_err(|_| Error::Invalid("blob is not text".into()))
+    }
+
+    /// Everything a conversation view shows, with the newest `limit` messages.
+    pub async fn conversation_view(
+        &self,
+        id: ConversationId,
+        limit: u32,
+    ) -> Result<ConversationView> {
+        let conversation = self.conversation(&id)?;
+        let messages = self.list_messages(id.clone(), None, limit).await?;
+        let board = self.board(&id).await?;
+        Ok(ConversationView {
+            conversation,
+            messages,
+            tasks: board.sorted_tasks(),
+            approvals: board.sorted_approvals(),
+            questions: board.sorted_questions(),
+            plans: board.sorted_plans(),
+            queue: board.queue.clone(),
+            run: board.run,
+            streaming: board.streaming.clone(),
+            notices: board.notices.clone(),
+        })
+    }
+
+    /// Appends events to a conversation's stream and applies them to its board. Returns each
+    /// event's stream sequence.
+    pub async fn record_conversation(
+        &self,
+        id: &ConversationId,
+        events: Vec<DomainEvent>,
+    ) -> Result<Vec<i64>> {
+        let stream = streams::conversation(id);
+        let mut boards = self.boards.lock().await;
+        if !boards.contains_key(id) {
+            let board = self.load_board(id).await?;
+            boards.insert(id.clone(), board);
+        }
+        let stored = self
+            .record(
+                events
+                    .iter()
+                    .map(|event| (stream.clone(), event.clone()))
+                    .collect(),
+            )
+            .await?;
+        if let Some(board) = boards.get_mut(id) {
+            for (event, stream_seq) in events.iter().zip(&stored) {
+                board.apply(event, *stream_seq);
+            }
+        }
+        Ok(stored)
+    }
+
+    /// A snapshot of a conversation's tasks.
+    pub async fn tasks(&self, id: &ConversationId) -> Result<Vec<Task>> {
+        Ok(self.board(id).await?.sorted_tasks())
+    }
+
+    /// The number the next task of a conversation gets (`task-N`).
+    pub async fn next_task_number(&self, id: &ConversationId) -> Result<u32> {
+        Ok(self.board(id).await?.next_task_number())
+    }
+
+    /// Queues a message while a turn runs.
+    pub async fn enqueue(
+        &self,
+        id: &ConversationId,
+        text: String,
+        attachments: Vec<AttachmentRef>,
+        mentions: Vec<TaskId>,
+    ) -> Result<QueuedMessage> {
+        if text.trim().is_empty() && attachments.is_empty() {
+            return Err(Error::Invalid("message is empty".into()));
+        }
+        check_attachments(&attachments)?;
+        let item = QueuedMessage {
+            id: uuid::Uuid::now_v7().to_string(),
+            text,
+            attachments,
+            mentions,
+            queued_at_ms: now_ms(),
+            edited_at_ms: None,
+        };
+        let queued = item.clone();
+        self.change_queue(id, move |queue| {
+            if queue.items.len() >= MAX_QUEUED {
+                return Err(Error::Invalid(format!(
+                    "at most {MAX_QUEUED} messages can wait in the queue"
+                )));
+            }
+            queue.items.push(queued);
+            Ok(())
+        })
+        .await?;
+        Ok(item)
+    }
+
+    pub async fn edit_queued(
+        &self,
+        id: &ConversationId,
+        item_id: &str,
+        text: String,
+        attachments: Vec<AttachmentRef>,
+        mentions: Vec<TaskId>,
+    ) -> Result<MessageQueue> {
+        if text.trim().is_empty() && attachments.is_empty() {
+            return Err(Error::Invalid("message is empty".into()));
+        }
+        check_attachments(&attachments)?;
+        self.change_queue(id, |queue| {
+            let item = find_queued(queue, item_id)?;
+            item.text = text;
+            item.attachments = attachments;
+            item.mentions = mentions;
+            item.edited_at_ms = Some(now_ms());
+            Ok(())
+        })
+        .await
+    }
+
+    /// Moves a queued message to `index` (clamped to the queue).
+    pub async fn move_queued(
+        &self,
+        id: &ConversationId,
+        item_id: &str,
+        index: u32,
+    ) -> Result<MessageQueue> {
+        self.change_queue(id, |queue| {
+            let from = queue
+                .items
+                .iter()
+                .position(|item| item.id == item_id)
+                .ok_or_else(|| Error::NotFound(format!("queued message {item_id}")))?;
+            let item = queue.items.remove(from);
+            let to = (index as usize).min(queue.items.len());
+            queue.items.insert(to, item);
+            Ok(())
+        })
+        .await
+    }
+
+    /// Takes a message out of the queue (deleted, or sent now as a steer).
+    pub async fn take_queued(&self, id: &ConversationId, item_id: &str) -> Result<QueuedMessage> {
+        let mut taken = None;
+        self.change_queue(id, |queue| {
+            let index = queue
+                .items
+                .iter()
+                .position(|item| item.id == item_id)
+                .ok_or_else(|| Error::NotFound(format!("queued message {item_id}")))?;
+            taken = Some(queue.items.remove(index));
+            Ok(())
+        })
+        .await?;
+        taken.ok_or_else(|| Error::NotFound(format!("queued message {item_id}")))
+    }
+
+    /// Takes the next message to send, unless the queue is paused or empty.
+    pub async fn pop_queued(&self, id: &ConversationId) -> Result<Option<QueuedMessage>> {
+        let board = self.board(id).await?;
+        if board.queue.paused || board.queue.items.is_empty() {
+            return Ok(None);
+        }
+        let first = board.queue.items[0].id.clone();
+        self.take_queued(id, &first).await.map(Some)
+    }
+
+    pub async fn set_queue_paused(
+        &self,
+        id: &ConversationId,
+        paused: bool,
+    ) -> Result<MessageQueue> {
+        self.change_queue(id, |queue| {
+            queue.paused = paused;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn change_queue(
+        &self,
+        id: &ConversationId,
+        change: impl FnOnce(&mut MessageQueue) -> Result<()>,
+    ) -> Result<MessageQueue> {
+        self.conversation(id)?;
+        // Held across the write so two changes cannot interleave.
+        let mut boards = self.boards.lock().await;
+        if !boards.contains_key(id) {
+            let board = self.load_board(id).await?;
+            boards.insert(id.clone(), board);
+        }
+        let mut queue = boards
+            .get(id)
+            .map(|board| board.queue.clone())
+            .unwrap_or_default();
+        change(&mut queue)?;
+        let event = DomainEvent::QueueChanged {
+            conversation_id: id.clone(),
+            queue: queue.clone(),
+        };
+        let stored = self
+            .record(vec![(streams::conversation(id), event.clone())])
+            .await?;
+        if let Some(board) = boards.get_mut(id) {
+            board.apply(&event, stored[0]);
+        }
+        Ok(queue)
+    }
+
+    async fn board(&self, id: &ConversationId) -> Result<Board> {
+        let mut boards = self.boards.lock().await;
+        if let Some(board) = boards.get(id) {
+            return Ok(board.clone());
+        }
+        let board = self.load_board(id).await?;
+        boards.insert(id.clone(), board.clone());
+        Ok(board)
+    }
+
+    /// Folds a conversation's stream into its board, newest page first.
+    async fn load_board(&self, id: &ConversationId) -> Result<Board> {
+        let mut events = Vec::new();
+        let mut before = None;
+        loop {
+            let page = self
+                .store
+                .read_stream(
+                    streams::conversation(id),
+                    StreamPage {
+                        before,
+                        kinds: board::KINDS.iter().map(|kind| (*kind).to_owned()).collect(),
+                        limit: BOARD_PAGE,
+                    },
+                )
+                .await?;
+            let full = page.len() == BOARD_PAGE as usize;
+            before = page.last().map(|event| event.stream_seq);
+            events.extend(page);
+            if !full {
+                break;
+            }
+        }
+        let mut board = Board::default();
+        for event in events.iter().rev() {
+            board.apply(&decode(event)?, event.stream_seq);
+        }
+        // Nothing runs across a daemon restart.
+        board.run = match board.run {
+            crate::work::RunState::Hibernated => crate::work::RunState::Hibernated,
+            _ => crate::work::RunState::Idle,
+        };
+        board.streaming = None;
+        Ok(board)
     }
 
     pub async fn update_settings(&self, settings: Settings) -> Result<Settings> {
@@ -414,6 +1055,119 @@ pub(crate) fn decode(event: &brigadier_store::StoredEvent) -> Result<DomainEvent
         seq: event.seq,
         source,
     })
+}
+
+/// Checks that `path` is the top-level directory of a git repository.
+async fn check_repo(path: String) -> Result<ProjectRepo> {
+    tokio::task::spawn_blocking(move || {
+        let dir = PathBuf::from(path.trim());
+        if !dir.is_absolute() {
+            return Err(Error::Invalid(format!(
+                "{} is not an absolute path",
+                dir.display()
+            )));
+        }
+        let dir = dir
+            .canonicalize()
+            .map_err(|err| Error::Invalid(format!("{}: {err}", dir.display())))?;
+        if !dir.join(".git").exists() {
+            return Err(Error::Invalid(format!(
+                "{} is not the top-level folder of a git repository",
+                dir.display()
+            )));
+        }
+        let name = dir
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| dir.display().to_string());
+        Ok(ProjectRepo {
+            path: dir.display().to_string(),
+            name,
+        })
+    })
+    .await
+    .map_err(|err| Error::Invalid(format!("checking the repository: {err}")))?
+}
+
+/// Secret files are paths inside the repository.
+fn check_secret_path(file: &str) -> Result<()> {
+    let path = Path::new(file);
+    let inside = !file.trim().is_empty()
+        && path.is_relative()
+        && path
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_)));
+    if inside {
+        Ok(())
+    } else {
+        Err(Error::Invalid(format!(
+            "{file}: secret files are paths relative to the repository root"
+        )))
+    }
+}
+
+fn check_attachments(attachments: &[AttachmentRef]) -> Result<()> {
+    if attachments.len() > MAX_ATTACHMENTS {
+        return Err(Error::Invalid(format!(
+            "at most {MAX_ATTACHMENTS} attachments per message"
+        )));
+    }
+    for attachment in attachments {
+        attachment.id.parse::<brigadier_store::BlobHash>()?;
+    }
+    Ok(())
+}
+
+fn find_queued<'a>(queue: &'a mut MessageQueue, item_id: &str) -> Result<&'a mut QueuedMessage> {
+    queue
+        .items
+        .iter_mut()
+        .find(|item| item.id == item_id)
+        .ok_or_else(|| Error::NotFound(format!("queued message {item_id}")))
+}
+
+/// Records a session setup's choices as the project's remembered ones. Returns whether
+/// anything changed.
+fn remember(project: &mut Project, setup: Option<&Setup>) -> bool {
+    let Some(Setup::Session {
+        environment,
+        permission,
+        orchestrator,
+        ..
+    }) = setup
+    else {
+        return false;
+    };
+    let before = project.prefs.clone();
+    project.prefs.permission = Some(*permission);
+    project.prefs.orchestrator = Some(orchestrator.clone());
+    project.prefs.environment = Some(match environment {
+        crate::model::Environment::LocalCheckout { .. } => EnvironmentKind::LocalCheckout,
+        crate::model::Environment::NewWorktree { .. } => EnvironmentKind::NewWorktree,
+    });
+    project.prefs != before
+}
+
+/// Whether two environments are the same, ignoring the session worktree path (set once it
+/// exists).
+fn same_environment(a: &crate::model::Environment, b: &crate::model::Environment) -> bool {
+    use crate::model::Environment as E;
+    match (a, b) {
+        (E::LocalCheckout { branch: a }, E::LocalCheckout { branch: b }) => a == b,
+        (
+            E::NewWorktree {
+                base: base_a,
+                branch: branch_a,
+                ..
+            },
+            E::NewWorktree {
+                base: base_b,
+                branch: branch_b,
+                ..
+            },
+        ) => base_a == base_b && branch_a == branch_b,
+        _ => false,
+    }
 }
 
 fn clean_name(name: &str, what: &str) -> Result<String> {

@@ -6,8 +6,10 @@
 //! `method` tag, so TypeScript can pair them with `Extract<Response, { method: M }>`.
 
 use brigadier_core::{
-    Catalog, Conversation, ConversationId, ConversationKind, Message, MessagePage, ProbeBurst,
-    Project, ProjectId, ProvidersView, RawApprovals, RawPage, RawSession, RawSessionId, Settings,
+    AttachmentRef, CardId, Catalog, Conversation, ConversationId, ConversationKind,
+    ConversationView, Message, MessagePage, MessageQueue, OrchestratorPage, ProbeBurst, Project,
+    ProjectId, ProjectPatch, ProvidersView, QueuedMessage, RawApprovals, RawPage, RawSession,
+    RawSessionId, RepoInfo, Settings, Setup, SetupRequest, TaskId, WorkerPage,
 };
 use brigadier_providers::{Access, ApprovalDecision, ProviderKind};
 use serde::{Deserialize, Serialize};
@@ -17,7 +19,7 @@ use ts_rs::TS;
 use crate::metrics::{DaemonMetrics, Diagnostics};
 
 /// Bumped on any incompatible change to these types.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Who is connecting.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -55,13 +57,151 @@ pub enum ClientFrame {
 )]
 pub enum Request {
     GetCatalog,
+    /// Creates a project. With `repo` (a repository's top-level folder, from the native
+    /// picker or typed), an empty `name` names it after the folder.
     CreateProject {
         name: String,
+        repo: Option<String>,
     },
+    UpdateProject {
+        id: ProjectId,
+        patch: ProjectPatch,
+    },
+    /// Branches and state of a repository, for the composer's branch picker.
+    GetRepoInfo {
+        path: String,
+    },
+    /// Creates a session (with a project) or a chat (without). The setup comes from the
+    /// composer; sessions need one to run, and their project remembers it.
     CreateConversation {
         kind: ConversationKind,
         project_id: Option<ProjectId>,
         title: Option<String>,
+        setup: Option<SetupRequest>,
+    },
+    /// Changes the model, effort or permission level (a session's repository and environment
+    /// cannot change once set).
+    UpdateSetup {
+        id: ConversationId,
+        setup: Setup,
+    },
+    /// Messages (newest `limit`), tasks, cards, queue and run state in one read.
+    GetConversation {
+        id: ConversationId,
+        limit: u32,
+    },
+    /// Sends a message. While a turn runs it waits in the queue (when queueing is on), or with
+    /// `steer` goes into the running turn now.
+    SendMessage {
+        conversation_id: ConversationId,
+        text: String,
+        attachments: Vec<AttachmentRef>,
+        mentions: Vec<TaskId>,
+        steer: bool,
+    },
+    EditQueued {
+        conversation_id: ConversationId,
+        item_id: String,
+        text: String,
+        attachments: Vec<AttachmentRef>,
+        mentions: Vec<TaskId>,
+    },
+    DeleteQueued {
+        conversation_id: ConversationId,
+        item_id: String,
+    },
+    /// Moves a queued message to `index` (drag to reorder).
+    MoveQueued {
+        conversation_id: ConversationId,
+        item_id: String,
+        index: u32,
+    },
+    /// Sends a queued message into the running turn now.
+    SteerQueued {
+        conversation_id: ConversationId,
+        item_id: String,
+    },
+    /// Resumes a queue paused by an interrupt.
+    ResumeQueue {
+        conversation_id: ConversationId,
+    },
+    /// Stops the running turn; the queue pauses.
+    Interrupt {
+        conversation_id: ConversationId,
+    },
+    /// Stores a file for a message. `data` is base64; at most 10 MB decoded.
+    AddAttachment {
+        name: String,
+        mime: String,
+        data: String,
+    },
+    /// Answers an approval card.
+    AnswerCard {
+        conversation_id: ConversationId,
+        card_id: CardId,
+        decision: ApprovalDecision,
+    },
+    AnswerQuestion {
+        conversation_id: ConversationId,
+        card_id: CardId,
+        answer: String,
+    },
+    DecidePlan {
+        conversation_id: ConversationId,
+        card_id: CardId,
+        approve: bool,
+        message: Option<String>,
+    },
+    /// Stops a worker for good (its unfinished changes are kept, see `Task.kept`).
+    StopTask {
+        task_id: TaskId,
+    },
+    /// Interrupts a worker's turn; `resumeTask` continues it.
+    PauseTask {
+        task_id: TaskId,
+    },
+    ResumeTask {
+        task_id: TaskId,
+    },
+    /// A page of a worker's live transcript.
+    ListWorkerEvents {
+        task_id: TaskId,
+        /// Only entries with a smaller `streamSeq` (for paging backwards).
+        before: Option<i64>,
+        limit: u32,
+    },
+    /// A page of the orchestrator log (Inspector): CLI events and context injections.
+    ListOrchestratorLog {
+        conversation_id: ConversationId,
+        before: Option<i64>,
+        limit: u32,
+    },
+    /// Part of an artifact's text.
+    ReadArtifact {
+        id: String,
+        offset: u64,
+        limit: u32,
+    },
+    /// Stops its CLI processes and removes temp files now; the next message continues it.
+    Hibernate {
+        id: ConversationId,
+    },
+    /// Stops workers, removes everything the conversation created (worktrees, CLI session
+    /// files, processes, scratch folders) and hides it in the Archived view.
+    Archive {
+        id: ConversationId,
+    },
+    /// Brings an archived conversation back; its model restarts from the transcript.
+    Restore {
+        id: ConversationId,
+    },
+    /// Permanently removes a conversation and its transcript.
+    Delete {
+        id: ConversationId,
+        /// Also delete its unmerged branches (otherwise they are kept).
+        delete_branches: bool,
+        /// Forget what the Project Brain learned from it (Phase 4; ignored until then).
+        forget_brain: bool,
     },
     RenameConversation {
         id: ConversationId,
@@ -187,16 +327,73 @@ pub enum Response {
         catalog: Catalog,
     },
     CreateProject {
-        project: Project,
+        project: Box<Project>,
+    },
+    UpdateProject {
+        project: Box<Project>,
+    },
+    GetRepoInfo {
+        repo: RepoInfo,
     },
     CreateConversation {
-        conversation: Conversation,
+        conversation: Box<Conversation>,
     },
+    UpdateSetup {
+        conversation: Box<Conversation>,
+    },
+    GetConversation {
+        view: Box<ConversationView>,
+    },
+    SendMessage {
+        outcome: SendOutcome,
+    },
+    EditQueued {
+        queue: MessageQueue,
+    },
+    DeleteQueued {
+        queue: MessageQueue,
+    },
+    MoveQueued {
+        queue: MessageQueue,
+    },
+    SteerQueued,
+    ResumeQueue {
+        queue: MessageQueue,
+    },
+    Interrupt,
+    AddAttachment {
+        attachment: AttachmentRef,
+    },
+    AnswerCard,
+    AnswerQuestion,
+    DecidePlan,
+    StopTask,
+    PauseTask,
+    ResumeTask,
+    ListWorkerEvents {
+        page: WorkerPage,
+    },
+    ListOrchestratorLog {
+        page: OrchestratorPage,
+    },
+    ReadArtifact {
+        text: ArtifactText,
+    },
+    Hibernate {
+        conversation: Box<Conversation>,
+    },
+    Archive {
+        conversation: Box<Conversation>,
+    },
+    Restore {
+        conversation: Box<Conversation>,
+    },
+    Delete,
     RenameConversation {
-        conversation: Conversation,
+        conversation: Box<Conversation>,
     },
     SetPinned {
-        conversation: Conversation,
+        conversation: Box<Conversation>,
     },
     AppendMessage {
         message: Message,
@@ -256,6 +453,31 @@ pub enum Response {
         session: Box<RawSession>,
     },
     Shutdown,
+}
+
+/// What happened to a sent message.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum SendOutcome {
+    /// It is in the transcript (a new turn, or steered into the running one).
+    Sent { message: Box<Message> },
+    /// It waits in the queue.
+    Queued { item: QueuedMessage },
+}
+
+/// A slice of an artifact's text.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactText {
+    pub text: String,
+    pub offset: u64,
+    pub total_bytes: u64,
+    /// Not text: `text` is empty.
+    pub binary: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

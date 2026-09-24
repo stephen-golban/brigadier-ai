@@ -100,7 +100,14 @@ export const useApp = create<AppState>()(() => ({
   catalogLoaded: false,
   projects: {},
   conversations: {},
-  settings: { density: cachedDensity() },
+  settings: {
+    density: cachedDensity(),
+    defaultPermission: "approveForMe",
+    defaultOrchestrator: null,
+    defaultChatModel: null,
+    queueEnabled: true,
+    hibernateAfterMinutes: 30,
+  },
   threads: {},
   pending: [],
   selection: { type: "draft", kind: "chat" },
@@ -315,6 +322,29 @@ function applyEvent(envelope: EventEnvelope, slice: Slice): Slice {
           : slice.pending.filter((_, index) => index !== echo);
       return { ...slice, conversations, threads, pending };
     }
+    case "projectUpdated":
+      return {
+        ...slice,
+        projects: { ...slice.projects, [event.project.id]: event.project },
+      };
+    case "conversationSetUp":
+    case "conversationLifecycleChanged": {
+      const current = slice.conversations[event.id];
+      if (!current) return slice;
+      const next =
+        event.type === "conversationSetUp"
+          ? { ...current, setup: event.setup }
+          : { ...current, lifecycle: event.lifecycle };
+      return {
+        ...slice,
+        conversations: { ...slice.conversations, [event.id]: next },
+      };
+    }
+    case "conversationDeleted": {
+      if (!slice.conversations[event.id]) return slice;
+      const { [event.id]: _deleted, ...conversations } = slice.conversations;
+      return { ...slice, conversations };
+    }
     case "settingsChanged":
       applyDensity(event.settings.density);
       return { ...slice, settings: event.settings };
@@ -327,6 +357,18 @@ function applyEvent(envelope: EventEnvelope, slice: Slice): Slice {
     // The cleanup ledger shows in the event list only.
     case "cleanupRecorded":
     case "cleanupCompleted":
+    // Conversation views (tasks, cards, queue, streaming) and the Inspector's orchestrator
+    // log read these themselves.
+    case "messageDelta":
+    case "runStateChanged":
+    case "conversationNotice":
+    case "taskUpdated":
+    case "approvalUpdated":
+    case "questionUpdated":
+    case "planUpdated":
+    case "queueChanged":
+    case "workerEvent":
+    case "orchestratorLogged":
       return slice;
   }
 }

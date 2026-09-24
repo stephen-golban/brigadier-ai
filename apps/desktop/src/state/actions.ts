@@ -135,7 +135,7 @@ export function setProjectExpanded(id: string, expanded: boolean): void {
 }
 
 export async function createProject(name: string): Promise<Project> {
-  const { project } = await request({ method: "createProject", name });
+  const { project } = await request({ method: "createProject", name, repo: null });
   useApp.setState((state) => ({
     projects: { ...state.projects, [project.id]: project },
   }));
@@ -178,6 +178,7 @@ export async function sendMessage(text: string): Promise<void> {
       kind: selection.kind,
       projectId: selection.kind === "session" ? selection.projectId : null,
       title: null,
+      setup: null,
     });
     storeConversation(conversation);
     conversationId = conversation.id;

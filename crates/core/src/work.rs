@@ -1,0 +1,541 @@
+//! The work inside a conversation: delegated tasks and their workers, reports, the cards that
+//! wait for the user (approvals, questions, plans), the message queue and attachments. Like the
+//! catalog, these types are the wire contract and are exported to TypeScript.
+//!
+//! Each conversation's stream (`conversation:<id>`) holds its messages and snapshots of these
+//! objects as they change. `position` fields are the stream sequence of the event that created
+//! the object, so messages and cards interleave in one timeline.
+
+use brigadier_providers::{ApprovalRequest, Decider, ProviderEvent, ProviderKind};
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
+
+pub use crate::model::{CardId, TaskId};
+use crate::model::{ConversationId, ModelChoice};
+
+/// A file the user attached, kept in the blob store.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentRef {
+    /// Content hash in the blob store.
+    pub id: String,
+    pub name: String,
+    pub mime: String,
+    pub bytes: u64,
+}
+
+// ----- tasks and workers ------------------------------------------------------------------
+
+/// What a task does (PLAN.md §5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum TaskKind {
+    /// Looks around the repository and answers a question.
+    Scout,
+    /// Reads docs and the web.
+    Research,
+    /// Changes code; its accepted result lands as one commit.
+    Implement,
+    /// Reviews another task's candidate commit or a plan.
+    Review,
+    /// Resolves conflicts between a task and its target branch.
+    Merge,
+    /// Runs the project's checks.
+    Verify,
+}
+
+impl TaskKind {
+    /// Whether the task's result is a change that lands as a commit.
+    pub fn writes(self) -> bool {
+        matches!(self, Self::Implement | Self::Merge)
+    }
+}
+
+/// How a worker may touch the repository.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum RepoAccess {
+    /// No repository checkout (research).
+    None,
+    /// A detached worktree it can read but not change.
+    Read,
+    /// Its own worktree on a task branch.
+    Write,
+}
+
+/// A worker's sandbox, set per task. Every worker also has a writable scratch folder outside
+/// the repository, and the outward-command gate at every permission level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerAccess {
+    pub repo: RepoAccess,
+    pub network: bool,
+    /// No OS sandbox (Full access).
+    pub unsandboxed: bool,
+}
+
+/// The model a task runs on and why.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct Route {
+    pub choice: ModelChoice,
+    /// Shown on the worker card ("why this model").
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum TaskState {
+    /// Waiting for an approved plan, a free slot or the task it depends on.
+    Queued,
+    /// Creating its worktree and starting the worker.
+    Starting,
+    Running,
+    /// The worker asked the orchestrator a question and waits for the answer.
+    Blocked,
+    /// The user interrupted the worker; it continues on resume.
+    Paused,
+    /// The worker submitted its report; the orchestrator decides what happens next.
+    Reported,
+    /// Its candidate commit is being reviewed by another vendor.
+    Reviewing,
+    /// Ask for approval: the landing waits for the user.
+    AwaitingApproval,
+    /// Accepted, but it cannot land safely right now (see `blockedReason`). Nothing changed.
+    ReadyToLand,
+    /// Its commit is on the target branch.
+    Landed,
+    /// Finished without landing (read-only tasks end here too).
+    Done,
+    /// The orchestrator or a review turned it down.
+    Rejected,
+    /// Stopped by the user or the orchestrator.
+    Stopped,
+    Failed,
+}
+
+impl TaskState {
+    /// Whether the task is over: its worker is gone and it will not run again.
+    pub fn is_final(self) -> bool {
+        matches!(
+            self,
+            Self::Landed | Self::Done | Self::Rejected | Self::Stopped | Self::Failed
+        )
+    }
+}
+
+/// Where a task works.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskWorkspace {
+    /// Its worktree, in Brigadier's data directory. Absent for tasks without a checkout.
+    pub worktree: Option<String>,
+    /// Its task branch (write tasks).
+    pub branch: Option<String>,
+    /// The commit it started from.
+    pub base: Option<String>,
+    /// The branch its accepted work lands on.
+    pub target: Option<String>,
+    /// Its scratch folder outside the repository.
+    pub scratch: String,
+}
+
+/// A structured report, the only part of a worker's work that enters the orchestrator's
+/// context. About 800 tokens at most; details go to artifacts.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct Report {
+    pub summary: String,
+    pub changes: Vec<String>,
+    pub decisions: Vec<String>,
+    /// What the worker verified and how.
+    pub verification: Vec<String>,
+    pub open_questions: Vec<String>,
+    /// For review tasks: the verdict.
+    pub verdict: Option<ReviewVerdict>,
+    pub artifacts: Vec<ArtifactRef>,
+    pub submitted_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ReviewVerdict {
+    Approve,
+    RequestChanges,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ArtifactKind {
+    /// The worker's full transcript.
+    Transcript,
+    Diff,
+    CommandOutput,
+    Screenshot,
+    /// A research or review note.
+    Note,
+    File,
+}
+
+/// Something stored in the blob store that the orchestrator can read on demand.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactRef {
+    /// Content hash in the blob store.
+    pub id: String,
+    pub title: String,
+    pub kind: ArtifactKind,
+    pub mime: String,
+    pub bytes: u64,
+}
+
+/// Lines added and removed, per file and in total.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffStat {
+    pub files: Vec<FileStat>,
+    pub insertions: u32,
+    pub deletions: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FileStat {
+    pub path: String,
+    pub insertions: u32,
+    pub deletions: u32,
+    /// Binary files have no line counts.
+    pub binary: bool,
+}
+
+/// A write task's result as one commit on the current target tip: what is reviewed, verified
+/// and landed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct Candidate {
+    pub commit: String,
+    /// The target tip it was built on.
+    pub onto: String,
+    pub message: String,
+    pub diff_stat: DiffStat,
+    /// Files the litter guard left out, with why.
+    pub excluded: Vec<ExcludedFile>,
+    /// The full diff, for reviewers and the UI.
+    pub diff: Option<ArtifactRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ExcludedFile {
+    pub path: String,
+    pub reason: String,
+}
+
+/// The mandatory cross-vendor review of a write task's candidate.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewRecord {
+    /// The review task.
+    pub task_id: TaskId,
+    /// The candidate commit it reviewed.
+    pub commit: String,
+    pub verdict: Option<ReviewVerdict>,
+    /// False when only one vendor was available and another model of it reviewed.
+    pub cross_vendor: bool,
+}
+
+/// A delegated unit of work and its worker.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct Task {
+    pub id: TaskId,
+    pub conversation_id: ConversationId,
+    /// Shown as `task-N` and used for @-mentions; unique within the conversation.
+    pub number: u32,
+    pub position: i64,
+    pub title: String,
+    pub kind: TaskKind,
+    /// The task spec the worker got.
+    pub spec: String,
+    pub access: WorkerAccess,
+    pub route: Route,
+    pub state: TaskState,
+    /// The task this one reviews or merges.
+    pub subject: Option<TaskId>,
+    /// The plan this one reviews.
+    pub plan: Option<CardId>,
+    pub attachments: Vec<AttachmentRef>,
+    pub workspace: Option<TaskWorkspace>,
+    pub report: Option<Report>,
+    pub candidate: Option<Candidate>,
+    pub review: Option<ReviewRecord>,
+    /// The landed commit.
+    pub landed: Option<String>,
+    /// Why it is blocked, paused or cannot land yet.
+    pub blocked_reason: Option<String>,
+    pub error: Option<String>,
+    /// Unfinished changes kept when the task was stopped or archived.
+    pub kept: Option<KeptWork>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+/// What happened to a task's unfinished changes when its worktree was removed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum KeptWork {
+    /// Committed as a work-in-progress commit on the task branch, which is kept.
+    Branch { branch: String, commit: String },
+    /// Stored as a diff artifact (tasks without a branch).
+    Diff { artifact: ArtifactRef },
+}
+
+// ----- cards -------------------------------------------------------------------------------
+
+/// Whether a card still waits for an answer, and the answer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum CardState {
+    Pending,
+    Allowed {
+        by: Decider,
+    },
+    Denied {
+        by: Decider,
+        message: Option<String>,
+    },
+    /// Nobody answered in time, or what it asked about went away.
+    Expired {
+        reason: String,
+    },
+}
+
+/// What an approval card asks.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum ApprovalSubject {
+    /// A worker's CLI asks for a permission Brigadier may not grant on the user's behalf.
+    Cli { request: ApprovalRequest },
+    /// An outward command stopped by the command gate, bound to exactly this argv and cwd.
+    OutwardCommand { argv: Vec<String>, cwd: String },
+    /// Ask for approval: land a reviewed task on its branch.
+    Landing {
+        task_id: TaskId,
+        branch: String,
+        diff_stat: DiffStat,
+    },
+    /// Merge the session branch into its base.
+    FinishSession {
+        branch: String,
+        base: String,
+        commits: u32,
+        diff_stat: DiffStat,
+    },
+    /// An action the orchestrator asked the user to approve.
+    Action { action: String, details: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct Approval {
+    pub id: CardId,
+    pub conversation_id: ConversationId,
+    pub task_id: Option<TaskId>,
+    pub position: i64,
+    pub subject: ApprovalSubject,
+    pub state: CardState,
+    pub created_at_ms: i64,
+    pub resolved_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum QuestionKind {
+    /// The orchestrator asks something only the user can answer (`ask_user`).
+    Orchestrator,
+    /// Local checkout with uncommitted changes: should workers start from them?
+    UncommittedChanges { files: Vec<String> },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct Question {
+    pub id: CardId,
+    pub conversation_id: ConversationId,
+    /// The task that waits for the answer, if any.
+    pub task_id: Option<TaskId>,
+    pub position: i64,
+    pub kind: QuestionKind,
+    pub text: String,
+    /// Suggested answers; the user may also type one.
+    pub options: Vec<String>,
+    pub answer: Option<String>,
+    pub created_at_ms: i64,
+    pub answered_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanStep {
+    pub title: String,
+    pub detail: Option<String>,
+    /// The task carrying out this step, once delegated.
+    pub task_id: Option<TaskId>,
+}
+
+/// Who approved a plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum PlanApprover {
+    User,
+    /// Approve for me, a plan the orchestrator did not mark risky: approved without review,
+    /// and marked as such on the card.
+    Brigadier,
+    /// Approve for me, a risky plan: approved after a cross-vendor plan review.
+    Review,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PlanState {
+    Proposed,
+    /// A reviewer from another vendor is checking it.
+    InReview {
+        task_id: TaskId,
+    },
+    Approved {
+        by: PlanApprover,
+    },
+    Rejected {
+        message: Option<String>,
+    },
+    /// A newer plan replaced it.
+    Superseded,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct Plan {
+    pub id: CardId,
+    pub conversation_id: ConversationId,
+    pub position: i64,
+    pub title: String,
+    pub steps: Vec<PlanStep>,
+    /// Big, risky or architectural, as the orchestrator judged it.
+    pub risky: bool,
+    pub state: PlanState,
+    pub created_at_ms: i64,
+    pub decided_at_ms: Option<i64>,
+}
+
+// ----- the message queue --------------------------------------------------------------------
+
+/// A message waiting for the running turn to end.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct QueuedMessage {
+    pub id: String,
+    pub text: String,
+    pub attachments: Vec<AttachmentRef>,
+    pub mentions: Vec<TaskId>,
+    pub queued_at_ms: i64,
+    pub edited_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageQueue {
+    /// In the order they will be sent.
+    pub items: Vec<QueuedMessage>,
+    /// The user interrupted the turn; nothing is sent until they resume.
+    pub paused: bool,
+}
+
+// ----- the conversation's live state --------------------------------------------------------
+
+/// What a conversation's model (the orchestrator, or a Chat's model) is doing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum RunState {
+    /// Not running (no CLI process, or between turns).
+    #[default]
+    Idle,
+    /// Setting up the environment or starting the CLI.
+    Starting,
+    /// A turn is running.
+    Running,
+    /// Its CLI stopped; the next message resumes it.
+    Hibernated,
+    Failed,
+}
+
+/// Why something entered the orchestrator's context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum InjectionKind {
+    /// Brigadier's role instructions, once per CLI session.
+    Instructions,
+    UserMessage,
+    Report,
+    WorkerQuestion,
+    /// A card was answered (approval, question, plan).
+    Decision,
+    TaskFailed,
+    /// A tool's result (a task id, a short status).
+    ToolResult,
+    /// An artifact it asked to read.
+    Artifact,
+    /// The transcript a new orchestrator CLI session is seeded with.
+    Reseed,
+}
+
+/// One thing Brigadier put into the orchestrator's context, for the Inspector.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextInjection {
+    pub kind: InjectionKind,
+    pub bytes: u64,
+    /// About four bytes per token.
+    pub tokens_estimate: u64,
+    /// A short description (`report task-3`, the first words of a message).
+    pub label: String,
+    pub task_id: Option<TaskId>,
+}
+
+/// One entry of the orchestrator log shown in the Inspector.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum OrchestratorEntry {
+    Injection {
+        injection: ContextInjection,
+    },
+    /// What the orchestrator's CLI reported.
+    Provider {
+        provider: ProviderKind,
+        event: ProviderEvent,
+    },
+}

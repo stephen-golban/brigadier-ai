@@ -4,12 +4,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use brigadier_core::Core;
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use brigadier_core::runtime::{Runtime, StartRaw};
+use brigadier_core::{Core, EnvironmentRequest, MAX_ATTACHMENT_BYTES, Setup, SetupRequest};
 use brigadier_ipc::metrics::{DaemonMetrics, Diagnostics, budgets};
 use brigadier_ipc::protocol::{
-    ClientFrame, ClientInfo, DaemonInfo, ErrorCode, EventEnvelope, IpcError, Outcome, RawJson,
-    Request, Response, ServerFrame,
+    ArtifactText, ClientFrame, ClientInfo, DaemonInfo, ErrorCode, EventEnvelope, IpcError, Outcome,
+    RawJson, Request, Response, SendOutcome, ServerFrame,
 };
 use brigadier_ipc::{Connection, Listener, Reader, Token, Writer};
 use brigadier_store::{Store, StoredEvent};
@@ -360,6 +362,20 @@ fn envelope(event: &StoredEvent) -> EventEnvelope {
     }
 }
 
+/// A request the orchestrator runtime serves once it is wired into the daemon.
+fn unavailable(what: &str) -> IpcError {
+    IpcError {
+        code: ErrorCode::Invalid,
+        message: format!("{what} is not available in this build yet"),
+    }
+}
+
+/// A short random suffix for generated names.
+fn uuid_suffix() -> String {
+    let id = brigadier_core::ConversationId::generate().0;
+    id.rsplit('-').next().unwrap_or(&id)[..8].to_owned()
+}
+
 fn internal(err: brigadier_store::Error) -> IpcError {
     IpcError::from(brigadier_core::Error::from(err))
 }
@@ -370,21 +386,162 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
         Request::GetCatalog => Response::GetCatalog {
             catalog: core.catalog(),
         },
-        Request::CreateProject { name } => Response::CreateProject {
-            project: core.create_project(name).await?,
+        Request::CreateProject { name, repo } => Response::CreateProject {
+            project: Box::new(core.create_project(name, repo).await?),
+        },
+        Request::UpdateProject { id, patch } => Response::UpdateProject {
+            project: Box::new(core.update_project(id, patch).await?),
         },
         Request::CreateConversation {
             kind,
             project_id,
             title,
-        } => Response::CreateConversation {
-            conversation: core.create_conversation(kind, project_id, title).await?,
+            setup,
+        } => {
+            if let Some(SetupRequest::Session {
+                environment:
+                    EnvironmentRequest::LocalCheckout {
+                        create_from: Some(_),
+                        ..
+                    },
+                ..
+            }) = &setup
+            {
+                return Err(unavailable("Creating a branch"));
+            }
+            let suffix = uuid_suffix();
+            let setup = setup.map(|request| Setup::from_request(request, &suffix));
+            Response::CreateConversation {
+                conversation: Box::new(
+                    core.create_conversation(kind, project_id, title, setup)
+                        .await?,
+                ),
+            }
+        }
+        Request::UpdateSetup { id, setup } => Response::UpdateSetup {
+            conversation: Box::new(core.set_setup(id, setup).await?),
         },
+        Request::GetConversation { id, limit } => Response::GetConversation {
+            view: Box::new(core.conversation_view(id, limit).await?),
+        },
+        Request::SendMessage {
+            conversation_id,
+            text,
+            attachments,
+            mentions,
+            steer: _,
+        } => Response::SendMessage {
+            outcome: SendOutcome::Sent {
+                message: Box::new(
+                    core.append_user_message(conversation_id, text, attachments, mentions)
+                        .await?,
+                ),
+            },
+        },
+        Request::EditQueued {
+            conversation_id,
+            item_id,
+            text,
+            attachments,
+            mentions,
+        } => Response::EditQueued {
+            queue: core
+                .edit_queued(&conversation_id, &item_id, text, attachments, mentions)
+                .await?,
+        },
+        Request::DeleteQueued {
+            conversation_id,
+            item_id,
+        } => {
+            core.take_queued(&conversation_id, &item_id).await?;
+            Response::DeleteQueued {
+                queue: core.conversation_view(conversation_id, 1).await?.queue,
+            }
+        }
+        Request::MoveQueued {
+            conversation_id,
+            item_id,
+            index,
+        } => Response::MoveQueued {
+            queue: core.move_queued(&conversation_id, &item_id, index).await?,
+        },
+        Request::ResumeQueue { conversation_id } => Response::ResumeQueue {
+            queue: core.set_queue_paused(&conversation_id, false).await?,
+        },
+        Request::AddAttachment { name, mime, data } => {
+            if data.len() > MAX_ATTACHMENT_BYTES.div_ceil(3) * 4 {
+                return Err(IpcError {
+                    code: ErrorCode::Invalid,
+                    message: "the attachment is too large".into(),
+                });
+            }
+            let bytes = BASE64.decode(data.as_bytes()).map_err(|err| IpcError {
+                code: ErrorCode::Invalid,
+                message: format!("the attachment is not valid base64: {err}"),
+            })?;
+            Response::AddAttachment {
+                attachment: core.add_attachment(name, mime, bytes).await?,
+            }
+        }
+        Request::ListWorkerEvents {
+            task_id,
+            before,
+            limit,
+        } => Response::ListWorkerEvents {
+            page: core.list_worker_events(&task_id, before, limit).await?,
+        },
+        Request::ListOrchestratorLog {
+            conversation_id,
+            before,
+            limit,
+        } => Response::ListOrchestratorLog {
+            page: core
+                .list_orchestrator_log(&conversation_id, before, limit)
+                .await?,
+        },
+        Request::ReadArtifact { id, offset, limit } => {
+            let (bytes, total_bytes) = core.read_blob_range(id, offset, limit).await?;
+            let text = match String::from_utf8(bytes) {
+                Ok(text) => Some(text),
+                // A slice can end inside a character; keep what decodes.
+                Err(err) if err.utf8_error().error_len().is_none() => {
+                    let valid = err.utf8_error().valid_up_to();
+                    let mut bytes = err.into_bytes();
+                    bytes.truncate(valid);
+                    String::from_utf8(bytes).ok()
+                }
+                Err(_) => None,
+            };
+            Response::ReadArtifact {
+                text: ArtifactText {
+                    binary: text.is_none(),
+                    text: text.unwrap_or_default(),
+                    offset,
+                    total_bytes,
+                },
+            }
+        }
+        Request::GetRepoInfo { .. } => return Err(unavailable("Reading a repository")),
+        Request::SteerQueued { .. } | Request::Interrupt { .. } => {
+            return Err(unavailable("Steering and interrupting"));
+        }
+        Request::AnswerCard { .. }
+        | Request::AnswerQuestion { .. }
+        | Request::DecidePlan { .. } => {
+            return Err(unavailable("Answering cards"));
+        }
+        Request::StopTask { .. } | Request::PauseTask { .. } | Request::ResumeTask { .. } => {
+            return Err(unavailable("Controlling workers"));
+        }
+        Request::Hibernate { .. }
+        | Request::Archive { .. }
+        | Request::Restore { .. }
+        | Request::Delete { .. } => return Err(unavailable("The conversation lifecycle")),
         Request::RenameConversation { id, title } => Response::RenameConversation {
-            conversation: core.rename_conversation(id, title).await?,
+            conversation: Box::new(core.rename_conversation(id, title).await?),
         },
         Request::SetPinned { id, pinned } => Response::SetPinned {
-            conversation: core.set_pinned(id, pinned).await?,
+            conversation: Box::new(core.set_pinned(id, pinned).await?),
         },
         Request::AppendMessage {
             conversation_id,
