@@ -6,6 +6,7 @@
 //! when the daemon starts are expired, since nobody waits for them any more.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -185,11 +186,19 @@ impl SessionManager {
                     && let Some(command) = &request.command
                     && brigadier_providers::policy::is_outward(command)
                 {
-                    // The CLI asked (its own ask rule); the gate must not ask again.
+                    // The CLI asked (its own ask rule); the gate must not ask again. Claude
+                    // names no cwd: its commands run where the worker runs.
+                    let cwd = match &request.cwd {
+                        Some(cwd) => Some(PathBuf::from(cwd)),
+                        None => match self.existing_task_live(&task_id) {
+                            Some(live) => live.cwd().await,
+                            None => None,
+                        },
+                    };
                     self.waiters.add_pass(Pass {
                         task_id: Some(task_id.clone()),
                         argv: split_command(command),
-                        cwd: request.cwd.clone().unwrap_or_default(),
+                        cwd: cwd.map(|cwd| resolved(&cwd)).unwrap_or_default(),
                         expires_ms: now_ms() + PASS_TTL_MS,
                     });
                 }
@@ -239,7 +248,10 @@ impl SessionManager {
         argv: Vec<String>,
         cwd: String,
     ) -> GateAnswer {
-        if self.waiters.consume_pass(&task_id, &argv, &cwd) {
+        if self
+            .waiters
+            .consume_pass(&task_id, &argv, &resolved(Path::new(&cwd)))
+        {
             return GateAnswer::Allow;
         }
         let subject = ApprovalSubject::OutwardCommand {
@@ -530,6 +542,15 @@ impl SessionManager {
         )
         .await;
     }
+}
+
+/// A folder as a pass is bound to it: resolved through symlinks (`/tmp` is `/private/tmp` on
+/// macOS), so the CLI's spelling and the gate's `getcwd()` compare equal.
+fn resolved(path: &Path) -> String {
+    path.canonicalize()
+        .unwrap_or_else(|_| path.to_owned())
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn answer_is_yes(answer: &str) -> bool {

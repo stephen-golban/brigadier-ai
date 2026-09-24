@@ -85,6 +85,8 @@ struct TaskLiveState {
     nudged: bool,
     stopping: bool,
     access: Option<Access>,
+    /// Where the worker's CLI runs (a command without its own cwd runs here).
+    cwd: Option<PathBuf>,
     redactor: Option<Arc<brigadier_providers::redact::Redactor>>,
 }
 
@@ -129,6 +131,10 @@ impl TaskLive {
 
     pub async fn redactor(&self) -> Option<Arc<brigadier_providers::redact::Redactor>> {
         self.state.lock().await.redactor.clone()
+    }
+
+    pub async fn cwd(&self) -> Option<PathBuf> {
+        self.state.lock().await.cwd.clone()
     }
 }
 
@@ -502,7 +508,7 @@ impl SessionManager {
         secret_values.push(gate_grant.clone());
         let redactor = secrets::redactor(secret_values);
         let spec = SessionSpec {
-            cwd,
+            cwd: cwd.clone(),
             model: task.route.choice.model.clone(),
             effort: task.route.choice.effort.clone(),
             origin,
@@ -541,6 +547,7 @@ impl SessionManager {
             let mut state = live.state.lock().await;
             state.cli = Some(cli.clone());
             state.access = Some(access);
+            state.cwd = Some(cwd);
             state.redactor = redactor;
             state.busy = true;
             state.stopping = false;
