@@ -20,6 +20,7 @@ import type {
 import { applyDensity } from "@/lib/density";
 import {
   boardFromView,
+  collectBoardEvents,
   emptyBoard,
   ORCHESTRATOR_ENTRIES,
   updateBoard,
@@ -65,8 +66,10 @@ export async function loadCatalog(): Promise<void> {
 export async function loadConversation(id: string): Promise<void> {
   updateThread(id, (thread) => ({ ...thread, loading: true }));
   const before = useApp.getState().conversations[id];
+  const arrived = collectBoardEvents(id);
   try {
     const { view } = await request({ method: "getConversation", id, limit: PAGE });
+    const events = arrived();
     const page = view.messages;
     const newest = page.messages.at(-1)?.seq ?? 0;
     updateThread(id, (thread) => ({
@@ -91,10 +94,11 @@ export async function loadConversation(id: string): Promise<void> {
     });
     useBoard.setState((state) =>
       state.board?.conversationId === id
-        ? { board: boardFromView(view, state.board) }
+        ? { board: boardFromView(view, state.board, events) }
         : state,
     );
   } catch (error) {
+    arrived();
     updateThread(id, (thread) => ({ ...thread, loading: false }));
     throw error;
   }
