@@ -24,6 +24,7 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use brigadier_core::Core;
+use brigadier_core::manager::SessionManager;
 use brigadier_core::runtime::{Runtime, Spawner};
 use brigadier_ipc::protocol::{DaemonInfo, PROTOCOL_VERSION};
 use brigadier_ipc::{Listener, Token};
@@ -197,6 +198,9 @@ async fn run(
     let providers = Runtime::start(core.clone(), platform.clone(), spawner)
         .await
         .context("starting the provider runtime")?;
+    let sessions = SessionManager::start(core.clone(), providers.clone())
+        .await
+        .context("starting the session manager")?;
     let metrics = Metrics::start(supervisor.clone(), store.clone(), platform.clone());
     let listener = Listener::bind(&*platform).context("binding the IPC endpoint")?;
     {
@@ -213,6 +217,7 @@ async fn run(
         info,
         core,
         providers.clone(),
+        sessions,
         store.clone(),
         metrics,
         supervisor.clone(),

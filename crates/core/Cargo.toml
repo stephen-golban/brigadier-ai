@@ -11,6 +11,7 @@ publish.workspace = true
 brigadier-providers.workspace = true
 brigadier-sandbox.workspace = true
 brigadier-store.workspace = true
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
