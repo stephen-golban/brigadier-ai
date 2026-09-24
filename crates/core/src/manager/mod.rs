@@ -68,6 +68,9 @@ pub struct SessionManager {
     grants: Grants,
     convs: Mutex<HashMap<ConversationId, Arc<ConvLive>>>,
     tasks: Mutex<HashMap<TaskId, Arc<TaskLive>>>,
+    /// Held while a new-worktree session's own worktree is created, so parallel first tasks
+    /// create it once.
+    session_worktrees: tokio::sync::Mutex<()>,
     waiters: Waiters,
     admitting: AtomicBool,
     background: TaskTracker,
@@ -106,6 +109,7 @@ impl SessionManager {
             grants: Grants::default(),
             convs: Mutex::new(HashMap::new()),
             tasks: Mutex::new(HashMap::new()),
+            session_worktrees: tokio::sync::Mutex::new(()),
             waiters: Waiters::default(),
             admitting: AtomicBool::new(true),
             background: TaskTracker::new(),
