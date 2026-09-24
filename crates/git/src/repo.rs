@@ -1,7 +1,7 @@
 use crate::{
     Branch, Change, ChangeKind, CollidingPath, DiffStat, Environment, Error, Git, LandBlock,
-    LandOutcome, LandRequest, MergeOutcome, Oid, RepoState, Result, Snapshot, Worktree,
-    WorktreeInfo, WorktreeSpec,
+    LandOutcome, LandRequest, MergeOutcome, Oid, PatchOutcome, RepoState, Result, Snapshot,
+    Worktree, WorktreeInfo, WorktreeSpec,
     command::{TempIndex, check, failure, valid_oid, valid_path},
     parse,
 };
@@ -181,6 +181,84 @@ impl Repo {
             false,
         )?;
         Ok(())
+    }
+
+    /// Delete a branch only while it still points at `expected`, refusing any branch a
+    /// worktree holds.
+    pub fn delete_branch_at(&self, name: &str, expected: &Oid) -> Result<()> {
+        self.validate_branch(name)?;
+        valid_oid(expected)?;
+        let lock = self.landing_lock();
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+        if self
+            .worktrees()?
+            .iter()
+            .any(|w| w.branch.as_deref() == Some(name))
+        {
+            return Err(Error::Invalid(format!("branch {name:?} is checked out")));
+        }
+        self.cmd(
+            &[
+                "update-ref",
+                "-m",
+                "Brigadier removed a task branch",
+                "-d",
+                &format!("refs/heads/{name}"),
+                &expected.0,
+            ],
+            false,
+        )?;
+        Ok(())
+    }
+
+    /// Create the new branch `name` at one commit of `patch` on `start` (three-way where the
+    /// patch's original files are known), with the user's identity. The patch is applied in a
+    /// private index: no checkout changes, and nothing is created unless all of it applies.
+    pub fn branch_from_patch(
+        &self,
+        name: &str,
+        start: &Oid,
+        patch: &[u8],
+        message: &str,
+    ) -> Result<PatchOutcome> {
+        self.validate_branch(name)?;
+        valid_oid(start)?;
+        if self.branch_tip(name)?.is_some() {
+            return Err(Error::Invalid(format!("branch {name:?} already exists")));
+        }
+        let index = TempIndex::new()?;
+        self.index_cmd(&index, &["read-tree", &start.0])?;
+        let args = [
+            "-c",
+            "core.splitIndex=false",
+            "apply",
+            "--cached",
+            "--3way",
+            "--whitespace=nowarn",
+            "-",
+        ];
+        let out = self
+            .git
+            .run(Some(&self.root), &args, false, &index.env(), Some(patch))?;
+        if !out.status.success() {
+            let unmerged = self.index_cmd(&index, &["ls-files", "--unmerged", "-z"])?;
+            let paths = parse::fields(&unmerged)
+                .filter_map(|entry| entry.splitn(2, |&c| c == b'\t').nth(1))
+                .map(|path| parse::text(path).map(str::to_owned))
+                .collect::<Result<BTreeSet<_>>>()?;
+            if paths.is_empty() {
+                return Ok(PatchOutcome::Failed {
+                    reason: String::from_utf8_lossy(&out.stderr).trim().to_owned(),
+                });
+            }
+            return Ok(PatchOutcome::Conflicts {
+                paths: paths.into_iter().collect(),
+            });
+        }
+        let tree = parse::oid(&self.index_cmd(&index, &["write-tree"])?)?;
+        let commit = self.commit_tree(&tree, &[start], message, false)?;
+        self.create_branch(name, &commit)?;
+        Ok(PatchOutcome::Applied { commit })
     }
 
     /// Whether all commits reachable from branch are also reachable from into.
@@ -399,6 +477,7 @@ impl Repo {
                 "--no-textconv",
                 "--no-color",
                 "--binary",
+                "--full-index",
                 "--find-renames",
                 &from.0,
                 &to.0,

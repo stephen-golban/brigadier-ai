@@ -974,7 +974,7 @@ impl SessionManager {
         .await;
     }
 
-    fn task_repo(&self, task: &Task) -> Result<PathBuf> {
+    pub(super) fn task_repo(&self, task: &Task) -> Result<PathBuf> {
         match self.core.conversation(&task.conversation_id)?.setup {
             Some(Setup::Session { repo, .. }) => Ok(PathBuf::from(repo)),
             _ => Err(Error::Invalid("tasks belong to a session".into())),

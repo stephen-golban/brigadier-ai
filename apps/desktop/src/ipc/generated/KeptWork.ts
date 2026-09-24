@@ -4,4 +4,8 @@ import type { ArtifactRef } from "./ArtifactRef";
 /**
  * What happened to a task's unfinished changes when its worktree was removed.
  */
-export type KeptWork = { "type": "branch", branch: string, commit: string, } | { "type": "diff", artifact: ArtifactRef, };
+export type KeptWork = { "type": "branch", branch: string, commit: string, } | { "type": "diff", artifact: ArtifactRef, 
+/**
+ * The branch the patch was restored as.
+ */
+restored: string | null, };

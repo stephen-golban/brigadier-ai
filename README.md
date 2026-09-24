@@ -131,9 +131,12 @@ ignored file would be overwritten, the task waits as "ready to land" and nothing
 Each project can name gitignored env files (for example `.env.local`) as secrets: they are copied
 into each worker's worktree, never committed, and their values are redacted from everything
 Brigadier records. Archiving a session removes its worktrees, scratch folders, CLI session files
-and processes (the whole process tree, detached children included); unfinished work is kept as a
-WIP commit on its task branch, or as a diff when it overlaps uncommitted changes you let workers
-see. Anything that could not be removed is retried at the next launch.
+and processes (the whole process tree, detached children included). Unfinished work is kept as a
+WIP commit on its task branch. When it overlaps uncommitted changes you let workers see, it is
+saved as a patch instead and its branch is deleted, because your uncommitted changes never stay
+in a commit; the task card shows the patch and can restore it as a new branch on the current tip
+of the target branch (or says where it conflicts). A task branch with no work of its own is
+deleted too. Anything that could not be removed is retried at the next launch.
 
 A Chat is a plain conversation with one model and no tools but web search. Text attachments up
 to 200 kB go into the message itself (a Chat cannot read files); other attachments are noted.

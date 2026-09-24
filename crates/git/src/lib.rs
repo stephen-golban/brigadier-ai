@@ -311,6 +311,26 @@ pub enum CommitOutcome {
     Empty,
 }
 
+/// Building a branch from a saved patch never modifies a checkout.
+#[derive(Debug, Clone)]
+pub enum PatchOutcome {
+    /// The branch was created at one new commit of the patch.
+    Applied {
+        /// The new commit.
+        commit: Oid,
+    },
+    /// The patch conflicts with the start commit; nothing was created.
+    Conflicts {
+        /// Conflicted paths.
+        paths: Vec<String>,
+    },
+    /// The patch does not apply at all (git's reason); nothing was created.
+    Failed {
+        /// Git's message.
+        reason: String,
+    },
+}
+
 /// Result of replaying a candidate onto a target that moved.
 #[derive(Debug, Clone)]
 pub enum RebaseOutcome {

@@ -12,6 +12,7 @@ import type {
   RawApprovals,
   RawSession,
   RepoInfo,
+  RestoreOutcome,
   Settings,
   Setup,
   SetupRequest,
@@ -448,6 +449,12 @@ export async function pauseTask(taskId: string): Promise<void> {
 
 export async function resumeTask(taskId: string): Promise<void> {
   await request({ method: "resumeTask", taskId });
+}
+
+/** Restores a task's saved patch as a new branch on its target branch. */
+export async function restoreKeptWork(taskId: string): Promise<RestoreOutcome> {
+  const { outcome } = await request({ method: "restoreKeptWork", taskId });
+  return outcome;
 }
 
 export async function readArtifact(id: string, offset: number, limit: number) {

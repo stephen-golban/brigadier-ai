@@ -11,7 +11,7 @@ use brigadier_core::{
     AttachmentRef, CardId, Catalog, Conversation, ConversationId, ConversationKind,
     ConversationView, Message, MessagePage, MessageQueue, OrchestratorPage, ProbeBurst, Project,
     ProjectId, ProjectPatch, ProvidersView, QueuedMessage, RawApprovals, RawPage, RawSession,
-    RawSessionId, RepoInfo, Settings, Setup, SetupRequest, TaskId, WorkerPage,
+    RawSessionId, RepoInfo, RestoreOutcome, Settings, Setup, SetupRequest, TaskId, WorkerPage,
 };
 use brigadier_providers::{Access, ApprovalDecision, ProviderKind};
 use serde::{Deserialize, Serialize};
@@ -178,6 +178,10 @@ pub enum Request {
         task_id: TaskId,
     },
     ResumeTask {
+        task_id: TaskId,
+    },
+    /// Restores a task's kept patch (`KeptWork::Diff`) as a new branch on its target branch.
+    RestoreKeptWork {
         task_id: TaskId,
     },
     /// A page of a worker's live transcript.
@@ -387,6 +391,9 @@ pub enum Response {
     StopTask,
     PauseTask,
     ResumeTask,
+    RestoreKeptWork {
+        outcome: RestoreOutcome,
+    },
     ListWorkerEvents {
         page: WorkerPage,
     },
