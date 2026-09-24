@@ -337,6 +337,7 @@ name = "brigadier-daemon"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.23.1",
  "brigadier-core",
  "brigadier-ipc",
  "brigadier-sandbox",
@@ -404,6 +405,7 @@ version = "0.1.0"
 name = "brigadier-providers"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
  "brigadier-sandbox",
  "dirs 7.0.0",
  "prettyplease",

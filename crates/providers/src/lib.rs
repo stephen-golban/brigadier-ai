@@ -110,10 +110,10 @@ pub trait ProviderSession: Send + Sync {
     fn native_id(&self) -> String;
 
     /// Starts a turn with the user's message.
-    fn send(&self, text: String) -> BoxFuture<'_, Result<()>>;
+    fn send(&self, input: TurnInput) -> BoxFuture<'_, Result<()>>;
 
     /// Adds a message to the turn that is running now.
-    fn steer(&self, text: String) -> BoxFuture<'_, Result<()>>;
+    fn steer(&self, input: TurnInput) -> BoxFuture<'_, Result<()>>;
 
     /// Stops the running turn.
     fn interrupt(&self) -> BoxFuture<'_, Result<()>>;

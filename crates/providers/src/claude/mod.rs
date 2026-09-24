@@ -23,6 +23,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use brigadier_sandbox::Platform;
 use serde_json::{Map, Value, json};
 use tokio::sync::{mpsc, oneshot};
@@ -664,11 +666,29 @@ impl ClaudeSession {
         }
     }
 
-    async fn write_message(&self, text: String) -> Result<()> {
-        if text.trim().is_empty() {
+    async fn write_message(&self, input: TurnInput) -> Result<()> {
+        if input.is_empty() {
             return Err(Error::Invalid("the message is empty".into()));
         }
-        self.process.write_line(&parse::user_message(&text)).await
+        let mut content = Vec::with_capacity(input.files.len() + 1);
+        for file in input.files.iter().filter(|file| file.is_image()) {
+            let bytes = tokio::fs::read(&file.path).await.map_err(|err| {
+                Error::Invalid(format!("attachment {}: {err}", file.path.display()))
+            })?;
+            content.push(json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": file.mime,
+                    "data": BASE64.encode(bytes),
+                },
+            }));
+        }
+        let text = input.text_with_file_notes();
+        if !text.trim().is_empty() {
+            content.push(json!({ "type": "text", "text": text }));
+        }
+        self.process.write_line(&parse::user_message(content)).await
     }
 }
 
@@ -677,15 +697,15 @@ impl ProviderSession for ClaudeSession {
         self.native_id.clone()
     }
 
-    fn send(&self, text: String) -> BoxFuture<'_, Result<()>> {
+    fn send(&self, input: TurnInput) -> BoxFuture<'_, Result<()>> {
         // A message sent during a turn is folded into it, exactly like a steer.
-        Box::pin(self.write_message(text))
+        Box::pin(self.write_message(input))
     }
 
-    fn steer(&self, text: String) -> BoxFuture<'_, Result<()>> {
+    fn steer(&self, input: TurnInput) -> BoxFuture<'_, Result<()>> {
         // Claude takes a message sent mid-turn at its next step; when the turn already ended,
         // the message starts the next one.
-        Box::pin(self.write_message(text))
+        Box::pin(self.write_message(input))
     }
 
     fn interrupt(&self) -> BoxFuture<'_, Result<()>> {

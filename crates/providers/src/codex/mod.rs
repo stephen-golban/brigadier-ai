@@ -787,18 +787,32 @@ impl CodexSession {
         lock(&self.shared.turn_id).clone()
     }
 
-    fn input(text: String) -> Result<Vec<p::UserInput>> {
-        if text.trim().is_empty() {
+    fn input(input: &TurnInput) -> Result<Vec<p::UserInput>> {
+        if input.is_empty() {
             return Err(Error::Invalid("the message is empty".into()));
         }
-        Ok(vec![p::UserInput::TextUserInput {
-            text,
-            text_elements: Vec::new(),
-            type_: p::TextUserInputType::Text,
-        }])
+        let mut items: Vec<p::UserInput> = input
+            .files
+            .iter()
+            .filter(|file| file.is_image())
+            .map(|file| p::UserInput::LocalImageUserInput {
+                detail: None,
+                path: file.path.display().to_string(),
+                type_: p::LocalImageUserInputType::LocalImage,
+            })
+            .collect();
+        let text = input.text_with_file_notes();
+        if !text.trim().is_empty() {
+            items.push(p::UserInput::TextUserInput {
+                text,
+                text_elements: Vec::new(),
+                type_: p::TextUserInputType::Text,
+            });
+        }
+        Ok(items)
     }
 
-    async fn start_turn(&self, text: String) -> Result<()> {
+    async fn start_turn(&self, input: &TurnInput) -> Result<()> {
         let effort = match &self.effort {
             Some(effort) => Some(
                 p::ReasoningEffort::try_from(effort.as_str())
@@ -812,7 +826,7 @@ impl CodexSession {
                 "turn/start",
                 &p::TurnStartParams {
                     thread_id: self.thread_id.clone(),
-                    input: Self::input(text)?,
+                    input: Self::input(input)?,
                     effort,
                     sandbox_policy: Some(sandbox_policy(&self.access)),
                     approval_policy: Some(approval_policy(&self.access)),
@@ -824,7 +838,7 @@ impl CodexSession {
         Ok(())
     }
 
-    async fn steer_turn(&self, turn_id: String, text: String) -> Result<()> {
+    async fn steer_turn(&self, turn_id: String, input: &TurnInput) -> Result<()> {
         let _: p::TurnSteerResponse = self
             .rpc
             .call(
@@ -832,7 +846,7 @@ impl CodexSession {
                 &p::TurnSteerParams {
                     thread_id: self.thread_id.clone(),
                     expected_turn_id: turn_id,
-                    input: Self::input(text)?,
+                    input: Self::input(input)?,
                     ..Default::default()
                 },
             )
@@ -846,24 +860,26 @@ impl ProviderSession for CodexSession {
         self.thread_id.clone()
     }
 
-    fn send(&self, text: String) -> BoxFuture<'_, Result<()>> {
+    fn send(&self, input: TurnInput) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
             match self.turn_id() {
                 // A message sent during a turn goes into it, as with Claude.
-                Some(turn_id) => self.steer_turn(turn_id, text).await,
-                None => self.start_turn(text).await,
+                Some(turn_id) => self.steer_turn(turn_id, &input).await,
+                None => self.start_turn(&input).await,
             }
         })
     }
 
-    fn steer(&self, text: String) -> BoxFuture<'_, Result<()>> {
+    fn steer(&self, input: TurnInput) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
             let Some(turn_id) = self.turn_id() else {
                 // The turn already ended: the message starts the next one.
-                return self.start_turn(text).await;
+                return self.start_turn(&input).await;
             };
-            match self.steer_turn(turn_id, text.clone()).await {
-                Err(Error::Rejected(_)) if self.turn_id().is_none() => self.start_turn(text).await,
+            match self.steer_turn(turn_id, &input).await {
+                Err(Error::Rejected(_)) if self.turn_id().is_none() => {
+                    self.start_turn(&input).await
+                }
                 other => other,
             }
         })

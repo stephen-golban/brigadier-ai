@@ -870,11 +870,11 @@ pub fn control_request(request_id: &str, request: Map<String, Value>) -> String 
     .to_string()
 }
 
-/// Builds a user message line.
-pub fn user_message(text: &str) -> String {
+/// Builds a user message line from its content blocks.
+pub fn user_message(content: Vec<Value>) -> String {
     serde_json::json!({
         "type": "user",
-        "message": {"role": "user", "content": [{"type": "text", "text": text}]},
+        "message": {"role": "user", "content": content},
         "parent_tool_use_id": null,
         "uuid": uuid::Uuid::new_v4().to_string(),
     })
