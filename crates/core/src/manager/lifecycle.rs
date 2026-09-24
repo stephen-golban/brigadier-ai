@@ -249,7 +249,12 @@ impl SessionManager {
         }
         let (owner, _) = conversation_owner(conversation);
         self.grants.revoke_owner(&owner);
-        for owner in [owner, format!("session:{id}")] {
+        let mut owners = vec![owner];
+        let session_worktree_goes = self.keep_session_changes(conversation).await;
+        if session_worktree_goes {
+            owners.push(format!("session:{id}"));
+        }
+        for owner in owners {
             let leftovers = self.runtime.ledger().dispose(&owner).await;
             if !leftovers.is_clean() {
                 tracing::warn!(
@@ -275,6 +280,7 @@ impl SessionManager {
             orchestrator,
             workers_see_uncommitted,
         }) = conversation.setup.clone()
+            && session_worktree_goes
         {
             // The session worktree is gone. The branch stays while it holds work the base does
             // not have; a restored session creates it again from the base otherwise.
@@ -316,6 +322,44 @@ impl SessionManager {
                     },
                 )
                 .await;
+        }
+    }
+
+    /// Changes made in a new-worktree session's own worktree (by the user; landings there are
+    /// commits) are kept as a WIP commit on the session branch before the worktree goes. If
+    /// they cannot be, the worktree stays, and so does everything in it (`false`).
+    async fn keep_session_changes(&self, conversation: &Conversation) -> bool {
+        let Some(Setup::Session {
+            environment:
+                Environment::NewWorktree {
+                    path: Some(path), ..
+                },
+            ..
+        }) = &conversation.setup
+        else {
+            return true;
+        };
+        let (git, path) = (self.git.clone(), PathBuf::from(path));
+        if !path.exists() {
+            return true;
+        }
+        let kept = blocking(move || {
+            git.open_worktree(&path)
+                .map_err(git_error)?
+                .commit_wip("WIP: uncommitted changes in the session worktree (kept by Brigadier)")
+                .map_err(git_error)
+        })
+        .await;
+        match kept {
+            Ok(Some(commit)) => {
+                tracing::info!(conversation = %conversation.id, commit = %commit.0, "kept the session worktree's changes as a WIP commit");
+                true
+            }
+            Ok(None) => true,
+            Err(err) => {
+                tracing::error!(conversation = %conversation.id, error = %err, "could not keep the session worktree's changes; the worktree stays");
+                false
+            }
         }
     }
 
