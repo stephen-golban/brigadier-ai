@@ -4,6 +4,9 @@
 //! `projects/<encoded cwd>/<id>.jsonl` (the transcript) and `projects/<encoded cwd>/<id>/`,
 //! plus `tasks/<id>`, `session-env/<id>`, `file-history/<id>`, `todos/<id>-*.json` and
 //! `debug/<id>.txt`. Nothing else is touched.
+//!
+//! In the working directory, Claude Code stages its writes in `.claude/.cc-writes`; the part of
+//! that path which did not exist before the session is removed with it, while it holds no files.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -13,6 +16,8 @@ use crate::{Error, Result};
 
 /// Per-session directories and files directly under the config directory, by name.
 const SESSION_DIRS: &[&str] = &["tasks", "session-env", "file-history"];
+/// Where Claude Code stages atomic writes, under `<cwd>/.claude`.
+const STAGING_DIR: &str = ".cc-writes";
 
 pub(super) fn check_session_id(id: &str) -> Result<()> {
     uuid::Uuid::parse_str(id)
@@ -32,6 +37,20 @@ pub(super) fn project_dir(config: &Path, cwd: &Path) -> PathBuf {
     config.join("projects").join(encoded)
 }
 
+/// Claude Code's write-staging directory under `cwd`, or its `.claude` parent, whichever the
+/// session would create. `None` when both already exist.
+pub(super) fn new_staging_dir(cwd: &Path) -> Option<PathBuf> {
+    let claude = cwd.join(".claude");
+    let staging = claude.join(STAGING_DIR);
+    if !claude.exists() {
+        Some(claude)
+    } else if !staging.exists() {
+        Some(staging)
+    } else {
+        None
+    }
+}
+
 pub(super) fn remove(config: &Path, artifacts: &[Artifact]) -> Result<()> {
     let mut failures = Vec::new();
     // Sessions first: a project directory can only go once the sessions in it are gone.
@@ -43,7 +62,16 @@ pub(super) fn remove(config: &Path, artifacts: &[Artifact]) -> Result<()> {
         Artifact::ClaudeProjectDir { path } => Some(remove_project_dir(config, Path::new(path))),
         _ => None,
     });
-    for result in sessions.collect::<Vec<_>>().into_iter().chain(dirs) {
+    let staging = artifacts.iter().filter_map(|artifact| match artifact {
+        Artifact::ClaudeStagingDir { path } => Some(remove_staging_dir(Path::new(path))),
+        _ => None,
+    });
+    for result in sessions
+        .collect::<Vec<_>>()
+        .into_iter()
+        .chain(dirs)
+        .chain(staging)
+    {
         if let Err(err) = result {
             failures.push(err.to_string());
         }
@@ -97,6 +125,38 @@ fn remove_project_dir(config: &Path, dir: &Path) -> Result<()> {
         std::fs::remove_dir(dir)?;
     }
     Ok(())
+}
+
+/// Removes a staging directory the session created, unless it holds a file: then someone put
+/// something there that is not Claude's scratch, and it stays.
+fn remove_staging_dir(dir: &Path) -> Result<()> {
+    let is_staging = match dir.file_name().and_then(|name| name.to_str()) {
+        Some(".claude") => true,
+        Some(STAGING_DIR) => dir.parent().and_then(Path::file_name) == Some(".claude".as_ref()),
+        _ => false,
+    };
+    if !is_staging {
+        return Err(Error::Invalid(format!(
+            "{} is not a Claude staging directory",
+            dir.display()
+        )));
+    }
+    if holds_only_dirs(dir) {
+        remove_path(dir)?;
+    }
+    Ok(())
+}
+
+/// Whether `dir` is a directory tree with no files (or symlinks) anywhere in it.
+fn holds_only_dirs(dir: &Path) -> bool {
+    match std::fs::symlink_metadata(dir) {
+        Ok(meta) if meta.is_dir() => std::fs::read_dir(dir).is_ok_and(|entries| {
+            entries
+                .into_iter()
+                .all(|entry| entry.is_ok_and(|entry| holds_only_dirs(&entry.path())))
+        }),
+        _ => false,
+    }
 }
 
 fn is_empty_dir(dir: &Path) -> bool {

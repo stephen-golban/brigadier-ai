@@ -414,6 +414,13 @@ impl Provider for Claude {
                     session_id: native_id.clone(),
                 })
                 .await?;
+            if let Some(path) = files::new_staging_dir(&cwd) {
+                ledger
+                    .record(Artifact::ClaudeStagingDir {
+                        path: path.display().to_string(),
+                    })
+                    .await?;
+            }
 
             let recorder = match &spec.record_to {
                 Some(path) => Some(Arc::new(Recorder::create(
