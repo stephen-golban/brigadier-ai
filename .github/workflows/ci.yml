@@ -135,9 +135,6 @@ jobs:
           pnpm tauri build ${{ matrix.tauri-args }}
 
       - name: Launch smoke check
-        env:
-          BRIGADIER_DATA_DIR: ${{ runner.temp }}/brigadier-smoke
-          BRIGADIER_SMOKE_REPORT: ${{ runner.temp }}/smoke-report.json
         run: |
           smoke() {
             if [ "$RUNNER_OS" = "Linux" ]; then
@@ -151,13 +148,24 @@ jobs:
           }
           # The first launch of a freshly built binary on a fresh runner also pays one-time OS
           # work (malware scan, loader and webview caches) that a user pays once after
-          # installing. Warm the OS up with a throwaway launch, then measure a cold app start
-          # with a fresh data directory. The warm-up's report is printed, never judged.
+          # installing. Warm the OS up with a throwaway launch; its report is printed, never
+          # judged.
           echo "::group::Warm-up launch (not judged)"
           BRIGADIER_DATA_DIR="$RUNNER_TEMP/brigadier-warmup" \
             BRIGADIER_SMOKE_REPORT="$RUNNER_TEMP/warmup-report.json" smoke || true
           echo "::endgroup::"
-          smoke
+          # Then three cold starts, each with a fresh data directory. On shared runners the
+          # window and webview creation before the page loads swings by seconds between
+          # identical launches, so cold start is judged by the median of the three against the
+          # same limit; every other check is judged on the first launch, as the app judged it.
+          for launch in 1 2 3; do
+            echo "::group::Judged launch $launch"
+            BRIGADIER_DATA_DIR="$RUNNER_TEMP/brigadier-smoke-$launch" \
+              BRIGADIER_SMOKE_REPORT="$RUNNER_TEMP/smoke-launch-$launch.json" smoke || true
+            echo "::endgroup::"
+          done
+          node apps/desktop/scripts/judge-smoke.mjs "$RUNNER_TEMP/smoke-report.json" \
+            "$RUNNER_TEMP"/smoke-launch-{1,2,3}.json
 
       - name: Smoke report
         if: always()
