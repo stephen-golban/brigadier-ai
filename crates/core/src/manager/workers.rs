@@ -831,7 +831,7 @@ impl SessionManager {
                         Some(_) => WorktreeSpec::Branch { name },
                         None => WorktreeSpec::NewBranch {
                             name,
-                            start: repo.resolve(&base_name).map_err(git_error)?,
+                            start: repo.branch_commit(&base_name).map_err(git_error)?,
                         },
                     };
                     repo.add_worktree(&path, spec)

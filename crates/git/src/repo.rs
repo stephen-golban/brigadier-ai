@@ -156,6 +156,13 @@ impl Repo {
         }
     }
 
+    /// A local branch's commit, which must exist. Unlike `resolve`, a tag or other ref with the
+    /// same name is never picked instead.
+    pub fn branch_commit(&self, branch: &str) -> Result<Oid> {
+        self.branch_tip(branch)?
+            .ok_or_else(|| Error::Invalid(format!("there is no branch {branch:?}")))
+    }
+
     /// Create a validated new branch at a commit; never replace an existing branch.
     pub fn create_branch(&self, name: &str, start: &Oid) -> Result<()> {
         self.validate_branch(name)?;
@@ -261,9 +268,10 @@ impl Repo {
         Ok(PatchOutcome::Applied { commit })
     }
 
-    /// Whether all commits reachable from branch are also reachable from into.
+    /// Whether all commits reachable from local branch `branch` are also reachable from local
+    /// branch `into`.
     pub fn is_merged(&self, branch: &str, into: &str) -> Result<bool> {
-        self.ancestor(&self.resolve(branch)?, &self.resolve(into)?)
+        self.ancestor(&self.branch_commit(branch)?, &self.branch_commit(into)?)
     }
     pub(crate) fn ancestor(&self, from: &Oid, to: &Oid) -> Result<bool> {
         valid_oid(from)?;
