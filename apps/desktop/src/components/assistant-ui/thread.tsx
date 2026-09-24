@@ -33,10 +33,14 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
-/** Optional overrides: `AssistantMessage` and `Welcome` replace whole sections. */
+/**
+ * Optional overrides: `AssistantMessage` and `Welcome` replace whole sections;
+ * `BeforeMessages` renders above the message list (e.g. a "load earlier" control).
+ */
 export type ThreadComponents = {
   AssistantMessage?: ComponentType | undefined;
   Welcome?: ComponentType | undefined;
+  BeforeMessages?: ComponentType | undefined;
 };
 
 export type ThreadProps = {
@@ -107,7 +111,9 @@ const ThreadRoot: FC<{
   autoFocus: boolean;
   placeholder: string;
 }> = ({ isEmpty, autoFocus, placeholder }) => {
-  const { Welcome = ThreadWelcome } = useContext(ThreadComponentsContext);
+  const { Welcome = ThreadWelcome, BeforeMessages } = useContext(
+    ThreadComponentsContext,
+  );
 
   return (
     <ThreadPrimitive.Root className="aui-root aui-thread-root bg-background @container flex h-full flex-col">
@@ -128,6 +134,7 @@ const ThreadRoot: FC<{
           <AuiIf condition={isHistoryLoadingView}>
             <ThreadHistorySkeleton />
           </AuiIf>
+          {BeforeMessages && <BeforeMessages />}
 
           <div
             data-slot="aui_message-group"
