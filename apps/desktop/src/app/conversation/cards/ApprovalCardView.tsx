@@ -81,7 +81,7 @@ function describe(
             {request.paths.length > 0 && (
               <ApprovalCardCode>{request.paths.join("\n")}</ApprovalCardCode>
             )}
-            {!request.command && request.paths.length === 0 && request.input && (
+            {!request.command && request.input && (
               <ApprovalCardCode>{request.input}</ApprovalCardCode>
             )}
             {request.cwd && (
