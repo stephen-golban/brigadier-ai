@@ -287,6 +287,7 @@ export async function send(outgoing: Outgoing, draft?: DraftTarget): Promise<voi
       ],
     }));
   }
+  const queueBefore = board?.conversationId === conversationId ? board.queue : null;
   try {
     const { outcome } = await request({
       method: "sendMessage",
@@ -302,8 +303,10 @@ export async function send(outgoing: Outgoing, draft?: DraftTarget): Promise<voi
         items: mergeMessages(thread.items, [outcome.message]),
       }));
     } else {
+      // Shown before its queue event arrives. If the queue changed meanwhile, the events are
+      // newer than this answer (the item may already be sent or deleted) and bring it anyway.
       updateBoard(conversationId, (current) =>
-        current.queue.items.some((item) => item.id === outcome.item.id)
+        current.queue !== queueBefore
           ? current
           : { ...current, queue: { ...current.queue, items: [...current.queue.items, outcome.item] } },
       );
