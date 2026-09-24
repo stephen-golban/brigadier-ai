@@ -1,0 +1,30 @@
+[package]
+name = "brigadier-ipc"
+description = "Authenticated local IPC (Unix socket / named pipe + per-launch token) and the typed protocol, exported to TypeScript."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+brigadier-core.workspace = true
+brigadier-sandbox.workspace = true
+getrandom = "0.4.3"
+interprocess = { version = "2.4.4", features = ["tokio"] }
+serde.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util", "time", "sync", "rt", "macros"] }
+tracing.workspace = true
+ts-rs.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+widestring = "1.2.1"
+
+[[bin]]
+name = "gen-ts"
+path = "src/bin/gen_ts.rs"
+
+[lints]
+workspace = true
