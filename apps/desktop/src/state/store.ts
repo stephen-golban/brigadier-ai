@@ -227,6 +227,13 @@ function applyEvent(
       applyDensity(event.settings.density);
       return { ...slice, settings: event.settings };
     case "probe":
+    // Raw sessions, the cleanup ledger and provider checks are Inspector state.
+    case "rawSessionCreated":
+    case "rawSessionUpdated":
+    case "rawEvent":
+    case "cleanupRecorded":
+    case "cleanupCompleted":
+    case "providerChecked":
       return slice;
   }
 }

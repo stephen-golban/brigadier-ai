@@ -1,5 +1,8 @@
 //! Domain model. These types are the wire contract too: they are exported to TypeScript.
 
+use brigadier_providers::{
+    Access, Artifact, ModelCatalog, ProviderEvent, ProviderKind, ProviderStatus, QuotaSnapshot,
+};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -31,6 +34,11 @@ id_type!(
 id_type!(
     /// Identifies a session or a chat.
     ConversationId
+);
+
+id_type!(
+    /// Identifies a raw provider session (a CLI session driven from the Inspector).
+    RawSessionId
 );
 
 /// A workspace of one or more repos. Owns its sessions.
@@ -125,6 +133,115 @@ pub struct MessagePage {
     pub has_more: bool,
 }
 
+/// Where a raw session's events come from.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum RawSource {
+    /// A live CLI process.
+    Live,
+    /// A recording replayed through the adapter's parser.
+    Replay { title: String },
+    /// Simulated CLI output fed through the adapter's parser (diagnostics).
+    Simulation { title: String },
+}
+
+/// Who answers a raw session's approval requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum RawApprovals {
+    /// Brigadier's policy answers what stays inside the session's access; the user the rest.
+    Delegated,
+    /// Brigadier declines every request (a read-only session such as an orchestrator).
+    DeclineAll,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum RawState {
+    Starting,
+    Running,
+    /// The CLI process ended; its CLI session is kept and can be resumed.
+    Stopped,
+    /// It could not start; whatever it created was removed.
+    Failed,
+    /// Being disposed of: the process is ending and its files are being removed.
+    Closing,
+    /// Everything it created is gone. The transcript stays in Brigadier.
+    Closed,
+}
+
+/// A raw provider session: one CLI session driven directly, for debugging adapters.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RawSession {
+    pub id: RawSessionId,
+    pub provider: ProviderKind,
+    pub source: RawSource,
+    pub cwd: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub access: Access,
+    pub approvals: RawApprovals,
+    /// The CLI's own session or thread id, once known.
+    pub native_id: Option<String>,
+    /// The session this one was forked from.
+    pub parent_id: Option<RawSessionId>,
+    pub state: RawState,
+    pub error: Option<String>,
+    /// File the raw stdio exchange is recorded to.
+    pub recording: Option<String>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+/// What Brigadier last learned about a provider.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderOverview {
+    pub provider: ProviderKind,
+    pub status: Option<ProviderStatus>,
+    /// Live model list, or the cached one until the first refresh.
+    pub models: Option<ModelCatalog>,
+    pub quota: Option<QuotaSnapshot>,
+    /// Why the last refresh could not complete.
+    pub error: Option<String>,
+    pub checked_at_ms: Option<i64>,
+}
+
+/// A replayable recording.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct Fixture {
+    /// `builtin:<name>` for fixtures shipped with Brigadier, `recording:<file>` for recordings
+    /// made from the Inspector.
+    pub id: String,
+    pub title: String,
+    pub provider: ProviderKind,
+    pub cli_version: Option<String>,
+    pub lines: u32,
+}
+
+/// One entry of a raw session's transcript.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RawEntry {
+    pub stream_seq: i64,
+    pub at_ms: i64,
+    pub event: ProviderEvent,
+}
+
+/// A page of a raw session's transcript, oldest first.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RawPage {
+    pub entries: Vec<RawEntry>,
+    pub has_more: bool,
+}
+
 /// Every change the core records. Serialized as the payload of a stored event.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(
@@ -153,6 +270,33 @@ pub enum DomainEvent {
     SettingsChanged {
         settings: Settings,
     },
+    RawSessionCreated {
+        session: RawSession,
+    },
+    RawSessionUpdated {
+        id: RawSessionId,
+        state: RawState,
+        native_id: Option<String>,
+        error: Option<String>,
+    },
+    /// Something a raw session's CLI reported.
+    RawEvent {
+        session_id: RawSessionId,
+        event: ProviderEvent,
+    },
+    /// An artifact a CLI session created, recorded before it is relied on.
+    CleanupRecorded {
+        owner: RawSessionId,
+        artifact: Artifact,
+    },
+    /// Every artifact recorded for `owner` was removed (except the listed failures).
+    CleanupCompleted {
+        owner: RawSessionId,
+        failures: Vec<String>,
+    },
+    ProviderChecked {
+        overview: ProviderOverview,
+    },
     /// Diagnostic probe used to measure ingest → paint latency end to end.
     Probe {
         burst_id: String,
@@ -171,6 +315,12 @@ impl DomainEvent {
             Self::ConversationPinned { .. } => "conversation.pinned",
             Self::MessageAppended { .. } => "message.appended",
             Self::SettingsChanged { .. } => "settings.changed",
+            Self::RawSessionCreated { .. } => "raw.created",
+            Self::RawSessionUpdated { .. } => "raw.updated",
+            Self::RawEvent { .. } => "raw.event",
+            Self::CleanupRecorded { .. } => "cleanup.recorded",
+            Self::CleanupCompleted { .. } => "cleanup.completed",
+            Self::ProviderChecked { .. } => "provider.checked",
             Self::Probe { .. } => "diag.probe",
         }
     }
@@ -184,6 +334,15 @@ pub mod streams {
     pub const CATALOG: &str = "catalog";
     pub const SETTINGS: &str = "settings";
     pub const DIAGNOSTICS: &str = "diag";
+    /// Raw sessions: creation and state changes.
+    pub const RAW: &str = "raw";
+    /// The cleanup ledger of every CLI session.
+    pub const CLEANUP: &str = "cleanup";
+    pub const PROVIDERS: &str = "providers";
+
+    pub fn raw_session(id: &super::RawSessionId) -> String {
+        format!("raw:{id}")
+    }
 
     pub fn conversation(id: &ConversationId) -> String {
         format!("conversation:{id}")

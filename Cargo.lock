@@ -319,11 +319,14 @@ version = "0.1.0"
 name = "brigadier-core"
 version = "0.1.0"
 dependencies = [
+ "brigadier-providers",
+ "brigadier-sandbox",
  "brigadier-store",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-util",
  "tracing",
  "ts-rs",
  "uuid",

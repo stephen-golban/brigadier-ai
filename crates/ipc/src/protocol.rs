@@ -283,7 +283,7 @@ impl From<brigadier_core::Error> for IpcError {
         let code = match &err {
             _ if err.is_shutting_down() => ErrorCode::ShuttingDown,
             E::NotFound(_) => ErrorCode::NotFound,
-            E::Invalid(_) => ErrorCode::Invalid,
+            E::Invalid(_) | E::Provider(_) => ErrorCode::Invalid,
             E::Store(_) | E::Corrupt { .. } => ErrorCode::Internal,
         };
         Self {

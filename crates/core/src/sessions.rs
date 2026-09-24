@@ -409,7 +409,7 @@ fn to_new_event(stream: String, event: &DomainEvent) -> Result<NewEvent> {
     Ok(NewEvent::new(stream, event.kind(), now_ms(), event)?)
 }
 
-fn decode(event: &brigadier_store::StoredEvent) -> Result<DomainEvent> {
+pub(crate) fn decode(event: &brigadier_store::StoredEvent) -> Result<DomainEvent> {
     serde_json::from_str(event.payload.get()).map_err(|source| Error::Corrupt {
         seq: event.seq,
         source,
