@@ -3,6 +3,10 @@
 use brigadier_providers::{
     Access, Artifact, ModelCatalog, ProviderEvent, ProviderKind, ProviderStatus, QuotaSnapshot,
 };
+
+use crate::work::{
+    Approval, AttachmentRef, MessageQueue, OrchestratorEntry, Plan, Question, RunState, Task,
+};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -40,6 +44,14 @@ id_type!(
     /// Identifies a raw provider session (a CLI session driven from the Inspector).
     RawSessionId
 );
+id_type!(
+    /// Identifies a delegated task (and its worker).
+    TaskId
+);
+id_type!(
+    /// Identifies a card waiting for the user: an approval, a question or a plan.
+    CardId
+);
 
 /// A workspace of one or more repos. Owns its sessions.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -48,6 +60,207 @@ pub struct Project {
     pub id: ProjectId,
     pub name: String,
     pub created_at_ms: i64,
+    /// The project's repositories. Sessions work in the first one until multi-repo projects
+    /// (Phase 8).
+    #[serde(default)]
+    pub repos: Vec<ProjectRepo>,
+    /// Choices remembered for the project's next session.
+    #[serde(default)]
+    pub prefs: ProjectPrefs,
+}
+
+/// A git repository in a project.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectRepo {
+    /// Absolute path of the repository's top-level directory (the user's own checkout).
+    pub path: String,
+    pub name: String,
+}
+
+/// What a project remembers from its last session setup, plus its secrets list.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ProjectPrefs {
+    /// Absent: the global default from Settings.
+    pub permission: Option<PermissionLevel>,
+    /// Orchestrator provider, model and effort. Absent: the global default.
+    pub orchestrator: Option<ModelChoice>,
+    pub environment: Option<EnvironmentKind>,
+    /// Gitignored env files (paths relative to the repository root) copied into every worker
+    /// worktree. Their values are redacted everywhere Brigadier shows or stores text.
+    pub secret_files: Vec<String>,
+}
+
+/// How much a session may do on its own (PLAN.md §5). Outward actions always ask.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum PermissionLevel {
+    /// You approve every plan and every landed change. Sandboxed.
+    AskForApproval,
+    /// Brigadier approves on your behalf and stops only for questions only you can answer.
+    /// Sandboxed.
+    #[default]
+    ApproveForMe,
+    /// Approve for me without the OS sandbox.
+    FullAccess,
+}
+
+/// A provider, model and reasoning effort, as picked in the composer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelChoice {
+    pub provider: ProviderKind,
+    /// The CLI's model id. Absent: the CLI's own default.
+    pub model: Option<String>,
+    pub effort: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum EnvironmentKind {
+    LocalCheckout,
+    NewWorktree,
+}
+
+/// Where a session's accepted work lands, as asked for in the composer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum EnvironmentRequest {
+    /// Commits land on `branch` in the user's own checkout.
+    LocalCheckout {
+        branch: String,
+        /// "New branch…": create `branch` from this branch or commit first.
+        create_from: Option<String>,
+    },
+    /// The session gets its own worktree on a new branch from `base`, merged back on approval.
+    NewWorktree {
+        base: String,
+        /// The session branch's name. Absent: Brigadier names it (`brigadier/<slug>`).
+        branch: Option<String>,
+    },
+}
+
+/// A session's environment once set up.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum Environment {
+    LocalCheckout {
+        branch: String,
+    },
+    NewWorktree {
+        base: String,
+        branch: String,
+        /// The session worktree, in Brigadier's data directory. Absent until it is created.
+        path: Option<String>,
+    },
+}
+
+/// What a new conversation is set up with, from the composer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum SetupRequest {
+    Session {
+        /// One of the project's repositories.
+        repo: String,
+        environment: EnvironmentRequest,
+        permission: PermissionLevel,
+        orchestrator: ModelChoice,
+    },
+    Chat {
+        model: ModelChoice,
+    },
+}
+
+/// How a conversation is set up.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum Setup {
+    Session {
+        repo: String,
+        environment: Environment,
+        permission: PermissionLevel,
+        orchestrator: ModelChoice,
+        /// Local checkout with uncommitted changes: whether workers start from them. Absent
+        /// until the user answered (or when the checkout was clean).
+        workers_see_uncommitted: Option<bool>,
+    },
+    Chat {
+        model: ModelChoice,
+    },
+}
+
+impl Setup {
+    /// The setup a composer request asks for. A new-worktree session without a branch name
+    /// gets `brigadier/session-<suffix>`; the runtime creates the branch and worktree when
+    /// the session starts.
+    pub fn from_request(request: SetupRequest, suffix: &str) -> Self {
+        match request {
+            SetupRequest::Session {
+                repo,
+                environment,
+                permission,
+                orchestrator,
+            } => Self::Session {
+                repo,
+                environment: match environment {
+                    EnvironmentRequest::LocalCheckout { branch, .. } => {
+                        Environment::LocalCheckout { branch }
+                    }
+                    EnvironmentRequest::NewWorktree { base, branch } => Environment::NewWorktree {
+                        base,
+                        branch: branch
+                            .filter(|branch| !branch.trim().is_empty())
+                            .unwrap_or_else(|| format!("brigadier/session-{suffix}")),
+                        path: None,
+                    },
+                },
+                permission,
+                orchestrator,
+                workers_see_uncommitted: None,
+            },
+            SetupRequest::Chat { model } => Self::Chat { model },
+        }
+    }
+}
+
+/// Changes to a project; absent fields stay as they are.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ProjectPatch {
+    pub name: Option<String>,
+    /// Absolute paths of the project's repositories (replaces the list).
+    pub repos: Option<Vec<String>>,
+    pub prefs: Option<ProjectPrefs>,
+}
+
+/// Where a conversation is in its lifecycle (PLAN.md §5). Deleted conversations leave the
+/// catalog.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum Lifecycle {
+    #[default]
+    Active,
+    /// Idle: its CLI processes stopped and temp files are gone; the next message continues it.
+    Hibernated,
+    /// Hidden in the Archived view; everything it created was cleaned up. Restorable.
+    Archived,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -73,6 +286,11 @@ pub struct Conversation {
     pub created_at_ms: i64,
     /// Last activity (creation, rename, pin, message).
     pub updated_at_ms: i64,
+    /// Absent for conversations created before setups existed (they get one on first use).
+    #[serde(default)]
+    pub setup: Option<Setup>,
+    #[serde(default)]
+    pub lifecycle: Lifecycle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -97,6 +315,14 @@ pub struct Message {
     /// Content hash of the full text when it was too large to keep inline.
     pub blob: Option<String>,
     pub created_at_ms: i64,
+    #[serde(default)]
+    pub attachments: Vec<AttachmentRef>,
+    /// Workers the message @-mentions.
+    #[serde(default)]
+    pub mentions: Vec<TaskId>,
+    /// For assistant messages: the model that wrote it (a Chat may fall back to another).
+    #[serde(default)]
+    pub model: Option<ModelChoice>,
 }
 
 /// Global size and spacing scale for every control.
@@ -109,10 +335,34 @@ pub enum Density {
 }
 
 /// User settings persisted by the core.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", default)]
 pub struct Settings {
     pub density: Density,
+    /// Permission level for projects that have not remembered one.
+    pub default_permission: PermissionLevel,
+    /// Orchestrator model for projects that have not remembered one. Absent: the first
+    /// logged-in provider's default model.
+    pub default_orchestrator: Option<ModelChoice>,
+    /// Model for new Chats. Absent: as for the orchestrator.
+    pub default_chat_model: Option<ModelChoice>,
+    /// Messages sent while a turn runs wait in the queue; off: they steer the running turn.
+    pub queue_enabled: bool,
+    /// A conversation with nothing running hibernates after this many idle minutes.
+    pub hibernate_after_minutes: u32,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            density: Density::default(),
+            default_permission: PermissionLevel::default(),
+            default_orchestrator: None,
+            default_chat_model: None,
+            queue_enabled: true,
+            hibernate_after_minutes: 30,
+        }
+    }
 }
 
 /// Everything the sidebar needs, in one read.
@@ -131,6 +381,89 @@ pub struct MessagePage {
     pub messages: Vec<Message>,
     /// Whether older messages exist before the first one returned.
     pub has_more: bool,
+}
+
+/// Text an assistant is still writing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamingMessage {
+    pub message_id: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct Notice {
+    pub level: brigadier_providers::NoticeLevel,
+    pub text: String,
+    pub at_ms: i64,
+}
+
+/// Everything a conversation view shows, in one read. Live changes follow on the
+/// conversation's event stream.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationView {
+    pub conversation: Conversation,
+    /// The newest page of messages.
+    pub messages: MessagePage,
+    pub tasks: Vec<Task>,
+    pub approvals: Vec<Approval>,
+    pub questions: Vec<Question>,
+    pub plans: Vec<Plan>,
+    pub queue: MessageQueue,
+    pub run: RunState,
+    pub streaming: Option<StreamingMessage>,
+    /// The latest notices (environment problems, fallbacks), newest last.
+    pub notices: Vec<Notice>,
+}
+
+/// A branch, for the composer's branch picker.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchInfo {
+    pub name: String,
+    pub commit: String,
+    /// The worktree that has it checked out (the user's checkout or another), if any.
+    pub checked_out_at: Option<String>,
+}
+
+/// A repository's state, for the composer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoInfo {
+    /// The repository's top-level directory.
+    pub path: String,
+    pub name: String,
+    /// The branch checked out in the user's checkout; absent when detached.
+    pub current_branch: Option<String>,
+    pub branches: Vec<BranchInfo>,
+    /// The user's checkout has uncommitted changes (tracked or untracked).
+    pub dirty: bool,
+}
+
+/// A page of a worker's transcript, oldest first.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerPage {
+    pub entries: Vec<RawEntry>,
+    pub has_more: bool,
+}
+
+/// A page of the orchestrator log, oldest first.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct OrchestratorPage {
+    pub entries: Vec<OrchestratorLogEntry>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct OrchestratorLogEntry {
+    pub stream_seq: i64,
+    pub at_ms: i64,
+    pub entry: OrchestratorEntry,
 }
 
 /// Where a raw session's events come from.
@@ -307,6 +640,63 @@ pub enum DomainEvent {
     ProviderChecked {
         overview: ProviderOverview,
     },
+    /// A project's name, repositories or remembered choices changed (full snapshot).
+    ProjectUpdated {
+        project: Project,
+    },
+    ConversationSetUp {
+        id: ConversationId,
+        setup: Setup,
+    },
+    ConversationLifecycleChanged {
+        id: ConversationId,
+        lifecycle: Lifecycle,
+    },
+    /// Permanently removed; its streams are purged.
+    ConversationDeleted {
+        id: ConversationId,
+    },
+    /// Assistant text as it streams. The final `messageAppended` with the same id replaces it.
+    MessageDelta {
+        conversation_id: ConversationId,
+        message_id: String,
+        text: String,
+    },
+    RunStateChanged {
+        conversation_id: ConversationId,
+        state: RunState,
+        error: Option<String>,
+    },
+    ConversationNotice {
+        conversation_id: ConversationId,
+        notice: Notice,
+    },
+    /// A task was created or changed (full snapshot).
+    TaskUpdated {
+        task: Box<Task>,
+    },
+    ApprovalUpdated {
+        approval: Approval,
+    },
+    QuestionUpdated {
+        question: Question,
+    },
+    PlanUpdated {
+        plan: Plan,
+    },
+    QueueChanged {
+        conversation_id: ConversationId,
+        queue: MessageQueue,
+    },
+    /// Something a worker's CLI reported.
+    WorkerEvent {
+        task_id: TaskId,
+        event: ProviderEvent,
+    },
+    OrchestratorLogged {
+        conversation_id: ConversationId,
+        entry: OrchestratorEntry,
+    },
     /// Diagnostic probe used to measure ingest → paint latency end to end.
     Probe {
         burst_id: String,
@@ -331,6 +721,20 @@ impl DomainEvent {
             Self::CleanupRecorded { .. } => "cleanup.recorded",
             Self::CleanupCompleted { .. } => "cleanup.completed",
             Self::ProviderChecked { .. } => "provider.checked",
+            Self::ProjectUpdated { .. } => "project.updated",
+            Self::ConversationSetUp { .. } => "conversation.setUp",
+            Self::ConversationLifecycleChanged { .. } => "conversation.lifecycle",
+            Self::ConversationDeleted { .. } => "conversation.deleted",
+            Self::MessageDelta { .. } => "message.delta",
+            Self::RunStateChanged { .. } => "conversation.run",
+            Self::ConversationNotice { .. } => "conversation.notice",
+            Self::TaskUpdated { .. } => "task.updated",
+            Self::ApprovalUpdated { .. } => "approval.updated",
+            Self::QuestionUpdated { .. } => "question.updated",
+            Self::PlanUpdated { .. } => "plan.updated",
+            Self::QueueChanged { .. } => "queue.changed",
+            Self::WorkerEvent { .. } => "worker.event",
+            Self::OrchestratorLogged { .. } => "orchestrator.logged",
             Self::Probe { .. } => "diag.probe",
         }
     }
@@ -354,7 +758,18 @@ pub mod streams {
         format!("raw:{id}")
     }
 
+    /// A conversation's messages, tasks, cards, queue and run state.
     pub fn conversation(id: &ConversationId) -> String {
         format!("conversation:{id}")
+    }
+
+    /// A worker's CLI events.
+    pub fn task(id: &super::TaskId) -> String {
+        format!("task:{id}")
+    }
+
+    /// The orchestrator's CLI events and context injections (Inspector).
+    pub fn orchestrator(id: &ConversationId) -> String {
+        format!("orch:{id}")
     }
 }

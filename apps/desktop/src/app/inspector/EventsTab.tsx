@@ -37,6 +37,36 @@ function summary(event: DomainEvent): string {
       return event.failures.length === 0 ? "removed" : `${event.failures.length} failed`;
     case "providerChecked":
       return event.overview.provider;
+    case "projectUpdated":
+      return event.project.name;
+    case "conversationSetUp":
+      return event.setup.type;
+    case "conversationLifecycleChanged":
+      return event.lifecycle;
+    case "conversationDeleted":
+      return "deleted";
+    case "messageDelta":
+      return event.text.slice(0, 120).replace(/\s+/g, " ");
+    case "runStateChanged":
+      return event.error === null ? event.state : `${event.state}: ${event.error}`;
+    case "conversationNotice":
+      return event.notice.text;
+    case "taskUpdated":
+      return `task-${event.task.number} ${event.task.state}`;
+    case "approvalUpdated":
+      return `${event.approval.subject.type} ${event.approval.state.type}`;
+    case "questionUpdated":
+      return event.question.answer === null ? "asked" : "answered";
+    case "planUpdated":
+      return `“${event.plan.title}” ${event.plan.state.type}`;
+    case "queueChanged":
+      return `${event.queue.items.length} queued${event.queue.paused ? ", paused" : ""}`;
+    case "workerEvent":
+      return event.event.type;
+    case "orchestratorLogged":
+      return event.entry.type === "injection"
+        ? `${event.entry.injection.kind} ${event.entry.injection.label}`
+        : event.entry.event.type;
   }
 }
 

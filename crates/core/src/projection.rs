@@ -12,8 +12,11 @@ pub(crate) struct Projection {
     pub(crate) settings: Settings,
     /// Global seq of the event that last set each last-writer-wins field. Concurrent writers
     /// can resume in a different order than they committed; an older event must not win.
-    title_seqs: HashMap<ConversationId, i64>,
-    pinned_seqs: HashMap<ConversationId, i64>,
+    title_seqs: HashMap<String, i64>,
+    pinned_seqs: HashMap<String, i64>,
+    setup_seqs: HashMap<String, i64>,
+    lifecycle_seqs: HashMap<String, i64>,
+    project_seqs: HashMap<String, i64>,
     settings_seq: i64,
 }
 
@@ -24,13 +27,38 @@ impl Projection {
             DomainEvent::ProjectCreated { project } => {
                 self.projects.insert(project.id.clone(), project.clone());
             }
+            DomainEvent::ProjectUpdated { project } => {
+                if self.projects.contains_key(&project.id)
+                    && latest(&mut self.project_seqs, &project.id.0, seq)
+                {
+                    self.projects.insert(project.id.clone(), project.clone());
+                }
+            }
+            DomainEvent::ConversationSetUp { id, setup } => {
+                if let Some(conversation) = self.conversations.get_mut(id)
+                    && latest(&mut self.setup_seqs, &id.0, seq)
+                {
+                    conversation.setup = Some(setup.clone());
+                }
+            }
+            DomainEvent::ConversationLifecycleChanged { id, lifecycle } => {
+                if let Some(conversation) = self.conversations.get_mut(id)
+                    && latest(&mut self.lifecycle_seqs, &id.0, seq)
+                {
+                    conversation.lifecycle = *lifecycle;
+                    conversation.updated_at_ms = conversation.updated_at_ms.max(at_ms);
+                }
+            }
+            DomainEvent::ConversationDeleted { id } => {
+                self.conversations.remove(id);
+            }
             DomainEvent::ConversationCreated { conversation } => {
                 self.conversations
                     .insert(conversation.id.clone(), conversation.clone());
             }
             DomainEvent::ConversationRenamed { id, title } => {
                 if let Some(conversation) = self.conversations.get_mut(id) {
-                    if latest(&mut self.title_seqs, id, seq) {
+                    if latest(&mut self.title_seqs, &id.0, seq) {
                         conversation.title.clone_from(title);
                     }
                     conversation.updated_at_ms = conversation.updated_at_ms.max(at_ms);
@@ -38,7 +66,7 @@ impl Projection {
             }
             DomainEvent::ConversationPinned { id, pinned_at_ms } => {
                 if let Some(conversation) = self.conversations.get_mut(id)
-                    && latest(&mut self.pinned_seqs, id, seq)
+                    && latest(&mut self.pinned_seqs, &id.0, seq)
                 {
                     conversation.pinned_at_ms = *pinned_at_ms;
                 }
@@ -52,8 +80,19 @@ impl Projection {
                     self.settings_seq = seq;
                 }
             }
-            // Raw sessions, the cleanup ledger and providers belong to the runtime.
+            // Raw sessions, the cleanup ledger and providers belong to the runtime; boards
+            // fold the rest of a conversation's stream.
             DomainEvent::RawSessionCreated { .. }
+            | DomainEvent::MessageDelta { .. }
+            | DomainEvent::RunStateChanged { .. }
+            | DomainEvent::ConversationNotice { .. }
+            | DomainEvent::TaskUpdated { .. }
+            | DomainEvent::ApprovalUpdated { .. }
+            | DomainEvent::QuestionUpdated { .. }
+            | DomainEvent::PlanUpdated { .. }
+            | DomainEvent::QueueChanged { .. }
+            | DomainEvent::WorkerEvent { .. }
+            | DomainEvent::OrchestratorLogged { .. }
             | DomainEvent::RawSessionUpdated { .. }
             | DomainEvent::RawEvent { .. }
             | DomainEvent::CleanupRecorded { .. }
@@ -84,8 +123,8 @@ impl Projection {
 }
 
 /// Records `seq` as the field's newest writer; false if a newer event already set it.
-fn latest(seqs: &mut HashMap<ConversationId, i64>, id: &ConversationId, seq: i64) -> bool {
-    let last = seqs.entry(id.clone()).or_insert(seq);
+fn latest(seqs: &mut HashMap<String, i64>, id: &str, seq: i64) -> bool {
+    let last = seqs.entry(id.to_owned()).or_insert(seq);
     if seq < *last {
         return false;
     }
