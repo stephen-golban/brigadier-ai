@@ -1,0 +1,90 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "./tokens.css";
+
+@custom-variant data-open (&:where([data-state="open"], [data-open]:not([data-open="false"])));
+@custom-variant data-closed (&:where([data-state="closed"], [data-closed]:not([data-closed="false"])));
+
+@theme inline {
+  @keyframes collapsible-down {
+    from {
+      height: 0;
+    }
+    to {
+      height: var(--radix-collapsible-content-height, auto);
+    }
+  }
+  @keyframes collapsible-up {
+    from {
+      height: var(--radix-collapsible-content-height, auto);
+    }
+    to {
+      height: 0;
+    }
+  }
+  --animate-collapsible-down: collapsible-down 150ms ease-out;
+  --animate-collapsible-up: collapsible-up 150ms ease-out;
+}
+
+/* Lets the browser skip layout and paint for messages scrolled out of view. */
+@utility message-contain {
+  content-visibility: auto;
+  contain-intrinsic-size: auto var(--message-intrinsic-size);
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html,
+  body,
+  #root {
+    @apply h-full;
+  }
+  html {
+    @apply overscroll-none;
+  }
+  body {
+    @apply bg-background text-foreground font-sans text-sm antialiased select-none;
+    font-optical-sizing: auto;
+  }
+  h1,
+  h2,
+  h3 {
+    @apply font-display tracking-section font-semibold;
+  }
+  h1 {
+    @apply tracking-hero font-medium;
+  }
+  pre,
+  code,
+  kbd {
+    font-variant-ligatures: none;
+  }
+  /* Text inside messages, inputs and the inspector stays selectable in a desktop shell. */
+  input,
+  textarea,
+  [contenteditable],
+  .aui-md,
+  [data-selectable] {
+    @apply select-text;
+  }
+  :focus-visible {
+    box-shadow: none;
+  }
+}
+
+/* Thin overlay-style scrollbars that appear on hover, carried by the standard properties. */
+@layer components {
+  * {
+    scrollbar-width: thin;
+  }
+  @media (hover: hover) {
+    * {
+      scrollbar-color: transparent transparent;
+    }
+    *:hover {
+      scrollbar-color: color-mix(in srgb, var(--muted-foreground) 35%, transparent) transparent;
+    }
+  }
+}
