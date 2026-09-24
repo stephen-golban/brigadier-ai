@@ -2,7 +2,6 @@ import {
   ActionBarPrimitive,
   AuiIf,
   type AssistantState,
-  BranchPickerPrimitive,
   ComposerPrimitive,
   ErrorPrimitive,
   MessagePrimitive,
@@ -13,11 +12,7 @@ import {
   ArrowDown,
   ArrowUp,
   Check,
-  ChevronLeft,
-  ChevronRight,
   Copy,
-  Pencil,
-  Regenerate,
   Stop,
 } from "@openai/apps-sdk-ui/components/Icon";
 import {
@@ -34,14 +29,23 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
 /**
- * Optional overrides: `AssistantMessage` and `Welcome` replace whole sections;
- * `BeforeMessages` renders above the message list (e.g. a "load earlier" control).
+ * Optional overrides: `AssistantMessage`, `Welcome` and `Composer` replace whole sections;
+ * `BeforeMessages` renders above the message list (e.g. a "load earlier" control);
+ * `Card` renders messages whose metadata carries a card (worker, approval, plan…);
+ * `MessageFooter` renders under each user or assistant message (attachments, model);
+ * `AboveComposer` renders between the messages and the composer (queue, notices).
  */
 export type ThreadComponents = {
   AssistantMessage?: ComponentType | undefined;
   Welcome?: ComponentType | undefined;
   BeforeMessages?: ComponentType | undefined;
+  Card?: ComponentType | undefined;
+  MessageFooter?: ComponentType | undefined;
+  AboveComposer?: ComponentType | undefined;
+  Composer?: ComponentType<ComposerProps> | undefined;
 };
+
+export type ComposerProps = { autoFocus: boolean; placeholder: string };
 
 export type ThreadProps = {
   components?: ThreadComponents | undefined;
@@ -111,9 +115,12 @@ const ThreadRoot: FC<{
   autoFocus: boolean;
   placeholder: string;
 }> = ({ isEmpty, autoFocus, placeholder }) => {
-  const { Welcome = ThreadWelcome, BeforeMessages } = useContext(
-    ThreadComponentsContext,
-  );
+  const {
+    Welcome = ThreadWelcome,
+    BeforeMessages,
+    AboveComposer,
+    Composer: ComposerComponent = Composer,
+  } = useContext(ThreadComponentsContext);
 
   return (
     <ThreadPrimitive.Root className="aui-root aui-thread-root bg-background @container flex h-full flex-col">
@@ -152,7 +159,8 @@ const ThreadRoot: FC<{
             )}
           >
             <ThreadScrollToBottom />
-            <Composer autoFocus={autoFocus} placeholder={placeholder} />
+            {AboveComposer && <AboveComposer />}
+            <ComposerComponent autoFocus={autoFocus} placeholder={placeholder} />
           </ThreadPrimitive.ViewportFooter>
         </div>
       </ThreadPrimitive.Viewport>
@@ -161,15 +169,29 @@ const ThreadRoot: FC<{
 };
 
 const ThreadMessage: FC = () => {
-  const { AssistantMessage: AssistantMessageComponent = AssistantMessage } =
+  const { AssistantMessage: AssistantMessageComponent = AssistantMessage, Card } =
     useContext(ThreadComponentsContext);
   const role = useAuiState((s) => s.message.role);
-  const isEditing = useAuiState((s) => s.message.composer.isEditing);
+  const isCard = useAuiState((s) => s.message.metadata.custom["card"] !== undefined);
 
-  if (isEditing) return <EditComposer />;
+  if (isCard && Card) return <Card />;
   if (role === "user") return <UserMessage />;
+  if (role === "system") return <SystemMessage />;
   return <AssistantMessageComponent />;
 };
+
+/** A line from Brigadier itself (an environment problem, a fallback), not from a model. */
+const SystemMessage: FC = () => (
+  <MessagePrimitive.Root
+    data-slot="aui_system-message-root"
+    data-role="system"
+    className="message-contain text-muted-foreground flex justify-center px-2 text-center text-xs"
+  >
+    <p className="max-w-4/5 whitespace-pre-wrap">
+      <MessagePrimitive.Parts />
+    </p>
+  </MessagePrimitive.Root>
+);
 
 const ThreadScrollToBottom: FC = () => {
   return (
@@ -196,7 +218,7 @@ const ThreadWelcome: FC = () => {
   );
 };
 
-const Composer: FC<{ autoFocus: boolean; placeholder: string }> = ({
+const Composer: FC<ComposerProps> = ({
   autoFocus,
   placeholder,
 }) => {
@@ -282,13 +304,18 @@ const AssistantMessage: FC = () => {
 
       <div
         data-slot="aui_assistant-message-footer"
-        className="ms-2 flex min-h-7.5 items-center pt-1.5"
+        className="ms-2 flex min-h-7.5 items-center gap-2 pt-1.5"
       >
-        <BranchPicker />
         <AssistantActionBar />
+        <MessageFooter />
       </div>
     </MessagePrimitive.Root>
   );
+};
+
+const MessageFooter: FC = () => {
+  const { MessageFooter: Footer } = useContext(ThreadComponentsContext);
+  return Footer ? <Footer /> : null;
 };
 
 const CopyIcon: FC = () => (
@@ -314,11 +341,6 @@ const AssistantActionBar: FC = () => {
           <CopyIcon />
         </TooltipIconButton>
       </ActionBarPrimitive.Copy>
-      <ActionBarPrimitive.Reload asChild>
-        <TooltipIconButton tooltip="Refresh">
-          <Regenerate />
-        </TooltipIconButton>
-      </ActionBarPrimitive.Reload>
     </ActionBarPrimitive.Root>
   );
 };
@@ -339,10 +361,7 @@ const UserMessage: FC = () => {
         </div>
       </div>
 
-      <BranchPicker
-        data-slot="aui_user-branch-picker"
-        className="-me-1 justify-end"
-      />
+      <MessageFooter />
     </MessagePrimitive.Root>
   );
 };
@@ -359,67 +378,6 @@ const UserActionBar: FC = () => {
           <CopyIcon />
         </TooltipIconButton>
       </ActionBarPrimitive.Copy>
-      <ActionBarPrimitive.Edit asChild>
-        <TooltipIconButton tooltip="Edit" className="aui-user-action-edit">
-          <Pencil />
-        </TooltipIconButton>
-      </ActionBarPrimitive.Edit>
     </ActionBarPrimitive.Root>
-  );
-};
-
-const EditComposer: FC = () => {
-  return (
-    <MessagePrimitive.Root
-      data-slot="aui_edit-composer-wrapper"
-      className="message-contain flex flex-col px-2"
-    >
-      <ComposerPrimitive.Root className="aui-edit-composer-root border-foreground/10 focus-within:border-foreground/25 bg-muted/30 rounded-thread ms-auto flex w-full max-w-4/5 cursor-text flex-col border transition-[border-color]">
-        <ComposerPrimitive.Input
-          className="aui-edit-composer-input text-foreground min-h-composer w-full resize-none bg-transparent px-4 pt-3 pb-1 text-base outline-none"
-          autoFocus
-        />
-        <div className="aui-edit-composer-footer mx-2.5 mb-2.5 flex items-center gap-1.5 self-end">
-          <ComposerPrimitive.Cancel asChild>
-            <Button variant="ghost" size="sm">
-              Cancel
-            </Button>
-          </ComposerPrimitive.Cancel>
-          <ComposerPrimitive.Send asChild>
-            <Button size="sm">Update</Button>
-          </ComposerPrimitive.Send>
-        </div>
-      </ComposerPrimitive.Root>
-    </MessagePrimitive.Root>
-  );
-};
-
-const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
-  className,
-  ...rest
-}) => {
-  return (
-    <BranchPickerPrimitive.Root
-      hideWhenSingleBranch
-      className={cn(
-        "aui-branch-picker-root text-muted-foreground -ms-2 me-2 inline-flex items-center text-xs",
-        className,
-      )}
-      {...rest}
-    >
-      <BranchPickerPrimitive.Previous asChild>
-        <TooltipIconButton tooltip="Previous">
-          <ChevronLeft />
-        </TooltipIconButton>
-      </BranchPickerPrimitive.Previous>
-      <span className="aui-branch-picker-state font-medium">
-        <BranchPickerPrimitive.Number /> / <BranchPickerPrimitive.Count />
-      </span>
-      <BranchPickerPrimitive.Next asChild>
-        <TooltipIconButton tooltip="Next">
-          <ChevronRight />
-        </TooltipIconButton>
-      </BranchPickerPrimitive.Next>
-    </BranchPickerPrimitive.Root>
   );
 };

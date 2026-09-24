@@ -1,7 +1,8 @@
 import { subscribe } from "@/ipc/client";
 import type { BridgeEvent, EventEnvelope } from "@/ipc/generated";
 import { markApplied, setSamplingPaused } from "@/lib/perf";
-import { loadCatalog, loadMessages } from "@/state/actions";
+import { loadCatalog, loadConversation, openOrchestratorLog } from "@/state/actions";
+import { applyBoardEvents, useBoard } from "@/state/board";
 import { applyEvents, useApp } from "@/state/store";
 
 let queued: EventEnvelope[] = [];
@@ -14,20 +15,24 @@ function flush() {
   const batch = queued;
   queued = [];
   applyEvents(batch);
+  applyBoardEvents(batch);
   for (const { atMs, event } of batch) {
     markApplied(atMs, event.type === "probe" ? event.burstId : null);
   }
 }
 
 /** Reloads everything the UI holds: used after (re)connecting and after missing events.
- * Threads other than the open one may be stale, so they are dropped and reload when opened. */
+ * Threads other than the open one may be stale, so they are dropped and reload when opened.
+ * The open conversation's board and the Inspector's orchestrator log are read again. */
 async function resync() {
   const { selection, threads } = useApp.getState();
   const openId = selection.type === "conversation" ? selection.id : null;
   const open = openId ? threads[openId] : undefined;
   useApp.setState({ threads: openId && open ? { [openId]: open } : {} });
   await loadCatalog();
-  if (openId) await loadMessages(openId);
+  const log = useBoard.getState().orchestrator;
+  if (log) void openOrchestratorLog(log.conversationId);
+  if (openId) await loadConversation(openId);
 }
 
 function onBridgeEvent(message: BridgeEvent) {

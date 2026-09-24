@@ -2,12 +2,16 @@ import { create } from "zustand";
 
 import type {
   AppInfo,
+  AttachmentRef,
   Conversation,
   DaemonInfo,
   DaemonMetrics,
   Diagnostics,
+  EnvironmentKind,
   EventEnvelope,
   Message,
+  ModelChoice,
+  PermissionLevel,
   Project,
   ProvidersView,
   RawEntry,
@@ -19,9 +23,43 @@ import { applyDensity, cachedDensity } from "@/lib/density";
 /** What the main area shows. Drafts become real conversations on their first message. */
 export type Selection =
   | { type: "none" }
+  | { type: "archived" }
   | { type: "conversation"; id: string }
   | { type: "draft"; kind: "chat" }
   | { type: "draft"; kind: "session"; projectId: string };
+
+/**
+ * The composer's choices for a conversation that does not exist yet. `null` fields follow
+ * the resolution order: the project's remembered choice, then the global default.
+ */
+export type DraftSetup = {
+  /** The project these choices were made for; they reset when the project changes. */
+  projectId: string | null;
+  environment: EnvironmentKind | null;
+  /** Local checkout: the branch commits land on. Absent: the checked-out branch. */
+  branch: string | null;
+  /** Local checkout, "New branch…": the branch to create from `branch`. */
+  newBranch: string | null;
+  /** New worktree: the base branch. Absent: the checked-out branch. */
+  base: string | null;
+  /** New worktree: the session branch's name. Empty: Brigadier names it. */
+  sessionBranch: string;
+  permission: PermissionLevel | null;
+  model: ModelChoice | null;
+};
+
+export function emptyDraft(projectId: string | null): DraftSetup {
+  return {
+    projectId,
+    environment: null,
+    branch: null,
+    newBranch: null,
+    base: null,
+    sessionBranch: "",
+    permission: null,
+    model: null,
+  };
+}
 
 export type ConnectionState = {
   status: "connecting" | "connected" | "disconnected";
@@ -34,6 +72,7 @@ export type PendingMessage = {
   localId: string;
   conversationId: string;
   text: string;
+  attachments: AttachmentRef[];
   createdAtMs: number;
 };
 
@@ -45,7 +84,7 @@ export type Thread = {
   fullText: Record<string, string>;
 };
 
-export type InspectorTab = "events" | "processes" | "performance" | "providers";
+export type InspectorTab = "events" | "orchestrator" | "processes" | "performance" | "providers";
 
 /** Newest inspector events kept in memory. */
 export const INSPECTOR_EVENTS = 500;
@@ -80,6 +119,7 @@ export type AppState = {
   threads: Record<string, Thread>;
   pending: PendingMessage[];
   selection: Selection;
+  draft: DraftSetup;
   expandedProjects: Record<string, boolean>;
   windowVisible: boolean;
   coldStartMs: number | null;
@@ -111,6 +151,7 @@ export const useApp = create<AppState>()(() => ({
   threads: {},
   pending: [],
   selection: { type: "draft", kind: "chat" },
+  draft: emptyDraft(null),
   expandedProjects: {},
   windowVisible: true,
   coldStartMs: null,
@@ -314,7 +355,8 @@ function applyEvent(envelope: EventEnvelope, slice: Slice): Slice {
       }
       // The confirmed message replaces its optimistic copy (the event can beat the response).
       const echo = slice.pending.findIndex(
-        (entry) => entry.conversationId === id && entry.text === message.text,
+        (entry) =>
+          message.role === "user" && entry.conversationId === id && entry.text === message.text,
       );
       const pending =
         echo === -1

@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect } from "react";
 
 import { AppSidebar } from "@/app/AppSidebar";
+import { ArchivedView } from "@/app/ArchivedView";
 import { ConversationView } from "@/app/ConversationView";
 import { runSmoke } from "@/app/smoke";
 import { TopBar } from "@/app/TopBar";
@@ -17,12 +18,15 @@ const Inspector = lazy(() =>
 
 let readyReported = false;
 
+/** Drafts share one key: switching the composer's project must not lose the typed text. */
 function viewKey(selection: Selection): string {
   switch (selection.type) {
     case "conversation":
       return selection.id;
     case "draft":
-      return selection.kind === "chat" ? "draft:chat" : `draft:${selection.projectId}`;
+      return "draft";
+    case "archived":
+      return "archived";
     case "none":
       return "none";
   }
@@ -79,7 +83,11 @@ export function App() {
         <div className="flex h-full min-w-0 flex-1 flex-col">
           <TopBar />
           <div className="min-h-0 flex-1">
-            <ConversationView key={viewKey(selection)} selection={selection} />
+            {selection.type === "archived" ? (
+              <ArchivedView />
+            ) : (
+              <ConversationView key={viewKey(selection)} selection={selection} />
+            )}
           </div>
         </div>
         {inspectorOpen && (

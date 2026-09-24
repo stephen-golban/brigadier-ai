@@ -1,0 +1,354 @@
+import { Pause, Play, Stop } from "@openai/apps-sdk-ui/components/Icon";
+import { memo, type ReactNode, useState } from "react";
+
+import { ArtifactDialog } from "@/app/conversation/ArtifactDialog";
+import { DiffStatView, Lines, Section, short } from "@/app/conversation/cards/common";
+import { useAction } from "@/app/conversation/useAction";
+import { WorkerTranscript } from "@/app/conversation/WorkerTranscript";
+import { PROVIDER_LABELS } from "@/app/inspector/providers/shared";
+import { mono } from "@/components/assistant-ui/elements/surfaces";
+import { TaskCard, type TaskCardState } from "@/components/assistant-ui/elements/task-card";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import type { ArtifactRef, Task, TaskState } from "@/ipc/generated";
+import { modelName, useModelGroups } from "@/lib/setup";
+import { cn } from "@/lib/utils";
+import { pauseTask, resumeTask, stopTask } from "@/state/actions";
+import { useBoard } from "@/state/board";
+
+export const TASK_STATE_LABELS: Record<TaskState, string> = {
+  queued: "Queued",
+  starting: "Starting",
+  running: "Running",
+  blocked: "Blocked",
+  paused: "Paused",
+  reported: "Reported",
+  reviewing: "In review",
+  awaitingApproval: "Waiting for approval",
+  readyToLand: "Ready to land",
+  landed: "Landed",
+  done: "Done",
+  rejected: "Rejected",
+  stopped: "Stopped",
+  failed: "Failed",
+};
+
+const CARD_STATES: Record<TaskState, TaskCardState> = {
+  queued: "waiting",
+  starting: "working",
+  running: "working",
+  blocked: "waiting",
+  paused: "paused",
+  reported: "working",
+  reviewing: "working",
+  awaitingApproval: "waiting",
+  readyToLand: "waiting",
+  landed: "done",
+  done: "done",
+  rejected: "cancelled",
+  stopped: "cancelled",
+  failed: "failed",
+};
+
+/** States in which a worker (or its task) can still be stopped. */
+const ACTIVE: ReadonlySet<TaskState> = new Set([
+  "queued",
+  "starting",
+  "running",
+  "blocked",
+  "paused",
+  "reported",
+  "reviewing",
+  "awaitingApproval",
+  "readyToLand",
+]);
+
+/** One worker, read from the open board by id so only its own updates rerender it. */
+export const TaskCardView = memo(function TaskCardView({ taskId }: { taskId: string }) {
+  const task = useBoard((s) => s.board?.tasks[taskId]);
+  const activity = useBoard((s) => s.board?.activity[taskId]);
+  const [open, setOpen] = useState(false);
+  const groups = useModelGroups();
+  const action = useAction();
+  if (!task) return null;
+
+  const choice = task.route.choice;
+  const model = `${modelName(groups, choice)}${choice.effort ? ` · ${choice.effort}` : ""}`;
+  const working = task.state === "running" || task.state === "starting";
+  const codex = choice.provider === "codex";
+
+  const actions = ACTIVE.has(task.state) && (
+    <>
+      {task.state === "paused" ? (
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={action.busy}
+          onClick={() => action.run(() => resumeTask(task.id))}
+        >
+          <Play />
+          Resume
+        </Button>
+      ) : (
+        working && (
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={action.busy}
+            onClick={() => action.run(() => pauseTask(task.id))}
+          >
+            <Pause />
+            Pause
+          </Button>
+        )
+      )}
+      <Button
+        size="xs"
+        variant="outline"
+        disabled={action.busy}
+        onClick={() => action.run(() => stopTask(task.id))}
+      >
+        <Stop />
+        Stop
+      </Button>
+      {working && codex && (
+        <span className="text-muted-foreground text-xs">
+          Pausing Codex lets its current command finish first.
+        </span>
+      )}
+      {action.error && (
+        <span role="alert" className="text-destructive text-xs">
+          {action.error}
+        </span>
+      )}
+    </>
+  );
+
+  return (
+    <TaskCard
+      data-task={`task-${task.number}`}
+      label={task.title}
+      state={CARD_STATES[task.state]}
+      stateLabel={TASK_STATE_LABELS[task.state]}
+      badges={
+        <>
+          <Badge variant="outline">{task.kind}</Badge>
+          <Badge variant={task.state === "failed" ? "destructive" : "secondary"}>
+            {TASK_STATE_LABELS[task.state]}
+          </Badge>
+        </>
+      }
+      meta={`task-${task.number} · ${model}`}
+      activity={working ? activity : undefined}
+      actions={actions || undefined}
+      result={taskResult(task)}
+      open={open}
+      onOpenChange={setOpen}
+    >
+      <TaskDetails task={task} model={model} />
+    </TaskCard>
+  );
+});
+
+/** The one-line outcome under the card: why it waits, what it reported, where it landed. */
+function taskResult(task: Task): ReactNode {
+  if (task.blockedReason) {
+    return <span className="text-warning">{task.blockedReason}</span>;
+  }
+  if (task.error) return <span className="text-destructive">{task.error}</span>;
+  if (task.landed) {
+    return (
+      <span>
+        Landed as <span className="font-mono">{short(task.landed)}</span>
+        {task.workspace?.target && ` on ${task.workspace.target}`}
+      </span>
+    );
+  }
+  if (task.report) return <span className="line-clamp-2">{task.report.summary}</span>;
+  return undefined;
+}
+
+function ArtifactButtons({
+  artifacts,
+  onOpen,
+}: {
+  artifacts: readonly ArtifactRef[];
+  onOpen: (artifact: ArtifactRef) => void;
+}) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {artifacts.map((artifact) => (
+        <Button key={artifact.id} size="xs" variant="outline" onClick={() => onOpen(artifact)}>
+          {artifact.title}
+          <span className="text-muted-foreground">{artifact.kind}</span>
+        </Button>
+      ))}
+    </div>
+  );
+}
+
+function TaskDetails({ task, model }: { task: Task; model: string }) {
+  const [artifact, setArtifact] = useState<ArtifactRef | null>(null);
+  const [transcriptOpen, setTranscriptOpen] = useState(false);
+  const subjectNumber = useBoard((s) =>
+    task.subject ? s.board?.tasks[task.subject]?.number : undefined,
+  );
+  const reviewNumber = useBoard((s) =>
+    task.review ? s.board?.tasks[task.review.taskId]?.number : undefined,
+  );
+  const { report, candidate, review, workspace, kept } = task;
+
+  return (
+    <>
+      <Section title="Model">
+        <p className="text-sm">
+          {PROVIDER_LABELS[task.route.choice.provider]} · {model}
+        </p>
+        <p className="text-muted-foreground text-xs">Why this model: {task.route.reason}</p>
+      </Section>
+
+      {(workspace || subjectNumber !== undefined) && (
+        <Section title="Workspace">
+          {subjectNumber !== undefined && (
+            <p className="text-xs">
+              {task.kind === "review" ? "Reviews" : "Works on"} task-{subjectNumber}
+            </p>
+          )}
+          {workspace?.branch && (
+            <p className={mono}>
+              {workspace.branch}
+              {workspace.target && ` → ${workspace.target}`}
+              {workspace.base && ` (from ${short(workspace.base)})`}
+            </p>
+          )}
+          {workspace?.worktree && (
+            <p className={cn(mono, "text-muted-foreground truncate")}>{workspace.worktree}</p>
+          )}
+        </Section>
+      )}
+
+      {report ? (
+        <>
+          <Section title="Report">
+            <p className="text-sm whitespace-pre-wrap">{report.summary}</p>
+          </Section>
+          <Section title="Changes">
+            <Lines items={report.changes} />
+          </Section>
+          <Section title="Decisions">
+            <Lines items={report.decisions} />
+          </Section>
+          <Section title="Verification">
+            <Lines items={report.verification} />
+          </Section>
+          {report.openQuestions.length > 0 && (
+            <Section title="Open questions">
+              <Lines items={report.openQuestions} />
+            </Section>
+          )}
+          {report.verdict && (
+            <Section title="Verdict">
+              <Badge variant={report.verdict === "approve" ? "success" : "warning"}>
+                {report.verdict === "approve" ? "Approved" : "Changes requested"}
+              </Badge>
+            </Section>
+          )}
+          {report.artifacts.length > 0 && (
+            <Section title="Artifacts">
+              <ArtifactButtons artifacts={report.artifacts} onOpen={setArtifact} />
+            </Section>
+          )}
+        </>
+      ) : (
+        <p className="text-muted-foreground text-xs">No report yet.</p>
+      )}
+
+      {candidate && (
+        <Section title="Candidate commit">
+          <p className="text-sm">
+            <span className="font-mono">{short(candidate.commit)}</span> {candidate.message}
+          </p>
+          <p className={cn(mono, "text-muted-foreground")}>on {short(candidate.onto)}</p>
+          <DiffStatView stat={candidate.diffStat} />
+          {candidate.excluded.length > 0 && (
+            <div className="flex flex-col gap-0.5">
+              <p className="text-xs">Left out by the litter guard:</p>
+              <ul className={cn(mono, "flex flex-col gap-0.5")}>
+                {candidate.excluded.map((file) => (
+                  <li key={file.path}>
+                    {file.path} <span className="text-muted-foreground">— {file.reason}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {candidate.diff && (
+            <ArtifactButtons artifacts={[candidate.diff]} onOpen={setArtifact} />
+          )}
+        </Section>
+      )}
+
+      {review && (
+        <Section title="Review">
+          <p className="flex flex-wrap items-center gap-2 text-sm">
+            {review.verdict === null ? (
+              <Badge variant="secondary">In review</Badge>
+            ) : (
+              <Badge variant={review.verdict === "approve" ? "success" : "warning"}>
+                {review.verdict === "approve" ? "Approved" : "Changes requested"}
+              </Badge>
+            )}
+            {reviewNumber !== undefined && <span className="text-xs">by task-{reviewNumber}</span>}
+            <span className="text-muted-foreground text-xs">
+              {review.crossVendor
+                ? "cross-vendor"
+                : "same vendor (only one was available)"}{" "}
+              · of {short(review.commit)}
+            </span>
+          </p>
+        </Section>
+      )}
+
+      {task.landed && (
+        <Section title="Landed">
+          <p className={mono}>
+            {task.landed}
+            {workspace?.target && ` on ${workspace.target}`}
+          </p>
+        </Section>
+      )}
+
+      {kept && (
+        <Section title="Kept work">
+          {kept.type === "branch" ? (
+            <p className={mono}>
+              {kept.branch} at {short(kept.commit)}
+            </p>
+          ) : (
+            <ArtifactButtons artifacts={[kept.artifact]} onOpen={setArtifact} />
+          )}
+        </Section>
+      )}
+
+      <Collapsible open={transcriptOpen} onOpenChange={setTranscriptOpen}>
+        <CollapsibleTrigger asChild>
+          <Button size="xs" variant="ghost" className="self-start">
+            {transcriptOpen ? "Hide live transcript" : "Show live transcript"}
+          </Button>
+        </CollapsibleTrigger>
+        <CollapsibleContent className="mt-1.5">
+          {transcriptOpen && (
+            <WorkerTranscript conversationId={task.conversationId} taskId={task.id} />
+          )}
+        </CollapsibleContent>
+      </Collapsible>
+
+      <ArtifactDialog artifact={artifact} onOpenChange={(next) => !next && setArtifact(null)} />
+    </>
+  );
+}

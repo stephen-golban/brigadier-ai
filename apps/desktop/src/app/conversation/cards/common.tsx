@@ -1,0 +1,55 @@
+import type { ReactNode } from "react";
+
+import { mono } from "@/components/assistant-ui/elements/surfaces";
+import type { DiffStat } from "@/ipc/generated";
+import { cn } from "@/lib/utils";
+
+/** A commit id as shown on cards. */
+export const short = (commit: string) => commit.slice(0, 8);
+
+export function Section({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="flex flex-col gap-1">
+      <h3 className="text-muted-foreground text-xs font-medium">{title}</h3>
+      {children}
+    </section>
+  );
+}
+
+export function Lines({ items }: { items: readonly string[] }) {
+  if (items.length === 0) return <p className="text-muted-foreground text-xs">None.</p>;
+  return (
+    <ul className="flex list-disc flex-col gap-0.5 ps-4 text-sm">
+      {items.map((item, index) => (
+        <li key={index}>{item}</li>
+      ))}
+    </ul>
+  );
+}
+
+export function DiffStatView({ stat }: { stat: DiffStat }) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      <p className="text-xs">
+        {stat.files.length} file{stat.files.length === 1 ? "" : "s"} ·{" "}
+        <span className="text-success">+{stat.insertions}</span>{" "}
+        <span className="text-destructive">−{stat.deletions}</span>
+      </p>
+      <ul className={cn(mono, "flex flex-col gap-0.5")}>
+        {stat.files.map((file) => (
+          <li key={file.path} className="flex gap-2">
+            <span className="min-w-0 flex-1 truncate">{file.path}</span>
+            {file.binary ? (
+              <span className="text-muted-foreground">binary</span>
+            ) : (
+              <span>
+                <span className="text-success">+{file.insertions}</span>{" "}
+                <span className="text-destructive">−{file.deletions}</span>
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}

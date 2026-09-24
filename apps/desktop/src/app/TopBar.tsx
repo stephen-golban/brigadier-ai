@@ -10,12 +10,12 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import type { Density } from "@/ipc/generated";
+import type { Density, Lifecycle } from "@/ipc/generated";
 import { cn } from "@/lib/utils";
 import { setDensity, setInspectorOpen } from "@/state/actions";
 import { useApp } from "@/state/store";
 
-function useTitle(): { project: string | null; title: string } {
+function useTitle(): { project: string | null; title: string; lifecycle: Lifecycle | null } {
   return useApp(
     useShallow((s) => {
       const { selection } = s;
@@ -24,22 +24,30 @@ function useTitle(): { project: string | null; title: string } {
         const project = conversation?.projectId
           ? (s.projects[conversation.projectId]?.name ?? null)
           : null;
-        return { project, title: conversation?.title ?? "" };
+        return {
+          project,
+          title: conversation?.title ?? "",
+          lifecycle: conversation?.lifecycle ?? null,
+        };
       }
       if (selection.type === "draft" && selection.kind === "session") {
         return {
           project: s.projects[selection.projectId]?.name ?? null,
           title: "New session",
+          lifecycle: null,
         };
       }
-      return { project: null, title: "New chat" };
+      if (selection.type === "archived") {
+        return { project: null, title: "Archived", lifecycle: null };
+      }
+      return { project: null, title: "New chat", lifecycle: null };
     }),
   );
 }
 
 export function TopBar() {
   const { state } = useSidebar();
-  const { project, title } = useTitle();
+  const { project, title, lifecycle } = useTitle();
   const connection = useApp((s) => s.connection.status);
   const density = useApp((s) => s.settings.density);
   const inspectorOpen = useApp((s) => s.inspector.open);
@@ -64,6 +72,16 @@ export function TopBar() {
           </>
         )}
         <span className="truncate font-medium">{title}</span>
+        {lifecycle === "hibernated" && (
+          <Badge variant="secondary" className="ms-1" title="Idle: its CLI processes are stopped. Sending a message wakes it.">
+            Hibernated
+          </Badge>
+        )}
+        {lifecycle === "archived" && (
+          <Badge variant="outline" className="ms-1" title="Archived: restore it from the sidebar's Archived view to continue.">
+            Archived
+          </Badge>
+        )}
       </div>
 
       {connection !== "connected" && (

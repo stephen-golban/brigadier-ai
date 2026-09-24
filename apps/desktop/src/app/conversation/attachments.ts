@@ -1,0 +1,83 @@
+import type {
+  Attachment,
+  AttachmentAdapter,
+  CompleteAttachment,
+  PendingAttachment,
+} from "@assistant-ui/react";
+
+import type { AttachmentRef } from "@/ipc/generated";
+import { formatBytes } from "@/lib/format";
+import { addAttachment } from "@/state/actions";
+
+/** The daemon's limit per attachment (MAX_ATTACHMENT_BYTES in the core). */
+const MAX_BYTES = 10 * 1024 * 1024;
+
+function kindOf(mime: string): "image" | "document" | "file" {
+  if (mime.startsWith("image/")) return "image";
+  if (mime.startsWith("text/") || mime === "application/pdf") return "document";
+  return "file";
+}
+
+/**
+ * Attachments for the composer: each file is stored in the daemon's blob store as soon as it
+ * is added, so sending only passes references. Attachment-only messages are allowed.
+ */
+export class BlobAttachmentAdapter implements AttachmentAdapter {
+  accept = "*";
+  private readonly refs = new Map<string, AttachmentRef>();
+
+  async *add({ file }: { file: File }): AsyncGenerator<PendingAttachment, void> {
+    const base = {
+      id: crypto.randomUUID(),
+      type: kindOf(file.type),
+      name: file.name,
+      contentType: file.type || "application/octet-stream",
+      file,
+    };
+    if (file.size > MAX_BYTES) {
+      yield {
+        ...base,
+        status: {
+          type: "incomplete",
+          reason: "error",
+          message: `${file.name} is ${formatBytes(file.size)}; attachments are limited to ${formatBytes(MAX_BYTES)}.`,
+        },
+      };
+      return;
+    }
+    yield { ...base, status: { type: "running", reason: "uploading", progress: 0 } };
+    try {
+      this.refs.set(base.id, await addAttachment(file));
+      yield { ...base, status: { type: "requires-action", reason: "composer-send" } };
+    } catch (error) {
+      yield {
+        ...base,
+        status: {
+          type: "incomplete",
+          reason: "error",
+          message: error instanceof Error ? error.message : String(error),
+        },
+      };
+    }
+  }
+
+  async remove(attachment: Attachment): Promise<void> {
+    // The blob stays until the daemon's garbage collection; nothing references it.
+    this.refs.delete(attachment.id);
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    if (!this.refs.has(attachment.id)) {
+      throw new Error(`${attachment.name} was not stored; remove it and attach it again.`);
+    }
+    return { ...attachment, status: { type: "complete" }, content: [] };
+  }
+
+  /** The stored references for a sent message's attachments, in order. */
+  refsOf(attachments: readonly { id: string }[]): AttachmentRef[] {
+    return attachments.flatMap((attachment) => {
+      const ref = this.refs.get(attachment.id);
+      return ref ? [ref] : [];
+    });
+  }
+}
