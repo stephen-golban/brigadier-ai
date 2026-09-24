@@ -2,8 +2,9 @@
 //!
 //! A recording is JSONL: a header, then one line per stdio line in either direction with its
 //! offset from the start. Personal data is scrubbed as it is written, so a recording can be
-//! committed as a fixture: emails, account and organization identifiers and the home directory
-//! never reach the file.
+//! committed as a fixture: emails, account and organization identifiers, the home directory and
+//! user name (also in object keys, and when a stream splits a path) and the contents of the
+//! user's Codex configuration never reach the file.
 
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -143,12 +144,22 @@ impl Recording {
 /// Removes personal data from recorded lines.
 struct Scrubber {
     home: Option<String>,
+    /// The home directory's last component, replaced wherever it appears as a word: a streamed
+    /// path can arrive split across deltas, out of reach of the home replacement.
+    user: Option<String>,
 }
 
 impl Scrubber {
     fn new() -> Self {
+        let home = dirs::home_dir();
         Self {
-            home: dirs::home_dir()
+            user: home
+                .as_ref()
+                .and_then(|home| home.file_name())
+                .and_then(|name| name.to_str())
+                .filter(|name| name.len() >= 3)
+                .map(str::to_owned),
+            home: home
                 .map(|home| home.display().to_string())
                 .filter(|home| home.len() > 1),
         }
@@ -157,6 +168,7 @@ impl Scrubber {
     fn scrub_line(&self, line: &str) -> String {
         match serde_json::from_str::<Value>(line) {
             Ok(mut value) => {
+                redact_codex_config(&mut value);
                 self.scrub_value(&mut value, None);
                 value.to_string()
             }
@@ -177,8 +189,10 @@ impl Scrubber {
                 .iter_mut()
                 .for_each(|item| self.scrub_value(item, key)),
             Value::Object(map) => {
-                for (key, value) in map.iter_mut() {
-                    self.scrub_value(value, Some(key));
+                let entries = std::mem::take(map);
+                for (key, mut value) in entries {
+                    self.scrub_value(&mut value, Some(&key));
+                    map.insert(self.scrub_text(&key), value);
                 }
             }
             _ => {}
@@ -193,8 +207,46 @@ impl Scrubber {
         if text.contains('@') {
             text = scrub_emails(&text);
         }
+        if let Some(user) = &self.user
+            && text.contains(user.as_str())
+        {
+            text = replace_word(&text, user, "user");
+        }
         text
     }
+}
+
+/// Empties a Codex `config/read` result: it is the user's whole configuration (projects, MCP
+/// servers, preferences), and replaying a session never needs it.
+fn redact_codex_config(value: &mut Value) {
+    let Some(result) = value.get_mut("result").and_then(Value::as_object_mut) else {
+        return;
+    };
+    if result.contains_key("config") && result.contains_key("origins") {
+        result.clear();
+        result.insert("config".into(), Value::Object(Default::default()));
+        result.insert("origins".into(), Value::Object(Default::default()));
+    }
+}
+
+/// Replaces `word` where it is not part of a longer alphanumeric word.
+fn replace_word(text: &str, word: &str, with: &str) -> String {
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(word) {
+        let before = rest[..at].chars().next_back();
+        let after = rest[at + word.len()..].chars().next();
+        out.push_str(&rest[..at]);
+        if before.is_some_and(is_word) || after.is_some_and(is_word) {
+            out.push_str(word);
+        } else {
+            out.push_str(with);
+        }
+        rest = &rest[at + word.len()..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Replaces anything shaped like an email address.
