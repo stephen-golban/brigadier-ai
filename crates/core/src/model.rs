@@ -225,6 +225,16 @@ pub struct Fixture {
     pub lines: u32,
 }
 
+/// Everything the Inspector's Providers tab shows, in one read.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvidersView {
+    pub providers: Vec<ProviderOverview>,
+    /// Newest first.
+    pub sessions: Vec<RawSession>,
+    pub fixtures: Vec<Fixture>,
+}
+
 /// One entry of a raw session's transcript.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]

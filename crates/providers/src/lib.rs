@@ -81,7 +81,8 @@ pub trait Provider: Send + Sync {
     fn quota(&self) -> BoxFuture<'_, Result<QuotaSnapshot>>;
 
     /// Starts, resumes or forks a session. Everything it creates is recorded in `ledger`
-    /// first; events stream on the returned receiver until the CLI exits.
+    /// first; events stream on the returned receiver until the CLI exits, and
+    /// [`ProviderEvent::Exited`] is always the last one.
     fn start(&self, spec: SessionSpec, ledger: Arc<dyn Ledger>) -> BoxFuture<'_, Result<Started>>;
 
     /// Removes the CLI-side artifacts of a finished session (transcripts, thread records).

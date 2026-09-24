@@ -16,8 +16,10 @@ use tauri::{AppHandle, Manager, WebviewWindow};
 use crate::AppState;
 
 pub const MAIN_WINDOW: &str = "main";
-/// Longest the app waits for the daemon to acknowledge a quit.
-const QUIT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Longest the app waits for the daemon to acknowledge a quit. Covers the daemon's bounded
+/// ending of CLI sessions (exit grace, process-group reap, last events stored) before its
+/// store drains; the daemon finishes quitting on its own if this runs out.
+const QUIT_TIMEOUT: Duration = Duration::from_secs(10);
 
 static QUITTING: AtomicBool = AtomicBool::new(false);
 static IN_MENU_BAR: AtomicBool = AtomicBool::new(false);

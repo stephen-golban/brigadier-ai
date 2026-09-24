@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 brigadier-core.workspace = true
+brigadier-providers.workspace = true
 brigadier-sandbox.workspace = true
 getrandom = "0.4.3"
 interprocess = { version = "2.4.4", features = ["tokio"] }

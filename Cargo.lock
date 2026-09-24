@@ -382,6 +382,7 @@ name = "brigadier-ipc"
 version = "0.1.0"
 dependencies = [
  "brigadier-core",
+ "brigadier-providers",
  "brigadier-sandbox",
  "getrandom 0.4.3",
  "interprocess",

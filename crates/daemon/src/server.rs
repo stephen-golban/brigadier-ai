@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use brigadier_core::Core;
+use brigadier_core::runtime::{Runtime, StartRaw};
 use brigadier_ipc::metrics::{DaemonMetrics, Diagnostics, budgets};
 use brigadier_ipc::protocol::{
     ClientFrame, ClientInfo, DaemonInfo, ErrorCode, EventEnvelope, IpcError, Outcome, RawJson,
@@ -33,6 +34,8 @@ const MAX_ACCEPT_FAILURES: u32 = 50;
 pub struct Daemon {
     pub info: DaemonInfo,
     pub core: Arc<Core>,
+    /// Provider sessions and what Brigadier knows about each provider.
+    pub runtime: Arc<Runtime>,
     pub store: Store,
     pub metrics: Arc<Metrics>,
     pub supervisor: Supervisor,
@@ -51,6 +54,7 @@ impl Daemon {
     pub fn new(
         info: DaemonInfo,
         core: Arc<Core>,
+        runtime: Arc<Runtime>,
         store: Store,
         metrics: Arc<Metrics>,
         supervisor: Supervisor,
@@ -61,6 +65,7 @@ impl Daemon {
         Self {
             info,
             core,
+            runtime,
             store,
             metrics,
             supervisor,
@@ -424,6 +429,75 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
             daemon.supervisor.spawn(run);
             Response::ProbeBurst { burst }
         }
+        Request::GetProviders => Response::GetProviders {
+            view: daemon.runtime.view().await,
+        },
+        Request::RefreshProviders => {
+            daemon.runtime.refresh_providers();
+            Response::RefreshProviders
+        }
+        Request::StartRawSession {
+            provider,
+            cwd,
+            model,
+            effort,
+            access,
+            approvals,
+            record,
+        } => Response::StartRawSession {
+            session: Box::new(
+                daemon
+                    .runtime
+                    .start_session(StartRaw {
+                        provider,
+                        cwd,
+                        model,
+                        effort,
+                        access,
+                        approvals,
+                        record,
+                    })
+                    .await?,
+            ),
+        },
+        Request::ResumeRawSession { id } => Response::ResumeRawSession {
+            session: Box::new(daemon.runtime.resume_session(id).await?),
+        },
+        Request::ForkRawSession { id } => Response::ForkRawSession {
+            session: Box::new(daemon.runtime.fork_session(id).await?),
+        },
+        Request::SendRawSession { id, text, steer } => {
+            daemon.runtime.send(&id, text, steer).await?;
+            Response::SendRawSession
+        }
+        Request::InterruptRawSession { id } => {
+            daemon.runtime.interrupt(&id).await?;
+            Response::InterruptRawSession
+        }
+        Request::AnswerApproval {
+            id,
+            approval_id,
+            decision,
+        } => {
+            daemon.runtime.answer(&id, approval_id, decision).await?;
+            Response::AnswerApproval
+        }
+        Request::StopRawSession { id } => {
+            daemon.runtime.stop_session(&id).await?;
+            Response::StopRawSession
+        }
+        Request::CloseRawSession { id } => Response::CloseRawSession {
+            session: Box::new(daemon.runtime.close_session(id).await?),
+        },
+        Request::ListRawEvents { id, before, limit } => Response::ListRawEvents {
+            page: daemon.runtime.transcript(&id, before, limit).await?,
+        },
+        Request::ReplayFixture { fixture_id } => Response::ReplayFixture {
+            session: Box::new(daemon.runtime.replay(&fixture_id).await?),
+        },
+        Request::SimulateUsageLimit { provider } => Response::SimulateUsageLimit {
+            session: Box::new(daemon.runtime.simulate_usage_limit(provider).await?),
+        },
         Request::Subscribe { .. } | Request::SetMetricsStreaming { .. } | Request::Shutdown => {
             return Err(IpcError {
                 code: ErrorCode::Invalid,

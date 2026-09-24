@@ -6,8 +6,9 @@
 //! 1. Take the single-instance lock (released by the OS if we crash).
 //! 2. Open the store, bind the IPC endpoint, publish the per-launch token.
 //! 3. Serve until SIGTERM/SIGINT, a client's `shutdown`, or a fatal failure.
-//! 4. Orderly quit: stop accepting and admitting writes, commit everything queued, acknowledge
-//!    the client that asked, close connections, remove the token, exit 0.
+//! 4. Orderly quit: stop accepting, end every CLI session and store its last events, stop
+//!    admitting writes, commit everything queued, acknowledge the client that asked, close
+//!    connections, remove the token, exit 0.
 //!
 //! A critical task or the store writer dying is logged and exits with code 70 instead.
 
@@ -23,6 +24,7 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use brigadier_core::Core;
+use brigadier_core::runtime::{Runtime, Spawner};
 use brigadier_ipc::protocol::{DaemonInfo, PROTOCOL_VERSION};
 use brigadier_ipc::{Listener, Token};
 use brigadier_sandbox::{InstanceLock, Platform, PlatformOptions};
@@ -185,6 +187,16 @@ async fn run(
     let core = Core::load(store.clone())
         .await
         .context("loading the catalog")?;
+    let spawner: Spawner = {
+        let supervisor = supervisor.clone();
+        Arc::new(move |task| {
+            supervisor.spawn(task);
+        })
+    };
+    // Also sweeps what a crashed daemon left behind, before any client can start sessions.
+    let providers = Runtime::start(core.clone(), platform.clone(), spawner)
+        .await
+        .context("starting the provider runtime")?;
     let metrics = Metrics::start(supervisor.clone(), store.clone(), platform.clone());
     let listener = Listener::bind(&*platform).context("binding the IPC endpoint")?;
     {
@@ -200,6 +212,7 @@ async fn run(
     let daemon = Arc::new(Daemon::new(
         info,
         core,
+        providers.clone(),
         store.clone(),
         metrics,
         supervisor.clone(),
@@ -219,10 +232,14 @@ async fn run(
         _ = quit_rx.recv() => "quit requested by a client",
         state = store.writer_stopped() => {
             tracing::error!(state = ?state, "store writer stopped; exiting");
+            stopping.cancel();
+            providers.shutdown().await;
             return Ok(ExitCode::from(EXIT_FATAL));
         }
         Some(reason) = fatal.recv() => {
             tracing::error!(reason = %reason, "critical task failed; exiting");
+            stopping.cancel();
+            providers.shutdown().await;
             return Ok(ExitCode::from(EXIT_FATAL));
         }
     };
@@ -230,9 +247,12 @@ async fn run(
 
     // 1. Stop accepting connections; critical tasks may now end without being fatal.
     stopping.cancel();
-    // 2. Stop admitting writes and commit everything already queued.
+    // 2. Stop admitting provider work, end every CLI session (bounded, whole process groups)
+    //    and store their last events.
+    providers.shutdown().await;
+    // 3. Stop admitting writes and commit everything already queued.
     let drained = store.shutdown().await;
-    // 3. Acknowledge the client that asked, then close every connection.
+    // 4. Acknowledge the client that asked, then close every connection.
     drained_tx.send_replace(true);
     closing.cancel();
     daemon.connections.close();
