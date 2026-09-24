@@ -81,6 +81,31 @@ impl CliEnv {
     }
 }
 
+/// Adds a session's extra environment to a spawn spec and puts its directories first on PATH.
+pub fn apply_session_env(spec: &mut SpawnSpec, env: &[(String, String)], path_prepend: &[PathBuf]) {
+    for (name, value) in env {
+        spec.env.retain(|(key, _)| key != OsStr::new(name));
+        spec.env.push((name.into(), value.into()));
+    }
+    if path_prepend.is_empty() {
+        return;
+    }
+    let current = spec
+        .env
+        .iter()
+        .find(|(key, _)| key == OsStr::new("PATH"))
+        .map(|(_, value)| value.clone())
+        .unwrap_or_default();
+    let mut dirs: Vec<PathBuf> = path_prepend.to_vec();
+    dirs.extend(
+        std::env::split_paths(&current).filter(|dir| !path_prepend.iter().any(|own| own == dir)),
+    );
+    if let Ok(path) = std::env::join_paths(dirs) {
+        spec.env.retain(|(key, _)| key != OsStr::new("PATH"));
+        spec.env.push(("PATH".into(), path));
+    }
+}
+
 /// The first line of a CLI's `--version` output, trimmed to the version number
 /// (`2.1.281 (Claude Code)` → `2.1.281`, `codex-cli 0.156.1` → `0.156.1`).
 pub fn parse_version(output: &str) -> Option<String> {

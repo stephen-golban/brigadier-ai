@@ -26,9 +26,8 @@ use brigadier_providers::codex::Codex;
 use brigadier_providers::policy::{self, ApprovalMode, Route};
 use brigadier_providers::record::{self, Recording};
 use brigadier_providers::{
-    Access, ApprovalDecision, Artifact, Decider, Ledger, ModelCatalog, Origin, Provider,
-    ProviderEvent, ProviderKind, ProviderSession, SessionSpec, Started, cleanup, fixtures,
-    simulate,
+    Access, ApprovalDecision, Decider, ModelCatalog, Origin, Provider, ProviderEvent, ProviderKind,
+    ProviderSession, SessionSpec, Started, ToolSet, fixtures, simulate,
 };
 use brigadier_sandbox::Platform;
 use brigadier_store::{NewEvent, Retention, StreamPage};
@@ -36,6 +35,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
+use crate::ledger::CleanupLedger;
 use crate::model::{
     DomainEvent, Fixture, ProviderOverview, ProvidersView, RawApprovals, RawEntry, RawPage,
     RawSession, RawSessionId, RawSource, RawState, streams,
@@ -80,8 +80,6 @@ struct Live {
 struct State {
     sessions: HashMap<RawSessionId, RawSession>,
     live: HashMap<RawSessionId, Live>,
-    /// Artifacts not yet removed, by owning session.
-    ledger: HashMap<RawSessionId, Vec<Artifact>>,
     overviews: HashMap<ProviderKind, ProviderOverview>,
     quota_recorded_ms: HashMap<ProviderKind, i64>,
     refreshing: bool,
@@ -98,6 +96,8 @@ pub struct Runtime {
     pumps: TaskTracker,
     cache_dir: PathBuf,
     recordings_dir: PathBuf,
+    ledger: Arc<CleanupLedger>,
+    env: Arc<CliEnv>,
 }
 
 impl Runtime {
@@ -116,9 +116,22 @@ impl Runtime {
         };
         let env = Arc::new(env);
         let data_dir = platform.paths().data_dir.clone();
+        let claude = Arc::new(Claude::new(platform.clone(), env.clone()));
+        let codex = Arc::new(Codex::new(platform.clone(), env.clone()));
+        let ledger = Arc::new(
+            CleanupLedger::load(
+                core.clone(),
+                platform.clone(),
+                claude.clone(),
+                codex.clone(),
+            )
+            .await?,
+        );
         let runtime = Arc::new(Self {
-            claude: Arc::new(Claude::new(platform.clone(), env.clone())),
-            codex: Arc::new(Codex::new(platform.clone(), env)),
+            claude,
+            codex,
+            ledger,
+            env,
             core,
             platform,
             spawner,
@@ -132,6 +145,40 @@ impl Runtime {
         runtime.sweep().await;
         runtime.refresh_providers();
         Ok(runtime)
+    }
+
+    /// The cleanup ledger shared by every CLI session and conversation.
+    pub fn ledger(&self) -> &Arc<CleanupLedger> {
+        &self.ledger
+    }
+
+    /// The environment CLIs (and git) run with: the user's login environment.
+    pub fn cli_env(&self) -> &Arc<CliEnv> {
+        &self.env
+    }
+
+    pub fn platform(&self) -> &Arc<dyn Platform> {
+        &self.platform
+    }
+
+    /// What Brigadier last learned about a provider (login, models, quota).
+    pub fn overview(&self, kind: ProviderKind) -> Option<ProviderOverview> {
+        self.state().overviews.get(&kind).cloned()
+    }
+
+    /// Starts a CLI session owned by `owner` (`orch:…`, `task:…`, `chat:…`); everything it
+    /// creates is recorded under `owner` in the cleanup ledger.
+    pub async fn start_hosted(
+        &self,
+        owner: &str,
+        kind: ProviderKind,
+        spec: SessionSpec,
+    ) -> Result<Started> {
+        self.admit()?;
+        self.provider(kind)
+            .start(spec, self.ledger.handle(owner.to_owned()))
+            .await
+            .map_err(provider_error)
     }
 
     fn provider(&self, kind: ProviderKind) -> Arc<dyn Provider> {
@@ -177,21 +224,6 @@ impl Runtime {
                 _ => {}
             }
         }
-        let mut ledger: HashMap<RawSessionId, Vec<Artifact>> = HashMap::new();
-        for event in self.read_all(streams::CLEANUP).await? {
-            match event {
-                DomainEvent::CleanupRecorded { owner, artifact } => {
-                    let artifacts = ledger.entry(owner).or_default();
-                    if !artifacts.contains(&artifact) {
-                        artifacts.push(artifact);
-                    }
-                }
-                DomainEvent::CleanupCompleted { owner, .. } => {
-                    ledger.remove(&owner);
-                }
-                _ => {}
-            }
-        }
         let cached = {
             let dir = self.cache_dir.clone();
             tokio::task::spawn_blocking(move || read_model_cache(&dir))
@@ -200,7 +232,6 @@ impl Runtime {
         };
         let mut state = self.state();
         state.sessions = sessions;
-        state.ledger = ledger;
         for kind in ProviderKind::ALL {
             state.overviews.insert(
                 kind,
@@ -243,38 +274,8 @@ impl Runtime {
     /// running become stopped (resumable); sessions that never started, or were being closed,
     /// have their artifacts removed.
     async fn sweep(self: &Arc<Self>) {
-        let (processes, sessions) = {
-            let state = self.state();
-            let processes: Vec<Artifact> = state
-                .ledger
-                .values()
-                .flatten()
-                .filter(|artifact| matches!(artifact, Artifact::Process { .. }))
-                .cloned()
-                .collect();
-            (
-                processes,
-                state.sessions.values().cloned().collect::<Vec<_>>(),
-            )
-        };
-        let platform = self.platform.clone();
-        let ended = tokio::task::spawn_blocking(move || {
-            processes
-                .iter()
-                .filter(|artifact| match artifact {
-                    Artifact::Process { pid, started_at_ms } => {
-                        cleanup::end_process(&*platform, *pid, *started_at_ms)
-                    }
-                    _ => false,
-                })
-                .count()
-        })
-        .await
-        .unwrap_or_default();
-        if ended > 0 {
-            tracing::info!(ended, "ended CLI processes left by a previous daemon");
-        }
-
+        self.ledger.sweep().await;
+        let sessions = self.state().sessions.values().cloned().collect::<Vec<_>>();
         for session in sessions {
             match session.state {
                 RawState::Running => {
@@ -316,18 +317,22 @@ impl Runtime {
     /// events to be stored. Call before the store shuts down.
     pub async fn shutdown(&self) {
         self.admitting.store(false, Ordering::Release);
-        let sessions: Vec<Arc<dyn ProviderSession>> = self
+        let sessions: Vec<(RawSessionId, Arc<dyn ProviderSession>)> = self
             .state()
             .live
-            .values()
-            .map(|live| live.session.clone())
+            .iter()
+            .map(|(id, live)| (id.clone(), live.session.clone()))
             .collect();
         if !sessions.is_empty() {
             tracing::info!(count = sessions.len(), "ending CLI sessions");
         }
         let closing = TaskTracker::new();
-        for session in sessions {
-            closing.spawn(async move { session.close().await });
+        for (id, session) in sessions {
+            let ledger = self.ledger.clone();
+            closing.spawn(async move {
+                session.close().await;
+                ledger.end_processes(&id.0).await;
+            });
         }
         closing.close();
         closing.wait().await;
@@ -587,6 +592,7 @@ impl Runtime {
     pub async fn stop_session(&self, id: &RawSessionId) -> Result<()> {
         let session = self.live(id)?;
         session.close().await;
+        self.ledger.end_processes(&id.0).await;
         Ok(())
     }
 
@@ -814,11 +820,11 @@ impl Runtime {
                 Ok(session) => session.provider,
                 Err(_) => return,
             };
-            let ledger: Arc<dyn Ledger> = Arc::new(RuntimeLedger {
-                runtime: runtime.clone(),
-                owner: id.clone(),
-            });
-            match runtime.provider(kind).start(spec, ledger).await {
+            let started = runtime
+                .provider(kind)
+                .start(spec, runtime.ledger.handle(id.0.clone()))
+                .await;
+            match started {
                 Ok(Started { session, events }) => {
                     if !runtime.admitting.load(Ordering::Acquire) {
                         session.close().await;
@@ -1040,111 +1046,9 @@ impl Runtime {
         }
     }
 
-    async fn record_artifact(&self, owner: &RawSessionId, artifact: Artifact) -> Result<()> {
-        if self
-            .state()
-            .ledger
-            .get(owner)
-            .is_some_and(|artifacts| artifacts.contains(&artifact))
-        {
-            return Ok(());
-        }
-        let event = DomainEvent::CleanupRecorded {
-            owner: owner.clone(),
-            artifact: artifact.clone(),
-        };
-        self.core
-            .store()
-            .append(vec![new_event(streams::CLEANUP, &event)?])
-            .await?;
-        self.state()
-            .ledger
-            .entry(owner.clone())
-            .or_default()
-            .push(artifact);
-        Ok(())
-    }
-
     /// Removes everything recorded for `owner`, and nothing else.
     async fn remove_artifacts(&self, owner: &RawSessionId) {
-        let (artifacts, kind) = {
-            let state = self.state();
-            (
-                state.ledger.get(owner).cloned().unwrap_or_default(),
-                state.sessions.get(owner).map(|session| session.provider),
-            )
-        };
-        if artifacts.is_empty() {
-            return;
-        }
-        let (processes, files): (Vec<Artifact>, Vec<Artifact>) = artifacts
-            .into_iter()
-            .partition(|artifact| matches!(artifact, Artifact::Process { .. }));
-        let platform = self.platform.clone();
-        let _ = tokio::task::spawn_blocking(move || {
-            for artifact in processes {
-                if let Artifact::Process { pid, started_at_ms } = artifact {
-                    cleanup::end_process(&*platform, pid, started_at_ms);
-                }
-            }
-        })
-        .await;
-        let mut failures = Vec::new();
-        if let (Some(kind), false) = (kind, files.is_empty())
-            && let Err(err) = self.provider(kind).remove(files).await
-        {
-            failures.push(err.to_string());
-        }
-        if !failures.is_empty() {
-            tracing::warn!(session = %owner, ?failures, "some session artifacts were not removed");
-        }
-        let event = DomainEvent::CleanupCompleted {
-            owner: owner.clone(),
-            failures,
-        };
-        let stored = async {
-            self.core
-                .store()
-                .append(vec![new_event(streams::CLEANUP, &event)?])
-                .await?;
-            Ok::<_, Error>(())
-        }
-        .await;
-        match stored {
-            Ok(()) => {
-                self.state().ledger.remove(owner);
-            }
-            Err(err) => {
-                tracing::warn!(session = %owner, error = %err, "could not record a cleanup")
-            }
-        }
-    }
-}
-
-struct RuntimeLedger {
-    runtime: Arc<Runtime>,
-    owner: RawSessionId,
-}
-
-impl Ledger for RuntimeLedger {
-    fn record(
-        &self,
-        artifact: Artifact,
-    ) -> brigadier_providers::BoxFuture<'_, brigadier_providers::Result<()>> {
-        Box::pin(async move {
-            self.runtime
-                .record_artifact(&self.owner, artifact)
-                .await
-                .map_err(|err| brigadier_providers::Error::Ledger(err.to_string()))
-        })
-    }
-
-    fn holds(&self, artifact: &Artifact) -> bool {
-        self.runtime
-            .state()
-            .ledger
-            .values()
-            .any(|artifacts| artifacts.contains(artifact))
+        self.ledger.dispose(&owner.0).await;
     }
 }
 
@@ -1156,7 +1060,10 @@ fn spec_for(session: &RawSession, origin: Origin, record_to: Option<PathBuf>) ->
         origin,
         access: session.access.clone(),
         append_system_prompt: None,
-        mcp_servers: serde_json::Map::new(),
+        mcp_servers: Vec::new(),
+        tools: ToolSet::Default,
+        env: Vec::new(),
+        path_prepend: Vec::new(),
         record_to,
     }
 }

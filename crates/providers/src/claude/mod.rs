@@ -143,7 +143,7 @@ impl Claude {
         result
     }
 
-    fn session_args(&self, spec: &SessionSpec, native_id: &str) -> Result<Vec<String>> {
+    fn session_args(&self, spec: &SessionSpec, cwd: &Path, native_id: &str) -> Result<Vec<String>> {
         let mut args: Vec<String> = [
             "-p",
             "--input-format",
@@ -166,22 +166,34 @@ impl Claude {
         .map(str::to_owned)
         .to_vec();
         args.push("--mcp-config".into());
-        args.push(json!({ "mcpServers": spec.mcp_servers }).to_string());
+        args.push(mcp_config(&spec.mcp_servers).to_string());
+        match spec.tools {
+            ToolSet::Default => {}
+            ToolSet::None => {
+                args.push("--tools".into());
+                args.push(String::new());
+            }
+            ToolSet::Web => {
+                args.push("--tools".into());
+                args.push("WebSearch,WebFetch".into());
+            }
+        }
         args.push("--settings".into());
-        args.push(settings(&spec.access).to_string());
+        args.push(settings(spec, cwd).to_string());
         args.push("--permission-mode".into());
         args.push(
             match spec.access {
-                Access::ReadOnly => "default",
-                Access::Workspace { .. } | Access::Full => "acceptEdits",
+                Access::ReadOnly
+                | Access::Scoped {
+                    write_cwd: false, ..
+                } => "default",
+                Access::Workspace { .. } | Access::Full | Access::Scoped { .. } => "acceptEdits",
             }
             .into(),
         );
-        if let Access::Workspace { extra_roots } = &spec.access {
-            for root in extra_roots {
-                args.push("--add-dir".into());
-                args.push(root.display().to_string());
-            }
+        for root in spec.access.writable_roots() {
+            args.push("--add-dir".into());
+            args.push(root.display().to_string());
         }
         if let Some(model) = &spec.model {
             args.push("--model".into());
@@ -218,17 +230,49 @@ impl Claude {
     }
 }
 
+/// Claude's `--mcp-config` for the session's servers.
+fn mcp_config(servers: &[McpServer]) -> Value {
+    let servers: Map<String, Value> = servers
+        .iter()
+        .map(|server| {
+            let env: Map<String, Value> = server
+                .env
+                .iter()
+                .map(|(name, value)| (name.clone(), Value::String(value.clone())))
+                .collect();
+            (
+                server.name.clone(),
+                json!({
+                    "type": "stdio",
+                    "command": server.command.display().to_string(),
+                    "args": server.args,
+                    "env": env,
+                }),
+            )
+        })
+        .collect();
+    json!({ "mcpServers": servers })
+}
+
+/// A permission rule path for an absolute path (`//abs/path/**`).
+fn rule_path(path: &Path) -> String {
+    format!("/{}/**", path.display())
+}
+
 /// Brigadier's settings layer for a session, passed with `--settings` (above project settings).
-fn settings(access: &Access) -> Value {
+fn settings(spec: &SessionSpec, cwd: &Path) -> Value {
     let mut ask = policy::claude_ask_rules();
     // Leaving the sandbox always goes through the permission prompt, even if a project rule
     // would allow the command.
     ask.push("Bash(dangerouslyDisableSandbox:true)".into());
-    let mut permissions = json!({
-        "ask": ask,
-        "disableBypassPermissionsMode": "disable",
-    });
-    let sandbox = match access {
+    let mut allow: Vec<String> = spec
+        .mcp_servers
+        .iter()
+        .filter(|server| server.trusted)
+        .map(|server| format!("mcp__{}", server.name))
+        .collect();
+    let mut deny: Vec<String> = Vec::new();
+    let sandbox = match &spec.access {
         Access::Workspace { extra_roots } => json!({
             "enabled": true,
             "failIfUnavailable": true,
@@ -236,12 +280,43 @@ fn settings(access: &Access) -> Value {
             "allowUnsandboxedCommands": true,
             "network": { "allowedDomains": ["*"] },
             "filesystem": {
-                "allowWrite": extra_roots
-                    .iter()
-                    .map(|root| root.display().to_string())
-                    .collect::<Vec<_>>(),
+                "allowWrite": paths(extra_roots),
             },
         }),
+        Access::Scoped {
+            write_cwd,
+            writable_roots,
+            network,
+            deny_read,
+            unix_sockets,
+        } => {
+            if !write_cwd {
+                for tool in ["Edit", "Write", "NotebookEdit"] {
+                    deny.push(format!("{tool}({})", rule_path(cwd)));
+                }
+            }
+            for path in deny_read {
+                deny.push(format!("Read({})", rule_path(path)));
+            }
+            let mut filesystem = json!({
+                "allowWrite": paths(writable_roots),
+                "denyRead": paths(deny_read),
+            });
+            if !write_cwd {
+                filesystem["denyWrite"] = json!([cwd.display().to_string()]);
+            }
+            json!({
+                "enabled": true,
+                "failIfUnavailable": true,
+                "autoAllowBashIfSandboxed": true,
+                "allowUnsandboxedCommands": true,
+                "network": {
+                    "allowedDomains": if *network { json!(["*"]) } else { json!([]) },
+                    "allowUnixSockets": paths(unix_sockets),
+                },
+                "filesystem": filesystem,
+            })
+        }
         Access::ReadOnly => json!({
             "enabled": true,
             "failIfUnavailable": true,
@@ -249,16 +324,36 @@ fn settings(access: &Access) -> Value {
             "allowUnsandboxedCommands": false,
         }),
         Access::Full => {
-            permissions["allow"] = json!(["Bash", "WebFetch"]);
+            allow.extend(["Bash".to_owned(), "WebFetch".to_owned()]);
             json!({ "enabled": false })
         }
     };
+    if spec.tools == ToolSet::Web {
+        allow.extend(["WebSearch".to_owned(), "WebFetch".to_owned()]);
+    }
+    let mut permissions = json!({
+        "ask": ask,
+        "disableBypassPermissionsMode": "disable",
+    });
+    if !allow.is_empty() {
+        permissions["allow"] = json!(allow);
+    }
+    if !deny.is_empty() {
+        permissions["deny"] = json!(deny);
+    }
     json!({
         // The Project Brain is Brigadier's memory; workers do not write Claude's.
         "autoMemoryEnabled": false,
         "permissions": permissions,
         "sandbox": sandbox,
     })
+}
+
+fn paths(paths: &[PathBuf]) -> Vec<String> {
+    paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect()
 }
 
 impl Provider for Claude {
@@ -402,7 +497,7 @@ impl Provider for Claude {
                 Origin::Resume { native_id } => native_id.clone(),
                 Origin::New | Origin::Fork { .. } => uuid::Uuid::new_v4().to_string(),
             };
-            let args = self.session_args(&spec, &native_id)?;
+            let args = self.session_args(&spec, &cwd, &native_id)?;
 
             // Recorded before the CLI can create them.
             if let Some(config) = self.config_dir() {
@@ -446,6 +541,16 @@ impl Provider for Claude {
             let mut process_spec = self.env.spec(&binary);
             process_spec.args = args.into_iter().map(Into::into).collect();
             process_spec.cwd = Some(cwd.clone());
+            let mut env = spec.env.clone();
+            if let Some(secs) = spec
+                .mcp_servers
+                .iter()
+                .filter_map(|server| server.tool_timeout_secs)
+                .max()
+            {
+                env.push(("MCP_TOOL_TIMEOUT".into(), (secs * 1000).to_string()));
+            }
+            crate::cli::apply_session_env(&mut process_spec, &env, &spec.path_prepend);
             let process::Spawned { process, stdout } =
                 process::spawn(self.platform.clone(), &process_spec, recorder)?;
             ledger

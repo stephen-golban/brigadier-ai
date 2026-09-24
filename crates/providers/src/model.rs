@@ -422,6 +422,32 @@ pub enum Access {
     ReadOnly,
     /// No OS sandbox.
     Full,
+    /// A worker's sandbox, each part set on its own. Everything is readable except
+    /// `denyRead` (where the CLI's sandbox can deny reads).
+    Scoped {
+        /// The working directory is writable. Codex always makes it writable, so a read-only
+        /// Codex worker runs in its scratch folder instead.
+        write_cwd: bool,
+        #[ts(as = "Vec<String>")]
+        writable_roots: Vec<PathBuf>,
+        network: bool,
+        #[ts(as = "Vec<String>")]
+        deny_read: Vec<PathBuf>,
+        /// Unix sockets it may connect to (Brigadier's, for the command gate).
+        #[ts(as = "Vec<String>")]
+        unix_sockets: Vec<PathBuf>,
+    },
+}
+
+impl Access {
+    /// Directories the session may write besides its working directory.
+    pub fn writable_roots(&self) -> &[PathBuf] {
+        match self {
+            Self::Workspace { extra_roots } => extra_roots,
+            Self::Scoped { writable_roots, .. } => writable_roots,
+            Self::ReadOnly | Self::Full => &[],
+        }
+    }
 }
 
 /// How a session begins.
@@ -505,6 +531,31 @@ impl From<String> for TurnInput {
     }
 }
 
+/// Which of the CLI's built-in tools a session gets.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ToolSet {
+    /// The CLI's usual tools (workers, raw sessions).
+    #[default]
+    Default,
+    /// None at all: only the MCP servers given (the orchestrator).
+    None,
+    /// Web search and fetch only (Chats).
+    Web,
+}
+
+/// An MCP server a session gets, launched by the CLI over stdio.
+#[derive(Debug, Clone, PartialEq)]
+pub struct McpServer {
+    pub name: String,
+    pub command: PathBuf,
+    pub args: Vec<String>,
+    pub env: Vec<(String, String)>,
+    /// Its tools may run for this long (a worker's blocking question waits for an answer).
+    pub tool_timeout_secs: Option<u64>,
+    /// Its tool calls run without asking for approval (Brigadier's own server).
+    pub trusted: bool,
+}
+
 /// Everything needed to start a provider session.
 #[derive(Debug, Clone)]
 pub struct SessionSpec {
@@ -515,8 +566,14 @@ pub struct SessionSpec {
     pub access: Access,
     /// Appended to the CLI's own system prompt.
     pub append_system_prompt: Option<String>,
-    /// MCP servers for the session, as an `mcpServers` object. Only these are loaded.
-    pub mcp_servers: serde_json::Map<String, serde_json::Value>,
+    /// MCP servers for the session. Only these are loaded.
+    pub mcp_servers: Vec<McpServer>,
+    pub tools: ToolSet,
+    /// Extra environment for the CLI and everything it starts (the process tag, the command
+    /// gate).
+    pub env: Vec<(String, String)>,
+    /// Directories put first on the CLI's PATH (the command gate's shims).
+    pub path_prepend: Vec<PathBuf>,
     /// Records the raw stdio exchange to this file (JSONL), for replay fixtures.
     pub record_to: Option<PathBuf>,
 }
@@ -548,4 +605,12 @@ pub enum Artifact {
     /// A project trust entry Codex persisted in the user's `config.toml` when a thread started
     /// there. Removed through Codex's config API, only while it is still just `trusted`.
     CodexProjectTrust { path: String },
+    /// Every process working inside `dir`, a folder Brigadier created (a worktree, a scratch
+    /// folder): what a worker started there, including processes that left its tree.
+    ProcessesIn { dir: String },
+    /// A git worktree Brigadier created (for a task or a session) in its data directory.
+    Worktree { repo: String, path: String },
+    /// A folder Brigadier created in its data directory (a worker's scratch folder, the
+    /// orchestrator's or a Chat's working folder).
+    ScratchDir { path: String },
 }
