@@ -79,6 +79,11 @@ pub trait Processes: Send + Sync {
     /// Spawns a process fully detached from the caller: its own session / process group, no
     /// controlling terminal, null stdio. It keeps running after the caller exits.
     fn spawn_detached(&self, spec: &SpawnSpec) -> Result<DetachedChild>;
+    /// A command for a child the caller talks to over stdio: stdin, stdout and stderr are
+    /// piped, and the child leads its own process group (a new process group on Windows), so
+    /// [`Processes::kill_tree`] ends it together with everything it started. The caller spawns
+    /// it (for example through `tokio::process::Command::from`).
+    fn piped_command(&self, spec: &SpawnSpec) -> std::process::Command;
     /// Whether a process with this id currently exists.
     fn is_alive(&self, pid: u32) -> bool;
     /// Asks a process to exit (SIGTERM on Unix). On Windows this terminates it.

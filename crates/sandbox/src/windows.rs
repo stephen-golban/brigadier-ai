@@ -273,6 +273,14 @@ impl Processes for WindowsProcesses {
         Ok(DetachedChild::new(child))
     }
 
+    fn piped_command(&self, spec: &SpawnSpec) -> Command {
+        let mut command = spec.piped();
+        command.creation_flags(
+            CREATE_NEW_PROCESS_GROUP | windows_sys::Win32::System::Threading::CREATE_NO_WINDOW,
+        );
+        command
+    }
+
     fn is_alive(&self, pid: u32) -> bool {
         let Ok(handle) = ProcessHandle::open(pid, PROCESS_QUERY_LIMITED_INFORMATION) else {
             return false;

@@ -5,6 +5,7 @@ use std::io;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
+use std::process::Command;
 
 use nix::sys::signal::{self, Signal};
 use nix::unistd::{Pid, Uid};
@@ -59,6 +60,12 @@ pub(crate) fn spawn_detached(spec: &SpawnSpec) -> Result<DetachedChild> {
         command.pre_exec(|| nix::unistd::setsid().map(drop).map_err(io::Error::from));
     }
     Ok(DetachedChild::new(command.spawn()?))
+}
+
+pub(crate) fn piped_command(spec: &SpawnSpec) -> Command {
+    let mut command = spec.piped();
+    command.process_group(0);
+    command
 }
 
 pub(crate) fn is_alive(pid: u32) -> bool {

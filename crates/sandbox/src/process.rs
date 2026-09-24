@@ -10,6 +10,9 @@ pub struct SpawnSpec {
     pub program: PathBuf,
     pub args: Vec<OsString>,
     pub env: Vec<(OsString, OsString)>,
+    /// Start from an empty environment instead of inheriting the caller's; `env` is all the
+    /// process gets.
+    pub clear_env: bool,
     pub cwd: Option<PathBuf>,
 }
 
@@ -34,6 +37,9 @@ impl SpawnSpec {
     /// A `Command` with program, args, env and cwd applied and stdio set to null.
     pub(crate) fn command(&self) -> Command {
         let mut command = Command::new(&self.program);
+        if self.clear_env {
+            command.env_clear();
+        }
         command
             .args(&self.args)
             .envs(self.env.iter().map(|(k, v)| (k, v)))
@@ -43,6 +49,16 @@ impl SpawnSpec {
         if let Some(cwd) = &self.cwd {
             command.current_dir(cwd);
         }
+        command
+    }
+
+    /// Like [`SpawnSpec::command`] but with stdin, stdout and stderr piped.
+    pub(crate) fn piped(&self) -> Command {
+        let mut command = self.command();
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         command
     }
 }
