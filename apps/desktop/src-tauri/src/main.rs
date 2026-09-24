@@ -19,6 +19,7 @@ use brigadier_ipc::protocol::{IpcError, Request, Response};
 use brigadier_sandbox::{Platform, PlatformOptions};
 use tauri::ipc::Channel;
 use tauri::{Manager, RunEvent, State, WindowEvent};
+use tauri_plugin_dialog::DialogExt;
 
 use crate::bridge::Bridge;
 use crate::launcher::Launcher;
@@ -45,6 +46,25 @@ async fn ipc_request(state: State<'_, AppState>, request: Request) -> Result<Res
 #[tauri::command]
 fn ipc_subscribe(state: State<'_, AppState>, channel: Channel<BridgeEvent>) {
     state.bridge.attach_ui(channel);
+}
+
+/// Asks for a folder with the system picker; `None` when the user cancels. The dialog plugin
+/// is used from here only: the webview gets no dialog permissions of its own.
+#[tauri::command]
+async fn pick_folder(app: tauri::AppHandle, starting: Option<String>) -> Option<String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut dialog = app.dialog().file().set_title("Choose a folder");
+    if let Some(window) = app.get_webview_window(shell::MAIN_WINDOW) {
+        dialog = dialog.set_parent(&window);
+    }
+    if let Some(starting) = starting.filter(|dir| std::path::Path::new(dir).is_dir()) {
+        dialog = dialog.set_directory(starting);
+    }
+    dialog.pick_folder(move |folder| {
+        let _ = tx.send(folder);
+    });
+    let folder = rx.await.ok().flatten()?.into_path().ok()?;
+    Some(folder.display().to_string())
 }
 
 /// The webview painted its first interactive frame at `paint_ms` (ms since the Unix epoch).
@@ -135,6 +155,7 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             shell::show_main(app);
         }))
+        .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
             let launcher = Launcher::new(platform.clone(), daemon_env);
             let bridge = Bridge::start(platform.clone() as Arc<dyn Platform>, launcher);
@@ -167,7 +188,8 @@ fn main() {
             ipc_request,
             ipc_subscribe,
             app_ready,
-            smoke_finish
+            smoke_finish,
+            pick_folder
         ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|err| {
