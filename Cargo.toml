@@ -30,6 +30,7 @@ publish = false
 brigadier-core = { path = "crates/core" }
 brigadier-store = { path = "crates/store" }
 brigadier-ipc = { path = "crates/ipc" }
+brigadier-providers = { path = "crates/providers" }
 brigadier-sandbox = { path = "crates/sandbox" }
 
 anyhow = "1.0.104"
