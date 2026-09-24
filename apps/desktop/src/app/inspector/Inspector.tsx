@@ -1,6 +1,7 @@
 import { X } from "@openai/apps-sdk-ui/components/Icon";
 
 import { EventsTab } from "@/app/inspector/EventsTab";
+import { OrchestratorTab } from "@/app/inspector/OrchestratorTab";
 import { PerformanceTab } from "@/app/inspector/PerformanceTab";
 import { ProcessesTab } from "@/app/inspector/ProcessesTab";
 import { ProvidersTab } from "@/app/inspector/providers/ProvidersTab";
@@ -13,6 +14,7 @@ import { type InspectorTab, useApp } from "@/state/store";
 function isTab(value: string): value is InspectorTab {
   return (
     value === "events" ||
+    value === "orchestrator" ||
     value === "processes" ||
     value === "performance" ||
     value === "providers"
@@ -20,8 +22,8 @@ function isTab(value: string): value is InspectorTab {
 }
 
 /**
- * Developer view: live event stream, processes, metrics against the §4 budgets, and raw
- * provider sessions.
+ * Developer view: live event stream, the open session's orchestrator context, processes,
+ * metrics against the §4 budgets, and raw provider sessions.
  */
 export function Inspector() {
   const tab = useApp((s) => s.inspector.tab);
@@ -44,6 +46,7 @@ export function Inspector() {
         >
           <TabsList className="flex-1">
             <TabsTrigger value="events">Events</TabsTrigger>
+            <TabsTrigger value="orchestrator">Orchestrator</TabsTrigger>
             <TabsTrigger value="processes">Processes</TabsTrigger>
             <TabsTrigger value="performance">Performance</TabsTrigger>
             <TabsTrigger value="providers">Providers</TabsTrigger>
@@ -59,6 +62,9 @@ export function Inspector() {
         </div>
         <TabsContent value="events" className="flex min-h-0 flex-col">
           <EventsTab />
+        </TabsContent>
+        <TabsContent value="orchestrator" className="flex min-h-0 flex-col">
+          <OrchestratorTab />
         </TabsContent>
         <TabsContent value="processes" className="min-h-0 overflow-y-auto">
           <ProcessesTab />
