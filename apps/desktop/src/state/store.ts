@@ -356,6 +356,8 @@ function applyEvent(envelope: EventEnvelope, slice: Slice): Slice {
     case "probe":
     // The cleanup ledger shows in the event list only.
     case "cleanupRecorded":
+    case "cleanupRemoved":
+    case "cleanupRequested":
     case "cleanupCompleted":
     // Conversation views (tasks, cards, queue, streaming) and the Inspector's orchestrator
     // log read these themselves.

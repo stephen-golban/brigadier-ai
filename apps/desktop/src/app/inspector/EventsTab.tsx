@@ -33,6 +33,10 @@ function summary(event: DomainEvent): string {
       return event.event.type;
     case "cleanupRecorded":
       return event.artifact.type;
+    case "cleanupRemoved":
+      return `${event.artifacts.length} removed`;
+    case "cleanupRequested":
+      return event.owner;
     case "cleanupCompleted":
       return event.failures.length === 0 ? "removed" : `${event.failures.length} failed`;
     case "providerChecked":
