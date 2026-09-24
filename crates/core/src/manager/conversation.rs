@@ -908,12 +908,31 @@ impl SessionManager {
         if limit_hit
             && status == TurnStatus::Failed
             && conv.kind == ConversationKind::Chat
-            && self.chat_fallback(conv, cli, carried).await
+            && let Some(next) = self.chat_fallback_choice(cli)
         {
+            // Not from inside the CLI's own event pump: closing the CLI waits for it.
+            let (manager, conv, cli) = (self.arc(), conv.clone(), cli.clone());
+            self.spawn(async move { manager.chat_fallback(&conv, &cli, next, carried).await });
             return;
         }
         self.set_run(&conv.id, RunState::Idle, None).await;
         self.kick(conv);
+    }
+
+    /// The model a Chat continues on after `cli`'s vendor hit a usage limit.
+    fn chat_fallback_choice(&self, cli: &Arc<Cli>) -> Option<brigadier_router::Choice> {
+        let from = brigadier_router::Choice {
+            provider: cli.provider,
+            model: cli.model.model.clone(),
+            effort: cli.model.effort.clone(),
+            reason: String::new(),
+            cross_vendor: None,
+        };
+        brigadier_router::fallback(
+            &from,
+            brigadier_router::TaskCategory::Chat,
+            &self.availability(),
+        )
     }
 
     /// A Chat hit a usage limit: continue on the other vendor's equivalent model, seeded with
@@ -922,21 +941,9 @@ impl SessionManager {
         &self,
         conv: &Arc<ConvLive>,
         cli: &Arc<Cli>,
+        next: brigadier_router::Choice,
         carried: Vec<Message>,
-    ) -> bool {
-        let from = brigadier_router::Choice {
-            provider: cli.provider,
-            model: cli.model.model.clone(),
-            effort: cli.model.effort.clone(),
-            reason: String::new(),
-            cross_vendor: None,
-        };
-        let available = self.availability();
-        let Some(next) =
-            brigadier_router::fallback(&from, brigadier_router::TaskCategory::Chat, &available)
-        else {
-            return false;
-        };
+    ) {
         let choice = ModelChoice {
             provider: next.provider,
             model: next.model.clone(),
@@ -965,7 +972,6 @@ impl SessionManager {
             state.pending = pending;
         }
         self.kick(conv);
-        true
     }
 
     /// What each provider can offer right now, for the router.

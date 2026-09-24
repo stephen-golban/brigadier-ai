@@ -142,6 +142,14 @@ impl SessionManager {
             .clone()
     }
 
+    /// The session's permission level.
+    pub(crate) fn permission(&self, id: &ConversationId) -> PermissionLevel {
+        match self.core.conversation(id).map(|c| c.setup) {
+            Ok(Some(Setup::Session { permission, .. })) => permission,
+            _ => PermissionLevel::ApproveForMe,
+        }
+    }
+
     /// How many workers each provider runs now, so parallel work spreads across vendors.
     fn running_workers(&self) -> Vec<(ProviderKind, u32)> {
         let mut claude = 0;
@@ -290,6 +298,7 @@ impl SessionManager {
             running: &running,
         })
         .map_err(|err| Error::Invalid(err.to_string()))?;
+        let choice = cheap_for_development(choice, &available);
         let reason = match (cross_checked, choice.cross_vendor) {
             (true, Some(false)) => format!(
                 "{} (not cross-vendor: only one vendor is available)",
@@ -1091,7 +1100,9 @@ impl SessionManager {
         if task.report.is_some() && task.state != TaskState::Running {
             // Reported; the worker waits (write tasks can be sent back to fix things).
             if !task.kind.writes() {
-                self.finish_read_task(&task).await;
+                // Not from inside the worker's own event pump: closing waits for it.
+                let manager = self.arc();
+                self.spawn(async move { manager.finish_read_task(&task).await });
             }
             return;
         }
@@ -1115,7 +1126,8 @@ impl SessionManager {
             .error
             .clone()
             .unwrap_or_else(|| "The worker stopped without a report.".into());
-        self.worker_failed(&task, &reason).await;
+        let manager = self.arc();
+        self.spawn(async move { manager.worker_failed(&task, &reason).await });
     }
 
     /// B7 for worker approvals: routed by the task's access; anything else asks the user.
@@ -1132,14 +1144,24 @@ impl SessionManager {
             .access
             .clone()
             .unwrap_or(Access::ReadOnly);
-        let route = policy::route(&request, &access, ApprovalMode::Delegated);
+        let mut route = policy::route(&request, &access, ApprovalMode::Delegated);
+        let outward = request.command.as_deref().is_some_and(policy::is_outward);
+        // Approve for me stays sandboxed and stops only for what only the user can decide:
+        // Brigadier declines anything else outside the task's access on the user's behalf.
+        // Outward actions always ask.
+        if route == PolicyRoute::AskUser
+            && !outward
+            && self.permission(&live.conversation_id) != PermissionLevel::AskForApproval
+        {
+            route = PolicyRoute::Deny;
+        }
         match route {
             PolicyRoute::Allow | PolicyRoute::Deny => {
                 let decision = if route == PolicyRoute::Allow {
                     ApprovalDecision::Allow
                 } else {
                     ApprovalDecision::Deny {
-                        message: "Declined by Brigadier: this task may not do that.".into(),
+                        message: "Declined by Brigadier: stay inside your sandbox (your worktree and scratch folder). If the task truly needs more, say so in your report.".into(),
                     }
                 };
                 if let Err(err) = cli
@@ -1705,6 +1727,32 @@ impl SessionManager {
             }
         }
     }
+}
+
+/// `BRIGADIER_ROUTE_CHEAP=1` (development and verification runs only): after routing picks
+/// the vendor, use its cheapest model at low effort.
+fn cheap_for_development(
+    mut choice: brigadier_router::Choice,
+    available: &[brigadier_router::Availability],
+) -> brigadier_router::Choice {
+    if std::env::var_os("BRIGADIER_ROUTE_CHEAP").is_none_or(|value| value != "1") {
+        return choice;
+    }
+    let family = match choice.provider {
+        ProviderKind::Claude => "haiku",
+        ProviderKind::Codex => "luna",
+    };
+    let model = available
+        .iter()
+        .filter(|a| a.provider == choice.provider)
+        .flat_map(|a| a.models.iter())
+        .find(|m| m.id.contains(family))
+        .map(|m| m.id.clone())
+        .unwrap_or_else(|| family.to_owned());
+    choice.model = Some(model);
+    choice.effort = (choice.provider == ProviderKind::Codex).then(|| "low".to_owned());
+    choice.reason = format!("{} (cheapest model: BRIGADIER_ROUTE_CHEAP)", choice.reason);
+    choice
 }
 
 /// The router's category for a task kind.
