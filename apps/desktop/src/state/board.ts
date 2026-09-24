@@ -161,6 +161,24 @@ function appendEntry(transcript: WorkerTranscript, entry: RawEntry): WorkerTrans
   };
 }
 
+/**
+ * Stores an updated task or card at its place in the thread. As in the daemon's board, an
+ * object's position is the conversation stream sequence of the event that first recorded it;
+ * the event itself doesn't carry it.
+ */
+function placed<T extends { id: string; position: number }>(
+  items: Record<string, T>,
+  item: T,
+  envelope: EventEnvelope,
+  board: Board,
+): Record<string, T> {
+  const known = items[item.id];
+  const position =
+    known?.position ??
+    (envelope.stream === `conversation:${board.conversationId}` ? envelope.streamSeq : item.position);
+  return { ...items, [item.id]: { ...item, position } };
+}
+
 function applyToBoard(board: Board, envelope: EventEnvelope): Board {
   const { event, streamSeq, atMs } = envelope;
   switch (event.type) {
@@ -188,19 +206,13 @@ function applyToBoard(board: Board, envelope: EventEnvelope): Board {
     case "conversationNotice":
       return { ...board, notices: [...board.notices, event.notice].slice(-NOTICES) };
     case "taskUpdated":
-      return { ...board, tasks: { ...board.tasks, [event.task.id]: event.task } };
+      return { ...board, tasks: placed(board.tasks, event.task, envelope, board) };
     case "approvalUpdated":
-      return {
-        ...board,
-        approvals: { ...board.approvals, [event.approval.id]: event.approval },
-      };
+      return { ...board, approvals: placed(board.approvals, event.approval, envelope, board) };
     case "questionUpdated":
-      return {
-        ...board,
-        questions: { ...board.questions, [event.question.id]: event.question },
-      };
+      return { ...board, questions: placed(board.questions, event.question, envelope, board) };
     case "planUpdated":
-      return { ...board, plans: { ...board.plans, [event.plan.id]: event.plan } };
+      return { ...board, plans: placed(board.plans, event.plan, envelope, board) };
     case "queueChanged":
       return { ...board, queue: event.queue };
     case "workerEvent": {
