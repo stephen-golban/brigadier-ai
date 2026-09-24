@@ -143,7 +143,10 @@ fn main() {
                 info,
                 cold_start_ms: Mutex::new(None),
             });
-            shell::install_tray(app.handle())?;
+            // No menu-bar host (e.g. a bare Linux session) must not stop the app.
+            if let Err(err) = shell::install_tray(app.handle()) {
+                tracing::warn!(error = %err, "menu-bar item unavailable");
+            }
             if smoke {
                 smoke::start_watchdog(app.handle());
             }
@@ -156,7 +159,7 @@ fn main() {
             {
                 // Closing the window keeps Brigadier running in the menu bar.
                 api.prevent_close();
-                shell::hide_main(window.app_handle());
+                shell::close_main(window.app_handle());
             }
         })
         .invoke_handler(tauri::generate_handler![

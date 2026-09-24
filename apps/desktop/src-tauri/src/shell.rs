@@ -20,6 +20,7 @@ pub const MAIN_WINDOW: &str = "main";
 const QUIT_TIMEOUT: Duration = Duration::from_secs(5);
 
 static QUITTING: AtomicBool = AtomicBool::new(false);
+static IN_MENU_BAR: AtomicBool = AtomicBool::new(false);
 
 pub fn is_quitting() -> bool {
     QUITTING.load(Ordering::Acquire)
@@ -45,7 +46,18 @@ pub fn install_tray(app: &AppHandle) -> tauri::Result<()> {
             _ => {}
         })
         .build(app)?;
+    IN_MENU_BAR.store(true, Ordering::Release);
     Ok(())
+}
+
+/// Closing the window hides it when the menu-bar item can bring it back; without one (a
+/// desktop with no tray host) closing quits.
+pub fn close_main(app: &AppHandle) {
+    if IN_MENU_BAR.load(Ordering::Acquire) {
+        hide_main(app);
+    } else {
+        quit(app, 0);
+    }
 }
 
 fn main_window(app: &AppHandle) -> Option<WebviewWindow> {
