@@ -34,10 +34,19 @@ impl Tier {
 
     /// The tier a model belongs to, if any.
     pub(crate) fn of(provider: ProviderKind, model: &ModelInfo) -> Option<Tier> {
+        Tier::of_names(provider, &model.id, model.resolved.as_deref())
+    }
+
+    /// The tier of a model known only by its id (and what it resolves to), if any.
+    pub(crate) fn of_names(
+        provider: ProviderKind,
+        id: &str,
+        resolved: Option<&str>,
+    ) -> Option<Tier> {
         Tier::ALL.into_iter().find(|tier| {
-            tier.families(provider)
-                .iter()
-                .any(|family| in_family(model, family))
+            tier.families(provider).iter().any(|family| {
+                has_word(id, family) || resolved.is_some_and(|resolved| has_word(resolved, family))
+            })
         })
     }
 }
