@@ -4,7 +4,7 @@ A free, open-source (MIT), local-first desktop app for long-running AI coding se
 to one orchestrator; it plans, delegates to workers from the CLIs on your machine, reviews their
 work and reports back. The design and build plan live in [docs/PLAN.md](docs/PLAN.md).
 
-Status: Phase 1 (foundations).
+Status: Phase 2 (provider adapters for Claude Code and Codex).
 
 ## Layout
 
@@ -14,6 +14,7 @@ crates/        Rust workspace (see PLAN.md §3)
   store/         SQLite WAL event store (single writer, read pool), blob store
   ipc/           authenticated local IPC + protocol types (exported to TypeScript)
   sandbox/       OS abstraction: paths, private files, processes, credentials, shell, sandbox
+  providers/     Provider trait, normalized events, Claude and Codex adapters, replay fixtures
   daemon/        brigadierd
   …              crates for later phases
 apps/desktop/  Tauri 2 shell (src-tauri/) and the React UI (src/)
@@ -65,6 +66,34 @@ BRIGADIER_DATA_DIR=$(mktemp -d) target/release/bundle/macos/Brigadier.app/Conten
 It prints a JSON report (also written to `BRIGADIER_SMOKE_REPORT` if set) and exits non-zero if
 a budget for an implemented feature is missed. `BRIGADIER_BUDGET_TOLERANCE` multiplies timing
 budgets only; CI uses 3 on shared runners, locally it is 1.
+
+## Providers
+
+Brigadier drives the `claude` and `codex` CLIs already installed and logged in on your machine,
+found on your login shell's `PATH`. It never reads their credentials. What a session makes a
+CLI write (Claude's transcript and task files, Codex's rollout and the trust entry Codex adds to
+`~/.codex/config.toml` for a new folder) is removed when you close the session.
+
+- Claude Code runs as one persistent `claude -p --input-format stream-json --output-format
+  stream-json` process per session.
+- Codex runs as one `codex app-server` per session, over stdio JSON-RPC. The Rust bindings in
+  `crates/providers/src/codex/protocol.rs` are generated from the installed CLI's schema. After
+  a Codex upgrade, regenerate them:
+
+  ```sh
+  cargo run -p brigadier-providers --features codegen --bin gen-codex -- "$(command -v codex)"
+  ```
+
+The Inspector's **Providers** tab shows each CLI's login state, version, live model list and
+remaining quota. From it you can start, resume, fork, steer, interrupt, stop and close raw
+sessions, answer their approval requests, simulate a usage-limit event and replay recordings.
+Recordings are scrubbed of personal data as they are written. The fixtures in
+`crates/providers/fixtures/` ship with the app.
+
+Known limitation: a Codex session with workspace access runs under Codex's `on-request`
+approval policy. Codex then runs outward commands such as `git push` or a package publish
+inside its sandbox without asking, so they are not gated. The Inspector shows a warning on these
+sessions. Claude sessions route them to you as approval requests.
 
 ## Build and sign (macOS)
 
