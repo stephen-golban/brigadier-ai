@@ -300,14 +300,19 @@ fn settings(spec: &SessionSpec, cwd: &Path) -> Value {
                 }
             }
             for path in deny_read {
+                // Permission rules match the path as the tool was given it: deny both spellings.
                 deny.push(format!("Read({})", rule_path(path)));
+                let real = resolved(path);
+                if real != *path {
+                    deny.push(format!("Read({})", rule_path(&real)));
+                }
             }
             let mut filesystem = json!({
                 "allowWrite": paths(writable_roots),
                 "denyRead": paths(deny_read),
             });
             if !write_cwd {
-                filesystem["denyWrite"] = json!([cwd.display().to_string()]);
+                filesystem["denyWrite"] = json!(paths(&[cwd.to_owned()]));
             }
             json!({
                 "enabled": true,
@@ -361,11 +366,18 @@ fn settings(spec: &SessionSpec, cwd: &Path) -> Value {
     })
 }
 
+/// Sandbox paths as Seatbelt matches them: resolved through symlinks (`/tmp` and
+/// `/var/folders` are `/private/…` on macOS). A unix-socket rule on the unresolved path never
+/// matches, so the connection is refused.
 fn paths(paths: &[PathBuf]) -> Vec<String> {
     paths
         .iter()
-        .map(|path| path.display().to_string())
+        .map(|path| resolved(path).display().to_string())
         .collect()
+}
+
+fn resolved(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_owned())
 }
 
 impl Provider for Claude {
