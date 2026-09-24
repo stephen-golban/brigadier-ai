@@ -56,6 +56,9 @@ impl Processes for LinuxProcesses {
     fn spawn_detached(&self, spec: &SpawnSpec) -> Result<DetachedChild> {
         unix::spawn_detached(spec)
     }
+    fn piped_command(&self, spec: &SpawnSpec) -> std::process::Command {
+        unix::piped_command(spec)
+    }
     fn is_alive(&self, pid: u32) -> bool {
         unix::is_alive(pid)
     }
