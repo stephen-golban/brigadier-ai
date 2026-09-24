@@ -514,10 +514,11 @@ export async function openWorkerTranscript(conversationId: string, taskId: strin
       loading: false,
     }));
   } catch (error) {
-    updateWorkerTranscript(conversationId, taskId, (transcript) => ({
-      ...transcript,
-      loading: false,
-    }));
+    // Forget it, so opening the card again retries the load.
+    updateBoard(conversationId, (current) => {
+      const { [taskId]: _failed, ...transcripts } = current.transcripts;
+      return { ...current, transcripts };
+    });
     throw error;
   }
 }
