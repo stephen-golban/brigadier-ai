@@ -7,8 +7,9 @@
 
 use brigadier_core::{
     Catalog, Conversation, ConversationId, ConversationKind, Message, MessagePage, ProbeBurst,
-    Project, ProjectId, Settings,
+    Project, ProjectId, ProvidersView, RawApprovals, RawPage, RawSession, RawSessionId, Settings,
 };
+use brigadier_providers::{Access, ApprovalDecision, ProviderKind};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use ts_rs::TS;
@@ -108,6 +109,68 @@ pub enum Request {
         count: u32,
         interval_ms: u32,
     },
+    /// Providers (login, models, quota), raw sessions and replayable fixtures.
+    GetProviders,
+    /// Checks every provider again in the background; results arrive as `providerChecked`.
+    RefreshProviders,
+    /// Starts a raw CLI session in the background; its state arrives as `rawSessionUpdated`.
+    StartRawSession {
+        provider: ProviderKind,
+        /// Absolute path of the working directory.
+        cwd: String,
+        model: Option<String>,
+        effort: Option<String>,
+        access: Access,
+        approvals: RawApprovals,
+        /// Record the raw stdio exchange as a replayable fixture.
+        record: bool,
+    },
+    /// Starts a stopped raw session's CLI session again.
+    ResumeRawSession {
+        id: RawSessionId,
+    },
+    /// Branches a new raw session off this one's CLI session.
+    ForkRawSession {
+        id: RawSessionId,
+    },
+    /// Sends a message: a new turn, or with `steer` into the running turn.
+    SendRawSession {
+        id: RawSessionId,
+        text: String,
+        steer: bool,
+    },
+    InterruptRawSession {
+        id: RawSessionId,
+    },
+    /// The user's answer to an approval routed to them.
+    AnswerApproval {
+        id: RawSessionId,
+        approval_id: String,
+        decision: ApprovalDecision,
+    },
+    /// Ends the CLI process, keeping its CLI session for a resume.
+    StopRawSession {
+        id: RawSessionId,
+    },
+    /// Ends the CLI process and removes everything its CLI session created.
+    CloseRawSession {
+        id: RawSessionId,
+    },
+    /// A page of a raw session's transcript.
+    ListRawEvents {
+        id: RawSessionId,
+        /// Only entries with a smaller `streamSeq` (for paging backwards).
+        before: Option<i64>,
+        limit: u32,
+    },
+    /// Replays a fixture through a fresh parser into a new, isolated raw session.
+    ReplayFixture {
+        fixture_id: String,
+    },
+    /// Feeds a simulated usage-limit turn through a fresh parser in an isolated raw session.
+    SimulateUsageLimit {
+        provider: ProviderKind,
+    },
     /// Orderly quit: stop admitting writes, commit what is queued, acknowledge, exit.
     Shutdown,
 }
@@ -162,6 +225,35 @@ pub enum Response {
     },
     ProbeBurst {
         burst: ProbeBurst,
+    },
+    GetProviders {
+        view: ProvidersView,
+    },
+    RefreshProviders,
+    StartRawSession {
+        session: Box<RawSession>,
+    },
+    ResumeRawSession {
+        session: Box<RawSession>,
+    },
+    ForkRawSession {
+        session: Box<RawSession>,
+    },
+    SendRawSession,
+    InterruptRawSession,
+    AnswerApproval,
+    StopRawSession,
+    CloseRawSession {
+        session: Box<RawSession>,
+    },
+    ListRawEvents {
+        page: RawPage,
+    },
+    ReplayFixture {
+        session: Box<RawSession>,
+    },
+    SimulateUsageLimit {
+        session: Box<RawSession>,
     },
     Shutdown,
 }

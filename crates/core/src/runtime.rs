@@ -37,8 +37,8 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
 use crate::model::{
-    DomainEvent, Fixture, ProviderOverview, RawApprovals, RawEntry, RawPage, RawSession,
-    RawSessionId, RawSource, RawState, streams,
+    DomainEvent, Fixture, ProviderOverview, ProvidersView, RawApprovals, RawEntry, RawPage,
+    RawSession, RawSessionId, RawSource, RawState, streams,
 };
 use crate::{Core, Error, Result, now_ms};
 
@@ -66,14 +66,6 @@ pub struct StartRaw {
     pub access: Access,
     pub approvals: RawApprovals,
     pub record: bool,
-}
-
-/// Everything the Providers panel shows, in one read.
-#[derive(Debug, Clone)]
-pub struct ProvidersView {
-    pub providers: Vec<ProviderOverview>,
-    pub sessions: Vec<RawSession>,
-    pub fixtures: Vec<Fixture>,
 }
 
 struct Live {
@@ -889,7 +881,12 @@ impl Runtime {
                     Some(event) => {
                         deadline = None;
                         self.record_raw(&id, std::mem::take(&mut deltas)).await;
+                        // The live session keeps its sender open; its exit ends the stream.
+                        let exited = matches!(event, ProviderEvent::Exited { .. });
                         self.handle(&id, event).await;
+                        if exited {
+                            break;
+                        }
                     }
                     None => break,
                 },

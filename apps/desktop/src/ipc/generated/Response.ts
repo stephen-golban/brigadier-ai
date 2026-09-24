@@ -7,9 +7,12 @@ import type { Message } from "./Message";
 import type { MessagePage } from "./MessagePage";
 import type { ProbeBurst } from "./ProbeBurst";
 import type { Project } from "./Project";
+import type { ProvidersView } from "./ProvidersView";
+import type { RawPage } from "./RawPage";
+import type { RawSession } from "./RawSession";
 import type { Settings } from "./Settings";
 
 /**
  * Results, tagged with the method of the request they answer.
  */
-export type Response = { "method": "getCatalog", catalog: Catalog, } | { "method": "createProject", project: Project, } | { "method": "createConversation", conversation: Conversation, } | { "method": "renameConversation", conversation: Conversation, } | { "method": "setPinned", conversation: Conversation, } | { "method": "appendMessage", message: Message, } | { "method": "listMessages", page: MessagePage, } | { "method": "readBlobText", text: string, } | { "method": "updateSettings", settings: Settings, } | { "method": "subscribe", lastSeq: number, } | { "method": "setMetricsStreaming", enabled: boolean, } | { "method": "eventsSince", events: Array<EventEnvelope>, lastSeq: number, } | { "method": "getDiagnostics", diagnostics: Diagnostics, } | { "method": "probeBurst", burst: ProbeBurst, } | { "method": "shutdown" };
+export type Response = { "method": "getCatalog", catalog: Catalog, } | { "method": "createProject", project: Project, } | { "method": "createConversation", conversation: Conversation, } | { "method": "renameConversation", conversation: Conversation, } | { "method": "setPinned", conversation: Conversation, } | { "method": "appendMessage", message: Message, } | { "method": "listMessages", page: MessagePage, } | { "method": "readBlobText", text: string, } | { "method": "updateSettings", settings: Settings, } | { "method": "subscribe", lastSeq: number, } | { "method": "setMetricsStreaming", enabled: boolean, } | { "method": "eventsSince", events: Array<EventEnvelope>, lastSeq: number, } | { "method": "getDiagnostics", diagnostics: Diagnostics, } | { "method": "probeBurst", burst: ProbeBurst, } | { "method": "getProviders", view: ProvidersView, } | { "method": "refreshProviders" } | { "method": "startRawSession", session: RawSession, } | { "method": "resumeRawSession", session: RawSession, } | { "method": "forkRawSession", session: RawSession, } | { "method": "sendRawSession" } | { "method": "interruptRawSession" } | { "method": "answerApproval" } | { "method": "stopRawSession" } | { "method": "closeRawSession", session: RawSession, } | { "method": "listRawEvents", page: RawPage, } | { "method": "replayFixture", session: RawSession, } | { "method": "simulateUsageLimit", session: RawSession, } | { "method": "shutdown" };
