@@ -813,13 +813,13 @@ impl SessionManager {
                         .ok_or_else(|| Error::Invalid("the session branch is gone".into()))?;
                     let commits = repo.count_commits(&base_tip, &tip).map_err(git_error)?;
                     let stat = repo.diff_stat(&base_tip, &commit).map_err(git_error)?;
-                    Ok(Ok((commit, base_tip, fast_forward, commits, stat)))
+                    Ok(Ok((commit, base_tip, tip, fast_forward, commits, stat)))
                 }
                 MergeOutcome::Conflicts { paths } => Ok(Err(paths)),
             }
         })
         .await?;
-        let (commit, base_tip, _fast_forward, commits, stat) = match prepared {
+        let (commit, base_tip, session_tip, _fast_forward, commits, stat) = match prepared {
             Ok(ready) => ready,
             Err(paths) => {
                 return Err(Error::Invalid(format!(
@@ -850,19 +850,30 @@ impl SessionManager {
         self.spawn(async move {
             let text = match rx.await {
                 Ok(CardAnswer::Decision(ApprovalDecision::Allow)) => {
-                    let (git, repo_path) = (manager.git.clone(), PathBuf::from(&repo));
+                    let (git, repo_path, session_branch) =
+                        (manager.git.clone(), PathBuf::from(&repo), branch.clone());
                     let request = LandRequest {
                         branch: base.clone(),
                         expected_tip: base_tip,
                         commit,
                     };
-                    match blocking(move || git.open(&repo_path).map_err(git_error)?.land(&request).map_err(git_error)).await {
-                        Ok(LandOutcome::Landed { new_tip }) => format!(
+                    // What the user approved is the session branch as it was: work that landed
+                    // on it while the card was open would be left out.
+                    let landing = blocking(move || {
+                        let repo = git.open(&repo_path).map_err(git_error)?;
+                        if repo.branch_tip(&session_branch).map_err(git_error)? != Some(session_tip) {
+                            return Ok(None);
+                        }
+                        repo.land(&request).map(Some).map_err(git_error)
+                    });
+                    match landing.await {
+                        Ok(None) => format!("[not finished] `{branch}` changed after the user was asked. Nothing was merged; call finish_session again."),
+                        Ok(Some(LandOutcome::Landed { new_tip })) => format!(
                             "[finished] The user approved: `{branch}` ({commits} commit{}) is merged into `{base}` at {}.",
                             if commits == 1 { "" } else { "s" },
                             short(&new_tip)
                         ),
-                        Ok(LandOutcome::Blocked(block)) => format!("[not finished] Merging `{branch}` into `{base}` is not safe now: {block} Nothing was changed; call finish_session again."),
+                        Ok(Some(LandOutcome::Blocked(block))) => format!("[not finished] Merging `{branch}` into `{base}` is not safe now: {block} Nothing was changed; call finish_session again."),
                         Err(err) => format!("[not finished] Merging failed: {err}. Nothing was changed."),
                     }
                 }
