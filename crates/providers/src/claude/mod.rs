@@ -588,15 +588,29 @@ impl Provider for Claude {
                 env.push(("CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT".into(), ms));
             }
             // Claude keeps its own temp files, and points sandboxed commands' TMPDIR, under
-            // `CLAUDE_CODE_TMPDIR` (`/tmp` by default): with the session's TMPDIR that is the
-            // session's own folder, removed with it.
+            // `CLAUDE_CODE_TMPDIR` (`/tmp` by default). A session with a TMPDIR of its own
+            // gets a short folder of its own there, removed with it.
             if let Some((_, tmp)) = spec.env.iter().find(|(name, _)| name == "TMPDIR")
                 && !spec
                     .env
                     .iter()
                     .any(|(name, _)| name == "CLAUDE_CODE_TMPDIR")
             {
-                env.push(("CLAUDE_CODE_TMPDIR".into(), tmp.clone()));
+                let dir = match files::temp_dir_path() {
+                    Some(dir) => {
+                        let path = dir.display().to_string();
+                        ledger
+                            .record(Artifact::ClaudeTempDir { path: path.clone() })
+                            .await?;
+                        ledger
+                            .record(Artifact::ProcessesIn { dir: path.clone() })
+                            .await?;
+                        files::create_temp_dir(&dir)?;
+                        path
+                    }
+                    None => tmp.clone(),
+                };
+                env.push(("CLAUDE_CODE_TMPDIR".into(), dir));
             }
             crate::cli::apply_session_env(&mut process_spec, &env, &spec.path_prepend);
             let process::Spawned { process, stdout } = process::spawn(
