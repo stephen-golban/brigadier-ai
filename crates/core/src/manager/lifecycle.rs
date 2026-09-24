@@ -64,7 +64,12 @@ impl SessionManager {
             for task in tasks.into_iter().filter(|task| !task.state.is_final()) {
                 match task.state {
                     // Its worktree is intact; the worker resumes when sent back to work.
-                    TaskState::Reported | TaskState::ReadyToLand => continue,
+                    TaskState::Reported | TaskState::ReadyToLand if task.kind.writes() => continue,
+                    // A read task that reported is done.
+                    TaskState::Reported => {
+                        self.dispose_task(&task, TaskState::Done).await;
+                        continue;
+                    }
                     // The landing was interrupted: accept it again.
                     TaskState::Reviewing | TaskState::AwaitingApproval if task.kind.writes() => {
                         let _ = self
