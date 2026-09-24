@@ -160,10 +160,9 @@ The gate guards against accidents, not against a hostile agent:
 
 - a program started by absolute path, a script that finds the real binary itself, or code
   calling an API directly is not seen;
-- git aliases are resolved (`-c alias.*=…` included), but a `!` shell alias and anything run
-  from git's own exec path (hooks) cannot be inspected, so they ask;
-- an external `git-<name>` program takes precedence over an alias of that name and is not
-  inspected;
+- git aliases are resolved (`-c alias.*=…` included), but a `!` shell alias, an external
+  `git-<name>` program (which git runs ahead of an alias of that name) and anything run from
+  git's own exec path (hooks) cannot be inspected, so they ask;
 - a command line or directory that is not UTF-8 is denied;
 - on Windows there are no shims yet;
 - raw sessions started from the Inspector's Providers tab are not gated (the Inspector warns
