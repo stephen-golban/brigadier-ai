@@ -785,8 +785,17 @@ impl SessionManager {
                 if path.is_some() {
                     return Ok(branch.clone());
                 }
-                let owner = format!("session:{conversation_id}");
+                // Parallel first tasks: one creates the worktree, the others then find it.
+                let _creating = self.session_worktrees.lock().await;
                 let conversation = self.core.conversation(conversation_id)?;
+                if let Some(Setup::Session {
+                    environment: Environment::NewWorktree { path: Some(_), .. },
+                    ..
+                }) = &conversation.setup
+                {
+                    return Ok(branch.clone());
+                }
+                let owner = format!("session:{conversation_id}");
                 let project = conversation
                     .project_id
                     .as_ref()

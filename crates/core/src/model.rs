@@ -148,7 +148,7 @@ pub enum EnvironmentRequest {
     /// The session gets its own worktree on a new branch from `base`, merged back on approval.
     NewWorktree {
         base: String,
-        /// The session branch's name. Absent: Brigadier names it (`brigadier/<slug>`).
+        /// The session branch's name. Absent: Brigadier names it (`brigadier/<session>/session`).
         branch: Option<String>,
     },
 }

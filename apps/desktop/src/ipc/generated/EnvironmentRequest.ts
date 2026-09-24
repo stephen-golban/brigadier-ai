@@ -9,6 +9,6 @@ export type EnvironmentRequest = { "type": "localCheckout", branch: string,
  */
 createFrom: string | null, } | { "type": "newWorktree", base: string, 
 /**
- * The session branch's name. Absent: Brigadier names it (`brigadier/<slug>`).
+ * The session branch's name. Absent: Brigadier names it (`brigadier/<session>/session`).
  */
 branch: string | null, };
