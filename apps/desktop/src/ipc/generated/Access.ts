@@ -4,4 +4,13 @@
  * What a session is allowed to do. The CLI's own OS sandbox enforces it; the always-ask list
  * ([`crate::policy::ALWAYS_ASK`]) applies at every level.
  */
-export type Access = { "type": "workspace", extraRoots: Array<string>, } | { "type": "readOnly" } | { "type": "full" };
+export type Access = { "type": "workspace", extraRoots: Array<string>, } | { "type": "readOnly" } | { "type": "full" } | { "type": "scoped", 
+/**
+ * The working directory is writable. Codex always makes it writable, so a read-only
+ * Codex worker runs in its scratch folder instead.
+ */
+writeCwd: boolean, writableRoots: Array<string>, network: boolean, denyRead: Array<string>, 
+/**
+ * Unix sockets it may connect to (Brigadier's, for the command gate).
+ */
+unixSockets: Array<string>, };
