@@ -528,9 +528,17 @@ impl SessionManager {
                 tracing::info!(conversation = %conv.id, error = %err, "resume failed; starting over from the transcript");
                 spec.origin = Origin::New;
                 conv.state.lock().await.reseed = true;
-                self.runtime
+                match self
+                    .runtime
                     .start_hosted(&owner, choice.provider, spec)
-                    .await?
+                    .await
+                {
+                    Ok(started) => started,
+                    Err(err) => {
+                        self.grants.revoke_owner(&owner);
+                        return Err(err);
+                    }
+                }
             }
             Err(err) => {
                 self.grants.revoke_owner(&owner);
