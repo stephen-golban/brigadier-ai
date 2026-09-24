@@ -1,8 +1,8 @@
 //! Window, menu-bar item and quit ordering.
 //!
 //! Closing the window hides it (and the Dock icon on macOS); the app and `brigadierd` keep
-//! running in the menu bar. Quit (menu-bar item or Cmd+Q) asks the daemon to drain and exit,
-//! waits for its acknowledgement, then exits the app.
+//! running in the menu bar. Quit (menu-bar item, Cmd+Q or a system quit) asks the daemon to
+//! drain and exit, waits for its acknowledgement, then exits the app.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -101,12 +101,29 @@ pub fn quit(app: &AppHandle, code: i32) {
     }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let bridge = app.state::<AppState>().bridge.clone();
-        if bridge.shutdown_daemon(QUIT_TIMEOUT).await {
-            tracing::info!("brigadierd drained and acknowledged the quit");
-        } else {
-            tracing::warn!("brigadierd did not acknowledge the quit");
-        }
+        stop_daemon(&app).await;
         app.exit(code);
     });
+}
+
+/// The process is already exiting without an orderly quit: on macOS, `terminate:` (the app
+/// menu's Quit, the Dock, AppleScript, logout) skips `ExitRequested` and only surfaces as
+/// `RunEvent::Exit`. Runs the same drain-and-acknowledge before the process goes away.
+pub fn quit_on_exit(app: &AppHandle) {
+    if QUITTING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    tauri::async_runtime::block_on(stop_daemon(app));
+}
+
+async fn stop_daemon(app: &AppHandle) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let bridge = state.bridge.clone();
+    if bridge.shutdown_daemon(QUIT_TIMEOUT).await {
+        tracing::info!("brigadierd drained and acknowledged the quit");
+    } else {
+        tracing::warn!("brigadierd did not acknowledge the quit");
+    }
 }

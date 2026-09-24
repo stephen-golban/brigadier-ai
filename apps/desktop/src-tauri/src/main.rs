@@ -182,6 +182,7 @@ fn main() {
             api.prevent_exit();
             shell::quit(app, 0);
         }
+        RunEvent::Exit => shell::quit_on_exit(app),
         #[cfg(target_os = "macos")]
         RunEvent::Reopen { .. } => shell::show_main(app),
         _ => {}
