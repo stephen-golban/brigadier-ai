@@ -658,7 +658,7 @@ impl SessionManager {
                     self.landing_problem(
                         &task,
                         &format!(
-                            "It is ready to land, but landing now is not safe: {block}. Nothing was changed. Call accept_task for task-{} again once that is resolved.",
+                            "It is ready to land, but landing now is not safe: {block} Nothing was changed. Call accept_task for task-{} again once that is resolved.",
                             task.number
                         ),
                         TaskState::ReadyToLand,
@@ -859,7 +859,7 @@ impl SessionManager {
                             if commits == 1 { "" } else { "s" },
                             short(&new_tip)
                         ),
-                        Ok(LandOutcome::Blocked(block)) => format!("[not finished] Merging `{branch}` into `{base}` is not safe now: {block}. Nothing was changed; call finish_session again."),
+                        Ok(LandOutcome::Blocked(block)) => format!("[not finished] Merging `{branch}` into `{base}` is not safe now: {block} Nothing was changed; call finish_session again."),
                         Err(err) => format!("[not finished] Merging failed: {err}. Nothing was changed."),
                     }
                 }
