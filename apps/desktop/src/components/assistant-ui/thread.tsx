@@ -5,6 +5,7 @@ import {
   ComposerPrimitive,
   ErrorPrimitive,
   MessagePrimitive,
+  type TextMessagePartProps,
   ThreadPrimitive,
   useAuiState,
 } from "@assistant-ui/react";
@@ -17,12 +18,13 @@ import {
 } from "@openai/apps-sdk-ui/components/Icon";
 import {
   createContext,
+  lazy,
+  Suspense,
   useContext,
   type ComponentType,
   type FC,
 } from "react";
 
-import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -287,6 +289,19 @@ const MessageError: FC = () => {
   );
 };
 
+// The markdown stack (remark, micromark, mdast) loads with the first reply, not at startup.
+const MarkdownText = lazy(() =>
+  import("@/components/assistant-ui/markdown-text").then((module) => ({
+    default: module.MarkdownText,
+  })),
+);
+
+const MessageText: FC<TextMessagePartProps> = (props) => (
+  <Suspense fallback={<p className="whitespace-pre-wrap">{props.text}</p>}>
+    <MarkdownText {...props} />
+  </Suspense>
+);
+
 const AssistantMessage: FC = () => {
   return (
     <MessagePrimitive.Root
@@ -298,7 +313,7 @@ const AssistantMessage: FC = () => {
         data-slot="aui_assistant-message-content"
         className="text-foreground px-2 leading-relaxed wrap-break-word"
       >
-        <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+        <MessagePrimitive.Parts components={{ Text: MessageText }} />
         <MessageError />
       </div>
 

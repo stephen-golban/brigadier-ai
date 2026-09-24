@@ -11,6 +11,8 @@ import { Unarchive, X } from "@openai/apps-sdk-ui/components/Icon";
 import {
   createContext,
   type FC,
+  lazy,
+  Suspense,
   useCallback,
   useContext,
   useEffect,
@@ -20,10 +22,7 @@ import {
 import { useShallow } from "zustand/react/shallow";
 
 import { BlobAttachmentAdapter } from "@/app/conversation/attachments";
-import { ApprovalCardView } from "@/app/conversation/cards/ApprovalCardView";
-import { PlanCardView } from "@/app/conversation/cards/PlanCardView";
-import { QuestionCardView } from "@/app/conversation/cards/QuestionCardView";
-import { TaskCardView } from "@/app/conversation/cards/TaskCardView";
+import type { CardType } from "@/app/conversation/cards/CardBody";
 import {
   type ComposerTarget,
   ComposerTargetContext,
@@ -65,7 +64,7 @@ import {
   useApp,
 } from "@/state/store";
 
-type CardType = "task" | "approval" | "question" | "plan";
+const CardBody = lazy(() => import("@/app/conversation/cards/CardBody"));
 
 type CardItem = { kind: "card"; type: CardType; id: string; position: number };
 
@@ -403,10 +402,11 @@ const Card: FC = () => {
   const id = custom.cardId ?? "";
   return (
     <div data-slot="thread-card" className="message-contain px-2">
-      {custom.card === "task" && <TaskCardView taskId={id} />}
-      {custom.card === "approval" && <ApprovalCardView cardId={id} />}
-      {custom.card === "question" && <QuestionCardView cardId={id} />}
-      {custom.card === "plan" && <PlanCardView cardId={id} />}
+      {custom.card && (
+        <Suspense fallback={null}>
+          <CardBody type={custom.card} id={id} />
+        </Suspense>
+      )}
     </div>
   );
 };
