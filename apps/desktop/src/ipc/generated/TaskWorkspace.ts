@@ -17,6 +17,11 @@ branch: string | null,
  */
 base: string | null, 
 /**
+ * `base` is a snapshot of the user's uncommitted changes (they let workers see them).
+ * Those changes are never landed or kept as part of the task's work.
+ */
+onSnapshot: boolean, 
+/**
  * The branch its accepted work lands on.
  */
 target: string | null, 

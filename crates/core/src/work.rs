@@ -136,6 +136,10 @@ pub struct TaskWorkspace {
     pub branch: Option<String>,
     /// The commit it started from.
     pub base: Option<String>,
+    /// `base` is a snapshot of the user's uncommitted changes (they let workers see them).
+    /// Those changes are never landed or kept as part of the task's work.
+    #[serde(default)]
+    pub on_snapshot: bool,
     /// The branch its accepted work lands on.
     pub target: Option<String>,
     /// Its scratch folder outside the repository.

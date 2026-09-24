@@ -69,6 +69,8 @@ pub(crate) struct Workspace {
     pub branch: Option<String>,
     /// The commit the worker started from (a snapshot commit when it saw uncommitted changes).
     pub base: Option<Oid>,
+    /// `base` is a snapshot of the user's uncommitted changes.
+    pub on_snapshot: bool,
     /// The branch accepted work lands on.
     pub target: Option<String>,
     pub scratch: PathBuf,
@@ -387,6 +389,7 @@ impl SessionManager {
                         .map(|p| p.to_string_lossy().into_owned()),
                     branch: workspace.branch.clone(),
                     base: workspace.base.as_ref().map(|oid| oid.0.clone()),
+                    on_snapshot: workspace.on_snapshot,
                     target: workspace.target.clone(),
                     scratch: workspace.scratch.to_string_lossy().into_owned(),
                 });
@@ -431,6 +434,7 @@ impl SessionManager {
             worktree: recorded.worktree.map(PathBuf::from),
             branch: recorded.branch,
             base: recorded.base.map(Oid),
+            on_snapshot: recorded.on_snapshot,
             target: recorded.target,
             scratch: PathBuf::from(recorded.scratch),
         };
@@ -672,6 +676,7 @@ impl SessionManager {
                 worktree: None,
                 branch: None,
                 base: None,
+                on_snapshot: false,
                 target: None,
                 scratch,
             });
@@ -681,21 +686,24 @@ impl SessionManager {
             .await?;
         // Reviews and checks look at the candidate commit; a merge task continues from the
         // conflicting task's work (kept as a WIP commit on its branch).
-        let (base, start) = match (task.kind, subject) {
+        let (base, start, on_snapshot) = match (task.kind, subject) {
             (TaskKind::Review | TaskKind::Verify, Some(subject)) if subject.candidate.is_some() => {
                 let commit = Oid(subject
                     .candidate
                     .as_ref()
                     .map(|c| c.commit.clone())
                     .unwrap_or_default());
-                (commit.clone(), commit)
+                (commit.clone(), commit, false)
             }
-            (TaskKind::Merge, Some(subject)) => self.merge_start(subject).await?,
+            (TaskKind::Merge, Some(subject)) => {
+                let (base, start) = self.merge_start(subject).await?;
+                (base, start, false)
+            }
             _ => {
-                let base = self
+                let (base, on_snapshot) = self
                     .worker_base(&task.conversation_id, &repo, &target)
                     .await?;
-                (base.clone(), base)
+                (base.clone(), base, on_snapshot)
             }
         };
         let project = conversation
@@ -757,6 +765,7 @@ impl SessionManager {
             worktree: Some(worktree),
             branch,
             base: Some(base),
+            on_snapshot,
             target: Some(target),
             scratch,
         })
@@ -852,13 +861,13 @@ impl SessionManager {
     }
 
     /// Where workers start: the target's tip, or a snapshot of the user's uncommitted changes
-    /// on top of it when the user chose to show them (local checkout only).
+    /// on top of it when the user chose to show them (local checkout only; then `true`).
     async fn worker_base(
         &self,
         conversation_id: &ConversationId,
         repo: &Path,
         target: &str,
-    ) -> Result<Oid> {
+    ) -> Result<(Oid, bool)> {
         let (git, repo_path, branch) = (self.git.clone(), repo.to_owned(), target.to_owned());
         let (tip, dirty, current) = blocking(move || {
             let repo = git.open(&repo_path).map_err(git_error)?;
@@ -877,18 +886,18 @@ impl SessionManager {
             ..
         }) = conversation.setup
         else {
-            return Ok(tip);
+            return Ok((tip, false));
         };
         // Uncommitted changes matter only when they sit on the target branch.
         if dirty.is_empty() || current.as_deref() != Some(branch.as_str()) {
-            return Ok(tip);
+            return Ok((tip, false));
         }
         let see = match workers_see_uncommitted {
             Some(see) => see,
             None => self.ask_about_uncommitted(conversation_id, dirty).await?,
         };
         if !see {
-            return Ok(tip);
+            return Ok((tip, false));
         }
         let (git, repo_path) = (self.git.clone(), repo.to_owned());
         blocking(move || {
@@ -896,8 +905,8 @@ impl SessionManager {
             Ok(repo
                 .snapshot_uncommitted()
                 .map_err(git_error)?
-                .map(|snapshot| snapshot.commit)
-                .unwrap_or(tip))
+                .map(|snapshot| (snapshot.commit, true))
+                .unwrap_or((tip, false)))
         })
         .await
     }
@@ -1713,19 +1722,34 @@ impl SessionManager {
             task.number, task.title
         );
         let base = workspace.base.clone().map(Oid);
+        let on_snapshot = workspace.on_snapshot;
         let result = blocking(move || {
             let worktree = git.open_worktree(&path).map_err(git_error)?;
-            let wip = worktree.commit_wip(&message).map_err(git_error)?;
+            worktree.commit_wip(&message).map_err(git_error)?;
             let head = worktree.head().map_err(git_error)?;
-            Ok((wip, head, base))
+            let Some(base) = base.filter(|base| *base != head) else {
+                return Ok(None);
+            };
+            if !on_snapshot {
+                return Ok(Some(Ok(head)));
+            }
+            // The user's uncommitted changes are never kept in a commit.
+            Ok(Some(
+                worktree.drop_snapshot(&base, &message).map_err(git_error)?,
+            ))
         })
         .await;
         match result {
-            Ok((_, head, Some(base))) if head != base => Some(crate::work::KeptWork::Branch {
+            Ok(Some(Ok(commit))) => Some(crate::work::KeptWork::Branch {
                 branch,
-                commit: head.0,
+                commit: commit.0,
             }),
-            Ok(_) => None,
+            Ok(Some(Err(paths))) => {
+                tracing::warn!(task = %task.id, ?paths, "unfinished work overlaps the user's uncommitted changes; keeping it as a diff");
+                let diff = self.diff_artifact(&self.task_live(task), task).await?;
+                Some(crate::work::KeptWork::Diff { artifact: diff })
+            }
+            Ok(None) => None,
             Err(err) => {
                 tracing::warn!(task = %task.id, error = %err, "could not keep unfinished work as a commit");
                 let diff = self.diff_artifact(&self.task_live(task), task).await?;
