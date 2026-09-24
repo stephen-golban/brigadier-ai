@@ -162,7 +162,10 @@ pub enum LandBlock {
         actual: Oid,
     },
     /// The discovered checkout switched branches before mutation.
-    #[error("The checkout at {} switched branches (now {now:?}).", worktree.display())]
+    #[error("The checkout at {} switched branches (it is now {}).", worktree.display(), match now {
+        Some(branch) => format!("on `{branch}`"),
+        None => "on a detached HEAD".to_owned(),
+    })]
     BranchSwitched {
         /// Checkout that switched.
         worktree: PathBuf,
@@ -170,7 +173,7 @@ pub enum LandBlock {
         now: Option<String>,
     },
     /// Landing would overwrite local changes or files.
-    #[error("Landing would overwrite local files in {}: {paths:?}.", worktree.display())]
+    #[error("Landing would overwrite local files in {}: {}.", worktree.display(), describe(paths))]
     Collisions {
         /// Checkout with collisions.
         worktree: PathBuf,
@@ -188,6 +191,22 @@ pub enum LandBlock {
     /// The candidate does not descend from the expected target.
     #[error("The candidate is not a fast-forward of the target branch.")]
     NotFastForward,
+}
+
+/// `a.txt (modified), docs/USAGE.md (ignored)`.
+fn describe(paths: &[CollidingPath]) -> String {
+    paths
+        .iter()
+        .map(|p| {
+            let kind = match p.kind {
+                CollisionKind::Modified => "modified",
+                CollisionKind::Untracked => "untracked",
+                CollisionKind::Ignored => "ignored",
+            };
+            format!("{} ({kind})", p.path)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// A path that would be overwritten by a landing.
