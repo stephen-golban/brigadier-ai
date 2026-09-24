@@ -52,7 +52,14 @@ impl Projection {
                     self.settings_seq = seq;
                 }
             }
-            DomainEvent::Probe { .. } => {}
+            // Raw sessions, the cleanup ledger and providers belong to the runtime.
+            DomainEvent::RawSessionCreated { .. }
+            | DomainEvent::RawSessionUpdated { .. }
+            | DomainEvent::RawEvent { .. }
+            | DomainEvent::CleanupRecorded { .. }
+            | DomainEvent::CleanupCompleted { .. }
+            | DomainEvent::ProviderChecked { .. }
+            | DomainEvent::Probe { .. } => {}
         }
     }
 

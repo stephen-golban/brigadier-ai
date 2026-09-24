@@ -25,6 +25,18 @@ function summary(event: DomainEvent): string {
       return `density ${event.settings.density}`;
     case "probe":
       return `probe ${event.index + 1}/${event.count}`;
+    case "rawSessionCreated":
+      return `${event.session.provider} ${event.session.source.type}`;
+    case "rawSessionUpdated":
+      return event.state;
+    case "rawEvent":
+      return event.event.type;
+    case "cleanupRecorded":
+      return event.artifact.type;
+    case "cleanupCompleted":
+      return event.failures.length === 0 ? "removed" : `${event.failures.length} failed`;
+    case "providerChecked":
+      return event.overview.provider;
   }
 }
 

@@ -6,6 +6,7 @@
 
 pub mod model;
 mod projection;
+pub mod runtime;
 mod sessions;
 
 pub use model::*;
@@ -20,6 +21,9 @@ pub enum Error {
     Invalid(String),
     #[error(transparent)]
     Store(#[from] brigadier_store::Error),
+    /// A CLI adapter failed.
+    #[error("{0}")]
+    Provider(String),
     #[error("corrupt event {seq}: {source}")]
     Corrupt { seq: i64, source: serde_json::Error },
 }
