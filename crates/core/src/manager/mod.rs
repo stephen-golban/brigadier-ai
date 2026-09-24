@@ -199,7 +199,7 @@ impl SessionManager {
                 (self.git.clone(), repo.clone(), branch.clone(), from.clone());
             blocking(move || {
                 let repo = git.open(Path::new(&repo)).map_err(git_error)?;
-                let start = repo.resolve(&from).map_err(git_error)?;
+                let start = repo.branch_commit(&from).map_err(git_error)?;
                 repo.create_branch(&branch, &start).map_err(git_error)
             })
             .await?;
