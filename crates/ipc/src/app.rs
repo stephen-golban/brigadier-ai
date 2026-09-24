@@ -64,6 +64,8 @@ pub struct UiMeasurements {
     pub frame_gaps: LatencySummary,
     /// Where the longest frame gap fell and the costliest event flush, to explain a stall.
     pub stall_context: String,
+    /// Startup milestones in ms since process start (webview, script, connected, catalog, paint).
+    pub startup: String,
     pub probes_expected: u32,
     pub probes_painted: u32,
 }
