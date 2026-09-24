@@ -17,6 +17,7 @@ crates/        Rust workspace (see PLAN.md §3)
   daemon/        brigadierd
   …              crates for later phases
 apps/desktop/  Tauri 2 shell (src-tauri/) and the React UI (src/)
+registry/      curated model registry, published from this repository (Phase 5)
 docs/          plan and design notes
 ```
 
