@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use brigadier_git::{Oid, WorktreeSpec};
+use brigadier_git::{Oid, PatchOutcome, WorktreeSpec};
 use brigadier_providers::policy::{self, ApprovalMode, Route as PolicyRoute};
 use brigadier_providers::{
     Access, ApprovalDecision, ApprovalRequest, Artifact, Decider, InputFile, Origin, ProviderEvent,
@@ -1582,6 +1582,86 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Restores a task's kept patch as a new branch on its target branch's current tip.
+    pub async fn restore_kept_work(&self, task_id: TaskId) -> Result<crate::work::RestoreOutcome> {
+        use crate::work::{KeptWork, RestoreOutcome};
+        let conversation_id = self.conversation_of_task(&task_id).await?;
+        let task = self.task_by_id(&conversation_id, &task_id).await?;
+        let Some(KeptWork::Diff { artifact, restored }) = &task.kept else {
+            return Err(Error::Invalid("this task kept no patch".into()));
+        };
+        if let Some(branch) = restored {
+            return Err(Error::Invalid(format!("already restored as {branch}")));
+        }
+        let workspace = task
+            .workspace
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("the task has no workspace".into()))?;
+        let target = workspace
+            .target
+            .clone()
+            .ok_or_else(|| Error::Invalid("the task has no target branch".into()))?;
+        let name = workspace
+            .branch
+            .clone()
+            .unwrap_or_else(|| task_branch(&conversation_id, task.number, &task.title));
+        let hash = artifact
+            .id
+            .parse()
+            .map_err(|_| Error::Invalid(format!("{} is not an artifact id", artifact.id)))?;
+        let patch = self
+            .core
+            .store()
+            .blobs()
+            .get(hash)
+            .await?
+            .ok_or_else(|| Error::NotFound("the saved patch".into()))?;
+        let repo = self.task_repo(&task)?;
+        let message = format!(
+            "task-{} {} (restored from its saved patch)",
+            task.number, task.title
+        );
+        let git = self.git.clone();
+        let outcome = blocking(move || {
+            let repo = git.open(&repo).map_err(git_error)?;
+            let tip = repo
+                .branch_tip(&target)
+                .map_err(git_error)?
+                .ok_or_else(|| Error::Invalid(format!("branch {target} does not exist")))?;
+            // The task branch's own name while it is free.
+            let mut branch = name.clone();
+            let mut n = 1;
+            while repo.branch_tip(&branch).map_err(git_error)?.is_some() {
+                n += 1;
+                branch = format!("{name}-restored-{n}");
+            }
+            Ok(
+                match repo
+                    .branch_from_patch(&branch, &tip, &patch, &message)
+                    .map_err(git_error)?
+                {
+                    PatchOutcome::Applied { commit } => RestoreOutcome::Restored {
+                        branch,
+                        commit: commit.0,
+                    },
+                    PatchOutcome::Conflicts { paths } => RestoreOutcome::Conflicts { paths },
+                    PatchOutcome::Failed { reason } => RestoreOutcome::Failed { reason },
+                },
+            )
+        })
+        .await?;
+        if let RestoreOutcome::Restored { branch, .. } = &outcome {
+            let branch = branch.clone();
+            self.update_task(&conversation_id, &task_id, |t| {
+                if let Some(KeptWork::Diff { restored, .. }) = &mut t.kept {
+                    *restored = Some(branch);
+                }
+            })
+            .await?;
+        }
+        Ok(outcome)
+    }
+
     /// Pauses a worker: its turn is interrupted, the session stays.
     pub async fn pause_task(&self, task_id: TaskId) -> Result<()> {
         let conversation_id = self.conversation_of_task(&task_id).await?;
@@ -1685,15 +1765,18 @@ impl SessionManager {
     }
 
     /// Ends a task: unfinished changes are kept (B15), then everything recorded under
-    /// `task:<id>` is removed. Branches with unlanded work stay.
+    /// `task:<id>` is removed. Branches with unlanded work stay; a task branch with nothing to
+    /// keep goes with the worktree.
     pub(crate) async fn dispose_task(&self, task: &Task, state: TaskState) {
         if let Some(live) = self.existing_task_live(&task.id) {
             live.close_cli().await;
         }
-        let kept = if matches!(state, TaskState::Stopped | TaskState::Failed) {
-            self.keep_unfinished(task).await
-        } else {
-            None
+        let (kept, drop_branch) = match state {
+            TaskState::Stopped | TaskState::Failed => self.keep_unfinished(task).await,
+            // A write task that ends done changed nothing that could land.
+            TaskState::Done => (None, true),
+            // A landed branch is deleted once the landing checked it is merged.
+            _ => (None, false),
         };
         let result = self
             .update_task(&task.conversation_id, &task.id, |t| {
@@ -1713,19 +1796,33 @@ impl SessionManager {
         if !leftovers.is_clean() {
             tracing::warn!(task = %task.id, ?leftovers, "some of the task's leftovers will be retried at the next launch");
         }
+        if drop_branch {
+            self.drop_task_branch(task).await;
+        }
         self.tasks_lock().remove(&task.id);
     }
 
     /// B15: a worker's unfinished changes survive the removal of its worktree, as a WIP commit
-    /// on its task branch (write tasks) or a diff artifact.
-    async fn keep_unfinished(&self, task: &Task) -> Option<crate::work::KeptWork> {
-        let workspace = task.workspace.as_ref()?;
-        let path = PathBuf::from(workspace.worktree.as_ref()?);
-        if !task.kind.writes() {
-            return None;
+    /// on its task branch. Work that sits on the user's uncommitted changes (when they let
+    /// workers see them) is replayed onto the target without them; if it overlaps them, it is
+    /// kept as a diff artifact instead, because their content must never stay in a commit.
+    ///
+    /// Also says whether the task branch goes with the worktree: when it holds no work, or when
+    /// it is built on the uncommitted changes and its work is safely stored as a diff.
+    async fn keep_unfinished(&self, task: &Task) -> (Option<crate::work::KeptWork>, bool) {
+        enum Unfinished {
+            None,
+            Commit(Oid),
+            Overlaps { paths: Vec<String>, head: Oid },
         }
-        let branch = workspace.branch.clone()?;
-        let git = self.git.clone();
+        let Some(workspace) = task.workspace.as_ref() else {
+            return (None, false);
+        };
+        let (Some(path), Some(branch)) = (workspace.worktree.as_ref(), workspace.branch.clone())
+        else {
+            return (None, false);
+        };
+        let (git, path) = (self.git.clone(), PathBuf::from(path));
         let message = format!(
             "WIP: task-{} {} (unfinished, kept by Brigadier)",
             task.number, task.title
@@ -1737,33 +1834,99 @@ impl SessionManager {
             worktree.commit_wip(&message).map_err(git_error)?;
             let head = worktree.head().map_err(git_error)?;
             let Some(base) = base.filter(|base| *base != head) else {
-                return Ok(None);
+                return Ok(Unfinished::None);
             };
             if !on_snapshot {
-                return Ok(Some(Ok(head)));
+                return Ok(Unfinished::Commit(head));
             }
-            // The user's uncommitted changes are never kept in a commit.
-            Ok(Some(
-                worktree.drop_snapshot(&base, &message).map_err(git_error)?,
-            ))
+            Ok(
+                match worktree.drop_snapshot(&base, &message).map_err(git_error)? {
+                    Ok(commit) => Unfinished::Commit(commit),
+                    Err(paths) => Unfinished::Overlaps { paths, head },
+                },
+            )
         })
         .await;
         match result {
-            Ok(Some(Ok(commit))) => Some(crate::work::KeptWork::Branch {
-                branch,
-                commit: commit.0,
-            }),
-            Ok(Some(Err(paths))) => {
-                tracing::warn!(task = %task.id, ?paths, "unfinished work overlaps the user's uncommitted changes; keeping it as a diff");
-                let diff = self.diff_artifact(&self.task_live(task), task).await?;
-                Some(crate::work::KeptWork::Diff { artifact: diff })
-            }
-            Ok(None) => None,
+            Ok(Unfinished::None) => (None, true),
+            Ok(Unfinished::Commit(commit)) => (
+                Some(crate::work::KeptWork::Branch {
+                    branch,
+                    commit: commit.0,
+                }),
+                false,
+            ),
+            Ok(Unfinished::Overlaps { paths, head }) => match self.kept_diff(task).await {
+                Some(artifact) => {
+                    tracing::info!(task = %task.id, ?paths, "unfinished work overlaps the user's uncommitted changes; kept as a diff");
+                    (
+                        Some(crate::work::KeptWork::Diff {
+                            artifact,
+                            restored: None,
+                        }),
+                        true,
+                    )
+                }
+                None => {
+                    // Losing the work would be worse: the branch stays, on the snapshot.
+                    tracing::error!(task = %task.id, "could not store the unfinished work as a diff; its branch stays, on the user's uncommitted changes");
+                    (
+                        Some(crate::work::KeptWork::Branch {
+                            branch,
+                            commit: head.0,
+                        }),
+                        false,
+                    )
+                }
+            },
             Err(err) => {
                 tracing::warn!(task = %task.id, error = %err, "could not keep unfinished work as a commit");
-                let diff = self.diff_artifact(&self.task_live(task), task).await?;
-                Some(crate::work::KeptWork::Diff { artifact: diff })
+                match self.kept_diff(task).await {
+                    Some(artifact) => (
+                        Some(crate::work::KeptWork::Diff {
+                            artifact,
+                            restored: None,
+                        }),
+                        on_snapshot,
+                    ),
+                    None => (None, false),
+                }
             }
+        }
+    }
+
+    /// The task's diff as an artifact, read back from the blob store to be sure it is there.
+    async fn kept_diff(&self, task: &Task) -> Option<ArtifactRef> {
+        let artifact = self.diff_artifact(&self.task_live(task), task).await?;
+        let hash = artifact.id.parse().ok()?;
+        match self.core.store().blobs().get(hash).await {
+            Ok(Some(bytes)) if bytes.len() as u64 == artifact.bytes => Some(artifact),
+            other => {
+                tracing::warn!(task = %task.id, found = ?other.map(|b| b.map(|b| b.len())), "the stored diff does not read back");
+                None
+            }
+        }
+    }
+
+    /// Deletes the task branch once its worktree is gone.
+    async fn drop_task_branch(&self, task: &Task) {
+        let Some(branch) = task.workspace.as_ref().and_then(|w| w.branch.clone()) else {
+            return;
+        };
+        let Ok(repo) = self.task_repo(task) else {
+            return;
+        };
+        let git = self.git.clone();
+        let result = blocking(move || {
+            let repo = git.open(&repo).map_err(git_error)?;
+            match repo.branch_tip(&branch).map_err(git_error)? {
+                Some(tip) => repo.delete_branch_at(&branch, &tip).map_err(git_error),
+                None => Ok(()),
+            }
+        })
+        .await;
+        if let Err(err) = result {
+            tracing::warn!(task = %task.id, error = %err, "could not delete the task branch");
         }
     }
 }

@@ -102,6 +102,7 @@ export type { RepoInfo } from "./RepoInfo";
 export type { Report } from "./Report";
 export type { Request } from "./Request";
 export type { Response } from "./Response";
+export type { RestoreOutcome } from "./RestoreOutcome";
 export type { ReviewRecord } from "./ReviewRecord";
 export type { ReviewVerdict } from "./ReviewVerdict";
 export type { Role } from "./Role";

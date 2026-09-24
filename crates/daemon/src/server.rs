@@ -572,6 +572,9 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
             sessions.resume_task(task_id).await?;
             Response::ResumeTask
         }
+        Request::RestoreKeptWork { task_id } => Response::RestoreKeptWork {
+            outcome: sessions.restore_kept_work(task_id).await?,
+        },
         Request::Hibernate { id } => Response::Hibernate {
             conversation: Box::new(sessions.hibernate(id).await?),
         },

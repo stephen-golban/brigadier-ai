@@ -15,10 +15,10 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import type { ArtifactRef, Task, TaskState } from "@/ipc/generated";
+import type { ArtifactRef, KeptWork, RestoreOutcome, Task, TaskState } from "@/ipc/generated";
 import { modelName, useModelGroups } from "@/lib/setup";
 import { cn } from "@/lib/utils";
-import { pauseTask, resumeTask, stopTask } from "@/state/actions";
+import { pauseTask, restoreKeptWork, resumeTask, stopTask } from "@/state/actions";
 import { useBoard } from "@/state/board";
 
 export const TASK_STATE_LABELS: Record<TaskState, string> = {
@@ -192,6 +192,60 @@ function ArtifactButtons({
   );
 }
 
+/** Unfinished work saved as a patch (its branch is gone), with "Restore as branch". */
+function KeptPatch({
+  taskId,
+  kept,
+  target,
+  onOpen,
+}: {
+  taskId: string;
+  kept: Extract<KeptWork, { type: "diff" }>;
+  target: string | null;
+  onOpen: (artifact: ArtifactRef) => void;
+}) {
+  const action = useAction();
+  const [outcome, setOutcome] = useState<RestoreOutcome | null>(null);
+  const restore = () =>
+    action.run(async () => setOutcome(await restoreKeptWork(taskId)));
+  return (
+    <div className="flex flex-col gap-1.5">
+      <p className="text-xs">
+        Saved as a patch, not a branch: it could not be kept as a clean commit on{" "}
+        {target ? <span className="font-mono">{target}</span> : "the target branch"} (for
+        example, it overlaps uncommitted changes you let workers see).
+      </p>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <ArtifactButtons artifacts={[kept.artifact]} onOpen={onOpen} />
+        {kept.restored === null && target && (
+          <Button size="xs" variant="outline" disabled={action.busy} onClick={restore}>
+            Restore as branch
+          </Button>
+        )}
+      </div>
+      {kept.restored !== null && (
+        <p className={mono}>Restored as {kept.restored}</p>
+      )}
+      {outcome?.type === "conflicts" && (
+        <p role="alert" className="text-destructive text-xs">
+          It can't be restored on {target}: it conflicts with {target} in{" "}
+          {outcome.paths.join(", ")}. Nothing was created.
+        </p>
+      )}
+      {outcome?.type === "failed" && (
+        <p role="alert" className="text-destructive text-xs">
+          It can't be restored: {outcome.reason} Nothing was created.
+        </p>
+      )}
+      {action.error && (
+        <p role="alert" className="text-destructive text-xs">
+          {action.error}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function TaskDetails({ task, model }: { task: Task; model: string }) {
   const [artifact, setArtifact] = useState<ArtifactRef | null>(null);
   const [transcriptOpen, setTranscriptOpen] = useState(false);
@@ -330,7 +384,12 @@ function TaskDetails({ task, model }: { task: Task; model: string }) {
               {kept.branch} at {short(kept.commit)}
             </p>
           ) : (
-            <ArtifactButtons artifacts={[kept.artifact]} onOpen={setArtifact} />
+            <KeptPatch
+              taskId={task.id}
+              kept={kept}
+              target={workspace?.target ?? null}
+              onOpen={setArtifact}
+            />
           )}
         </Section>
       )}

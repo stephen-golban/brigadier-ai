@@ -296,8 +296,31 @@ pub struct Task {
 pub enum KeptWork {
     /// Committed as a work-in-progress commit on the task branch, which is kept.
     Branch { branch: String, commit: String },
-    /// Stored as a diff artifact (tasks without a branch).
-    Diff { artifact: ArtifactRef },
+    /// Stored as a diff artifact, when it could not be kept as a clean commit on the target
+    /// (for example because it overlaps uncommitted changes the user let workers see). The
+    /// task branch is gone; the patch can be restored as a new branch.
+    Diff {
+        artifact: ArtifactRef,
+        /// The branch the patch was restored as.
+        #[serde(default)]
+        restored: Option<String>,
+    },
+}
+
+/// What restoring a kept patch as a branch did.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum RestoreOutcome {
+    /// A new branch with one commit of the patch on the target branch's current tip.
+    Restored { branch: String, commit: String },
+    /// The patch conflicts with the target branch now; nothing was created.
+    Conflicts { paths: Vec<String> },
+    /// The patch no longer applies at all; nothing was created.
+    Failed { reason: String },
 }
 
 // ----- cards -------------------------------------------------------------------------------
