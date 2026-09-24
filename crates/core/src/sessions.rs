@@ -24,6 +24,9 @@ const NEW_CHAT_TITLE: &str = "New chat";
 const PROBES_KEPT: u32 = 10_000;
 const MAX_PROBES: u32 = 5_000;
 const CATALOG_PAGE: u32 = 1_000;
+/// Serialized size a message page may reach, well under the IPC frame cap. A single message
+/// always fits: its inline text is capped at `INLINE_TEXT_BYTES`.
+const PAGE_BYTES: usize = 4 * 1024 * 1024;
 
 /// A synthetic event burst started by [`Core::probe_burst`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -266,8 +269,22 @@ impl Core {
                 },
             )
             .await?;
-        let has_more = events.len() > limit as usize;
+        let mut has_more = events.len() > limit as usize;
         events.truncate(limit as usize);
+        // Newest first: stop where the size budget runs out, so the page stays contiguous.
+        let mut bytes = 0;
+        let fits = events
+            .iter()
+            .take_while(|event| {
+                bytes += event.payload.get().len();
+                bytes <= PAGE_BYTES
+            })
+            .count()
+            .max(1);
+        if fits < events.len() {
+            events.truncate(fits);
+            has_more = true;
+        }
         events.reverse();
         let messages = events
             .iter()
