@@ -1,10 +1,17 @@
 //! Codex adapter: `codex app-server` over stdio JSON-RPC, one app-server per session.
 //!
 //! Sessions use `thread/*` and `turn/*` (steer and interrupt included). Approvals are
-//! server requests Brigadier answers. The approval policy is `untrusted`: Codex runs its
-//! known-safe read-only commands itself and asks about everything else, so Brigadier's policy
-//! decides (allow inside the sandbox, ask the user for outward actions and escalations). With
-//! `on-request` a networked `git push` would run without asking.
+//! server requests Brigadier answers. A command Codex asks about runs outside its sandbox once
+//! approved, so every command and file-change approval is an escalation:
+//!
+//! - Workspace (and full) access use `on-request`: commands run inside the sandbox without
+//!   asking; Codex asks only to leave it, and that goes to the user.
+//! - Read-only access uses `untrusted`: Codex asks before every command, and a read-only
+//!   session (such as an orchestrator) has all of them declined, so nothing runs.
+//!
+//! Codex has no per-session way to make an outward action such as `git push` ask while it runs
+//! inside the sandbox: its exec-policy rules load only from `~/.codex/rules` or from the
+//! `.codex/rules` of a project trusted in `~/.codex/config.toml`.
 //!
 //! The user's personal Codex setup stays out: plugins, apps, hooks, computer and browser use,
 //! memories and `notify` are switched off per process, and the MCP servers from their config are
@@ -386,7 +393,7 @@ async fn open_thread(
     let trusted_before = trusted_projects(rpc, cwd).await?;
     let cwd_text = Some(cwd.display().to_string());
     let sandbox = Some(sandbox_mode(&spec.access));
-    let approval = Some(p::AskForApproval::Untrusted);
+    let approval = Some(approval_policy(&spec.access));
     let instructions = spec.append_system_prompt.clone();
     let (thread, model) = match &spec.origin {
         Origin::New => {
@@ -534,6 +541,13 @@ async fn thread_config(rpc: &Rpc, spec: &SessionSpec, cwd: &Path) -> Result<Map<
         );
     }
     Ok(config)
+}
+
+fn approval_policy(access: &Access) -> p::AskForApproval {
+    match access {
+        Access::ReadOnly => p::AskForApproval::Untrusted,
+        Access::Workspace { .. } | Access::Full => p::AskForApproval::OnRequest,
+    }
 }
 
 fn sandbox_mode(access: &Access) -> p::SandboxMode {
@@ -759,7 +773,7 @@ impl CodexSession {
                     input: Self::input(text)?,
                     effort,
                     sandbox_policy: Some(sandbox_policy(&self.access)),
-                    approval_policy: Some(p::AskForApproval::Untrusted),
+                    approval_policy: Some(approval_policy(&self.access)),
                     ..Default::default()
                 },
             )

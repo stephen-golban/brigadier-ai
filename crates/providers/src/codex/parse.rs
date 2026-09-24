@@ -452,11 +452,8 @@ impl Parser {
                 else {
                     return self.unsupported(rpc_id, method, out);
                 };
+                // An approved command runs outside the sandbox (see the adapter's docs).
                 let reason = ask.reason.clone();
-                let escalation = ask.network_approval_context.is_some()
-                    || reason
-                        .as_deref()
-                        .is_some_and(|reason| reason.to_lowercase().contains("sandbox"));
                 (
                     ApprovalRequest {
                         id: approval_id.clone(),
@@ -469,7 +466,7 @@ impl Parser {
                             ask.network_approval_context
                                 .map(|network| format!("network access to {}", network.host))
                         }),
-                        escalation,
+                        escalation: true,
                         input: ask.command,
                     },
                     PendingKind::Command,
@@ -493,7 +490,7 @@ impl Parser {
                         command: None,
                         cwd: None,
                         paths,
-                        escalation: ask.grant_root.is_some(),
+                        escalation: true,
                         reason: ask.reason.or_else(|| {
                             ask.grant_root.map(|root| format!("write access to {root}"))
                         }),
