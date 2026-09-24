@@ -83,7 +83,7 @@ pub fn usage_limit(provider: ProviderKind) -> Vec<String> {
                     "id": turn, "items": [], "itemsView": "notLoaded", "status": "inProgress",
                     "error": null, "startedAt": now_s, "completedAt": null, "durationMs": null,
                 }}}),
-                json!({"method": "item/completed", "params": {"threadId": session, "turnId": turn, "item": {
+                json!({"method": "item/completed", "params": {"threadId": session, "turnId": turn, "completedAtMs": now_s * 1000, "item": {
                     "type": "userMessage", "id": id(), "clientId": null,
                     "content": [{"type": "text", "text": "Summarize the open pull requests.", "text_elements": []}],
                 }}}),
