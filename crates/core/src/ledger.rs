@@ -239,7 +239,21 @@ impl CleanupLedger {
             tracing::info!(ended, "ended CLI processes left by a previous daemon");
         }
         let disposing: Vec<String> = self.state().disposing.iter().cloned().collect();
+        let git_engine = self
+            .worktrees
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_some();
         for owner in disposing {
+            if !git_engine
+                && self
+                    .artifacts(&owner)
+                    .iter()
+                    .any(|artifact| matches!(artifact, Artifact::Worktree { .. }))
+            {
+                // Worktrees need the git engine; the session manager sweeps again once it is in.
+                continue;
+            }
             let leftovers = self.dispose(&owner).await;
             if !leftovers.is_clean() {
                 tracing::warn!(owner, failures = ?leftovers.failures, "cleanup still incomplete");
