@@ -7,8 +7,8 @@ use std::time::Duration;
 use brigadier_core::Core;
 use brigadier_ipc::metrics::{DaemonMetrics, Diagnostics, budgets};
 use brigadier_ipc::protocol::{
-    ClientFrame, ClientInfo, DaemonInfo, ErrorCode, EventEnvelope, IpcError, Outcome, Request,
-    Response, ServerFrame,
+    ClientFrame, ClientInfo, DaemonInfo, ErrorCode, EventEnvelope, IpcError, Outcome, RawJson,
+    Request, Response, ServerFrame,
 };
 use brigadier_ipc::{Connection, Listener, Reader, Token, Writer};
 use brigadier_store::{Store, StoredEvent};
@@ -351,7 +351,7 @@ fn envelope(event: &StoredEvent) -> EventEnvelope {
         stream: event.stream.clone(),
         stream_seq: event.stream_seq,
         at_ms: event.at_ms,
-        event: event.payload.clone(),
+        event: RawJson(event.payload.clone()),
     }
 }
 

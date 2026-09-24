@@ -205,7 +205,29 @@ pub struct EventEnvelope {
     pub at_ms: i64,
     /// The stored payload, passed through without re-encoding.
     #[ts(as = "brigadier_core::DomainEvent")]
-    pub event: Box<RawValue>,
+    pub event: RawJson,
+}
+
+/// Pre-encoded JSON. The daemon sends stored payloads as they are (no re-encoding per
+/// subscriber). Deserializing goes through [`serde_json::Value`], because the frames are
+/// internally tagged enums and serde buffers their content, which a borrowed [`RawValue`]
+/// cannot be read back from.
+#[derive(Debug, Clone)]
+pub struct RawJson(pub Box<RawValue>);
+
+impl Serialize for RawJson {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for RawJson {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        serde_json::value::to_raw_value(&value)
+            .map(RawJson)
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 /// Frames sent by the daemon.
