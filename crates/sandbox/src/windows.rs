@@ -300,6 +300,12 @@ impl Processes for WindowsProcesses {
         Ok(())
     }
 
+    fn kill_group(&self, _pid: u32) -> Result<()> {
+        // Windows process groups only route console control events; nothing can be signalled
+        // through one once its leader is gone. `kill_tree` covers a live process's tree.
+        Ok(())
+    }
+
     fn kill_tree(&self, pid: u32) -> Result<()> {
         let status = Command::new("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])

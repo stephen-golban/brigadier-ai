@@ -88,8 +88,14 @@ pub trait Processes: Send + Sync {
     fn is_alive(&self, pid: u32) -> bool;
     /// Asks a process to exit (SIGTERM on Unix). On Windows this terminates it.
     fn terminate(&self, pid: u32) -> Result<()>;
-    /// Kills a process and every process in its tree / process group.
+    /// Kills a process and everything it started: its process group and, walking the process
+    /// tree, descendants that moved to groups or sessions of their own (CLIs start tool commands
+    /// that way). `pid` must still be the caller's process: not yet reaped, or its start time
+    /// checked.
     fn kill_tree(&self, pid: u32) -> Result<()>;
+    /// Kills what is left in the process group `pid` led, after that process exited and was
+    /// reaped. Never signals `pid` itself, which may belong to another process by now.
+    fn kill_group(&self, pid: u32) -> Result<()>;
     /// Wall-clock start time of a process, in milliseconds since the Unix epoch.
     fn start_time_ms(&self, pid: u32) -> Result<f64>;
 }
