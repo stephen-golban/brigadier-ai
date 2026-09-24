@@ -24,7 +24,7 @@ pub mod parse;
 #[allow(clippy::all, clippy::pedantic, dead_code, unused_imports)]
 pub mod protocol;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -377,7 +377,10 @@ impl Provider for Codex {
     }
 
     fn replayer(&self) -> Box<dyn Replayer> {
-        Box::new(CodexReplayer(Parser::replay()))
+        Box::new(CodexReplayer {
+            parser: Parser::replay(),
+            asked: HashSet::new(),
+        })
     }
 }
 
@@ -614,22 +617,57 @@ fn toml_string(text: &str) -> String {
     quoted
 }
 
-struct CodexReplayer(Parser);
+struct CodexReplayer {
+    parser: Parser,
+    /// Approval requests not answered yet.
+    asked: HashSet<String>,
+}
 
 impl Replayer for CodexReplayer {
     fn feed(&mut self, dir: Direction, line: &str) -> Vec<ProviderEvent> {
-        // Codex reports everything a replay needs in its own output.
         if dir == Direction::In {
-            return Vec::new();
+            // The only thing Brigadier sends that the output does not show is an approval's
+            // answer: a response to Codex's request.
+            let sent: Value = serde_json::from_str(line).unwrap_or_default();
+            let answered = format!("codex-{}", sent["id"]);
+            let result = &sent["result"];
+            if sent.get("method").is_some() || result.is_null() || !self.asked.remove(&answered) {
+                return Vec::new();
+            }
+            let allowed = match result.get("decision") {
+                Some(decision) => decision.as_str().is_some_and(|d| d.starts_with("accept")),
+                None => result["permissions"]
+                    .as_object()
+                    .is_some_and(|permissions| !permissions.is_empty()),
+            };
+            let decision = if allowed {
+                ApprovalDecision::Allow
+            } else {
+                ApprovalDecision::Deny {
+                    message: String::new(),
+                }
+            };
+            return vec![ProviderEvent::ApprovalResolved {
+                id: answered,
+                decision,
+                decided_by: Decider::Recorded,
+            }];
         }
-        self.0
+        let events: Vec<ProviderEvent> = self
+            .parser
             .feed(line)
             .into_iter()
             .filter_map(|output| match output {
                 Output::Event(event) => Some(event),
                 Output::Control(_) => None,
             })
-            .collect()
+            .collect();
+        for event in &events {
+            if let ProviderEvent::ApprovalRequested { request } = event {
+                self.asked.insert(request.id.clone());
+            }
+        }
+        events
     }
 }
 
