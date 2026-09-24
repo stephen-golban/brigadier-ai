@@ -50,6 +50,8 @@ const ORCHESTRATOR_TOOL_TIMEOUT_SECS: u64 = 120;
 const RESEED_MESSAGES: u32 = 40;
 /// Bytes of transcript carried when a conversation's CLI session is started over.
 const RESEED_BYTES: usize = 48_000;
+/// A Chat's text attachments up to this size go into the message itself.
+const CHAT_INLINE_MAX_BYTES: usize = 200_000;
 
 /// Where a sent message went.
 #[derive(Debug, Clone)]
@@ -625,7 +627,8 @@ impl SessionManager {
     }
 
     /// The turn's input: user messages verbatim, then each envelope. Images go along as
-    /// images; other attachments are named so the orchestrator can hand them to workers.
+    /// images. Other attachments are named so the orchestrator can hand them to workers; a
+    /// Chat cannot open files, so it gets text files inline.
     async fn turn_input(
         &self,
         conv: &Arc<ConvLive>,
@@ -637,8 +640,13 @@ impl SessionManager {
         for message in users {
             let mut text = self.full_text(message).await;
             for attachment in &message.attachments {
-                let wanted = conv.kind == ConversationKind::Chat || is_image(&attachment.mime);
-                if wanted && let Some(file) = self.attachment_file(conv, attachment).await {
+                if conv.kind == ConversationKind::Chat && !is_image(&attachment.mime) {
+                    text.push_str(&self.inline_attachment(attachment).await);
+                    continue;
+                }
+                if is_image(&attachment.mime)
+                    && let Some(file) = self.attachment_file(conv, attachment).await
+                {
                     files.push(file);
                 }
                 if conv.kind == ConversationKind::Session {
@@ -685,6 +693,30 @@ impl SessionManager {
                 .await
                 .unwrap_or_else(|_| message.text.clone()),
             None => message.text.clone(),
+        }
+    }
+
+    /// A Chat's non-image attachment as text in the message: the file itself when it is text
+    /// of a sensible size, otherwise a note saying it could not be read.
+    async fn inline_attachment(&self, attachment: &AttachmentRef) -> String {
+        let bytes = match attachment.id.parse::<brigadier_store::BlobHash>() {
+            Ok(hash) => self.core.store().blobs().get(hash).await.ok().flatten(),
+            Err(_) => None,
+        };
+        match bytes.map(String::from_utf8) {
+            Some(Ok(content)) if content.len() <= CHAT_INLINE_MAX_BYTES => format!(
+                "\n\n[attached file \"{}\" ({})]\n{content}\n[end of \"{}\"]",
+                attachment.name, attachment.mime, attachment.name
+            ),
+            Some(Ok(_)) => format!(
+                "\n\n[attached file \"{}\" is larger than {} kB, too large to include here]",
+                attachment.name,
+                CHAT_INLINE_MAX_BYTES / 1_000
+            ),
+            _ => format!(
+                "\n\n[attached file \"{}\" ({}) is not text and cannot be read in a Chat]",
+                attachment.name, attachment.mime
+            ),
         }
     }
 
