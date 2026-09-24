@@ -36,6 +36,15 @@ const HEALTHY_CONNECTION: Duration = Duration::from_secs(5);
 
 type Reply = oneshot::Sender<Result<Response, IpcError>>;
 
+/// Where the connection task is. Quitting waits out an attempt in flight, since that attempt
+/// may just have launched a daemon.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Link {
+    Down,
+    Connecting,
+    Up,
+}
+
 struct Outgoing {
     request: Request,
     reply: Option<Reply>,
@@ -53,7 +62,7 @@ struct Inner {
     ui: Mutex<Option<Channel<BridgeEvent>>>,
     /// Latest connection state, replayed to a webview that subscribes late or reloads.
     status: Mutex<Option<BridgeEvent>>,
-    connected: watch::Sender<bool>,
+    link: watch::Sender<Link>,
     metrics_wanted: AtomicBool,
     /// Highest event `seq` forwarded to the webview; the resubscribe cursor.
     last_seq: AtomicI64,
@@ -71,7 +80,7 @@ impl Bridge {
                 requests,
                 ui: Mutex::new(None),
                 status: Mutex::new(None),
-                connected: watch::channel(false).0,
+                link: watch::channel(Link::Down).0,
                 metrics_wanted: AtomicBool::new(false),
                 last_seq: AtomicI64::new(-1),
                 stopping: AtomicBool::new(false),
@@ -127,14 +136,21 @@ impl Bridge {
     }
 
     /// Asks the daemon to drain and exit, waiting for its acknowledgement, and stops
-    /// reconnecting. Returns false if the daemon could not be reached.
+    /// reconnecting. A connection attempt in flight is waited for within `timeout`, so a daemon
+    /// it launched is stopped too. Returns false if the daemon could not be reached.
     pub async fn shutdown_daemon(&self, timeout: Duration) -> bool {
         self.inner.stopping.store(true, Ordering::Release);
-        if !*self.inner.connected.borrow() {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut link = self.inner.link.subscribe();
+        let up = matches!(
+            tokio::time::timeout_at(deadline, link.wait_for(|link| *link != Link::Connecting)).await,
+            Ok(Ok(link)) if *link == Link::Up
+        );
+        if !up {
             return false;
         }
         matches!(
-            tokio::time::timeout(timeout, self.request(Request::Shutdown)).await,
+            tokio::time::timeout_at(deadline, self.request(Request::Shutdown)).await,
             Ok(Ok(Response::Shutdown))
         )
     }
@@ -142,7 +158,11 @@ impl Bridge {
     async fn run(&self, mut queue: mpsc::Receiver<Outgoing>) {
         let mut backoff = MIN_BACKOFF;
         loop {
+            // Announced before checking `stopping`: a quit either sees this attempt and waits
+            // for it, or this check sees the quit.
+            self.inner.link.send_replace(Link::Connecting);
             if self.inner.stopping.load(Ordering::Acquire) {
+                self.inner.link.send_replace(Link::Down);
                 return;
             }
             match self.connect().await {
@@ -159,10 +179,10 @@ impl Bridge {
                         daemon,
                         last_seq: cursor,
                     });
-                    self.inner.connected.send_replace(true);
+                    self.inner.link.send_replace(Link::Up);
                     let connected_at = tokio::time::Instant::now();
                     let reason = self.serve(connection, cursor, &mut queue).await;
-                    self.inner.connected.send_replace(false);
+                    self.inner.link.send_replace(Link::Down);
                     tracing::warn!(reason = %reason, "disconnected from brigadierd");
                     if self.inner.stopping.load(Ordering::Acquire) {
                         return;
@@ -178,6 +198,7 @@ impl Bridge {
                     }
                 }
                 Err(reason) => {
+                    self.inner.link.send_replace(Link::Down);
                     tracing::warn!(reason = %reason, "cannot reach brigadierd");
                     self.emit(BridgeEvent::Disconnected { reason });
                     tokio::time::sleep(backoff).await;
