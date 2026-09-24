@@ -1139,6 +1139,14 @@ impl Ledger for RuntimeLedger {
                 .map_err(|err| brigadier_providers::Error::Ledger(err.to_string()))
         })
     }
+
+    fn holds(&self, artifact: &Artifact) -> bool {
+        self.runtime
+            .state()
+            .ledger
+            .values()
+            .any(|artifacts| artifacts.contains(artifact))
+    }
 }
 
 fn spec_for(session: &RawSession, origin: Origin, record_to: Option<PathBuf>) -> SessionSpec {

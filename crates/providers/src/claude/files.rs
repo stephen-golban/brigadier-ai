@@ -37,18 +37,12 @@ pub(super) fn project_dir(config: &Path, cwd: &Path) -> PathBuf {
     config.join("projects").join(encoded)
 }
 
-/// Claude Code's write-staging directory under `cwd`, or its `.claude` parent, whichever the
-/// session would create. `None` when both already exist.
-pub(super) fn new_staging_dir(cwd: &Path) -> Option<PathBuf> {
+/// The directories Claude Code creates under `cwd` to stage writes, outermost first:
+/// `.claude`, then `.claude/.cc-writes`.
+pub(super) fn staging_dirs(cwd: &Path) -> [PathBuf; 2] {
     let claude = cwd.join(".claude");
     let staging = claude.join(STAGING_DIR);
-    if !claude.exists() {
-        Some(claude)
-    } else if !staging.exists() {
-        Some(staging)
-    } else {
-        None
-    }
+    [claude, staging]
 }
 
 pub(super) fn remove(config: &Path, artifacts: &[Artifact]) -> Result<()> {
