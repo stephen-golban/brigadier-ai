@@ -55,6 +55,21 @@ impl CliEnv {
         which::which_in(provider.binary(), Some(path), cwd).ok()
     }
 
+    /// Absolute path of any program on the login PATH.
+    pub fn which(&self, program: &str) -> Option<PathBuf> {
+        let path = self.vars.get(OsStr::new("PATH"))?;
+        let cwd = self.home().unwrap_or_else(|| PathBuf::from("/"));
+        which::which_in(program, Some(path), cwd).ok()
+    }
+
+    /// Every variable, for running other tools (git) with exactly this environment.
+    pub fn vars(&self) -> Vec<(OsString, OsString)> {
+        self.vars
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect()
+    }
+
     pub fn home(&self) -> Option<PathBuf> {
         self.vars
             .get(OsStr::new("HOME"))

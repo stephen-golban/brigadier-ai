@@ -8,7 +8,9 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+brigadier-git.workspace = true
 brigadier-providers.workspace = true
+brigadier-router.workspace = true
 brigadier-sandbox.workspace = true
 brigadier-store.workspace = true
 schemars.workspace = true

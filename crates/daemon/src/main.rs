@@ -34,7 +34,7 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use brigadier_core::Core;
-use brigadier_core::manager::SessionManager;
+use brigadier_core::manager::{ManagerConfig, SessionManager};
 use brigadier_core::runtime::{Runtime, Spawner};
 use brigadier_ipc::protocol::{DaemonInfo, PROTOCOL_VERSION};
 use brigadier_ipc::{Listener, Token};
@@ -220,10 +220,14 @@ async fn run(
         })
     };
     // Also sweeps what a crashed daemon left behind, before any client can start sessions.
-    let providers = Runtime::start(core.clone(), platform.clone(), spawner)
+    let providers = Runtime::start(core.clone(), platform.clone(), spawner.clone())
         .await
         .context("starting the provider runtime")?;
-    let sessions = SessionManager::start(core.clone(), providers.clone())
+    let manager_config = ManagerConfig {
+        daemon_exe: std::env::current_exe().context("locating brigadierd")?,
+        gate_dir: Some(platform.paths().data_dir.join("gate").join("bin")),
+    };
+    let sessions = SessionManager::start(core.clone(), providers.clone(), spawner, manager_config)
         .await
         .context("starting the session manager")?;
     let metrics = Metrics::start(supervisor.clone(), store.clone(), platform.clone());
@@ -263,12 +267,14 @@ async fn run(
         state = store.writer_stopped() => {
             tracing::error!(state = ?state, "store writer stopped; exiting");
             stopping.cancel();
+            daemon.sessions.shutdown().await;
             providers.shutdown().await;
             return Ok(ExitCode::from(EXIT_FATAL));
         }
         Some(reason) = fatal.recv() => {
             tracing::error!(reason = %reason, "critical task failed; exiting");
             stopping.cancel();
+            daemon.sessions.shutdown().await;
             providers.shutdown().await;
             return Ok(ExitCode::from(EXIT_FATAL));
         }
@@ -278,7 +284,9 @@ async fn run(
     // 1. Stop accepting connections; critical tasks may now end without being fatal.
     stopping.cancel();
     // 2. Stop admitting provider work, end every CLI session (bounded, whole process groups)
-    //    and store their last events.
+    //    and store their last events. Sessions, Chats and workers first: they are hosted by
+    //    the provider runtime.
+    daemon.sessions.shutdown().await;
     providers.shutdown().await;
     // 3. Stop admitting writes and commit everything already queued.
     let drained = store.shutdown().await;
