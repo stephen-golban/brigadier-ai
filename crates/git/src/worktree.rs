@@ -334,6 +334,48 @@ impl Worktree {
         Ok(Some(commit))
     }
 
+    /// Kept work must not carry the user's uncommitted changes the worker started from: replace
+    /// the branch's commits since `snapshot` with one commit of the same changes on the
+    /// snapshot's parent (the user's HEAD). Returns the new tip, or the conflicting paths when
+    /// the work overlaps the uncommitted changes (the branch is then left as it is).
+    pub fn drop_snapshot(
+        &self,
+        snapshot: &Oid,
+        message: &str,
+    ) -> Result<std::result::Result<Oid, Vec<String>>> {
+        valid_oid(snapshot)?;
+        self.ensure_idle()?;
+        let branch = self
+            .repo
+            .symbolic_head()?
+            .ok_or_else(|| Error::Invalid("kept work needs a branch".into()))?;
+        let head = self.head()?;
+        let parent = self.repo.resolve(&format!("{}^", snapshot.0))?;
+        let tree = parse::oid(&self.repo.cmd(
+            &["rev-parse", "--verify", &format!("{}^{{tree}}", head.0)],
+            true,
+        )?)?;
+        match self.repo.replay_tree(snapshot, &parent, &tree)? {
+            TreeMerge::Conflicts(paths) => Ok(Err(paths)),
+            TreeMerge::Ready(tree) => {
+                let commit = self.repo.commit_tree(&tree, &[&parent], message, false)?;
+                let name = format!("refs/heads/{branch}");
+                self.repo.cmd(
+                    &[
+                        "update-ref",
+                        "-m",
+                        "Brigadier kept work without the uncommitted snapshot",
+                        &name,
+                        &commit.0,
+                        &head.0,
+                    ],
+                    false,
+                )?;
+                Ok(Ok(commit))
+            }
+        }
+    }
+
     /// Full final-content patch against base, including non-ignored untracked files.
     pub fn diff_from(&self, base: &Oid) -> Result<String> {
         valid_oid(base)?;

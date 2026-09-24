@@ -276,6 +276,7 @@ impl SessionManager {
                         // Later work of this worker is relative to the candidate's parent.
                         if let Some(workspace) = t.workspace.as_mut() {
                             workspace.base = Some(onto.0.clone());
+                            workspace.on_snapshot = false;
                         }
                     })
                     .await?;
@@ -622,6 +623,7 @@ impl SessionManager {
                                     }
                                     if let Some(w) = t.workspace.as_mut() {
                                         w.base = Some(actual.0.clone());
+                                        w.on_snapshot = false;
                                     }
                                 })
                                 .await?;
