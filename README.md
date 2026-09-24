@@ -65,7 +65,28 @@ BRIGADIER_DATA_DIR=$(mktemp -d) target/release/bundle/macos/Brigadier.app/Conten
 
 It prints a JSON report (also written to `BRIGADIER_SMOKE_REPORT` if set) and exits non-zero if
 a budget for an implemented feature is missed. `BRIGADIER_BUDGET_TOLERANCE` multiplies timing
-budgets only; CI uses 3 on shared runners, locally it is 1.
+budgets only; CI uses 3 on shared runners, locally it is 1. The cold-start note breaks the time
+down into milestones (ms since process start: webview, script, connected, catalog, paint), and
+the frame-gap note says when the longest gap fell and which event flush cost the most.
+
+In CI, after one warm-up launch that is never judged, the app is launched three times, each with
+a fresh data directory, and `apps/desktop/scripts/judge-smoke.mjs` judges them:
+
+- cold start by the **median** of the three, against the same limit (1 s × tolerance);
+- every other check on the first launch, exactly as the app judged it.
+
+All three reports, with their milestones, are printed in the log and kept in the combined
+report artifact. This is because, on shared runners, most of a cold start passes before the page
+even loads, while the platform creates the window and webview. That part swings by seconds
+between identical launches, for example on the same code:
+
+| Launch | webview | script | connected | catalog | paint (cold start) |
+|---|---|---|---|---|---|
+| macOS runner | 2299 | 2630 | 2661 | 2846 | 2909 |
+| Windows runner | 3191 | 3329 | 3353 | 3590 | 3599 |
+| Local Mac | 234 | 307 | 312 | 341 | 349 |
+
+On Windows the same shell code measured anywhere from 1080 ms to 3599 ms across runs.
 
 ## Providers
 
