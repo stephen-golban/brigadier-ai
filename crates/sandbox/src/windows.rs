@@ -319,6 +319,17 @@ impl Processes for WindowsProcesses {
         }
     }
 
+    fn descendants(&self, _pid: u32) -> Result<Vec<u32>> {
+        // Walking the tree needs a Toolhelp snapshot; this arrives with the Windows platform
+        // phase. `kill_tree` (`taskkill /T`) still ends a live CLI's whole tree.
+        unsupported("listing a process's descendants", NAME)
+    }
+
+    fn group_of(&self, _pid: u32) -> Option<u32> {
+        // Windows has no process groups to signal (see `kill_group`).
+        None
+    }
+
     fn in_dir(&self, _dir: &std::path::Path) -> Result<Vec<u32>> {
         // Reading another process's working directory needs its PEB; this arrives with the
         // Windows platform phase. `kill_tree` still ends a CLI's whole tree.

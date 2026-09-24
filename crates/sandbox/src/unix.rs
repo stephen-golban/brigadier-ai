@@ -121,6 +121,27 @@ pub(crate) fn kill_tree(pid: u32, children: impl Fn(u32) -> Vec<u32>) -> Result<
     }
 }
 
+/// Everything below `pid` in the tree `children` describes, parents before children.
+pub(crate) fn descendants(pid: u32, children: impl Fn(u32) -> Vec<u32>) -> Vec<u32> {
+    let mut tree = vec![pid];
+    let mut next = 0;
+    while let Some(&parent) = tree.get(next) {
+        next += 1;
+        for child in children(parent) {
+            if !tree.contains(&child) {
+                tree.push(child);
+            }
+        }
+    }
+    tree.remove(0);
+    tree
+}
+
+pub(crate) fn group_of(pid: u32) -> Option<u32> {
+    let group = nix::unistd::getpgid(Some(to_pid(pid)?)).ok()?;
+    u32::try_from(group.as_raw()).ok()
+}
+
 pub(crate) fn kill_group(pid: u32) -> Result<()> {
     let group = to_pid(pid).ok_or_else(invalid_pid)?;
     match signal::killpg(group, Signal::SIGKILL) {
