@@ -63,6 +63,7 @@ export async function loadCatalog(): Promise<void> {
  */
 export async function loadConversation(id: string): Promise<void> {
   updateThread(id, (thread) => ({ ...thread, loading: true }));
+  const before = useApp.getState().conversations[id];
   try {
     const { view } = await request({ method: "getConversation", id, limit: PAGE });
     const page = view.messages;
@@ -78,9 +79,14 @@ export async function loadConversation(id: string): Promise<void> {
       hasMore: page.hasMore,
       loading: false,
     }));
-    useApp.setState((state) => ({
-      conversations: { ...state.conversations, [id]: view.conversation },
-    }));
+    // A copy live events changed while the view was read is newer (a new conversation is
+    // renamed by its first message); whatever else the view holds arrives as events too.
+    useApp.setState((state) => {
+      const live = state.conversations[id];
+      return live && live !== before
+        ? state
+        : { conversations: { ...state.conversations, [id]: view.conversation } };
+    });
     useBoard.setState((state) =>
       state.board?.conversationId === id
         ? { board: boardFromView(view, state.board) }
