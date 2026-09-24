@@ -93,10 +93,46 @@ function byId<T extends { id: string }>(items: readonly T[]): Record<string, T> 
   return Object.fromEntries(items.map((item) => [item.id, item]));
 }
 
-/** Replaces the board's snapshot with a fresh read, keeping opened transcripts. */
-export function boardFromView(view: ConversationView, previous: Board | null): Board {
+/**
+ * Board events that replace an object outright, so applying one again is harmless. A view is
+ * read at an unknown point in the event stream, so these are re-applied on top of it.
+ */
+const REPLAYED = new Set<EventEnvelope["event"]["type"]>([
+  "taskUpdated",
+  "approvalUpdated",
+  "questionUpdated",
+  "planUpdated",
+  "queueChanged",
+  "runStateChanged",
+]);
+
+/** Conversation view reads in flight, each collecting the board events that arrive meanwhile. */
+const viewLoads = new Set<{ conversationId: string; events: EventEnvelope[] }>();
+
+/**
+ * Starts collecting a conversation's board events while its view is read. The returned
+ * function stops collecting and returns them, to pass to `boardFromView`.
+ */
+export function collectBoardEvents(conversationId: string): () => EventEnvelope[] {
+  const load = { conversationId, events: [] as EventEnvelope[] };
+  viewLoads.add(load);
+  return () => {
+    viewLoads.delete(load);
+    return load.events;
+  };
+}
+
+/**
+ * Replaces the board's snapshot with a fresh read, keeping opened transcripts. Events that
+ * arrived while it was read are applied again, since the read may predate them.
+ */
+export function boardFromView(
+  view: ConversationView,
+  previous: Board | null,
+  arrived: readonly EventEnvelope[],
+): Board {
   const keep = previous?.conversationId === view.conversation.id ? previous : null;
-  return {
+  const board: Board = {
     conversationId: view.conversation.id,
     loaded: true,
     tasks: byId(view.tasks),
@@ -111,6 +147,7 @@ export function boardFromView(view: ConversationView, previous: Board | null): B
     activity: keep?.activity ?? {},
     transcripts: keep?.transcripts ?? {},
   };
+  return arrived.reduce(applyToBoard, board);
 }
 
 /** A few words on what a worker event shows it doing, or `undefined` to keep the last one. */
@@ -259,6 +296,14 @@ function applyToLog(log: OrchestratorLog, envelope: EventEnvelope): Orchestrator
  * log, in one update. Everything else is ignored here: other conversations have no board.
  */
 export function applyBoardEvents(envelopes: readonly EventEnvelope[]): void {
+  for (const load of viewLoads) {
+    const stream = `conversation:${load.conversationId}`;
+    for (const envelope of envelopes) {
+      if (envelope.stream === stream && REPLAYED.has(envelope.event.type)) {
+        load.events.push(envelope);
+      }
+    }
+  }
   const { board, orchestrator } = useBoard.getState();
   if (!board && !orchestrator) return;
   const conversationStream = board ? `conversation:${board.conversationId}` : null;
