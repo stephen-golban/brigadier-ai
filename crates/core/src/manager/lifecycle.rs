@@ -39,9 +39,24 @@ impl SessionManager {
                 Box::pin(async move {
                     tokio::task::spawn_blocking(move || {
                         match git.open(&repo) {
-                            Ok(repo) => repo
-                                .remove_worktree(&path, true)
-                                .map_err(|err| err.to_string()),
+                            Ok(repo) => {
+                                let same = |a: &std::path::Path| {
+                                    a == path || a.canonicalize().ok() == path.canonicalize().ok()
+                                };
+                                let registered = repo
+                                    .worktrees()
+                                    .map_err(|err| err.to_string())?
+                                    .iter()
+                                    .any(|w| same(&w.path));
+                                if registered || !path.exists() || same(repo.root()) {
+                                    repo.remove_worktree(&path, true)
+                                        .map_err(|err| err.to_string())
+                                } else {
+                                    // Git already let go of it (a removal that failed halfway);
+                                    // what is left is the folder Brigadier created and recorded.
+                                    std::fs::remove_dir_all(&path).map_err(|err| err.to_string())
+                                }
+                            }
                             // The repository itself is gone: only the folder is left to remove.
                             Err(_) if !path.exists() => Ok(()),
                             Err(_) => std::fs::remove_dir_all(&path).map_err(|err| err.to_string()),
