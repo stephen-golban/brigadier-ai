@@ -5,6 +5,7 @@
 //! every change as a [`DomainEvent`].
 
 mod board;
+pub mod ledger;
 pub mod model;
 mod projection;
 pub mod runtime;

@@ -627,14 +627,25 @@ pub enum DomainEvent {
         session_id: RawSessionId,
         event: ProviderEvent,
     },
-    /// An artifact a CLI session created, recorded before it is relied on.
+    /// An artifact a CLI session created, recorded before it is relied on. Owners are raw
+    /// session ids, or `orch:`, `chat:`, `task:` and `session:` followed by an id.
     CleanupRecorded {
-        owner: RawSessionId,
+        owner: String,
         artifact: Artifact,
     },
-    /// Every artifact recorded for `owner` was removed (except the listed failures).
+    /// These artifacts of `owner` are gone.
+    CleanupRemoved {
+        owner: String,
+        artifacts: Vec<Artifact>,
+    },
+    /// Everything `owner` created is to be removed; what fails is retried at the next launch.
+    CleanupRequested {
+        owner: String,
+    },
+    /// Written before artifacts were acknowledged one by one: every artifact of `owner` was
+    /// dealt with.
     CleanupCompleted {
-        owner: RawSessionId,
+        owner: String,
         failures: Vec<String>,
     },
     ProviderChecked {
@@ -719,6 +730,8 @@ impl DomainEvent {
             Self::RawSessionUpdated { .. } => "raw.updated",
             Self::RawEvent { .. } => "raw.event",
             Self::CleanupRecorded { .. } => "cleanup.recorded",
+            Self::CleanupRemoved { .. } => "cleanup.removed",
+            Self::CleanupRequested { .. } => "cleanup.requested",
             Self::CleanupCompleted { .. } => "cleanup.completed",
             Self::ProviderChecked { .. } => "provider.checked",
             Self::ProjectUpdated { .. } => "project.updated",

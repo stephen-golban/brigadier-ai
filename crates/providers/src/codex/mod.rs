@@ -52,6 +52,10 @@ const START_TIMEOUT: Duration = Duration::from_secs(60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const EXIT_GRACE: Duration = Duration::from_secs(3);
 
+/// Built-ins switched off for sessions that must not act on their own (the orchestrator, a
+/// Chat): viewing local images, generating images and Codex's own sub-agents.
+const RESTRICTED_FEATURES: &[&str] = &["view_image", "image_generation", "multi_agent"];
+
 /// Features that bring the user's personal Codex setup (or desktop integrations) into a
 /// session.
 const DISABLED_FEATURES: &[&str] = &[
@@ -98,16 +102,26 @@ impl Codex {
     async fn app_server(
         &self,
         cwd: &Path,
+        session: Option<&SessionSpec>,
         recorder: Option<Arc<Recorder>>,
     ) -> Result<(Arc<Rpc>, mpsc::Receiver<String>)> {
         let mut spec = self.env.spec(self.binary()?);
         let mut args: Vec<String> = vec!["app-server".into()];
-        for feature in DISABLED_FEATURES {
+        let tools = session.map(|session| session.tools).unwrap_or_default();
+        let role_features: &[&str] = match tools {
+            ToolSet::Default => &[],
+            ToolSet::None | ToolSet::Web => RESTRICTED_FEATURES,
+        };
+        for feature in DISABLED_FEATURES.iter().chain(role_features) {
             args.push("--disable".into());
             args.push((*feature).into());
         }
         args.push("-c".into());
         args.push("notify=[]".into());
+        // Commands run in a plain (non-login) shell. A login shell, and the login environment
+        // Codex snapshots from one, would rebuild PATH and drop the command gate's shims.
+        args.push("-c".into());
+        args.push("allow_login_shell=false".into());
         args.push("-c".into());
         args.push(format!(
             "projects.{}.trust_level=\"trusted\"",
@@ -115,6 +129,9 @@ impl Codex {
         ));
         spec.args = args.into_iter().map(Into::into).collect();
         spec.cwd = Some(cwd.to_owned());
+        if let Some(session) = session {
+            crate::cli::apply_session_env(&mut spec, &session.env, &session.path_prepend);
+        }
         let process::Spawned { process, stdout } =
             process::spawn(self.platform.clone(), &spec, recorder)?;
         Ok((Arc::new(Rpc::new(process)), stdout))
@@ -123,7 +140,7 @@ impl Codex {
     /// Runs `work` against a throwaway app-server, then shuts it down.
     async fn control<T>(&self, work: impl AsyncFnOnce(&Rpc) -> Result<T>) -> Result<T> {
         let cwd = self.platform.paths().data_dir.clone();
-        let (rpc, stdout) = self.app_server(&cwd, None).await?;
+        let (rpc, stdout) = self.app_server(&cwd, None, None).await?;
         let reader = tokio::spawn(control_reader(rpc.clone(), stdout));
         let result = async {
             rpc.initialize().await?;
@@ -254,6 +271,16 @@ impl Provider for Codex {
 
     fn start(&self, spec: SessionSpec, ledger: Arc<dyn Ledger>) -> BoxFuture<'_, Result<Started>> {
         Box::pin(async move {
+            if let Access::Scoped {
+                write_cwd: false, ..
+            } = spec.access
+            {
+                return Err(Error::Invalid(
+                    "Codex cannot keep its working directory read-only in a workspace sandbox; \
+                     start a read-only Codex worker in its scratch folder"
+                        .into(),
+                ));
+            }
             let cwd = spec.cwd.canonicalize().map_err(|err| {
                 Error::Invalid(format!("working directory {}: {err}", spec.cwd.display()))
             })?;
@@ -271,7 +298,7 @@ impl Provider for Codex {
                 )?)),
                 None => None,
             };
-            let (rpc, stdout) = self.app_server(&cwd, recorder).await?;
+            let (rpc, stdout) = self.app_server(&cwd, Some(&spec), recorder).await?;
             ledger
                 .record(Artifact::Process {
                     pid: rpc.process.pid(),
@@ -527,16 +554,50 @@ async fn thread_config(rpc: &Rpc, spec: &SessionSpec, cwd: &Path) -> Result<Map<
                 .collect()
         })
         .unwrap_or_default();
-    servers.extend(spec.mcp_servers.clone());
+    for server in &spec.mcp_servers {
+        let env: Map<String, Value> = server
+            .env
+            .iter()
+            .map(|(name, value)| (name.clone(), Value::String(value.clone())))
+            .collect();
+        let mut config = json!({
+            "command": server.command.display().to_string(),
+            "args": server.args,
+            "env": env,
+        });
+        if let Some(secs) = server.tool_timeout_secs {
+            config["tool_timeout_sec"] = json!(secs);
+        }
+        if server.trusted {
+            config["default_tools_approval_mode"] = json!("approve");
+        }
+        servers.insert(server.name.clone(), config);
+    }
 
     let mut config = Map::new();
     config.insert("mcp_servers".into(), Value::Object(servers));
-    if let Access::Workspace { extra_roots } = &spec.access {
+    match spec.tools {
+        ToolSet::Default => {}
+        ToolSet::None => {
+            config.insert("web_search".into(), json!("disabled"));
+        }
+        ToolSet::Web => {
+            config.insert("web_search".into(), json!("live"));
+        }
+    }
+    let network = match &spec.access {
+        Access::Workspace { .. } => Some(true),
+        Access::Scoped { network, .. } => Some(*network),
+        Access::ReadOnly | Access::Full => None,
+    };
+    if let Some(network) = network {
         config.insert(
             "sandbox_workspace_write".into(),
             json!({
-                "network_access": true,
-                "writable_roots": extra_roots
+                "network_access": network,
+                "writable_roots": spec
+                    .access
+                    .writable_roots()
                     .iter()
                     .map(|root| root.display().to_string())
                     .collect::<Vec<_>>(),
@@ -549,13 +610,15 @@ async fn thread_config(rpc: &Rpc, spec: &SessionSpec, cwd: &Path) -> Result<Map<
 fn approval_policy(access: &Access) -> p::AskForApproval {
     match access {
         Access::ReadOnly => p::AskForApproval::Untrusted,
-        Access::Workspace { .. } | Access::Full => p::AskForApproval::OnRequest,
+        Access::Workspace { .. } | Access::Full | Access::Scoped { .. } => {
+            p::AskForApproval::OnRequest
+        }
     }
 }
 
 fn sandbox_mode(access: &Access) -> p::SandboxMode {
     match access {
-        Access::Workspace { .. } => p::SandboxMode::WorkspaceWrite,
+        Access::Workspace { .. } | Access::Scoped { .. } => p::SandboxMode::WorkspaceWrite,
         Access::ReadOnly => p::SandboxMode::ReadOnly,
         Access::Full => p::SandboxMode::DangerFullAccess,
     }
@@ -568,6 +631,19 @@ fn sandbox_policy(access: &Access) -> p::SandboxPolicy {
             exclude_tmpdir_env_var: false,
             network_access: true,
             writable_roots: extra_roots
+                .iter()
+                .map(|root| p::AbsolutePathBuf(root.display().to_string()))
+                .collect(),
+        },
+        Access::Scoped {
+            writable_roots,
+            network,
+            ..
+        } => p::SandboxPolicy::WorkspaceWrite {
+            exclude_slash_tmp: false,
+            exclude_tmpdir_env_var: false,
+            network_access: *network,
+            writable_roots: writable_roots
                 .iter()
                 .map(|root| p::AbsolutePathBuf(root.display().to_string()))
                 .collect(),

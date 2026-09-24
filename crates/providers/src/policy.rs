@@ -127,6 +127,32 @@ pub fn route(request: &ApprovalRequest, access: &Access, mode: ApprovalMode) -> 
     match access {
         Access::ReadOnly => Route::AskUser,
         Access::Workspace { .. } | Access::Full => Route::Allow,
+        // The OS sandbox confines commands; file tools outside it may only write where the
+        // sandbox would let a command write.
+        Access::Scoped {
+            write_cwd,
+            writable_roots,
+            ..
+        } => {
+            if request.kind != ApprovalKind::FileChange {
+                return Route::Allow;
+            }
+            let cwd = request.cwd.as_deref().map(std::path::Path::new);
+            let writable = |path: &std::path::Path| {
+                writable_roots.iter().any(|root| path.starts_with(root))
+                    || (*write_cwd && cwd.is_some_and(|cwd| path.starts_with(cwd)))
+            };
+            if !request.paths.is_empty()
+                && request
+                    .paths
+                    .iter()
+                    .all(|path| writable(std::path::Path::new(path)))
+            {
+                Route::Allow
+            } else {
+                Route::AskUser
+            }
+        }
     }
 }
 

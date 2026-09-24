@@ -96,6 +96,8 @@ impl Projection {
             | DomainEvent::RawSessionUpdated { .. }
             | DomainEvent::RawEvent { .. }
             | DomainEvent::CleanupRecorded { .. }
+            | DomainEvent::CleanupRemoved { .. }
+            | DomainEvent::CleanupRequested { .. }
             | DomainEvent::CleanupCompleted { .. }
             | DomainEvent::ProviderChecked { .. }
             | DomainEvent::Probe { .. } => {}
