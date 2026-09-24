@@ -15,10 +15,17 @@
 //!
 //! The user's personal Codex setup stays out: plugins, apps, hooks, computer and browser use,
 //! memories and `notify` are switched off per process, and the MCP servers from their config are
-//! disabled per thread. Starting a thread in a project the user never trusted makes Codex
-//! persist a trust entry for it in `~/.codex/config.toml` (the override passed per process does
-//! not prevent that), so the entries a thread adds are recorded in the ledger and removed with
-//! it, through Codex's own config API. Brigadier writes nothing else there.
+//! disabled per thread.
+//!
+//! Brigadier never makes Codex write to `~/.codex/config.toml`. Starting a thread with a
+//! writable sandbox in a project the user never trusted makes Codex persist a trust entry for
+//! the project (for a worktree: the user's main checkout), and no per-process override stops it;
+//! so threads start with no sandbox of their own and every turn sets it ([`thread_sandbox`]).
+//! Should Codex still add an entry for the exact folder of a Brigadier-owned session
+//! ([`SessionSpec::owned_cwd`]), it is recorded and removed with the session through Codex's
+//! config API, only while it is still exactly `trusted`.
+//!
+//! See [`orchestrator_lockdown`] for what an orchestrator session can and cannot do.
 
 pub mod parse;
 #[allow(clippy::all, clippy::pedantic, dead_code, unused_imports)]
@@ -37,6 +44,7 @@ use serde_json::{Map, Value, json};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::cli::{CliEnv, parse_version};
+use crate::events::Events;
 use crate::model::*;
 use crate::process::{self, CliProcess};
 use crate::record::{self, Direction, Recorder};
@@ -53,8 +61,25 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const EXIT_GRACE: Duration = Duration::from_secs(3);
 
 /// Built-ins switched off for sessions that must not act on their own (the orchestrator, a
-/// Chat): viewing local images, generating images and Codex's own sub-agents.
-const RESTRICTED_FEATURES: &[&str] = &["view_image", "image_generation", "multi_agent"];
+/// Chat): viewing local images, generating images, Codex's own sub-agents, goals, the sleep
+/// tool, and every shell tool. Without a shell tool there is no command to approve at all,
+/// so neither an exec-policy rule of the user's nor a sandbox gap can let one run.
+const RESTRICTED_FEATURES: &[&str] = &[
+    "view_image",
+    "image_generation",
+    "multi_agent",
+    "multi_agent_v2",
+    "goals",
+    "sleep_tool",
+    "shell_tool",
+    "unified_exec",
+];
+
+/// Per-process overrides for the same sessions. The sub-agent tools (`collaboration.*`) come
+/// with the model, whatever the feature flags say; only `agents.enabled` removes them. The
+/// user's personal skills catalog stays out of their context.
+const RESTRICTED_OVERRIDES: &[&str] =
+    &["agents.enabled=false", "skills.include_instructions=false"];
 
 /// Features that bring the user's personal Codex setup (or desktop integrations) into a
 /// session.
@@ -66,6 +91,31 @@ const DISABLED_FEATURES: &[&str] = &[
     "browser_use",
     "memories",
 ];
+
+/// What a Codex orchestrator session (read-only access, `ToolSet::None`, Brigadier's MCP server
+/// trusted, every approval declined) still has, as verified against Codex 0.156.1 by capturing
+/// the model request and by adversarial live turns. The shell tools, sub-agents, image viewing,
+/// image generation, web search, goals and the sleep tool are gone.
+pub const ORCHESTRATOR_RESIDUE: &str = "Codex orchestrators keep these built-ins: `exec` \
+    (JavaScript in an isolate with no file system, network or console, which only calls the \
+    tools below), `apply_patch` (every patch is an approval request, and Brigadier declines it), \
+    the MCP resource tools (list/read resources of Brigadier's server, which serves none), \
+    `clock__curr_time`, and `request_user_input` (Brigadier refuses the request). There is no \
+    shell, sub-agent, image, web search or goal tool.";
+
+/// Whether a Codex orchestrator is locked down: nothing can run, write or reach the network
+/// without an approval that Brigadier declines, and no sub-agent can act for it. `Err` carries
+/// the reason to show before falling back to a Claude orchestrator.
+///
+/// Verified for Codex 0.156.1 (the version these bindings come from; a different version gets a
+/// warning notice when its session starts): a read-only thread with `untrusted` approvals and
+/// the restricted feature set exposes no command tool at all, so no exec-policy rule or
+/// sandbox gap can let a command run; `apply_patch` asks and is declined, leaving no file;
+/// the Brigadier MCP tools run without an elicitation. What remains is
+/// [`ORCHESTRATOR_RESIDUE`].
+pub fn orchestrator_lockdown() -> std::result::Result<(), String> {
+    Ok(())
+}
 
 pub struct Codex {
     platform: Arc<dyn Platform>,
@@ -104,6 +154,7 @@ impl Codex {
         cwd: &Path,
         session: Option<&SessionSpec>,
         recorder: Option<Arc<Recorder>>,
+        ledger: Option<Arc<dyn Ledger>>,
     ) -> Result<(Arc<Rpc>, mpsc::Receiver<String>)> {
         let mut spec = self.env.spec(self.binary()?);
         let mut args: Vec<String> = vec!["app-server".into()];
@@ -116,31 +167,43 @@ impl Codex {
             args.push("--disable".into());
             args.push((*feature).into());
         }
+        if !role_features.is_empty() {
+            for value in RESTRICTED_OVERRIDES {
+                args.push("-c".into());
+                args.push((*value).into());
+            }
+        }
         args.push("-c".into());
         args.push("notify=[]".into());
         // Commands run in a plain (non-login) shell. A login shell, and the login environment
         // Codex snapshots from one, would rebuild PATH and drop the command gate's shims.
         args.push("-c".into());
         args.push("allow_login_shell=false".into());
-        args.push("-c".into());
-        args.push(format!(
-            "projects.{}.trust_level=\"trusted\"",
-            toml_string(&cwd.display().to_string())
-        ));
         spec.args = args.into_iter().map(Into::into).collect();
         spec.cwd = Some(cwd.to_owned());
         if let Some(session) = session {
             crate::cli::apply_session_env(&mut spec, &session.env, &session.path_prepend);
         }
-        let process::Spawned { process, stdout } =
-            process::spawn(self.platform.clone(), &spec, recorder)?;
+        let redactor = session.and_then(|session| session.redactor.clone());
+        let process::Spawned { process, stdout } = process::spawn(
+            self.platform.clone(),
+            &spec,
+            process::Options {
+                recorder,
+                redactor,
+                ledger,
+                owned_dir: session
+                    .filter(|session| session.owned_cwd)
+                    .map(|_| cwd.to_owned()),
+            },
+        )?;
         Ok((Arc::new(Rpc::new(process)), stdout))
     }
 
     /// Runs `work` against a throwaway app-server, then shuts it down.
     async fn control<T>(&self, work: impl AsyncFnOnce(&Rpc) -> Result<T>) -> Result<T> {
         let cwd = self.platform.paths().data_dir.clone();
-        let (rpc, stdout) = self.app_server(&cwd, None, None).await?;
+        let (rpc, stdout) = self.app_server(&cwd, None, None, None).await?;
         let reader = tokio::spawn(control_reader(rpc.clone(), stdout));
         let result = async {
             rpc.initialize().await?;
@@ -161,7 +224,9 @@ async fn control_reader(rpc: Arc<Rpc>, mut stdout: mpsc::Receiver<String>) {
             match output {
                 Output::Control(Control::Response { id, result }) => rpc.resolve(id, result),
                 Output::Control(
-                    Control::Approval { rpc_id, .. } | Control::Unsupported { rpc_id, .. },
+                    Control::Approval { rpc_id, .. }
+                    | Control::Elicitation { rpc_id, .. }
+                    | Control::Unsupported { rpc_id, .. },
                 ) => {
                     rpc.reject(rpc_id, "not served by a control connection")
                         .await;
@@ -295,10 +360,13 @@ impl Provider for Codex {
                         recorded_at_ms: now_ms(),
                         title: "Codex session".into(),
                     },
+                    spec.redactor.clone(),
                 )?)),
                 None => None,
             };
-            let (rpc, stdout) = self.app_server(&cwd, Some(&spec), recorder).await?;
+            let (rpc, stdout) = self
+                .app_server(&cwd, Some(&spec), recorder, Some(ledger.clone()))
+                .await?;
             ledger
                 .record(Artifact::Process {
                     pid: rpc.process.pid(),
@@ -310,9 +378,15 @@ impl Provider for Codex {
             let shared = Arc::new(Shared {
                 approvals: Mutex::new(HashMap::new()),
                 turn_id: Mutex::new(None),
-                events: events_tx,
+                events: Events::new(events_tx, spec.redactor.clone()),
             });
-            tokio::spawn(read_loop(rpc.clone(), stdout, shared.clone()));
+            let trusted: HashSet<String> = spec
+                .mcp_servers
+                .iter()
+                .filter(|server| server.trusted)
+                .map(|server| server.name.clone())
+                .collect();
+            tokio::spawn(read_loop(rpc.clone(), stdout, shared.clone(), trusted));
 
             let started = tokio::time::timeout(
                 START_TIMEOUT,
@@ -321,7 +395,11 @@ impl Provider for Codex {
             .await
             .map_err(|_| Error::Timeout("Codex to start the thread"))
             .and_then(|result| result);
-            let (thread, model) = match started {
+            let Opened {
+                thread,
+                model,
+                notices,
+            } = match started {
                 Ok(started) => started,
                 Err(err) => {
                     rpc.process.shutdown(EXIT_GRACE).await;
@@ -344,6 +422,14 @@ impl Provider for Codex {
                     cli_version: Some(thread.cli_version.clone()),
                 })
                 .await;
+            for message in notices {
+                session
+                    .emit(ProviderEvent::Notice {
+                        level: NoticeLevel::Warning,
+                        message,
+                    })
+                    .await;
+            }
             if thread.cli_version != p::SCHEMA_VERSION {
                 session
                     .emit(ProviderEvent::Notice {
@@ -411,18 +497,41 @@ impl Provider for Codex {
     }
 }
 
+/// A started thread, its model, and warnings for the user.
+struct Opened {
+    thread: p::Thread,
+    model: String,
+    notices: Vec<String>,
+}
+
 /// Starts, resumes or forks the session's thread, recording it in the ledger.
 async fn open_thread(
     rpc: &Rpc,
     spec: &SessionSpec,
     cwd: &Path,
     ledger: &dyn Ledger,
-) -> Result<(p::Thread, String)> {
+) -> Result<Opened> {
     rpc.initialize().await?;
     let config = thread_config(rpc, spec, cwd).await?;
-    let trusted_before = trusted_projects(rpc, cwd).await?;
+    // Only a folder Brigadier created may have its trust entry recorded and undone. Codex keys
+    // trust on the main checkout for a worktree, which is the user's: watched, never touched.
+    let watched: Vec<String> = if spec.owned_cwd {
+        let mut watched = vec![cwd.display().to_string()];
+        let root = trust_root(cwd).display().to_string();
+        if !watched.contains(&root) {
+            watched.push(root);
+        }
+        watched
+    } else {
+        Vec::new()
+    };
+    let trusted_before = if watched.is_empty() {
+        Map::new()
+    } else {
+        trusted_projects(rpc, cwd).await?
+    };
     let cwd_text = Some(cwd.display().to_string());
-    let sandbox = Some(sandbox_mode(&spec.access));
+    let sandbox = thread_sandbox(&spec.access);
     let approval = Some(approval_policy(&spec.access));
     let instructions = spec.append_system_prompt.clone();
     let (thread, model) = match &spec.origin {
@@ -487,12 +596,33 @@ async fn open_thread(
             thread_id: thread.id.clone(),
         })
         .await?;
-    for (path, _) in trusted_projects(rpc, cwd).await? {
-        if !trusted_before.contains_key(&path) {
-            ledger.record(Artifact::CodexProjectTrust { path }).await?;
+    let mut notices = Vec::new();
+    if !watched.is_empty() {
+        let trusted_after = trusted_projects(rpc, cwd).await?;
+        for path in watched {
+            if trusted_before.contains_key(&path) || trusted_after.get(&path) != Some(&trusted()) {
+                continue;
+            }
+            if path == cwd.display().to_string() {
+                ledger.record(Artifact::CodexProjectTrust { path }).await?;
+            } else {
+                notices.push(format!(
+                    "Codex marked {path} as trusted in ~/.codex/config.toml. That folder is \
+                     not Brigadier's, so the entry stays; remove it there if you did not want it."
+                ));
+            }
         }
     }
-    Ok((thread, model))
+    Ok(Opened {
+        thread,
+        model,
+        notices,
+    })
+}
+
+/// The trust entry Codex writes, exactly.
+fn trusted() -> Value {
+    json!({ "trust_level": "trusted" })
 }
 
 /// The `projects` table of the user's own `config.toml`, by project path.
@@ -519,7 +649,7 @@ async fn trusted_projects(rpc: &Rpc, cwd: &Path) -> Result<Map<String, Value>> {
 /// Removes a trust entry a thread added, unless it changed since (the user decided on it).
 async fn remove_project_trust(rpc: &Rpc, path: &str) -> Result<()> {
     let projects = trusted_projects(rpc, Path::new(path)).await?;
-    if projects.get(path) != Some(&json!({ "trust_level": "trusted" })) {
+    if projects.get(path) != Some(&trusted()) {
         return Ok(());
     }
     let _: Value = rpc
@@ -591,6 +721,7 @@ async fn thread_config(rpc: &Rpc, spec: &SessionSpec, cwd: &Path) -> Result<Map<
         Access::ReadOnly | Access::Full => None,
     };
     if let Some(network) = network {
+        let scoped = matches!(spec.access, Access::Scoped { .. });
         config.insert(
             "sandbox_workspace_write".into(),
             json!({
@@ -601,6 +732,8 @@ async fn thread_config(rpc: &Rpc, spec: &SessionSpec, cwd: &Path) -> Result<Map<
                     .iter()
                     .map(|root| root.display().to_string())
                     .collect::<Vec<_>>(),
+                "exclude_slash_tmp": scoped,
+                "exclude_tmpdir_env_var": scoped,
             }),
         );
     }
@@ -616,11 +749,16 @@ fn approval_policy(access: &Access) -> p::AskForApproval {
     }
 }
 
-fn sandbox_mode(access: &Access) -> p::SandboxMode {
+/// The sandbox a thread starts with. Only read-only is set here: starting a thread with a
+/// writable sandbox in a project the user never trusted makes Codex persist a trust entry for
+/// that project in `~/.codex/config.toml` (for a worktree, the user's main checkout), which a
+/// `-c projects.….trust_level` override does not prevent. Every turn sets the full sandbox
+/// policy instead ([`sandbox_policy`]), which holds for that turn and the ones after it; nothing
+/// runs in a thread outside a turn.
+fn thread_sandbox(access: &Access) -> Option<p::SandboxMode> {
     match access {
-        Access::Workspace { .. } | Access::Scoped { .. } => p::SandboxMode::WorkspaceWrite,
-        Access::ReadOnly => p::SandboxMode::ReadOnly,
-        Access::Full => p::SandboxMode::DangerFullAccess,
+        Access::ReadOnly => Some(p::SandboxMode::ReadOnly),
+        Access::Workspace { .. } | Access::Scoped { .. } | Access::Full => None,
     }
 }
 
@@ -635,13 +773,15 @@ fn sandbox_policy(access: &Access) -> p::SandboxPolicy {
                 .map(|root| p::AbsolutePathBuf(root.display().to_string()))
                 .collect(),
         },
+        // Exactly the working directory and the roots: `/tmp` and `$TMPDIR` stay read-only (a
+        // worker's TMPDIR is its scratch folder, one of the roots).
         Access::Scoped {
             writable_roots,
             network,
             ..
         } => p::SandboxPolicy::WorkspaceWrite {
-            exclude_slash_tmp: false,
-            exclude_tmpdir_env_var: false,
+            exclude_slash_tmp: true,
+            exclude_tmpdir_env_var: true,
             network_access: *network,
             writable_roots: writable_roots
                 .iter()
@@ -675,6 +815,38 @@ fn model_info(model: p::Model) -> ModelInfo {
             .filter_map(|value| value.as_str().map(str::to_owned))
             .collect(),
     }
+}
+
+/// The folder Codex keys a project's trust on for `cwd`: the root of the main checkout when
+/// `cwd` is in a git repository or one of its linked worktrees, else `cwd` itself.
+fn trust_root(cwd: &Path) -> PathBuf {
+    for dir in cwd.ancestors() {
+        let git = dir.join(".git");
+        if git.is_dir() {
+            return dir.to_owned();
+        }
+        if git.is_file() {
+            // A linked worktree: `.git` names `<main>/.git/worktrees/<name>`, whose
+            // `commondir` leads back to `<main>/.git`.
+            let Some(gitdir) = std::fs::read_to_string(&git).ok().and_then(|text| {
+                text.lines()
+                    .find_map(|line| line.strip_prefix("gitdir:"))
+                    .map(|path| dir.join(path.trim()))
+            }) else {
+                return dir.to_owned();
+            };
+            let common = std::fs::read_to_string(gitdir.join("commondir"))
+                .map(|common| gitdir.join(common.trim()))
+                .unwrap_or(gitdir);
+            return match common.canonicalize() {
+                Ok(common) if common.file_name().is_some_and(|name| name == ".git") => common
+                    .parent()
+                    .map_or_else(|| dir.to_owned(), Path::to_path_buf),
+                _ => dir.to_owned(),
+            };
+        }
+    }
+    cwd.to_owned()
 }
 
 /// A TOML basic string, for `-c` override keys.
@@ -843,7 +1015,7 @@ struct Shared {
     /// Unanswered approvals: approval id → JSON-RPC request id and answer shape.
     approvals: Mutex<HashMap<String, (Value, PendingKind)>>,
     turn_id: Mutex<Option<String>>,
-    events: mpsc::Sender<ProviderEvent>,
+    events: Events,
 }
 
 pub struct CodexSession {
@@ -856,7 +1028,7 @@ pub struct CodexSession {
 
 impl CodexSession {
     async fn emit(&self, event: ProviderEvent) {
-        let _ = self.shared.events.send(event).await;
+        self.shared.events.send(event).await;
     }
 
     fn turn_id(&self) -> Option<String> {
@@ -1010,13 +1182,20 @@ impl ProviderSession for CodexSession {
     }
 }
 
-async fn read_loop(rpc: Arc<Rpc>, mut stdout: mpsc::Receiver<String>, shared: Arc<Shared>) {
+/// Serves a session's app-server output until it exits. `trusted` names the MCP servers whose
+/// tool calls run without asking.
+async fn read_loop(
+    rpc: Arc<Rpc>,
+    mut stdout: mpsc::Receiver<String>,
+    shared: Arc<Shared>,
+    trusted: HashSet<String>,
+) {
     let mut parser = Parser::live();
     while let Some(line) = stdout.recv().await {
         for output in parser.feed(&line) {
             match output {
                 Output::Event(event) => {
-                    let _ = shared.events.send(event).await;
+                    shared.events.send(event).await;
                 }
                 Output::Control(Control::Response { id, result }) => rpc.resolve(id, result),
                 Output::Control(Control::Approval {
@@ -1025,6 +1204,33 @@ async fn read_loop(rpc: Arc<Rpc>, mut stdout: mpsc::Receiver<String>, shared: Ar
                     kind,
                 }) => {
                     lock(&shared.approvals).insert(approval_id, (rpc_id, kind));
+                }
+                Output::Control(Control::Elicitation {
+                    rpc_id,
+                    server,
+                    tool_approval,
+                    message,
+                }) => {
+                    // Trusted servers' tool calls are configured to run without asking, so
+                    // this should not happen; answer rather than leave the turn hanging.
+                    let accept = tool_approval && trusted.contains(&server);
+                    let action = if accept { "accept" } else { "decline" };
+                    let answer = if accept {
+                        json!({ "action": "accept", "content": {} })
+                    } else {
+                        json!({ "action": "decline" })
+                    };
+                    let _ = rpc.respond(rpc_id, answer).await;
+                    shared
+                        .events
+                        .send(ProviderEvent::Notice {
+                            level: NoticeLevel::Warning,
+                            message: format!(
+                                "The MCP server {server} asked \"{message}\"; Brigadier \
+                                 answered {action}."
+                            ),
+                        })
+                        .await;
                 }
                 Output::Control(Control::Unsupported { rpc_id, method }) => {
                     rpc.reject(rpc_id, &format!("Brigadier does not handle {method}"))
@@ -1038,7 +1244,7 @@ async fn read_loop(rpc: Arc<Rpc>, mut stdout: mpsc::Receiver<String>, shared: Ar
     let exit = rpc.process.exited().await;
     rpc.fail_all();
     lock(&shared.turn_id).take();
-    let _ = shared
+    shared
         .events
         .send(ProviderEvent::Exited {
             code: exit.code,

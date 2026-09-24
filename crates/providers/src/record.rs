@@ -4,17 +4,22 @@
 //! offset from the start. Personal data is scrubbed as it is written, so a recording can be
 //! committed as a fixture: emails, account and organization identifiers, the home directory and
 //! user name (also in object keys, and when a stream splits a path) and the contents of the
-//! user's Codex configuration never reach the file.
+//! user's Codex configuration never reach the file. With a [`Redactor`], secret values never do
+//! either, including a secret streamed across several delta lines: each delta stream holds back
+//! the tail that may start a secret, and a line carrying what was held is written when the
+//! stream ends.
 
+use std::collections::HashMap;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::model::ProviderKind;
+use crate::redact::Redactor;
 
 /// Fixture format version.
 pub const FORMAT: u32 = 1;
@@ -73,7 +78,13 @@ pub struct Recorder {
 }
 
 impl Recorder {
-    pub fn create(path: &Path, header: &Header) -> std::io::Result<Self> {
+    /// Starts a recording at `path`. Lines are scrubbed, and redacted with `redactor`, before
+    /// they are written.
+    pub fn create(
+        path: &Path,
+        header: &Header,
+        redactor: Option<Arc<Redactor>>,
+    ) -> std::io::Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -83,20 +94,34 @@ impl Recorder {
         file.flush()?;
 
         let (lines, rx) = mpsc::channel::<Line>();
-        let scrubber = Scrubber::new();
+        let redactor = redactor.filter(|redactor| !redactor.is_empty());
+        let mut streams = redactor
+            .clone()
+            .map(|redactor| DeltaStreams::new(header.provider, redactor));
+        let scrubber = Scrubber::new(redactor);
         let path = path.to_owned();
         std::thread::Builder::new()
             .name("cli-recorder".into())
             .spawn(move || {
-                for mut line in rx {
-                    line.line = scrubber.scrub_line(&line.line);
-                    let written = serde_json::to_writer(&mut file, &line)
-                        .map_err(std::io::Error::from)
-                        .and_then(|()| file.write_all(b"\n"))
-                        .and_then(|()| file.flush());
-                    if let Err(err) = written {
-                        tracing::warn!(path = %path.display(), error = %err, "recording stopped");
-                        return;
+                for line in rx {
+                    for text in scrubber.scrub_line(line.dir, &line.line, streams.as_mut()) {
+                        let row = Line {
+                            t: line.t,
+                            dir: line.dir,
+                            line: text,
+                        };
+                        let written = serde_json::to_writer(&mut file, &row)
+                            .map_err(std::io::Error::from)
+                            .and_then(|()| file.write_all(b"\n"))
+                            .and_then(|()| file.flush());
+                        if let Err(err) = written {
+                            tracing::warn!(
+                                path = %path.display(),
+                                error = %err,
+                                "recording stopped"
+                            );
+                            return;
+                        }
                     }
                 }
             })?;
@@ -141,18 +166,20 @@ impl Recording {
     }
 }
 
-/// Removes personal data from recorded lines.
+/// Removes personal data and secrets from recorded lines.
 struct Scrubber {
     home: Option<String>,
     /// The home directory's last component, replaced wherever it appears as a word: a streamed
     /// path can arrive split across deltas, out of reach of the home replacement.
     user: Option<String>,
+    redactor: Option<Arc<Redactor>>,
 }
 
 impl Scrubber {
-    fn new() -> Self {
+    fn new(redactor: Option<Arc<Redactor>>) -> Self {
         let home = dirs::home_dir();
         Self {
+            redactor,
             user: home
                 .as_ref()
                 .and_then(|home| home.file_name())
@@ -165,14 +192,30 @@ impl Scrubber {
         }
     }
 
-    fn scrub_line(&self, line: &str) -> String {
+    /// The lines to record for `line`: the line itself, scrubbed, after any line that ends a
+    /// delta stream's held tail.
+    fn scrub_line(
+        &self,
+        dir: Direction,
+        line: &str,
+        streams: Option<&mut DeltaStreams>,
+    ) -> Vec<String> {
         match serde_json::from_str::<Value>(line) {
             Ok(mut value) => {
                 redact_codex_config(&mut value);
-                self.scrub_value(&mut value, None);
-                value.to_string()
+                let mut rows = match streams {
+                    Some(streams) if dir == Direction::Out => streams.apply(&mut value),
+                    _ => Vec::new(),
+                };
+                rows.push(value);
+                rows.into_iter()
+                    .map(|mut row| {
+                        self.scrub_value(&mut row, None);
+                        row.to_string()
+                    })
+                    .collect()
             }
-            Err(_) => self.scrub_text(line),
+            Err(_) => vec![self.scrub_text(line)],
         }
     }
 
@@ -200,9 +243,13 @@ impl Scrubber {
     }
 
     fn scrub_text(&self, text: &str) -> String {
+        let text = match &self.redactor {
+            Some(redactor) => redactor.redact(text),
+            None => std::borrow::Cow::Borrowed(text),
+        };
         let mut text = match &self.home {
             Some(home) => text.replace(home.as_str(), "~"),
-            None => text.to_owned(),
+            None => text.into_owned(),
         };
         if text.contains('@') {
             text = scrub_emails(&text);
@@ -214,6 +261,151 @@ impl Scrubber {
         }
         text
     }
+}
+
+/// The delta streams of a recording, each holding back the tail that may start a secret.
+struct DeltaStreams {
+    provider: ProviderKind,
+    redactor: Arc<Redactor>,
+    streams: HashMap<String, HeldDelta>,
+}
+
+struct HeldDelta {
+    /// The item (Codex) or content block (Claude) the stream belongs to.
+    item: String,
+    /// Where the delta text sits in the line.
+    pointer: &'static str,
+    pending: String,
+    /// The stream's last line, the shape of the line that carries the held tail at the end.
+    last: Value,
+}
+
+impl DeltaStreams {
+    fn new(provider: ProviderKind, redactor: Arc<Redactor>) -> Self {
+        Self {
+            provider,
+            redactor,
+            streams: HashMap::new(),
+        }
+    }
+
+    /// Redacts a delta line through its stream, or ends the streams `line` closes, returning
+    /// lines with their held tails to record before it.
+    fn apply(&mut self, line: &mut Value) -> Vec<Value> {
+        if let Some((key, item, pointer)) = delta_location(self.provider, line) {
+            let held = self.streams.entry(key).or_insert_with(|| HeldDelta {
+                item,
+                pointer,
+                pending: String::new(),
+                last: Value::Null,
+            });
+            if let Some(Value::String(text)) = line.pointer_mut(pointer) {
+                let redacted = self.redactor.push(&mut held.pending, text).into_owned();
+                *text = redacted;
+            }
+            held.last = line.clone();
+            return Vec::new();
+        }
+        let Some(ended) = stream_end(self.provider, line) else {
+            return Vec::new();
+        };
+        let keys: Vec<String> = self
+            .streams
+            .iter()
+            .filter(|(_, held)| ended.as_deref().is_none_or(|item| held.item == item))
+            .map(|(key, _)| key.clone())
+            .collect();
+        let mut rows = Vec::new();
+        for key in keys {
+            let Some(mut held) = self.streams.remove(&key) else {
+                continue;
+            };
+            if let Some(tail) = self.redactor.flush(&mut held.pending)
+                && let Some(text) = held.last.pointer_mut(held.pointer)
+            {
+                *text = Value::String(tail);
+                rows.push(held.last);
+            }
+        }
+        rows
+    }
+}
+
+/// For a streamed delta line: its stream key, its item and where its text is.
+fn delta_location(provider: ProviderKind, line: &Value) -> Option<(String, String, &'static str)> {
+    match provider {
+        ProviderKind::Codex => {
+            let method = line.get("method")?.as_str()?;
+            let params = line.get("params")?;
+            params.get("delta")?.as_str()?;
+            let item = params.get("itemId")?.as_str()?;
+            if !method.starts_with("item/") {
+                return None;
+            }
+            let part = ["summaryIndex", "contentIndex"]
+                .iter()
+                .filter_map(|key| params.get(key))
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join(":");
+            Some((
+                format!("{method}|{item}|{part}"),
+                item.to_owned(),
+                "/params/delta",
+            ))
+        }
+        ProviderKind::Claude => {
+            if line.get("type")?.as_str()? != "stream_event" {
+                return None;
+            }
+            let event = line.get("event")?;
+            if event.get("type")?.as_str()? != "content_block_delta" {
+                return None;
+            }
+            let pointer = match event.pointer("/delta/type")?.as_str()? {
+                "text_delta" => "/event/delta/text",
+                "thinking_delta" => "/event/delta/thinking",
+                "input_json_delta" => "/event/delta/partial_json",
+                _ => return None,
+            };
+            let item = claude_block(line, event);
+            Some((format!("{item}|{pointer}"), item, pointer))
+        }
+    }
+}
+
+/// The streams a line ends: `Some(item)` for one item's, `None` for all of them.
+fn stream_end(provider: ProviderKind, line: &Value) -> Option<Option<String>> {
+    match provider {
+        ProviderKind::Codex => match line.get("method")?.as_str()? {
+            "item/completed" => Some(Some(line.pointer("/params/item/id")?.as_str()?.to_owned())),
+            "turn/completed" => Some(None),
+            _ => None,
+        },
+        ProviderKind::Claude => match line.get("type")?.as_str()? {
+            "stream_event" => {
+                let event = line.get("event")?;
+                match event.get("type")?.as_str()? {
+                    "content_block_stop" => Some(Some(claude_block(line, event))),
+                    "message_stop" => Some(None),
+                    _ => None,
+                }
+            }
+            "result" => Some(None),
+            _ => None,
+        },
+    }
+}
+
+/// A Claude content block: its index within the (sub-agent's) message.
+fn claude_block(line: &Value, event: &Value) -> String {
+    format!(
+        "{}:{}",
+        line.get("parent_tool_use_id")
+            .and_then(Value::as_str)
+            .unwrap_or("main"),
+        event.get("index").and_then(Value::as_u64).unwrap_or(0)
+    )
 }
 
 /// Empties a Codex `config/read` result: it is the user's whole configuration (projects, MCP

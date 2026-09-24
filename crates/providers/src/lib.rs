@@ -16,11 +16,13 @@
 pub mod claude;
 pub mod cli;
 pub mod codex;
+mod events;
 pub mod fixtures;
 pub mod model;
 pub mod policy;
 pub mod process;
 pub mod record;
+pub mod redact;
 pub mod simulate;
 mod time;
 
@@ -31,6 +33,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 pub use model::*;
+pub use redact::{REDACTED, Redactor, env_file_values};
 
 /// A boxed future, so the traits stay object-safe.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
