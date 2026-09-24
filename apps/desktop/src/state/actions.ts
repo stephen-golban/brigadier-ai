@@ -81,10 +81,11 @@ export async function loadConversation(id: string): Promise<void> {
       loading: false,
     }));
     // A copy live events changed while the view was read is newer (a new conversation is
-    // renamed by its first message); whatever else the view holds arrives as events too.
+    // renamed by its first message), and one they removed was deleted; whatever else the
+    // view holds arrives as events too.
     useApp.setState((state) => {
       const live = state.conversations[id];
-      return live && live !== before
+      return live !== before
         ? state
         : { conversations: { ...state.conversations, [id]: view.conversation } };
     });
