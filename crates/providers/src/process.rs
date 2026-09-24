@@ -1,10 +1,19 @@
 //! A CLI child process Brigadier talks to over stdio.
 //!
-//! The child leads its own process group, so ending it ends everything it started. Three tasks
-//! serve it: stdout is split into lines and handed to the adapter, stderr keeps a short tail for
-//! error reports, and a waiter reaps the child, then kills whatever is left of its group.
+//! The child leads its own process group. Four tasks serve it: stdout is split into lines and
+//! handed to the adapter, stderr keeps a short tail for error reports, a tracker walks its
+//! process tree every second while it runs, and a waiter reaps the child, then ends whatever
+//! it left behind.
+//!
+//! The tracker is what makes "nothing survives" hold. Both CLIs start tool commands in
+//! sessions of their own (`setsid`), and a command can put a server in the background and
+//! exit, leaving the server parented to `launchd`/`init` and out of the CLI's tree. Every
+//! process seen in the tree is remembered with its start time and ended when the CLI goes,
+//! however it goes, and each group or session leader among them is also recorded in the
+//! cleanup ledger, so the crash sweep finds it after the daemon died.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -14,14 +23,18 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::ChildStdin;
 use tokio::sync::{mpsc, watch};
 
+use crate::model::Artifact;
 use crate::record::{Direction, Recorder};
-use crate::{Error, Result};
+use crate::redact::Redactor;
+use crate::{Error, Ledger, Result};
 
 /// Stdout lines buffered between the reader and the adapter.
 const STDOUT_LINES: usize = 256;
 const STDERR_TAIL_LINES: usize = 40;
 /// After a forced kill, how long to wait for the child to be reaped.
 const REAP_WAIT: Duration = Duration::from_secs(2);
+/// How often the tracker walks the CLI's process tree.
+const TRACK_EVERY: Duration = Duration::from_secs(1);
 
 /// How a CLI process ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +50,98 @@ pub struct CliProcess {
     exit: watch::Receiver<Option<Exit>>,
     stderr_tail: Arc<Mutex<VecDeque<String>>>,
     recorder: Option<Arc<Recorder>>,
+    tree: Arc<Tree>,
+}
+
+/// What else a spawned CLI process is wired to.
+#[derive(Default)]
+pub struct Options {
+    /// Records the stdio exchange.
+    pub recorder: Option<Arc<Recorder>>,
+    /// Redacts stderr lines before they are logged or kept.
+    pub redactor: Option<Arc<Redactor>>,
+    /// Records the group and session leaders the CLI starts, for the crash sweep.
+    pub ledger: Option<Arc<dyn Ledger>>,
+    /// A folder Brigadier created for this CLI alone (its working directory). Whatever still
+    /// runs inside it when the CLI goes is ended too: that finds a server that detached from
+    /// the tree before a walk saw it.
+    pub owned_dir: Option<PathBuf>,
+}
+
+/// The processes seen below the CLI, by pid, with their start times.
+struct Tree {
+    root: u32,
+    platform: Arc<dyn Platform>,
+    seen: Mutex<HashMap<u32, Option<f64>>>,
+    owned_dir: Option<PathBuf>,
+}
+
+impl Tree {
+    /// Walks the CLI's tree and the trees of every process seen before (a detached server is
+    /// no longer the CLI's descendant, but what it starts is its own). Returns the leaders of
+    /// process groups among the processes seen for the first time.
+    fn scan(&self) -> Vec<(u32, Option<f64>)> {
+        let processes = self.platform.processes();
+        let mut roots = vec![self.root];
+        {
+            // Forget what exited: its pid may be reused by a process that is not ours.
+            let mut seen = lock(&self.seen);
+            seen.retain(|pid, started| is_same(processes, *pid, *started));
+            roots.extend(seen.keys().copied());
+        }
+        let mut found = Vec::new();
+        for root in roots {
+            if let Ok(below) = processes.descendants(root) {
+                found.extend(below);
+            }
+        }
+        let mut leaders = Vec::new();
+        let mut seen = lock(&self.seen);
+        for pid in found {
+            if pid == self.root || seen.contains_key(&pid) {
+                continue;
+            }
+            let started = processes.start_time_ms(pid).ok();
+            seen.insert(pid, started);
+            if processes.group_of(pid) == Some(pid) {
+                leaders.push((pid, started));
+            }
+        }
+        leaders
+    }
+
+    /// Kills every process seen that still runs and is still the one seen (same start time),
+    /// with its own tree and group, then whatever still works inside the owned folder. Returns
+    /// how many were running.
+    fn end_all(&self) -> usize {
+        let processes = self.platform.processes();
+        let seen: Vec<(u32, Option<f64>)> = lock(&self.seen).drain().collect();
+        let mut ended = 0;
+        for (pid, started) in seen {
+            if is_same(processes, pid, started) {
+                if let Err(err) = processes.kill_tree(pid) {
+                    tracing::debug!(pid, error = %err, "could not end a process the cli left");
+                }
+                ended += 1;
+            }
+        }
+        if let Some(dir) = &self.owned_dir {
+            match processes.in_dir(dir) {
+                Ok(pids) => {
+                    for pid in pids {
+                        if let Err(err) = processes.kill_tree(pid) {
+                            tracing::debug!(pid, error = %err, "could not end a process in its folder");
+                        }
+                        ended += 1;
+                    }
+                }
+                Err(err) => {
+                    tracing::debug!(dir = %dir.display(), error = %err, "no folder sweep here")
+                }
+            }
+        }
+        ended
+    }
 }
 
 /// A running CLI and the lines it prints.
@@ -46,11 +151,13 @@ pub struct Spawned {
 }
 
 /// Spawns `spec` with piped stdio in its own process group.
-pub fn spawn(
-    platform: Arc<dyn Platform>,
-    spec: &SpawnSpec,
-    recorder: Option<Arc<Recorder>>,
-) -> Result<Spawned> {
+pub fn spawn(platform: Arc<dyn Platform>, spec: &SpawnSpec, options: Options) -> Result<Spawned> {
+    let Options {
+        recorder,
+        redactor,
+        ledger,
+        owned_dir,
+    } = options;
     let mut command = tokio::process::Command::from(platform.processes().piped_command(spec));
     command.stdin(Stdio::piped()).kill_on_drop(false);
     let mut child = command
@@ -82,7 +189,10 @@ pub fn spawn(
     let tail = stderr_tail.clone();
     tokio::spawn(async move {
         let mut reader = BufReader::new(stderr).lines();
-        while let Ok(Some(line)) = reader.next_line().await {
+        while let Ok(Some(mut line)) = reader.next_line().await {
+            if let Some(redactor) = &redactor {
+                redactor.redact_in_place(&mut line);
+            }
             tracing::debug!(pid, stderr = %line, "cli stderr");
             let mut tail = tail.lock().unwrap_or_else(|p| p.into_inner());
             if tail.len() == STDERR_TAIL_LINES {
@@ -92,14 +202,47 @@ pub fn spawn(
         }
     });
 
+    let tree = Arc::new(Tree {
+        root: pid,
+        platform: platform.clone(),
+        seen: Mutex::new(HashMap::new()),
+        owned_dir,
+    });
     let (exit_tx, exit) = watch::channel(None);
+    let tracked = tree.clone();
+    let mut until_exit = exit.clone();
+    tokio::spawn(async move {
+        let mut every = tokio::time::interval(TRACK_EVERY);
+        every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                _ = every.tick() => {}
+                _ = until_exit.wait_for(Option::is_some) => return,
+            }
+            for (leader, started_at_ms) in tracked.scan() {
+                if let Some(ledger) = &ledger {
+                    let artifact = Artifact::Process {
+                        pid: leader,
+                        started_at_ms,
+                    };
+                    if let Err(err) = ledger.record(artifact).await {
+                        tracing::warn!(pid = leader, error = %err, "could not record a process");
+                    }
+                }
+            }
+        }
+    });
+
     let reaper = platform.clone();
+    let left = tree.clone();
     tokio::spawn(async move {
         let status = child.wait().await;
-        // The CLI may have left children behind in its group (background shells, servers).
+        // The CLI may have left children behind in its group (background shells, servers),
+        // and in groups of their own.
         let _ = reaper.processes().kill_group(pid);
+        let ended = left.end_all();
         let code = status.ok().and_then(|status| status.code());
-        tracing::debug!(pid, code, "cli process exited");
+        tracing::debug!(pid, code, ended, "cli process exited");
         exit_tx.send_replace(Some(Exit { code }));
     });
 
@@ -112,6 +255,7 @@ pub fn spawn(
             exit,
             stderr_tail,
             recorder,
+            tree,
         }),
         stdout: lines,
     })
@@ -169,8 +313,13 @@ impl CliProcess {
     }
 
     /// Ends the process: closes stdin (both CLIs exit on EOF), waits up to `grace`, then kills
-    /// its process tree and waits for the reap. Bounded by `grace` plus [`REAP_WAIT`].
+    /// its process tree and waits for the reap. Every process it started ends with it (see the
+    /// module docs). Bounded by `grace` plus [`REAP_WAIT`].
     pub async fn shutdown(&self, grace: Duration) -> Exit {
+        // What runs right now, including what started since the last walk, is ended with it.
+        if self.is_running() {
+            self.tree.scan();
+        }
         self.stdin.lock().await.take();
         if let Ok(exit) = tokio::time::timeout(grace, self.exited()).await {
             return exit;
@@ -224,4 +373,20 @@ pub async fn run(
             Err(Error::Timeout("the command"))
         }
     }
+}
+
+/// Whether `pid` still runs and is the process that started at `started` (a process whose start
+/// time was never known cannot be told apart from a newcomer, so it never is).
+fn is_same(processes: &dyn brigadier_sandbox::Processes, pid: u32, started: Option<f64>) -> bool {
+    let Some(started) = started else {
+        return false;
+    };
+    processes.is_alive(pid)
+        && processes
+            .start_time_ms(pid)
+            .is_ok_and(|now| (now - started).abs() < 1_000.0)
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|p| p.into_inner())
 }

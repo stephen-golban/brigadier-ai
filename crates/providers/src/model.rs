@@ -4,9 +4,12 @@
 //! TypeScript), so field names are camelCase and enums are internally tagged.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
+
+use crate::redact::Redactor;
 
 /// A CLI Brigadier can drive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
@@ -576,6 +579,14 @@ pub struct SessionSpec {
     pub path_prepend: Vec<PathBuf>,
     /// Records the raw stdio exchange to this file (JSONL), for replay fixtures.
     pub record_to: Option<PathBuf>,
+    /// Secret values (the project's secret files, the session's grants) replaced in every
+    /// event, logged stderr line and recorded line before they leave the adapter.
+    pub redactor: Option<Arc<Redactor>>,
+    /// `cwd` is a folder Brigadier created for this session (an orchestrator folder, a worker
+    /// worktree or scratch folder, a Chat folder). Only then may the adapter record and later
+    /// undo what the CLI persists about that exact folder in the user's own configuration
+    /// (Codex's project trust entry). Raw sessions in the user's folders are never owned.
+    pub owned_cwd: bool,
 }
 
 /// Something a session created that must be removed when it is disposed of. Recorded in the

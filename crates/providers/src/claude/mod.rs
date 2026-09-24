@@ -30,6 +30,7 @@ use serde_json::{Map, Value, json};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::cli::{CliEnv, parse_version};
+use crate::events::Events;
 use crate::model::*;
 use crate::process::{self, CliProcess};
 use crate::record::{self, Direction, Recorder};
@@ -109,7 +110,7 @@ impl Claude {
         let process::Spawned {
             process,
             mut stdout,
-        } = process::spawn(self.platform.clone(), &spec, None)?;
+        } = process::spawn(self.platform.clone(), &spec, process::Options::default())?;
 
         let result = async {
             let mut answers = Vec::with_capacity(requests.len());
@@ -240,15 +241,18 @@ fn mcp_config(servers: &[McpServer]) -> Value {
                 .iter()
                 .map(|(name, value)| (name.clone(), Value::String(value.clone())))
                 .collect();
-            (
-                server.name.clone(),
-                json!({
+            (server.name.clone(), {
+                let mut config = json!({
                     "type": "stdio",
                     "command": server.command.display().to_string(),
                     "args": server.args,
                     "env": env,
-                }),
-            )
+                });
+                if let Some(secs) = server.tool_timeout_secs {
+                    config["timeout"] = json!(secs * 1000);
+                }
+                config
+            })
         })
         .collect();
     json!({ "mcpServers": servers })
@@ -346,6 +350,14 @@ fn settings(spec: &SessionSpec, cwd: &Path) -> Value {
         "autoMemoryEnabled": false,
         "permissions": permissions,
         "sandbox": sandbox,
+        // A repository's `AGENTS.md` files load next to its `CLAUDE.md` files (by default
+        // Claude reads them only where there is no `CLAUDE.md`), nested ones included once
+        // Claude reads a file in their directory.
+        "pluginConfigs": {
+            "agents-md@builtin": {
+                "options": { "instructionFiles": "claude-md-and-agents-md" },
+            },
+        },
     })
 }
 
@@ -535,6 +547,7 @@ impl Provider for Claude {
                         recorded_at_ms: now_ms(),
                         title: "Claude session".into(),
                     },
+                    spec.redactor.clone(),
                 )?)),
                 None => None,
             };
@@ -548,11 +561,34 @@ impl Provider for Claude {
                 .filter_map(|server| server.tool_timeout_secs)
                 .max()
             {
-                env.push(("MCP_TOOL_TIMEOUT".into(), (secs * 1000).to_string()));
+                // The overall limit, and the limit on a stdio call that sends nothing back
+                // while it waits (30 minutes by default), which a blocking question can exceed.
+                let ms = (secs * 1000).to_string();
+                env.push(("MCP_TOOL_TIMEOUT".into(), ms.clone()));
+                env.push(("CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT".into(), ms));
+            }
+            // Claude keeps its own temp files, and points sandboxed commands' TMPDIR, under
+            // `CLAUDE_CODE_TMPDIR` (`/tmp` by default): with the session's TMPDIR that is the
+            // session's own folder, removed with it.
+            if let Some((_, tmp)) = spec.env.iter().find(|(name, _)| name == "TMPDIR")
+                && !spec
+                    .env
+                    .iter()
+                    .any(|(name, _)| name == "CLAUDE_CODE_TMPDIR")
+            {
+                env.push(("CLAUDE_CODE_TMPDIR".into(), tmp.clone()));
             }
             crate::cli::apply_session_env(&mut process_spec, &env, &spec.path_prepend);
-            let process::Spawned { process, stdout } =
-                process::spawn(self.platform.clone(), &process_spec, recorder)?;
+            let process::Spawned { process, stdout } = process::spawn(
+                self.platform.clone(),
+                &process_spec,
+                process::Options {
+                    recorder,
+                    redactor: spec.redactor.clone(),
+                    ledger: Some(ledger.clone()),
+                    owned_dir: spec.owned_cwd.then(|| cwd.clone()),
+                },
+            )?;
             ledger
                 .record(Artifact::Process {
                     pid: process.pid(),
@@ -564,7 +600,7 @@ impl Provider for Claude {
             let shared = Arc::new(Shared {
                 pending: Mutex::new(HashMap::new()),
                 approvals: Mutex::new(HashMap::new()),
-                events: events_tx,
+                events: Events::new(events_tx, spec.redactor.clone()),
                 turn_active: AtomicBool::new(false),
                 next_request: AtomicU64::new(1),
             });
@@ -719,7 +755,7 @@ struct Shared {
     pending: Mutex<HashMap<String, oneshot::Sender<std::result::Result<Value, String>>>>,
     /// Tool inputs of unanswered permission requests, by request id.
     approvals: Mutex<HashMap<String, Value>>,
-    events: mpsc::Sender<ProviderEvent>,
+    events: Events,
     turn_active: AtomicBool,
     next_request: AtomicU64,
 }
@@ -737,7 +773,7 @@ pub struct ClaudeSession {
 
 impl ClaudeSession {
     async fn emit(&self, event: ProviderEvent) {
-        let _ = self.shared.events.send(event).await;
+        self.shared.events.send(event).await;
     }
 
     async fn request(&self, mut request: Map<String, Value>, timeout: Duration) -> Result<Value> {
@@ -877,9 +913,8 @@ async fn read_loop(
         for output in parser.feed(&line) {
             match output {
                 Output::Event(event) => {
-                    if shared.events.send(event).await.is_err() {
-                        // Nobody listens any more; keep draining so the CLI never blocks.
-                    }
+                    // When nobody listens any more, keep draining so the CLI never blocks.
+                    shared.events.send(event).await;
                 }
                 Output::Control(Control::Response { request_id, result }) => {
                     if let Some(reply) = lock(&shared.pending).remove(&request_id) {
@@ -891,7 +926,7 @@ async fn read_loop(
                 }
                 Output::Control(Control::Cancelled { request_id }) => {
                     if lock(&shared.approvals).remove(&request_id).is_some() {
-                        let _ = shared
+                        shared
                             .events
                             .send(ProviderEvent::ApprovalResolved {
                                 id: request_id,
@@ -927,7 +962,7 @@ async fn read_loop(
     let exit = process.exited().await;
     lock(&shared.pending).clear();
     shared.turn_active.store(false, Ordering::Release);
-    let _ = shared
+    shared
         .events
         .send(ProviderEvent::Exited {
             code: exit.code,

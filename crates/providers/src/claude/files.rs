@@ -7,6 +7,13 @@
 //!
 //! In the working directory, Claude Code stages its writes in `.claude/.cc-writes`; the part of
 //! that path which did not exist before the session is removed with it, while it holds no files.
+//!
+//! Claude also keeps per-session temp files in `<temp>/claude-<uid>/<encoded cwd>/<id>/`
+//! (`<temp>` is `CLAUDE_CODE_TMPDIR`, else `/tmp` on macOS and the system temp directory
+//! elsewhere). A session started with a TMPDIR of its own gets `CLAUDE_CODE_TMPDIR` pointed
+//! there and leaves nothing in the shared location; for the others the session's folder is
+//! removed with it, and the per-cwd folder too when it is empty and belonged to a project
+//! directory the session created.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -53,7 +60,10 @@ pub(super) fn remove(config: &Path, artifacts: &[Artifact]) -> Result<()> {
         _ => None,
     });
     let dirs = artifacts.iter().filter_map(|artifact| match artifact {
-        Artifact::ClaudeProjectDir { path } => Some(remove_project_dir(config, Path::new(path))),
+        Artifact::ClaudeProjectDir { path } => Some(
+            remove_project_dir(config, Path::new(path))
+                .and_then(|()| remove_temp_project_dir(config, Path::new(path))),
+        ),
         _ => None,
     });
     let staging = artifacts.iter().filter_map(|artifact| match artifact {
@@ -91,6 +101,15 @@ fn remove_session(config: &Path, id: &str) -> Result<()> {
         remove_path(&config.join(name).join(id))?;
     }
     remove_path(&config.join("debug").join(format!("{id}.txt")))?;
+    if let Some(temp) = temp_root(config)
+        && let Ok(entries) = std::fs::read_dir(&temp)
+    {
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                remove_path(&entry.path().join(id))?;
+            }
+        }
+    }
     if let Ok(entries) = std::fs::read_dir(config.join("todos")) {
         for entry in entries.flatten() {
             let name = entry.file_name();
@@ -117,6 +136,39 @@ fn remove_project_dir(config: &Path, dir: &Path) -> Result<()> {
     }
     if is_empty_dir(dir) {
         std::fs::remove_dir(dir)?;
+    }
+    Ok(())
+}
+
+/// Claude's shared temp folder for this user (see the module docs).
+fn temp_root(config: &Path) -> Option<PathBuf> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        // The configuration directory is the user's own, so its owner is the uid Claude uses.
+        let uid = std::fs::metadata(config).ok()?.uid();
+        let base = if cfg!(target_os = "macos") {
+            PathBuf::from("/tmp")
+        } else {
+            std::env::temp_dir()
+        };
+        Some(base.join(format!("claude-{uid}")))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = config;
+        Some(std::env::temp_dir().join("claude"))
+    }
+}
+
+/// Removes the per-cwd temp folder of a project directory the session created, while empty.
+fn remove_temp_project_dir(config: &Path, project: &Path) -> Result<()> {
+    let (Some(temp), Some(name)) = (temp_root(config), project.file_name()) else {
+        return Ok(());
+    };
+    let dir = temp.join(name);
+    if is_empty_dir(&dir) {
+        std::fs::remove_dir(&dir)?;
     }
     Ok(())
 }

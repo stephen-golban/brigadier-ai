@@ -29,6 +29,15 @@ pub enum Control {
         rpc_id: Value,
         kind: PendingKind,
     },
+    /// An MCP server asks the user something (`mcpServer/elicitation/request`).
+    Elicitation {
+        rpc_id: Value,
+        server: String,
+        /// Codex asks whether a tool call may run (`_meta.codex_approval_kind` is
+        /// `mcp_tool_call`), rather than for information.
+        tool_approval: bool,
+        message: String,
+    },
     /// A server request Brigadier does not serve.
     Unsupported { rpc_id: Value, method: String },
 }
@@ -445,6 +454,25 @@ impl Parser {
         out: &mut Vec<Output>,
     ) {
         let approval_id = format!("codex-{}", rpc_id);
+        if method == "mcpServer/elicitation/request" {
+            let text = |key: &str| {
+                params
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned()
+            };
+            out.push(Output::Control(Control::Elicitation {
+                server: text("serverName"),
+                tool_approval: params
+                    .pointer("/_meta/codex_approval_kind")
+                    .and_then(Value::as_str)
+                    == Some("mcp_tool_call"),
+                message: clip(&text("message"), 300),
+                rpc_id,
+            }));
+            return;
+        }
         let (request, kind) = match method {
             "item/commandExecution/requestApproval" => {
                 let Some(ask) =
