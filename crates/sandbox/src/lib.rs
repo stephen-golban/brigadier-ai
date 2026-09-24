@@ -96,6 +96,12 @@ pub trait Processes: Send + Sync {
     /// Kills what is left in the process group `pid` led, after that process exited and was
     /// reaped. Never signals `pid` itself, which may belong to another process by now.
     fn kill_group(&self, pid: u32) -> Result<()>;
+    /// Every process below `pid` in the process tree (children, their children, …), without
+    /// signalling any of them. A snapshot: callers that keep it check start times before they
+    /// act on a pid later.
+    fn descendants(&self, pid: u32) -> Result<Vec<u32>>;
+    /// The process group `pid` belongs to, while it runs.
+    fn group_of(&self, pid: u32) -> Option<u32>;
     /// Wall-clock start time of a process, in milliseconds since the Unix epoch.
     fn start_time_ms(&self, pid: u32) -> Result<f64>;
     /// The current user's processes whose working directory is `dir` or inside it. This finds

@@ -72,6 +72,12 @@ impl Processes for MacProcesses {
     fn kill_group(&self, pid: u32) -> Result<()> {
         unix::kill_group(pid)
     }
+    fn descendants(&self, pid: u32) -> Result<Vec<u32>> {
+        Ok(unix::descendants(pid, child_pids))
+    }
+    fn group_of(&self, pid: u32) -> Option<u32> {
+        unix::group_of(pid)
+    }
     fn in_dir(&self, dir: &Path) -> Result<Vec<u32>> {
         let dir = dir.canonicalize()?;
         let own = std::process::id();
