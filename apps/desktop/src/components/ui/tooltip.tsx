@@ -1,6 +1,7 @@
 import type * as React from "react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 
+import { tokenPx } from "@/lib/tokens";
 import { cn } from "@/lib/utils";
 
 function TooltipProvider({
@@ -30,7 +31,8 @@ function TooltipTrigger({
 
 function TooltipContent({
   className,
-  sideOffset = 4,
+  // One spacing step, so the gap to the trigger follows density.
+  sideOffset = tokenPx("--spacing"),
   children,
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Content>) {

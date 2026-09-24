@@ -2,6 +2,7 @@ import type * as React from "react";
 import { Check, ChevronRight, Dot } from "@openai/apps-sdk-ui/components/Icon";
 import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui";
 
+import { tokenPx } from "@/lib/tokens";
 import { cn } from "@/lib/utils";
 
 function DropdownMenu({
@@ -31,7 +32,8 @@ function DropdownMenuTrigger({
 
 function DropdownMenuContent({
   className,
-  sideOffset = 4,
+  // One spacing step, so the gap to the trigger follows density.
+  sideOffset = tokenPx("--spacing"),
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Content>) {
   return (
