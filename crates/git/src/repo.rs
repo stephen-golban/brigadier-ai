@@ -349,6 +349,15 @@ impl Repo {
         Ok((temp, tree))
     }
 
+    /// The tree of the checkout's files as they stand (HEAD plus every non-ignored change),
+    /// read past an index with unresolved entries, which `capture` refuses.
+    pub(crate) fn files_tree(&self) -> Result<Oid> {
+        let temp = TempIndex::new()?;
+        self.index_cmd(&temp, &["read-tree", "HEAD"])?;
+        self.index_cmd(&temp, &["add", "-A", "--", "."])?;
+        parse::oid(&self.index_cmd(&temp, &["write-tree"])?)
+    }
+
     pub(crate) fn commit_tree(
         &self,
         tree: &Oid,

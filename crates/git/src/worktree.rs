@@ -376,10 +376,16 @@ impl Worktree {
         }
     }
 
-    /// Full final-content patch against base, including non-ignored untracked files.
+    /// Full final-content patch against base, including non-ignored untracked files. A
+    /// checkout stuck in a conflicted merge or rebase is read as its files stand (conflict
+    /// markers included), so a worker's unfinished work there can still be kept.
     pub fn diff_from(&self, base: &Oid) -> Result<String> {
         valid_oid(base)?;
-        let (_, tree) = self.repo.capture()?;
+        let tree = match self.repo.capture() {
+            Ok((_, tree)) => tree,
+            Err(_) if self.repo.status(false)?.unmerged => self.repo.files_tree()?,
+            Err(err) => return Err(err),
+        };
         self.repo.diff(base, &tree)
     }
 }
