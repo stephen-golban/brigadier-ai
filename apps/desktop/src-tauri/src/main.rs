@@ -175,8 +175,7 @@ fn main() {
             std::process::exit(1);
         });
 
-    // `run_return` hands back the code passed to `app.exit`, so smoke failures reach CI.
-    let code = app.run_return(|app, event| match event {
+    app.run_return(|app, event| match event {
         // Cmd+Q and other user-initiated exits go through the orderly quit.
         RunEvent::ExitRequested { api, code, .. } if code.is_none() && !shell::is_quitting() => {
             api.prevent_exit();
@@ -187,5 +186,6 @@ fn main() {
         RunEvent::Reopen { .. } => shell::show_main(app),
         _ => {}
     });
-    std::process::exit(code);
+    // The code the quit asked for, so smoke failures reach CI.
+    std::process::exit(shell::exit_code());
 }
