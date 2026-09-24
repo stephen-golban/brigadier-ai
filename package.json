@@ -1,0 +1,13 @@
+{
+  "name": "brigadier",
+  "private": true,
+  "license": "MIT",
+  "packageManager": "pnpm@12.6.0",
+  "scripts": {
+    "dev": "pnpm --filter @brigadier/desktop dev",
+    "typecheck": "pnpm --filter @brigadier/desktop typecheck",
+    "lint": "pnpm --filter @brigadier/desktop lint",
+    "build": "pnpm --filter @brigadier/desktop build",
+    "tauri": "pnpm --filter @brigadier/desktop tauri"
+  }
+}
