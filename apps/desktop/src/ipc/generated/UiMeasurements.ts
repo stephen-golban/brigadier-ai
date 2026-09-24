@@ -8,4 +8,8 @@ export type UiMeasurements = { idleRssBytes: number, ingestToPaint: LatencySumma
 /**
  * Gaps between animation frames while the burst was painting.
  */
-frameGaps: LatencySummary, probesExpected: number, probesPainted: number, };
+frameGaps: LatencySummary, 
+/**
+ * Where the longest frame gap fell and the costliest event flush, to explain a stall.
+ */
+stallContext: string, probesExpected: number, probesPainted: number, };

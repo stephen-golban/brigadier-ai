@@ -4,6 +4,7 @@ import {
   ingestToPaint,
   probeSamples,
   setFrameSampling,
+  stallContext,
   summarize,
 } from "@/lib/perf";
 import { runProbeBurst, setInspectorOpen, setMetricsStreaming } from "@/state/actions";
@@ -49,6 +50,7 @@ export async function runSmoke(): Promise<void> {
     idleRssBytes,
     ingestToPaint: summarize(probes),
     frameGaps: summarize(frameGaps.values()),
+    stallContext: stallContext(),
     probesExpected: burst.count,
     probesPainted: probes.length,
   });

@@ -62,6 +62,8 @@ pub struct UiMeasurements {
     pub ingest_to_paint: LatencySummary,
     /// Gaps between animation frames while the burst was painting.
     pub frame_gaps: LatencySummary,
+    /// Where the longest frame gap fell and the costliest event flush, to explain a stall.
+    pub stall_context: String,
     pub probes_expected: u32,
     pub probes_painted: u32,
 }
