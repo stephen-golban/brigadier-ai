@@ -319,7 +319,9 @@ version = "0.1.0"
 name = "brigadier-core"
 version = "0.1.0"
 dependencies = [
+ "brigadier-git",
  "brigadier-providers",
+ "brigadier-router",
  "brigadier-sandbox",
  "brigadier-store",
  "schemars 1.2.2",
@@ -341,8 +343,12 @@ dependencies = [
  "base64 0.23.1",
  "brigadier-core",
  "brigadier-ipc",
+ "brigadier-mcp-server",
+ "brigadier-providers",
  "brigadier-sandbox",
  "brigadier-store",
+ "interprocess",
+ "nix",
  "serde_json",
  "sysinfo",
  "tokio",
@@ -404,11 +410,23 @@ dependencies = [
 [[package]]
 name = "brigadier-mcp-server"
 version = "0.1.0"
+dependencies = [
+ "brigadier-core",
+ "rmcp",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
 
 [[package]]
 name = "brigadier-providers"
 version = "0.1.0"
 dependencies = [
+ "aho-corasick",
  "base64 0.23.1",
  "brigadier-sandbox",
  "dirs 7.0.0",
@@ -437,6 +455,10 @@ version = "0.1.0"
 [[package]]
 name = "brigadier-router"
 version = "0.1.0"
+dependencies = [
+ "brigadier-providers",
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "brigadier-sandbox"
@@ -1285,12 +1307,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "futures"
+version = "0.3.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a31d2a3fbaaeb2af2368bbdd904aa8e812d3c04a1ee10d3171f52d556e5d0a3"
+dependencies = [
+ "futures-channel",
+ "futures-core",
+ "futures-executor",
+ "futures-io",
+ "futures-sink",
+ "futures-task",
+ "futures-util",
+]
+
+[[package]]
 name = "futures-channel"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b1f9e3d69d39e4862ffed03ed071a76f9a13ba1d9109d355b0f0aa6b15e393c4"
 dependencies = [
  "futures-core",
+ "futures-sink",
 ]
 
 [[package]]
@@ -1358,6 +1396,7 @@ version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d50a92467f8ba5dd6e3ee5d4bd04d73ab2e4e1c44474a0674821dfce14b79bc"
 dependencies = [
+ "futures-channel",
  "futures-core",
  "futures-io",
  "futures-macro",
@@ -2763,6 +2802,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "pastey"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
+
+[[package]]
 name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3189,6 +3234,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "rmcp"
+version = "3.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5b6317cd8c13e3ec9033cf2aa5aa92cd743f0f4f8a93cddc42ea0ae6ce3b8898"
+dependencies = [
+ "chrono",
+ "futures",
+ "indexmap 2.14.2",
+ "pastey",
+ "pin-project-lite",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "rsqlite-vfs"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3299,6 +3365,7 @@ version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "687274d293b6cdc6e73e0fee520bf2049650090d7164f87672d212a3c530cf4a"
 dependencies = [
+ "chrono",
  "dyn-clone",
  "ref-cast",
  "schemars_derive 1.2.2",
@@ -4363,6 +4430,7 @@ dependencies = [
  "futures-core",
  "futures-sink",
  "futures-util",
+ "libc",
  "pin-project-lite",
  "tokio",
 ]

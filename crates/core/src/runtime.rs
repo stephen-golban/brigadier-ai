@@ -1020,6 +1020,27 @@ impl Runtime {
         self.record_overview(overview).await;
     }
 
+    /// Keeps the provider overview's quota current from a hosted session's rate-limit events.
+    pub async fn note_quota_snapshot(&self, quota: brigadier_providers::QuotaSnapshot) {
+        let overview = {
+            let mut state = self.state();
+            let kind = quota.provider;
+            let now = now_ms();
+            let Some(overview) = state.overviews.get_mut(&kind) else {
+                return;
+            };
+            overview.quota = Some(quota);
+            let overview = overview.clone();
+            let last = state.quota_recorded_ms.entry(kind).or_default();
+            if now - *last < QUOTA_RECORD_INTERVAL_MS {
+                return;
+            }
+            *last = now;
+            overview
+        };
+        self.record_overview(overview).await;
+    }
+
     async fn record_raw(&self, id: &RawSessionId, events: Vec<ProviderEvent>) {
         if events.is_empty() {
             return;
@@ -1065,6 +1086,8 @@ fn spec_for(session: &RawSession, origin: Origin, record_to: Option<PathBuf>) ->
         env: Vec::new(),
         path_prepend: Vec::new(),
         record_to,
+        redactor: None,
+        owned_cwd: false,
     }
 }
 
@@ -1082,7 +1105,7 @@ fn apply_update(
     session.updated_at_ms = now_ms();
 }
 
-fn is_delta(event: &ProviderEvent) -> bool {
+pub(crate) fn is_delta(event: &ProviderEvent) -> bool {
     matches!(
         event,
         ProviderEvent::MessageDelta { .. }
@@ -1092,7 +1115,7 @@ fn is_delta(event: &ProviderEvent) -> bool {
 }
 
 /// Appends a delta to the previous one when both continue the same item.
-fn merge_delta(deltas: &mut Vec<ProviderEvent>, event: ProviderEvent) {
+pub(crate) fn merge_delta(deltas: &mut Vec<ProviderEvent>, event: ProviderEvent) {
     use ProviderEvent::{CommandOutputDelta, MessageDelta, ReasoningDelta};
     match (deltas.last_mut(), event) {
         (

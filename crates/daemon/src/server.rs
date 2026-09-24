@@ -8,7 +8,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use brigadier_core::manager::SessionManager;
 use brigadier_core::runtime::{Runtime, StartRaw};
-use brigadier_core::{Core, EnvironmentRequest, MAX_ATTACHMENT_BYTES, Setup, SetupRequest};
+use brigadier_core::{Core, MAX_ATTACHMENT_BYTES};
 use brigadier_ipc::metrics::{DaemonMetrics, Diagnostics, budgets};
 use brigadier_ipc::protocol::{
     ArtifactText, ClientFrame, ClientInfo, DaemonInfo, ErrorCode, EventEnvelope, IpcError, Outcome,
@@ -380,26 +380,13 @@ fn envelope(event: &StoredEvent) -> EventEnvelope {
     }
 }
 
-/// A request the orchestrator runtime serves once it is wired into the daemon.
-fn unavailable(what: &str) -> IpcError {
-    IpcError {
-        code: ErrorCode::Invalid,
-        message: format!("{what} is not available in this build yet"),
-    }
-}
-
-/// A short random suffix for generated names.
-fn uuid_suffix() -> String {
-    let id = brigadier_core::ConversationId::generate().0;
-    id.rsplit('-').next().unwrap_or(&id)[..8].to_owned()
-}
-
 fn internal(err: brigadier_store::Error) -> IpcError {
     IpcError::from(brigadier_core::Error::from(err))
 }
 
 async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Response, IpcError> {
     let core = &daemon.core;
+    let sessions = &daemon.sessions;
     Ok(match request {
         Request::GetCatalog => Response::GetCatalog {
             catalog: core.catalog(),
@@ -415,27 +402,13 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
             project_id,
             title,
             setup,
-        } => {
-            if let Some(SetupRequest::Session {
-                environment:
-                    EnvironmentRequest::LocalCheckout {
-                        create_from: Some(_),
-                        ..
-                    },
-                ..
-            }) = &setup
-            {
-                return Err(unavailable("Creating a branch"));
-            }
-            let suffix = uuid_suffix();
-            let setup = setup.map(|request| Setup::from_request(request, &suffix));
-            Response::CreateConversation {
-                conversation: Box::new(
-                    core.create_conversation(kind, project_id, title, setup)
-                        .await?,
-                ),
-            }
-        }
+        } => Response::CreateConversation {
+            conversation: Box::new(
+                sessions
+                    .create_conversation(kind, project_id, title, setup)
+                    .await?,
+            ),
+        },
         Request::UpdateSetup { id, setup } => Response::UpdateSetup {
             conversation: Box::new(core.set_setup(id, setup).await?),
         },
@@ -447,13 +420,16 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
             text,
             attachments,
             mentions,
-            steer: _,
+            steer,
         } => Response::SendMessage {
-            outcome: SendOutcome::Sent {
-                message: Box::new(
-                    core.append_user_message(conversation_id, text, attachments, mentions)
-                        .await?,
-                ),
+            outcome: match sessions
+                .send_message(conversation_id, text, attachments, mentions, steer)
+                .await?
+            {
+                brigadier_core::manager::SendOutcome::Sent(message) => SendOutcome::Sent {
+                    message: Box::new(message),
+                },
+                brigadier_core::manager::SendOutcome::Queued(item) => SendOutcome::Queued { item },
             },
         },
         Request::EditQueued {
@@ -484,7 +460,7 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
             queue: core.move_queued(&conversation_id, &item_id, index).await?,
         },
         Request::ResumeQueue { conversation_id } => Response::ResumeQueue {
-            queue: core.set_queue_paused(&conversation_id, false).await?,
+            queue: sessions.resume_queue(conversation_id).await?,
         },
         Request::AddAttachment { name, mime, data } => {
             if data.len() > MAX_ATTACHMENT_BYTES.div_ceil(3) * 4 {
@@ -539,22 +515,80 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
                 },
             }
         }
-        Request::GetRepoInfo { .. } => return Err(unavailable("Reading a repository")),
-        Request::SteerQueued { .. } | Request::Interrupt { .. } => {
-            return Err(unavailable("Steering and interrupting"));
+        Request::GetRepoInfo { path } => Response::GetRepoInfo {
+            repo: sessions.repo_info(path).await?,
+        },
+        Request::SteerQueued {
+            conversation_id,
+            item_id,
+        } => {
+            sessions.steer_queued(conversation_id, item_id).await?;
+            Response::SteerQueued
         }
-        Request::AnswerCard { .. }
-        | Request::AnswerQuestion { .. }
-        | Request::DecidePlan { .. } => {
-            return Err(unavailable("Answering cards"));
+        Request::Interrupt { conversation_id } => {
+            sessions.interrupt(conversation_id).await?;
+            Response::Interrupt
         }
-        Request::StopTask { .. } | Request::PauseTask { .. } | Request::ResumeTask { .. } => {
-            return Err(unavailable("Controlling workers"));
+        Request::AnswerCard {
+            conversation_id,
+            card_id,
+            decision,
+        } => {
+            sessions
+                .answer_card(conversation_id, card_id, decision)
+                .await?;
+            Response::AnswerCard
         }
-        Request::Hibernate { .. }
-        | Request::Archive { .. }
-        | Request::Restore { .. }
-        | Request::Delete { .. } => return Err(unavailable("The conversation lifecycle")),
+        Request::AnswerQuestion {
+            conversation_id,
+            card_id,
+            answer,
+        } => {
+            sessions
+                .answer_question(conversation_id, card_id, answer)
+                .await?;
+            Response::AnswerQuestion
+        }
+        Request::DecidePlan {
+            conversation_id,
+            card_id,
+            approve,
+            message,
+        } => {
+            sessions
+                .decide_plan(conversation_id, card_id, approve, message)
+                .await?;
+            Response::DecidePlan
+        }
+        Request::StopTask { task_id } => {
+            sessions.stop_task(task_id).await?;
+            Response::StopTask
+        }
+        Request::PauseTask { task_id } => {
+            sessions.pause_task(task_id).await?;
+            Response::PauseTask
+        }
+        Request::ResumeTask { task_id } => {
+            sessions.resume_task(task_id).await?;
+            Response::ResumeTask
+        }
+        Request::Hibernate { id } => Response::Hibernate {
+            conversation: Box::new(sessions.hibernate(id).await?),
+        },
+        Request::Archive { id } => Response::Archive {
+            conversation: Box::new(sessions.archive(id).await?),
+        },
+        Request::Restore { id } => Response::Restore {
+            conversation: Box::new(sessions.restore(id).await?),
+        },
+        Request::Delete {
+            id,
+            delete_branches,
+            forget_brain: _,
+        } => {
+            sessions.delete(id, delete_branches).await?;
+            Response::Delete
+        }
         Request::RenameConversation { id, title } => Response::RenameConversation {
             conversation: Box::new(core.rename_conversation(id, title).await?),
         },

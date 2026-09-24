@@ -909,7 +909,7 @@ impl Core {
         Ok(queue)
     }
 
-    async fn board(&self, id: &ConversationId) -> Result<Board> {
+    pub(crate) async fn board(&self, id: &ConversationId) -> Result<Board> {
         let mut boards = self.boards.lock().await;
         if let Some(board) = boards.get(id) {
             return Ok(board.clone());
@@ -1022,7 +1022,7 @@ impl Core {
             .unwrap_or_else(|poison| poison.into_inner())
     }
 
-    fn conversation(&self, id: &ConversationId) -> Result<Conversation> {
+    pub fn conversation(&self, id: &ConversationId) -> Result<Conversation> {
         self.projection()
             .conversations
             .get(id)
@@ -1032,7 +1032,7 @@ impl Core {
 
     /// Appends events atomically, applies them to the projection, and returns each event's
     /// stream sequence.
-    async fn record(&self, events: Vec<(String, DomainEvent)>) -> Result<Vec<i64>> {
+    pub(crate) async fn record(&self, events: Vec<(String, DomainEvent)>) -> Result<Vec<i64>> {
         let new = events
             .iter()
             .map(|(stream, event)| to_new_event(stream.clone(), event))

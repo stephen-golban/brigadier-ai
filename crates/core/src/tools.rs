@@ -134,6 +134,7 @@ pub struct TaskRef {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AskUser {
+    /// The question, self-contained: the user may read it later, out of context.
     pub question: String,
     /// Suggested answers shown as buttons; the user can always type their own.
     #[serde(default)]
@@ -161,6 +162,7 @@ pub struct ReadArtifact {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct QueryBrain {
+    /// What you want to know about the project.
     pub query: String,
 }
 
@@ -168,7 +170,9 @@ pub struct QueryBrain {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PlanStepInput {
+    /// The step, in a few words.
     pub title: String,
+    /// What it involves, if the title is not enough.
     #[serde(default)]
     pub detail: Option<String>,
 }
@@ -178,7 +182,9 @@ pub struct PlanStepInput {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ProposePlan {
+    /// What the plan achieves.
     pub title: String,
+    /// The steps, in order.
     pub steps: Vec<PlanStepInput>,
     /// True for big, risky or architectural plans: they get a cross-vendor review before
     /// Brigadier approves them on the user's behalf.
@@ -259,6 +265,7 @@ impl OrchestratorCall {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AskOrchestrator {
+    /// The question, with the context the orchestrator needs to answer it.
     pub question: String,
 }
 
@@ -268,6 +275,7 @@ pub struct AskOrchestrator {
 pub struct ArtifactInput {
     /// Path of the file, inside the worker's scratch folder (absolute, or relative to it).
     pub path: String,
+    /// What the file holds, in a few words.
     pub title: String,
 }
 
@@ -288,11 +296,13 @@ pub struct SubmitReport {
     /// Exactly what was verified and how (commands run and their results).
     #[serde(default)]
     pub verification: Vec<String>,
+    /// Questions left open, or (for reviews) the exact issues to fix.
     #[serde(default)]
     pub open_questions: Vec<String>,
     /// Review tasks only: the verdict on the reviewed change.
     #[serde(default)]
     pub verdict: Option<ReviewVerdict>,
+    /// Files from your scratch folder with details the report leaves out.
     #[serde(default)]
     pub artifacts: Vec<ArtifactInput>,
 }
