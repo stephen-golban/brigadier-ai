@@ -256,6 +256,11 @@ impl Bridge {
                 }
             };
             if let Some(Outgoing { request, reply }) = outgoing {
+                // The caller gave up (it timed out while we reconnected): running its request
+                // now would apply a change it already reported as failed.
+                if reply.as_ref().is_some_and(Reply::is_closed) {
+                    continue;
+                }
                 let id = next_id;
                 next_id = next_id.wrapping_add(1).max(1);
                 let frame = ClientFrame::Request { id, request };
