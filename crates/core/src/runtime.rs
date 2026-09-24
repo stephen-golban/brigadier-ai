@@ -666,11 +666,10 @@ impl Runtime {
         self.admit()?;
         let text = load_fixture(&self.recordings_dir, fixture_id).await?;
         let recording = Recording::parse(&text).map_err(Error::Invalid)?;
-        let lines: Vec<(u64, String)> = recording
+        let lines = recording
             .lines
             .into_iter()
-            .filter(|line| line.dir == record::Direction::Out)
-            .map(|line| (line.t, line.line))
+            .map(|line| (line.t, line.dir, line.line))
             .collect();
         let source = RawSource::Replay {
             title: recording.header.title,
@@ -688,7 +687,7 @@ impl Runtime {
         self.admit()?;
         let lines = simulate::usage_limit(provider)
             .into_iter()
-            .map(|line| (0, line))
+            .map(|line| (0, record::Direction::Out, line))
             .collect();
         let source = RawSource::Simulation {
             title: format!("{} usage limit", provider.label()),
@@ -700,7 +699,7 @@ impl Runtime {
         self: &Arc<Self>,
         provider: ProviderKind,
         source: RawSource,
-        lines: Vec<(u64, String)>,
+        lines: Vec<(u64, record::Direction, String)>,
         paced: bool,
     ) -> Result<RawSession> {
         let now = now_ms();
@@ -726,13 +725,13 @@ impl Runtime {
         let mut replayer = self.provider(provider).replayer();
         self.spawn(async move {
             let mut last = 0;
-            for (t, line) in lines {
+            for (t, dir, line) in lines {
                 if paced {
                     let gap = Duration::from_millis(t.saturating_sub(last)).min(REPLAY_MAX_GAP);
                     tokio::time::sleep(gap).await;
                     last = t;
                 }
-                for event in replayer.feed(&line) {
+                for event in replayer.feed(dir, &line) {
                     if events_tx.send(event).await.is_err() {
                         return;
                     }

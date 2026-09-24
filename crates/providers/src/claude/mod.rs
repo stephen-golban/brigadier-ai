@@ -30,7 +30,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::cli::{CliEnv, parse_version};
 use crate::model::*;
 use crate::process::{self, CliProcess};
-use crate::record::{self, Recorder};
+use crate::record::{self, Direction, Recorder};
 use crate::{
     BoxFuture, Error, Ledger, Provider, ProviderSession, Replayer, Result, Started, now_ms, policy,
 };
@@ -558,7 +558,14 @@ fn model_info(model: &Value) -> Option<ModelInfo> {
 struct ClaudeReplayer(Parser);
 
 impl Replayer for ClaudeReplayer {
-    fn feed(&mut self, line: &str) -> Vec<ProviderEvent> {
+    fn feed(&mut self, dir: Direction, line: &str) -> Vec<ProviderEvent> {
+        if dir == Direction::In {
+            let sent: Value = serde_json::from_str(line).unwrap_or_default();
+            if sent["type"] == "control_request" && sent["request"]["subtype"] == "interrupt" {
+                self.0.interrupt_requested();
+            }
+            return Vec::new();
+        }
         self.0
             .feed(line)
             .into_iter()
