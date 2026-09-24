@@ -72,8 +72,8 @@ pub fn evaluate(
                 BudgetId::FrameGaps => (
                     (ui.frame_gaps.samples > 0).then_some(ui.frame_gaps.max_ms),
                     format!(
-                        "largest of {} frame gaps during the burst",
-                        ui.frame_gaps.samples
+                        "largest of {} frame gaps during the burst; {}",
+                        ui.frame_gaps.samples, ui.stall_context
                     ),
                 ),
                 BudgetId::RuntimeStalls => (

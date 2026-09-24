@@ -101,16 +101,50 @@ export function forgetProbes(burstId: string): void {
 let frameLoop: number | null = null;
 let lastFrame: number | null = null;
 
+// What explains a stall while sampling: when the longest frame gap ended, and the longest
+// synchronous event flush with the event kinds it applied (times relative to sampling start).
+let sampledFrom = 0;
+let longestGap = { ms: 0, endedAt: 0 };
+let longestFlush = { ms: 0, at: 0, kinds: "" };
+
 function onFrame(time: number) {
-  if (lastFrame !== null) frameGaps.push(time - lastFrame);
+  if (lastFrame !== null) {
+    const gap = time - lastFrame;
+    frameGaps.push(gap);
+    if (gap > longestGap.ms) longestGap = { ms: gap, endedAt: time - sampledFrom };
+  }
   lastFrame = time;
   frameLoop = requestAnimationFrame(onFrame);
+}
+
+/** Records how long applying one batch of events to UI state took (while sampling). */
+export function noteFlush(startedAt: number, kinds: readonly string[]): void {
+  if (frameLoop === null) return;
+  const ms = performance.now() - startedAt;
+  if (ms <= longestFlush.ms) return;
+  const counts = new Map<string, number>();
+  for (const kind of kinds) counts.set(kind, (counts.get(kind) ?? 0) + 1);
+  longestFlush = {
+    ms,
+    at: startedAt - sampledFrom,
+    kinds: [...counts].map(([kind, n]) => (n > 1 ? `${kind}×${n}` : kind)).join(", "),
+  };
+}
+
+/** One line on where the longest frame gap fell and the costliest event flush. */
+export function stallContext(): string {
+  const gap = `longest gap ended at +${Math.round(longestGap.endedAt)} ms`;
+  if (longestFlush.ms === 0) return gap;
+  return `${gap}; longest event flush ${Math.round(longestFlush.ms)} ms at +${Math.round(longestFlush.at)} ms (${longestFlush.kinds})`;
 }
 
 /** Starts or stops frame-gap sampling (a proxy for long tasks: WebKit has no Long Tasks API). */
 export function setFrameSampling(on: boolean): void {
   if (on && frameLoop === null) {
     lastFrame = null;
+    sampledFrom = performance.now();
+    longestGap = { ms: 0, endedAt: 0 };
+    longestFlush = { ms: 0, at: 0, kinds: "" };
     frameLoop = requestAnimationFrame(onFrame);
   } else if (!on && frameLoop !== null) {
     cancelAnimationFrame(frameLoop);

@@ -1,6 +1,6 @@
 import { subscribe } from "@/ipc/client";
 import type { BridgeEvent, EventEnvelope } from "@/ipc/generated";
-import { markApplied, setSamplingPaused } from "@/lib/perf";
+import { markApplied, noteFlush, setSamplingPaused } from "@/lib/perf";
 import { loadCatalog, loadConversation, openOrchestratorLog } from "@/state/actions";
 import { applyBoardEvents, useBoard } from "@/state/board";
 import { applyEvents, useApp } from "@/state/store";
@@ -14,8 +14,10 @@ function flush() {
   flushScheduled = false;
   const batch = queued;
   queued = [];
+  const started = performance.now();
   applyEvents(batch);
   applyBoardEvents(batch);
+  noteFlush(started, batch.map(({ event }) => event.type));
   for (const { atMs, event } of batch) {
     markApplied(atMs, event.type === "probe" ? event.burstId : null);
   }
