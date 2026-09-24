@@ -476,6 +476,12 @@ pub enum Artifact {
     ClaudeSession { session_id: String },
     /// A Claude Code project directory (`projects/<encoded cwd>`) that did not exist before.
     ClaudeProjectDir { path: String },
+    /// Claude Code's write-staging directory in the working directory (`.claude/.cc-writes`,
+    /// or `.claude` itself when that did not exist). Removed only while it holds no files.
+    ClaudeStagingDir { path: String },
     /// A Codex thread: its rollout file and state records, removed through `thread/delete`.
     CodexThread { thread_id: String },
+    /// A project trust entry Codex persisted in the user's `config.toml` when a thread started
+    /// there. Removed through Codex's config API, only while it is still just `trusted`.
+    CodexProjectTrust { path: String },
 }

@@ -8,4 +8,4 @@ export type Artifact = { "type": "process", pid: number,
 /**
  * Start time, to tell it apart from a later process that reused the pid.
  */
-startedAtMs: number | null, } | { "type": "claudeSession", sessionId: string, } | { "type": "claudeProjectDir", path: string, } | { "type": "codexThread", threadId: string, };
+startedAtMs: number | null, } | { "type": "claudeSession", sessionId: string, } | { "type": "claudeProjectDir", path: string, } | { "type": "claudeStagingDir", path: string, } | { "type": "codexThread", threadId: string, } | { "type": "codexProjectTrust", path: string, };

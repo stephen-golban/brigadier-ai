@@ -8,8 +8,10 @@
 //!
 //! The user's personal Codex setup stays out: plugins, apps, hooks, computer and browser use,
 //! memories and `notify` are switched off per process, and the MCP servers from their config are
-//! disabled per thread. A trust entry for the working directory is passed as an override, so
-//! Codex does not write one into `~/.codex/config.toml`. Brigadier never edits that file.
+//! disabled per thread. Starting a thread in a project the user never trusted makes Codex
+//! persist a trust entry for it in `~/.codex/config.toml` (the override passed per process does
+//! not prevent that), so the entries a thread adds are recorded in the ledger and removed with
+//! it, through Codex's own config API. Brigadier writes nothing else there.
 
 pub mod parse;
 #[allow(clippy::all, clippy::pedantic, dead_code, unused_imports)]
@@ -327,17 +329,22 @@ impl Provider for Codex {
 
     fn remove(&self, artifacts: Vec<Artifact>) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
-            let threads: Vec<String> = artifacts
-                .into_iter()
-                .filter_map(|artifact| match artifact {
-                    Artifact::CodexThread { thread_id } => Some(thread_id),
-                    _ => None,
-                })
-                .collect();
-            if threads.is_empty() {
+            let mut threads = Vec::new();
+            let mut trusts = Vec::new();
+            for artifact in artifacts {
+                match artifact {
+                    Artifact::CodexThread { thread_id } => threads.push(thread_id),
+                    Artifact::CodexProjectTrust { path } => trusts.push(path),
+                    _ => {}
+                }
+            }
+            if threads.is_empty() && trusts.is_empty() {
                 return Ok(());
             }
             self.control(async |rpc: &Rpc| {
+                for path in trusts {
+                    remove_project_trust(rpc, &path).await?;
+                }
                 for thread_id in threads {
                     let deleted: Result<Value> = rpc
                         .call(
@@ -349,8 +356,10 @@ impl Provider for Codex {
                         .await;
                     match deleted {
                         Ok(_) => {}
-                        // Already gone (never persisted, or deleted before).
-                        Err(Error::Rejected(message)) if message.contains("not found") => {}
+                        // Already gone: never persisted (no turn ran), or deleted before.
+                        Err(Error::Rejected(message))
+                            if message.contains("not found")
+                                || message.contains("no rollout found") => {}
                         Err(err) => return Err(err),
                     }
                 }
@@ -374,6 +383,7 @@ async fn open_thread(
 ) -> Result<(p::Thread, String)> {
     rpc.initialize().await?;
     let config = thread_config(rpc, spec, cwd).await?;
+    let trusted_before = trusted_projects(rpc, cwd).await?;
     let cwd_text = Some(cwd.display().to_string());
     let sandbox = Some(sandbox_mode(&spec.access));
     let approval = Some(p::AskForApproval::Untrusted);
@@ -440,7 +450,52 @@ async fn open_thread(
             thread_id: thread.id.clone(),
         })
         .await?;
+    for (path, _) in trusted_projects(rpc, cwd).await? {
+        if !trusted_before.contains_key(&path) {
+            ledger.record(Artifact::CodexProjectTrust { path }).await?;
+        }
+    }
     Ok((thread, model))
+}
+
+/// The `projects` table of the user's own `config.toml`, by project path.
+async fn trusted_projects(rpc: &Rpc, cwd: &Path) -> Result<Map<String, Value>> {
+    let read: Value = rpc
+        .call(
+            "config/read",
+            &json!({ "includeLayers": true, "cwd": cwd.display().to_string() }),
+        )
+        .await?;
+    let projects = read
+        .get("layers")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|layer| layer.pointer("/name/type").and_then(Value::as_str) == Some("user"))
+        .and_then(|layer| layer.pointer("/config/projects"))
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    Ok(projects)
+}
+
+/// Removes a trust entry a thread added, unless it changed since (the user decided on it).
+async fn remove_project_trust(rpc: &Rpc, path: &str) -> Result<()> {
+    let projects = trusted_projects(rpc, Path::new(path)).await?;
+    if projects.get(path) != Some(&json!({ "trust_level": "trusted" })) {
+        return Ok(());
+    }
+    let _: Value = rpc
+        .call(
+            "config/value/write",
+            &json!({
+                "keyPath": format!("projects.{}", toml_string(path)),
+                "value": null,
+                "mergeStrategy": "replace",
+            }),
+        )
+        .await?;
+    Ok(())
 }
 
 /// Per-thread config: the user's MCP servers off, Brigadier's on, and the workspace sandbox
