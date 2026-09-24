@@ -29,6 +29,10 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 /// How long to wait for a freshly launched daemon to accept connections.
 const LAUNCH_WAIT: Duration = Duration::from_secs(10);
 const CONNECT_POLL: Duration = Duration::from_millis(20);
+const MIN_BACKOFF: Duration = Duration::from_millis(100);
+const MAX_BACKOFF: Duration = Duration::from_secs(2);
+/// A connection that lasted this long resets the reconnect backoff.
+const HEALTHY_CONNECTION: Duration = Duration::from_secs(5);
 
 type Reply = oneshot::Sender<Result<Response, IpcError>>;
 
@@ -136,14 +140,13 @@ impl Bridge {
     }
 
     async fn run(&self, mut queue: mpsc::Receiver<Outgoing>) {
-        let mut backoff = Duration::from_millis(100);
+        let mut backoff = MIN_BACKOFF;
         loop {
             if self.inner.stopping.load(Ordering::Acquire) {
                 return;
             }
             match self.connect().await {
                 Ok((connection, daemon, last_seq)) => {
-                    backoff = Duration::from_millis(100);
                     tracing::info!(pid = daemon.pid, "connected to brigadierd");
                     // Resume right after the last event we forwarded; first connection starts
                     // at the daemon's head.
@@ -157,6 +160,7 @@ impl Bridge {
                         last_seq: cursor,
                     });
                     self.inner.connected.send_replace(true);
+                    let connected_at = tokio::time::Instant::now();
                     let reason = self.serve(connection, cursor, &mut queue).await;
                     self.inner.connected.send_replace(false);
                     tracing::warn!(reason = %reason, "disconnected from brigadierd");
@@ -164,12 +168,20 @@ impl Bridge {
                         return;
                     }
                     self.emit(BridgeEvent::Disconnected { reason });
+                    // A connection that dies right away (e.g. on a frame we cannot read) must
+                    // not turn into a reconnect storm: back off unless it was healthy a while.
+                    if connected_at.elapsed() < HEALTHY_CONNECTION {
+                        tokio::time::sleep(backoff).await;
+                        backoff = (backoff * 2).min(MAX_BACKOFF);
+                    } else {
+                        backoff = MIN_BACKOFF;
+                    }
                 }
                 Err(reason) => {
                     tracing::warn!(reason = %reason, "cannot reach brigadierd");
                     self.emit(BridgeEvent::Disconnected { reason });
                     tokio::time::sleep(backoff).await;
-                    backoff = (backoff * 2).min(Duration::from_secs(2));
+                    backoff = (backoff * 2).min(MAX_BACKOFF);
                 }
             }
         }
