@@ -36,7 +36,11 @@ export const QuestionCardView = memo(function QuestionCardView({ cardId }: { car
       icon={<QuestionMarkCircle />}
       title={uncommitted ? "Should workers see your uncommitted changes?" : "A question for you"}
       subtitle={
-        taskNumber === undefined ? "From the orchestrator" : `task-${taskNumber} waits for this`
+        uncommitted
+          ? "Brigadier asks once, before the first worker starts"
+          : taskNumber === undefined
+            ? "From the orchestrator"
+            : `task-${taskNumber} waits for this`
       }
       pending={pending}
       resolution={
