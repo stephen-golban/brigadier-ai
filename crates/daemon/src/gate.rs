@@ -15,6 +15,9 @@
 //!    `exec`. Denied: `Brigadier: <why>` on stderr, exit status 1. No grant, no daemon, or a
 //!    dropped connection deny too (fail closed).
 //!
+//! An unknown git subcommand for which an external `git-<name>` program exists (git's exec
+//! path or PATH) asks as well: git runs it ahead of any alias, and it cannot be inspected.
+//!
 //! It guards against accidents, not against a hostile agent: a program started by absolute
 //! path, a script that finds the real binary itself (git puts its own exec path first on the
 //! PATH of the commands it runs, so hooks and `!` aliases see the real git), or an
@@ -125,6 +128,11 @@ mod shim {
             match policy::classify_argv(&argv) {
                 ArgvVerdict::Local => return false,
                 ArgvVerdict::Outward => return true,
+                // git runs an external `git-<name>` ahead of an alias of that name, and what it
+                // does cannot be inspected: ask.
+                ArgvVerdict::GitAlias { globals, name } if git_helper(real, &globals, &name) => {
+                    return true;
+                }
                 ArgvVerdict::GitAlias { globals, name } => match git_alias(real, &globals, &name) {
                     Ok(None) => return false,
                     Ok(Some(value)) => match policy::expand_git_alias(&argv, &value) {
@@ -160,6 +168,36 @@ mod shim {
             Some(1) => Ok(None),
             _ => Err(()),
         }
+    }
+
+    /// Whether git would run an external `git-<name>` program for this call: one in its exec
+    /// path or on PATH, as git looks. When that cannot be told, `true`.
+    fn git_helper(git: &Path, globals: &[String], name: &str) -> bool {
+        if name.contains('/') {
+            return true;
+        }
+        let Ok(output) = Command::new(git)
+            .args(globals)
+            .arg("--exec-path")
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+        else {
+            return true;
+        };
+        if !output.status.success() {
+            return true;
+        }
+        let exec_path =
+            PathBuf::from(String::from_utf8_lossy(&output.stdout).trim_end_matches(['\n', '\r']));
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        std::iter::once(exec_path)
+            .chain(std::env::split_paths(&path))
+            .map(|dir| dir.join(format!("git-{name}")))
+            .any(|candidate| {
+                std::fs::metadata(candidate)
+                    .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+            })
     }
 
     /// Asks the daemon; `Ok` when the user allowed the command.
