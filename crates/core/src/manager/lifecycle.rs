@@ -276,7 +276,29 @@ impl SessionManager {
             workers_see_uncommitted,
         }) = conversation.setup.clone()
         {
-            // The session worktree is gone; the branch stays.
+            // The session worktree is gone. The branch stays while it holds work the base does
+            // not have; a restored session creates it again from the base otherwise.
+            if branch.starts_with("brigadier/") {
+                let (git, repo, branch, base) = (
+                    self.git.clone(),
+                    PathBuf::from(&repo),
+                    branch.clone(),
+                    base.clone(),
+                );
+                let deleted = blocking(move || {
+                    let repo = git.open(&repo).map_err(git_error)?;
+                    if let Some(tip) = repo.branch_tip(&branch).map_err(git_error)?
+                        && repo.is_merged(&branch, &base).map_err(git_error)?
+                    {
+                        repo.delete_branch_at(&branch, &tip).map_err(git_error)?;
+                    }
+                    Ok(())
+                })
+                .await;
+                if let Err(err) = deleted {
+                    tracing::warn!(conversation = %id, error = %err, "could not delete the merged session branch");
+                }
+            }
             let _ = self
                 .core
                 .set_setup(
