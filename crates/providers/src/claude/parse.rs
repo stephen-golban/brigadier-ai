@@ -85,6 +85,8 @@ pub struct Parser {
     totals: TokenUsage,
     interrupting: bool,
     turn_active: bool,
+    /// An error was already reported for the running turn.
+    turn_error: bool,
     turn_started_ms: Option<i64>,
 }
 
@@ -268,6 +270,7 @@ impl Parser {
         let message = value.get("message").cloned().unwrap_or(Value::Null);
         if let Some(code) = str_of(value, "error") {
             let text = content_text(&message);
+            self.turn_error = true;
             out.push(Output::Event(ProviderEvent::Error {
                 error: self.classify(code, text),
             }));
@@ -390,6 +393,7 @@ impl Parser {
             let text = content_text(value.get("message").unwrap_or(&Value::Null));
             if !self.turn_active {
                 self.turn_active = true;
+                self.turn_error = false;
                 self.interrupting = false;
                 self.turn_started_ms = Some(now_ms());
                 out.push(Output::Event(ProviderEvent::TurnStarted { turn_id: None }));
@@ -548,7 +552,7 @@ impl Parser {
         } else {
             TurnStatus::Failed
         };
-        if status == TurnStatus::Failed {
+        if status == TurnStatus::Failed && !std::mem::take(&mut self.turn_error) {
             let text = str_of(value, "result")
                 .map(str::to_owned)
                 .or_else(|| {
@@ -577,6 +581,7 @@ impl Parser {
                     .take()
                     .map(|started| now_ms() - started)
             });
+        self.turn_error = false;
         out.push(Output::Event(ProviderEvent::TurnCompleted {
             turn_id: None,
             status,
@@ -645,27 +650,10 @@ impl Parser {
             quota: QuotaSnapshot {
                 provider: ProviderKind::Claude,
                 windows: self.quota.clone(),
-                limit: rejected.then(|| hit.clone()),
+                limit: rejected.then_some(hit),
                 observed_at_ms: now_ms(),
             },
         }));
-        if rejected {
-            out.push(Output::Event(ProviderEvent::Error {
-                error: ProviderError {
-                    kind: ErrorKind::UsageLimit,
-                    message: format!(
-                        "Claude usage limit reached{}",
-                        hit.window
-                            .as_deref()
-                            .map(|window| format!(" ({})", window_label(window)))
-                            .unwrap_or_default()
-                    ),
-                    will_retry: false,
-                    limit: Some(hit),
-                    code: Some("rate_limit_event:rejected".into()),
-                },
-            }));
-        }
     }
 
     fn control_request(&mut self, value: &Value, out: &mut Vec<Output>) {

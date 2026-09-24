@@ -34,12 +34,16 @@ pub(super) fn project_dir(config: &Path, cwd: &Path) -> PathBuf {
 
 pub(super) fn remove(config: &Path, artifacts: &[Artifact]) -> Result<()> {
     let mut failures = Vec::new();
-    for artifact in artifacts {
-        let result = match artifact {
-            Artifact::ClaudeSession { session_id } => remove_session(config, session_id),
-            Artifact::ClaudeProjectDir { path } => remove_project_dir(config, Path::new(path)),
-            _ => Ok(()),
-        };
+    // Sessions first: a project directory can only go once the sessions in it are gone.
+    let sessions = artifacts.iter().filter_map(|artifact| match artifact {
+        Artifact::ClaudeSession { session_id } => Some(remove_session(config, session_id)),
+        _ => None,
+    });
+    let dirs = artifacts.iter().filter_map(|artifact| match artifact {
+        Artifact::ClaudeProjectDir { path } => Some(remove_project_dir(config, Path::new(path))),
+        _ => None,
+    });
+    for result in sessions.collect::<Vec<_>>().into_iter().chain(dirs) {
         if let Err(err) = result {
             failures.push(err.to_string());
         }
