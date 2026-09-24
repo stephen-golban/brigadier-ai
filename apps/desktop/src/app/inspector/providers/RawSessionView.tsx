@@ -19,7 +19,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import type { ApprovalRequest, ProviderError, RawSession } from "@/ipc/generated";
+import type { ApprovalRequest, Decider, ProviderError, RawSession } from "@/ipc/generated";
 import { formatDateTime, formatMs } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import {
@@ -36,6 +36,12 @@ import {
 import { useApp } from "@/state/store";
 
 const EMPTY: never[] = [];
+
+const DECIDERS: Record<Decider, string> = {
+  policy: "Brigadier",
+  user: "you",
+  recorded: "the recording",
+};
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -344,7 +350,7 @@ const Item = memo(function Item({ item }: { item: TranscriptItem }) {
           {item.resolution ? (
             <span className="text-muted-foreground">
               {item.resolution.decision.type === "allow" ? "allowed" : "denied"} by{" "}
-              {item.resolution.decidedBy === "policy" ? "Brigadier" : "you"}
+              {DECIDERS[item.resolution.decidedBy]}
             </span>
           ) : (
             <span className="text-warning">waiting</span>

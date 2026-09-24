@@ -17,7 +17,7 @@
 mod files;
 pub mod parse;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -517,7 +517,10 @@ impl Provider for Claude {
     }
 
     fn replayer(&self) -> Box<dyn Replayer> {
-        Box::new(ClaudeReplayer(Parser::replay()))
+        Box::new(ClaudeReplayer {
+            parser: Parser::replay(),
+            asked: HashSet::new(),
+        })
     }
 }
 
@@ -555,25 +558,52 @@ fn model_info(model: &Value) -> Option<ModelInfo> {
     })
 }
 
-struct ClaudeReplayer(Parser);
+struct ClaudeReplayer {
+    parser: Parser,
+    /// Approval requests not answered yet.
+    asked: HashSet<String>,
+}
 
 impl Replayer for ClaudeReplayer {
     fn feed(&mut self, dir: Direction, line: &str) -> Vec<ProviderEvent> {
         if dir == Direction::In {
             let sent: Value = serde_json::from_str(line).unwrap_or_default();
             if sent["type"] == "control_request" && sent["request"]["subtype"] == "interrupt" {
-                self.0.interrupt_requested();
+                self.parser.interrupt_requested();
             }
-            return Vec::new();
+            let answered = sent["response"]["request_id"].as_str().unwrap_or_default();
+            if sent["type"] != "control_response" || !self.asked.remove(answered) {
+                return Vec::new();
+            }
+            let answer = &sent["response"]["response"];
+            let decision = if answer["behavior"] == "allow" {
+                ApprovalDecision::Allow
+            } else {
+                ApprovalDecision::Deny {
+                    message: answer["message"].as_str().unwrap_or_default().to_owned(),
+                }
+            };
+            return vec![ProviderEvent::ApprovalResolved {
+                id: answered.to_owned(),
+                decision,
+                decided_by: Decider::Recorded,
+            }];
         }
-        self.0
+        let events: Vec<ProviderEvent> = self
+            .parser
             .feed(line)
             .into_iter()
             .filter_map(|output| match output {
                 Output::Event(event) => Some(event),
                 Output::Control(_) => None,
             })
-            .collect()
+            .collect();
+        for event in &events {
+            if let ProviderEvent::ApprovalRequested { request } = event {
+                self.asked.insert(request.id.clone());
+            }
+        }
+        events
     }
 }
 

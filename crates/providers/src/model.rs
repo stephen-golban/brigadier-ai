@@ -224,6 +224,8 @@ pub enum Decider {
     /// Brigadier's policy, on the user's behalf.
     Policy,
     User,
+    /// Replayed from a recording, which keeps the answer but not who gave it.
+    Recorded,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
