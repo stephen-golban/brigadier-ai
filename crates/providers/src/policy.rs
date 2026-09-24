@@ -341,3 +341,328 @@ fn shell_script(words: &[String]) -> Option<String> {
         .position(|word| word.starts_with('-') && !word.starts_with("--") && word.contains('c'))?;
     rest.get(flag + 1).cloned()
 }
+
+// ----- the command gate: argv-level matching -----------------------------------------------
+
+/// The environment variable that carries a CLI session's gate grant to the command gate.
+/// Codex's default environment filter drops names containing KEY, SECRET or TOKEN, so this one
+/// avoids them.
+pub const GATE_ENV: &str = "BRIGADIER_GATE";
+
+/// Programs named in [`ALWAYS_ASK`], each once, in order. The command gate shims each of them
+/// on a worker's PATH.
+pub fn gate_programs() -> Vec<&'static str> {
+    let mut programs: Vec<&'static str> = Vec::new();
+    for words in ALWAYS_ASK {
+        if !programs.contains(&words[0]) {
+            programs.push(words[0]);
+        }
+    }
+    programs
+}
+
+/// What the command gate does with a command line, judged from its argv alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArgvVerdict {
+    /// Stays on the machine: runs without asking.
+    Local,
+    /// Affects the outside world (or cannot be judged): the user decides.
+    Outward,
+    /// A git subcommand that is not a git command, so it may be an alias. Look up
+    /// `alias.<name>` with the real git and these global options, then judge
+    /// [`expand_git_alias`]'s result.
+    GitAlias { globals: Vec<String>, name: String },
+}
+
+/// Judges `argv` (`argv[0]` is the program, as invoked) for the command gate.
+///
+/// - git: global options before the subcommand are skipped (`git -C repo push`,
+///   `git -c k=v --git-dir=… push`), the subcommand is matched exactly (so `git log --grep push`
+///   runs), commands that run other commands (`submodule foreach`, `rebase --exec`,
+///   `bisect run`) are judged by what they run, and anything that is not a git command may be
+///   an alias ([`ArgvVerdict::GitAlias`]). An unknown global option asks.
+/// - gh: an unknown top-level command may be an alias or an extension, so it asks.
+/// - everything else: [`ALWAYS_ASK`] matching over the words.
+pub fn classify_argv(argv: &[String]) -> ArgvVerdict {
+    let Some((program, args)) = argv.split_first() else {
+        return ArgvVerdict::Local;
+    };
+    let name = program.rsplit('/').next().unwrap_or(program);
+    match name {
+        "git" => classify_git(args),
+        "gh" if args.first().is_some_and(|command| {
+            !command.starts_with('-') && !GH_COMMANDS.contains(&command.as_str())
+        }) =>
+        {
+            ArgvVerdict::Outward
+        }
+        _ => {
+            let mut words = Vec::with_capacity(argv.len());
+            words.push(name.to_owned());
+            words.extend(args.iter().cloned());
+            if ALWAYS_ASK
+                .iter()
+                .any(|pattern| matches_pattern(&words, pattern))
+            {
+                ArgvVerdict::Outward
+            } else {
+                ArgvVerdict::Local
+            }
+        }
+    }
+}
+
+/// The command line a git alias stands for: `argv` with the alias word replaced by the
+/// alias's words (git's own quoting rules). `None` for a shell alias (`!…`), which runs an
+/// arbitrary command line: the gate asks for those.
+pub fn expand_git_alias(argv: &[String], value: &str) -> Option<Vec<String>> {
+    let value = value.trim();
+    if value.starts_with('!') {
+        return None;
+    }
+    let (program, args) = argv.split_first()?;
+    let split = split_git_globals(args);
+    let command = split.command?;
+    let mut expanded = Vec::with_capacity(argv.len() + 4);
+    expanded.push(program.clone());
+    expanded.extend(args[..command].iter().cloned());
+    expanded.extend(split_git_cmdline(value));
+    expanded.extend(args[command + 1..].iter().cloned());
+    Some(expanded)
+}
+
+/// Top-level `gh` commands (2.101) and help topics. Anything else is an alias or an
+/// extension.
+#[rustfmt::skip]
+const GH_COMMANDS: &[&str] = &[
+    "accessibility", "actions", "agent-task", "alias", "api", "attestation", "auth", "browse",
+    "cache", "codespace", "completion", "config", "copilot", "discussion", "environment",
+    "exit-codes", "extension", "formatting", "gist", "gpg-key", "help", "issue", "label",
+    "licenses", "mintty", "org", "pr", "preview", "project", "reference", "release", "repo",
+    "ruleset", "run", "search", "secret", "skill", "ssh-key", "status", "telemetry", "variable",
+    "version", "workflow",
+];
+
+/// git's commands (built-ins and the scripts git ships). git never lets an alias shadow a
+/// command, so these skip the alias lookup; any other word is looked up.
+#[rustfmt::skip]
+const GIT_COMMANDS: &[&str] = &[
+    "add", "am", "annotate", "apply", "archimport", "archive", "backfill", "bisect", "blame",
+    "branch", "bugreport", "bundle", "cat-file", "check-attr", "check-ignore", "check-mailmap",
+    "check-ref-format", "checkout", "checkout-index", "cherry", "cherry-pick", "citool", "clean",
+    "clone", "column", "commit", "commit-graph", "commit-tree", "config", "count-objects",
+    "credential", "credential-cache", "credential-osxkeychain", "credential-store",
+    "cvsexportcommit", "cvsimport", "cvsserver", "daemon", "describe", "diagnose", "diff",
+    "diff-files", "diff-index", "diff-pairs", "diff-tree", "difftool", "fast-export", "fast-import",
+    "fetch", "fetch-pack", "filter-branch", "fmt-merge-msg", "for-each-ref", "for-each-repo",
+    "format-patch", "fsck", "fsck-objects", "fsmonitor--daemon", "gc", "get-tar-commit-id", "grep",
+    "gui", "hash-object", "help", "hook", "http-backend", "http-fetch", "http-push", "imap-send",
+    "index-pack", "init", "init-db", "instaweb", "interpret-trailers", "last-modified", "log",
+    "ls-files", "ls-remote", "ls-tree", "mailinfo", "mailsplit", "maintenance", "merge",
+    "merge-base", "merge-file", "merge-index", "merge-octopus", "merge-one-file", "merge-ours",
+    "merge-recursive", "merge-resolve", "merge-subtree", "merge-tree", "mergetool", "mktag",
+    "mktree", "multi-pack-index", "mv", "name-rev", "notes", "p4", "pack-objects", "pack-redundant",
+    "pack-refs", "patch-id", "prune", "prune-packed", "pull", "push", "quiltimport", "range-diff",
+    "read-tree", "rebase", "receive-pack", "reflog", "refs", "remote", "remote-ext", "remote-fd",
+    "remote-ftp", "remote-ftps", "remote-http", "remote-https", "repack", "replace", "replay",
+    "repo", "request-pull", "rerere", "reset", "restore", "rev-list", "rev-parse", "revert", "rm",
+    "send-email", "send-pack", "sh-i18n--envsubst", "shell", "shortlog", "show", "show-branch",
+    "show-index", "show-ref", "sparse-checkout", "stage", "stash", "status", "stripspace",
+    "submodule", "subtree", "svn", "switch", "symbolic-ref", "tag", "unpack-file", "unpack-objects",
+    "update-index", "update-ref", "update-server-info", "upload-archive", "upload-pack", "var",
+    "verify-commit", "verify-pack", "verify-tag", "version", "web--browse", "whatchanged",
+    "worktree", "write-tree",
+];
+
+/// Where git's global options end.
+struct GitSplit {
+    /// Index (in the arguments after `git`) of the subcommand; `None` when there is none.
+    command: Option<usize>,
+    /// A global option this list does not know, so its arguments cannot be told apart.
+    unknown_option: bool,
+}
+
+/// Skips git's global options (git 2.54 `handle_options`).
+fn split_git_globals(args: &[String]) -> GitSplit {
+    const WITH_VALUE: &[&str] = &[
+        "-C",
+        "-c",
+        "--git-dir",
+        "--work-tree",
+        "--namespace",
+        "--super-prefix",
+        "--config-env",
+        "--attr-source",
+        "--shallow-file",
+        "--exec-path",
+    ];
+    const FLAGS: &[&str] = &[
+        "-p",
+        "--paginate",
+        "-P",
+        "--no-pager",
+        "--no-replace-objects",
+        "--no-lazy-fetch",
+        "--no-optional-locks",
+        "--no-advice",
+        "--bare",
+        "--literal-pathspecs",
+        "--no-literal-pathspecs",
+        "--glob-pathspecs",
+        "--noglob-pathspecs",
+        "--icase-pathspecs",
+    ];
+    // Print something and exit, or turn into `git help` / `git version`.
+    const TERMINAL: &[&str] = &[
+        "-h",
+        "--help",
+        "-v",
+        "--version",
+        "--html-path",
+        "--man-path",
+        "--info-path",
+    ];
+    let mut index = 0;
+    while let Some(arg) = args.get(index) {
+        let arg = arg.as_str();
+        if !arg.starts_with('-') {
+            return GitSplit {
+                command: Some(index),
+                unknown_option: false,
+            };
+        }
+        let joined = arg
+            .split_once('=')
+            .is_some_and(|(name, _)| WITH_VALUE.contains(&name) || name == "--list-cmds");
+        if TERMINAL.contains(&arg) || arg.starts_with("--list-cmds=") || arg == "--exec-path" {
+            // `--exec-path` without a value prints the path.
+            return GitSplit {
+                command: None,
+                unknown_option: false,
+            };
+        }
+        if joined || FLAGS.contains(&arg) {
+            index += 1;
+        } else if WITH_VALUE.contains(&arg) {
+            index += 2;
+        } else {
+            return GitSplit {
+                command: None,
+                unknown_option: true,
+            };
+        }
+    }
+    GitSplit {
+        command: None,
+        unknown_option: false,
+    }
+}
+
+fn classify_git(args: &[String]) -> ArgvVerdict {
+    let split = split_git_globals(args);
+    if split.unknown_option {
+        return ArgvVerdict::Outward;
+    }
+    let Some(command) = split.command else {
+        return ArgvVerdict::Local;
+    };
+    let sub = args[command].as_str();
+    let rest = &args[command + 1..];
+    let outward_sub = ALWAYS_ASK.iter().any(|pattern| {
+        pattern[0] == "git"
+            && pattern
+                .get(1)
+                .is_some_and(|wanted| wanted.eq_ignore_ascii_case(sub))
+            && pattern[2..]
+                .iter()
+                .all(|wanted| rest.iter().any(|word| word == wanted))
+    });
+    if outward_sub || git_runs_outward(sub, rest) {
+        return ArgvVerdict::Outward;
+    }
+    if GIT_COMMANDS.contains(&sub) {
+        ArgvVerdict::Local
+    } else {
+        ArgvVerdict::GitAlias {
+            globals: args[..command].to_vec(),
+            name: sub.to_owned(),
+        }
+    }
+}
+
+/// git commands that run a command line of their own.
+fn git_runs_outward(sub: &str, rest: &[String]) -> bool {
+    let command_line = match sub {
+        // `git submodule [--quiet] foreach [--recursive] <command>`
+        "submodule" => match rest.iter().position(|word| word == "foreach") {
+            Some(at) => rest[at + 1..]
+                .iter()
+                .skip_while(|word| word.starts_with('-'))
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" "),
+            None => return false,
+        },
+        // `git rebase -x <cmd>`, `--exec <cmd>`, `--exec=<cmd>`
+        "rebase" => {
+            let mut commands = Vec::new();
+            let mut words = rest.iter();
+            while let Some(word) = words.next() {
+                if word == "-x" || word == "--exec" {
+                    commands.extend(words.next().cloned());
+                } else if let Some(command) = word.strip_prefix("--exec=") {
+                    commands.push(command.to_owned());
+                } else if let Some(command) = word.strip_prefix("-x")
+                    && !command.is_empty()
+                {
+                    commands.push(command.to_owned());
+                }
+            }
+            commands.join("\n")
+        }
+        // `git bisect run <cmd> [<args>…]`
+        "bisect" if rest.first().is_some_and(|word| word == "run") => rest[1..].join(" "),
+        _ => return false,
+    };
+    is_outward(&command_line)
+}
+
+/// Splits an alias value the way git's `split_cmdline` does: whitespace separates words,
+/// single and double quotes group them, and a backslash escapes the next character (outside
+/// single quotes).
+fn split_git_cmdline(value: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut in_word = false;
+    let mut quote: Option<char> = None;
+    let mut chars = value.chars();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some('\''), '\'') | (Some('"'), '"') => quote = None,
+            (Some('"') | None, '\\') => {
+                in_word = true;
+                if let Some(next) = chars.next() {
+                    word.push(next);
+                }
+            }
+            (None, '\'' | '"') => {
+                in_word = true;
+                quote = Some(c);
+            }
+            (None, c) if c.is_whitespace() => {
+                if in_word {
+                    words.push(std::mem::take(&mut word));
+                    in_word = false;
+                }
+            }
+            (_, c) => {
+                in_word = true;
+                word.push(c);
+            }
+        }
+    }
+    if in_word {
+        words.push(word);
+    }
+    words
+}
