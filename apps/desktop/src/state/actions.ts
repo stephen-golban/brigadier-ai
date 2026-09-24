@@ -80,17 +80,26 @@ export async function loadEarlier(id: string): Promise<void> {
   }
 }
 
+/** Blob reads in flight, by message id, so each full text is requested once. */
+const fullTextLoading = new Set<string>();
+
 /** Fetches the full text of a message whose body lives in the blob store. */
 export async function loadFullText(
   conversationId: string,
   messageId: string,
   hash: string,
 ): Promise<void> {
-  const { text } = await request({ method: "readBlobText", hash });
-  updateThread(conversationId, (thread) => ({
-    ...thread,
-    fullText: { ...thread.fullText, [messageId]: text },
-  }));
+  if (fullTextLoading.has(messageId)) return;
+  fullTextLoading.add(messageId);
+  try {
+    const { text } = await request({ method: "readBlobText", hash });
+    updateThread(conversationId, (thread) => ({
+      ...thread,
+      fullText: { ...thread.fullText, [messageId]: text },
+    }));
+  } finally {
+    fullTextLoading.delete(messageId);
+  }
 }
 
 export function select(selection: Selection): void {
