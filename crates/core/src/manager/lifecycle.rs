@@ -18,11 +18,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::conversation::Envelope;
 use super::{SessionManager, blocking, git_error};
 use crate::model::{
     Conversation, ConversationId, ConversationKind, Environment, Lifecycle, Setup, streams,
 };
-use crate::work::TaskState;
+use crate::work::{InjectionKind, TaskState};
 use crate::{Error, Result, now_ms};
 
 /// How often idle conversations are checked for hibernation.
@@ -79,6 +80,20 @@ impl SessionManager {
                                 t.review = None;
                             })
                             .await;
+                        // The orchestrator was promised the landing's outcome as a message.
+                        self.deliver(
+                            &conversation.id,
+                            Envelope {
+                                kind: InjectionKind::Decision,
+                                label: format!("landing task-{}", task.number),
+                                task_id: Some(task.id.clone()),
+                                text: format!(
+                                    "[not landed task-{} \"{}\"] Brigadier restarted before the landing finished; nothing landed. Call accept_task for task-{} again.",
+                                    task.number, task.title, task.number
+                                ),
+                            },
+                        )
+                        .await;
                         continue;
                     }
                     _ => {}

@@ -476,23 +476,39 @@ impl SessionManager {
             return;
         };
         for approval in board.approvals.values() {
-            if approval.state == CardState::Pending && !self.waiters.is_waited_for(&approval.id) {
-                let keep = matches!(
-                    approval.subject,
-                    ApprovalSubject::Action { .. }
-                        | ApprovalSubject::Landing { .. }
-                        | ApprovalSubject::FinishSession { .. }
-                );
-                if !keep {
-                    self.settle_approval(
-                        approval,
-                        CardState::Expired {
-                            reason: "The session that asked has ended.".into(),
+            if approval.state != CardState::Pending || self.waiters.is_waited_for(&approval.id) {
+                continue;
+            }
+            match &approval.subject {
+                // Answering it delivers the decision itself; nothing needs to wait.
+                ApprovalSubject::Action { .. } => continue,
+                // The landing that asked is gone; `recover` tells the orchestrator to accept
+                // the task again.
+                ApprovalSubject::Landing { .. } => {}
+                // Nothing would merge on a click any more: the orchestrator asks again.
+                ApprovalSubject::FinishSession { branch, base, .. } => {
+                    self.deliver(
+                        conversation_id,
+                        Envelope {
+                            kind: InjectionKind::Decision,
+                            label: "finish session".into(),
+                            task_id: None,
+                            text: format!(
+                                "[not finished] The user had not answered whether to merge `{branch}` into `{base}` when Brigadier restarted; nothing was merged. Call finish_session again."
+                            ),
                         },
                     )
                     .await;
                 }
+                _ => {}
             }
+            self.settle_approval(
+                approval,
+                CardState::Expired {
+                    reason: "The session that asked has ended.".into(),
+                },
+            )
+            .await;
         }
     }
 
