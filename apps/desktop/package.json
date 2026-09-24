@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
     "lint": "oxlint --deny-warnings",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "stage-sidecar": "node scripts/stage-sidecar.mjs"
   },
   "dependencies": {
     "@assistant-ui/react": "0.15.21",

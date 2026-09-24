@@ -1,0 +1,31 @@
+[package]
+name = "brigadier-desktop"
+description = "Brigadier desktop app: Tauri shell that launches and talks to brigadierd."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "brigadier"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+brigadier-core.workspace = true
+brigadier-ipc.workspace = true
+brigadier-sandbox.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2.11.6", features = ["tray-icon", "image-png"] }
+tauri-plugin-single-instance = "2.4.5"
+tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+ts-rs.workspace = true
+
+[lints]
+workspace = true

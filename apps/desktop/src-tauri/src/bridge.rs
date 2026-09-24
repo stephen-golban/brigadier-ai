@@ -1,0 +1,317 @@
+//! The app's single connection to `brigadierd`, bridged to the webview.
+//!
+//! One task owns the connection: it (re)connects, launching the daemon when nothing is
+//! listening, resubscribes from the last event it forwarded, pairs requests with responses,
+//! and forwards events and metrics to the webview channel. Requests made while disconnected
+//! wait in a bounded queue until the connection is back.
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use brigadier_ipc::app::BridgeEvent;
+use brigadier_ipc::protocol::{
+    ClientFrame, ClientInfo, DaemonInfo, ErrorCode, IpcError, Outcome, Request, Response,
+    ServerFrame,
+};
+use brigadier_ipc::{Connection, Reader};
+use brigadier_sandbox::Platform;
+use tauri::ipc::Channel;
+use tokio::sync::{mpsc, oneshot, watch};
+
+use crate::launcher::Launcher;
+
+/// Requests waiting for a connection, at most.
+const QUEUED_REQUESTS: usize = 256;
+/// How long a request may wait (including reconnecting) before failing.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long to wait for a freshly launched daemon to accept connections.
+const LAUNCH_WAIT: Duration = Duration::from_secs(10);
+const CONNECT_POLL: Duration = Duration::from_millis(20);
+
+type Reply = oneshot::Sender<Result<Response, IpcError>>;
+
+struct Outgoing {
+    request: Request,
+    reply: Option<Reply>,
+}
+
+#[derive(Clone)]
+pub struct Bridge {
+    inner: Arc<Inner>,
+}
+
+struct Inner {
+    platform: Arc<dyn Platform>,
+    launcher: Launcher,
+    requests: mpsc::Sender<Outgoing>,
+    ui: Mutex<Option<Channel<BridgeEvent>>>,
+    /// Latest connection state, replayed to a webview that subscribes late or reloads.
+    status: Mutex<Option<BridgeEvent>>,
+    connected: watch::Sender<bool>,
+    metrics_wanted: AtomicBool,
+    /// Highest event `seq` forwarded to the webview; the resubscribe cursor.
+    last_seq: AtomicI64,
+    stopping: AtomicBool,
+}
+
+impl Bridge {
+    /// Starts the connection task on Tauri's async runtime.
+    pub fn start(platform: Arc<dyn Platform>, launcher: Launcher) -> Self {
+        let (requests, queue) = mpsc::channel(QUEUED_REQUESTS);
+        let bridge = Self {
+            inner: Arc::new(Inner {
+                platform,
+                launcher,
+                requests,
+                ui: Mutex::new(None),
+                status: Mutex::new(None),
+                connected: watch::channel(false).0,
+                metrics_wanted: AtomicBool::new(false),
+                last_seq: AtomicI64::new(-1),
+                stopping: AtomicBool::new(false),
+            }),
+        };
+        let task = bridge.clone();
+        tauri::async_runtime::spawn(async move { task.run(queue).await });
+        bridge
+    }
+
+    /// Sends a request and waits for its response.
+    pub async fn request(&self, request: Request) -> Result<Response, IpcError> {
+        if let Request::SetMetricsStreaming { enabled } = &request {
+            self.inner.metrics_wanted.store(*enabled, Ordering::Release);
+        }
+        let (reply, response) = oneshot::channel();
+        let outgoing = Outgoing {
+            request,
+            reply: Some(reply),
+        };
+        let result = tokio::time::timeout(REQUEST_TIMEOUT, async {
+            self.inner
+                .requests
+                .send(outgoing)
+                .await
+                .map_err(|_| unavailable("the bridge has stopped"))?;
+            response
+                .await
+                .map_err(|_| unavailable("the daemon disconnected before answering"))?
+        })
+        .await;
+        result.unwrap_or_else(|_| Err(unavailable("the daemon did not answer in time")))
+    }
+
+    /// Routes events to the webview. Sends the current connection state right away.
+    pub fn attach_ui(&self, channel: Channel<BridgeEvent>) {
+        if let Some(status) = self.inner.status.lock().expect("status lock").clone() {
+            let _ = channel.send(status);
+        }
+        *self.inner.ui.lock().expect("ui lock") = Some(channel);
+    }
+
+    pub fn emit(&self, event: BridgeEvent) {
+        if matches!(
+            event,
+            BridgeEvent::Connected { .. } | BridgeEvent::Disconnected { .. }
+        ) {
+            *self.inner.status.lock().expect("status lock") = Some(event.clone());
+        }
+        if let Some(channel) = self.inner.ui.lock().expect("ui lock").as_ref() {
+            let _ = channel.send(event);
+        }
+    }
+
+    /// Asks the daemon to drain and exit, waiting for its acknowledgement, and stops
+    /// reconnecting. Returns false if the daemon could not be reached.
+    pub async fn shutdown_daemon(&self, timeout: Duration) -> bool {
+        self.inner.stopping.store(true, Ordering::Release);
+        if !*self.inner.connected.borrow() {
+            return false;
+        }
+        matches!(
+            tokio::time::timeout(timeout, self.request(Request::Shutdown)).await,
+            Ok(Ok(Response::Shutdown))
+        )
+    }
+
+    async fn run(&self, mut queue: mpsc::Receiver<Outgoing>) {
+        let mut backoff = Duration::from_millis(100);
+        loop {
+            if self.inner.stopping.load(Ordering::Acquire) {
+                return;
+            }
+            match self.connect().await {
+                Ok((connection, daemon, last_seq)) => {
+                    backoff = Duration::from_millis(100);
+                    tracing::info!(pid = daemon.pid, "connected to brigadierd");
+                    // Resume right after the last event we forwarded; first connection starts
+                    // at the daemon's head.
+                    let cursor = match self.inner.last_seq.load(Ordering::Acquire) {
+                        -1 => last_seq,
+                        seen => seen,
+                    };
+                    self.inner.last_seq.store(cursor, Ordering::Release);
+                    self.emit(BridgeEvent::Connected {
+                        daemon,
+                        last_seq: cursor,
+                    });
+                    self.inner.connected.send_replace(true);
+                    let reason = self.serve(connection, cursor, &mut queue).await;
+                    self.inner.connected.send_replace(false);
+                    tracing::warn!(reason = %reason, "disconnected from brigadierd");
+                    if self.inner.stopping.load(Ordering::Acquire) {
+                        return;
+                    }
+                    self.emit(BridgeEvent::Disconnected { reason });
+                }
+                Err(reason) => {
+                    tracing::warn!(reason = %reason, "cannot reach brigadierd");
+                    self.emit(BridgeEvent::Disconnected { reason });
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(Duration::from_secs(2));
+                }
+            }
+        }
+    }
+
+    /// Connects, launching the daemon if nothing answers.
+    async fn connect(&self) -> Result<(Connection, DaemonInfo, i64), String> {
+        let client = ClientInfo {
+            name: "Brigadier".into(),
+            pid: std::process::id(),
+        };
+        if let Ok(connected) = brigadier_ipc::connect(&*self.inner.platform, client.clone()).await {
+            return Ok(connected);
+        }
+        self.inner.launcher.ensure_launched().await?;
+        let deadline = tokio::time::Instant::now() + LAUNCH_WAIT;
+        loop {
+            match brigadier_ipc::connect(&*self.inner.platform, client.clone()).await {
+                Ok(connected) => return Ok(connected),
+                Err(err) if tokio::time::Instant::now() >= deadline => {
+                    return Err(format!("brigadierd did not start: {err}"));
+                }
+                Err(_) => tokio::time::sleep(CONNECT_POLL).await,
+            }
+        }
+    }
+
+    /// Serves one connection until it drops. Returns why it ended.
+    async fn serve(
+        &self,
+        connection: Connection,
+        cursor: i64,
+        queue: &mut mpsc::Receiver<Outgoing>,
+    ) -> String {
+        let Connection { reader, mut writer } = connection;
+        // Frames are read on their own task: reading is not cancel-safe inside select!.
+        let (frames_tx, mut frames) = mpsc::channel(64);
+        let reader_task = tauri::async_runtime::spawn(read_frames(reader, frames_tx));
+
+        let mut pending: HashMap<u32, Option<Reply>> = HashMap::new();
+        let mut next_id: u32 = 1;
+        let subscribe = Outgoing {
+            request: Request::Subscribe {
+                after_seq: cursor,
+                metrics: self.inner.metrics_wanted.load(Ordering::Acquire),
+            },
+            reply: None,
+        };
+        let mut first = Some(subscribe);
+
+        let reason = loop {
+            let outgoing = if let Some(subscribe) = first.take() {
+                Some(subscribe)
+            } else {
+                tokio::select! {
+                    frame = frames.recv() => {
+                        match frame {
+                            Some(Ok(frame)) => {
+                                if let Some(reason) = self.dispatch(frame, &mut pending) {
+                                    break reason;
+                                }
+                            }
+                            Some(Err(err)) => break err,
+                            None => break "connection closed".to_owned(),
+                        }
+                        None
+                    }
+                    outgoing = queue.recv() => match outgoing {
+                        Some(outgoing) => Some(outgoing),
+                        None => break "bridge stopped".to_owned(),
+                    },
+                }
+            };
+            if let Some(Outgoing { request, reply }) = outgoing {
+                let id = next_id;
+                next_id = next_id.wrapping_add(1).max(1);
+                let frame = ClientFrame::Request { id, request };
+                if let Err(err) = writer.write(&frame).await {
+                    if let Some(reply) = reply {
+                        let _ = reply.send(Err(unavailable("the daemon connection broke")));
+                    }
+                    break format!("write failed: {err}");
+                }
+                pending.insert(id, reply);
+            }
+        };
+        reader_task.abort();
+        // Dropping the pending replies fails those requests; the UI retries after reconnect.
+        drop(pending);
+        reason
+    }
+
+    /// Handles one frame from the daemon. Returns a reason when the connection should end.
+    fn dispatch(
+        &self,
+        frame: ServerFrame,
+        pending: &mut HashMap<u32, Option<Reply>>,
+    ) -> Option<String> {
+        match frame {
+            ServerFrame::Response { id, result } => {
+                if let Some(Some(reply)) = pending.remove(&id) {
+                    let _ = reply.send(match result {
+                        Outcome::Ok { value } => Ok(value),
+                        Outcome::Err { error } => Err(error),
+                    });
+                }
+            }
+            ServerFrame::Event { event } => {
+                self.inner.last_seq.fetch_max(event.seq, Ordering::AcqRel);
+                self.emit(BridgeEvent::Event { event });
+            }
+            ServerFrame::Lagged { resume_after } => {
+                // The webview reloads its state; resume the live feed from the daemon's head.
+                self.inner.last_seq.store(-1, Ordering::Release);
+                self.emit(BridgeEvent::Lagged { resume_after });
+                return Some("lagged behind the live feed".into());
+            }
+            ServerFrame::Metrics { metrics } => self.emit(BridgeEvent::Metrics { metrics }),
+            ServerFrame::Closing => return Some("daemon is shutting down".into()),
+            ServerFrame::Welcome { .. } => return Some("unexpected second welcome".into()),
+        }
+        None
+    }
+}
+
+async fn read_frames(mut reader: Reader, frames: mpsc::Sender<Result<ServerFrame, String>>) {
+    loop {
+        let frame = match reader.read::<ServerFrame>().await {
+            Ok(Some(frame)) => Ok(frame),
+            Ok(None) => return,
+            Err(err) => Err(format!("read failed: {err}")),
+        };
+        let failed = frame.is_err();
+        if frames.send(frame).await.is_err() || failed {
+            return;
+        }
+    }
+}
+
+fn unavailable(message: &str) -> IpcError {
+    IpcError {
+        code: ErrorCode::Internal,
+        message: message.into(),
+    }
+}
