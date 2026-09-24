@@ -4,7 +4,7 @@
 //! running in the menu bar. Quit (menu-bar item, Cmd+Q or a system quit) asks the daemon to
 //! drain and exit, waits for its acknowledgement, then exits the app.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::time::Duration;
 
 use brigadier_ipc::app::BridgeEvent;
@@ -21,9 +21,16 @@ const QUIT_TIMEOUT: Duration = Duration::from_secs(5);
 
 static QUITTING: AtomicBool = AtomicBool::new(false);
 static IN_MENU_BAR: AtomicBool = AtomicBool::new(false);
+/// The code the process exits with once the event loop returns. Tauri's runtime turns
+/// `app.exit(code)` into a plain exit, so the event loop itself always reports 0.
+static EXIT_CODE: AtomicI32 = AtomicI32::new(0);
 
 pub fn is_quitting() -> bool {
     QUITTING.load(Ordering::Acquire)
+}
+
+pub fn exit_code() -> i32 {
+    EXIT_CODE.load(Ordering::Acquire)
 }
 
 pub fn install_tray(app: &AppHandle) -> tauri::Result<()> {
@@ -96,6 +103,7 @@ pub fn quit(app: &AppHandle, code: i32) {
     if QUITTING.swap(true, Ordering::AcqRel) {
         return;
     }
+    EXIT_CODE.store(code, Ordering::Release);
     if let Some(window) = main_window(app) {
         let _ = window.hide();
     }
