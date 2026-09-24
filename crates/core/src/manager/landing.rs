@@ -687,14 +687,19 @@ impl SessionManager {
         if let (Some(branch), Ok(repo)) = (branch, self.task_repo(task)) {
             let git = self.git.clone();
             let into = target.to_owned();
-            let _ = blocking(move || {
+            let deleted = blocking(move || {
                 let repo = git.open(&repo).map_err(git_error)?;
+                // `git branch -d` would compare with the main checkout's HEAD, which is not
+                // the target in a new-worktree session; the merge check here is the real one.
                 if repo.is_merged(&branch, &into).map_err(git_error)? {
-                    repo.delete_branch(&branch, false).map_err(git_error)?;
+                    repo.delete_branch(&branch, true).map_err(git_error)?;
                 }
                 Ok(())
             })
             .await;
+            if let Err(err) = deleted {
+                tracing::warn!(task = %task.id, error = %err, "could not delete the landed task branch");
+            }
         }
         let review = task
             .review
