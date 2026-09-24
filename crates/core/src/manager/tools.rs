@@ -320,21 +320,31 @@ impl SessionManager {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-        let page = self.core.list_messages(id.clone(), None, 500).await?;
-        let mut found = Vec::new();
-        for wanted in ids {
-            let attachment = page
-                .messages
-                .iter()
-                .flat_map(|message| message.attachments.iter())
-                .find(|attachment| &attachment.id == wanted)
-                .cloned()
-                .ok_or_else(|| {
-                    Error::NotFound(format!("attachment {wanted} in this conversation"))
-                })?;
-            found.push(attachment);
+        let mut found: Vec<Option<AttachmentRef>> = vec![None; ids.len()];
+        let mut before = None;
+        // Newest first, page by page, until every attachment is found or history ends.
+        while found.iter().any(Option::is_none) {
+            let page = self.core.list_messages(id.clone(), before, 500).await?;
+            for attachment in page.messages.iter().flat_map(|m| m.attachments.iter()) {
+                for (wanted, slot) in ids.iter().zip(found.iter_mut()) {
+                    if slot.is_none() && &attachment.id == wanted {
+                        *slot = Some(attachment.clone());
+                    }
+                }
+            }
+            match page.messages.first() {
+                Some(oldest) if page.has_more => before = Some(oldest.seq),
+                _ => break,
+            }
         }
-        Ok(found)
+        ids.iter()
+            .zip(found)
+            .map(|(wanted, attachment)| {
+                attachment.ok_or_else(|| {
+                    Error::NotFound(format!("attachment {wanted} in this conversation"))
+                })
+            })
+            .collect()
     }
 }
 
