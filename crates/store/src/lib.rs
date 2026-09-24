@@ -9,20 +9,25 @@
 //!   materializes a bounded page and finishes its statement before the result leaves the
 //!   thread, so no WAL snapshot is ever held while a client is being served.
 //! - **Append-only streams.** Events are appended per stream with a per-stream sequence and a
-//!   global, monotonically increasing `seq` that subscribers use as a resync cursor.
-//! - **Blobs.** Large payloads live in a content-addressed store on disk ([`BlobStore`]).
+//!   global, monotonically increasing `seq` that subscribers use as a resync cursor. The only
+//!   removals are retention trims and [`Store::delete_streams`] (a permanent Delete); neither
+//!   renumbers anything, and a `seq` is never reused.
+//! - **Blobs.** Large payloads live in a content-addressed store on disk ([`BlobStore`]). The
+//!   writer indexes every blob hash an event payload mentions, and [`Store::gc_blobs`] deletes
+//!   the blobs no remaining event mentions (the rule is on [`BlobStore`]).
 //!
 //! Nothing here ever blocks a Tokio worker thread.
 
 mod blob;
 mod reader;
+mod refs;
 mod schema;
 mod writer;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use serde::Serialize;
 use serde_json::value::RawValue;
@@ -40,6 +45,12 @@ pub const WRITE_QUEUE: usize = 1024;
 pub const MAX_PAGE: u32 = 1000;
 /// Capacity of the live event feed; slower subscribers are cut off and must resync.
 pub const FEED_CAPACITY: usize = 4096;
+/// How long a blob that no event references is kept after it was last put or touched. It
+/// covers the gap between storing a blob and appending the event that references it, which
+/// for a composer attachment is as long as the user takes to send the message.
+pub const BLOB_GC_GRACE: Duration = Duration::from_secs(24 * 60 * 60);
+/// Blobs the writer checks and deletes per command, so appends interleave with a large GC.
+const GC_CHUNK: usize = 256;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -59,6 +70,8 @@ pub enum Error {
     ReaderGone,
     #[error("invalid blob hash")]
     InvalidBlobHash,
+    #[error("invalid request: {0}")]
+    Invalid(&'static str),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -148,6 +161,22 @@ pub struct StoreStats {
     pub checkpoints: u64,
 }
 
+/// What a [`Store::gc_blobs`] run found and did.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GcStats {
+    /// Blob files found.
+    pub blobs: u64,
+    /// Kept because an event references them.
+    pub referenced: u64,
+    /// Kept because they were put or touched within the grace period.
+    pub recent: u64,
+    /// Deleted.
+    pub removed: u64,
+    pub removed_bytes: u64,
+    /// Unreferenced and stale, but deleting failed (logged); retried by the next run.
+    pub failed: u64,
+}
+
 /// How the writer thread ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WriterState {
@@ -200,6 +229,7 @@ impl Store {
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         writer::spawn(
             config.db_path.clone(),
+            blobs.clone(),
             writer_rx,
             feed.clone(),
             counters.clone(),
@@ -241,6 +271,94 @@ impl Store {
             reply,
         })
         .await?
+    }
+
+    /// Permanently removes every event of these exact streams, atomically and in order with
+    /// the appends around it (through the single writer). Returns how many events were
+    /// removed. Other streams and all sequence numbers are untouched; subscribers see nothing
+    /// (the feed only carries appends). Blobs the events referenced stay until
+    /// [`Store::gc_blobs`].
+    pub async fn delete_streams(&self, streams: Vec<String>) -> Result<u64> {
+        self.delete(streams, Vec::new()).await
+    }
+
+    /// Like [`Store::delete_streams`], for every stream whose name starts with one of
+    /// `prefixes` (e.g. `"task:"` plus an id prefix). An empty prefix is refused.
+    pub async fn delete_stream_prefixes(&self, prefixes: Vec<String>) -> Result<u64> {
+        if prefixes.iter().any(String::is_empty) {
+            return Err(Error::Invalid("an empty prefix would delete every stream"));
+        }
+        self.delete(Vec::new(), prefixes).await
+    }
+
+    async fn delete(&self, streams: Vec<String>, prefixes: Vec<String>) -> Result<u64> {
+        if !self.admitting.load(Ordering::Acquire) {
+            return Err(Error::ShuttingDown);
+        }
+        if streams.is_empty() && prefixes.is_empty() {
+            return Ok(0);
+        }
+        self.command(|reply| WriteOp::Delete {
+            streams,
+            prefixes,
+            reply,
+        })
+        .await?
+    }
+
+    /// Deletes the blob files no stored event references, keeping any put or touched within
+    /// [`BLOB_GC_GRACE`] (the rule is on [`BlobStore`]).
+    ///
+    /// Listing the blob directory runs on Tokio's blocking pool; the reference check and the
+    /// deletes run on the writer thread in chunks, between batches, so no append can slip in
+    /// between the check and the delete. Nothing runs on the async runtime.
+    pub async fn gc_blobs(&self) -> Result<GcStats> {
+        self.gc_blobs_with(BLOB_GC_GRACE).await
+    }
+
+    /// [`Store::gc_blobs`] with a different grace period. Shorter than [`BLOB_GC_GRACE`] is only
+    /// safe when nothing can hold an unreferenced blob for longer (e.g. no composer is open).
+    pub async fn gc_blobs_with(&self, grace: Duration) -> Result<GcStats> {
+        if !self.admitting.load(Ordering::Acquire) {
+            return Err(Error::ShuttingDown);
+        }
+        let cutoff = SystemTime::now()
+            .checked_sub(grace)
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        let blobs = self.blobs.clone();
+        let listed = tokio::task::spawn_blocking(move || blobs.list_blocking())
+            .await
+            .map_err(|err| Error::Io(std::io::Error::other(err)))??;
+
+        let mut stats = GcStats {
+            blobs: listed.len() as u64,
+            ..GcStats::default()
+        };
+        let mut candidates = Vec::new();
+        for entry in listed {
+            if entry.modified > cutoff {
+                stats.recent += 1;
+            } else {
+                candidates.push(entry.hash);
+            }
+        }
+        for chunk in candidates.chunks(GC_CHUNK) {
+            let hashes = chunk.to_vec();
+            let collected = self
+                .command(|reply| WriteOp::CollectBlobs {
+                    hashes,
+                    cutoff,
+                    reply,
+                })
+                .await??;
+            stats.referenced += collected.referenced;
+            stats.recent += collected.recent;
+            stats.removed += collected.removed;
+            stats.removed_bytes += collected.removed_bytes;
+            stats.failed += collected.failed;
+        }
+        tracing::info!(?stats, "blob gc finished");
+        Ok(stats)
     }
 
     /// Asks the writer for a PASSIVE WAL checkpoint without waiting behind a full queue.

@@ -2,13 +2,15 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 use rusqlite::{Connection, OptionalExtension, params};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
+use crate::blob::{BlobStore, Removal};
 use crate::{
-    Counters, Error, MAX_BATCH, NewEvent, Result, Retention, StoredEvent, WriterState, schema,
+    BlobHash, Counters, Error, MAX_BATCH, NewEvent, Result, Retention, StoredEvent, WriterState,
+    schema,
 };
 
 pub(crate) struct WriteCommand {
@@ -21,6 +23,16 @@ pub(crate) enum WriteOp {
         retention: Option<Retention>,
         reply: AppendReply,
     },
+    Delete {
+        streams: Vec<String>,
+        prefixes: Vec<String>,
+        reply: oneshot::Sender<Result<u64>>,
+    },
+    CollectBlobs {
+        hashes: Vec<BlobHash>,
+        cutoff: SystemTime,
+        reply: oneshot::Sender<Result<Collected>>,
+    },
     Checkpoint {
         reply: oneshot::Sender<Result<()>>,
     },
@@ -32,14 +44,91 @@ pub(crate) enum WriteOp {
 type Feed = broadcast::Sender<Arc<StoredEvent>>;
 type AppendReply = oneshot::Sender<Result<Vec<Arc<StoredEvent>>>>;
 
-struct PendingAppend {
-    events: Vec<NewEvent>,
-    retention: Option<Retention>,
-    reply: AppendReply,
+/// A command that changes the event log, committed in queue order within one transaction.
+enum Mutation {
+    Append {
+        events: Vec<NewEvent>,
+        retention: Option<Retention>,
+        reply: AppendReply,
+    },
+    Delete {
+        streams: Vec<String>,
+        prefixes: Vec<String>,
+        reply: oneshot::Sender<Result<u64>>,
+    },
+}
+
+/// A blob collection request, run after the batch's transaction has committed.
+struct Collection {
+    hashes: Vec<BlobHash>,
+    cutoff: SystemTime,
+    reply: oneshot::Sender<Result<Collected>>,
+}
+
+/// Outcome of one [`WriteOp::CollectBlobs`] chunk.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct Collected {
+    pub(crate) removed: u64,
+    pub(crate) removed_bytes: u64,
+    pub(crate) referenced: u64,
+    pub(crate) recent: u64,
+    pub(crate) failed: u64,
+}
+
+/// Sorts commands into mutations (in order), blob collections, checkpoints and a shutdown.
+#[derive(Default)]
+struct Sorted {
+    mutations: Vec<Mutation>,
+    collections: Vec<Collection>,
+    checkpoints: Vec<oneshot::Sender<Result<()>>>,
+    shutdown: Option<oneshot::Sender<Result<()>>>,
+}
+
+impl Sorted {
+    fn push(&mut self, op: WriteOp) {
+        match op {
+            WriteOp::Append {
+                events,
+                retention,
+                reply,
+            } => self.mutations.push(Mutation::Append {
+                events,
+                retention,
+                reply,
+            }),
+            WriteOp::Delete {
+                streams,
+                prefixes,
+                reply,
+            } => self.mutations.push(Mutation::Delete {
+                streams,
+                prefixes,
+                reply,
+            }),
+            WriteOp::CollectBlobs {
+                hashes,
+                cutoff,
+                reply,
+            } => self.collections.push(Collection {
+                hashes,
+                cutoff,
+                reply,
+            }),
+            WriteOp::Checkpoint { reply } => self.checkpoints.push(reply),
+            WriteOp::Shutdown { reply } => match self.shutdown {
+                // A second shutdown racing the first just succeeds.
+                Some(_) => {
+                    let _ = reply.send(Ok(()));
+                }
+                None => self.shutdown = Some(reply),
+            },
+        }
+    }
 }
 
 pub(crate) fn spawn(
     db_path: PathBuf,
+    blobs: BlobStore,
     rx: mpsc::Receiver<WriteCommand>,
     feed: Feed,
     counters: Arc<Counters>,
@@ -53,7 +142,7 @@ pub(crate) fn spawn(
                 state,
                 outcome: None,
             };
-            let mut writer = match Writer::open(&db_path, feed, counters) {
+            let mut writer = match Writer::open(&db_path, blobs, feed, counters) {
                 Ok(writer) => {
                     let _ = ready.send(Ok(()));
                     writer
@@ -96,6 +185,7 @@ impl Drop for StateGuard {
 
 struct Writer {
     conn: Connection,
+    blobs: BlobStore,
     wal_path: PathBuf,
     feed: Feed,
     counters: Arc<Counters>,
@@ -107,19 +197,24 @@ struct Writer {
 const MAX_CACHED_HEADS: usize = 16_384;
 
 impl Writer {
-    fn open(db_path: &Path, feed: Feed, counters: Arc<Counters>) -> Result<Self> {
+    fn open(db_path: &Path, blobs: BlobStore, feed: Feed, counters: Arc<Counters>) -> Result<Self> {
         let mut conn = Connection::open(db_path)?;
         schema::configure_writer(&conn)?;
         schema::migrate(&mut conn)?;
-        let last_seq: i64 =
-            conn.query_row("SELECT COALESCE(MAX(seq), 0) FROM events", [], |row| {
-                row.get(0)
-            })?;
+        // AUTOINCREMENT's counter, not MAX(seq): after the newest events were deleted the next
+        // seq is still above them, and so must be the cursor subscribers resync from.
+        let last_seq: i64 = conn.query_row(
+            "SELECT MAX(COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'events'), 0), \
+                        COALESCE((SELECT MAX(seq) FROM events), 0))",
+            [],
+            |row| row.get(0),
+        )?;
         counters.last_seq.store(last_seq, Ordering::Release);
         let mut wal_path = db_path.as_os_str().to_owned();
         wal_path.push("-wal");
         let writer = Self {
             conn,
+            blobs,
             wal_path: wal_path.into(),
             feed,
             counters,
@@ -145,49 +240,33 @@ impl Writer {
                 }
             }
 
-            let mut shutdown = None;
-            let mut checkpoints = Vec::new();
-            let mut appends = Vec::new();
+            let mut sorted = Sorted::default();
             for command in batch.drain(..) {
-                match command.op {
-                    WriteOp::Append {
-                        events,
-                        retention,
-                        reply,
-                    } => appends.push(PendingAppend {
-                        events,
-                        retention,
-                        reply,
-                    }),
-                    WriteOp::Checkpoint { reply } => checkpoints.push(reply),
-                    WriteOp::Shutdown { reply } => shutdown = Some(reply),
-                }
+                sorted.push(command.op);
             }
 
-            if shutdown.is_some() {
+            if sorted.shutdown.is_some() {
                 // Admission is already closed; commit anything that raced in behind us.
                 rx.close();
                 while let Ok(command) = rx.try_recv() {
-                    match command.op {
-                        WriteOp::Append {
-                            events,
-                            retention,
-                            reply,
-                        } => appends.push(PendingAppend {
-                            events,
-                            retention,
-                            reply,
-                        }),
-                        WriteOp::Checkpoint { reply } => checkpoints.push(reply),
-                        WriteOp::Shutdown { reply } => {
-                            let _ = reply.send(Ok(()));
-                        }
-                    }
+                    sorted.push(command.op);
                 }
             }
 
-            if !appends.is_empty() {
-                self.commit(appends)?;
+            let Sorted {
+                mutations,
+                collections,
+                checkpoints,
+                shutdown,
+            } = sorted;
+            if !mutations.is_empty() {
+                self.commit(mutations)?;
+            }
+            // Only after the commit: a rolled-back delete must not have freed its blobs.
+            for collection in collections {
+                let _ = collection
+                    .reply
+                    .send(self.collect(collection.hashes, collection.cutoff));
             }
             for reply in checkpoints {
                 let _ = reply.send(self.checkpoint("PASSIVE"));
@@ -205,54 +284,71 @@ impl Writer {
         }
     }
 
-    /// Commits every append in one transaction, isolating each command in a savepoint so one
-    /// bad command fails alone. Replies and the live feed only see committed events.
-    fn commit(&mut self, appends: Vec<PendingAppend>) -> Result<()> {
+    /// Commits every mutation in one transaction, in queue order, isolating each command in a
+    /// savepoint so one bad command fails alone. Replies and the live feed only see committed
+    /// events; deletes are not broadcast.
+    fn commit(&mut self, mutations: Vec<Mutation>) -> Result<()> {
         let started = Instant::now();
-        let commands = appends.len() as u64;
-        let mut outcomes = Vec::with_capacity(appends.len());
+        let commands = mutations.len() as u64;
+        let mut outcomes = Vec::with_capacity(mutations.len());
 
         let mut tx = self.conn.transaction()?;
-        for PendingAppend {
-            events,
-            retention,
-            reply,
-        } in appends
-        {
+        for mutation in mutations {
             let mut savepoint = tx.savepoint()?;
-            match append(&savepoint, &mut self.heads, events, retention) {
-                Ok(stored) => {
-                    savepoint.commit()?;
-                    outcomes.push((reply, Ok(stored)));
-                }
-                Err(err) => {
-                    savepoint.rollback()?;
-                    // Heads touched by the failed command may be ahead of the table.
-                    self.heads.clear();
-                    outcomes.push((reply, Err(err)));
-                }
+            let outcome = match mutation {
+                Mutation::Append {
+                    events,
+                    retention,
+                    reply,
+                } => Outcome::Append(
+                    reply,
+                    append(&savepoint, &mut self.heads, events, retention),
+                ),
+                Mutation::Delete {
+                    streams,
+                    prefixes,
+                    reply,
+                } => Outcome::Delete(
+                    reply,
+                    delete(&savepoint, &mut self.heads, &streams, &prefixes),
+                ),
+            };
+            if outcome.is_ok() {
+                savepoint.commit()?;
+            } else {
+                savepoint.rollback()?;
+                // Heads touched by the failed command may disagree with the table.
+                self.heads.clear();
             }
+            outcomes.push(outcome);
         }
         if let Err(err) = tx.commit() {
             self.heads.clear();
             let message = err.to_string();
-            for (reply, _) in outcomes {
-                let _ = reply.send(Err(Error::Io(std::io::Error::other(message.clone()))));
+            for outcome in outcomes {
+                outcome.fail(&message);
             }
             return Err(err.into());
         }
 
         let mut committed = 0u64;
-        for (reply, outcome) in outcomes {
-            if let Ok(stored) = &outcome {
-                for event in stored {
-                    committed += 1;
-                    self.counters.last_seq.store(event.seq, Ordering::Release);
-                    // No receivers is fine; lagging receivers are handled on their side.
-                    let _ = self.feed.send(event.clone());
+        for outcome in outcomes {
+            match outcome {
+                Outcome::Append(reply, outcome) => {
+                    if let Ok(stored) = &outcome {
+                        for event in stored {
+                            committed += 1;
+                            self.counters.last_seq.store(event.seq, Ordering::Release);
+                            // No receivers is fine; lagging receivers are handled on their side.
+                            let _ = self.feed.send(event.clone());
+                        }
+                    }
+                    let _ = reply.send(outcome);
+                }
+                Outcome::Delete(reply, outcome) => {
+                    let _ = reply.send(outcome);
                 }
             }
-            let _ = reply.send(outcome);
         }
 
         let c = &self.counters;
@@ -266,6 +362,35 @@ impl Writer {
             self.heads.clear();
         }
         Ok(())
+    }
+
+    /// Deletes each blob that no event references and that was not put or touched after
+    /// `cutoff`. Runs on this thread, between batches, so no event can be appended between the
+    /// reference check and the delete; the blob lock orders it against concurrent puts.
+    fn collect(&self, hashes: Vec<BlobHash>, cutoff: SystemTime) -> Result<Collected> {
+        let mut referenced = self
+            .conn
+            .prepare_cached("SELECT EXISTS (SELECT 1 FROM blob_refs WHERE hash = ?1)")?;
+        let mut collected = Collected::default();
+        for hash in hashes {
+            if referenced.query_row([hash.as_str()], |row| row.get::<_, bool>(0))? {
+                collected.referenced += 1;
+                continue;
+            }
+            match self.blobs.remove_if_stale_blocking(&hash, cutoff) {
+                Ok(Removal::Removed { bytes }) => {
+                    collected.removed += 1;
+                    collected.removed_bytes += bytes;
+                }
+                Ok(Removal::Recent) => collected.recent += 1,
+                Ok(Removal::Missing) => {}
+                Err(err) => {
+                    tracing::warn!(blob = %hash, error = %err, "could not remove an unreferenced blob");
+                    collected.failed += 1;
+                }
+            }
+        }
+        Ok(collected)
     }
 
     fn checkpoint(&self, mode: &str) -> Result<()> {
@@ -291,6 +416,60 @@ impl Writer {
             .unwrap_or(0);
         self.counters.wal_bytes.store(bytes, Ordering::Relaxed);
     }
+}
+
+/// A mutation's result, held until the transaction commits.
+enum Outcome {
+    Append(AppendReply, Result<Vec<Arc<StoredEvent>>>),
+    Delete(oneshot::Sender<Result<u64>>, Result<u64>),
+}
+
+impl Outcome {
+    fn is_ok(&self) -> bool {
+        match self {
+            Self::Append(_, outcome) => outcome.is_ok(),
+            Self::Delete(_, outcome) => outcome.is_ok(),
+        }
+    }
+
+    /// Replies with the commit failure.
+    fn fail(self, message: &str) {
+        let err = || Error::Io(std::io::Error::other(message.to_owned()));
+        match self {
+            Self::Append(reply, _) => {
+                let _ = reply.send(Err(err()));
+            }
+            Self::Delete(reply, _) => {
+                let _ = reply.send(Err(err()));
+            }
+        }
+    }
+}
+
+/// Removes every event of the exact `streams` and of every stream starting with one of
+/// `prefixes`. Their `blob_refs` rows go with them (cascade); no other row changes, so nothing
+/// else is renumbered. A deleted stream that is appended to again starts over at 1.
+fn delete(
+    conn: &Connection,
+    heads: &mut HashMap<String, i64>,
+    streams: &[String],
+    prefixes: &[String],
+) -> Result<u64> {
+    let mut removed = 0u64;
+    let mut exact = conn.prepare_cached("DELETE FROM events WHERE stream = ?1")?;
+    for stream in streams {
+        removed += exact.execute([stream])? as u64;
+        heads.remove(stream);
+    }
+    // A range on the (stream, stream_seq) index, like `stream_heads`.
+    let mut range = conn.prepare_cached("DELETE FROM events WHERE stream >= ?1 AND stream < ?2")?;
+    for prefix in prefixes {
+        let mut upper = prefix.clone();
+        upper.push(char::MAX);
+        removed += range.execute(params![prefix, upper])? as u64;
+        heads.retain(|stream, _| !stream.starts_with(prefix.as_str()));
+    }
+    Ok(removed)
 }
 
 fn append(
@@ -324,9 +503,11 @@ fn append(
             event.at_ms,
             event.payload.get()
         ])?;
+        let seq = conn.last_insert_rowid();
+        schema::record_blob_refs(conn, seq, event.payload.get())?;
         heads.insert(event.stream.clone(), stream_seq);
         stored.push(Arc::new(StoredEvent {
-            seq: conn.last_insert_rowid(),
+            seq,
             stream: event.stream,
             stream_seq,
             kind: event.kind,
