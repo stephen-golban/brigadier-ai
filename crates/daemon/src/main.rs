@@ -11,11 +11,21 @@
 //!    connections, remove the token, exit 0.
 //!
 //! A critical task or the store writer dying is logged and exits with code 70 instead.
+//!
+//! The same binary has two more jobs, chosen before any of the above runs:
+//!
+//! - `brigadierd mcp`: the stdio bridge CLI sessions start for the Brigadier MCP tools
+//!   ([`bridge`]);
+//! - started through a command-gate link (`git`, `gh`, `npm`, …): the outward-command gate
+//!   ([`gate`]).
 
+mod bridge;
+mod gate;
 mod logging;
 mod metrics;
 mod server;
 mod supervisor;
+mod upgrade;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -72,10 +82,22 @@ fn parse_args() -> Result<Args, String> {
 }
 
 fn main() -> ExitCode {
+    // A command-gate shim (`git`, `gh`, … linked to this binary): decide and exec before any
+    // runtime, logging or store exists, so ungated commands pay almost nothing.
+    #[cfg(unix)]
+    if let Some(program) = gate::shim_program() {
+        return gate::run_shim(program);
+    }
+    // `brigadierd mcp`: the stdio MCP bridge a CLI session starts.
+    if std::env::args_os().nth(1).is_some_and(|arg| arg == "mcp") {
+        return bridge::run(std::env::args_os().skip(2));
+    }
     let args = match parse_args() {
         Ok(args) => args,
         Err(err) => {
-            eprintln!("brigadierd: {err}\nusage: brigadierd [--data-dir PATH] [--foreground]");
+            eprintln!(
+                "brigadierd: {err}\nusage: brigadierd [--data-dir PATH] [--foreground]\n       brigadierd mcp [--data-dir PATH]"
+            );
             return ExitCode::from(2);
         }
     };
@@ -117,6 +139,9 @@ fn start(platform: Arc<dyn Platform>) -> anyhow::Result<ExitCode> {
         tracing::info!("another brigadierd owns this data directory; exiting");
         return Ok(ExitCode::SUCCESS);
     };
+    // Workers' outward commands are gated through these shims; without them they would run
+    // unasked, so failing to create them is fatal.
+    gate::install(&paths.data_dir).context("creating the command gate")?;
     let started_at_ms = brigadier_core::now_ms();
     tracing::info!(
         pid = std::process::id(),

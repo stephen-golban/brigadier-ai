@@ -14,7 +14,7 @@ use brigadier_ipc::protocol::{
     ArtifactText, ClientFrame, ClientInfo, DaemonInfo, ErrorCode, EventEnvelope, IpcError, Outcome,
     RawJson, Request, Response, SendOutcome, ServerFrame,
 };
-use brigadier_ipc::{Connection, Listener, Reader, Token, Writer};
+use brigadier_ipc::{Accepted, Connection, Listener, Reader, Token, Writer};
 use brigadier_store::{Store, StoredEvent};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, mpsc, watch};
@@ -23,6 +23,7 @@ use tokio_util::task::TaskTracker;
 
 use crate::metrics::Metrics;
 use crate::supervisor::Supervisor;
+use crate::upgrade;
 
 /// Frames buffered between a connection's reader task and its handler.
 const INBOUND_FRAMES: usize = 32;
@@ -85,7 +86,8 @@ impl Daemon {
     }
 }
 
-/// Accepts connections until shutdown begins. Each connection authenticates on its own task.
+/// Accepts connections until shutdown begins. Each connection authenticates on its own task:
+/// the app with the token, CLI sessions' MCP bridges and gate checks with their grant.
 pub async fn accept_loop(
     daemon: Arc<Daemon>,
     listener: Listener,
@@ -116,8 +118,19 @@ pub async fn accept_loop(
         let daemon_for_task = daemon.clone();
         let token = token.clone();
         let task = daemon.supervisor.monitor().instrument(async move {
-            match pending.authenticate(&token).await {
-                Ok((connection, client)) => serve(daemon_for_task, connection, client).await,
+            match pending.handshake(&token).await {
+                Ok(Accepted::Client { connection, client }) => {
+                    serve(daemon_for_task, connection, client).await
+                }
+                Ok(Accepted::Mcp { grant, stream }) => {
+                    upgrade::serve_mcp(daemon_for_task, grant, stream).await
+                }
+                Ok(Accepted::Gate {
+                    grant,
+                    argv,
+                    cwd,
+                    check,
+                }) => upgrade::serve_gate(daemon_for_task, grant, argv, cwd, check).await,
                 Err(err) => tracing::warn!(error = %err, "rejected IPC connection"),
             }
         });
@@ -206,8 +219,8 @@ impl Session {
                             Flow::Close => break Ok(()),
                         }
                     }
-                    Some(Ok(ClientFrame::Hello { .. })) => {
-                        break Err(anyhow::anyhow!("hello sent twice"));
+                    Some(Ok(_)) => {
+                        break Err(anyhow::anyhow!("handshake frame after the handshake"));
                     }
                     Some(Err(err)) => break Err(err.into()),
                     None => break Ok(()),

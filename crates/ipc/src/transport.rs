@@ -4,18 +4,30 @@
 use std::io;
 use std::time::Duration;
 
-use brigadier_sandbox::{IpcEndpoint, Platform};
+use brigadier_sandbox::{AppPaths, IpcEndpoint, Platform};
 use interprocess::local_socket::tokio::{Listener as TokioListener, RecvHalf, SendHalf, Stream};
 use interprocess::local_socket::traits::tokio::{Listener as _, Stream as _};
 use interprocess::local_socket::{ListenerOptions, Name};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use crate::Error;
 use crate::frame::{FrameReader, FrameWriter};
-use crate::protocol::{ClientFrame, ClientInfo, DaemonInfo, PROTOCOL_VERSION, ServerFrame};
+use crate::protocol::{
+    ClientFrame, ClientInfo, DaemonInfo, GateVerdict, PROTOCOL_VERSION, ServerFrame,
+};
 use crate::token::Token;
 
-/// Time a new connection has to present a valid hello.
+/// Time a new connection has to present a valid first frame.
 pub const AUTH_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Largest first frame: a hello, an MCP grant, or a gate check carrying a command line (a
+/// Unix command line is at most a few MiB).
+const MAX_FIRST_FRAME_BYTES: usize = 4 * 1024 * 1024;
+
+/// A connection's raw byte stream, after its first frame.
+pub type RawStream = Stream;
 
 /// Reading half of a connection.
 pub type Reader = FrameReader<RecvHalf>;
@@ -85,20 +97,43 @@ impl Listener {
     }
 }
 
-/// A connection that has not yet presented the token.
+/// A connection that has not yet sent its first frame.
 pub struct Pending {
     stream: Stream,
 }
 
+/// What a new connection turned out to be, from its first frame.
+pub enum Accepted {
+    /// A token holder (the app): a framed request/event connection.
+    Client {
+        connection: Connection,
+        client: ClientInfo,
+    },
+    /// A CLI session's Brigadier MCP bridge (`brigadierd mcp`). The stream carries raw MCP from
+    /// here on, starting with the first byte after the frame.
+    Mcp { grant: String, stream: RawStream },
+    /// An outward-command gate check, to be answered once through `check`.
+    Gate {
+        grant: String,
+        argv: Vec<String>,
+        cwd: String,
+        check: GateCheck,
+    },
+}
+
 impl Pending {
-    /// Reads the hello within [`AUTH_TIMEOUT`] and checks the token and protocol version.
-    /// Any failure drops the connection without a reply.
-    pub async fn authenticate(self, token: &Token) -> Result<(Connection, ClientInfo), Error> {
-        let mut connection = Connection::new(self.stream);
-        let hello = tokio::time::timeout(AUTH_TIMEOUT, connection.reader.read::<ClientFrame>())
+    /// Reads the first frame within [`AUTH_TIMEOUT`]. A hello must carry the token and the
+    /// protocol version; MCP and gate frames carry a grant the caller checks. Any failure
+    /// drops the connection without a reply.
+    ///
+    /// The first frame is read unbuffered, so nothing the peer sent after it is lost when the
+    /// connection switches to raw MCP.
+    pub async fn handshake(self, token: &Token) -> Result<Accepted, Error> {
+        let mut stream = self.stream;
+        let first = tokio::time::timeout(AUTH_TIMEOUT, read_first_frame(&mut stream))
             .await
-            .map_err(|_| Error::Unauthorized("no hello before the deadline"))?;
-        match hello {
+            .map_err(|_| Error::Unauthorized("no first frame before the deadline"))?;
+        match first {
             Ok(Some(ClientFrame::Hello {
                 token: presented,
                 protocol,
@@ -110,14 +145,111 @@ impl Pending {
                 if protocol != PROTOCOL_VERSION {
                     return Err(Error::Unauthorized("unsupported protocol version"));
                 }
-                Ok((connection, client))
+                Ok(Accepted::Client {
+                    connection: Connection::new(stream),
+                    client,
+                })
             }
-            Ok(Some(_)) => Err(Error::Unauthorized("first frame was not a hello")),
-            Ok(None) => Err(Error::Unauthorized("closed before hello")),
+            Ok(Some(ClientFrame::Mcp { grant })) => Ok(Accepted::Mcp { grant, stream }),
+            Ok(Some(ClientFrame::Gate { grant, argv, cwd })) => Ok(Accepted::Gate {
+                grant,
+                argv,
+                cwd,
+                check: GateCheck { stream },
+            }),
+            Ok(Some(ClientFrame::Request { .. })) => {
+                Err(Error::Unauthorized("first frame was not a hello"))
+            }
+            Ok(None) => Err(Error::Unauthorized("closed before the first frame")),
             // Oversized or malformed first frames are rejected here too.
-            Err(_) => Err(Error::Unauthorized("malformed hello")),
+            Err(_) => Err(Error::Unauthorized("malformed first frame")),
         }
     }
+}
+
+/// The daemon's side of a gate check.
+pub struct GateCheck {
+    stream: Stream,
+}
+
+impl GateCheck {
+    /// Resolves when the asking program goes away (it was killed, or its CLI session ended),
+    /// so the question can be withdrawn. The program sends nothing after its check.
+    pub async fn closed(&mut self) {
+        let mut byte = [0u8; 1];
+        let _ = self.stream.read(&mut byte).await;
+    }
+
+    /// Sends the verdict and closes the connection.
+    pub async fn answer(mut self, verdict: &GateVerdict) -> Result<(), Error> {
+        self.stream.write_all(&encode_frame(verdict)?).await?;
+        self.stream.flush().await?;
+        Ok(())
+    }
+}
+
+/// Reads one length-prefixed frame straight from the stream, without read-ahead.
+async fn read_first_frame(stream: &mut Stream) -> Result<Option<ClientFrame>, Error> {
+    let mut len = [0u8; 4];
+    match stream.read_exact(&mut len).await {
+        Ok(_) => {}
+        Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(err) => return Err(err.into()),
+    }
+    let len = u32::from_be_bytes(len) as usize;
+    if len > MAX_FIRST_FRAME_BYTES {
+        return Err(Error::FrameTooLarge(len));
+    }
+    let mut buffer = vec![0u8; len];
+    stream.read_exact(&mut buffer).await?;
+    Ok(Some(serde_json::from_slice(&buffer)?))
+}
+
+fn encode_frame<T: Serialize>(frame: &T) -> Result<Vec<u8>, Error> {
+    let json = serde_json::to_vec(frame)?;
+    if json.len() > crate::MAX_FRAME_BYTES {
+        return Err(Error::FrameTooLarge(json.len()));
+    }
+    let mut bytes = Vec::with_capacity(json.len() + 4);
+    bytes.extend_from_slice(&(json.len() as u32).to_be_bytes());
+    bytes.extend_from_slice(&json);
+    Ok(bytes)
+}
+
+/// Connects to the daemon for `paths` without an async runtime and sends `first`, a
+/// [`ClientFrame::Mcp`] or [`ClientFrame::Gate`]. For the short-lived helper processes CLI
+/// sessions start (`brigadierd mcp`, the command gate), which never read the token.
+pub fn connect_blocking(
+    paths: &AppPaths,
+    first: &ClientFrame,
+) -> Result<interprocess::local_socket::Stream, Error> {
+    use interprocess::local_socket::traits::Stream as _;
+    use std::io::Write as _;
+    let mut stream =
+        interprocess::local_socket::Stream::connect(endpoint_name(&paths.ipc_endpoint)?)?;
+    stream.write_all(&encode_frame(first)?)?;
+    stream.flush()?;
+    Ok(stream)
+}
+
+/// Reads one length-prefixed frame from a blocking reader; `None` when the peer closed the
+/// connection before it.
+pub fn read_frame_blocking<T: DeserializeOwned>(
+    reader: &mut impl io::Read,
+) -> Result<Option<T>, Error> {
+    let mut len = [0u8; 4];
+    match reader.read_exact(&mut len) {
+        Ok(()) => {}
+        Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(err) => return Err(err.into()),
+    }
+    let len = u32::from_be_bytes(len) as usize;
+    if len > crate::MAX_FRAME_BYTES {
+        return Err(Error::FrameTooLarge(len));
+    }
+    let mut buffer = vec![0u8; len];
+    reader.read_exact(&mut buffer)?;
+    Ok(Some(serde_json::from_slice(&buffer)?))
 }
 
 /// Connects to a running daemon and completes the handshake.
