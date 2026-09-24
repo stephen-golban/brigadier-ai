@@ -53,6 +53,8 @@ pub struct Parser {
     /// A session reported its own start; `thread/started` is then not a start.
     started: bool,
     turn_id: Option<String>,
+    /// An error was already reported for the running turn.
+    turn_error: bool,
     /// Files of file-change items, which their approval requests do not repeat.
     file_items: HashMap<String, Vec<FileChange>>,
     quota: Option<QuotaSnapshot>,
@@ -140,6 +142,7 @@ impl Parser {
                     return;
                 };
                 self.turn_id = Some(started.turn.id.clone());
+                self.turn_error = false;
                 out.push(Output::Event(ProviderEvent::TurnStarted {
                     turn_id: Some(started.turn.id),
                 }));
@@ -158,6 +161,7 @@ impl Parser {
                 };
                 if let Some(error) = &turn.error
                     && status == TurnStatus::Failed
+                    && !std::mem::take(&mut self.turn_error)
                 {
                     out.push(Output::Event(ProviderEvent::Error {
                         error: self.classify(error, false),
@@ -238,6 +242,7 @@ impl Parser {
             }
             "error" => {
                 if let Some(error) = decode::<p::ErrorNotification>(method, params, out) {
+                    self.turn_error |= !error.will_retry;
                     out.push(Output::Event(ProviderEvent::Error {
                         error: self.classify(&error.error, error.will_retry),
                     }));

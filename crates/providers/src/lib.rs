@@ -16,10 +16,12 @@
 pub mod claude;
 pub mod cli;
 pub mod codex;
+pub mod fixtures;
 pub mod model;
 pub mod policy;
 pub mod process;
 pub mod record;
+pub mod simulate;
 mod time;
 
 use std::future::Future;
