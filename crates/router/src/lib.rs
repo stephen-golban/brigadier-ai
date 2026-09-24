@@ -330,21 +330,8 @@ pub fn fallback(
     };
     let tier = source
         .and_then(|model| Tier::of(from.provider, model))
-        .or_else(|| {
-            // Not in the catalog (or none loaded): classify the id itself.
-            let id = from.model.as_deref()?;
-            let probe = ModelInfo {
-                id: id.to_owned(),
-                display_name: String::new(),
-                description: String::new(),
-                resolved: None,
-                efforts: Vec::new(),
-                default_effort: None,
-                is_default: false,
-                input_modalities: Vec::new(),
-            };
-            Tier::of(from.provider, &probe)
-        });
+        // Not in the catalog (or none loaded): classify the id itself.
+        .or_else(|| Tier::of_names(from.provider, from.model.as_deref()?, None));
 
     let row = table::row(category);
     let (model, effort_wanted, why) = match tier
