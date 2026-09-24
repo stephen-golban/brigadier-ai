@@ -19,8 +19,9 @@
  * Rejected in JSX `style={{…}}` objects:
  *   - numeric literals for any property that is not unitless (padding: 12, width: 300)
  *   - named colors for color properties (color: "red")
- * Rejected on JSX attributes: numeric width/height/size (<Icon width={16} />) and raw or
- * named colors on color/fill/stroke.
+ * Rejected on JSX attributes: numeric width/height/size (<Icon width={16} />), numeric
+ * popover offsets and paddings (sideOffset={4}), and raw or named colors on color/fill/stroke.
+ * The same size props are rejected as numeric parameter defaults (`sideOffset = 4`).
  *
  * Allowed: token utilities, var(--…) references (also as Tailwind shorthand `w-(--x)`),
  * `0`, keywords (auto, transparent, currentColor, inherit), percentages inside style
@@ -91,7 +92,17 @@ const UNITLESS_STYLE_PROPERTIES = new Set([
 const COLOR_STYLE_PROPERTY =
   /^(?:color|background|backgroundColor|border(?:Top|Right|Bottom|Left|Block|Inline)?(?:Start|End)?Color|borderColor|border|outline|outlineColor|fill|stroke|caretColor|accentColor|columnRuleColor|textDecorationColor|textEmphasisColor|boxShadow|textShadow|stopColor|floodColor|lightingColor|--.*)$/;
 
-const SIZE_ATTRIBUTES = new Set(["width", "height", "size", "strokeWidth"]);
+const SIZE_ATTRIBUTES = new Set([
+  "width",
+  "height",
+  "size",
+  "strokeWidth",
+  // Radix popper geometry, in CSS pixels.
+  "sideOffset",
+  "alignOffset",
+  "collisionPadding",
+  "arrowPadding",
+]);
 const COLOR_ATTRIBUTES = new Set(["color", "fill", "stroke", "stopColor", "floodColor"]);
 
 const SKIPPED_PARENTS = new Set([
@@ -252,6 +263,16 @@ const noRawDesignValues = {
     };
 
     return {
+      AssignmentPattern(node) {
+        if (node.left.type !== "Identifier" || !SIZE_ATTRIBUTES.has(node.left.name)) return;
+        const number = numericLiteral(node.right);
+        if (number !== undefined && number !== 0) {
+          context.report({
+            node,
+            message: `Design token required: numeric default ${node.left.name} = ${number}; derive it from a token (tokenPx).`,
+          });
+        }
+      },
       Literal(node) {
         if (typeof node.value !== "string") return;
         if (node.parent && SKIPPED_PARENTS.has(node.parent.type)) return;
@@ -279,7 +300,7 @@ const noRawDesignValues = {
           if (!Number.isNaN(number) && number !== 0) {
             context.report({
               node,
-              message: `Design token required: numeric ${name}="${number}"; size with a token utility (size-icon-*, h-control-*).`,
+              message: `Design token required: numeric ${name}="${number}"; size with a token utility (size-icon-*, h-control-*) or tokenPx(…).`,
             });
           }
           return;
