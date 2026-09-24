@@ -6,7 +6,6 @@ import type {
   DaemonInfo,
   DaemonMetrics,
   Diagnostics,
-  DomainEvent,
   EventEnvelope,
   Message,
   Project,
@@ -137,9 +136,9 @@ export function applyEvents(envelopes: readonly EventEnvelope[]): void {
   if (envelopes.length === 0) return;
   useApp.setState((state) => {
     let { projects, conversations, threads, pending, settings } = state;
-    for (const { event } of envelopes) {
+    for (const envelope of envelopes) {
       ({ projects, conversations, threads, pending, settings } = applyEvent(
-        event,
+        envelope,
         { projects, conversations, threads, pending, settings },
       ));
     }
@@ -164,7 +163,10 @@ type Slice = Pick<
   "projects" | "conversations" | "threads" | "pending" | "settings"
 >;
 
-function applyEvent(event: DomainEvent, slice: Slice): Slice {
+function applyEvent(
+  { event, streamSeq }: EventEnvelope,
+  slice: Slice,
+): Slice {
   switch (event.type) {
     case "projectCreated":
       return {
@@ -193,7 +195,8 @@ function applyEvent(event: DomainEvent, slice: Slice): Slice {
       };
     }
     case "messageAppended": {
-      const { message } = event;
+      // The store assigns a message's position: its sequence in the conversation stream.
+      const message = { ...event.message, seq: streamSeq };
       const id = message.conversationId;
       let { conversations, threads } = slice;
       const conversation = conversations[id];
