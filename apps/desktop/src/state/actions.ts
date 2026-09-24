@@ -38,10 +38,15 @@ export async function loadMessages(id: string): Promise<void> {
       before: null,
       limit: PAGE,
     });
+    const newest = page.messages.at(-1)?.seq ?? 0;
     updateThread(id, (thread) => ({
       ...thread,
-      // Keep anything the live feed delivered while the page was loading.
-      items: mergeMessages(page.messages, thread.items),
+      // Keep only what the live feed delivered after the page was read. Older items may be
+      // stale (e.g. after missing events) and would leave a gap below this page.
+      items: mergeMessages(
+        page.messages,
+        thread.items.filter((message) => message.seq > newest),
+      ),
       hasMore: page.hasMore,
       loading: false,
     }));
