@@ -232,6 +232,10 @@ impl Claude {
 }
 
 /// Claude's `--mcp-config` for the session's servers.
+///
+/// The config is on Claude's command line, which any process of the user can read, so a
+/// server's environment values (such as a grant) are not in it: they are in Claude's own
+/// environment, and the config names them (`${NAME}`, expanded by Claude).
 fn mcp_config(servers: &[McpServer]) -> Value {
     let servers: Map<String, Value> = servers
         .iter()
@@ -239,7 +243,7 @@ fn mcp_config(servers: &[McpServer]) -> Value {
             let env: Map<String, Value> = server
                 .env
                 .iter()
-                .map(|(name, value)| (name.clone(), Value::String(value.clone())))
+                .map(|(name, _)| (name.clone(), Value::String(format!("${{{name}}}"))))
                 .collect();
             (server.name.clone(), {
                 let mut config = json!({
@@ -567,6 +571,10 @@ impl Provider for Claude {
             process_spec.args = args.into_iter().map(Into::into).collect();
             process_spec.cwd = Some(cwd.clone());
             let mut env = spec.env.clone();
+            // What the MCP config refers to by name.
+            for server in &spec.mcp_servers {
+                env.extend(server.env.iter().cloned());
+            }
             if let Some(secs) = spec
                 .mcp_servers
                 .iter()
