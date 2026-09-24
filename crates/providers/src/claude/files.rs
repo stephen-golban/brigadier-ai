@@ -10,10 +10,11 @@
 //!
 //! Claude also keeps per-session temp files in `<temp>/claude-<uid>/<encoded cwd>/<id>/`
 //! (`<temp>` is `CLAUDE_CODE_TMPDIR`, else `/tmp` on macOS and the system temp directory
-//! elsewhere). A session started with a TMPDIR of its own gets `CLAUDE_CODE_TMPDIR` pointed
-//! there and leaves nothing in the shared location; for the others the session's folder is
-//! removed with it, and the per-cwd folder too when it is empty and belonged to a project
-//! directory the session created.
+//! elsewhere), and its sandbox gives commands `<temp>/claude-<uid>` as their TMPDIR. A session
+//! started with a TMPDIR of its own gets a short folder of its own as `<temp>`
+//! ([`create_temp_dir`]), removed with everything in it, and leaves nothing in the shared
+//! location; for the others the session's folder is removed with it, and the per-cwd folder
+//! too when it is empty and belonged to a project directory the session created.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -25,6 +26,10 @@ use crate::{Error, Result};
 const SESSION_DIRS: &[&str] = &["tasks", "session-env", "file-history"];
 /// Where Claude Code stages atomic writes, under `<cwd>/.claude`.
 const STAGING_DIR: &str = ".cc-writes";
+/// Where a session's own temp folders live, and their name before the id.
+#[cfg(unix)]
+const TEMP_BASE: &str = "/tmp";
+const TEMP_PREFIX: &str = "brigadier-";
 
 pub(super) fn check_session_id(id: &str) -> Result<()> {
     uuid::Uuid::parse_str(id)
@@ -68,6 +73,7 @@ pub(super) fn remove(config: &Path, artifacts: &[Artifact]) -> Result<()> {
     });
     let staging = artifacts.iter().filter_map(|artifact| match artifact {
         Artifact::ClaudeStagingDir { path } => Some(remove_staging_dir(Path::new(path))),
+        Artifact::ClaudeTempDir { path } => Some(remove_temp_dir(Path::new(path))),
         _ => None,
     });
     for result in sessions
@@ -138,6 +144,65 @@ fn remove_project_dir(config: &Path, dir: &Path) -> Result<()> {
         std::fs::remove_dir(dir)?;
     }
     Ok(())
+}
+
+/// A new temp folder for one session, private to the user. Its path is kept short: Claude's
+/// sandbox makes sockets under `<temp>/claude-<uid>`, and gives commands that folder as their
+/// TMPDIR only while its path fits them (about 30 characters for `<temp>` on macOS; a data
+/// directory's scratch folder never does). Otherwise their TMPDIR is the shared
+/// `/tmp/claude-<uid>`, which nothing cleans up. Returns `None` where Claude has no sandbox.
+pub(super) fn temp_dir_path() -> Option<PathBuf> {
+    #[cfg(unix)]
+    {
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        Some(Path::new(TEMP_BASE).join(format!("{TEMP_PREFIX}{}", &id[..12])))
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
+/// Creates the folder from [`temp_dir_path`], which must not exist yet.
+pub(super) fn create_temp_dir(dir: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(dir)
+            .map_err(|err| {
+                Error::Io(io::Error::new(
+                    err.kind(),
+                    format!("{}: {err}", dir.display()),
+                ))
+            })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+        Ok(())
+    }
+}
+
+/// Removes a session's temp folder with everything in it.
+fn remove_temp_dir(dir: &Path) -> Result<()> {
+    let ours = dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            name.strip_prefix(TEMP_PREFIX)
+                .is_some_and(|id| id.len() == 12 && id.chars().all(|c| c.is_ascii_hexdigit()))
+        });
+    #[cfg(unix)]
+    let ours = ours && dir.parent() == Some(Path::new(TEMP_BASE));
+    if !ours {
+        return Err(Error::Invalid(format!(
+            "{} is not a Claude session's temp folder",
+            dir.display()
+        )));
+    }
+    remove_path(dir)
 }
 
 /// Claude's shared temp folder for this user (see the module docs).

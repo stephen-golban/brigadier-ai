@@ -296,7 +296,8 @@ impl CleanupLedger {
                 }
                 Artifact::ClaudeSession { .. }
                 | Artifact::ClaudeProjectDir { .. }
-                | Artifact::ClaudeStagingDir { .. } => claude.push(artifact),
+                | Artifact::ClaudeStagingDir { .. }
+                | Artifact::ClaudeTempDir { .. } => claude.push(artifact),
                 Artifact::CodexThread { .. } | Artifact::CodexProjectTrust { .. } => {
                     codex.push(artifact)
                 }

@@ -624,4 +624,7 @@ pub enum Artifact {
     /// A folder Brigadier created in its data directory (a worker's scratch folder, the
     /// orchestrator's or a Chat's working folder).
     ScratchDir { path: String },
+    /// A short temp folder of a Claude session's own (`/tmp/brigadier-<id>`), for Claude's
+    /// temp files and its sandboxed commands' TMPDIR.
+    ClaudeTempDir { path: String },
 }
