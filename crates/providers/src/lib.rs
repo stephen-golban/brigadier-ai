@@ -65,6 +65,11 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Records what a session creates, durably, before the session relies on it.
 pub trait Ledger: Send + Sync {
     fn record(&self, artifact: Artifact) -> BoxFuture<'_, Result<()>>;
+
+    /// Whether any session's ledger still holds `artifact`, i.e. Brigadier created it and it
+    /// has not been removed yet. A session sharing such a directory records it too, so the
+    /// last one disposed of removes it.
+    fn holds(&self, artifact: &Artifact) -> bool;
 }
 
 /// A CLI Brigadier can drive.

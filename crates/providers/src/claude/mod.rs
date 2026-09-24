@@ -156,6 +156,10 @@ impl Claude {
             "--strict-mcp-config",
             "--setting-sources",
             "project",
+            // Thinking otherwise streams empty; its summaries are the reasoning Brigadier
+            // shows. (The `showThinkingSummaries` setting is not read in print mode.)
+            "--thinking-display",
+            "summarized",
         ]
         .map(str::to_owned)
         .to_vec();
@@ -401,12 +405,11 @@ impl Provider for Claude {
             // Recorded before the CLI can create them.
             if let Some(config) = self.config_dir() {
                 let project = files::project_dir(&config, &cwd);
-                if !project.exists() {
-                    ledger
-                        .record(Artifact::ClaudeProjectDir {
-                            path: project.display().to_string(),
-                        })
-                        .await?;
+                let artifact = Artifact::ClaudeProjectDir {
+                    path: project.display().to_string(),
+                };
+                if !project.exists() || ledger.holds(&artifact) {
+                    ledger.record(artifact).await?;
                 }
             }
             ledger
@@ -414,12 +417,15 @@ impl Provider for Claude {
                     session_id: native_id.clone(),
                 })
                 .await?;
-            if let Some(path) = files::new_staging_dir(&cwd) {
-                ledger
-                    .record(Artifact::ClaudeStagingDir {
-                        path: path.display().to_string(),
-                    })
-                    .await?;
+            for path in files::staging_dirs(&cwd) {
+                let artifact = Artifact::ClaudeStagingDir {
+                    path: path.display().to_string(),
+                };
+                if !path.exists() || ledger.holds(&artifact) {
+                    ledger.record(artifact).await?;
+                    // Its parent is either ours as well, or was there before.
+                    break;
+                }
             }
 
             let recorder = match &spec.record_to {
