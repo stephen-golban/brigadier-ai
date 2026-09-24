@@ -97,7 +97,7 @@ pub fn spawn(
     tokio::spawn(async move {
         let status = child.wait().await;
         // The CLI may have left children behind in its group (background shells, servers).
-        let _ = reaper.processes().kill_tree(pid);
+        let _ = reaper.processes().kill_group(pid);
         let code = status.ok().and_then(|status| status.code());
         tracing::debug!(pid, code, "cli process exited");
         exit_tx.send_replace(Some(Exit { code }));
@@ -169,7 +169,7 @@ impl CliProcess {
     }
 
     /// Ends the process: closes stdin (both CLIs exit on EOF), waits up to `grace`, then kills
-    /// the whole process group and waits for the reap. Bounded by `grace` plus [`REAP_WAIT`].
+    /// its process tree and waits for the reap. Bounded by `grace` plus [`REAP_WAIT`].
     pub async fn shutdown(&self, grace: Duration) -> Exit {
         self.stdin.lock().await.take();
         if let Ok(exit) = tokio::time::timeout(grace, self.exited()).await {
@@ -177,10 +177,10 @@ impl CliProcess {
         }
         tracing::info!(
             pid = self.pid,
-            "cli did not exit in time; killing its process group"
+            "cli did not exit in time; killing its process tree"
         );
         if let Err(err) = self.platform.processes().kill_tree(self.pid) {
-            tracing::warn!(pid = self.pid, error = %err, "could not kill the cli process group");
+            tracing::warn!(pid = self.pid, error = %err, "could not kill the cli process tree");
         }
         tokio::time::timeout(REAP_WAIT, self.exited())
             .await

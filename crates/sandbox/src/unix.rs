@@ -86,15 +86,45 @@ pub(crate) fn terminate(pid: u32) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn kill_tree(pid: u32) -> Result<()> {
-    let pid = to_pid(pid).ok_or_else(invalid_pid)?;
-    // Detached children lead their own process group, so the group id is their pid.
-    match signal::killpg(pid, Signal::SIGKILL) {
+/// Kills `pid`'s tree. `children` lists a process's children; each process is stopped before
+/// its children are listed, so nothing forks past the walk. Every process found is killed, with
+/// any process group it leads.
+pub(crate) fn kill_tree(pid: u32, children: impl Fn(u32) -> Vec<u32>) -> Result<()> {
+    let root = to_pid(pid).ok_or_else(invalid_pid)?;
+    let mut tree = vec![pid];
+    let mut next = 0;
+    while let Some(&parent) = tree.get(next) {
+        next += 1;
+        if let Some(parent) = to_pid(parent) {
+            let _ = signal::kill(parent, Signal::SIGSTOP);
+        }
+        for child in children(parent) {
+            if !tree.contains(&child) {
+                tree.push(child);
+            }
+        }
+    }
+    for member in tree.into_iter().skip(1).filter_map(to_pid) {
+        if nix::unistd::getpgid(Some(member)) == Ok(member) {
+            let _ = signal::killpg(member, Signal::SIGKILL);
+        }
+        let _ = signal::kill(member, Signal::SIGKILL);
+    }
+    // Piped children lead their own process group, so the group id is their pid.
+    match signal::killpg(root, Signal::SIGKILL) {
         Ok(()) => Ok(()),
         Err(nix::errno::Errno::ESRCH) => {
-            signal::kill(pid, Signal::SIGKILL).map_err(io::Error::from)?;
+            signal::kill(root, Signal::SIGKILL).map_err(io::Error::from)?;
             Ok(())
         }
+        Err(err) => Err(io::Error::from(err).into()),
+    }
+}
+
+pub(crate) fn kill_group(pid: u32) -> Result<()> {
+    let group = to_pid(pid).ok_or_else(invalid_pid)?;
+    match signal::killpg(group, Signal::SIGKILL) {
+        Ok(()) | Err(nix::errno::Errno::ESRCH) => Ok(()),
         Err(err) => Err(io::Error::from(err).into()),
     }
 }

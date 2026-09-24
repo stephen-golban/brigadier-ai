@@ -66,7 +66,10 @@ impl Processes for LinuxProcesses {
         unix::terminate(pid)
     }
     fn kill_tree(&self, pid: u32) -> Result<()> {
-        unix::kill_tree(pid)
+        unix::kill_tree(pid, child_pids)
+    }
+    fn kill_group(&self, pid: u32) -> Result<()> {
+        unix::kill_group(pid)
     }
     fn start_time_ms(&self, pid: u32) -> Result<f64> {
         let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))?;
@@ -125,4 +128,21 @@ impl Sandbox for Unsupported {
     fn confine(&self, _spec: SpawnSpec, _policy: &SandboxPolicy) -> Result<SpawnSpec> {
         unsupported("the worker sandbox", NAME)
     }
+}
+
+/// A process's children, from each of its threads' `children` list in procfs.
+fn child_pids(pid: u32) -> Vec<u32> {
+    let Ok(threads) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
+        return Vec::new();
+    };
+    threads
+        .flatten()
+        .filter_map(|thread| std::fs::read_to_string(thread.path().join("children")).ok())
+        .flat_map(|children| {
+            children
+                .split_whitespace()
+                .filter_map(|child| child.parse().ok())
+                .collect::<Vec<u32>>()
+        })
+        .collect()
 }

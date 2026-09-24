@@ -67,7 +67,10 @@ impl Processes for MacProcesses {
         unix::terminate(pid)
     }
     fn kill_tree(&self, pid: u32) -> Result<()> {
-        unix::kill_tree(pid)
+        unix::kill_tree(pid, child_pids)
+    }
+    fn kill_group(&self, pid: u32) -> Result<()> {
+        unix::kill_group(pid)
     }
     fn start_time_ms(&self, pid: u32) -> Result<f64> {
         let pid = i32::try_from(pid)
@@ -91,6 +94,34 @@ impl Processes for MacProcesses {
             return Err(io::Error::last_os_error().into());
         }
         Ok(info.pbi_start_tvsec as f64 * 1000.0 + info.pbi_start_tvusec as f64 / 1000.0)
+    }
+}
+
+/// A process's children, per `proc_listchildpids`.
+fn child_pids(pid: u32) -> Vec<u32> {
+    let Ok(pid) = i32::try_from(pid) else {
+        return Vec::new();
+    };
+    let mut capacity = 64;
+    loop {
+        let mut pids = vec![0 as libc::pid_t; capacity];
+        let bytes = (capacity * std::mem::size_of::<libc::pid_t>()) as libc::c_int;
+        // SAFETY: `pids` is a writable buffer of exactly `bytes` bytes; the call returns how
+        // many pids it wrote, never more than fit.
+        #[allow(unsafe_code)]
+        let count = unsafe { libc::proc_listchildpids(pid, pids.as_mut_ptr().cast(), bytes) };
+        let Ok(count) = usize::try_from(count) else {
+            return Vec::new();
+        };
+        // A full buffer may have cut the list short.
+        if count < capacity {
+            pids.truncate(count);
+            return pids
+                .into_iter()
+                .filter_map(|pid| u32::try_from(pid).ok())
+                .collect();
+        }
+        capacity *= 4;
     }
 }
 
@@ -161,7 +192,7 @@ impl Shell for LoginShell {
         let output = match rx.recv_timeout(SHELL_TIMEOUT) {
             Ok(output) => output?,
             Err(_) => {
-                let _ = unix::kill_tree(pid);
+                let _ = unix::kill_tree(pid, child_pids);
                 let _ = child.wait();
                 return Err(Error::Shell(format!(
                     "{} did not finish within {SHELL_TIMEOUT:?}",
