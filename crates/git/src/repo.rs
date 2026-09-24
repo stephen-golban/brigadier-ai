@@ -712,6 +712,19 @@ impl Repo {
                 }
                 return Ok(busy(failure(&args, &out).to_string()));
             }
+            // Someone switched the checkout between the check above and the merge: the merge
+            // went to the branch they switched to, and the target did not move.
+            let actual = tip()?;
+            if actual != request.commit {
+                let now = checkout.symbolic_head()?;
+                if now.as_deref() == Some(&request.branch) {
+                    return Ok(LandOutcome::Blocked(LandBlock::TipMoved { actual }));
+                }
+                return Ok(LandOutcome::Blocked(LandBlock::BranchSwitched {
+                    worktree: holding.path,
+                    now,
+                }));
+            }
         } else {
             let actual = tip()?;
             if actual != request.expected_tip {
