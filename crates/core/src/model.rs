@@ -40,6 +40,14 @@ id_type!(
     ConversationId
 );
 
+impl ConversationId {
+    /// The last 8 characters (random in a v7 uuid): the session's part of the branch and
+    /// folder names Brigadier creates for it.
+    pub fn short(&self) -> &str {
+        &self.0[self.0.len().saturating_sub(8)..]
+    }
+}
+
 id_type!(
     /// Identifies a raw provider session (a CLI session driven from the Inspector).
     RawSessionId
@@ -208,9 +216,9 @@ pub enum Setup {
 
 impl Setup {
     /// The setup a composer request asks for. A new-worktree session without a branch name
-    /// gets `brigadier/session-<suffix>`; the runtime creates the branch and worktree when
-    /// the session starts.
-    pub fn from_request(request: SetupRequest, suffix: &str) -> Self {
+    /// gets `brigadier/<id.short()>/session`, next to its task branches; the runtime creates
+    /// the branch and worktree when the session starts.
+    pub fn from_request(request: SetupRequest, id: &ConversationId) -> Self {
         match request {
             SetupRequest::Session {
                 repo,
@@ -227,7 +235,7 @@ impl Setup {
                         base,
                         branch: branch
                             .filter(|branch| !branch.trim().is_empty())
-                            .unwrap_or_else(|| format!("brigadier/session-{suffix}")),
+                            .unwrap_or_else(|| format!("brigadier/{}/session", id.short())),
                         path: None,
                     },
                 },

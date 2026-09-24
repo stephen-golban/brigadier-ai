@@ -180,9 +180,11 @@ impl Core {
         self.projection().settings.clone()
     }
 
-    /// Creates a session or a chat. A session's setup is remembered by its project.
+    /// Creates a session or a chat under `id` (picked by the caller, whose setup may name
+    /// branches after it). A session's setup is remembered by its project.
     pub async fn create_conversation(
         &self,
+        id: ConversationId,
         kind: ConversationKind,
         project_id: Option<ProjectId>,
         title: Option<String>,
@@ -235,7 +237,7 @@ impl Core {
             }
         }
         let conversation = Conversation {
-            id: ConversationId::generate(),
+            id,
             kind,
             project_id,
             title,
