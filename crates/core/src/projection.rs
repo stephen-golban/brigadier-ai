@@ -10,11 +10,16 @@ pub(crate) struct Projection {
     pub(crate) projects: HashMap<ProjectId, Project>,
     pub(crate) conversations: HashMap<ConversationId, Conversation>,
     pub(crate) settings: Settings,
+    /// Global seq of the event that last set each last-writer-wins field. Concurrent writers
+    /// can resume in a different order than they committed; an older event must not win.
+    title_seqs: HashMap<ConversationId, i64>,
+    pinned_seqs: HashMap<ConversationId, i64>,
+    settings_seq: i64,
 }
 
 impl Projection {
-    /// Applies a committed event. `at_ms` is the event's ingest time.
-    pub(crate) fn apply(&mut self, event: &DomainEvent, at_ms: i64) {
+    /// Applies a committed event. `seq` is its global sequence, `at_ms` its ingest time.
+    pub(crate) fn apply(&mut self, event: &DomainEvent, seq: i64, at_ms: i64) {
         match event {
             DomainEvent::ProjectCreated { project } => {
                 self.projects.insert(project.id.clone(), project.clone());
@@ -25,12 +30,16 @@ impl Projection {
             }
             DomainEvent::ConversationRenamed { id, title } => {
                 if let Some(conversation) = self.conversations.get_mut(id) {
-                    conversation.title.clone_from(title);
+                    if latest(&mut self.title_seqs, id, seq) {
+                        conversation.title.clone_from(title);
+                    }
                     conversation.updated_at_ms = conversation.updated_at_ms.max(at_ms);
                 }
             }
             DomainEvent::ConversationPinned { id, pinned_at_ms } => {
-                if let Some(conversation) = self.conversations.get_mut(id) {
+                if let Some(conversation) = self.conversations.get_mut(id)
+                    && latest(&mut self.pinned_seqs, id, seq)
+                {
                     conversation.pinned_at_ms = *pinned_at_ms;
                 }
             }
@@ -38,7 +47,10 @@ impl Projection {
                 self.touch(&message.conversation_id, message.created_at_ms);
             }
             DomainEvent::SettingsChanged { settings } => {
-                self.settings = settings.clone();
+                if seq >= self.settings_seq {
+                    self.settings = settings.clone();
+                    self.settings_seq = seq;
+                }
             }
             DomainEvent::Probe { .. } => {}
         }
@@ -62,4 +74,14 @@ impl Projection {
             settings: self.settings.clone(),
         }
     }
+}
+
+/// Records `seq` as the field's newest writer; false if a newer event already set it.
+fn latest(seqs: &mut HashMap<ConversationId, i64>, id: &ConversationId, seq: i64) -> bool {
+    let last = seqs.entry(id.clone()).or_insert(seq);
+    if seq < *last {
+        return false;
+    }
+    *last = seq;
+    true
 }

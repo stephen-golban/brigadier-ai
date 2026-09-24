@@ -52,7 +52,7 @@ impl Core {
                 .read_stream_since(streams::CATALOG.into(), after, CATALOG_PAGE)
                 .await?;
             for event in &page {
-                projection.apply(&decode(event)?, event.at_ms);
+                projection.apply(&decode(event)?, event.seq, event.at_ms);
                 after = event.stream_seq;
             }
             if page.len() < CATALOG_PAGE as usize {
@@ -70,7 +70,7 @@ impl Core {
             )
             .await?;
         if let Some(event) = latest_settings.first() {
-            projection.apply(&decode(event)?, event.at_ms);
+            projection.apply(&decode(event)?, event.seq, event.at_ms);
         }
 
         // Last activity per conversation comes from the head of its message stream.
@@ -382,7 +382,7 @@ impl Core {
         let stored = self.store.append(new).await?;
         let mut projection = self.projection();
         for ((_, event), stored) in events.iter().zip(&stored) {
-            projection.apply(event, stored.at_ms);
+            projection.apply(event, stored.seq, stored.at_ms);
         }
         Ok(stored.iter().map(|event| event.stream_seq).collect())
     }
