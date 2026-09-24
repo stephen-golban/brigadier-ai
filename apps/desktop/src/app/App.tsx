@@ -8,6 +8,7 @@ import { TopBar } from "@/app/TopBar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { appReady, nowEpochMs } from "@/ipc/client";
 import { nextPaint, setFrameSampling } from "@/lib/perf";
+import { markStartup } from "@/lib/startup";
 import { setInspectorOpen, setMetricsStreaming } from "@/state/actions";
 import { useApp, type Selection } from "@/state/store";
 
@@ -43,8 +44,12 @@ export function App() {
   useEffect(() => {
     if (!catalogLoaded || readyReported) return;
     readyReported = true;
+    markStartup("catalog");
     void nextPaint()
-      .then(() => appReady(nowEpochMs()))
+      .then(() => {
+        markStartup("paint");
+        return appReady(nowEpochMs());
+      })
       .then((coldStartMs) => {
         useApp.setState({ coldStartMs });
         if (useApp.getState().info?.smoke) return runSmoke();

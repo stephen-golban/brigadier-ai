@@ -57,7 +57,10 @@ pub fn evaluate(
                 ),
                 BudgetId::ColdStart => (
                     Some(cold_start_ms),
-                    "process start to first interactive paint, daemon launch included".into(),
+                    format!(
+                        "process start to first interactive paint, daemon launch included; ms since process start: {}",
+                        ui.startup
+                    ),
                 ),
                 BudgetId::IngestToPaint => (
                     (ui.probes_painted > 0).then_some(ui.ingest_to_paint.p95_ms),

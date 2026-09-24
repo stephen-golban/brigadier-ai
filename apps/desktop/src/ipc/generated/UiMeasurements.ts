@@ -12,4 +12,8 @@ frameGaps: LatencySummary,
 /**
  * Where the longest frame gap fell and the costliest event flush, to explain a stall.
  */
-stallContext: string, probesExpected: number, probesPainted: number, };
+stallContext: string, 
+/**
+ * Startup milestones in ms since process start (webview, script, connected, catalog, paint).
+ */
+startup: string, probesExpected: number, probesPainted: number, };

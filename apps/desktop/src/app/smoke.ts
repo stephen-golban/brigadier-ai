@@ -7,7 +7,9 @@ import {
   stallContext,
   summarize,
 } from "@/lib/perf";
+import { startupBreakdown } from "@/lib/startup";
 import { runProbeBurst, setInspectorOpen, setMetricsStreaming } from "@/state/actions";
+import { useApp } from "@/state/store";
 
 const PROBES = 200;
 const PROBE_INTERVAL_MS = 5;
@@ -51,6 +53,7 @@ export async function runSmoke(): Promise<void> {
     ingestToPaint: summarize(probes),
     frameGaps: summarize(frameGaps.values()),
     stallContext: stallContext(),
+    startup: startupBreakdown(useApp.getState().info?.processStartMs ?? performance.timeOrigin),
     probesExpected: burst.count,
     probesPainted: probes.length,
   });
