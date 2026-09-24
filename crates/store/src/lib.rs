@@ -258,7 +258,7 @@ impl Store {
         self.command(|reply| WriteOp::Shutdown { reply }).await?
     }
 
-    /// A stream page, newest first when paging with `before`, oldest first otherwise.
+    /// A stream page, newest first (optionally only events before `page.before`).
     pub async fn read_stream(&self, stream: String, page: StreamPage) -> Result<Vec<StoredEvent>> {
         self.reads
             .run(move |conn| reader::read_stream(conn, &stream, &page))
