@@ -319,6 +319,12 @@ impl Processes for WindowsProcesses {
         }
     }
 
+    fn in_dir(&self, _dir: &std::path::Path) -> Result<Vec<u32>> {
+        // Reading another process's working directory needs its PEB; this arrives with the
+        // Windows platform phase. `kill_tree` still ends a CLI's whole tree.
+        unsupported("finding processes by working directory", NAME)
+    }
+
     fn start_time_ms(&self, pid: u32) -> Result<f64> {
         let handle = ProcessHandle::open(pid, PROCESS_QUERY_LIMITED_INFORMATION)?;
         let zero = FILETIME {

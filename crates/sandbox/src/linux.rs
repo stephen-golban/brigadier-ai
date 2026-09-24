@@ -71,6 +71,28 @@ impl Processes for LinuxProcesses {
     fn kill_group(&self, pid: u32) -> Result<()> {
         unix::kill_group(pid)
     }
+    fn in_dir(&self, dir: &std::path::Path) -> Result<Vec<u32>> {
+        let dir = dir.canonicalize()?;
+        let own = std::process::id();
+        let mut pids = Vec::new();
+        for entry in std::fs::read_dir("/proc")?.flatten() {
+            let Some(pid) = entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            if pid == own || pid <= 1 {
+                continue;
+            }
+            // Other users' processes are unreadable, and processes may exit meanwhile.
+            if std::fs::read_link(entry.path().join("cwd")).is_ok_and(|cwd| cwd.starts_with(&dir)) {
+                pids.push(pid);
+            }
+        }
+        Ok(pids)
+    }
     fn start_time_ms(&self, pid: u32) -> Result<f64> {
         let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))?;
         // Field 2 (comm) may contain spaces, so count fields from the closing parenthesis.
