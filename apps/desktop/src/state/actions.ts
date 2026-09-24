@@ -1,13 +1,25 @@
 import { request } from "@/ipc/client";
-import type { Conversation, Density, Project } from "@/ipc/generated";
+import type {
+  Access,
+  ApprovalDecision,
+  Conversation,
+  Density,
+  Project,
+  ProviderKind,
+  RawApprovals,
+  RawSession,
+} from "@/ipc/generated";
 import { applyDensity } from "@/lib/density";
 import {
   emptyThread,
   mergeMessages,
   replaceCatalog,
   type InspectorTab,
+  type ProvidersState,
+  type RawTranscript,
   type Selection,
   type Thread,
+  upsertRawSession,
   useApp,
 } from "@/state/store";
 
@@ -243,4 +255,149 @@ export async function setMetricsStreaming(enabled: boolean): Promise<void> {
 export async function runProbeBurst(count = 200, intervalMs = 5) {
   const { burst } = await request({ method: "probeBurst", count, intervalMs });
   return burst;
+}
+
+// ----- providers and raw sessions (Inspector) -------------------------------------------
+
+/** Transcript entries fetched per page. */
+const RAW_PAGE = 500;
+
+function updateProviders(update: (providers: ProvidersState) => ProvidersState): void {
+  useApp.setState((state) => ({ providers: update(state.providers) }));
+}
+
+function updateTranscript(id: string, update: (transcript: RawTranscript) => RawTranscript): void {
+  updateProviders((providers) => ({
+    ...providers,
+    transcripts: {
+      ...providers.transcripts,
+      [id]: update(providers.transcripts[id] ?? { entries: [], hasMore: false, loading: false }),
+    },
+  }));
+}
+
+/** Shows a session returned by a request right away (its event may still be in flight). */
+function showRawSession(session: RawSession): void {
+  updateProviders((providers) => upsertRawSession(providers, session));
+  selectRawSession(session.id);
+}
+
+export async function loadProviders(): Promise<void> {
+  const { view } = await request({ method: "getProviders" });
+  updateProviders((providers) => ({ ...providers, view }));
+}
+
+export async function refreshProviders(): Promise<void> {
+  await request({ method: "refreshProviders" });
+}
+
+/** Opens a raw session in the Providers tab (or goes back to the list with `null`). */
+export function selectRawSession(id: string | null): void {
+  updateProviders((providers) => ({ ...providers, selected: id }));
+  if (id !== null && !useApp.getState().providers.transcripts[id]) {
+    void loadRawTranscript(id);
+  }
+}
+
+/** Loads the newest page of a transcript, keeping live entries that arrived meanwhile. */
+export async function loadRawTranscript(id: string): Promise<void> {
+  updateTranscript(id, (transcript) => ({ ...transcript, loading: true }));
+  try {
+    const { page } = await request({ method: "listRawEvents", id, before: null, limit: RAW_PAGE });
+    const newest = page.entries.at(-1)?.streamSeq ?? 0;
+    updateTranscript(id, (transcript) => ({
+      entries: [
+        ...page.entries,
+        ...transcript.entries.filter((entry) => entry.streamSeq > newest),
+      ],
+      hasMore: page.hasMore,
+      loading: false,
+    }));
+  } catch (error) {
+    updateTranscript(id, (transcript) => ({ ...transcript, loading: false }));
+    throw error;
+  }
+}
+
+export async function loadEarlierRawEntries(id: string): Promise<void> {
+  const transcript = useApp.getState().providers.transcripts[id];
+  const oldest = transcript?.entries[0];
+  if (!transcript || !oldest || transcript.loading) return;
+  updateTranscript(id, (current) => ({ ...current, loading: true }));
+  try {
+    const { page } = await request({
+      method: "listRawEvents",
+      id,
+      before: oldest.streamSeq,
+      limit: RAW_PAGE,
+    });
+    updateTranscript(id, (current) => ({
+      entries: [...page.entries, ...current.entries],
+      hasMore: page.hasMore,
+      loading: false,
+    }));
+  } catch (error) {
+    updateTranscript(id, (current) => ({ ...current, loading: false }));
+    throw error;
+  }
+}
+
+export type StartRawSession = {
+  provider: ProviderKind;
+  cwd: string;
+  model: string | null;
+  effort: string | null;
+  access: Access;
+  approvals: RawApprovals;
+  record: boolean;
+};
+
+export async function startRawSession(start: StartRawSession): Promise<void> {
+  const { session } = await request({ method: "startRawSession", ...start });
+  showRawSession(session);
+}
+
+export async function resumeRawSession(id: string): Promise<void> {
+  const { session } = await request({ method: "resumeRawSession", id });
+  updateProviders((providers) => upsertRawSession(providers, session));
+}
+
+export async function forkRawSession(id: string): Promise<void> {
+  const { session } = await request({ method: "forkRawSession", id });
+  showRawSession(session);
+}
+
+export async function sendRawSession(id: string, text: string, steer: boolean): Promise<void> {
+  await request({ method: "sendRawSession", id, text, steer });
+}
+
+export async function interruptRawSession(id: string): Promise<void> {
+  await request({ method: "interruptRawSession", id });
+}
+
+export async function answerApproval(
+  id: string,
+  approvalId: string,
+  decision: ApprovalDecision,
+): Promise<void> {
+  await request({ method: "answerApproval", id, approvalId, decision });
+}
+
+export async function stopRawSession(id: string): Promise<void> {
+  await request({ method: "stopRawSession", id });
+}
+
+export async function closeRawSession(id: string): Promise<void> {
+  const { session } = await request({ method: "closeRawSession", id });
+  updateProviders((providers) => upsertRawSession(providers, session));
+}
+
+export async function replayFixture(fixtureId: string): Promise<void> {
+  const { session } = await request({ method: "replayFixture", fixtureId });
+  showRawSession(session);
+}
+
+export async function simulateUsageLimit(provider: ProviderKind): Promise<void> {
+  const { session } = await request({ method: "simulateUsageLimit", provider });
+  showRawSession(session);
 }

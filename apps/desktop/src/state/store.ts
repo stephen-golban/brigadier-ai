@@ -9,6 +9,9 @@ import type {
   EventEnvelope,
   Message,
   Project,
+  ProvidersView,
+  RawEntry,
+  RawSession,
   Settings,
 } from "@/ipc/generated";
 import { applyDensity, cachedDensity } from "@/lib/density";
@@ -42,10 +45,30 @@ export type Thread = {
   fullText: Record<string, string>;
 };
 
-export type InspectorTab = "events" | "processes" | "performance";
+export type InspectorTab = "events" | "processes" | "performance" | "providers";
 
 /** Newest inspector events kept in memory. */
 export const INSPECTOR_EVENTS = 500;
+
+/** Newest entries kept per open raw-session transcript; older ones load on demand. */
+export const RAW_ENTRIES = 5_000;
+
+/** The loaded part of a raw session's transcript, oldest first. */
+export type RawTranscript = {
+  entries: RawEntry[];
+  hasMore: boolean;
+  loading: boolean;
+};
+
+/** The Inspector's Providers tab: provider overviews, raw sessions and their transcripts. */
+export type ProvidersState = {
+  /** Absent until first loaded. */
+  view: ProvidersView | null;
+  /** The raw session shown, if any. */
+  selected: string | null;
+  /** Transcripts of the raw sessions opened so far, by session id. */
+  transcripts: Record<string, RawTranscript>;
+};
 
 export type AppState = {
   info: AppInfo | null;
@@ -68,6 +91,7 @@ export type AppState = {
     metrics: DaemonMetrics | null;
     diagnostics: Diagnostics | null;
   };
+  providers: ProvidersState;
 };
 
 export const useApp = create<AppState>()(() => ({
@@ -90,6 +114,7 @@ export const useApp = create<AppState>()(() => ({
     metrics: null,
     diagnostics: null,
   },
+  providers: { view: null, selected: null, transcripts: {} },
 }));
 
 export const emptyThread: Thread = {
@@ -135,11 +160,11 @@ export function mergeMessages(
 export function applyEvents(envelopes: readonly EventEnvelope[]): void {
   if (envelopes.length === 0) return;
   useApp.setState((state) => {
-    let { projects, conversations, threads, pending, settings } = state;
+    let { projects, conversations, threads, pending, settings, providers } = state;
     for (const envelope of envelopes) {
-      ({ projects, conversations, threads, pending, settings } = applyEvent(
+      ({ projects, conversations, threads, pending, settings, providers } = applyEvent(
         envelope,
-        { projects, conversations, threads, pending, settings },
+        { projects, conversations, threads, pending, settings, providers },
       ));
     }
     const newest = envelopes.toReversed();
@@ -153,6 +178,7 @@ export function applyEvents(envelopes: readonly EventEnvelope[]): void {
       threads,
       pending,
       settings,
+      providers,
       inspector: { ...state.inspector, events },
     };
   });
@@ -160,13 +186,79 @@ export function applyEvents(envelopes: readonly EventEnvelope[]): void {
 
 type Slice = Pick<
   AppState,
-  "projects" | "conversations" | "threads" | "pending" | "settings"
+  "projects" | "conversations" | "threads" | "pending" | "settings" | "providers"
 >;
 
-function applyEvent(
-  { event, streamSeq }: EventEnvelope,
-  slice: Slice,
-): Slice {
+/** Adds or replaces a raw session in the list, newest first. */
+export function upsertRawSession(
+  providers: ProvidersState,
+  session: RawSession,
+): ProvidersState {
+  const view = providers.view;
+  if (!view) return providers;
+  const index = view.sessions.findIndex((existing) => existing.id === session.id);
+  const sessions =
+    index === -1
+      ? [session, ...view.sessions]
+      : view.sessions.map((existing, i) => (i === index ? session : existing));
+  return { ...providers, view: { ...view, sessions } };
+}
+
+function applyProviderEvent(
+  { event, streamSeq, atMs }: EventEnvelope,
+  providers: ProvidersState,
+): ProvidersState {
+  switch (event.type) {
+    case "providerChecked": {
+      const view = providers.view;
+      if (!view) return providers;
+      const others = view.providers.filter(
+        (overview) => overview.provider !== event.overview.provider,
+      );
+      const order = ["claude", "codex"];
+      const overviews = [...others, event.overview].toSorted(
+        (a, b) => order.indexOf(a.provider) - order.indexOf(b.provider),
+      );
+      return { ...providers, view: { ...view, providers: overviews } };
+    }
+    case "rawSessionCreated":
+      return upsertRawSession(providers, event.session);
+    case "rawSessionUpdated": {
+      const current = providers.view?.sessions.find((session) => session.id === event.id);
+      if (!current) return providers;
+      return upsertRawSession(providers, {
+        ...current,
+        state: event.state,
+        nativeId: event.nativeId ?? current.nativeId,
+        error: event.error,
+        updatedAtMs: atMs,
+      });
+    }
+    case "rawEvent": {
+      const transcript = providers.transcripts[event.sessionId];
+      const last = transcript?.entries.at(-1);
+      if (!transcript || (last && last.streamSeq >= streamSeq)) return providers;
+      const entries = [...transcript.entries, { streamSeq, atMs, event: event.event }];
+      const trimmed = entries.length > RAW_ENTRIES;
+      return {
+        ...providers,
+        transcripts: {
+          ...providers.transcripts,
+          [event.sessionId]: {
+            ...transcript,
+            entries: trimmed ? entries.slice(-RAW_ENTRIES) : entries,
+            hasMore: transcript.hasMore || trimmed,
+          },
+        },
+      };
+    }
+    default:
+      return providers;
+  }
+}
+
+function applyEvent(envelope: EventEnvelope, slice: Slice): Slice {
+  const { event, streamSeq } = envelope;
   switch (event.type) {
     case "projectCreated":
       return {
@@ -226,14 +318,15 @@ function applyEvent(
     case "settingsChanged":
       applyDensity(event.settings.density);
       return { ...slice, settings: event.settings };
-    case "probe":
-    // Raw sessions, the cleanup ledger and provider checks are Inspector state.
     case "rawSessionCreated":
     case "rawSessionUpdated":
     case "rawEvent":
+    case "providerChecked":
+      return { ...slice, providers: applyProviderEvent(envelope, slice.providers) };
+    case "probe":
+    // The cleanup ledger shows in the event list only.
     case "cleanupRecorded":
     case "cleanupCompleted":
-    case "providerChecked":
       return slice;
   }
 }
