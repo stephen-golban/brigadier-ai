@@ -1,0 +1,67 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/core",
+  "crates/store",
+  "crates/ipc",
+  "crates/providers",
+  "crates/brain",
+  "crates/index",
+  "crates/router",
+  "crates/review",
+  "crates/git",
+  "crates/registry",
+  "crates/sandbox",
+  "crates/mcp-server",
+  "crates/daemon",
+]
+default-members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+repository = "https://github.com/stephen-golban/brigadier-ai"
+publish = false
+
+[workspace.dependencies]
+brigadier-core = { path = "crates/core" }
+brigadier-store = { path = "crates/store" }
+brigadier-ipc = { path = "crates/ipc" }
+brigadier-sandbox = { path = "crates/sandbox" }
+
+anyhow = "1.0.104"
+blake3 = "1.8.7"
+dirs = "7.0.0"
+nix = { version = "0.31.3", features = ["fs", "process", "signal", "user"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite_migration = "2.6.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
+thiserror = "2.0.21"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "signal", "net"] }
+tokio-util = "0.7.19"
+tracing = "0.1.44"
+tracing-appender = "0.2.5"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+ts-rs = "12.0.1"
+uuid = { version = "1.26.1", features = ["v7", "serde"] }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+await_holding_lock = "deny"
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "unwind"

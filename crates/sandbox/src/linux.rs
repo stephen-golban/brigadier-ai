@@ -1,0 +1,125 @@
+//! Linux: everything the daemon needs to run. The worker sandbox, credential storage and
+//! login-shell resolution arrive with the Linux platform phase.
+
+use std::collections::BTreeMap;
+use std::ffi::OsString;
+use std::io;
+use std::path::PathBuf;
+
+use nix::unistd::{SysconfVar, sysconf};
+
+use crate::unix::{self, UnixPrivateFs};
+use crate::{
+    AppPaths, CredentialStore, DetachedChild, Platform, PrivateFs, Processes, Result, Sandbox,
+    SandboxPolicy, Shell, SpawnSpec, unsupported,
+};
+
+const NAME: &str = "linux";
+
+pub(crate) struct Linux {
+    paths: AppPaths,
+}
+
+impl Linux {
+    pub(crate) fn new(paths: AppPaths) -> Self {
+        Self { paths }
+    }
+}
+
+impl Platform for Linux {
+    fn name(&self) -> &'static str {
+        NAME
+    }
+    fn paths(&self) -> &AppPaths {
+        &self.paths
+    }
+    fn private_fs(&self) -> &dyn PrivateFs {
+        &UnixPrivateFs
+    }
+    fn processes(&self) -> &dyn Processes {
+        &LinuxProcesses
+    }
+    fn credentials(&self) -> &dyn CredentialStore {
+        &Unsupported
+    }
+    fn shell(&self) -> &dyn Shell {
+        &Unsupported
+    }
+    fn sandbox(&self) -> &dyn Sandbox {
+        &Unsupported
+    }
+}
+
+struct LinuxProcesses;
+
+impl Processes for LinuxProcesses {
+    fn spawn_detached(&self, spec: &SpawnSpec) -> Result<DetachedChild> {
+        unix::spawn_detached(spec)
+    }
+    fn is_alive(&self, pid: u32) -> bool {
+        unix::is_alive(pid)
+    }
+    fn terminate(&self, pid: u32) -> Result<()> {
+        unix::terminate(pid)
+    }
+    fn kill_tree(&self, pid: u32) -> Result<()> {
+        unix::kill_tree(pid)
+    }
+    fn start_time_ms(&self, pid: u32) -> Result<f64> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))?;
+        // Field 2 (comm) may contain spaces, so count fields from the closing parenthesis.
+        let after_comm = stat
+            .rfind(')')
+            .map(|index| &stat[index + 1..])
+            .ok_or_else(bad_proc)?;
+        let start_ticks: f64 = after_comm
+            .split_whitespace()
+            .nth(19)
+            .and_then(|field| field.parse().ok())
+            .ok_or_else(bad_proc)?;
+        let boot_secs: f64 = std::fs::read_to_string("/proc/stat")?
+            .lines()
+            .find_map(|line| line.strip_prefix("btime "))
+            .and_then(|value| value.trim().parse().ok())
+            .ok_or_else(bad_proc)?;
+        let ticks_per_sec = sysconf(SysconfVar::CLK_TCK)
+            .ok()
+            .flatten()
+            .filter(|ticks| *ticks > 0)
+            .ok_or_else(bad_proc)? as f64;
+        Ok(boot_secs * 1000.0 + start_ticks * 1000.0 / ticks_per_sec)
+    }
+}
+
+fn bad_proc() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, "unexpected /proc format")
+}
+
+struct Unsupported;
+
+impl CredentialStore for Unsupported {
+    fn set(&self, _account: &str, _secret: &[u8]) -> Result<()> {
+        unsupported("credential storage", NAME)
+    }
+    fn get(&self, _account: &str) -> Result<Option<Vec<u8>>> {
+        unsupported("credential storage", NAME)
+    }
+    fn delete(&self, _account: &str) -> Result<()> {
+        unsupported("credential storage", NAME)
+    }
+}
+
+impl Shell for Unsupported {
+    fn login_shell(&self) -> Result<PathBuf> {
+        unsupported("login shell resolution", NAME)
+    }
+    fn login_environment(&self) -> Result<BTreeMap<OsString, OsString>> {
+        unsupported("login shell resolution", NAME)
+    }
+}
+
+impl Sandbox for Unsupported {
+    fn confine(&self, _spec: SpawnSpec, _policy: &SandboxPolicy) -> Result<SpawnSpec> {
+        unsupported("the worker sandbox", NAME)
+    }
+}

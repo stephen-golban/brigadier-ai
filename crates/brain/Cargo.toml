@@ -1,0 +1,11 @@
+[package]
+name = "brigadier-brain"
+description = "Project Brain: knowledge graph, freshness, retrieval and rebirth briefings."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

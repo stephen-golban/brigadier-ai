@@ -1,0 +1,11 @@
+[package]
+name = "brigadier-review"
+description = "Review tiers, fusion panel and the verification pipeline."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

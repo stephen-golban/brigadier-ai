@@ -1,0 +1,30 @@
+[package]
+name = "brigadier-daemon"
+description = "brigadierd: the Brigadier core process."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "brigadierd"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+brigadier-core.workspace = true
+brigadier-ipc.workspace = true
+brigadier-sandbox.workspace = true
+brigadier-store.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
+sysinfo.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+tokio-metrics = "0.5.2"
+tokio-util = { workspace = true, features = ["rt"] }
+tracing.workspace = true
+tracing-appender.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true
