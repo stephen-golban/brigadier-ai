@@ -36,7 +36,8 @@ import {
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { formatTime } from "@/lib/format";
+import { useNow } from "@/hooks/use-now";
+import { formatDaySeparator, formatSentAt, sameDay } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 /**
@@ -392,6 +393,7 @@ const UserMessage: FC = () => {
       className="group/user fade-in slide-in-from-bottom-1 animate-in message-contain flex flex-col items-end gap-y-1 px-2 duration-150"
       data-role="user"
     >
+      <DaySeparator />
       <div className="aui-user-message-content-wrapper flex max-w-7/10 min-w-0 flex-col items-end gap-y-1">
         <UserMessageText />
         <MessageFooter />
@@ -400,6 +402,22 @@ const UserMessage: FC = () => {
         </div>
       </div>
     </MessagePrimitive.Root>
+  );
+};
+
+/** "Yesterday 3:09 AM", centred above the first message of a day. */
+const DaySeparator: FC = () => {
+  const sentAt = useAuiState((s) => s.message.createdAt.getTime());
+  const previous = useAuiState((s) => {
+    const index = s.message.index;
+    return index > 0 ? (s.thread.messages[index - 1]?.createdAt.getTime() ?? null) : null;
+  });
+  const now = useNow(60_000);
+  if (previous === null ? sameDay(sentAt, now) : sameDay(previous, sentAt)) return null;
+  return (
+    <p className="text-muted-foreground self-stretch pt-2 pb-4 text-center text-sm">
+      {formatDaySeparator(sentAt, now)}
+    </p>
   );
 };
 
@@ -451,9 +469,10 @@ const canRework = (s: AssistantState) => s.message.metadata.custom["rework"] ===
 
 const UserActionBar: FC = () => {
   const sentAt = useAuiState((s) => s.message.createdAt.getTime());
+  const now = useNow(60_000);
   return (
     <ActionBarPrimitive.Root className="aui-user-action-bar-root text-muted-foreground flex items-center gap-1">
-      <span className="pe-1 text-xs tabular-nums">{formatTime(sentAt)}</span>
+      <span className="pe-1 text-xs tabular-nums">{formatSentAt(sentAt, now)}</span>
       <ActionBarPrimitive.Copy asChild>
         <TooltipIconButton tooltip="Copy" className="aui-user-action-copy">
           <CopyIcon />
