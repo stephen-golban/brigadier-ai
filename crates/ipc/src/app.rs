@@ -44,6 +44,33 @@ pub enum BridgeEvent {
     },
 }
 
+/// What the side panel's Browser tab hears about its page, over the channel it opened it with.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum BrowserEvent {
+    /// A page started (`loading`) or finished loading.
+    Load { url: String, loading: bool },
+    /// The page's title changed.
+    Title { title: String },
+    /// A navigation or download the tab refused (not a web page, or a file to save); the tab
+    /// offers the system browser instead.
+    Blocked { url: String },
+}
+
+/// Where the Browser tab's page sits in the window, in CSS pixels from its top left.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserBounds {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
 /// Static facts about this app launch.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]

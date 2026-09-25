@@ -2,6 +2,7 @@ import {
   CollapseLg,
   ExpandLg,
   Folders,
+  Globe,
   Plus,
   PlusCircle,
   SidebarRight,
@@ -33,6 +34,7 @@ import { useSidebar } from "@/components/ui/sidebar";
 import { tokenPx } from "@/lib/tokens";
 import { cn } from "@/lib/utils";
 import { useApp } from "@/state/store";
+import { closePage } from "@/state/browsers";
 import { closeSideChat } from "@/state/sideChats";
 import { closeTerminal } from "@/state/terminals";
 
@@ -45,6 +47,9 @@ const TerminalTab = lazy(() =>
 const SideChatTab = lazy(() =>
   import("@/app/conversation/SideChatTab").then((module) => ({ default: module.SideChatTab })),
 );
+const BrowserTab = lazy(() =>
+  import("@/app/conversation/BrowserTab").then((module) => ({ default: module.BrowserTab })),
+);
 const FilesTab = lazy(() =>
   import("@/app/conversation/FilesTab").then((module) => ({ default: module.FilesTab })),
 );
@@ -56,18 +61,19 @@ const FilesTab = lazy(() =>
  */
 
 /** The kinds of tab the side panel opens. */
-export type SideTab = "workers" | "review" | "terminal" | "files" | "sideChat";
+export type SideTab = "workers" | "review" | "terminal" | "browser" | "files" | "sideChat";
 
 /** Each tab's title, icon and ChatGPT's shortcut (macOS keys; Ctrl for ⌘ elsewhere). */
 const TABS: Record<SideTab, { title: string; icon: ReactNode; keys: string | null }> = {
   workers: { title: WORKERS_LABEL, icon: <User />, keys: null },
   review: { title: "Review", icon: <DiffGlyph />, keys: "⌃⇧G" },
   terminal: { title: "Terminal", icon: <Terminal />, keys: "⌃`" },
+  browser: { title: "Browser", icon: <Globe />, keys: "⌘T" },
   files: { title: "Files", icon: <Folders />, keys: "⌘P" },
   sideChat: { title: "Side chat", icon: <PlusCircle />, keys: "⌥⌘S" },
 };
 
-/** Which tab a key press opens: ChatGPT's ⌃⇧G, ⌃`, ⌘P and ⌥⌘S (Ctrl for ⌘ off macOS). */
+/** Which tab a key press opens: ChatGPT's ⌃⇧G, ⌃`, ⌘T, ⌘P and ⌥⌘S (Ctrl for ⌘ off macOS). */
 function tabForKey(event: KeyboardEvent, mac: boolean): SideTab | null {
   const command = mac ? event.metaKey : event.ctrlKey;
   if (event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey && event.code === "KeyG") {
@@ -76,6 +82,7 @@ function tabForKey(event: KeyboardEvent, mac: boolean): SideTab | null {
   if (event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey) {
     if (event.code === "Backquote") return "terminal";
   }
+  if (command && !event.shiftKey && !event.altKey && event.code === "KeyT") return "browser";
   if (command && !event.shiftKey && !event.altKey && event.code === "KeyP") return "files";
   if (command && event.altKey && !event.shiftKey && event.code === "KeyS") return "sideChat";
   return null;
@@ -144,7 +151,7 @@ export function useSidePanel(
   const available = useMemo<SideTab[]>(
     () =>
       kind === "session"
-        ? ["workers", "review", "terminal", "files", "sideChat"]
+        ? ["workers", "review", "terminal", "browser", "files", "sideChat"]
         : kind === "chat"
           ? ["sideChat"]
           : [],
@@ -160,8 +167,10 @@ export function useSidePanel(
     }));
   }, []);
   const closeTab = useCallback((tab: SideTab) => {
-    // Closing the Terminal tab ends its shell; closing the Side chat tab deletes the chat.
+    // Closing the Terminal tab ends its shell, the Browser tab drops its page, and closing
+    // the Side chat tab deletes the chat.
     if (tab === "terminal" && conversationId) closeTerminal(conversationId);
+    if (tab === "browser" && conversationId) closePage(conversationId);
     if (tab === "sideChat" && conversationId) closeSideChat(conversationId);
     setState((current) => {
       const tabs = current.tabs.filter((open) => open !== tab);
@@ -170,6 +179,11 @@ export function useSidePanel(
       const active = current.active === tab ? (tabs.at(-1) ?? "new") : current.active;
       return { ...current, tabs, active };
     });
+  }, [conversationId]);
+  // The panel goes with the conversation view, and the Browser tab's page with it.
+  useEffect(() => {
+    if (!conversationId) return;
+    return () => closePage(conversationId);
   }, [conversationId]);
   // ChatGPT's tab shortcuts while this conversation is open.
   useEffect(() => {
@@ -438,6 +452,10 @@ export function SidePanel({ conversationId }: { conversationId: string | null })
         ) : state.active === "terminal" && conversationId ? (
           <Suspense fallback={null}>
             <TerminalTab conversationId={conversationId} />
+          </Suspense>
+        ) : state.active === "browser" && conversationId ? (
+          <Suspense fallback={null}>
+            <BrowserTab conversationId={conversationId} />
           </Suspense>
         ) : state.active === "sideChat" && conversationId ? (
           <Suspense fallback={null}>

@@ -3,6 +3,8 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
   AppInfo,
   BridgeEvent,
+  BrowserBounds,
+  BrowserEvent,
   IpcError,
   Request,
   Response,
@@ -127,4 +129,52 @@ export async function openFolder(path: string, app?: string): Promise<void> {
   } catch (error) {
     throw isIpcError(error) ? new RequestError(error) : error;
   }
+}
+
+/**
+ * Makes the Browser tab `id`'s page, showing `url` over `bounds`; `onEvent` hears that page
+ * until it is closed.
+ */
+export async function browserOpen(
+  id: string,
+  url: string,
+  bounds: BrowserBounds,
+  onEvent: (event: BrowserEvent) => void,
+): Promise<void> {
+  try {
+    await invoke("browser_open", { id, url, bounds, events: new Channel<BrowserEvent>(onEvent) });
+  } catch (error) {
+    throw isIpcError(error) ? new RequestError(error) : error;
+  }
+}
+
+/** Shows `url` in the Browser tab `id`'s page, over `bounds`. */
+export async function browserNavigate(
+  id: string,
+  url: string,
+  bounds: BrowserBounds,
+): Promise<void> {
+  try {
+    await invoke("browser_navigate", { id, url, bounds });
+  } catch (error) {
+    throw isIpcError(error) ? new RequestError(error) : error;
+  }
+}
+
+/** Moves the Browser tab's page to `bounds`, or hides it (`null`). */
+export function browserPlace(id: string, bounds: BrowserBounds | null): Promise<void> {
+  return invoke("browser_place", { id, bounds });
+}
+
+/** Back, forward, reload or stop in the Browser tab's page. */
+export function browserGo(
+  id: string,
+  action: "back" | "forward" | "reload" | "stop",
+): Promise<void> {
+  return invoke("browser_go", { id, action });
+}
+
+/** Drops the Browser tab's page and all it stored. */
+export function browserClose(id: string): Promise<void> {
+  return invoke("browser_close", { id });
 }

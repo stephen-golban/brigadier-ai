@@ -378,6 +378,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ts-rs",
+ "wry",
 ]
 
 [[package]]
