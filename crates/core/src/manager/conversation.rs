@@ -91,6 +91,9 @@ pub(crate) struct Cli {
     pub owner: String,
     /// Cancelled once the session's pump has stored its last event.
     pub ended: CancellationToken,
+    /// Commands the user allowed again for the rest of this CLI session ("Don't ask again for
+    /// this command"), with their escalation flag. In memory only: they end with the session.
+    pub granted: std::sync::Mutex<HashSet<(String, bool)>>,
 }
 
 #[derive(Default)]
@@ -950,6 +953,7 @@ impl SessionManager {
             session,
             owner,
             ended: CancellationToken::new(),
+            granted: Default::default(),
         });
         conv.state.lock().await.cli = Some(cli.clone());
         let manager = self.arc();

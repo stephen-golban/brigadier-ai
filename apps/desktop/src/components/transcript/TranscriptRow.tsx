@@ -121,7 +121,7 @@ export const TranscriptRow = memo(function TranscriptRow({ item }: { item: Trans
           </span>
           {item.resolution ? (
             <span className="text-muted-foreground">
-              {item.resolution.decision.type === "allow" ? "allowed" : "denied"} by{" "}
+              {item.resolution.decision.type === "deny" ? "denied" : "allowed"} by{" "}
               {DECIDERS[item.resolution.decidedBy]}
             </span>
           ) : (

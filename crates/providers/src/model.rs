@@ -210,6 +210,10 @@ pub struct ApprovalRequest {
     pub escalation: bool,
     /// The tool input as JSON text, for display.
     pub input: Option<String>,
+    /// Set when the user may allow this exact command for the rest of the CLI session
+    /// ([`ApprovalDecision::AllowSimilar`]): the command as shown.
+    #[serde(default)]
+    pub grant: Option<String>,
 }
 
 /// The answer to an [`ApprovalRequest`].
@@ -221,7 +225,12 @@ pub struct ApprovalRequest {
 )]
 pub enum ApprovalDecision {
     Allow,
-    Deny { message: String },
+    /// Allow, and allow the same command again for the rest of the CLI session without
+    /// asking ("Don't ask again for this command"). Never persisted.
+    AllowSimilar,
+    Deny {
+        message: String,
+    },
 }
 
 /// Who answered an approval.

@@ -171,6 +171,19 @@ pub fn is_outward(command: &str) -> bool {
     })
 }
 
+/// The script of a `sh -c '…'` wrapper (`/bin/zsh -lc 'npm test'` → `npm test`), else the
+/// command itself.
+pub fn unwrapped_command(command: &str) -> String {
+    let commands = simple_commands(command);
+    if let [inner @ .., outer] = commands.as_slice()
+        && let Some(script) = shell_script(outer)
+        && simple_commands(&script).len() == inner.len()
+    {
+        return script.trim().to_owned();
+    }
+    command.trim().to_owned()
+}
+
 fn matches_pattern(words: &[String], pattern: &[&str]) -> bool {
     let words = strip_prefixes(words);
     let Some((program, rest)) = words.split_first() else {

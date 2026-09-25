@@ -45,7 +45,10 @@ pub enum Control {
 /// What an approval answer has to look like.
 #[derive(Debug, Clone)]
 pub enum PendingKind {
-    Command,
+    /// `grant`: Codex can allow the same command again for the rest of its session.
+    Command {
+        grant: bool,
+    },
     FileChange,
     /// The requested permission profile, echoed back when granted.
     Permissions(Value),
@@ -508,6 +511,15 @@ impl Parser {
                 };
                 // An approved command runs outside the sandbox (see the adapter's docs).
                 let reason = ask.reason.clone();
+                // Codex's session approval cache (`acceptForSession`) holds this exact command.
+                let grant = ask
+                    .command
+                    .as_deref()
+                    .filter(|command| {
+                        ask.kind == p::CommandExecutionApprovalKind::Command
+                            && !crate::policy::is_outward(command)
+                    })
+                    .map(crate::policy::unwrapped_command);
                 (
                     ApprovalRequest {
                         id: approval_id.clone(),
@@ -522,8 +534,11 @@ impl Parser {
                         }),
                         escalation: true,
                         input: ask.command,
+                        grant: grant.clone(),
                     },
-                    PendingKind::Command,
+                    PendingKind::Command {
+                        grant: grant.is_some(),
+                    },
                 )
             }
             "item/fileChange/requestApproval" => {
@@ -549,6 +564,7 @@ impl Parser {
                             ask.grant_root.map(|root| format!("write access to {root}"))
                         }),
                         input: None,
+                        grant: None,
                     },
                     PendingKind::FileChange,
                 )
@@ -570,6 +586,7 @@ impl Parser {
                         reason: ask.reason,
                         escalation: true,
                         input: Some(clip(&requested.to_string(), OUTPUT_CLIP)),
+                        grant: None,
                     },
                     PendingKind::Permissions(requested),
                 )

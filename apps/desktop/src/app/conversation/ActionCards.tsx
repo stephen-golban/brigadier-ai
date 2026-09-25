@@ -1,7 +1,9 @@
 import {
   Branch,
+  ChevronDown,
   Commit,
   Globe,
+  InfoCircle,
   PencilSquare,
   QuestionMarkCircle,
   Sparkle,
@@ -28,8 +30,15 @@ import {
 } from "@/components/assistant-ui/elements/action-card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Kbd } from "@/components/ui/kbd";
-import type { Approval, Conversation } from "@/ipc/generated";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import type { Approval, ApprovalDecision, Conversation } from "@/ipc/generated";
 import { ALWAYS_ASK_NOTE } from "@/lib/setup";
 import { answerCard, answerQuestion, decidePlan } from "@/state/actions";
 import { useBoard } from "@/state/board";
@@ -220,14 +229,11 @@ function ApprovalAction({ id, footer }: { id: string; footer: ReactNode }) {
   if (!approval) return null;
 
   const shown = describe(approval, taskNumber, landingNumber);
-  const answer = (allowed: boolean) =>
-    action.run(() =>
-      answerCard(
-        approval.conversationId,
-        approval.id,
-        allowed ? { type: "allow" } : { type: "deny", message: "" },
-      ),
-    );
+  const request = approval.subject.type === "cli" ? approval.subject.request : null;
+  const grant = request?.grant ?? null;
+  const answer = (decision: ApprovalDecision) =>
+    action.run(() => answerCard(approval.conversationId, approval.id, decision));
+  const deny = () => answer({ type: "deny", message: "" });
   return (
     <ActionCard
       aria-label="Approval"
@@ -235,7 +241,7 @@ function ApprovalAction({ id, footer }: { id: string; footer: ReactNode }) {
       onKeyDown={(event) => {
         if (event.key === "Escape" && !typing(event) && !action.busy) {
           event.preventDefault();
-          answer(false);
+          deny();
         }
       }}
     >
@@ -253,24 +259,82 @@ function ApprovalAction({ id, footer }: { id: string; footer: ReactNode }) {
           size="sm"
           className="rounded-capsule"
           disabled={action.busy}
-          onClick={() => answer(false)}
+          onClick={deny}
         >
           Deny
           <Kbd>Esc</Kbd>
         </Button>
-        <Button
-          ref={allow}
-          size="sm"
-          className="rounded-capsule"
-          disabled={action.busy}
-          onClick={() => answer(true)}
-        >
-          Allow once
-          <Kbd>↩</Kbd>
-        </Button>
+        <div className="flex">
+          <Button
+            ref={allow}
+            size="sm"
+            className={grant ? "rounded-s-capsule rounded-e-none" : "rounded-capsule"}
+            disabled={action.busy}
+            onClick={() => answer({ type: "allow" })}
+          >
+            Allow once
+            <Kbd>↩</Kbd>
+          </Button>
+          {grant && (
+            <GrantMenu
+              command={grant}
+              escalation={request?.escalation ?? false}
+              disabled={action.busy}
+              onAnswer={answer}
+            />
+          )}
+        </div>
       </div>
       {footer}
     </ActionCard>
+  );
+}
+
+/**
+ * The ⌄ half of ChatGPT's split "Allow once". Its "Allow similar commands" becomes an exact
+ * grant: this command, for the rest of this worker's CLI session, never saved.
+ */
+function GrantMenu({
+  command,
+  escalation,
+  disabled,
+  onAnswer,
+}: {
+  command: string;
+  escalation: boolean;
+  disabled: boolean;
+  onAnswer: (decision: ApprovalDecision) => void;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          size="sm"
+          aria-label="Approval options"
+          className="border-primary-foreground/20 rounded-s-none rounded-e-capsule border-s px-2"
+          disabled={disabled}
+        >
+          <ChevronDown />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem onSelect={() => onAnswer({ type: "allow" })}>Allow once</DropdownMenuItem>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <DropdownMenuItem onSelect={() => onAnswer({ type: "allowSimilar" })}>
+              Don't ask again for this command
+              <InfoCircle className="text-muted-foreground ms-auto" />
+            </DropdownMenuItem>
+          </TooltipTrigger>
+          <TooltipContent side="right">
+            <span>
+              Allow <code className="font-mono break-all">{command}</code>
+              {escalation && " outside the sandbox"} again for this worker
+            </span>
+          </TooltipContent>
+        </Tooltip>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 

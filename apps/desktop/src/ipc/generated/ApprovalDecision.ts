@@ -3,4 +3,4 @@
 /**
  * The answer to an [`ApprovalRequest`].
  */
-export type ApprovalDecision = { "type": "allow" } | { "type": "deny", message: string, };
+export type ApprovalDecision = { "type": "allow" } | { "type": "allowSimilar" } | { "type": "deny", message: string, };
