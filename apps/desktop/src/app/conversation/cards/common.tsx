@@ -53,3 +53,19 @@ export function DiffStatView({ stat }: { stat: DiffStat }) {
     </div>
   );
 }
+
+/**
+ * In the thread, a decision whose card is in the composer: a grey row, as ChatGPT's "Waiting
+ * for your answer".
+ */
+export function WaitingRow({ icon, children }: { icon: ReactNode; children: ReactNode }) {
+  return (
+    <div
+      data-slot="waiting-row"
+      className="text-muted-foreground min-h-row-sm flex min-w-0 items-center gap-2 text-sm [&_svg]:size-icon-md [&_svg]:shrink-0"
+    >
+      {icon}
+      <span className="shimmer min-w-0 truncate">{children}</span>
+    </div>
+  );
+}

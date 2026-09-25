@@ -430,6 +430,9 @@ pub struct Question {
     pub text: String,
     /// Suggested answers; the user may also type one.
     pub options: Vec<String>,
+    /// The suggested answer the asker recommends, by its index in `options`.
+    #[serde(default)]
+    pub recommended: Option<u32>,
     pub answer: Option<String>,
     pub created_at_ms: i64,
     pub answered_at_ms: Option<i64>,

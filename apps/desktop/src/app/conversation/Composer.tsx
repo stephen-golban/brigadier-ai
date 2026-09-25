@@ -21,6 +21,7 @@ import { Mentions } from "@/app/conversation/Mentions";
 import { SlashCommands } from "@/app/conversation/SlashCommands";
 import { BackgroundWorkers } from "@/app/conversation/BackgroundWorkers";
 import { type ComposerTarget, ComposerTargetContext } from "@/app/conversation/composerTarget";
+import { PendingActionCard, usePendingActions, WaitingReminder } from "@/app/conversation/ActionCards";
 import { QueueCard, usePullQueued } from "@/app/conversation/QueueCard";
 import { StatusCard, StatusCardContext } from "@/app/conversation/StatusCard";
 import { ComposerRail, ComposerRailItem } from "@/components/assistant-ui/elements/composer-rail";
@@ -32,6 +33,7 @@ import { ModelSelector } from "@/components/assistant-ui/elements/model-selector
 import { ContextRing } from "@/components/assistant-ui/context-ring";
 import type { ComposerProps } from "@/components/assistant-ui/thread";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { cn } from "@/lib/utils";
 import { useBoard } from "@/state/board";
 import { useApp } from "@/state/store";
 
@@ -46,9 +48,19 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
   const target = useContext(ComposerTargetContext);
   const [modelOpen, setModelOpen] = useState(false);
   const statusCard = useContext(StatusCardContext);
+  const pending = usePendingActions(target?.conversation ?? null);
+  // Cards put aside with ×, for the conversation they belong to.
+  const [aside, setAside] = useState<{ conversationId: string | null; ids: string[] }>({
+    conversationId: null,
+    ids: [],
+  });
   if (!target) return null;
   const { conversation, resolved, targets } = target;
   const archived = conversation?.lifecycle === "archived";
+  const putAside = aside.conversationId === (conversation?.id ?? null) ? aside.ids : [];
+  const waiting = pending.filter((entry) => !putAside.includes(entry.id));
+  const current = archived ? undefined : waiting[0];
+  const setAsideIds = (ids: string[]) => setAside({ conversationId: conversation?.id ?? null, ids });
 
   return (
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>
@@ -68,9 +80,28 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
           {conversation?.kind === "session" && !archived && (
             <BackgroundWorkers conversationId={conversation.id} />
           )}
+          {pending.length > waiting.length && !archived && (
+            <ComposerRailItem label="Waiting for you">
+              <WaitingReminder count={pending.length - waiting.length} onShow={() => setAsideIds([])} />
+            </ComposerRailItem>
+          )}
         </ComposerRail>
         <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col gap-1.5">
-          {/* ChatGPT's card: lifted, an inner hairline for an edge, and no focus ring. */}
+          {current ? (
+            <PendingActionCard
+              action={current}
+              more={waiting.length - 1}
+              onDismiss={() => setAsideIds([...putAside, current.id])}
+              message={
+                // The user can always talk to the orchestrator; this steers or queues as usual.
+                <div className="border-foreground/10 flex items-center gap-1 border-t pt-2">
+                  <ComposerInput placeholder="Message Brigadier" autoFocus={false} running={target.running} line />
+                  <SendControls running={target.running} onResume={target.onResume} />
+                </div>
+              }
+            />
+          ) : (
+          /* ChatGPT's card: lifted, an inner hairline for an edge, and no focus ring. */
           <div
             data-slot="aui_composer-shell"
             className="@container/composer bg-composer rounded-composer shadow-hairline relative flex w-full cursor-text flex-col gap-1 p-2 backdrop-blur-lg"
@@ -118,6 +149,7 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
               <SendControls running={target.running} onResume={target.onResume} />
             </div>
           </div>
+          )}
           <ComposerHint target={target} />
         </ComposerPrimitive.Root>
       </div>
@@ -134,10 +166,13 @@ function ComposerInput({
   placeholder,
   autoFocus,
   running,
+  line = false,
 }: {
   placeholder: string;
   autoFocus: boolean;
   running: boolean;
+  /** One line (under an action card): it doesn't grow, it scrolls. */
+  line?: boolean;
 }) {
   const [scrolled, setScrolled] = useState(false);
   const aui = useAui();
@@ -167,7 +202,12 @@ function ComposerInput({
       data-scrolled={scrolled || undefined}
       onKeyDown={onKeyDown}
       onScroll={(event) => setScrolled(event.currentTarget.scrollTop > 0)}
-      className="aui-composer-input caret-primary placeholder:text-muted-foreground/60 min-h-composer max-h-composer-max data-scrolled:mask-fade-top w-full resize-none bg-transparent px-2 py-2.5 text-base outline-none"
+      className={cn(
+        "aui-composer-input caret-primary placeholder:text-muted-foreground/60 w-full resize-none bg-transparent text-base outline-none",
+        line
+          ? "min-h-control-md max-h-control-md px-1 py-1.5 text-sm"
+          : "min-h-composer max-h-composer-max data-scrolled:mask-fade-top px-2 py-2.5",
+      )}
       rows={1}
       autoFocus={autoFocus}
       enterKeyHint="send"

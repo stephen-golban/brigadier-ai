@@ -139,6 +139,9 @@ pub struct AskUser {
     /// Suggested answers shown as buttons; the user can always type their own.
     #[serde(default)]
     pub options: Vec<String>,
+    /// The option you recommend, by its 0-based index in `options` (shown as "Recommended").
+    #[serde(default)]
+    pub recommended: Option<u32>,
     /// The task that waits for the answer, if any (other tasks continue).
     #[serde(default)]
     pub task: Option<String>,
