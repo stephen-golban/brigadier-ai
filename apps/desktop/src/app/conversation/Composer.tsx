@@ -130,11 +130,7 @@ function SendControls({
   onResume: (() => void) | null;
 }) {
   const queueEnabled = useApp((s) => s.settings.queueEnabled);
-  const sendTip = running
-    ? queueEnabled
-      ? "Queue message (sends when this turn ends)"
-      : "Steer: send into the running turn"
-    : "Send message";
+  const sendTip = running ? (queueEnabled ? "Queue" : "Steer") : "Send message";
   return (
     <div className="flex shrink-0 items-center gap-1">
       <AuiIf condition={(s) => s.composer.canCancel}>

@@ -1,6 +1,6 @@
 import { useId, useState, type FormEvent } from "react";
 
-import { ErrorLine, errorText, Field, RadioChoice, SwitchRow } from "@/app/dialogs/fields";
+import { ErrorLine, errorText, Field, RadioChoice } from "@/app/dialogs/fields";
 import {
   ModelSelector,
   type ModelGroup,
@@ -145,12 +145,25 @@ function SettingsForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
         />
       </Field>
 
-      <SwitchRow
-        label="Queue messages while a turn runs"
-        hint="Off: a message sent while the model works steers the running turn instead."
-        checked={queueEnabled}
-        onCheckedChange={setQueueEnabled}
-      />
+      <Field label="Follow-up behavior">
+        <RadioChoice<"queue" | "steer">
+          label="Follow-up behavior"
+          value={queueEnabled ? "queue" : "steer"}
+          onChange={(value) => setQueueEnabled(value === "queue")}
+          options={[
+            {
+              value: "queue",
+              label: "Queue",
+              hint: "A message sent while the model works waits until its turn ends.",
+            },
+            {
+              value: "steer",
+              label: "Steer",
+              hint: "A message sent while the model works goes into the running turn.",
+            },
+          ]}
+        />
+      </Field>
 
       <Field
         label="Hibernate after (minutes)"

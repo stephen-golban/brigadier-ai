@@ -45,6 +45,13 @@ export type BlockStep = {
   position: number;
 };
 
+/** A message the user steered into the block's running turn: a bubble inside the block. */
+export type BlockSteer = {
+  message: Message;
+  text: string;
+  position: number;
+};
+
 export type BlockState = RequestState["type"];
 
 export type Block = {
@@ -57,6 +64,10 @@ export type Block = {
   tasks: string[];
   /** Their steps, in order. */
   steps: BlockStep[];
+  /** Messages steered into its turn, whose requests it shows too. */
+  steers: BlockSteer[];
+  /** The requests it shows: its own (the key), then the steered ones. */
+  requestIds: string[];
   state: BlockState;
   error: string | null;
   startedAtMs: number;
@@ -244,6 +255,8 @@ export function buildBlocks(
         cards: [],
         tasks: [],
         steps: [],
+        steers: [],
+        requestIds: [key],
         state: request?.state.type ?? "done",
         error: request?.state.type === "failed" ? request.state.error : null,
         startedAtMs: request?.startedAtMs ?? startedAtMs,
@@ -302,7 +315,10 @@ export function buildBlocks(
     });
   }
 
-  const result = order.map((key) => blocks.get(key) as Block);
+  const result = joinSteered(
+    order.map((key) => blocks.get(key) as Block),
+    board.requests,
+  );
   // Sent but not yet stored: the bubble, and a block that works on it.
   for (const entry of pending) {
     result.push({
@@ -312,6 +328,8 @@ export function buildBlocks(
       cards: [],
       tasks: [],
       steps: [],
+      steers: [],
+      requestIds: [entry.localId],
       state: "working",
       error: null,
       startedAtMs: entry.createdAtMs,
@@ -319,6 +337,51 @@ export function buildBlocks(
     });
   }
   return result;
+}
+
+/**
+ * A request steered into the running turn of the block just before it joins that block, as
+ * ChatGPT shows a follow-up sent while it works: its message becomes a bubble inside the
+ * block, its work follows, and the header times from the steer.
+ */
+function joinSteered(blocks: Block[], requests: BoardDigest["requests"]): Block[] {
+  const joined: Block[] = [];
+  for (const block of blocks) {
+    const into = requests[block.key]?.steeredInto;
+    const previous = joined.at(-1);
+    if (!into || !previous?.requestIds.includes(into) || block.user?.kind !== "message") {
+      joined.push(block);
+      continue;
+    }
+    const texts = [...previous.texts, ...block.texts];
+    // The bubble shows after the reply that was streaming when it was sent.
+    const after = texts.find((text) => text.messageId === requests[block.key]?.steeredAfter);
+    const live = [previous.state, block.state].filter(isLive);
+    const state = live.length > 0 ? (live.includes("working") ? "working" : "waiting") : block.state;
+    joined[joined.length - 1] = {
+      ...previous,
+      texts: texts.toSorted((a, b) => a.position - b.position),
+      cards: [...previous.cards, ...block.cards],
+      tasks: [...previous.tasks, ...block.tasks],
+      steps: [...previous.steps, ...block.steps],
+      steers: [
+        ...previous.steers,
+        {
+          message: block.user.message,
+          text: block.user.text,
+          position: Math.max(block.user.message.seq, after ? after.position + 0.5 : 0),
+        },
+        ...block.steers,
+      ],
+      requestIds: [...previous.requestIds, ...block.requestIds],
+      state,
+      error: state === block.state ? block.error : null,
+      startedAtMs: block.startedAtMs,
+      endedAtMs:
+        live.length > 0 ? null : Math.max(previous.endedAtMs ?? 0, block.endedAtMs ?? 0) || null,
+    };
+  }
+  return joined;
 }
 
 /** Whether a block still has work running or waiting. */

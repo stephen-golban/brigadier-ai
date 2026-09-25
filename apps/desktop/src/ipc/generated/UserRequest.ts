@@ -19,4 +19,13 @@ preview: string, state: RequestState, startedAtMs: number,
 /**
  * When it last stopped working; absent while it works.
  */
-endedAtMs: number | null, };
+endedAtMs: number | null, 
+/**
+ * The request whose running turn its message was steered into: the thread shows it
+ * inside that request's block.
+ */
+steeredInto: string | null, 
+/**
+ * The reply that was streaming when it was steered in: its bubble shows after it.
+ */
+steeredAfter: string | null, };
